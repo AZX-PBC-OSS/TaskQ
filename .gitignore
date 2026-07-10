@@ -1,0 +1,62 @@
+# Python
+__pycache__/
+*.py[codz]
+*$py.class
+*.so
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Environments
+.env
+.env.local
+.env.*.local
+.envrc
+.venv/
+venv/
+
+# Test / coverage
+htmlcov/
+.coverage
+.coverage.*
+.cache
+.hypothesis/
+.pytest_cache/
+coverage.xml
+
+# Node.js (Tailwind CSS CLI for admin UI)
+node_modules/
+
+# MkDocs build output
+/site/
+
+# Type checker / linter caches
+.mypy_cache/
+.pyright_cache/
+.ruff_cache/
+
+# OS junk
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Docker compose local overrides
+docker-compose.override.yml
+docker-compose.override.yaml
+
+# Postgres data volume if a future compose maps it as a bind mount
+postgres-data/
+
+# Agent workspace
+.claude/
+.serena/

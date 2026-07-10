@@ -1,0 +1,71 @@
+services:
+  postgres:
+    image: postgres:18.4
+    container_name: taskq-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: taskq
+      POSTGRES_PASSWORD: taskq
+      POSTGRES_DB: taskq
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --locale=C"
+    command:
+      - postgres
+      - -c
+      - max_connections=200
+      - -c
+      - shared_buffers=256MB
+      - -c
+      - log_min_duration_statement=200ms
+      - -c
+      - track_io_timing=on
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U taskq -d taskq"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+
+  redis:
+    image: redis:8.6.3
+    container_name: taskq-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "no", "--save", ""]
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+
+  admin:
+    image: ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+    container_name: taskq-admin
+    working_dir: /app
+    environment:
+      TASKQ_PG_DSN: postgresql://taskq:taskq@postgres:5432/taskq
+      TASKQ_REDIS_URL: redis://redis:6379/0
+      TASKQ_SCHEMA_NAME: taskq
+      TASKQ_ADMIN_HOST: "0.0.0.0"
+      TASKQ_ADMIN_PORT: "8080"
+      TASKQ_ENVIRONMENT: development
+    ports:
+      - "8080:8080"
+    volumes:
+      - .:/app
+      - admin-venv:/app/.venv
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: >
+      sh -c "uv sync --no-group dev --extra fastapi --extra redis && uv run taskq ui serve --migrate --host 0.0.0.0 --port 8080"
+
+volumes:
+  postgres-data:
+  admin-venv:

@@ -1,0 +1,59 @@
+{% extends "_base.html" %}
+{% set active_page = "queue_detail" %}
+{% from "_partials/table.html" import styled_table, table_header, table_body, table_row %}
+{% from "_partials/job_card.html" import status_badge %}
+
+{% block title %}Queue {{ queue_name }} — TaskQ Admin{% endblock %}
+
+{% block content %}
+<h2 class="text-xl font-semibold tracking-tight mb-1">Queue: <span class="font-mono">{{ queue_name }}</span></h2>
+
+{% if has_alive_worker is defined and not has_alive_worker %}
+<div class="bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-lg p-3 text-sm mt-3 mb-4 text-yellow-700 dark:text-yellow-300">
+    <strong>Warning:</strong> No alive worker subscribed. Jobs may be stuck.
+    <a href="{{ base_path }}/workers" class="underline font-medium ml-1">Check workers</a>
+</div>
+{% endif %}
+
+<nav class="flex gap-0 border-b border-slate-200 dark:border-slate-700 mb-4 mt-4">
+{% for s in allowed_statuses %}
+    {% if s == status %}
+    <span class="px-3 py-2 text-sm font-semibold border-b-2 border-blue-500 text-blue-600 dark:text-blue-400">{{ s }}</span>
+    {% else %}
+    <a href="{{ base_path }}/queues/{{ queue_name|urlencode }}?status={{ s|urlencode }}" class="px-3 py-2 text-sm font-medium border-b-2 border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 hover:border-slate-300 transition-colors">{{ s }}</a>
+    {% endif %}
+{% endfor %}
+</nav>
+
+{% if jobs %}
+{% call styled_table() %}
+    {{ table_header(["ID", "Actor", "Status", "Scheduled At", "Attempt"]) }}
+    {% call table_body() %}
+    {% for job in jobs %}
+        {% call table_row() %}
+            <td class="px-4 py-2.5">
+                <a href="{{ base_path }}/jobs/{{ job.id }}" class="font-mono text-xs text-blue-600 dark:text-blue-400 hover:underline">{{ job.id[:8] }}</a>
+            </td>
+            <td class="px-4 py-2.5 text-sm font-medium">{{ job.actor }}</td>
+            <td class="px-4 py-2.5">{{ status_badge(job.status) }}</td>
+            <td class="px-4 py-2.5 text-xs text-slate-500 whitespace-nowrap">{{ job.scheduled_at }}</td>
+            <td class="px-4 py-2.5 text-xs text-slate-500">{{ job.attempt }}/{{ job.max_attempts }}</td>
+        {% endcall %}
+    {% endfor %}
+    {% endcall %}
+{% endcall %}
+
+{% if has_next %}
+<div class="mt-3 flex justify-end">
+    <a href="{{ base_path }}/queues/{{ queue_name|urlencode }}?status={{ status|urlencode }}&cursor_at={{ next_cursor_at|urlencode }}&cursor_id={{ next_cursor_id|urlencode }}"
+       class="inline-flex items-center gap-1 px-3 py-1.5 text-sm font-medium border border-slate-300 dark:border-slate-600 rounded-md text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors">
+        Next page →
+    </a>
+</div>
+{% endif %}
+{% else %}
+<div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg p-12 text-center">
+    <p class="text-slate-400 text-sm">No jobs with status "{{ status }}" in this queue.</p>
+</div>
+{% endif %}
+{% endblock %}
