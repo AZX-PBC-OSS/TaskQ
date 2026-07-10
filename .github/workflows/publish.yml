@@ -1,0 +1,84 @@
+name: Publish to PyPI
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.3.2
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Verify tag matches pyproject.toml version
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF#refs/tags/v}"
+          version="$(uv run python -c 'import importlib.metadata; print(importlib.metadata.version("taskq-py"))')"
+          echo "Tag: ${tag}"
+          echo "pyproject.toml version: ${version}"
+          if [ "${tag}" != "${version}" ]; then
+            echo "::error::Git tag ${tag} does not match pyproject.toml version ${version}"
+            exit 1
+          fi
+
+      - name: Build sdist and wheel
+        run: uv build
+
+      - name: Assert wheel ships required non-code artifacts
+        run: |
+          set -euo pipefail
+          listing="$(uv run python -m zipfile -l dist/*.whl)"
+          echo "$listing" | grep -q "taskq/py.typed"
+          echo "$listing" | grep -q "taskq/migrations/01.00.00_01_pre_initial.sql"
+          echo "$listing" | grep -q "taskq/web/templates/"
+
+      - name: Test installation from wheel
+        run: |
+          uv venv test-env
+          uv pip install --python test-env/bin/python dist/*.whl
+          cd /tmp && $GITHUB_WORKSPACE/test-env/bin/python -c "import taskq; print(taskq.__version__)"
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: release-dist
+          path: dist/
+          retention-days: 7
+
+  publish:
+    needs: [build]
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/taskq-py/
+    permissions:
+      id-token: write
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v6
+        with:
+          name: release-dist
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+
+# Trusted Publishing (OIDC): no API token is stored in this repo.
+# The PyPI trusted publisher is configured for:
+#   Repository: AZX-PBC-OSS/TaskQ
+#   Workflow: publish.yml
+#   Environment: (Any)
+# See https://docs.pypi.org/trusted-publishers/ for setup details.

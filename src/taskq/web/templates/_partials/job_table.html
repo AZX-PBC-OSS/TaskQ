@@ -1,0 +1,148 @@
+{% from "_partials/job_card.html" import status_badge, duration_fmt, timestamp_cell %}
+
+{# Sortable column header macro #}
+{% macro sort_header(label, field, current_sort, current_order) %}
+    {% set is_active = (current_sort == field) %}
+    {% set next_order = 'asc' if (is_active and current_order == 'desc') else 'desc' %}
+    {% set indicator = '' %}
+    {% if is_active %}
+        {% set indicator = ' ▲' if current_order == 'asc' else ' ▼' %}
+    {% endif %}
+    <a href="{{ base_path }}/jobs?tab={{ tab }}&sort={{ field }}&order={{ next_order }}{% for s in statuses %}&status={{ s | urlencode }}{% endfor %}{% if actor_filter %}&actor={{ actor_filter | urlencode }}{% endif %}{% if queue_filter %}&queue={{ queue_filter | urlencode }}{% endif %}{% if time_range %}&time_range={{ time_range | urlencode }}{% endif %}{% if identity_key %}&identity_key={{ identity_key | urlencode }}{% endif %}{% if fairness_key %}&fairness_key={{ fairness_key | urlencode }}{% endif %}{% if search %}&search={{ search | urlencode }}{% endif %}{% if tags_filter %}&tags={{ tags_filter | urlencode }}{% endif %}{% if live == 'off' %}&live=off{% endif %}"
+       hx-get="{{ base_path }}/jobs?tab={{ tab }}&sort={{ field }}&order={{ next_order }}{% for s in statuses %}&status={{ s | urlencode }}{% endfor %}{% if actor_filter %}&actor={{ actor_filter | urlencode }}{% endif %}{% if queue_filter %}&queue={{ queue_filter | urlencode }}{% endif %}{% if time_range %}&time_range={{ time_range | urlencode }}{% endif %}{% if identity_key %}&identity_key={{ identity_key | urlencode }}{% endif %}{% if fairness_key %}&fairness_key={{ fairness_key | urlencode }}{% endif %}{% if search %}&search={{ search | urlencode }}{% endif %}{% if tags_filter %}&tags={{ tags_filter | urlencode }}{% endif %}{% if live == 'off' %}&live=off{% endif %}"
+       hx-target="#job-table-container" hx-swap="outerHTML"
+       class="no-underline hover:text-slate-700 dark:hover:text-slate-200 {{ 'text-blue-600 dark:text-blue-400' if is_active else '' }}">
+        {{ label }}{{ indicator }}
+    </a>
+{% endmacro %}
+
+{% if jobs %}
+<div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg overflow-hidden">
+    <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+            <thead>
+                <tr class="bg-slate-50 dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700">
+                    <th class="px-3 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">ID</th>
+                    <th class="px-3 py-2.5 text-left text-xs font-semibold uppercase tracking-wider">{{ sort_header('Actor', 'actor', sort, order) }}</th>
+                    <th class="px-3 py-2.5 text-left text-xs font-semibold uppercase tracking-wider">{{ sort_header('Queue', 'queue', sort, order) }}</th>
+                    <th class="px-3 py-2.5 text-left text-xs font-semibold uppercase tracking-wider">{{ sort_header('Status', 'status', sort, order) }}</th>
+                    {% if tab == 'live' %}
+                    <th class="px-3 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Progress</th>
+                    {% endif %}
+                    <th class="px-3 py-2.5 text-left text-xs font-semibold uppercase tracking-wider">{{ sort_header('Created', 'created_at', sort, order) }}</th>
+                    <th class="px-3 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Started</th>
+                    <th class="px-3 py-2.5 text-left text-xs font-semibold uppercase tracking-wider">{{ sort_header('Finished', 'finished_at', sort, order) if tab == 'archived' else 'Finished' }}</th>
+                    <th class="px-3 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Duration</th>
+                    <th class="px-3 py-2.5 text-left text-xs font-semibold uppercase tracking-wider">{{ sort_header('Attempt', 'attempt', sort, order) }}</th>
+                    <th class="px-3 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Tags</th>
+                    {% if tab == 'archived' %}
+                    <th class="px-3 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Archived</th>
+                    {% endif %}
+                    <th class="px-3 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Actions</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-surface-100 dark:divide-surface-800">
+            {% for job in jobs %}
+                <tr class="job-row hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors"
+                    data-job-id="{{ job.id }}"
+                    data-status="{{ job.status }}">
+                    <td class="px-3 py-2">
+                        <a href="{{ base_path }}/jobs/{{ job.id }}"
+                           class="font-mono text-xs text-blue-600 dark:text-blue-400 hover:underline">
+                           {{ job.id[:8] }}
+                        </a>
+                    </td>
+                    <td class="px-3 py-2 font-medium max-w-[150px] truncate" title="{{ job.actor }}">{{ job.actor }}</td>
+                    <td class="px-3 py-2 max-w-[120px] truncate" title="{{ job.queue }}">{{ job.queue }}</td>
+                    <td class="px-3 py-2">{{ status_badge(job.status) }}</td>
+                    {% if tab == 'live' %}
+                    <td class="px-3 py-2 min-w-[120px]">
+                        {% set ps = job.progress_state or {} %}
+                        {% if ps is mapping and (ps.get('percent') or ps.get('step')) %}
+                        <div class="flex items-center gap-1.5">
+                            <div class="flex-1 h-1.5 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden max-w-[80px]">
+                                <div class="progress-bar h-full bg-blue-500 rounded-full" style="width: {{ ps.get('percent', 0) }}%"></div>
+                            </div>
+                            <span class="text-xs text-slate-500">{{ ps.get('percent', '') }}{% if ps.get('percent') %}%{% endif %}</span>
+                        </div>
+                        {% elif job.status == 'running' %}
+                        <span class="text-xs text-slate-400">—</span>
+                        {% else %}
+                        <span class="text-xs text-slate-400">—</span>
+                        {% endif %}
+                    </td>
+                    {% endif %}
+                    <td class="px-3 py-2 text-xs whitespace-nowrap">{{ timestamp_cell(job.created_at) }}</td>
+                    <td class="px-3 py-2 text-xs whitespace-nowrap">
+                        {{ timestamp_cell(job.started_at) }}
+                    </td>
+                    <td class="px-3 py-2 text-xs whitespace-nowrap">
+                        {{ timestamp_cell(job.finished_at) }}
+                    </td>
+                    <td class="px-3 py-2 text-xs font-mono text-slate-500">
+                        {% if job.duration_ms is not none %}{{ duration_fmt(job.duration_ms) }}{% else %}—{% endif %}
+                    </td>
+                    <td class="px-3 py-2 text-xs text-slate-500">{{ job.attempt }}/{{ job.max_attempts }}</td>
+                    <td class="px-3 py-2 max-w-[180px]">
+                        <div class="flex flex-wrap gap-1">
+                            {% for tag in (job.tags or [])[:3] %}
+                            <span class="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-700 dark:bg-blue-900/20 dark:text-blue-300">{{ tag }}</span>
+                            {% endfor %}
+                            {% if (job.tags or []) | length > 3 %}
+                            <span class="text-xs text-slate-400">+{{ job.tags | length - 3 }}</span>
+                            {% endif %}
+                        </div>
+                    </td>
+                    {% if tab == 'archived' %}
+                    <td class="px-3 py-2 text-xs text-slate-500 whitespace-nowrap">
+                        {% if job.get('archived_at') %}{{ job.archived_at[:19] }}{% else %}—{% endif %}
+                    </td>
+                    {% endif %}
+                    <td class="px-3 py-2">
+                        <div class="flex items-center gap-1">
+                            <a href="{{ base_path }}/jobs/{{ job.id }}" title="View details"
+                               class="p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300">
+                                <i data-lucide="eye" class="w-3.5 h-3.5"></i>
+                            </a>
+                        </div>
+                    </td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    {# Pagination #}
+    {% if has_next or has_prev %}
+    <div class="flex items-center justify-between px-3 py-2 border-t border-slate-200 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-800/50 text-xs text-slate-500">
+        <span>Showing {{ jobs | length }} results</span>
+        <div class="flex gap-1">
+            {% if has_prev %}
+            <a href="{{ base_path }}/jobs?tab={{ tab }}&cursor_at={{ prev_cursor_at | urlencode }}&cursor_id={{ prev_cursor_id | urlencode }}&cursor_dir=prev{% for s in statuses %}&status={{ s | urlencode }}{% endfor %}{% if actor_filter %}&actor={{ actor_filter | urlencode }}{% endif %}{% if queue_filter %}&queue={{ queue_filter | urlencode }}{% endif %}{% if time_range %}&time_range={{ time_range | urlencode }}{% endif %}{% if identity_key %}&identity_key={{ identity_key | urlencode }}{% endif %}{% if fairness_key %}&fairness_key={{ fairness_key | urlencode }}{% endif %}{% if search %}&search={{ search | urlencode }}{% endif %}{% if tags_filter %}&tags={{ tags_filter | urlencode }}{% endif %}{% if live == 'off' %}&live=off{% endif %}"
+               hx-get="{{ base_path }}/jobs?tab={{ tab }}&cursor_at={{ prev_cursor_at | urlencode }}&cursor_id={{ prev_cursor_id | urlencode }}&cursor_dir=prev{% for s in statuses %}&status={{ s | urlencode }}{% endfor %}{% if actor_filter %}&actor={{ actor_filter | urlencode }}{% endif %}{% if queue_filter %}&queue={{ queue_filter | urlencode }}{% endif %}{% if time_range %}&time_range={{ time_range | urlencode }}{% endif %}{% if identity_key %}&identity_key={{ identity_key | urlencode }}{% endif %}{% if fairness_key %}&fairness_key={{ fairness_key | urlencode }}{% endif %}{% if search %}&search={{ search | urlencode }}{% endif %}{% if tags_filter %}&tags={{ tags_filter | urlencode }}{% endif %}{% if live == 'off' %}&live=off{% endif %}"
+               hx-target="#job-table-container" hx-swap="outerHTML"
+               class="inline-flex items-center gap-1 px-2.5 py-1 rounded border border-slate-300 dark:border-slate-600 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors">
+                <i data-lucide="chevron-left" class="w-3.5 h-3.5"></i> Previous
+            </a>
+            {% endif %}
+            {% if has_next %}
+            <a href="{{ base_path }}/jobs?tab={{ tab }}&cursor_at={{ next_cursor_at | urlencode }}&cursor_id={{ next_cursor_id | urlencode }}&cursor_dir=next{% for s in statuses %}&status={{ s | urlencode }}{% endfor %}{% if actor_filter %}&actor={{ actor_filter | urlencode }}{% endif %}{% if queue_filter %}&queue={{ queue_filter | urlencode }}{% endif %}{% if time_range %}&time_range={{ time_range | urlencode }}{% endif %}{% if identity_key %}&identity_key={{ identity_key | urlencode }}{% endif %}{% if fairness_key %}&fairness_key={{ fairness_key | urlencode }}{% endif %}{% if search %}&search={{ search | urlencode }}{% endif %}{% if tags_filter %}&tags={{ tags_filter | urlencode }}{% endif %}{% if live == 'off' %}&live=off{% endif %}"
+               hx-get="{{ base_path }}/jobs?tab={{ tab }}&cursor_at={{ next_cursor_at | urlencode }}&cursor_id={{ next_cursor_id | urlencode }}&cursor_dir=next{% for s in statuses %}&status={{ s | urlencode }}{% endfor %}{% if actor_filter %}&actor={{ actor_filter | urlencode }}{% endif %}{% if queue_filter %}&queue={{ queue_filter | urlencode }}{% endif %}{% if time_range %}&time_range={{ time_range | urlencode }}{% endif %}{% if identity_key %}&identity_key={{ identity_key | urlencode }}{% endif %}{% if fairness_key %}&fairness_key={{ fairness_key | urlencode }}{% endif %}{% if search %}&search={{ search | urlencode }}{% endif %}{% if tags_filter %}&tags={{ tags_filter | urlencode }}{% endif %}{% if live == 'off' %}&live=off{% endif %}"
+               hx-target="#job-table-container" hx-swap="outerHTML"
+               class="inline-flex items-center gap-1 px-2.5 py-1 rounded border border-slate-300 dark:border-slate-600 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors">
+                Next <i data-lucide="chevron-right" class="w-3.5 h-3.5"></i>
+            </a>
+            {% endif %}
+        </div>
+    </div>
+    {% endif %}
+</div>
+{% else %}
+<div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg p-12 text-center">
+    <i data-lucide="inbox" class="w-10 h-10 text-slate-300 dark:text-slate-600 mx-auto mb-3"></i>
+    <p class="text-slate-500 dark:text-slate-400 text-sm">
+        No jobs found matching the current filters.
+    </p>
+    <a href="{{ base_path }}/jobs" class="inline-block mt-3 text-sm text-blue-600 dark:text-blue-400 hover:underline">Clear all filters</a>
+</div>
+{% endif %}

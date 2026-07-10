@@ -1,0 +1,98 @@
+{% extends "_base.html" %}
+{% set active_page = "history" %}
+{% from "_partials/job_card.html" import job_row %}
+
+{% block title %}History — TaskQ Admin{% endblock %}
+
+{% block content %}
+<h2>Job History</h2>
+
+<section class="metrics-bar">
+    <dl class="metrics">
+        <div class="metric">
+            <dt>Total</dt>
+            <dd>{{ total_display }}</dd>
+        </div>
+        {% if success_rate is not none %}
+        <div class="metric">
+            <dt>Success Rate</dt>
+            <dd>{{ success_rate }}%</dd>
+        </div>
+        {% endif %}
+        {% for s in all_statuses %}
+        {% if summary.get(s, 0) > 0 %}
+        <div class="metric">
+            <dt>{{ s }}</dt>
+            <dd>{{ summary[s] }}</dd>
+        </div>
+        {% endif %}
+        {% endfor %}
+    </dl>
+</section>
+
+<form method="GET" action="" class="filter-form">
+    <fieldset>
+        <legend>Filters</legend>
+        <label>
+            Status
+            <select name="status" multiple size="8">
+            {% for s in all_statuses %}
+                <option value="{{ s }}"{% if s in statuses %} selected{% endif %}>{{ s }}</option>
+            {% endfor %}
+            </select>
+        </label>
+        <label>
+            Actor
+            <input type="text" name="actor" value="{{ actor_filter or '' }}" placeholder="e.g. send_email">
+        </label>
+        <label>
+            Queue
+            <input type="text" name="queue" value="{{ queue_filter or '' }}" placeholder="e.g. default">
+        </label>
+        <button type="submit">Filter</button>
+        <a href="{{ base_path }}/history" class="filter-reset">Reset</a>
+    </fieldset>
+</form>
+
+{% if jobs %}
+<table>
+    <thead>
+        <tr>
+            <th>ID</th>
+            <th>Actor</th>
+            <th>Queue</th>
+            <th>Status</th>
+            <th>Enqueued</th>
+            <th>Started</th>
+            <th>Finished</th>
+            <th>Duration</th>
+            <th>Attempt</th>
+            <th>Source</th>
+        </tr>
+    </thead>
+    <tbody>
+    {% for job in jobs %}
+        <tr>
+            <td><a href="{{ base_path }}/jobs/{{ job.id }}">{{ job.id }}</a></td>
+            <td>{{ job.actor }}</td>
+            <td>{{ job.queue }}</td>
+            <td>{{ job.status }}</td>
+            <td>{{ job.created_at }}</td>
+            <td>{{ job.started_at or '—' }}</td>
+            <td>{{ job.finished_at or '—' }}</td>
+            <td>{% if job.duration_ms is not none %}{{ "%.1f"|format(job.duration_ms / 1000) }}s{% else %}—{% endif %}</td>
+            <td>{{ job.attempt }}/{{ job.max_attempts }}</td>
+            <td>{% if job.is_archived %}<span class="badge badge-grey">archived</span>{% else %}live{% endif %}</td>
+        </tr>
+    {% endfor %}
+    </tbody>
+</table>
+
+{% if has_next %}
+<a href="{{ base_path }}/history?{% for s in statuses %}status={{ s|urlencode }}&{% endfor %}{% if actor_filter %}actor={{ actor_filter|urlencode }}&{% endif %}{% if queue_filter %}queue={{ queue_filter|urlencode }}&{% endif %}cursor_at={{ next_cursor_at|urlencode }}&cursor_id={{ next_cursor_id|urlencode }}" class="pagination-next">Next page</a>
+{% endif %}
+
+{% else %}
+<p>No completed jobs found matching the current filters.</p>
+{% endif %}
+{% endblock %}
