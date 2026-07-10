@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TaskQ Example — Trigger UI</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 960px; margin: 2rem auto; padding: 0 1rem; }
+    .card { border: 1px solid #ddd; border-radius: 8px; padding: 1rem 1.5rem; margin-bottom: 1rem; }
+    .card h2 { margin-top: 0; }
+    .card p { color: #555; }
+    label { display: inline-block; width: 140px; }
+    input { margin-bottom: 0.5rem; }
+    button { margin-top: 0.5rem; }
+    .admin-link { margin: 2rem 0; }
+    .tag { display: inline-block; font-size: 0.7rem; font-weight: 600; letter-spacing: 0.05em;
+           text-transform: uppercase; background: #e0f2fe; color: #0369a1;
+           border-radius: 4px; padding: 1px 6px; margin-left: 8px; vertical-align: middle; }
+    .toast { position: fixed; bottom: 1rem; right: 1rem; padding: 0.75rem 1.25rem; border-radius: 6px;
+             color: #fff; font-size: 0.9rem; z-index: 9999; opacity: 0; transition: opacity 0.3s; pointer-events: none; }
+    .toast.show { opacity: 1; }
+    .toast.success { background: #16a34a; }
+    .toast.error { background: #dc2626; }
+    .progress-toast { position: fixed; bottom: 1rem; right: 1rem; width: 320px;
+                      background: #1e293b; color: #f1f5f9; border-radius: 8px;
+                      padding: 1rem; z-index: 9999; box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+                      font-size: 0.85rem; pointer-events: auto; }
+    .progress-toast .pt-title { font-weight: 600; margin-bottom: 0.5rem; display: flex;
+                                justify-content: space-between; align-items: center; }
+    .progress-toast .pt-title a { color: #93c5fd; text-decoration: none; font-weight: 400; font-size: 0.8rem; }
+    .progress-toast .pt-detail { color: #94a3b8; margin-bottom: 0.4rem; }
+    .progress-toast .pt-bar-bg { height: 6px; background: #334155; border-radius: 3px; overflow: hidden; }
+    .progress-toast .pt-bar { height: 100%; background: #3b82f6; border-radius: 3px;
+                              transition: width 0.3s ease; width: 0%; }
+    .progress-toast .pt-bar.done { background: #22c55e; }
+    .progress-toast .pt-meta { color: #64748b; font-size: 0.75rem; margin-top: 0.35rem; }
+    .progress-toast .pt-close { cursor: pointer; background: none; border: none; color: #64748b;
+                                 font-size: 1.1rem; line-height: 1; padding: 0 0 0 0.5rem; }
+    .progress-toast .pt-close:hover { color: #f1f5f9; }
+    .toast-stack { position: fixed; bottom: 1rem; right: 1rem; z-index: 9999; display: flex;
+                   flex-direction: column-reverse; gap: 0.5rem; align-items: flex-end; }
+  </style>
+</head>
+<body>
+  <h1>TaskQ Example — Trigger UI</h1>
+
+  <p class="admin-link">
+    <a href="{{ admin_url }}/queues">Queue overview (admin UI)</a>
+  </p>
+
+  {% for actor in actors %}
+  <div class="card">
+    <h2>
+      {{ actor.name }}
+      {% if actor.has_result %}<span class="tag">returns result</span>{% endif %}
+    </h2>
+    <p>{{ actor.description }}</p>
+    <form data-actor="{{ actor.name }}" data-has-result="{{ actor.has_result | lower }}">
+      {% for field_name, input_type, default_val, label in actor.fields %}
+      <div>
+        <label for="{{ actor.name }}-{{ field_name }}">{{ label }}</label>
+        <input id="{{ actor.name }}-{{ field_name }}" name="{{ field_name }}" type="{{ input_type }}" value="{{ default_val }}">
+      </div>
+      {% endfor %}
+      <button type="submit">Enqueue {{ actor.name }}</button>
+      {% if actor.watch_queue_url %}
+      <p style="margin-top:0.5rem;font-size:0.85em;color:#555">
+        <a href="{{ actor.watch_queue_url }}" target="_blank">Watch child counter jobs in queue</a>
+      </p>
+      {% endif %}
+    </form>
+  </div>
+  {% endfor %}
+
+  <div id="toast-stack" class="toast-stack"></div>
+
+  <script>
+    function showToast(msg, type) {
+      const el = document.createElement('div');
+      el.className = 'toast ' + type;
+      el.textContent = msg;
+      document.getElementById('toast-stack').appendChild(el);
+      requestAnimationFrame(() => el.classList.add('show'));
+      setTimeout(() => { el.classList.remove('show'); setTimeout(() => el.remove(), 300); }, 3000);
+    }
+
+    function showProgressToast(jobId, actorName) {
+      const stack = document.getElementById('toast-stack');
+      const el = document.createElement('div');
+      el.className = 'progress-toast';
+      el.innerHTML = `
+        <div class="pt-title">
+          <span>${actorName}</span>
+          <span style="display:flex;align-items:center">
+            <a href="/taskq/jobs/${jobId}" target="_blank">view job</a>
+            <button class="pt-close" title="dismiss">&times;</button>
+          </span>
+        </div>
+        <div class="pt-detail">Starting…</div>
+        <div class="pt-bar-bg"><div class="pt-bar"></div></div>
+        <div class="pt-meta"></div>
+      `;
+
+      const detailEl = el.querySelector('.pt-detail');
+      const barEl = el.querySelector('.pt-bar');
+      const metaEl = el.querySelector('.pt-meta');
+      const closeBtn = el.querySelector('.pt-close');
+
+      let autoDismiss = null;
+      closeBtn.addEventListener('click', () => {
+        if (es) es.close();
+        el.remove();
+        if (autoDismiss) clearTimeout(autoDismiss);
+      });
+
+      stack.appendChild(el);
+
+      let es = null;
+
+      function onProgress(evt) {
+        detailEl.textContent = evt.detail || `Step ${evt.step || ''}`;
+        const pct = typeof evt.percent === 'number' ? evt.percent : 0;
+        barEl.style.width = Math.min(100, Math.max(0, pct)) + '%';
+        const parts = [];
+        if (evt.step) parts.push('Step ' + evt.step);
+        if (pct > 0) parts.push(pct.toFixed(1) + '%');
+        metaEl.textContent = parts.join(' · ');
+      }
+
+      function onTerminal(evt) {
+        onProgress(evt);
+        barEl.classList.add('done');
+        barEl.style.width = '100%';
+        detailEl.textContent = evt.detail || 'Completed';
+        metaEl.textContent = 'Done';
+        if (es) es.close();
+        autoDismiss = setTimeout(() => el.remove(), 5000);
+      }
+
+      function fallbackPoll() {
+        if (es) { es.close(); es = null; }
+        const interval = setInterval(() => {
+          fetch(`/taskq/jobs/api/job/${jobId}/state`)
+            .then(r => r.json())
+            .then(body => {
+              if (body.progress_state) onProgress(body.progress_state);
+              const terminal = ['succeeded','failed','cancelled','crashed','abandoned'];
+              if (terminal.includes(body.status)) {
+                clearInterval(interval);
+                onTerminal(body.progress_state || { percent: 100, detail: body.status });
+              }
+            })
+            .catch(() => {});
+        }, 1000);
+      }
+
+      try {
+        es = new EventSource(`/taskq/jobs/api/job/${jobId}/progress/stream`);
+        es.addEventListener('progress', (raw) => {
+          try { onProgress(JSON.parse(raw.data)); } catch {}
+        });
+        es.addEventListener('terminal', (raw) => {
+          try { onTerminal(JSON.parse(raw.data)); } catch {}
+        });
+        es.addEventListener('done', () => {
+          if (es) { es.close(); es = null; }
+        });
+        es.addEventListener('error', () => {
+          if (es) { es.close(); es = null; }
+          fallbackPoll();
+        });
+      } catch {
+        fallbackPoll();
+      }
+    }
+
+    document.querySelectorAll('form[data-actor]').forEach(form => {
+      form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const actorName = form.dataset.actor;
+        const hasResult = form.dataset.hasResult === 'true';
+        const body = new URLSearchParams(new FormData(form));
+
+        let resp;
+        try {
+          resp = await fetch(`/enqueue/${actorName}`, { method: 'POST', body });
+        } catch (err) {
+          showToast('Network error: ' + err, 'error');
+          return;
+        }
+
+        const data = await resp.json().catch(() => ({}));
+
+        if (resp.status === 409) {
+          showToast(data.error || 'Enqueue blocked', 'error');
+          return;
+        }
+        if (!resp.ok) {
+          showToast(data.error || 'Enqueue failed', 'error');
+          return;
+        }
+
+        if (hasResult && data.result_url) {
+          window.open(data.result_url, '_blank');
+          showToast('Job enqueued — result page opened', 'success');
+        } else if (data.has_progress && data.job_id) {
+          showProgressToast(data.job_id, actorName);
+        } else if (data.redirect) {
+          showToast('Job enqueued — opening admin page', 'success');
+          window.open(data.redirect, '_blank');
+        } else {
+          showToast('Job enqueued', 'success');
+        }
+      });
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Job Result — {{ job_id }}</title>
+  {% if not done %}
+  <meta http-equiv="refresh" content="2">
+  {% endif %}
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 640px; margin: 2rem auto; padding: 0 1rem; }
+    .card { border: 1px solid #ddd; border-radius: 8px; padding: 1rem 1.5rem; margin-bottom: 1rem; }
+    .status { font-weight: bold; text-transform: uppercase; font-size: 0.85rem; letter-spacing: 0.05em; }
+    .status.succeeded { color: #16a34a; }
+    .status.running, .status.pending { color: #2563eb; }
+    .status.failed, .status.crashed, .status.cancelled { color: #dc2626; }
+    pre { background: #f4f4f5; border-radius: 6px; padding: 1rem; overflow-x: auto; }
+    a { color: #2563eb; }
+  </style>
+</head>
+<body>
+  <h1>Job Result</h1>
+  <div class="card">
+    <p><strong>Job ID:</strong> {{ job_id }}</p>
+    <p><strong>Status:</strong> <span class="status {{ status }}">{{ status }}</span></p>
+
+    {% if done and result is not none %}
+    <h2>Result</h2>
+    <pre>{{ result | tojson(indent=2) }}</pre>
+    {% elif not done %}
+    <p>Job is still running — this page refreshes every 2 seconds.</p>
+    {% else %}
+    <p>No result available (job may have failed or not stored a result).</p>
+    {% endif %}
+
+    <p><a href="{{ admin_url }}/admin/jobs/{{ job_id }}">View full details in admin &rarr;</a></p>
+    <p><a href="/">Back to trigger UI</a></p>
+  </div>
+</body>
+</html>

@@ -1,0 +1,424 @@
+[project]
+name = "taskq-py"
+version = "0.1.0"
+description = "Async-native, Postgres-backed background job library for Python 3.12+"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.12"
+authors = [{ name = "AZX, PBC.", email = "oss@azx.io" }]
+keywords = ["jobs", "queue", "postgres", "asyncio", "opentelemetry"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Framework :: AsyncIO",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Libraries",
+]
+dependencies = [
+    "asyncpg>=0.31.0,<1",
+    "croniter>=6.2.3",
+    "dotenvmodel>=0.3.0,<1",
+    "opentelemetry-api>=1.43.0",
+    "orjson>=3.11.9",
+    "pydantic>=2.13.4,<3",
+    "structlog>=26.1.0,<27",
+    "typer>=0.26.8,<1",
+    "uuid-utils>=0.17.0,<1",
+]
+
+[project.scripts]
+taskq = "taskq.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/AZX-PBC-OSS/TaskQ"
+Documentation = "https://AZX-PBC-OSS.github.io/TaskQ/"
+Repository = "https://github.com/AZX-PBC-OSS/TaskQ"
+Issues = "https://github.com/AZX-PBC-OSS/TaskQ/issues"
+Changelog = "https://github.com/AZX-PBC-OSS/TaskQ/blob/main/CHANGELOG.md"
+
+[project.optional-dependencies]
+redis = [
+    "redis>=8.0.1,<9",
+]
+fastapi = [
+    "fastapi>=0.139.0,<1",
+    "humanize>=4.16.0",
+    "jinja2>=3.1.6",
+    "sse-starlette>=3.4.5",
+    "starlette>=1.3.1",
+    "uvicorn>=0.51.0,<1",
+]
+reload = [
+    "watchfiles>=1.2.0",
+]
+otel = [
+    # Not imported anywhere under src/taskq; kept optional for operators who
+    # export OTLP directly or drive auto-instrumentation via
+    # `opentelemetry-instrument`.
+    "opentelemetry-sdk>=1.43.0",
+    "opentelemetry-exporter-otlp>=1.43.0",
+    "opentelemetry-instrumentation>=0.62b1,<1",
+]
+prometheus = [
+    # >=0.63b0 guarantees PrometheusMetricReader's public `registry=` kwarg
+    # (opentelemetry-python #5055); earlier releases hard-coded the global
+    # REGISTRY, which is not safe for isolated metric scrapes.
+    "opentelemetry-exporter-prometheus>=0.63b0,<1",
+    "prometheus-client>=0.25.0,<1",
+]
+oidc = [
+    # OAuth2/OIDC client, discovery, and JWT/JWKS validation. Vendor-neutral —
+    # works against any OIDC provider (Entra, Okta, Auth0, Google); no vendor SDK.
+    "authlib>=1.7.2",
+    # HTTP client for authlib's AsyncOAuth2Client (subclasses httpx.AsyncClient
+    # for the OAuth2 token-exchange flow). authlib does not declare httpx as a
+    # hard dependency, so it must be listed here explicitly.
+    "httpx>=0.28.1,<1",
+    # HTTP client for direct OIDC calls (discovery, JWKS fetch). httpx2 is the
+    # Pydantic-maintained successor to httpx with the same API surface.
+    "httpx2>=2.5.0",
+    # Signed session cookies (shared with the SAML backend via _session.py).
+    "itsdangerous>=2.2.0,<3",
+]
+saml = [
+    # OneLogin SP toolkit; xmlsec ships self-contained wheels on common platforms
+    # (manylinux/musllinux/macos/windows) — no system libxmlsec1 needed there.
+    # See docs/guides/sso.md for platform-specific notes.
+    "python3-saml>=1.16.0",
+    # Shared signed session cookies via _session.py.
+    "itsdangerous>=2.2.0,<3",
+]
+
+[tool.uv]
+# Supply-chain hardening: never resolve to distributions published within the
+# last 24 hours, giving time for malicious releases to be detected and yanked.
+exclude-newer = "24 hours"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/taskq"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/taskq", "examples", "README.md", "LICENSE", "pyproject.toml"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests", "examples"]
+
+[tool.ruff.lint]
+select = [
+    "E",     # pycodestyle errors
+    "W",     # pycodestyle warnings
+    "F",     # pyflakes
+    "I",     # isort
+    "B",     # flake8-bugbear
+    "UP",    # pyupgrade
+    "N",     # pep8-naming
+    "ASYNC", # flake8-async (PEP 789 async-safety hazards)
+    "S",     # bandit
+    "C4",    # comprehensions
+    "SIM",   # simplify
+    "RUF",   # ruff-specific
+]
+ignore = [
+    "S101",  # assert in tests
+    "E501",  # long lines (formatter handles)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "S105", "S106"]
+"tests/test_workgroup.py" = ["S108", "ASYNC110"]
+# Exception class names follow the project glossary verbatim
+# (Snooze, RetryAfter, ResultTooLarge, ScopeViolation, etc.).
+"src/taskq/exceptions.py" = ["N818"]
+# ASYNC109: _consume_transactional and _consume_autonomous accept a
+# pre-computed start_to_close timeout from the job row; this is not a
+# user-facing async-with-timeout API — the timeout is consumed
+# internally by asyncio.wait_for, not exposed as an alternative to
+# asyncio.timeout(). SIM117: loop_conn.transaction() wrapping the
+# actor body + mark_succeeded_with_conn cannot be flattened into a
+# combined async-with because the conn is a parameter, not acquired
+# from a pool inside the function.
+"src/taskq/worker/_consumer.py" = ["ASYNC109", "SIM117"]
+# Schema name is validated against _IDENT_RE before interpolation; bandit
+# cannot trace that across function boundaries. asyncpg has no parameter
+# binding for identifiers, so we have to interpolate.
+"src/taskq/migrate.py" = ["S608"]
+# Schema name is validated against _IDENT_RE before interpolation; same
+# rationale as migrate.py.  All user-supplied values use $N parameter
+# binding — only the schema identifier is interpolated, and it is
+# validated at construction time.
+"src/taskq/backend/postgres.py" = ["S608", "SIM117"]
+# S608: schema name is validated against _IDENT_RE before interpolation; same
+# rationale as migrate.py.  All user-supplied values use $N parameter binding.
+# SIM117: pool.acquire() and conn.transaction() cannot be flattened into a
+# single async-with because conn is not bound until after the first __aenter__.
+"src/taskq/backend/_terminal.py" = ["S608", "SIM117"]
+"src/taskq/backend/_enqueue.py" = ["S608", "SIM117"]
+"src/taskq/backend/_reads.py" = ["S608"]
+"src/taskq/backend/_dispatch.py" = ["S608", "SIM117"]
+"src/taskq/backend/_sql_templates.py" = ["S608"]
+# SIM117: pool.acquire() and conn.transaction() cannot be flattened into a
+# single async-with because conn is not bound until after the first __aenter__.
+# Schema name is validated against _IDENT_RE before interpolation; same
+# rationale as migrate.py.  All user-supplied values use $N parameter
+# binding.
+# Schema name is validated against _IDENT_RE before interpolation; same
+# rationale as migrate.py.  All user-supplied values use $N parameter
+# binding — only the schema identifier is interpolated.
+# Schema name is validated against _IDENT_RE before interpolation; same
+# rationale as migrate.py.  All user-supplied values use $N parameter
+# binding — only the schema identifier is interpolated, and it is
+# validated at construction time.
+"src/taskq/worker/dispatch.py" = ["S608"]
+"tests/test_postgres_terminal_writes.py" = ["S608"]
+# Same rationale as test_postgres_terminal_writes.py — schema name is
+# validated against _IDENT_RE before interpolation; all user-supplied
+# values use $N parameter binding.
+"tests/test_postgres_cancel_paths.py" = ["S608"]
+# Same rationale — schema name validated against _IDENT_RE; all
+# user-supplied values use $N parameter binding.
+# Same rationale — schema name validated against _IDENT_RE; all
+# user-supplied values use $N parameter binding.
+"tests/test_postgres_enqueue.py" = ["S608"]
+# Same rationale — schema name validated against _IDENT_RE; all
+# user-supplied values use $N parameter binding.
+# SIM117: conn.transaction() depends on conn from pool.acquire();
+# async-with nesting cannot be flattened.
+"tests/test_singleton.py" = ["S608", "SIM117"]
+# Same rationale — schema name validated against _IDENT_RE; all
+# user-supplied values use $N parameter binding.
+"tests/test_postgres_reads.py" = ["S608"]
+# Same rationale — schema name validated against _IDENT_RE; all
+# user-supplied values use $N parameter binding.
+"tests/test_postgres_sweeps.py" = ["S608"]
+# Same rationale — schema name validated against _IDENT_RE; all
+# user-supplied values use $N parameter binding.
+"tests/test_obs_sweep_counters.py" = ["S608"]
+# Same rationale — schema name validated against _IDENT_RE; all
+# user-supplied values use $N parameter binding.  S311: random module
+# used for timing jitter in race-condition tests, not cryptographic.
+"tests/test_terminal_writes_chaos.py" = ["S608", "S311"]
+# Same rationale — schema name validated via PostgresBackend constructor;
+# all user-supplied values use $N parameter binding.
+"tests/test_backend_equivalence.py" = ["S608"]
+# Same rationale — schema name validated against _IDENT_RE; all
+# user-supplied values use $N parameter binding.
+"tests/test_heartbeat_integration.py" = ["S608"]
+# Same rationale — schema name validated against _IDENT_RE; all
+# user-supplied values use $N parameter binding.
+"tests/test_actor_config_sync.py" = ["S608"]
+# Same rationale — schema name validated against _IDENT_RE; all
+# user-supplied values use $N parameter binding.
+"tests/test_heartbeat_chaos.py" = ["S608"]
+"tests/test_leader_integration.py" = ["S608"]
+"tests/test_cron_integration.py" = ["S608", "SIM117"]
+# Same rationale — schema name validated against _IDENT_RE; all
+# user-supplied values use $N parameter binding.
+"tests/test_web_admin_integration.py" = ["S608"]
+# FastAPI Depends() in test route-handler defaults is the same idiomatic
+# declarative-injection pattern as web/admin — not a real mutable default.
+"tests/test_sso_session.py" = ["B008"]
+"tests/test_sso_oidc.py" = ["B008"]
+"tests/test_sso_saml.py" = ["B008"]
+# Same rationale — schema name is a module constant; all user-supplied
+# values use $N parameter binding.
+"tests/web_progress/test_integration.py" = ["S608"]
+# Same rationale — schema name is a module constant; all user-supplied
+# values use $N parameter binding.
+"src/taskq/testing/fixtures.py" = ["S608", "E402"]
+# Same rationale — schema name validated against _IDENT_RE; all
+# user-supplied values use $N parameter binding.
+"tests/test_dispatch_pg.py" = ["S608"]
+"tests/test_dispatch_identity_serialization.py" = ["S608"]
+# Same rationale — schema name validated against _IDENT_RE; all
+# user-supplied values use $N parameter binding.
+"tests/test_postgres_unique_for.py" = ["S608"]
+# Same rationale — schema name validated against _IDENT_RE; all
+# user-supplied values use $N parameter binding.
+"tests/test_postgres_max_pending.py" = ["S608"]
+# Same rationale — schema name validated against _IDENT_RE; all
+# user-supplied values use $N parameter binding.
+"tests/test_batch.py" = ["S608"]
+# Same rationale — schema name is a module constant; all user-supplied
+# values use $N parameter binding.
+"tests/test_ratelimit_reservation_pg.py" = ["S608"]
+# S608: schema name is a module constant; all user-supplied values use $N
+# parameter binding.  ASYNC109: _wait_for_pg uses timeout as a local
+# variable, not a missing async-with timeout pattern.  S110: pool.close()
+# in finally after PG restart may fail if pool was already broken.
+"tests/test_ratelimit_reservation_chaos.py" = ["S608", "ASYNC109", "S110"]
+# Schema name validated against _IDENT_RE before interpolation; same as above.
+"tests/test_integration_fixtures.py" = ["S608"]
+# Same rationale — schema name is a worker-scoped constant derived from
+# PYTEST_XDIST_WORKER; all user-supplied values use $N parameter binding.
+"tests/test_worker_bootstrap.py" = ["S608"]
+# ASYNC109: fake_connect mirrors asyncpg.connect(timeout=...) signature; the
+# `timeout` parameter is part of the mocked API surface, not a missing timeout
+# context-manager pattern.
+"tests/test_heartbeat_isolate.py" = ["ASYNC109"]
+# S311: random.Random used for timing jitter in backoff tests, not
+# cryptographic purposes.
+"tests/test_retry_backoff.py" = ["S311"]
+# ASYNC109: timeout parameter mirrors asyncpg Connection API — cannot
+# use asyncio.timeout in a wrapper that delegates to the real connection.
+"src/taskq/testing/asyncpg_chaos.py" = ["ASYNC109"]
+# S608: schema name validated against _IDENT_RE before interpolation;
+# asyncpg cannot bind identifiers as parameters.
+"src/taskq/worker/cron_loop.py" = ["S608"]
+# F822: _main is lazily re-exported via __getattr__, not a module-level name.
+"src/taskq/worker/run.py" = ["F822"]
+# Typer's declarative Option() metadata in argument defaults is a standard
+# pattern (not a mutable-default hazard). Every command would trigger B008.
+"src/taskq/cli.py" = ["B008"]
+# FastAPI Depends() in route handler signatures is the idiomatic injection
+# pattern; like Typer Option(), it is declarative metadata, not a real
+# mutable default.  S608: schema name is validated against _IDENT_RE before
+# interpolation in create_router(); same rationale as migrate.py.  All
+# user-supplied values use $N parameter binding — only the schema identifier
+# is interpolated.
+"src/taskq/web/admin/*.py" = ["B008", "S608"]
+# FastAPI Depends() in SSO auth route handlers — same declarative-injection
+# rationale as web/admin/*.py.  B008: Depends() in defaults.  The auth package
+# guards authlib/python3-saml imports inside factory functions so importing
+# taskq.web.admin.auth never crashes when the extras are absent.
+"src/taskq/web/admin/auth/*.py" = ["B008"]
+# FastAPI Depends() in progress router factory — same rationale as web/admin.
+# S608: schema name is validated against _IDENT_RE before interpolation via
+# _PROGRESS_SQL.format(schema=_schema); same rationale as migrate.py.  All
+# user-supplied values use $N parameter binding — only the schema identifier
+# is interpolated.
+"src/taskq/web/progress.py" = ["B008", "S608"]
+# FastAPI Depends() in example route handlers is the same idiomatic injection
+# pattern as web/admin — declarative metadata, not a real mutable default.
+"examples/*.py" = ["B008"]
+"examples/fastapi_app/*.py" = ["B008"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.pyright]
+include = ["src", "tests", "examples"]
+pythonVersion = "3.12"
+typeCheckingMode = "strict"
+reportMissingTypeStubs = false
+reportUnknownMemberType = false
+venvPath = "."
+venv = ".venv"
+
+[[tool.pyright.executionEnvironments]]
+root = "src/taskq/testing"
+reportPrivateUsage = false
+
+[[tool.pyright.executionEnvironments]]
+root = "src/taskq/ratelimit"
+reportPrivateUsage = false
+
+[[tool.pyright.executionEnvironments]]
+root = "src/taskq/worker"
+reportPrivateUsage = false
+reportUnsupportedDunderAll = false
+
+# SSO auth backends bind to untyped third-party libraries (authlib/joserfc,
+# python3-saml/onelogin) that ship no type stubs. Relax the unknown-type
+# reports at this boundary so pyright strict doesn't flag every call into
+# those libraries; structural correctness is covered by the test suite.
+[[tool.pyright.executionEnvironments]]
+root = "src/taskq/web/admin/auth"
+reportPrivateUsage = false
+reportUnknownVariableType = false
+reportUnknownArgumentType = false
+reportUnknownMemberType = false
+
+[[tool.pyright.executionEnvironments]]
+root = "tests"
+reportPrivateUsage = false
+reportUnknownArgumentType = false
+reportUnknownLambdaType = false
+reportArgumentType = false
+reportMissingImports = false
+reportUnknownVariableType = false
+
+[[tool.pyright.executionEnvironments]]
+root = "examples"
+reportArgumentType = false
+reportMissingImports = false
+reportUnknownVariableType = false
+reportUnknownArgumentType = false
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "module"
+asyncio_default_test_loop_scope = "module"
+addopts = [
+    "-ra",
+    "--strict-markers",
+    "--strict-config",
+    "--dist=loadgroup",
+    "--timeout=300",
+]
+filterwarnings = [
+    "ignore::DeprecationWarning:testcontainers.*",
+    "ignore::DeprecationWarning:redis.*",
+    "ignore::DeprecationWarning:onelogin.*",
+]
+markers = [
+    "slow: marks tests as slow (skip with -m 'not slow')",
+    "integration: marks tests requiring testcontainers",
+    "redis: marks tests requiring the [redis] extra and a Redis container",
+    "examples: marks tests for the example app (excluded from default CI run)",
+]
+
+[tool.coverage.run]
+source = ["src/taskq"]
+branch = true
+omit = ["tests/*", "**/__pycache__/*"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "\\.\\.\\.",
+    "def __repr__",
+    "@abstractmethod",
+]
+
+[dependency-groups]
+dev = [
+    "anyio>=4.13.0",
+    "asyncpg-stubs>=0.31.2",
+    "authlib>=1.7.2",
+    "httpx>=0.28.1",
+    "httpx2>=2.0.0",
+    "hypothesis>=6.152.4",
+    "itsdangerous>=2.2.0",
+    "jsonschema>=4.26.0",
+    "mkdocs>=1.6.1",
+    "mkdocs-material>=9.7.6",
+    "mkdocstrings[python]>=1.0.4",
+    "opentelemetry-sdk>=1.43.0",
+    "pip-audit>=2.10.1",
+    "pyright>=1.1.409",
+    "pytest>=9.0.3",
+    "pytest-asyncio>=1.3.0",
+    "pytest-cov>=7.1.0",
+    "pytest-timeout>=2.4.0",
+    "pytest-xdist>=3.8.0",
+    "python-multipart>=0.0.28",
+    "python3-saml>=1.16.0",
+    "pyyaml>=6.0.3",
+    "respx>=0.23.1",
+    "ruff>=0.15.12",
+    "testcontainers[postgres,redis]>=4.14.2",
+]

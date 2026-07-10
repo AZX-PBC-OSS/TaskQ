@@ -1,0 +1,13 @@
+{
+  "name": "taskq-admin-css",
+  "private": true,
+  "description": "Tailwind CSS build for the admin UI. Run 'npm install && npm run build' to regenerate admin.css.",
+  "scripts": {
+    "build": "tailwindcss -i src/taskq/web/static/tailwind.css -o src/taskq/web/static/admin.css --minify",
+    "watch": "tailwindcss -i src/taskq/web/static/tailwind.css -o src/taskq/web/static/admin.css --watch"
+  },
+  "dependencies": {
+    "@tailwindcss/cli": "^4.3.0",
+    "tailwindcss": "^4.3.0"
+  }
+}

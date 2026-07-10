@@ -1,0 +1,367 @@
+{% extends "_base.html" %}
+{% set active_page = "job_detail" %}
+{% from "_partials/job_card.html" import status_badge, duration_fmt %}
+
+{% block title %}Job {{ job.id }} — TaskQ Admin{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+    {# Header #}
+    <div class="flex items-start justify-between">
+        <div>
+            <h2 class="text-xl font-semibold tracking-tight flex items-center gap-2">
+                <span class="font-mono text-base text-slate-500">{{ job.id[:8] }}...</span>
+                {% if is_archived %}
+                <span class="text-xs px-2 py-0.5 rounded bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-400">Archived</span>
+                {% endif %}
+            </h2>
+            <div class="flex items-center gap-3 mt-1 text-sm text-slate-500">
+                <span>{{ job.actor }}</span>
+                <span class="text-slate-300">·</span>
+                <span>{{ job.queue }}</span>
+                <span class="text-slate-300">·</span>
+                {{ status_badge(job.status) }}
+            </div>
+        </div>
+        <div class="flex gap-2">
+            {% if job.status not in terminal_statuses %}
+            <form method="post" action="{{ base_path }}/jobs/{{ job.id }}/cancel" class="inline">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <button type="submit" onclick="return confirm('Cancel job {{ job.id }}?')"
+                        class="px-3 py-1.5 text-sm font-medium bg-red-600 text-white rounded-md hover:bg-red-700 transition-colors">
+                    Cancel Job
+                </button>
+            </form>
+            {% endif %}
+            {% if job.status in ("failed", "crashed", "cancelled") and not is_archived %}
+            <form method="post" action="{{ base_path }}/jobs/{{ job.id }}/retry" class="inline">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <button type="submit" onclick="return confirm('Retry job {{ job.id }}?')"
+                        class="px-3 py-1.5 text-sm font-medium bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors">
+                    Retry Job
+                </button>
+            </form>
+            {% endif %}
+        </div>
+    </div>
+
+    {# Job Card #}
+    <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg p-4">
+        <dl class="grid grid-cols-2 sm:grid-cols-4 gap-x-4 gap-y-2 text-sm">
+            <div>
+                <dt class="text-xs text-slate-500 uppercase tracking-wider">ID</dt>
+                <dd class="font-mono text-xs">{{ job.id }}</dd>
+            </div>
+            <div>
+                <dt class="text-xs text-slate-500 uppercase tracking-wider">Status</dt>
+                <dd>{{ status_badge(job.status) }}</dd>
+            </div>
+            <div>
+                <dt class="text-xs text-slate-500 uppercase tracking-wider">Queue</dt>
+                <dd>{{ job.queue }}</dd>
+            </div>
+            <div>
+                <dt class="text-xs text-slate-500 uppercase tracking-wider">Actor</dt>
+                <dd class="font-medium">{{ job.actor }}</dd>
+            </div>
+            <div>
+                <dt class="text-xs text-slate-500 uppercase tracking-wider">Priority</dt>
+                <dd>{{ job.priority }}</dd>
+            </div>
+            <div>
+                <dt class="text-xs text-slate-500 uppercase tracking-wider">Attempt</dt>
+                <dd>{{ job.attempt }} / {{ job.max_attempts }}</dd>
+            </div>
+            <div>
+                <dt class="text-xs text-slate-500 uppercase tracking-wider">Scheduled</dt>
+                <dd class="text-xs">{{ job.scheduled_at }}</dd>
+            </div>
+            <div>
+                <dt class="text-xs text-slate-500 uppercase tracking-wider">Started</dt>
+                <dd class="text-xs">{{ job.started_at or '—' }}</dd>
+            </div>
+            <div>
+                <dt class="text-xs text-slate-500 uppercase tracking-wider">Finished</dt>
+                <dd class="text-xs">{{ job.finished_at or '—' }}</dd>
+            </div>
+            {% if is_archived %}
+            <div>
+                <dt class="text-xs text-slate-500 uppercase tracking-wider">Archived</dt>
+                <dd class="text-xs">{{ archived_at.isoformat() if archived_at else '—' }}</dd>
+            </div>
+            {% endif %}
+        </dl>
+    </div>
+
+    {# Job State #}
+    <section>
+        <h3 class="text-sm font-semibold text-slate-700 dark:text-slate-300 mb-3 uppercase tracking-wider">Job State</h3>
+        <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg p-4">
+            <dl class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-x-4 gap-y-2 text-sm">
+                <div>
+                    <dt class="text-xs text-slate-500">Retry Kind</dt>
+                    <dd>{{ job.retry_kind or '—' }}</dd>
+                </div>
+                {% if job.schedule_to_close is not none %}
+                <div>
+                    <dt class="text-xs text-slate-500">Schedule To Close</dt>
+                    <dd>{{ job.schedule_to_close }}</dd>
+                </div>
+                {% endif %}
+                {% if job.start_to_close is not none %}
+                <div>
+                    <dt class="text-xs text-slate-500">Start To Close</dt>
+                    <dd>{{ job.start_to_close }}</dd>
+                </div>
+                {% endif %}
+                {% if job.identity_key %}
+                <div>
+                    <dt class="text-xs text-slate-500">Identity Key</dt>
+                    <dd class="font-mono text-xs">{{ job.identity_key }}</dd>
+                </div>
+                {% endif %}
+                {% if job.idempotency_key %}
+                <div>
+                    <dt class="text-xs text-slate-500">Idempotency Key</dt>
+                    <dd class="font-mono text-xs">{{ job.idempotency_key }}</dd>
+                </div>
+                {% endif %}
+                {% if job.fairness_key %}
+                <div>
+                    <dt class="text-xs text-slate-500">Fairness Key</dt>
+                    <dd class="font-mono text-xs">{{ job.fairness_key }}</dd>
+                </div>
+                {% endif %}
+                <div>
+                    <dt class="text-xs text-slate-500">Tags</dt>
+                    <dd>
+                        {% if job.tags %}
+                        <div class="flex flex-wrap gap-1 mt-0.5">
+                            {% for tag in job.tags %}
+                            <a href="{{ base_path }}/jobs?tags={{ tag | urlencode }}" class="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-700 dark:bg-blue-900/20 dark:text-blue-300 hover:bg-blue-200 dark:hover:bg-blue-900/40 transition-colors">{{ tag }}</a>
+                            {% endfor %}
+                        </div>
+                        {% else %}
+                        <span class="text-xs text-slate-400">—</span>
+                        {% endif %}
+                    </dd>
+                </div>
+                {% if job.locked_by_worker %}
+                <div>
+                    <dt class="text-xs text-slate-500">Locked By Worker</dt>
+                    <dd class="font-mono text-xs">{{ job.locked_by_worker }}</dd>
+                </div>
+                {% endif %}
+                {% if job.lock_expires_at %}
+                <div>
+                    <dt class="text-xs text-slate-500">Lock Expires At</dt>
+                    <dd class="text-xs">{{ job.lock_expires_at }}</dd>
+                </div>
+                {% endif %}
+                {% if job.cancel_requested_at %}
+                <div>
+                    <dt class="text-xs text-slate-500">Cancel Requested</dt>
+                    <dd class="text-xs">{{ job.cancel_requested_at }}</dd>
+                </div>
+                <div>
+                    <dt class="text-xs text-slate-500">Cancel Phase</dt>
+                    <dd>{{ job.cancel_phase }}</dd>
+                </div>
+                {% endif %}
+                <div>
+                    <dt class="text-xs text-slate-500">Trace ID</dt>
+                    <dd class="font-mono text-xs">{{ job.trace_id or '—' }}</dd>
+                </div>
+                {% if job.span_id %}
+                <div>
+                    <dt class="text-xs text-slate-500">Span ID</dt>
+                    <dd class="font-mono text-xs">{{ job.span_id }}</dd>
+                </div>
+                {% endif %}
+                {% if job.result_size_bytes is not none %}
+                <div>
+                    <dt class="text-xs text-slate-500">Result Size</dt>
+                    <dd>{{ job.result_size_bytes }} bytes</dd>
+                </div>
+                {% endif %}
+            </dl>
+
+            {% if job.error_class or job.error_message %}
+            <div class="mt-3 pt-3 border-t border-slate-200 dark:border-slate-700">
+                <dt class="text-xs text-slate-500 font-medium mb-1">Error</dt>
+                <dd class="text-sm text-red-600 dark:text-red-400">{{ job.error_class }}: {{ job.error_message }}</dd>
+                {% if job.error_traceback %}
+                <details class="mt-2">
+                    <summary class="text-xs text-slate-500 cursor-pointer hover:text-slate-700">Traceback</summary>
+                    <pre class="mt-1 p-2 bg-slate-100 dark:bg-slate-800 rounded text-xs overflow-x-auto max-h-64">{{ job.error_traceback or '—' }}</pre>
+                </details>
+                {% endif %}
+            </div>
+            {% endif %}
+        </div>
+    </section>
+
+    {# Payload / Metadata / Result #}
+    <section>
+        <h3 class="text-sm font-semibold text-slate-700 dark:text-slate-300 mb-3 uppercase tracking-wider">Data</h3>
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg p-4">
+                <h4 class="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Payload</h4>
+                <pre class="text-xs bg-slate-50 dark:bg-slate-800 rounded p-2 overflow-x-auto max-h-48">{{ job.payload or '—' }}</pre>
+            </div>
+            <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg p-4">
+                <h4 class="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Metadata</h4>
+                <pre class="text-xs bg-slate-50 dark:bg-slate-800 rounded p-2 overflow-x-auto max-h-48">{{ job.metadata or '—' }}</pre>
+            </div>
+            {% if job.result is not none %}
+            <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg p-4 lg:col-span-2">
+                <h4 class="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Result</h4>
+                <pre class="text-xs bg-slate-50 dark:bg-slate-800 rounded p-2 overflow-x-auto max-h-48">{{ job.result }}</pre>
+            </div>
+            {% endif %}
+        </div>
+    </section>
+
+    {# Batch info #}
+    {% if job.metadata is mapping and job.metadata.get("batch_id") is not none %}
+    <section>
+        <h3 class="text-sm font-semibold text-slate-700 dark:text-slate-300 mb-3 uppercase tracking-wider">Batch</h3>
+        <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg p-4">
+            <dl class="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
+                <div>
+                    <dt class="text-xs text-slate-500">Batch ID</dt>
+                    <dd class="font-mono text-xs">{{ job.metadata.get("batch_id") }}</dd>
+                </div>
+                {% if job.metadata.get("role") is not none %}
+                <div>
+                    <dt class="text-xs text-slate-500">Role</dt>
+                    <dd>{{ job.metadata.get("role") }}</dd>
+                </div>
+                {% endif %}
+            </dl>
+        </div>
+    </section>
+    {% endif %}
+
+    {# Progress #}
+    <section>
+        <h3 class="text-sm font-semibold text-slate-700 dark:text-slate-300 mb-3 uppercase tracking-wider">Progress</h3>
+        <div id="progress-section" data-job-id="{{ job.id }}" class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg p-4">
+            <div id="progress-timeline" class="space-y-2">
+                {% set ps = job.progress_state or {} %}
+                {% if ps is mapping and ps.get('step') is not none %}
+                <div class="progress-event bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded p-3">
+                    {% if ps.get('percent') is not none %}
+                    <div class="flex items-center gap-2 mb-2">
+                        <div class="flex-1 h-2 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden">
+                            <div class="progress-bar h-full bg-blue-500 rounded-full" style="width: {{ ps.percent }}%"></div>
+                        </div>
+                        <span class="text-xs font-mono text-slate-500">{{ ps.percent }}%</span>
+                    </div>
+                    {% endif %}
+                    <div class="flex items-center gap-3 text-xs text-slate-500">
+                        <span class="font-medium text-slate-700 dark:text-slate-300">{{ ps.step }}</span>
+                        {% if ps.detail %}<span>{{ ps.detail }}</span>{% endif %}
+                        {% if ps.ts %}<span class="text-slate-400">{{ ps.ts }}</span>{% endif %}
+                    </div>
+                    {% if ps.data is not none %}
+                    <details class="mt-2">
+                        <summary class="text-xs text-slate-400 cursor-pointer hover:text-slate-600">data</summary>
+                        <pre class="mt-1 p-2 bg-slate-100 dark:bg-slate-800 rounded text-xs overflow-x-auto">{{ ps.data }}</pre>
+                    </details>
+                    {% endif %}
+                </div>
+                {% else %}
+                <p class="text-xs text-slate-400">No progress recorded.</p>
+                {% endif %}
+            </div>
+        </div>
+    </section>
+
+    {% if (realtime_mode | default("polling")) in ("realtime", "polling-degraded") %}
+    <script>const POLL_INTERVAL_MS = {{ poll_interval_ms }};</script>
+    <script>window.TASKQ_BASE_PATH = "{{ base_path }}";</script>
+    <script src="{{ base_path }}/static/realtime.js"></script>
+    {% endif %}
+
+    {# Attempt History #}
+    <section>
+        <h3 class="text-sm font-semibold text-slate-700 dark:text-slate-300 mb-3 uppercase tracking-wider">Attempt History</h3>
+        {% if attempts %}
+        <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg overflow-hidden">
+            <div class="overflow-x-auto">
+                <table class="w-full text-sm">
+                    <thead>
+                        <tr class="bg-slate-50 dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700">
+                            <th class="px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase">#</th>
+                            <th class="px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase">Started</th>
+                            <th class="px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase">Finished</th>
+                            <th class="px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase">Outcome</th>
+                            <th class="px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase">Duration</th>
+                            <th class="px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase">Worker</th>
+                            <th class="px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase">Error</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-surface-100 dark:divide-surface-800">
+                    {% for a in attempts %}
+                        <tr class="hover:bg-slate-50 dark:hover:bg-slate-800/50">
+                            <td class="px-3 py-2 text-xs">{{ a.attempt }}</td>
+                            <td class="px-3 py-2 text-xs text-slate-500">{{ a.started_at }}</td>
+                            <td class="px-3 py-2 text-xs text-slate-500">{{ a.finished_at }}</td>
+                            <td class="px-3 py-2">{{ status_badge(a.outcome) }}</td>
+                            <td class="px-3 py-2 text-xs font-mono text-slate-500">{% if a.duration_ms is not none %}{{ duration_fmt(a.duration_ms) }}{% else %}—{% endif %}</td>
+                            <td class="px-3 py-2 text-xs font-mono text-slate-500">{{ a.worker_id or '—' }}</td>
+                            <td class="px-3 py-2 text-xs max-w-[200px] truncate" title="{{ a.error_message or '' }}">
+                                {% if a.error_message %}{{ a.error_class }}: {{ a.error_message }}{% else %}—{% endif %}
+                                {% if a.error_traceback %}
+                                <details class="mt-1">
+                                    <summary class="text-slate-400 cursor-pointer">traceback</summary>
+                                    <pre class="mt-1 p-1 bg-slate-100 dark:bg-slate-800 rounded text-xs overflow-x-auto max-h-32">{{ a.error_traceback }}</pre>
+                                </details>
+                                {% endif %}
+                            </td>
+                        </tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        {% else %}
+        <p class="text-sm text-slate-400">No attempts recorded.</p>
+        {% endif %}
+    </section>
+
+    {# Event Log #}
+    <section>
+        <h3 class="text-sm font-semibold text-slate-700 dark:text-slate-300 mb-3 uppercase tracking-wider">Event Log</h3>
+        {% if events %}
+        <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg overflow-hidden">
+            <div class="overflow-x-auto">
+                <table class="w-full text-sm">
+                    <thead>
+                        <tr class="bg-slate-50 dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700">
+                            <th class="px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase">Time</th>
+                            <th class="px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase">Kind</th>
+                            <th class="px-3 py-2 text-left text-xs font-semibold text-slate-500 uppercase">Detail</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-surface-100 dark:divide-surface-800">
+                    {% for e in events %}
+                        <tr class="hover:bg-slate-50 dark:hover:bg-slate-800/50">
+                            <td class="px-3 py-2 text-xs text-slate-500 whitespace-nowrap">{{ e.occurred_at }}</td>
+                            <td class="px-3 py-2 text-xs"><span class="px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 font-mono">{{ e.kind }}</span></td>
+                            <td class="px-3 py-2 text-xs">
+                                <pre class="text-xs max-h-20 overflow-y-auto">{{ e.detail }}</pre>
+                            </td>
+                        </tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        {% else %}
+        <p class="text-sm text-slate-400">No events recorded.</p>
+        {% endif %}
+    </section>
+</div>
+{% endblock %}

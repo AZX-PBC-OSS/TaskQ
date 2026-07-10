@@ -1,0 +1,85 @@
+{% extends "_base.html" %}
+{% set active_page = "queues" %}
+{% from "_partials/table.html" import styled_table, table_header, table_body, table_row %}
+
+{% block title %}Queues — TaskQ Admin{% endblock %}
+
+{% block content %}
+<h2 class="text-xl font-semibold tracking-tight mb-4">Queues</h2>
+
+{% if orphan_queues %}
+<div class="bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-lg p-3 text-sm mb-4 text-yellow-700 dark:text-yellow-300">
+    <strong>Warning:</strong>
+    {% set orphan_list = orphan_queues | list | sort %}
+    {% if orphan_list | length == 1 %}
+    Queue <em>{{ orphan_list[0] }}</em> has pending jobs but no alive worker.
+    {% else %}
+    Queues {% for q in orphan_list %}<em>{{ q }}</em>{% if not loop.last %}, {% endif %}{% endfor %} have pending jobs but no alive worker.
+    {% endif %}
+    <a href="{{ base_path }}/workers" class="underline font-medium ml-1">Check workers</a>
+</div>
+{% endif %}
+
+<div id="queue-table-wrap"
+     hx-get="{{ base_path }}/queues"
+     hx-trigger="every {{ poll_interval_ms }}ms"
+     hx-select="#queue-table-wrap"
+     hx-swap="outerHTML"
+     hx-target="#queue-table-wrap">
+{% if queues %}
+{% call styled_table() %}
+    {{ table_header(["Queue", "Pending", "Scheduled", "Running", "Failed"]) }}
+    {% call table_body() %}
+    {% for q in queues %}
+        {% call table_row() %}
+            <td class="px-4 py-2.5">
+                <a href="{{ base_path }}/queues/{{ q.queue|urlencode }}" class="font-medium text-blue-600 dark:text-blue-400 hover:underline">{{ q.queue }}</a>
+            </td>
+            <td class="px-4 py-2.5">
+                {% if orphan_queues and q.queue in orphan_queues and q.pending_count > 0 %}
+                <span class="inline-flex items-center gap-1">
+                    <span class="w-2 h-2 rounded-full bg-yellow-500" title="No alive worker"></span>
+                    <span class="font-semibold text-yellow-600 dark:text-yellow-400">{{ q.pending_count }}</span>
+                </span>
+                {% elif q.pending_count > 0 %}
+                <span class="font-semibold text-yellow-600 dark:text-yellow-400">{{ q.pending_count }}</span>
+                {% else %}
+                <span class="text-slate-400">{{ q.pending_count }}</span>
+                {% endif %}
+            </td>
+            <td class="px-4 py-2.5">
+                {% if q.scheduled_count > 0 %}
+                <span class="text-purple-600 dark:text-purple-400">{{ q.scheduled_count }}</span>
+                {% else %}
+                <span class="text-slate-400">{{ q.scheduled_count }}</span>
+                {% endif %}
+            </td>
+            <td class="px-4 py-2.5">
+                {% if q.running_count > 0 %}
+                <span class="inline-flex items-center gap-1">
+                    <span class="w-2 h-2 rounded-full bg-blue-500 animate-pulse"></span>
+                    <span class="text-blue-600 dark:text-blue-400">{{ q.running_count }}</span>
+                </span>
+                {% else %}
+                <span class="text-slate-400">{{ q.running_count }}</span>
+                {% endif %}
+            </td>
+            <td class="px-4 py-2.5">
+                {% set fc = q.failed_count | default(0) %}
+                {% if fc > 0 %}
+                <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300">{{ fc }}</span>
+                {% else %}
+                <span class="text-slate-400">{{ fc }}</span>
+                {% endif %}
+            </td>
+        {% endcall %}
+    {% endfor %}
+    {% endcall %}
+{% endcall %}
+{% else %}
+<div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg p-12 text-center">
+    <p class="text-slate-400 text-sm">No queues with active jobs found.</p>
+</div>
+{% endif %}
+</div>
+{% endblock %}

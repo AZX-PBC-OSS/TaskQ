@@ -1,0 +1,130 @@
+site_name: TaskQ
+site_description: Async-native, Postgres-backed background job library for Python 3.12+
+site_url: https://AZX-PBC-OSS.github.io/TaskQ/
+repo_url: https://github.com/AZX-PBC-OSS/TaskQ
+repo_name: AZX-PBC-OSS/TaskQ
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  features:
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.sections
+    - navigation.expand
+    - navigation.indexes
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.code.annotate
+    - content.action.edit
+    - toc.follow
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  font:
+    text: Roboto
+    code: Roboto Mono
+  icon:
+    repo: fontawesome/brands/github
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [src]
+          options:
+            docstring_style: google
+            show_source: true
+            show_signature_annotations: true
+            separate_signature: true
+            show_root_heading: true
+            show_root_full_path: false
+            members_order: source
+            merge_init_into_class: true
+            show_if_no_docstring: true
+            heading_level: 2
+
+markdown_extensions:
+  - admonition
+  - codehilite:
+      guess_lang: false
+  - footnotes
+  - tables
+  - toc:
+      permalink: true
+  - attr_list
+  - md_in_html
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+
+nav:
+  - Home: index.md
+  - Getting Started:
+      - Installation: getting-started/installation.md
+      - Quick Start: getting-started/quick-start.md
+  - Guides:
+      - Actors: guides/actors.md
+      - Jobs & Clients: guides/jobs-clients.md
+      - Workers: guides/workers.md
+      - Rate Limiting: guides/rate-limiting.md
+      - Retries: guides/retries.md
+      - Cancellation: guides/cancellation.md
+      - Progress Tracking: guides/progress.md
+      - Workgroups: guides/workgroups.md
+      - Cron Scheduling: guides/cron.md
+      - Dependency Injection: guides/dependency-injection.md
+      - Observability: guides/observability.md
+      - Testing: guides/testing.md
+      - Admin UI: guides/admin-ui.md
+      - SSO / SAML: guides/sso.md
+      - Configuration: guides/configuration.md
+      - CLI: guides/cli.md
+      - Upgrading: guides/upgrading.md
+  - API Reference:
+      - Package Overview: api-reference/taskq.md
+      - Actor: api-reference/actor.md
+      - Client: api-reference/client.md
+      - Worker: api-reference/worker.md
+      - Rate Limiting: api-reference/ratelimit.md
+      - Dependency Injection: api-reference/di.md
+      - Web: api-reference/web.md
+      - Observability: api-reference/obs.md
+      - Progress: api-reference/progress.md
+      - Testing: api-reference/testing.md
+      - Migrations: api-reference/migrate.md
+      - CLI: api-reference/cli.md
+  - Architecture: architecture.md
+  - Changelog: changelog.md
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/AZX-PBC-OSS/TaskQ
+    - icon: fontawesome/brands/python
+      link: https://pypi.org/project/taskq-py/

@@ -1,0 +1,125 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: taskq-rules
+  labels:
+    app: taskq
+    # Most Prometheus Operator deployments select PrometheusRule resources via a
+    # ruleSelector label such as `release: <helm-release-name>` or
+    # `prometheus: kube-prometheus`.  Add the label your operator expects here;
+    # without it the rule will be silently ignored by the operator.
+    # Example: release: kube-prometheus-stack
+spec:
+  groups:
+    - name: taskq.rules
+      rules:
+        - alert: TaskQQueueDepthHigh
+          expr: taskq_queue_depth > 1000
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "TaskQ queue {{ $labels.queue }} depth is {{ $value }}"
+            description: >-
+              Queue depth has been above threshold (1000) for 5 minutes.
+              Operators should override the threshold in their own rule
+              configuration.
+
+        - alert: TaskQHeartbeatMisses
+          expr: rate(taskq_heartbeat_misses_total[5m]) > 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "TaskQ worker {{ $labels.worker_id }} heartbeat misses detected"
+            description: >-
+              Heartbeat renewal failures detected. If misses continue, the
+              worker will self-isolate. Investigate PG connectivity
+              and lock lease configuration.
+
+        - alert: TaskQCrashedJobRateHigh
+          expr: |
+            rate(messaging_client_consumed_messages_total{outcome="failed"}[5m])
+            / rate(messaging_client_consumed_messages_total[5m]) > 0.01
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "TaskQ failed job rate > 1%"
+            description: >-
+              Terminal failures exceed 1% of completions in the last 5 minutes.
+              Inspect job_attempts.error_class for root cause.
+
+        - alert: TaskQAbandonedJobs
+          expr: rate(messaging_client_consumed_messages_total{outcome="abandoned"}[5m]) > 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "TaskQ abandoned jobs detected"
+            description: >-
+              Any abandoned job is concerning — it means a worker died during
+              shutdown phase 4 (ABANDONING) without cleaning up. Inspect
+              job_attempts with outcome=abandoned.
+
+        - alert: TaskQLockExpiringSoon
+          expr: histogram_quantile(0.99, rate(taskq_lock_expires_in_seconds_bucket[5m])) < 30
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "TaskQ lock p99 remaining time < 30s (worker {{ $labels.worker_id }})"
+            description: >-
+              Lock remaining-time-to-expiry p99 is below 30s. Locks are
+              dangerously close to expiry, indicating the heartbeat loop is
+              not renewing fast enough. Investigate PG latency or heartbeat
+              interval configuration.
+
+        - alert: TaskQLeaderSplitBrainOrNoLeader
+          expr: sum(taskq_maintenance_leader_is_leader) != 1
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: "TaskQ leader count is {{ $value }} (expected exactly 1)"
+            description: >-
+              Sum of taskq_maintenance_leader_is_leader across all pods is
+              not 1. Either no leader is elected (0) or two pods both believe
+              they are leader (>1). Both are split-brain conditions. Inspect
+              pg_advisory_lock state.
+
+        - alert: TaskQDispatchLatencyHigh
+          expr: histogram_quantile(0.99, rate(taskq_dispatch_duration_seconds_bucket[5m])) > 0.05
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "TaskQ dispatch p99 > 50ms (queue {{ $labels.queue }})"
+            description: >-
+              Dispatch query p99 exceeds 50ms, approaching the SKIP LOCKED
+              ceiling. Investigate PG load, index health on jobs_dispatch_idx,
+              and batch size configuration.
+
+        - alert: TaskQProgressPublishFailures
+          expr: rate(taskq_progress_publish_failures_total[5m]) > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "TaskQ progress publish failures detected"
+            description: >-
+              Redis publish errors on progress events. Admin UI real-time
+              mode will degrade to polling. Investigate Redis connectivity.
+
+        - alert: TaskQCronScheduleDisabled
+          expr: taskq_cron_disabled_schedules > 0
+          for: 0m
+          labels:
+            severity: warning
+          annotations:
+            summary: "{{ $value }} TaskQ cron schedule(s) auto-disabled"
+            description: >-
+              One or more cron schedules have been auto-disabled after 3
+              consecutive payload_factory failures (§6.6 three-strike rule).
+              Inspect cron_schedules.last_fire_error to identify the
+              affected schedule(s) and fix the payload_factory.

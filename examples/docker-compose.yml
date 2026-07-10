@@ -1,0 +1,117 @@
+services:
+  postgres:
+    image: postgres:18.4
+    environment:
+      POSTGRES_USER: taskq
+      POSTGRES_PASSWORD: taskq
+      POSTGRES_DB: taskq
+    volumes:
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U taskq"]
+      interval: 2s
+      retries: 15
+      start_period: 10s
+
+  redis:
+    image: redis:8.6.3
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      retries: 15
+
+  worker-1:
+    build:
+      context: ..
+      dockerfile: examples/Dockerfile
+    command: uv run python examples/worker.py
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      PYTHONPATH: /app
+      TASKQ_PG_DSN: postgresql://taskq:taskq@postgres/taskq
+      TASKQ_REDIS_URL: redis://redis:6379
+      TASKQ_ENVIRONMENT: dev
+      TASKQ_QUEUES: examples
+
+  worker-2:
+    build:
+      context: ..
+      dockerfile: examples/Dockerfile
+    command: uv run python examples/worker.py
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      PYTHONPATH: /app
+      TASKQ_PG_DSN: postgresql://taskq:taskq@postgres/taskq
+      TASKQ_REDIS_URL: redis://redis:6379
+      TASKQ_ENVIRONMENT: dev
+      TASKQ_QUEUES: examples
+
+  app:
+    build:
+      context: ..
+      dockerfile: examples/Dockerfile
+    command: uv run uvicorn examples.app:app --host 0.0.0.0 --port 8000
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      TASKQ_PG_DSN: postgresql://taskq:taskq@postgres/taskq
+      TASKQ_REDIS_URL: redis://redis:6379
+      TASKQ_ENVIRONMENT: dev
+      TASKQ_EXAMPLE_HOST: "0.0.0.0"
+      TASKQ_EXAMPLE_PORT: "8000"
+      TASKQ_ADMIN_URL: http://localhost:8001
+      TASKQ_MIGRATE_ON_START: "true"
+
+  admin:
+    build:
+      context: ..
+      dockerfile: examples/Dockerfile
+    command: uv run uvicorn examples.admin_app:app --host 0.0.0.0 --port 8001
+    ports:
+      - "8001:8001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      TASKQ_PG_DSN: postgresql://taskq:taskq@postgres/taskq
+      TASKQ_REDIS_URL: redis://redis:6379
+      TASKQ_ENVIRONMENT: dev
+      TASKQ_ADMIN_HOST: "0.0.0.0"
+      TASKQ_ADMIN_PORT: "8001"
+      TASKQ_MIGRATE_ON_START: "true"
+
+  fastapi-app:
+    profiles: [example]
+    build:
+      context: ..
+      dockerfile: examples/Dockerfile
+    command: uv run uvicorn examples.fastapi_app.main:app --host 0.0.0.0 --port 8002
+    ports:
+      - "8002:8002"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      TASKQ_PG_DSN: postgresql://taskq:taskq@postgres/taskq
+      TASKQ_REDIS_URL: redis://redis:6379
+      TASKQ_ENVIRONMENT: dev
+
+volumes:
+  pgdata:

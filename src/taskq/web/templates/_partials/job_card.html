@@ -1,0 +1,97 @@
+{# Shared job macros: row display, card, status badges, formatters. #}
+
+{% macro timestamp_cell(ts, class='') %}
+    {% if ts and ts != 'None' and ts != '' %}
+    <span class="whitespace-nowrap {{ class }}" title="{{ ts | iso_attr }}">{{ ts | time_ago }}</span>
+    {% else %}<span class="text-slate-400 {{ class }}">—</span>{% endif %}
+{% endmacro %}
+
+{% macro status_badge(status) %}
+    {% set colors = {
+        'pending': 'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300',
+        'scheduled': 'bg-purple-100 text-purple-700 dark:bg-purple-900 dark:text-purple-300',
+        'running': 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900 dark:text-yellow-300',
+        'succeeded': 'bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300',
+        'failed': 'bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300',
+        'cancelled': 'bg-orange-100 text-orange-700 dark:bg-orange-900 dark:text-orange-300',
+        'crashed': 'bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300',
+        'abandoned': 'bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400',
+    } %}
+    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium {{ colors.get(status, 'bg-gray-100 text-gray-700') }}">
+        {{ status }}
+    </span>
+{% endmacro %}
+
+{% macro duration_fmt(ms) %}
+    {% set s = (ms / 1000) | round(1) %}
+    {% if s < 1 %}{{ ms | int }}ms
+    {% elif s < 60 %}{{ s }}s
+    {% elif s < 3600 %}{{ (s // 60) | int }}m {{ (s % 60) | int }}s
+    {% else %}{{ (s // 3600) | int }}h {{ ((s % 3600) // 60) | int }}m
+    {% endif %}
+{% endmacro %}
+
+{% macro time_ago(ts) %}
+    {% if ts is none or ts == 'None' or ts == '' %}—{% else %}
+    {% set now_ts = now().timestamp() if now is defined else 0 %}
+    {% if ts is string %}
+        {% set job_ts = ts %}
+    {% else %}
+        {% set job_ts = ts %}
+    {% endif %}
+    {{ ts[:19] if ts is string and ts | length >= 19 else ts }}
+    {% endif %}
+{% endmacro %}
+
+{% macro job_row(job) %}
+<tr>
+    <td><a href="{{ base_path }}/jobs/{{ job.id }}" class="font-mono text-xs text-blue-600 dark:text-blue-400 hover:underline">{{ job.id }}</a></td>
+    <td>{{ job.actor }}</td>
+    <td>{{ status_badge(job.status) }}</td>
+    <td>{{ job.scheduled_at }}</td>
+    <td>{{ job.attempt }}/{{ job.max_attempts }}</td>
+</tr>
+{% endmacro %}
+
+{% macro job_card(job) %}
+<div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg p-4">
+    <dl class="grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-2 text-sm">
+        <div>
+            <dt class="text-xs text-slate-500 uppercase tracking-wider">ID</dt>
+            <dd class="font-mono text-xs">{{ job.id }}</dd>
+        </div>
+        <div>
+            <dt class="text-xs text-slate-500 uppercase tracking-wider">Status</dt>
+            <dd>{{ status_badge(job.status) }}</dd>
+        </div>
+        <div>
+            <dt class="text-xs text-slate-500 uppercase tracking-wider">Queue</dt>
+            <dd>{{ job.queue }}</dd>
+        </div>
+        <div>
+            <dt class="text-xs text-slate-500 uppercase tracking-wider">Actor</dt>
+            <dd class="font-medium">{{ job.actor }}</dd>
+        </div>
+        <div>
+            <dt class="text-xs text-slate-500 uppercase tracking-wider">Priority</dt>
+            <dd>{{ job.priority }}</dd>
+        </div>
+        <div>
+            <dt class="text-xs text-slate-500 uppercase tracking-wider">Attempt</dt>
+            <dd>{{ job.attempt }} / {{ job.max_attempts }}</dd>
+        </div>
+        <div>
+            <dt class="text-xs text-slate-500 uppercase tracking-wider">Scheduled At</dt>
+            <dd class="text-xs">{{ job.scheduled_at }}</dd>
+        </div>
+        <div>
+            <dt class="text-xs text-slate-500 uppercase tracking-wider">Started At</dt>
+            <dd class="text-xs">{{ job.started_at or '—' }}</dd>
+        </div>
+        <div>
+            <dt class="text-xs text-slate-500 uppercase tracking-wider">Finished At</dt>
+            <dd class="text-xs">{{ job.finished_at or '—' }}</dd>
+        </div>
+    </dl>
+</div>
+{% endmacro %}
