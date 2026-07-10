@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en" class="{{ 'dark' if dark else '' }}">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    {% if realtime_mode | default("polling") != "realtime" and not suppress_refresh | default(false) %}
+    <meta http-equiv="refresh" content="{{ poll_interval_ms // 1000 }}">
+    {% endif %}
+    <title>{% block title %}TaskQ Admin{% endblock %}</title>
+    <link rel="stylesheet" href="{{ base_path }}/static/admin.css">
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.9/dist/cdn.min.js"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <script src="{{ base_path }}/static/htmx.min.js"></script>
+    <style>
+        [x-cloak] { display: none !important; }
+        .htmx-indicator { opacity: 0; transition: opacity 200ms ease-in; }
+        .htmx-request .htmx-indicator, .htmx-request.htmx-indicator { opacity: 1; }
+        .job-row { transition: background-color 0.3s ease; }
+        .job-row.new-row { background-color: rgba(59, 130, 246, 0.08); }
+        @keyframes slide-down { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: translateY(0); } }
+        .animate-slide-down { animation: slide-down 0.3s ease-out; }
+        .progress-bar { transition: width 0.4s ease; }
+    </style>
+    {% block head %}{% endblock %}
+</head>
+<body class="bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 min-h-screen antialiased"
+      x-data="{ dark: localStorage.theme === 'dark' || (!localStorage.theme && window.matchMedia('(prefers-color-scheme: dark)').matches) }"
+      x-init="$watch('dark', v => { localStorage.theme = v ? 'dark' : 'light'; document.documentElement.classList.toggle('dark', v) }); dark && document.documentElement.classList.add('dark')">
+{% set active_page = active_page|default("") %}
+    <header class="bg-slate-900 dark:bg-slate-950 border-b border-slate-700">
+        <div class="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
+            <a href="{{ base_path }}/" class="flex items-center gap-3 text-white no-underline hover:opacity-85">
+                <span class="text-yellow-400 font-bold">⚡</span>
+                <h1 class="text-lg font-semibold tracking-tight">TaskQ Admin</h1>
+                <span class="taskq-badge text-xs font-medium px-2 py-0.5 rounded-full" data-mode="{{ realtime_mode | default('polling') }}">{{ mode_label | default('polling mode') }}</span>
+            </a>
+            <button @click="dark = !dark" class="p-2 rounded-lg text-slate-400 hover:text-white hover:bg-slate-700 transition-colors" aria-label="Toggle dark mode">
+                <span x-show="!dark">☀</span>
+                <span x-show="dark">☾</span>
+            </button>
+        </div>
+    </header>
+    <nav class="bg-slate-800 dark:bg-slate-900 border-b border-slate-700">
+        <div class="max-w-7xl mx-auto px-4 flex gap-0 overflow-x-auto">
+            <a href="{{ base_path }}/queues"
+               class="px-4 py-2.5 text-sm font-medium whitespace-nowrap border-b-2 transition-colors
+                      {% if active_page in ('queues', 'queue_detail') %}text-white border-blue-400{% else %}text-slate-400 border-transparent hover:text-slate-200 hover:border-slate-500{% endif %}">Queues</a>
+            <a href="{{ base_path }}/jobs"
+               class="px-4 py-2.5 text-sm font-medium whitespace-nowrap border-b-2 transition-colors
+                      {% if active_page in ('jobs', 'job_detail') %}text-white border-blue-400{% else %}text-slate-400 border-transparent hover:text-slate-200 hover:border-slate-500{% endif %}">Jobs</a>
+            <a href="{{ base_path }}/workers"
+               class="px-4 py-2.5 text-sm font-medium whitespace-nowrap border-b-2 transition-colors
+                      {% if active_page == 'workers' %}text-white border-blue-400{% else %}text-slate-400 border-transparent hover:text-slate-200 hover:border-slate-500{% endif %}">Workers</a>
+            <a href="{{ base_path }}/schedules"
+               class="px-4 py-2.5 text-sm font-medium whitespace-nowrap border-b-2 transition-colors
+                      {% if active_page == 'schedules' %}text-white border-blue-400{% else %}text-slate-400 border-transparent hover:text-slate-200 hover:border-slate-500{% endif %}">Schedules</a>
+            <a href="{{ base_path }}/rate-limits"
+               class="px-4 py-2.5 text-sm font-medium whitespace-nowrap border-b-2 transition-colors
+                      {% if active_page == 'rate_limits' %}text-white border-blue-400{% else %}text-slate-400 border-transparent hover:text-slate-200 hover:border-slate-500{% endif %}">Rate Limits</a>
+            <a href="{{ base_path }}/reservations"
+               class="px-4 py-2.5 text-sm font-medium whitespace-nowrap border-b-2 transition-colors
+                      {% if active_page == 'reservations' %}text-white border-blue-400{% else %}text-slate-400 border-transparent hover:text-slate-200 hover:border-slate-500{% endif %}">Reservations</a>
+            <a href="{{ base_path }}/leader"
+               class="px-4 py-2.5 text-sm font-medium whitespace-nowrap border-b-2 transition-colors
+                      {% if active_page == 'leader' %}text-white border-blue-400{% else %}text-slate-400 border-transparent hover:text-slate-200 hover:border-slate-500{% endif %}">Leader</a>
+        </div>
+    </nav>
+    <main class="max-w-7xl mx-auto px-4 py-6">
+{% block content %}{% endblock %}
+    </main>
+    <footer class="border-t border-slate-200 dark:border-slate-800 py-4 text-center text-xs text-slate-400">
+        <p>TaskQ Admin</p>
+    </footer>
+</body>
+</html>

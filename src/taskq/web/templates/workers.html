@@ -1,0 +1,69 @@
+{% extends "_base.html" %}
+{% set active_page = "workers" %}
+
+{% block title %}Workers — TaskQ Admin{% endblock %}
+
+{% block content %}
+<h2 class="text-xl font-semibold tracking-tight mb-4">Workers</h2>
+
+{% if workers %}
+<div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg overflow-hidden">
+    <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+            <thead>
+                <tr class="bg-slate-50 dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700">
+                    <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Hostname</th>
+                    <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">PID</th>
+                    <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Queues</th>
+                    <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">NOTIFY</th>
+                    <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Last Seen</th>
+                    <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Status</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-100 dark:divide-slate-800">
+            {% for w in workers %}
+                <tr class="even:bg-slate-50/50 dark:even:bg-slate-800/50 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors">
+                    <td class="px-4 py-2.5 font-medium">{{ w.hostname }}</td>
+                    <td class="px-4 py-2.5 font-mono text-xs text-slate-500">{{ w.pid }}</td>
+                    <td class="px-4 py-2.5">
+                        <div class="flex flex-wrap gap-1">
+                        {% for q in w.queues %}
+                            <a href="{{ base_path }}/queues/{{ q|urlencode }}" class="px-1.5 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300 hover:bg-blue-200 dark:hover:bg-blue-800 transition-colors">{{ q }}</a>
+                        {% endfor %}
+                        </div>
+                    </td>
+                    <td class="px-4 py-2.5">
+                        {% if w.notify_enabled %}
+                        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700 dark:bg-green-900/20 dark:text-green-300">
+                            <span class="w-1.5 h-1.5 rounded-full bg-green-500"></span> Enabled
+                        </span>
+                        {% else %}
+                        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-400">
+                            <span class="w-1.5 h-1.5 rounded-full bg-slate-400"></span> Disabled
+                        </span>
+                        {% endif %}
+                    </td>
+                    <td class="px-4 py-2.5 text-xs text-slate-500 whitespace-nowrap">{{ w.last_seen_at }}</td>
+                    <td class="px-4 py-2.5">
+                        {% if w.is_leader %}
+                        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300">
+                            <span class="w-1.5 h-1.5 rounded-full bg-green-500"></span> Leader
+                        </span>
+                        {% else %}
+                        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-400">
+                            <span class="w-1.5 h-1.5 rounded-full bg-slate-400"></span> Worker
+                        </span>
+                        {% endif %}
+                    </td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% else %}
+<div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg p-12 text-center">
+    <p class="text-slate-400 text-sm">No workers registered.</p>
+</div>
+{% endif %}
+{% endblock %}
