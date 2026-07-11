@@ -1,9 +1,13 @@
 # Architecture Reference
 
-Internal architecture reference for TaskQ contributors. Covers component topology,
+Internal architecture reference for TaskQ. Covers component topology,
 the backend protocol, state machine, dispatch mechanics, DI engine, cancellation
 protocol, leader election, NOTIFY wiring, rate limiting, schema design, and
 observability.
+
+This document is useful both for contributors working on TaskQ internals and
+for users who want to understand the system's correctness guarantees before
+relying on it in production.
 
 Related docs: [api-reference/testing.md](api-reference/testing.md), [index.md](index.md),
 [guides/workers.md](guides/workers.md), [guides/actors.md](guides/actors.md), [guides/rate-limiting.md](guides/rate-limiting.md).

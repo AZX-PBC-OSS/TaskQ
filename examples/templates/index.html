@@ -28,6 +28,10 @@
     .progress-toast .pt-title { font-weight: 600; margin-bottom: 0.5rem; display: flex;
                                 justify-content: space-between; align-items: center; }
     .progress-toast .pt-title a { color: #93c5fd; text-decoration: none; font-weight: 400; font-size: 0.8rem; }
+    .progress-toast .pt-cancel { background: #dc2626; color: #fff; border: none; border-radius: 4px;
+                                  padding: 2px 8px; font-size: 0.75rem; cursor: pointer; margin-left: 0.5rem; }
+    .progress-toast .pt-cancel:hover { background: #b91c1c; }
+    .progress-toast .pt-cancel:disabled { background: #64748b; cursor: not-allowed; }
     .progress-toast .pt-detail { color: #94a3b8; margin-bottom: 0.4rem; }
     .progress-toast .pt-bar-bg { height: 6px; background: #334155; border-radius: 3px; overflow: hidden; }
     .progress-toast .pt-bar { height: 100%; background: #3b82f6; border-radius: 3px;
@@ -93,6 +97,7 @@
           <span>${actorName}</span>
           <span style="display:flex;align-items:center">
             <a href="/taskq/jobs/${jobId}" target="_blank">view job</a>
+            <button class="pt-cancel" title="cancel this job">cancel</button>
             <button class="pt-close" title="dismiss">&times;</button>
           </span>
         </div>
@@ -105,12 +110,35 @@
       const barEl = el.querySelector('.pt-bar');
       const metaEl = el.querySelector('.pt-meta');
       const closeBtn = el.querySelector('.pt-close');
+      const cancelBtn = el.querySelector('.pt-cancel');
 
       let autoDismiss = null;
       closeBtn.addEventListener('click', () => {
         if (es) es.close();
         el.remove();
         if (autoDismiss) clearTimeout(autoDismiss);
+      });
+
+      cancelBtn.addEventListener('click', async () => {
+        cancelBtn.disabled = true;
+        cancelBtn.textContent = 'cancelling…';
+        try {
+          const resp = await fetch(`/cancel/${jobId}`, { method: 'POST' });
+          const data = await resp.json().catch(() => ({}));
+          if (resp.ok && data.cancellation_initiated) {
+            detailEl.textContent = 'Cancel requested — waiting for worker...';
+          } else if (resp.ok) {
+            detailEl.textContent = `Job already ${data.new_status}`;
+          } else {
+            detailEl.textContent = 'Cancel failed';
+            cancelBtn.disabled = false;
+            cancelBtn.textContent = 'cancel';
+          }
+        } catch {
+          detailEl.textContent = 'Network error during cancel';
+          cancelBtn.disabled = false;
+          cancelBtn.textContent = 'cancel';
+        }
       });
 
       stack.appendChild(el);

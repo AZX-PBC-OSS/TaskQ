@@ -10,6 +10,39 @@ state. A single `TASKQ_PG_DSN` is sufficient to run the full stack.
 
 ---
 
+## Why TaskQ?
+
+If you are evaluating Python task queues, here is how TaskQ compares to the alternatives:
+
+| | TaskQ | Celery | Dramatiq | arq | RQ |
+|---|---|---|---|---|---|
+| **Broker** | Postgres (no external broker) | Redis/RabbitMQ | Redis/RabbitMQ | Redis | Redis |
+| **Async-native** | Yes (asyncio + asyncpg) | No (thread-based) | No (thread-based) | Yes | No |
+| **Type-safe end-to-end** | Yes (Pydantic + pyright strict) | No | No | Partial | No |
+| **Admin UI** | Built-in (FastAPI + htmx) | Via Flower | Via Flower | No | No |
+| **DI engine** | Yes (scoped providers) | No | No | No | No |
+| **Cron scheduling** | Built-in (leader-elected) | celery-beat | periodic | via arq-cron | via rq-scheduler |
+| **Rate limiting** | Built-in (token bucket, sliding window, reservations) | No | No | No | No |
+| **Observability** | OpenTelemetry-native, vendor-neutral | Via extensions | Via extensions | Limited | Limited |
+| **Batch enqueue** | Yes (COPY FROM up to 50K rows) | `group()` | No | No | No |
+| **Cooperative cancellation** | Three-phase protocol | No | No | No | No |
+
+**When to choose TaskQ:**
+
+- You already use Postgres and want durable background jobs without standing up Redis/RabbitMQ
+- Your codebase is async-first and you need a worker that speaks asyncio natively
+- You want end-to-end type safety from `@actor` through `JobHandle[R].wait()`
+- You need built-in rate limiting, cron scheduling, or dependency injection
+- You want a production-grade admin UI out of the box
+
+**When to look elsewhere:**
+
+- You need a polyglot broker shared across multiple languages (Celery + RabbitMQ)
+- You need massive throughput (>50K jobs/sec) where Redis's in-memory dispatch wins over Postgres
+- You're on an older Python (<3.12) or don't use async
+
+---
+
 ## Features
 
 <div class="grid cards" markdown>

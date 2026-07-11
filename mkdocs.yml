@@ -88,6 +88,7 @@ nav:
   - Getting Started:
       - Installation: getting-started/installation.md
       - Quick Start: getting-started/quick-start.md
+      - Tutorial: guides/tutorial.md
   - Guides:
       - Actors: guides/actors.md
       - Jobs & Clients: guides/jobs-clients.md
@@ -105,7 +106,9 @@ nav:
       - SSO / SAML: guides/sso.md
       - Configuration: guides/configuration.md
       - CLI: guides/cli.md
+      - Troubleshooting: guides/troubleshooting.md
       - Upgrading: guides/upgrading.md
+      - Production Deployment: guides/deployment.md
   - API Reference:
       - Package Overview: api-reference/taskq.md
       - Actor: api-reference/actor.md

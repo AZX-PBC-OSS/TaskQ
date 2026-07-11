@@ -27,8 +27,12 @@ from examples.actors import (
     fetch_actor,
     file_processor,
     flaky,
+    generate_thumbnail,
     inmemory_rate_limited,
+    process_csv_chunk,
+    process_csv_upload,
     reserved,
+    send_digest_email,
     singleton_job,
     snoozer,
     step_one,
@@ -82,6 +86,11 @@ ACTORS: dict[str, ActorRef[Any, Any]] = {
     "count_words": count_words,
     # fastapi_app demo actor
     "process_item": process_item,
+    # real-world scenario actors
+    "send_digest_email": send_digest_email,
+    "process_csv_upload": process_csv_upload,
+    "process_csv_chunk": process_csv_chunk,
+    "generate_thumbnail": generate_thumbnail,
 }
 
 if __name__ == "__main__":
