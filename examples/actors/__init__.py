@@ -34,6 +34,12 @@ from examples.actors.ratelimit import (
     token_rate_limited,
     window_rate_limited,
 )
+from examples.actors.realworld import (
+    generate_thumbnail,
+    process_csv_chunk,
+    process_csv_upload,
+    send_digest_email,
+)
 from examples.actors.sync_demo import count_words
 from examples.actors.tags_demo import tagged_lower, tagged_upper
 from examples.actors.ticker import ticker
@@ -51,8 +57,12 @@ __all__ = [
     "fetch_actor",
     "file_processor",
     "flaky",
+    "generate_thumbnail",
     "inmemory_rate_limited",
+    "process_csv_chunk",
+    "process_csv_upload",
     "reserved",
+    "send_digest_email",
     "singleton_job",
     "snoozer",
     "step_one",

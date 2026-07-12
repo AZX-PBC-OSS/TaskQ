@@ -46,8 +46,27 @@ class FakeDb:
         return [{"id": 1, "sql": sql, "params": list(params), "result": "ok"}]
 
 
+class SmtpClient:
+    """Toy SMTP client — simulates a real email sending service."""
+
+    def __init__(self) -> None:
+        self._closed = False
+
+    async def send(self, to: str, subject: str, body: str) -> str:
+        return f"msg-{to}-{id(body)}"
+
+    async def aclose(self) -> None:
+        self._closed = True
+
+
 async def _http_client_factory() -> AsyncGenerator[FakeHttpClient, None]:
     client = FakeHttpClient()
+    yield client
+    await client.aclose()
+
+
+async def _smtp_client_factory() -> AsyncGenerator[SmtpClient, None]:
+    client = SmtpClient()
     yield client
     await client.aclose()
 
@@ -101,5 +120,6 @@ def build_registry() -> ProviderRegistry:
     """
     registry = ProviderRegistry()
     registry.register_factory(FakeHttpClient, Scope.LOOP, _http_client_factory)
+    registry.register_factory(SmtpClient, Scope.LOOP, _smtp_client_factory)
     registry.register_factory(FakeDb, Scope.TRANSIENT, _db_factory)
     return registry

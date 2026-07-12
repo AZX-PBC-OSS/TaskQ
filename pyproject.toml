@@ -353,6 +353,9 @@ reportArgumentType = false
 reportMissingImports = false
 reportUnknownVariableType = false
 reportUnknownArgumentType = false
+reportUnknownParameterType = false
+reportUnknownLambdaType = false
+reportUntypedFunctionDecorator = false
 
 [tool.pytest.ini_options]
 minversion = "8.0"

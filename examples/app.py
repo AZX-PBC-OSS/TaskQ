@@ -55,8 +55,11 @@ from examples.actors import (
     fetch_actor,
     file_processor,
     flaky,
+    generate_thumbnail,
     inmemory_rate_limited,
+    process_csv_upload,
     reserved,
+    send_digest_email,
     singleton_job,
     snoozer,
     step_one,
@@ -113,6 +116,10 @@ ACTORS: dict[str, ActorRef[Any, Any]] = {
     "tagged_upper": tagged_upper,
     # sync actor
     "count_words": count_words,
+    # real-world scenario actors
+    "send_digest_email": send_digest_email,
+    "process_csv_upload": process_csv_upload,
+    "generate_thumbnail": generate_thumbnail,
 }
 
 settings = TaskQSettings.load()
@@ -141,6 +148,7 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None]:
             stack.push_async_callback(redis_client.aclose)
 
         application.state.redis_client = redis_client
+        application.state.pg_pool = pg_pool
 
         tq = await stack.enter_async_context(
             TaskQ(
@@ -338,6 +346,33 @@ async def get_result(job_id: UUID, request: Request) -> Response:
     return Response(content=html, media_type="text/html")
 
 
+# ── Cancel ───────────────────────────────────────────────────────────────
+
+
+@app.post("/cancel/{job_id}")
+async def cancel_job(job_id: UUID, request: Request) -> JSONResponse:
+    """Cancel a running or pending job by ID.
+
+    Delegates to :meth:`TaskQ.cancel` which writes a cancel request to
+    Postgres. The worker observes it on the next heartbeat tick and
+    initiates the three-phase cancellation protocol.
+    """
+    tq: TaskQ = request.app.state.tq
+    try:
+        result = await tq.cancel(JobId(job_id), reason="user_requested")
+    except KeyError:
+        return JSONResponse({"error": "job not found"}, status_code=404)
+
+    return JSONResponse(
+        {
+            "job_id": str(result.job_id),
+            "previous_status": result.previous_status,
+            "new_status": result.new_status,
+            "cancellation_initiated": result.cancellation_initiated,
+        }
+    )
+
+
 # ── Batch-fast enqueue ──────────────────────────────────────────────────
 
 
@@ -376,11 +411,11 @@ async def peek_rate_limits(request: Request) -> JSONResponse:
     Redis for full live state; memory-backed buckets show PG-persisted
     metadata only.
     """
-    tq: TaskQ = request.app.state.tq
     redis_client = getattr(request.app.state, "redis_client", None)
+    pg_pool = getattr(request.app.state, "pg_pool", None)
 
     from taskq.ratelimit.registry import registry as rl_registry
-    from taskq.worker.deps import WorkerSettings
+    from taskq.settings import WorkerSettings
 
     rl_settings = WorkerSettings.load_from_dict(
         {
@@ -392,7 +427,7 @@ async def peek_rate_limits(request: Request) -> JSONResponse:
     try:
         live_states = await rl_registry.peek_all(
             redis_client=redis_client,
-            pg_pool=tq._pool,  # pyright: ignore[reportPrivateUsage]  # Why: example app accesses TaskQ's internal pool for admin UI rate-limit display.
+            pg_pool=pg_pool,
             settings=rl_settings,
         )
     except Exception:

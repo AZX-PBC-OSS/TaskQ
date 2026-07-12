@@ -1,0 +1,46 @@
+# Example workgroup configuration — multi-queue worker supervision.
+#
+# This TOML file configures a TaskQ workgroup supervisor that manages
+# multiple worker processes with independent queue assignments and
+# concurrency budgets. Use it with:
+#
+#   uv run taskq workgroup examples/workgroup.toml
+#
+# The supervisor spawns one child process per [[workers]] entry, monitors
+# them for crashes, and restarts with exponential backoff.
+
+actors = "examples.worker:ACTORS"
+
+[defaults]
+worker_group = "examples"
+
+[supervisor]
+shutdown_grace = 30.0
+backoff_initial = 0.5
+backoff_max = 30.0
+burst_limit = 10
+burst_window = 60.0
+
+# High-throughput worker for the main examples queue.
+# Polls frequently and allows 8 concurrent jobs.
+[[workers]]
+name = "api"
+queues = ["examples"]
+max_concurrency = 8
+poll_interval = 0.5
+
+[workers.health]
+enabled = true
+check_interval = 15
+stale_after = 60
+startup_grace = 15.0
+consecutive_failure_limit = 3
+
+# Low-throughput worker for background tasks.
+# Longer poll interval, fewer concurrent jobs — ideal for CPU-bound actors
+# like generate_thumbnail that should not monopolize the event loop.
+[[workers]]
+name = "background"
+queues = ["examples"]
+max_concurrency = 2
+poll_interval = 2.0

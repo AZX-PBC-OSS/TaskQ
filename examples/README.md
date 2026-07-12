@@ -22,6 +22,16 @@ Submitting any form enqueues a job and redirects to the admin job-detail page wh
 |---|---|---|
 | `POST` | `/batch-fast` | Enqueue N counter jobs via `enqueue_batch_fast` (COPY FROM). Accepts JSON `{"n": 5}`. Returns `{"count": N, "actor": "counter"}`. |
 | `GET` | `/rate-limits` | Peek all registered rate-limit bucket states. Returns JSON `{"bucket_name": {...state...}}`. |
+| `POST` | `/cancel/{job_id}` | Cancel a running or pending job by ID. Returns `{"job_id", "previous_status", "new_status", "cancellation_initiated"}`. |
+
+## Additional Example Files
+
+| File | What it demonstrates |
+|---|---|
+| `client_script.py` | Standalone CLI script for enqueuing jobs, backfills, cancellation, and job listing outside a web app. Run with `uv run python examples/client_script.py [--backfill N \| --cancel ID \| --list \| --realworld]`. |
+| `test_example.py` | Unit tests using `InMemoryBackend` + `FakeClock` — no Postgres or Redis required. Run with `uv run pytest examples/test_example.py -v`. |
+| `workgroup.toml` | Workgroup supervisor config for multi-queue worker management. Run with `uv run taskq workgroup examples/workgroup.toml`. |
+| `otel_setup.py` | OpenTelemetry SDK initialization for tracing with Jaeger or any OTLP collector. Run with `uv run python examples/otel_setup.py` (requires `[otel]` extra). |
 
 ## Actor Table
 
@@ -41,6 +51,9 @@ Submitting any form enqueues a job and redirects to the admin job-detail page wh
 | `tagged_lower` | Job tagging — enqueued with `tags=["alpha", "lower"]` | `label` (str, default "demo") | Returns a `TaggedResult(label, reversed)`. Filter jobs by tag in the admin UI or via `JobFilter(tags=("alpha",))`. |
 | `tagged_upper` | Job tagging — enqueued with `tags=["alpha", "upper"]` | `label` (str, default "demo") | Reports per-character progress. Shares the `"alpha"` tag with `tagged_lower` — filtering by `"alpha"` finds both actors' jobs. |
 | `count_words` | Sync actor (plain `def`, dispatched via `asyncio.to_thread`) | `text` (str) | Counts words and characters synchronously. Returns `WordCountResult(word_count, char_count)`. Polls `ctx.should_abort()` for cooperative cancellation. |
+| `send_digest_email` | Real-world: email digest with retry, dedup, DI, typed result | `user_id` (str), `email` (str), `period` (str, default "weekly") | Sends a digest email via injected `SmtpClient`. Deduplicated per `user_id` within 30 min. Retries up to 3 times on failure. Returns `DigestEmailResult(message_id, recipients, articles_included)`. |
+| `process_csv_upload` | Real-world: ETL pipeline with progress and fan-out | `filename` (str), `row_count` (int, default 1000), `chunk_size` (int, default 500) | Parses, validates, chunks, and dispatches sub-jobs via `ctx.jobs.enqueue_batch()`. Watch the spawned `process_csv_chunk` jobs in the admin queue overview. |
+| `generate_thumbnail` | Real-world: CPU-bound sync actor (image processing) | `image_url` (str), `width` (int, default 200), `height` (int, default 200), `format` (str, default "webp") | Runs synchronously via `asyncio.to_thread`. Polls `ctx.should_abort()` for cancellation. Returns `ThumbnailResult(output_path, width, height, format, source_bytes)`. |
 
 ## Job Tags
 
