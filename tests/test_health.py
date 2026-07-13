@@ -2,9 +2,11 @@
 
 import asyncio
 import contextlib
+import glob
 import json
 import os
 import sys
+from collections.abc import Iterator
 from types import SimpleNamespace
 
 import asyncpg
@@ -262,6 +264,22 @@ def _next_sock_path() -> str:
     global _sock_id_seq
     _sock_id_seq += 1
     return f"{_SOCK_ID_PREFIX}{_sock_id_seq}.sock"
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _cleanup_sock_files() -> Iterator[None]:  # pyright: ignore[reportUnusedFunction] # Why: pytest autouse fixture consumed implicitly by the test runner; pyright does not track fixture usage.
+    """Sweep this process's own tqht-<pid>-*.sock files after the session.
+
+    HealthServer.start()/stop() already unlink these under normal test
+    completion; this is a backstop for abnormal termination (a killed or
+    timed-out run skips `finally` blocks and leaves the socket file
+    behind). Scoped to _SOCK_ID_PREFIX (this PID only), so it can never
+    touch a socket file from a different process or session.
+    """
+    yield
+    for path in glob.glob(f"{_SOCK_ID_PREFIX}*.sock"):
+        with contextlib.suppress(OSError):
+            os.unlink(path)
 
 
 # ── Readiness 503 body schema with CANCELLING ───────────────────

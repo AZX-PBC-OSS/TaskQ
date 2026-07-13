@@ -156,12 +156,17 @@ def _unlink_stale_socket(path: str) -> None:
     check is applied at bind time too: if something is actually listening,
     leave the path alone and let ``start_unix_server`` fail loudly instead
     of silently stealing the socket out from under a live process.
+
+    ``ENOTSOCK`` means *path* exists but is a regular file, not a socket
+    at all (e.g. leftover from a crash before the socket was ever bound,
+    or a stray file created at that path) — also stale, also safe to
+    remove.
     """
     probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
         probe.connect(path)
     except OSError as exc:
-        if exc.errno in (errno.ECONNREFUSED, errno.ENOENT):
+        if exc.errno in (errno.ECONNREFUSED, errno.ENOENT, errno.ENOTSOCK):
             with contextlib.suppress(FileNotFoundError):
                 os.unlink(path)
     else:
