@@ -113,9 +113,7 @@ def test_enrich_pg_dsn_injects_password_and_forces_ssl() -> None:
 def test_enrich_pg_dsn_preserves_existing_params() -> None:
     """Existing query parameters are preserved when enriching."""
     cred = PgCredential(password="tok")
-    result = enrich_pg_dsn(
-        "postgresql://user@host:5432/db?application_name=taskq", cred
-    )
+    result = enrich_pg_dsn("postgresql://user@host:5432/db?application_name=taskq", cred)
     assert "application_name=taskq" in result
     assert "password=tok" in result
     assert "sslmode=require" in result
@@ -210,9 +208,7 @@ async def test_make_redis_client_factory_raises_when_url_none() -> None:
 async def test_make_redis_client_factory_builds_with_credential_provider() -> None:
     """The factory attaches a credential_provider that delegates to the provider."""
     provider = _FakeRedisProvider(username="my-oid", password="redis-tok")
-    factory = make_redis_client_factory(
-        "rediss://cache.redis.cache.windows.net:6380", provider
-    )
+    factory = make_redis_client_factory("rediss://cache.redis.cache.windows.net:6380", provider)
 
     fake_redis = MagicMock()
     with patch("redis.asyncio.Redis.from_url", return_value=fake_redis) as mock_from_url:

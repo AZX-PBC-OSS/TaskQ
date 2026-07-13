@@ -396,14 +396,14 @@ async def test_connection_loss_during_preflight(
                     actor="_unique_for_15min_actor",
                     queue="default",
                     payload={"value": 1},
-                max_attempts=3,
-                retry_kind="transient",
-                scheduled_at=datetime.now(UTC),
-                identity_key=IdentityKey(identity),
-                unique_for=timedelta(minutes=15),
-                unique_states=("pending", "scheduled", "running"),
+                    max_attempts=3,
+                    retry_kind="transient",
+                    scheduled_at=datetime.now(UTC),
+                    identity_key=IdentityKey(identity),
+                    unique_for=timedelta(minutes=15),
+                    unique_states=("pending", "scheduled", "running"),
+                )
             )
-        )
     finally:
         deps.worker_pool = original_pool  # Restore real pool for post-check
 

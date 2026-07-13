@@ -79,5 +79,11 @@ def test_worker_connections_rejects_all_role_conflicts() -> None:
         with pytest.raises(ValueError, match=concrete):
             WorkerConnections(
                 **{concrete: pool if "pool" in concrete or "redis" in concrete else conn},  # type: ignore[arg-type]
-                **{factory: _fake_pool_factory if "pool" in factory else _fake_redis_factory if "redis" in factory else _fake_conn_factory},  # type: ignore[arg-type]
+                **{
+                    factory: _fake_pool_factory
+                    if "pool" in factory
+                    else _fake_redis_factory
+                    if "redis" in factory
+                    else _fake_conn_factory
+                },  # type: ignore[arg-type]
             )

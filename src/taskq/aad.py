@@ -232,9 +232,7 @@ class EntraIdRedisProvider(RedisCredentialProvider):
         self._username = username
 
     async def get_redis_credential(self) -> RedisCredential:
-        username, token = await fetch_redis_credentials(
-            self._credential, username=self._username
-        )
+        username, token = await fetch_redis_credentials(self._credential, username=self._username)
         return RedisCredential(username=username, password=token)
 
 

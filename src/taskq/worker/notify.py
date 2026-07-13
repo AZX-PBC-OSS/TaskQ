@@ -267,6 +267,7 @@ async def reconnect_notify_conn(
         host=dsn_host(str(deps.settings.pg_dsn_direct)) if deps.settings.pg_dsn_direct else None,
     )
     if close_old and old_conn is not None and old_conn is not new_conn:
+
         async def _close_old() -> None:
             with contextlib.suppress(Exception):
                 await old_conn.close()

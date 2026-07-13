@@ -248,9 +248,7 @@ async def test_tc2_pg_container_stop_start(
                 from taskq.worker.deps import open_dedicated_conn
 
                 async def _new_notify_factory() -> object:
-                    return await open_dedicated_conn(
-                        pg_dsn, label="notify", apply_keepalive=True
-                    )
+                    return await open_dedicated_conn(pg_dsn, label="notify", apply_keepalive=True)
 
                 deps.notify_conn_factory = _new_notify_factory
                 await asyncio.sleep(0.5)

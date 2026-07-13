@@ -421,6 +421,7 @@ async def open_worker_deps(
         # guards below prevent a double-close error during AsyncExitStack teardown.
         # Caller-owned connections are never closed here.
         if owns_notify:
+
             async def _close_notify_conn() -> None:
                 if deps.notify_conn is not None:
                     await deps.notify_conn.close()
@@ -428,6 +429,7 @@ async def open_worker_deps(
 
             stack.push_async_callback(_close_notify_conn)
         if owns_leader:
+
             async def _close_leader_conn() -> None:
                 if deps.leader_conn is not None:
                     await deps.leader_conn.close()
@@ -558,8 +560,7 @@ async def reload_credentials(
     stack = deps._exit_stack
     if stack is None:
         raise RuntimeError(
-            "reload_credentials called outside of open_worker_deps — "
-            "deps._exit_stack is None"
+            "reload_credentials called outside of open_worker_deps — deps._exit_stack is None"
         )
 
     reloaded: list[str] = []

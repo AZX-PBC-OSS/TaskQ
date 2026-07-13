@@ -41,9 +41,7 @@ def test_fetch_rds_iam_token_defaults_region_to_empty() -> None:
     """When region is None, an empty string is passed (boto3 resolves from env)."""
     fake_client = MagicMock()
     fake_client.generate_db_auth_token.return_value = "tok"
-    fetch_rds_iam_token(
-        hostname="host", port=5432, username="user", client=fake_client
-    )
+    fetch_rds_iam_token(hostname="host", port=5432, username="user", client=fake_client)
     fake_client.generate_db_auth_token.assert_called_once_with(
         DBHostname="host", Port=5432, DBUsername="user", Region=""
     )
@@ -71,9 +69,7 @@ async def test_rds_iam_provider_uses_dsn_username() -> None:
     """RdsIamProvider extracts the username from the DSN."""
     fake_client = MagicMock()
     fake_client.generate_db_auth_token.return_value = "tok"
-    provider = RdsIamProvider(
-        "postgresql://mydbuser@host:5432/db", client=fake_client
-    )
+    provider = RdsIamProvider("postgresql://mydbuser@host:5432/db", client=fake_client)
     await provider.get_pg_credential()
     call_kwargs = fake_client.generate_db_auth_token.call_args.kwargs
     assert call_kwargs["DBUsername"] == "mydbuser"

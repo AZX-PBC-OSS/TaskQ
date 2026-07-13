@@ -236,9 +236,7 @@ async def apply_pending_locked(
     if conn is not None and conn_factory is not None:
         raise ValueError("apply_pending_locked: provide 'conn' or 'conn_factory', not both")
     if conn is None and conn_factory is None and dsn is None:
-        raise ValueError(
-            "apply_pending_locked: provide 'dsn', 'conn', or 'conn_factory'"
-        )
+        raise ValueError("apply_pending_locked: provide 'dsn', 'conn', or 'conn_factory'")
 
     owns_conn = conn is None  # factory/DSN → we close; caller-owned → we don't
     c: asyncpg.Connection | None = None

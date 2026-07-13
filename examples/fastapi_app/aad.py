@@ -122,9 +122,7 @@ def main() -> None:
 
             importlib.import_module("fastapi")
         except ImportError as exc:
-            raise SystemExit(
-                "FastAPI is not installed. pip install 'taskq-py[fastapi]'"
-            ) from exc
+            raise SystemExit("FastAPI is not installed. pip install 'taskq-py[fastapi]'") from exc
         asyncio.run(_serve(settings))
     else:  # pragma: no cover
         raise SystemExit(f"unknown mode {mode!r}; use 'worker' or 'serve'")
@@ -162,7 +160,9 @@ async def _serve(settings: WorkerSettings) -> None:
             try:
                 app = _build_app(tq)
                 config = uvicorn.Config(  # type: ignore[union-attr]
-                    app, host="0.0.0.0", port=8000  # noqa: S104  # demo
+                    app,
+                    host="0.0.0.0",  # noqa: S104  # Why: demo app; production deployments override.
+                    port=8000,
                 )
                 server = uvicorn.Server(config)  # type: ignore[union-attr]
                 await server.serve()

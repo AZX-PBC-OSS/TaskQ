@@ -74,10 +74,12 @@ def _make_mock_deps(
     deps = Mock()
     deps.settings = settings
     deps.notify_conn = _mock_conn()
+
     # Default reconnect factory — returns a fresh mock conn. Individual tests
     # override this to assert on the factory being called.
     async def _default_factory() -> object:
         return _mock_conn()
+
     deps.notify_conn_factory = _default_factory
     deps.leader_conn_factory = None
     return deps
