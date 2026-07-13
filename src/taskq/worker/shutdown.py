@@ -242,21 +242,31 @@ def install_signal_handlers(
     backend: Backend,
     orchestrator_holder: list[asyncio.Task[int]],
 ) -> None:
-    """Register SIGTERM/SIGINT handlers with a three-signal escalation counter.
+    """Register SIGTERM/SIGINT/SIGHUP handlers.
 
-    First signal schedules ``orchestrate_shutdown`` via ``loop.create_task``
-    and appends the created task to ``orchestrator_holder`` so that ``_main``
+    **SIGTERM/SIGINT**: three-signal escalation counter.  First signal
+    schedules ``orchestrate_shutdown`` via ``loop.create_task`` and
+    appends the created task to ``orchestrator_holder`` so that ``_main``
     can later await it for the exit code.  Second signal sets
     ``escalate_event`` to fast-advance CANCELLING → FORCING.  Third signal
     calls ``sys.exit(1)`` (Kubernetes SIGKILL is the hard backstop).
 
-    The signal counter is closure-scoped — each call to this function creates
-    a fresh, independent counter.  The handler callable contains zero
-    ``await`` or I/O.
+    **SIGHUP**: sets ``deps.reload_event`` to signal the hot-reload
+    coordinator (:func:`~taskq.worker.deps.reload_credentials`) that a
+    credential refresh has been requested. The coordinator runs as a
+    sibling task in the worker's ``TaskGroup`` and performs the actual
+    pool/connection swap. SIGHUP can be sent multiple times — each one
+    sets the event; the coordinator clears it after a reload completes.
+    If a reload is already in progress, the second SIGHUP is a no-op
+    (the event is already set).
+
+    The signal counter is closure-scoped — each call to this function
+    creates a fresh, independent counter.  The handler callable contains
+    zero ``await`` or I/O.
     """
     _sig_count = 0
 
-    def _on_signal() -> None:
+    def _on_shutdown_signal() -> None:
         nonlocal _sig_count
         _sig_count += 1
         if _sig_count == 1:
@@ -276,12 +286,21 @@ def install_signal_handlers(
         else:
             sys.exit(1)
 
+    def _on_reload_signal() -> None:
+        deps.reload_event.set()
+
     for sig in (signal.SIGTERM, signal.SIGINT):
         try:
-            loop.add_signal_handler(sig, _on_signal)
+            loop.add_signal_handler(sig, _on_shutdown_signal)
         except NotImplementedError:
             _log.warning(
                 "signal-handlers-unavailable",
                 os_name=os.name,
             )
             return
+    # SIGHUP — credential hot-reload. Not available on Windows.
+    if hasattr(signal, "SIGHUP"):
+        try:
+            loop.add_signal_handler(signal.SIGHUP, _on_reload_signal)
+        except NotImplementedError:
+            _log.warning("sighup-handler-unavailable", os_name=os.name)

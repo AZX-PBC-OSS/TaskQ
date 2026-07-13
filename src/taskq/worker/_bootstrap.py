@@ -26,6 +26,7 @@ from taskq.backend._protocol import Backend, JobRow, ScheduleCreateArgs
 from taskq.backend.clock import Clock, SystemClock
 from taskq.backend.postgres import PostgresBackend
 from taskq.client._enqueuer import SubJobEnqueuer
+from taskq.connections import WorkerConnections
 from taskq.cron import (
     CronScheduleSpec,
     compute_next_fire_after,
@@ -38,7 +39,7 @@ from taskq.ratelimit.registry import registry as rl_registry
 from taskq.settings import WorkerSettings
 from taskq.worker.actor_config import ActorConfig
 from taskq.worker.cancel import make_cancel_controller
-from taskq.worker.deps import open_worker_deps
+from taskq.worker.deps import WorkerDeps, open_worker_deps
 from taskq.worker.health import HealthServer
 from taskq.worker.heartbeat import heartbeat_loop
 from taskq.worker.leader import MaintenanceLeader
@@ -109,6 +110,7 @@ async def _main(
     actor_registry: Mapping[str, ActorRef[Any, Any]] | None = None,
     _registry: ProviderRegistry | None = None,
     _cron_registry: list[CronScheduleSpec] | None = None,
+    connections: WorkerConnections | None = None,
 ) -> int:
     """Worker bootstrap: open deps, wire TaskGroup of siblings, run to shutdown.
 
@@ -171,7 +173,7 @@ async def _main(
 
     _producer_log = structlog.get_logger("taskq.worker.run.producer")
 
-    async with open_worker_deps(settings) as deps:
+    async with open_worker_deps(settings, connections=connections) as deps:
         if not registry.has_provider(asyncpg.Pool):
             registry.register_value(asyncpg.Pool, Scope.LOOP, deps.worker_pool)
 
@@ -438,6 +440,11 @@ async def _main(
                                 )
                             )
 
+                    tg.create_task(
+                        _reload_coordinator_loop(deps, shutdown_event),
+                        name="worker.reload_coordinator",
+                    )
+
                     await shutdown_event.wait()
             finally:
                 try:
@@ -455,12 +462,61 @@ async def _main(
     return exit_code
 
 
+async def _reload_coordinator_loop(
+    deps: WorkerDeps,
+    shutdown: asyncio.Event,
+) -> None:
+    """Watch ``deps.reload_event`` and trigger credential hot-reload on SIGHUP.
+
+    Runs as a sibling task in the worker's ``TaskGroup``. Each time
+    ``reload_event`` is set (by the SIGHUP handler), calls
+    :func:`~taskq.worker.deps.reload_credentials` to hot-swap every
+    factory-backed pool / connection / Redis client with a freshly-built
+    replacement. Logs success or failure and clears the event so the next
+    SIGHUP can trigger another reload.
+
+    If a reload fails, the error is logged but the worker continues — the
+    old resources are still live. The operator can send SIGHUP again or
+    restart the worker.
+    """
+    from taskq.worker.deps import reload_credentials
+
+    while not shutdown.is_set():
+        # Wait for either a reload request or shutdown.
+        reload_wait = asyncio.create_task(deps.reload_event.wait())
+        shutdown_wait = asyncio.create_task(shutdown.wait())
+        try:
+            _done, _pending = await asyncio.wait(
+                [reload_wait, shutdown_wait],
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+        finally:
+            for task in (reload_wait, shutdown_wait):
+                if not task.done():
+                    task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await task
+
+        if shutdown.is_set():
+            return
+
+        # reload_event is set — trigger the reload.
+        deps.reload_event.clear()
+        try:
+            await reload_credentials(deps)
+        except Exception:
+            _startup_log.exception("credentials-reload-failed")
+            # Clear the event in case it was re-set during the failed reload.
+            deps.reload_event.clear()
+
+
 def worker_main(
     settings: WorkerSettings,
     *,
     actor_registry: Mapping[str, ActorRef[Any, Any]] | None = None,
     di_registry: ProviderRegistry | None = None,
     cron_registry: list[CronScheduleSpec] | None = None,
+    connections: WorkerConnections | None = None,
 ) -> int:
     """Worker process entry point.
 
@@ -505,5 +561,6 @@ def worker_main(
                 actor_registry=actor_registry,
                 _registry=di_registry,
                 _cron_registry=schedule_specs,
+                connections=connections,
             )
         )

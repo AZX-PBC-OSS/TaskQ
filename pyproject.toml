@@ -91,6 +91,22 @@ saml = [
     # Shared signed session cookies via _session.py.
     "itsdangerous>=2.2.0,<3",
 ]
+aad = [
+    # Microsoft Entra ID (AAD) managed-identity authentication for Azure
+    # Database for PostgreSQL and Azure Cache for Redis. Used by the
+    # credential providers in taskq.aad; see docs/guides/managed-identities.md.
+    "azure-identity>=1.25.3,<2",
+]
+aws = [
+    # AWS IAM database authentication for Amazon RDS Postgres. Used by the
+    # credential providers in taskq.aws; see docs/guides/managed-identities.md.
+    "boto3>=1.43.46,<2",
+]
+vault = [
+    # HashiCorp Vault database secrets engine dynamic credentials. Used by
+    # the credential providers in taskq.vault; see docs/guides/managed-identities.md.
+    "hvac>=2.4.0,<3",
+]
 
 [tool.uv]
 # Supply-chain hardening: never resolve to distributions published within the
@@ -338,6 +354,32 @@ reportUnknownVariableType = false
 reportUnknownArgumentType = false
 reportUnknownMemberType = false
 
+# taskq.aad binds to azure-identity, which ships no type stubs. Same
+# rationale as the SSO auth boundary — relax unknown-type reports at this
+# import boundary; structural correctness is covered by the test suite.
+[[tool.pyright.executionEnvironments]]
+root = "src/taskq/aad.py"
+reportUnknownVariableType = false
+reportUnknownArgumentType = false
+reportUnknownMemberType = false
+reportMissingImports = false
+
+# taskq.aws binds to boto3, which ships no type stubs. Same rationale.
+[[tool.pyright.executionEnvironments]]
+root = "src/taskq/aws.py"
+reportUnknownVariableType = false
+reportUnknownArgumentType = false
+reportUnknownMemberType = false
+reportMissingImports = false
+
+# taskq.vault binds to hvac, which ships no type stubs. Same rationale.
+[[tool.pyright.executionEnvironments]]
+root = "src/taskq/vault.py"
+reportUnknownVariableType = false
+reportUnknownArgumentType = false
+reportUnknownMemberType = false
+reportMissingImports = false
+
 [[tool.pyright.executionEnvironments]]
 root = "tests"
 reportPrivateUsage = false
@@ -402,8 +444,11 @@ dev = [
     "anyio>=4.13.0",
     "asyncpg-stubs>=0.31.2",
     "authlib>=1.7.2",
+    "azure-identity>=1.25.3",
+    "boto3>=1.43.46",
     "httpx>=0.28.1",
     "httpx2>=2.0.0",
+    "hvac>=2.4.0",
     "hypothesis>=6.152.4",
     "itsdangerous>=2.2.0",
     "jsonschema>=4.26.0",

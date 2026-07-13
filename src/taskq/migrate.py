@@ -14,6 +14,7 @@ There is no ``down`` operation. To revert, restore from a database backup.
 import contextlib
 import hashlib
 import re
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from importlib import resources
 from typing import Literal, TypeAlias
@@ -209,29 +210,49 @@ _MIGRATION_LOCK_KEY: int = 1_234_567
 
 
 async def apply_pending_locked(
-    dsn: str,
+    dsn: str | None = None,
     *,
     schema: str,
     phase: Phase | None = None,
     target: str | None = None,
     max_steps: int | None = None,
+    conn: asyncpg.Connection | None = None,
+    conn_factory: Callable[[], Awaitable[asyncpg.Connection]] | None = None,
 ) -> list[Migration]:
     """Apply pending migrations under a session-level advisory lock.
 
-    Opens its own connection, acquires ``pg_advisory_lock`` to prevent
-    concurrent startup races, applies pending migrations, and closes the
-    connection.  Raises :class:`SystemExit` on failure so the calling
-    process aborts cleanly.
+    Acquires ``pg_advisory_lock`` to prevent concurrent startup races,
+    applies pending migrations, and releases the lock.
 
-    This is the recommended entry point for CLI ``--migrate`` and admin
-    sidecar ``TASKQ_MIGRATE_ON_START`` paths.
+    Connection sources (mutually exclusive):
+    * ``conn`` — pre-constructed, caller-owned; NOT closed here.
+    * ``conn_factory`` — zero-arg async factory; closed in ``finally``.
+    * ``dsn`` — ``asyncpg.connect(dsn)``; closed in ``finally``.
+
+    Raises :class:`SystemExit` on failure so the calling process aborts
+    cleanly.  This is the recommended entry point for CLI ``--migrate``
+    and admin sidecar ``TASKQ_MIGRATE_ON_START`` paths.
     """
-    conn: asyncpg.Connection | None = None
+    if conn is not None and conn_factory is not None:
+        raise ValueError("apply_pending_locked: provide 'conn' or 'conn_factory', not both")
+    if conn is None and conn_factory is None and dsn is None:
+        raise ValueError(
+            "apply_pending_locked: provide 'dsn', 'conn', or 'conn_factory'"
+        )
+
+    owns_conn = conn is None  # factory/DSN → we close; caller-owned → we don't
+    c: asyncpg.Connection | None = None
     try:
-        conn = await asyncpg.connect(dsn)
-        await conn.execute("SELECT pg_advisory_lock($1)", _MIGRATION_LOCK_KEY)
+        if conn is not None:
+            c = conn
+        elif conn_factory is not None:
+            c = await conn_factory()
+        else:
+            assert dsn is not None  # guarded by validation above
+            c = await asyncpg.connect(dsn)
+        await c.execute("SELECT pg_advisory_lock($1)", _MIGRATION_LOCK_KEY)
         applied = await apply_pending(
-            conn, schema=schema, phase=phase, target=target, max_steps=max_steps
+            c, schema=schema, phase=phase, target=target, max_steps=max_steps
         )
         if applied:
             logger.info("applied migrations before startup", count=len(applied))
@@ -241,8 +262,9 @@ async def apply_pending_locked(
     except Exception as exc:
         raise SystemExit(f"migration failed, aborting startup: {exc}") from exc
     finally:
-        if conn is not None:
+        if c is not None:
             with contextlib.suppress(Exception):
-                await conn.execute("SELECT pg_advisory_unlock($1)", _MIGRATION_LOCK_KEY)
-            with contextlib.suppress(Exception):
-                await conn.close()
+                await c.execute("SELECT pg_advisory_unlock($1)", _MIGRATION_LOCK_KEY)
+            if owns_conn:
+                with contextlib.suppress(Exception):
+                    await c.close()

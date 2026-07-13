@@ -11,6 +11,12 @@ Canonical imports:
 import importlib.metadata
 
 from taskq.actor import ActorFn, ActorFnWithCtx, ActorHandler, ActorRef, actor
+from taskq.auth import (
+    PgCredential,
+    PgCredentialProvider,
+    RedisCredential,
+    RedisCredentialProvider,
+)
 from taskq.backend._protocol import (
     CancelPhase,
     DstStrategy,
@@ -28,6 +34,7 @@ from taskq.backend._protocol import (
 from taskq.batch import BatchCompletionStatus, BatchHandle, EnqueueItem, wait_for_batch
 from taskq.client import CancelResult, JobEvent, JobHandle, JobsClient, TaskQ
 from taskq.client._enqueuer import SubJobEnqueuer
+from taskq.connections import ConnFactory, PoolFactory, RedisFactory, WorkerConnections
 from taskq.context import JobContext
 from taskq.cron import CronScheduleSpec, ScheduleHandle, cron
 from taskq.exceptions import (
@@ -82,6 +89,7 @@ __all__ = [
     "BatchHandle",
     "CancelPhase",
     "CancelResult",
+    "ConnFactory",
     "CronScheduleSpec",
     "DIError",
     "DependencyCycle",
@@ -107,11 +115,17 @@ __all__ = [
     "OnSuccess",
     "PartialBatchError",
     "PayloadValidationError",
+    "PgCredential",
+    "PgCredentialProvider",
+    "PoolFactory",
     "ProgressEvent",
     "ProgressTooLarge",
     "QueueMode",
     "QueueName",
     "RateLimitBackend",
+    "RedisCredential",
+    "RedisCredentialProvider",
+    "RedisFactory",
     "ReservationUnavailable",
     "ResultTooLarge",
     "ResultUnavailable",
@@ -133,6 +147,7 @@ __all__ = [
     "SubJobEnqueuer",
     "TaskQ",
     "TaskQError",
+    "WorkerConnections",
     "WorkerOwnershipMismatch",
     "__version__",
     "actor",

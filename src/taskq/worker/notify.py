@@ -30,7 +30,7 @@ from taskq.constants import events_channel, wake_channel, worker_channel
 from taskq.obs import get_logger, get_meter
 from taskq.worker.deps import (
     WorkerDeps,
-    open_dedicated_conn,
+    _drain_tasks,  # pyright: ignore[reportPrivateUsage]  # Why: module-level drain-task set for fire-and-forget background close; accessed at module scope by both notify.py and deps.py.
 )
 
 logger: structlog.stdlib.BoundLogger = get_logger(__name__)
@@ -54,6 +54,22 @@ _cancel_notify_received_counter = _meter.create_counter(
 
 _active_listeners: set[PostgresBackend] = set()
 _connected_lookup: dict[PostgresBackend, bool] = {}
+_active_channels: dict[
+    PostgresBackend, list[tuple[str, Callable[[asyncpg.Connection, int, str, str], None]]]
+] = {}
+
+
+def active_channels(
+    backend: PostgresBackend,
+) -> list[tuple[str, Callable[[asyncpg.Connection, int, str, str], None]]] | None:
+    """Return the live channel/callback list for *backend*, or ``None``.
+
+    Populated by :func:`notify_listener_loop` for the duration of its run;
+    used by :func:`~taskq.worker.deps.reload_credentials` to re-issue
+    LISTEN and re-register callbacks on a SIGHUP-triggered notify_conn swap
+    without duplicating the channel-construction logic.
+    """
+    return _active_channels.get(backend)
 
 
 def _observe_connected(options: CallbackOptions) -> Iterable[Observation]:
@@ -188,16 +204,47 @@ def _make_worker_events_callback(
     return _on_worker_event
 
 
-async def _reconnect(
+async def reconnect_notify_conn(
     deps: WorkerDeps,
     backend: PostgresBackend,
     channels: list[tuple[str, Callable[[asyncpg.Connection, int, str, str], None]]],
+    *,
+    close_old: bool = False,
 ) -> None:
-    new_conn = await open_dedicated_conn(
-        str(deps.settings.pg_dsn_direct),
-        label="notify_conn",
-        apply_keepalive=True,
-    )
+    """Rebuild ``deps.notify_conn``, re-issue LISTEN, and re-register callbacks.
+
+    Uses ``deps.notify_conn_factory`` when set — the credential source (DSN
+    closure or a user-supplied AAD/AWS/Vault factory) the connection was
+    originally opened with — so a factory-backed deployment (which may have
+    no DSN at all) reconnects through the same source rather than falling
+    back to a stale ``pg_dsn_direct``. Falls back to the raw DSN only when
+    ``notify_conn_factory`` is unset (caller-owned ``notify_conn`` — nothing
+    TaskQ can rebuild; raises if called in that case).
+
+    ``close_old`` additionally closes ``deps.notify_conn`` (the connection
+    being replaced) in the background after the swap — used by
+    :func:`~taskq.worker.deps.reload_credentials` for a SIGHUP-triggered
+    hot reload, where the old connection is still live and must be drained
+    rather than assumed already dead (the health-check reconnect path never
+    passes this — the old connection is already closed by the time it calls
+    in).
+
+    A SIGHUP-triggered call can race a concurrent SIGTERM/SIGINT shutdown
+    (the shutdown clears ``deps.notify_reconnect_fn`` and removes listeners
+    once ``notify_listener_loop`` observes the shutdown event, which may
+    happen mid-reconnect). Any exception from that race is caught and
+    logged by :func:`~taskq.worker.deps.reload_credentials`'s caller — it
+    does not crash the worker; the reload is simply reported as failed for
+    ``notify_conn`` on an already-terminating worker.
+    """
+    old_conn = deps.notify_conn
+    factory = deps.notify_conn_factory
+    if factory is None:
+        raise RuntimeError(
+            "notify_conn has no factory to reconnect through (caller-owned "
+            "connection) — TaskQ cannot rebuild it automatically."
+        )
+    new_conn = await factory()
     try:
         for channel, on_notify in channels:
             await new_conn.execute(f'LISTEN "{channel}"')
@@ -217,8 +264,18 @@ async def _reconnect(
         "notify-listener-connect",
         kind="notify_listener_connect",
         channels=[ch for ch, _ in channels],
-        host=dsn_host(str(deps.settings.pg_dsn_direct)),
+        host=dsn_host(str(deps.settings.pg_dsn_direct)) if deps.settings.pg_dsn_direct else None,
     )
+    if close_old and old_conn is not None and old_conn is not new_conn:
+        async def _close_old() -> None:
+            with contextlib.suppress(Exception):
+                await old_conn.close()
+
+        # Store the reference so the task is not garbage-collected before
+        # completing. The set is module-level (single event loop, async-safe).
+        _t = asyncio.create_task(_close_old())
+        _drain_tasks.add(_t)
+        _t.add_done_callback(_drain_tasks.discard)
 
 
 async def _health_check_loop(
@@ -264,7 +321,7 @@ async def _health_check_loop(
             attempt = 0
             while not shutdown.is_set():
                 try:
-                    await _reconnect(deps, backend, channels)
+                    await reconnect_notify_conn(deps, backend, channels)
                     conn = deps.notify_conn
                     if conn is None:
                         break
@@ -305,6 +362,15 @@ async def notify_listener_loop(
 
     _active_listeners.add(backend)
     _connected_lookup[backend] = False
+    _active_channels[backend] = channels
+
+    # Store a reconnect closure on deps so reload_credentials can trigger
+    # a callback-aware reconnect (re-registers LISTEN + callbacks on the
+    # new connection) without needing access to the channels itself.
+    async def _reconnect_for_reload() -> None:
+        await reconnect_notify_conn(deps, backend, channels, close_old=True)
+
+    deps.notify_reconnect_fn = _reconnect_for_reload
 
     try:
         for channel, on_notify_callback in channels:
@@ -318,8 +384,10 @@ async def notify_listener_loop(
             )
             await shutdown.wait()
     finally:
+        deps.notify_reconnect_fn = None
         _connected_lookup[backend] = False
         _connected_lookup.pop(backend, None)
+        _active_channels.pop(backend, None)
         for channel, on_notify_callback in channels:
             with contextlib.suppress(asyncpg.InterfaceError, RuntimeError, AttributeError):
                 await deps.notify_conn.remove_listener(channel, on_notify_callback)  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess]  # Why: stubs over-narrow callback type; notify_conn is non-None after open_worker_deps

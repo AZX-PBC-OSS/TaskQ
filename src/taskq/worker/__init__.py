@@ -15,9 +15,10 @@ time nothing is actually executed, so this costs nothing at runtime.
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from taskq.connections import WorkerConnections
     from taskq.worker.budget import ConnectionBudget, compute_connection_budget
     from taskq.worker.cancel import ActiveJobRegistry, CancelController, make_cancel_controller
-    from taskq.worker.deps import WorkerDeps, open_worker_deps
+    from taskq.worker.deps import WorkerDeps, open_worker_deps, reload_credentials
     from taskq.worker.heartbeat import heartbeat_loop, isolate_self
     from taskq.worker.shutdown import ShutdownPhase, drain_local_queue_to_pending
     from taskq.worker.startup import sync_actor_config
@@ -29,6 +30,7 @@ def __getattr__(name: str) -> object:
         "CancelController": lambda: _imp("taskq.worker.cancel", "CancelController"),
         "ConnectionBudget": lambda: _imp("taskq.worker.budget", "ConnectionBudget"),
         "ShutdownPhase": lambda: _imp("taskq.worker.shutdown", "ShutdownPhase"),
+        "WorkerConnections": lambda: _imp("taskq.connections", "WorkerConnections"),
         "WorkerDeps": lambda: _imp("taskq.worker.deps", "WorkerDeps"),
         "compute_connection_budget": lambda: _imp(
             "taskq.worker.budget", "compute_connection_budget"
@@ -40,6 +42,7 @@ def __getattr__(name: str) -> object:
         "isolate_self": lambda: _imp("taskq.worker.heartbeat", "isolate_self"),
         "make_cancel_controller": lambda: _imp("taskq.worker.cancel", "make_cancel_controller"),
         "open_worker_deps": lambda: _imp("taskq.worker.deps", "open_worker_deps"),
+        "reload_credentials": lambda: _imp("taskq.worker.deps", "reload_credentials"),
         "sync_actor_config": lambda: _imp("taskq.worker.startup", "sync_actor_config"),
     }
     if name in _lazy:
@@ -58,6 +61,7 @@ __all__ = [  # pyright: ignore[reportUnsupportedDunderAll]  # Why: __getattr__ l
     "CancelController",
     "ConnectionBudget",
     "ShutdownPhase",
+    "WorkerConnections",
     "WorkerDeps",
     "compute_connection_budget",
     "drain_local_queue_to_pending",
@@ -65,5 +69,6 @@ __all__ = [  # pyright: ignore[reportUnsupportedDunderAll]  # Why: __getattr__ l
     "isolate_self",
     "make_cancel_controller",
     "open_worker_deps",
+    "reload_credentials",
     "sync_actor_config",
 ]

@@ -68,7 +68,7 @@ def test_first_signal_schedules_orchestrator(monkeypatch: pytest.MonkeyPatch) ->
         holder,
     )  # type: ignore[arg-type] # Why: Mock not a real AbstractEventLoop but satisfies the interface at runtime.
 
-    assert len(handlers) == 2
+    assert len(handlers) == 3  # SIGTERM, SIGINT, SIGHUP
 
     handler = handlers[0][1]
     handler()

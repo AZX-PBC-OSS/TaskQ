@@ -33,8 +33,8 @@ from taskq.worker.notify import (
     _make_callback,
     _make_events_callback,
     _make_worker_events_callback,
-    _reconnect,
     notify_listener_loop,
+    reconnect_notify_conn,
 )
 
 # ── Helpers ────────────────────────────────────────────────────────────
@@ -70,10 +70,16 @@ def _make_mock_deps(
             "notify_health_check_interval": str(health_check_interval),
         }
     )
-    settings.pg_dsn_direct = settings.pg_dsn  # pyright: ignore[reportAttributeAccessIssue] # Why: ensure direct DSN is set for _reconnect tests; _post_load already did this but making it explicit
+    settings.pg_dsn_direct = settings.pg_dsn  # pyright: ignore[reportAttributeAccessIssue] # Why: ensure direct DSN is set for reconnect tests; _post_load already did this but making it explicit
     deps = Mock()
     deps.settings = settings
     deps.notify_conn = _mock_conn()
+    # Default reconnect factory — returns a fresh mock conn. Individual tests
+    # override this to assert on the factory being called.
+    async def _default_factory() -> object:
+        return _mock_conn()
+    deps.notify_conn_factory = _default_factory
+    deps.leader_conn_factory = None
     return deps
 
 
@@ -255,21 +261,17 @@ class TestReconnectPath:
         new_conn.execute = AsyncMock()
         new_conn.is_closed = Mock(return_value=False)
 
-        open_conn_calls: list[tuple[str, str]] = []
+        factory_calls: list[None] = []
 
-        async def fake_open_dedicated_conn(
-            dsn: str,
-            *,
-            label: str,
-            apply_keepalive: bool = True,
-        ) -> Mock:
-            open_conn_calls.append((dsn, label))
+        async def fake_factory() -> Mock:
+            factory_calls.append(None)
             return new_conn
+
+        deps.notify_conn_factory = fake_factory
 
         import taskq.worker.notify as notify_mod
 
         with pytest.MonkeyPatch().context() as monkeypatch:
-            monkeypatch.setattr(notify_mod, "open_dedicated_conn", fake_open_dedicated_conn)
             monkeypatch.setattr(notify_mod, "logger", Mock())
 
             async def _runner() -> None:
@@ -284,8 +286,7 @@ class TestReconnectPath:
 
             assert old_conn.remove_listener.called
             assert old_conn.close.called
-            assert len(open_conn_calls) >= 1
-            assert open_conn_calls[0][0] == str(deps.settings.pg_dsn_direct)
+            assert len(factory_calls) >= 1
             assert deps.notify_conn is new_conn
             # add_listener called once per channel on the new connection
             assert new_conn.add_listener.call_count >= 1
@@ -307,18 +308,14 @@ class TestReconnectPath:
         new_conn = _mock_conn()
         new_conn.execute = AsyncMock()
 
-        async def fake_open_dedicated_conn(
-            dsn: str,
-            *,
-            label: str,
-            apply_keepalive: bool = True,
-        ) -> Mock:
+        async def fake_factory() -> Mock:
             return new_conn
+
+        deps.notify_conn_factory = fake_factory
 
         import taskq.worker.notify as notify_mod
 
         with pytest.MonkeyPatch().context() as monkeypatch:
-            monkeypatch.setattr(notify_mod, "open_dedicated_conn", fake_open_dedicated_conn)
             monkeypatch.setattr(notify_mod, "logger", Mock())
 
             async with backend.subscribe_wake() as subscriber_event:
@@ -427,12 +424,7 @@ class TestReconnectBackoff:
 
         fail_count = 0
 
-        async def fake_open_dedicated_conn(
-            dsn: str,
-            *,
-            label: str,
-            apply_keepalive: bool = True,
-        ) -> Mock:
+        async def fake_factory() -> Mock:
             nonlocal fail_count
             fail_count += 1
             if fail_count <= 6:
@@ -440,6 +432,8 @@ class TestReconnectBackoff:
             new_conn = _mock_conn()
             new_conn.execute = AsyncMock()
             return new_conn
+
+        deps.notify_conn_factory = fake_factory
 
         sleep_delays: list[float] = []
         orig_sleep = asyncio.sleep
@@ -451,7 +445,6 @@ class TestReconnectBackoff:
         import taskq.worker.notify as notify_mod
 
         with pytest.MonkeyPatch().context() as monkeypatch:
-            monkeypatch.setattr(notify_mod, "open_dedicated_conn", fake_open_dedicated_conn)
             monkeypatch.setattr(notify_mod, "logger", Mock())
             monkeypatch.setattr(asyncio, "sleep", recording_sleep)
 
@@ -663,12 +656,12 @@ class TestShutdownTeardownRace:
         )
 
 
-# ── _reconnect integration ─────────────────────────────────────────────
+# ── reconnect_notify_conn integration ─────────────────────────────────────────────
 
 
 class TestReconnectInternal:
     async def test_reconnect_assigns_new_connection_to_deps(self) -> None:
-        """_reconnect opens a new connection, assigns it to deps.notify_conn,
+        """reconnect_notify_conn opens a new connection, assigns it to deps.notify_conn,
         and calls add_listener for each channel.
         """
         deps = _make_mock_deps()
@@ -678,21 +671,17 @@ class TestReconnectInternal:
         new_conn = _mock_conn()
         new_conn.execute = AsyncMock()
 
-        async def fake_open_dedicated_conn(
-            dsn: str,
-            *,
-            label: str,
-            apply_keepalive: bool = True,
-        ) -> Mock:
+        async def fake_factory() -> Mock:
             return new_conn
+
+        deps.notify_conn_factory = fake_factory
 
         import taskq.worker.notify as notify_mod
 
         with pytest.MonkeyPatch().context() as monkeypatch:
-            monkeypatch.setattr(notify_mod, "open_dedicated_conn", fake_open_dedicated_conn)
             monkeypatch.setattr(notify_mod, "logger", Mock())
 
-            await _reconnect(deps, backend, channels)
+            await reconnect_notify_conn(deps, backend, channels)
 
             assert deps.notify_conn is new_conn
             assert new_conn.add_listener.call_count == len(channels)
@@ -718,40 +707,39 @@ class TestHealthCheckLoopShutdown:
         await asyncio.wait_for(task, timeout=2.0)
 
 
-# ── _reconnect uses pg_dsn_direct ─────────────────────────────────────
+# ── reconnect uses the deps factory ─────────────────────────────────────
 
 
 class TestReconnectUsesDirectDsn:
     async def test_reconnect_uses_pg_dsn_direct_not_pooled(self) -> None:
-        """_reconnect must use pg_dsn_direct, never pg_dsn_pooled."""
+        """reconnect uses the factory on deps (which encodes the credential source)."""
         deps = _make_mock_deps()
         backend = _make_backend()
         channels = _make_channels(backend)
 
-        captured_dsn: list[str] = []
+        factory_called: list[None] = []
 
         new_conn = _mock_conn()
         new_conn.execute = AsyncMock()
 
-        async def fake_open_dedicated_conn(
-            dsn: str,
-            *,
-            label: str,
-            apply_keepalive: bool = True,
-        ) -> Mock:
-            captured_dsn.append(dsn)
+        async def fake_factory() -> Mock:
+            factory_called.append(None)
             return new_conn
+
+        deps.notify_conn_factory = fake_factory
 
         import taskq.worker.notify as notify_mod
 
         with pytest.MonkeyPatch().context() as monkeypatch:
-            monkeypatch.setattr(notify_mod, "open_dedicated_conn", fake_open_dedicated_conn)
             monkeypatch.setattr(notify_mod, "logger", Mock())
 
-            await _reconnect(deps, backend, channels)
+            await reconnect_notify_conn(deps, backend, channels)
 
-            assert len(captured_dsn) == 1
-            assert str(deps.settings.pg_dsn_direct) in captured_dsn[0]
+            # The factory on deps was called — reconnect goes through the
+            # credential source (DSN closure or user factory) stored at
+            # startup, never a raw pg_dsn_pooled.
+            assert len(factory_called) == 1
+            assert deps.notify_conn is new_conn
 
 
 # ── Cancel event routing ───────────────────────────────────────────────

@@ -457,6 +457,130 @@ async def test_leader_conn_replaced_after_watchdog(monkeypatch: Any) -> None:  #
     assert deps.leader_conn is not original_leader_conn
 
 
+async def test_watchdog_reopen_uses_leader_conn_factory_not_dsn(monkeypatch: Any) -> None:  # type: ignore[reportUnknownParameterType]
+    """When deps.leader_conn_factory is set, the watchdog reopens through it —
+    never through open_dedicated_conn's raw DSN path. Regression test for a bug
+    where the watchdog hardcoded pg_dsn_direct, bypassing WorkerConnections
+    entirely (broken for AAD/AWS/Vault deployments with no DSN configured)."""
+    original_leader_conn = FakeConn(fetchval_result=True)
+    leader, deps, _backend, _, _, shutdown = await _make_leader(
+        leader_conn=original_leader_conn,
+        monkeypatch=monkeypatch,
+    )
+
+    # Simulate watchdog failure: clear is_leader, null leader_conn
+    deps.leader_conn = None
+    deps.is_leader.clear()
+
+    factory_calls: list[None] = []
+    factory_conns: list[FakeConn] = []
+
+    async def fake_factory() -> FakeConn:
+        factory_calls.append(None)
+        conn = FakeConn(fetchval_result=True)
+        factory_conns.append(conn)
+        return conn
+
+    deps.leader_conn_factory = fake_factory  # type: ignore[assignment]
+
+    # open_dedicated_conn must NOT be called when a factory is set — fail loud
+    # if the watchdog falls back to the DSN path instead of the factory.
+    import taskq.worker.leader as leader_mod
+
+    async def fail_if_called(
+        dsn: str, *, label: str = "", apply_keepalive: bool = True
+    ) -> FakeConn:
+        raise AssertionError(
+            f"open_dedicated_conn called with dsn={dsn!r} label={label!r} — "
+            "leader_conn_factory should have been used instead"
+        )
+
+    monkeypatch.setattr(leader_mod, "open_dedicated_conn", fail_if_called)
+
+    task = asyncio.create_task(leader._election_loop(shutdown))
+    for _ in range(200):
+        if deps.is_leader.is_set():
+            break
+        await asyncio.sleep(0.01)
+    shutdown.set()
+    await task
+
+    # leader_conn_factory backs leader_conn AND the leader's other dedicated
+    # connections (leader_monitor_conn, cron_conn) — all must route through
+    # it, never through the raw-DSN open_dedicated_conn path.
+    assert len(factory_calls) >= 1
+    assert deps.leader_conn in factory_conns
+
+
+async def test_reload_credentials_rebuilds_leader_monitor_and_cron_conns(
+    monkeypatch: Any,  # type: ignore[reportUnknownParameterType]
+) -> None:
+    """SIGHUP reload (reload_credentials nulling leader_conn) causes the
+    election loop's re-election cascade to rebuild leader_monitor_conn and
+    cron_conn through leader_conn_factory too — not just leader_conn itself.
+
+    reload_credentials() only directly touches deps.leader_conn (closing it
+    and setting it to None so the watchdog/election loop reopens it — see
+    deps.py's reload_credentials docstring). This test verifies the
+    downstream effect: _election_loop's re-election path, triggered by
+    leader_conn becoming None while is_leader is still set, also rebuilds
+    the leader's other dedicated connections (_leader_monitor_conn,
+    _cron_conn) via the SAME leader_conn_factory — so a hot-reloaded leader
+    doesn't keep querying with monitor/cron connections opened under a
+    stale credential until they separately fail.
+    """
+    original_leader_conn = FakeConn(fetchval_result=True)
+    leader, deps, _backend, _, _, shutdown = await _make_leader(
+        leader_conn=original_leader_conn,
+        monkeypatch=monkeypatch,
+    )
+
+    factory_calls: list[str] = []
+
+    async def fake_factory() -> FakeConn:
+        factory_calls.append("factory")
+        return FakeConn(fetchval_result=True)
+
+    deps.leader_conn_factory = fake_factory  # type: ignore[assignment]
+
+    # Drive the election loop through a REAL election first (is_leader=True
+    # at construction is an artificial state _election_loop's re-election
+    # path never produces — genuine leadership always flows through
+    # `if got_lock:`, which is what populates _leader_monitor_conn /
+    # _cron_conn in the first place).
+    task = asyncio.create_task(leader._election_loop(shutdown))
+    for _ in range(200):
+        if leader._leader_monitor_conn is not None and leader._cron_conn is not None:
+            break
+        await asyncio.sleep(0.01)
+    assert deps.is_leader.is_set()
+    assert leader._leader_monitor_conn is not None
+    assert leader._cron_conn is not None
+    old_monitor_conn = leader._leader_monitor_conn
+    old_cron_conn = leader._cron_conn
+    factory_calls.clear()  # only count calls from the reload onward
+
+    # Simulate what reload_credentials does to leader_conn on SIGHUP: close
+    # it and null it while is_leader remains set (deps.py:599-606).
+    deps.leader_conn = None
+
+    for _ in range(200):
+        if (
+            leader._leader_monitor_conn is not old_monitor_conn
+            and leader._cron_conn is not old_cron_conn
+        ):
+            break
+        await asyncio.sleep(0.01)
+    shutdown.set()
+    await task
+
+    assert leader._leader_monitor_conn is not old_monitor_conn
+    assert leader._cron_conn is not old_cron_conn
+    # Both the leader_conn reopen and the monitor/cron reopens went through
+    # leader_conn_factory (3 calls: leader_conn, leader_monitor_conn, cron_conn).
+    assert len(factory_calls) == 3
+
+
 # ── Sweep loops gate on is_leader ──────────────────────────────────
 
 

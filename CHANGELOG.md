@@ -9,6 +9,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Connection hook points for managed-identity / BYO connections** —
+  `WorkerConnections` dataclass with per-role pre-constructed resources
+  (caller-owned) or zero-arg async factories (TaskQ-owned) for the worker's
+  three PG pools, notify/leader dedicated connections, and Redis client.
+  `worker_main(..., connections=...)` and `open_worker_deps(...,
+  connections=...)` accept it; fields left `None` fall back to DSN
+  construction. `PoolFactory`, `ConnFactory`, `RedisFactory` type aliases
+  exported from `taskq` top-level.
+- **Vendor-neutral credential provider abstraction** (`taskq.auth`) —
+  `PgCredentialProvider` and `RedisCredentialProvider` async Protocols
+  with reusable `make_pg_pool_factory`, `make_dedicated_conn_factory`,
+  `make_redis_client_factory` builders. Any provider implementing the
+  Protocols gets all factory builders for free.
+- **`taskq[aad]` extra** — `taskq.aad` module with Microsoft Entra ID
+  providers (`EntraIdProvider`, `EntraIdPgProvider`, `EntraIdRedisProvider`)
+  backed by `azure.identity.aio`. See `docs/guides/managed-identities.md`.
+- **`taskq[aws]` extra** — `taskq.aws` module with `RdsIamProvider` for
+  AWS IAM RDS Postgres authentication, backed by `boto3`.
+- **`taskq[vault]` extra** — `taskq.vault` module with
+  `VaultDynamicDbProvider` for HashiCorp Vault database secrets engine
+  dynamic credentials, backed by `hvac`.
+- **`TaskQ` stream hooks** — `pg_conn_factory` and `listen_conn`
+  parameters for the LISTEN/NOTIFY transport in `TaskQ.stream()`, so
+  pool-only / AAD deployments can stream without a DSN. `stream()` now
+  uses `contextlib.aclosing` to ensure the inner generator's `finally`
+  (conn close) runs promptly on early return.
+- **`migrate.apply_pending_locked` hooks** — `conn` (caller-owned) and
+  `conn_factory` (TaskQ-owned) parameters replace the DSN-only path.
+- **SIGHUP credential hot-reload** — sending SIGHUP to a worker process
+  triggers `reload_credentials`, which hot-swaps every factory-backed PG
+  pool, dedicated connection, and Redis client with freshly-built
+  replacements (each factory fetches a fresh credential). Old resources
+  are drained in the background with a bounded timeout. The
+  dispatcher/consumer/heartbeat loops are never blocked during a reload.
+  Each resource reloads independently — one factory failure is logged and
+  does not abort the rest; the `credentials-reloaded` log line's `failed`
+  field reports any resource that didn't rotate. Caller-owned resources
+  are not swapped. `reload_credentials` can also be called
+  programmatically.
 - `ErrorReporter` Protocol for vendor-neutral terminal failure routing (Sentry, Datadog, DLQ) with `NullErrorReporter` default and `taskq.error_reporter.failures` OTel counter
 - `retry_classifier` hook on `@actor` for exception-instance-level retry classification (inspect attributes like HTTP status codes, return `RetryOverride` to refine kind/delay per occurrence)
 - `RetryOverride` and `RetryClassifierHook` types exported from `taskq` top-level

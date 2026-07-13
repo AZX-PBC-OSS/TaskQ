@@ -238,17 +238,21 @@ async def test_tc2_pg_container_stop_start(
                             raise
                         await asyncio.sleep(2)
                 # Docker Desktop on macOS may assign a new port after restart;
-                # re-derive the DSN so _reconnect uses the current port.
+                # re-derive the DSN and update the reconnect factory so
+                # reconnect_notify_conn uses the current port. The factory is
+                # a closure that captured the old DSN at startup — it must be
+                # replaced with a new closure pointing at the new port.
                 pg_dsn = pg_container_function_scoped.get_connection_url().replace(
                     "postgresql+psycopg2://", "postgresql://"
                 )
-                deps.settings = WorkerSettings.load_from_dict(
-                    {
-                        "TASKQ_PG_DSN": pg_dsn,
-                        "TASKQ_SCHEMA_NAME": "taskq_test",
-                        "TASKQ_NOTIFY_HEALTH_CHECK_INTERVAL": "1",
-                    }
-                )
+                from taskq.worker.deps import open_dedicated_conn
+
+                async def _new_notify_factory() -> object:
+                    return await open_dedicated_conn(
+                        pg_dsn, label="notify", apply_keepalive=True
+                    )
+
+                deps.notify_conn_factory = _new_notify_factory
                 await asyncio.sleep(0.5)
 
                 deadline = asyncio.get_running_loop().time() + 30.0
@@ -332,20 +336,16 @@ async def test_tc3_shutdown_mid_reconnect() -> None:
     open_conn_gate = asyncio.Event()
     open_conn_called = asyncio.Event()
 
-    async def blocking_open_dedicated_conn(
-        dsn: str,
-        *,
-        label: str,
-        apply_keepalive: bool = True,
-    ) -> Mock:
+    async def blocking_factory() -> Mock:
         open_conn_called.set()
         await open_conn_gate.wait()
         raise asyncpg.InterfaceError("cancelled by shutdown mid-open — teardown must survive")
 
+    deps.notify_conn_factory = blocking_factory
+
     import taskq.worker.notify as notify_mod
 
     with pytest.MonkeyPatch().context() as monkeypatch:
-        monkeypatch.setattr(notify_mod, "open_dedicated_conn", blocking_open_dedicated_conn)
         monkeypatch.setattr(notify_mod, "logger", Mock())
 
         shutdown = asyncio.Event()

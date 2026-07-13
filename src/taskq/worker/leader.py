@@ -118,6 +118,40 @@ class MaintenanceLeader:
             setattr(self, attr, None)
         self._deps.is_leader.clear()
 
+    async def _open_leader_conn(self) -> asyncpg.Connection:
+        """Open or reopen the leader advisory-lock connection.
+
+        Uses ``deps.leader_conn_factory`` when set (credential-provider-
+        backed deployments — AAD/AWS/Vault), so reconnection after a drop
+        re-fetches a fresh credential rather than falling back to a
+        stale/absent DSN. Falls back to ``open_dedicated_conn`` with the
+        DSN only when no factory is available.
+        """
+        factory = self._deps.leader_conn_factory
+        if factory is not None:
+            return await factory()
+        return await open_dedicated_conn(
+            str(self._deps.settings.pg_dsn_direct),
+            label="leader_conn",
+            apply_keepalive=True,
+        )
+
+    async def _open_dedicated_conn(self, label: str) -> asyncpg.Connection:
+        """Open a leader-owned dedicated connection (monitor / cron).
+
+        Uses ``deps.leader_conn_factory`` when set so the same credential
+        source is used for all leader connections. Falls back to
+        ``open_dedicated_conn`` with the DSN otherwise.
+        """
+        factory = self._deps.leader_conn_factory
+        if factory is not None:
+            return await factory()
+        return await open_dedicated_conn(
+            str(self._deps.settings.pg_dsn_direct),
+            label=label,
+            apply_keepalive=True,
+        )
+
     async def run(self, shutdown: asyncio.Event) -> None:
         _active_leaders.add(self)
         try:
@@ -174,11 +208,7 @@ class MaintenanceLeader:
                         )
             if self._deps.leader_conn is None or self._deps.leader_conn.is_closed():
                 try:
-                    self._deps.leader_conn = await open_dedicated_conn(
-                        str(self._deps.settings.pg_dsn_direct),
-                        label="leader_conn",
-                        apply_keepalive=True,
-                    )  # Why: only post-construction mutation of WorkerDeps allowed in M1; leader_conn may be None after watchdog or error handler closes it — a fresh connection is required before the lock attempt.
+                    self._deps.leader_conn = await self._open_leader_conn()
                 except (asyncpg.PostgresConnectionError, asyncpg.InterfaceError, OSError) as exc:
                     self._deps.leader_conn = None
                     log.warning(
@@ -232,16 +262,10 @@ class MaintenanceLeader:
                     shutdown.set()
                     return
                 try:
-                    self._leader_monitor_conn = await open_dedicated_conn(
-                        str(self._deps.settings.pg_dsn_direct),
-                        label="leader_monitor_conn",
-                        apply_keepalive=True,
+                    self._leader_monitor_conn = await self._open_dedicated_conn(
+                        "leader_monitor_conn"
                     )
-                    self._cron_conn = await open_dedicated_conn(
-                        str(self._deps.settings.pg_dsn_direct),
-                        label="cron_conn",
-                        apply_keepalive=True,
-                    )
+                    self._cron_conn = await self._open_dedicated_conn("cron_conn")
                 except (asyncpg.PostgresConnectionError, asyncpg.InterfaceError, OSError) as exc:
                     if not self._deps.leader_conn.is_closed():
                         await self._deps.leader_conn.close()

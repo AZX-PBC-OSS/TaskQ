@@ -682,10 +682,12 @@ def test_worker_main_runs_under_asyncio_runner_and_returns_exit_code(
         actor_registry: object = None,
         _registry: object = None,
         _cron_registry: object = None,
+        connections: object = None,
     ) -> int:
         captured_kwargs["actor_registry"] = actor_registry
         captured_kwargs["_registry"] = _registry
         captured_kwargs["_cron_registry"] = _cron_registry
+        captured_kwargs["connections"] = connections
         return 7
 
     with patch("taskq.worker._bootstrap._main", side_effect=_fake_main):
@@ -706,6 +708,7 @@ def test_worker_main_uses_get_registered_crons_when_cron_registry_omitted(
         actor_registry: object = None,
         _registry: object = None,
         _cron_registry: object = None,
+        connections: object = None,
     ) -> int:
         return 0
 

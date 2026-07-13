@@ -580,10 +580,15 @@ async def test_singleton_connection_failure_mid_preflight(
             mock_conn.fetchrow.side_effect = asyncpg.PostgresConnectionError("connection killed")
             yield mock_conn
 
-    monkeypatch.setattr(backend, "_worker_pool", _MockPool())
+    _mock_pool = _MockPool()
+    original_pool = deps.worker_pool
+    deps.worker_pool = _mock_pool  # type: ignore[assignment]  # Why: PostgresBackend._worker_pool reads deps.worker_pool live; inject the mock pool temporarily.
 
-    with pytest.raises(asyncpg.PostgresConnectionError):
-        await backend.enqueue(_pg_singleton_args(actor=actor))
+    try:
+        with pytest.raises(asyncpg.PostgresConnectionError):
+            await backend.enqueue(_pg_singleton_args(actor=actor))
+    finally:
+        deps.worker_pool = original_pool  # Restore real pool for post-check
 
     async with deps.worker_pool.acquire() as conn:
         count = await conn.fetchval(
