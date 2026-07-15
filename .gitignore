@@ -60,3 +60,5 @@ postgres-data/
 # Agent workspace
 .claude/
 .serena/
+
+.shipwright/
