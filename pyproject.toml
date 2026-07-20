@@ -19,8 +19,8 @@ classifiers = [
 ]
 dependencies = [
     "asyncpg>=0.31.0,<1",
-    "croniter>=6.2.3",
-    "dotenvmodel>=0.3.0,<1",
+    "croniter>=6.2.4",
+    "dotenvmodel>=0.3.2,<1",
     "opentelemetry-api>=1.43.0",
     "orjson>=3.11.9",
     "pydantic>=2.13.4,<3",
@@ -79,7 +79,7 @@ oidc = [
     "httpx>=0.28.1,<1",
     # HTTP client for direct OIDC calls (discovery, JWKS fetch). httpx2 is the
     # Pydantic-maintained successor to httpx with the same API surface.
-    "httpx2>=2.5.0",
+    "httpx2>=2.6.0",
     # Signed session cookies (shared with the SAML backend via _session.py).
     "itsdangerous>=2.2.0,<3",
 ]
@@ -100,7 +100,7 @@ aad = [
 aws = [
     # AWS IAM database authentication for Amazon RDS Postgres. Used by the
     # credential providers in taskq.aws; see docs/guides/managed-identities.md.
-    "boto3>=1.43.46,<2",
+    "boto3>=1.43.47",
 ]
 vault = [
     # HashiCorp Vault database secrets engine dynamic credentials. Used by
@@ -112,6 +112,8 @@ vault = [
 # Supply-chain hardening: never resolve to distributions published within the
 # last 24 hours, giving time for malicious releases to be detected and yanked.
 exclude-newer = "24 hours"
+# dotenvmodel is a single-publisher internal package; no cooldown needed.
+exclude-newer-package = { dotenvmodel = "0d", markupsafe = false }
 
 [build-system]
 requires = ["hatchling"]
@@ -441,32 +443,32 @@ exclude_lines = [
 
 [dependency-groups]
 dev = [
-    "anyio>=4.13.0",
-    "asyncpg-stubs>=0.31.2",
+    "anyio>=4.14.2",
+    "asyncpg-stubs>=0.31.3",
     "authlib>=1.7.2",
     "azure-identity>=1.25.3",
-    "boto3>=1.43.46",
+    "boto3>=1.43.47",
     "httpx>=0.28.1",
-    "httpx2>=2.0.0",
+    "httpx2>=2.6.0",
     "hvac>=2.4.0",
-    "hypothesis>=6.152.4",
+    "hypothesis>=6.156.6",
     "itsdangerous>=2.2.0",
     "jsonschema>=4.26.0",
     "mkdocs>=1.6.1",
     "mkdocs-material>=9.7.6",
-    "mkdocstrings[python]>=1.0.4",
+    "mkdocstrings[python]>=1.0.6",
     "opentelemetry-sdk>=1.43.0",
     "pip-audit>=2.10.1",
-    "pyright>=1.1.409",
-    "pytest>=9.0.3",
-    "pytest-asyncio>=1.3.0",
+    "pyright>=1.1.411",
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
     "pytest-cov>=7.1.0",
     "pytest-timeout>=2.4.0",
     "pytest-xdist>=3.8.0",
-    "python-multipart>=0.0.28",
+    "python-multipart>=0.0.32",
     "python3-saml>=1.16.0",
     "pyyaml>=6.0.3",
     "respx>=0.23.1",
-    "ruff>=0.15.12",
+    "ruff>=0.15.21",
     "testcontainers[postgres,redis]>=4.14.2",
 ]
