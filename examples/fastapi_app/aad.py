@@ -101,21 +101,18 @@ def main() -> None:
     if mode == "worker":
         from azure.identity.aio import DefaultAzureCredential
 
-        # DefaultAzureCredential is an async context manager
-        # (azure.identity.aio); worker_main() drives its own asyncio.Runner,
-        # so the credential is entered/exited manually around it rather than
-        # with `async with`.
+        # worker_main() drives its own asyncio.Runner with a private event
+        # loop, so the credential cannot be closed cleanly from here — its
+        # aiohttp session is created on that loop, and __aexit__ from a
+        # different loop would be a cross-loop close. Construct it plainly
+        # and rely on process exit for cleanup.
         cred = DefaultAzureCredential()
-        asyncio.run(cred.__aenter__())
-        try:
-            provider = EntraIdProvider(cred)
-            worker_main(
-                settings,
-                actor_registry=ACTORS,
-                connections=build_connections(settings, provider),
-            )
-        finally:
-            asyncio.run(cred.__aexit__(None, None, None))
+        provider = EntraIdProvider(cred)
+        worker_main(
+            settings,
+            actor_registry=ACTORS,
+            connections=build_connections(settings, provider),
+        )
     elif mode == "serve":
         try:
             import importlib
@@ -133,7 +130,6 @@ async def _serve(settings: WorkerSettings) -> None:
     from azure.identity.aio import DefaultAzureCredential
 
     from taskq import TaskQ
-    from taskq.auth import make_pg_pool_factory
 
     async with DefaultAzureCredential() as cred:
         # One provider instance for both PG and Redis (EntraIdProvider implements
@@ -155,6 +151,9 @@ async def _serve(settings: WorkerSettings) -> None:
                 pool=pool,  # caller-owned
                 redis_client=redis_client,  # caller-owned, None if no Redis
                 schema=settings.schema_name,
+                # tq.stream() needs a LISTEN transport: Redis (above), or
+                # pg_conn_factory=/listen_conn= here. Pool-only mode with no
+                # Redis raises a documented RuntimeError from stream().
             )
             await tq.open()
             try:

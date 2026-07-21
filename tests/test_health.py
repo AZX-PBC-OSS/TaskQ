@@ -66,6 +66,7 @@ def _make_deps(**overrides: object) -> WorkerDeps:  # pyright: ignore[reportRetu
         "is_leader": SimpleNamespace(is_set=lambda: False),
         "active_jobs": SimpleNamespace(count=lambda: 2),
         "heartbeat_failures": 0,
+        "redis_client": None,
     }
     defaults.update(overrides)
     return SimpleNamespace(**defaults)  # type: ignore[return-value] # Why: same underlying constraint as above; pyright flags the return statement separately.
@@ -169,6 +170,41 @@ async def test_compute_health_no_redis_ready() -> None:
     report = await compute_health(deps)
 
     assert report.redis_configured is False
+    assert report.ready is True
+
+
+# ── redis_configured via injected client (managed-identity) ──────
+
+
+async def test_compute_health_redis_configured_via_client() -> None:
+    """redis_configured is True when a redis_client exists without redis_url.
+
+    Managed-identity deployments inject a client via redis_client_factory
+    (or pass a caller-owned client) and never set TASKQ_REDIS_URL — the
+    health report must reflect the working client, not the absent URL.
+    """
+    deps = _make_deps(redis_client=object())
+
+    report = await compute_health(deps)
+
+    assert report.redis_configured is True
+    assert report.ready is True
+
+
+async def test_compute_health_redis_configured_via_url() -> None:
+    """redis_configured is True when redis_url is set (no client yet)."""
+    deps = _make_deps(
+        settings=SimpleNamespace(
+            health_pg_ping_timeout=0.2,
+            max_heartbeat_failures=3,
+            redis_url="redis://localhost/0",
+            health_socket_path="",
+        ),
+    )
+
+    report = await compute_health(deps)
+
+    assert report.redis_configured is True
     assert report.ready is True
 
 

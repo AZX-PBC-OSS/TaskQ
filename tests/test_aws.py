@@ -37,13 +37,16 @@ def test_fetch_rds_iam_token_calls_generate_db_auth_token() -> None:
     )
 
 
-def test_fetch_rds_iam_token_defaults_region_to_empty() -> None:
-    """When region is None, an empty string is passed (boto3 resolves from env)."""
+def test_fetch_rds_iam_token_passes_region_none_through() -> None:
+    """When region is None, None must be passed through — botocore only
+    falls back to the client's ambient region when Region is None. An
+    empty string would produce a signature scoped to `date//rds-db/...`
+    which RDS rejects."""
     fake_client = MagicMock()
     fake_client.generate_db_auth_token.return_value = "tok"
     fetch_rds_iam_token(hostname="host", port=5432, username="user", client=fake_client)
     fake_client.generate_db_auth_token.assert_called_once_with(
-        DBHostname="host", Port=5432, DBUsername="user", Region=""
+        DBHostname="host", Port=5432, DBUsername="user", Region=None
     )
 
 
@@ -98,6 +101,53 @@ def test_rds_iam_provider_rejects_dsn_without_username() -> None:
     """A DSN with no username raises ValueError."""
     with pytest.raises(ValueError, match="no username"):
         RdsIamProvider("postgresql://host:5432/db", client=MagicMock())
+
+
+def test_rds_iam_provider_error_does_not_leak_dsn_credentials() -> None:
+    """The no-username error must not embed the raw DSN — a userinfo
+    password would otherwise land in tracebacks and log aggregation."""
+    with pytest.raises(ValueError, match="no username") as exc_info:
+        RdsIamProvider("postgresql://:secret-static-pw@host:5432/db", client=MagicMock())
+    assert "secret-static-pw" not in str(exc_info.value)
+    assert "postgresql://" not in str(exc_info.value)
+
+
+def test_rds_iam_provider_username_param_rescues_userless_dsn() -> None:
+    """The username= escape hatch must actually work when the DSN has no user."""
+    provider = RdsIamProvider("postgresql://host:5432/db", client=MagicMock(), username="iamuser")
+    assert provider._username == "iamuser"
+
+
+async def test_rds_iam_provider_percent_decodes_dsn_username() -> None:
+    """A percent-encoded DSN user (user%40domain) must be decoded before
+    signing — the IAM token is scoped to the literal DB username."""
+    fake_client = MagicMock()
+    fake_client.generate_db_auth_token.return_value = "tok"
+    provider = RdsIamProvider("postgresql://user%40domain@host:5432/db", client=fake_client)
+    await provider.get_pg_credential()
+    call_kwargs = fake_client.generate_db_auth_token.call_args.kwargs
+    assert call_kwargs["DBUsername"] == "user@domain"
+
+
+async def test_rds_iam_provider_fetches_token_off_the_event_loop() -> None:
+    """generate_db_auth_token may refresh STS/IMDS credentials over the
+    network (blocking) — the provider must offload it to a thread."""
+    import threading
+
+    loop_thread = threading.get_ident()
+    seen_threads: list[int] = []
+
+    fake_client = MagicMock()
+
+    def _record_thread(**_kwargs: object) -> str:
+        seen_threads.append(threading.get_ident())
+        return "tok"
+
+    fake_client.generate_db_auth_token.side_effect = _record_thread
+    provider = RdsIamProvider("postgresql://user@host:5432/db", client=fake_client)
+    await provider.get_pg_credential()
+
+    assert seen_threads and all(t != loop_thread for t in seen_threads)
 
 
 def test_rds_token_lifetime_is_15_minutes() -> None:

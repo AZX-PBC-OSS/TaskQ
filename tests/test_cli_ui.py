@@ -632,11 +632,12 @@ def test_ui_serve_health_token_protects_endpoints(monkeypatch: pytest.MonkeyPatc
 
 
 def _prometheus_available() -> bool:
+    import importlib.util
+
     try:
-        import opentelemetry.exporter.prometheus  # noqa: F401
-    except ImportError:
+        return importlib.util.find_spec("opentelemetry.exporter.prometheus") is not None
+    except ModuleNotFoundError:
         return False
-    return True
 
 
 def test_ui_serve_metrics_endpoint_available(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -9,7 +9,7 @@ users with other providers implement :class:`PgCredentialProvider` /
 :class:`RedisCredentialProvider` directly and get all the factory
 builders for free.
 
-See :doc:`/guides/managed-identities` for the deployment guide.
+See the managed-identities deployment guide (docs/guides/managed-identities.md).
 
 Design
 ------
@@ -24,9 +24,14 @@ Design
 * :func:`make_pg_pool_factory` / :func:`make_dedicated_conn_factory` /
   :func:`make_redis_client_factory` — accept any provider implementing
   the Protocol and return the zero-arg async factories that
-  :class:`~taskq.connections.WorkerConnections` consumes.
-* :func:`enrich_pg_dsn` — shared DSN helper (inject password, force
-  ``sslmode=require``, optionally override user).
+  :class:`~taskq.connections.WorkerConnections` consumes. Credentials
+  are passed to asyncpg as ``user=`` / ``password=`` keyword arguments
+  (which take precedence over both DSN userinfo and query parameters),
+  so the token never appears in the DSN string.
+* :func:`enrich_pg_dsn` — shared DSN helper for callers that need a
+  self-contained DSN string: the credential is written into the DSN
+  userinfo (the only slot asyncpg's resolver never shadows) and
+  ``sslmode=require`` is added only when no sslmode is already set.
 
 The factories fetch a fresh credential each time they are invoked (at
 pool / connection construction time). For long-lived workers, recreate
@@ -39,12 +44,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
-from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
+from urllib.parse import parse_qs, quote, urlencode, urlparse, urlunparse
 
 from taskq.connections import ConnFactory, PoolFactory, RedisFactory
+from taskq.obs import get_logger
 
 if TYPE_CHECKING:
     import asyncpg
+
+logger = get_logger(__name__)
 
 __all__ = [
     "PgCredential",
@@ -119,27 +127,68 @@ class RedisCredentialProvider(Protocol):
 # ── DSN enrichment ─────────────────────────────────────────────────────
 
 
-def enrich_pg_dsn(dsn: str, credential: PgCredential) -> str:
-    """Apply *credential* to *dsn*: inject the password and force ``sslmode=require``.
+def _ensure_sslmode_require(dsn: str) -> str:
+    """Add ``sslmode=require`` to *dsn* unless an sslmode is already set.
 
-    When ``credential.username`` is set, it overrides the DSN's userinfo
-    user (needed by Vault dynamic DB creds). The password is placed in
-    the query string (``password=``) to avoid userinfo-encoding edge
-    cases and to preserve existing query parameters; the query value
-    takes precedence at asyncpg's resolver over any password in the
-    userinfo.
-
-    ``sslmode=require`` is forced because every cloud provider that
-    issues rotating tokens (Azure, AWS, GCP) mandates TLS for token auth.
+    An explicit sslmode is never overridden — in particular stronger
+    modes (``verify-ca`` / ``verify-full``) must not be downgraded:
+    ``require`` skips certificate verification, which would expose the
+    very token this module injects to a MITM.
     """
     parsed = urlparse(str(dsn))
-    query = parse_qs(parsed.query)
-    query["password"] = [credential.password]
+    query = parse_qs(parsed.query, keep_blank_values=True)
+    if "sslmode" in query:
+        return str(dsn)
     query["sslmode"] = ["require"]
+    return urlunparse(parsed._replace(query=urlencode(query, doseq=True)))
+
+
+def enrich_pg_dsn(dsn: str, credential: PgCredential) -> str:
+    """Apply *credential* to *dsn* and return a self-contained DSN string.
+
+    The credential is written into the DSN **userinfo** (percent-encoded),
+    replacing any existing userinfo password — and replacing the userinfo
+    user when ``credential.username`` is set (Vault dynamic DB creds).
+    This is the only slot that is guaranteed to take effect: asyncpg's
+    resolver applies userinfo *before* query parameters (both behind
+    ``if user is None`` / ``if password is None`` guards), so a
+    query-string ``user=`` / ``password=`` is silently ignored whenever
+    the DSN already carries userinfo. A stale ``password=`` query
+    parameter is dropped (always shadowed by the userinfo password);
+    a ``user=`` query parameter is dropped only when the userinfo
+    carries a user to shadow it — a query-carried user with no userinfo
+    user is the effective principal and is preserved.
+
+    ``sslmode=require`` is added only when the DSN has no explicit
+    sslmode, so stronger modes (``verify-full``) are never downgraded.
+
+    Prefer the factory builders (:func:`make_pg_pool_factory` /
+    :func:`make_dedicated_conn_factory`) where possible — they pass the
+    credential as keyword arguments instead, keeping the token out of
+    the DSN string entirely.
+    """
+    parsed = urlparse(str(dsn))
+    query = parse_qs(parsed.query, keep_blank_values=True)
+    query.pop("password", None)
+
+    if "@" in parsed.netloc:
+        auth, _, hostspec = parsed.netloc.partition("@")
+    else:
+        auth, hostspec = "", parsed.netloc
+    user, _, _old_password = auth.partition(":")
     if credential.username is not None:
-        query["user"] = [credential.username]
-    new_query = urlencode({k: v[0] for k, v in query.items()})
-    return urlunparse(parsed._replace(query=new_query))
+        user = quote(credential.username, safe="")
+    if user:
+        # The userinfo will carry a user, which shadows any query user= in
+        # asyncpg's resolver — drop the stale query copy. When the userinfo
+        # has NO user (credential.username unset, none in the DSN), a query
+        # user= is the effective principal and must be preserved.
+        query.pop("user", None)
+    netloc = f"{user}:{quote(credential.password, safe='')}@{hostspec}"
+
+    query.setdefault("sslmode", ["require"])
+    new_query = urlencode(query, doseq=True)
+    return urlunparse(parsed._replace(netloc=netloc, query=new_query))
 
 
 # ── Factory builders ───────────────────────────────────────────────────
@@ -161,9 +210,14 @@ def make_pg_pool_factory(
 ) -> PoolFactory:
     """Build a :data:`~taskq.connections.PoolFactory` backed by *provider*.
 
-    Each invocation fetches a fresh :class:`PgCredential` from *provider*,
-    enriches *dsn* with it, and calls ``asyncpg.create_pool``. The pool is
-    owned by the worker (entered on its ``AsyncExitStack``).
+    Each invocation fetches a fresh :class:`PgCredential` from *provider*
+    and calls ``asyncpg.create_pool`` with the credential as keyword
+    arguments — ``password=`` always, ``user=`` when the credential
+    carries a username. Keyword arguments take precedence over both DSN
+    userinfo and query parameters in asyncpg's resolver, so a stale
+    credential baked into *dsn* can never shadow the fresh one, and the
+    token never appears in the DSN string. The pool is owned by the
+    worker (entered on its ``AsyncExitStack``).
 
     Token refresh: the credential is fetched when the factory is invoked,
     not on each ``acquire()``. For long-lived workers, send ``SIGHUP`` to
@@ -176,13 +230,15 @@ def make_pg_pool_factory(
 
     async def factory() -> asyncpg.Pool:
         credential = await provider.get_pg_credential()
-        enriched = enrich_pg_dsn(dsn, credential)
         kwargs: dict[str, Any] = {
-            "dsn": enriched,
+            "dsn": _ensure_sslmode_require(dsn),
+            "password": credential.password,
             "min_size": min_size,
             "max_size": max_size,
             "max_inactive_connection_lifetime": max_inactive_connection_lifetime,
         }
+        if credential.username is not None:
+            kwargs["user"] = credential.username
         if command_timeout is not None:
             kwargs["command_timeout"] = command_timeout
         pool = await asyncpg.create_pool(**kwargs)
@@ -199,14 +255,22 @@ def make_dedicated_conn_factory(
     """Build a :data:`~taskq.connections.ConnFactory` backed by *provider*.
 
     Used for the worker's ``notify_conn`` / ``leader_conn`` or
-    :class:`taskq.TaskQ`'s ``pg_conn_factory``.
+    :class:`taskq.TaskQ`'s ``pg_conn_factory``. Like
+    :func:`make_pg_pool_factory`, the credential is passed as keyword
+    arguments (precedence over userinfo and query params; the token
+    never appears in the DSN string).
     """
     import asyncpg
 
     async def factory() -> asyncpg.Connection:
         credential = await provider.get_pg_credential()
-        enriched = enrich_pg_dsn(dsn, credential)
-        return await asyncpg.connect(enriched)
+        kwargs: dict[str, Any] = {
+            "dsn": _ensure_sslmode_require(dsn),
+            "password": credential.password,
+        }
+        if credential.username is not None:
+            kwargs["user"] = credential.username
+        return await asyncpg.connect(**kwargs)
 
     return factory
 
@@ -220,7 +284,9 @@ def make_redis_client_factory(
 
     ``url`` is the Redis URL **without** credentials. The factory attaches
     a redis-py ``CredentialProvider`` that delegates to *provider*, so
-    reconnects re-fetch the credential automatically.
+    reconnects re-fetch the credential automatically. Use a ``rediss://``
+    (TLS) URL — with a plain ``redis://`` URL the bearer token is sent
+    unencrypted, and the factory logs a warning.
 
     If ``url`` is ``None`` the factory raises :class:`RuntimeError` when
     called (matches the worker's "Redis not configured" contract).
@@ -257,6 +323,15 @@ def make_redis_client_factory(
             raise RuntimeError(
                 "Redis URL is not configured but a Redis credential-provider "
                 "factory was provided. Set TASKQ_REDIS_URL or pass url= explicitly."
+            )
+        if urlparse(url).scheme == "redis":
+            logger.warning(
+                "redis-credential-over-plaintext",
+                scheme="redis",
+                note=(
+                    "redis:// sends the credential provider's bearer token "
+                    "unencrypted; use rediss:// (TLS) instead."
+                ),
             )
         client_kwargs.setdefault("decode_responses", False)
         return redis_async.Redis.from_url(

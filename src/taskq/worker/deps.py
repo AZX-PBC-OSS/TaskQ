@@ -33,7 +33,13 @@ from taskq.worker.shutdown import ShutdownPhase
 if TYPE_CHECKING:
     import redis.asyncio as redis_async
 
-__all__ = ["WorkerDeps", "open_dedicated_conn", "open_worker_deps", "reload_credentials"]
+__all__ = [
+    "WorkerDeps",
+    "apply_keepalive_to_conn",
+    "open_dedicated_conn",
+    "open_worker_deps",
+    "reload_credentials",
+]
 
 logger: structlog.stdlib.BoundLogger = get_logger(__name__)
 
@@ -71,6 +77,34 @@ def _apply_keepalive(sock: socket.socket) -> None:
         sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, _TCP_KEEPCNT)
 
 
+def apply_keepalive_to_conn(conn: asyncpg.Connection, *, label: str) -> bool:
+    """Set TCP keepalive on an established connection's socket.
+
+    Split out from :func:`open_dedicated_conn` so factory-built dedicated
+    connections (credential-provider ``ConnFactory`` results) get the same
+    keepalive policy as DSN-built ones — the worker owns this policy, not
+    the user's factory. Returns True when keepalive was applied.
+    """
+    transport = getattr(
+        conn, "_transport", None
+    )  # Why: asyncpg exposes _transport for socket access; no public API for keepalive. getattr: fake/wrapped connections may not have one.
+    sock: socket.socket | None = (
+        transport.get_extra_info("socket") if transport is not None else None
+    )
+    if sock is None:
+        logger.info("keepalive-skipped", label=label, reason="socket-not-available")
+        return False
+    _apply_keepalive(sock)
+    logger.info(
+        "keepalive-applied",
+        label=label,
+        keepidle=_TCP_KEEPIDLE,
+        keepintvl=_TCP_KEEPINTVL,
+        keepcnt=_TCP_KEEPCNT,
+    )
+    return True
+
+
 async def open_dedicated_conn(
     dsn: str,
     *,
@@ -83,35 +117,18 @@ async def open_dedicated_conn(
     on the underlying socket after the connection is established.
     """
     conn = await asyncpg.connect(dsn)
-    if apply_keepalive:
-        transport = conn._transport  # type: ignore[attr-defined]  # Why: asyncpg exposes _transport for socket access; no public API for keepalive.
-        sock: socket.socket | None = transport.get_extra_info("socket")
-        if sock is not None:
-            _apply_keepalive(sock)
-            logger.info(
-                "dedicated-connection-opened",
-                label=label,
-                host=_dsn_host(dsn),
-                keepalive=True,
-                keepidle=_TCP_KEEPIDLE,
-                keepintvl=_TCP_KEEPINTVL,
-                keepcnt=_TCP_KEEPCNT,
-            )
-        else:
-            logger.info(
-                "dedicated-connection-opened",
-                label=label,
-                host=_dsn_host(dsn),
-                keepalive=False,
-                reason="socket-not-available",
-            )
-    else:
-        logger.info(
-            "dedicated-connection-opened",
-            label=label,
-            host=_dsn_host(dsn),
-            keepalive=False,
-        )
+    applied = apply_keepalive_to_conn(conn, label=label) if apply_keepalive else False
+    logger.info(
+        "dedicated-connection-opened",
+        label=label,
+        host=_dsn_host(dsn),
+        keepalive=applied,
+        **(
+            {}
+            if applied
+            else {"reason": "disabled" if not apply_keepalive else "socket-not-available"}
+        ),
+    )
     return conn
 
 
@@ -181,6 +198,32 @@ class WorkerDeps:
     """Resolved factory that rebuilds ``redis_client`` on
     :func:`reload_credentials`. ``None`` when the client is caller-owned or
     DSN-constructed (static credentials — nothing to rotate)."""
+    owns_notify_conn: bool = False
+    """True when ``notify_conn`` is TaskQ-owned (DSN- or factory-built) and
+    may be closed by TaskQ paths. False when caller-owned — the ownership
+    contract ("TaskQ never closes caller-owned resources") forbids closing
+    it even on error paths."""
+    owns_leader_conn: bool = False
+    """True when ``leader_conn`` is TaskQ-owned. Same ownership contract as
+    :attr:`owns_notify_conn`."""
+    reload_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    """Serializes :func:`reload_credentials` — a second invocation while one
+    is in flight returns immediately instead of double-draining pools and
+    leaking the loser's replacements."""
+    notify_reconnect_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    """Serializes notify_conn reconnects — the health-check loop and
+    :func:`reload_credentials` (via ``notify_reconnect_fn``) can both trigger
+    a reconnect; without mutual exclusion both build a new conn and the
+    loser's LISTEN-registered conn leaks."""
+
+    def request_reload(self) -> None:
+        """Programmatic credential hot-reload trigger for embedders.
+
+        Equivalent to sending SIGHUP: sets :attr:`reload_event`, which the
+        worker's reload coordinator loop consumes. Also the rotation path
+        on platforms without SIGHUP (e.g. Windows).
+        """
+        self.reload_event.set()
 
 
 @asynccontextmanager
@@ -234,6 +277,23 @@ async def open_worker_deps(
         if settings.pg_dsn_pooled is None:
             raise ValueError("pg_dsn_pooled is None — was WorkerSettings.load() called?")
         pooled_dsn = str(settings.pg_dsn_pooled)
+
+    # Fail fast: a caller-owned leader_conn with no factory and no direct
+    # DSN can never be rebuilt after a drop — the election watchdog would
+    # otherwise retry asyncpg.connect(str(None)) forever, so leadership
+    # would silently never recover. (notify_conn gets a pass: LISTEN is
+    # best-effort with a poll fallback, and the listener disables itself
+    # gracefully when a caller-owned conn drops with no rebuild path.)
+    if (
+        conns.leader_conn is not None
+        and conns.leader_conn_factory is None
+        and settings.pg_dsn_direct is None
+    ):
+        raise ValueError(
+            "leader_conn is caller-owned with no leader_conn_factory and no "
+            "pg_dsn_direct — a dropped leader connection could never be "
+            "rebuilt. Provide leader_conn_factory (or configure pg_dsn_direct)."
+        )
 
     # Track ownership of dedicated connections so the LIFO teardown guards
     # only close TaskQ-owned conns (caller-owned conns are left alone).
@@ -335,6 +395,7 @@ async def open_worker_deps(
         elif conns.notify_conn_factory is not None:
             resolved_notify_factory = conns.notify_conn_factory
             notify_conn = await resolved_notify_factory()
+            apply_keepalive_to_conn(notify_conn, label="notify")
         else:
             assert direct_dsn is not None  # guarded by _needs_pg_dsn
             _direct_notify = direct_dsn
@@ -363,6 +424,7 @@ async def open_worker_deps(
         elif conns.leader_conn_factory is not None:
             resolved_leader_factory = conns.leader_conn_factory
             leader_conn = await resolved_leader_factory()
+            apply_keepalive_to_conn(leader_conn, label="leader")
         else:
             assert direct_dsn is not None  # guarded by _needs_pg_dsn
             _direct_leader = direct_dsn
@@ -412,13 +474,17 @@ async def open_worker_deps(
             heartbeat_pool_factory=conns.heartbeat_pool_factory,
             worker_pool_factory=conns.worker_pool_factory,
             redis_client_factory=conns.redis_client_factory,
+            owns_notify_conn=owns_notify,
+            owns_leader_conn=owns_leader,
             _exit_stack=stack,
         )
 
         # LIFO teardown guards for TaskQ-owned dedicated connections.
-        # orchestrate_shutdown closes and nulls leader_conn / notify_conn early
-        # (to release the advisory lock before SIGTERM budget expires).  The
-        # guards below prevent a double-close error during AsyncExitStack teardown.
+        # orchestrate_shutdown closes and nulls a TaskQ-owned leader_conn early
+        # (to release the advisory lock before the SIGTERM budget expires), and
+        # reload_credentials swaps conns/pools mid-run. The guards below read
+        # through ``deps`` at teardown time (never a captured instance), so
+        # they close whatever is current and never double-close.
         # Caller-owned connections are never closed here.
         if owns_notify:
 
@@ -437,8 +503,16 @@ async def open_worker_deps(
 
             stack.push_async_callback(_close_leader_conn)
         if owns_redis and redis_client is not None:
-            _rc = redis_client
-            stack.push_async_callback(_rc.aclose)
+
+            async def _close_redis_client() -> None:
+                # Closes through ``deps.redis_client`` — NOT the startup
+                # instance — so a client swapped in by reload_credentials is
+                # the one closed here (reload drains the old one itself).
+                # Mirrors the notify/leader guards above.
+                if deps.redis_client is not None:
+                    await deps.redis_client.aclose()
+
+            stack.push_async_callback(_close_redis_client)
 
             async def _drain_pending_publishes() -> None:
                 """Give in-flight fire-and-forget progress publishes a bounded
@@ -448,7 +522,13 @@ async def open_worker_deps(
 
             stack.push_async_callback(_drain_pending_publishes)
 
-        yield deps
+        try:
+            yield deps
+        finally:
+            # After exit the stack is closed — a late reload_credentials call
+            # must fail fast instead of registering new pools on a dead stack
+            # (they would never be closed).
+            deps._exit_stack = None
 
 
 # ── Internal helpers ───────────────────────────────────────────────────
@@ -518,26 +598,31 @@ async def reload_credentials(
     deps: WorkerDeps,
     *,
     drain_timeout: float = 5.0,
-) -> None:
+    factory_timeout: float = 30.0,
+) -> tuple[list[str], list[str]]:
     """Hot-swap every factory-backed PG pool, dedicated connection, and Redis
     client on *deps* with freshly-built replacements.
 
     For each factory-backed resource:
     1. Build a new resource by calling the factory (which fetches a fresh
-       credential — AAD token, AWS IAM token, Vault dynamic creds).
+       credential — AAD token, AWS IAM token, Vault dynamic creds), bounded
+       by ``factory_timeout`` so a hung token endpoint cannot wedge the
+       reload (and, via the coordinator, all future SIGHUPs).
     2. Atomically swap it onto ``deps``.
     3. Close the old resource in a background task with a bounded drain
        timeout — in-flight queries on old pool connections are given
-       ``drain_timeout`` seconds to finish before the old pool is force-closed.
+       ``drain_timeout`` seconds to finish before the old pool is
+       terminated.
 
     Resources that are caller-owned (no factory stored on ``deps``) are
     skipped — the caller is responsible for their lifecycle.
 
-    Dedicated connections (``notify_conn``, ``leader_conn``) are swapped
-    in place. The notify listener's ``reconnect_notify_conn`` helper
-    re-issues LISTEN and re-registers callbacks; the leader election loop
-    detects the new connection on its next tick and re-acquires the
-    advisory lock if needed.
+    ``notify_conn`` is rebuilt through the listener's
+    ``reconnect_notify_conn`` helper, which re-issues LISTEN and
+    re-registers callbacks. ``leader_conn`` is closed and nulled (not
+    swapped): the leader election watchdog observes the None and reopens
+    through ``leader_conn_factory`` on its next tick, re-acquiring the
+    advisory lock.
 
     New pools are registered on ``deps._exit_stack`` (the ``AsyncExitStack``
     from ``open_worker_deps``) for LIFO teardown at shutdown. Old pools are
@@ -548,10 +633,15 @@ async def reload_credentials(
     (``credential-reload-resource-failed``) and does NOT abort the
     remaining resources or raise out of this function; that resource
     simply keeps its current (not-yet-expired) pool/connection until the
-    next SIGHUP. The final ``credentials-reloaded`` log line's ``failed``
-    field lists any resource that did not reload this round — a non-empty
-    ``failed`` list means a partial reload; the operator can send SIGHUP
-    again to retry.
+    next SIGHUP.
+
+    Concurrent invocations are serialized on ``deps.reload_lock``: a
+    second call while one is in flight returns ``([], [])`` immediately
+    rather than double-draining pools and leaking replacements.
+
+    Returns ``(reloaded, failed)`` — the resource labels that were and
+    were not rotated. A non-empty ``failed`` list means a partial reload;
+    the operator can send SIGHUP again to retry.
 
     This function is triggered by the SIGHUP handler installed by
     :func:`~taskq.worker.shutdown.install_signal_handlers` and run by the
@@ -563,130 +653,167 @@ async def reload_credentials(
             "reload_credentials called outside of open_worker_deps — deps._exit_stack is None"
         )
 
-    reloaded: list[str] = []
-    failed: list[str] = []
+    if deps.reload_lock.locked():
+        logger.info("credential-reload-skipped", reason="reload-already-in-progress")
+        return [], []
 
-    # ── Pools ──────────────────────────────────────────────────────
-    # Each pool is reloaded independently — a factory failure for one
-    # (e.g. a transient credential-fetch error) is logged and does NOT
-    # abort the remaining resources. Without this, a single flaky
-    # provider call would silently leave later pools/conns on stale
-    # credentials with no indication anything was skipped.
-    for label, pool_attr, factory_attr in (
-        ("dispatcher", "dispatcher_pool", "dispatcher_pool_factory"),
-        ("heartbeat", "heartbeat_pool", "heartbeat_pool_factory"),
-        ("worker", "worker_pool", "worker_pool_factory"),
-    ):
-        factory: PoolFactory | None = getattr(deps, factory_attr)
-        if factory is None:
-            continue
-        try:
-            old_pool: asyncpg.Pool = getattr(deps, pool_attr)
-            new_pool = await factory()
-            await stack.enter_async_context(new_pool)
-            setattr(deps, pool_attr, new_pool)
-            _drain_old_pool(old_pool, label, drain_timeout)
-            reloaded.append(label)
-        except Exception as exc:
-            logger.warning(
-                "credential-reload-resource-failed",
-                kind="credential_reload_resource_failed",
-                resource=label,
-                error=repr(exc),
-            )
-            failed.append(label)
+    async with deps.reload_lock:
+        reloaded: list[str] = []
+        failed: list[str] = []
 
-    # ── notify_conn ────────────────────────────────────────────────
-    # The notify listener loop owns the LISTEN subscriptions and callbacks.
-    # We trigger a callback-aware reconnect via deps.notify_reconnect_fn
-    # (set by notify_listener_loop) rather than swapping the connection
-    # directly — this re-registers LISTEN + callbacks on the new connection.
-    try:
-        if deps.notify_reconnect_fn is not None:
-            await deps.notify_reconnect_fn()
-            reloaded.append("notify_conn")
-        elif deps.notify_conn_factory is not None:
-            # Listener not started yet (or already stopped) — swap directly.
-            old_notify = deps.notify_conn
-            new_notify = await deps.notify_conn_factory()
-            channel = wake_channel(deps.settings.schema_name)
-            await new_notify.execute(f'LISTEN "{channel}"')
-            deps.notify_conn = new_notify
-            if old_notify is not None and old_notify is not new_notify:
-                _drain_old_conn(old_notify, "notify", drain_timeout)
-            reloaded.append("notify_conn")
-    except Exception as exc:
-        logger.warning(
-            "credential-reload-resource-failed",
-            kind="credential_reload_resource_failed",
-            resource="notify_conn",
-            error=repr(exc),
+        # ── Pools ──────────────────────────────────────────────────
+        # Each pool is reloaded independently — a factory failure for one
+        # (e.g. a transient credential-fetch error) is logged and does NOT
+        # abort the remaining resources. Without this, a single flaky
+        # provider call would silently leave later pools/conns on stale
+        # credentials with no indication anything was skipped.
+        for label, pool_attr, factory_attr in (
+            ("dispatcher", "dispatcher_pool", "dispatcher_pool_factory"),
+            ("heartbeat", "heartbeat_pool", "heartbeat_pool_factory"),
+            ("worker", "worker_pool", "worker_pool_factory"),
+        ):
+            factory: PoolFactory | None = getattr(deps, factory_attr)
+            if factory is None:
+                continue
+            try:
+                old_pool: asyncpg.Pool = getattr(deps, pool_attr)
+                new_pool = await asyncio.wait_for(factory(), timeout=factory_timeout)
+                await stack.enter_async_context(new_pool)
+                setattr(deps, pool_attr, new_pool)
+                _drain_old_pool(old_pool, label, drain_timeout)
+                reloaded.append(label)
+            except Exception as exc:
+                logger.warning(
+                    "credential-reload-resource-failed",
+                    kind="credential_reload_resource_failed",
+                    resource=label,
+                    error=repr(exc),
+                )
+                failed.append(label)
+
+        # ── notify_conn ────────────────────────────────────────────
+        # Caller-owned notify_conn has no factory — nothing to rotate, so
+        # skip cleanly (never record a spurious failure). When a factory
+        # exists, prefer the listener's callback-aware reconnect closure
+        # (re-issues LISTEN + re-registers callbacks); fall back to a
+        # direct swap when the listener isn't running.
+        if deps.notify_conn_factory is None:
+            pass
+        else:
+            try:
+                if deps.notify_reconnect_fn is not None:
+                    await asyncio.wait_for(deps.notify_reconnect_fn(), timeout=factory_timeout)
+                    reloaded.append("notify_conn")
+                else:
+                    # Listener not started yet (or already stopped) — swap directly.
+                    old_notify = deps.notify_conn
+                    new_notify = await asyncio.wait_for(
+                        deps.notify_conn_factory(), timeout=factory_timeout
+                    )
+                    apply_keepalive_to_conn(new_notify, label="notify")
+                    channel = wake_channel(deps.settings.schema_name)
+                    await new_notify.execute(f'LISTEN "{channel}"')
+                    deps.notify_conn = new_notify
+                    if old_notify is not None and old_notify is not new_notify:
+                        _drain_old_conn(old_notify, "notify", drain_timeout)
+                    reloaded.append("notify_conn")
+            except Exception as exc:
+                logger.warning(
+                    "credential-reload-resource-failed",
+                    kind="credential_reload_resource_failed",
+                    resource="notify_conn",
+                    error=repr(exc),
+                )
+                failed.append("notify_conn")
+
+        # ── leader_conn ────────────────────────────────────────────
+        # The leader election loop has its own watchdog that detects a dead
+        # leader_conn, clears is_leader, and reopens via _open_leader_conn
+        # (which uses deps.leader_conn_factory when set). We trigger that
+        # failover path by closing the current leader_conn — the watchdog
+        # reopens with a fresh credential and re-acquires the advisory lock.
+        # This is the same path as a PG connection drop, so it's well-tested.
+        #
+        # The old conn is closed inline (bounded) BEFORE nulling — a
+        # background close would let the watchdog's re-election race the
+        # old session's lock release, guaranteeing a first-attempt
+        # pg_try_advisory_lock failure. On timeout the close moves to a
+        # background task that terminates the conn.
+        #
+        # This ALSO rebuilds MaintenanceLeader's other dedicated connections
+        # (_leader_monitor_conn, _cron_conn) as a side effect: re-election
+        # (triggered by leader_conn becoming None while is_leader is still
+        # set) reopens both through the same leader_conn_factory before
+        # re-setting is_leader — see leader.py's _election_loop `if got_lock:`
+        # branch. So a single SIGHUP rotates every leader-owned connection,
+        # not just leader_conn, even though this function never touches
+        # _leader_monitor_conn/_cron_conn directly.
+        if deps.leader_conn_factory is not None and deps.leader_conn is not None:
+            old_leader = deps.leader_conn
+            try:
+                await asyncio.wait_for(old_leader.close(), timeout=drain_timeout)
+            except TimeoutError:
+                logger.warning("conn-drain-timeout", label="leader", drain_timeout=drain_timeout)
+                _terminate_conn_background(old_leader, "leader")
+            except Exception as exc:
+                logger.warning("conn-drain-error", label="leader", error=repr(exc))
+            # Identity-guard: the close above suspends, and the election
+            # watchdog may already have reopened leader_conn via the factory.
+            # Nulling unconditionally would orphan the fresh (possibly
+            # lock-holding) conn until GC.
+            if deps.leader_conn is old_leader:
+                deps.leader_conn = None
+            reloaded.append("leader_conn")
+
+        # ── Redis ──────────────────────────────────────────────────
+        if deps.redis_client_factory is not None:
+            try:
+                old_redis = deps.redis_client
+                new_redis = await asyncio.wait_for(
+                    deps.redis_client_factory(), timeout=factory_timeout
+                )
+                deps.redis_client = new_redis
+                if old_redis is not None:
+                    _drain_old_redis(old_redis, drain_timeout)
+                reloaded.append("redis_client")
+            except Exception as exc:
+                logger.warning(
+                    "credential-reload-resource-failed",
+                    kind="credential_reload_resource_failed",
+                    resource="redis_client",
+                    error=repr(exc),
+                )
+                failed.append("redis_client")
+
+        logger.info(
+            "credentials-reloaded",
+            kind="credentials_reloaded",
+            resources=reloaded,
+            failed=failed,
+            drain_timeout=drain_timeout,
         )
-        failed.append("notify_conn")
-
-    # ── leader_conn ────────────────────────────────────────────────
-    # The leader election loop has its own watchdog that detects a dead
-    # leader_conn, clears is_leader, and reopens via _open_leader_conn
-    # (which uses deps.leader_conn_factory when set). We trigger that
-    # failover path by closing the current leader_conn — the watchdog
-    # reopens with a fresh credential and re-acquires the advisory lock.
-    # This is the same path as a PG connection drop, so it's well-tested.
-    #
-    # This ALSO rebuilds MaintenanceLeader's other dedicated connections
-    # (_leader_monitor_conn, _cron_conn) as a side effect: re-election
-    # (triggered by leader_conn becoming None while is_leader is still
-    # set) reopens both through the same leader_conn_factory before
-    # re-setting is_leader — see leader.py's _election_loop `if got_lock:`
-    # branch. So a single SIGHUP rotates every leader-owned connection,
-    # not just leader_conn, even though this function never touches
-    # _leader_monitor_conn/_cron_conn directly.
-    if deps.leader_conn_factory is not None and deps.leader_conn is not None:
-        old_leader = deps.leader_conn
-        # Don't swap directly — close it so the watchdog triggers a clean
-        # reopen + lock re-acquisition. Closing in the background so we
-        # don't block the reload on the leader's response time.
-        _drain_old_conn(old_leader, "leader", drain_timeout)
-        deps.leader_conn = None
-        reloaded.append("leader_conn")
-
-    # ── Redis ──────────────────────────────────────────────────────
-    if deps.redis_client_factory is not None:
-        try:
-            old_redis = deps.redis_client
-            new_redis = await deps.redis_client_factory()
-            deps.redis_client = new_redis
-            if old_redis is not None:
-                _drain_old_redis(old_redis, drain_timeout)
-            reloaded.append("redis_client")
-        except Exception as exc:
-            logger.warning(
-                "credential-reload-resource-failed",
-                kind="credential_reload_resource_failed",
-                resource="redis_client",
-                error=repr(exc),
-            )
-            failed.append("redis_client")
-
-    logger.info(
-        "credentials-reloaded",
-        kind="credentials_reloaded",
-        resources=reloaded,
-        failed=failed,
-        drain_timeout=drain_timeout,
-    )
+        return reloaded, failed
 
 
 def _drain_old_pool(pool: asyncpg.Pool, label: str, drain_timeout: float) -> None:
-    """Close an old pool in the background with a bounded drain timeout."""
+    """Close an old pool in the background with a bounded drain timeout.
+
+    On timeout the pool is *terminated* — ``close()`` waits for checked-out
+    connections to be released, which a stuck holder can delay indefinitely,
+    keeping old-credential sessions alive past the rotation point.
+    ``terminate()`` kills them immediately.
+    """
 
     async def _close() -> None:
         logger.info("pool-draining", pool=label, drain_timeout=drain_timeout)
         try:
             await asyncio.wait_for(pool.close(), timeout=drain_timeout)
         except TimeoutError:
-            logger.warning("pool-drain-timeout", pool=label, drain_timeout=drain_timeout)
+            logger.warning(
+                "pool-drain-timeout-terminating", pool=label, drain_timeout=drain_timeout
+            )
             with suppress(Exception):
-                await pool.close()
+                pool.terminate()
         except Exception as exc:
             logger.warning("pool-drain-error", pool=label, error=repr(exc))
 
@@ -696,19 +823,33 @@ def _drain_old_pool(pool: asyncpg.Pool, label: str, drain_timeout: float) -> Non
 
 
 def _drain_old_conn(conn: asyncpg.Connection, label: str, drain_timeout: float) -> None:
-    """Close an old dedicated connection in the background."""
+    """Close an old dedicated connection in the background; terminate on timeout."""
 
     async def _close() -> None:
         try:
             await asyncio.wait_for(conn.close(), timeout=drain_timeout)
         except TimeoutError:
-            logger.warning("conn-drain-timeout", label=label, drain_timeout=drain_timeout)
+            logger.warning(
+                "conn-drain-timeout-terminating", label=label, drain_timeout=drain_timeout
+            )
             with suppress(Exception):
-                await conn.close()
+                conn.terminate()
         except Exception as exc:
             logger.warning("conn-drain-error", label=label, error=repr(exc))
 
     _t = asyncio.create_task(_close())
+    _drain_tasks.add(_t)
+    _t.add_done_callback(_drain_tasks.discard)
+
+
+def _terminate_conn_background(conn: asyncpg.Connection, label: str) -> None:
+    """Terminate a connection whose graceful close already timed out."""
+
+    async def _terminate() -> None:
+        with suppress(Exception):
+            conn.terminate()
+
+    _t = asyncio.create_task(_terminate())
     _drain_tasks.add(_t)
     _t.add_done_callback(_drain_tasks.discard)
 

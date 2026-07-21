@@ -11,6 +11,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock
 
 import asyncpg
+import pytest
 
 from taskq.connections import WorkerConnections
 from taskq.settings import WorkerSettings
@@ -267,6 +268,45 @@ async def test_all_pg_overridden_no_dsn_needed() -> None:
     assert worker.closed
 
 
+async def test_caller_owned_leader_conn_without_factory_or_dsn_fails_fast() -> None:
+    """A caller-owned leader_conn with no leader_conn_factory and no
+    pg_dsn_direct can never be rebuilt after a drop — the watchdog would
+    otherwise retry asyncpg.connect("None") forever. Fail fast at startup."""
+    settings = _make_settings()
+    settings.pg_dsn_direct = None  # type: ignore[assignment]
+    settings.pg_dsn_pooled = None  # type: ignore[assignment]
+
+    conns = WorkerConnections(
+        dispatcher_pool_factory=_make_pool_factory(_FakePool()),
+        heartbeat_pool_factory=_make_pool_factory(_FakePool()),
+        worker_pool_factory=_make_pool_factory(_FakePool()),
+        notify_conn_factory=_make_conn_factory(_FakeConn()),
+        leader_conn=_FakeConn(),  # type: ignore[arg-type]  # caller-owned, no factory, no DSN
+    )
+    with pytest.raises(ValueError, match="leader_conn"):
+        async with open_worker_deps(settings, connections=conns):
+            pass
+
+
+async def test_caller_owned_notify_conn_without_factory_or_dsn_is_allowed() -> None:
+    """A caller-owned notify_conn without a rebuild path is NOT a startup
+    error — NOTIFY is best-effort (poll fallback); the listener disables
+    itself gracefully if the conn drops and cannot be rebuilt."""
+    settings = _make_settings()
+    settings.pg_dsn_direct = None  # type: ignore[assignment]
+    settings.pg_dsn_pooled = None  # type: ignore[assignment]
+
+    conns = WorkerConnections(
+        dispatcher_pool_factory=_make_pool_factory(_FakePool()),
+        heartbeat_pool_factory=_make_pool_factory(_FakePool()),
+        worker_pool_factory=_make_pool_factory(_FakePool()),
+        notify_conn=_FakeConn(),  # type: ignore[arg-type]  # caller-owned
+        leader_conn_factory=_make_conn_factory(_FakeConn()),
+    )
+    async with open_worker_deps(settings, connections=conns) as deps:
+        assert deps.notify_conn is conns.notify_conn
+
+
 async def test_partial_override_still_uses_dsn_for_uncovered_roles() -> None:
     """Overriding only worker_pool leaves the direct DSN required for notify/leader.
 
@@ -324,3 +364,48 @@ async def test_partial_override_still_uses_dsn_for_uncovered_roles() -> None:
     assert fake_heartbeat.closed
     assert fake_notify.closed
     assert fake_leader.closed
+
+
+# ── _needs_pg_dsn guards ───────────────────────────────────────────────
+
+
+async def test_unoverridden_direct_role_with_none_direct_dsn_fails_fast() -> None:
+    """A non-overridden direct role with pg_dsn_direct=None raises ValueError.
+
+    notify is intentionally left un-overridden so the direct-DSN fallback is
+    required; without the guard, asyncpg would receive str(None) == "None".
+    """
+    settings = _make_settings()
+    settings.pg_dsn_direct = None  # type: ignore[assignment]
+
+    conns = WorkerConnections(
+        dispatcher_pool_factory=_make_pool_factory(_FakePool()),
+        heartbeat_pool_factory=_make_pool_factory(_FakePool()),
+        worker_pool_factory=_make_pool_factory(_FakePool()),
+        # notify_conn NOT overridden — requires the direct DSN.
+        leader_conn_factory=_make_conn_factory(_FakeConn()),
+    )
+    with pytest.raises(ValueError, match="pg_dsn_direct is None"):
+        async with open_worker_deps(settings, connections=conns):
+            pass
+
+
+async def test_unoverridden_worker_pool_with_none_pooled_dsn_fails_fast() -> None:
+    """A non-overridden worker_pool with pg_dsn_pooled=None raises ValueError.
+
+    All four direct roles are overridden so the direct-DSN check passes and
+    the pooled-DSN guard is the one exercised.
+    """
+    settings = _make_settings()
+    settings.pg_dsn_pooled = None  # type: ignore[assignment]
+
+    conns = WorkerConnections(
+        dispatcher_pool_factory=_make_pool_factory(_FakePool()),
+        heartbeat_pool_factory=_make_pool_factory(_FakePool()),
+        # worker_pool NOT overridden — requires the pooled DSN.
+        notify_conn_factory=_make_conn_factory(_FakeConn()),
+        leader_conn_factory=_make_conn_factory(_FakeConn()),
+    )
+    with pytest.raises(ValueError, match="pg_dsn_pooled is None"):
+        async with open_worker_deps(settings, connections=conns):
+            pass

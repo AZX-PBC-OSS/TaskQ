@@ -22,7 +22,7 @@ from taskq.ratelimit import TokenBucket
 from taskq.settings import WorkerSettings
 from taskq.testing.asyncpg_chaos import ChaosConnection, ChaosPool
 from taskq.testing.clock import FakeClock
-from taskq.testing.fixtures import ModulePgSchema
+from taskq.testing.fixtures import ModulePgSchema, redis_url_for
 
 pytestmark = [pytest.mark.integration, pytest.mark.redis]
 
@@ -37,14 +37,16 @@ def _unique_name() -> str:
 async def test_redis_to_pg_degradation(
     module_pg_schema: ModulePgSchema,
     module_pg_pool: asyncpg.Pool,
-    redis_url: str,
-    redis_container: object,
+    killable_redis_container: object,
 ) -> None:
     """(consolidated): Real Redis container; acquire confirms
     Redis path; stop container; next acquire triggers PG fallback with WARNING.
 
-    The container is restarted in the finally block so subsequent tests see
-    a running container.
+    Uses a function-scoped killable container — the session container is
+    shared by every module and must never be stopped (a restart can also
+    remap the host port, invalidating the session URL for unrelated tests).
+    The container is restarted in the finally block so the recovery path
+    is exercised too.
     """
     schema = module_pg_schema.schema_name
     settings = WorkerSettings.load_from_dict(
@@ -59,7 +61,7 @@ async def test_redis_to_pg_degradation(
         refill_per_second=1.0,
         backend="redis",
     )
-    client = redis_async.from_url(redis_url, decode_responses=False)
+    client = redis_async.from_url(redis_url_for(killable_redis_container), decode_responses=False)
 
     try:
         r = await tb.acquire(
@@ -68,7 +70,7 @@ async def test_redis_to_pg_degradation(
         assert r.allowed is True
         assert r.backend == "redis"
 
-        redis_container.stop()  # type: ignore[union-attr] # Why: redis_container is a RedisContainer with stop(); typed as object in fixtures to avoid transitive imports
+        killable_redis_container.stop()  # type: ignore[union-attr] # Why: RedisContainer.stop(); the fixture is typed object to avoid transitive imports
 
         r2 = await tb.acquire(
             redis_client=client, pg_pool=module_pg_pool, clock=clock, settings=settings
@@ -77,7 +79,7 @@ async def test_redis_to_pg_degradation(
         assert r2.backend == "postgres"
     finally:
         try:
-            redis_container.start()  # type: ignore[union-attr] # Why: redis_container is a RedisContainer with start(); typed as object in fixtures to avoid transitive imports
+            killable_redis_container.start()  # type: ignore[union-attr] # Why: as above
         except Exception as exc:
             structlog.get_logger("taskq.test_chaos").warning(
                 "redis-container-restart-failed",
@@ -92,7 +94,7 @@ async def test_redis_to_pg_degradation(
 async def test_redis_recovery_after_restart(
     module_pg_schema: ModulePgSchema,
     module_pg_pool: asyncpg.Pool,
-    redis_container: object,
+    killable_redis_container: object,
 ) -> None:
     """After Redis→PG fallback, restart the Redis container; next
     acquire returns backend=="redis" with no WARNING.
@@ -128,8 +130,8 @@ async def test_redis_recovery_after_restart(
         backend="redis",
     )
 
-    host = redis_container.get_container_host_ip()  # type: ignore[union-attr] # Why: redis_container is a RedisContainer; typed as object in fixtures
-    port = redis_container.get_exposed_port(6379)  # type: ignore[union-attr] # Why: same as above
+    host = killable_redis_container.get_container_host_ip()  # type: ignore[union-attr] # Why: RedisContainer; the fixture is typed object to avoid transitive imports
+    port = killable_redis_container.get_exposed_port(6379)  # type: ignore[union-attr] # Why: same as above
     original_url = f"redis://{host}:{port}/0"
     client = redis_async.from_url(original_url, decode_responses=False)
 
@@ -139,7 +141,7 @@ async def test_redis_recovery_after_restart(
         )
         assert r.backend == "redis"
 
-        redis_container.stop()  # type: ignore[union-attr] # Why: redis_container is a RedisContainer with stop(); typed as object in fixtures to avoid transitive imports
+        killable_redis_container.stop()  # type: ignore[union-attr] # Why: RedisContainer.stop(); the fixture is typed object to avoid transitive imports
 
         r_fallback = await tb.acquire(
             redis_client=client, pg_pool=module_pg_pool, clock=clock, settings=settings
@@ -148,9 +150,9 @@ async def test_redis_recovery_after_restart(
 
         await client.aclose()
 
-        redis_container.start()  # type: ignore[union-attr] # Why: same as above
+        killable_redis_container.start()  # type: ignore[union-attr] # Why: same as above
 
-        new_port = redis_container.get_exposed_port(6379)  # type: ignore[union-attr] # Why: same as above; port differs after restart (testcontainers artifact)
+        new_port = killable_redis_container.get_exposed_port(6379)  # type: ignore[union-attr] # Why: same as above; port differs after restart (testcontainers artifact)
         new_url = f"redis://{host}:{new_port}/0"
         client = redis_async.from_url(new_url, decode_responses=False)
 

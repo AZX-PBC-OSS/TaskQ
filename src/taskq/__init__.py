@@ -16,6 +16,10 @@ from taskq.auth import (
     PgCredentialProvider,
     RedisCredential,
     RedisCredentialProvider,
+    enrich_pg_dsn,
+    make_dedicated_conn_factory,
+    make_pg_pool_factory,
+    make_redis_client_factory,
 )
 from taskq.backend._protocol import (
     CancelPhase,
@@ -152,6 +156,10 @@ __all__ = [
     "__version__",
     "actor",
     "cron",
+    "enrich_pg_dsn",
+    "make_dedicated_conn_factory",
+    "make_pg_pool_factory",
+    "make_redis_client_factory",
     "register_cron",
     "wait_for_batch",
 ]

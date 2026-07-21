@@ -344,7 +344,7 @@ async def test_ti4_coalesced_flush_fires_during_actor_sleep(
 
             flush_task = asyncio.create_task(
                 progress_flush_loop(
-                    deps.worker_pool,
+                    lambda: deps.worker_pool,
                     schema,
                     wid,
                     deps.progress_buffers,
@@ -561,7 +561,7 @@ async def test_tc2_pg_unavailable_during_flush_recovers(
 
         await asyncio.gather(
             progress_flush_loop(
-                deps.worker_pool, schema, wid, deps.progress_buffers, 0.05, shutdown
+                lambda: deps.worker_pool, schema, wid, deps.progress_buffers, 0.05, shutdown
             ),
             _stop_when_clean(),
         )

@@ -40,18 +40,24 @@ The helpers accept any object exposing ``get_token(*scopes) -> AccessToken``
 — i.e. :class:`azure.core.credentials.TokenCredential` (sync) **or** its
 async counterpart from :mod:`azure.identity.aio` (e.g.
 :class:`azure.identity.aio.DefaultAzureCredential`). See
-:data:`AadCredential`. The credential is **caller-owned**: create it once
-per process (async credentials are async context managers — close them in
-your lifespan). Pass ``None`` to use a default async
-``DefaultAzureCredential`` per call.
+:data:`AadCredential`. Sync credentials are offloaded to a thread so
+their blocking HTTP never stalls the event loop. The credential is
+**caller-owned**: create it once per process (async credentials are
+async context managers — close them in your lifespan). Pass ``None`` to
+let the provider lazily create one async ``DefaultAzureCredential`` and
+reuse it for its lifetime (a per-fetch credential would leak unclosed
+aiohttp sessions and cold-cache every acquisition).
 
 This module never imports ``azure.identity`` at module top level — the
 import is deferred to call time so ``import taskq.aad`` is safe without
-the extra installed.
+the extra installed. Note ``import azure.identity`` alone does NOT make
+``azure.identity.aio`` available — the subpackage must be imported
+explicitly.
 """
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import inspect
 import json
@@ -108,37 +114,74 @@ class AadCredential(Protocol):
 # ── Credential / token helpers ─────────────────────────────────────────
 
 
-def _require_azure_identity() -> Any:
-    """Import ``azure.identity`` lazily.
+def _require_azure_identity_aio() -> Any:
+    """Import ``azure.identity.aio`` lazily and return the subpackage.
 
-    Raises :class:`ImportError` with install instructions if the ``[aad]``
-    extra is not installed.
+    The ``aio`` subpackage is NOT pulled in by ``import azure.identity``
+    — accessing ``azure.identity.aio`` without an explicit import raises
+    :class:`AttributeError`. Raises :class:`ImportError` with install
+    instructions if the ``[aad]`` extra is not installed.
     """
     try:
-        import azure.identity  # type: ignore[import-not-found]  # Why: optional [aad] extra; deferred so the module is import-safe without it.
+        import azure.identity.aio  # type: ignore[import-not-found]  # Why: optional [aad] extra; deferred so the module is import-safe without it.
     except ImportError as exc:
         raise ImportError(
             "taskq[aad] is required for Microsoft Entra ID authentication. "
             "Install it with: pip install 'taskq-py[aad]'"
         ) from exc
-    return azure.identity
+    return azure.identity.aio
 
 
 def _default_credential() -> AadCredential:
-    """Return a default async ``DefaultAzureCredential``."""
-    azure_identity_aio = _require_azure_identity().aio
-    return azure_identity_aio.DefaultAzureCredential()  # type: ignore[no-any-return]  # Why: azure.identity.aio has no stubs-exposed concrete return type; the instance satisfies AadCredential structurally.
+    """Return a default async ``DefaultAzureCredential``.
+
+    The async credentials perform HTTP over aiohttp; if aiohttp is
+    missing, construction raises :class:`ImportError`, re-raised here
+    with install instructions.
+    """
+    azure_identity_aio = _require_azure_identity_aio()
+    try:
+        return azure_identity_aio.DefaultAzureCredential()  # type: ignore[no-any-return]  # Why: azure.identity.aio has no stubs-exposed concrete return type; the instance satisfies AadCredential structurally.
+    except ImportError as exc:
+        raise ImportError(
+            "azure.identity.aio credentials require aiohttp. "
+            "Install it with: pip install 'taskq-py[aad]'"
+        ) from exc
+
+
+class _LazyDefaultCredential:
+    """Lazily creates and caches a single default credential.
+
+    Creating one per token fetch would leak unclosed aiohttp sessions and
+    cold-cache every acquisition (a full MSAL/IMDS round-trip each time) —
+    worst on the Redis path, where the redis-py adapter re-fetches on
+    every reconnect.
+    """
+
+    def __init__(self) -> None:
+        self._instance: AadCredential | None = None
+
+    def get(self) -> AadCredential:
+        if self._instance is None:
+            self._instance = _default_credential()
+        return self._instance
 
 
 async def _get_token(credential: AadCredential, scope: str) -> str:
     """Call ``credential.get_token(scope)`` and return ``.token``.
 
-    Await-detects the result so both sync (:mod:`azure.identity`) and async
-    (:mod:`azure.identity.aio`) credentials work.
+    Async credentials (:mod:`azure.identity.aio`) are awaited inline.
+    Sync credentials (:mod:`azure.identity`) perform blocking HTTP
+    (requests/MSAL), so they are offloaded to a thread — running them
+    inline would stall the worker's event loop (heartbeat starvation).
     """
-    result = credential.get_token(scope)
-    if inspect.isawaitable(result):
-        result = await result
+    get_token = credential.get_token
+    if inspect.iscoroutinefunction(get_token):
+        result = await get_token(scope)
+    else:
+        result = await asyncio.to_thread(get_token, scope)
+        if inspect.isawaitable(result):  # sync wrapper returning an awaitable
+            result = await result
     return result.token
 
 
@@ -190,6 +233,8 @@ def _decode_jwt_oid(jwt: str) -> str | None:
         claims = json.loads(decoded)
     except (ValueError, json.JSONDecodeError):
         return None
+    if not isinstance(claims, dict):
+        return None
     oid = claims.get("oid")
     return oid if isinstance(oid, str) else None
 
@@ -197,25 +242,39 @@ def _decode_jwt_oid(jwt: str) -> str | None:
 # ── Provider implementations ───────────────────────────────────────────
 
 
-class EntraIdPgProvider(PgCredentialProvider):
+class _EntraIdProviderBase:
+    """Shared credential resolution for the Entra ID providers.
+
+    An explicit credential is used as-is (caller-owned). Otherwise a
+    single default async ``DefaultAzureCredential`` is created lazily and
+    reused for the provider's lifetime — see :class:`_LazyDefaultCredential`.
+    """
+
+    def __init__(self, credential: AadCredential | None = None) -> None:
+        self._credential = credential
+        self._default_credential = _LazyDefaultCredential()
+
+    def _resolve_credential(self) -> AadCredential:
+        return self._credential if self._credential is not None else self._default_credential.get()
+
+
+class EntraIdPgProvider(_EntraIdProviderBase, PgCredentialProvider):
     """:class:`~taskq.auth.PgCredentialProvider` backed by Microsoft Entra ID.
 
     Returns the AAD token as the Postgres password; the DSN's existing
     user (the AAD principal name) is preserved.
 
-    ``credential`` defaults to a fresh async ``DefaultAzureCredential``
-    per call; pass a process-wide credential to reuse it.
+    ``credential`` defaults to a lazily-created, provider-reused async
+    ``DefaultAzureCredential``; pass a process-wide credential to own its
+    lifecycle (recommended in production).
     """
 
-    def __init__(self, credential: AadCredential | None = None) -> None:
-        self._credential = credential
-
     async def get_pg_credential(self) -> PgCredential:
-        token = await fetch_pg_access_token(self._credential)
+        token = await fetch_pg_access_token(self._resolve_credential())
         return PgCredential(password=token)
 
 
-class EntraIdRedisProvider(RedisCredentialProvider):
+class EntraIdRedisProvider(_EntraIdProviderBase, RedisCredentialProvider):
     """:class:`~taskq.auth.RedisCredentialProvider` backed by Microsoft Entra ID.
 
     Returns ``(managed-identity object ID, AAD token)``. Pass ``username``
@@ -228,11 +287,13 @@ class EntraIdRedisProvider(RedisCredentialProvider):
         *,
         username: str | None = None,
     ) -> None:
-        self._credential = credential
+        super().__init__(credential)
         self._username = username
 
     async def get_redis_credential(self) -> RedisCredential:
-        username, token = await fetch_redis_credentials(self._credential, username=self._username)
+        username, token = await fetch_redis_credentials(
+            self._resolve_credential(), username=self._username
+        )
         return RedisCredential(username=username, password=token)
 
 

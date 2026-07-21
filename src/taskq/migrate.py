@@ -235,6 +235,10 @@ async def apply_pending_locked(
     """
     if conn is not None and conn_factory is not None:
         raise ValueError("apply_pending_locked: provide 'conn' or 'conn_factory', not both")
+    if dsn is not None and (conn is not None or conn_factory is not None):
+        raise ValueError(
+            "apply_pending_locked: 'dsn' is mutually exclusive with 'conn' and 'conn_factory'"
+        )
     if conn is None and conn_factory is None and dsn is None:
         raise ValueError("apply_pending_locked: provide 'dsn', 'conn', or 'conn_factory'")
 

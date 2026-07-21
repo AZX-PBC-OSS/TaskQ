@@ -247,7 +247,7 @@ async def test_tc2_pg_container_stop_start(
                 )
                 from taskq.worker.deps import open_dedicated_conn
 
-                async def _new_notify_factory() -> object:
+                async def _new_notify_factory() -> asyncpg.Connection:
                     return await open_dedicated_conn(pg_dsn, label="notify", apply_keepalive=True)
 
                 deps.notify_conn_factory = _new_notify_factory
@@ -290,6 +290,7 @@ async def test_tc3_shutdown_mid_reconnect() -> None:
     from unittest.mock import AsyncMock, Mock
 
     deps = Mock()
+    deps.notify_reconnect_lock = asyncio.Lock()  # Why: reconnect_notify_conn serializes on a real lock; a bare Mock would fail the async-CM protocol.
     deps.settings = WorkerSettings.load_from_dict(
         {
             "pg_dsn": "postgresql://localhost:5432/taskq",

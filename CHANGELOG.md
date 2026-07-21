@@ -21,10 +21,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `PgCredentialProvider` and `RedisCredentialProvider` async Protocols
   with reusable `make_pg_pool_factory`, `make_dedicated_conn_factory`,
   `make_redis_client_factory` builders. Any provider implementing the
-  Protocols gets all factory builders for free.
+  Protocols gets all factory builders for free. The PG factories pass the
+  credential to asyncpg as `user=` / `password=` keyword arguments
+  (which take precedence over both DSN userinfo and DSN query
+  parameters), so the token never appears in the DSN string;
+  `enrich_pg_dsn` remains as the string-helper variant (writes the
+  credential into DSN userinfo; adds `sslmode=require` only when the DSN
+  has no explicit sslmode — `verify-full` is never downgraded). All four
+  helpers are exported from the `taskq` top level as well as
+  `taskq.auth`.
 - **`taskq[aad]` extra** — `taskq.aad` module with Microsoft Entra ID
   providers (`EntraIdProvider`, `EntraIdPgProvider`, `EntraIdRedisProvider`)
-  backed by `azure.identity.aio`. See `docs/guides/managed-identities.md`.
+  backed by `azure.identity.aio` (the extra includes `aiohttp`, required
+  by the async credentials). Providers constructed with `credential=None`
+  lazily create one `DefaultAzureCredential` and reuse it; sync
+  `azure.identity` credentials are supported and offloaded to a thread.
+  See `docs/guides/managed-identities.md`.
 - **`taskq[aws]` extra** — `taskq.aws` module with `RdsIamProvider` for
   AWS IAM RDS Postgres authentication, backed by `boto3`.
 - **`taskq[vault]` extra** — `taskq.vault` module with
@@ -37,17 +49,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (conn close) runs promptly on early return.
 - **`migrate.apply_pending_locked` hooks** — `conn` (caller-owned) and
   `conn_factory` (TaskQ-owned) parameters replace the DSN-only path.
-- **SIGHUP credential hot-reload** — sending SIGHUP to a worker process
-  triggers `reload_credentials`, which hot-swaps every factory-backed PG
-  pool, dedicated connection, and Redis client with freshly-built
-  replacements (each factory fetches a fresh credential). Old resources
-  are drained in the background with a bounded timeout. The
-  dispatcher/consumer/heartbeat loops are never blocked during a reload.
-  Each resource reloads independently — one factory failure is logged and
-  does not abort the rest; the `credentials-reloaded` log line's `failed`
-  field reports any resource that didn't rotate. Caller-owned resources
-  are not swapped. `reload_credentials` can also be called
-  programmatically.
+- **Credential hot-reload (SIGHUP / interval / programmatic)** —
+  hot-swaps every factory-backed PG pool, dedicated connection, and
+  Redis client with freshly-built replacements (each factory fetches a
+  fresh credential). Triggers: SIGHUP; `TASKQ_RELOAD_INTERVAL`
+  (seconds, unset by default) for periodic reloads with no external
+  signal — the only rotation path on Windows; and
+  `WorkerDeps.request_reload()` / `reload_credentials(deps)` for
+  embedders. Each factory call is bounded by
+  `TASKQ_RELOAD_FACTORY_TIMEOUT` (default 30 s). The swap is atomic: the
+  old pool stops serving new acquisitions immediately and is closed in
+  the background with a bounded drain (default 5 s), then terminated —
+  an in-flight actor that outlives the drain sees its next acquire fail
+  and the job retries on the new pool. DI-injected `db: asyncpg.Pool`
+  actors resolve the new pool (LOOP-scope cache refresh) and progress
+  flushing follows the swap. A SIGHUP arriving mid-reload (success or
+  failure) triggers exactly one follow-up reload; reloads are skipped
+  while shutdown is in progress. Each resource reloads independently —
+  one factory failure is logged and does not abort the rest; the
+  `credentials-reloaded` log line's `failed` field reports any resource
+  that didn't rotate. Caller-owned resources are not swapped.
+- **NOTIFY listener resilience** — the reconnect loop rebuilds a dropped
+  LISTEN connection through the user-supplied `notify_conn_factory` (or
+  the DSN closure it was opened with) instead of a stale/absent DSN. A
+  caller-owned `notify_conn` that drops disables the listener
+  (poll-based dispatch fallback) instead of crashing the worker.
+- **Ownership-contract enforcement** — caller-owned pools/connections/
+  Redis clients are never closed by TaskQ (including shutdown paths). A
+  caller-owned `leader_conn` with no `leader_conn_factory` and no
+  `pg_dsn_direct` is a startup `ValueError` (no rebuild path).
+  TaskQ-owned dedicated connections (DSN- or factory-built) get TCP
+  keepalive.
+- `taskq.worker` re-exports `WorkerConnections` and `reload_credentials`
+  (lazy, alongside the existing `WorkerDeps` / `open_worker_deps`).
 - `ErrorReporter` Protocol for vendor-neutral terminal failure routing (Sentry, Datadog, DLQ) with `NullErrorReporter` default and `taskq.error_reporter.failures` OTel counter
 - `retry_classifier` hook on `@actor` for exception-instance-level retry classification (inspect attributes like HTTP status codes, return `RetryOverride` to refine kind/delay per occurrence)
 - `RetryOverride` and `RetryClassifierHook` types exported from `taskq` top-level

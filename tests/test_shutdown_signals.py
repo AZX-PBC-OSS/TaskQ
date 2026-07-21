@@ -1,7 +1,8 @@
-"""Unit tests for install_signal_handlers."""
+"""Unit tests for install_signal_handlers and orchestrate_shutdown ownership."""
 
 import asyncio
 import inspect
+import signal
 from collections.abc import Callable
 from unittest.mock import AsyncMock, Mock
 
@@ -11,7 +12,7 @@ from taskq._ids import new_uuid
 from taskq.backend._protocol import Backend
 from taskq.settings import WorkerSettings
 from taskq.worker.deps import WorkerDeps
-from taskq.worker.shutdown import install_signal_handlers
+from taskq.worker.shutdown import install_signal_handlers, orchestrate_shutdown
 
 
 def _worker_settings() -> WorkerSettings:
@@ -20,15 +21,52 @@ def _worker_settings() -> WorkerSettings:
     )
 
 
-def _worker_deps() -> WorkerDeps:
-    pool = Mock()
+class _FakeConn:
+    """Minimal asyncpg.Connection stand-in for drain_local_queue_to_pending."""
+
+    async def execute(self, query: str, *args: object) -> str:
+        return "UPDATE 0"
+
+
+class _AcquireCtx:
+    async def __aenter__(self) -> _FakeConn:
+        return _FakeConn()
+
+    async def __aexit__(self, *args: object) -> None:
+        pass
+
+
+class _FakePool:
+    """Pool stand-in whose acquire() is a real async context manager."""
+
+    def acquire(self, timeout: float = 30.0) -> _AcquireCtx:
+        return _AcquireCtx()
+
+
+class _FakeLeaderConn:
+    """Leader-conn stand-in recording whether TaskQ closed it."""
+
+    def __init__(self) -> None:
+        self.closed = False
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+def _worker_deps(
+    *,
+    leader_conn: _FakeLeaderConn | None = None,
+    owns_leader_conn: bool = False,
+) -> WorkerDeps:
+    pool = _FakePool()
     return WorkerDeps(
         settings=_worker_settings(),
-        dispatcher_pool=pool,  # type: ignore[arg-type] # Why: Mock drop-in for asyncpg.Pool in unit tests.
+        dispatcher_pool=pool,  # type: ignore[arg-type] # Why: fake pool drop-in for asyncpg.Pool in unit tests.
         heartbeat_pool=pool,  # type: ignore[arg-type]
         worker_pool=pool,  # type: ignore[arg-type]
         notify_conn=None,
-        leader_conn=None,
+        leader_conn=leader_conn,  # type: ignore[arg-type] # Why: fake conn drop-in; orchestrate_shutdown only awaits .close().
+        owns_leader_conn=owns_leader_conn,
     )
 
 
@@ -36,7 +74,10 @@ def _mock_loop() -> tuple[Mock, list[tuple[int, Callable[[], None]]]]:
     captured: list[tuple[int, Callable[[], None]]] = []
     loop = Mock()
     loop.add_signal_handler = Mock(side_effect=lambda sig, cb: captured.append((sig, cb)))
-    loop.create_task = Mock()
+    # Why close(): the real loop would await the orchestrator coroutine;
+    # the mock never does, so close it to avoid "coroutine was never
+    # awaited" RuntimeWarnings leaking into unrelated tests at GC time.
+    loop.create_task = Mock(side_effect=lambda coro: coro.close())
     return loop, captured
 
 
@@ -264,3 +305,94 @@ def test_counter_isolation(monkeypatch: pytest.MonkeyPatch) -> None:
     assert len(holder2) == 1
     assert not esc1.is_set()
     assert not esc2.is_set()
+
+
+# ── SIGHUP sets reload_event (deterministic, no real signals) ─────
+
+
+def test_sighup_handler_sets_reload_event() -> None:
+    """Captured SIGHUP handler sets deps.reload_event when invoked directly.
+
+    Uses the mock-loop harness (no real process signal), so the test is
+    deterministic and cannot leak signal state into the test process.
+    """
+    deps = _worker_deps()
+    backend = AsyncMock(spec=Backend)
+    loop, handlers = _mock_loop()
+    holder: list[asyncio.Task[int]] = []
+
+    install_signal_handlers(
+        loop,
+        deps,
+        new_uuid(),
+        asyncio.Event(),
+        asyncio.Event(),
+        backend,
+        holder,
+    )  # type: ignore[arg-type] # Why: Mock not a real AbstractEventLoop but satisfies the interface at runtime.
+
+    sighup_handlers = [cb for sig, cb in handlers if sig == signal.SIGHUP]
+    assert len(sighup_handlers) == 1
+    assert not deps.reload_event.is_set()
+
+    sighup_handlers[0]()
+    assert deps.reload_event.is_set()
+
+    # Coalescing is the coordinator's job; the handler stays idempotent.
+    sighup_handlers[0]()
+    assert deps.reload_event.is_set()
+
+    assert not holder  # SIGHUP must never schedule shutdown work
+
+
+# ── orchestrate_shutdown leader_conn ownership guard ──────────────
+
+
+async def test_orchestrate_shutdown_closes_taskq_owned_leader_conn() -> None:
+    """TaskQ-owned leader_conn is closed and nulled (early advisory-lock release)."""
+    conn = _FakeLeaderConn()
+    deps = _worker_deps(leader_conn=conn, owns_leader_conn=True)
+    backend = AsyncMock(spec=Backend)
+    shut_event = asyncio.Event()
+
+    exit_code = await orchestrate_shutdown(
+        deps,
+        deps.settings,
+        new_uuid(),
+        shut_event,
+        asyncio.Event(),
+        backend=backend,
+    )
+
+    assert exit_code == 0
+    assert conn.closed is True
+    assert deps.leader_conn is None
+    assert shut_event.is_set()
+
+
+async def test_orchestrate_shutdown_leaves_caller_owned_leader_conn_unclosed() -> None:
+    """Caller-owned leader_conn survives orchestrate_shutdown untouched.
+
+    Ownership contract: "TaskQ never closes caller-owned resources". The
+    reference is also left in place — nulling it would make the still-
+    running leader election loop open a *fresh* conn and possibly
+    re-acquire the advisory lock mid-shutdown.
+    """
+    conn = _FakeLeaderConn()
+    deps = _worker_deps(leader_conn=conn, owns_leader_conn=False)
+    backend = AsyncMock(spec=Backend)
+    shut_event = asyncio.Event()
+
+    exit_code = await orchestrate_shutdown(
+        deps,
+        deps.settings,
+        new_uuid(),
+        shut_event,
+        asyncio.Event(),
+        backend=backend,
+    )
+
+    assert exit_code == 0
+    assert conn.closed is False
+    assert deps.leader_conn is conn
+    assert shut_event.is_set()

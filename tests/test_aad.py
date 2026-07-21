@@ -11,6 +11,7 @@ from __future__ import annotations
 import base64
 import json
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 
@@ -20,6 +21,7 @@ from taskq.aad import (
     EntraIdPgProvider,
     EntraIdProvider,
     EntraIdRedisProvider,
+    _default_credential,
     fetch_pg_access_token,
     fetch_redis_credentials,
 )
@@ -169,6 +171,115 @@ def test_aad_credential_protocol_matches_sync_and_async() -> None:
     """AadCredential is runtime-checkable and matches both sync and async credentials."""
     assert isinstance(_FakeCredential(), AadCredential)
     assert isinstance(_FakeAsyncCredential(), AadCredential)
+
+
+# ── Default credential (azure.identity.aio) ────────────────────────────
+
+
+async def test_default_credential_constructs_aio_default_azure_credential() -> None:
+    """_default_credential must reach azure.identity.aio — a plain
+    ``import azure.identity`` does NOT pull in the ``aio`` subpackage,
+    so the import must be explicit."""
+    cred = _default_credential()
+    try:
+        assert hasattr(cred, "get_token")
+    finally:
+        await cred.close()  # type: ignore[attr-defined]  # Why: aio credentials hold an aiohttp session; close to avoid leaks in the test process.
+
+
+async def test_pg_provider_reuses_one_default_credential_across_calls() -> None:
+    """With credential=None the provider must create ONE default credential
+    and reuse it — per-call construction leaks unclosed aiohttp sessions
+    and cold-caches every token fetch."""
+    fake = _FakeAsyncCredential(token="cached-tok")
+    with patch("taskq.aad._default_credential", return_value=fake) as mock_default:
+        provider = EntraIdPgProvider()
+        first = await provider.get_pg_credential()
+        second = await provider.get_pg_credential()
+
+    assert first.password == second.password == "cached-tok"
+    assert mock_default.call_count == 1
+
+
+async def test_entra_id_provider_shares_one_default_credential_for_pg_and_redis() -> None:
+    """The combined provider must use a single default credential for both
+    PG and Redis token fetches."""
+    jwt = _make_jwt(oid="shared-oid")
+    fake = _FakeAsyncCredential(token=jwt)
+    with patch("taskq.aad._default_credential", return_value=fake) as mock_default:
+        provider = EntraIdProvider()
+        await provider.get_pg_credential()
+        await provider.get_redis_credential()
+
+    assert mock_default.call_count == 1
+
+
+async def test_explicit_credential_never_touches_default() -> None:
+    """An explicit caller-owned credential is used as-is; no default is built."""
+    explicit = _FakeCredential(token="explicit-tok")
+    with patch("taskq.aad._default_credential") as mock_default:
+        provider = EntraIdPgProvider(explicit)
+        result = await provider.get_pg_credential()
+
+    assert result.password == "explicit-tok"
+    mock_default.assert_not_called()
+
+
+# ── Sync credentials must not block the event loop ─────────────────────
+
+
+async def test_get_token_sync_credential_runs_off_the_event_loop() -> None:
+    """A sync credential's get_token performs blocking HTTP (requests/MSAL);
+    it must be offloaded to a thread, not run inline on the loop."""
+    import threading
+
+    loop_thread = threading.get_ident()
+    seen_threads: list[int] = []
+
+    class _ThreadRecordingCredential:
+        def get_token(self, *scopes: str, **_kw: object) -> _FakeAccessToken:
+            seen_threads.append(threading.get_ident())
+            return _FakeAccessToken("off-loop-tok")
+
+    token = await fetch_pg_access_token(_ThreadRecordingCredential())
+
+    assert token == "off-loop-tok"
+    assert seen_threads and all(t != loop_thread for t in seen_threads)
+
+
+async def test_get_token_async_credential_stays_on_the_event_loop() -> None:
+    """Async credentials await inline — no thread offload needed."""
+    import threading
+
+    loop_thread = threading.get_ident()
+    seen_threads: list[int] = []
+
+    class _AsyncThreadRecordingCredential:
+        async def get_token(self, *scopes: str, **_kw: object) -> _FakeAccessToken:
+            seen_threads.append(threading.get_ident())
+            return _FakeAccessToken("on-loop-tok")
+
+    token = await fetch_pg_access_token(_AsyncThreadRecordingCredential())
+
+    assert token == "on-loop-tok"
+    assert seen_threads == [loop_thread]
+
+
+# ── JWT oid decode robustness ──────────────────────────────────────────
+
+
+@pytest.mark.parametrize("payload_json", ['"just-a-string"', "[1, 2]", "123", "null"])
+async def test_fetch_redis_credentials_non_object_jwt_payload_raises_valueerror(
+    payload_json: str,
+) -> None:
+    """A JWT payload that decodes to valid non-object JSON must produce the
+    helpful ValueError, not an AttributeError from claims.get."""
+    header = base64.urlsafe_b64encode(b"{}").rstrip(b"=")
+    payload = base64.urlsafe_b64encode(payload_json.encode()).rstrip(b"=")
+    jwt = f"{header.decode()}.{payload.decode()}."
+    cred = _FakeCredential(token=jwt)
+    with pytest.raises(ValueError, match="oid"):
+        await fetch_redis_credentials(cred)
 
 
 # ── Missing extra ──────────────────────────────────────────────────────

@@ -72,6 +72,29 @@ async def test_no_connection_source_raises() -> None:
         await apply_pending_locked(schema="taskq")
 
 
+async def test_dsn_and_conn_mutually_exclusive() -> None:
+    """Providing both dsn and conn is a ValueError — the dsn must not be
+    silently ignored in favour of the caller-owned conn."""
+    conn = _FakeConn()
+    with pytest.raises(ValueError, match=r"dsn.*conn"):
+        await apply_pending_locked(
+            dsn="postgresql://fake/fake",
+            schema="taskq",
+            conn=conn,  # type: ignore[arg-type]
+        )
+
+
+async def test_dsn_and_conn_factory_mutually_exclusive() -> None:
+    """Providing both dsn and conn_factory is a ValueError."""
+    conn = _FakeConn()
+    with pytest.raises(ValueError, match=r"dsn.*conn"):
+        await apply_pending_locked(
+            dsn="postgresql://fake/fake",
+            schema="taskq",
+            conn_factory=_make_conn_factory(conn),
+        )
+
+
 # ── Caller-owned conn not closed ───────────────────────────────────────
 
 
@@ -140,3 +163,18 @@ async def test_advisory_lock_released_on_failure() -> None:
     assert len(unlock_sqls) == 1
     # Factory conn still closed despite failure
     assert conn.closed
+
+
+# ── conn_factory failure → SystemExit ──────────────────────────────────
+
+
+async def test_conn_factory_error_raises_system_exit() -> None:
+    """A conn_factory that raises surfaces as SystemExit — the documented
+    abort-startup path (migration failures must abort the process, not be
+    swallowed). No advisory unlock is attempted: no conn was ever produced."""
+
+    async def _boom_factory() -> asyncpg.Connection:
+        raise RuntimeError("factory boom")
+
+    with pytest.raises(SystemExit, match="migration failed"):
+        await apply_pending_locked(schema="taskq", conn_factory=_boom_factory)

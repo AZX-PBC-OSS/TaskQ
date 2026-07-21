@@ -497,6 +497,28 @@ class WorkerSettings(TaskQSettings):
         "the common case). Use poll_interval when NOTIFY is disabled.",
     )
 
+    # ── Credential hot-reload ────────────────────────────────────────────
+    reload_interval: float | None = Field(
+        default=None,
+        gt=0,
+        description="TASKQ_RELOAD_INTERVAL (seconds). When set, the worker "
+        "periodically triggers a credential hot-reload (the same path as "
+        "SIGHUP) with no external signal required — the rotation path for "
+        "platforms without SIGHUP (e.g. Windows) and for hands-off "
+        "scheduled rotation (e.g. ~720s for AWS IAM's 15-minute tokens). "
+        "None disables the timer; SIGHUP and deps.request_reload() still "
+        "work. Only factory-backed resources are rebuilt; DSN/static "
+        "credentials are unaffected.",
+    )
+    reload_factory_timeout: float = Field(
+        default=30.0,
+        gt=0,
+        description="TASKQ_RELOAD_FACTORY_TIMEOUT (seconds). Bounds each "
+        "individual factory call during a credential hot-reload — a hung "
+        "token endpoint is marked failed for that resource instead of "
+        "wedging the reload coordinator (and all future SIGHUPs).",
+    )
+
     # ── Queue selection ──────────────────────────────────────────────────
     queues: list[str] = Field(
         default_factory=lambda: ["default"],

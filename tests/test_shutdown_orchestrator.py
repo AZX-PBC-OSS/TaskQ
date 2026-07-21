@@ -134,6 +134,7 @@ def _make_deps(
     registry: FakeActiveJobRegistry | None = None,
     settings: WorkerSettings | None = None,
     leader_conn: asyncpg.Connection | None = None,
+    owns_leader_conn: bool = True,
 ) -> WorkerDeps:
     pool = MagicMock()
     deps = WorkerDeps(
@@ -143,6 +144,9 @@ def _make_deps(
         worker_pool=pool,  # type: ignore[arg-type]
         notify_conn=None,
         leader_conn=leader_conn,
+        # Default True: these tests exercise the TaskQ-owned close path.
+        # Caller-owned (False) is covered in test_shutdown_signals.py.
+        owns_leader_conn=owns_leader_conn,
     )
     if registry is not None:
         deps.active_jobs = registry  # type: ignore[assignment]
@@ -619,6 +623,7 @@ async def test_leader_conn_closed_and_nulled(monkeypatch: pytest.MonkeyPatch) ->
         worker_pool=pool,  # type: ignore[arg-type]
         notify_conn=None,
         leader_conn=leader_conn,
+        owns_leader_conn=True,  # Why: these tests exercise the TaskQ-owned close path.
     )
     deps.active_jobs = registry  # type: ignore[assignment]
 
@@ -660,6 +665,7 @@ async def test_leader_conn_close_error_suppressed_and_nulled(
         worker_pool=pool,  # type: ignore[arg-type]
         notify_conn=None,
         leader_conn=leader_conn,
+        owns_leader_conn=True,  # Why: these tests exercise the TaskQ-owned close path.
     )
     deps.active_jobs = registry  # type: ignore[assignment]
 
@@ -699,6 +705,7 @@ async def test_leader_conn_os_error_suppressed(monkeypatch: pytest.MonkeyPatch) 
         worker_pool=pool,  # type: ignore[arg-type]
         notify_conn=None,
         leader_conn=leader_conn,
+        owns_leader_conn=True,  # Why: these tests exercise the TaskQ-owned close path.
     )
     deps.active_jobs = registry  # type: ignore[assignment]
 

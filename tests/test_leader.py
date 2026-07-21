@@ -473,7 +473,9 @@ async def test_watchdog_reopen_uses_leader_conn_factory_not_dsn(monkeypatch: Any
     deps.is_leader.clear()
 
     factory_calls: list[None] = []
-    factory_conns: list[FakeConn] = []
+    factory_conns: list[
+        object
+    ] = []  # Why: identity bag — members are compared with `is`/`in` against deps.leader_conn (asyncpg.Connection), so element typing as FakeConn makes pyright report no-overlap.
 
     async def fake_factory() -> FakeConn:
         factory_calls.append(None)
@@ -1917,3 +1919,330 @@ async def test_archive_expiry_loop_survives_unlock_failure(monkeypatch: Any) -> 
 
     assert sweep_ran, "archive expiry sweep should have run"
     assert not task.cancelled(), "task should not be cancelled after unlock failure"
+
+
+# ── Reopen retries on credential-provider exceptions ────────────────────
+
+
+class _FakeProviderError(RuntimeError):
+    """Stand-in for azure/hvac/botocore credential-fetch failures, which are
+    NOT asyncpg.PostgresConnectionError subclasses (and neither is
+    asyncpg.InvalidPasswordError — a fresh-but-rejected token)."""
+
+
+async def test_election_reopen_retries_on_provider_exception(monkeypatch: Any) -> None:  # type: ignore[reportUnknownParameterType]
+    """A leader_conn_factory raising a provider-style exception once (IdP
+    outage) then succeeding must be retried by the election loop — the
+    exception must NOT escape and crash the worker TaskGroup."""
+    leader, deps, _backend, _, _, shutdown = await _make_leader(monkeypatch=monkeypatch)
+    deps.leader_conn = None
+    deps.is_leader.clear()
+
+    factory_calls = 0
+
+    async def flaky_factory() -> FakeConn:
+        nonlocal factory_calls
+        factory_calls += 1
+        if factory_calls == 1:
+            raise _FakeProviderError("simulated IdP outage")
+        return FakeConn(fetchval_result=True)
+
+    deps.leader_conn_factory = flaky_factory  # type: ignore[assignment]
+
+    task = asyncio.create_task(leader._election_loop(shutdown))
+    for _ in range(200):
+        if deps.is_leader.is_set():
+            break
+        await asyncio.sleep(0.01)
+    shutdown.set()
+    await task  # must not propagate the provider exception
+
+    assert deps.is_leader.is_set()
+    assert factory_calls >= 2
+
+
+async def test_dedicated_conn_reopen_retries_on_provider_exception(monkeypatch: Any) -> None:  # type: ignore[reportUnknownParameterType]
+    """A provider exception while opening the monitor/cron dedicated conns
+    (after the advisory lock is won) must be caught and retried — a
+    transient IdP failure mid-election must not crash the worker."""
+    leader, deps, _backend, _, _, shutdown = await _make_leader(monkeypatch=monkeypatch)
+    deps.leader_conn = None
+    deps.is_leader.clear()
+
+    factory_calls = 0
+
+    async def flaky_factory() -> FakeConn:
+        nonlocal factory_calls
+        factory_calls += 1
+        if factory_calls == 2:
+            # leader_conn reopened fine; the monitor-conn open hits the outage
+            raise _FakeProviderError("simulated IdP outage")
+        return FakeConn(fetchval_result=True)
+
+    deps.leader_conn_factory = flaky_factory  # type: ignore[assignment]
+
+    task = asyncio.create_task(leader._election_loop(shutdown))
+    for _ in range(200):
+        if deps.is_leader.is_set():
+            break
+        await asyncio.sleep(0.01)
+    shutdown.set()
+    await task
+
+    assert deps.is_leader.is_set()
+    # leader, failed monitor, then leader + monitor + cron on the retry
+    assert factory_calls >= 4
+
+
+# ── Ownership contract: caller-owned leader_conn is never closed ────────
+
+
+async def test_watchdog_does_not_close_caller_owned_leader_conn(monkeypatch: Any) -> None:  # type: ignore[reportUnknownParameterType]
+    """Caller-owned leader_conn that dies is abandoned, never closed.
+
+    The ownership contract ("TaskQ never closes caller-owned resources")
+    forbids close() even on the dead-conn path — the caller owns the
+    corpse. The watchdog must still drop our reference so the election
+    loop rebuilds via the factory/DSN path and re-establishes leadership.
+    """
+    caller_conn = FakeConn(fetchval_result=True)
+    leader, deps, _backend, _, _, shutdown = await _make_leader(
+        leader_conn=caller_conn,
+        monkeypatch=monkeypatch,
+    )
+    assert not deps.owns_leader_conn  # _make_deps default: caller-provided conn
+    assert deps.leader_conn is caller_conn
+
+    class FailingMonitor(FakeConn):
+        async def fetchval(self, sql: str, *args: object) -> object:
+            raise asyncpg.PostgresConnectionError("monitor probe failed")
+
+    deps.is_leader.set()
+    failing_monitor = FailingMonitor()
+    leader._leader_monitor_conn = failing_monitor  # type: ignore[reportAttributeAccessIssue]
+
+    factory_conns: list[
+        object
+    ] = []  # Why: identity bag — members are compared with `is`/`in` against deps.leader_conn (asyncpg.Connection), so element typing as FakeConn makes pyright report no-overlap.
+
+    async def factory() -> FakeConn:
+        conn = FakeConn(fetchval_result=True)
+        factory_conns.append(conn)
+        return conn
+
+    deps.leader_conn_factory = factory  # type: ignore[assignment]
+
+    watchdog_task = asyncio.create_task(leader._watchdog_loop(shutdown))
+    election_task = asyncio.create_task(leader._election_loop(shutdown))
+
+    # Wait for the watchdog failure path to run. failing_monitor._closed is
+    # the stable witness: _close_leader_owned_conns closes it AFTER the
+    # leader_conn close/abandon in the same handler, so once it is True the
+    # caller-conn decision has definitely been made (and unlike the
+    # is_leader flip, it never flips back under a racing re-election).
+    for _ in range(200):
+        if failing_monitor._closed:
+            break
+        await asyncio.sleep(0.01)
+    assert failing_monitor._closed
+    assert not caller_conn.is_closed()
+    assert caller_conn.close_calls == 0
+
+    # Election loop re-acquires leadership through the factory.
+    for _ in range(200):
+        if deps.is_leader.is_set() and deps.leader_conn in factory_conns:
+            break
+        await asyncio.sleep(0.01)
+    shutdown.set()
+    watchdog_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await watchdog_task
+    await election_task
+
+    assert deps.is_leader.is_set()
+    assert deps.leader_conn in factory_conns
+    assert not caller_conn.is_closed()
+    assert caller_conn.close_calls == 0
+
+
+async def test_watchdog_closes_taskq_owned_leader_conn() -> None:
+    """TaskQ-owned leader_conn IS closed on the watchdog failure path — the
+    ownership guard must not change TaskQ-owned behaviour."""
+    leader_conn = FakeConn(fetchval_result=True)
+    leader, deps, _backend, _, _, shutdown = await _make_leader(leader_conn=leader_conn)
+    deps.owns_leader_conn = True
+    deps.is_leader.set()
+
+    class FailingMonitor(FakeConn):
+        async def fetchval(self, sql: str, *args: object) -> object:
+            raise asyncpg.PostgresConnectionError("monitor probe failed")
+
+    failing_monitor = FailingMonitor()
+    leader._leader_monitor_conn = failing_monitor  # type: ignore[reportAttributeAccessIssue]
+
+    task = asyncio.create_task(leader._watchdog_loop(shutdown))
+    for _ in range(200):
+        if leader_conn.is_closed() and not deps.is_leader.is_set():
+            break
+        await asyncio.sleep(0.01)
+    shutdown.set()
+    deps.is_leader.set()  # unblock the wait() so the loop observes shutdown
+    await task
+
+    assert leader_conn.is_closed()
+    assert leader_conn.close_calls == 1
+    assert deps.leader_conn is None
+
+
+# ── Keepalive applied to factory-built leader connections ───────────────
+
+
+async def test_factory_built_leader_conns_get_keepalive(monkeypatch: Any) -> None:  # type: ignore[reportUnknownParameterType]
+    """Factory-built leader/monitor/cron conns get the worker's TCP
+    keepalive policy applied. The DSN path gets it inside
+    open_dedicated_conn; the factory path bypasses that helper, so
+    _open_leader_conn/_open_dedicated_conn must apply it explicitly."""
+    leader, deps, _backend, _, _, shutdown = await _make_leader(monkeypatch=monkeypatch)
+    deps.leader_conn = None
+    deps.is_leader.clear()
+
+    async def factory() -> FakeConn:
+        return FakeConn(fetchval_result=True)
+
+    deps.leader_conn_factory = factory  # type: ignore[assignment]
+
+    import taskq.worker.leader as leader_mod
+
+    keepalive_calls: list[str] = []
+
+    def fake_keepalive(conn: object, *, label: str) -> bool:
+        keepalive_calls.append(label)
+        return True
+
+    monkeypatch.setattr(leader_mod, "apply_keepalive_to_conn", fake_keepalive)
+
+    task = asyncio.create_task(leader._election_loop(shutdown))
+    for _ in range(200):
+        if deps.is_leader.is_set():
+            break
+        await asyncio.sleep(0.01)
+    shutdown.set()
+    await task
+
+    assert deps.is_leader.is_set()
+    assert keepalive_calls == ["leader_conn", "leader_monitor_conn", "cron_conn"]
+
+
+# ── Fail-fast when no rebuild path exists ───────────────────────────────
+
+
+async def test_open_leader_conn_fails_fast_without_factory_or_dsn(monkeypatch: Any) -> None:  # type: ignore[reportUnknownParameterType]
+    """With no leader_conn_factory and pg_dsn_direct None, _open_leader_conn
+    must fail fast with RuntimeError — never asyncpg.connect(str(None)),
+    which would DNS-retry the literal host 'None' forever. Unreachable via
+    open_worker_deps (startup validation forbids it); belt-and-braces for
+    hand-built WorkerDeps."""
+    leader, deps, _backend, _, _, _shutdown = await _make_leader(monkeypatch=monkeypatch)
+    deps.leader_conn_factory = None
+    deps.settings.pg_dsn_direct = None
+
+    import taskq.worker.leader as leader_mod
+
+    async def fail_if_called(
+        dsn: str, *, label: str = "", apply_keepalive: bool = True
+    ) -> FakeConn:
+        raise AssertionError(f"open_dedicated_conn must not be called (dsn={dsn!r})")
+
+    monkeypatch.setattr(leader_mod, "open_dedicated_conn", fail_if_called)
+
+    with pytest.raises(RuntimeError, match="cannot rebuild leader connection"):
+        await leader._open_leader_conn()
+
+
+async def test_open_dedicated_conn_fails_fast_without_factory_or_dsn(monkeypatch: Any) -> None:  # type: ignore[reportUnknownParameterType]
+    """Same fail-fast for the monitor/cron dedicated-conn open path."""
+    leader, deps, _backend, _, _, _shutdown = await _make_leader(monkeypatch=monkeypatch)
+    deps.leader_conn_factory = None
+    deps.settings.pg_dsn_direct = None
+
+    import taskq.worker.leader as leader_mod
+
+    async def fail_if_called(
+        dsn: str, *, label: str = "", apply_keepalive: bool = True
+    ) -> FakeConn:
+        raise AssertionError(f"open_dedicated_conn must not be called (dsn={dsn!r})")
+
+    monkeypatch.setattr(leader_mod, "open_dedicated_conn", fail_if_called)
+
+    with pytest.raises(RuntimeError, match="cannot rebuild leader_monitor_conn"):
+        await leader._open_dedicated_conn("leader_monitor_conn")
+
+
+# ── Leadership gap-window after reload ──────────────────────────────────
+
+
+async def test_reelection_survives_advisory_lock_gap_window(monkeypatch: Any) -> None:  # type: ignore[reportUnknownParameterType]
+    """After reload closes leader_conn, the first pg_try_advisory_lock on the
+    rebuilt conn can return False — the old session's lock release is still
+    propagating. The election loop must treat it as an ordinary lost
+    election (clear is_leader, retry with the SAME rebuilt conn), not
+    crash, and win on the next attempt."""
+    original = FakeConn(fetchval_result=True)
+    leader, deps, _backend, _, _, shutdown = await _make_leader(
+        leader_conn=original,
+        monkeypatch=monkeypatch,
+    )
+
+    task = asyncio.create_task(leader._election_loop(shutdown))
+    for _ in range(200):
+        if deps.is_leader.is_set():
+            break
+        await asyncio.sleep(0.01)
+    assert deps.is_leader.is_set()
+
+    # Gap-window conn: first lock attempt loses, subsequent attempts win.
+    lock_attempts = 0
+
+    class GapWindowConn(FakeConn):
+        async def fetchval(self, sql: str, *args: object) -> object:
+            nonlocal lock_attempts
+            if "pg_try_advisory_lock" in sql:
+                lock_attempts += 1
+                return lock_attempts > 1
+            return await super().fetchval(sql, *args)
+
+    gap_conn = GapWindowConn()
+    factory_calls = 0
+
+    async def factory() -> FakeConn:
+        nonlocal factory_calls
+        factory_calls += 1
+        return gap_conn
+
+    deps.leader_conn_factory = factory  # type: ignore[assignment]
+
+    # Simulate reload_credentials: close leader_conn, null it, is_leader still set.
+    await original.close()
+    deps.leader_conn = None
+
+    # is_leader clears as the re-election cascade begins...
+    for _ in range(200):
+        if not deps.is_leader.is_set():
+            break
+        await asyncio.sleep(0.01)
+    assert not deps.is_leader.is_set()
+
+    # ...then re-sets once the old session's lock release has propagated.
+    for _ in range(200):
+        if deps.is_leader.is_set():
+            break
+        await asyncio.sleep(0.01)
+    shutdown.set()
+    await task
+
+    assert deps.is_leader.is_set()
+    assert deps.leader_conn is gap_conn
+    assert lock_attempts >= 2  # first False (gap window), then True
+    # The rebuilt conn is reused across lock attempts — the factory runs
+    # once per conn ROLE (leader + monitor + cron), not per attempt.
+    assert factory_calls == 3

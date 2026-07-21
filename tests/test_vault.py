@@ -10,6 +10,9 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import MagicMock
 
+import hvac.exceptions
+import pytest
+
 from taskq.auth import PgCredential, PgCredentialProvider
 from taskq.vault import VaultDynamicDbProvider
 
@@ -71,3 +74,38 @@ def test_vault_provider_protocol_matching() -> None:
     """VaultDynamicDbProvider satisfies PgCredentialProvider at runtime."""
     provider = VaultDynamicDbProvider(_fake_hvac_client(), role="my-role")
     assert isinstance(provider, PgCredentialProvider)
+
+
+# ── Error paths ────────────────────────────────────────────────────────
+
+
+async def test_vault_provider_propagates_hvac_error() -> None:
+    """An hvac error from generate_credentials propagates unchanged through
+    asyncio.to_thread — callers must see the real Vault failure, not a wrapper."""
+    client = _fake_hvac_client()
+    client.secrets.database.generate_credentials.side_effect = hvac.exceptions.VaultError(
+        "permission denied"
+    )
+    provider = VaultDynamicDbProvider(client, role="my-role")
+    with pytest.raises(hvac.exceptions.VaultError):
+        await provider.get_pg_credential()
+
+
+async def test_vault_provider_missing_data_key_raises_key_error() -> None:
+    """A Vault response without a 'data' key raises KeyError (pinned current
+    behavior — the provider does not pre-validate the response shape)."""
+    client = _fake_hvac_client()
+    client.secrets.database.generate_credentials.return_value = {}
+    provider = VaultDynamicDbProvider(client, role="my-role")
+    with pytest.raises(KeyError):
+        await provider.get_pg_credential()
+
+
+async def test_vault_provider_missing_username_or_password_raises_key_error() -> None:
+    """A Vault response missing 'username'/'password' under 'data' raises
+    KeyError (pinned current behavior)."""
+    client = _fake_hvac_client()
+    client.secrets.database.generate_credentials.return_value = {"data": {"username": "u"}}
+    provider = VaultDynamicDbProvider(client, role="my-role")
+    with pytest.raises(KeyError):
+        await provider.get_pg_credential()

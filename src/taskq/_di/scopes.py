@@ -328,23 +328,48 @@ class LoopScope(ScopeContainer):
 
         The returned mapping is a live view onto the underlying cache —
         providers resolved after this method is called (e.g., lazy
-        providers) become visible without re-fetching. Callers MUST NOT
-        attempt to mutate the mapping; doing so raises ``TypeError``.
+        providers) become visible without re-fetching, and replacements
+        made via :meth:`replace_value` become visible to subsequent
+        ``.get()`` reads. Callers MUST NOT attempt to mutate the mapping;
+        doing so raises ``TypeError``.
 
         Stability invariant: once ``bootstrap`` returns, the registered
         set of LOOP-scope provider types is FROZEN for the lifetime of
-        the loop. The values stored under each type key (e.g. an
-        ``asyncpg.Connection``) are expected to be stable references —
+        the loop. ``asyncpg.Connection`` values are stable references —
         callers that read the mapping repeatedly (such as
         ``SubJobEnqueuer.enqueue``) assume the connection identity does
-        not change between dispatches. If a future feature needs to
-        swap a LOOP-scope value mid-loop (e.g., reconnect after a pool
-        reset), it must coordinate with consumers of this mapping
-        because the consumer's per-dispatch transaction lifecycle
-        requires the same connection across both transaction-open and
-        transaction-close.
+        not change between dispatches, because the consumer's
+        per-dispatch transaction lifecycle requires the same connection
+        across both transaction-open and transaction-close.
+
+        ``asyncpg.Pool`` values are the one sanctioned exception: they
+        may be replaced mid-loop via :meth:`replace_value` (credential
+        hot-reload — see ``taskq.worker.deps.reload_credentials``).
+        Pools are stateless acquisition factories, so swapping the
+        reference does not violate any transaction-identity invariant;
+        consumers that read the mapping per dispatch (rather than
+        capturing it once) always see the current pool.
         """
         return MappingProxyType(self._cache)
+
+    def replace_value(self, type_: type, value: object) -> None:
+        """Replace the cached instance for *type_*.
+
+        The sanctioned mid-loop swap for VALUE providers whose resource
+        was hot-swapped externally — currently ``asyncpg.Pool`` after a
+        SIGHUP credential reload (``taskq.worker.deps.reload_credentials``
+        drains and closes the old pool; without this, DI-injected
+        ``db: asyncpg.Pool`` consumers would keep using a closed pool).
+
+        The old value is NOT torn down here — its lifecycle belongs to
+        the swapper. Only the cache entry is replaced; the (sealed)
+        registry is untouched. Raises :class:`KeyError` when *type_* has
+        no cached value — replacing an absent entry would silently
+        insert a value no provider declared.
+        """
+        if type_ not in self._cache:
+            raise KeyError(f"no cached value for {type_!r} — nothing to replace")
+        self._cache[type_] = value
 
     async def get_or_create[T](self, type_: type[T], entry: ProviderEntry[T]) -> T:
         running = asyncio.get_running_loop()

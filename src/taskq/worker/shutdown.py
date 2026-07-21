@@ -120,8 +120,8 @@ async def orchestrate_shutdown(
     """Run the four-phase shutdown orchestration.
 
     Phases are DRAINING → CANCELLING → FORCING → ABANDONING, followed by
-    leader_conn close and ``shutdown_event.set()``.  Each phase is assigned
-    to ``deps.shutdown_phase`` BEFORE any per-phase work.
+    TaskQ-owned ``leader_conn`` close and ``shutdown_event.set()``.  Each
+    phase is assigned to ``deps.shutdown_phase`` BEFORE any per-phase work.
     Returns 0 on clean exit.
     """
     loop = asyncio.get_running_loop()
@@ -215,7 +215,17 @@ async def orchestrate_shutdown(
                 )
 
         # ── leader_conn close ──────────────────────────────────
-        if deps.leader_conn is not None:
+        # Why the owns_leader_conn guard: the ownership contract ("TaskQ
+        # never closes caller-owned resources") forbids closing a
+        # caller-provided leader_conn even during shutdown. The reference
+        # is also left in place for caller-owned conns: the leader
+        # election loop keeps running until shutdown_event fires (finally
+        # block below), and a None leader_conn would make it open a
+        # *fresh* conn and possibly re-acquire the advisory lock
+        # mid-shutdown. For TaskQ-owned conns, close+null releases the
+        # advisory lock early so a replacement pod can take over before
+        # the SIGTERM budget expires.
+        if deps.leader_conn is not None and deps.owns_leader_conn:
             with contextlib.suppress(asyncpg.PostgresConnectionError, OSError):
                 await deps.leader_conn.close()
             deps.leader_conn = None
@@ -256,9 +266,12 @@ def install_signal_handlers(
     credential refresh has been requested. The coordinator runs as a
     sibling task in the worker's ``TaskGroup`` and performs the actual
     pool/connection swap. SIGHUP can be sent multiple times — each one
-    sets the event; the coordinator clears it after a reload completes.
-    If a reload is already in progress, the second SIGHUP is a no-op
-    (the event is already set).
+    sets the event. The coordinator clears the event *before* each
+    reload and never after, so a SIGHUP arriving mid-reload (success OR
+    failure) is honored with exactly one follow-up reload: N signals
+    during one reload coalesce into one follow-up, not N. Reload
+    requests arriving while shutdown orchestration is in progress
+    (``deps.shutdown_phase`` is not NONE) are skipped.
 
     The signal counter is closure-scoped — each call to this function
     creates a fresh, independent counter.  The handler callable contains

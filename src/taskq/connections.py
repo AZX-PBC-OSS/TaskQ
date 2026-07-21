@@ -12,10 +12,11 @@ replace any of those with either:
 Fields left ``None`` fall back to the existing DSN construction, so the
 hook points are purely additive.
 
-See :doc:`/guides/managed-identities` for the managed-identity
-deployment guide; :mod:`taskq.auth` provides vendor-neutral credential
-providers and factory builders, with provider-specific implementations in
-:mod:`taskq.aad`, :mod:`taskq.aws`, and :mod:`taskq.vault`.
+See the managed-identities deployment guide
+(docs/guides/managed-identities.md); :mod:`taskq.auth` provides
+vendor-neutral credential providers and factory builders, with
+provider-specific implementations in :mod:`taskq.aad`, :mod:`taskq.aws`,
+and :mod:`taskq.vault`.
 
 Ownership rule
 --------------

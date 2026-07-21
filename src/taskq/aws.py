@@ -35,10 +35,13 @@ call to a factory fetches a fresh token. For long-lived workers, send
 the factory is re-invoked automatically to rebuild the pool with a fresh
 token (see ``taskq.worker.deps.reload_credentials``); no restart needed.
 
-``boto3`` is synchronous; ``generate_db_auth_token`` is local SigV4 signing
-(no network I/O), so it is safe to call directly from an async provider.
-This module never imports ``boto3`` at module top level — the import is
-deferred so ``import taskq.aws`` is safe without the extra installed.
+``boto3`` is synchronous. ``generate_db_auth_token`` itself is local
+SigV4 signing, but resolving the ambient credential chain
+(``get_frozen_credentials``) may perform blocking STS/IMDS HTTPS calls
+when credentials are near expiry — so the provider offloads the call to
+a thread rather than stalling the event loop. This module never imports
+``boto3`` at module top level — the import is deferred so
+``import taskq.aws`` is safe without the extra installed.
 
 Prerequisites
 -------------
@@ -54,7 +57,9 @@ Prerequisites
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
+from urllib.parse import unquote, urlparse
 
 from taskq.auth import PgCredential, PgCredentialProvider
 
@@ -88,18 +93,17 @@ def _require_boto3() -> Any:
 
 
 def _parse_dsn(dsn: str) -> tuple[str, int, str]:
-    """Extract ``(hostname, port, username)`` from a Postgres DSN."""
-    from urllib.parse import urlparse
+    """Extract ``(hostname, port, username)`` from a Postgres DSN.
 
+    The username is percent-decoded (urlparse keeps the raw encoding, but
+    the IAM token is signed for the literal DB username). May be empty —
+    the caller decides whether that's an error (an explicit ``username=``
+    parameter can rescue a userless DSN).
+    """
     parsed = urlparse(str(dsn))
     hostname = parsed.hostname or "localhost"
     port = parsed.port or 5432
-    username = parsed.username or ""
-    if not username:
-        raise ValueError(
-            f"DSN {dsn!r} has no username; AWS IAM RDS auth requires the "
-            "IAM-mapped database user in the DSN userinfo (or pass username=)."
-        )
+    username = unquote(parsed.username or "")
     return hostname, port, username
 
 
@@ -121,9 +125,14 @@ def fetch_rds_iam_token(
     ``region`` to pin the region when the client is not supplied.
 
     The token is a SigV4-signed URL valid for 15 minutes
-    (:data:`RDS_TOKEN_LIFETIME_SECONDS`). ``generate_db_auth_token`` is
-    local SigV4 signing — no network I/O — so this is safe to call from
-    an async context without an executor.
+    (:data:`RDS_TOKEN_LIFETIME_SECONDS`). ``region`` is passed through to
+    botocore untouched — ``None`` lets botocore fall back to the client's
+    ambient region (an empty string would produce a signature scoped to
+    ``date//rds-db/aws4_request``, which RDS rejects).
+
+    This is a synchronous function and may perform blocking network I/O
+    (STS/IMDS credential refresh); async callers should offload it to a
+    thread, as :class:`RdsIamProvider` does.
     """
     if client is None:
         boto3 = _require_boto3()
@@ -137,7 +146,7 @@ def fetch_rds_iam_token(
         DBHostname=hostname,
         Port=port,
         DBUsername=username,
-        Region=region or "",
+        Region=region,
     )
 
 
@@ -167,13 +176,22 @@ class RdsIamProvider(PgCredentialProvider):
         self._hostname = hostname
         self._port = port
         self._username = username if username is not None else parsed_username
+        if not self._username:
+            # Deliberately no DSN in the message — it may carry a userinfo
+            # password, which must not land in tracebacks / log aggregation.
+            raise ValueError(
+                "DSN has no username; AWS IAM RDS auth requires the "
+                "IAM-mapped database user in the DSN userinfo (or pass username=)."
+            )
         self._region = region
         self._client = client
 
     async def get_pg_credential(self) -> PgCredential:
-        # generate_db_auth_token is local SigV4 signing (no network I/O),
-        # so no executor is needed — safe to call from an async context.
-        token = fetch_rds_iam_token(
+        # Offloaded to a thread: although generate_db_auth_token is local
+        # SigV4 signing, the ambient credential chain may perform blocking
+        # STS/IMDS HTTPS refreshes, which must not stall the event loop.
+        token = await asyncio.to_thread(
+            fetch_rds_iam_token,
             hostname=self._hostname,
             port=self._port,
             username=self._username,
