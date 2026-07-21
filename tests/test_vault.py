@@ -1,8 +1,8 @@
 """Tests for taskq.vault — HashiCorp Vault dynamic DB credential providers.
 
 Uses a fake hvac client (no real Vault calls) to verify the provider
-implementation. The ``[vault]`` extra (hvac) is installed in the dev
-environment.
+implementation. Requires the ``[vault]`` extra (hvac); skips when the
+extra is not installed.
 """
 
 from __future__ import annotations
@@ -10,8 +10,11 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import MagicMock
 
-import hvac.exceptions
 import pytest
+
+pytest.importorskip("hvac", reason="requires taskq[vault]")
+
+import hvac.exceptions
 
 from taskq.auth import PgCredential, PgCredentialProvider
 from taskq.vault import VaultDynamicDbProvider

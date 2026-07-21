@@ -2,8 +2,8 @@
 
 Uses fake credentials (no real Azure calls) to verify the provider
 implementations satisfy the Protocols and return the right credential
-carriers. The ``[aad]`` extra (azure-identity) is installed in the dev
-environment.
+carriers. Requires the ``[aad]`` extra (azure-identity + aiohttp); skips
+when the extra is not installed.
 """
 
 from __future__ import annotations
@@ -14,6 +14,9 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
+
+pytest.importorskip("azure.identity.aio", reason="requires taskq[aad]")
+pytest.importorskip("aiohttp", reason="requires taskq[aad]")
 
 from taskq.aad import (
     PG_TOKEN_SCOPE,

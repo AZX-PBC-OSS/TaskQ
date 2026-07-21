@@ -1,8 +1,8 @@
 """Tests for taskq.aws — AWS IAM RDS credential providers.
 
 Uses a fake boto3 client (no real AWS calls) to verify the provider
-implementation. The ``[aws]`` extra (boto3) is installed in the dev
-environment.
+implementation. Requires the ``[aws]`` extra (boto3); skips when the
+extra is not installed.
 """
 
 from __future__ import annotations
@@ -10,6 +10,8 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 import pytest
+
+pytest.importorskip("boto3", reason="requires taskq[aws]")
 
 from taskq.auth import PgCredential, PgCredentialProvider
 from taskq.aws import RDS_TOKEN_LIFETIME_SECONDS, RdsIamProvider, fetch_rds_iam_token
