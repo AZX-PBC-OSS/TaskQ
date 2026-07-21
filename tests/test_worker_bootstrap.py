@@ -429,9 +429,27 @@ async def test_ensure_slots_failure_logged_and_bootstrap_continues(
 
     monkeypatch.setattr(ConcurrencyReservation, "ensure_slots", _raise_ensure_slots)
 
+    async def _run() -> None:
+        with contextlib.suppress(asyncio.CancelledError):
+            await _main(settings, actor_registry=registry)
+
     try:
         with structlog.testing.capture_logs() as captured:
-            await _run_and_cancel(lambda: _main(settings, actor_registry=registry))
+            task = asyncio.create_task(_run())
+            # Poll for the expected log instead of a fixed sleep — under a
+            # loaded container, bootstrap may need more than a fixed window
+            # to reach the ensure_slots loop.
+            deadline = asyncio.get_running_loop().time() + 30.0
+            while asyncio.get_running_loop().time() < deadline:
+                if any(e.get("event") == "ensure_slots_failed" for e in captured):
+                    break
+                if task.done():
+                    break
+                await asyncio.sleep(0.05)
+            if not task.done():
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
     finally:
         rl_registry._reservations.pop(reservation_name, None)  # pyright: ignore[reportPrivateUsage]
 

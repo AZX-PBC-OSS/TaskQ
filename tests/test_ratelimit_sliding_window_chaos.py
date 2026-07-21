@@ -7,9 +7,10 @@ Redis→PG degradation — stop Redis container, verify PG fallback with
 WARNING log, ``RateLimitDecision.backend == "postgres"``.
 
 Redis dies mid-Lua — semantically captured by ConnectionError on the
-next command after ``redis_container.stop()``. The state divergence between
+next command after stopping the container. The state divergence between
 Redis (containing N entries) and PG (empty) is expected and documented: the
-two backends are independent state stores.
+two backends are independent state stores. Container-stopping tests use a
+function-scoped killable container, never the shared session container.
 
 Both backends unavailable — stop both Redis and PG; acquire() raises
 (the underlying error), does NOT silently allow. Also tests
@@ -28,7 +29,7 @@ from taskq._ids import new_base62
 from taskq.backend.clock import SystemClock
 from taskq.ratelimit import SlidingWindow
 from taskq.settings import WorkerSettings
-from taskq.testing.fixtures import ModulePgSchema
+from taskq.testing.fixtures import ModulePgSchema, redis_url_for
 
 pytestmark = [pytest.mark.integration, pytest.mark.redis]
 
@@ -61,16 +62,16 @@ async def test_redis_to_pg_degradation(
     style: str,
     module_pg_schema: ModulePgSchema,
     module_pg_pool: asyncpg.Pool,
-    redis_url: str,
-    redis_container: object,
+    killable_redis_container: object,
 ) -> None:
     """With both backends running, acquire confirms Redis. Stop Redis;
     next acquire falls back to PG with a WARNING log containing
     ``rate-limit-redis-fallback``, ``bucket_name``, and ``style``. The
     WARNING precedes any INFO decision log.
 
-    The Redis container is restarted in ``finally`` so subsequent tests see
-    a running container.
+    Uses a function-scoped killable container — the session container is
+    shared by every module and must never be stopped. The container is
+    restarted in ``finally`` so the recovery path is also exercised.
     """
     settings = _settings(module_pg_schema)
     clock = SystemClock()
@@ -83,7 +84,7 @@ async def test_redis_to_pg_degradation(
         backend="redis",
         style=style,
     )
-    client = await _make_redis_client(redis_url)
+    client = await _make_redis_client(redis_url_for(killable_redis_container))
 
     try:
         r = await sw.acquire(
@@ -92,7 +93,7 @@ async def test_redis_to_pg_degradation(
         assert r.allowed is True
         assert r.backend == "redis"
 
-        redis_container.stop()  # type: ignore[union-attr] # Why: redis_container is a RedisContainer with stop(); typed as object in fixtures to avoid transitive imports
+        killable_redis_container.stop()  # type: ignore[union-attr] # Why: RedisContainer.stop(); the fixture is typed object to avoid transitive imports
 
         r2 = await sw.acquire(
             redis_client=client, pg_pool=module_pg_pool, clock=clock, settings=settings
@@ -102,7 +103,7 @@ async def test_redis_to_pg_degradation(
         assert r2.allowed is True
     finally:
         try:
-            redis_container.start()  # type: ignore[union-attr] # Why: redis_container is a RedisContainer with start(); typed as object in fixtures to avoid transitive imports
+            killable_redis_container.start()  # type: ignore[union-attr] # Why: as above
         except Exception as exc:
             structlog.get_logger("taskq.test_chaos").warning(
                 "redis-container-restart-failed",
@@ -119,8 +120,7 @@ async def test_redis_dies_mid_lua(
     style: str,
     module_pg_schema: ModulePgSchema,
     module_pg_pool: asyncpg.Pool,
-    redis_url: str,
-    redis_container: object,
+    killable_redis_container: object,
 ) -> None:
     """Redis dies mid-Lua. The container stop causes a ConnectionError
     on the next Redis command, which is semantically equivalent to the script
@@ -143,7 +143,7 @@ async def test_redis_dies_mid_lua(
         backend="redis",
         style=style,
     )
-    client = await _make_redis_client(redis_url)
+    client = await _make_redis_client(redis_url_for(killable_redis_container))
 
     try:
         r = await sw.acquire(
@@ -152,7 +152,7 @@ async def test_redis_dies_mid_lua(
         assert r.allowed is True
         assert r.backend == "redis"
 
-        redis_container.stop()  # type: ignore[union-attr] # Why: redis_container is a RedisContainer with stop(); typed as object in fixtures to avoid transitive imports
+        killable_redis_container.stop()  # type: ignore[union-attr] # Why: RedisContainer.stop(); the fixture is typed object to avoid transitive imports
 
         r2 = await sw.acquire(
             redis_client=client, pg_pool=module_pg_pool, clock=clock, settings=settings
@@ -180,7 +180,7 @@ async def test_redis_dies_mid_lua(
             assert row["kind"] == "gcra"
     finally:
         try:
-            redis_container.start()  # type: ignore[union-attr] # Why: redis_container is a RedisContainer with start(); typed as object in fixtures to avoid transitive imports
+            killable_redis_container.start()  # type: ignore[union-attr] # Why: RedisContainer.start(); the fixture is typed object to avoid transitive imports
         except Exception as exc:
             structlog.get_logger("taskq.test_chaos").warning(
                 "redis-container-restart-failed",

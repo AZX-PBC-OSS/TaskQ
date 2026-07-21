@@ -193,13 +193,10 @@ class PostgresBackend:
             raise ValueError(f"invalid schema identifier: {_schema!r}")
         self._schema_name: str = _schema
 
-        self._worker_pool: asyncpg.Pool = deps.worker_pool
-        self._heartbeat_pool: asyncpg.Pool = deps.heartbeat_pool
-
-        _dp: asyncpg.Pool | None = getattr(deps, "dispatcher_pool", None)
-        self._notify_pool: asyncpg.Pool = _dp if _dp is not None else self._worker_pool
-        self._dispatcher_pool: asyncpg.Pool | None = _dp
-
+        # Pools are accessed dynamically via self._deps so that
+        # reload_credentials() hot-swaps are visible to the backend without
+        # needing to re-construct it. The properties below delegate to
+        # self._deps at every access.
         self._wake_subscribers: set[asyncio.Event] = set()
         self._wake_lock: asyncio.Lock = asyncio.Lock()
 
@@ -208,6 +205,25 @@ class PostgresBackend:
 
         self._sql: SqlTemplates = render(self._schema_name)
         self._schedule_sql = ScheduleSql.build(self._schema_name)
+
+    # ── Pool accessors (dynamic via self._deps for hot-reload) ────────
+
+    @property
+    def _worker_pool(self) -> "asyncpg.Pool":
+        return self._deps.worker_pool
+
+    @property
+    def _heartbeat_pool(self) -> "asyncpg.Pool":
+        return self._deps.heartbeat_pool
+
+    @property
+    def _dispatcher_pool(self) -> "asyncpg.Pool | None":
+        return getattr(self._deps, "dispatcher_pool", None)
+
+    @property
+    def _notify_pool(self) -> "asyncpg.Pool":
+        _dp = self._dispatcher_pool
+        return _dp if _dp is not None else self._worker_pool
 
     # ── Enqueue ────────────────────────────────────────────────────────
 

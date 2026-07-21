@@ -105,6 +105,7 @@ nav:
       - Admin UI: guides/admin-ui.md
       - SSO / SAML: guides/sso.md
       - Configuration: guides/configuration.md
+      - Managed Identities & BYO Connections: guides/managed-identities.md
       - CLI: guides/cli.md
       - Troubleshooting: guides/troubleshooting.md
       - Upgrading: guides/upgrading.md
@@ -121,6 +122,11 @@ nav:
       - Progress: api-reference/progress.md
       - Testing: api-reference/testing.md
       - Migrations: api-reference/migrate.md
+      - Connections (BYO / Factories): api-reference/connections.md
+      - Credential Providers: api-reference/auth.md
+      - Microsoft Entra ID (AAD): api-reference/aad.md
+      - AWS IAM RDS: api-reference/aws.md
+      - HashiCorp Vault: api-reference/vault.md
       - CLI: api-reference/cli.md
   - Architecture: architecture.md
   - Changelog: changelog.md

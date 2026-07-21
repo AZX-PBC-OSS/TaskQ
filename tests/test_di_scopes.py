@@ -318,6 +318,42 @@ async def test_log_and_continue_across_cancelled_error() -> None:
     assert third_ran
 
 
+# ── LoopScope.replace_value (credential hot-reload seam) ────────────────
+
+
+async def test_loop_scope_replace_value_replaces_cached_instance() -> None:
+    """replace_value swaps the cached instance so resolved_cache() and
+    get() reflect the new value — the sanctioned mid-loop swap for
+    hot-reloaded resources (e.g. worker_pool after SIGHUP)."""
+    first, second = _MockClient(), _MockClient()
+    entry = ProviderEntry(
+        type_=_MockClient,
+        scope=Scope.LOOP,
+        kind="value",
+        impl=first,
+        factory_shape=FactoryShape.VALUE,
+    )
+    registry, loop_scope = _make_registry_and_loop_scope((_MockClient, entry))
+    await loop_scope.bootstrap(registry, ProcessScope(resolver=_stub_resolver))
+
+    assert loop_scope.resolved_cache()[_MockClient] is first
+
+    loop_scope.replace_value(_MockClient, second)
+
+    assert loop_scope.resolved_cache()[_MockClient] is second
+    assert loop_scope.get(_MockClient) is second
+    await loop_scope.shutdown()
+
+
+async def test_loop_scope_replace_value_raises_for_uncached_type() -> None:
+    """replace_value on a type with no cached value is a programming error
+    — fail fast rather than silently inserting a bogus entry."""
+    _registry, loop_scope = _make_registry_and_loop_scope()
+    with pytest.raises(KeyError, match="nothing to replace"):
+        loop_scope.replace_value(_MockClient, _MockClient())
+    await loop_scope.shutdown()
+
+
 # ── LOOP-loop assertion ────────────────────────────────────────────
 
 

@@ -20,6 +20,7 @@ The fixtures are imported from :mod:`taskq.testing.fixtures`
 and re-registered here so they are available to all test modules.
 """
 
+import os
 from collections.abc import AsyncIterator, Iterator
 
 import asyncpg
@@ -57,6 +58,7 @@ from taskq.testing.fixtures import (
     clean_redis_client,
     clean_redis_url,
     jobs_app,
+    killable_redis_container,
     memory_jobs,
     module_jobs_app,
     module_pg_pool,
@@ -128,24 +130,37 @@ class _FakeConnCtx:
 
 
 @pytest.fixture(autouse=True)
-def _clean_rate_limit_registry(request: pytest.FixtureRequest) -> None:  # pyright: ignore[reportUnusedFunction] # Why: autouse fixture called by pytest; pyright cannot detect autouse fixtures.
-    """Reset the global rate-limit singleton between test modules.
+def _clean_rate_limit_registry(request: pytest.FixtureRequest) -> Iterator[None]:  # pyright: ignore[reportUnusedFunction] # Why: autouse fixture called by pytest; pyright cannot detect autouse fixtures.
+    """Isolate the global rate-limit singleton per test.
 
     Actor decorators register rate limits into the module-level
-    ``RateLimitRegistry`` singleton as import-time side effects. That
-    state leaks across test modules and causes ``sync_rate_limit_buckets``
-    ``sync_slots`` (called from ``_main``) to attempt pool I/O on
-    stub-pool objects in unit tests.
+    ``RateLimitRegistry`` singleton as import-time side effects, and pytest
+    imports every collected module before running any test — so by the
+    first test, the registry already holds ALL modules' entries.
 
-    We skip this cleanup for integration tests (they need the real
-    registry populated from their own actor imports).
+    * Unit tests: cleared outright — ``sync_rate_limit_buckets`` /
+      ``sync_slots`` (called from ``_main``) would otherwise attempt pool
+      I/O on stub-pool objects.
+    * Integration tests: snapshot-and-restore — entries a test adds (or
+      removes) are reverted afterwards so nothing leaks FORWARD into
+      later tests. The worker additionally filters the registry by its
+      own schema at bootstrap (see ``worker/_bootstrap.py``), so leftover
+      foreign-schema entries are inert.
     """
-    if "integration" in request.node.keywords:
-        return
     from taskq.ratelimit.registry import registry as _rl
 
-    _rl._rate_limits.clear()  # pyright: ignore[reportPrivateUsage]
-    _rl._reservations.clear()  # pyright: ignore[reportPrivateUsage]
+    if "integration" in request.node.keywords:
+        snapshot_limits = dict(_rl._rate_limits)  # pyright: ignore[reportPrivateUsage]
+        snapshot_reservations = dict(_rl._reservations)  # pyright: ignore[reportPrivateUsage]
+        yield
+        _rl._rate_limits.clear()  # pyright: ignore[reportPrivateUsage]
+        _rl._rate_limits.update(snapshot_limits)  # pyright: ignore[reportPrivateUsage]
+        _rl._reservations.clear()  # pyright: ignore[reportPrivateUsage]
+        _rl._reservations.update(snapshot_reservations)  # pyright: ignore[reportPrivateUsage]
+    else:
+        _rl._rate_limits.clear()  # pyright: ignore[reportPrivateUsage]
+        _rl._reservations.clear()  # pyright: ignore[reportPrivateUsage]
+        yield
 
 
 __all__ = [
@@ -180,6 +195,7 @@ __all__ = [
     "error_info",
     "get_job_triple",
     "jobs_app",
+    "killable_redis_container",
     "make_enqueue_args",
     "make_integration_settings",
     "make_integration_settings_dict",
@@ -221,10 +237,82 @@ def pg_container() -> Iterator[PostgresContainer]:
         yield container
 
 
-@pytest.fixture(scope="session")
-def pg_dsn(pg_container: PostgresContainer) -> str:
-    """Asyncpg-friendly DSN (``postgresql://`` scheme, no driver suffix)."""
-    return pg_container.get_connection_url().replace("postgresql+psycopg2://", "postgresql://")
+def _module_db_name(request: pytest.FixtureRequest) -> str:
+    """Derive a unique, lowercase database name from the test module path.
+
+    Mirrors the schema-name hashing in ``taskq.testing.fixtures`` (worker
+    id included so the same module on parallel xdist workers gets distinct
+    databases), sized well under PostgreSQL's 63-char identifier limit.
+    """
+    import hashlib
+
+    worker = os.environ.get("PYTEST_XDIST_WORKER", "master")
+    full = request.module.__name__.replace(".", "_").replace("/", "_").lower()
+    return "tq_db_" + hashlib.md5(f"{worker}_{full}".encode()).hexdigest()[:12]  # noqa: S324 # Why: non-cryptographic hash for test database naming; collisions across ~100 modules are negligible.
+
+
+def _pg_admin(base_dsn: str, *statements: str) -> None:
+    """Run admin statements (CREATE/DROP DATABASE) against the container.
+
+    Uses a private event loop on a private thread: sync fixtures may be
+    requested from inside an already-running loop (pytest-asyncio drives
+    async fixtures/tests via ``asyncio.Runner`` in the main thread), so
+    creating a loop in the calling thread is not safe — a fresh thread
+    has no such constraint. asyncpg is the only PG driver installed.
+    """
+    import asyncio
+    import threading
+
+    error: list[BaseException] = []
+
+    def _target() -> None:
+        async def _go() -> None:
+            conn = await asyncpg.connect(base_dsn)
+            try:
+                for stmt in statements:
+                    await conn.execute(stmt)
+            finally:
+                await conn.close()
+
+        try:
+            asyncio.run(_go())
+        except BaseException as exc:  # Why: re-raised in the calling thread below.
+            error.append(exc)
+
+    t = threading.Thread(target=_target, daemon=True)
+    t.start()
+    t.join(timeout=30)
+    if t.is_alive():
+        raise TimeoutError(f"database admin timed out: {statements!r}")
+    if error:
+        raise error[0]
+
+
+@pytest.fixture(scope="module")
+def pg_dsn(pg_container: PostgresContainer, request: pytest.FixtureRequest) -> Iterator[str]:
+    """Module-scoped database on the shared container; DSN pointing at it.
+
+    Every test module gets its OWN database — schema-level isolation in a
+    shared database still shares cluster-wide state (advisory locks,
+    pg_stat_activity, connection pressure), which let modules clobber each
+    other. The database is dropped (FORCE) on module teardown; a
+    drop-if-exists at setup clears stale state from crashed runs.
+    """
+    base_dsn = pg_container.get_connection_url().replace("postgresql+psycopg2://", "postgresql://")
+    db_name = _module_db_name(request)
+
+    _pg_admin(
+        base_dsn,
+        f'DROP DATABASE IF EXISTS "{db_name}" WITH (FORCE)',
+        f'CREATE DATABASE "{db_name}"',
+    )
+
+    prefix, _, _db = base_dsn.rpartition("/")
+    module_dsn = f"{prefix}/{db_name}"
+    try:
+        yield module_dsn
+    finally:
+        _pg_admin(base_dsn, f'DROP DATABASE IF EXISTS "{db_name}" WITH (FORCE)')
 
 
 @pytest.fixture

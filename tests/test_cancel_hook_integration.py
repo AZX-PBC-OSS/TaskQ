@@ -204,6 +204,12 @@ class _FlakyConnection:
     async def fetch(self, sql: str, *args: object, **kwargs: Any) -> list[asyncpg.Record]:
         return await self._conn.fetch(sql, *args, **kwargs)
 
+    async def fetchrow(self, sql: str, *args: object, **kwargs: Any) -> asyncpg.Record | None:
+        return await self._conn.fetchrow(sql, *args, **kwargs)
+
+    async def fetchval(self, sql: str, *args: object, **kwargs: Any) -> Any:
+        return await self._conn.fetchval(sql, *args, **kwargs)
+
     def transaction(self) -> Any:
         return self._conn.transaction()
 

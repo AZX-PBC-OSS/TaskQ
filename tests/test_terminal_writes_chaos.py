@@ -288,14 +288,17 @@ class TestTransactionRollbackOnMidFlightFailure:
         chaos_conn = ChaosConnection(direct_conn, fail_on_call=2)
         chaos_pool = ChaosPool(chaos_conn)
 
-        original_pool = backend._worker_pool  # type: ignore[reportPrivateUsage] # Why: injecting chaos pool for rollback test
-        backend._worker_pool = chaos_pool  # type: ignore[reportPrivateUsage] # Why: same
+        # PostgresBackend._worker_pool reads deps.worker_pool live (so
+        # SIGHUP hot-reload swaps are visible without reconstruction) —
+        # inject the chaos pool via deps, not the now-read-only property.
+        original_pool = deps.worker_pool
+        deps.worker_pool = chaos_pool  # type: ignore[assignment] # Why: injecting chaos pool for rollback test
 
         try:
             with pytest.raises(ChaosException):
                 await backend.mark_succeeded(job_id, worker_id, {"ok": True})
         finally:
-            backend._worker_pool = original_pool  # type: ignore[reportPrivateUsage] # Why: restoring original pool
+            deps.worker_pool = original_pool  # Why: restoring original pool
             await chaos_conn.close()
 
         # Reconnect with a fresh connection and verify rollback

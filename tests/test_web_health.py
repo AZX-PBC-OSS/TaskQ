@@ -67,6 +67,8 @@ def _make_deps(**overrides: object) -> SimpleNamespace:
             "is_leader": SimpleNamespace(is_set=lambda: False),
             "active_jobs": SimpleNamespace(count=lambda: 2),
             "heartbeat_failures": 0,
+            # WorkerDeps.redis_client (default None) — health reads it for redis_configured.
+            "redis_client": None,
             **overrides,
         }
     )

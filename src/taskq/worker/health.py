@@ -129,7 +129,11 @@ async def compute_health(deps: WorkerDeps) -> HealthReport:
         heartbeat_failures=deps.heartbeat_failures,
         max_heartbeat_failures=deps.settings.max_heartbeat_failures,
         is_leader=deps.is_leader.is_set(),
-        redis_configured=bool(deps.settings.redis_url),
+        # Why the client check: managed-identity deployments inject a
+        # client via redis_client_factory (or pass a caller-owned one)
+        # without setting TASKQ_REDIS_URL — the URL alone would report
+        # redis_configured: false despite a working client.
+        redis_configured=bool(deps.settings.redis_url) or deps.redis_client is not None,
         pg_ping_ok=pg_ping_ok_,
         pg_ping_latency_ms=pg_ping_latency_ms,
         active_jobs=deps.active_jobs.count(),
@@ -156,12 +160,17 @@ def _unlink_stale_socket(path: str) -> None:
     check is applied at bind time too: if something is actually listening,
     leave the path alone and let ``start_unix_server`` fail loudly instead
     of silently stealing the socket out from under a live process.
+
+    ``ENOTSOCK`` means *path* exists but is a regular file, not a socket
+    at all (e.g. leftover from a crash before the socket was ever bound,
+    or a stray file created at that path) — also stale, also safe to
+    remove.
     """
     probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
         probe.connect(path)
     except OSError as exc:
-        if exc.errno in (errno.ECONNREFUSED, errno.ENOENT):
+        if exc.errno in (errno.ECONNREFUSED, errno.ENOENT, errno.ENOTSOCK):
             with contextlib.suppress(FileNotFoundError):
                 os.unlink(path)
     else:

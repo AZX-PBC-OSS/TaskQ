@@ -114,6 +114,7 @@ __all__ = [
     "clean_redis_client",
     "clean_redis_url",
     "jobs_app",
+    "killable_redis_container",
     "memory_jobs",
     "module_jobs_app",
     "module_pg_pool",
@@ -121,6 +122,7 @@ __all__ = [
     "module_redis_url",
     "redis_container",
     "redis_url",
+    "redis_url_for",
     "worker_with_running_job",
 ]
 
@@ -513,14 +515,23 @@ async def backend_pair(request: pytest.FixtureRequest) -> AsyncIterator[Backend]
 
 # ── Redis container fixtures ───────────────────────────────────────────────
 
+# Dragonfly is a drop-in Redis replacement (RESP wire protocol, EVALSHA,
+# FLUSHDB — all verified); pinned by tag for reproducibility.
+_DRAGONFLY_IMAGE = "docker.dragonflydb.io/dragonflydb/dragonfly:v1.39.0"
+
+# Logical DBs available for per-module / per-test allocation (dragonfly
+# caps --dbnum at 1024; DB 0 is reserved for ad-hoc use).
+_REDIS_DB_POOL_SIZE = 1024
+
 
 @pytest.fixture(scope="session")
 def redis_container() -> Iterator[RedisContainer]:
-    """Boot a Redis 7.4 container for the test session.
+    """Boot a Dragonfly container (Redis-compatible) for the test session.
 
-    Image pinned to ``redis:7.4-alpine`` to match the ``redis-py >= 7.4.0``
-    client expectations and Redis 7.0+ features (ACL, RESP3, streamed
-    pub/sub).
+    Started with ``--dbnum 1024`` so every test module (``module_redis_url``)
+    and every test function (``redis_url``) gets its own logical DB — the
+    16-DB default would force sharing, and sharing lets one consumer's
+    FLUSHDB wipe another's mid-run state.
     """
     import warnings
 
@@ -533,34 +544,65 @@ def redis_container() -> Iterator[RedisContainer]:
             category=DeprecationWarning,
             module="testcontainers.redis",
         )
-        with RedisContainer(image="redis:7.4-alpine") as rc:
+        with RedisContainer(image=_DRAGONFLY_IMAGE).with_command("--dbnum 1024") as rc:
             yield rc
 
 
 @pytest.fixture
-def redis_url(redis_container: RedisContainer) -> str:
-    """Per-test Redis URL against the session-scoped container.
+def killable_redis_container() -> Iterator[RedisContainer]:
+    """Function-scoped Dragonfly container for chaos tests that stop/restart Redis.
 
-    Database ``/0`` is pinned explicitly — redis-py defaults to db=0 when
-    no path is given, but spelling it out avoids surprises across redis-py
-    versions and macOS Docker Desktop port-mapping quirks (where
-    ``get_exposed_port`` may return a host-mapped port distinct from 6379).
+    Chaos tests must NEVER stop the session container (``redis_container``)
+    — every other module shares it, and a slow restart leaks failures into
+    unrelated tests. Each kill test gets its own container (~1s boot).
     """
-    host = redis_container.get_container_host_ip()
-    port = redis_container.get_exposed_port(6379)
-    return f"redis://{host}:{port}/0"
+    import warnings
+
+    from testcontainers.redis import RedisContainer
+
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message=".*wait_container_is_ready.*",
+            category=DeprecationWarning,
+            module="testcontainers.redis",
+        )
+        with RedisContainer(image=_DRAGONFLY_IMAGE) as rc:
+            yield rc
+
+
+def redis_url_for(container: RedisContainer, db: int = 0) -> str:
+    """Build a ``redis://host:port/{db}`` URL for *container*."""
+    host = container.get_container_host_ip()
+    port = container.get_exposed_port(6379)
+    return f"redis://{host}:{port}/{db}"
+
+
+@pytest.fixture
+def redis_url(redis_container: RedisContainer) -> str:
+    """Per-test Redis URL with a UNIQUE logical DB — a guaranteed clean slate.
+
+    Each test function gets its own DB (never reused within the session),
+    so no setup/teardown flushing is needed and no two tests can observe
+    each other's keys.
+    """
+    return redis_url_for(redis_container, db=_next_redis_db())
 
 
 # ── Redis DB counter (module-level) ─────────────────────────────────────
 
-_REDIS_DB_IDS: list[int] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+# One logical DB per consumer (test module OR test function); the
+# container runs --dbnum 1024. No wrap-around: sharing a DB between
+# consumers would let one consumer's FLUSHDB wipe another's mid-run state.
 _redis_db_index: int = 0
 
 
 def _next_redis_db() -> int:
-    """Return the next Redis DB id (1-15), wrapping deterministically."""
+    """Return the next Redis DB id (1-1023), never reusing one."""
     global _redis_db_index
-    db = _REDIS_DB_IDS[_redis_db_index % len(_REDIS_DB_IDS)]
+    db = _redis_db_index + 1
+    if db >= _REDIS_DB_POOL_SIZE:
+        raise RuntimeError(f"exhausted Redis logical DBs ({_REDIS_DB_POOL_SIZE})")
     _redis_db_index += 1
     return db
 
@@ -655,25 +697,20 @@ def module_redis_url(
 ) -> Iterator[str]:
     """Module-scoped Redis URL with a unique DB per test file.
 
-    Assigns a unique Redis DB id (1-15) via atomic counter, returns
-    ``redis://host:port/{db}``.  FLUSHDB on module teardown so clean
-    for the next file.  DB 0 is reserved for the ``redis_url``
-    fixture and manual development.
+    Assigns a unique Redis DB id (1-1023, never reused) via counter and
+    returns ``redis://host:port/{db}``. FLUSHDB at setup (clean slate even
+    after a crashed run) and again on teardown.
     """
     import redis as redis_sync
 
-    host = redis_container.get_container_host_ip()
-    port = redis_container.get_exposed_port(6379)
-    db = _next_redis_db()
-    url = f"redis://{host}:{port}/{db}"
+    url = redis_url_for(redis_container, db=_next_redis_db())
+    with redis_sync.from_url(url, decode_responses=False) as client:
+        client.flushdb()
     yield url
 
     # Teardown: FLUSHDB the module's DB via sync client (safe in any context).
-    client = redis_sync.from_url(url, decode_responses=False)
-    try:
+    with redis_sync.from_url(url, decode_responses=False) as client:
         client.flushdb()
-    finally:
-        client.close()
 
 
 # ── Module-scoped PG pool ────────────────────────────────────────────────

@@ -8,6 +8,7 @@ import asyncpg
 import pytest
 
 from taskq._ids import new_uuid
+from taskq.connections import WorkerConnections
 from taskq.settings import WorkerSettings
 from taskq.worker.deps import WorkerDeps
 from taskq.worker.run import _main
@@ -90,7 +91,11 @@ def _setup_lifecycle_stubs(
     from contextlib import asynccontextmanager
 
     @asynccontextmanager
-    async def _stub_open_worker_deps(settings: WorkerSettings):
+    async def _stub_open_worker_deps(
+        settings: WorkerSettings,
+        *,
+        connections: WorkerConnections | None = None,
+    ):
         fake_pool = _FakePool()
         deps = WorkerDeps(  # type: ignore[call-arg] # Why: WorkerDeps requires a full set of asyncpg pools; lifecycle test only needs the settings field and an is_leader Event — passing class objects as pool stubs avoids spinning up real pools.
             settings=settings,

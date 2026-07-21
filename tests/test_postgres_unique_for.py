@@ -384,23 +384,28 @@ async def test_connection_loss_during_preflight(
             mock_conn.fetchrow.side_effect = asyncpg.PostgresConnectionError("connection killed")
             yield mock_conn
 
-    monkeypatch.setattr(pg_backend, "_worker_pool", _MockPool())
+    _mock_pool = _MockPool()
+    original_pool = deps.worker_pool
+    deps.worker_pool = _mock_pool  # type: ignore[assignment]  # Why: PostgresBackend._worker_pool reads deps.worker_pool live; inject the mock pool temporarily.
 
-    with pytest.raises(asyncpg.PostgresConnectionError):
-        await pg_backend.enqueue(
-            EnqueueArgs(
-                id=new_job_id(),
-                actor="_unique_for_15min_actor",
-                queue="default",
-                payload={"value": 1},
-                max_attempts=3,
-                retry_kind="transient",
-                scheduled_at=datetime.now(UTC),
-                identity_key=IdentityKey(identity),
-                unique_for=timedelta(minutes=15),
-                unique_states=("pending", "scheduled", "running"),
+    try:
+        with pytest.raises(asyncpg.PostgresConnectionError):
+            await pg_backend.enqueue(
+                EnqueueArgs(
+                    id=new_job_id(),
+                    actor="_unique_for_15min_actor",
+                    queue="default",
+                    payload={"value": 1},
+                    max_attempts=3,
+                    retry_kind="transient",
+                    scheduled_at=datetime.now(UTC),
+                    identity_key=IdentityKey(identity),
+                    unique_for=timedelta(minutes=15),
+                    unique_states=("pending", "scheduled", "running"),
+                )
             )
-        )
+    finally:
+        deps.worker_pool = original_pool  # Restore real pool for post-check
 
     async with deps.worker_pool.acquire() as conn:
         count = await conn.fetchval(

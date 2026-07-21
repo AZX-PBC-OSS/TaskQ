@@ -1,6 +1,7 @@
 """Coalesced periodic progress flush to Postgres."""
 
 import asyncio
+from collections.abc import Callable
 from uuid import UUID
 
 import asyncpg
@@ -108,14 +109,20 @@ async def _flush_buffer_immediate(
 
 
 async def progress_flush_loop(
-    worker_pool: asyncpg.Pool,
+    pool_getter: Callable[[], asyncpg.Pool],
     schema: str,
     worker_id: UUID,
     progress_buffers: dict[UUID, _ProgressBuffer],
     coalesce_interval: float,
     shutdown: asyncio.Event,
 ) -> None:
-    """Periodic flush loop: runs until shutdown is set, flushing dirty buffers each tick."""
+    """Periodic flush loop: runs until shutdown is set, flushing dirty buffers each tick.
+
+    ``pool_getter`` is resolved on every flush rather than captured once,
+    so a credential hot-reload (SIGHUP) that swaps the worker pool takes
+    effect immediately — a captured pool would be drained and closed
+    seconds after the reload, breaking every subsequent flush.
+    """
     if not _IDENT_RE.match(schema):
         raise ValueError(f"invalid schema identifier: {schema!r}")
 
@@ -127,7 +134,7 @@ async def progress_flush_loop(
                 continue
             try:
                 await _flush_buffer(
-                    worker_pool, schema, job_id, worker_id, buffer, progress_buffers
+                    pool_getter(), schema, job_id, worker_id, buffer, progress_buffers
                 )
             except asyncio.CancelledError:
                 raise

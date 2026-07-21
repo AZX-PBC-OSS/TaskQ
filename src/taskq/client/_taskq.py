@@ -35,7 +35,7 @@ Passing an existing pool (e.g. shared with the rest of the application)::
 
 import asyncio
 import contextlib
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
@@ -47,6 +47,8 @@ from pydantic import BaseModel, ConfigDict, TypeAdapter
 if TYPE_CHECKING:
     import asyncpg
     import redis.asyncio as redis_async
+
+    from taskq.connections import ConnFactory
 
 from taskq.actor import ActorRef
 from taskq.backend._protocol import (
@@ -156,6 +158,18 @@ class TaskQ:
         An already-open ``redis.asyncio.Redis`` client. The caller retains
         ownership; ``close()`` will not close it. Mutually exclusive with
         ``redis_url``.
+    pg_conn_factory:
+        A zero-arg async factory returning an ``asyncpg.Connection`` for the
+        LISTEN/NOTIFY transport used by :meth:`stream`. Mutually exclusive
+        with ``listen_conn``. Takes precedence over ``dsn`` when set. Use
+        this when you have no DSN (e.g. AAD-managed-identity auth) but still
+        want streaming. TaskQ owns and closes the connection produced by
+        the factory per ``stream()`` call.
+    listen_conn:
+        A pre-constructed ``asyncpg.Connection`` for the LISTEN transport.
+        Caller-owned; TaskQ does not close it. Mutually exclusive with
+        ``pg_conn_factory``. Takes precedence over ``dsn`` when set. Use
+        this to share a dedicated LISTEN conn across callers.
     poll_timeout:
         Maximum seconds to wait between transport wakeups before re-fetching
         job state. Defaults to ``30.0``.
@@ -171,6 +185,8 @@ class TaskQ:
         max_pool_size: int = 5,
         redis_url: str | None = None,
         redis_client: Any | None = None,
+        pg_conn_factory: "ConnFactory | None" = None,
+        listen_conn: "asyncpg.Connection | None" = None,
         poll_timeout: float = 30.0,
     ) -> None:
         if dsn is None and pool is None:
@@ -179,6 +195,8 @@ class TaskQ:
             raise ValueError("TaskQ accepts 'dsn' or 'pool', not both")
         if redis_url is not None and redis_client is not None:
             raise ValueError("TaskQ accepts 'redis_url' or 'redis_client', not both")
+        if pg_conn_factory is not None and listen_conn is not None:
+            raise ValueError("TaskQ accepts 'pg_conn_factory' or 'listen_conn', not both")
 
         self._dsn = dsn
         self._pool: "asyncpg.Pool | None" = pool  # noqa: UP037  # Why: asyncpg imported under TYPE_CHECKING; quotes required for runtime resolution.
@@ -187,6 +205,8 @@ class TaskQ:
         self._max_pool_size = max_pool_size
         self._redis_url = redis_url
         self._redis_client: "redis_async.Redis | None" = redis_client  # type: ignore[type-arg]  # noqa: UP037  # Why: erasure boundary — redis_async is under TYPE_CHECKING; string annotation avoids runtime import. type-arg: redis-py stubs expose Redis as an unparameterised generic. The caller-supplied client is stored here and forwarded to JobsClient without entering it on the exit stack.
+        self._pg_conn_factory = pg_conn_factory
+        self._listen_conn = listen_conn
         self._poll_timeout = poll_timeout
         self._owns_pool = pool is None
         self._client: JobsClient | None = None
@@ -475,8 +495,8 @@ class TaskQ:
         if event.terminal:
             return
 
-        if self._redis_client is not None:
-            async for evt in _stream_redis(
+        gen: AsyncGenerator[JobEvent, None] = (
+            _stream_redis(
                 self._redis_client,
                 self._schema,
                 job_id,
@@ -484,12 +504,9 @@ class TaskQ:
                 self._poll_timeout,
                 last_seq=row.progress_seq,
                 last_status=row.status,
-            ):
-                yield evt
-                if evt.terminal:
-                    return
-        else:
-            async for evt in _stream_pg(
+            )
+            if self._redis_client is not None
+            else _stream_pg(
                 self._dsn,
                 self._schema,
                 job_id,
@@ -497,7 +514,12 @@ class TaskQ:
                 self._poll_timeout,
                 last_seq=row.progress_seq,
                 last_status=row.status,
-            ):
+                pg_conn_factory=self._pg_conn_factory,
+                listen_conn=self._listen_conn,
+            )
+        )
+        async with contextlib.aclosing(gen) as agen:
+            async for evt in agen:
                 yield evt
                 if evt.terminal:
                     return
@@ -512,13 +534,21 @@ async def _stream_pg(
     *,
     last_seq: int = -1,
     last_status: JobStatus | None = None,
-) -> AsyncIterator[JobEvent]:
+    pg_conn_factory: "ConnFactory | None" = None,
+    listen_conn: "asyncpg.Connection | None" = None,
+) -> AsyncGenerator[JobEvent, None]:
     """PG LISTEN/NOTIFY transport for :meth:`TaskQ.stream`.
 
     Opens a dedicated asyncpg connection, registers a LISTEN callback on
     ``wake_channel(schema)``, and yields :class:`JobEvent` on each detected
-    state change. Terminates on terminal state. The dedicated connection is
-    closed in a ``finally`` block.
+    state change. Terminates on terminal state.
+
+    Connection sources, in priority order:
+    * ``listen_conn`` — pre-constructed, caller-owned; NOT closed here.
+    * ``pg_conn_factory`` — zero-arg async factory; closed in ``finally``.
+    * ``dsn`` — ``asyncpg.connect(dsn=...)``; closed in ``finally``.
+
+    Raises :class:`RuntimeError` if none of the three is provided.
 
     If the LISTEN connection is killed mid-stream (e.g. by
     ``pg_terminate_backend``), the ``InterfaceError`` / ``OSError`` is
@@ -526,10 +556,11 @@ async def _stream_pg(
     ``asyncio.sleep(poll_timeout)``.  This provides single-recovery
     resilience without a full reconnect loop (out of scope for M5).
     """
-    if dsn is None:
+    if listen_conn is None and pg_conn_factory is None and dsn is None:
         raise RuntimeError(
-            "TaskQ.stream() requires a DSN for the PG LISTEN transport. "
-            "Pass dsn= to TaskQ alongside pool= to enable streaming."
+            "TaskQ.stream() requires a LISTEN transport source: pass 'dsn=', "
+            "'pg_conn_factory=', or 'listen_conn=' to TaskQ. See "
+            "docs/guides/managed-identities.md for AAD / pool-only setups."
         )
 
     import asyncpg
@@ -537,6 +568,7 @@ async def _stream_pg(
     wake = asyncio.Event()
     channel = wake_channel(schema)
     listen_alive = True
+    owns_conn = listen_conn is None  # factory/DSN → we close; caller-owned → we don't
 
     def _on_notify(
         conn: asyncpg.Connection,
@@ -546,7 +578,12 @@ async def _stream_pg(
     ) -> None:
         wake.set()
 
-    conn = await asyncpg.connect(dsn=str(dsn))
+    if listen_conn is not None:
+        conn = listen_conn
+    elif pg_conn_factory is not None:
+        conn = await pg_conn_factory()
+    else:
+        conn = await asyncpg.connect(dsn=str(dsn))
     try:
         await conn.add_listener(channel, _on_notify)  # pyright: ignore[reportArgumentType]  # Why: asyncpg stubs over-narrow the callback type — same pattern as worker/notify.py
         while True:
@@ -588,8 +625,9 @@ async def _stream_pg(
     finally:
         with contextlib.suppress(Exception):
             await conn.remove_listener(channel, _on_notify)  # pyright: ignore[reportArgumentType]  # Why: asyncpg stubs over-narrow the callback type — same pattern as worker/notify.py
-        with contextlib.suppress(Exception):
-            await conn.close()
+        if owns_conn:
+            with contextlib.suppress(Exception):
+                await conn.close()
 
 
 async def _stream_redis(
@@ -601,7 +639,7 @@ async def _stream_redis(
     *,
     last_seq: int = -1,
     last_status: JobStatus | None = None,
-) -> AsyncIterator[JobEvent]:
+) -> AsyncGenerator[JobEvent, None]:
     """Redis pub/sub transport for :meth:`TaskQ.stream`.
 
     Subscribes to ``progress_channel(schema, job_id)`` and yields

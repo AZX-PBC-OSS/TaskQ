@@ -32,6 +32,7 @@ Submitting any form enqueues a job and redirects to the admin job-detail page wh
 | `test_example.py` | Unit tests using `InMemoryBackend` + `FakeClock` — no Postgres or Redis required. Run with `uv run pytest examples/test_example.py -v`. |
 | `workgroup.toml` | Workgroup supervisor config for multi-queue worker management. Run with `uv run taskq workgroup examples/workgroup.toml`. |
 | `otel_setup.py` | OpenTelemetry SDK initialization for tracing with Jaeger or any OTLP collector. Run with `uv run python examples/otel_setup.py` (requires `[otel]` extra). |
+| `fastapi_app/aad.py` | Azure managed-identity (Entra ID) deployment scaffold — AAD-authenticated worker and web app wired through `taskq[aad]` credential-provider factories, including the serve-mode lifespan ownership pattern. Run with `uv run python -m examples.fastapi_app.aad worker` or `... serve` (requires Azure resources; see the [Managed Identities guide](https://AZX-PBC-OSS.github.io/TaskQ/guides/managed-identities/)). |
 
 ## Actor Table
 

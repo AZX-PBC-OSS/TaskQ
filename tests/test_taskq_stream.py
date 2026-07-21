@@ -13,12 +13,15 @@ Covers:
 
 import dataclasses
 from datetime import UTC, datetime
-from typing import cast
+from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID
 
 import pytest
 from pydantic import TypeAdapter
+
+if TYPE_CHECKING:
+    import asyncpg
 
 from taskq.backend._protocol import Backend, JobId, JobRow, JobStatus
 from taskq.client._jobs import JobsClient
@@ -206,8 +209,8 @@ async def test_stream_before_open_raises_runtime_error() -> None:
 
 
 async def test_stream_pg_raises_when_dsn_none() -> None:
-    """PG LISTEN transport raises RuntimeError when dsn is None
-    (pool-only construction).
+    """PG LISTEN transport raises RuntimeError when no LISTEN source is
+    provided (pool-only construction with no ``pg_conn_factory`` / ``listen_conn``).
     """
     row = _row(status="running", progress_seq=0)
     backend = _stub_backend(rows=[row])
@@ -217,12 +220,93 @@ async def test_stream_pg_raises_when_dsn_none() -> None:
     tq._client = client
     tq._redis_client = None
     tq._dsn = None
+    tq._pg_conn_factory = None
+    tq._listen_conn = None
     tq._schema = _SCHEMA_LABEL
     tq._poll_timeout = 30.0
 
-    with pytest.raises(RuntimeError, match="DSN"):
+    with pytest.raises(RuntimeError, match="LISTEN transport source"):
         async for _ in tq.stream(cast(JobId, _JOB_ID)):
             pass
+
+
+# ── PG transport: pg_conn_factory / listen_conn hooks ────────────────────
+
+
+class _FakeListenConn:
+    """Fake asyncpg.Connection for the LISTEN transport.
+
+    Yields one state change then a terminal status, so the stream exits.
+    """
+
+    def __init__(self) -> None:
+        self.closed = False
+        self.removed: list[str] = []
+
+    async def add_listener(self, channel: str, callback: object) -> None:
+        pass
+
+    async def remove_listener(self, channel: str, callback: object) -> None:
+        self.removed.append(channel)
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+async def test_stream_pg_with_pg_conn_factory_closes_conn() -> None:
+    """pg_conn_factory produces a TaskQ-owned conn that is closed in finally."""
+    rows = [_row(status="running", progress_seq=0), _row(status="succeeded", progress_seq=1)]
+    backend = _stub_backend(rows=rows)
+    client = _make_client(backend)
+
+    fake_conn = _FakeListenConn()
+
+    async def factory() -> "asyncpg.Connection":
+        return cast("asyncpg.Connection", fake_conn)
+
+    tq = TaskQ.__new__(TaskQ)
+    tq._client = client
+    tq._redis_client = None
+    tq._dsn = None
+    tq._pg_conn_factory = factory
+    tq._listen_conn = None
+    tq._schema = _SCHEMA_LABEL
+    tq._poll_timeout = 30.0
+
+    events = [e async for e in tq.stream(cast(JobId, _JOB_ID))]
+    assert len(events) == 2
+    assert events[1].terminal is True
+    # Factory-produced → closed
+    assert fake_conn.closed
+
+
+async def test_stream_pg_with_listen_conn_does_not_close() -> None:
+    """listen_conn is caller-owned; it is NOT closed by the stream."""
+    rows = [_row(status="running", progress_seq=0), _row(status="succeeded", progress_seq=1)]
+    backend = _stub_backend(rows=rows)
+    client = _make_client(backend)
+
+    fake_conn = _FakeListenConn()
+
+    tq = TaskQ.__new__(TaskQ)
+    tq._client = client
+    tq._redis_client = None
+    tq._dsn = None
+    tq._pg_conn_factory = None
+    tq._listen_conn = cast("asyncpg.Connection", fake_conn)
+    tq._schema = _SCHEMA_LABEL
+    tq._poll_timeout = 30.0
+
+    events = [e async for e in tq.stream(cast(JobId, _JOB_ID))]
+    assert events[-1].terminal is True
+    # Caller-owned → NOT closed
+    assert not fake_conn.closed
+
+
+async def test_taskq_init_rejects_pg_conn_factory_and_listen_conn() -> None:
+    """TaskQ.__init__ rejects providing both pg_conn_factory and listen_conn."""
+    with pytest.raises(ValueError, match=r"pg_conn_factory.*listen_conn"):
+        TaskQ(pool=object(), pg_conn_factory=lambda: None, listen_conn=object())  # type: ignore[arg-type]
 
 
 # ── Redis transport: _stream_redis ───────────────────────────────────────

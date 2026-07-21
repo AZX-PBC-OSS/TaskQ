@@ -26,6 +26,7 @@ from taskq.backend._protocol import Backend, JobRow, ScheduleCreateArgs
 from taskq.backend.clock import Clock, SystemClock
 from taskq.backend.postgres import PostgresBackend
 from taskq.client._enqueuer import SubJobEnqueuer
+from taskq.connections import WorkerConnections
 from taskq.cron import (
     CronScheduleSpec,
     compute_next_fire_after,
@@ -38,7 +39,7 @@ from taskq.ratelimit.registry import registry as rl_registry
 from taskq.settings import WorkerSettings
 from taskq.worker.actor_config import ActorConfig
 from taskq.worker.cancel import make_cancel_controller
-from taskq.worker.deps import open_worker_deps
+from taskq.worker.deps import WorkerDeps, open_worker_deps
 from taskq.worker.health import HealthServer
 from taskq.worker.heartbeat import heartbeat_loop
 from taskq.worker.leader import MaintenanceLeader
@@ -109,6 +110,7 @@ async def _main(
     actor_registry: Mapping[str, ActorRef[Any, Any]] | None = None,
     _registry: ProviderRegistry | None = None,
     _cron_registry: list[CronScheduleSpec] | None = None,
+    connections: WorkerConnections | None = None,
 ) -> int:
     """Worker bootstrap: open deps, wire TaskGroup of siblings, run to shutdown.
 
@@ -171,8 +173,12 @@ async def _main(
 
     _producer_log = structlog.get_logger("taskq.worker.run.producer")
 
-    async with open_worker_deps(settings) as deps:
-        if not registry.has_provider(asyncpg.Pool):
+    async with open_worker_deps(settings, connections=connections) as deps:
+        # Only register the worker pool in DI when the user hasn't provided
+        # their own asyncpg.Pool provider — and only then may the reload
+        # coordinator refresh the DI cache after a hot-reload swap.
+        worker_pool_registered_in_di = not registry.has_provider(asyncpg.Pool)
+        if worker_pool_registered_in_di:
             registry.register_value(asyncpg.Pool, Scope.LOOP, deps.worker_pool)
 
         actors_list: list[ActorRef[Any, Any]] | None = (
@@ -182,6 +188,15 @@ async def _main(
         registry.validate(actors=actors_list, rate_limit_registry=rl_registry)
 
         from taskq.ratelimit import sync_rate_limit_buckets, sync_slots
+
+        # The rate-limit registry is a process-global singleton — it may
+        # carry reservations declared for OTHER schemas/databases (e.g.
+        # sibling apps in the same process). Only this worker's own schema
+        # is in scope: touching another schema's slot tables here would
+        # write into the wrong database or fail noisily.
+        own_reservations = [
+            res for res in rl_registry.reservations.values() if res.schema == settings.schema_name
+        ]
 
         try:
             await sync_rate_limit_buckets(
@@ -194,7 +209,7 @@ async def _main(
             )
         try:
             await sync_slots(
-                list(rl_registry.reservations.values()),
+                own_reservations,
                 deps.worker_pool,
                 schema=settings.schema_name,
             )
@@ -271,7 +286,7 @@ async def _main(
                     schema=settings.schema_name,
                 )
 
-            for res in rl_registry.reservations.values():
+            for res in own_reservations:
                 try:
                     await res.ensure_slots(deps.dispatcher_pool)
                 except Exception as exc:
@@ -376,7 +391,11 @@ async def _main(
                     )
                     tg.create_task(
                         progress_flush_loop(
-                            deps.worker_pool,
+                            # Resolved per flush tick so a credential
+                            # hot-reload swap is picked up immediately —
+                            # capturing the pool here would leave the loop
+                            # flushing through a drained pool after SIGHUP.
+                            lambda: deps.worker_pool,
                             settings.schema_name,
                             worker_id,
                             deps.progress_buffers,
@@ -438,6 +457,16 @@ async def _main(
                                 )
                             )
 
+                    tg.create_task(
+                        _reload_coordinator_loop(
+                            deps,
+                            shutdown_event,
+                            loop_scope=loop_scope,
+                            refresh_worker_pool_di=worker_pool_registered_in_di,
+                        ),
+                        name="worker.reload_coordinator",
+                    )
+
                     await shutdown_event.wait()
             finally:
                 try:
@@ -455,12 +484,110 @@ async def _main(
     return exit_code
 
 
+async def _reload_coordinator_loop(
+    deps: WorkerDeps,
+    shutdown: asyncio.Event,
+    *,
+    loop_scope: LoopScope | None = None,
+    refresh_worker_pool_di: bool = False,
+) -> None:
+    """Trigger credential hot-reload on SIGHUP, on a timer, or on request.
+
+    Runs as a sibling task in the worker's ``TaskGroup``. Reloads are
+    triggered by ``deps.reload_event`` (set by the SIGHUP handler or by
+    :meth:`~taskq.worker.deps.WorkerDeps.request_reload`) and, when
+    ``settings.reload_interval`` is set, by a periodic timer — the
+    rotation path for platforms without SIGHUP and for hands-off
+    scheduled rotation. Each trigger calls
+    :func:`~taskq.worker.deps.reload_credentials` to hot-swap every
+    factory-backed pool / connection / Redis client with freshly-built
+    replacements.
+
+    Semantics:
+
+    * The event is cleared *before* each reload and never cleared after,
+      so a SIGHUP arriving mid-reload — success OR failure — is honored
+      by exactly one follow-up reload. (Event coalescing: N signals
+      during one reload produce one follow-up, not N.)
+    * Reloads are skipped while shutdown orchestration is in progress
+      (``deps.shutdown_phase`` is not NONE): churning pools on a draining
+      worker is wasteful, and the leader watchdog could re-acquire
+      leadership mid-shutdown.
+    * When the reload swapped the worker pool and the worker (not the
+      user) registered ``asyncpg.Pool`` in DI, the LOOP-scope cache is
+      refreshed so actors injected with ``db: asyncpg.Pool`` resolve the
+      live pool instead of the drained one.
+    * A reload exception is logged and the worker continues — old
+      resources are still live; the operator can SIGHUP again.
+    """
+    from taskq.worker.deps import reload_credentials
+    from taskq.worker.shutdown import ShutdownPhase
+
+    interval = deps.settings.reload_interval
+
+    while not shutdown.is_set():
+        # Wait for a reload request, the interval timer, or shutdown.
+        waiters: list[
+            asyncio.Task[Any]
+        ] = [  # Why: heterogeneous task results (Event.wait → bool, sleep → None); results are never read, only completion matters.
+            asyncio.create_task(deps.reload_event.wait()),
+            asyncio.create_task(shutdown.wait()),
+        ]
+        if interval is not None:
+            waiters.append(asyncio.create_task(asyncio.sleep(interval)))
+        try:
+            await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            for task in waiters:
+                if not task.done():
+                    task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await task
+
+        if shutdown.is_set():
+            return
+
+        deps.reload_event.clear()
+
+        if deps.shutdown_phase is not ShutdownPhase.NONE:
+            _startup_log.info(
+                "credentials-reload-skipped",
+                reason="shutdown-in-progress",
+                shutdown_phase=deps.shutdown_phase.name,
+            )
+            continue
+
+        try:
+            reloaded, _failed = await reload_credentials(
+                deps, factory_timeout=deps.settings.reload_factory_timeout
+            )
+        except Exception:
+            _startup_log.exception("credentials-reload-failed")
+            continue
+
+        if refresh_worker_pool_di and loop_scope is not None and "worker" in reloaded:
+            # The worker pool was hot-swapped — refresh the DI cache so
+            # actors injected with db: asyncpg.Pool get the live pool, not
+            # the one now draining in the background.
+            try:
+                loop_scope.replace_value(asyncpg.Pool, deps.worker_pool)
+            except KeyError:
+                # Unreachable via _main (bootstrap eagerly caches all LOOP
+                # providers), but the kwarg contract permits an
+                # un-bootstrapped loop_scope — a raise here would tear down
+                # the worker's TaskGroup.
+                _startup_log.warning("di-worker-pool-refresh-skipped", reason="not-cached")
+            else:
+                _startup_log.info("di-worker-pool-refreshed")
+
+
 def worker_main(
     settings: WorkerSettings,
     *,
     actor_registry: Mapping[str, ActorRef[Any, Any]] | None = None,
     di_registry: ProviderRegistry | None = None,
     cron_registry: list[CronScheduleSpec] | None = None,
+    connections: WorkerConnections | None = None,
 ) -> int:
     """Worker process entry point.
 
@@ -505,5 +632,6 @@ def worker_main(
                 actor_registry=actor_registry,
                 _registry=di_registry,
                 _cron_registry=schedule_specs,
+                connections=connections,
             )
         )

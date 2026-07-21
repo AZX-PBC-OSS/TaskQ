@@ -30,7 +30,8 @@ from taskq.constants import events_channel, wake_channel, worker_channel
 from taskq.obs import get_logger, get_meter
 from taskq.worker.deps import (
     WorkerDeps,
-    open_dedicated_conn,
+    _drain_tasks,  # pyright: ignore[reportPrivateUsage]  # Why: module-level drain-task set for fire-and-forget background close; accessed at module scope by both notify.py and deps.py.
+    apply_keepalive_to_conn,
 )
 
 logger: structlog.stdlib.BoundLogger = get_logger(__name__)
@@ -188,37 +189,94 @@ def _make_worker_events_callback(
     return _on_worker_event
 
 
-async def _reconnect(
+async def reconnect_notify_conn(
     deps: WorkerDeps,
     backend: PostgresBackend,
     channels: list[tuple[str, Callable[[asyncpg.Connection, int, str, str], None]]],
+    *,
+    close_old: bool = False,
 ) -> None:
-    new_conn = await open_dedicated_conn(
-        str(deps.settings.pg_dsn_direct),
-        label="notify_conn",
-        apply_keepalive=True,
-    )
-    try:
-        for channel, on_notify in channels:
-            await new_conn.execute(f'LISTEN "{channel}"')
-            await new_conn.add_listener(channel, on_notify)  # pyright: ignore[reportArgumentType]  # Why: stubs over-narrow callback type; runtime asyncpg accepts sync callbacks per asyncpg/connection.py:_process_notification
-    except Exception:
-        with contextlib.suppress(Exception):
-            await new_conn.close()
-        raise
-    deps.notify_conn = new_conn
-    # Simulate a wake notify so any pending subscribers are unblocked after reconnect.
-    if channels:
-        wake_ch, wake_cb = channels[0]
-        wake_cb(new_conn, 0, wake_ch, "")
-    _notify_reconnects_counter.add(1)
-    _connected_lookup[backend] = True
-    logger.info(
-        "notify-listener-connect",
-        kind="notify_listener_connect",
-        channels=[ch for ch, _ in channels],
-        host=dsn_host(str(deps.settings.pg_dsn_direct)),
-    )
+    """Rebuild ``deps.notify_conn``, re-issue LISTEN, and re-register callbacks.
+
+    Uses ``deps.notify_conn_factory`` when set — the credential source (DSN
+    closure or a user-supplied AAD/AWS/Vault factory) the connection was
+    originally opened with — so a factory-backed deployment (which may have
+    no DSN at all) reconnects through the same source rather than falling
+    back to a stale ``pg_dsn_direct``. Falls back to the raw DSN only when
+    ``notify_conn_factory`` is unset (caller-owned ``notify_conn`` — nothing
+    TaskQ can rebuild; raises if called in that case).
+
+    ``close_old`` additionally closes ``deps.notify_conn`` (the connection
+    being replaced) in the background after the swap — used by
+    :func:`~taskq.worker.deps.reload_credentials` for a SIGHUP-triggered
+    hot reload, where the old connection is still live and must be drained
+    rather than assumed already dead (the health-check reconnect path never
+    passes this — the old connection is already closed by the time it calls
+    in).
+
+    A SIGHUP-triggered call can race a concurrent SIGTERM/SIGINT shutdown
+    (the shutdown clears ``deps.notify_reconnect_fn`` and removes listeners
+    once ``notify_listener_loop`` observes the shutdown event, which may
+    happen mid-reconnect). Any exception from that race is caught and
+    logged by :func:`~taskq.worker.deps.reload_credentials`'s caller — it
+    does not crash the worker; the reload is simply reported as failed for
+    ``notify_conn`` on an already-terminating worker.
+    """
+    # Serialized on deps.notify_reconnect_lock: the health-check loop and
+    # reload_credentials (via deps.notify_reconnect_fn) can both trigger a
+    # reconnect — without mutual exclusion both build a new conn, last
+    # writer wins, and the loser's LISTEN-registered conn leaks.
+    async with deps.notify_reconnect_lock:
+        old_conn = deps.notify_conn
+        factory = deps.notify_conn_factory
+        if factory is None:
+            raise RuntimeError(
+                "notify_conn has no factory to reconnect through (caller-owned "
+                "connection) — TaskQ cannot rebuild it automatically."
+            )
+        new_conn = await factory()
+        # The DSN path gets TCP keepalive via open_dedicated_conn; a conn
+        # rebuilt through the factory must get the same policy — the worker
+        # owns this policy, not the user's factory. Safe on fakes (returns
+        # False when no socket is available).
+        apply_keepalive_to_conn(new_conn, label="notify")
+        try:
+            for channel, on_notify in channels:
+                await new_conn.execute(f'LISTEN "{channel}"')
+                await new_conn.add_listener(channel, on_notify)  # pyright: ignore[reportArgumentType]  # Why: stubs over-narrow callback type; runtime asyncpg accepts sync callbacks per asyncpg/connection.py:_process_notification
+        except BaseException:
+            # BaseException: CancelledError (e.g. reload's factory_timeout
+            # firing mid-LISTEN-setup) must also close the freshly-built
+            # conn — otherwise it leaks until GC with a ResourceWarning.
+            with contextlib.suppress(Exception):
+                await new_conn.close()
+            raise
+        deps.notify_conn = new_conn
+        # Simulate a wake notify so any pending subscribers are unblocked after reconnect.
+        if channels:
+            wake_ch, wake_cb = channels[0]
+            wake_cb(new_conn, 0, wake_ch, "")
+        _notify_reconnects_counter.add(1)
+        _connected_lookup[backend] = True
+        logger.info(
+            "notify-listener-connect",
+            kind="notify_listener_connect",
+            channels=[ch for ch, _ in channels],
+            host=dsn_host(str(deps.settings.pg_dsn_direct))
+            if deps.settings.pg_dsn_direct
+            else None,
+        )
+        if close_old and old_conn is not None and old_conn is not new_conn:
+
+            async def _close_old() -> None:
+                with contextlib.suppress(Exception):
+                    await old_conn.close()
+
+            # Store the reference so the task is not garbage-collected before
+            # completing. The set is module-level (single event loop, async-safe).
+            _t = asyncio.create_task(_close_old())
+            _drain_tasks.add(_t)
+            _t.add_done_callback(_drain_tasks.discard)
 
 
 async def _health_check_loop(
@@ -255,27 +313,41 @@ async def _health_check_loop(
             for channel, on_notify in channels:
                 with contextlib.suppress(asyncpg.InterfaceError):
                     await conn.remove_listener(channel, on_notify)  # pyright: ignore[reportArgumentType]  # Why: stubs over-narrow callback type; runtime accepts sync callbacks
-            with contextlib.suppress(
-                Exception
-            ):  # Why:  — close can raise on a half-dead socket and must be swallowed to enter the reconnect loop
-                await conn.close()
+            if deps.owns_notify_conn:
+                # Ownership contract (connections.py): TaskQ never closes
+                # caller-owned resources — the caller owns its lifecycle even
+                # on the error path. The remove_listener calls above are kept
+                # unconditionally: harmless on a caller's conn, needed before
+                # a rebuild.
+                with contextlib.suppress(
+                    Exception
+                ):  # Why:  — close can raise on a half-dead socket and must be swallowed to enter the reconnect loop
+                    await conn.close()
 
             delay = float(deps.settings.notify_reconnect_backoff_initial)
             attempt = 0
             while not shutdown.is_set():
                 try:
-                    await _reconnect(deps, backend, channels)
+                    await reconnect_notify_conn(deps, backend, channels)
                     conn = deps.notify_conn
                     if conn is None:
                         break
                     break
-                except (
-                    asyncpg.PostgresConnectionError,
-                    asyncpg.InterfaceError,
-                    asyncpg.InternalClientError,  # Why: same deviation — InternalClientError from a half-dead connection must enter the reconnect loop, not crash the worker.
-                    asyncpg.AdminShutdownError,  # Why: same deviation — AdminShutdownError must enter the reconnect loop, not crash the worker
-                    OSError,
-                ) as exc:
+                except Exception as exc:  # Why: the retry loop must survive ANY factory/reconnect failure — a credential provider raises non-asyncpg errors (azure ClientAuthenticationError, hvac VaultError, botocore ClientError) and a rejected fresh token raises asyncpg.InvalidPasswordError, which is a PostgresError, NOT a PostgresConnectionError. Catching only asyncpg connection errors here would crash the worker during exactly the IdP outage this loop exists to survive. asyncio.CancelledError is BaseException (3.8+), so shutdown cancellation still propagates.
+                    if isinstance(exc, RuntimeError) and deps.notify_conn_factory is None:
+                        # Caller-owned notify_conn dropped and there is no
+                        # factory to rebuild through — retrying could never
+                        # succeed. Disable the listener; poll-based dispatch
+                        # remains as the fallback.
+                        logger.warning(
+                            "notify-listener-disabled",
+                            kind="notify_listener_disabled",
+                            reason="caller-owned notify_conn dropped and no "
+                            "notify_conn_factory to rebuild through; falling "
+                            "back to poll-based dispatch",
+                            channels=[ch for ch, _ in channels],
+                        )
+                        return
                     attempt += 1
                     logger.warning(
                         "notify-reconnect-attempt",
@@ -283,6 +355,7 @@ async def _health_check_loop(
                         attempt=attempt,
                         delay=delay,
                         error=repr(exc),
+                        error_type=type(exc).__name__,
                         channels=[ch for ch, _ in channels],
                     )
                     await asyncio.sleep(delay)
@@ -306,6 +379,18 @@ async def notify_listener_loop(
     _active_listeners.add(backend)
     _connected_lookup[backend] = False
 
+    # Store a reconnect closure on deps so reload_credentials can trigger
+    # a callback-aware reconnect (re-registers LISTEN + callbacks on the
+    # new connection) without needing access to the channels itself.
+    async def _reconnect_for_reload() -> None:
+        await reconnect_notify_conn(deps, backend, channels, close_old=True)
+
+    if deps.notify_conn_factory is not None:
+        # Only register when there is a factory to rebuild through — with a
+        # caller-owned notify_conn the closure could only raise RuntimeError
+        # if invoked. reload_credentials already skips factory-less notify.
+        deps.notify_reconnect_fn = _reconnect_for_reload
+
     try:
         for channel, on_notify_callback in channels:
             await deps.notify_conn.add_listener(channel, on_notify_callback)  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess]  # Why: stubs over-narrow callback type; notify_conn is non-None after open_worker_deps
@@ -318,6 +403,7 @@ async def notify_listener_loop(
             )
             await shutdown.wait()
     finally:
+        deps.notify_reconnect_fn = None
         _connected_lookup[backend] = False
         _connected_lookup.pop(backend, None)
         for channel, on_notify_callback in channels:

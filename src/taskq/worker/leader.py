@@ -56,6 +56,7 @@ from taskq.worker._leader_sweeps import (
 from taskq.worker.cron_loop import tick_cron
 from taskq.worker.deps import (
     WorkerDeps,
+    apply_keepalive_to_conn,
     open_dedicated_conn,
 )
 
@@ -118,6 +119,88 @@ class MaintenanceLeader:
             setattr(self, attr, None)
         self._deps.is_leader.clear()
 
+    async def _drop_leader_conn(self, *, reason: str) -> None:
+        """Null ``deps.leader_conn``, closing it only when TaskQ-owned.
+
+        The ownership contract ("TaskQ never closes caller-owned
+        resources") forbids closing a caller-provided leader_conn even when
+        it is dead — the caller owns the corpse. A caller-owned conn is
+        therefore abandoned: our reference is dropped so the election loop
+        rebuilds via ``leader_conn_factory`` / ``pg_dsn_direct``, and the
+        caller's own handle is left for them to dispose of.
+        """
+        conn = self._deps.leader_conn
+        if conn is None:
+            return
+        if self._deps.owns_leader_conn:
+            if not conn.is_closed():
+                await conn.close()
+        else:
+            log.warning(
+                "leader-conn-abandoned-caller-owned",
+                kind="leader_conn_abandoned_caller_owned",
+                worker_id=str(self._worker_id),
+                reason=reason,
+            )
+        self._deps.leader_conn = None
+
+    async def _open_leader_conn(self) -> asyncpg.Connection:
+        """Open or reopen the leader advisory-lock connection.
+
+        Uses ``deps.leader_conn_factory`` when set (credential-provider-
+        backed deployments — AAD/AWS/Vault), so reconnection after a drop
+        re-fetches a fresh credential rather than falling back to a
+        stale/absent DSN. Falls back to ``open_dedicated_conn`` with the
+        DSN only when no factory is available.
+        """
+        factory = self._deps.leader_conn_factory
+        if factory is not None:
+            conn = await factory()
+            # Why: the factory path bypasses open_dedicated_conn, so the
+            # worker's keepalive policy must be applied here — the factory
+            # owns the credential, TaskQ owns the socket policy.
+            apply_keepalive_to_conn(conn, label="leader_conn")
+            return conn
+        dsn = self._deps.settings.pg_dsn_direct
+        if dsn is None:
+            # Why: open_worker_deps validates this at startup, so None here
+            # means deps were built by hand — fail fast instead of letting
+            # asyncpg.connect(str(None)) DNS-retry the host "None" forever.
+            raise RuntimeError(
+                "no leader_conn_factory and pg_dsn_direct is None — "
+                "cannot rebuild leader connection"
+            )
+        return await open_dedicated_conn(
+            str(dsn),
+            label="leader_conn",
+            apply_keepalive=True,
+        )
+
+    async def _open_dedicated_conn(self, label: str) -> asyncpg.Connection:
+        """Open a leader-owned dedicated connection (monitor / cron).
+
+        Uses ``deps.leader_conn_factory`` when set so the same credential
+        source is used for all leader connections. Falls back to
+        ``open_dedicated_conn`` with the DSN otherwise.
+        """
+        factory = self._deps.leader_conn_factory
+        if factory is not None:
+            conn = await factory()
+            apply_keepalive_to_conn(conn, label=label)
+            return conn
+        dsn = self._deps.settings.pg_dsn_direct
+        if dsn is None:
+            # Why: same fail-fast as _open_leader_conn — never connect to
+            # the literal host "None".
+            raise RuntimeError(
+                f"no leader_conn_factory and pg_dsn_direct is None — cannot rebuild {label}"
+            )
+        return await open_dedicated_conn(
+            str(dsn),
+            label=label,
+            apply_keepalive=True,
+        )
+
     async def run(self, shutdown: asyncio.Event) -> None:
         _active_leaders.add(self)
         try:
@@ -162,9 +245,7 @@ class MaintenanceLeader:
                         asyncpg.InterfaceError,
                         OSError,
                     ) as exc:
-                        if not self._deps.leader_conn.is_closed():
-                            await self._deps.leader_conn.close()
-                        self._deps.leader_conn = None
+                        await self._drop_leader_conn(reason="probe_failed")
                         await self._close_leader_owned_conns()
                         log.warning(
                             "leader-conn-died",
@@ -174,18 +255,24 @@ class MaintenanceLeader:
                         )
             if self._deps.leader_conn is None or self._deps.leader_conn.is_closed():
                 try:
-                    self._deps.leader_conn = await open_dedicated_conn(
-                        str(self._deps.settings.pg_dsn_direct),
-                        label="leader_conn",
-                        apply_keepalive=True,
-                    )  # Why: only post-construction mutation of WorkerDeps allowed in M1; leader_conn may be None after watchdog or error handler closes it — a fresh connection is required before the lock attempt.
-                except (asyncpg.PostgresConnectionError, asyncpg.InterfaceError, OSError) as exc:
+                    self._deps.leader_conn = await self._open_leader_conn()
+                except Exception as exc:
+                    # Why: ``except Exception`` is deliberate at this retry
+                    # point — credential-provider factories raise
+                    # azure/hvac/botocore exceptions, and a rejected fresh
+                    # token raises asyncpg.InvalidPasswordError (an
+                    # InvalidAuthorizationSpecificationError, NOT a
+                    # PostgresConnectionError). All are transient at this
+                    # boundary and must retry, not crash the worker
+                    # TaskGroup. CancelledError is BaseException (3.8+), so
+                    # shutdown still propagates.
                     self._deps.leader_conn = None
                     log.warning(
                         "leader-conn-open-failed",
                         kind="leader_conn_open_failed",
                         worker_id=str(self._worker_id),
                         error=repr(exc),
+                        error_type=type(exc).__name__,
                     )
                     await asyncio.sleep(self._deps.settings.heartbeat_interval)
                     continue
@@ -195,9 +282,7 @@ class MaintenanceLeader:
                     MAINTENANCE_LEADER_LOCK_NAME,
                 )
             except (asyncpg.PostgresConnectionError, asyncpg.InterfaceError, OSError) as exc:
-                if not self._deps.leader_conn.is_closed():
-                    await self._deps.leader_conn.close()
-                self._deps.leader_conn = None
+                await self._drop_leader_conn(reason="lock_attempt_failed")
                 await self._close_leader_owned_conns()
                 record_election_attempt(str(self._worker_id), won=False)
                 log.warning(
@@ -232,26 +317,26 @@ class MaintenanceLeader:
                     shutdown.set()
                     return
                 try:
-                    self._leader_monitor_conn = await open_dedicated_conn(
-                        str(self._deps.settings.pg_dsn_direct),
-                        label="leader_monitor_conn",
-                        apply_keepalive=True,
+                    self._leader_monitor_conn = await self._open_dedicated_conn(
+                        "leader_monitor_conn"
                     )
-                    self._cron_conn = await open_dedicated_conn(
-                        str(self._deps.settings.pg_dsn_direct),
-                        label="cron_conn",
-                        apply_keepalive=True,
-                    )
-                except (asyncpg.PostgresConnectionError, asyncpg.InterfaceError, OSError) as exc:
-                    if not self._deps.leader_conn.is_closed():
-                        await self._deps.leader_conn.close()
-                    self._deps.leader_conn = None
+                    self._cron_conn = await self._open_dedicated_conn("cron_conn")
+                except Exception as exc:
+                    # Why: ``except Exception`` is deliberate here for the
+                    # same reason as the leader_conn reopen path above —
+                    # factory-built conns surface provider (azure/hvac/
+                    # botocore) and asyncpg.InvalidPasswordError failures,
+                    # which are transient and must retry, not escape into
+                    # the worker TaskGroup. CancelledError (BaseException)
+                    # is unaffected.
+                    await self._drop_leader_conn(reason="dedicated_conn_open_failed")
                     await self._close_leader_owned_conns()
                     log.warning(
                         "leader-dedicated-conn-failed",
                         kind="leader_dedicated_conn_failed",
                         worker_id=str(self._worker_id),
                         error=repr(exc),
+                        error_type=type(exc).__name__,
                     )
                     await asyncio.sleep(self._deps.settings.heartbeat_interval)
                     continue
@@ -282,12 +367,7 @@ class MaintenanceLeader:
                 try:
                     await conn.fetchval("SELECT 1")
                 except (asyncpg.PostgresConnectionError, asyncpg.InterfaceError, OSError) as exc:
-                    if (
-                        self._deps.leader_conn is not None
-                        and not self._deps.leader_conn.is_closed()
-                    ):
-                        await self._deps.leader_conn.close()
-                    self._deps.leader_conn = None
+                    await self._drop_leader_conn(reason="watchdog_probe_failed")
                     await self._close_leader_owned_conns()
                     log.warning(
                         "leadership-lost",

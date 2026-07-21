@@ -21,6 +21,7 @@ import pytest
 
 from taskq._ids import new_uuid
 from taskq.backend._protocol import Backend, JobId, JobRow
+from taskq.connections import WorkerConnections
 from taskq.settings import WorkerSettings
 from taskq.testing.actor import FakeBackend
 from taskq.worker.deps import WorkerDeps
@@ -682,10 +683,12 @@ def test_worker_main_runs_under_asyncio_runner_and_returns_exit_code(
         actor_registry: object = None,
         _registry: object = None,
         _cron_registry: object = None,
+        connections: object = None,
     ) -> int:
         captured_kwargs["actor_registry"] = actor_registry
         captured_kwargs["_registry"] = _registry
         captured_kwargs["_cron_registry"] = _cron_registry
+        captured_kwargs["connections"] = connections
         return 7
 
     with patch("taskq.worker._bootstrap._main", side_effect=_fake_main):
@@ -706,6 +709,7 @@ def test_worker_main_uses_get_registered_crons_when_cron_registry_omitted(
         actor_registry: object = None,
         _registry: object = None,
         _cron_registry: object = None,
+        connections: object = None,
     ) -> int:
         return 0
 
@@ -717,3 +721,27 @@ def test_worker_main_uses_get_registered_crons_when_cron_registry_omitted(
 
     assert result == 0
     mock_get_registered_crons.assert_called_once()
+
+
+def test_worker_main_forwards_connections_to_main(settings: WorkerSettings) -> None:
+    """worker_main(connections=…) forwards the exact WorkerConnections object
+    to _main — identity is the contract (managed-identity hook point)."""
+    sentinel = WorkerConnections()
+    captured: dict[str, object] = {}
+
+    async def _fake_main(
+        s: WorkerSettings,
+        *,
+        actor_registry: object = None,
+        _registry: object = None,
+        _cron_registry: object = None,
+        connections: object = None,
+    ) -> int:
+        captured["connections"] = connections
+        return 0
+
+    with patch("taskq.worker._bootstrap._main", side_effect=_fake_main):
+        result = worker_main(settings, cron_registry=[], connections=sentinel)
+
+    assert result == 0
+    assert captured["connections"] is sentinel

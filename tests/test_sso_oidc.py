@@ -12,7 +12,7 @@ respx can intercept direct calls alongside authlib's token-endpoint calls.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from typing import Any
 from urllib.parse import parse_qs, urlparse
@@ -88,7 +88,7 @@ def _mock_provider(
     token_response: dict[str, Any] | None = None,
     *,
     discovery: dict[str, Any] | None = None,
-) -> Iterator[respx.MockRouter]:
+) -> Generator[respx.MockRouter, None, None]:
     """Mock the OIDC provider: respx intercepts every httpx call the backend
     makes — discovery, JWKS, and the token endpoint — since the OIDC module
     uses plain httpx.AsyncClient throughout (authlib's AsyncOAuth2Client

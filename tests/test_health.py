@@ -2,9 +2,11 @@
 
 import asyncio
 import contextlib
+import glob
 import json
 import os
 import sys
+from collections.abc import Iterator
 from types import SimpleNamespace
 
 import asyncpg
@@ -64,6 +66,7 @@ def _make_deps(**overrides: object) -> WorkerDeps:  # pyright: ignore[reportRetu
         "is_leader": SimpleNamespace(is_set=lambda: False),
         "active_jobs": SimpleNamespace(count=lambda: 2),
         "heartbeat_failures": 0,
+        "redis_client": None,
     }
     defaults.update(overrides)
     return SimpleNamespace(**defaults)  # type: ignore[return-value] # Why: same underlying constraint as above; pyright flags the return statement separately.
@@ -170,6 +173,41 @@ async def test_compute_health_no_redis_ready() -> None:
     assert report.ready is True
 
 
+# ── redis_configured via injected client (managed-identity) ──────
+
+
+async def test_compute_health_redis_configured_via_client() -> None:
+    """redis_configured is True when a redis_client exists without redis_url.
+
+    Managed-identity deployments inject a client via redis_client_factory
+    (or pass a caller-owned client) and never set TASKQ_REDIS_URL — the
+    health report must reflect the working client, not the absent URL.
+    """
+    deps = _make_deps(redis_client=object())
+
+    report = await compute_health(deps)
+
+    assert report.redis_configured is True
+    assert report.ready is True
+
+
+async def test_compute_health_redis_configured_via_url() -> None:
+    """redis_configured is True when redis_url is set (no client yet)."""
+    deps = _make_deps(
+        settings=SimpleNamespace(
+            health_pg_ping_timeout=0.2,
+            max_heartbeat_failures=3,
+            redis_url="redis://localhost/0",
+            health_socket_path="",
+        ),
+    )
+
+    report = await compute_health(deps)
+
+    assert report.redis_configured is True
+    assert report.ready is True
+
+
 # ── _check_live() returns (True, "ok") ────────────────────────
 
 
@@ -262,6 +300,22 @@ def _next_sock_path() -> str:
     global _sock_id_seq
     _sock_id_seq += 1
     return f"{_SOCK_ID_PREFIX}{_sock_id_seq}.sock"
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _cleanup_sock_files() -> Iterator[None]:  # pyright: ignore[reportUnusedFunction] # Why: pytest autouse fixture consumed implicitly by the test runner; pyright does not track fixture usage.
+    """Sweep this process's own tqht-<pid>-*.sock files after the session.
+
+    HealthServer.start()/stop() already unlink these under normal test
+    completion; this is a backstop for abnormal termination (a killed or
+    timed-out run skips `finally` blocks and leaves the socket file
+    behind). Scoped to _SOCK_ID_PREFIX (this PID only), so it can never
+    touch a socket file from a different process or session.
+    """
+    yield
+    for path in glob.glob(f"{_SOCK_ID_PREFIX}*.sock"):
+        with contextlib.suppress(OSError):
+            os.unlink(path)
 
 
 # ── Readiness 503 body schema with CANCELLING ───────────────────

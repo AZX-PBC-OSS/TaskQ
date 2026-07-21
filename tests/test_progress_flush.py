@@ -20,6 +20,14 @@ _WORKER_ID = UUID("11111111-2222-3333-4444-555555555555")
 
 def _make_pool_mock(*, returning_row: dict[str, object] | None = None) -> MagicMock:
     """Return a pool mock whose acquire() acts as an async context manager."""
+    pool, _conn = _make_pool_with_conn(returning_row=returning_row)
+    return pool
+
+
+def _make_pool_with_conn(
+    *, returning_row: dict[str, object] | None = None
+) -> tuple[MagicMock, AsyncMock]:
+    """Return (pool, conn) mocks whose acquire() is an async context manager."""
     conn = AsyncMock()
     conn.fetchrow.return_value = returning_row
 
@@ -30,7 +38,7 @@ def _make_pool_mock(*, returning_row: dict[str, object] | None = None) -> MagicM
         yield conn
 
     pool.acquire = _acquire
-    return pool
+    return pool, conn
 
 
 def _make_dirty_buffer(*, base_seq: int = 0, delta: int = 2) -> _ProgressBuffer:
@@ -276,6 +284,40 @@ async def test_flush_immediate_flushes_dirty_buffer() -> None:
     assert buf.pending_seq_delta == 0
 
 
+async def test_flush_loop_resolves_pool_via_getter_each_tick() -> None:
+    """The loop resolves the pool fresh on every flush — after a credential
+    hot-reload swaps the worker pool, flushes must target the new pool,
+    not the (drained/closed) startup pool."""
+    pool_a, conn_a = _make_pool_with_conn(returning_row={"progress_seq": 2})
+    pool_b, conn_b = _make_pool_with_conn(returning_row={"progress_seq": 2})
+    current = {"pool": pool_a}
+
+    buffers: dict[UUID, _ProgressBuffer] = {}
+    shutdown = asyncio.Event()
+    task = asyncio.create_task(
+        progress_flush_loop(
+            lambda: current["pool"],
+            "taskq_test",
+            _WORKER_ID,
+            buffers,
+            0.01,
+            shutdown,  # type: ignore[arg-type]
+        )
+    )
+    try:
+        buffers[_JOB_ID] = _make_dirty_buffer()
+        await asyncio.sleep(0.05)
+        current["pool"] = pool_b  # simulate credential hot-reload swap
+        buffers[_JOB_ID] = _make_dirty_buffer()
+        await asyncio.sleep(0.05)
+    finally:
+        shutdown.set()
+        await task
+
+    assert conn_a.fetchrow.await_count >= 1
+    assert conn_b.fetchrow.await_count >= 1  # post-swap flush hit the NEW pool
+
+
 async def test_flush_loop_raises_on_invalid_schema() -> None:
     pool = _make_pool_mock()
     buffers: dict[UUID, _ProgressBuffer] = {}
@@ -283,7 +325,7 @@ async def test_flush_loop_raises_on_invalid_schema() -> None:
     shutdown.set()
 
     with pytest.raises(ValueError, match="invalid schema identifier"):
-        await progress_flush_loop(pool, "bad schema!", _WORKER_ID, buffers, 0.1, shutdown)
+        await progress_flush_loop(lambda: pool, "bad schema!", _WORKER_ID, buffers, 0.1, shutdown)
 
 
 async def test_flush_loop_exits_when_shutdown_set() -> None:
@@ -292,7 +334,7 @@ async def test_flush_loop_exits_when_shutdown_set() -> None:
     shutdown = asyncio.Event()
     shutdown.set()
 
-    await progress_flush_loop(pool, "taskq_test", _WORKER_ID, buffers, 0.01, shutdown)
+    await progress_flush_loop(lambda: pool, "taskq_test", _WORKER_ID, buffers, 0.01, shutdown)
 
 
 async def test_flush_loop_flushes_dirty_buffer_on_tick() -> None:
@@ -308,7 +350,7 @@ async def test_flush_loop_flushes_dirty_buffer_on_tick() -> None:
         shutdown.set()
 
     await asyncio.gather(
-        progress_flush_loop(pool, "taskq_test", _WORKER_ID, buffers, 0.01, shutdown),
+        progress_flush_loop(lambda: pool, "taskq_test", _WORKER_ID, buffers, 0.01, shutdown),
         _set_shutdown_after_flush(),
     )
 
@@ -327,7 +369,7 @@ async def test_flush_loop_skips_clean_buffers() -> None:
         shutdown.set()
 
     await asyncio.gather(
-        progress_flush_loop(pool, "taskq_test", _WORKER_ID, buffers, 0.01, shutdown),
+        progress_flush_loop(lambda: pool, "taskq_test", _WORKER_ID, buffers, 0.01, shutdown),
         _stop(),
     )
 
@@ -347,7 +389,7 @@ async def test_flush_loop_removes_buffer_when_row_gone() -> None:
         shutdown.set()
 
     await asyncio.gather(
-        progress_flush_loop(pool, "taskq_test", _WORKER_ID, buffers, 0.01, shutdown),
+        progress_flush_loop(lambda: pool, "taskq_test", _WORKER_ID, buffers, 0.01, shutdown),
         _stop(),
     )
 
@@ -396,7 +438,7 @@ async def test_flush_loop_continues_after_per_job_exception() -> None:
         shutdown.set()
 
     await asyncio.gather(
-        progress_flush_loop(pool, "taskq_test", _WORKER_ID, buffers, 0.01, shutdown),
+        progress_flush_loop(lambda: pool, "taskq_test", _WORKER_ID, buffers, 0.01, shutdown),
         _stop(),
     )
 

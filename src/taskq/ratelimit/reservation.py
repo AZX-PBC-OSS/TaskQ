@@ -347,6 +347,17 @@ class ConcurrencyReservation:
             self._table = None
 
     @property
+    def schema(self) -> str:
+        """The PG schema this reservation's slot table lives in.
+
+        Workers filter registry-global reservations by their own schema at
+        startup (a process-global registry may carry reservations declared
+        for other schemas/databases — touching those would write into the
+        wrong schema or fail noisily).
+        """
+        return self._schema
+
+    @property
     def name(self) -> str:
         return self._name
 
