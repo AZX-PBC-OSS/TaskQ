@@ -122,6 +122,11 @@ nav:
       - Progress: api-reference/progress.md
       - Testing: api-reference/testing.md
       - Migrations: api-reference/migrate.md
+      - Connections (BYO / Factories): api-reference/connections.md
+      - Credential Providers: api-reference/auth.md
+      - Microsoft Entra ID (AAD): api-reference/aad.md
+      - AWS IAM RDS: api-reference/aws.md
+      - HashiCorp Vault: api-reference/vault.md
       - CLI: api-reference/cli.md
   - Architecture: architecture.md
   - Changelog: changelog.md

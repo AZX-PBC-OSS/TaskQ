@@ -20,12 +20,12 @@ classifiers = [
 dependencies = [
     "asyncpg>=0.31.0,<1",
     "croniter>=6.2.4",
-    "dotenvmodel>=0.3.2,<1",
-    "opentelemetry-api>=1.43.0",
+    "dotenvmodel>=0.4.0,<1",
+    "opentelemetry-api>=1.44.0",
     "orjson>=3.11.9",
     "pydantic>=2.13.4,<3",
     "structlog>=26.1.0,<27",
-    "typer>=0.26.8,<1",
+    "typer>=0.27.0,<1",
     "uuid-utils>=0.17.0,<1",
 ]
 
@@ -44,10 +44,10 @@ redis = [
     "redis>=8.0.1,<9",
 ]
 fastapi = [
-    "fastapi>=0.139.0,<1",
+    "fastapi>=0.139.2,<1",
     "humanize>=4.16.0",
     "jinja2>=3.1.6",
-    "sse-starlette>=3.4.5",
+    "sse-starlette>=3.4.6",
     "starlette>=1.3.1",
     "uvicorn>=0.51.0,<1",
 ]
@@ -58,9 +58,9 @@ otel = [
     # Not imported anywhere under src/taskq; kept optional for operators who
     # export OTLP directly or drive auto-instrumentation via
     # `opentelemetry-instrument`.
-    "opentelemetry-sdk>=1.43.0",
-    "opentelemetry-exporter-otlp>=1.43.0",
-    "opentelemetry-instrumentation>=0.62b1,<1",
+    "opentelemetry-sdk>=1.44.0",
+    "opentelemetry-exporter-otlp>=1.44.0",
+    "opentelemetry-instrumentation>=0.65b0,<1",
 ]
 prometheus = [
     # >=0.63b0 guarantees PrometheusMetricReader's public `registry=` kwarg
@@ -79,7 +79,7 @@ oidc = [
     "httpx>=0.28.1,<1",
     # HTTP client for direct OIDC calls (discovery, JWKS fetch). httpx2 is the
     # Pydantic-maintained successor to httpx with the same API surface.
-    "httpx2>=2.6.0",
+    "httpx2>=2.7.0",
     # Signed session cookies (shared with the SAML backend via _session.py).
     "itsdangerous>=2.2.0,<3",
 ]
@@ -96,11 +96,16 @@ aad = [
     # Database for PostgreSQL and Azure Cache for Redis. Used by the
     # credential providers in taskq.aad; see docs/guides/managed-identities.md.
     "azure-identity>=1.25.3,<2",
+    # Async transport for azure.identity.aio credentials — azure-identity
+    # treats aiohttp as a soft dependency, but constructing any async
+    # credential (e.g. aio.DefaultAzureCredential) raises ImportError
+    # without it.
+    "aiohttp>=3.14.2,<4",
 ]
 aws = [
     # AWS IAM database authentication for Amazon RDS Postgres. Used by the
     # credential providers in taskq.aws; see docs/guides/managed-identities.md.
-    "boto3>=1.43.47",
+    "boto3>=1.43.52,<2",
 ]
 vault = [
     # HashiCorp Vault database secrets engine dynamic credentials. Used by
@@ -447,17 +452,17 @@ dev = [
     "asyncpg-stubs>=0.31.3",
     "authlib>=1.7.2",
     "azure-identity>=1.25.3",
-    "boto3>=1.43.47",
+    "boto3>=1.43.52",
     "httpx>=0.28.1",
-    "httpx2>=2.6.0",
+    "httpx2>=2.7.0",
     "hvac>=2.4.0",
-    "hypothesis>=6.156.6",
+    "hypothesis>=6.157.1",
     "itsdangerous>=2.2.0",
     "jsonschema>=4.26.0",
     "mkdocs>=1.6.1",
-    "mkdocs-material>=9.7.6",
+    "mkdocs-material>=9.7.7",
     "mkdocstrings[python]>=1.0.6",
-    "opentelemetry-sdk>=1.43.0",
+    "opentelemetry-sdk>=1.44.0",
     "pip-audit>=2.10.1",
     "pyright>=1.1.411",
     "pytest>=9.1.1",
@@ -469,6 +474,6 @@ dev = [
     "python3-saml>=1.16.0",
     "pyyaml>=6.0.3",
     "respx>=0.23.1",
-    "ruff>=0.15.21",
+    "ruff>=0.15.22",
     "testcontainers[postgres,redis]>=4.14.2",
 ]
