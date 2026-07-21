@@ -228,7 +228,7 @@ See [../architecture.md](../architecture.md) for the prune/archive schema design
 
 ## Validation Constraints
 
-These cross-field constraints are enforced in `_post_load` at startup. Violations raise `ValueError` before the process enters its main loop.
+These cross-field constraints are enforced in `post_load` at startup. Violations raise `ValidationError` (or `MultipleValidationErrors` when several fire at once) before the process enters its main loop.
 
 ### Lock lease vs heartbeat interval
 
@@ -266,7 +266,7 @@ Error pattern: `cancellation_grace_period + cleanup_grace_period must be < lock_
 log_format in {"json", "console"}
 ```
 
-Error pattern: `log_format must be 'json' or 'console'`
+Error pattern: `log_format must be one of ['console', 'json'], got <value>`
 
 ---
 

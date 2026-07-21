@@ -295,7 +295,7 @@ async def _open_pg_backend(
     finally:
         await conn.close()
 
-    # 3. DSN narrowing — direct DSN is guaranteed set after _post_load
+    # 3. DSN narrowing — direct DSN is guaranteed set after post_load
     assert settings.pg_dsn_direct is not None  # post-load guarantee
 
     # 4. Open WorkerDeps via AsyncExitStack for proper LIFO teardown.

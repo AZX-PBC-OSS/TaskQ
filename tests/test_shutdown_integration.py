@@ -297,9 +297,11 @@ async def test_ti3_budget_validation() -> None:
     """Grace budget validation fires at startup.
 
     Construct WorkerSettings with cancellation_grace + cleanup_grace
-    >= termination_grace - 5. Oracle: ValueError before any pool open.
+    >= termination_grace - 5. Oracle: ValidationError before any pool open.
     """
-    with pytest.raises(ValueError, match=r"grace_period"):
+    from dotenvmodel import ValidationError
+
+    with pytest.raises(ValidationError, match=r"grace_period"):
         WorkerSettings.load_from_dict(
             {
                 "TASKQ_PG_DSN": "postgresql://x:x@localhost/x",

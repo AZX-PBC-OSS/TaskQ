@@ -1107,7 +1107,6 @@ async def test_schedule_utc_to_cron_invalid_minutes() -> None:
 async def test_build_retention_per_status_defaults() -> None:
     """_build_retention_per_status returns five statuses with crashed → abandoned."""
     settings = _worker_settings("postgresql://x:x@localhost/x")
-    settings._post_load()
     result = _build_retention_per_status(settings)
     assert set(result.keys()) == {"succeeded", "failed", "cancelled", "crashed", "abandoned"}
     assert result["crashed"] == settings.prune_retention_abandoned
@@ -1123,7 +1122,6 @@ async def test_build_retention_per_status_crashed_uses_abandoned() -> None:
         "postgresql://x:x@localhost/x",
         PRUNE_RETENTION_ABANDONED="P120D",
     )
-    settings._post_load()
     result = _build_retention_per_status(settings)
     assert result["crashed"] == timedelta(days=120)
     assert result["abandoned"] == timedelta(days=120)

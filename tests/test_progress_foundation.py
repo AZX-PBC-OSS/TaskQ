@@ -382,17 +382,19 @@ def test_progress_data_max_bytes_via_env(monkeypatch: pytest.MonkeyPatch) -> Non
 
 
 def test_progress_coalesce_interval_zero_raises() -> None:
-    s = _load()
-    object.__setattr__(s, "progress_coalesce_interval", 0.0)
-    with pytest.raises(ValueError, match=r"progress_coalesce_interval.*must be > 0"):
-        s._post_load()
+    """progress_coalesce_interval=0.0 violates ge=0.1 constraint."""
+    from dotenvmodel import ConstraintViolationError
+
+    with pytest.raises(ConstraintViolationError, match=r"greater than or equal to 0\.1"):
+        _load(TASKQ_PROGRESS_COALESCE_INTERVAL="0.0")
 
 
 def test_progress_coalesce_interval_negative_raises() -> None:
-    s = _load()
-    object.__setattr__(s, "progress_coalesce_interval", -1.0)
-    with pytest.raises(ValueError, match=r"progress_coalesce_interval.*must be > 0"):
-        s._post_load()
+    """progress_coalesce_interval=-1.0 violates ge=0.1 constraint."""
+    from dotenvmodel import ConstraintViolationError
+
+    with pytest.raises(ConstraintViolationError, match=r"greater than or equal to 0\.1"):
+        _load(TASKQ_PROGRESS_COALESCE_INTERVAL="-1.0")
 
 
 # ── ProgressTooLarge exception ─────────────────────────────────────────────

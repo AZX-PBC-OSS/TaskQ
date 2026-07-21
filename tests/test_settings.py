@@ -3,6 +3,7 @@
 from datetime import timedelta
 
 import pytest
+from dotenvmodel import ConstraintViolationError, ValidationError
 from hypothesis import given
 from hypothesis import strategies as st
 
@@ -28,15 +29,27 @@ def _load(**overrides: str) -> WorkerSettings:
 
 
 def test_lock_lease_too_small_raises() -> None:
-    """lock_lease < 4 * heartbeat_interval raises ValueError."""
-    with pytest.raises(ValueError, match=r"lock_lease.*must be >= 4 \* heartbeat_interval"):
-        _load(TASKQ_LOCK_LEASE="30.0", TASKQ_HEARTBEAT_INTERVAL="10.0")
+    """lock_lease < 4 * heartbeat_interval raises ValidationError."""
+    # Pin grace periods small so only the lock_lease invariant fires
+    # (cancellation+cleanup < lock_lease holds at 0.1+0.1 < 30).
+    with pytest.raises(ValidationError, match=r"lock_lease.*must be >= 4 \* heartbeat_interval"):
+        _load(
+            TASKQ_LOCK_LEASE="30.0",
+            TASKQ_HEARTBEAT_INTERVAL="10.0",
+            TASKQ_CANCELLATION_GRACE_PERIOD="0.1",
+            TASKQ_CLEANUP_GRACE_PERIOD="0.1",
+        )
 
 
 def test_lock_lease_error_message_contains_fields() -> None:
     """Error message includes both field names and the ratio."""
-    with pytest.raises(ValueError) as exc_info:
-        _load(TASKQ_LOCK_LEASE="30.0", TASKQ_HEARTBEAT_INTERVAL="10.0")
+    with pytest.raises(ValidationError) as exc_info:
+        _load(
+            TASKQ_LOCK_LEASE="30.0",
+            TASKQ_HEARTBEAT_INTERVAL="10.0",
+            TASKQ_CANCELLATION_GRACE_PERIOD="0.1",
+            TASKQ_CLEANUP_GRACE_PERIOD="0.1",
+        )
     msg = str(exc_info.value)
     assert "lock_lease" in msg
     assert "heartbeat_interval" in msg
@@ -109,8 +122,6 @@ def test_health_pg_ping_timeout_via_dict() -> None:
 
 def test_health_pg_ping_timeout_negative_raises() -> None:
     """Negative health_pg_ping_timeout raises via the dotenvmodel ge=0.0 constraint."""
-    from dotenvmodel.exceptions import ConstraintViolationError
-
     with pytest.raises(ConstraintViolationError, match="greater than or equal to 0"):
         _load(TASKQ_HEALTH_PG_PING_TIMEOUT="-1.0")
 
@@ -195,12 +206,12 @@ def test_rate_limit_pg_fallback_enabled_false_via_env(monkeypatch: pytest.Monkey
 
 
 def test_cancellation_grace_plus_cleanup_exceeds_lock_lease_raises() -> None:
-    """cancellation_grace_period + cleanup_grace_period >= lock_lease raises ValueError."""
+    """cancellation_grace_period + cleanup_grace_period >= lock_lease raises ValidationError."""
     # Use lock_lease=60.0, heartbeat_interval=10.0 (valid for).
     # Set termination_grace_period high enough that the check does NOT
     # fire first (termination check: 40+20 < termination-5; use 120 => 60 < 115 ✓).
     # Then set cancellation+cleanup >= lock_lease to trigger the check.
-    with pytest.raises(ValueError, match="must be < lock_lease"):
+    with pytest.raises(ValidationError, match="must be < lock_lease"):
         _load(
             TASKQ_LOCK_LEASE="60.0",
             TASKQ_HEARTBEAT_INTERVAL="10.0",
@@ -224,12 +235,17 @@ def test_cancellation_grace_plus_cleanup_below_lock_lease_accepted() -> None:
 
 
 def test_lock_lease_violation_before_connections() -> None:
-    """ValueError is raised at construction, before any asyncpg calls."""
-    # If the ValueError fires, no pool or connection was opened.
-    # This is a white-box check: _post_load fires inside load_from_dict
+    """ValidationError is raised at construction, before any asyncpg calls."""
+    # If the error fires, no pool or connection was opened.
+    # This is a white-box check: post_load fires inside load_from_dict
     # which is a sync call. No asyncpg calls happen synchronously.
-    with pytest.raises(ValueError, match="lock_lease"):
-        _load(TASKQ_LOCK_LEASE="10.0", TASKQ_HEARTBEAT_INTERVAL="10.0")
+    with pytest.raises(ValidationError, match="lock_lease"):
+        _load(
+            TASKQ_LOCK_LEASE="10.0",
+            TASKQ_HEARTBEAT_INTERVAL="10.0",
+            TASKQ_CANCELLATION_GRACE_PERIOD="0.1",
+            TASKQ_CLEANUP_GRACE_PERIOD="0.1",
+        )
 
 
 # ── lock_lease invariant universality ──────────────────────────────
@@ -242,7 +258,7 @@ def test_lock_lease_violation_before_connections() -> None:
     ),
 )
 def test_lock_lease_invariant_universality(lock_lease: float, heartbeat_interval: float) -> None:
-    """ValueError raised iff lock_lease < 4 * heartbeat_interval.
+    """ValidationError raised iff lock_lease < 4 * heartbeat_interval.
 
     Picks generous cancellation/cleanup grace values that always satisfy the
     cancellation invariant (sum < lock_lease) when the invariant
@@ -260,7 +276,7 @@ def test_lock_lease_invariant_universality(lock_lease: float, heartbeat_interval
     should_raise = lock_lease < 4 * heartbeat_interval
 
     if should_raise:
-        with pytest.raises(ValueError, match="lock_lease"):
+        with pytest.raises(ValidationError, match="lock_lease"):
             _load(**overrides)
     else:
         s = _load(**overrides)
@@ -268,11 +284,11 @@ def test_lock_lease_invariant_universality(lock_lease: float, heartbeat_interval
         assert s.heartbeat_interval == heartbeat_interval
 
 
-# ── A-TG-02: _post_load skipped → str(pg_dsn_direct) == "None" footgun ──────
+# ── A-TG-02: post_load skipped → str(pg_dsn_direct) == "None" footgun ──────
 
 
 def test_post_load_skipped_produces_none_dsn_string() -> None:
-    """A-TG-02: bypassing _post_load (e.g. via object.__new__ + field assignment)
+    """A-TG-02: bypassing post_load (e.g. via object.__new__ + field assignment)
     leaves pg_dsn_direct as None. str(None) == 'None', documenting the footgun.
 
     This test is intentionally white-box: it verifies the contract documented
@@ -281,7 +297,7 @@ def test_post_load_skipped_produces_none_dsn_string() -> None:
     instance = object.__new__(WorkerSettings)
     # Directly set the private Pydantic fields via __dict__ to bypass validation.
     # This simulates deserialisation from pickle or direct construction without
-    # calling load() / load_from_dict() (which call _post_load).
+    # calling load() / load_from_dict() (which run post_load).
     object.__setattr__(instance, "pg_dsn_direct", None)
     # The footgun: str(None) == "None" (not a crash, not a missing value error)
     assert str(instance.pg_dsn_direct) == "None"
@@ -369,7 +385,7 @@ def test_grace_budget_validation_fires_when_termination_grace_present() -> None:
     """
     # lock_lease=240, heartbeat=10 → valid (240 >= 40)
     # termination=90, cancellation=50, cleanup=40 → 50+40=90 >= 90-5=85 → fires
-    with pytest.raises(ValueError, match=r"termination_grace_period"):
+    with pytest.raises(ValidationError, match=r"termination_grace_period"):
         _load(
             TASKQ_LOCK_LEASE="240.0",
             TASKQ_HEARTBEAT_INTERVAL="10.0",
@@ -424,7 +440,9 @@ def test_grace_budget_invariant_property(
     should_fail = cancellation + cleanup >= termination - 5.0
 
     if should_fail:
-        with pytest.raises(ValueError, match=r"termination_grace_period|must be < termination"):
+        with pytest.raises(
+            ValidationError, match=r"termination_grace_period|must be < termination"
+        ):
             _load(**overrides)
     else:
         s = _load(**overrides)
@@ -495,8 +513,6 @@ def test_admin_max_sse_connections_via_env(monkeypatch: pytest.MonkeyPatch) -> N
 
 def test_admin_max_sse_connections_zero_raises() -> None:
     """admin_max_sse_connections=0 violates ge=1 constraint."""
-    from dotenvmodel.exceptions import ConstraintViolationError
-
     with pytest.raises(ConstraintViolationError, match="greater than or equal to 1"):
         TaskQSettings.load_from_dict({"TASKQ_ADMIN_MAX_SSE_CONNECTIONS": "0"})
 
@@ -536,8 +552,6 @@ def test_admin_port_via_dict() -> None:
 
 def test_admin_port_out_of_range_raises() -> None:
     """admin_port=0 violates ge=1 constraint."""
-    from dotenvmodel.exceptions import ConstraintViolationError
-
     with pytest.raises(ConstraintViolationError):
         TaskQSettings.load_from_dict({"TASKQ_ADMIN_PORT": "0"})
 
@@ -599,8 +613,6 @@ def test_example_port_via_dict() -> None:
 
 def test_example_port_out_of_range_raises() -> None:
     """example_port=0 violates ge=1 constraint."""
-    from dotenvmodel.exceptions import ConstraintViolationError
-
     with pytest.raises(ConstraintViolationError):
         TaskQSettings.load_from_dict({"TASKQ_EXAMPLE_PORT": "0"})
 
@@ -698,80 +710,76 @@ def test_archive_expiry_cron_expr_default_is_none() -> None:
     assert s.archive_expiry_cron_expr is None
 
 
-# ── negative prune_retention_* raises ValueError ──────────────
+# ── negative prune_retention_* raises ConstraintViolationError ──────
 
 
 def test_prune_retention_succeeded_negative_raises() -> None:
-    """prune_retention_succeeded=timedelta(days=-1) raises ValueError."""
-    s = _load()
-    object.__setattr__(s, "prune_retention_succeeded", timedelta(days=-1))
-    with pytest.raises(ValueError, match=r"prune_retention_succeeded.*must not be negative"):
-        s._post_load()
+    """prune_retention_succeeded=timedelta(days=-1) raises ConstraintViolationError."""
+    with pytest.raises(
+        ConstraintViolationError, match=r"prune_retention_succeeded.*must not be negative"
+    ):
+        _load(TASKQ_PRUNE_RETENTION_SUCCEEDED="-86400")
 
 
 def test_prune_retention_period_negative_raises() -> None:
-    """Negative prune_retention_period raises ValueError."""
-    s = _load()
-    object.__setattr__(s, "prune_retention_period", timedelta(days=-1))
-    with pytest.raises(ValueError, match=r"prune_retention_period.*must not be negative"):
-        s._post_load()
+    """Negative prune_retention_period raises ConstraintViolationError."""
+    with pytest.raises(
+        ConstraintViolationError, match=r"prune_retention_period.*must not be negative"
+    ):
+        _load(TASKQ_PRUNE_RETENTION_PERIOD="-86400")
 
 
 def test_prune_retention_failed_negative_raises() -> None:
-    """Negative prune_retention_failed raises ValueError."""
-    s = _load()
-    object.__setattr__(s, "prune_retention_failed", timedelta(days=-1))
-    with pytest.raises(ValueError, match=r"prune_retention_failed.*must not be negative"):
-        s._post_load()
+    """Negative prune_retention_failed raises ConstraintViolationError."""
+    with pytest.raises(
+        ConstraintViolationError, match=r"prune_retention_failed.*must not be negative"
+    ):
+        _load(TASKQ_PRUNE_RETENTION_FAILED="-86400")
 
 
 def test_prune_retention_cancelled_negative_raises() -> None:
-    """Negative prune_retention_cancelled raises ValueError."""
-    s = _load()
-    object.__setattr__(s, "prune_retention_cancelled", timedelta(days=-1))
-    with pytest.raises(ValueError, match=r"prune_retention_cancelled.*must not be negative"):
-        s._post_load()
+    """Negative prune_retention_cancelled raises ConstraintViolationError."""
+    with pytest.raises(
+        ConstraintViolationError, match=r"prune_retention_cancelled.*must not be negative"
+    ):
+        _load(TASKQ_PRUNE_RETENTION_CANCELLED="-86400")
 
 
 def test_prune_retention_abandoned_negative_raises() -> None:
-    """Negative prune_retention_abandoned raises ValueError."""
-    s = _load()
-    object.__setattr__(s, "prune_retention_abandoned", timedelta(days=-1))
-    with pytest.raises(ValueError, match=r"prune_retention_abandoned.*must not be negative"):
-        s._post_load()
+    """Negative prune_retention_abandoned raises ConstraintViolationError."""
+    with pytest.raises(
+        ConstraintViolationError, match=r"prune_retention_abandoned.*must not be negative"
+    ):
+        _load(TASKQ_PRUNE_RETENTION_ABANDONED="-86400")
 
 
-# ── negative archive_retention_period raises ValueError ───────
+# ── negative archive_retention_period raises ConstraintViolationError ───
 
 
 def test_archive_retention_period_negative_raises() -> None:
-    """archive_retention_period=timedelta(days=-1) raises ValueError."""
-    s = _load()
-    object.__setattr__(s, "archive_retention_period", timedelta(days=-1))
-    with pytest.raises(ValueError, match=r"archive_retention_period.*must not be negative"):
-        s._post_load()
+    """archive_retention_period=timedelta(days=-1) raises ConstraintViolationError."""
+    with pytest.raises(
+        ConstraintViolationError, match=r"archive_retention_period.*must not be negative"
+    ):
+        _load(TASKQ_ARCHIVE_RETENTION_PERIOD="-86400")
 
 
 # ── negative retention raises before any connection ──────────
 
 
 def test_negative_retention_raises_before_connections() -> None:
-    """ValueError is raised at construction, before any asyncpg calls."""
-    s = _load()
-    object.__setattr__(s, "prune_retention_succeeded", timedelta(days=-1))
-    with pytest.raises(ValueError, match="prune_retention_succeeded"):
-        s._post_load()
+    """ConstraintViolationError is raised at construction, before any asyncpg calls."""
+    with pytest.raises(ConstraintViolationError, match="prune_retention_succeeded"):
+        _load(TASKQ_PRUNE_RETENTION_SUCCEEDED="-86400")
 
 
 # ── negative archive_retention_period raises before any connection ────
 
 
 def test_negative_archive_retention_raises_before_connections() -> None:
-    """ValueError is raised at construction, before any asyncpg calls."""
-    s = _load()
-    object.__setattr__(s, "archive_retention_period", timedelta(days=-1))
-    with pytest.raises(ValueError, match="archive_retention_period"):
-        s._post_load()
+    """ConstraintViolationError is raised at construction, before any asyncpg calls."""
+    with pytest.raises(ConstraintViolationError, match="archive_retention_period"):
+        _load(TASKQ_ARCHIVE_RETENTION_PERIOD="-86400")
 
 
 # ── timedelta(0) accepted for all retention fields ────────────────────
@@ -779,44 +787,38 @@ def test_negative_archive_retention_raises_before_connections() -> None:
 
 def test_prune_retention_period_zero_accepted() -> None:
     """prune_retention_period=timedelta(0) is accepted."""
-    s = _load()
-    object.__setattr__(s, "prune_retention_period", timedelta(0))
-    s._post_load()
+    s = _load(TASKQ_PRUNE_RETENTION_PERIOD="0")
+    assert s.prune_retention_period == timedelta(0)
 
 
 def test_prune_retention_succeeded_zero_accepted() -> None:
     """prune_retention_succeeded=timedelta(0) is accepted."""
-    s = _load()
-    object.__setattr__(s, "prune_retention_succeeded", timedelta(0))
-    s._post_load()
+    s = _load(TASKQ_PRUNE_RETENTION_SUCCEEDED="0")
+    assert s.prune_retention_succeeded == timedelta(0)
 
 
 def test_prune_retention_failed_zero_accepted() -> None:
     """prune_retention_failed=timedelta(0) is accepted."""
-    s = _load()
-    object.__setattr__(s, "prune_retention_failed", timedelta(0))
-    s._post_load()
+    s = _load(TASKQ_PRUNE_RETENTION_FAILED="0")
+    assert s.prune_retention_failed == timedelta(0)
 
 
 def test_prune_retention_cancelled_zero_accepted() -> None:
     """prune_retention_cancelled=timedelta(0) is accepted."""
-    s = _load()
-    object.__setattr__(s, "prune_retention_cancelled", timedelta(0))
-    s._post_load()
+    s = _load(TASKQ_PRUNE_RETENTION_CANCELLED="0")
+    assert s.prune_retention_cancelled == timedelta(0)
 
 
 def test_prune_retention_abandoned_zero_accepted() -> None:
     """prune_retention_abandoned=timedelta(0) is accepted."""
-    s = _load()
-    object.__setattr__(s, "prune_retention_abandoned", timedelta(0))
-    s._post_load()
+    s = _load(TASKQ_PRUNE_RETENTION_ABANDONED="0")
+    assert s.prune_retention_abandoned == timedelta(0)
 
 
 def test_archive_retention_period_zero_accepted() -> None:
     """archive_retention_period=timedelta(0) is accepted."""
-    s = _load()
-    object.__setattr__(s, "archive_retention_period", timedelta(0))
-    s._post_load()
+    s = _load(TASKQ_ARCHIVE_RETENTION_PERIOD="0")
+    assert s.archive_retention_period == timedelta(0)
 
 
 # ── Cron scheduler settings ─────────────────────────────────────────
@@ -836,8 +838,6 @@ def test_cron_auto_disable_threshold_default() -> None:
 
 def test_cron_auto_disable_threshold_zero_raises() -> None:
     """cron_auto_disable_threshold=0 violates ge=1 constraint."""
-    from dotenvmodel.exceptions import ConstraintViolationError
-
     with pytest.raises(ConstraintViolationError, match="greater than or equal to 1"):
         _load(TASKQ_CRON_AUTO_DISABLE_THRESHOLD="0")
 
@@ -849,15 +849,14 @@ def test_cron_auto_disable_threshold_via_dict() -> None:
 
 
 def test_cron_catch_up_window_negative_raises() -> None:
-    """cron_catch_up_window=timedelta(seconds=-1) raises ValueError."""
-    s = _load()
-    object.__setattr__(s, "cron_catch_up_window", timedelta(seconds=-1))
-    with pytest.raises(ValueError, match=r"cron_catch_up_window.*must not be negative"):
-        s._post_load()
+    """cron_catch_up_window=timedelta(seconds=-1) raises ConstraintViolationError."""
+    with pytest.raises(
+        ConstraintViolationError, match=r"cron_catch_up_window.*must not be negative"
+    ):
+        _load(TASKQ_CRON_CATCH_UP_WINDOW="-1")
 
 
 def test_cron_catch_up_window_zero_accepted() -> None:
     """cron_catch_up_window=timedelta(0) is accepted."""
-    s = _load()
-    object.__setattr__(s, "cron_catch_up_window", timedelta(0))
-    s._post_load()
+    s = _load(TASKQ_CRON_CATCH_UP_WINDOW="0")
+    assert s.cron_catch_up_window == timedelta(0)

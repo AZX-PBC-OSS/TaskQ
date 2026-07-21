@@ -75,7 +75,7 @@ exit_code = worker_main(settings, actor_registry=registry)
 
 `actor_registry` must be a `Mapping[str, ActorRef]`. Passing `actor_registry=None` runs stub consumers (M0/internal use only). Production code must always pass a registry.
 
-`WorkerSettings.load()` reads all `TASKQ_*` environment variables and applies DSN fallback and invariant validation. Always construct settings through `load()` or `load_from_dict()`, never via the constructor directly, because `_post_load()` must run.
+`WorkerSettings.load()` reads all `TASKQ_*` environment variables and applies DSN fallback and invariant validation. Always construct settings through `load()` or `load_from_dict()`, never via the constructor directly, because `post_load()` must run.
 
 `worker_main` returns an `int` exit code (0 on clean shutdown). In a container entrypoint:
 

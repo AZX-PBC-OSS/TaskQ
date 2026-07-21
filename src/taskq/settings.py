@@ -20,7 +20,7 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Self
 
-from dotenvmodel import DotEnvConfig, Field
+from dotenvmodel import DotEnvConfig, Field, ValidationError, ValidatorContext
 from dotenvmodel.types import PostgresDsn, RedisDsn
 
 __all__ = ["OIDCSettings", "SAMLSettings", "TaskQSettings", "WorkerSettings"]
@@ -290,6 +290,33 @@ def _parse_groups(raw: str) -> frozenset[str]:
     return frozenset(g.strip() for g in raw.split(",") if g.strip())
 
 
+def _non_negative_timedelta(value: timedelta, ctx: ValidatorContext) -> timedelta:
+    if value < timedelta(0):
+        raise ValueError(f"{ctx.field_name} must not be negative, got {value}")
+    return value
+
+
+def _positive_timedelta(value: timedelta, ctx: ValidatorContext) -> timedelta:
+    if value <= timedelta(0):
+        raise ValueError(f"{ctx.field_name} must be > 0, got {value}")
+    return value
+
+
+_VALID_LOG_FORMATS = frozenset({"json", "console"})
+
+
+def _log_format_validator(value: str, ctx: ValidatorContext) -> str:
+    # A validator hook (not choices=) so the check also runs under
+    # load_from_dict(..., validate=False) — choices= is a built-in constraint
+    # that validate=False skips, which would let an invalid LOG_FORMAT load
+    # silently. See dotenvmodel docs: validator hooks run regardless of validate.
+    if value not in _VALID_LOG_FORMATS:
+        raise ValueError(
+            f"{ctx.field_name} must be one of {sorted(_VALID_LOG_FORMATS)}, got {value!r}"
+        )
+    return value
+
+
 class WorkerSettings(TaskQSettings):
     """Worker-specific configuration with three-pool sizing and dual-DSN support.
 
@@ -404,6 +431,7 @@ class WorkerSettings(TaskQSettings):
 
     default_start_to_close: timedelta | None = Field(
         default=None,
+        validator=_positive_timedelta,
         description=(
             "TASKQ_DEFAULT_START_TO_CLOSE (interval). Worker-side fallback "
             "per-attempt execution timeout, applied only when a job has no "
@@ -564,6 +592,7 @@ class WorkerSettings(TaskQSettings):
     )
     log_format: str = Field(
         default="json",
+        validator=_log_format_validator,
         description="TASKQ_LOG_FORMAT. json|console. Selects JSONRenderer or ConsoleRenderer "
         "in setup_logging.",
     )
@@ -592,24 +621,29 @@ class WorkerSettings(TaskQSettings):
     # ── Per-status prune retention ────────────────────────────────
     prune_retention_period: timedelta = Field(
         default=timedelta(days=30),
+        validator=_non_negative_timedelta,
         description="TASKQ_PRUNE_RETENTION_PERIOD. Global fallback retention. "
         "timedelta(0) means archive all terminal jobs immediately (valid). "
-        "Negative values raise ValueError at settings load.",
+        "Negative values raise ConstraintViolationError at settings load.",
     )
     prune_retention_succeeded: timedelta = Field(
         default=timedelta(days=30),
+        validator=_non_negative_timedelta,
         description="TASKQ_PRUNE_RETENTION_SUCCEEDED.",
     )
     prune_retention_failed: timedelta = Field(
         default=timedelta(days=90),
+        validator=_non_negative_timedelta,
         description="TASKQ_PRUNE_RETENTION_FAILED.",
     )
     prune_retention_cancelled: timedelta = Field(
         default=timedelta(days=30),
+        validator=_non_negative_timedelta,
         description="TASKQ_PRUNE_RETENTION_CANCELLED.",
     )
     prune_retention_abandoned: timedelta = Field(
         default=timedelta(days=90),
+        validator=_non_negative_timedelta,
         description="TASKQ_PRUNE_RETENTION_ABANDONED. Also used for crashed "
         "jobs (no separate prune_retention_crashed field).",
     )
@@ -617,9 +651,10 @@ class WorkerSettings(TaskQSettings):
     # ── Archive retention & expiry schedule ──────────────────────
     archive_retention_period: timedelta = Field(
         default=timedelta(days=365),
+        validator=_non_negative_timedelta,
         description="TASKQ_ARCHIVE_RETENTION_PERIOD. How long archived jobs are "
         "retained in jobs_archive before hard-deletion. Default 1 year. "
-        "timedelta(0) is valid. Negative values raise ValueError.",
+        "timedelta(0) is valid. Negative values raise ConstraintViolationError.",
     )
     archive_expiry_schedule_utc: str = Field(
         default="04:00",
@@ -678,6 +713,7 @@ class WorkerSettings(TaskQSettings):
     # ── Cron scheduler ────────────────────────────────────────────
     cron_catch_up_window: timedelta = Field(
         default=timedelta(hours=1),
+        validator=_non_negative_timedelta,
         description="TASKQ_CRON_CATCH_UP_WINDOW. Missed firings within this "
         "window are caught up sequentially; older misses are skipped.",
     )
@@ -690,57 +726,64 @@ class WorkerSettings(TaskQSettings):
 
     @property
     def resolved_pg_dsn_direct(self) -> PostgresDsn:
-        """Direct DSN guaranteed non-``None`` after :meth:`_post_load`.
+        """Direct DSN guaranteed non-``None`` after :meth:`post_load`.
 
         Why a property: ``pg_dsn_direct: PostgresDsn | None`` carries the
         environment-shape that distinguishes "user did not set
         ``TASKQ_PG_DSN_DIRECT``" (``None``, fallback to ``pg_dsn``) from
-        "user set it explicitly". Once :meth:`_post_load` has applied the
+        "user set it explicitly". Once :meth:`post_load` has applied the
         fallback, the field is always non-``None`` — but pyright cannot
         prove that across method boundaries. This property re-asserts the
         invariant at every call site, eliminating the need for ``assert``
         or ``cast`` at call sites that read the DSN.
 
-        Raises :class:`RuntimeError` if accessed before :meth:`_post_load`
+        Raises :class:`RuntimeError` if accessed before :meth:`post_load`
         ran (signals a programming error: ``WorkerSettings()`` constructor
         must always go through :meth:`load` / :meth:`load_from_dict`).
         """
         if self.pg_dsn_direct is None:
             raise RuntimeError(
-                "pg_dsn_direct accessed before _post_load(); "
+                "pg_dsn_direct accessed before post_load(); "
                 "construct WorkerSettings via load()/load_from_dict()",
             )
         return self.pg_dsn_direct
 
     @property
     def resolved_pg_dsn_pooled(self) -> PostgresDsn:
-        """Pooled DSN guaranteed non-``None`` after :meth:`_post_load`.
+        """Pooled DSN guaranteed non-``None`` after :meth:`post_load`.
 
         See :attr:`resolved_pg_dsn_direct` for the rationale.
         """
         if self.pg_dsn_pooled is None:
             raise RuntimeError(
-                "pg_dsn_pooled accessed before _post_load(); "
+                "pg_dsn_pooled accessed before post_load(); "
                 "construct WorkerSettings via load()/load_from_dict()",
             )
         return self.pg_dsn_pooled
 
-    @classmethod
-    def load(
-        cls, env: str | None = None, *, override: bool = True, env_dir: Path | None = None
-    ) -> Self:
-        instance = super().load(env=env, override=override, env_dir=env_dir)
-        instance._post_load()
-        return instance
+    def post_load(self) -> list[ValidationError] | None:
+        """Apply DSN fallback and validate cross-field invariants after loading.
 
-    @classmethod
-    def load_from_dict(cls, data: dict[str, str], *, validate: bool = True) -> Self:
-        instance = super().load_from_dict(data, validate=validate)
-        instance._post_load()
-        return instance
+        Runs automatically on every load path (``load()``,
+        ``load_from_dict()``, ``reload()``, and nested config loading),
+        including under ``validate=False`` — consistent with the per-field
+        ``validator`` hooks (transformation is part of loading, not
+        validation). No ``WorkerSettings.load`` / ``load_from_dict``
+        override is needed; the base ``DotEnvConfig._load_fields`` invokes
+        this hook itself.
 
-    def _post_load(self) -> None:
-        """Apply DSN fallback and validate invariants after loading."""
+        Returns ``list[ValidationError]`` so failures integrate with
+        dotenvmodel's uniform error hierarchy: a single returned error is
+        raised unchanged (its exact type preserved), several aggregate
+        into ``MultipleValidationErrors``. Catch ``DotEnvModelError`` (the
+        common base) to cover both single and aggregate cases —
+        ``MultipleValidationErrors`` is a ``DotEnvModelError`` but not a
+        ``ValidationError``, so ``except ValidationError`` alone misses the
+        multi-invariant case. ``ValidationError`` suffices only when at
+        most one invariant can fire (e.g. a single field constraint).
+        """
+        errors: list[ValidationError] = []
+
         # DSN fallback: if split DSNs were not provided, resolve to pg_dsn.
         # After this, pg_dsn_direct and pg_dsn_pooled are always non-None.
         if self.pg_dsn_direct is None:
@@ -748,18 +791,17 @@ class WorkerSettings(TaskQSettings):
         if self.pg_dsn_pooled is None:
             self.pg_dsn_pooled = self.pg_dsn
 
-        # log_format must be a closed set.
-        valid_log_formats = {"json", "console"}
-        if self.log_format not in valid_log_formats:
-            raise ValueError(
-                f"log_format must be one of {valid_log_formats}, got {self.log_format!r}"
-            )
-
         # lock_lease invariant: "Tolerates 3 missed heartbeats before reclamation."
         if self.lock_lease < 4 * self.heartbeat_interval:
-            raise ValueError(
-                f"lock_lease ({self.lock_lease}) must be >= 4 * heartbeat_interval "
-                f"({4 * self.heartbeat_interval})"
+            errors.append(
+                ValidationError(
+                    field_name="lock_lease",
+                    value=self.lock_lease,
+                    error_msg=(
+                        f"lock_lease ({self.lock_lease}) must be >= 4 * heartbeat_interval "
+                        f"({4 * self.heartbeat_interval})"
+                    ),
+                )
             )
 
         # Cancellation + cleanup grace must fit within termination_grace_period.
@@ -771,47 +813,33 @@ class WorkerSettings(TaskQSettings):
             and self.cancellation_grace_period + self.cleanup_grace_period
             >= termination_grace - 5.0
         ):
-            raise ValueError(
-                f"cancellation_grace_period ({self.cancellation_grace_period}) + "
-                f"cleanup_grace_period ({self.cleanup_grace_period}) must be < "
-                f"termination_grace_period - 5.0 ({termination_grace - 5.0})"
+            errors.append(
+                ValidationError(
+                    field_name="cancellation_grace_period",
+                    value=self.cancellation_grace_period,
+                    error_msg=(
+                        f"cancellation_grace_period ({self.cancellation_grace_period}) + "
+                        f"cleanup_grace_period ({self.cleanup_grace_period}) must be < "
+                        f"termination_grace_period - 5.0 ({termination_grace - 5.0})"
+                    ),
+                )
             )
 
         # Cancellation grace + cleanup grace must be less than lock_lease.
         if self.cancellation_grace_period + self.cleanup_grace_period >= self.lock_lease:
-            raise ValueError(
-                f"cancellation_grace_period ({self.cancellation_grace_period}) + "
-                f"cleanup_grace_period ({self.cleanup_grace_period}) must be < "
-                f"lock_lease ({self.lock_lease})"
+            errors.append(
+                ValidationError(
+                    field_name="cancellation_grace_period",
+                    value=self.cancellation_grace_period,
+                    error_msg=(
+                        f"cancellation_grace_period ({self.cancellation_grace_period}) + "
+                        f"cleanup_grace_period ({self.cleanup_grace_period}) must be < "
+                        f"lock_lease ({self.lock_lease})"
+                    ),
+                )
             )
 
-        # Negative retention periods are invalid. timedelta(0) is allowed.
-        _retention_fields = {
-            "prune_retention_period": self.prune_retention_period,
-            "prune_retention_succeeded": self.prune_retention_succeeded,
-            "prune_retention_failed": self.prune_retention_failed,
-            "prune_retention_cancelled": self.prune_retention_cancelled,
-            "prune_retention_abandoned": self.prune_retention_abandoned,
-            "archive_retention_period": self.archive_retention_period,
-        }
-        for name, value in _retention_fields.items():
-            if value < timedelta(0):
-                raise ValueError(f"{name} ({value}) must not be negative.")
-
-        if self.cron_catch_up_window < timedelta(0):
-            raise ValueError(
-                f"cron_catch_up_window ({self.cron_catch_up_window}) must not be negative."
-            )
-
-        if self.progress_coalesce_interval <= 0:
-            raise ValueError(
-                f"progress_coalesce_interval ({self.progress_coalesce_interval}) must be > 0."
-            )
-
-        if self.default_start_to_close is not None and self.default_start_to_close <= timedelta(0):
-            raise ValueError(
-                f"default_start_to_close must be > 0, got {self.default_start_to_close!r}"
-            )
+        return errors or None
 
     @property
     def worker_pool_size(self) -> int:

@@ -406,11 +406,28 @@ def test_worker_settings_log_level_debug() -> None:
 
 
 def test_worker_settings_log_format_rejects_invalid_value() -> None:
+    from dotenvmodel import ConstraintViolationError
+
     from taskq.settings import WorkerSettings
 
-    with pytest.raises(ValueError, match="log_format"):
+    with pytest.raises(ConstraintViolationError, match=r"log_format"):
         WorkerSettings.load_from_dict(
             {"PG_DSN": "postgresql://localhost/test", "TASKQ_LOG_FORMAT": "yaml"}
+        )
+
+
+def test_worker_settings_log_format_rejects_invalid_value_even_when_validate_disabled() -> None:
+    # Regression: choices= is a built-in constraint that load_from_dict(..., validate=False)
+    # skips, so log_format previously accepted arbitrary strings under validate=False.
+    # The validator hook runs regardless of validate=, closing the hole.
+    from dotenvmodel import ConstraintViolationError
+
+    from taskq.settings import WorkerSettings
+
+    with pytest.raises(ConstraintViolationError, match=r"log_format"):
+        WorkerSettings.load_from_dict(
+            {"PG_DSN": "postgresql://localhost/test", "TASKQ_LOG_FORMAT": "xml"},
+            validate=False,
         )
 
 
