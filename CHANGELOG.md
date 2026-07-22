@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0](https://github.com/AZX-PBC-OSS/TaskQ/compare/v0.1.0...v0.2.0) (2026-07-22)
+
+
+### Features
+
+* managed-identity connections, credential hot-reload, BYO pools ([df9d7c3](https://github.com/AZX-PBC-OSS/TaskQ/commit/df9d7c35ad00f267a6cffc0460a0a0a2cd0ec922))
+* managed-identity connections, credential hot-reload, BYO pools ([a754fd7](https://github.com/AZX-PBC-OSS/TaskQ/commit/a754fd730e21f939b2ad2e6e1acd0ebca78c1eb5))
+
+
+### Bug Fixes
+
+* handle ENOTSOCK in stale socket cleanup, add session backstop fixture ([dc87254](https://github.com/AZX-PBC-OSS/TaskQ/commit/dc8725424fe1c788234d51e9d73dc38b0b92facf))
+* log traceback on generic job exceptions ([63d18ca](https://github.com/AZX-PBC-OSS/TaskQ/commit/63d18caafffbcfc9b7fd390cde16a8b2f083b701))
+* PR review correctness fixes, reload hardening, isolated test infra ([5cb6483](https://github.com/AZX-PBC-OSS/TaskQ/commit/5cb64837a28a514c4f2c13ee520af6aa2c5681c8))
+* stop swallowing exceptions in worker exception handlers ([4ff0065](https://github.com/AZX-PBC-OSS/TaskQ/commit/4ff0065f242a45a34ee27f9325640114124c0540))
+* stop swallowing exceptions in worker exception handlers ([fc7786b](https://github.com/AZX-PBC-OSS/TaskQ/commit/fc7786b3ba6565f6cb4c17879dbf05f71689120d))
+* stringify job ids ([8dbf369](https://github.com/AZX-PBC-OSS/TaskQ/commit/8dbf369353fd649997dcf65013b927cd9b263396))
+
+
+### Documentation
+
+* improve examples, add real-world actors, deployment/troubleshooting/tutorial guides ([1d02b34](https://github.com/AZX-PBC-OSS/TaskQ/commit/1d02b34743014a1edf5574f961853a766761e637))
+
+
+### Continuous Integration
+
+* add release-please for automated release PRs, tags, and PyPI publish ([#10](https://github.com/AZX-PBC-OSS/TaskQ/issues/10)) ([ab86d7d](https://github.com/AZX-PBC-OSS/TaskQ/commit/ab86d7d371faf550aad8fdceb5f95b9d5da37b48))
+* only deploy docs on push to main, not on PRs ([afaffc7](https://github.com/AZX-PBC-OSS/TaskQ/commit/afaffc79c7690db6c2947f61a0e71cf7778bc3d9))
+
 ## [Unreleased]
 
 ### Added
