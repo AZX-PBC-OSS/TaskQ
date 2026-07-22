@@ -30,6 +30,5 @@ jobs:
     if: needs.release-please.outputs.release_created
     uses: ./.github/workflows/publish.yml
     with:
-      release_created: true
       tag_name: ${{ needs.release-please.outputs.tag_name }}
     secrets: inherit
