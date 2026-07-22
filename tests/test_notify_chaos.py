@@ -487,7 +487,7 @@ async def test_tc5_reconnect_delivers_missed_jobs(pg_dsn: str) -> None:
                     await jobs_conn.execute(f"SET search_path TO {schema}")
                     for _ in range(2):
                         await jobs_conn.execute(
-                            f'INSERT INTO "{schema}".jobs'  # noqa: S608 # Why: schema name validated by WorkerSettings._post_load; asyncpg has no parameter binding for identifiers
+                            f'INSERT INTO "{schema}".jobs'  # noqa: S608 # Why: schema name validated by WorkerSettings.post_load; asyncpg has no parameter binding for identifiers
                             " (id, actor, queue, payload, max_attempts, retry_kind)"
                             " VALUES ($1, 'test.actor', 'default', '{}', 3, 'transient')",
                             new_uuid(),

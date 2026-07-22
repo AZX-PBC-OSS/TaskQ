@@ -799,8 +799,10 @@ def test_grace_budget_rejected(
     args: tuple[float, float, float, float, float],
 ) -> None:
     """Invalid grace budget tuples are rejected by load_from_dict."""
+    from dotenvmodel import DotEnvModelError
+
     cancel_g, cleanup_g, term_g, lock_l, hb_int = args
-    with pytest.raises(ValueError):
+    with pytest.raises(DotEnvModelError):
         WorkerSettings.load_from_dict(
             {
                 "TASKQ_PG_DSN": "postgresql://x:x@localhost/x",

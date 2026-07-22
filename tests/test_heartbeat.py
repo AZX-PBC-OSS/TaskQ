@@ -756,13 +756,15 @@ async def test_lock_expires_at_always_gt_now_property(
         assert v >= 0
 
 
-# ── heartbeat_interval > lock_lease / 4 raises ValueError ──────────
+# ── heartbeat_interval > lock_lease / 4 raises ValidationError ──────────
 
 
-def test_invalid_heartbeat_ratio_raises_value_error() -> None:
-    """heartbeat_interval > lock_lease / 4 raises ValueError at
+def test_invalid_heartbeat_ratio_raises_validation_error() -> None:
+    """heartbeat_interval > lock_lease / 4 raises ValidationError at
     WorkerSettings load time."""
-    with pytest.raises(ValueError, match="lock_lease"):
+    from dotenvmodel import ValidationError
+
+    with pytest.raises(ValidationError, match="lock_lease"):
         _worker_settings(
             "postgresql://x:x@localhost/x",
             LOCK_LEASE="30.0",

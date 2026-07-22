@@ -43,30 +43,26 @@ def _load_settings(**overrides: str) -> WorkerSettings:
 
 
 class TestDefaultStartToCloseSettings:
-    """WorkerSettings._post_load rejects non-positive default_start_to_close."""
+    """WorkerSettings field validator rejects non-positive default_start_to_close."""
 
     def test_negative_raises(self) -> None:
-        s = _load_settings()
-        object.__setattr__(s, "default_start_to_close", timedelta(seconds=-1))
-        with pytest.raises(ValueError, match=r"default_start_to_close must be > 0"):
-            s._post_load()
+        from dotenvmodel import ConstraintViolationError
+
+        with pytest.raises(ConstraintViolationError, match=r"default_start_to_close must be > 0"):
+            _load_settings(TASKQ_DEFAULT_START_TO_CLOSE="-1")
 
     def test_zero_raises(self) -> None:
-        s = _load_settings()
-        object.__setattr__(s, "default_start_to_close", timedelta(seconds=0))
-        with pytest.raises(ValueError, match=r"default_start_to_close must be > 0"):
-            s._post_load()
+        from dotenvmodel import ConstraintViolationError
+
+        with pytest.raises(ConstraintViolationError, match=r"default_start_to_close must be > 0"):
+            _load_settings(TASKQ_DEFAULT_START_TO_CLOSE="0")
 
     def test_positive_accepted(self) -> None:
-        s = _load_settings()
-        object.__setattr__(s, "default_start_to_close", timedelta(seconds=30))
-        s._post_load()
+        s = _load_settings(TASKQ_DEFAULT_START_TO_CLOSE="30")
         assert s.default_start_to_close == timedelta(seconds=30)
 
     def test_none_accepted(self) -> None:
         s = _load_settings()
-        object.__setattr__(s, "default_start_to_close", None)
-        s._post_load()
         assert s.default_start_to_close is None
 
 

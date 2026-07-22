@@ -9,7 +9,7 @@ Covers:
 - schedule_to_close computed server-side via now() + interval
 """
 
-# ruff: noqa: S608 Why: schema name is validated by WorkerSettings._post_load and _IDENT_RE before reaching SQL; asyncpg has no parameter binding for identifiers; matches existing integration test pattern
+# ruff: noqa: S608 Why: schema name is validated by WorkerSettings.post_load and _IDENT_RE before reaching SQL; asyncpg has no parameter binding for identifiers; matches existing integration test pattern
 
 import asyncio
 from datetime import UTC, datetime, timedelta

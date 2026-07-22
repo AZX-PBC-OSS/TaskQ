@@ -7,7 +7,7 @@ Covers:
 - Regression: autonomous mark_succeeded still works after helper extraction
 """
 
-# ruff: noqa: S608 Why: schema name validated by WorkerSettings._post_load against _IDENT_RE before reaching SQL; asyncpg has no parameter binding for identifiers; matches existing integration test pattern
+# ruff: noqa: S608 Why: schema name validated by WorkerSettings.post_load against _IDENT_RE before reaching SQL; asyncpg has no parameter binding for identifiers; matches existing integration test pattern
 
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING

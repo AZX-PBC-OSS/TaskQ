@@ -127,6 +127,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `starlette` and `prometheus_client` declared as direct dependencies (were transitive-reliance)
 - Dependency upper bounds added to `asyncpg`, `redis`, `pydantic`, `fastapi`, `typer`, `dotenvmodel`, `uuid-utils`, `uvicorn`, `structlog`, `opentelemetry-instrumentation`, `prometheus-client`
 
+### Changed
+
+- **dotenvmodel bumped 0.3.0 → 0.5.0.** `WorkerSettings` now uses dotenvmodel's native `post_load()` hook (added in 0.5.0) instead of a manual `_post_load` method called from `load()`/`load_from_dict()` overrides. The base `DotEnvConfig._load_fields` invokes `post_load` automatically on every load path — `load()`, `load_from_dict()`, and `reload()` — including under `validate=False`. The redundant `WorkerSettings.load`/`load_from_dict` overrides have been removed.
+- **Breaking: cross-field invariant exceptions changed type.** `WorkerSettings.load()`/`load_from_dict()` cross-field invariants (`lock_lease >= 4 * heartbeat_interval`, grace-budget checks) previously raised `ValueError`; they now raise `ValidationError` (single failure) or `MultipleValidationErrors` (several at once). `ConstraintViolationError` (field validators) was already not a `ValueError`. **Callers that catch `ValueError` around `WorkerSettings.load*()` will no longer catch these** — catch `DotEnvModelError` (the common base) to cover both single and aggregate cases, or `ValidationError` when at most one invariant can fire. Field-level validation (`prune_retention_*`, `default_start_to_close`, `log_format`, etc.) already raised `ConstraintViolationError` and is unaffected.
+- **`reload()` now enforces cross-field invariants and applies DSN fallback.** Previously `reload()` did not run `_post_load` (it was only called from the `load()`/`load_from_dict()` overrides), so a reload that produced invariant-violating values would silently succeed. This is now fixed by the native `post_load` hook.
+- **`log_format` validation moved from `choices=` to a `validator` hook.** `choices=` is a built-in constraint that `load_from_dict(..., validate=False)` skips, so an invalid `TASKQ_LOG_FORMAT` could previously load silently under `validate=False`. The validator hook runs regardless of `validate=`, closing the hole. Error message changed from `log_format must be 'json' or 'console'` to `log_format must be one of ['console', 'json'], got <value>`.
+
 ### Security
 
 - SQL injection in `batch.py` public API (`BatchHandle.status()`, `wait_for_batch()`) — schema parameter was interpolated without validation

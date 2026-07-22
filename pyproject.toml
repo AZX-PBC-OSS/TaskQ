@@ -20,7 +20,7 @@ classifiers = [
 dependencies = [
     "asyncpg>=0.31.0,<1",
     "croniter>=6.2.4",
-    "dotenvmodel>=0.4.0,<1",
+    "dotenvmodel>=0.5.0,<1",
     "opentelemetry-api>=1.44.0",
     "orjson>=3.11.9",
     "pydantic>=2.13.4,<3",
@@ -117,7 +117,12 @@ vault = [
 # Supply-chain hardening: never resolve to distributions published within the
 # last 24 hours, giving time for malicious releases to be detected and yanked.
 exclude-newer = "24 hours"
-# dotenvmodel is a single-publisher internal package; no cooldown needed.
+# dotenvmodel is published by the same org (AZX-PBC-OSS) as TaskQ and is the
+# only same-org dependency. Opt it out of the 24-hour supply-chain quarantine
+# so same-day releases can be adopted immediately; this is deliberate and
+# scoped to dotenvmodel only (every other dep still honors the cooldown).
+# markupsafe is excluded from cooldown for the same reason as dotenvmodel —
+# it's a transitive of pydantic that we pin tightly and audit.
 exclude-newer-package = { dotenvmodel = "0d", markupsafe = false }
 
 [build-system]

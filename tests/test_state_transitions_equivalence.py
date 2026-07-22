@@ -13,7 +13,7 @@ protocol, so it cannot be parametrized via backend_pair).
 
 from __future__ import annotations
 
-# ruff: noqa: S608 Why: schema name validated by WorkerSettings._post_load against _IDENT_RE before reaching SQL; asyncpg has no parameter binding for identifiers; matches existing integration test pattern
+# ruff: noqa: S608 Why: schema name validated by WorkerSettings.post_load against _IDENT_RE before reaching SQL; asyncpg has no parameter binding for identifiers; matches existing integration test pattern
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 from uuid import UUID

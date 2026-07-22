@@ -72,7 +72,7 @@ def _make_mock_deps(
     if reconnect_backoff_initial is not None:
         settings_dict["notify_reconnect_backoff_initial"] = str(reconnect_backoff_initial)
     settings = WorkerSettings.load_from_dict(settings_dict)
-    settings.pg_dsn_direct = settings.pg_dsn  # pyright: ignore[reportAttributeAccessIssue] # Why: ensure direct DSN is set for reconnect tests; _post_load already did this but making it explicit
+    settings.pg_dsn_direct = settings.pg_dsn  # pyright: ignore[reportAttributeAccessIssue] # Why: ensure direct DSN is set for reconnect tests; post_load already did this but making it explicit
     deps = Mock()
     deps.settings = settings
     deps.notify_conn = _mock_conn()

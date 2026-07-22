@@ -5,7 +5,7 @@ polling retry pattern, and the heartbeat isolate-self bypass against
 real Postgres 18 via testcontainers.
 """
 
-# ruff: noqa: S608 Why: schema name validated by WorkerSettings._post_load against _IDENT_RE before reaching SQL; asyncpg has no parameter binding for identifiers; matches existing integration test pattern
+# ruff: noqa: S608 Why: schema name validated by WorkerSettings.post_load against _IDENT_RE before reaching SQL; asyncpg has no parameter binding for identifiers; matches existing integration test pattern
 
 import asyncio
 from datetime import UTC, datetime, timedelta
