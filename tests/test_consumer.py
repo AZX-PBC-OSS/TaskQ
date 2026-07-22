@@ -712,6 +712,57 @@ async def test_lifecycle_failed_carries_error_class(
     assert events[0].attributes["to_state"] == "failed"  # type: ignore[reportUnknownMemberAccess]  # Why: events_on returns list[Any]; at runtime these are Event objects with .attributes
 
 
+async def test_generic_exception_logs_traceback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """_handle_generic_exception logs job_exception with error_class, error_message, and error_traceback."""
+
+    async def actor(_job: object, _ctx: JobContext[BaseModel]) -> object:
+        raise RuntimeError("boom")
+
+    setup_tracer(monkeypatch)
+    tracer = obs_mod.get_tracer()
+
+    job = make_job_row(
+        attempt=3,
+        max_attempts=3,
+        retry_kind="transient",
+    )
+    cfg = StubActorConfig(retry=RetryPolicy(kind="transient", max_attempts=3, jitter=0.0))
+    backend = _FakeBackend()
+    clk: Clock = FakeClock(_NOW)
+
+    from unittest.mock import MagicMock
+
+    import structlog
+
+    mock_log = MagicMock(spec=structlog.stdlib.BoundLogger)
+    mock_log.bind.return_value = mock_log
+
+    with tracer.start_as_current_span("test-span"):
+        await consume_one_job(
+            as_backend(backend),
+            job,
+            _WORKER_ID,
+            run_actor=actor,
+            actor_config=cfg,
+            payload_type=EmptyPayload,
+            clock=clk,
+            logger=mock_log,
+        )
+
+    error_calls = [c for c in mock_log.error.call_args_list if c.args and c.args[0] == "job_exception"]
+    assert len(error_calls) == 1, f"expected 1 job_exception log, got {len(error_calls)}"
+    kwargs = error_calls[0].kwargs
+    assert kwargs["error_class"] == "RuntimeError"
+    assert kwargs["error_message"] == "boom"
+    assert "Traceback" in kwargs["error_traceback"]
+    assert "RuntimeError: boom" in kwargs["error_traceback"]
+    assert str(job.id) == kwargs["job_id"]
+    assert kwargs["actor"] == job.actor
+    assert kwargs["attempt"] == job.attempt
+
+
 # ── attempt span is child of CONSUMER span ────────────────────
 
 

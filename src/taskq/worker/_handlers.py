@@ -485,6 +485,15 @@ async def _handle_generic_exception(
         error_message=str(e),
         error_traceback=traceback.format_exc(),
     )
+    log.error(
+        "job_exception",
+        job_id=str(job.id),
+        actor=job.actor,
+        attempt=job.attempt,
+        error_class=error_info.error_class,
+        error_message=error_info.error_message,
+        error_traceback=error_info.error_traceback,
+    )
     job_state = JobRetryState(
         attempt=job.attempt,
         max_attempts=job.max_attempts,
