@@ -69,13 +69,11 @@ type AttemptOutcome = Literal[
 __all__ = [
     "_TerminalWriteFailed",
     "_dispatch_exception",
-    "_format_exc",
     "_handle_generic_exception",
     "_handle_reservation_class_denied",
     "_handle_retry_after",
     "_handle_snooze",
     "_handle_timeout",
-    "_log_job_failed",
     "_log_terminal_write_failed",
 ]
 

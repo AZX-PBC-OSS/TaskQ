@@ -133,16 +133,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   five handlers emits exactly one `job_failed` ERROR event (`job_id`,
   `actor`, `attempt`, `cause`, `error_class`, plus handler context such as
   `snooze_count` / `consume_budget` / `bucket_name`) — one alertable event
-  per dead job, and zero ERROR noise on retryable attempts (previously
-  `job_exception` fired ERROR before the retry decision). Tracebacks are
-  formatted from the explicit exception object rather than the ambient
-  `sys.exception()`, so handler invocations outside an `except` block no
-  longer record `'NoneType: None'`. Timeout spans (`lifecycle.scheduled` /
-  `lifecycle.failed`) now report the concrete exception class instead of
-  hardcoded `TimeoutError`, agreeing with the log fields. Snooze /
-  RetryAfter / ReservationUnavailable terminal outcomes and the
-  stranded-jobs leader sweep also log their failure details instead of
-  continuing silently.
+  per dead job, and per-attempt diagnostics at WARNING so retryable
+  attempts produce zero ERROR noise. Tracebacks are formatted from the
+  explicit exception object rather than the ambient `sys.exception()`, so
+  handler invocations outside an `except` block no longer record
+  `'NoneType: None'`. The `terminal-write-failed` event now includes
+  `job_error_traceback` and `infra_error_traceback`. Timeout spans
+  (`lifecycle.scheduled` / `lifecycle.failed`) now report the concrete
+  exception class instead of hardcoded `TimeoutError`, agreeing with the
+  log fields. Snooze / RetryAfter / ReservationUnavailable terminal
+  outcomes and the stranded-jobs leader sweep also log their failure
+  details instead of continuing silently.
 
 ### Changed
 

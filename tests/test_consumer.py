@@ -17,11 +17,11 @@ from pydantic import BaseModel, ValidationError
 
 import taskq.obs as obs_mod
 from taskq._ids import new_uuid
-from taskq.backend._protocol import EnqueueArgs, JobRow
+from taskq.backend._protocol import EnqueueArgs, ErrorInfo, JobRow
 from taskq.backend.clock import Clock
 from taskq.client._enqueuer import SubJobEnqueuer
 from taskq.context import JobContext
-from taskq.exceptions import ReservationUnavailable, RetryAfter, Snooze
+from taskq.exceptions import ReservationUnavailable, RetryAfter, Snooze, WorkerOwnershipMismatch
 from taskq.progress._buffer import _ProgressBuffer
 from taskq.retry import RetryPolicy
 from taskq.settings import WorkerSettings
@@ -782,7 +782,7 @@ async def test_generic_exception_logs_traceback(
 async def test_timeout_logs_actual_exception_details(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """_handle_timeout logs job_warning with the actual TimeoutError, not hardcoded values."""
+    """_handle_timeout logs job_timeout with the actual TimeoutError, not hardcoded values."""
 
     async def actor(_job: object, _ctx: JobContext[BaseModel]) -> object:
         raise TimeoutError("database query took too long")
@@ -1865,3 +1865,143 @@ async def test_timeout_retry_path_logs_warning_only(
     assert len(backend.mark_failed_or_retry_calls) == 1
     call = backend.mark_failed_or_retry_calls[0]
     assert call["next_scheduled_at"] is not None
+
+
+# ── Ownership mismatch: terminal write lost → NO job_failed ─────────────
+
+
+class _OwnershipMismatchBackend(_FakeBackend):
+    """mark_failed_or_retry always loses the ownership race."""
+
+    async def mark_failed_or_retry(
+        self,
+        job_id: UUID,
+        worker_id: UUID,
+        error_info: ErrorInfo,
+        next_scheduled_at: datetime | None,
+        progress_seq: int = 0,
+        progress_state: dict[str, object] | None = None,
+    ) -> JobRow:
+        raise WorkerOwnershipMismatch(job_id=job_id, expected=worker_id, actual=new_uuid())
+
+
+async def test_generic_exception_terminal_ownership_mismatch_logs_no_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Terminal generic exception whose write loses the ownership race emits
+    NO job_failed ERROR — the job is not dead by our hand. The per-attempt
+    job_exception diagnostic and the ownership-mismatch WARNING still fire."""
+
+    async def actor(_job: object, _ctx: JobContext[BaseModel]) -> object:
+        raise RuntimeError("boom")
+
+    setup_tracer(monkeypatch)
+    tracer = obs_mod.get_tracer()
+
+    job = make_job_row(
+        attempt=3,
+        max_attempts=3,
+        retry_kind="transient",
+    )
+    cfg = StubActorConfig(retry=RetryPolicy(kind="transient", max_attempts=3, jitter=0.0))
+    backend = _OwnershipMismatchBackend()
+    clk: Clock = FakeClock(_NOW)
+
+    from unittest.mock import MagicMock
+
+    import structlog
+
+    mock_log = MagicMock(spec=structlog.stdlib.BoundLogger)
+    mock_log.bind.return_value = mock_log
+
+    with tracer.start_as_current_span("test-span"):
+        await consume_one_job(
+            as_backend(backend),
+            job,
+            _WORKER_ID,
+            run_actor=actor,
+            actor_config=cfg,
+            payload_type=EmptyPayload,
+            clock=clk,
+            logger=mock_log,
+        )
+
+    mock_log.error.assert_not_called()
+
+    mismatch_warnings = [
+        c
+        for c in mock_log.warning.call_args_list
+        if c.args and c.args[0] == "mark-failed-or-retry-ownership-mismatch"
+    ]
+    assert len(mismatch_warnings) == 1, (
+        f"expected 1 ownership-mismatch warning, got {len(mismatch_warnings)}"
+    )
+
+    warning_calls = [
+        c for c in mock_log.warning.call_args_list if c.args and c.args[0] == "job_exception"
+    ]
+    assert len(warning_calls) == 1, f"expected 1 job_exception log, got {len(warning_calls)}"
+    kwargs = warning_calls[0].kwargs
+    assert kwargs["error_class"] == "RuntimeError"
+    assert kwargs["error_message"] == "boom"
+
+
+async def test_timeout_terminal_ownership_mismatch_logs_no_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Terminal timeout whose write loses the ownership race emits NO
+    job_failed ERROR — the job is not dead by our hand. The per-attempt
+    job_timeout diagnostic and the ownership-mismatch WARNING still fire."""
+
+    async def actor(_job: object, _ctx: JobContext[BaseModel]) -> object:
+        raise TimeoutError("db slow")
+
+    setup_tracer(monkeypatch)
+    tracer = obs_mod.get_tracer()
+
+    job = make_job_row(
+        attempt=3,
+        max_attempts=3,
+        retry_kind="transient",
+    )
+    cfg = StubActorConfig(retry=RetryPolicy(kind="transient", max_attempts=3, jitter=0.0))
+    backend = _OwnershipMismatchBackend()
+    clk: Clock = FakeClock(_NOW)
+
+    from unittest.mock import MagicMock
+
+    import structlog
+
+    mock_log = MagicMock(spec=structlog.stdlib.BoundLogger)
+    mock_log.bind.return_value = mock_log
+
+    with tracer.start_as_current_span("test-span"):
+        await consume_one_job(
+            as_backend(backend),
+            job,
+            _WORKER_ID,
+            run_actor=actor,
+            actor_config=cfg,
+            payload_type=EmptyPayload,
+            clock=clk,
+            logger=mock_log,
+        )
+
+    mock_log.error.assert_not_called()
+
+    mismatch_warnings = [
+        c
+        for c in mock_log.warning.call_args_list
+        if c.args and c.args[0] == "mark-failed-or-retry-ownership-mismatch"
+    ]
+    assert len(mismatch_warnings) == 1, (
+        f"expected 1 ownership-mismatch warning, got {len(mismatch_warnings)}"
+    )
+
+    warning_calls = [
+        c for c in mock_log.warning.call_args_list if c.args and c.args[0] == "job_timeout"
+    ]
+    assert len(warning_calls) == 1, f"expected 1 job_timeout log, got {len(warning_calls)}"
+    kwargs = warning_calls[0].kwargs
+    assert kwargs["error_class"] == "TimeoutError"
+    assert kwargs["error_message"] == "db slow"

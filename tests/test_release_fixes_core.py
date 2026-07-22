@@ -511,3 +511,73 @@ async def test_timeout_traceback_without_active_exception() -> None:
     tb = job_timeout_calls[0].kwargs["error_traceback"]
     assert "TimeoutError: db slow" in tb
     assert "NoneType" not in tb
+
+
+# ── terminal-write-failed: job/infra traceback fields ────────────────────
+
+
+def test_log_terminal_write_failed_includes_tracebacks() -> None:
+    """Error-path terminal write failure logs one ERROR event carrying real
+    tracebacks for both the actor exception and the infra exception."""
+    import structlog
+
+    from taskq.testing.jobs import make_job_row
+    from taskq.worker._handlers import _log_terminal_write_failed
+
+    try:
+        raise RuntimeError("actor blew up")
+    except RuntimeError as exc:
+        job_exc = exc
+
+    try:
+        raise OSError("db socket closed")
+    except OSError as exc:
+        infra_exc = exc
+
+    job = make_job_row()
+    log = MagicMock(spec=structlog.stdlib.BoundLogger)
+    log.bind.return_value = log
+
+    _log_terminal_write_failed(log, job, job_exc, infra_exc)
+
+    log.error.assert_called_once()
+    call = log.error.call_args
+    assert call.args[0] == "terminal-write-failed"
+    kwargs = call.kwargs
+    assert kwargs["kind"] == "terminal-write-failed"
+    assert kwargs["actor_succeeded"] is False
+    assert kwargs["job_error_class"] == "RuntimeError"
+    assert "RuntimeError: actor blew up" in kwargs["job_error_traceback"]
+    assert kwargs["infra_error_class"] == "OSError"
+    assert "OSError: db socket closed" in kwargs["infra_error_traceback"]
+
+
+def test_log_terminal_write_failed_success_path_omits_job_fields() -> None:
+    """Success-path terminal write failure (job_exc=None): actor_succeeded
+    is True and the job_* fields are None; infra fields stay populated."""
+    import structlog
+
+    from taskq.testing.jobs import make_job_row
+    from taskq.worker._handlers import _log_terminal_write_failed
+
+    try:
+        raise OSError("db socket closed")
+    except OSError as exc:
+        infra_exc = exc
+
+    job = make_job_row()
+    log = MagicMock(spec=structlog.stdlib.BoundLogger)
+    log.bind.return_value = log
+
+    _log_terminal_write_failed(log, job, None, infra_exc)
+
+    log.error.assert_called_once()
+    call = log.error.call_args
+    assert call.args[0] == "terminal-write-failed"
+    kwargs = call.kwargs
+    assert kwargs["actor_succeeded"] is True
+    assert kwargs["job_error_class"] is None
+    assert kwargs["job_error_message"] is None
+    assert kwargs["job_error_traceback"] is None
+    assert kwargs["infra_error_class"] == "OSError"
+    assert "OSError: db socket closed" in kwargs["infra_error_traceback"]
