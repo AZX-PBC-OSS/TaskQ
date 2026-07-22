@@ -4,6 +4,14 @@ on:
   push:
     tags:
       - "v*"
+  workflow_call:
+    inputs:
+      release_created:
+        required: true
+        type: boolean
+      tag_name:
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -11,8 +19,11 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    if: ${{ github.event_name != 'workflow_call' || inputs.release_created }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag_name || github.ref }}
 
       - name: Install uv
         uses: astral-sh/setup-uv@v8.3.2
@@ -25,7 +36,8 @@ jobs:
       - name: Verify tag matches pyproject.toml version
         run: |
           set -euo pipefail
-          tag="${GITHUB_REF#refs/tags/v}"
+          tag="${{ inputs.tag_name || github.ref_name }}"
+          tag="${tag#v}"
           version="$(uv run python -c 'import importlib.metadata; print(importlib.metadata.version("taskq-py"))')"
           echo "Tag: ${tag}"
           echo "pyproject.toml version: ${version}"
@@ -81,4 +93,12 @@ jobs:
 #   Repository: AZX-PBC-OSS/TaskQ
 #   Workflow: publish.yml
 #   Environment: (Any)
+# This workflow is invoked two ways:
+#   1. Direct push of a v* tag (manual fallback path).
+#   2. workflow_call from release-please.yml after release-please creates a
+#      release (tags made with GITHUB_TOKEN don't trigger push workflows, so
+#      release-please.yml calls this workflow explicitly).
+# The PyPI publisher stays valid for both paths because it targets
+# publish.yml — the file containing the publish job. For reusable-workflow
+# calls, PyPI checks the called workflow's filename, which is still this one.
 # See https://docs.pypi.org/trusted-publishers/ for setup details.
