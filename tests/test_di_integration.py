@@ -24,6 +24,7 @@ from taskq._di.scopes import LoopScope, ProcessScope, ThreadScope, make_resolver
 from taskq.actor import ActorRef
 from taskq.settings import WorkerSettings
 from taskq.testing.fixtures import ModulePgSchema
+from tests.conftest import unique_health_sock_path
 
 pytestmark = pytest.mark.integration
 
@@ -137,6 +138,8 @@ async def test_worker_startup_with_default_providers(
             "schema_name": schema,
             "lock_lease": "60",
             "heartbeat_interval": "10",
+            # _main starts a real HealthServer — never the shared default path.
+            "health_socket_path": unique_health_sock_path("di_integration"),
         },
     )
 

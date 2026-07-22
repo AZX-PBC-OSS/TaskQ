@@ -277,8 +277,9 @@ class SubJobEnqueuer:
                 _log.warning(
                     "sub_enqueue_flush_error",
                     kind="sub_enqueue_flush_error",
-                    job_id=args.id,
-                    message=str(exc),
+                    job_id=str(args.id),
+                    error_class=type(exc).__name__,
+                    error_message=str(exc),
                 )
         if failed_items:
             raise SubEnqueueError(failed_items=failed_items)

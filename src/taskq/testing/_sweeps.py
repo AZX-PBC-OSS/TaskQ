@@ -42,7 +42,7 @@ async def _scheduled_to_pending(self: "InMemoryBackend", now: datetime) -> int:
                 kind="state_change",
                 from_state="scheduled",
                 to_state="pending",
-                job_id=job_id,
+                job_id=str(job_id),
             )
             count += 1
     if count > 0:
@@ -93,7 +93,7 @@ async def _deadline_sweep(self: "InMemoryBackend", now: datetime) -> int:
                 kind="state_change",
                 from_state=row.status,
                 to_state="failed",
-                job_id=job_id,
+                job_id=str(job_id),
             )
             count += 1
     return count
@@ -155,7 +155,7 @@ async def _reclaim_expired_locks(
                     kind="state_change",
                     from_state="running",
                     to_state="pending",
-                    job_id=job_id,
+                    job_id=str(job_id),
                 )
                 for event in self._wake_subscribers:
                     event.set()
@@ -178,7 +178,7 @@ async def _reclaim_expired_locks(
                     kind="state_change",
                     from_state="running",
                     to_state="crashed",
-                    job_id=job_id,
+                    job_id=str(job_id),
                 )
             count += 1
     return count

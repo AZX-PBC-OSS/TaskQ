@@ -104,7 +104,7 @@ async def invoke_error_reporter(
     except TimeoutError:
         logger.warning(
             "error-reporter-timeout",
-            job_id=job.id,
+            job_id=str(job.id),
             actor=job.actor,
             reporter_type=reporter_type,
             timeout_seconds=timeout,
@@ -112,7 +112,7 @@ async def invoke_error_reporter(
     except Exception as exc:
         logger.warning(
             "error-reporter-failed",
-            job_id=job.id,
+            job_id=str(job.id),
             actor=job.actor,
             reporter_type=reporter_type,
             error=repr(exc),

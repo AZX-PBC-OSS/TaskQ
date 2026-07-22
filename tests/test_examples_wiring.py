@@ -36,6 +36,7 @@ from taskq.actor import ActorRef
 from taskq.backend.clock import Clock, SystemClock
 from taskq.settings import WorkerSettings
 from taskq.worker.run import _main
+from tests.conftest import unique_health_sock_path
 
 # ── Helpers ──────────────────────────────────────────────────────────
 
@@ -46,6 +47,8 @@ def _settings() -> WorkerSettings:
             "PG_DSN": "postgres://u:p@localhost:5432/db",
             "LOCK_LEASE": 60,
             "HEARTBEAT_INTERVAL": 10,
+            # _main starts a real HealthServer — never the shared default path.
+            "TASKQ_HEALTH_SOCKET_PATH": unique_health_sock_path("examples_wiring"),
         },
     )
 

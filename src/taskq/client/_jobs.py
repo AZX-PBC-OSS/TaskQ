@@ -276,7 +276,7 @@ class JobsClient:
             logger.debug(
                 "job_enqueued",
                 kind="job_enqueued",
-                job_id=row.id,
+                job_id=str(row.id),
                 actor=row.actor,
                 queue=row.queue,
                 idempotency_key=row.idempotency_key,
@@ -597,7 +597,7 @@ class JobsClient:
         logger.debug(
             "cancel_requested",
             kind="cancel_requested",
-            job_id=job_id,
+            job_id=str(job_id),
             previous_status=previous_status,
             cancellation_initiated=initiated,
         )

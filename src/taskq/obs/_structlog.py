@@ -175,8 +175,8 @@ def bind_job_context(
     is always bound (defaults to ``""`` when no active OTel span per spec).
     Returns a new ``BoundLogger``; does not mutate the input.
     """
-    fields: dict[str, UUID | str | int] = {
-        "job_id": job_id,
+    fields: dict[str, str | int] = {
+        "job_id": str(job_id),
         "actor": actor,
         "queue": queue,
         "attempt": attempt,

@@ -461,7 +461,7 @@ async def invoke_on_retry_exhausted(
     except Exception as exc:
         logger.warning(
             "on-retry-exhausted-hook-failed",
-            job_id=job_row.id,
+            job_id=str(job_row.id),
             actor=job_row.actor,
             hook="on_retry_exhausted",
             error=repr(exc),
@@ -474,7 +474,7 @@ async def invoke_on_retry_exhausted(
         except TimeoutError:
             logger.warning(
                 "on-retry-exhausted-hook-timeout",
-                job_id=job_row.id,
+                job_id=str(job_row.id),
                 actor=job_row.actor,
                 hook="on_retry_exhausted",
                 timeout_seconds=timeout,
@@ -482,7 +482,7 @@ async def invoke_on_retry_exhausted(
         except Exception as exc:
             logger.warning(
                 "on-retry-exhausted-hook-failed",
-                job_id=job_row.id,
+                job_id=str(job_row.id),
                 actor=job_row.actor,
                 hook="on_retry_exhausted",
                 error=repr(exc),
@@ -516,7 +516,7 @@ async def invoke_on_success(
     except Exception as exc:
         logger.warning(
             "on-success-hook-failed",
-            job_id=job_row.id,
+            job_id=str(job_row.id),
             actor=job_row.actor,
             hook="on_success",
             error=repr(exc),
@@ -529,7 +529,7 @@ async def invoke_on_success(
         except TimeoutError:
             logger.warning(
                 "on-success-hook-timeout",
-                job_id=job_row.id,
+                job_id=str(job_row.id),
                 actor=job_row.actor,
                 hook="on_success",
                 timeout_seconds=timeout,
@@ -537,7 +537,7 @@ async def invoke_on_success(
         except Exception as exc:
             logger.warning(
                 "on-success-hook-failed",
-                job_id=job_row.id,
+                job_id=str(job_row.id),
                 actor=job_row.actor,
                 hook="on_success",
                 error=repr(exc),
@@ -575,7 +575,7 @@ async def safe_mark_failed_or_retry(
     except WorkerOwnershipMismatch as exc:
         logger.warning(
             "mark-failed-or-retry-ownership-mismatch",
-            job_id=exc.job_id,
+            job_id=str(exc.job_id),
             expected_worker=exc.expected,
             actual_worker=exc.actual,
         )

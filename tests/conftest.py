@@ -20,6 +20,8 @@ The fixtures are imported from :mod:`taskq.testing.fixtures`
 and re-registered here so they are available to all test modules.
 """
 
+import contextlib
+import glob
 import os
 from collections.abc import AsyncIterator, Iterator
 
@@ -28,6 +30,7 @@ import pytest
 import pytest_asyncio
 from testcontainers.postgres import PostgresContainer
 
+from taskq._ids import new_base62
 from taskq.settings import TaskQSettings
 from taskq.testing.actor import (
     EmptyPayload,
@@ -91,6 +94,76 @@ from taskq.testing.settings import (
     make_integration_settings,
     make_integration_settings_dict,
 )
+from taskq.worker.deps import WorkerDeps
+from taskq.worker.health import HealthServer
+
+# ── Health-socket isolation ──────────────────────────────────────────────
+# WorkerSettings.health_socket_path defaults to the shared production path
+# /tmp/taskq_health.sock, and _main starts a real HealthServer. Under xdist,
+# two workers inside _main concurrently race on that one filesystem path —
+# the loser gets EADDRINUSE (TOCTOU window in create_unix_server's stale-file
+# removal), or silently steals the socket from the live winner.
+# unique_health_sock_path() mints per-test unique module-scoped paths for
+# settings factories; the autouse fixture below redirects any
+# HealthServer.start still targeting the shared default, so no test can ever
+# bind it regardless of how its settings were built.
+
+_SHARED_DEFAULT_HEALTH_SOCK = "/tmp/taskq_health.sock"  # noqa: S108  # Why: must match the WorkerSettings.health_socket_path default in settings.py; pinned by tests/test_health_socket_isolation.py.
+
+
+def unique_health_sock_path(module: str) -> str:
+    """Return a unique unix-socket path for one test's health server.
+
+    ``/tmp/tq-<module>-<pid>-<token>.sock``: the pid scopes across xdist
+    workers, the random token across tests within a worker (stateless — no
+    shared counter, so uniqueness survives any pytest import mode), and the
+    module label identifies the owner when debugging stale files. The short
+    ``/tmp/tq-`` prefix keeps paths well under the 104-char AF_UNIX
+    sun_path limit on macOS.
+    """
+    return f"/tmp/tq-{module}-{os.getpid()}-{new_base62()}.sock"  # noqa: S108  # Why: test-only socket files; /tmp is the shortest safe prefix.
+
+
+@pytest.fixture(autouse=True)
+def _isolate_health_server_socket(  # pyright: ignore[reportUnusedFunction]  # Why: autouse fixture consumed implicitly by the test runner; pyright does not track fixture usage.
+    monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
+) -> None:
+    """Redirect HealthServer.start away from any path another server may hold.
+
+    Rewrites the shared default path (the WorkerSettings default no test
+    should bind) AND any path this fixture already minted — the latter so a
+    settings object reused across two start() calls (e.g. a worker-restart
+    test) still yields two distinct sockets instead of the second start
+    stealing the first server's live socket.
+    """
+    original_start = HealthServer.start
+    module = getattr(request.module, "__name__", "unknown")
+    module = module.removeprefix("tests.test_").removeprefix("tests.")
+    minted: set[str] = set()
+
+    async def _start_isolated(self: HealthServer, deps: WorkerDeps) -> None:
+        path = deps.settings.health_socket_path
+        if path == _SHARED_DEFAULT_HEALTH_SOCK or path in minted:
+            path = unique_health_sock_path(module)
+            minted.add(path)
+            deps.settings.health_socket_path = path
+        await original_start(self, deps)
+
+    monkeypatch.setattr(HealthServer, "start", _start_isolated)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _sweep_health_sock_files() -> Iterator[None]:  # pyright: ignore[reportUnusedFunction]  # Why: autouse fixture consumed implicitly by the test runner; pyright does not track fixture usage.
+    """Sweep this process's own tq-*-<pid>-*.sock files after the session.
+
+    HealthServer.stop() unlinks under normal completion; this is a backstop
+    for abnormal termination. Scoped to this PID only, so it can never touch
+    another worker's or session's socket files.
+    """
+    yield
+    for path in glob.glob(f"/tmp/tq-*-{os.getpid()}-*.sock"):  # noqa: S108  # Why: matches unique_health_sock_path's own prefix.
+        with contextlib.suppress(OSError):
+            os.unlink(path)
 
 
 class _FakePool:

@@ -453,7 +453,7 @@ async def tick_cancel_polling(backend: "InMemoryBackend") -> None:
                 kind="state_change",
                 from_state="running",
                 to_state="running",
-                job_id=job_id,
+                job_id=str(job_id),
                 cancel_phase=1,
             )
 

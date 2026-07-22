@@ -5,6 +5,15 @@ reservation denied, generic exception) live here.  Each handler maps a
 raised exception to the appropriate backend terminal write, span event,
 and structured log entry.
 
+Failure-logging contract:
+
+- ``state-change`` — INFO, lifecycle transitions.
+- ``job_timeout`` / ``job_exception`` — WARNING, every attempt (retryable
+  or terminal), with full error_class/error_message/error_traceback.
+- ``job_failed`` — ERROR, exactly once per dead job, emitted by all five
+  handlers after the terminal write persists.
+- ``terminal-write-failed`` — ERROR, infra write failure.
+
 :func:`_dispatch_exception` consolidates the exception dispatch logic
 shared between ``consume_one_job`` and ``_consume_transactional``.
 """
@@ -123,20 +132,74 @@ def _log_terminal_write_failed(
     log.error(
         "terminal-write-failed",
         kind="terminal-write-failed",
-        job_id=job.id,
+        job_id=str(job.id),
         actor=job.actor,
         actor_succeeded=job_exc is None,
         job_error_class=type(job_exc).__name__ if job_exc is not None else None,
         job_error_message=str(job_exc) if job_exc is not None else None,
+        job_error_traceback=_format_exc(job_exc) if job_exc is not None else None,
         infra_error_class=type(infra_exc).__name__,
         infra_error_message=str(infra_exc),
+        infra_error_traceback=_format_exc(infra_exc),
     )
+
+
+def _format_exc(exc: BaseException) -> str:
+    """Format *exc*'s traceback from the explicit exception object.
+
+    ``traceback.format_exc()`` formats the *ambient* active exception and
+    silently degrades to ``'NoneType: None\\n'`` when the handler runs
+    outside an ``except`` block (direct calls in tests; any future
+    refactored call site that defers handling). Formatting the explicit
+    parameter matches :func:`_log_terminal_write_failed` and is immune to
+    call-site structure.
+    """
+    return "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+
+
+def _log_job_failed(
+    log: structlog.stdlib.BoundLogger,
+    job: JobRow,
+    *,
+    cause: str,
+    error_class: str,
+    error_message: str | None = None,
+    error_traceback: str | None = None,
+    **context: object,
+) -> None:
+    """Emit ``job_failed`` — the single ERROR event for a dead job.
+
+    Alerting contract: exactly one ``job_failed`` per terminal
+    (non-retryable) failure, emitted by all five handlers *after* the
+    terminal write persists — never on the retry path, never on infra
+    write failure (that is ``terminal-write-failed``), never on ownership
+    mismatch (our write did not land; the job is not dead by our hand).
+
+    ``cause`` is the terminal classification (``Fail.error_class`` or the
+    backend tri-state cause); ``error_class`` is the concrete exception
+    class. ``None``-valued optionals are omitted from the event, not
+    logged as null, so synthesized-cause sites keep their exact field set.
+    """
+    fields: dict[str, object] = {
+        "job_id": str(job.id),
+        "actor": job.actor,
+        "attempt": job.attempt,
+        "cause": cause,
+        "error_class": error_class,
+    }
+    if error_message is not None:
+        fields["error_message"] = error_message
+    if error_traceback is not None:
+        fields["error_traceback"] = error_traceback
+    fields.update(context)
+    log.error("job_failed", **fields)
 
 
 async def _handle_timeout(
     backend: Backend,
     job: JobRow,
     worker_id: UUID,
+    exc: TimeoutError,
     actor_config: ActorConfigLike,
     clock: Clock,
     max_retry_backoff: timedelta,
@@ -148,9 +211,18 @@ async def _handle_timeout(
     error_reporter: ErrorReporter | None = None,
 ) -> None:
     error_info = ErrorInfo(
-        error_class="TimeoutError",
-        error_message="start_to_close",
-        error_traceback=None,
+        error_class=type(exc).__name__,
+        error_message=str(exc) or "start_to_close",
+        error_traceback=_format_exc(exc),
+    )
+    log.warning(
+        "job_timeout",
+        job_id=str(job.id),
+        actor=job.actor,
+        attempt=job.attempt,
+        error_class=error_info.error_class,
+        error_message=error_info.error_message,
+        error_traceback=error_info.error_traceback,
     )
     job_state = JobRetryState(
         attempt=job.attempt,
@@ -161,7 +233,7 @@ async def _handle_timeout(
     )
     decision = decide_after_failure(
         actor_config,
-        TimeoutError("start_to_close"),
+        exc,
         job_state,
         clock.now(),
         max_retry_backoff=max_retry_backoff,
@@ -172,7 +244,7 @@ async def _handle_timeout(
             attributes={
                 "from_state": "running",
                 "to_state": "scheduled",
-                "error_class": "TimeoutError",
+                "error_class": error_info.error_class,
             },
         )
         await asyncio.shield(
@@ -187,13 +259,19 @@ async def _handle_timeout(
                 log=log,
             )
         )
+        log_state_change(
+            log,
+            from_state="running",
+            to_state="scheduled",
+            cause=type(exc).__name__,
+        )
     else:
         span.add_event(
             "lifecycle.failed",
             attributes={
                 "from_state": "running",
                 "to_state": "failed",
-                "error_class": "TimeoutError",
+                "error_class": error_info.error_class,
             },
         )
         updated_row = await asyncio.shield(
@@ -208,18 +286,33 @@ async def _handle_timeout(
                 log=log,
             )
         )
+        log_state_change(
+            log,
+            from_state="running",
+            to_state="failed",
+            cause=type(exc).__name__,
+            retryable=decision.retryable,
+        )
         if updated_row is not None:
+            _log_job_failed(
+                log,
+                job,
+                cause=decision.error_class,
+                error_class=error_info.error_class,
+                error_message=error_info.error_message,
+                error_traceback=error_info.error_traceback,
+            )
             await invoke_on_retry_exhausted(
                 actor_config.on_retry_exhausted,
                 updated_row,
-                TimeoutError("start_to_close"),
+                exc,
                 actor_config.on_retry_exhausted_timeout,
                 log=log,
             )
             await invoke_error_reporter(
                 error_reporter,
                 updated_row,
-                TimeoutError("start_to_close"),
+                exc,
                 log=log,
             )
 
@@ -273,6 +366,13 @@ async def _handle_snooze(
                 "to_state": "failed",
                 "error_class": "DeadlineExceeded",
             },
+        )
+        _log_job_failed(
+            log,
+            job,
+            cause="DeadlineExceeded",
+            error_class="DeadlineExceeded",
+            snooze_count=current_snooze_count,
         )
         log_state_change(
             log,
@@ -352,6 +452,13 @@ async def _handle_retry_after(
                 "to_state": "failed",
                 "error_class": cause,
             },
+        )
+        _log_job_failed(
+            log,
+            job,
+            cause=cause,
+            error_class=cause,
+            consume_budget=r.consume_budget,
         )
         log_state_change(
             log,
@@ -436,6 +543,13 @@ async def _handle_reservation_class_denied(
                 "error_class": "DeadlineExceeded",
             },
         )
+        _log_job_failed(
+            log,
+            job,
+            cause="DeadlineExceeded",
+            error_class="DeadlineExceeded",
+            bucket_name=e.bucket_name,
+        )
         log_state_change(
             log,
             from_state="running",
@@ -483,7 +597,16 @@ async def _handle_generic_exception(
     error_info = ErrorInfo(
         error_class=type(e).__name__,
         error_message=str(e),
-        error_traceback=traceback.format_exc(),
+        error_traceback=_format_exc(e),
+    )
+    log.warning(
+        "job_exception",
+        job_id=str(job.id),
+        actor=job.actor,
+        attempt=job.attempt,
+        error_class=error_info.error_class,
+        error_message=error_info.error_message,
+        error_traceback=error_info.error_traceback,
     )
     job_state = JobRetryState(
         attempt=job.attempt,
@@ -555,6 +678,14 @@ async def _handle_generic_exception(
             retryable=decision.retryable,
         )
         if updated_row is not None:
+            _log_job_failed(
+                log,
+                job,
+                cause=decision.error_class,
+                error_class=error_info.error_class,
+                error_message=error_info.error_message,
+                error_traceback=error_info.error_traceback,
+            )
             await invoke_on_retry_exhausted(
                 actor_config.on_retry_exhausted,
                 updated_row,
@@ -613,6 +744,7 @@ async def _dispatch_exception(
                 backend,
                 job,
                 worker_id,
+                exc,
                 actor_config,
                 clock,
                 max_retry_backoff,

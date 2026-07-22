@@ -427,7 +427,12 @@ async def _stranded_jobs_loop(ctx: SweepContext, shutdown: asyncio.Event) -> Non
         try:
             async with ctx.deps.worker_pool.acquire() as conn:
                 rows = await conn.fetch(sql)
-        except Exception:  # noqa: S112
+        except Exception as exc:
+            log.warning(
+                "stranded_jobs_query_failed",
+                error_class=type(exc).__name__,
+                error_message=str(exc),
+            )
             continue
         for row in rows:
             actor: str = row["actor"]

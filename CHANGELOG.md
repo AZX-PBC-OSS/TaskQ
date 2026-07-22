@@ -126,6 +126,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `humanize` moved from core to `[fastapi]` extra (was bloating core install)
 - `starlette` and `prometheus_client` declared as direct dependencies (were transitive-reliance)
 - Dependency upper bounds added to `asyncpg`, `redis`, `pydantic`, `fastapi`, `typer`, `dotenvmodel`, `uuid-utils`, `uvicorn`, `structlog`, `opentelemetry-instrumentation`, `prometheus-client`
+- Worker exception handlers no longer swallow failure diagnostics. Timeout
+  and generic-exception attempts log `job_timeout` / `job_exception`
+  WARNING events carrying `error_class` / `error_message` /
+  `error_traceback`; every terminal (non-retryable) failure across all
+  five handlers emits exactly one `job_failed` ERROR event (`job_id`,
+  `actor`, `attempt`, `cause`, `error_class`, plus handler context such as
+  `snooze_count` / `consume_budget` / `bucket_name`) — one alertable event
+  per dead job, and per-attempt diagnostics at WARNING so retryable
+  attempts produce zero ERROR noise. Tracebacks are formatted from the
+  explicit exception object rather than the ambient `sys.exception()`, so
+  handler invocations outside an `except` block no longer record
+  `'NoneType: None'`. The `terminal-write-failed` event now includes
+  `job_error_traceback` and `infra_error_traceback`. Timeout spans
+  (`lifecycle.scheduled` / `lifecycle.failed`) now report the concrete
+  exception class instead of hardcoded `TimeoutError`, agreeing with the
+  log fields. Snooze / RetryAfter / ReservationUnavailable terminal
+  outcomes and the stranded-jobs leader sweep also log their failure
+  details instead of continuing silently.
 
 ### Changed
 
@@ -133,6 +151,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking: cross-field invariant exceptions changed type.** `WorkerSettings.load()`/`load_from_dict()` cross-field invariants (`lock_lease >= 4 * heartbeat_interval`, grace-budget checks) previously raised `ValueError`; they now raise `ValidationError` (single failure) or `MultipleValidationErrors` (several at once). `ConstraintViolationError` (field validators) was already not a `ValueError`. **Callers that catch `ValueError` around `WorkerSettings.load*()` will no longer catch these** — catch `DotEnvModelError` (the common base) to cover both single and aggregate cases, or `ValidationError` when at most one invariant can fire. Field-level validation (`prune_retention_*`, `default_start_to_close`, `log_format`, etc.) already raised `ConstraintViolationError` and is unaffected.
 - **`reload()` now enforces cross-field invariants and applies DSN fallback.** Previously `reload()` did not run `_post_load` (it was only called from the `load()`/`load_from_dict()` overrides), so a reload that produced invariant-violating values would silently succeed. This is now fixed by the native `post_load` hook.
 - **`log_format` validation moved from `choices=` to a `validator` hook.** `choices=` is a built-in constraint that `load_from_dict(..., validate=False)` skips, so an invalid `TASKQ_LOG_FORMAT` could previously load silently under `validate=False`. The validator hook runs regardless of `validate=`, closing the hole. Error message changed from `log_format must be 'json' or 'console'` to `log_format must be one of ['console', 'json'], got <value>`.
+- **Breaking: structured-log field rename in sub-enqueue failure events.**
+  `sub_enqueue_re_enqueue_error` and `sub_enqueue_flush_error` now carry
+  `error_class` + `error_message` instead of the single `message` field,
+  matching the `error_class`/`error_message` convention used by every
+  other error event (`job_timeout`, `job_exception`, `job_failed`,
+  `rate_limit_release_failed`, `savepoint_rollback_failed`,
+  `stranded_jobs_query_failed`, and the `failed_details` payload of
+  `sub_enqueue_flush_failed`). Log pipelines querying `fields.message`
+  on these two events must switch to `error_message`.
 
 ### Security
 

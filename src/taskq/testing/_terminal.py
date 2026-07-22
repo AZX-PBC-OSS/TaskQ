@@ -116,7 +116,7 @@ async def _mark_succeeded(
         kind="state_change",
         from_state="running",
         to_state="succeeded",
-        job_id=job_id,
+        job_id=str(job_id),
     )
     return True
 
@@ -199,7 +199,7 @@ async def _mark_failed_or_retry(
             kind="state_change",
             from_state="running",
             to_state="scheduled",
-            job_id=job_id,
+            job_id=str(job_id),
         )
         return updated
 
@@ -242,7 +242,7 @@ async def _mark_failed_or_retry(
         kind="state_change",
         from_state="running",
         to_state="failed",
-        job_id=job_id,
+        job_id=str(job_id),
     )
     return updated
 
@@ -294,7 +294,7 @@ async def _mark_cancelled(
         kind="state_change",
         from_state="running",
         to_state="cancelled",
-        job_id=job_id,
+        job_id=str(job_id),
     )
     return True
 
@@ -335,7 +335,7 @@ async def _write_cancel_escalation(
         kind="state_change",
         from_state="running",
         to_state="running",
-        job_id=job_id,
+        job_id=str(job_id),
         cancel_phase=CancelPhase.FORCED,
     )
     return True
@@ -386,7 +386,7 @@ async def _mark_abandoned(
         kind="state_change",
         from_state="running",
         to_state="abandoned",
-        job_id=job_id,
+        job_id=str(job_id),
     )
     return True
 
@@ -448,7 +448,7 @@ async def _mark_snoozed(
             kind="state_change",
             from_state="running",
             to_state="failed",
-            job_id=job_id,
+            job_id=str(job_id),
         )
         return "failed"
 
@@ -495,7 +495,7 @@ async def _mark_snoozed(
         kind="state_change",
         from_state="running",
         to_state="scheduled",
-        job_id=job_id,
+        job_id=str(job_id),
     )
     return "scheduled"
 
@@ -556,7 +556,7 @@ async def _mark_retry_after(
             kind="state_change",
             from_state="running",
             to_state="failed",
-            job_id=job_id,
+            job_id=str(job_id),
             worker_id=worker_id,
             attempt=row.attempt,
             cause="retry_after",
@@ -603,7 +603,7 @@ async def _mark_retry_after(
             kind="state_change",
             from_state="running",
             to_state="failed",
-            job_id=job_id,
+            job_id=str(job_id),
             worker_id=worker_id,
             attempt=row.attempt,
             cause="retry_after",
@@ -654,7 +654,7 @@ async def _mark_retry_after(
         kind="state_change",
         from_state="running",
         to_state="scheduled",
-        job_id=job_id,
+        job_id=str(job_id),
         worker_id=worker_id,
         attempt=new_attempt,
         cause="retry_after",

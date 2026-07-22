@@ -80,7 +80,7 @@ async def _publish_progress_event(
         _log.warning(
             "progress-publish-failure",
             kind="progress_publish_failure",
-            job_id=job_id,
+            job_id=str(job_id),
             seq=seq,
             error_type=type(exc).__name__,
         )
@@ -90,7 +90,7 @@ async def _publish_progress_event(
         )
         return
 
-    log = _log.bind(job_id=job_id, actor=actor, seq=seq)
+    log = _log.bind(job_id=str(job_id), actor=actor, seq=seq)
 
     per_job_channel = progress_channel(settings.schema_name, job_id)
     await _publish_event(
@@ -166,7 +166,7 @@ async def _publish_state_change_event(
         _log.warning(
             "progress-publish-failure",
             kind="progress_publish_failure",
-            job_id=job_id,
+            job_id=str(job_id),
             seq=seq,
             error_type=type(exc).__name__,
         )
@@ -175,7 +175,7 @@ async def _publish_state_change_event(
             error_type=type(exc).__name__,
         )
         return
-    log = _log.bind(job_id=job_id, actor=actor, seq=seq, status=status)
+    log = _log.bind(job_id=str(job_id), actor=actor, seq=seq, status=status)
 
     schema = settings.schema_name
     per_job_channel = progress_channel(schema, job_id)

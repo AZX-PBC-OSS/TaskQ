@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 
 import asyncpg
 import pytest
+import structlog
 from pydantic import BaseModel, TypeAdapter
 
 from taskq.actor import ActorRef
@@ -383,6 +384,37 @@ async def test_flush_buffer_raises_sub_enqueue_error_on_failure() -> None:
     assert len(exc_info.value.failed_items) == 1
     assert len(backend._jobs) == 1
     assert enqueuer.pending_count == 0
+
+
+async def test_flush_buffer_logs_renamed_error_fields_on_failure() -> None:
+    """sub_enqueue_flush_error carries error_class/error_message — not the
+    pre-rename ``message`` field."""
+    backend = _make_backend()
+    clock = FakeClock(datetime(2025, 1, 1, tzinfo=UTC))
+    stub_conn = _StubConn()
+    enqueuer = _make_enqueuer(
+        loop_scope_resolved={asyncpg.Connection: stub_conn},
+        backend=backend,
+        clock=clock,
+    )
+    ref = _make_actor_ref()
+
+    await enqueuer.enqueue(ref, _Payload(value="a"))
+
+    async def _failing_enqueue(args: object) -> object:
+        raise RuntimeError("pg down")
+
+    backend.enqueue = _failing_enqueue  # type: ignore[assignment] # Why: test injects a failing enqueue to pin the sub_enqueue_flush_error log fields
+
+    with structlog.testing.capture_logs() as captured, pytest.raises(SubEnqueueError):
+        await enqueuer.flush_buffer()
+
+    flush_errors = [e for e in captured if e.get("event") == "sub_enqueue_flush_error"]
+    assert len(flush_errors) == 1
+    entry = flush_errors[0]
+    assert entry["error_class"] == "RuntimeError"
+    assert entry["error_message"] == "pg down"
+    assert "message" not in entry
 
 
 # ── EnqueueItem dataclass ────────────────────────────────────────────────

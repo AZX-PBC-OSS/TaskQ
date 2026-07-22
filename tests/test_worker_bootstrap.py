@@ -29,6 +29,7 @@ from taskq.ratelimit.registry import registry as rl_registry
 from taskq.ratelimit.reservation import ConcurrencyReservation
 from taskq.settings import WorkerSettings
 from taskq.worker.run import _main
+from tests.conftest import unique_health_sock_path
 
 pytestmark = pytest.mark.integration
 
@@ -63,6 +64,8 @@ async def _cleanup_schema_for(pg_dsn: str, schema: str) -> None:
 
 def _settings_for(pg_dsn: str, schema: str, **overrides: str) -> WorkerSettings:
     data: dict[str, str] = {"pg_dsn": pg_dsn, "schema_name": schema}
+    # _main starts a real HealthServer — never the shared default path.
+    data.setdefault("health_socket_path", unique_health_sock_path("worker_bootstrap"))
     data.update(overrides)
     return WorkerSettings.load_from_dict(data)
 
@@ -116,6 +119,8 @@ async def _cleanup_schema(pg_dsn: str) -> None:
 
 def _settings(pg_dsn: str, **overrides: str) -> WorkerSettings:
     data: dict[str, str] = {"pg_dsn": pg_dsn, "schema_name": _SCHEMA_LABEL}
+    # _main starts a real HealthServer — never the shared default path.
+    data.setdefault("health_socket_path", unique_health_sock_path("worker_bootstrap"))
     data.update(overrides)
     return WorkerSettings.load_from_dict(data)
 

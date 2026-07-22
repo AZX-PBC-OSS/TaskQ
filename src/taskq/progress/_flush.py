@@ -60,14 +60,14 @@ async def _flush_buffer(
             raise
         _log.error(
             "progress-flush-error",
-            job_id=job_id,
+            job_id=str(job_id),
             error=str(exc),
             kind="progress_flush_error",
         )
         return
 
     if row is None:
-        _log.debug("progress-flush-no-row", job_id=job_id)
+        _log.debug("progress-flush-no-row", job_id=str(job_id))
         # Job no longer running on this worker — idempotency gate fired.
         # Use pop to avoid KeyError if the consumer's finally block already removed it.
         progress_buffers.pop(job_id, None)
@@ -141,7 +141,7 @@ async def progress_flush_loop(
             except Exception as exc:
                 _log.error(
                     "progress-flush-error",
-                    job_id=job_id,
+                    job_id=str(job_id),
                     error=str(exc),
                     kind="progress_flush_error",
                 )

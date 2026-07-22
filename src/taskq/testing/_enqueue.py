@@ -75,7 +75,7 @@ async def _enqueue(self: "InMemoryBackend", args: EnqueueArgs) -> JobRow:
                 logger.info(
                     "singleton-collision",
                     actor=args.actor,
-                    blocking_job_id=row.id,
+                    blocking_job_id=str(row.id),
                     detection_path="preflight_check",
                 )
                 raise SingletonCollisionError(
@@ -185,7 +185,7 @@ async def _enqueue(self: "InMemoryBackend", args: EnqueueArgs) -> JobRow:
         kind="state_change",
         from_state=None,
         to_state=status,
-        job_id=args.id,
+        job_id=str(args.id),
         actor=args.actor,
     )
 

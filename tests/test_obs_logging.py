@@ -454,7 +454,7 @@ def test_bind_job_context_binds_mandatory_fields() -> None:
 
     assert len(captured) == 1
     entry = captured[0]
-    assert entry["job_id"] == job_id
+    assert entry["job_id"] == str(job_id)
     assert entry["actor"] == "ingest_telemetry"
     assert entry["queue"] == "ingest"
     assert entry["attempt"] == 1
@@ -634,7 +634,7 @@ def test_bind_job_context_returns_new_logger_does_not_mutate_original() -> None:
 
     assert len(captured) == 2
     assert "job_id" not in captured[0]
-    assert captured[1]["job_id"] == job_id
+    assert captured[1]["job_id"] == str(job_id)
 
 
 # ── worker_id via contextvars ────────────────────────
@@ -784,7 +784,7 @@ def test_log_state_change_emits_correct_fields() -> None:
     assert entry["kind"] == "state_change"
     assert entry["from_state"] == "pending"
     assert entry["to_state"] == "running"
-    assert entry["job_id"] == job_id
+    assert entry["job_id"] == str(job_id)
     assert entry["log_level"] == "info"
 
 
@@ -854,7 +854,7 @@ def test_log_cancel_phase_change_emits_correct_fields() -> None:
     assert entry["kind"] == "cancel_phase_change"
     assert entry["from_phase"] == 1
     assert entry["to_phase"] == 2
-    assert entry["job_id"] == job_id
+    assert entry["job_id"] == str(job_id)
     assert entry["log_level"] == "info"
 
 

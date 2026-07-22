@@ -414,7 +414,7 @@ class ConcurrencyReservation:
                 "reservation-acquired",
                 bucket_name=self._name,
                 slot_index=slot_index,
-                job_id=job_id,
+                job_id=str(job_id),
                 worker_id=worker_id,
                 backend="memory",
             )
@@ -441,7 +441,7 @@ class ConcurrencyReservation:
             "reservation-acquired",
             bucket_name=self._name,
             slot_index=slot_index,
-            job_id=job_id,
+            job_id=str(job_id),
             worker_id=worker_id,
         )
         return slot_index

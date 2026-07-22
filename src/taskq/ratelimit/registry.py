@@ -404,7 +404,7 @@ class RateLimitRegistry:
                     )
                     logger.info(
                         "composition-denied",
-                        job_id=job_id,
+                        job_id=str(job_id),
                         rate_limits=rate_limits,
                         reservations=reservations,
                         allowed=False,
@@ -432,7 +432,7 @@ class RateLimitRegistry:
 
             logger.debug(
                 "composition-acquired",
-                job_id=job_id,
+                job_id=str(job_id),
                 rate_limits=rate_limits,
                 reservations=reservations,
                 allowed=True,
