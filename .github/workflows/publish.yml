@@ -34,10 +34,11 @@ jobs:
         run: uv python install 3.12
 
       - name: Verify tag matches pyproject.toml version
+        env:
+          TAG_NAME: ${{ inputs.tag_name || github.ref_name }}
         run: |
           set -euo pipefail
-          tag="${{ inputs.tag_name || github.ref_name }}"
-          tag="${tag#v}"
+          tag="${TAG_NAME#v}"
           version="$(uv run python -c 'import importlib.metadata; print(importlib.metadata.version("taskq-py"))')"
           echo "Tag: ${tag}"
           echo "pyproject.toml version: ${version}"

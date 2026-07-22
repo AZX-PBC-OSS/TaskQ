@@ -10,8 +10,7 @@
       "extra-files": [
         {
           "type": "generic",
-          "path": "src/taskq/__init__.py",
-          "jsonpath": "$.__version__"
+          "path": "src/taskq/__init__.py"
         }
       ]
     }
