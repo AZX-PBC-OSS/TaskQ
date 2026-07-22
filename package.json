@@ -7,7 +7,7 @@
     "watch": "tailwindcss -i src/taskq/web/static/tailwind.css -o src/taskq/web/static/admin.css --watch"
   },
   "dependencies": {
-    "@tailwindcss/cli": "^4.3.0",
+    "@tailwindcss/cli": "^4.3.3",
     "tailwindcss": "^4.3.0"
   }
 }
