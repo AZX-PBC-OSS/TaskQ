@@ -53,6 +53,10 @@ class _FakeBackend(FakeBackend):
         return make_job_row()
 
 
+class _SlowQueryTimeout(TimeoutError):  # noqa: N818  Why: the concrete class name is the assertion target — it pins that span/log error_class report the subclass name verbatim, not a hardcoded 'TimeoutError'.
+    """TimeoutError subclass: pins log/span error_class agreement."""
+
+
 # ── indefinite-tier Retry — no taskq.indefinite_retry event ────
 
 
@@ -715,7 +719,9 @@ async def test_lifecycle_failed_carries_error_class(
 async def test_generic_exception_logs_traceback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """_handle_generic_exception logs job_exception with error_class, error_message, and error_traceback."""
+    """_handle_generic_exception logs job_exception at WARNING with
+    error_class, error_message, and error_traceback on every attempt, and
+    exactly one terminal job_failed at ERROR after the write persists."""
 
     async def actor(_job: object, _ctx: JobContext[BaseModel]) -> object:
         raise RuntimeError("boom")
@@ -751,11 +757,11 @@ async def test_generic_exception_logs_traceback(
             logger=mock_log,
         )
 
-    error_calls = [
-        c for c in mock_log.error.call_args_list if c.args and c.args[0] == "job_exception"
+    warning_calls = [
+        c for c in mock_log.warning.call_args_list if c.args and c.args[0] == "job_exception"
     ]
-    assert len(error_calls) == 1, f"expected 1 job_exception log, got {len(error_calls)}"
-    kwargs = error_calls[0].kwargs
+    assert len(warning_calls) == 1, f"expected 1 job_exception log, got {len(warning_calls)}"
+    kwargs = warning_calls[0].kwargs
     assert kwargs["error_class"] == "RuntimeError"
     assert kwargs["error_message"] == "boom"
     assert "Traceback" in kwargs["error_traceback"]
@@ -763,6 +769,14 @@ async def test_generic_exception_logs_traceback(
     assert str(job.id) == kwargs["job_id"]
     assert kwargs["actor"] == job.actor
     assert kwargs["attempt"] == job.attempt
+
+    error_calls = [c for c in mock_log.error.call_args_list if c.args and c.args[0] == "job_failed"]
+    assert len(error_calls) == 1, f"expected 1 job_failed log, got {len(error_calls)}"
+    kwargs = error_calls[0].kwargs
+    assert kwargs["cause"] == "RuntimeError"
+    assert kwargs["error_class"] == "RuntimeError"
+    assert kwargs["error_message"] == "boom"
+    assert "RuntimeError: boom" in kwargs["error_traceback"]
 
 
 async def test_timeout_logs_actual_exception_details(
@@ -816,6 +830,86 @@ async def test_timeout_logs_actual_exception_details(
     assert str(job.id) == kwargs["job_id"]
     assert kwargs["actor"] == job.actor
 
+    error_calls = [c for c in mock_log.error.call_args_list if c.args and c.args[0] == "job_failed"]
+    assert len(error_calls) == 1, f"expected 1 job_failed log, got {len(error_calls)}"
+    kwargs = error_calls[0].kwargs
+    assert kwargs["cause"] == "TimeoutError"
+    assert kwargs["error_class"] == "TimeoutError"
+    assert kwargs["error_message"] == "database query took too long"
+
+
+async def test_timeout_retry_emits_log_state_change() -> None:
+    """_handle_timeout emits log_state_change running→scheduled when the
+    retry decision is Retry — mirroring _handle_generic_exception."""
+
+    async def actor(_job: object, _ctx: JobContext[BaseModel]) -> object:
+        raise TimeoutError("slow query")
+
+    job = make_job_row(attempt=1, max_attempts=3, retry_kind="transient")
+    cfg = StubActorConfig(retry=RetryPolicy(kind="transient", max_attempts=3, jitter=0.0))
+    backend = _FakeBackend()
+
+    import structlog
+
+    with structlog.testing.capture_logs() as captured:
+        await consume_one_job(
+            as_backend(backend),
+            job,
+            _WORKER_ID,
+            run_actor=actor,
+            actor_config=cfg,
+            payload_type=EmptyPayload,
+            clock=FakeClock(_NOW),
+            logger=structlog.get_logger("test"),
+        )
+
+    state_changes = [
+        e for e in captured if e.get("kind") == "state_change" and e.get("to_state") == "scheduled"
+    ]
+    assert len(state_changes) == 1, f"expected 1 state_change log, got {len(state_changes)}"
+    entry = state_changes[0]
+    assert entry["from_state"] == "running"
+    assert entry["cause"] == "TimeoutError"
+    assert entry["job_id"] == str(job.id)
+    assert entry["actor"] == job.actor
+
+
+async def test_timeout_terminal_emits_log_state_change() -> None:
+    """_handle_timeout emits log_state_change running→failed when retries are
+    exhausted — mirroring _handle_generic_exception."""
+
+    async def actor(_job: object, _ctx: JobContext[BaseModel]) -> object:
+        raise TimeoutError("slow query")
+
+    job = make_job_row(attempt=3, max_attempts=3, retry_kind="transient")
+    cfg = StubActorConfig(retry=RetryPolicy(kind="transient", max_attempts=3, jitter=0.0))
+    backend = _FakeBackend()
+
+    import structlog
+
+    with structlog.testing.capture_logs() as captured:
+        await consume_one_job(
+            as_backend(backend),
+            job,
+            _WORKER_ID,
+            run_actor=actor,
+            actor_config=cfg,
+            payload_type=EmptyPayload,
+            clock=FakeClock(_NOW),
+            logger=structlog.get_logger("test"),
+        )
+
+    state_changes = [
+        e for e in captured if e.get("kind") == "state_change" and e.get("to_state") == "failed"
+    ]
+    assert len(state_changes) == 1, f"expected 1 state_change log, got {len(state_changes)}"
+    entry = state_changes[0]
+    assert entry["from_state"] == "running"
+    assert entry["cause"] == "TimeoutError"
+    assert entry["retryable"] is False
+    assert entry["job_id"] == str(job.id)
+    assert entry["actor"] == job.actor
+
 
 async def test_snooze_terminal_failure_logs_error(
     monkeypatch: pytest.MonkeyPatch,
@@ -864,6 +958,8 @@ async def test_snooze_terminal_failure_logs_error(
     assert kwargs["error_class"] == "DeadlineExceeded"
     assert str(job.id) == kwargs["job_id"]
     assert kwargs["actor"] == job.actor
+    # None-valued optionals are omitted from the event, not logged as null.
+    assert "error_message" not in kwargs
 
 
 async def test_retry_after_terminal_failure_logs_error(
@@ -907,9 +1003,10 @@ async def test_retry_after_terminal_failure_logs_error(
         )
 
     error_calls = [c for c in mock_log.error.call_args_list if c.args and c.args[0] == "job_failed"]
-    assert len(error_calls) >= 1, f"expected at least 1 job_failed log, got {len(error_calls)}"
+    assert len(error_calls) == 1, f"expected 1 job_failed log, got {len(error_calls)}"
     kwargs = error_calls[0].kwargs
-    assert kwargs["cause"] in ("DeadlineExceeded", "MaxAttemptsExceeded")
+    assert kwargs["cause"] == "DeadlineExceeded"
+    assert kwargs["error_class"] == "DeadlineExceeded"
     assert str(job.id) == kwargs["job_id"]
     assert kwargs["actor"] == job.actor
 
@@ -1551,3 +1648,220 @@ async def test_autonomous_explicit_params_override_deps() -> None:
     )
     assert result == "succeeded"
     assert progress_called
+
+
+# ── TimeoutError subclass: span/log error_class agreement ─────────────
+
+
+async def test_timeout_subclass_span_log_agree_on_retry_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A TimeoutError subclass on the retry path reports the concrete
+    class in both the lifecycle.scheduled span event and the job_timeout
+    warning — not a hardcoded 'TimeoutError'."""
+
+    async def actor(_job: object, _ctx: JobContext[BaseModel]) -> object:
+        raise _SlowQueryTimeout("query exceeded deadline")
+
+    _, exporter = setup_tracer(monkeypatch)
+    tracer = obs_mod.get_tracer()
+
+    job = make_job_row(
+        attempt=1,
+        max_attempts=3,
+        retry_kind="transient",
+    )
+    cfg = StubActorConfig(retry=RetryPolicy(kind="transient", max_attempts=3, jitter=0.0))
+    backend = _FakeBackend()
+    clk: Clock = FakeClock(_NOW)
+
+    from unittest.mock import MagicMock
+
+    import structlog
+
+    mock_log = MagicMock(spec=structlog.stdlib.BoundLogger)
+    mock_log.bind.return_value = mock_log
+
+    with tracer.start_as_current_span("test-span"):
+        await consume_one_job(
+            as_backend(backend),
+            job,
+            _WORKER_ID,
+            run_actor=actor,
+            actor_config=cfg,
+            payload_type=EmptyPayload,
+            clock=clk,
+            logger=mock_log,
+        )
+
+    events = exporter.events_on("test-span", "lifecycle.scheduled")
+    assert len(events) == 1
+    attrs = events[0].attributes  # type: ignore[reportUnknownMemberAccess]  # Why: events_on returns list[Any]; at runtime these are Event objects with .attributes
+    assert attrs is not None
+    assert attrs["error_class"] == "_SlowQueryTimeout"
+
+    warning_calls = [
+        c for c in mock_log.warning.call_args_list if c.args and c.args[0] == "job_timeout"
+    ]
+    assert len(warning_calls) == 1, f"expected 1 job_timeout log, got {len(warning_calls)}"
+    kwargs = warning_calls[0].kwargs
+    assert kwargs["error_class"] == "_SlowQueryTimeout"
+
+
+async def test_timeout_subclass_span_log_agree_on_terminal_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Same agreement pin on the terminal path: lifecycle.failed carries
+    the concrete subclass name."""
+
+    async def actor(_job: object, _ctx: JobContext[BaseModel]) -> object:
+        raise _SlowQueryTimeout("query exceeded deadline")
+
+    _, exporter = setup_tracer(monkeypatch)
+    tracer = obs_mod.get_tracer()
+
+    job = make_job_row(
+        attempt=3,
+        max_attempts=3,
+        retry_kind="transient",
+    )
+    cfg = StubActorConfig(retry=RetryPolicy(kind="transient", max_attempts=3, jitter=0.0))
+    backend = _FakeBackend()
+    clk: Clock = FakeClock(_NOW)
+
+    from unittest.mock import MagicMock
+
+    import structlog
+
+    mock_log = MagicMock(spec=structlog.stdlib.BoundLogger)
+    mock_log.bind.return_value = mock_log
+
+    with tracer.start_as_current_span("test-span"):
+        await consume_one_job(
+            as_backend(backend),
+            job,
+            _WORKER_ID,
+            run_actor=actor,
+            actor_config=cfg,
+            payload_type=EmptyPayload,
+            clock=clk,
+            logger=mock_log,
+        )
+
+    events = exporter.events_on("test-span", "lifecycle.failed")
+    assert len(events) == 1
+    attrs = events[0].attributes  # type: ignore[reportUnknownMemberAccess]  # Why: events_on returns list[Any]; at runtime these are Event objects with .attributes
+    assert attrs is not None
+    assert attrs["error_class"] == "_SlowQueryTimeout"
+
+
+# ── Retry path: WARNING only, zero ERROR noise ────────────────────────
+
+
+async def test_generic_exception_retry_path_logs_warning_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Retryable generic exception logs job_exception at WARNING and
+    nothing at ERROR — the single job_failed ERROR is reserved for the
+    terminal failure."""
+
+    async def actor(_job: object, _ctx: JobContext[BaseModel]) -> object:
+        raise RuntimeError("transient boom")
+
+    setup_tracer(monkeypatch)
+    tracer = obs_mod.get_tracer()
+
+    job = make_job_row(
+        attempt=1,
+        max_attempts=3,
+        retry_kind="transient",
+    )
+    cfg = StubActorConfig(retry=RetryPolicy(kind="transient", max_attempts=3, jitter=0.0))
+    backend = _FakeBackend()
+    clk: Clock = FakeClock(_NOW)
+
+    from unittest.mock import MagicMock
+
+    import structlog
+
+    mock_log = MagicMock(spec=structlog.stdlib.BoundLogger)
+    mock_log.bind.return_value = mock_log
+
+    with tracer.start_as_current_span("test-span"):
+        await consume_one_job(
+            as_backend(backend),
+            job,
+            _WORKER_ID,
+            run_actor=actor,
+            actor_config=cfg,
+            payload_type=EmptyPayload,
+            clock=clk,
+            logger=mock_log,
+        )
+
+    warning_calls = [
+        c for c in mock_log.warning.call_args_list if c.args and c.args[0] == "job_exception"
+    ]
+    assert len(warning_calls) == 1, f"expected 1 job_exception log, got {len(warning_calls)}"
+    kwargs = warning_calls[0].kwargs
+    assert kwargs["error_class"] == "RuntimeError"
+    assert kwargs["error_message"] == "transient boom"
+    mock_log.error.assert_not_called()
+
+    assert len(backend.mark_failed_or_retry_calls) == 1
+    call = backend.mark_failed_or_retry_calls[0]
+    assert call["next_scheduled_at"] is not None
+
+
+async def test_timeout_retry_path_logs_warning_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Retryable timeout logs job_timeout at WARNING and nothing at
+    ERROR."""
+
+    async def actor(_job: object, _ctx: JobContext[BaseModel]) -> object:
+        raise TimeoutError("db slow")
+
+    setup_tracer(monkeypatch)
+    tracer = obs_mod.get_tracer()
+
+    job = make_job_row(
+        attempt=1,
+        max_attempts=3,
+        retry_kind="transient",
+    )
+    cfg = StubActorConfig(retry=RetryPolicy(kind="transient", max_attempts=3, jitter=0.0))
+    backend = _FakeBackend()
+    clk: Clock = FakeClock(_NOW)
+
+    from unittest.mock import MagicMock
+
+    import structlog
+
+    mock_log = MagicMock(spec=structlog.stdlib.BoundLogger)
+    mock_log.bind.return_value = mock_log
+
+    with tracer.start_as_current_span("test-span"):
+        await consume_one_job(
+            as_backend(backend),
+            job,
+            _WORKER_ID,
+            run_actor=actor,
+            actor_config=cfg,
+            payload_type=EmptyPayload,
+            clock=clk,
+            logger=mock_log,
+        )
+
+    warning_calls = [
+        c for c in mock_log.warning.call_args_list if c.args and c.args[0] == "job_timeout"
+    ]
+    assert len(warning_calls) == 1, f"expected 1 job_timeout log, got {len(warning_calls)}"
+    kwargs = warning_calls[0].kwargs
+    assert kwargs["error_class"] == "TimeoutError"
+    assert kwargs["error_message"] == "db slow"
+    mock_log.error.assert_not_called()
+
+    assert len(backend.mark_failed_or_retry_calls) == 1
+    call = backend.mark_failed_or_retry_calls[0]
+    assert call["next_scheduled_at"] is not None

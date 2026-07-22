@@ -210,7 +210,7 @@ class _CancelController:
                     _log,
                     from_phase=int(CancelPhase.NONE),
                     to_phase=int(CancelPhase.COOPERATIVE),
-                    job_id=active.job_id,
+                    job_id=str(active.job_id),
                     worker_id=worker_id,
                 )
                 _record_phase_transition(CancelPhase.NONE, CancelPhase.COOPERATIVE)
@@ -221,7 +221,7 @@ class _CancelController:
                     _log,
                     from_phase=int(active.cancel_phase),
                     to_phase=int(CancelPhase.FORCED),
-                    job_id=active.job_id,
+                    job_id=str(active.job_id),
                     worker_id=worker_id,
                 )
                 _record_phase_transition(active.cancel_phase, CancelPhase.FORCED)
@@ -278,7 +278,7 @@ class _CancelController:
                     _log,
                     from_phase=int(CancelPhase.COOPERATIVE),
                     to_phase=int(CancelPhase.FORCED),
-                    job_id=active.job_id,
+                    job_id=str(active.job_id),
                     worker_id=worker_id,
                 )
                 _record_phase_transition(CancelPhase.COOPERATIVE, CancelPhase.FORCED)
@@ -319,7 +319,7 @@ class _CancelController:
                 _log,
                 from_phase=int(CancelPhase.FORCED),
                 to_phase=int(CancelPhase.ABANDON_PENDING),
-                job_id=job_id,
+                job_id=str(job_id),
                 worker_id=worker_id,
             )
             _record_phase_transition(CancelPhase.FORCED, CancelPhase.ABANDON_PENDING)

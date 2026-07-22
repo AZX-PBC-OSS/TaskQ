@@ -636,7 +636,7 @@ async def test_snooze_handler_log_carries_job_context_fields() -> None:
     ]
     assert len(state_changes) >= 1
     entry = state_changes[0]
-    assert entry["job_id"] == job.id
+    assert entry["job_id"] == str(job.id)
     assert entry["actor"] == job.actor
     assert entry["queue"] == job.queue
     assert entry["attempt"] == job.attempt
@@ -673,7 +673,7 @@ async def test_generic_exception_handler_log_carries_job_context_fields() -> Non
     ]
     assert len(state_changes) >= 1
     entry = state_changes[0]
-    assert entry["job_id"] == job.id
+    assert entry["job_id"] == str(job.id)
     assert entry["actor"] == job.actor
     assert entry["queue"] == job.queue
     assert entry["identity_key"] == IdentityKey("err-key")
@@ -716,7 +716,7 @@ async def test_rate_limit_denial_handler_log_carries_job_context_fields() -> Non
     ]
     assert len(state_changes) >= 1
     entry = state_changes[0]
-    assert entry["job_id"] == job.id
+    assert entry["job_id"] == str(job.id)
     assert entry["actor"] == job.actor
     assert entry["queue"] == job.queue
     assert entry["identity_key"] == IdentityKey("rl-key")

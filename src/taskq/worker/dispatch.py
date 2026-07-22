@@ -111,7 +111,7 @@ async def dispatch_one_job(
             logger.warning(
                 "otel-link-skipped",
                 reason="malformed_trace_id",
-                job_id=job.id,
+                job_id=str(job.id),
             )
     links = [trace.Link(link_ctx)] if link_ctx else []
 

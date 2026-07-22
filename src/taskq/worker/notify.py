@@ -138,12 +138,13 @@ def _make_events_callback(
         _cancel_notify_received_counter.add(1)
         for event in list(backend._cancel_subscribers):  # pyright: ignore[reportPrivateUsage]  # Why: snapshot iteration; event.set() is idempotent
             event.set()
+        raw_job_id = msg.get("job_id")
         logger.debug(
             "cancel_event_received",
             kind="cancel_event_received",
             channel=channel,
             pid=pid,
-            job_id=msg.get("job_id"),
+            job_id=str(raw_job_id) if raw_job_id is not None else None,
         )
 
     return _on_event
@@ -178,12 +179,13 @@ def _make_worker_events_callback(
         _cancel_notify_received_counter.add(1)
         for event in list(backend._cancel_subscribers):  # pyright: ignore[reportPrivateUsage]  # Why: snapshot iteration; event.set() is idempotent
             event.set()
+        raw_job_id = msg.get("job_id")
         logger.debug(
             "worker_cancel_event_received",
             kind="worker_cancel_event_received",
             channel=channel,
             pid=pid,
-            job_id=msg.get("job_id"),
+            job_id=str(raw_job_id) if raw_job_id is not None else None,
         )
 
     return _on_worker_event

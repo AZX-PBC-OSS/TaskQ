@@ -394,3 +394,120 @@ async def test_pg_token_bucket_cold_start_single_admission(pg_dsn: str) -> None:
 # ── Finding 5 helper reused by test_dispatch_fairness_pg.py ─────────────
 
 __all__ = ["JobsApp", "ModulePgSchema", "make_enqueue_args"]
+
+
+# ── Traceback regression: format the explicit exception, not the ambient ──
+
+
+class _RecordingTerminalBackend:
+    """Backend stub recording mark_failed_or_retry kwargs; never raises.
+
+    Used by direct-call handler tests that take the retry path, where the
+    handler only needs the write to succeed (the returned row is unused).
+    """
+
+    def __init__(self) -> None:
+        self.mark_failed_or_retry_calls: list[dict[str, object]] = []
+
+    async def mark_failed_or_retry(self, **kwargs: object) -> None:
+        self.mark_failed_or_retry_calls.append(kwargs)
+
+
+class _FakeSpan:
+    def add_event(self, *_args: object, **_kwargs: object) -> None:
+        return None
+
+
+@pytest.mark.asyncio
+async def test_generic_exception_traceback_without_active_exception() -> None:
+    """Direct call outside an except block: error_traceback must come from
+    the explicit exception, not the ambient (empty) one."""
+    from datetime import UTC, datetime
+
+    import structlog
+
+    from taskq.retry import RetryPolicy
+    from taskq.testing.actor import StubActorConfig
+    from taskq.testing.clock import FakeClock
+    from taskq.testing.jobs import make_job_row
+    from taskq.worker._handlers import _handle_generic_exception
+
+    backend = _RecordingTerminalBackend()
+    job = make_job_row(attempt=1, max_attempts=3)
+    actor_config = StubActorConfig(retry=RetryPolicy(max_attempts=3))
+    clock = FakeClock(datetime(2025, 1, 1, tzinfo=UTC))
+    log = MagicMock(spec=structlog.stdlib.BoundLogger)
+    log.bind.return_value = log
+
+    actor_exc = RuntimeError("actor blew up")  # constructed, never raised
+
+    await _handle_generic_exception(
+        backend,  # type: ignore[arg-type]
+        job,
+        _WORKER_ID,
+        actor_exc,
+        actor_config,
+        clock,
+        timedelta(hours=24),
+        _FakeSpan(),  # type: ignore[arg-type]
+        log,
+    )
+
+    # Level-agnostic: the level pins live in test_consumer.py; this test
+    # pins the traceback regression only.
+    job_exception_calls = [
+        c
+        for c in (*log.warning.call_args_list, *log.error.call_args_list)
+        if c.args and c.args[0] == "job_exception"
+    ]
+    assert len(job_exception_calls) == 1, (
+        f"expected 1 job_exception log, got {len(job_exception_calls)}"
+    )
+    tb = job_exception_calls[0].kwargs["error_traceback"]
+    assert "RuntimeError: actor blew up" in tb
+    assert "NoneType" not in tb
+
+
+@pytest.mark.asyncio
+async def test_timeout_traceback_without_active_exception() -> None:
+    """Same regression pin for _handle_timeout."""
+    from datetime import UTC, datetime
+
+    import structlog
+
+    from taskq.retry import RetryPolicy
+    from taskq.testing.actor import StubActorConfig
+    from taskq.testing.clock import FakeClock
+    from taskq.testing.jobs import make_job_row
+    from taskq.worker._handlers import _handle_timeout
+
+    backend = _RecordingTerminalBackend()
+    job = make_job_row(attempt=1, max_attempts=3)
+    actor_config = StubActorConfig(retry=RetryPolicy(max_attempts=3))
+    clock = FakeClock(datetime(2025, 1, 1, tzinfo=UTC))
+    log = MagicMock(spec=structlog.stdlib.BoundLogger)
+    log.bind.return_value = log
+
+    timeout_exc = TimeoutError("db slow")  # constructed, never raised
+
+    await _handle_timeout(
+        backend,  # type: ignore[arg-type]
+        job,
+        _WORKER_ID,
+        timeout_exc,
+        actor_config,
+        clock,
+        timedelta(hours=24),
+        _FakeSpan(),  # type: ignore[arg-type]
+        log,
+    )
+
+    job_timeout_calls = [
+        c
+        for c in (*log.warning.call_args_list, *log.error.call_args_list)
+        if c.args and c.args[0] == "job_timeout"
+    ]
+    assert len(job_timeout_calls) == 1, f"expected 1 job_timeout log, got {len(job_timeout_calls)}"
+    tb = job_timeout_calls[0].kwargs["error_traceback"]
+    assert "TimeoutError: db slow" in tb
+    assert "NoneType" not in tb

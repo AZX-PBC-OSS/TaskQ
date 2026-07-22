@@ -182,7 +182,7 @@ async def orchestrate_shutdown(
             except Exception as e:
                 _log.warning(
                     "force-cancel-pg-write-failed",
-                    job_id=active.job_id,
+                    job_id=str(active.job_id),
                     error=str(e),
                 )
                 continue
@@ -210,7 +210,7 @@ async def orchestrate_shutdown(
             except Exception as exc:
                 _log.warning(
                     "abandon-pg-write-failed",
-                    job_id=active.job_id,
+                    job_id=str(active.job_id),
                     error=str(exc),
                 )
 

@@ -392,7 +392,7 @@ async def consumer_loop_stub(
             raise
 
         except Exception:
-            _consumer_log.exception("consumer-stub-error", job_id=job.id)
+            _consumer_log.exception("consumer-stub-error", job_id=str(job.id))
 
         finally:
             await deps.active_jobs.deregister(job.id)
@@ -454,7 +454,7 @@ async def di_consumer_loop(
         if job.actor not in actor_registry:
             _consumer_log.error(
                 "dispatch-actor-not-found",
-                job_id=job.id,
+                job_id=str(job.id),
                 actor=job.actor,
             )
             # Release the claimed job instead of leaving it 'running' until
@@ -471,7 +471,7 @@ async def di_consumer_loop(
             except Exception:
                 _consumer_log.exception(
                     "dispatch-actor-not-found-release-failed",
-                    job_id=job.id,
+                    job_id=str(job.id),
                     actor=job.actor,
                 )
             continue
@@ -503,7 +503,7 @@ async def di_consumer_loop(
                 enqueuer=enqueuer,
             )
         except Exception:
-            _consumer_log.exception("dispatch-failed", job_id=job.id)
+            _consumer_log.exception("dispatch-failed", job_id=str(job.id))
 
 
 async def register_worker(pool: asyncpg.Pool, settings: WorkerSettings) -> UUID:

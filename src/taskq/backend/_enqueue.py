@@ -103,7 +103,7 @@ async def _enqueue_on_conn(
             logger.info(
                 "singleton-collision",
                 actor=args.actor,
-                blocking_job_id=blocking_id,
+                blocking_job_id=str(blocking_id),
                 detection_path="preflight_check",
             )
             raise SingletonCollisionError(
