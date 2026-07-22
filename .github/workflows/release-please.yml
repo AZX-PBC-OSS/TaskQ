@@ -30,6 +30,11 @@ jobs:
     if: needs.release-please.outputs.release_created
     uses: ./.github/workflows/publish.yml
     with:
-      release_created: true
       tag_name: ${{ needs.release-please.outputs.tag_name }}
+      # Reusable-workflow attestations are rejected by PyPI (the Sigstore
+      # certificate records this caller, not publish.yml). The OIDC token
+      # is unaffected. The callee cannot detect this case itself — inside
+      # a reusable workflow the github context belongs to the caller — so
+      # it is passed explicitly.
+      attestations: false
     secrets: inherit

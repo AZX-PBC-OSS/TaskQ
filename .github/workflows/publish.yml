@@ -6,12 +6,18 @@ on:
       - "v*"
   workflow_call:
     inputs:
-      release_created:
-        required: true
-        type: boolean
       tag_name:
         required: true
         type: string
+      attestations:
+        description: >-
+          Generate Sigstore attestations. Reusable-workflow callers must pass
+          false: PyPI rejects attestations whose certificate records the
+          top-level (caller) workflow, and the callee cannot detect that case
+          itself because the github context follows the caller.
+        required: false
+        type: boolean
+        default: true
   workflow_dispatch:
     inputs:
       tag_name:
@@ -25,7 +31,6 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    if: ${{ github.event_name != 'workflow_call' || inputs.release_created }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -98,12 +103,10 @@ jobs:
           # Attestations are only valid when publish.yml is the top-level
           # workflow: the Sigstore certificate's Build Config URI records the
           # top-level workflow, and PyPI verifies it against the trusted
-          # publisher (publish.yml). Via workflow_call from release-please.yml
-          # the certificate says release-please.yml instead, which PyPI
-          # rejects with a 400 (attestations under reusable workflows are
-          # unsupported). The OIDC token validates on both paths because PyPI
-          # matches it against job_workflow_ref (publish.yml).
-          attestations: ${{ github.event_name != 'workflow_call' }}
+          # publisher (publish.yml). release-please.yml therefore passes
+          # attestations: false; direct tag pushes and manual dispatches run
+          # top-level and keep full attestations via the input default.
+          attestations: ${{ inputs.attestations }}
 
 # Trusted Publishing (OIDC): no API token is stored in this repo.
 # The PyPI trusted publisher is configured for:
@@ -111,17 +114,20 @@ jobs:
 #   Workflow: publish.yml
 #   Environment: (Any)
 # This workflow is invoked three ways:
-#   1. Direct push of a v* tag (manual fallback path).
+#   1. Direct push of a v* tag (manual fallback path) — attestations ON.
 #   2. workflow_call from release-please.yml after release-please creates a
 #      release (tags made with GITHUB_TOKEN don't trigger push workflows, so
-#      release-please.yml calls this workflow explicitly).
+#      release-please.yml calls this workflow explicitly) — attestations OFF,
+#      passed explicitly by the caller. NB: inside a reusable workflow the
+#      github context belongs to the CALLER (github.event_name is the
+#      caller's trigger event), so this workflow cannot detect the case
+#      itself; the decision must arrive as an input.
 #   3. workflow_dispatch with an existing tag name (manual republish, e.g.
-#      recovering a failed automated publish).
+#      recovering a failed automated publish) — attestations ON.
 # The PyPI publisher stays valid for all paths because it targets
 # publish.yml — the file containing the publish job. For reusable-workflow
 # calls, PyPI matches the OIDC token against the called workflow's filename
 # (job_workflow_ref), which is still this one. Sigstore attestations are the
 # exception: their certificate records the TOP-LEVEL workflow, so they are
-# only enabled when publish.yml runs top-level (paths 1 and 3); see the
-# attestations input on the publish step.
+# only enabled when publish.yml runs top-level (paths 1 and 3).
 # See https://docs.pypi.org/trusted-publishers/ for setup details.
