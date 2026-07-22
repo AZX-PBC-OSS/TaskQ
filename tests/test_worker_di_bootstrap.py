@@ -41,6 +41,7 @@ from taskq.settings import WorkerSettings
 from taskq.testing.clock import FakeClock
 from taskq.worker.deps import WorkerDeps
 from taskq.worker.run import _main
+from tests.conftest import unique_health_sock_path
 
 # ── Helpers ────────────────────────────────────────────────────────
 
@@ -75,6 +76,8 @@ def _settings() -> WorkerSettings:
             "PG_DSN": "postgres://u:p@localhost:5432/db",
             "LOCK_LEASE": 60,
             "HEARTBEAT_INTERVAL": 10,
+            # _main starts a real HealthServer — never the shared default path.
+            "TASKQ_HEALTH_SOCKET_PATH": unique_health_sock_path("worker_di_bootstrap"),
         },
     )
 
@@ -162,6 +165,8 @@ def _integration_settings(pg_dsn: str, *, schema: str) -> WorkerSettings:
         {
             "pg_dsn": pg_dsn,
             "schema_name": schema,
+            # _main starts a real HealthServer — never the shared default path.
+            "health_socket_path": unique_health_sock_path("worker_di_bootstrap"),
         },
     )
 

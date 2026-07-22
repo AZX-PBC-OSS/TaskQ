@@ -31,6 +31,7 @@ from taskq.worker.run import (
     register_worker,
     worker_main,
 )
+from tests.conftest import unique_health_sock_path
 
 # ── Fixtures ────────────────────────────────────────────────────────────
 
@@ -46,6 +47,8 @@ def settings() -> WorkerSettings:
             "TASKQ_LOCK_LEASE": "45.0",
             "TASKQ_HEARTBEAT_INTERVAL": "5.0",
             "TASKQ_MAX_CONCURRENCY": "2",
+            # _main starts a real HealthServer — never the shared default path.
+            "TASKQ_HEALTH_SOCKET_PATH": unique_health_sock_path("worker_main"),
         }
     )
 
