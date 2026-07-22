@@ -751,7 +751,9 @@ async def test_generic_exception_logs_traceback(
             logger=mock_log,
         )
 
-    error_calls = [c for c in mock_log.error.call_args_list if c.args and c.args[0] == "job_exception"]
+    error_calls = [
+        c for c in mock_log.error.call_args_list if c.args and c.args[0] == "job_exception"
+    ]
     assert len(error_calls) == 1, f"expected 1 job_exception log, got {len(error_calls)}"
     kwargs = error_calls[0].kwargs
     assert kwargs["error_class"] == "RuntimeError"
@@ -761,6 +763,204 @@ async def test_generic_exception_logs_traceback(
     assert str(job.id) == kwargs["job_id"]
     assert kwargs["actor"] == job.actor
     assert kwargs["attempt"] == job.attempt
+
+
+async def test_timeout_logs_actual_exception_details(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """_handle_timeout logs job_warning with the actual TimeoutError, not hardcoded values."""
+
+    async def actor(_job: object, _ctx: JobContext[BaseModel]) -> object:
+        raise TimeoutError("database query took too long")
+
+    setup_tracer(monkeypatch)
+    tracer = obs_mod.get_tracer()
+
+    job = make_job_row(
+        attempt=3,
+        max_attempts=3,
+        retry_kind="transient",
+    )
+    cfg = StubActorConfig(retry=RetryPolicy(kind="transient", max_attempts=3, jitter=0.0))
+    backend = _FakeBackend()
+    clk: Clock = FakeClock(_NOW)
+
+    from unittest.mock import MagicMock
+
+    import structlog
+
+    mock_log = MagicMock(spec=structlog.stdlib.BoundLogger)
+    mock_log.bind.return_value = mock_log
+
+    with tracer.start_as_current_span("test-span"):
+        await consume_one_job(
+            as_backend(backend),
+            job,
+            _WORKER_ID,
+            run_actor=actor,
+            actor_config=cfg,
+            payload_type=EmptyPayload,
+            clock=clk,
+            logger=mock_log,
+        )
+
+    warning_calls = [
+        c for c in mock_log.warning.call_args_list if c.args and c.args[0] == "job_timeout"
+    ]
+    assert len(warning_calls) == 1, f"expected 1 job_timeout log, got {len(warning_calls)}"
+    kwargs = warning_calls[0].kwargs
+    assert kwargs["error_class"] == "TimeoutError"
+    assert kwargs["error_message"] == "database query took too long"
+    assert "Traceback" in kwargs["error_traceback"]
+    assert "TimeoutError: database query took too long" in kwargs["error_traceback"]
+    assert str(job.id) == kwargs["job_id"]
+    assert kwargs["actor"] == job.actor
+
+
+async def test_snooze_terminal_failure_logs_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """_handle_snooze terminal 'failed' outcome logs job_failed at ERROR level."""
+
+    async def actor(_job: object, _ctx: JobContext[BaseModel]) -> object:
+        raise Snooze(timedelta(seconds=1))
+
+    setup_tracer(monkeypatch)
+    tracer = obs_mod.get_tracer()
+
+    job = make_job_row(
+        attempt=3,
+        max_attempts=3,
+        retry_kind="indefinite",
+        schedule_to_close=_NOW + timedelta(seconds=1),
+    )
+    cfg = StubActorConfig(retry=RetryPolicy(kind="indefinite", jitter=0.0))
+    backend = _FakeBackend(mark_snoozed_return="failed")
+    clk: Clock = FakeClock(_NOW + timedelta(seconds=2))
+
+    from unittest.mock import MagicMock
+
+    import structlog
+
+    mock_log = MagicMock(spec=structlog.stdlib.BoundLogger)
+    mock_log.bind.return_value = mock_log
+
+    with tracer.start_as_current_span("test-span"):
+        await consume_one_job(
+            as_backend(backend),
+            job,
+            _WORKER_ID,
+            run_actor=actor,
+            actor_config=cfg,
+            payload_type=EmptyPayload,
+            clock=clk,
+            logger=mock_log,
+        )
+
+    error_calls = [c for c in mock_log.error.call_args_list if c.args and c.args[0] == "job_failed"]
+    assert len(error_calls) == 1, f"expected 1 job_failed log, got {len(error_calls)}"
+    kwargs = error_calls[0].kwargs
+    assert kwargs["cause"] == "DeadlineExceeded"
+    assert kwargs["error_class"] == "DeadlineExceeded"
+    assert str(job.id) == kwargs["job_id"]
+    assert kwargs["actor"] == job.actor
+
+
+async def test_retry_after_terminal_failure_logs_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """_handle_retry_after terminal 'failed' outcome logs job_failed at ERROR level."""
+
+    async def actor(_job: object, _ctx: JobContext[BaseModel]) -> object:
+        raise RetryAfter(timedelta(seconds=1))
+
+    setup_tracer(monkeypatch)
+    tracer = obs_mod.get_tracer()
+
+    job = make_job_row(
+        attempt=3,
+        max_attempts=3,
+        retry_kind="indefinite",
+        schedule_to_close=_NOW + timedelta(seconds=1),
+    )
+    cfg = StubActorConfig(retry=RetryPolicy(kind="indefinite", jitter=0.0))
+    backend = _FakeBackend(mark_retry_after_return="failed:DeadlineExceeded")
+    clk: Clock = FakeClock(_NOW + timedelta(seconds=2))
+
+    from unittest.mock import MagicMock
+
+    import structlog
+
+    mock_log = MagicMock(spec=structlog.stdlib.BoundLogger)
+    mock_log.bind.return_value = mock_log
+
+    with tracer.start_as_current_span("test-span"):
+        await consume_one_job(
+            as_backend(backend),
+            job,
+            _WORKER_ID,
+            run_actor=actor,
+            actor_config=cfg,
+            payload_type=EmptyPayload,
+            clock=clk,
+            logger=mock_log,
+        )
+
+    error_calls = [c for c in mock_log.error.call_args_list if c.args and c.args[0] == "job_failed"]
+    assert len(error_calls) >= 1, f"expected at least 1 job_failed log, got {len(error_calls)}"
+    kwargs = error_calls[0].kwargs
+    assert kwargs["cause"] in ("DeadlineExceeded", "MaxAttemptsExceeded")
+    assert str(job.id) == kwargs["job_id"]
+    assert kwargs["actor"] == job.actor
+
+
+async def test_reservation_denied_terminal_failure_logs_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """_handle_reservation_class_denied terminal 'failed' outcome logs job_failed at ERROR level."""
+
+    async def actor(_job: object, _ctx: JobContext[BaseModel]) -> object:
+        raise ReservationUnavailable(bucket_name="test-bucket", retry_after=timedelta(seconds=1))
+
+    setup_tracer(monkeypatch)
+    tracer = obs_mod.get_tracer()
+
+    job = make_job_row(
+        attempt=3,
+        max_attempts=3,
+        retry_kind="indefinite",
+        schedule_to_close=_NOW + timedelta(seconds=1),
+    )
+    cfg = StubActorConfig(retry=RetryPolicy(kind="indefinite", jitter=0.0))
+    backend = _FakeBackend(mark_snoozed_return="failed")
+    clk: Clock = FakeClock(_NOW + timedelta(seconds=2))
+
+    from unittest.mock import MagicMock
+
+    import structlog
+
+    mock_log = MagicMock(spec=structlog.stdlib.BoundLogger)
+    mock_log.bind.return_value = mock_log
+
+    with tracer.start_as_current_span("test-span"):
+        await consume_one_job(
+            as_backend(backend),
+            job,
+            _WORKER_ID,
+            run_actor=actor,
+            actor_config=cfg,
+            payload_type=EmptyPayload,
+            clock=clk,
+            logger=mock_log,
+        )
+
+    error_calls = [c for c in mock_log.error.call_args_list if c.args and c.args[0] == "job_failed"]
+    assert len(error_calls) == 1, f"expected 1 job_failed log, got {len(error_calls)}"
+    kwargs = error_calls[0].kwargs
+    assert kwargs["cause"] == "DeadlineExceeded"
+    assert kwargs["bucket_name"] == "test-bucket"
+    assert str(job.id) == kwargs["job_id"]
+    assert kwargs["actor"] == job.actor
 
 
 # ── attempt span is child of CONSUMER span ────────────────────

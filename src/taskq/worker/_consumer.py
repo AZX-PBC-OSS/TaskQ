@@ -579,10 +579,12 @@ async def consume_one_job(
                 await asyncio.shield(
                     rate_limit_registry.release_for_actor(acquired, pg_pool=worker_pool)
                 )
-            except Exception:
+            except Exception as exc:
                 _log.warning(
                     "rate_limit_release_failed",
                     job_id=job.id,
+                    error_class=type(exc).__name__,
+                    error_message=str(exc),
                 )
 
 
@@ -673,11 +675,13 @@ async def _consume_transactional(
                 _preserved_exc = exc
                 try:
                     await loop_conn.execute("ROLLBACK TO SAVEPOINT _tq_actor")
-                except Exception:
+                except Exception as exc:
                     log.warning(
                         "savepoint_rollback_failed",
                         kind="savepoint_rollback_failed",
                         job_id=job.id,
+                        error_class=type(exc).__name__,
+                        error_message=str(exc),
                     )
                 _re_enqueue_list = enqueuer.drain_for_re_enqueue()
 
@@ -691,7 +695,8 @@ async def _consume_transactional(
                         "sub_enqueue_re_enqueue_error",
                         kind="sub_enqueue_re_enqueue_error",
                         job_id=args.id,
-                        message=str(exc),
+                        error_class=type(exc).__name__,
+                        error_message=str(exc),
                     )
                     _re_enqueue_failures.append(f"{args.id}: {exc}")
             if _re_enqueue_failures:
@@ -708,6 +713,14 @@ async def _consume_transactional(
                 job_id=job.id,
                 failed_count=len(sub_err.failed_items),
                 failed_job_ids=[str(args.id) for args, _ in sub_err.failed_items],
+                failed_details=[
+                    {
+                        "job_id": str(args.id),
+                        "error_class": type(exc).__name__,
+                        "error_message": str(exc),
+                    }
+                    for args, exc in sub_err.failed_items
+                ],
             )
         completion = _OK
         _tx_result = result

@@ -128,8 +128,16 @@ def _log_terminal_write_failed(
         actor_succeeded=job_exc is None,
         job_error_class=type(job_exc).__name__ if job_exc is not None else None,
         job_error_message=str(job_exc) if job_exc is not None else None,
+        job_error_traceback=(
+            "".join(traceback.format_exception(type(job_exc), job_exc, job_exc.__traceback__))
+            if job_exc is not None
+            else None
+        ),
         infra_error_class=type(infra_exc).__name__,
         infra_error_message=str(infra_exc),
+        infra_error_traceback="".join(
+            traceback.format_exception(type(infra_exc), infra_exc, infra_exc.__traceback__)
+        ),
     )
 
 
@@ -137,6 +145,7 @@ async def _handle_timeout(
     backend: Backend,
     job: JobRow,
     worker_id: UUID,
+    exc: TimeoutError,
     actor_config: ActorConfigLike,
     clock: Clock,
     max_retry_backoff: timedelta,
@@ -148,9 +157,18 @@ async def _handle_timeout(
     error_reporter: ErrorReporter | None = None,
 ) -> None:
     error_info = ErrorInfo(
-        error_class="TimeoutError",
-        error_message="start_to_close",
-        error_traceback=None,
+        error_class=type(exc).__name__,
+        error_message=str(exc) or "start_to_close",
+        error_traceback=traceback.format_exc(),
+    )
+    log.warning(
+        "job_timeout",
+        job_id=str(job.id),
+        actor=job.actor,
+        attempt=job.attempt,
+        error_class=error_info.error_class,
+        error_message=error_info.error_message,
+        error_traceback=error_info.error_traceback,
     )
     job_state = JobRetryState(
         attempt=job.attempt,
@@ -161,7 +179,7 @@ async def _handle_timeout(
     )
     decision = decide_after_failure(
         actor_config,
-        TimeoutError("start_to_close"),
+        exc,
         job_state,
         clock.now(),
         max_retry_backoff=max_retry_backoff,
@@ -212,14 +230,14 @@ async def _handle_timeout(
             await invoke_on_retry_exhausted(
                 actor_config.on_retry_exhausted,
                 updated_row,
-                TimeoutError("start_to_close"),
+                exc,
                 actor_config.on_retry_exhausted_timeout,
                 log=log,
             )
             await invoke_error_reporter(
                 error_reporter,
                 updated_row,
-                TimeoutError("start_to_close"),
+                exc,
                 log=log,
             )
 
@@ -273,6 +291,15 @@ async def _handle_snooze(
                 "to_state": "failed",
                 "error_class": "DeadlineExceeded",
             },
+        )
+        log.error(
+            "job_failed",
+            job_id=str(job.id),
+            actor=job.actor,
+            attempt=job.attempt,
+            cause="DeadlineExceeded",
+            error_class="DeadlineExceeded",
+            snooze_count=current_snooze_count,
         )
         log_state_change(
             log,
@@ -352,6 +379,15 @@ async def _handle_retry_after(
                 "to_state": "failed",
                 "error_class": cause,
             },
+        )
+        log.error(
+            "job_failed",
+            job_id=str(job.id),
+            actor=job.actor,
+            attempt=job.attempt,
+            cause=cause,
+            error_class=cause,
+            consume_budget=r.consume_budget,
         )
         log_state_change(
             log,
@@ -435,6 +471,15 @@ async def _handle_reservation_class_denied(
                 "to_state": "failed",
                 "error_class": "DeadlineExceeded",
             },
+        )
+        log.error(
+            "job_failed",
+            job_id=str(job.id),
+            actor=job.actor,
+            attempt=job.attempt,
+            cause="DeadlineExceeded",
+            error_class="DeadlineExceeded",
+            bucket_name=e.bucket_name,
         )
         log_state_change(
             log,
@@ -622,6 +667,7 @@ async def _dispatch_exception(
                 backend,
                 job,
                 worker_id,
+                exc,
                 actor_config,
                 clock,
                 max_retry_backoff,
