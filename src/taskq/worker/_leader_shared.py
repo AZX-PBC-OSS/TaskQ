@@ -228,7 +228,6 @@ _JOB_ATTEMPTS_COLUMNS: tuple[str, ...] = (
 _JOB_ATTEMPTS_COLUMNS_CSV = ", ".join(_JOB_ATTEMPTS_COLUMNS)
 _JOB_ATTEMPTS_COLUMNS_QUALIFIED_CSV = ", ".join(f"ja.{c}" for c in _JOB_ATTEMPTS_COLUMNS)
 
-
 _ARCHIVE_CTE_SQL = (
     "WITH candidate_ids AS ("
     '  SELECT id FROM "{schema}".jobs'
