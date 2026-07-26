@@ -81,7 +81,19 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger("taskq.ratelimit.registry")
 
+QUEUE_CONCURRENCY_PREFIX = "taskq:global:queue:"
+"""Reserved namespace for fleet-wide per-queue concurrency cap reservations.
+
+Primitives whose name starts with this prefix are internal to TaskQ's
+queue-cap bootstrap path and must be registered via
+:meth:`RateLimitRegistry.register_queue_cap_reservation`, not via the
+public :meth:`RateLimitRegistry.register`. The public ``register`` rejects
+any primitive whose name starts with this prefix to prevent accidental or
+malicious shadowing of an internal queue cap.
+"""
+
 __all__ = [
+    "QUEUE_CONCURRENCY_PREFIX",
     "RateLimitRegistry",
     "queue_concurrency_reservation_name",
     "registry",
@@ -115,7 +127,7 @@ def queue_concurrency_reservation_name(queue: str) -> str:
     register and acquire against the same PG ``reservation_slots`` rows,
     giving a true fleet-wide cap per queue.
     """
-    return f"taskq:global:queue:{queue}"
+    return f"{QUEUE_CONCURRENCY_PREFIX}{queue}"
 
 
 def _same_config(
@@ -200,27 +212,14 @@ class RateLimitRegistry:
         self,
         primitive: TokenBucket | SlidingWindow | ConcurrencyReservation,
     ) -> None:
-        if isinstance(primitive, ConcurrencyReservation):
-            name = primitive.name
-            existing_reservation = self._reservations.get(name)
-            if existing_reservation is not None:
-                if _same_config(existing_reservation, primitive):
-                    logger.debug(
-                        "registry-register-idempotent-noop",
-                        kind="reservation",
-                        name=name,
-                    )
-                    return
-                raise ValueError(
-                    f"reservation name already registered with a different config: "
-                    f"{name!r} — existing={existing_reservation!r}, new={primitive!r}"
-                )
-            self._reservations[name] = primitive
-            logger.debug(
-                "registry-registered",
-                kind="reservation",
-                name=name,
+        if primitive.name.startswith(QUEUE_CONCURRENCY_PREFIX):
+            raise ValueError(
+                f"name {primitive.name!r} starts with the reserved prefix "
+                f"{QUEUE_CONCURRENCY_PREFIX!r} — internal queue-cap reservations "
+                f"must be registered via register_queue_cap_reservation()"
             )
+        if isinstance(primitive, ConcurrencyReservation):
+            self._register_reservation_unchecked(primitive)
             return
 
         name = primitive.name
@@ -243,6 +242,58 @@ class RateLimitRegistry:
             kind="rate_limit",
             name=name,
         )
+
+    def _register_reservation_unchecked(
+        self,
+        primitive: ConcurrencyReservation,
+    ) -> None:
+        """Idempotent registration of a ConcurrencyReservation.
+
+        Called by both :meth:`register` (after the reserved-prefix rejection
+        check) and :meth:`register_queue_cap_reservation` (after the
+        reserved-prefix assertion). Duplicate-name-with-different-config →
+        ``ValueError``; duplicate-name-with-same-config → idempotent no-op.
+        """
+        name = primitive.name
+        existing = self._reservations.get(name)
+        if existing is not None:
+            if _same_config(existing, primitive):
+                logger.debug(
+                    "registry-register-idempotent-noop",
+                    kind="reservation",
+                    name=name,
+                )
+                return
+            raise ValueError(
+                f"reservation name already registered with a different config: "
+                f"{name!r} — existing={existing!r}, new={primitive!r}"
+            )
+        self._reservations[name] = primitive
+        logger.debug(
+            "registry-registered",
+            kind="reservation",
+            name=name,
+        )
+
+    def register_queue_cap_reservation(
+        self,
+        reservation: ConcurrencyReservation,
+    ) -> None:
+        """Register a fleet-wide queue-cap reservation in the reserved namespace.
+
+        This is the ONLY way to register a reservation whose name starts with
+        :data:`QUEUE_CONCURRENCY_PREFIX`. The public :meth:`register` rejects
+        such names to prevent users from accidentally shadowing internal
+        queue caps. Idempotency and conflict detection are identical to
+        :meth:`register` (duplicate-name-with-different-config →
+        ``ValueError``; duplicate-name-with-same-config → idempotent no-op).
+        """
+        if not reservation.name.startswith(QUEUE_CONCURRENCY_PREFIX):
+            raise ValueError(
+                f"register_queue_cap_reservation() requires a name starting with "
+                f"{QUEUE_CONCURRENCY_PREFIX!r}, got {reservation.name!r}"
+            )
+        self._register_reservation_unchecked(reservation)
 
     def get_rate_limit(self, name: str) -> TokenBucket | SlidingWindow:
         try:
@@ -454,7 +505,7 @@ class RateLimitRegistry:
         as an invalid key and raises ``ValueError`` — a broken ``key_fn``
         can never silently resolve to a shared/global bucket. When
         ``settings`` is provided and the number of tracked keyed rate
-        limits reaches ``settings.max_keyed_reservations``, a new key
+        limits reaches ``settings.max_keyed_rate_limits``, a new key
         raises :class:`~taskq.exceptions.ReservationUnavailable`.
 
         Capacity is normally reclaimed by the leader's 30-second sweep
@@ -492,15 +543,15 @@ class RateLimitRegistry:
         if (
             concrete_name not in self._keyed_rate_limit_last_used
             and settings is not None
-            and len(self._keyed_rate_limit_last_used) >= settings.max_keyed_reservations
+            and len(self._keyed_rate_limit_last_used) >= settings.max_keyed_rate_limits
         ):
             self.evict_idle_keyed_rate_limits(idle_for=_KEYED_IDLE_THRESHOLD)
-            if len(self._keyed_rate_limit_last_used) >= settings.max_keyed_reservations:
+            if len(self._keyed_rate_limit_last_used) >= settings.max_keyed_rate_limits:
                 logger.warning(
                     "registry-keyed-rate-limit-limit-exceeded",
                     base_name=ref.base_name,
                     current_count=len(self._keyed_rate_limit_last_used),
-                    limit=settings.max_keyed_reservations,
+                    limit=settings.max_keyed_rate_limits,
                 )
                 raise ReservationUnavailable(
                     bucket_name=ref.base_name,
@@ -512,6 +563,7 @@ class RateLimitRegistry:
                 name=concrete_name,
                 capacity=ref.capacity,
                 refill_per_second=ref.refill_per_second,
+                backend=ref.backend,
             )
             self.register(new_bucket)
             self._keyed_rate_limit_last_used[concrete_name] = monotonic()

@@ -3,7 +3,7 @@
 Tests ``KeyedRateLimitRef`` validation, ``RateLimitRegistry._resolve_rate_limit_name``
 dynamic key resolution/lazy registration, ``acquire_for_actor`` composing static and
 keyed rate limits, ``evict_idle_keyed_rate_limits``, and hardening guards (bad
-``key_fn`` outputs, key length/character validation, ``max_keyed_reservations`` cap).
+``key_fn`` outputs, key length/character validation, ``max_keyed_rate_limits`` cap).
 Mirrors the in-memory (``FakeClock``-backed ``TokenBucket``) conventions of
 ``tests/test_ratelimit_keyed_refs.py`` and ``tests/test_ratelimit_composition.py`` — no
 Redis or PG instance required, so every call passes ``redis_client=None`` and
@@ -68,7 +68,7 @@ def _hardening_settings(max_keyed: int = 10000) -> WorkerSettings:
     return WorkerSettings.load_from_dict(
         {
             "TASKQ_PG_DSN": "postgresql://x:x@localhost/x",
-            "TASKQ_MAX_KEYED_RESERVATIONS": str(max_keyed),
+            "TASKQ_MAX_KEYED_RATE_LIMITS": str(max_keyed),
         },
         validate=False,
     )
@@ -98,6 +98,20 @@ class TestKeyedRateLimitRefValidation:
         assert ref.capacity == 10.0
         assert ref.refill_per_second == 1.0
 
+    def test_backend_defaults_to_redis(self) -> None:
+        ref = _rate_limit_ref()
+        assert ref.backend == "redis"
+
+    def test_backend_can_be_set_to_memory(self) -> None:
+        ref = KeyedRateLimitRef(
+            base_name="api-per-tenant",
+            key_fn=_default_key_fn,
+            capacity=10.0,
+            refill_per_second=1.0,
+            backend="memory",
+        )
+        assert ref.backend == "memory"
+
     def test_rejects_empty_base_name(self) -> None:
         with pytest.raises(ValueError, match="base_name must not be empty"):
             _rate_limit_ref(base_name="")
@@ -119,6 +133,44 @@ class TestKeyedRateLimitRefValidation:
         own accepted range)."""
         ref = _rate_limit_ref(refill_per_second=0)
         assert ref.refill_per_second == 0
+
+
+# ── KeyedRateLimitRef backend field ──────────────────────────────
+
+
+async def test_keyed_rate_limit_ref_backend_memory_materializes_memory_token_bucket() -> None:
+    """A ``KeyedRateLimitRef`` with ``backend="memory"`` materializes a
+    ``TokenBucket`` whose ``backend`` property is ``"memory"``, not silently
+    ``"redis"`` — and the bucket can be acquired without a ``redis_client``,
+    proving it did NOT try to hit Redis."""
+    reg = RateLimitRegistry()
+    ref = KeyedRateLimitRef(
+        base_name="api-per-tenant",
+        key_fn=_default_key_fn,
+        capacity=10.0,
+        refill_per_second=1.0,
+        backend="memory",
+    )
+
+    name = await reg._resolve_rate_limit_name(  # pyright: ignore[reportPrivateUsage]
+        ref, payload={"tenant_id": "t1"}, settings=None
+    )
+
+    bucket = reg.get_rate_limit(name)
+    assert isinstance(bucket, TokenBucket)
+    assert bucket.backend == "memory"
+
+    clock = FakeClock(_START)
+    acquired = await reg.acquire_for_actor(
+        rate_limits=[ref],
+        reservations=[],
+        job_id=new_uuid(),
+        worker_id=new_uuid(),
+        payload={"tenant_id": "t1"},
+        clock=clock,
+    )
+    assert len(acquired) == 1
+    assert acquired[0].name == "api-per-tenant:t1"
 
 
 # ── _resolve_rate_limit_name: plain string passthrough ─────────
@@ -370,10 +422,10 @@ async def test_resolve_keyed_ref_key_fn_missing_dict_key_propagates_keyerror() -
         await reg._resolve_rate_limit_name(ref, payload={"unrelated": "value"}, settings=None)  # pyright: ignore[reportPrivateUsage]
 
 
-# ── max_keyed_reservations guard ───────────────────────────────
+# ── max_keyed_rate_limits guard ───────────────────────────────
 
 
-async def test_max_keyed_reservations_guard_raises_reservation_unavailable() -> None:
+async def test_max_keyed_rate_limits_guard_raises_reservation_unavailable() -> None:
     """When the number of keyed rate-limit entries reaches the limit, a new
     key raises ReservationUnavailable."""
     settings = _hardening_settings(max_keyed=2)
@@ -394,7 +446,7 @@ async def test_max_keyed_reservations_guard_raises_reservation_unavailable() -> 
         )
 
 
-async def test_max_keyed_reservations_guard_allows_reusing_existing_key() -> None:
+async def test_max_keyed_rate_limits_guard_allows_reusing_existing_key() -> None:
     """Re-resolving an already-tracked key does not trip the guard even at the limit."""
     settings = _hardening_settings(max_keyed=1)
     reg = RateLimitRegistry()
@@ -412,7 +464,7 @@ async def test_max_keyed_reservations_guard_allows_reusing_existing_key() -> Non
     assert name == "api-per-tenant:k1"
 
 
-async def test_max_keyed_reservations_guard_skipped_when_settings_none() -> None:
+async def test_max_keyed_rate_limits_guard_skipped_when_settings_none() -> None:
     """When settings is None the guardrail is not enforced (no limit known)."""
     reg = RateLimitRegistry()
     ref = _rate_limit_ref(base_name="api-per-tenant")

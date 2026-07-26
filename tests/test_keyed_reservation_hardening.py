@@ -491,3 +491,107 @@ async def test_leader_sweep_skips_eviction_when_no_keyed_reservations(
         await task
 
     mock_registry.evict_idle_keyed_reservations.assert_not_called()
+
+
+# ── K3: evict_idle_keyed_rate_limits wired into leader sweep ─────────
+
+
+async def test_leader_sweep_calls_evict_idle_keyed_rate_limits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The leader sweep loop calls ``evict_idle_keyed_rate_limits`` when
+    keyed rate limits are in use."""
+    import taskq.worker._leader_sweeps as sweeps_mod
+
+    mock_registry = MagicMock()
+    mock_registry.has_keyed_rate_limits = True
+    mock_registry.evict_idle_keyed_rate_limits.return_value = 0
+    monkeypatch.setattr(sweeps_mod, "rl_registry", mock_registry)
+
+    settings = _settings()
+    deps_data: dict[str, str] = {
+        "TASKQ_PG_DSN": "postgresql://x:x@localhost/x",
+        "TASKQ_HEARTBEAT_INTERVAL": "0.5",
+        "TASKQ_LOCK_LEASE": "2.0",
+        "TASKQ_CANCELLATION_GRACE_PERIOD": "0.0",
+        "TASKQ_CLEANUP_GRACE_PERIOD": "0.0",
+    }
+    settings = WorkerSettings.load_from_dict(deps_data, validate=False)
+
+    from taskq.worker.deps import WorkerDeps
+
+    deps = WorkerDeps(
+        settings=settings,
+        dispatcher_pool=_FakePool(),  # type: ignore[arg-type]  # Why: test double for asyncpg.Pool.
+        heartbeat_pool=_FakePool(),  # type: ignore[arg-type]
+        worker_pool=_FakePool(),  # type: ignore[arg-type]
+        notify_conn=None,
+        leader_conn=_FakeConn(),  # type: ignore[arg-type]
+    )
+    deps.is_leader.set()
+
+    clock: Clock = FakeClock(datetime(2025, 1, 1, tzinfo=UTC))
+    ctx = SweepContext(deps=deps, backend=_SimpleBackend(), clock=clock, worker_id=new_uuid())
+
+    shutdown = asyncio.Event()
+    task = asyncio.create_task(sweeps_mod._sweep_loop(ctx, shutdown))
+    for _ in range(200):
+        if mock_registry.evict_idle_keyed_rate_limits.called:
+            break
+        await asyncio.sleep(0.01)
+
+    shutdown.set()
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+    mock_registry.evict_idle_keyed_rate_limits.assert_called_once()
+    call_kwargs = mock_registry.evict_idle_keyed_rate_limits.call_args
+    assert call_kwargs.kwargs["idle_for"] == timedelta(hours=1)
+
+
+async def test_leader_sweep_skips_eviction_when_no_keyed_rate_limits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When there are no keyed rate limits, the sweep loop does not call eviction."""
+    import taskq.worker._leader_sweeps as sweeps_mod
+
+    mock_registry = MagicMock()
+    mock_registry.has_keyed_rate_limits = False
+    mock_registry.evict_idle_keyed_rate_limits.return_value = 0
+    monkeypatch.setattr(sweeps_mod, "rl_registry", mock_registry)
+
+    settings_data: dict[str, str] = {
+        "TASKQ_PG_DSN": "postgresql://x:x@localhost/x",
+        "TASKQ_HEARTBEAT_INTERVAL": "0.5",
+        "TASKQ_LOCK_LEASE": "2.0",
+        "TASKQ_CANCELLATION_GRACE_PERIOD": "0.0",
+        "TASKQ_CLEANUP_GRACE_PERIOD": "0.0",
+    }
+    settings = WorkerSettings.load_from_dict(settings_data, validate=False)
+
+    from taskq.worker.deps import WorkerDeps
+
+    deps = WorkerDeps(
+        settings=settings,
+        dispatcher_pool=_FakePool(),  # type: ignore[arg-type]
+        heartbeat_pool=_FakePool(),  # type: ignore[arg-type]
+        worker_pool=_FakePool(),  # type: ignore[arg-type]
+        notify_conn=None,
+        leader_conn=_FakeConn(),  # type: ignore[arg-type]
+    )
+    deps.is_leader.set()
+
+    clock: Clock = FakeClock(datetime(2025, 1, 1, tzinfo=UTC))
+    ctx = SweepContext(deps=deps, backend=_SimpleBackend(), clock=clock, worker_id=new_uuid())
+
+    shutdown = asyncio.Event()
+    task = asyncio.create_task(sweeps_mod._sweep_loop(ctx, shutdown))
+    await asyncio.sleep(0.05)
+
+    shutdown.set()
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+    mock_registry.evict_idle_keyed_rate_limits.assert_not_called()

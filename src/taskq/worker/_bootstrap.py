@@ -27,6 +27,9 @@ from taskq.backend.clock import Clock, SystemClock
 from taskq.backend.postgres import PostgresBackend
 from taskq.client._enqueuer import SubJobEnqueuer
 from taskq.connections import WorkerConnections
+from taskq.constants import (
+    _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex for defence-in-depth schema validation at this SQL interpolation site, per architecture.md §8 Invariant 4
+)
 from taskq.cron import (
     CronScheduleSpec,
     compute_next_fire_after,
@@ -309,7 +312,9 @@ async def _main(
         # so the heartbeat extends it in lockstep with job locks; if a
         # worker dies, both the job lock and the queue reservation slot
         # expire at roughly the same time and the recovery sweep reclaims
-        # them. register() is idempotent for identical config. sync_slots
+        # them. register_queue_cap_reservation() is idempotent for identical
+        # config (the public register() rejects names in the reserved
+        # queue-cap namespace to prevent user shadowing). sync_slots
         # (not ensure_slots) is used so that BOTH growing AND shrinking a
         # cap take effect on restart — ensure_slots is purely additive
         # (INSERT ... ON CONFLICT DO NOTHING) and could never remove
@@ -320,38 +325,44 @@ async def _main(
         from taskq.ratelimit.registry import queue_concurrency_reservation_name
         from taskq.ratelimit.reservation import ConcurrencyReservation
 
+        if not _IDENT_RE.match(settings.schema_name):
+            raise ValueError(f"invalid schema identifier: {settings.schema_name!r}")
+        # This query is as hard-required as sync_actor_config / register_worker
+        # elsewhere in this same _main function — neither of those is wrapped
+        # in a broad try/except. The only exception we catch specifically is
+        # UndefinedColumnError, which signals that migration 01.00.04 has not
+        # been applied (the queues.max_concurrent column is absent). That is
+        # a deployment mistake that must crash startup loudly, not a
+        # best-effort condition to warn about. Any other exception (connection
+        # errors, etc.) propagates and crashes startup exactly like every
+        # other hard-required startup step in this function already does —
+        # this is a deliberate consistency choice, not an oversight.
         try:
             async with deps.dispatcher_pool.acquire() as conn:
                 cap_rows = await conn.fetch(
-                    f'SELECT name, max_concurrent FROM "{settings.schema_name}".queues '  # noqa: S608  # Why: schema validated at construction; asyncpg cannot bind identifiers.
+                    f'SELECT name, max_concurrent FROM "{settings.schema_name}".queues '  # noqa: S608  # Why: schema validated at construction and re-checked above; asyncpg cannot bind identifiers.
                     f"WHERE name = ANY($1) AND max_concurrent IS NOT NULL",
                     settings.queues,
                 )
-        except Exception as exc:
-            _startup_log.warning(
-                "queue_concurrency_caps_query_failed",
-                error=str(exc),
-            )
-            cap_rows = []
+        except asyncpg.exceptions.UndefinedColumnError as exc:
+            raise RuntimeError(
+                f"queues.max_concurrent column is missing in schema "
+                f"{settings.schema_name!r} — migration "
+                f"01.00.04_01_pre_queue_concurrency.sql has not been applied. "
+                f"Apply pending migrations before starting workers."
+            ) from exc
 
         queue_cap_reservations: list[ConcurrencyReservation] = []
         for row in cap_rows:
-            try:
-                res_name = queue_concurrency_reservation_name(row["name"])
-                reservation = ConcurrencyReservation(
-                    name=res_name,
-                    slots=row["max_concurrent"],
-                    lease=timedelta(seconds=settings.lock_lease),
-                    schema=settings.schema_name,
-                )
-                rl_registry.register(reservation)
-                queue_cap_reservations.append(reservation)
-            except Exception as exc:
-                _startup_log.warning(
-                    "queue_concurrency_cap_setup_failed",
-                    queue_name=row["name"],
-                    error=str(exc),
-                )
+            res_name = queue_concurrency_reservation_name(row["name"])
+            reservation = ConcurrencyReservation(
+                name=res_name,
+                slots=row["max_concurrent"],
+                lease=timedelta(seconds=settings.lock_lease),
+                schema=settings.schema_name,
+            )
+            rl_registry.register_queue_cap_reservation(reservation)
+            queue_cap_reservations.append(reservation)
 
         if queue_cap_reservations:
             try:

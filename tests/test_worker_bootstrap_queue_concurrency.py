@@ -438,3 +438,75 @@ async def test_queue_cap_sync_slots_failure_logged_and_bootstrap_continues(
     assert "sync_slots boom" in matches[0]["error"]
 
     await _cleanup_schema_for(pg_dsn, schema)
+
+
+# ── Missing migration: bootstrap must crash, not silently continue ──
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_raises_when_max_concurrent_column_missing(pg_dsn: str) -> None:
+    """When migration ``01.00.04_01_pre_queue_concurrency.sql`` has not been
+    applied (the ``queues.max_concurrent`` column is absent), bootstrap MUST
+    raise a clear error identifying the missing migration — not silently
+    continue with no queue-cap reservation registered.
+
+    Simulates the missing column by applying all migrations then dropping
+    the ``max_concurrent`` column, which is equivalent to having stopped
+    one migration earlier.
+    """
+    schema = f"twbqc_{new_base62()}".lower()
+    await _prepare_schema_for(pg_dsn, schema)
+
+    queue_name = "orders"
+
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        await conn.execute(
+            f'INSERT INTO "{schema}".queues (name) VALUES ($1)',
+            queue_name,
+        )
+        await conn.execute(
+            f'ALTER TABLE "{schema}".queues DROP COLUMN max_concurrent',
+        )
+    finally:
+        await conn.close()
+
+    settings = _settings_for(pg_dsn, schema, queues=queue_name)
+
+    cap_name = queue_concurrency_reservation_name(queue_name)
+
+    async def _run() -> None:
+        with contextlib.suppress(asyncio.CancelledError):
+            await _main(settings)
+
+    task = asyncio.create_task(_run())
+    raised_exc: Exception | None = None
+    deadline = asyncio.get_running_loop().time() + 30.0
+    while asyncio.get_running_loop().time() < deadline:
+        if task.done():
+            exc = task.exception()
+            if exc is not None and not isinstance(exc, asyncio.CancelledError):
+                raised_exc = exc
+            break
+        await asyncio.sleep(0.05)
+
+    if not task.done():
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    try:
+        assert raised_exc is not None, (
+            "bootstrap should have raised RuntimeError about missing "
+            "queues.max_concurrent column, but did not raise"
+        )
+        assert isinstance(raised_exc, RuntimeError), (
+            f"expected RuntimeError, got {type(raised_exc).__name__}: {raised_exc}"
+        )
+        assert "max_concurrent" in str(raised_exc)
+        assert "01.00.04" in str(raised_exc)
+
+        # The queue-cap reservation must NOT have been registered.
+        assert cap_name not in rl_registry.reservations
+    finally:
+        await _cleanup_schema_for(pg_dsn, schema)

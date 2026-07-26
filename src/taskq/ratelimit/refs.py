@@ -27,6 +27,8 @@ from datetime import timedelta
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
+from taskq.backend._protocol import RateLimitBackend
+
 __all__ = ["KeyedRateLimitRef", "KeyedReservationRef", "RateLimitRef", "ReservationRef"]
 
 
@@ -118,9 +120,19 @@ class KeyedRateLimitRef(BaseModel):
     past a per-time-unit budget, so both may be needed together on the
     same actor.
 
+    **Backend selection.** The ``backend`` field (default ``"redis"``)
+    controls which storage backend the materialized
+    :class:`~taskq.ratelimit.token_bucket.TokenBucket` uses, identical to
+    the ``backend`` constructor parameter on a static ``TokenBucket``. In a
+    deployment without Redis configured, set ``backend="postgres"`` or
+    ``backend="memory"`` to avoid the Redis-required failure mode — a
+    keyed bucket with ``backend="redis"`` but no ``redis_client`` raises
+    ``RuntimeError`` on acquire (not caught by ``with_pg_fallback``, which
+    only handles ``ConnectionError``/``TimeoutError``).
+
     **PG fallback inheritance.** ``_resolve_rate_limit_name`` constructs a
     plain :class:`~taskq.ratelimit.token_bucket.TokenBucket` (with the
-    default ``backend="redis"``) and calls its normal ``.acquire()``.
+    ``backend`` from this ref, default ``"redis"``) and calls its normal ``.acquire()``.
     The existing ``with_pg_fallback`` path in
     ``token_bucket._acquire_redis_wrapped`` is therefore inherited
     automatically — on Redis ``ConnectionError``/``TimeoutError``, the
@@ -150,6 +162,7 @@ class KeyedRateLimitRef(BaseModel):
     key_fn: Callable[[dict[str, object]], str]
     capacity: float
     refill_per_second: float
+    backend: RateLimitBackend = "redis"
 
     @field_validator("base_name")
     @classmethod

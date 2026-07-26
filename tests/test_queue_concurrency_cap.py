@@ -12,17 +12,21 @@ All tests use in-memory backends (``FakeClock``-backed ``ConcurrencyReservation`
 import asyncio
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from taskq._ids import new_uuid
 from taskq.exceptions import ReservationUnavailable
 from taskq.ratelimit.registry import (
+    QUEUE_CONCURRENCY_PREFIX,
     RateLimitRegistry,
     queue_concurrency_reservation_name,
 )
 from taskq.ratelimit.reservation import ConcurrencyReservation
+from taskq.ratelimit.token_bucket import TokenBucket
 from taskq.testing.clock import FakeClock
 
 _START = datetime(2025, 1, 1, tzinfo=UTC)
-_RESERVED_PREFIX = "taskq:global:queue:"
+_RESERVED_PREFIX = QUEUE_CONCURRENCY_PREFIX
 
 
 def _reservation(
@@ -104,7 +108,9 @@ async def test_concurrent_acquires_respect_2_slot_cap_across_multiple_actors() -
     reg = RateLimitRegistry()
 
     queue_cap = queue_concurrency_reservation_name("orders")
-    reg.register(_reservation(queue_cap, slots=2, lease=timedelta(seconds=30), clock=clock))
+    reg.register_queue_cap_reservation(
+        _reservation(queue_cap, slots=2, lease=timedelta(seconds=30), clock=clock)
+    )
     # Per-actor reservations with plenty of slots — never the bottleneck.
     reg.register(_reservation("actor_a_res", slots=10, lease=timedelta(seconds=30), clock=clock))
     reg.register(_reservation("actor_b_res", slots=10, lease=timedelta(seconds=30), clock=clock))
@@ -194,7 +200,7 @@ def test_dispatch_no_queue_cap_preserves_actor_reservations() -> None:
     assert effective == actor_reservations
 
     # Register a queue-cap → it IS prepended.
-    reg.register(
+    reg.register_queue_cap_reservation(
         _reservation(queue_cap_name, slots=5, lease=timedelta(seconds=30), clock=FakeClock(_START))
     )
     effective = list(actor_reservations)
@@ -202,3 +208,68 @@ def test_dispatch_no_queue_cap_preserves_actor_reservations() -> None:
         effective.insert(0, queue_cap_name)
     assert effective[0] == queue_cap_name
     assert effective[1:] == actor_reservations
+
+
+# ── Reserved prefix protection (Fix 2) ──────────────────────────────
+
+
+def test_register_rejects_reservation_with_reserved_prefix() -> None:
+    """``register()`` rejects a user-supplied ``ConcurrencyReservation``
+    whose name starts with the reserved queue-cap prefix."""
+    reg = RateLimitRegistry()
+    cap_name = queue_concurrency_reservation_name("orders")
+    res = _reservation(cap_name, slots=2, lease=timedelta(seconds=30))
+
+    with pytest.raises(ValueError, match="reserved prefix"):
+        reg.register(res)
+
+
+def test_register_rejects_token_bucket_with_reserved_prefix() -> None:
+    """``register()`` rejects a user-supplied ``TokenBucket`` whose name
+    starts with the reserved queue-cap prefix."""
+    reg = RateLimitRegistry()
+    cap_name = queue_concurrency_reservation_name("orders")
+    tb = TokenBucket(name=cap_name, capacity=10, refill_per_second=1.0, backend="memory")
+
+    with pytest.raises(ValueError, match="reserved prefix"):
+        reg.register(tb)
+
+
+def test_register_queue_cap_reservation_succeeds_for_prefixed_name() -> None:
+    """``register_queue_cap_reservation()`` succeeds for a correctly-prefixed
+    name and registers the reservation."""
+    reg = RateLimitRegistry()
+    cap_name = queue_concurrency_reservation_name("orders")
+    res = _reservation(cap_name, slots=3, lease=timedelta(seconds=30))
+
+    reg.register_queue_cap_reservation(res)
+
+    assert cap_name in reg.reservations
+    assert reg.reservations[cap_name].slots == 3
+
+
+def test_register_queue_cap_reservation_idempotent_for_same_config() -> None:
+    """``register_queue_cap_reservation()`` is idempotent for identical config
+    — a second call with the same name and config is a no-op (no error, no
+    duplicate)."""
+    reg = RateLimitRegistry()
+    cap_name = queue_concurrency_reservation_name("orders")
+    res1 = _reservation(cap_name, slots=3, lease=timedelta(seconds=30))
+    res2 = _reservation(cap_name, slots=3, lease=timedelta(seconds=30))
+
+    reg.register_queue_cap_reservation(res1)
+    reg.register_queue_cap_reservation(res2)
+
+    assert len(reg.reservations) == 1
+    assert reg.reservations[cap_name] is res1
+
+
+def test_register_queue_cap_reservation_raises_for_unprefixed_name() -> None:
+    """``register_queue_cap_reservation()`` raises ``ValueError`` for a name
+    that does NOT start with the reserved prefix — a defensive guard against
+    internal misuse."""
+    reg = RateLimitRegistry()
+    res = _reservation("user-reservation", slots=2, lease=timedelta(seconds=30))
+
+    with pytest.raises(ValueError, match="requires a name starting with"):
+        reg.register_queue_cap_reservation(res)

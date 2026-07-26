@@ -575,11 +575,11 @@ def register(router: APIRouter) -> None:
         tmpl: Environment = Depends(get_templates),
         realtime_ctx: tuple[str, str] = Depends(get_realtime_ctx),
     ) -> HTMLResponse:
-        from taskq.ratelimit.registry import queue_concurrency_reservation_name
+        from taskq.ratelimit.registry import QUEUE_CONCURRENCY_PREFIX
         from taskq.ratelimit.registry import registry as rl_registry
         from taskq.ratelimit.reservation import sync_slots
 
-        _queue_cap_prefix = queue_concurrency_reservation_name("")
+        _queue_cap_prefix = QUEUE_CONCURRENCY_PREFIX
 
         configured_reservations: list[dict[str, object]] = []
         reservation_primitives = list(rl_registry.reservations.values())

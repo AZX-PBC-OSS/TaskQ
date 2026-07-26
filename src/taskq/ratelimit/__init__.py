@@ -19,6 +19,7 @@ from taskq.ratelimit.refs import (
     ReservationRef,
 )
 from taskq.ratelimit.registry import (
+    QUEUE_CONCURRENCY_PREFIX,
     RateLimitRegistry,
     queue_concurrency_reservation_name,
     registry,
@@ -29,6 +30,7 @@ from taskq.ratelimit.sliding_window import SlidingWindow
 from taskq.ratelimit.token_bucket import TokenBucket
 
 __all__ = [
+    "QUEUE_CONCURRENCY_PREFIX",
     "AcquiredResource",
     "ConcurrencyReservation",
     "KeyedRateLimitRef",

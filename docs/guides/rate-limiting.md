@@ -723,7 +723,10 @@ on the job row) and must return a non-empty string. `base_name` namespaces the d
 the concrete name registered for a given key is `f"{base_name}:{key}"` — so distinct
 `KeyedRateLimitRef` declarations never collide. `capacity` and `refill_per_second` apply
 identically to every key derived from a given ref; use a separate `KeyedRateLimitRef` if
-different keys need different budgets.
+different keys need different budgets. The optional `backend` field (default `"redis"`)
+controls which storage backend the materialized `TokenBucket` uses, mirroring the `backend`
+constructor parameter on a static `TokenBucket` — set `backend="postgres"` or
+`backend="memory"` in deployments without Redis configured.
 
 ### Lazy registration and reuse
 
@@ -752,7 +755,7 @@ mechanisms bound this growth:
    1 hour (`_KEYED_IDLE_THRESHOLD`).
 
 2. **Opportunistic eviction on the acquisition path.** When `_resolve_rate_limit_name` would
-   otherwise deny a new key because the `max_keyed_reservations` cap has been reached, it
+   otherwise deny a new key because the `max_keyed_rate_limits` cap has been reached, it
    first attempts an opportunistic eviction of idle entries — so hitting the cap is never
    purely an artefact of sweep timing. Only if the cap is still exceeded after the
    opportunistic eviction does the method raise `ReservationUnavailable`.
@@ -766,23 +769,26 @@ mechanisms bound this growth:
 These are three independent bounds, not one mechanism: the sweep and opportunistic eviction
 bound the Python-process-local registry dict; the Redis TTL bounds Redis memory.
 
-!!! note "`settings.max_keyed_reservations` is shared"
-    The `settings.max_keyed_reservations` field (default `10_000`) is shared between keyed
-    reservations and keyed rate limits. Each kind is tracked against its own independent
-    counter (`_keyed_reservation_last_used` vs. `_keyed_rate_limit_last_used`), but both
-    counters are compared against the same configured limit value. The field name says
-    "reservations" but it governs keyed rate limits equally — this is not obvious from the
-    name alone.
+!!! note "Independent caps for keyed reservations and keyed rate limits"
+    `settings.max_keyed_reservations` (default `10_000`) governs keyed
+    **reservations** only, and `settings.max_keyed_rate_limits` (default
+    `10_000`) governs keyed **rate limits** only. Each kind is tracked
+    against its own independent counter and cap, so a high cardinality of
+    one kind cannot starve the other.
 
 !!! note "Redis-unavailable behavior is identical to a static bucket"
     A keyed bucket is a plain `TokenBucket` under the hood — `_resolve_rate_limit_name`
-    constructs it with the default `backend="redis"` and calls its normal `.acquire()`. The
-    existing `with_pg_fallback` path in `token_bucket._acquire_redis_wrapped` (see
-    `src/taskq/ratelimit/_redis_utils.py`) is therefore inherited automatically: on Redis
-    `ConnectionError`/`TimeoutError`, the acquire falls back to the PG `rate_limit_buckets`
-    table governed by `settings.rate_limit_pg_fallback_enabled`. No second fallback mechanism
-    is built or needed — a keyed bucket behaves identically to a static bucket when Redis is
-    unavailable, with zero special-casing.
+    constructs it with the `backend` from the `KeyedRateLimitRef` (default `"redis"`) and calls
+    its normal `.acquire()`. The existing `with_pg_fallback` path in
+    `token_bucket._acquire_redis_wrapped` (see `src/taskq/ratelimit/_redis_utils.py`) is
+    therefore inherited automatically: on Redis `ConnectionError`/`TimeoutError`, the acquire
+    falls back to the PG `rate_limit_buckets` table governed by
+    `settings.rate_limit_pg_fallback_enabled`. No second fallback mechanism is built or needed —
+    a keyed bucket behaves identically to a static bucket when Redis is unavailable, with zero
+    special-casing. In a deployment without Redis configured at all, set
+    `backend="postgres"` or `backend="memory"` on the `KeyedRateLimitRef` to avoid the
+    Redis-required failure mode (a `"redis"` backend with no `redis_client` raises
+    `RuntimeError` on acquire, which is not caught by `with_pg_fallback`).
 
 ---
 
