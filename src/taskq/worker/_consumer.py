@@ -54,7 +54,7 @@ from taskq.progress._buffer import (
 from taskq.progress._flush import _flush_buffer, _flush_buffer_immediate
 from taskq.progress._publish import _publish_state_change_event
 from taskq.ratelimit.composition import AcquiredResource
-from taskq.ratelimit.refs import KeyedReservationRef
+from taskq.ratelimit.refs import KeyedRateLimitRef, KeyedReservationRef
 from taskq.ratelimit.registry import RateLimitRegistry
 from taskq.retry import (
     ActorConfigLike,
@@ -212,7 +212,7 @@ async def consume_one_job(
     loop_conn: asyncpg.Connection | None = None,
     validated_payload: BaseModel | None = None,
     rate_limit_registry: RateLimitRegistry | None = None,
-    rate_limits: list[str] | None = None,
+    rate_limits: list[str | KeyedRateLimitRef] | None = None,
     reservations: list[str | KeyedReservationRef] | None = None,
     redis_client: "redis_async.Redis | None" = None,
     worker_pool: asyncpg.Pool | None = None,

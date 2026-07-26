@@ -191,6 +191,109 @@ async def test_max_keyed_reservations_guard_skipped_when_settings_none() -> None
     assert len(reg._keyed_reservation_last_used) == 5  # pyright: ignore[reportPrivateUsage]
 
 
+# ── Opportunistic eviction on the acquisition path ──────────────────
+
+
+async def test_opportunistic_eviction_reclaims_idle_capacity_on_cap_hit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Materialising a new key at the cap succeeds when idle entries exist —
+    the acquisition path itself performs an opportunistic eviction, without
+    the caller ever calling ``evict_idle_keyed_reservations`` directly.
+
+    1. Fill the cap (3 entries) at t=1000.
+    2. Advance past the 1-hour idle threshold.
+    3. Re-stamp one key as fresh (so only 2 of 3 are stale).
+    4. Materialise a NEW key that would exceed the cap — the opportunistic
+       eviction inside ``_resolve_reservation_name`` reclaims the 2 stale
+       entries, making room.  The call succeeds and the new key is
+       registered.
+    """
+    from importlib import import_module
+
+    registry_mod = import_module("taskq.ratelimit.registry")
+
+    settings = _settings(max_keyed=3)
+    reg = RateLimitRegistry()
+    ref = _keyed_ref(base_name="session-cap")
+
+    # 1. Fill the cap at t=1000.
+    fake_time = 1000.0
+    monkeypatch.setattr(registry_mod, "monotonic", lambda: fake_time)
+    await reg._resolve_reservation_name(
+        ref, payload={"session_id": "k1"}, pg_pool=None, settings=settings
+    )  # pyright: ignore[reportPrivateUsage]
+    await reg._resolve_reservation_name(
+        ref, payload={"session_id": "k2"}, pg_pool=None, settings=settings
+    )  # pyright: ignore[reportPrivateUsage]
+    await reg._resolve_reservation_name(
+        ref, payload={"session_id": "k3"}, pg_pool=None, settings=settings
+    )  # pyright: ignore[reportPrivateUsage]
+    assert len(reg._keyed_reservation_last_used) == 3  # pyright: ignore[reportPrivateUsage]
+
+    # 2. Advance past the 1-hour idle threshold (3600 s).
+    fake_time = 5000.0
+    monkeypatch.setattr(registry_mod, "monotonic", lambda: fake_time)
+
+    # 3. Re-stamp k3 as fresh (last_used=5000) — k1 and k2 remain stale.
+    await reg._resolve_reservation_name(
+        ref, payload={"session_id": "k3"}, pg_pool=None, settings=settings
+    )  # pyright: ignore[reportPrivateUsage]
+
+    # 4. Materialise a NEW key — would exceed the cap, but opportunistic
+    #    eviction reclaims the 2 stale entries first.
+    name = await reg._resolve_reservation_name(  # pyright: ignore[reportPrivateUsage]
+        ref, payload={"session_id": "k4"}, pg_pool=None, settings=settings
+    )
+
+    assert name == "session-cap:k4"
+    assert "session-cap:k4" in reg.reservations
+    # Stale entries were evicted; k3 and k4 remain.
+    assert "session-cap:k1" not in reg.reservations
+    assert "session-cap:k2" not in reg.reservations
+    assert "session-cap:k3" in reg.reservations
+
+
+async def test_cap_hit_with_nothing_idle_still_raises_reservation_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When all entries are recently used (nothing stale to reclaim), the
+    opportunistic eviction has no effect and the cap hit still raises
+    ``ReservationUnavailable`` — the denial is a genuine
+    sustained-high-cardinality condition, not an artefact of sweep timing.
+    """
+    from importlib import import_module
+
+    registry_mod = import_module("taskq.ratelimit.registry")
+
+    settings = _settings(max_keyed=2)
+    reg = RateLimitRegistry()
+    ref = _keyed_ref(base_name="session-cap")
+
+    # Materialise 2 keys — all at the same recent time, nothing idle.
+    fake_time = 1000.0
+    monkeypatch.setattr(registry_mod, "monotonic", lambda: fake_time)
+    await reg._resolve_reservation_name(
+        ref, payload={"session_id": "k1"}, pg_pool=None, settings=settings
+    )  # pyright: ignore[reportPrivateUsage]
+    await reg._resolve_reservation_name(
+        ref, payload={"session_id": "k2"}, pg_pool=None, settings=settings
+    )  # pyright: ignore[reportPrivateUsage]
+    assert len(reg._keyed_reservation_last_used) == 2  # pyright: ignore[reportPrivateUsage]
+
+    # A third key at the same time — nothing is idle, so opportunistic
+    # eviction reclaims 0 entries and the cap hit is genuine.
+    with pytest.raises(ReservationUnavailable):
+        await reg._resolve_reservation_name(  # pyright: ignore[reportPrivateUsage]
+            ref, payload={"session_id": "k3"}, pg_pool=None, settings=settings
+        )
+
+    # Registry is unchanged — no eviction occurred.
+    assert len(reg._keyed_reservation_last_used) == 2  # pyright: ignore[reportPrivateUsage]
+    assert "session-cap:k1" in reg.reservations
+    assert "session-cap:k2" in reg.reservations
+
+
 # ── K2: Race condition between eviction and lazy registration ─────────
 
 

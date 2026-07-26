@@ -299,6 +299,54 @@ async def _main(
                         error=str(exc),
                     )
 
+        # Fleet-wide per-queue concurrency caps (DB-driven): query the
+        # queues table for queues this worker consumes that have a
+        # max_concurrent set, register a ConcurrencyReservation for each,
+        # and ensure their slot rows exist. The DB is the single source
+        # of truth — read at worker startup, avoiding configuration drift
+        # across a fleet of workers during rolling deploys (the footgun
+        # the settings-based design had). The lease is set to lock_lease
+        # so the heartbeat extends it in lockstep with job locks; if a
+        # worker dies, both the job lock and the queue reservation slot
+        # expire at roughly the same time and the recovery sweep reclaims
+        # them. register() is idempotent for identical config and
+        # ensure_slots uses ON CONFLICT DO NOTHING, so this is safe
+        # across concurrently-booting workers sharing the schema.
+        from taskq.ratelimit.registry import queue_concurrency_reservation_name
+        from taskq.ratelimit.reservation import ConcurrencyReservation
+
+        try:
+            async with deps.dispatcher_pool.acquire() as conn:
+                cap_rows = await conn.fetch(
+                    f'SELECT name, max_concurrent FROM "{settings.schema_name}".queues '  # noqa: S608  # Why: schema validated at construction; asyncpg cannot bind identifiers.
+                    f"WHERE name = ANY($1) AND max_concurrent IS NOT NULL",
+                    settings.queues,
+                )
+        except Exception as exc:
+            _startup_log.warning(
+                "queue_concurrency_caps_query_failed",
+                error=str(exc),
+            )
+            cap_rows = []
+
+        for row in cap_rows:
+            try:
+                res_name = queue_concurrency_reservation_name(row["name"])
+                reservation = ConcurrencyReservation(
+                    name=res_name,
+                    slots=row["max_concurrent"],
+                    lease=timedelta(seconds=settings.lock_lease),
+                    schema=settings.schema_name,
+                )
+                rl_registry.register(reservation)
+                await reservation.ensure_slots(deps.dispatcher_pool)
+            except Exception as exc:
+                _startup_log.warning(
+                    "queue_concurrency_cap_setup_failed",
+                    queue_name=row["name"],
+                    error=str(exc),
+                )
+
         if _cron_registry:
             for spec in _cron_registry:
                 next_fires = compute_next_fire_after(

@@ -12,8 +12,18 @@ from taskq.ratelimit.composition import (
     ReservationHandle,
 )
 from taskq.ratelimit.decision import RateLimitDecision, RateLimitState
-from taskq.ratelimit.refs import KeyedReservationRef, RateLimitRef, ReservationRef
-from taskq.ratelimit.registry import RateLimitRegistry, registry, sync_rate_limit_buckets
+from taskq.ratelimit.refs import (
+    KeyedRateLimitRef,
+    KeyedReservationRef,
+    RateLimitRef,
+    ReservationRef,
+)
+from taskq.ratelimit.registry import (
+    RateLimitRegistry,
+    queue_concurrency_reservation_name,
+    registry,
+    sync_rate_limit_buckets,
+)
 from taskq.ratelimit.reservation import ConcurrencyReservation, SyncResult, sync_slots
 from taskq.ratelimit.sliding_window import SlidingWindow
 from taskq.ratelimit.token_bucket import TokenBucket
@@ -21,6 +31,7 @@ from taskq.ratelimit.token_bucket import TokenBucket
 __all__ = [
     "AcquiredResource",
     "ConcurrencyReservation",
+    "KeyedRateLimitRef",
     "KeyedReservationRef",
     "RateLimitBackend",
     "RateLimitDecision",
@@ -34,6 +45,7 @@ __all__ = [
     "SyncResult",
     "TokenBucket",
     "get_redis_pool",
+    "queue_concurrency_reservation_name",
     "register_rate_limit_registry",
     "register_redis_pool",
     "registry",

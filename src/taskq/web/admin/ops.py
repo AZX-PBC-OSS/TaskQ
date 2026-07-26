@@ -575,8 +575,11 @@ def register(router: APIRouter) -> None:
         tmpl: Environment = Depends(get_templates),
         realtime_ctx: tuple[str, str] = Depends(get_realtime_ctx),
     ) -> HTMLResponse:
+        from taskq.ratelimit.registry import queue_concurrency_reservation_name
         from taskq.ratelimit.registry import registry as rl_registry
         from taskq.ratelimit.reservation import sync_slots
+
+        _queue_cap_prefix = queue_concurrency_reservation_name("")
 
         configured_reservations: list[dict[str, object]] = []
         reservation_primitives = list(rl_registry.reservations.values())
@@ -587,6 +590,7 @@ def register(router: APIRouter) -> None:
                     "bucket_name": name,
                     "configured_slots": prim.slots,
                     "lease": str(prim.lease),
+                    "is_queue_cap": name.startswith(_queue_cap_prefix),
                 }
             )
 
@@ -642,6 +646,7 @@ def register(router: APIRouter) -> None:
                         "held_count": pg_row.get("held_count", 0),
                         "free_count": pg_row.get("free_count", 0),
                         "total_slots": pg_row.get("total_slots", 0),
+                        "is_queue_cap": name.startswith(_queue_cap_prefix),
                     }
                 )
 

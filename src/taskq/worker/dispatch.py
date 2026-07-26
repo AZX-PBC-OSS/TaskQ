@@ -39,7 +39,7 @@ from taskq.obs import (
     record_process_duration,
     safe_start_span,
 )
-from taskq.ratelimit.registry import RateLimitRegistry
+from taskq.ratelimit.registry import RateLimitRegistry, queue_concurrency_reservation_name
 from taskq.retry import ActorConfigLike
 from taskq.worker._consumer import consume_one_job
 from taskq.worker._handlers import (
@@ -225,6 +225,20 @@ async def dispatch_one_job(
                     except ImportError:
                         pass
 
+                    # Fleet-wide per-queue concurrency cap: if the job's
+                    # queue has a fleet-wide cap registered (set via the
+                    # max_concurrent column on the queues table, read at
+                    # worker startup), prepend its reservation name to the
+                    # actor-declared reservations so acquire_for_actor
+                    # acquires a slot before the actor runs. This caps
+                    # total concurrent jobs for this queue across all
+                    # workers, not just this one.
+                    effective_reservations = list(actor_ref.reservations)
+                    if rl_registry is not None:
+                        queue_cap_name = queue_concurrency_reservation_name(job.queue)
+                        if queue_cap_name in rl_registry.reservations:
+                            effective_reservations.insert(0, queue_cap_name)
+
                     result = await consume_one_job(
                         backend,
                         job,
@@ -242,7 +256,7 @@ async def dispatch_one_job(
                         validated_payload=validated_payload,
                         rate_limit_registry=rl_registry,
                         rate_limits=actor_ref.rate_limits,
-                        reservations=actor_ref.reservations,
+                        reservations=effective_reservations,
                         redis_client=redis_client,
                         worker_pool=deps.worker_pool,
                         settings=deps.settings,

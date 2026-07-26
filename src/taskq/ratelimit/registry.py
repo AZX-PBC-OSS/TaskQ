@@ -10,7 +10,29 @@ reservations first in declaration order, then
 rate limits in declaration order; rollback on failure in reverse acquisition
 order; best-effort release with per-handle error catching; post-actor release
 where reservation slots are released but rate-limit tokens are consumed
-permanently.
+permanently. Both ``reservations`` and ``rate_limits`` entries may be plain
+names (statically pre-registered) or :class:`KeyedReservationRef` /
+:class:`KeyedRateLimitRef` instances that lazily materialize a per-key
+primitive from the job payload on first acquisition; registry growth from
+high key cardinality is bounded by the leader-sweep eviction methods.
+
+Every worker process unconditionally participates in leader election
+(see ``src/taskq/worker/_bootstrap.py`` — ``MaintenanceLeader`` is
+started inside the main ``TaskGroup`` without any settings flag), so the
+30-second sweep that calls ``evict_idle_keyed_reservations`` /
+``evict_idle_keyed_rate_limits`` always eventually runs in any topology
+that is capable of materializing keyed primitives in the first place
+(keyed materialisation only happens from a worker's job-dispatch path,
+and that worker — or a peer — always wins leader election within the
+documented failover SLA).  This is not a silent-forever-leak bug.
+
+As a defence-in-depth measure, the acquisition path
+(``_resolve_reservation_name`` / ``_resolve_rate_limit_name``) also
+performs an *opportunistic* eviction when the keyed-entry cap would
+otherwise be hit — so reclaiming idle capacity never depends solely on
+sweep timing.  A cap hit after opportunistic eviction is a genuine
+sustained-high-cardinality denial, not an artefact of when the sweep
+last ran.
 
 Over-acquisition window on rollback failure:
 
@@ -25,6 +47,7 @@ Over-acquisition window on rollback failure:
 import re
 from collections.abc import AsyncGenerator, Sequence
 from contextlib import asynccontextmanager
+from datetime import timedelta
 from time import monotonic
 from typing import TYPE_CHECKING
 
@@ -42,13 +65,12 @@ from taskq.ratelimit.composition import (
     ReservationHandle,
 )
 from taskq.ratelimit.decision import RateLimitDecision, RateLimitState
-from taskq.ratelimit.refs import KeyedReservationRef
+from taskq.ratelimit.refs import KeyedRateLimitRef, KeyedReservationRef
 from taskq.ratelimit.reservation import ConcurrencyReservation
 from taskq.ratelimit.sliding_window import SlidingWindow
 from taskq.ratelimit.token_bucket import TokenBucket
 
 if TYPE_CHECKING:
-    from datetime import timedelta
     from uuid import UUID
 
     import asyncpg
@@ -59,10 +81,39 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger("taskq.ratelimit.registry")
 
-__all__ = ["RateLimitRegistry", "registry", "sync_rate_limit_buckets"]
+__all__ = [
+    "RateLimitRegistry",
+    "queue_concurrency_reservation_name",
+    "registry",
+    "sync_rate_limit_buckets",
+]
 
-_MAX_KEYED_RESERVATION_KEY_LEN = 255
-_KEYED_RESERVATION_KEY_RE = re.compile(r"^[A-Za-z0-9_\-:.]+$")
+_MAX_KEYED_KEY_LEN = 255
+_KEYED_KEY_RE = re.compile(r"^[A-Za-z0-9_\-:.]+$")
+
+_KEYED_IDLE_THRESHOLD = timedelta(hours=1)
+"""Idle duration before a keyed entry is eligible for eviction.
+
+Used both by the leader sweep (``_leader_sweeps.py``) and by the
+opportunistic eviction on the acquisition path in
+:meth:`~RateLimitRegistry._resolve_reservation_name` /
+:meth:`~RateLimitRegistry._resolve_rate_limit_name`. Centralised here so
+the two paths never drift apart.
+"""
+
+
+def queue_concurrency_reservation_name(queue: str) -> str:
+    """Return the registry name for the fleet-wide concurrency cap of *queue*.
+
+    The ``taskq:global:queue:`` prefix namespaces these internally-generated
+    reservations apart from user-declared ones.  A reservation only exists
+    in the registry for a queue if that queue's ``max_concurrent`` column
+    was set in the ``queues`` table (read from Postgres at worker startup);
+    there is no other config source. All workers sharing the schema
+    register and acquire against the same PG ``reservation_slots`` rows,
+    giving a true fleet-wide cap per queue.
+    """
+    return f"taskq:global:queue:{queue}"
 
 
 def _same_config(
@@ -118,6 +169,12 @@ class RateLimitRegistry:
         # evict_idle_keyed_reservations() to bound registry growth under
         # high key cardinality. Never consulted by acquire_for_actor.
         self._keyed_reservation_last_used: dict[str, float] = {}
+        # Names of rate limits materialized from a KeyedRateLimitRef
+        # (as opposed to a static @actor(rate_limits=["name"]) entry),
+        # and the monotonic time each was last acquired — used only by
+        # evict_idle_keyed_rate_limits() to bound registry growth under
+        # high key cardinality. Never consulted by acquire_for_actor.
+        self._keyed_rate_limit_last_used: dict[str, float] = {}
 
     @property
     def rate_limits(self) -> dict[str, TokenBucket | SlidingWindow]:
@@ -130,6 +187,10 @@ class RateLimitRegistry:
     @property
     def has_keyed_reservations(self) -> bool:
         return bool(self._keyed_reservation_last_used)
+
+    @property
+    def has_keyed_rate_limits(self) -> bool:
+        return bool(self._keyed_rate_limit_last_used)
 
     def register(
         self,
@@ -248,13 +309,22 @@ class RateLimitRegistry:
         ref always produces since ``slots``/``lease`` are fixed on the ref).
 
         The ``key_fn`` return value is validated: it must be non-empty, at
-        most ``_MAX_KEYED_RESERVATION_KEY_LEN`` characters, and match
-        ``_KEYED_RESERVATION_KEY_RE`` (alphanumeric plus ``_ - : .``) — this
+        most ``_MAX_KEYED_KEY_LEN`` characters, and match
+        ``_KEYED_KEY_RE`` (alphanumeric plus ``_ - : .``) — this
         prevents control characters in PG text columns and bounds storage
         growth from attacker-controlled keys. When ``settings`` is provided
         and the number of tracked keyed reservations reaches
         ``settings.max_keyed_reservations``, a new key raises
         :class:`~taskq.exceptions.ReservationUnavailable`.
+
+        Capacity is normally reclaimed by the leader's 30-second sweep
+        (``evict_idle_keyed_reservations``).  However, an acquisition that
+        would otherwise be denied purely because idle entries haven't been
+        swept yet gets one *opportunistic* eviction attempt first — so
+        hitting the cap is never purely an artefact of sweep timing, only a
+        genuine sustained-high-cardinality condition.  Only if the cap is
+        still exceeded after the opportunistic eviction does the method
+        raise :class:`~taskq.exceptions.ReservationUnavailable`.
 
         The reservation is built with ``schema=settings.schema_name`` (not
         the ``ConcurrencyReservation`` default) so it targets the same
@@ -287,13 +357,13 @@ class RateLimitRegistry:
                 f"KeyedReservationRef(base_name={ref.base_name!r}).key_fn returned "
                 f"an empty key for payload {payload!r}"
             )
-        if len(key) > _MAX_KEYED_RESERVATION_KEY_LEN:
+        if len(key) > _MAX_KEYED_KEY_LEN:
             raise ValueError(
                 f"KeyedReservationRef(base_name={ref.base_name!r}).key_fn returned "
                 f"a key of length {len(key)} which exceeds the maximum of "
-                f"{_MAX_KEYED_RESERVATION_KEY_LEN} characters"
+                f"{_MAX_KEYED_KEY_LEN} characters"
             )
-        if not _KEYED_RESERVATION_KEY_RE.match(key):
+        if not _KEYED_KEY_RE.match(key):
             raise ValueError(
                 f"KeyedReservationRef(base_name={ref.base_name!r}).key_fn returned "
                 f"key {key!r} which contains characters outside the allowed set "
@@ -305,17 +375,19 @@ class RateLimitRegistry:
             and settings is not None
             and len(self._keyed_reservation_last_used) >= settings.max_keyed_reservations
         ):
-            logger.warning(
-                "registry-keyed-reservation-limit-exceeded",
-                base_name=ref.base_name,
-                current_count=len(self._keyed_reservation_last_used),
-                limit=settings.max_keyed_reservations,
-            )
-            raise ReservationUnavailable(
-                bucket_name=ref.base_name,
-                retry_after=DEFAULT_RESERVATION_BACKOFF,
-                source="reservation",
-            )
+            self.evict_idle_keyed_reservations(idle_for=_KEYED_IDLE_THRESHOLD)
+            if len(self._keyed_reservation_last_used) >= settings.max_keyed_reservations:
+                logger.warning(
+                    "registry-keyed-reservation-limit-exceeded",
+                    base_name=ref.base_name,
+                    current_count=len(self._keyed_reservation_last_used),
+                    limit=settings.max_keyed_reservations,
+                )
+                raise ReservationUnavailable(
+                    bucket_name=ref.base_name,
+                    retry_after=DEFAULT_RESERVATION_BACKOFF,
+                    source="reservation",
+                )
         if concrete_name not in self._reservations:
             schema = settings.schema_name if settings is not None else "taskq"
             new_reservation = ConcurrencyReservation(
@@ -330,9 +402,113 @@ class RateLimitRegistry:
         self._keyed_reservation_last_used[concrete_name] = monotonic()
         return concrete_name
 
+    async def _resolve_rate_limit_name(
+        self,
+        ref: "str | KeyedRateLimitRef",
+        payload: dict[str, object] | None,
+        *,
+        settings: "WorkerSettings | None",
+    ) -> str:
+        """Return the concrete registry name for *ref*.
+
+        Mirrors :meth:`_resolve_reservation_name` for rate limits. A plain
+        ``str`` is returned as-is (must already be registered via
+        :meth:`register`). A :class:`KeyedRateLimitRef` derives
+        ``f"{ref.base_name}:{key}"`` by calling ``ref.key_fn(payload)`` and
+        lazily registers a matching :class:`TokenBucket` on first use —
+        subsequent calls for the same key reuse it (``register`` is
+        idempotent for identical config, which every call for a given ref
+        always produces since ``capacity``/``refill_per_second`` are fixed
+        on the ref).
+
+        The ``key_fn`` return value is validated with the same rules as
+        keyed reservations: it must be a ``str``, non-empty, at most
+        ``_MAX_KEYED_KEY_LEN`` characters, and match
+        ``_KEYED_KEY_RE`` (alphanumeric plus ``_ - : .``). A
+        ``key_fn`` that returns ``None`` or any non-``str`` value is treated
+        as an invalid key and raises ``ValueError`` — a broken ``key_fn``
+        can never silently resolve to a shared/global bucket. When
+        ``settings`` is provided and the number of tracked keyed rate
+        limits reaches ``settings.max_keyed_reservations``, a new key
+        raises :class:`~taskq.exceptions.ReservationUnavailable`.
+
+        Capacity is normally reclaimed by the leader's 30-second sweep
+        (``evict_idle_keyed_rate_limits``).  However, an acquisition that
+        would otherwise be denied purely because idle entries haven't been
+        swept yet gets one *opportunistic* eviction attempt first — so
+        hitting the cap is never purely an artefact of sweep timing, only a
+        genuine sustained-high-cardinality condition.  Only if the cap is
+        still exceeded after the opportunistic eviction does the method
+        raise :class:`~taskq.exceptions.ReservationUnavailable`.
+
+        Unlike reservations there is no PG slot pre-allocation step — a
+        :class:`TokenBucket` is immediately usable after ``register()``
+        (there is no ``ensure_slots`` equivalent). Note that when the
+        underlying ``TokenBucket`` uses the Redis backend, per-key Redis
+        memory is already self-bounding via the Lua script's ``EXPIRE`` TTL
+        on the bucket's hash; :meth:`evict_idle_keyed_rate_limits` only
+        bounds this Python-process-local registry dict, not Redis itself.
+        These are two independent growth bounds.
+        """
+        if isinstance(ref, str):
+            return ref
+
+        if payload is None:
+            raise ValueError(
+                f"rate limit {ref.base_name!r} is a KeyedRateLimitRef but no "
+                "payload was provided to derive its key from"
+            )
+        key = ref.key_fn(payload)
+        if type(key) is not str or not key:
+            raise ValueError(
+                f"KeyedRateLimitRef(base_name={ref.base_name!r}).key_fn returned "
+                f"an empty or non-string key for payload {payload!r}"
+            )
+        if len(key) > _MAX_KEYED_KEY_LEN:
+            raise ValueError(
+                f"KeyedRateLimitRef(base_name={ref.base_name!r}).key_fn returned "
+                f"a key of length {len(key)} which exceeds the maximum of "
+                f"{_MAX_KEYED_KEY_LEN} characters"
+            )
+        if not _KEYED_KEY_RE.match(key):
+            raise ValueError(
+                f"KeyedRateLimitRef(base_name={ref.base_name!r}).key_fn returned "
+                f"key {key!r} which contains characters outside the allowed set "
+                f"[A-Za-z0-9_\\-:.]"
+            )
+        concrete_name = f"{ref.base_name}:{key}"
+        if (
+            concrete_name not in self._keyed_rate_limit_last_used
+            and settings is not None
+            and len(self._keyed_rate_limit_last_used) >= settings.max_keyed_reservations
+        ):
+            self.evict_idle_keyed_rate_limits(idle_for=_KEYED_IDLE_THRESHOLD)
+            if len(self._keyed_rate_limit_last_used) >= settings.max_keyed_reservations:
+                logger.warning(
+                    "registry-keyed-rate-limit-limit-exceeded",
+                    base_name=ref.base_name,
+                    current_count=len(self._keyed_rate_limit_last_used),
+                    limit=settings.max_keyed_reservations,
+                )
+                raise ReservationUnavailable(
+                    bucket_name=ref.base_name,
+                    retry_after=DEFAULT_RESERVATION_BACKOFF,
+                    source="rate_limit",
+                )
+        if concrete_name not in self._rate_limits:
+            new_bucket = TokenBucket(
+                name=concrete_name,
+                capacity=ref.capacity,
+                refill_per_second=ref.refill_per_second,
+            )
+            self.register(new_bucket)
+            self._keyed_rate_limit_last_used[concrete_name] = monotonic()
+        self._keyed_rate_limit_last_used[concrete_name] = monotonic()
+        return concrete_name
+
     async def acquire_for_actor(
         self,
-        rate_limits: list[str],
+        rate_limits: Sequence["str | KeyedRateLimitRef"],
         reservations: Sequence["str | KeyedReservationRef"],
         *,
         job_id: "UUID",
@@ -348,8 +524,11 @@ class RateLimitRegistry:
         ``reservations`` entries may be plain names (resolved against
         statically pre-registered primitives) or :class:`KeyedReservationRef`
         instances (resolved dynamically per job from ``payload`` — see
-        :meth:`_resolve_reservation_name`). ``payload`` is required if any
-        entry is a ``KeyedReservationRef``.
+        :meth:`_resolve_reservation_name`). ``rate_limits`` entries may
+        likewise be plain names or :class:`KeyedRateLimitRef` instances
+        (resolved dynamically via :meth:`_resolve_rate_limit_name`).
+        ``payload`` is required if any entry is a ``KeyedReservationRef``
+        or ``KeyedRateLimitRef``.
 
         Returns the list of ``AcquiredResource`` handles on full success.
         Raises ``ReservationUnavailable`` on any denial — rollback is performed
@@ -379,7 +558,8 @@ class RateLimitRegistry:
                     )
                 )
 
-            for rl_name in rate_limits:
+            for rl_ref in rate_limits:
+                rl_name = await self._resolve_rate_limit_name(rl_ref, payload, settings=settings)
                 rl = self._rate_limits[rl_name]
                 if isinstance(rl, TokenBucket):
                     result = await rl.acquire(
@@ -628,6 +808,42 @@ class RateLimitRegistry:
             del self._keyed_reservation_last_used[name]
         if stale:
             logger.debug("registry-evicted-idle-keyed-reservations", count=len(stale))
+        return len(stale)
+
+    def evict_idle_keyed_rate_limits(self, idle_for: "timedelta") -> int:
+        """Drop registry entries for keyed rate limits idle at least ``idle_for``.
+
+        Rate limits derived from a :class:`KeyedRateLimitRef` are registered
+        lazily and never removed automatically — under high key cardinality
+        (e.g. one token bucket per tenant over a long worker lifetime) this
+        dict grows without bound. The leader sweep calls this automatically
+        with a 1-hour idle threshold; call directly for custom eviction
+        windows.
+
+        Only removes the in-memory registry entry and its acquire-recency
+        tracking — it does NOT touch the underlying Redis hash for that
+        bucket; per-key Redis memory is already self-bounding via the Lua
+        script's ``EXPIRE`` TTL on the bucket's hash (see
+        :meth:`_resolve_rate_limit_name`). A key that is acquired again
+        after eviction is simply re-registered on next use (idempotent — see
+        :meth:`_resolve_rate_limit_name`), so eviction is always safe to
+        call, including concurrently with in-flight acquisitions for other
+        keys. Token buckets are not automatically removed from Redis; their
+        independent TTL handles that side.
+
+        Returns the number of entries evicted.
+        """
+        cutoff = monotonic() - idle_for.total_seconds()
+        stale = [
+            name
+            for name, last_used in self._keyed_rate_limit_last_used.items()
+            if last_used < cutoff
+        ]
+        for name in stale:
+            self._rate_limits.pop(name, None)
+            del self._keyed_rate_limit_last_used[name]
+        if stale:
+            logger.debug("registry-evicted-idle-keyed-rate-limits", count=len(stale))
         return len(stale)
 
 

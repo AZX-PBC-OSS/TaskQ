@@ -26,7 +26,12 @@ from taskq.obs import (
     update_queue_depth_cache,
     update_reservation_slots_cache,
 )
-from taskq.ratelimit.registry import registry as rl_registry
+from taskq.ratelimit.registry import (
+    _KEYED_IDLE_THRESHOLD,  # pyright: ignore[reportPrivateUsage]  # Why: shared constant — centralised in registry.py so the sweep and the opportunistic eviction path never drift.
+)
+from taskq.ratelimit.registry import (
+    registry as rl_registry,
+)
 from taskq.worker._leader_shared import (
     _EK2,
     _EK3,
@@ -181,7 +186,9 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                     )
             if rl_registry.has_keyed_reservations:
                 try:
-                    evicted = rl_registry.evict_idle_keyed_reservations(idle_for=timedelta(hours=1))
+                    evicted = rl_registry.evict_idle_keyed_reservations(
+                        idle_for=_KEYED_IDLE_THRESHOLD
+                    )
                     if evicted:
                         log.debug(
                             "sweep-evicted-idle-keyed-reservations",
@@ -192,6 +199,24 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                     log.warning(
                         "sweep-evict-idle-keyed-reservations-failed",
                         kind="evict_idle_keyed_reservations_failed",
+                        worker_id=str(ctx.worker_id),
+                        error=repr(exc),
+                    )
+            if rl_registry.has_keyed_rate_limits:
+                try:
+                    evicted = rl_registry.evict_idle_keyed_rate_limits(
+                        idle_for=_KEYED_IDLE_THRESHOLD
+                    )
+                    if evicted:
+                        log.debug(
+                            "sweep-evicted-idle-keyed-rate-limits",
+                            kind="evict_idle_keyed_rate_limits",
+                            count=evicted,
+                        )
+                except Exception as exc:
+                    log.warning(
+                        "sweep-evict-idle-keyed-rate-limits-failed",
+                        kind="evict_idle_keyed_rate_limits_failed",
                         worker_id=str(ctx.worker_id),
                         error=repr(exc),
                     )

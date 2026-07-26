@@ -297,6 +297,9 @@ ignore = [
 # Same rationale — schema name is a worker-scoped constant derived from
 # PYTEST_XDIST_WORKER; all user-supplied values use $N parameter binding.
 "tests/test_worker_bootstrap.py" = ["S608"]
+# Same rationale — schema name validated against _IDENT_RE; all user-supplied
+# values use $N parameter binding.
+"tests/test_worker_bootstrap_queue_concurrency.py" = ["S608"]
 # ASYNC109: fake_connect mirrors asyncpg.connect(timeout=...) signature; the
 # `timeout` parameter is part of the mocked API surface, not a missing timeout
 # context-manager pattern.

@@ -13,6 +13,13 @@ declares ``reservations=["geocode-global", KeyedReservationRef(base_name="geocod
 to cap total concurrent geocode calls globally *and* per import session,
 with each session's cap materializing as its own
 :class:`~taskq.ratelimit.reservation.ConcurrencyReservation` on first use.
+
+``KeyedRateLimitRef`` mirrors ``KeyedReservationRef`` for token buckets:
+instead of a single fixed rate-limit name, it derives a per-key
+:class:`~taskq.ratelimit.token_bucket.TokenBucket` from the payload — e.g.
+an actor declares ``rate_limits=[KeyedRateLimitRef(base_name="api-per-tenant", key_fn=lambda p: p["tenant_id"], capacity=10, refill_per_second=1.0)]``
+to give each tenant its own independent token budget, with each tenant's
+bucket materializing on first use.
 """
 
 from collections.abc import Callable
@@ -20,7 +27,7 @@ from datetime import timedelta
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
-__all__ = ["KeyedReservationRef", "RateLimitRef", "ReservationRef"]
+__all__ = ["KeyedRateLimitRef", "KeyedReservationRef", "RateLimitRef", "ReservationRef"]
 
 
 class RateLimitRef(BaseModel):
@@ -84,4 +91,83 @@ class KeyedReservationRef(BaseModel):
     def _validate_lease(cls, v: timedelta) -> timedelta:
         if v <= timedelta(0):
             raise ValueError(f"lease must be > 0, got {v!r}")
+        return v
+
+
+class KeyedRateLimitRef(BaseModel):
+    """Reference to a per-key token bucket, derived from the payload.
+
+    Mirrors :class:`KeyedReservationRef` but for rate limits: ``base_name``
+    namespaces the derived buckets (concrete name is ``f"{base_name}:{key}"``),
+    ``key_fn`` derives the key from the actor's validated payload, and
+    ``capacity`` / ``refill_per_second`` configure every bucket derived
+    from this ref identically (all keys share the same per-key budget).
+
+    A consumer calling an external API with per-tenant rate limits would
+    declare ``rate_limits=[KeyedRateLimitRef(base_name="api-per-tenant",
+    key_fn=lambda p: p["tenant_id"], capacity=10, refill_per_second=1.0)]``
+    to give each tenant its own independent token budget, with each
+    tenant's bucket materializing on first use.
+
+    **Concurrency caps vs. rate limits.** A concurrency limiter (how many
+    jobs at once, e.g. :class:`KeyedReservationRef` /
+    :class:`~taskq.ratelimit.reservation.ConcurrencyReservation`) and a
+    rate limiter (how many per unit time, e.g.
+    :class:`~taskq.ratelimit.token_bucket.TokenBucket`) solve different
+    problems: N concurrent slots with fast responses can still burst well
+    past a per-time-unit budget, so both may be needed together on the
+    same actor.
+
+    **PG fallback inheritance.** ``_resolve_rate_limit_name`` constructs a
+    plain :class:`~taskq.ratelimit.token_bucket.TokenBucket` (with the
+    default ``backend="redis"``) and calls its normal ``.acquire()``.
+    The existing ``with_pg_fallback`` path in
+    ``token_bucket._acquire_redis_wrapped`` is therefore inherited
+    automatically — on Redis ``ConnectionError``/``TimeoutError``, the
+    acquire falls back to the PG ``rate_limit_buckets`` table governed by
+    ``settings.rate_limit_pg_fallback_enabled``. No second fallback
+    mechanism is built or needed.
+
+    **Dual growth bounds.** Per-key Redis memory is self-bounding because
+    the token-bucket Lua script sets an ``EXPIRE`` TTL on each bucket's
+    Redis hash (computed from ``capacity``/``refill_per_second``). The
+    Python-process-local dict/registry growth is bounded separately by
+    :meth:`~taskq.ratelimit.registry.RateLimitRegistry.evict_idle_keyed_rate_limits`,
+    which evicts idle entries from the in-memory registry. These are two
+    independent bounds — Redis TTL bounds Redis memory; registry eviction
+    bounds Python memory.
+
+    Concrete per-key :class:`~taskq.ratelimit.token_bucket.TokenBucket`
+    instances are registered lazily on first acquisition and are not
+    automatically removed — see
+    :meth:`~taskq.ratelimit.registry.RateLimitRegistry.evict_idle_keyed_rate_limits`
+    for bounding registry growth under high key cardinality.
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    base_name: str
+    key_fn: Callable[[dict[str, object]], str]
+    capacity: float
+    refill_per_second: float
+
+    @field_validator("base_name")
+    @classmethod
+    def _validate_base_name(cls, v: str) -> str:
+        if not v:
+            raise ValueError("base_name must not be empty")
+        return v
+
+    @field_validator("capacity")
+    @classmethod
+    def _validate_capacity(cls, v: float) -> float:
+        if v <= 0:
+            raise ValueError(f"capacity must be > 0, got {v}")
+        return v
+
+    @field_validator("refill_per_second")
+    @classmethod
+    def _validate_refill_per_second(cls, v: float) -> float:
+        if v < 0:
+            raise ValueError(f"refill_per_second must be >= 0, got {v}")
         return v
