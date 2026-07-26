@@ -11,6 +11,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 import pytest
+import pytest_asyncio
 
 from taskq._ids import new_job_id, new_uuid
 from taskq.backend import (
@@ -21,7 +22,8 @@ from taskq.backend import (
     JobFilter,
     JobRow,
 )
-from taskq.backend._protocol import ErrorInfo, EventRow, IdentityKey, JobId
+from taskq.backend._protocol import ErrorInfo, EventRow, IdentityKey, JobId, JobStatus
+from taskq.backend.statemachine import ACTIVE_STATUSES, TERMINAL_STATUSES
 from taskq.testing.in_memory import InMemoryBackend, encode_cursor
 
 # The harness exercises PG via backend_pair; PG branch must be opt-in.
@@ -1591,3 +1593,135 @@ async def test_indefinite_tier_fail_retry_succeed(backend_pair: Backend) -> None
     assert row is not None
     assert row.status == "succeeded"
     assert row.attempt == 2
+
+
+# ── multi-status and active meta-filter equivalence ─────────────────
+
+
+_ALL_STATUSES: tuple[JobStatus, ...] = (
+    "pending",
+    "scheduled",
+    "running",
+    "succeeded",
+    "failed",
+    "cancelled",
+    "crashed",
+    "abandoned",
+)
+
+
+@pytest_asyncio.fixture
+async def all_statuses_seeded(backend_pair: Backend) -> dict[str, JobId]:
+    """Enqueue one job per JobStatus value (all 8) for ``actor_a`` with
+    descending priorities, force non-pending statuses via
+    ``_force_job_state``, and return a mapping of status string → JobId.
+
+    Priorities are unique and descending (70 … 0) so the default
+    ``list_jobs`` ordering (priority DESC, scheduled_at ASC, id ASC) is
+    deterministic across both backends.
+    """
+    ids: dict[str, JobId] = {}
+    for i, status in enumerate(_ALL_STATUSES):
+        priority = (len(_ALL_STATUSES) - 1 - i) * 10
+        jid = new_job_id()
+        await backend_pair.enqueue(
+            EnqueueArgs(
+                id=jid,
+                actor="actor_a",
+                queue="default",
+                payload={},
+                max_attempts=3,
+                retry_kind="transient",
+                scheduled_at=_START,
+                priority=priority,
+            )
+        )
+        ids[status] = jid
+        if status != "pending":
+            await _force_job_state(backend_pair, jid, status=status)
+    return ids
+
+
+async def test_eq_multi_status_filter(
+    backend_pair: Backend,
+    all_statuses_seeded: dict[str, JobId],
+) -> None:
+    """Query with status=['pending', 'running'] — both backends must
+    return exactly the pending and running job ids.
+    """
+    ids = all_statuses_seeded
+    rows = await backend_pair.list_jobs(
+        JobFilter(actor="actor_a", status=["pending", "running"], limit=100)
+    )
+    returned_ids = {r.id for r in rows}
+    assert returned_ids == {ids["pending"], ids["running"]}
+
+
+async def test_eq_active_true_filter(
+    backend_pair: Backend,
+    all_statuses_seeded: dict[str, JobId],
+) -> None:
+    """Query with active=True — both backends must return exactly the
+    non-terminal job ids (pending, scheduled, running).
+    """
+    ids = all_statuses_seeded
+    rows = await backend_pair.list_jobs(JobFilter(actor="actor_a", active=True, limit=100))
+    returned_ids = {r.id for r in rows}
+    assert returned_ids == {ids[s] for s in ACTIVE_STATUSES}
+
+
+async def test_eq_full_state_coverage_status_and_active(
+    backend_pair: Backend,
+    all_statuses_seeded: dict[str, JobId],
+) -> None:
+    """For every one of the 8 JobStatus values, a single-status filter
+    returns exactly that one job. active=True returns the 3 non-terminal
+    ids; active=False returns the 5 terminal ids.
+    """
+    ids = all_statuses_seeded
+
+    for status in _ALL_STATUSES:
+        rows = await backend_pair.list_jobs(JobFilter(actor="actor_a", status=status, limit=100))
+        assert {r.id for r in rows} == {ids[status]}, (
+            f"single-status filter for {status!r} returned wrong ids"
+        )
+
+    active_rows = await backend_pair.list_jobs(JobFilter(actor="actor_a", active=True, limit=100))
+    assert {r.id for r in active_rows} == {ids[s] for s in ACTIVE_STATUSES}
+
+    terminal_rows = await backend_pair.list_jobs(
+        JobFilter(actor="actor_a", active=False, limit=100)
+    )
+    assert {r.id for r in terminal_rows} == {ids[s] for s in TERMINAL_STATUSES}
+
+
+async def test_eq_status_filter_empty_sequence(
+    backend_pair: Backend,
+    all_statuses_seeded: dict[str, JobId],
+) -> None:
+    """An empty status sequence (status=[] or status=()) matches no jobs
+    on either backend, even though 8 jobs are present for actor_a.
+    """
+    ids = all_statuses_seeded
+    assert len(ids) == len(_ALL_STATUSES)  # sanity: 8 jobs seeded
+
+    rows_list = await backend_pair.list_jobs(JobFilter(actor="actor_a", status=[], limit=100))
+    assert rows_list == []
+
+    rows_tuple = await backend_pair.list_jobs(JobFilter(actor="actor_a", status=(), limit=100))
+    assert rows_tuple == []
+
+
+async def test_eq_status_filter_full_sequence(
+    backend_pair: Backend,
+    all_statuses_seeded: dict[str, JobId],
+) -> None:
+    """A full status sequence (all 8 JobStatus values) behaves like no
+    status filter — returns all 8 seeded job ids for actor_a.
+    """
+    ids = all_statuses_seeded
+    rows = await backend_pair.list_jobs(
+        JobFilter(actor="actor_a", status=list(_ALL_STATUSES), limit=100)
+    )
+    returned_ids = {r.id for r in rows}
+    assert returned_ids == set(ids.values())

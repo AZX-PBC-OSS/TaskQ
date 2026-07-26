@@ -121,6 +121,15 @@ class Backend(Protocol):
     def subscribe_cancel_wake(self) -> AsyncContextManager[asyncio.Event]: ...
 ```
 
+`list_jobs` accepts a `JobFilter` whose `status` field may be a single
+`JobStatus` or a sequence of statuses (e.g. `["pending", "running"]`).  The
+PG backend renders a single status as `status = $n` and a sequence as
+`status = ANY($n)` with bound parameters.  The `active` meta-filter selects
+non-terminal statuses (`active=True` → pending, scheduled, running) or
+terminal statuses (`active=False`); the non-terminal set is derived from
+`ACTIVE_STATUSES` in `statemachine.py`.  `status` and `active` are mutually
+exclusive — specifying both raises `ValueError`.
+
 `BACKEND_PROTOCOL_VERSION` is a `ClassVar[int]` (currently `2`). Both backends
 assert this constant matches at import time, preventing silent protocol drift.
 
@@ -186,6 +195,12 @@ abandoned → (terminal)
 guard. The SQL `WHERE status = 'X'` predicate is the authoritative serialization
 gate — two concurrent writers cannot both transition the same row because only one
 can hold the row lock from the dispatch CTE's `FOR UPDATE SKIP LOCKED`.
+
+`statemachine.py` also exports `ACTIVE_STATUSES` — the complement of
+`TERMINAL_STATUSES` over the full `JobStatus` set (pending, scheduled, running),
+derived from `VALID_TRANSITIONS` keys.  `JobFilter(active=True)` uses this set
+so that adding a new non-terminal state to the state machine automatically
+extends the active filter without a second edit.
 
 ### Which component drives each transition
 

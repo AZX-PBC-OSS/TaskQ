@@ -10,6 +10,7 @@ from taskq.backend._protocol import JobId, JobStatus
 from taskq.exceptions import IllegalStateTransition
 
 __all__ = [
+    "ACTIVE_STATUSES",
     "TERMINAL_STATUSES",
     "VALID_TRANSITIONS",
     "JobStatus",
@@ -34,6 +35,15 @@ VALID_TRANSITIONS: dict[JobStatus, frozenset[JobStatus]] = {
     "crashed": frozenset(),
     "abandoned": frozenset(),
 }
+
+ACTIVE_STATUSES: frozenset[JobStatus] = frozenset(VALID_TRANSITIONS) - TERMINAL_STATUSES
+"""Non-terminal job statuses — the complement of :data:`TERMINAL_STATUSES`
+over the full :data:`JobStatus` set.
+
+Derived from ``VALID_TRANSITIONS`` keys so that adding a new non-terminal
+state to the state machine automatically includes it here without a
+second edit.  Used by ``JobFilter(active=True)``.
+"""
 
 
 def assert_valid_transition(

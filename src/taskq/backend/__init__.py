@@ -31,6 +31,7 @@ from taskq.backend._protocol import (
     ScheduleRecord,
 )
 from taskq.backend.statemachine import (
+    ACTIVE_STATUSES,
     TERMINAL_STATUSES,
     VALID_TRANSITIONS,
     assert_valid_transition,
@@ -46,6 +47,7 @@ def __getattr__(name: str) -> object:
 
 
 __all__ = [  # pyright: ignore[reportUnsupportedDunderAll]  # Why: __getattr__ lazily provides PostgresBackend at module level
+    "ACTIVE_STATUSES",
     "BACKEND_PROTOCOL_VERSION",
     "TERMINAL_STATUSES",
     "VALID_TRANSITIONS",

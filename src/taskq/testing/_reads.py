@@ -16,6 +16,7 @@ from taskq.backend._protocol import (
     JobRow,
     JobSortField,
 )
+from taskq.backend.statemachine import ACTIVE_STATUSES, TERMINAL_STATUSES
 
 if TYPE_CHECKING:
     from taskq.testing.in_memory import InMemoryBackend
@@ -39,7 +40,14 @@ async def _list_jobs(self: "InMemoryBackend", filters: JobFilter) -> list[JobRow
     if filters.queue is not None:
         candidates = [r for r in candidates if r.queue == filters.queue]
     if filters.status is not None:
-        candidates = [r for r in candidates if r.status == filters.status]
+        if isinstance(filters.status, str):
+            candidates = [r for r in candidates if r.status == filters.status]
+        else:
+            status_set = frozenset(filters.status)
+            candidates = [r for r in candidates if r.status in status_set]
+    elif filters.active is not None:
+        status_set = ACTIVE_STATUSES if filters.active else TERMINAL_STATUSES
+        candidates = [r for r in candidates if r.status in status_set]
     if filters.actor is not None:
         candidates = [r for r in candidates if r.actor == filters.actor]
     if filters.identity_key is not None:

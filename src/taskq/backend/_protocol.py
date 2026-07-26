@@ -12,6 +12,7 @@ creating a circular dependency through the re-export boundary in
 
 import asyncio
 import re
+from collections.abc import Sequence
 from contextlib import AbstractAsyncContextManager as AsyncContextManager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -377,10 +378,38 @@ class JobFilter:
     compares the UUID directly. Keeping the typed shape here means
     ``JobsClient.list(batch_id=UUID(...))`` flows without an implicit
     ``str(uuid)`` coercion. See  / audit M102-3.
+
+    ``status`` accepts either a single :data:`JobStatus` (backwards
+    compatible — e.g. ``JobFilter(status="pending")``) or a sequence of
+    statuses (e.g. ``JobFilter(status=["pending", "running"])``).
+    The PG backend renders a single status as ``status = $n`` and a
+    sequence as ``status = ANY($n)``; the in-memory backend performs a
+    membership check in both cases.
+
+    ``active`` is a meta-filter that selects statuses by terminality:
+
+    - ``active=True`` → non-terminal statuses (pending, scheduled, running)
+    - ``active=False`` → terminal statuses (succeeded, failed, cancelled,
+      crashed, abandoned)
+    - ``active=None`` (default) → no status-terminality filter
+
+    The non-terminal set is derived from
+    :data:`~taskq.backend.statemachine.ACTIVE_STATUSES`, which is itself
+    derived from the state machine — adding a new non-terminal state
+    updates this filter automatically.
+
+    ``status`` and ``active`` are mutually exclusive; specifying both
+    raises :class:`ValueError` in :meth:`__post_init__`.
+
+    Usage examples::
+
+        JobsClient.list(JobFilter(status="pending"))
+        JobsClient.list(JobFilter(status=["pending", "running"]))
+        JobsClient.list(JobFilter(active=True))
     """
 
     queue: str | None = None
-    status: JobStatus | None = None
+    status: JobStatus | Sequence[JobStatus] | None = None
     actor: str | None = None
     identity_key: IdentityKey | None = None
     batch_id: UUID | None = None
@@ -388,6 +417,7 @@ class JobFilter:
     cursor: str | None = None
     tags: tuple[str, ...] | None = None
     order_by: JobSortField | None = None
+    active: bool | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -399,6 +429,12 @@ class JobFilter:
                 "cursor pagination is only supported with the default ordering "
                 "(order_by=None or JobSortField.SCHEDULED_AT_ASC); "
                 "non-default order_by changes the keyset the cursor encodes"
+            )
+        if self.status is not None and self.active is not None:
+            raise ValueError(
+                "status and active are mutually exclusive; "
+                "use status for specific status(es) or active for the "
+                "terminal/non-terminal meta-filter"
             )
 
 
@@ -810,7 +846,16 @@ class Backend(Protocol):
     # ── Read ────────────────────────────────────────────────────────────
     async def get(self, job_id: JobId) -> JobRow | None: ...
 
-    async def list_jobs(self, filters: JobFilter) -> list[JobRow]: ...
+    async def list_jobs(self, filters: JobFilter) -> list[JobRow]:
+        """List jobs matching *filters*, returning at most ``filters.limit``
+        rows in keyset-pagination order.
+
+        ``filters.status`` accepts a single :data:`JobStatus` or a
+        sequence of statuses; ``filters.active`` is a meta-filter for
+        non-terminal (``True``) or terminal (``False``) statuses.
+        See :class:`JobFilter` for details.
+        """
+        ...
 
     async def count_pending_jobs(self, actors: list[str]) -> dict[str, int]:
         """Return pending+scheduled job counts per actor.

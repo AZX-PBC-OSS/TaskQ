@@ -537,7 +537,15 @@ class JobsClient:
         )
 
     async def list(self, filter: JobFilter) -> JobPage:
-        """List jobs matching *filter*, returning a :class:`JobPage`."""
+        """List jobs matching *filter*, returning a :class:`JobPage`.
+
+        ``filter.status`` accepts a single :data:`JobStatus` or a
+        sequence of statuses (e.g. ``JobFilter(status=["pending",
+        "running"])``).  ``filter.active`` is a meta-filter:
+        ``active=True`` selects non-terminal statuses (pending,
+        scheduled, running) and ``active=False`` selects terminal ones.
+        See :class:`JobFilter` for full semantics.
+        """
         with self._translate_schema_errors():
             rows = await self._backend.list_jobs(filter)
         next_cursor: str | None = None
