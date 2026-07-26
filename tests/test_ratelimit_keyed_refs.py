@@ -450,3 +450,36 @@ async def test_evict_idle_keyed_reservations_re_registration_after_eviction_is_i
 
     assert name == "session-cap:s1"
     assert len(reg.reservations) == 1
+
+
+# ── _clean_rate_limit_registry fixture isolation ──────────────────────
+
+
+def test_singleton_keyed_tracking_dicts_empty_at_start() -> None:
+    """Regression test for the ``_clean_rate_limit_registry`` autouse fixture.
+
+    The fixture in ``tests/conftest.py`` clears the singleton
+    ``registry``'s ``_keyed_reservation_last_used`` and
+    ``_keyed_rate_limit_last_used`` dicts before each unit test.  If a
+    prior test materialized a keyed ref against the real singleton
+    (instead of a fresh local ``RateLimitRegistry()``) and the fixture
+    failed to clean up, those dicts would still hold entries here.
+
+    This is the simpler substitute for a cross-test-boundary regression
+    test (which would require a nested pytest run via ``pytester``):
+    a direct assertion that both dicts are empty at the start, proving
+    no prior test leaked tracking state into this one.  Every test in
+    this file uses a fresh local ``RateLimitRegistry()`` to avoid the
+    singleton, but the fixture is the safety net for any future test
+    that does not — this test guards that safety net.
+    """
+    from taskq.ratelimit.registry import registry as _rl
+
+    assert len(_rl._keyed_reservation_last_used) == 0, (  # pyright: ignore[reportPrivateUsage]
+        f"_keyed_reservation_last_used leaked from a prior test: "
+        f"{dict(_rl._keyed_reservation_last_used)}"  # pyright: ignore[reportPrivateUsage]
+    )
+    assert len(_rl._keyed_rate_limit_last_used) == 0, (  # pyright: ignore[reportPrivateUsage]
+        f"_keyed_rate_limit_last_used leaked from a prior test: "
+        f"{dict(_rl._keyed_rate_limit_last_used)}"  # pyright: ignore[reportPrivateUsage]
+    )

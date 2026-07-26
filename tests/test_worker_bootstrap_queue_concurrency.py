@@ -10,11 +10,15 @@ direct SQL, runs the ``_main`` bootstrap sequence, and asserts:
   - The global ``rl_registry`` contains a ``ConcurrencyReservation`` named
     ``queue_concurrency_reservation_name(<queue>)`` with matching slots.
   - The ``reservation_slots`` table in PG has the expected slot rows for
-    that bucket name (proving ``ensure_slots`` actually ran).
+    that bucket name (proving ``sync_slots`` actually ran).
   - Queues with ``max_concurrent IS NULL`` or not in ``settings.queues``
     produce NO registry entry and NO slot rows.
-  - A failing ``ensure_slots`` for the queue-cap path is caught, logged,
+  - A failing ``sync_slots`` for the queue-cap path is caught, logged,
     and does not crash worker startup.
+  - Lowering ``max_concurrent`` and re-running bootstrap (simulating a
+    worker restart) shrinks the slot rows — the core regression test for
+    the ``sync_slots`` fix that replaced the purely-additive
+    ``ensure_slots`` call.
 """
 
 import asyncio
@@ -32,7 +36,6 @@ from taskq.ratelimit.registry import (
 from taskq.ratelimit.registry import (
     registry as rl_registry,
 )
-from taskq.ratelimit.reservation import ConcurrencyReservation
 from taskq.settings import WorkerSettings
 from taskq.worker.run import _main
 from tests.conftest import unique_health_sock_path
@@ -143,7 +146,151 @@ async def test_queue_cap_registered_and_slots_created(pg_dsn: str) -> None:
     await _cleanup_schema_for(pg_dsn, schema)
 
 
-# ── Opt-in: NULL max_concurrent or queue not in settings.queues ──────
+# ── Shrink/grow: sync_slots correctly adjusts slot count on restart ──
+
+
+@pytest.mark.asyncio
+async def test_queue_cap_shrink_slots_on_restart(pg_dsn: str) -> None:
+    """Lowering ``max_concurrent`` and re-running bootstrap shrinks the
+    ``reservation_slots`` row count — the core regression test for the
+    ``sync_slots`` fix.  ``ensure_slots`` (the old code) was purely
+    additive (INSERT ... ON CONFLICT DO NOTHING) and could never remove
+    excess slots, so lowering a cap was a silent no-op.  ``sync_slots``
+    deletes excess free slots, so a worker restart after lowering the
+    cap actually takes effect."""
+    schema = f"twbqc_{new_base62()}".lower()
+    await _prepare_schema_for(pg_dsn, schema)
+
+    queue_name = "shrinkable"
+    cap_name = queue_concurrency_reservation_name(queue_name)
+
+    # ── First boot: max_concurrent = 5 → 5 slot rows ───────────────
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        await conn.execute(
+            f'INSERT INTO "{schema}".queues (name, max_concurrent) VALUES ($1, $2)',
+            queue_name,
+            5,
+        )
+    finally:
+        await conn.close()
+
+    settings = _settings_for(pg_dsn, schema, queues=queue_name)
+    await _run_and_cancel(lambda: _main(settings))
+
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        count = await conn.fetchval(
+            f'SELECT count(*) FROM "{schema}".reservation_slots WHERE bucket_name = $1',
+            cap_name,
+        )
+        assert count == 5
+    finally:
+        await conn.close()
+
+    # Simulate a worker restart: clear the reservation from the
+    # in-memory registry (a fresh process starts with an empty registry).
+    rl_registry._reservations.pop(cap_name, None)  # pyright: ignore[reportPrivateUsage]
+
+    # ── Second boot: lower to max_concurrent = 2 → 2 slot rows ──────
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        await conn.execute(
+            f'UPDATE "{schema}".queues SET max_concurrent = $2 WHERE name = $1',
+            queue_name,
+            2,
+        )
+    finally:
+        await conn.close()
+
+    await _run_and_cancel(lambda: _main(settings))
+
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        count = await conn.fetchval(
+            f'SELECT count(*) FROM "{schema}".reservation_slots WHERE bucket_name = $1',
+            cap_name,
+        )
+        assert count == 2, (
+            f"expected 2 slots after shrinking from 5→2, got {count} "
+            f"(sync_slots should have deleted 3 excess free slots)"
+        )
+    finally:
+        await conn.close()
+
+    rl_registry._reservations.pop(cap_name, None)  # pyright: ignore[reportPrivateUsage]
+    await _cleanup_schema_for(pg_dsn, schema)
+
+
+@pytest.mark.asyncio
+async def test_queue_cap_grow_slots_on_restart(pg_dsn: str) -> None:
+    """Raising ``max_concurrent`` and re-running bootstrap grows the
+    ``reservation_slots`` row count.  While the old ``ensure_slots`` code
+    could also grow (it was additive), this test confirms the
+    ``sync_slots`` replacement preserves the grow capability — a strict
+    superset of ``ensure_slots`` must not regress on the insert path."""
+    schema = f"twbqc_{new_base62()}".lower()
+    await _prepare_schema_for(pg_dsn, schema)
+
+    queue_name = "growable"
+    cap_name = queue_concurrency_reservation_name(queue_name)
+
+    # ── First boot: max_concurrent = 2 → 2 slot rows ───────────────
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        await conn.execute(
+            f'INSERT INTO "{schema}".queues (name, max_concurrent) VALUES ($1, $2)',
+            queue_name,
+            2,
+        )
+    finally:
+        await conn.close()
+
+    settings = _settings_for(pg_dsn, schema, queues=queue_name)
+    await _run_and_cancel(lambda: _main(settings))
+
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        count = await conn.fetchval(
+            f'SELECT count(*) FROM "{schema}".reservation_slots WHERE bucket_name = $1',
+            cap_name,
+        )
+        assert count == 2
+    finally:
+        await conn.close()
+
+    # Simulate a worker restart: clear the reservation from the
+    # in-memory registry (a fresh process starts with an empty registry).
+    rl_registry._reservations.pop(cap_name, None)  # pyright: ignore[reportPrivateUsage]
+
+    # ── Second boot: raise to max_concurrent = 5 → 5 slot rows ──────
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        await conn.execute(
+            f'UPDATE "{schema}".queues SET max_concurrent = $2 WHERE name = $1',
+            queue_name,
+            5,
+        )
+    finally:
+        await conn.close()
+
+    await _run_and_cancel(lambda: _main(settings))
+
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        count = await conn.fetchval(
+            f'SELECT count(*) FROM "{schema}".reservation_slots WHERE bucket_name = $1',
+            cap_name,
+        )
+        assert count == 5, (
+            f"expected 5 slots after growing from 2→5, got {count} "
+            f"(sync_slots should have inserted 3 missing slots)"
+        )
+    finally:
+        await conn.close()
+
+    rl_registry._reservations.pop(cap_name, None)  # pyright: ignore[reportPrivateUsage]
+    await _cleanup_schema_for(pg_dsn, schema)
 
 
 @pytest.mark.asyncio
@@ -227,17 +374,20 @@ async def test_queue_cap_not_in_settings_queues_produces_no_reservation(pg_dsn: 
     await _cleanup_schema_for(pg_dsn, schema)
 
 
-# ── ensure_slots failure: caught, logged, bootstrap continues ────────
+# ── sync_slots failure: caught, logged, bootstrap continues ──────────
 
 
 @pytest.mark.asyncio
-async def test_queue_cap_ensure_slots_failure_logged_and_bootstrap_continues(
+async def test_queue_cap_sync_slots_failure_logged_and_bootstrap_continues(
     pg_dsn: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A failing queue-cap ``ensure_slots`` is caught, logged as
-    ``queue_concurrency_cap_setup_failed``, and does not crash worker
-    startup — mirroring ``test_ensure_slots_failure_logged_and_bootstrap_continues``
-    for the actor-config path."""
+    """A failing queue-cap ``sync_slots`` is caught, logged as
+    ``sync_slots_failed``, and does not crash worker startup — mirroring
+    ``test_sync_rate_limit_buckets_and_sync_slots_failure_logged`` for the
+    actor-config path.  After the fix that replaced ``ensure_slots`` with
+    ``sync_slots``, slot creation failures are caught by the
+    ``sync_slots`` try/except, not the per-row
+    ``queue_concurrency_cap_setup_failed`` handler."""
     schema = f"twbqc_{new_base62()}".lower()
     await _prepare_schema_for(pg_dsn, schema)
 
@@ -255,10 +405,10 @@ async def test_queue_cap_ensure_slots_failure_logged_and_bootstrap_continues(
 
     settings = _settings_for(pg_dsn, schema, queues=queue_name)
 
-    async def _raise_ensure_slots(self: ConcurrencyReservation, pool: object) -> None:
-        raise RuntimeError("ensure_slots boom")
+    async def _raise_sync_slots(reservations: object, pool: object, *, schema: str) -> None:
+        raise RuntimeError("sync_slots boom")
 
-    monkeypatch.setattr(ConcurrencyReservation, "ensure_slots", _raise_ensure_slots)
+    monkeypatch.setattr("taskq.ratelimit.sync_slots", _raise_sync_slots)
 
     cap_name = queue_concurrency_reservation_name(queue_name)
 
@@ -271,7 +421,7 @@ async def test_queue_cap_ensure_slots_failure_logged_and_bootstrap_continues(
             task = asyncio.create_task(_run())
             deadline = asyncio.get_running_loop().time() + 30.0
             while asyncio.get_running_loop().time() < deadline:
-                if any(e.get("event") == "queue_concurrency_cap_setup_failed" for e in captured):
+                if any(e.get("event") == "sync_slots_failed" for e in captured):
                     break
                 if task.done():
                     break
@@ -283,8 +433,8 @@ async def test_queue_cap_ensure_slots_failure_logged_and_bootstrap_continues(
     finally:
         rl_registry._reservations.pop(cap_name, None)  # pyright: ignore[reportPrivateUsage]
 
-    matches = [e for e in captured if e.get("event") == "queue_concurrency_cap_setup_failed"]
+    matches = [e for e in captured if e.get("event") == "sync_slots_failed"]
     assert len(matches) >= 1
-    assert matches[0]["queue_name"] == queue_name
+    assert "sync_slots boom" in matches[0]["error"]
 
     await _cleanup_schema_for(pg_dsn, schema)

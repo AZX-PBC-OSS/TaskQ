@@ -377,7 +377,21 @@ def run_validation(
     When ``rate_limit_registry`` is provided, an additional phase
     after the DI-edge walk checks each actor's ``rate_limits`` and
     ``reservations`` string lists against the registry's dicts.
-    Unknown names raise ``MissingProvider`` at startup .
+    Unknown names raise ``MissingProvider`` at startup.
+
+    Phase 2b intentionally name-checks only plain ``str`` entries.
+    ``KeyedRateLimitRef`` / ``KeyedReservationRef`` instances are
+    non-frozen pydantic ``BaseModel`` s (unhashable), so an
+    ``x not in some_dict`` membership test on a ref instance raises
+    ``TypeError`` rather than returning a clean boolean — and there is
+    nothing meaningful to validate ahead of time anyway, since a ref's
+    concrete per-key name only materializes at acquisition time
+    (``_resolve_rate_limit_name`` / ``_resolve_reservation_name`` in
+    ``registry.py``). The ref's own pydantic ``field_validator`` s
+    already enforce non-empty ``base_name`` / positive ``slots`` /
+    positive ``capacity`` etc. at construction time, and runtime
+    key-validation enforces the rest — so this static startup pass
+    skips ref instances entirely and only checks string entries.
     """
     actor_edges: list[tuple[str, type, Scope | None]] = []
     if actors is not None:
@@ -398,18 +412,23 @@ def run_validation(
             )
 
     # Phase 2b — Rate-limit / reservation name check
+    # Why: only plain str entries are name-checked here — a
+    # KeyedRateLimitRef / KeyedReservationRef instance is an unhashable
+    # pydantic BaseModel, so ``x not in some_dict`` would raise TypeError
+    # (not return False), and its concrete per-key name only materializes
+    # at acquisition time anyway. See the run_validation docstring.
     if rate_limit_registry is not None and actors is not None:
         rl_names = rate_limit_registry.rate_limits
         res_names = rate_limit_registry.reservations
         for actor in actors:
             for rl_name in actor.rate_limits:
-                if rl_name not in rl_names:
+                if isinstance(rl_name, str) and rl_name not in rl_names:
                     raise MissingProvider(
                         type_name="RateLimit",
                         required_by=f"actor:{actor.name}:rate_limits:{rl_name}",
                     )
             for res_name in actor.reservations:
-                if res_name not in res_names:
+                if isinstance(res_name, str) and res_name not in res_names:
                     raise MissingProvider(
                         type_name="ConcurrencyReservation",
                         required_by=f"actor:{actor.name}:reservations:{res_name}",

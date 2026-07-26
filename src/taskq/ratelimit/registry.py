@@ -49,7 +49,7 @@ from collections.abc import AsyncGenerator, Sequence
 from contextlib import asynccontextmanager
 from datetime import timedelta
 from time import monotonic
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeVar
 
 import structlog
 
@@ -87,6 +87,8 @@ __all__ = [
     "registry",
     "sync_rate_limit_buckets",
 ]
+
+_P = TypeVar("_P")
 
 _MAX_KEYED_KEY_LEN = 255
 _KEYED_KEY_RE = re.compile(r"^[A-Za-z0-9_\-:.]+$")
@@ -148,7 +150,9 @@ def _same_config(
             and a.ttl == b.ttl
         )
     if isinstance(a, ConcurrencyReservation) and isinstance(b, ConcurrencyReservation):
-        return a.name == b.name and a.slots == b.slots and a.lease == b.lease
+        return (
+            a.name == b.name and a.slots == b.slots and a.lease == b.lease and a.schema == b.schema
+        )
     return False
 
 
@@ -290,6 +294,39 @@ class RateLimitRegistry:
             )
         yield decision
 
+    def _validate_keyed_key(
+        self,
+        key: object,
+        ref_repr: str,
+        payload: dict[str, object] | None,
+        *,
+        empty_key_msg: str = "an empty or non-string key",
+    ) -> str:
+        """Validate a ``key_fn`` return value and return it as a ``str``.
+
+        Raises ``ValueError`` if *key* is not a non-empty ``str``, exceeds
+        ``_MAX_KEYED_KEY_LEN`` characters, or contains characters outside
+        ``_KEYED_KEY_RE``.  *ref_repr* is included in error messages to
+        identify which ref type produced the invalid key.  *empty_key_msg*
+        controls the wording of the empty/non-string error (the two
+        call-sites historically used slightly different phrasing).
+        """
+        if type(key) is not str or not key:
+            raise ValueError(f"{ref_repr}.key_fn returned {empty_key_msg} for payload {payload!r}")
+        if len(key) > _MAX_KEYED_KEY_LEN:
+            raise ValueError(
+                f"{ref_repr}.key_fn returned "
+                f"a key of length {len(key)} which exceeds the maximum of "
+                f"{_MAX_KEYED_KEY_LEN} characters"
+            )
+        if not _KEYED_KEY_RE.match(key):
+            raise ValueError(
+                f"{ref_repr}.key_fn returned "
+                f"key {key!r} which contains characters outside the allowed set "
+                f"[A-Za-z0-9_\\-:.]"
+            )
+        return key
+
     async def _resolve_reservation_name(
         self,
         ref: "str | KeyedReservationRef",
@@ -351,24 +388,12 @@ class RateLimitRegistry:
                 f"reservation {ref.base_name!r} is a KeyedReservationRef but no "
                 "payload was provided to derive its key from"
             )
-        key = ref.key_fn(payload)
-        if not key:
-            raise ValueError(
-                f"KeyedReservationRef(base_name={ref.base_name!r}).key_fn returned "
-                f"an empty key for payload {payload!r}"
-            )
-        if len(key) > _MAX_KEYED_KEY_LEN:
-            raise ValueError(
-                f"KeyedReservationRef(base_name={ref.base_name!r}).key_fn returned "
-                f"a key of length {len(key)} which exceeds the maximum of "
-                f"{_MAX_KEYED_KEY_LEN} characters"
-            )
-        if not _KEYED_KEY_RE.match(key):
-            raise ValueError(
-                f"KeyedReservationRef(base_name={ref.base_name!r}).key_fn returned "
-                f"key {key!r} which contains characters outside the allowed set "
-                f"[A-Za-z0-9_\\-:.]"
-            )
+        key = self._validate_keyed_key(
+            ref.key_fn(payload),
+            f"KeyedReservationRef(base_name={ref.base_name!r})",
+            payload,
+            empty_key_msg="an empty key or non-string value",
+        )
         concrete_name = f"{ref.base_name}:{key}"
         if (
             concrete_name not in self._keyed_reservation_last_used
@@ -458,24 +483,11 @@ class RateLimitRegistry:
                 f"rate limit {ref.base_name!r} is a KeyedRateLimitRef but no "
                 "payload was provided to derive its key from"
             )
-        key = ref.key_fn(payload)
-        if type(key) is not str or not key:
-            raise ValueError(
-                f"KeyedRateLimitRef(base_name={ref.base_name!r}).key_fn returned "
-                f"an empty or non-string key for payload {payload!r}"
-            )
-        if len(key) > _MAX_KEYED_KEY_LEN:
-            raise ValueError(
-                f"KeyedRateLimitRef(base_name={ref.base_name!r}).key_fn returned "
-                f"a key of length {len(key)} which exceeds the maximum of "
-                f"{_MAX_KEYED_KEY_LEN} characters"
-            )
-        if not _KEYED_KEY_RE.match(key):
-            raise ValueError(
-                f"KeyedRateLimitRef(base_name={ref.base_name!r}).key_fn returned "
-                f"key {key!r} which contains characters outside the allowed set "
-                f"[A-Za-z0-9_\\-:.]"
-            )
+        key = self._validate_keyed_key(
+            ref.key_fn(payload),
+            f"KeyedRateLimitRef(base_name={ref.base_name!r})",
+            payload,
+        )
         concrete_name = f"{ref.base_name}:{key}"
         if (
             concrete_name not in self._keyed_rate_limit_last_used
@@ -620,7 +632,7 @@ class RateLimitRegistry:
                 handle_count=len(acquired),
             )
             return acquired
-        except ReservationUnavailable:
+        except Exception:
             for handle in reversed(acquired):
                 try:
                     await handle.release()
@@ -775,6 +787,28 @@ class RateLimitRegistry:
                 )
                 record_ratelimit_refund_failure(handle.name, backend)
 
+    def _evict_idle_keyed(
+        self,
+        tracking_dict: dict[str, float],
+        primitive_dict: dict[str, _P],
+        idle_for: timedelta,
+        event_name: str,
+    ) -> int:
+        """Evict stale entries from *tracking_dict* and *primitive_dict*.
+
+        Removes entries whose ``last_used`` timestamp is older than
+        ``monotonic() - idle_for`` from both dicts, logs *event_name*
+        with the evicted count, and returns that count.
+        """
+        cutoff = monotonic() - idle_for.total_seconds()
+        stale = [name for name, last_used in tracking_dict.items() if last_used < cutoff]
+        for name in stale:
+            primitive_dict.pop(name, None)
+            del tracking_dict[name]
+        if stale:
+            logger.debug(event_name, count=len(stale))
+        return len(stale)
+
     def evict_idle_keyed_reservations(self, idle_for: "timedelta") -> int:
         """Drop registry entries for keyed reservations idle at least ``idle_for``.
 
@@ -797,18 +831,12 @@ class RateLimitRegistry:
 
         Returns the number of entries evicted.
         """
-        cutoff = monotonic() - idle_for.total_seconds()
-        stale = [
-            name
-            for name, last_used in self._keyed_reservation_last_used.items()
-            if last_used < cutoff
-        ]
-        for name in stale:
-            self._reservations.pop(name, None)
-            del self._keyed_reservation_last_used[name]
-        if stale:
-            logger.debug("registry-evicted-idle-keyed-reservations", count=len(stale))
-        return len(stale)
+        return self._evict_idle_keyed(
+            self._keyed_reservation_last_used,
+            self._reservations,
+            idle_for,
+            "registry-evicted-idle-keyed-reservations",
+        )
 
     def evict_idle_keyed_rate_limits(self, idle_for: "timedelta") -> int:
         """Drop registry entries for keyed rate limits idle at least ``idle_for``.
@@ -833,18 +861,12 @@ class RateLimitRegistry:
 
         Returns the number of entries evicted.
         """
-        cutoff = monotonic() - idle_for.total_seconds()
-        stale = [
-            name
-            for name, last_used in self._keyed_rate_limit_last_used.items()
-            if last_used < cutoff
-        ]
-        for name in stale:
-            self._rate_limits.pop(name, None)
-            del self._keyed_rate_limit_last_used[name]
-        if stale:
-            logger.debug("registry-evicted-idle-keyed-rate-limits", count=len(stale))
-        return len(stale)
+        return self._evict_idle_keyed(
+            self._keyed_rate_limit_last_used,
+            self._rate_limits,
+            idle_for,
+            "registry-evicted-idle-keyed-rate-limits",
+        )
 
 
 async def sync_rate_limit_buckets(

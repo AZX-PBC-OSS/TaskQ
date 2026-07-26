@@ -10,3 +10,5 @@
 -- machinery (reservation_slots table) rather than a new mechanism.
 -- NULL means uncapped, matching the actor_config.max_concurrent convention.
 ALTER TABLE "{schema}".queues ADD COLUMN IF NOT EXISTS max_concurrent int;
+ALTER TABLE "{schema}".queues ADD CONSTRAINT queues_max_concurrent_check
+    CHECK (max_concurrent IS NULL OR max_concurrent >= 1);

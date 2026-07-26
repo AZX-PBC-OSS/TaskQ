@@ -302,16 +302,21 @@ async def _main(
         # Fleet-wide per-queue concurrency caps (DB-driven): query the
         # queues table for queues this worker consumes that have a
         # max_concurrent set, register a ConcurrencyReservation for each,
-        # and ensure their slot rows exist. The DB is the single source
+        # and sync their slot rows to match. The DB is the single source
         # of truth — read at worker startup, avoiding configuration drift
         # across a fleet of workers during rolling deploys (the footgun
         # the settings-based design had). The lease is set to lock_lease
         # so the heartbeat extends it in lockstep with job locks; if a
         # worker dies, both the job lock and the queue reservation slot
         # expire at roughly the same time and the recovery sweep reclaims
-        # them. register() is idempotent for identical config and
-        # ensure_slots uses ON CONFLICT DO NOTHING, so this is safe
-        # across concurrently-booting workers sharing the schema.
+        # them. register() is idempotent for identical config. sync_slots
+        # (not ensure_slots) is used so that BOTH growing AND shrinking a
+        # cap take effect on restart — ensure_slots is purely additive
+        # (INSERT ... ON CONFLICT DO NOTHING) and could never remove
+        # excess slots, so lowering max_concurrent was a silent no-op.
+        # sync_slots inserts missing slots, deletes excess free slots, and
+        # skips held slots (reporting them) — a strict superset of
+        # ensure_slots, so initial registration works identically.
         from taskq.ratelimit.registry import queue_concurrency_reservation_name
         from taskq.ratelimit.reservation import ConcurrencyReservation
 
@@ -329,6 +334,7 @@ async def _main(
             )
             cap_rows = []
 
+        queue_cap_reservations: list[ConcurrencyReservation] = []
         for row in cap_rows:
             try:
                 res_name = queue_concurrency_reservation_name(row["name"])
@@ -339,11 +345,24 @@ async def _main(
                     schema=settings.schema_name,
                 )
                 rl_registry.register(reservation)
-                await reservation.ensure_slots(deps.dispatcher_pool)
+                queue_cap_reservations.append(reservation)
             except Exception as exc:
                 _startup_log.warning(
                     "queue_concurrency_cap_setup_failed",
                     queue_name=row["name"],
+                    error=str(exc),
+                )
+
+        if queue_cap_reservations:
+            try:
+                await sync_slots(
+                    queue_cap_reservations,
+                    deps.dispatcher_pool,
+                    schema=settings.schema_name,
+                )
+            except Exception as exc:
+                _startup_log.warning(
+                    "sync_slots_failed",
                     error=str(exc),
                 )
 

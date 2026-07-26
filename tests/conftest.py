@@ -211,6 +211,15 @@ def _clean_rate_limit_registry(request: pytest.FixtureRequest) -> Iterator[None]
     imports every collected module before running any test — so by the
     first test, the registry already holds ALL modules' entries.
 
+    The registry has four module-level dicts that can carry state across
+    tests: ``_rate_limits``, ``_reservations``,
+    ``_keyed_reservation_last_used``, and ``_keyed_rate_limit_last_used``.
+    The latter two are populated by lazy keyed-ref materialization
+    (``_resolve_reservation_name`` / ``_resolve_rate_limit_name``) and
+    would leak across tests if not isolated — a test that materializes a
+    keyed ref against the real singleton would leave tracking entries
+    that a subsequent test's cap-check or eviction logic could observe.
+
     * Unit tests: cleared outright — ``sync_rate_limit_buckets`` /
       ``sync_slots`` (called from ``_main``) would otherwise attempt pool
       I/O on stub-pool objects.
@@ -225,14 +234,22 @@ def _clean_rate_limit_registry(request: pytest.FixtureRequest) -> Iterator[None]
     if "integration" in request.node.keywords:
         snapshot_limits = dict(_rl._rate_limits)  # pyright: ignore[reportPrivateUsage]
         snapshot_reservations = dict(_rl._reservations)  # pyright: ignore[reportPrivateUsage]
+        snapshot_keyed_res = dict(_rl._keyed_reservation_last_used)  # pyright: ignore[reportPrivateUsage]
+        snapshot_keyed_rl = dict(_rl._keyed_rate_limit_last_used)  # pyright: ignore[reportPrivateUsage]
         yield
         _rl._rate_limits.clear()  # pyright: ignore[reportPrivateUsage]
         _rl._rate_limits.update(snapshot_limits)  # pyright: ignore[reportPrivateUsage]
         _rl._reservations.clear()  # pyright: ignore[reportPrivateUsage]
         _rl._reservations.update(snapshot_reservations)  # pyright: ignore[reportPrivateUsage]
+        _rl._keyed_reservation_last_used.clear()  # pyright: ignore[reportPrivateUsage]
+        _rl._keyed_reservation_last_used.update(snapshot_keyed_res)  # pyright: ignore[reportPrivateUsage]
+        _rl._keyed_rate_limit_last_used.clear()  # pyright: ignore[reportPrivateUsage]
+        _rl._keyed_rate_limit_last_used.update(snapshot_keyed_rl)  # pyright: ignore[reportPrivateUsage]
     else:
         _rl._rate_limits.clear()  # pyright: ignore[reportPrivateUsage]
         _rl._reservations.clear()  # pyright: ignore[reportPrivateUsage]
+        _rl._keyed_reservation_last_used.clear()  # pyright: ignore[reportPrivateUsage]
+        _rl._keyed_rate_limit_last_used.clear()  # pyright: ignore[reportPrivateUsage]
         yield
 
 
