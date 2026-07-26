@@ -1,7 +1,9 @@
-"""Integration tests for the idempotency_scope migration (01.00.03_01).
+"""Integration tests for the idempotency_scope migration
+(01.00.03_01_pre_idempotency_scope.sql /
+01.00.03_01_post_idempotency_scope_drop_old_index.sql).
 
 Covers:
-- Migration correctness: after applying all migrations against a fresh DB,
+- Migration correctness: after applying both phases against a fresh DB,
   idempotency_scope column exists NOT NULL DEFAULT '', the old single-column
   unique index is gone, the new composite unique index exists, and two rows
   with the default scope ('') and the same idempotency_key raise
@@ -9,8 +11,17 @@ Covers:
   enforces global dedupe for unscoped keys at the DB level.
 - Migration upgrade path: apply migrations up through 01.00.01, insert a
   job row with idempotency_key (no idempotency_scope column yet), then
-  apply 01.00.03 and assert the existing row has idempotency_scope = ''
+  apply the rest and assert the existing row has idempotency_scope = ''
   and a second insert with the same key still conflicts.
+- Rolling-deploy overlap window: after applying ONLY the `pre` phase (the
+  state every worker's schema is in the moment the migration lands, before
+  every worker is confirmed running the new code), pre-this-release code's
+  exact `ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL`
+  SQL shape must still execute successfully against the schema — this is
+  the assertion that proves the pre/post split actually avoids the outage
+  a single combined migration would have caused. See the "PHASE
+  OBLIGATIONS" header comment in the pre migration file for the full
+  rationale.
 """
 
 from datetime import UTC, datetime
@@ -191,7 +202,7 @@ class TestMigrationUpgradePath:
         key = "upgrade-path-pre-existing"
         await _insert_job_raw(pg_conn, settings.schema_name, idempotency_key=key)
 
-        # 3. Apply the remaining migration (01.00.03_01)
+        # 3. Apply the remaining migrations (01.00.03_01 pre + post)
         applied = await migrate_mod.apply_pending(pg_conn, schema=settings.schema_name)
         assert len(applied) >= 1
         assert applied[0].version == "01.00.03_01"
@@ -261,3 +272,137 @@ class TestMigrationUpgradePath:
             settings.schema_name,
         )
         assert row is not None, "composite index should exist after 01.00.03"
+
+
+# ── Rolling-deploy overlap window: pre phase only ──────────────
+#
+# The moment `taskq migrate up --phase pre` runs, EVERY worker's schema is
+# in the "pre applied, post not yet applied" state — including workers
+# still running the code that shipped before this feature. This class
+# proves that state is safe for that old code, which is the entire
+# point of splitting the migration into pre + post phases instead of
+# shipping a single migration that both adds the column and drops the old
+# index.
+
+
+async def _insert_job_old_shape(
+    conn: asyncpg.Connection,
+    schema: str,
+    *,
+    idempotency_key: str | None,
+) -> None:
+    """Issue the EXACT INSERT statement pre-this-release code used:
+    no idempotency_scope column reference at all (that code doesn't know
+    the column exists), and — critically — the single-column
+    `ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL`
+    target, which only resolves against `jobs_idempotency_key_uniq`.
+    """
+    await conn.execute(
+        f'INSERT INTO "{schema}".jobs '
+        f"(id, actor, queue, payload, max_attempts, retry_kind, scheduled_at, idempotency_key) "
+        f"VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8) "
+        f"ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING",
+        new_uuid(),
+        "direct_actor",
+        "default",
+        "{}",
+        3,
+        "transient",
+        datetime.now(UTC),
+        idempotency_key,
+    )
+
+
+class TestPrePhaseOverlapWindow:
+    """After `taskq migrate up --phase pre` only (the state during a
+    rolling deploy, before the post phase drops the old index), both
+    indexes coexist and pre-this-release code's exact SQL shape keeps
+    working unmodified."""
+
+    async def test_old_shape_on_conflict_still_resolves_after_pre_only(
+        self, pg_conn: asyncpg.Connection, settings: TaskQSettings
+    ) -> None:
+        """This is the assertion that proves the overlap window is safe:
+        pre-this-release code's `ON CONFLICT (idempotency_key)` — which
+        can only resolve against a unique index whose column set is
+        EXACTLY `(idempotency_key)` — must still find a matching index
+        and succeed, not raise
+        "there is no unique or exclusion constraint matching the
+        ON CONFLICT specification"."""
+        await migrate_mod.apply_pending(pg_conn, schema=settings.schema_name, phase="pre")
+
+        key = "pre-phase-overlap-old-shape"
+        # First insert: new row. Must not raise.
+        await _insert_job_old_shape(pg_conn, settings.schema_name, idempotency_key=key)
+        # Second insert: same key, old code's ON CONFLICT DO NOTHING path.
+        # Must still resolve against jobs_idempotency_key_uniq and no-op,
+        # not fail with "no unique or exclusion constraint matching".
+        await _insert_job_old_shape(pg_conn, settings.schema_name, idempotency_key=key)
+
+        rows = await pg_conn.fetch(
+            f'SELECT id FROM "{settings.schema_name}".jobs WHERE idempotency_key = $1',
+            key,
+        )
+        assert len(rows) == 1, "ON CONFLICT DO NOTHING must have deduped, not inserted twice"
+
+    async def test_both_indexes_coexist_after_pre_only(
+        self, pg_conn: asyncpg.Connection, settings: TaskQSettings
+    ) -> None:
+        await migrate_mod.apply_pending(pg_conn, schema=settings.schema_name, phase="pre")
+
+        old_index = await pg_conn.fetchrow(
+            """
+            SELECT indexname FROM pg_indexes
+            WHERE schemaname = $1 AND indexname = 'jobs_idempotency_key_uniq'
+            """,
+            settings.schema_name,
+        )
+        assert old_index is not None, "old index must still exist after pre-only"
+
+        new_index = await pg_conn.fetchrow(
+            """
+            SELECT indexname FROM pg_indexes
+            WHERE schemaname = $1 AND indexname = 'jobs_idempotency_scope_key_uniq'
+            """,
+            settings.schema_name,
+        )
+        assert new_index is not None, "composite index must already exist after pre-only"
+
+    async def test_scoped_dedupe_is_inert_until_post_applied(
+        self, pg_conn: asyncpg.Connection, settings: TaskQSettings
+    ) -> None:
+        """While only the pre phase is applied, the OLD index still
+        enforces "idempotency_key unique across ALL scopes" — strictly
+        stronger than the new composite constraint — so the same key in
+        different scopes still collides. The new scoped-dedupe behavior
+        only activates once the post phase drops the old index."""
+        await migrate_mod.apply_pending(pg_conn, schema=settings.schema_name, phase="pre")
+
+        key = "pre-phase-scoped-dedupe-inert"
+        await _insert_job_raw(
+            pg_conn, settings.schema_name, idempotency_key=key, idempotency_scope="run-A"
+        )
+        with pytest.raises(asyncpg.UniqueViolationError):
+            await _insert_job_raw(
+                pg_conn, settings.schema_name, idempotency_key=key, idempotency_scope="run-B"
+            )
+
+    async def test_scoped_dedupe_activates_after_post_applied(
+        self, pg_conn: asyncpg.Connection, settings: TaskQSettings
+    ) -> None:
+        """Once the post phase drops the old index, the same key in
+        different scopes both succeed -- the feature's actual payoff."""
+        await migrate_mod.apply_pending(pg_conn, schema=settings.schema_name, phase="pre")
+
+        key = "post-phase-scoped-dedupe-active"
+        await _insert_job_raw(
+            pg_conn, settings.schema_name, idempotency_key=key, idempotency_scope="run-A"
+        )
+
+        await migrate_mod.apply_pending(pg_conn, schema=settings.schema_name, phase="post")
+
+        # Now the same key in a different scope must succeed -- no longer
+        # blocked by the (now-dropped) single-column index.
+        await _insert_job_raw(
+            pg_conn, settings.schema_name, idempotency_key=key, idempotency_scope="run-B"
+        )

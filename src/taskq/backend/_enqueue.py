@@ -194,7 +194,8 @@ async def _enqueue_on_conn(
         if rec is None:
             raise RuntimeError(
                 "enqueue ON CONFLICT fired but follow-up SELECT "
-                f"found no row for idempotency_key={args.idempotency_key!r}"
+                f"found no row for idempotency_scope={args.idempotency_scope!r} "
+                f"idempotency_key={args.idempotency_key!r}"
             )
 
     row = _job_row_from_record(rec)
@@ -221,6 +222,7 @@ async def _enqueue_on_conn(
             queue=row.queue,
             identity_key=row.identity_key,
             idempotency_key=row.idempotency_key,
+            idempotency_scope=row.idempotency_scope,
             existing_job_id=str(row.id),
             dedup_reason="idempotency_key",
         )
