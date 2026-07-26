@@ -46,11 +46,18 @@ logger: structlog.stdlib.BoundLogger = get_logger(__name__)
 # that the transition is valid.
 
 _SWEEP_1_SQL = """\
--- Sweep 1 runs on every worker, not just the leader.  FOR UPDATE SKIP
--- LOCKED lets sibling workers run concurrently without blocking — each
--- worker reclaims a disjoint subset of expired-lock rows.  Vendor
--- parallel: Oban's lifeline plugin runs this on every instance, not just
--- the elected leader.
+-- Leader-only reclaim sweep (per architecture §Leader Election).  FOR
+-- UPDATE SKIP LOCKED is kept so the SQL is safe if the sweep is ever run
+-- concurrently; the production leader loop serializes it.
+--
+-- The cancel_phase != 0 carve-out below adds a flat extra 60 seconds on
+-- top of cancel_grace + cleanup_grace before a job with an in-flight
+-- cancel request becomes eligible for crash-reclaim.  This is a fixed
+-- safety margin, not derived from any other setting: it gives the
+-- cooperative-cancel/escalation protocol (see the cancellation-protocol
+-- section of docs/architecture.md) extra headroom to complete on its own
+-- before the crash-recovery path pre-empts it, so a merely-slow (not
+-- actually crashed) cancellation isn't mistaken for a crash.
 WITH snap AS (
     SELECT id, locked_by_worker
     FROM "{schema}".jobs
@@ -68,6 +75,8 @@ SET status = CASE
     END,
     locked_by_worker = NULL,
     lock_expires_at = NULL,
+    cancel_phase = 0,
+    cancel_requested_at = NULL,
     scheduled_at = CASE
         WHEN j.attempt < j.max_attempts AND j.retry_kind != 'non_retryable'
             THEN now() + interval '5 seconds'
@@ -160,7 +169,7 @@ async def sweep_expired_locks(
     For each reclaimed job:
 
     - If attempts remain and retry is allowed: transition to
-      ``'scheduled'`` with 5-second backoff.
+      ``'pending'`` with ``scheduled_at = now() + 5s`` backoff.
     - Otherwise: transition to ``'crashed'`` with ``finished_at = now()``.
 
     Both branches write a ``job_attempts`` row (outcome ``'crashed'``,

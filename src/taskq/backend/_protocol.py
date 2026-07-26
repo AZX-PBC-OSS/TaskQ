@@ -60,6 +60,7 @@ __all__ = [
     "JobRow",
     "JobSortField",
     "JobStatus",
+    "LongRunningJobEventsWriter",
     "QueueMode",
     "QueueName",
     "RateLimitBackend",
@@ -352,6 +353,23 @@ class EventRow:
     occurred_at: datetime
     kind: Literal["state_change", "cancel_request"]
     detail: dict[str, object]
+
+
+@dataclass(frozen=True, slots=True)
+class LongRunningJobEventsWriter:
+    """A transaction holding a lock on ``job_events`` for longer than a
+    ``poll_reclaim_events`` visibility-delay margin — a candidate cause of
+    a silently missed reclaim event (see
+    ``taskq.constants.RECLAIM_EVENT_VISIBILITY_DELAY``). Diagnostic only:
+    reported by ``PostgresBackend.check_reclaim_visibility_delay_risk``,
+    not a guarantee that this specific transaction will write to
+    ``job_events`` again or actually cause a miss — a proxy signal for an
+    operator to investigate, not proof of an incident.
+    """
+
+    pid: int
+    xact_start: datetime
+    xact_age_seconds: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -774,7 +792,13 @@ class Backend(Protocol):
 
     async def get_events(self, job_id: JobId) -> list[EventRow]: ...
 
-    async def poll_reclaim_events(self, after_id: int, limit: int = 100) -> list[EventRow]: ...
+    async def poll_reclaim_events(
+        self,
+        after_id: int,
+        limit: int = 100,
+        *,
+        visibility_delay: timedelta | None = None,
+    ) -> list[EventRow]: ...
 
     # ── Cancel signals ──────────────────────────────────────────────────
     async def write_cancel_request(

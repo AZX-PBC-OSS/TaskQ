@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 
 import structlog
 
-from taskq.backend._protocol import AttemptRow
+from taskq.backend._protocol import AttemptRow, CancelPhase
 from taskq.obs import record_deadline_exceeded_swept
 
 if TYPE_CHECKING:
@@ -105,13 +105,20 @@ async def _reclaim_expired_locks(
     cancel_grace: timedelta,
     cleanup_grace: timedelta,
 ) -> int:
+    # Mirrors PostgresBackend._SWEEP_1_SQL's carve-out exactly: a job with
+    # an in-flight cancel request (cancel_phase != 0) is normally left for
+    # the cancellation protocol to finish, but is still reclaimed once its
+    # lock has been expired for cancel_grace + cleanup_grace + a flat 60s
+    # safety margin (see _sweeps.py's _SWEEP_1_SQL comment) — otherwise a
+    # worker that died mid-cancellation would never be recovered.
+    deep_expiry_margin = cancel_grace + cleanup_grace + timedelta(seconds=60)
     count = 0
     for job_id, row in list(self._jobs.items()):
         if (
             row.status == "running"
             and row.lock_expires_at is not None
             and row.lock_expires_at < now
-            and row.cancel_phase == 0
+            and (row.cancel_phase == 0 or row.lock_expires_at < now - deep_expiry_margin)
         ):
             duration_ms: int | None = None
             if row.started_at is not None:
@@ -141,6 +148,8 @@ async def _reclaim_expired_locks(
                     scheduled_at=new_scheduled,
                     locked_by_worker=None,
                     lock_expires_at=None,
+                    cancel_phase=CancelPhase.NONE,
+                    cancel_requested_at=None,
                 )
                 self._append_state_change_event(
                     job_id,
@@ -162,6 +171,8 @@ async def _reclaim_expired_locks(
                     row,
                     status="crashed",
                     finished_at=now,
+                    cancel_phase=CancelPhase.NONE,
+                    cancel_requested_at=None,
                 )
                 self._append_state_change_event(
                     job_id,

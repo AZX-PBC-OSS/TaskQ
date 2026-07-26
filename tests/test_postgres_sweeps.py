@@ -18,6 +18,7 @@ import pytest
 from taskq._ids import new_uuid
 from taskq.backend._protocol import JobId
 from taskq.backend.postgres import PostgresBackend
+from taskq.constants import RECLAIM_EVENT_VISIBILITY_DELAY
 from taskq.testing.fixtures import JobsApp
 from taskq.testing.pg import create_pending_job, create_running_job, create_worker
 
@@ -308,6 +309,51 @@ class TestSweepExpiredLocks:
         assert row is not None
         assert row["status"] in ("pending", "crashed")
 
+    async def test_cancel_state_cleared_on_deeply_expired_retry(
+        self, clean_jobs_app: JobsApp
+    ) -> None:
+        """A deeply expired lock with an in-flight cancel request is
+        reclaimed; the retry branch must reset cancel_phase and
+        cancel_requested_at so the next worker does not immediately
+        re-cancel the job."""
+        deps = clean_jobs_app.deps
+        schema = deps.settings.schema_name
+        worker_id = new_uuid()
+
+        deep_past = datetime.now(UTC) - timedelta(seconds=180)
+
+        async with deps.worker_pool.acquire() as conn:
+            await create_worker(conn, schema, worker_id)
+            job_id = await create_running_job(
+                conn,
+                schema,
+                worker_id,
+                lock_expires_at=deep_past,
+                cancel_phase=1,
+                cancel_requested_at=datetime.now(UTC),
+            )
+
+            count = await PostgresBackend.sweep_expired_locks(
+                conn,
+                datetime.now(UTC),
+                _CANCEL_GRACE,
+                _CLEANUP_GRACE,
+                schema=schema,
+            )
+
+        assert count == 1
+
+        async with deps.worker_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f'SELECT status, cancel_phase, cancel_requested_at FROM "{schema}".jobs WHERE id = $1',
+                job_id,
+            )
+
+        assert row is not None
+        assert row["status"] == "pending"
+        assert row["cancel_phase"] == 0
+        assert row["cancel_requested_at"] is None
+
     async def test_event_detail_contains_reason(self, clean_jobs_app: JobsApp) -> None:
         """job_events detail should include reason='lock_expired'."""
         deps = clean_jobs_app.deps
@@ -430,7 +476,7 @@ class TestPollReclaimEvents:
                 schema=schema,
             )
 
-        events = await backend.poll_reclaim_events(0)
+        events = await backend.poll_reclaim_events(0, visibility_delay=timedelta(0))
         assert len(events) == 1
         evt = events[0]
         assert evt.detail["to_state"] == "crashed"
@@ -465,7 +511,7 @@ class TestPollReclaimEvents:
                 schema=schema,
             )
 
-        events = await backend.poll_reclaim_events(0)
+        events = await backend.poll_reclaim_events(0, visibility_delay=timedelta(0))
         assert len(events) == 1
         evt = events[0]
         assert evt.detail["to_state"] == "pending"
@@ -502,17 +548,19 @@ class TestPollReclaimEvents:
             )
 
         # limit=1 → only 1 event
-        first_batch = await backend.poll_reclaim_events(0, limit=1)
+        first_batch = await backend.poll_reclaim_events(0, limit=1, visibility_delay=timedelta(0))
         assert len(first_batch) == 1
 
         # after_id filtering → excludes already-seen event
         first_id = first_batch[0].event_id
-        second_batch = await backend.poll_reclaim_events(first_id, limit=100)
+        second_batch = await backend.poll_reclaim_events(
+            first_id, limit=100, visibility_delay=timedelta(0)
+        )
         assert len(second_batch) == 1
         assert second_batch[0].event_id > first_id
 
         # full query → ascending order
-        all_events = await backend.poll_reclaim_events(0, limit=100)
+        all_events = await backend.poll_reclaim_events(0, limit=100, visibility_delay=timedelta(0))
         assert len(all_events) == 2
         assert all_events[0].event_id < all_events[1].event_id
 
@@ -557,7 +605,7 @@ class TestPollReclaimEvents:
         assert row.status == "running"
 
         # No reclaim events should be observable (INSERT rolled back)
-        events = await backend.poll_reclaim_events(0)
+        events = await backend.poll_reclaim_events(0, visibility_delay=timedelta(0))
         assert len(events) == 0
 
     async def test_no_duplicate_across_repeated_sweeps(self, clean_jobs_app: JobsApp) -> None:
@@ -598,7 +646,7 @@ class TestPollReclaimEvents:
             )
             assert count2 == 0
 
-        events = await backend.poll_reclaim_events(0)
+        events = await backend.poll_reclaim_events(0, visibility_delay=timedelta(0))
         assert len(events) == 1
 
     async def test_no_duplicate_across_concurrent_sweeps(self, clean_jobs_app: JobsApp) -> None:
@@ -638,19 +686,28 @@ class TestPollReclaimEvents:
         total_swept = sum(counts)
         assert total_swept == num_jobs
 
-        events = await backend.poll_reclaim_events(0)
+        events = await backend.poll_reclaim_events(0, visibility_delay=timedelta(0))
         assert len(events) == num_jobs
 
-    async def test_concurrent_uncommitted_transaction_does_not_cause_lost_event(
-        self, clean_jobs_app: JobsApp
-    ) -> None:
-        """Under concurrent sweep transactions, bigserial id allocation
-        order and commit order can diverge: a lower-id transaction may
-        commit after a higher-id one.  Without the xact-id horizon filter,
-        a poller could see the higher-id row, advance its cursor past it,
-        and then permanently lose the lower-id row when it commits.  The
-        horizon filter ensures rows from still-uncommitted transactions
-        are never returned or skipped past.
+    async def test_out_of_order_commit_does_not_lose_event(self, clean_jobs_app: JobsApp) -> None:
+        """``job_events.id`` (bigserial) is allocated at INSERT time, but
+        transactions can commit out of order under real contention (lock
+        waits, a slower sweep pass, GC pauses): a transaction holding a
+        LOWER id can commit AFTER one holding a HIGHER id.
+
+        With ``visibility_delay=0`` (no protection — reproduces the bug
+        directly against the real query, not a reverted copy of it),
+        polling right after the higher-id transaction commits returns it
+        immediately; a cursor advanced to that id would then permanently
+        exclude the lower-id transaction's event once it finally commits.
+
+        The production default (``RECLAIM_EVENT_VISIBILITY_DELAY``) holds
+        back freshly-committed rows until enough wall-clock time has
+        passed that any transaction which could hold a lower id is
+        guaranteed to have already committed or aborted — ``id`` and
+        ``occurred_at`` are stamped at the same INSERT instant, so they
+        are co-monotonic, and this is why waiting on ``occurred_at``
+        alone is sufficient once it clears the margin.
         """
         deps = clean_jobs_app.deps
         backend = clean_jobs_app.backend
@@ -688,6 +745,7 @@ class TestPollReclaimEvents:
         tx_a = conn_a.transaction()
         tx_b = conn_b.transaction()
         try:
+            # A inserts first, grabbing the LOWER event_id, then stays open.
             await tx_a.start()
             await conn_a.execute(
                 f'INSERT INTO "{schema}".'
@@ -697,6 +755,8 @@ class TestPollReclaimEvents:
                 detail_json,
             )
 
+            # B inserts second, grabbing the HIGHER event_id, and commits
+            # immediately — out of order relative to A.
             await tx_b.start()
             await conn_b.execute(
                 f'INSERT INTO "{schema}".'
@@ -707,21 +767,29 @@ class TestPollReclaimEvents:
             )
             await tx_b.commit()
 
-            events = await backend.poll_reclaim_events(0)
-            assert len(events) == 0, (
-                "Expected 0 events with an uncommitted concurrent transaction, "
-                f"got {len(events)} — the xact-id horizon filter is not working"
+            # Reproduces the bug directly: with no visibility delay, B's
+            # event is returned right away and a cursor advanced to it
+            # would permanently exclude A once A finally commits.
+            unsafe = await backend.poll_reclaim_events(0, visibility_delay=timedelta(0))
+            assert len(unsafe) == 1
+            assert unsafe[0].job_id == JobId(job_b)
+
+            # The fix: the production default margin holds B back.
+            protected = await backend.poll_reclaim_events(0)
+            assert protected == [], (
+                "visibility_delay should hold back a freshly-committed row "
+                "while an earlier-id transaction may still be uncommitted"
             )
 
+            # A finally commits, comfortably within the margin.
             await tx_a.commit()
+            await asyncio.sleep(RECLAIM_EVENT_VISIBILITY_DELAY.total_seconds() + 0.3)
 
-            events = await backend.poll_reclaim_events(0)
-            assert len(events) == 2, (
-                f"Expected 2 events after both transactions committed, got {len(events)}"
-            )
-            assert events[0].event_id < events[1].event_id
-            assert events[0].job_id == JobId(job_a)
-            assert events[1].job_id == JobId(job_b)
+            settled = await backend.poll_reclaim_events(0)
+            assert len(settled) == 2
+            assert settled[0].event_id < settled[1].event_id
+            assert settled[0].job_id == JobId(job_a)
+            assert settled[1].job_id == JobId(job_b)
         finally:
             with contextlib.suppress(Exception):
                 await tx_a.rollback()
@@ -731,6 +799,65 @@ class TestPollReclaimEvents:
                 await conn_a.close()
             with contextlib.suppress(Exception):
                 await conn_b.close()
+
+    async def test_check_reclaim_visibility_delay_risk_detects_long_open_writer(
+        self, clean_jobs_app: JobsApp
+    ) -> None:
+        """check_reclaim_visibility_delay_risk reports a transaction that
+        has held job_events open longer than a (deliberately tiny) margin,
+        and reports nothing once that transaction commits."""
+        backend = clean_jobs_app.backend
+        deps = clean_jobs_app.deps
+        schema = deps.settings.schema_name
+        dsn = str(deps.settings.pg_dsn)
+
+        detail_json = json.dumps(
+            {"reason": "lock_expired", "to_state": "crashed", "from_state": "running"}
+        )
+
+        async with deps.worker_pool.acquire() as conn:
+            worker_id = new_uuid()
+            await create_worker(conn, schema, worker_id)
+            job_id = await create_running_job(
+                conn,
+                schema,
+                worker_id,
+                lock_expires_at=datetime.now(UTC) - timedelta(seconds=10),
+                max_attempts=1,
+                retry_kind="transient",
+                attempt=1,
+            )
+
+        conn_a = await asyncpg.connect(dsn)
+        tx_a = conn_a.transaction()
+        try:
+            await tx_a.start()
+            await conn_a.execute(
+                f'INSERT INTO "{schema}".'
+                "job_events (job_id, kind, detail) "
+                "VALUES ($1, 'state_change', $2::jsonb)",
+                job_id,
+                detail_json,
+            )
+
+            tiny_margin = timedelta(milliseconds=50)
+            await asyncio.sleep(0.15)
+
+            risky = await backend.check_reclaim_visibility_delay_risk(visibility_delay=tiny_margin)
+            assert len(risky) == 1
+            assert risky[0].xact_age_seconds >= tiny_margin.total_seconds()
+
+            await tx_a.commit()
+
+            settled = await backend.check_reclaim_visibility_delay_risk(
+                visibility_delay=tiny_margin
+            )
+            assert settled == []
+        finally:
+            with contextlib.suppress(Exception):
+                await tx_a.rollback()
+            with contextlib.suppress(Exception):
+                await conn_a.close()
 
 
 # ── sweep_deadline_exceeded ────────────────────────────────────

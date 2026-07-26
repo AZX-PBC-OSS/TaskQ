@@ -1226,7 +1226,7 @@ async def test_poll_reclaim_events_equivalence(backend_pair: Backend) -> None:
         cleanup_grace=timedelta(seconds=10),
     )
 
-    events = await backend_pair.poll_reclaim_events(0)
+    events = await backend_pair.poll_reclaim_events(0, visibility_delay=timedelta(0))
     assert len(events) == 1
     evt = events[0]
     assert evt.kind == "state_change"

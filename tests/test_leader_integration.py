@@ -826,8 +826,11 @@ async def test_ti7_crash_reclaim_observable_via_poll(pg_dsn: str) -> None:
         )
         assert count == 1
 
-        # Consumer observes the terminal transition via poll_reclaim_events
-        events = await backend.poll_reclaim_events(0)
+        # Consumer observes the terminal transition via poll_reclaim_events.
+        # visibility_delay=0: no concurrent sweep in this test, so there is
+        # no out-of-order-commit hazard to guard against — see
+        # taskq.constants.RECLAIM_EVENT_VISIBILITY_DELAY.
+        events = await backend.poll_reclaim_events(0, visibility_delay=timedelta(0))
         assert len(events) == 1
         evt = events[0]
         assert evt.detail["to_state"] == "crashed"
@@ -920,8 +923,9 @@ async def test_ti8_fanout_outstanding_counter_reaches_zero(
             ):
                 outstanding -= 1
 
-        # Crash-reclaim path: poll_reclaim_events observes the crashed job
-        events = await backend.poll_reclaim_events(0)
+        # Crash-reclaim path: poll_reclaim_events observes the crashed job.
+        # visibility_delay=0: single sweep, no concurrent-commit hazard here.
+        events = await backend.poll_reclaim_events(0, visibility_delay=timedelta(0))
         assert len(events) == 1
         assert events[0].job_id == JobId(crashed_jid)
         outstanding -= 1

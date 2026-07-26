@@ -49,12 +49,14 @@ from taskq.backend._protocol import (
     JobFilter,
     JobId,
     JobRow,
+    LongRunningJobEventsWriter,
     ScheduleCreateArgs,
     ScheduleRecord,
     ScheduleUpdateArgs,
     parse_cancel_phase,
 )
 from taskq.backend._reads import (
+    _check_reclaim_visibility_risk,
     _count_pending_jobs,
     _get,
     _get_attempts,
@@ -112,6 +114,7 @@ from taskq.backend._terminal import (
 from taskq.backend.clock import Clock
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
+    RECLAIM_EVENT_VISIBILITY_DELAY,
     events_channel,
     wake_channel,
     worker_channel,
@@ -173,6 +176,13 @@ class PostgresBackend:
 
     ``cancellation_grace_period`` and ``cleanup_grace_period`` are the
     ``timedelta`` values used by :meth:`reclaim_expired_locks`.
+
+    ``reclaim_event_visibility_delay`` is the default trailing-watermark
+    margin :meth:`poll_reclaim_events` applies when a caller does not pass
+    an explicit ``visibility_delay`` — see
+    ``taskq.constants.RECLAIM_EVENT_VISIBILITY_DELAY`` and
+    ``WorkerSettings.reclaim_event_visibility_delay`` for the correctness
+    assumption this encodes.
     """
 
     BACKEND_PROTOCOL_VERSION: ClassVar[int] = BACKEND_PROTOCOL_VERSION
@@ -183,11 +193,13 @@ class PostgresBackend:
         clock: Clock,
         cancellation_grace_period: timedelta,
         cleanup_grace_period: timedelta,
+        reclaim_event_visibility_delay: timedelta = RECLAIM_EVENT_VISIBILITY_DELAY,
     ) -> None:
         self._deps = deps
         self._clock = clock
         self._cancellation_grace_period = cancellation_grace_period
         self._cleanup_grace_period = cleanup_grace_period
+        self._reclaim_event_visibility_delay = reclaim_event_visibility_delay
 
         _schema: str = deps.settings.schema_name
         if not _IDENT_RE.match(_schema):
@@ -459,8 +471,46 @@ class PostgresBackend:
     async def get_events(self, job_id: JobId) -> list[EventRow]:
         return await _get_events(self._worker_pool, self._sql, job_id)
 
-    async def poll_reclaim_events(self, after_id: int, limit: int = 100) -> list[EventRow]:
-        return await _poll_reclaim_events(self._worker_pool, self._sql, after_id, limit)
+    async def poll_reclaim_events(
+        self,
+        after_id: int,
+        limit: int = 100,
+        *,
+        visibility_delay: timedelta | None = None,
+    ) -> list[EventRow]:
+        delay = (
+            visibility_delay
+            if visibility_delay is not None
+            else self._reclaim_event_visibility_delay
+        )
+        return await _poll_reclaim_events(
+            self._worker_pool, self._sql, after_id, limit, visibility_delay=delay
+        )
+
+    async def check_reclaim_visibility_delay_risk(
+        self,
+        *,
+        visibility_delay: timedelta | None = None,
+    ) -> list[LongRunningJobEventsWriter]:
+        """Diagnostic (not part of ``Backend``): report transactions that
+        have held a lock on ``job_events`` for longer than the configured
+        visibility-delay margin — a candidate cause of a silently missed
+        ``poll_reclaim_events`` event (see
+        ``taskq.constants.RECLAIM_EVENT_VISIBILITY_DELAY``).
+
+        Intended for a periodic monitoring/alerting loop, not the per-poll
+        hot path — this issues its own query against ``pg_locks`` /
+        ``pg_stat_activity`` and is not free.  A non-empty result is a
+        proxy warning, not proof of an actual missed event.
+        """
+        delay = (
+            visibility_delay
+            if visibility_delay is not None
+            else self._reclaim_event_visibility_delay
+        )
+        return await _check_reclaim_visibility_risk(
+            self._worker_pool, self._sql, visibility_delay=delay
+        )
 
     # ── Cancel signals ──────────────────────────────────────────────────
 

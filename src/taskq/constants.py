@@ -18,6 +18,7 @@ __all__ = [
     "MAX_RESULT_BYTES",
     "PROGRESS_CHANNEL_FMT",
     "PROGRESS_GLOBAL_CHANNEL_FMT",
+    "RECLAIM_EVENT_VISIBILITY_DELAY",
     "WAKE_CHANNEL_FMT",
     "WORKER_CHANNEL_FMT",
     "events_channel",
@@ -27,6 +28,54 @@ __all__ = [
     "wake_channel",
     "worker_channel",
 ]
+
+RECLAIM_EVENT_VISIBILITY_DELAY: Final[timedelta] = timedelta(seconds=2)
+"""Trailing-watermark safety margin for ``poll_reclaim_events``.
+
+``job_events.id`` (bigserial) and ``occurred_at`` (``clock_timestamp()``)
+are both stamped at INSERT time within the same statement, so they are
+co-monotonic: whichever row was inserted first always has both the lower
+``id`` and the earlier ``occurred_at``. A plain ``SELECT`` can never see
+an uncommitted sibling row at all (it is invisible under MVCC, not just
+filtered out), so no snapshot- or transaction-id-based predicate computed
+only over *visible* rows can detect one. Instead, ``poll_reclaim_events``
+only returns rows whose ``occurred_at`` is older than this margin: by the
+time a row clears it, any transaction that could have inserted a
+still-lower ``id`` has, by construction, had at least as long to commit —
+so it must have either committed already (and is returned, correctly
+ordered, in this or an earlier poll) or aborted (permanently gone, safe
+to skip).
+
+**This guarantee is conditional, not unconditional.** It assumes no
+``job_events`` writer takes longer than this margin between its INSERT
+and its COMMIT. Sweep and terminal-write transactions are a handful of
+single-round-trip statements with no external I/O, so this is a generous
+bound under normal operation — but it is an assumption enforced by
+nothing in the SQL itself, not a property the query guarantees on its
+own. Known ways it can be violated: lock contention delaying commit
+after the ``FOR UPDATE SKIP LOCKED`` scan, a slow or overloaded database
+extending that scan itself, a stalled/GC-paused worker holding the
+transaction open, or an abnormally large batch inserted in one
+transaction. If a writer transaction does exceed the margin, the
+consequence is a **silently missed event**: a lower-``id`` row can commit
+after the cursor has already advanced past its position, with no error
+raised anywhere — the same failure mode this feature exists to prevent,
+just pushed to a rarer trigger.
+
+``PostgresBackend.check_reclaim_visibility_delay_risk`` turns this from a
+silent failure into an operator-visible one: it reports any transaction
+that has held ``job_events`` open longer than the margin (see
+:class:`~taskq.backend._protocol.LongRunningJobEventsWriter`) — a proxy
+warning, not proof of an actual miss, intended for a periodic
+monitoring/alerting loop rather than the per-poll hot path (see
+``docs/architecture.md``'s crash-reclaim section for what it does and does
+not detect). Configurable via
+``WorkerSettings.reclaim_event_visibility_delay`` /
+``TASKQ_RECLAIM_EVENT_VISIBILITY_DELAY`` and per-call via
+``poll_reclaim_events(..., visibility_delay=...)`` — raise it if sweeps
+run under heavy contention or against large batches; lower it if lower
+latency matters more and writes are known to be fast.
+"""
 
 DEFAULT_RESERVATION_BACKOFF: Final[timedelta] = timedelta(seconds=5)
 """Default backoff when ``RateLimitDecision.retry_after`` is ``None``.

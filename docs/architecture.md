@@ -206,25 +206,102 @@ Sweep 1 (`running → crashed` / `running → pending`) additionally writes a
 fleet-wide-pollable `job_events` outbox row in the same transaction as the
 reclaim UPDATE.  Consumers observe crash-reclaimed jobs via
 `Backend.poll_reclaim_events(after_id)` or `TaskQ.watch_reclaims(after_id)`
-without enumerating every `job_id`.  Gap-free at-least-once delivery is
-guaranteed by a **xact-id horizon filter**: each `job_events` row records
-its inserting transaction's id (`xact_id`), and `poll_reclaim_events` only
-returns rows whose `xact_id` is below `pg_snapshot_xmin(pg_current_snapshot())`
-— i.e., the transaction is guaranteed to have committed or aborted with no
-still-uncommitted sibling that could later insert a row with a lower
-`event_id`.  Rows from concurrent transactions that have not yet cleared the
-horizon are simply held back and become visible on a later poll; consumers
-must be idempotent (dedupe on `event_id`).  The reclaim `pg_notify` now fires
-for every swept row, which is a wake-channel semantics change — `wake_channel`
-previously meant only "new dispatchable work"; it now also means "something
-changed on job_events," so every crash-reclaim wakes every subscriber
-(including pure-dispatch workers).  Crashes are rare so the cost is low, but
-the channel's meaning has broadened.  The index added by migration
-`01.00.02_01_pre_job_events_outbox.sql` uses `CREATE INDEX` (not
-`CONCURRENTLY`) and takes an exclusive lock on `job_events` for the duration
-of the build — operators with a large/populated table should run the
-equivalent `CREATE INDEX CONCURRENTLY` manually during a maintenance window
-(see the migration file for details).
+without enumerating every `job_id`.
+
+Delivery is **at-least-once, and gap-free under a bounded-transaction-duration
+assumption** — not an unconditional guarantee. `job_events.id` (`bigserial`)
+is allocated at INSERT time, so under concurrent sweep transactions, id
+allocation order and commit order can diverge: a transaction holding a lower
+id can commit *after* one holding a higher id. A naive `id > cursor` poll
+would return the higher-id row immediately, advance the cursor past it, and
+permanently lose the lower-id row once its transaction finally committed.
+
+Two SQL-only fixes were tried and both failed to close this gap, for
+reasons worth recording so they aren't retried:
+
+- A per-row filter comparing each row's inserting-transaction id against
+  `pg_snapshot_xmin(pg_current_snapshot())` only checks whether *that row's
+  own* transaction is complete — it cannot detect a *different*,
+  still-uncommitted transaction sitting at a lower `event_id`, because that
+  row is invisible under MVCC to any plain `SELECT`, not merely filtered out.
+  No predicate computed only over visible rows can bound something it cannot
+  see.
+- A gap-detection variant (treat any hole in the visible `id` sequence as
+  "possibly still forthcoming" while `pg_current_snapshot()` reports any
+  transaction in progress) fails for a structural reason: `job_events` is a
+  shared, multi-kind table (state changes, cancel requests, progress) written
+  continuously by unrelated code paths, so some transaction is touching it
+  almost continuously in a live system — the "anything in progress" signal is
+  effectively always true, which would stall reclaim-event delivery
+  indefinitely rather than only during genuine contention. (Separately, this
+  environment's `pg_snapshot_xmin`/`pg_snapshot_xmax` did not reflect a
+  confirmed-active concurrent transaction in ad hoc testing — a further reason
+  not to depend on them here without deeper investigation.)
+
+Instead, `poll_reclaim_events` uses a **trailing-watermark (visibility delay)
+filter**: `id` and `occurred_at` (`clock_timestamp()`) are stamped at the same
+INSERT instant, so they are co-monotonic — an earlier id always has an
+earlier-or-equal `occurred_at`. Only rows older than
+`taskq.constants.RECLAIM_EVENT_VISIBILITY_DELAY` (2 seconds by default) are
+returned: by the time a row clears that margin, any transaction that could
+have inserted a still-lower id has had at least as long to commit, so it must
+have either committed (returned, correctly ordered, in this or an earlier
+poll) or aborted (permanently gone, safe to skip). **This assumes no
+`job_events` writer takes longer than the margin between its INSERT and its
+commit** — true for TaskQ's short, single-round-trip sweep and terminal-write
+transactions, but not something the SQL itself enforces; an abnormally
+long-held writing transaction could still, in principle, exceed the margin
+and reproduce the gap. Consumers must be idempotent (dedupe on `event_id`).
+Configurable via `WorkerSettings.reclaim_event_visibility_delay` /
+`TASKQ_RECLAIM_EVENT_VISIBILITY_DELAY` (and per-call via
+`poll_reclaim_events(..., visibility_delay=...)`) — raise it under heavy
+sweep contention or large batches, lower it if latency matters more and
+writes are known to be fast.
+
+**Detecting a violation.** A silent-failure mode nobody can see is worse
+than a slower one that's visible, so `PostgresBackend.check_reclaim_
+visibility_delay_risk` is provided as an opt-in diagnostic: it queries
+`pg_locks`/`pg_stat_activity` for any transaction that has held a lock on
+`job_events` for longer than the configured margin, returning
+`LongRunningJobEventsWriter` rows. This is a *proxy* signal, not proof of
+an actual miss — it cannot see whether that transaction will insert a
+`job_events` row before committing, only that it has held the table open
+unusually long, so it can both false-positive (an unrelated long-running
+transaction that merely touched `job_events` once) and false-negative (a
+writer that inserts and commits within the margin every time, even if
+some other assumption about the deployment is wrong). It is deliberately
+**not** wired into the per-poll hot path — it issues its own
+`pg_locks`/`pg_stat_activity` query, so running it on every
+`poll_reclaim_events`/`watch_reclaims` call would add cost and, in a busy
+system, noise; it is intended for a periodic monitoring/alerting loop
+instead.
+
+`TaskQ.watch_reclaims()`'s PG LISTEN transport wakes on the reclaim
+`pg_notify` for low latency, but a NOTIFY-triggered poll can still come up
+empty if the event hasn't cleared the visibility-delay margin yet — it then
+retries on a short, bounded cadence (`_catch_up_after_notify`) until the
+margin elapses, rather than falling back to a full — possibly much longer —
+`poll_timeout` wait.
+This is the standard "polling publisher" mitigation for the transactional
+outbox pattern's well-known bigserial-ordering hazard — the alternative,
+fully exact fix is to read commit order directly off the WAL (logical
+decoding / CDC), which is out of scope here.
+
+The reclaim `pg_notify` now fires for every swept row (previously only the
+retry branch), which is a **wake-channel semantics change**, not purely a
+bugfix — `wake_channel` previously meant only "new dispatchable work"; it now
+also means "something changed on job_events," so every crash-reclaim wakes
+every subscriber (including pure-dispatch workers with no interest in it).
+Crashes are rare so the added wakeup cost is low, but the channel's meaning
+has broadened.
+
+The index added by migration `01.00.02_01_pre_job_events_outbox.sql` uses
+`CREATE INDEX` (not `CONCURRENTLY`, since `migrate.py` applies each migration
+inside a transaction and Postgres forbids `CONCURRENTLY` there) and takes an
+exclusive lock on `job_events` for the duration of the build, which can stall
+writes to that heavily-written table — operators with a large/populated table
+should run the equivalent `CREATE INDEX CONCURRENTLY` manually during a
+maintenance window (see the migration file for details).
 
 ---
 

@@ -29,6 +29,7 @@ from taskq.backend._protocol import (
     JobPage,
     JobRow,
     JobStatus,
+    LongRunningJobEventsWriter,
     ScheduleRecord,
 )
 from taskq.backend.statemachine import (
@@ -63,6 +64,7 @@ __all__ = [  # pyright: ignore[reportUnsupportedDunderAll]  # Why: __getattr__ l
     "JobPage",
     "JobRow",
     "JobStatus",
+    "LongRunningJobEventsWriter",
     "PostgresBackend",
     "ScheduleRecord",
     "assert_valid_transition",
