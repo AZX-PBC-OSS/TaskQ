@@ -104,6 +104,16 @@ async def _enqueue(self: "InMemoryBackend", args: EnqueueArgs) -> JobRow:
             )
 
     if args.idempotency_key is not None:
+        # NOTE: InMemoryBackend always simulates the fully-migrated
+        # (post-01.00.03_01_post_idempotency_scope_drop_old_index) state --
+        # true (idempotency_scope, idempotency_key) isolation, always. It
+        # does NOT model the rolling-deploy overlap window where Postgres
+        # still has the old global idempotency_key-only index alongside
+        # the new composite one (see ScopedIdempotencyMigrationPendingError
+        # and _enqueue.py's matching handling). Tests that need to exercise
+        # that transitional window must do so against real Postgres
+        # (tests/test_idempotency_scope_migrations.py); InMemoryBackend
+        # cannot reproduce the cross-scope collision that window raises.
         existing_id = self._idempotency_index.get((args.idempotency_scope, args.idempotency_key))
         if existing_id is not None:
             existing_row = self._jobs.get(existing_id)

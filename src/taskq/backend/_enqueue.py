@@ -29,6 +29,7 @@ from taskq.backend.clock import Clock
 from taskq.constants import wake_channel
 from taskq.exceptions import (
     MaxPendingExceededError,
+    ScopedIdempotencyMigrationPendingError,
     SingletonCollisionError,
 )
 from taskq.obs import (
@@ -50,6 +51,13 @@ __all__ = [
 logger: structlog.stdlib.BoundLogger = get_logger(__name__)
 
 _SINGLETON_CONSTRAINT_NAME = "jobs_singleton_uniq"
+
+# The old single-column idempotency index, still present alongside the new
+# composite one during the rolling-deploy window between
+# 01.00.03_01_pre_idempotency_scope.sql and
+# 01.00.03_01_post_idempotency_scope_drop_old_index.sql. See
+# ScopedIdempotencyMigrationPendingError for the full rationale.
+_LEGACY_IDEMPOTENCY_KEY_CONSTRAINT_NAME = "jobs_idempotency_key_uniq"
 
 
 async def _enqueue_on_conn(
@@ -181,6 +189,29 @@ async def _enqueue_on_conn(
                 actor=args.actor,
                 blocking_job_id=None,
                 retry_after=None,
+            ) from exc
+        if exc.constraint_name == _LEGACY_IDEMPOTENCY_KEY_CONSTRAINT_NAME:
+            # Rolling-deploy overlap window: the old single-column index
+            # still exists alongside the new composite one (see
+            # 01.00.03_01_pre_idempotency_scope.sql). This row's
+            # (idempotency_scope, idempotency_key) pair is new -- our own
+            # ON CONFLICT target didn't fire -- but the bare
+            # idempotency_key already exists under a DIFFERENT scope, and
+            # that legacy index isn't covered by our conflict target, so
+            # Postgres raises unconditionally. See
+            # ScopedIdempotencyMigrationPendingError's docstring for why
+            # this is surfaced explicitly rather than silently resolved
+            # against the wrong scope's row.
+            logger.warning(
+                "scoped-idempotency-migration-pending",
+                actor=args.actor,
+                idempotency_key=args.idempotency_key,
+                idempotency_scope=args.idempotency_scope,
+            )
+            raise ScopedIdempotencyMigrationPendingError(
+                actor=args.actor,
+                idempotency_key=str(args.idempotency_key),
+                idempotency_scope=args.idempotency_scope,
             ) from exc
         raise
     if rec is not None:
@@ -320,30 +351,50 @@ async def _enqueue_batch(
         tag_jsons.append(dumps_str(list(args.tags)))
 
     async def _enqueue_batch_on_conn(conn: ConnLike) -> list[JobRow]:
-        returning_recs = await conn.fetch(
-            sql.enqueue_batch,
-            ids,
-            actors,
-            queues,
-            identity_keys,
-            fairness_keys,
-            payloads,
-            payload_schema_vers,
-            priorities,
-            max_attempts_list,
-            retry_kinds,
-            schedule_to_closes,
-            start_to_closes,
-            heartbeat_timeouts,
-            scheduled_ats,
-            metadatas,
-            idempotency_scopes,
-            idempotency_keys,
-            trace_ids,
-            span_ids,
-            result_expires_ats,
-            tag_jsons,
-        )
+        try:
+            returning_recs = await conn.fetch(
+                sql.enqueue_batch,
+                ids,
+                actors,
+                queues,
+                identity_keys,
+                fairness_keys,
+                payloads,
+                payload_schema_vers,
+                priorities,
+                max_attempts_list,
+                retry_kinds,
+                schedule_to_closes,
+                start_to_closes,
+                heartbeat_timeouts,
+                scheduled_ats,
+                metadatas,
+                idempotency_scopes,
+                idempotency_keys,
+                trace_ids,
+                span_ids,
+                result_expires_ats,
+                tag_jsons,
+            )
+        except UniqueViolationError as exc:
+            if exc.constraint_name == _LEGACY_IDEMPOTENCY_KEY_CONSTRAINT_NAME:
+                # Rolling-deploy overlap window (see
+                # _enqueue_on_conn's matching except-branch and
+                # ScopedIdempotencyMigrationPendingError's docstring).
+                # Unlike the single-enqueue path, this INSERT is one
+                # statement covering the whole batch: a single
+                # cross-scope collision against the legacy index aborts
+                # the ENTIRE batch, not just the offending item --
+                # Postgres gives us no cheaper way to identify which
+                # item(s) caused it without re-inserting one row at a
+                # time, which isn't warranted for a purely transitional
+                # migration-window condition.
+                logger.warning(
+                    "scoped-idempotency-migration-pending-batch",
+                    batch_size=len(args_list),
+                )
+                raise ScopedIdempotencyMigrationPendingError(detail=str(exc)) from exc
+            raise
 
         inserted_ids: set[UUID] = {rec["id"] for rec in returning_recs}
         if inserted_ids:

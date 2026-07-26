@@ -22,6 +22,15 @@ Covers:
   a single combined migration would have caused. See the "PHASE
   OBLIGATIONS" header comment in the pre migration file for the full
   rationale.
+- Application enqueue path during the pre-only window: drives the real
+  ``PostgresBackend.enqueue`` / ``enqueue_batch`` (not raw SQL) against a
+  pre-phase-only schema. Unscoped and same-scope usage must keep working
+  exactly as before; cross-scope usage of a repeated key must raise
+  :class:`~taskq.exceptions.ScopedIdempotencyMigrationPendingError` — a
+  clear, typed, documented error — rather than crash on a raw
+  ``asyncpg.UniqueViolationError``. See that exception's docstring for why
+  the library raises instead of silently falling back to a different
+  scope's row.
 """
 
 from datetime import UTC, datetime
@@ -31,7 +40,10 @@ import pytest
 
 from taskq import migrate as migrate_mod
 from taskq._ids import new_uuid
+from taskq.exceptions import ScopedIdempotencyMigrationPendingError
 from taskq.settings import TaskQSettings
+from taskq.testing.fixtures import _open_pg_backend_on_schema
+from taskq.testing.jobs import make_enqueue_args
 
 pytestmark = pytest.mark.integration
 
@@ -406,3 +418,136 @@ class TestPrePhaseOverlapWindow:
         await _insert_job_raw(
             pg_conn, settings.schema_name, idempotency_key=key, idempotency_scope="run-B"
         )
+
+
+# ── Application enqueue path during the pre-only window ────────
+#
+# TestPrePhaseOverlapWindow above proves the raw-SQL shape stays safe.
+# This class drives the real PostgresBackend.enqueue()/enqueue_batch()
+# (this release's actual application code, not raw SQL) against a
+# pre-phase-only schema -- the gap a HIGH finding fell through in an
+# earlier review round: unscoped and same-scope usage must be
+# unaffected, but cross-scope usage of a repeated key hits the
+# still-present old global index and must raise a clear, typed error
+# rather than crash on a raw asyncpg.UniqueViolationError.
+
+
+class TestApplicationEnqueuePathDuringPreOnlyWindow:
+    async def test_unscoped_enqueue_dedupes_safely(
+        self, pg_conn: asyncpg.Connection, settings: TaskQSettings
+    ) -> None:
+        await migrate_mod.apply_pending(pg_conn, schema=settings.schema_name, phase="pre")
+
+        stack, _deps, backend = await _open_pg_backend_on_schema(
+            str(settings.pg_dsn), settings.schema_name
+        )
+        try:
+            key = "app-path-unscoped-pre-only"
+            row1 = await backend.enqueue(make_enqueue_args(idempotency_key=key))
+            row2 = await backend.enqueue(
+                make_enqueue_args(idempotency_key=key, payload={"second": True})
+            )
+            assert row1.id == row2.id
+        finally:
+            await stack.aclose()
+
+    async def test_same_scope_enqueue_dedupes_safely(
+        self, pg_conn: asyncpg.Connection, settings: TaskQSettings
+    ) -> None:
+        await migrate_mod.apply_pending(pg_conn, schema=settings.schema_name, phase="pre")
+
+        stack, _deps, backend = await _open_pg_backend_on_schema(
+            str(settings.pg_dsn), settings.schema_name
+        )
+        try:
+            key = "app-path-same-scope-pre-only"
+            row1 = await backend.enqueue(
+                make_enqueue_args(idempotency_key=key, idempotency_scope="run-A")
+            )
+            row2 = await backend.enqueue(
+                make_enqueue_args(
+                    idempotency_key=key, idempotency_scope="run-A", payload={"second": True}
+                )
+            )
+            assert row1.id == row2.id
+        finally:
+            await stack.aclose()
+
+    async def test_cross_scope_enqueue_raises_typed_error_not_raw_driver_error(
+        self, pg_conn: asyncpg.Connection, settings: TaskQSettings
+    ) -> None:
+        """This is the assertion that closes the test-coverage gap: a
+        repeated key under a DIFFERENT scope during the pre-only window
+        must raise ScopedIdempotencyMigrationPendingError -- a documented,
+        catchable, legible error -- not a raw asyncpg.UniqueViolationError
+        that crashes the caller."""
+        await migrate_mod.apply_pending(pg_conn, schema=settings.schema_name, phase="pre")
+
+        stack, _deps, backend = await _open_pg_backend_on_schema(
+            str(settings.pg_dsn), settings.schema_name
+        )
+        try:
+            key = "app-path-cross-scope-pre-only"
+            await backend.enqueue(make_enqueue_args(idempotency_key=key, idempotency_scope="run-A"))
+            with pytest.raises(ScopedIdempotencyMigrationPendingError) as exc_info:
+                await backend.enqueue(
+                    make_enqueue_args(idempotency_key=key, idempotency_scope="run-B")
+                )
+            assert exc_info.value.idempotency_key == key
+            assert exc_info.value.idempotency_scope == "run-B"
+            # The raw asyncpg error must be chained, not swallowed.
+            assert isinstance(exc_info.value.__cause__, asyncpg.UniqueViolationError)
+        finally:
+            await stack.aclose()
+
+    async def test_enqueue_batch_cross_scope_collision_raises_typed_error(
+        self, pg_conn: asyncpg.Connection, settings: TaskQSettings
+    ) -> None:
+        """A single cross-scope collision inside enqueue_batch aborts the
+        whole batch statement (Postgres gives no cheaper per-item
+        attribution) -- must still surface as the typed error, not a raw
+        driver exception."""
+        await migrate_mod.apply_pending(pg_conn, schema=settings.schema_name, phase="pre")
+
+        stack, _deps, backend = await _open_pg_backend_on_schema(
+            str(settings.pg_dsn), settings.schema_name
+        )
+        try:
+            key = "app-path-batch-cross-scope-pre-only"
+            await backend.enqueue(make_enqueue_args(idempotency_key=key, idempotency_scope="run-A"))
+            with pytest.raises(ScopedIdempotencyMigrationPendingError) as exc_info:
+                await backend.enqueue_batch(
+                    [
+                        make_enqueue_args(idempotency_key="app-path-batch-fresh-key"),
+                        make_enqueue_args(idempotency_key=key, idempotency_scope="run-B"),
+                    ]
+                )
+            assert isinstance(exc_info.value.__cause__, asyncpg.UniqueViolationError)
+        finally:
+            await stack.aclose()
+
+    async def test_cross_scope_enqueue_succeeds_after_post_applied(
+        self, pg_conn: asyncpg.Connection, settings: TaskQSettings
+    ) -> None:
+        """The same cross-scope pattern that raised above must succeed
+        once the post migration has run -- proving the typed error is
+        purely a transitional-window signal, not a permanent limitation."""
+        await migrate_mod.apply_pending(pg_conn, schema=settings.schema_name, phase="pre")
+
+        stack, _deps, backend = await _open_pg_backend_on_schema(
+            str(settings.pg_dsn), settings.schema_name
+        )
+        try:
+            key = "app-path-cross-scope-post-applied"
+            row1 = await backend.enqueue(
+                make_enqueue_args(idempotency_key=key, idempotency_scope="run-A")
+            )
+
+            await migrate_mod.apply_pending(pg_conn, schema=settings.schema_name, phase="post")
+
+            row2 = await backend.enqueue(
+                make_enqueue_args(idempotency_key=key, idempotency_scope="run-B")
+            )
+            assert row1.id != row2.id
+        finally:
+            await stack.aclose()

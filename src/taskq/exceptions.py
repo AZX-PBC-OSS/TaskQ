@@ -380,6 +380,77 @@ class SchemaNotMigratedError(TaskQError):
         )
 
 
+class ScopedIdempotencyMigrationPendingError(TaskQError):
+    """``idempotency_scope`` was used, but the schema has not yet had
+    ``01.00.03_01_post_idempotency_scope_drop_old_index.sql`` applied.
+
+    Between applying ``01.00.03_01_pre_idempotency_scope.sql`` and its
+    ``post`` counterpart (the rolling-deploy window every worker's schema
+    passes through), BOTH the old global ``jobs_idempotency_key_uniq``
+    index (on ``idempotency_key`` alone) and the new composite
+    ``jobs_idempotency_scope_key_uniq`` index (on ``(idempotency_scope,
+    idempotency_key)``) exist simultaneously — this is deliberate, see the
+    "PHASE OBLIGATIONS" comment in the pre migration file, and is what
+    keeps pre-this-release code's unscoped ``ON CONFLICT (idempotency_key)``
+    working unmodified during the window.
+
+    The cost of that safety: enqueuing the same ``idempotency_key`` under
+    two *different* ``idempotency_scope`` values satisfies the new
+    composite index's ``ON CONFLICT`` target (no conflict there — the
+    ``(scope, key)`` pair is new) but still violates the still-present old
+    global index, which is not covered by that ``ON CONFLICT`` target.
+    PostgreSQL raises ``UniqueViolationError`` for a conflict against a
+    non-arbiter unique index unconditionally — the library deliberately
+    does NOT catch that and silently fall back to a different scope's row,
+    because doing so would return the *wrong* job for the scope the caller
+    actually asked for, silently, which is a worse failure mode than a
+    loud, explicit error for a purely transitional migration-window
+    condition. Raised instead of letting the raw
+    ``asyncpg.UniqueViolationError`` propagate.
+
+    Unscoped calls (``idempotency_scope=None`` or ``""``) are NEVER
+    affected — a repeated unscoped key always conflicts identically
+    against both indexes for the exact same row, which ``ON CONFLICT DO
+    NOTHING`` on the composite index resolves cleanly.
+
+    Resolution: confirm every worker is running the release that shipped
+    ``idempotency_scope``, then apply
+    ``taskq migrate up --phase post`` (or a plain ``taskq migrate up``) to
+    drop the old index and activate scoped dedupe — or avoid passing
+    ``idempotency_scope`` until that migration has run.
+    """
+
+    def __init__(
+        self,
+        *,
+        actor: str | None = None,
+        idempotency_key: str | None = None,
+        idempotency_scope: str | None = None,
+        detail: str | None = None,
+    ) -> None:
+        self.actor = actor
+        self.idempotency_key = idempotency_key
+        self.idempotency_scope = idempotency_scope
+        self.detail = detail
+        if idempotency_key is not None:
+            where = f"idempotency_key={idempotency_key!r} idempotency_scope={idempotency_scope!r}"
+            if actor is not None:
+                where = f"actor={actor!r} {where}"
+        else:
+            where = "one or more items in the batch"
+        message = (
+            f"idempotency_scope was used ({where}) but this schema has not yet had "
+            "01.00.03_01_post_idempotency_scope_drop_old_index.sql applied -- the old "
+            "global jobs_idempotency_key_uniq index is still enforcing idempotency_key "
+            "uniqueness across ALL scopes. Confirm every worker is on this release, then "
+            "run `taskq migrate up --phase post` to activate scoped dedupe, or do not "
+            "pass idempotency_scope until that migration has run."
+        )
+        if detail is not None:
+            message = f"{message} (postgres detail: {detail})"
+        super().__init__(message)
+
+
 class SubEnqueueError(TaskQError):
     """Raised by flush_buffer() when one or more buffered sub-job enqueues fail after parent commit.
 
