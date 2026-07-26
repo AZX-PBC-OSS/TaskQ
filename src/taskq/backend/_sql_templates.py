@@ -497,7 +497,7 @@ FROM unnest(
     scheduled_at, metadata, idempotency_scope, idempotency_key, trace_id, span_id,
     result_expires_at, tags_jsonb)
 ON CONFLICT (idempotency_scope, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
-RETURNING id, actor, queue, identity_key, status, idempotency_key""",
+RETURNING id, actor, queue, identity_key, status, idempotency_key, idempotency_scope""",
         enqueue_batch_fetch_existing=f"""\
 SELECT j.* FROM "{s}".jobs j
 JOIN unnest($1::text[], $2::text[]) AS pairs(scope, key)

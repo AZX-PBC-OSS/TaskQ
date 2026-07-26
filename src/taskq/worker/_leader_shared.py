@@ -198,17 +198,35 @@ _QUERY_RESERVATION_SLOTS_SQL_TEMPLATE = (
     "WHERE job_id IS NOT NULL GROUP BY bucket_name"
 )
 
-# Explicit (not `j.*`) column lists for the jobs -> jobs_archive INSERT below.
-# `jobs_archive` mirrors every `jobs` column plus two archive-only trailing
-# columns (archived_at, expire_at). Postgres ALTER TABLE ADD COLUMN always
-# appends at the end of a table's own column order, so a new column added to
-# `jobs` (e.g. idempotency_scope) lands AFTER `jobs_archive`'s archived_at/
-# expire_at in `jobs_archive`'s physical order once mirrored there — a bare
-# `SELECT j.*` relies on the two tables' column orders staying in lockstep,
-# which a future single-table ALTER TABLE ADD COLUMN silently breaks. Naming
-# every column explicitly makes this correct regardless of physical order.
+# Explicit (not `j.*` / `ja.*`) column lists for the jobs -> jobs_archive and
+# job_attempts -> job_attempts_archive INSERTs below. `jobs_archive` mirrors
+# every `jobs` column plus two archive-only trailing columns (archived_at,
+# expire_at); `job_attempts_archive` mirrors `job_attempts` column-for-column.
+# Postgres ALTER TABLE ADD COLUMN always appends at the end of a table's own
+# column order, so a new column added to one side of a mirrored pair (e.g.
+# `jobs.idempotency_scope`) lands in a different relative position than on
+# the other side once mirrored there — a bare `SELECT source.*` relies on
+# the two tables' column orders staying in lockstep, which a future
+# single-table ALTER TABLE ADD COLUMN silently breaks. Naming every column
+# explicitly on both sides makes this correct regardless of physical order.
 _JOBS_COLUMNS_CSV = ", ".join(COPY_FROM_COLUMNS)
 _JOBS_COLUMNS_QUALIFIED_CSV = ", ".join(f"j.{c}" for c in COPY_FROM_COLUMNS)
+
+_JOB_ATTEMPTS_COLUMNS: tuple[str, ...] = (
+    "job_id",
+    "attempt",
+    "started_at",
+    "finished_at",
+    "outcome",
+    "error_class",
+    "error_message",
+    "error_traceback",
+    "duration_ms",
+    "worker_id",
+    "metadata",
+)
+_JOB_ATTEMPTS_COLUMNS_CSV = ", ".join(_JOB_ATTEMPTS_COLUMNS)
+_JOB_ATTEMPTS_COLUMNS_QUALIFIED_CSV = ", ".join(f"ja.{c}" for c in _JOB_ATTEMPTS_COLUMNS)
 
 _ARCHIVE_CTE_SQL = (
     "WITH candidate_ids AS ("
@@ -224,8 +242,8 @@ _ARCHIVE_CTE_SQL = (
     "  JOIN candidate_ids c ON j.id = c.id"
     "  RETURNING id, actor, status"
     "), moved_attempts AS ("
-    '  INSERT INTO "{schema}".job_attempts_archive'
-    "  SELECT ja.*"
+    f'  INSERT INTO "{{schema}}".job_attempts_archive ({_JOB_ATTEMPTS_COLUMNS_CSV})'
+    f"  SELECT {_JOB_ATTEMPTS_COLUMNS_QUALIFIED_CSV}"
     '  FROM "{schema}".job_attempts ja'
     "  JOIN moved m ON ja.job_id = m.id"
     "), deleted AS ("
@@ -251,8 +269,8 @@ _ARCHIVE_CTE_ACTOR_SQL = (
     "  JOIN candidate_ids c ON j.id = c.id"
     "  RETURNING id, actor, status"
     "), moved_attempts AS ("
-    '  INSERT INTO "{schema}".job_attempts_archive'
-    "  SELECT ja.*"
+    f'  INSERT INTO "{{schema}}".job_attempts_archive ({_JOB_ATTEMPTS_COLUMNS_CSV})'
+    f"  SELECT {_JOB_ATTEMPTS_COLUMNS_QUALIFIED_CSV}"
     '  FROM "{schema}".job_attempts ja'
     "  JOIN moved m ON ja.job_id = m.id"
     "), deleted AS ("

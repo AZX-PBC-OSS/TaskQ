@@ -21,7 +21,24 @@ ALTER TABLE "{schema}".jobs
 ALTER TABLE "{schema}".jobs_archive
     ADD COLUMN IF NOT EXISTS idempotency_scope text NOT NULL DEFAULT '';
 
--- Drop the old single-column unique index and replace it with the composite form.
+-- OPS NOTE -- locking impact of this migration on `jobs`:
+-- The migration runner (src/taskq/migrate.py) applies every migration file
+-- inside a single transaction, so `CREATE INDEX CONCURRENTLY` is not
+-- available here (Postgres forbids it inside a transaction block). The
+-- DROP INDEX + CREATE UNIQUE INDEX below therefore builds the new index
+-- while holding the ordinary index-build lock, which conflicts with writes:
+-- INSERT/UPDATE/DELETE against "{schema}".jobs (i.e. enqueue and dequeue)
+-- block for the duration of the index build, which scales with the current
+-- row count of `jobs`. On a small/lightly-loaded table this is momentary;
+-- on a large, busy production `jobs` table this can freeze the whole
+-- worker fleet's enqueue/dequeue path for a noticeable window. Apply this
+-- migration during a maintenance window (or when `jobs` is small/quiescent,
+-- e.g. right after a prune sweep) on any deployment where `jobs` is large.
+-- This is a limitation of the migration runner's transaction-per-file
+-- design, not specific to this migration -- 01.00.01_01 has the same shape,
+-- but against the tiny cron_schedules table, so its lock window is
+-- negligible; this is the first migration to take that lock against `jobs`
+-- itself.
 DROP INDEX IF EXISTS "{schema}".jobs_idempotency_key_uniq;
 
 CREATE UNIQUE INDEX IF NOT EXISTS jobs_idempotency_scope_key_uniq
