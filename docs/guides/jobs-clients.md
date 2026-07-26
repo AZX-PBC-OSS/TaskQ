@@ -186,6 +186,16 @@ remaining steps. Later steps only execute when earlier ones did not match or rai
   between actors: `"send_receipt:order_123"`, not `"order_123"`.
 - Maximum length: **256 characters**.
 - Empty strings and whitespace-only strings raise `ValueError` before any backend call.
+- **No TTL.** `idempotency_scope` decouples the dedupe horizon by *namespace*, not by *time* —
+  there is no `idempotency_ttl` parameter. A key within a scope still dedupes **until pruned**,
+  same as before scope existed, just confined to that namespace. This is deliberate: a real
+  sliding-window TTL can't be a single static unique index the way scope can (every mature queue
+  that offers one — Oban, River — trades away the atomic `ON CONFLICT` insert or buckets time
+  into the key itself). Need "dedupe for an hour, not forever"? Encode the window into the scope
+  string yourself for now.
+- **Rolling-deploy note:** mid-upgrade (the `pre` migration applied, `post` not yet), reusing a
+  key under two *different* scopes raises `ScopedIdempotencyMigrationPendingError` instead of
+  silently deduping against the wrong scope's job. Unscoped/same-scope calls are unaffected.
 - `idempotency_key` does **not** bypass `max_pending`. The idempotency check fires at step 5,
   after the `max_pending` check at step 4. On the **first** call with a new key, `max_pending` is
   evaluated normally — if the queue is full, `MaxPendingExceededError` is raised and the job is

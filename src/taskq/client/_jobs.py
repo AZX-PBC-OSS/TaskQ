@@ -237,6 +237,35 @@ class JobsClient:
           bound applies to ``idempotency_scope``; an empty scope (``""``)
           is valid and equivalent to ``None`` (the default/global scope).
 
+        - **No time-based (TTL) dedupe window.** ``idempotency_scope``
+          decouples the dedupe horizon from ``prune_retention_*`` by
+          namespace, not by time — there is no ``idempotency_ttl`` or
+          equivalent "dedupe for the next N seconds" parameter. A key
+          within a given scope still dedupes **until pruned**, exactly
+          like the pre-scope global behavior, just scoped to that
+          namespace. This is a deliberate scope decision, not an
+          oversight: a real sliding-window TTL cannot be expressed as a
+          single static unique index the way scope can — every mature
+          job queue that offers one (Oban, River) either gives up the
+          atomic ``INSERT ... ON CONFLICT`` for a check-then-insert lock
+          (weaker concurrency guarantee) or buckets time into the key
+          itself (coarser, edge-artifact-prone semantics). If your use
+          case genuinely needs "dedupe for the next hour, not forever,"
+          encode the window into the scope yourself (e.g. a
+          time-bucketed scope string) until/unless a TTL parameter ships
+          as a separate feature.
+
+        - Rolling-deploy note: if this schema is mid-upgrade (the
+          ``01.00.03_01_pre_idempotency_scope.sql`` migration applied but
+          ``01.00.03_01_post_idempotency_scope_drop_old_index.sql`` not
+          yet applied), reusing the same ``idempotency_key`` under two
+          *different* ``idempotency_scope`` values raises
+          :class:`~taskq.exceptions.ScopedIdempotencyMigrationPendingError`
+          rather than silently dedupe against the wrong scope's job.
+          Unscoped and same-scope-repeated calls are unaffected. See that
+          exception's docstring and the migration file's header comment
+          for the full rationale.
+
         **unique_for:**
 
         - ``unique_for`` deduplication is **best-effort**. Concurrent

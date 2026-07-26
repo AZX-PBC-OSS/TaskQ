@@ -526,6 +526,82 @@ class TestApplicationEnqueuePathDuringPreOnlyWindow:
         finally:
             await stack.aclose()
 
+    async def test_enqueue_batch_same_scope_dedupes_safely(
+        self, pg_conn: asyncpg.Connection, settings: TaskQSettings
+    ) -> None:
+        """A same-scope repeated idempotency_key inside a batch must
+        dedupe cleanly against the composite index even while the old
+        global index still exists -- the legacy index must not fire."""
+        await migrate_mod.apply_pending(pg_conn, schema=settings.schema_name, phase="pre")
+
+        stack, _deps, backend = await _open_pg_backend_on_schema(
+            str(settings.pg_dsn), settings.schema_name
+        )
+        try:
+            key = "app-path-batch-same-scope-pre-only"
+            rows = await backend.enqueue_batch(
+                [
+                    make_enqueue_args(idempotency_key=key, idempotency_scope="run-A"),
+                    make_enqueue_args(
+                        idempotency_key=key,
+                        idempotency_scope="run-A",
+                        payload={"second": True},
+                    ),
+                ]
+            )
+            assert len(rows) == 2
+            assert rows[0].id == rows[1].id
+        finally:
+            await stack.aclose()
+
+    async def test_enqueue_batch_unscoped_dedupes_safely(
+        self, pg_conn: asyncpg.Connection, settings: TaskQSettings
+    ) -> None:
+        """An unscoped repeated idempotency_key inside a batch must
+        dedupe cleanly against the composite index even while the old
+        global index still exists -- the legacy index must not fire."""
+        await migrate_mod.apply_pending(pg_conn, schema=settings.schema_name, phase="pre")
+
+        stack, _deps, backend = await _open_pg_backend_on_schema(
+            str(settings.pg_dsn), settings.schema_name
+        )
+        try:
+            key = "app-path-batch-unscoped-pre-only"
+            rows = await backend.enqueue_batch(
+                [
+                    make_enqueue_args(idempotency_key=key),
+                    make_enqueue_args(idempotency_key=key, payload={"second": True}),
+                ]
+            )
+            assert len(rows) == 2
+            assert rows[0].id == rows[1].id
+        finally:
+            await stack.aclose()
+
+    async def test_enqueue_batch_cross_scope_collision_within_batch_raises_typed_error(
+        self, pg_conn: asyncpg.Connection, settings: TaskQSettings
+    ) -> None:
+        """A cross-scope collision entirely within one batch (no
+        pre-existing row) must still surface as the typed migration-pending
+        error, not a raw driver exception."""
+        await migrate_mod.apply_pending(pg_conn, schema=settings.schema_name, phase="pre")
+
+        stack, _deps, backend = await _open_pg_backend_on_schema(
+            str(settings.pg_dsn), settings.schema_name
+        )
+        try:
+            key = "app-path-batch-cross-scope-within-batch-pre-only"
+            with pytest.raises(ScopedIdempotencyMigrationPendingError) as exc_info:
+                await backend.enqueue_batch(
+                    [
+                        make_enqueue_args(idempotency_key=key, idempotency_scope="run-A"),
+                        make_enqueue_args(idempotency_key=key, idempotency_scope="run-B"),
+                    ]
+                )
+            assert isinstance(exc_info.value.__cause__, asyncpg.UniqueViolationError)
+        finally:
+            await stack.aclose()
+
     async def test_cross_scope_enqueue_succeeds_after_post_applied(
         self, pg_conn: asyncpg.Connection, settings: TaskQSettings
     ) -> None:
