@@ -382,6 +382,8 @@ class JobFilter:
     ``status`` accepts either a single :data:`JobStatus` (backwards
     compatible — e.g. ``JobFilter(status="pending")``) or a sequence of
     statuses (e.g. ``JobFilter(status=["pending", "running"])``).
+    An empty sequence (``status=[]``) matches no jobs — it is not
+    treated as 'no filter'.
     The PG backend renders a single status as ``status = $n`` and a
     sequence as ``status = ANY($n)``; the in-memory backend performs a
     membership check in both cases.
@@ -392,6 +394,10 @@ class JobFilter:
     - ``active=False`` → terminal statuses (succeeded, failed, cancelled,
       crashed, abandoned)
     - ``active=None`` (default) → no status-terminality filter
+
+    This is deliberately broader than the 'active' terminology in tools
+    like Celery/Flower, which refers only to currently-executing tasks;
+    here it means 'not yet finished'.
 
     The non-terminal set is derived from
     :data:`~taskq.backend.statemachine.ACTIVE_STATUSES`, which is itself

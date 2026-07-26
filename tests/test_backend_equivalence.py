@@ -1725,3 +1725,57 @@ async def test_eq_status_filter_full_sequence(
     )
     returned_ids = {r.id for r in rows}
     assert returned_ids == set(ids.values())
+
+
+async def test_eq_multi_status_cursor_pagination(backend_pair: Backend) -> None:
+    """Cursor-paginate a multi-status filter across both backends and
+    assert a complete, non-overlapping, correctly-ordered traversal.
+
+    Enqueues 5 jobs with distinct priorities for ``actor_a``, forces a
+    mix of statuses so that ``status=['pending', 'running']`` matches a
+    strict subset (4 of 5 — the succeeded job at priority 30 is
+    excluded), then pages through with ``limit=2``. The combined pages
+    must contain every matching id exactly once in
+    ``priority DESC, scheduled_at ASC, id ASC`` order — proving PG and
+    in-memory produce identical, correct paginated results for a
+    multi-status predicate.
+    """
+    priorities = [50, 40, 30, 20, 10]
+    statuses = ["running", "pending", "succeeded", "running", "pending"]
+    ids = [new_job_id() for _ in range(5)]
+
+    for jid, pri, st in zip(ids, priorities, statuses, strict=True):
+        await backend_pair.enqueue(
+            EnqueueArgs(
+                id=jid,
+                actor="actor_a",
+                queue="default",
+                payload={},
+                max_attempts=3,
+                retry_kind="transient",
+                scheduled_at=_START,
+                priority=pri,
+            )
+        )
+        if st != "pending":
+            await _force_job_state(backend_pair, jid, status=st)
+
+    # Matching subset: priorities 50, 40, 20, 10 (succeeded at 30 excluded)
+    expected_ids = [ids[i] for i, s in enumerate(statuses) if s in ("pending", "running")]
+
+    # Page through with limit=2
+    collected: list[JobRow] = []
+    cursor: str | None = None
+    for _ in range(10):
+        page = await backend_pair.list_jobs(
+            JobFilter(actor="actor_a", status=["pending", "running"], limit=2, cursor=cursor)
+        )
+        if not page:
+            break
+        collected.extend(page)
+        cursor = encode_cursor(page[-1].priority, page[-1].scheduled_at, page[-1].id)
+
+    # Every matching id appears exactly once, in correct global order
+    returned_ids = [r.id for r in collected]
+    assert returned_ids == expected_ids
+    assert len(returned_ids) == len(set(returned_ids))

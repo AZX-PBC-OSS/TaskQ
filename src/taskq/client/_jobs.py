@@ -543,8 +543,10 @@ class JobsClient:
         sequence of statuses (e.g. ``JobFilter(status=["pending",
         "running"])``).  ``filter.active`` is a meta-filter:
         ``active=True`` selects non-terminal statuses (pending,
-        scheduled, running) and ``active=False`` selects terminal ones.
-        See :class:`JobFilter` for full semantics.
+        scheduled, running) and ``active=False`` selects terminal ones
+        ('active' here is broader than Celery/Flower, meaning 'not yet
+        finished' rather than 'currently-executing').  See
+        :class:`JobFilter` for full semantics.
         """
         with self._translate_schema_errors():
             rows = await self._backend.list_jobs(filter)
