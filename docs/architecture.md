@@ -206,9 +206,25 @@ Sweep 1 (`running → crashed` / `running → pending`) additionally writes a
 fleet-wide-pollable `job_events` outbox row in the same transaction as the
 reclaim UPDATE.  Consumers observe crash-reclaimed jobs via
 `Backend.poll_reclaim_events(after_id)` or `TaskQ.watch_reclaims(after_id)`
-without enumerating every `job_id`.  Delivery is at-least-once, ordered by
-the monotonic `event_id` cursor; consumers must be idempotent (dedupe on
-`event_id`).
+without enumerating every `job_id`.  Gap-free at-least-once delivery is
+guaranteed by a **xact-id horizon filter**: each `job_events` row records
+its inserting transaction's id (`xact_id`), and `poll_reclaim_events` only
+returns rows whose `xact_id` is below `pg_snapshot_xmin(pg_current_snapshot())`
+— i.e., the transaction is guaranteed to have committed or aborted with no
+still-uncommitted sibling that could later insert a row with a lower
+`event_id`.  Rows from concurrent transactions that have not yet cleared the
+horizon are simply held back and become visible on a later poll; consumers
+must be idempotent (dedupe on `event_id`).  The reclaim `pg_notify` now fires
+for every swept row, which is a wake-channel semantics change — `wake_channel`
+previously meant only "new dispatchable work"; it now also means "something
+changed on job_events," so every crash-reclaim wakes every subscriber
+(including pure-dispatch workers).  Crashes are rare so the cost is low, but
+the channel's meaning has broadened.  The index added by migration
+`01.00.02_01_pre_job_events_outbox.sql` uses `CREATE INDEX` (not
+`CONCURRENTLY`) and takes an exclusive lock on `job_events` for the duration
+of the build — operators with a large/populated table should run the
+equivalent `CREATE INDEX CONCURRENTLY` manually during a maintenance window
+(see the migration file for details).
 
 ---
 

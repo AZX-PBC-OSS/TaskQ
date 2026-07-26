@@ -6,6 +6,8 @@ and Sweep 4 (sweep_leaked_reservation_slots).
 """
 
 import asyncio
+import contextlib
+import json
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
@@ -638,6 +640,97 @@ class TestPollReclaimEvents:
 
         events = await backend.poll_reclaim_events(0)
         assert len(events) == num_jobs
+
+    async def test_concurrent_uncommitted_transaction_does_not_cause_lost_event(
+        self, clean_jobs_app: JobsApp
+    ) -> None:
+        """Under concurrent sweep transactions, bigserial id allocation
+        order and commit order can diverge: a lower-id transaction may
+        commit after a higher-id one.  Without the xact-id horizon filter,
+        a poller could see the higher-id row, advance its cursor past it,
+        and then permanently lose the lower-id row when it commits.  The
+        horizon filter ensures rows from still-uncommitted transactions
+        are never returned or skipped past.
+        """
+        deps = clean_jobs_app.deps
+        backend = clean_jobs_app.backend
+        schema = deps.settings.schema_name
+        dsn = str(deps.settings.pg_dsn)
+        worker_id = new_uuid()
+
+        detail_json = json.dumps(
+            {"reason": "lock_expired", "to_state": "crashed", "from_state": "running"}
+        )
+
+        async with deps.worker_pool.acquire() as conn:
+            await create_worker(conn, schema, worker_id)
+            job_a = await create_running_job(
+                conn,
+                schema,
+                worker_id,
+                lock_expires_at=datetime.now(UTC) - timedelta(seconds=10),
+                max_attempts=1,
+                retry_kind="transient",
+                attempt=1,
+            )
+            job_b = await create_running_job(
+                conn,
+                schema,
+                worker_id,
+                lock_expires_at=datetime.now(UTC) - timedelta(seconds=10),
+                max_attempts=1,
+                retry_kind="transient",
+                attempt=1,
+            )
+
+        conn_a = await asyncpg.connect(dsn)
+        conn_b = await asyncpg.connect(dsn)
+        tx_a = conn_a.transaction()
+        tx_b = conn_b.transaction()
+        try:
+            await tx_a.start()
+            await conn_a.execute(
+                f'INSERT INTO "{schema}".'
+                "job_events (job_id, kind, detail) "
+                "VALUES ($1, 'state_change', $2::jsonb)",
+                job_a,
+                detail_json,
+            )
+
+            await tx_b.start()
+            await conn_b.execute(
+                f'INSERT INTO "{schema}".'
+                "job_events (job_id, kind, detail) "
+                "VALUES ($1, 'state_change', $2::jsonb)",
+                job_b,
+                detail_json,
+            )
+            await tx_b.commit()
+
+            events = await backend.poll_reclaim_events(0)
+            assert len(events) == 0, (
+                "Expected 0 events with an uncommitted concurrent transaction, "
+                f"got {len(events)} — the xact-id horizon filter is not working"
+            )
+
+            await tx_a.commit()
+
+            events = await backend.poll_reclaim_events(0)
+            assert len(events) == 2, (
+                f"Expected 2 events after both transactions committed, got {len(events)}"
+            )
+            assert events[0].event_id < events[1].event_id
+            assert events[0].job_id == JobId(job_a)
+            assert events[1].job_id == JobId(job_b)
+        finally:
+            with contextlib.suppress(Exception):
+                await tx_a.rollback()
+            with contextlib.suppress(Exception):
+                await tx_b.rollback()
+            with contextlib.suppress(Exception):
+                await conn_a.close()
+            with contextlib.suppress(Exception):
+                await conn_b.close()
 
 
 # ── sweep_deadline_exceeded ────────────────────────────────────

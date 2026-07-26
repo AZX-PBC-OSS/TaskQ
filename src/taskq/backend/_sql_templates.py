@@ -517,11 +517,15 @@ FROM "{s}".job_events
 WHERE job_id = $1
 ORDER BY occurred_at, event_id""",
         poll_reclaim_events=f"""\
+WITH horizon AS (
+    SELECT pg_snapshot_xmin(pg_current_snapshot())::text::bigint AS xact_horizon
+)
 SELECT id AS event_id, job_id, occurred_at, kind, detail
-FROM "{s}".job_events
+FROM "{s}".job_events, horizon
 WHERE kind = 'state_change'
   AND (detail->>'reason') = 'lock_expired'
   AND id > $1
+  AND (xact_id IS NULL OR xact_id < horizon.xact_horizon)
 ORDER BY id ASC
 LIMIT $2""",
         count_pending_jobs=(

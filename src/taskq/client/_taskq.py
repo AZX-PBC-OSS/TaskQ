@@ -796,6 +796,23 @@ async def _watch_reclaims_pg(
     If none of the three is provided, falls back to pure polling via
     :func:`_watch_reclaims_poll` (does NOT raise, matching
     ``watch_reclaims``'s contract).
+
+    Reconnect behaviour on LISTEN-connection loss
+    ---------------------------------------------
+    When the connection is owned by this function (``pg_conn_factory`` or
+    ``dsn`` path — not caller-supplied ``listen_conn``), a transient
+    ``InterfaceError`` / ``OSError`` logs one warning and falls back to
+    the poll loop, but every ``_RECONNECT_POLL_INTERVAL`` iterations the
+    function attempts to re-establish the LISTEN connection via the same
+    factory/DSN path.  On success it logs a recovery message and resumes
+    the LISTEN-driven outer loop.  On failure it keeps polling and
+    retries after the same interval — warnings on repeated failures are
+    logged at a cadence (not every attempt) to avoid log spam.
+
+    When the connection is caller-supplied (``listen_conn``), this
+    function cannot reconnect it — the caller owns that connection's
+    lifecycle — so the permanent poll-fallback is the best available
+    behaviour and reconnection is not attempted.
     """
     if listen_conn is None and pg_conn_factory is None and dsn is None:
         async for evt in _watch_reclaims_poll(client, poll_timeout, after_id=after_id):
@@ -803,6 +820,8 @@ async def _watch_reclaims_pg(
         return
 
     import asyncpg
+
+    _reconnect_poll_interval = 10
 
     wake = asyncio.Event()
     channel = wake_channel(schema)
@@ -816,6 +835,11 @@ async def _watch_reclaims_pg(
         payload: str,
     ) -> None:
         wake.set()
+
+    async def _open_listen_conn() -> asyncpg.Connection:
+        if pg_conn_factory is not None:
+            return await pg_conn_factory()
+        return await asyncpg.connect(dsn=str(dsn))
 
     if listen_conn is not None:
         conn = listen_conn
@@ -837,6 +861,20 @@ async def _watch_reclaims_pg(
                     await asyncio.wait_for(wake.wait(), timeout=poll_timeout)
             except (asyncpg.InterfaceError, OSError):
                 logger.warning("watch_reclaims-listen-connection-lost")
+                if not owns_conn:
+                    # Caller-supplied connection — we cannot reconnect it;
+                    # permanent poll-fallback is the documented limitation.
+                    while True:
+                        await asyncio.sleep(poll_timeout)
+                        events = await client.backend.poll_reclaim_events(cursor)
+                        if events:
+                            for evt in events:
+                                cursor = evt.event_id
+                                yield evt
+                # Owned connection — poll as fallback while periodically
+                # attempting to re-establish the LISTEN connection.
+                poll_iters = 0
+                reconnect_failed_logged = False
                 while True:
                     await asyncio.sleep(poll_timeout)
                     events = await client.backend.poll_reclaim_events(cursor)
@@ -844,6 +882,46 @@ async def _watch_reclaims_pg(
                         for evt in events:
                             cursor = evt.event_id
                             yield evt
+                    poll_iters += 1
+                    if poll_iters % _reconnect_poll_interval != 0:
+                        continue
+                    try:
+                        new_conn = await _open_listen_conn()
+                    except Exception:
+                        if not reconnect_failed_logged:
+                            logger.warning(
+                                "watch_reclaims-reconnect-still-failing",
+                                poll_attempts=poll_iters,
+                            )
+                            reconnect_failed_logged = True
+                        continue
+                    reconnect_failed_logged = False
+                    try:
+                        await new_conn.add_listener(channel, _on_notify)  # pyright: ignore[reportArgumentType]  # Why: same asyncpg stub narrowing as above
+                    except Exception:
+                        with contextlib.suppress(Exception):
+                            await new_conn.close()
+                        if not reconnect_failed_logged:
+                            logger.warning(
+                                "watch_reclaims-reconnect-listen-failed",
+                                poll_attempts=poll_iters,
+                            )
+                            reconnect_failed_logged = True
+                        continue
+                    # Success — swap the dead connection for the new one
+                    # and resume the LISTEN-driven outer loop.
+                    with contextlib.suppress(Exception):
+                        await conn.remove_listener(channel, _on_notify)  # pyright: ignore[reportArgumentType]  # Why: same asyncpg stub narrowing as above
+                    if owns_conn:
+                        with contextlib.suppress(Exception):
+                            await conn.close()
+                    conn = new_conn
+                    wake = asyncio.Event()
+                    logger.info(
+                        "watch_reclaims-listen-reconnected",
+                        poll_attempts=poll_iters,
+                    )
+                    break
     finally:
         with contextlib.suppress(Exception):
             await conn.remove_listener(channel, _on_notify)  # pyright: ignore[reportArgumentType]  # Why: same pattern as _stream_pg

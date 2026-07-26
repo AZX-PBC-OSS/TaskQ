@@ -176,6 +176,14 @@ async def sweep_expired_locks(
     that fleet-wide consumers using ``watch_reclaims`` get a low-latency
     wakeup on both branches.
 
+    .. note:: This is a **channel-semantics change**, not purely a
+       bugfix: ``wake_channel`` previously meant "new dispatchable work"
+       (enqueue, scheduled-to-pending promotion); it now *also* means
+       "something changed on job_events."  Every crash-reclaim therefore
+       wakes every subscriber — including pure-dispatch workers with no
+       interest in reclaim events.  Crashes are rare so the cost is low,
+       but the wake channel is no longer exclusively a dispatch signal.
+
     Returns the count of affected rows.
     """
     if not _IDENT_RE.match(schema):
