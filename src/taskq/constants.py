@@ -137,6 +137,22 @@ PROGRESS_GLOBAL_CHANNEL_FMT: Final[str] = "taskq:{schema}:progress"
 
 _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
+_KEYED_KEY_RE = re.compile(r"^[A-Za-z0-9_\-:.]+$")
+"""Character set for keyed-ref name components (``base_name`` and ``key``).
+
+Both segments of the concrete name ``f"{base_name}:{key}"`` flow into Redis
+key names and PG text columns — this regex prevents control characters,
+spaces, slashes, and other metacharacters from reaching storage.  Mirrors
+the ``_IDENT_RE`` approach for schema identifiers.
+"""
+
+_MAX_KEYED_KEY_LEN = 255
+"""Maximum length (chars) for keyed-ref name components (``base_name`` and ``key``).
+
+Bounds storage growth from attacker-controlled keys and base names — the
+same rationale as the character regex above.
+"""
+
 
 def quote_ident(identifier: str) -> str:
     """Return *identifier* safely wrapped in double-quotes for SQL interpolation.

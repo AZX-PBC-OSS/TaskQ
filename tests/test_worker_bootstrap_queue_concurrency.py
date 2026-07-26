@@ -485,7 +485,7 @@ async def test_bootstrap_raises_when_max_concurrent_column_missing(pg_dsn: str) 
     while asyncio.get_running_loop().time() < deadline:
         if task.done():
             exc = task.exception()
-            if exc is not None and not isinstance(exc, asyncio.CancelledError):
+            if isinstance(exc, Exception):
                 raised_exc = exc
             break
         await asyncio.sleep(0.05)

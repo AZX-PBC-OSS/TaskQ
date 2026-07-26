@@ -44,7 +44,6 @@ Over-acquisition window on rollback failure:
   within 30 seconds at most.
 """
 
-import re
 from collections.abc import AsyncGenerator, Sequence
 from contextlib import asynccontextmanager
 from datetime import timedelta
@@ -55,6 +54,8 @@ import structlog
 
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
+    _KEYED_KEY_RE,  # pyright: ignore[reportPrivateUsage]
+    _MAX_KEYED_KEY_LEN,  # pyright: ignore[reportPrivateUsage]
     DEFAULT_RESERVATION_BACKOFF,
 )
 from taskq.exceptions import ReservationUnavailable
@@ -101,9 +102,6 @@ __all__ = [
 ]
 
 _P = TypeVar("_P")
-
-_MAX_KEYED_KEY_LEN = 255
-_KEYED_KEY_RE = re.compile(r"^[A-Za-z0-9_\-:.]+$")
 
 _KEYED_IDLE_THRESHOLD = timedelta(hours=1)
 """Idle duration before a keyed entry is eligible for eviction.

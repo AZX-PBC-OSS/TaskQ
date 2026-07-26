@@ -116,6 +116,26 @@ class TestKeyedRateLimitRefValidation:
         with pytest.raises(ValueError, match="base_name must not be empty"):
             _rate_limit_ref(base_name="")
 
+    def test_rejects_base_name_with_space(self) -> None:
+        with pytest.raises(ValueError, match="outside the allowed set"):
+            _rate_limit_ref(base_name="api per tenant")
+
+    def test_rejects_base_name_with_slash(self) -> None:
+        with pytest.raises(ValueError, match="outside the allowed set"):
+            _rate_limit_ref(base_name="api/per-tenant")
+
+    def test_rejects_base_name_with_control_char(self) -> None:
+        with pytest.raises(ValueError, match="outside the allowed set"):
+            _rate_limit_ref(base_name="api\tper-tenant")
+
+    def test_rejects_base_name_exceeding_length_cap(self) -> None:
+        with pytest.raises(ValueError, match="at most 255 characters"):
+            _rate_limit_ref(base_name="a" * 256)
+
+    def test_accepts_valid_base_name_with_allowed_punctuation(self) -> None:
+        ref = _rate_limit_ref(base_name="api_per-tenant:1.0")
+        assert ref.base_name == "api_per-tenant:1.0"
+
     def test_rejects_zero_capacity(self) -> None:
         with pytest.raises(ValueError, match="capacity must be > 0"):
             _rate_limit_ref(capacity=0)

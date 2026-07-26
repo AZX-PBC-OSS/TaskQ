@@ -63,6 +63,26 @@ class TestKeyedReservationRefValidation:
         with pytest.raises(ValueError, match="base_name must not be empty"):
             _keyed_ref(base_name="")
 
+    def test_rejects_base_name_with_space(self) -> None:
+        with pytest.raises(ValueError, match="outside the allowed set"):
+            _keyed_ref(base_name="session cap")
+
+    def test_rejects_base_name_with_slash(self) -> None:
+        with pytest.raises(ValueError, match="outside the allowed set"):
+            _keyed_ref(base_name="session/cap")
+
+    def test_rejects_base_name_with_control_char(self) -> None:
+        with pytest.raises(ValueError, match="outside the allowed set"):
+            _keyed_ref(base_name="session\tcap")
+
+    def test_rejects_base_name_exceeding_length_cap(self) -> None:
+        with pytest.raises(ValueError, match="at most 255 characters"):
+            _keyed_ref(base_name="a" * 256)
+
+    def test_accepts_valid_base_name_with_allowed_punctuation(self) -> None:
+        ref = _keyed_ref(base_name="session_cap:1.0")
+        assert ref.base_name == "session_cap:1.0"
+
     def test_rejects_slots_below_one(self) -> None:
         with pytest.raises(ValueError, match="slots must be >= 1"):
             _keyed_ref(slots=0)

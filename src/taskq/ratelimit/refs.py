@@ -28,6 +28,7 @@ from datetime import timedelta
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from taskq.backend._protocol import RateLimitBackend
+from taskq.constants import _KEYED_KEY_RE, _MAX_KEYED_KEY_LEN
 
 __all__ = ["KeyedRateLimitRef", "KeyedReservationRef", "RateLimitRef", "ReservationRef"]
 
@@ -79,6 +80,14 @@ class KeyedReservationRef(BaseModel):
     def _validate_base_name(cls, v: str) -> str:
         if not v:
             raise ValueError("base_name must not be empty")
+        if len(v) > _MAX_KEYED_KEY_LEN:
+            raise ValueError(
+                f"base_name must be at most {_MAX_KEYED_KEY_LEN} characters, got length {len(v)}"
+            )
+        if not _KEYED_KEY_RE.match(v):
+            raise ValueError(
+                f"base_name {v!r} contains characters outside the allowed set [A-Za-z0-9_\\-:.]"
+            )
         return v
 
     @field_validator("slots")
@@ -169,6 +178,14 @@ class KeyedRateLimitRef(BaseModel):
     def _validate_base_name(cls, v: str) -> str:
         if not v:
             raise ValueError("base_name must not be empty")
+        if len(v) > _MAX_KEYED_KEY_LEN:
+            raise ValueError(
+                f"base_name must be at most {_MAX_KEYED_KEY_LEN} characters, got length {len(v)}"
+            )
+        if not _KEYED_KEY_RE.match(v):
+            raise ValueError(
+                f"base_name {v!r} contains characters outside the allowed set [A-Za-z0-9_\\-:.]"
+            )
         return v
 
     @field_validator("capacity")
