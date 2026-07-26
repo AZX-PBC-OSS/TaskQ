@@ -294,3 +294,98 @@ async def test_list_jobs_multi_status_cursor_pagination() -> None:
     all_returned = [r.id for r in page1 + page2 + page3]
     assert all_returned == expected_ids
     assert len(all_returned) == len(set(all_returned))
+
+
+# ── active meta-filter + cursor pagination ────────────────────────────
+
+
+async def test_list_jobs_active_true_cursor_pagination() -> None:
+    """Cursor pagination with active=True produces a complete,
+    non-overlapping, correctly-ordered traversal across multiple pages
+    that includes exactly the non-terminal jobs and excludes all
+    terminal jobs.
+
+    Creates 5 non-terminal jobs (mix of pending, scheduled, running)
+    with distinct priorities and 3 terminal jobs (succeeded, failed,
+    cancelled), then pages through with active=True and limit=2 using
+    cursors. Asserts every non-terminal row appears exactly once in
+    priority-DESC order and no terminal row leaks through.
+    """
+    backend = _backend()
+    priorities = [10, 8, 5, 3, 1]
+    active_statuses = ["pending", "scheduled", "running", "pending", "scheduled"]
+    active_jobs: list[JobRow] = []
+    for pri, st in zip(priorities, active_statuses, strict=True):
+        j = _job(status=st, priority=pri)
+        active_jobs.append(j)
+        backend._jobs[j.id] = j
+
+    # Terminal jobs that must never appear in active=True results.
+    for st in ("succeeded", "failed", "cancelled"):
+        j = _job(status=st, priority=99)
+        backend._jobs[j.id] = j
+
+    expected_ids = [
+        j.id for j in sorted(active_jobs, key=lambda r: (-r.priority, r.scheduled_at, r.id))
+    ]
+
+    # Page 1
+    page1 = await backend.list_jobs(JobFilter(actor="test_actor", active=True, limit=2))
+    assert len(page1) == 2
+    assert [r.id for r in page1] == expected_ids[:2]
+
+    cursor = encode_cursor(page1[-1].priority, page1[-1].scheduled_at, page1[-1].id)
+
+    # Page 2
+    page2 = await backend.list_jobs(
+        JobFilter(actor="test_actor", active=True, limit=2, cursor=cursor)
+    )
+    assert len(page2) == 2
+    assert [r.id for r in page2] == expected_ids[2:4]
+
+    cursor = encode_cursor(page2[-1].priority, page2[-1].scheduled_at, page2[-1].id)
+
+    # Page 3 — only 1 job left
+    page3 = await backend.list_jobs(
+        JobFilter(actor="test_actor", active=True, limit=2, cursor=cursor)
+    )
+    assert len(page3) == 1
+    assert [r.id for r in page3] == expected_ids[4:]
+
+    # Complete, non-overlapping, no terminal jobs
+    all_returned = [r.id for r in page1 + page2 + page3]
+    assert all_returned == expected_ids
+    assert len(all_returned) == len(set(all_returned))
+    assert len(all_returned) == 5
+
+
+# ── active meta-filter + non-default order_by ─────────────────────────
+
+
+async def test_list_jobs_active_true_with_created_at_desc() -> None:
+    """active=True combined with order_by=CREATED_AT_DESC returns only
+    non-terminal jobs sorted by created_at descending.
+
+    This combination is legal per JobFilter.__post_init__, which only
+    rejects cursor + non-default order_by, not active + non-default
+    order_by.
+    """
+    backend = _backend()
+    oldest_active = _job(status="pending", created_at=_T0)
+    middle_active = _job(status="running", created_at=_T0 + timedelta(minutes=10))
+    newest_active = _job(status="scheduled", created_at=_T0 + timedelta(minutes=20))
+
+    # Terminal jobs with created_at values that interleave — they must
+    # be excluded entirely, not just sorted to the bottom.
+    old_terminal = _job(status="succeeded", created_at=_T0 + timedelta(minutes=5))
+    new_terminal = _job(status="failed", created_at=_T0 + timedelta(minutes=15))
+
+    for j in (oldest_active, middle_active, newest_active, old_terminal, new_terminal):
+        backend._jobs[j.id] = j
+
+    rows = await backend.list_jobs(
+        JobFilter(actor="test_actor", active=True, order_by=JobSortField.CREATED_AT_DESC, limit=10)
+    )
+
+    assert [r.id for r in rows] == [newest_active.id, middle_active.id, oldest_active.id]
+    assert all(r.status in ACTIVE_STATUSES for r in rows)

@@ -34,6 +34,7 @@ from taskq.backend._protocol import (
     JobFilter,
     JobId,
     JobPage,
+    JobSortField,
     QueueName,
     ScheduleCreateArgs,
     ScheduleUpdateArgs,
@@ -547,11 +548,20 @@ class JobsClient:
         ('active' here is broader than Celery/Flower, meaning 'not yet
         finished' rather than 'currently-executing').  See
         :class:`JobFilter` for full semantics.
+
+        ``next_cursor`` is always ``None`` when a non-default
+        ``order_by`` is used, because cursor pagination only applies to
+        the default ordering (``order_by=None`` or
+        ``JobSortField.SCHEDULED_AT_ASC``).
         """
         with self._translate_schema_errors():
             rows = await self._backend.list_jobs(filter)
         next_cursor: str | None = None
-        if rows and len(rows) == filter.limit:
+        if (
+            rows
+            and len(rows) == filter.limit
+            and (filter.order_by is None or filter.order_by is JobSortField.SCHEDULED_AT_ASC)
+        ):
             last = rows[-1]
             next_cursor = encode_cursor(last.priority, last.scheduled_at, last.id)
         return JobPage(jobs=rows, next_cursor=next_cursor)
