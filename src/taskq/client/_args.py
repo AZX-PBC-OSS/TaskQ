@@ -74,6 +74,7 @@ def build_enqueue_args[P: BaseModel, R: BaseModel | None](
     metadata: dict[str, object] | None = None,
     identity_key: IdentityKey | None = None,
     idempotency_key: IdempotencyKey | str | None = None,
+    idempotency_scope: str | None = None,
     trace_id: str | None = None,
     span_id: str | None = None,
     schedule_to_close: datetime | None = None,
@@ -105,6 +106,11 @@ def build_enqueue_args[P: BaseModel, R: BaseModel | None](
             raise ValueError(
                 f"idempotency_key must be at most 256 characters, got {len(idempotency_key)}"
             )
+
+    if idempotency_scope is not None and len(idempotency_scope) > 256:
+        raise ValueError(
+            f"idempotency_scope must be at most 256 characters, got {len(idempotency_scope)}"
+        )
 
     if start_to_close is not None and start_to_close <= timedelta(0):
         raise ValueError(f"start_to_close must be > 0, got {start_to_close!r}")
@@ -158,6 +164,7 @@ def build_enqueue_args[P: BaseModel, R: BaseModel | None](
         identity_key=identity_key,
         fairness_key=fairness_key,
         idempotency_key=idempotency_key,  # type: ignore[arg-type]  # Why: IdempotencyKey is NewType(str); str values accepted at runtime but pyright cannot narrow str to the NewType
+        idempotency_scope=idempotency_scope if idempotency_scope is not None else "",
         trace_id=trace_id,
         span_id=span_id,
         result_ttl=ref.result_ttl,
@@ -190,6 +197,7 @@ def build_batch_args(
             fairness_key=item.fairness_key,
             identity_key=item.identity_key,
             idempotency_key=item.idempotency_key,
+            idempotency_scope=item.idempotency_scope,
             metadata=merged_metadata,
             start_to_close=item.start_to_close,
             tags=item.tags,

@@ -124,6 +124,7 @@ async def enqueue(
     identity_key: IdentityKey | None = None,
     fairness_key: str | None = None,
     idempotency_key: IdempotencyKey | None = None,
+    idempotency_scope: str | None = None,
     trace_id: str | None = None,
     span_id: str | None = None,
     metadata: dict[str, object] | None = None,
@@ -148,7 +149,8 @@ Serialises the payload through `ref.payload_type`, enqueues the job, and returns
 | `heartbeat_timeout` | `timedelta \| None` | `None` | Maximum time allowed between heartbeats before the job is considered crashed. |
 | `identity_key` | `IdentityKey \| None` | `None` | Opaque string identifying the logical entity this job belongs to (e.g. `"account:42"`). Required for `unique_for` deduplication to take effect. Also used for fairness scheduling. |
 | `fairness_key` | `str \| None` | `None` | Partitions the dispatch order so no single key monopolises the queue. |
-| `idempotency_key` | `IdempotencyKey \| None` | `None` | Globally-unique string preventing duplicate insertion. See [Idempotency key](#idempotency_key). |
+| `idempotency_key` | `IdempotencyKey \| None` | `None` | String preventing duplicate insertion, unique within its `idempotency_scope`. See [Idempotency key](#idempotency_key). |
+| `idempotency_scope` | `str \| None` | `None` | Namespacing scope for `idempotency_key`. `None` or `""` means the global/default scope (preserves prior global-dedupe behavior). An explicit scope (e.g. a run/batch/epoch id) allows the same business key in different scopes to both succeed. ≤ 256 chars. |
 | `trace_id` | `str \| None` | extracted from OTel span | Trace ID for distributed tracing. Automatically extracted from the active OTel span when one is valid; pass explicitly to override. |
 | `span_id` | `str \| None` | extracted from OTel span | Span ID for distributed tracing. See `trace_id`. |
 | `metadata` | `dict[str, object] \| None` | `{}` | Per-job metadata stored in the `jobs.metadata` JSONB column. Merged with the library-injected `singleton` key when applicable. The caller's dict is never mutated. |
@@ -175,8 +177,13 @@ remaining steps. Later steps only execute when earlier ones did not match or rai
 
 ### `idempotency_key`
 
-- Keys are **globally unique**, not scoped to an actor. Namespace to avoid collisions:
-  `"send_receipt:order_123"`, not `"order_123"`.
+- Keys are unique within their `idempotency_scope` (composite
+  `(idempotency_scope, idempotency_key)` uniqueness). The default scope
+  (`None` or `""`) preserves the prior global-dedupe behavior exactly.
+  Pass an explicit scope (e.g. a run/batch/epoch id) to allow the same
+  business key in different scopes to both succeed, decoupling the dedupe
+  horizon from `prune_retention_*`. Namespace keys to avoid collisions
+  between actors: `"send_receipt:order_123"`, not `"order_123"`.
 - Maximum length: **256 characters**.
 - Empty strings and whitespace-only strings raise `ValueError` before any backend call.
 - `idempotency_key` does **not** bypass `max_pending`. The idempotency check fires at step 5,
@@ -269,6 +276,7 @@ EnqueueItem(
     priority=None,
     fairness_key=None,
     idempotency_key=None,                  # str | None, ≤ 256 chars
+    idempotency_scope=None,               # str | None, ≤ 256 chars
     identity_key=None,
     metadata={},
 )
@@ -282,6 +290,7 @@ EnqueueItem(
 | `priority` | `int \| None` | `None` | Dispatch priority within the queue. |
 | `fairness_key` | `str \| None` | `None` | Fairness grouping key. |
 | `idempotency_key` | `IdempotencyKey \| str \| None` | `None` | Per-item idempotency token (≤ 256 chars). |
+| `idempotency_scope` | `str \| None` | `None` | Per-item idempotency scope (≤ 256 chars). `None` or `""` = global/default scope. |
 | `identity_key` | `IdentityKey \| None` | `None` | Opaque identity string; required for `unique_for` dedup to take effect. |
 | `metadata` | `dict[str, object]` | `{}` | Per-job metadata. Do **not** set `batch_id` here — the library overwrites it. |
 | `tags` | `list[str] \| None` | `None` | Per-job tags. See [Tags](#tags). |
@@ -727,6 +736,7 @@ async def enqueue(
     metadata: dict[str, object] | None = None,
     identity_key: IdentityKey | None = None,
     idempotency_key: IdempotencyKey | str | None = None,
+    idempotency_scope: str | None = None,
     unique_for: timedelta | None = None,
     unique_states: tuple[JobStatus, ...] | None = None,
     max_pending: int | None = None,
@@ -880,7 +890,9 @@ async def send_order_confirmation(client: JobsClient, order_id: str) -> str:
 
 **Rules:**
 
-- The key is globally unique across all actors. Always namespace it: `"actor_name:entity_id"`.
+- The key is unique within its `idempotency_scope` (the default scope `None`/`""`
+  preserves the prior global-dedupe behavior). Always namespace it:
+  `"actor_name:entity_id"`.
 - Maximum 256 characters. Empty and whitespace-only keys raise `ValueError`.
 - A duplicate key returns a handle with `was_existing=True` pointing at the original job.
 - `idempotency_key` does not bypass `max_pending` on the **first** call for a given key. If the

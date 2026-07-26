@@ -104,7 +104,7 @@ async def _enqueue(self: "InMemoryBackend", args: EnqueueArgs) -> JobRow:
             )
 
     if args.idempotency_key is not None:
-        existing_id = self._idempotency_index.get(args.idempotency_key)
+        existing_id = self._idempotency_index.get((args.idempotency_scope, args.idempotency_key))
         if existing_id is not None:
             existing_row = self._jobs.get(existing_id)
             if existing_row is not None:
@@ -166,6 +166,7 @@ async def _enqueue(self: "InMemoryBackend", args: EnqueueArgs) -> JobRow:
         result_size_bytes=None,
         result_expires_at=result_expires_at,
         idempotency_key=args.idempotency_key,
+        idempotency_scope=args.idempotency_scope,
         trace_id=args.trace_id,
         span_id=args.span_id,
         metadata=args.metadata,
@@ -175,7 +176,7 @@ async def _enqueue(self: "InMemoryBackend", args: EnqueueArgs) -> JobRow:
     self._jobs[args.id] = row
 
     if args.idempotency_key is not None:
-        self._idempotency_index[args.idempotency_key] = args.id
+        self._idempotency_index[(args.idempotency_scope, args.idempotency_key)] = args.id
 
     for event in self._wake_subscribers:
         event.set()

@@ -161,6 +161,7 @@ async def _enqueue_on_conn(
             args.start_to_close,
             args.heartbeat_timeout,
             scheduled_at_param,
+            args.idempotency_scope,
             args.idempotency_key,
             args.trace_id,
             args.span_id,
@@ -187,6 +188,7 @@ async def _enqueue_on_conn(
     else:
         rec = await conn.fetchrow(
             sql.enqueue_select_by_key,
+            args.idempotency_scope,
             args.idempotency_key,
         )
         if rec is None:
@@ -276,6 +278,7 @@ async def _enqueue_batch(
     scheduled_ats: list[datetime | None] = []
     metadatas: list[str] = []
     idempotency_keys: list[str | None] = []
+    idempotency_scopes: list[str] = []
     trace_ids: list[str | None] = []
     span_ids: list[str | None] = []
     result_expires_ats: list[datetime | None] = []
@@ -305,6 +308,7 @@ async def _enqueue_batch(
         idempotency_keys.append(
             str(args.idempotency_key) if args.idempotency_key is not None else None
         )
+        idempotency_scopes.append(args.idempotency_scope)
         trace_ids.append(args.trace_id)
         span_ids.append(args.span_id)
         result_expires_at: datetime | None = None
@@ -331,6 +335,7 @@ async def _enqueue_batch(
             heartbeat_timeouts,
             scheduled_ats,
             metadatas,
+            idempotency_scopes,
             idempotency_keys,
             trace_ids,
             span_ids,
@@ -347,10 +352,10 @@ async def _enqueue_batch(
 
         new_rows_by_id: dict[UUID, object] = {rec["id"]: rec for rec in returning_recs}
 
-        collision_keys: list[str] = []
+        collision_pairs: list[tuple[str, str]] = []
         for args in args_list:
             if args.idempotency_key is not None and UUID(bytes=args.id.bytes) not in inserted_ids:
-                collision_keys.append(str(args.idempotency_key))
+                collision_pairs.append((args.idempotency_scope, str(args.idempotency_key)))
 
         new_item_ids = list(inserted_ids)
         full_new_recs: dict[UUID, object] = {}
@@ -362,23 +367,30 @@ async def _enqueue_batch(
             for rec in recs:
                 full_new_recs[UUID(bytes=rec["id"].bytes)] = rec
 
-        existing_by_idem: dict[str, object] = {}
-        if collision_keys:
+        existing_by_idem: dict[tuple[str, str], object] = {}
+        if collision_pairs:
+            collision_scopes = [p[0] for p in collision_pairs]
+            collision_keys = [p[1] for p in collision_pairs]
             recs = await conn.fetch(
                 sql.enqueue_batch_fetch_existing,
+                collision_scopes,
                 collision_keys,
             )
             for rec in recs:
-                idem_key = rec["idempotency_key"]
-                existing_by_idem[idem_key] = rec
+                pair = (rec["idempotency_scope"], str(rec["idempotency_key"]))
+                existing_by_idem[pair] = rec
 
         result: list[JobRow] = []
         for args in args_list:
             arg_uuid = UUID(bytes=args.id.bytes)
             if arg_uuid in full_new_recs:
                 result.append(_job_row_from_record(full_new_recs[arg_uuid]))  # type: ignore[arg-type]  # Why: asyncpg Record is duck-typed; _job_row_from_record accepts asyncpg.Record at runtime
-            elif args.idempotency_key is not None and str(args.idempotency_key) in existing_by_idem:
-                result.append(_job_row_from_record(existing_by_idem[str(args.idempotency_key)]))  # type: ignore[arg-type]  # Why: asyncpg Record is duck-typed; _job_row_from_record accepts asyncpg.Record at runtime
+            elif (
+                args.idempotency_key is not None
+                and (args.idempotency_scope, str(args.idempotency_key)) in existing_by_idem
+            ):
+                rec = existing_by_idem[(args.idempotency_scope, str(args.idempotency_key))]
+                result.append(_job_row_from_record(rec))  # type: ignore[arg-type]  # Why: asyncpg Record is duck-typed; _job_row_from_record accepts asyncpg.Record at runtime
             else:
                 partial = new_rows_by_id.get(arg_uuid)
                 if partial is not None:
@@ -461,6 +473,7 @@ async def _enqueue_batch_fast(
                 None,
                 None,
                 result_expires_at,
+                args.idempotency_scope,
                 str(args.idempotency_key) if args.idempotency_key is not None else None,
                 args.trace_id,
                 args.span_id,

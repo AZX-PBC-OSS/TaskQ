@@ -17,6 +17,7 @@ from uuid import UUID
 import structlog
 
 from taskq.backend._protocol import Backend, ConnLike
+from taskq.backend._sql_templates import COPY_FROM_COLUMNS
 from taskq.backend.clock import Clock
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
@@ -197,6 +198,18 @@ _QUERY_RESERVATION_SLOTS_SQL_TEMPLATE = (
     "WHERE job_id IS NOT NULL GROUP BY bucket_name"
 )
 
+# Explicit (not `j.*`) column lists for the jobs -> jobs_archive INSERT below.
+# `jobs_archive` mirrors every `jobs` column plus two archive-only trailing
+# columns (archived_at, expire_at). Postgres ALTER TABLE ADD COLUMN always
+# appends at the end of a table's own column order, so a new column added to
+# `jobs` (e.g. idempotency_scope) lands AFTER `jobs_archive`'s archived_at/
+# expire_at in `jobs_archive`'s physical order once mirrored there — a bare
+# `SELECT j.*` relies on the two tables' column orders staying in lockstep,
+# which a future single-table ALTER TABLE ADD COLUMN silently breaks. Naming
+# every column explicitly makes this correct regardless of physical order.
+_JOBS_COLUMNS_CSV = ", ".join(COPY_FROM_COLUMNS)
+_JOBS_COLUMNS_QUALIFIED_CSV = ", ".join(f"j.{c}" for c in COPY_FROM_COLUMNS)
+
 _ARCHIVE_CTE_SQL = (
     "WITH candidate_ids AS ("
     '  SELECT id FROM "{schema}".jobs'
@@ -205,8 +218,8 @@ _ARCHIVE_CTE_SQL = (
     "  ORDER BY finished_at"
     "  LIMIT $3"
     "), moved AS ("
-    '  INSERT INTO "{schema}".jobs_archive'
-    "  SELECT j.*, now() AS archived_at, now() + $4 AS expire_at"
+    f'  INSERT INTO "{{schema}}".jobs_archive ({_JOBS_COLUMNS_CSV}, archived_at, expire_at)'
+    f"  SELECT {_JOBS_COLUMNS_QUALIFIED_CSV}, now(), now() + $4"
     '  FROM "{schema}".jobs j'
     "  JOIN candidate_ids c ON j.id = c.id"
     "  RETURNING id, actor, status"
@@ -232,8 +245,8 @@ _ARCHIVE_CTE_ACTOR_SQL = (
     "  ORDER BY finished_at"
     "  LIMIT $3"
     "), moved AS ("
-    '  INSERT INTO "{schema}".jobs_archive'
-    "  SELECT j.*, now() AS archived_at, now() + $4 AS expire_at"
+    f'  INSERT INTO "{{schema}}".jobs_archive ({_JOBS_COLUMNS_CSV}, archived_at, expire_at)'
+    f"  SELECT {_JOBS_COLUMNS_QUALIFIED_CSV}, now(), now() + $4"
     '  FROM "{schema}".jobs j'
     "  JOIN candidate_ids c ON j.id = c.id"
     "  RETURNING id, actor, status"

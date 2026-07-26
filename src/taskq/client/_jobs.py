@@ -177,6 +177,7 @@ class JobsClient:
         identity_key: IdentityKey | None = None,
         fairness_key: str | None = None,
         idempotency_key: IdempotencyKey | None = None,
+        idempotency_scope: str | None = None,
         trace_id: str | None = None,
         span_id: str | None = None,
         metadata: dict[str, object] | None = None,
@@ -221,13 +222,20 @@ class JobsClient:
 
         **idempotency_key:**
 
-        - ``idempotency_key`` is **globally unique** (not per-actor scoped).
-          Callers must namespace keys to avoid collisions between actors
-          (e.g. ``"actor_name:delivery_id"``).
+        - ``idempotency_key`` is unique within its ``idempotency_scope``
+          (composite ``(idempotency_scope, idempotency_key)`` uniqueness).
+          The default scope (``idempotency_scope=None`` or ``""``) preserves
+          the prior global-until-prune behavior exactly, so existing callers
+          see zero behavior change. Passing an explicit scope (e.g. a
+          run/batch/epoch id) lets two enqueues with the same business key
+          in different scopes both succeed, decoupling the dedupe horizon
+          from ``prune_retention_*``.
 
         - Key length is bounded at **256 characters**. Empty keys and
           whitespace-only keys raise :class:`ValueError` at the client
-          boundary before any backend call.
+          boundary before any backend call. The same **256-character**
+          bound applies to ``idempotency_scope``; an empty scope (``""``)
+          is valid and equivalent to ``None`` (the default/global scope).
 
         **unique_for:**
 
@@ -259,6 +267,7 @@ class JobsClient:
                 metadata=metadata,
                 identity_key=identity_key,
                 idempotency_key=idempotency_key,
+                idempotency_scope=idempotency_scope,
                 trace_id=extracted_trace_id,
                 span_id=extracted_span_id,
                 schedule_to_close=schedule_to_close,
@@ -361,6 +370,11 @@ class JobsClient:
                         f"idempotency_key for item {i} must be at most 256 characters, "
                         f"got {len(item.idempotency_key)}"
                     )
+            if item.idempotency_scope is not None and len(item.idempotency_scope) > 256:
+                raise ValueError(
+                    f"idempotency_scope for item {i} must be at most 256 characters, "
+                    f"got {len(item.idempotency_scope)}"
+                )
 
         # Phase 2: Aggregated max_pending check (one query for the whole batch)
         # Collect actors that declare max_pending

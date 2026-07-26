@@ -17,7 +17,6 @@ pytestmark = pytest.mark.integration
 
 _IDEMP_KEY_1 = "idemp-key-collision-1"
 _IDEMP_KEY_2 = "idemp-key-collision-2"
-_IDEMP_KEY_3 = "idemp-key-collision-3"
 
 
 def _make_args(

@@ -73,6 +73,7 @@ def _full_record(*, job_id: UUID | None = None) -> dict[str, object]:
         "result_size_bytes": None,
         "result_expires_at": None,
         "idempotency_key": None,
+        "idempotency_scope": "",
         "trace_id": None,
         "span_id": None,
         "metadata": "{}",
@@ -316,7 +317,7 @@ async def test_idempotency_key_conflict_returns_existing_row() -> None:
     existing_id = new_job_id()
     existing_rec = _Record(_full_record(job_id=existing_id))
     conn = _FakeEnqueueConn(
-        fetchrow_map={"idempotency_key = $1": existing_rec},
+        fetchrow_map={"idempotency_key = $2": existing_rec},
         # INSERT RETURNING returns None (conflict) — default fetchrow returns None.
     )
     args = _make_args(idempotency_key="idem-1")

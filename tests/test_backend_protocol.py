@@ -90,6 +90,7 @@ _JOB_ROW_DEFAULTS: dict[str, object] = {
     "result_size_bytes": None,
     "result_expires_at": None,
     "idempotency_key": None,
+    "idempotency_scope": "",
     "trace_id": None,
     "span_id": None,
     "metadata": dict[str, object](),
@@ -394,7 +395,7 @@ class TestEnqueueArgsRoundTrip:
         assert flds["scheduled_at"].default_factory is MISSING
 
     def test_field_count(self) -> None:
-        expected = 24
+        expected = 25
         assert len(fields(EnqueueArgs)) == expected
 
     def test_frozen(self) -> None:
@@ -440,7 +441,7 @@ class TestJobRowRoundTrip:
         assert flds["status"].type is JobStatus
 
     def test_field_count(self) -> None:
-        expected = 37  # field list + tags
+        expected = 38  # field list + tags
         assert len(fields(JobRow)) == expected
 
     def test_frozen(self) -> None:

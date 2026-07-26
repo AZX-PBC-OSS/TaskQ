@@ -68,6 +68,7 @@ def _job_row_from_record(rec: "asyncpg.Record") -> JobRow:
     """
     raw_identity = rec["identity_key"]
     raw_idempotency = rec["idempotency_key"]
+    raw_scope = rec["idempotency_scope"]
     return JobRow(
         id=JobId(rec["id"]),
         actor=rec["actor"],
@@ -102,6 +103,7 @@ def _job_row_from_record(rec: "asyncpg.Record") -> JobRow:
         result_size_bytes=rec["result_size_bytes"],
         result_expires_at=rec["result_expires_at"],
         idempotency_key=IdempotencyKey(raw_idempotency) if raw_idempotency is not None else None,
+        idempotency_scope=raw_scope,
         trace_id=rec["trace_id"],
         span_id=rec["span_id"],
         metadata=jsonb_to_dict(rec["metadata"]) or {},
