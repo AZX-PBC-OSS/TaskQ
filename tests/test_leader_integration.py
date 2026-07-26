@@ -784,6 +784,9 @@ async def test_ti7_crash_reclaim_observable_via_poll(pg_dsn: str) -> None:
 
         # Open a dedicated connection simulating the worker's session
         worker_conn = await asyncpg.connect(str(deps.settings.pg_dsn))
+        # Fetched immediately after connect (before anything that could
+        # fail) so it's unconditionally bound for the finally block below.
+        worker_pid = await worker_conn.fetchval("SELECT pg_backend_pid()")
         try:
             job_id = new_uuid()
             await worker_conn.execute(
@@ -807,7 +810,6 @@ async def test_ti7_crash_reclaim_observable_via_poll(pg_dsn: str) -> None:
                 now - timedelta(minutes=2),
                 0,
             )
-            worker_pid = await worker_conn.fetchval("SELECT pg_backend_pid()")
         finally:
             # Kill the worker's connection (simulating SIGKILL)
             killer_conn = await asyncpg.connect(str(deps.settings.pg_dsn))

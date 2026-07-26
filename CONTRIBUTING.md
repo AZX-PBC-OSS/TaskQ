@@ -107,7 +107,7 @@ The project uses `pyright` for type checking:
 
 ```bash
 # Run type checking
-uv run pyright src/taskq
+uv run pyright src/taskq tests
 
 # Type check specific file
 uv run pyright src/taskq/actor.py
@@ -140,7 +140,7 @@ Before submitting a PR, run all quality checks:
 uv run pytest
 
 # Run type checking
-uv run pyright src/taskq
+uv run pyright src/taskq tests
 
 # Run linting
 uv run ruff check .
@@ -187,7 +187,7 @@ uv run ruff format --check .
    uv run pytest
 
    # Check types
-   uv run pyright src/taskq
+   uv run pyright src/taskq tests
 
    # Check linting
    uv run ruff check .
@@ -207,7 +207,7 @@ uv run ruff format --check .
 
 2. **Ensure type checking passes:**
    ```bash
-   uv run pyright src/taskq
+   uv run pyright src/taskq tests
    ```
 
 3. **Ensure code is properly formatted:**
