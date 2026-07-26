@@ -172,6 +172,10 @@ async def sweep_expired_locks(
     A CTE snapshots ``locked_by_worker`` before the UPDATE clears it, so
     the ``job_attempts.worker_id`` is populated correctly.
 
+    A ``pg_notify`` is fired for every swept row (terminal or retry) so
+    that fleet-wide consumers using ``watch_reclaims`` get a low-latency
+    wakeup on both branches.
+
     Returns the count of affected rows.
     """
     if not _IDENT_RE.match(schema):
@@ -233,8 +237,7 @@ async def sweep_expired_locks(
                 }
             )
 
-        _pending_count = sum(1 for info in swept_rows if info["new_status"] == "pending")
-        if _pending_count > 0:
+        if swept_rows:
             await conn.execute(
                 "SELECT pg_notify($1, '')",
                 wake_channel(schema),

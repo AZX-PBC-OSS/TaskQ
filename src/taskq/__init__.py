@@ -24,6 +24,7 @@ from taskq.auth import (
 from taskq.backend._protocol import (
     CancelPhase,
     DstStrategy,
+    EventRow,
     IdempotencyKey,
     IdentityKey,
     JobFilter,
@@ -100,6 +101,7 @@ __all__ = [
     "DstStrategy",
     "EnqueueItem",
     "ErrorReporter",
+    "EventRow",
     "Fail",
     "IdempotencyKey",
     "IdentityKey",

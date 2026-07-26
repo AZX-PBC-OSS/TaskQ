@@ -202,6 +202,14 @@ can hold the row lock from the dispatch CTE's `FOR UPDATE SKIP LOCKED`.
 | pending/scheduled → cancelled | `write_cancel_request` (client) |
 | pending/scheduled → failed | `deadline_sweep` (leader, Sweep 2) |
 
+Sweep 1 (`running → crashed` / `running → pending`) additionally writes a
+fleet-wide-pollable `job_events` outbox row in the same transaction as the
+reclaim UPDATE.  Consumers observe crash-reclaimed jobs via
+`Backend.poll_reclaim_events(after_id)` or `TaskQ.watch_reclaims(after_id)`
+without enumerating every `job_id`.  Delivery is at-least-once, ordered by
+the monotonic `event_id` cursor; consumers must be idempotent (dedupe on
+`event_id`).
+
 ---
 
 ## Dispatch CTE

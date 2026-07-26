@@ -53,6 +53,7 @@ if TYPE_CHECKING:
 from taskq.actor import ActorRef
 from taskq.backend._protocol import (
     DstStrategy,
+    EventRow,
     IdempotencyKey,
     IdentityKey,
     JobFilter,
@@ -72,7 +73,7 @@ from taskq.cron import ScheduleHandle
 from taskq.progress._events import ProgressEvent
 from taskq.types import CancelResult
 
-__all__ = ["JobEvent", "TaskQ"]
+__all__ = ["EventRow", "JobEvent", "TaskQ"]
 
 logger = structlog.get_logger("taskq.client._taskq")
 
@@ -524,6 +525,68 @@ class TaskQ:
                 if evt.terminal:
                     return
 
+    async def watch_reclaims(
+        self,
+        after_id: int = 0,
+        *,
+        poll_timeout: float | None = None,
+    ) -> AsyncIterator[EventRow]:
+        """Stream fleet-wide crash-reclaim events as :class:`EventRow` objects.
+
+        Yields ``job_events`` rows with ``kind='state_change'`` and
+        ``detail['reason']='lock_expired'``, ordered by the monotonic
+        ``event_id`` cursor ascending.  The caller persists the last-seen
+        ``event_id`` and passes it back as *after_id* on resumption to
+        achieve idempotent at-least-once consumption.
+
+        On Postgres with a LISTEN transport source (``dsn``,
+        ``pg_conn_factory``, or ``listen_conn``), the method LISTENs on
+        ``wake_channel(schema)`` purely as a low-latency wakeup, but
+        always polls ``backend.poll_reclaim_events(after_id)`` as the
+        durable source of truth — NOTIFY is an optimisation, never the
+        only path.
+
+        Without a LISTEN transport or on Redis-configured backends, a
+        plain poll loop against ``poll_reclaim_events`` runs on
+        ``poll_timeout``.
+
+        Usage::
+
+            cursor = 0
+            async for evt in tq.watch_reclaims(after_id=cursor):
+                cursor = evt.event_id
+                # decrement outstanding-work counter, etc.
+
+        Raises
+        ------
+        RuntimeError
+            Called before ``tq.open()`` or outside an ``async with`` block.
+        """
+        client = self._require_open()
+        timeout = poll_timeout if poll_timeout is not None else self._poll_timeout
+
+        has_listen_source = (
+            self._dsn is not None
+            or self._pg_conn_factory is not None
+            or self._listen_conn is not None
+        )
+        if self._redis_client is None and has_listen_source:
+            gen: AsyncGenerator[EventRow, None] = _watch_reclaims_pg(
+                self._dsn,
+                self._schema,
+                client,
+                timeout,
+                after_id=after_id,
+                pg_conn_factory=self._pg_conn_factory,
+                listen_conn=self._listen_conn,
+            )
+        else:
+            gen = _watch_reclaims_poll(client, timeout, after_id=after_id)
+
+        async with contextlib.aclosing(gen) as agen:
+            async for evt in agen:
+                yield evt
+
 
 async def _stream_pg(
     dsn: str | None,
@@ -683,3 +746,107 @@ async def _stream_redis(
         on_timeout=_refetch,
     ):
         yield event
+
+
+async def _watch_reclaims_poll(
+    client: JobsClient,
+    poll_timeout: float,
+    *,
+    after_id: int = 0,
+) -> AsyncGenerator[EventRow, None]:
+    """Poll-only transport for :meth:`TaskQ.watch_reclaims`.
+
+    Repeatedly calls ``backend.poll_reclaim_events(cursor)`` and yields
+    events in ascending ``event_id`` order.  Sleeps for *poll_timeout*
+    when no new events are available.
+    """
+    cursor = after_id
+    while True:
+        events = await client.backend.poll_reclaim_events(cursor)
+        if events:
+            for evt in events:
+                cursor = evt.event_id
+                yield evt
+        else:
+            await asyncio.sleep(poll_timeout)
+
+
+async def _watch_reclaims_pg(
+    dsn: str | None,
+    schema: str,
+    client: JobsClient,
+    poll_timeout: float,
+    *,
+    after_id: int = 0,
+    pg_conn_factory: "ConnFactory | None" = None,
+    listen_conn: "asyncpg.Connection | None" = None,
+) -> AsyncGenerator[EventRow, None]:
+    """PG LISTEN/NOTIFY transport for :meth:`TaskQ.watch_reclaims`.
+
+    Opens a dedicated asyncpg connection, registers a LISTEN callback on
+    ``wake_channel(schema)``, and polls ``poll_reclaim_events`` on each
+    wakeup or timeout.  NOTIFY is a low-latency optimisation; the
+    durable source of truth is the ``poll_reclaim_events`` cursor.
+
+    Connection sources, in priority order:
+    * ``listen_conn`` — pre-constructed, caller-owned; NOT closed here.
+    * ``pg_conn_factory`` — zero-arg async factory; closed in ``finally``.
+    * ``dsn`` — ``asyncpg.connect(dsn=...)``; closed in ``finally``.
+
+    If none of the three is provided, falls back to pure polling via
+    :func:`_watch_reclaims_poll` (does NOT raise, matching
+    ``watch_reclaims``'s contract).
+    """
+    if listen_conn is None and pg_conn_factory is None and dsn is None:
+        async for evt in _watch_reclaims_poll(client, poll_timeout, after_id=after_id):
+            yield evt
+        return
+
+    import asyncpg
+
+    wake = asyncio.Event()
+    channel = wake_channel(schema)
+    cursor = after_id
+    owns_conn = listen_conn is None
+
+    def _on_notify(
+        conn: asyncpg.Connection,
+        pid: int,
+        ch: str,
+        payload: str,
+    ) -> None:
+        wake.set()
+
+    if listen_conn is not None:
+        conn = listen_conn
+    elif pg_conn_factory is not None:
+        conn = await pg_conn_factory()
+    else:
+        conn = await asyncpg.connect(dsn=str(dsn))
+    try:
+        await conn.add_listener(channel, _on_notify)  # pyright: ignore[reportArgumentType]  # Why: asyncpg stubs over-narrow the callback type — same pattern as _stream_pg
+        while True:
+            wake.clear()
+            events = await client.backend.poll_reclaim_events(cursor)
+            if events:
+                for evt in events:
+                    cursor = evt.event_id
+                    yield evt
+            try:
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(wake.wait(), timeout=poll_timeout)
+            except (asyncpg.InterfaceError, OSError):
+                logger.warning("watch_reclaims-listen-connection-lost")
+                while True:
+                    await asyncio.sleep(poll_timeout)
+                    events = await client.backend.poll_reclaim_events(cursor)
+                    if events:
+                        for evt in events:
+                            cursor = evt.event_id
+                            yield evt
+    finally:
+        with contextlib.suppress(Exception):
+            await conn.remove_listener(channel, _on_notify)  # pyright: ignore[reportArgumentType]  # Why: same pattern as _stream_pg
+        if owns_conn:
+            with contextlib.suppress(Exception):
+                await conn.close()

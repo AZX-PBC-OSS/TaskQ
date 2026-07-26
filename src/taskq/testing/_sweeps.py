@@ -157,8 +157,6 @@ async def _reclaim_expired_locks(
                     to_state="pending",
                     job_id=str(job_id),
                 )
-                for event in self._wake_subscribers:
-                    event.set()
             else:
                 self._jobs[job_id] = replace(
                     row,
@@ -180,5 +178,7 @@ async def _reclaim_expired_locks(
                     to_state="crashed",
                     job_id=str(job_id),
                 )
+            for event in self._wake_subscribers:
+                event.set()
             count += 1
     return count

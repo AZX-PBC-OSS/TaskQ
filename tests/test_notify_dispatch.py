@@ -195,9 +195,11 @@ class TestSweepWakesSubscriber:
             assert count == 1
             assert event.is_set()
 
-    async def test_reclaim_expired_locks_no_pending_no_wake(self) -> None:
+    async def test_reclaim_expired_locks_crashed_still_wakes_subscriber(self) -> None:
         """When reclaim_expired_locks transitions to crashed (not pending),
-        no wake is needed because the job is terminal."""
+        wake still fires: fleet-wide crash-reclaim consumers (see
+        ``poll_reclaim_events`` / ``TaskQ.watch_reclaims``) need a
+        low-latency wakeup for terminal transitions too, not only retries."""
         backend = _make_inmem_backend()
         clock = backend._clock  # type: ignore[reportPrivateUsage]
         worker_id = uuid4()
@@ -254,8 +256,9 @@ class TestSweepWakesSubscriber:
                 cleanup_grace=timedelta(seconds=30),
             )
             assert count == 1
-            # Goes to crashed, not pending — no wake needed
-            assert not event.is_set()
+            # Goes to crashed (terminal), but wake still fires so a
+            # watch_reclaims()-style consumer is woken promptly.
+            assert event.is_set()
             assert backend._jobs[job_id].status == "crashed"  # type: ignore[reportPrivateUsage]
 
 

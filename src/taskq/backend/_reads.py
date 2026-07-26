@@ -32,6 +32,7 @@ __all__ = [
     "_get_attempts",
     "_get_events",
     "_list_jobs",
+    "_poll_reclaim_events",
 ]
 
 
@@ -165,6 +166,26 @@ async def _get_events(
 ) -> list[EventRow]:
     async with pool.acquire() as conn:
         records = await conn.fetch(sql.get_events, job_id)
+    return [
+        EventRow(
+            event_id=rec["event_id"],
+            job_id=JobId(rec["job_id"]),
+            occurred_at=rec["occurred_at"],
+            kind=rec["kind"],  # type: ignore[arg-type]  # Why: asyncpg returns PG value as str; EventKind is Literal[str, ...]
+            detail=jsonb_to_dict(rec["detail"]) or {},
+        )
+        for rec in records
+    ]
+
+
+async def _poll_reclaim_events(
+    pool: "asyncpg.Pool",
+    sql: SqlTemplates,
+    after_id: int,
+    limit: int = 100,
+) -> list[EventRow]:
+    async with pool.acquire() as conn:
+        records = await conn.fetch(sql.poll_reclaim_events, after_id, limit)
     return [
         EventRow(
             event_id=rec["event_id"],

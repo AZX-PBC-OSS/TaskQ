@@ -26,6 +26,7 @@ __all__ = [
     "_get_attempts",
     "_get_events",
     "_list_jobs",
+    "_poll_reclaim_events",
 ]
 
 
@@ -99,3 +100,17 @@ async def _get_events(self: "InMemoryBackend", job_id: JobId) -> list[EventRow]:
     from taskq.testing._runner import get_events as _get_events_impl
 
     return await _get_events_impl(self, job_id)
+
+
+async def _poll_reclaim_events(
+    self: "InMemoryBackend",
+    after_id: int,
+    limit: int = 100,
+) -> list[EventRow]:
+    return [
+        e
+        for e in sorted(self._events, key=lambda ev: ev.event_id)
+        if e.event_id > after_id
+        and e.kind == "state_change"
+        and e.detail.get("reason") == "lock_expired"
+    ][:limit]

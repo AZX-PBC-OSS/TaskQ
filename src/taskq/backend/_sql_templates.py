@@ -120,6 +120,7 @@ class SqlTemplates:
 
     # ── Static read SQL ────────────────────────────────────────────
     get_events: str
+    poll_reclaim_events: str
     count_pending_jobs: str
 
     # ── Admin operations ───────────────────────────────────────────
@@ -515,6 +516,14 @@ SELECT id AS event_id, job_id, occurred_at, kind, detail
 FROM "{s}".job_events
 WHERE job_id = $1
 ORDER BY occurred_at, event_id""",
+        poll_reclaim_events=f"""\
+SELECT id AS event_id, job_id, occurred_at, kind, detail
+FROM "{s}".job_events
+WHERE kind = 'state_change'
+  AND (detail->>'reason') = 'lock_expired'
+  AND id > $1
+ORDER BY id ASC
+LIMIT $2""",
         count_pending_jobs=(
             f'SELECT actor, count(*)::int AS cnt FROM "{s}".jobs '
             f"WHERE actor = ANY($1::text[]) "

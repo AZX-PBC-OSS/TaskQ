@@ -17,6 +17,7 @@ import asyncpg
 import pytest
 
 from taskq._ids import new_base62, new_uuid
+from taskq.backend._protocol import JobId
 from taskq.backend.clock import SystemClock
 from taskq.backend.postgres import PostgresBackend
 from taskq.constants import wake_channel
@@ -759,5 +760,172 @@ async def test_tn5_fk_violation_triggers_shutdown(pg_dsn: str) -> None:
                 task.cancel()
                 with suppress(asyncio.CancelledError):
                     await task
+    finally:
+        await stack.aclose()
+
+
+# ── Crash-reclaim observability via poll_reclaim_events ──────────
+
+
+@pytest.mark.asyncio
+async def test_ti7_crash_reclaim_observable_via_poll(pg_dsn: str) -> None:
+    """Real-crash end-to-end: a worker's connection is killed via
+    pg_terminate_backend, the lock expires, Sweep 1 reclaims the job,
+    and a consumer observes the terminal transition via
+    poll_reclaim_events without polling list_jobs/get itself.
+
+    Contributes to acceptance_definition.
+    """
+    schema, stack, deps, backend, worker_id = await _open_single(
+        pg_dsn, f"test_leader_{new_base62()}"
+    )
+    try:
+        now = datetime.now(UTC)
+
+        # Open a dedicated connection simulating the worker's session
+        worker_conn = await asyncpg.connect(str(deps.settings.pg_dsn))
+        try:
+            job_id = new_uuid()
+            await worker_conn.execute(
+                f'INSERT INTO "{schema}".jobs (id, actor, queue, payload, '
+                f"max_attempts, retry_kind, status, priority, attempt, "
+                f"scheduled_at, locked_by_worker, lock_expires_at, "
+                f"started_at, last_heartbeat_at, cancel_phase) "
+                f"VALUES ($1, $2, $3, $4::jsonb, $5, $6, "
+                f"'running', 0, $7, $8, $9, $10, $11, $12, $13)",
+                job_id,
+                "test_actor",
+                "default",
+                "{}",
+                1,
+                "transient",
+                1,
+                now - timedelta(minutes=5),
+                worker_id,
+                now - timedelta(minutes=1),
+                now - timedelta(minutes=2),
+                now - timedelta(minutes=2),
+                0,
+            )
+            worker_pid = await worker_conn.fetchval("SELECT pg_backend_pid()")
+        finally:
+            # Kill the worker's connection (simulating SIGKILL)
+            killer_conn = await asyncpg.connect(str(deps.settings.pg_dsn))
+            try:
+                await killer_conn.fetchval("SELECT pg_terminate_backend($1)", worker_pid)
+            finally:
+                await killer_conn.close()
+            with suppress(Exception):
+                await worker_conn.close()
+
+        # Run Sweep 1
+        count = await backend.reclaim_expired_locks(
+            now,
+            timedelta(seconds=deps.settings.cancellation_grace_period),
+            timedelta(seconds=deps.settings.cleanup_grace_period),
+        )
+        assert count == 1
+
+        # Consumer observes the terminal transition via poll_reclaim_events
+        events = await backend.poll_reclaim_events(0)
+        assert len(events) == 1
+        evt = events[0]
+        assert evt.detail["to_state"] == "crashed"
+        assert evt.detail["reason"] == "lock_expired"
+        assert evt.job_id == JobId(job_id)
+    finally:
+        await stack.aclose()
+
+
+@pytest.mark.asyncio
+async def test_ti8_fanout_outstanding_counter_reaches_zero(
+    pg_dsn: str,
+) -> None:
+    """Fan-out scenario: enqueue N jobs, mark most succeeded, crash one,
+    run the sweep, and drive an outstanding-work counter purely off
+    poll_reclaim_events + the normal succeeded-path checks. The counter
+    must reach zero — without poll_reclaim_events it would be stuck at 1
+    forever (the regression described in the issue).
+
+    Contributes to acceptance_definition.
+    """
+    schema, stack, deps, backend, worker_id = await _open_single(
+        pg_dsn, f"test_leader_{new_base62()}"
+    )
+    try:
+        now = datetime.now(UTC)
+        num_jobs = 5
+        job_ids: list[UUID] = []
+
+        # Create N running jobs with valid locks
+        async with deps.dispatcher_pool.acquire() as conn:
+            for _ in range(num_jobs):
+                jid = new_uuid()
+                job_ids.append(jid)
+                await conn.execute(
+                    f'INSERT INTO "{schema}".jobs (id, actor, queue, payload, '
+                    f"max_attempts, retry_kind, status, priority, attempt, "
+                    f"scheduled_at, locked_by_worker, lock_expires_at, "
+                    f"started_at, last_heartbeat_at, cancel_phase) "
+                    f"VALUES ($1, $2, $3, $4::jsonb, $5, $6, "
+                    f"'running', 0, 1, $7, $8, $9, $10, $11, 0)",
+                    jid,
+                    "test_actor",
+                    "default",
+                    "{}",
+                    3,
+                    "transient",
+                    now - timedelta(minutes=5),
+                    worker_id,
+                    now + timedelta(seconds=60),
+                    now - timedelta(minutes=2),
+                    now - timedelta(minutes=2),
+                )
+
+        # Mark first N-1 as succeeded
+        for jid in job_ids[:-1]:
+            await backend.mark_succeeded(JobId(jid), worker_id, None)
+
+        # Force-expire the lock on the last job (simulates a crashed worker)
+        crashed_jid = job_ids[-1]
+        async with deps.dispatcher_pool.acquire() as conn:
+            await conn.execute(
+                f'UPDATE "{schema}".jobs SET lock_expires_at = $1 WHERE id = $2',
+                now - timedelta(seconds=10),
+                crashed_jid,
+            )
+
+        # Run Sweep 1
+        count = await backend.reclaim_expired_locks(
+            now,
+            timedelta(seconds=deps.settings.cancellation_grace_period),
+            timedelta(seconds=deps.settings.cleanup_grace_period),
+        )
+        assert count == 1
+
+        # Drive outstanding-work counter — a consumer tracking completion
+        # of a fan-out of N jobs via an outstanding-work counter.
+        outstanding = num_jobs
+
+        # Normal succeeded-path: check each non-crashed job's status
+        for jid in job_ids[:-1]:
+            row = await backend.get(JobId(jid))
+            assert row is not None
+            if row.status in (
+                "succeeded",
+                "failed",
+                "crashed",
+                "cancelled",
+                "abandoned",
+            ):
+                outstanding -= 1
+
+        # Crash-reclaim path: poll_reclaim_events observes the crashed job
+        events = await backend.poll_reclaim_events(0)
+        assert len(events) == 1
+        assert events[0].job_id == JobId(crashed_jid)
+        outstanding -= 1
+
+        assert outstanding == 0
     finally:
         await stack.aclose()

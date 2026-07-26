@@ -60,6 +60,7 @@ from taskq.backend._reads import (
     _get_attempts,
     _get_events,
     _list_jobs,
+    _poll_reclaim_events,
 )
 from taskq.backend._records import parse_rowcount
 from taskq.backend._schedules import (
@@ -457,6 +458,9 @@ class PostgresBackend:
 
     async def get_events(self, job_id: JobId) -> list[EventRow]:
         return await _get_events(self._worker_pool, self._sql, job_id)
+
+    async def poll_reclaim_events(self, after_id: int, limit: int = 100) -> list[EventRow]:
+        return await _poll_reclaim_events(self._worker_pool, self._sql, after_id, limit)
 
     # ── Cancel signals ──────────────────────────────────────────────────
 

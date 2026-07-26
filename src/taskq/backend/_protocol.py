@@ -568,8 +568,8 @@ class BackendDeps(Protocol):
 class Backend(Protocol):
     """Contract that both PostgresBackend and InMemoryBackend satisfy.
 
-    30 async methods plus two sync methods (``subscribe_wake`` and
-    ``subscribe_cancel_wake``) (32 methods total) covering enqueue,
+    31 async methods plus two sync methods (``subscribe_wake`` and
+    ``subscribe_cancel_wake``) (33 methods total) covering enqueue,
     dispatch, heartbeat, terminal writes, attempt history, cancel
     signals, scheduling / sweeps, read, NOTIFY hook, and schedule CRUD.
     Method order grouped for review-grep ergonomics.
@@ -773,6 +773,8 @@ class Backend(Protocol):
     async def get_attempts(self, job_id: JobId) -> list[AttemptRow]: ...
 
     async def get_events(self, job_id: JobId) -> list[EventRow]: ...
+
+    async def poll_reclaim_events(self, after_id: int, limit: int = 100) -> list[EventRow]: ...
 
     # ── Cancel signals ──────────────────────────────────────────────────
     async def write_cancel_request(
