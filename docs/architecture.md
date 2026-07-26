@@ -287,11 +287,12 @@ outbox pattern's well-known bigserial-ordering hazard — the alternative,
 fully exact fix is to read commit order directly off the WAL (logical
 decoding / CDC), which is out of scope here.
 
-The reclaim `pg_notify` now fires for every swept row (previously only the
-retry branch), which is a **wake-channel semantics change**, not purely a
-bugfix — `wake_channel` previously meant only "new dispatchable work"; it now
-also means "something changed on job_events," so every crash-reclaim wakes
-every subscriber (including pure-dispatch workers with no interest in it).
+Sweep 1 now fires one `pg_notify` per sweep call that reclaims at least one
+row of *either* kind (previously only when the retry branch produced a
+row), which is a **wake-channel semantics change**, not purely a bugfix —
+`wake_channel` previously meant only "new dispatchable work"; it now also
+means "something changed on job_events," so every crash-reclaim wakes every
+subscriber (including pure-dispatch workers with no interest in it).
 Crashes are rare so the added wakeup cost is low, but the channel's meaning
 has broadened.
 

@@ -17,6 +17,7 @@ import pytest
 
 from taskq._ids import new_uuid
 from taskq.backend._protocol import JobId
+from taskq.backend.clock import SystemClock
 from taskq.backend.postgres import PostgresBackend
 from taskq.constants import RECLAIM_EVENT_VISIBILITY_DELAY
 from taskq.testing.fixtures import JobsApp
@@ -858,6 +859,61 @@ class TestPollReclaimEvents:
                 await tx_a.rollback()
             with contextlib.suppress(Exception):
                 await conn_a.close()
+
+    async def test_settings_configured_visibility_delay_is_the_default(
+        self, clean_jobs_app: JobsApp
+    ) -> None:
+        """A PostgresBackend constructed with a custom
+        reclaim_event_visibility_delay applies that margin as
+        poll_reclaim_events' default when no per-call override is given —
+        the end-to-end path from WorkerSettings.reclaim_event_visibility_delay
+        (via PostgresBackend.__init__) down to the SQL, not just the
+        per-call visibility_delay= parameter exercised elsewhere."""
+        deps = clean_jobs_app.deps
+        schema = deps.settings.schema_name
+        worker_id = new_uuid()
+        custom_delay = timedelta(milliseconds=300)
+
+        configured_backend = PostgresBackend(
+            deps,
+            clock=SystemClock(),
+            cancellation_grace_period=_CANCEL_GRACE,
+            cleanup_grace_period=_CLEANUP_GRACE,
+            reclaim_event_visibility_delay=custom_delay,
+        )
+
+        async with deps.worker_pool.acquire() as conn:
+            await create_worker(conn, schema, worker_id)
+            await create_running_job(
+                conn,
+                schema,
+                worker_id,
+                lock_expires_at=datetime.now(UTC) - timedelta(seconds=10),
+                max_attempts=1,
+                retry_kind="transient",
+                attempt=1,
+            )
+            await PostgresBackend.sweep_expired_locks(
+                conn,
+                datetime.now(UTC),
+                _CANCEL_GRACE,
+                _CLEANUP_GRACE,
+                schema=schema,
+            )
+
+        # No visibility_delay= override: relies entirely on the
+        # constructor-configured default.
+        immediate = await configured_backend.poll_reclaim_events(0)
+        assert immediate == [], (
+            "expected the configured 300ms margin to hold the event back "
+            "immediately after the sweep, not the library default (2s) or "
+            "no margin at all"
+        )
+
+        await asyncio.sleep(custom_delay.total_seconds() + 0.2)
+
+        settled = await configured_backend.poll_reclaim_events(0)
+        assert len(settled) == 1
 
 
 # ── sweep_deadline_exceeded ────────────────────────────────────

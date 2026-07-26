@@ -591,6 +591,11 @@ class TaskQ:
                 after_id=after_id,
                 pg_conn_factory=self._pg_conn_factory,
                 listen_conn=self._listen_conn,
+                visibility_delay=(
+                    self._reclaim_event_visibility_delay
+                    if self._reclaim_event_visibility_delay is not None
+                    else RECLAIM_EVENT_VISIBILITY_DELAY
+                ),
             )
         else:
             gen = _watch_reclaims_poll(client, timeout, after_id=after_id)
@@ -786,20 +791,33 @@ async def _watch_reclaims_poll(
 _NOTIFY_CATCHUP_INTERVAL = 0.25
 """Retry cadence for :func:`_catch_up_after_notify`, in seconds."""
 
+_RECONNECT_POLL_INTERVAL = 10
+"""Poll iterations between LISTEN-reconnect attempts in
+:func:`_watch_reclaims_pg`'s degraded (connection-lost) fallback loop."""
 
-async def _catch_up_after_notify(client: JobsClient, cursor: int) -> AsyncGenerator[EventRow, None]:
+
+async def _catch_up_after_notify(
+    client: JobsClient,
+    cursor: int,
+    visibility_delay: timedelta = RECLAIM_EVENT_VISIBILITY_DELAY,
+) -> AsyncGenerator[EventRow, None]:
     """Bounded short-interval re-poll after a NOTIFY-driven wake finds
-    nothing yet, bridging ``RECLAIM_EVENT_VISIBILITY_DELAY`` without
-    waiting for a full (possibly much longer) ``poll_timeout`` cycle.
+    nothing yet, bridging ``visibility_delay`` without waiting for a full
+    (possibly much longer) ``poll_timeout`` cycle.
 
-    Gives up once ``RECLAIM_EVENT_VISIBILITY_DELAY`` has elapsed since
-    the wake — at that point either the event has appeared (yielded
-    already) or the writing transaction is taking longer than the
-    margin assumes, in which case the caller's normal poll_timeout
-    cadence takes back over.
+    Gives up once *visibility_delay* has elapsed since the wake — at that
+    point either the event has appeared (yielded already) or the writing
+    transaction is taking longer than the margin assumes, in which case
+    the caller's normal poll_timeout cadence takes back over.
+
+    *visibility_delay* must match the value used by
+    ``backend.poll_reclaim_events`` so the catch-up retries for exactly
+    as long as the trailing watermark holds rows back. The default falls
+    back to ``RECLAIM_EVENT_VISIBILITY_DELAY`` for standalone use.
     """
-    deadline = asyncio.get_event_loop().time() + RECLAIM_EVENT_VISIBILITY_DELAY.total_seconds()
-    while asyncio.get_event_loop().time() < deadline:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + visibility_delay.total_seconds()
+    while loop.time() < deadline:
         events = await client.backend.poll_reclaim_events(cursor)
         if events:
             for evt in events:
@@ -818,6 +836,7 @@ async def _watch_reclaims_pg(
     after_id: int = 0,
     pg_conn_factory: "ConnFactory | None" = None,
     listen_conn: "asyncpg.Connection | None" = None,
+    visibility_delay: timedelta = RECLAIM_EVENT_VISIBILITY_DELAY,
 ) -> AsyncGenerator[EventRow, None]:
     """PG LISTEN/NOTIFY transport for :meth:`TaskQ.watch_reclaims`.
 
@@ -864,8 +883,6 @@ async def _watch_reclaims_pg(
 
     import asyncpg
 
-    _reconnect_poll_interval = 10
-
     wake = asyncio.Event()
     channel = wake_channel(schema)
     cursor = after_id
@@ -908,8 +925,9 @@ async def _watch_reclaims_pg(
                     pass
                 if woke_via_notify:
                     # A NOTIFY fired, but the event that triggered it may
-                    # not have cleared poll_reclaim_events' visibility
-                    # delay yet (see RECLAIM_EVENT_VISIBILITY_DELAY) — an
+                    # not have cleared poll_reclaim_events' configured
+                    # visibility delay yet (see visibility_delay,
+                    # threaded through from watch_reclaims) — an
                     # immediate re-poll (top of the next loop iteration)
                     # can still come up empty.  Retry on a short, bounded
                     # cadence until it appears, rather than falling back
@@ -917,7 +935,9 @@ async def _watch_reclaims_pg(
                     # otherwise the low-latency wakeup this LISTEN
                     # transport exists for would be silently defeated by
                     # that margin.
-                    async for evt in _catch_up_after_notify(client, cursor):
+                    async for evt in _catch_up_after_notify(
+                        client, cursor, visibility_delay=visibility_delay
+                    ):
                         cursor = evt.event_id
                         yield evt
             except (asyncpg.InterfaceError, OSError):
@@ -944,7 +964,7 @@ async def _watch_reclaims_pg(
                             cursor = evt.event_id
                             yield evt
                     poll_iters += 1
-                    if poll_iters % _reconnect_poll_interval != 0:
+                    if poll_iters % _RECONNECT_POLL_INTERVAL != 0:
                         continue
                     try:
                         new_conn = await _open_listen_conn()

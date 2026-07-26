@@ -5,6 +5,17 @@ schema, hold no instance state), so they live here as module-level
 functions.  :class:`~taskq.backend.postgres.PostgresBackend` exposes
 thin ``@staticmethod`` wrappers that delegate here, preserving the
 existing ``PostgresBackend.sweep_*`` call surface.
+
+Every finished-at / terminal timestamp written in these sweeps uses
+``clock_timestamp()``, not ``now()``: ``now()`` is fixed at transaction
+*start*, so within a long-held sweep transaction it can disagree both
+with other ``clock_timestamp()``-derived values in the same row and with
+``job_events.occurred_at`` (also ``clock_timestamp()``, via
+``INSERT_EVENT_SQL`` — see ``taskq.constants.RECLAIM_EVENT_VISIBILITY_
+DELAY`` for why that column's co-monotonicity with ``job_events.id``
+matters). Python-side ``duration_ms`` computations use
+``datetime.now(UTC)`` for the same reason — matching ``clock_timestamp()``
+wall-clock semantics, not transaction-start ``now()``.
 """
 
 from datetime import UTC, datetime, timedelta
@@ -84,7 +95,7 @@ SET status = CASE
     END,
     finished_at = CASE
         WHEN NOT (j.attempt < j.max_attempts AND j.retry_kind != 'non_retryable')
-            THEN now()
+            THEN clock_timestamp()
         ELSE j.finished_at
     END
 FROM snap
@@ -102,7 +113,7 @@ WITH snap AS (
 )
 UPDATE "{schema}".jobs j
 SET status = 'failed'::"{schema}".job_status,
-    finished_at = now(),
+    finished_at = clock_timestamp(),
     error_class = 'DeadlineExceeded',
     error_message = 'schedule_to_close reached before next dispatch'
 FROM snap
@@ -147,13 +158,13 @@ _SWEEP_1_ATTEMPT_SQL = """\
 INSERT INTO "{schema}".job_attempts
 (job_id, attempt, started_at, finished_at, outcome,
  error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
-VALUES ($1, $2, $3, now(), $4, $5, $6, $7, $8, $9, $10::jsonb)"""
+VALUES ($1, $2, $3, clock_timestamp(), $4, $5, $6, $7, $8, $9, $10::jsonb)"""
 
 _SWEEP_2_ATTEMPT_SQL = """\
 INSERT INTO "{schema}".job_attempts
 (job_id, attempt, started_at, finished_at, outcome,
  error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
-VALUES ($1, $2, COALESCE($3, now()), now(), $4, $5, $6, $7, $8, $9, $10::jsonb)"""
+VALUES ($1, $2, COALESCE($3, now()), clock_timestamp(), $4, $5, $6, $7, $8, $9, $10::jsonb)"""
 
 
 async def sweep_expired_locks(
@@ -170,20 +181,26 @@ async def sweep_expired_locks(
 
     - If attempts remain and retry is allowed: transition to
       ``'pending'`` with ``scheduled_at = now() + 5s`` backoff.
-    - Otherwise: transition to ``'crashed'`` with ``finished_at = now()``.
+    - Otherwise: transition to ``'crashed'`` with
+      ``finished_at = clock_timestamp()``.
 
     Both branches write a ``job_attempts`` row (outcome ``'crashed'``,
     error_class ``'WorkerCrashed'``) and a ``job_events`` row (kind
     ``'state_change'``, reason ``'lock_expired'``).
 
-    *now* is accepted for API consistency; PG uses server-side ``now()``.
+    *now* is accepted for API consistency; PG uses server-side
+    ``clock_timestamp()`` for WHERE comparisons and finished-at timestamps
+    (not ``now()``, which is transaction-start time — see the module
+    docstring's note on why a long-held sweep transaction must not mix the
+    two for timestamps that need to agree with each other or with
+    ``job_events.occurred_at``).
 
     A CTE snapshots ``locked_by_worker`` before the UPDATE clears it, so
     the ``job_attempts.worker_id`` is populated correctly.
 
-    A ``pg_notify`` is fired for every swept row (terminal or retry) so
-    that fleet-wide consumers using ``watch_reclaims`` get a low-latency
-    wakeup on both branches.
+    One ``pg_notify`` is fired per sweep call that reclaims at least one
+    row (not one per row) so that fleet-wide consumers using
+    ``watch_reclaims`` get a low-latency wakeup on both branches.
 
     .. note:: This is a **channel-semantics change**, not purely a
        bugfix: ``wake_channel`` previously meant "new dispatchable work"
