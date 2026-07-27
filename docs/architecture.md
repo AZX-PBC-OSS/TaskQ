@@ -121,8 +121,40 @@ class Backend(Protocol):
     def subscribe_cancel_wake(self) -> AsyncContextManager[asyncio.Event]: ...
 ```
 
-`BACKEND_PROTOCOL_VERSION` is a `ClassVar[int]` (currently `2`). Both backends
+`list_jobs` accepts a `JobFilter` whose `status` field may be a single
+`JobStatus` or a sequence of statuses (e.g. `["pending", "running"]`).  The
+PG backend renders a single status as `status = $n` and a sequence as
+`status = ANY($n)` with bound parameters.  An empty sequence
+(`status=[]`) matches no jobs, not all jobs; unknown status values are
+rejected with `ValueError` at `JobFilter` construction so both backends
+fail identically.  `status` and `active` are mutually exclusive —
+specifying both raises `ValueError`.
+
+The `active` meta-filter selects statuses by terminality.  **Despite the
+name, this is not Celery/Flower's 'active'** (currently-executing tasks
+only): `active=True` selects all non-terminal statuses (pending,
+scheduled, running — 'not yet finished') and `active=False` the terminal
+ones; the non-terminal set is derived from `ACTIVE_STATUSES` in
+`statemachine.py`.
+
+`BACKEND_PROTOCOL_VERSION` is a `ClassVar[int]` (currently `3`). Both backends
 assert this constant matches at import time, preventing silent protocol drift.
+
+**When the version bumps:** increment it whenever a change alters an existing
+protocol member's observable contract such that an implementation written
+against the previous version would *silently* misbehave — return wrong rows,
+ignore inputs — instead of failing loudly.  Purely additive changes that an old
+implementation can ignore without producing incorrect behaviour (a new optional
+method with a default, a new carrier field old code simply never reads) do not
+require a bump.  History: **v3** — `list_jobs`; `JobFilter.status` widened to
+accept a sequence and the `active` meta-filter was added (a v2 implementation
+returns 0 rows for `status=[...]` and ignores `active`, with no error).
+
+Third-party backends should declare the version they implement as
+`BACKEND_PROTOCOL_VERSION: ClassVar[int]` and assert it against the canonical
+constant at import time, the same pattern `PostgresBackend` and
+`InMemoryBackend` use (`_EXPECTED_PROTOCOL_VERSION` + `RuntimeError`), so a
+contract bump fails fast instead of drifting silently.
 
 `retry_job` resets a terminal job (`failed`, `crashed`, or `cancelled`) back to
 `pending` so it can be re-dispatched. Returns `True` if the job was retried,
@@ -186,6 +218,12 @@ abandoned → (terminal)
 guard. The SQL `WHERE status = 'X'` predicate is the authoritative serialization
 gate — two concurrent writers cannot both transition the same row because only one
 can hold the row lock from the dispatch CTE's `FOR UPDATE SKIP LOCKED`.
+
+`statemachine.py` also exports `ACTIVE_STATUSES` — the complement of
+`TERMINAL_STATUSES` over the full `JobStatus` set (pending, scheduled, running),
+derived from `VALID_TRANSITIONS` keys.  `JobFilter(active=True)` uses this set
+so that adding a new non-terminal state to the state machine automatically
+extends the active filter without a second edit.
 
 ### Which component drives each transition
 
@@ -911,4 +949,7 @@ These invariants must remain true across all changes.
 8. **`BACKEND_PROTOCOL_VERSION` is checked at import time** — both
    `PostgresBackend` and `InMemoryBackend` assert the version constant at module
    load, not at runtime. A version bump without updating both implementations
-   raises `RuntimeError` on import, not on the first query.
+   raises `RuntimeError` on import, not on the first query. The version bumps
+   only when an existing member's contract changes in a way old implementations
+   would silently mishandle (see *When the version bumps* under
+   §Backend protocol above).

@@ -17,6 +17,7 @@ from taskq.backend._protocol import (
     JobRow,
     JobSortField,
 )
+from taskq.backend.statemachine import ACTIVE_STATUSES, TERMINAL_STATUSES
 
 if TYPE_CHECKING:
     from taskq.testing.in_memory import InMemoryBackend
@@ -41,7 +42,14 @@ async def _list_jobs(self: "InMemoryBackend", filters: JobFilter) -> list[JobRow
     if filters.queue is not None:
         candidates = [r for r in candidates if r.queue == filters.queue]
     if filters.status is not None:
-        candidates = [r for r in candidates if r.status == filters.status]
+        if isinstance(filters.status, str):
+            candidates = [r for r in candidates if r.status == filters.status]
+        else:
+            status_set = frozenset(filters.status)
+            candidates = [r for r in candidates if r.status in status_set]
+    elif filters.active is not None:
+        status_set = ACTIVE_STATUSES if filters.active else TERMINAL_STATUSES
+        candidates = [r for r in candidates if r.status in status_set]
     if filters.actor is not None:
         candidates = [r for r in candidates if r.actor == filters.actor]
     if filters.identity_key is not None:
@@ -55,14 +63,22 @@ async def _list_jobs(self: "InMemoryBackend", filters: JobFilter) -> list[JobRow
         candidates = [r for r in candidates if filter_tags & set(r.tags)]
 
     if filters.order_by is JobSortField.CREATED_AT_DESC:
-        candidates.sort(key=lambda r: (r.created_at, r.id), reverse=True)
+        # PG: ORDER BY created_at DESC, id ASC. A single reverse=True key
+        # would invert the id tie-break to DESC, so sort the id ASC
+        # tie-breaker first and let sort stability preserve it under the
+        # primary DESC sort.
+        candidates.sort(key=lambda r: r.id)
+        candidates.sort(key=lambda r: r.created_at, reverse=True)
     elif filters.order_by is JobSortField.FINISHED_AT_DESC:
-        # NULLS LAST for DESC: non-None finished_at sorts before None via the
-        # leading bool (True > False under reverse=True); finished_at is only
-        # compared when both rows share the same bool, so None-vs-None never
-        # reaches an ordered comparison.
+        # PG: ORDER BY finished_at DESC NULLS LAST, id ASC. NULLS LAST for
+        # DESC: non-None finished_at sorts before None via the leading bool
+        # (True > False under reverse=True); finished_at is only compared
+        # when both rows share the same bool, so None-vs-None never reaches
+        # an ordered comparison. Same two-pass idiom as CREATED_AT_DESC for
+        # the id ASC tie-break.
+        candidates.sort(key=lambda r: r.id)
         candidates.sort(
-            key=lambda r: (r.finished_at is not None, r.finished_at, r.id),
+            key=lambda r: (r.finished_at is not None, r.finished_at),
             reverse=True,
         )
     else:

@@ -2,7 +2,7 @@
 
 Covers the Definition of Done items:
 - Protocol is @runtime_checkable
-- BACKEND_PROTOCOL_VERSION == 2
+- BACKEND_PROTOCOL_VERSION == 3
 - All 33 public members present (30 async methods + 2 sync
   subscribe_wake/subscribe_cancel_wake + supports_transactional_simulation)
 - Five bool-returning terminal-write methods have bool return annotations
@@ -128,8 +128,22 @@ def _make_attempt_row(**overrides: object) -> AttemptRow:
 
 
 class TestProtocolVersion:
-    def test_version_is_two(self) -> None:
-        assert BACKEND_PROTOCOL_VERSION == 2
+    def test_version_is_three(self) -> None:
+        """Pins the current protocol version and the bump rule.
+
+        v3: ``list_jobs`` — ``JobFilter.status`` widened to accept a
+        sequence of statuses and the ``active`` meta-filter was added.  A
+        backend written against v2 silently returns wrong rows for both
+        shapes (0 rows for ``status=[...]``; ``active`` ignored), which is
+        exactly the silent drift this constant exists to prevent.
+
+        Bump this constant whenever a change alters an existing protocol
+        member's observable contract such that an implementation written
+        against the previous version would silently misbehave instead of
+        failing loudly; purely additive, ignorably-compatible changes do
+        not require a bump (see docs/architecture.md).
+        """
+        assert BACKEND_PROTOCOL_VERSION == 3
 
     def test_version_is_int(self) -> None:
         assert isinstance(BACKEND_PROTOCOL_VERSION, int)
@@ -140,24 +154,24 @@ class TestProtocolVersion:
 
 class TestProtocolVersionConsistency:
     """B-TG-10: all three protocol-implementing modules must declare
-    BACKEND_PROTOCOL_VERSION == 2. Importing from each module's namespace
+    BACKEND_PROTOCOL_VERSION == 3. Importing from each module's namespace
     guards against accidental shadowing or divergence on future bumps.
     """
 
-    def test_protocol_module_version_is_two(self) -> None:
+    def test_protocol_module_version_is_three(self) -> None:
         import taskq.backend._protocol as proto_mod
 
-        assert proto_mod.BACKEND_PROTOCOL_VERSION == 2
+        assert proto_mod.BACKEND_PROTOCOL_VERSION == 3
 
-    def test_postgres_module_version_is_two(self) -> None:
+    def test_postgres_module_version_is_three(self) -> None:
         import taskq.backend.postgres as pg_mod
 
-        assert pg_mod.BACKEND_PROTOCOL_VERSION == 2
+        assert pg_mod.BACKEND_PROTOCOL_VERSION == 3
 
-    def test_in_memory_module_version_is_two(self) -> None:
+    def test_in_memory_module_version_is_three(self) -> None:
         import taskq.testing.in_memory as mem_mod
 
-        assert mem_mod.BACKEND_PROTOCOL_VERSION == 2
+        assert mem_mod.BACKEND_PROTOCOL_VERSION == 3
 
     def test_all_three_versions_equal(self) -> None:
         import taskq.backend._protocol as proto_mod
@@ -172,6 +186,17 @@ class TestProtocolVersionConsistency:
         assert len(set(versions.values())) == 1, (
             f"BACKEND_PROTOCOL_VERSION diverged across modules: {versions}"
         )
+
+    def test_fake_backend_version_matches_canonical(self) -> None:
+        """``testing.actor.FakeBackend`` must track the canonical constant.
+
+        A hardcoded literal here previously drifted (stayed ``2`` across a
+        contract change); it is now bound to the canonical constant, and
+        this pin keeps it that way.
+        """
+        from taskq.testing.actor import FakeBackend
+
+        assert FakeBackend.BACKEND_PROTOCOL_VERSION == BACKEND_PROTOCOL_VERSION
 
 
 # ── Runtime checkability ───────────────────────────────────────────────
@@ -488,7 +513,7 @@ class TestJobFilterRoundTrip:
         assert f.cursor is None
 
     def test_field_count(self) -> None:
-        expected = 9
+        expected = 10
         assert len(fields(JobFilter)) == expected
 
     def test_frozen(self) -> None:

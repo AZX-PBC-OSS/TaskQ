@@ -34,6 +34,7 @@ from taskq.backend._protocol import (
     JobFilter,
     JobId,
     JobPage,
+    JobSortField,
     QueueName,
     ScheduleCreateArgs,
     ScheduleUpdateArgs,
@@ -537,11 +538,31 @@ class JobsClient:
         )
 
     async def list(self, filter: JobFilter) -> JobPage:
-        """List jobs matching *filter*, returning a :class:`JobPage`."""
+        """List jobs matching *filter*, returning a :class:`JobPage`.
+
+        ``filter.status`` accepts a single :data:`JobStatus` or a
+        sequence of statuses (e.g. ``JobFilter(status=["pending",
+        "running"])``).
+
+        ``filter.active`` is a meta-filter — **not Celery's 'active'**:
+        ``active=True`` selects *non-terminal* statuses (pending,
+        scheduled, running — 'not yet finished', not 'currently
+        executing') and ``active=False`` selects terminal ones.  See
+        :class:`JobFilter` for full semantics.
+
+        ``next_cursor`` is always ``None`` when a non-default
+        ``order_by`` is used, because cursor pagination only applies to
+        the default ordering (``order_by=None`` or
+        ``JobSortField.SCHEDULED_AT_ASC``).
+        """
         with self._translate_schema_errors():
             rows = await self._backend.list_jobs(filter)
         next_cursor: str | None = None
-        if rows and len(rows) == filter.limit:
+        if (
+            rows
+            and len(rows) == filter.limit
+            and (filter.order_by is None or filter.order_by is JobSortField.SCHEDULED_AT_ASC)
+        ):
             last = rows[-1]
             next_cursor = encode_cursor(last.priority, last.scheduled_at, last.id)
         return JobPage(jobs=rows, next_cursor=next_cursor)
