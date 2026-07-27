@@ -14,6 +14,7 @@ direction.
 
 import asyncio
 import time
+from collections.abc import Sequence
 from datetime import timedelta
 from typing import TYPE_CHECKING
 from uuid import UUID
@@ -39,6 +40,7 @@ from taskq.obs import (
     record_process_duration,
     safe_start_span,
 )
+from taskq.ratelimit.refs import KeyedReservationRef
 from taskq.ratelimit.registry import RateLimitRegistry, queue_concurrency_reservation_name
 from taskq.retry import ActorConfigLike
 from taskq.worker._consumer import consume_one_job
@@ -67,6 +69,35 @@ def _to_consumed_outcome(attempt_outcome: str) -> ConsumedOutcome:
     if attempt_outcome == "scheduled":
         return "abandoned"
     return attempt_outcome  # type: ignore[return-value]  # Why: AttemptOutcome is Literal["succeeded","failed","cancelled","scheduled"]; after the "scheduled" branch the remaining values are exactly the ConsumedOutcome union but pyright cannot narrow across the return-site coercion
+
+
+def _effective_reservations(
+    reservations: Sequence[str | KeyedReservationRef],
+    queue: str,
+    rl_registry: RateLimitRegistry | None,
+) -> Sequence[str | KeyedReservationRef]:
+    """Prepend the fleet-wide queue-cap reservation name, if one is registered.
+
+    If the job's queue has a fleet-wide cap registered (set via the
+    ``max_concurrent`` column on the queues table, read at worker startup),
+    its reservation name is prepended to the actor-declared reservations so
+    :meth:`RateLimitRegistry.acquire_for_actor` acquires a slot before the
+    actor runs. This caps total concurrent jobs for this queue across all
+    workers, not just this one. Transparent to actor code — no ``@actor``
+    change needed.
+
+    Hot-path notes: the membership test uses
+    :meth:`RateLimitRegistry.has_reservation`, an O(1) lookup — NOT the
+    ``reservations`` property, which defensively copies the whole dict and
+    would make every job dispatch O(registry size). And when no cap is
+    registered (the common case) the actor's own list is returned unchanged,
+    so dispatch does no per-job list copying either.
+    """
+    if rl_registry is not None:
+        queue_cap_name = queue_concurrency_reservation_name(queue)
+        if rl_registry.has_reservation(queue_cap_name):
+            return [queue_cap_name, *reservations]
+    return reservations
 
 
 async def dispatch_one_job(
@@ -225,19 +256,12 @@ async def dispatch_one_job(
                     except ImportError:
                         pass
 
-                    # Fleet-wide per-queue concurrency cap: if the job's
-                    # queue has a fleet-wide cap registered (set via the
-                    # max_concurrent column on the queues table, read at
-                    # worker startup), prepend its reservation name to the
-                    # actor-declared reservations so acquire_for_actor
-                    # acquires a slot before the actor runs. This caps
-                    # total concurrent jobs for this queue across all
-                    # workers, not just this one.
-                    effective_reservations = list(actor_ref.reservations)
-                    if rl_registry is not None:
-                        queue_cap_name = queue_concurrency_reservation_name(job.queue)
-                        if queue_cap_name in rl_registry.reservations:
-                            effective_reservations.insert(0, queue_cap_name)
+                    # Fleet-wide per-queue concurrency cap (see
+                    # _effective_reservations): O(1) membership test, no
+                    # per-job dict/list copies on the no-cap fast path.
+                    effective_reservations = _effective_reservations(
+                        actor_ref.reservations, job.queue, rl_registry
+                    )
 
                     result = await consume_one_job(
                         backend,

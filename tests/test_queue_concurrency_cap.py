@@ -168,46 +168,322 @@ async def test_concurrent_acquires_respect_2_slot_cap_across_multiple_actors() -
     )
 
 
-# ── dispatch.py prepend-logic regression: no queue-cap registered ──
+# ── Cap interaction: queue cap AND keyed reservation AND keyed rate limit ──
+
+
+async def test_queue_cap_composes_with_keyed_refs_and_rolls_back_across_kinds() -> None:
+    """Per-queue cap + keyed reservation + keyed rate limit in one acquire:
+    AND-composition (ALL must be acquired), acquired in declaration order
+    (queue cap first, via the dispatch prepend), and a denial at any stage
+    rolls back every earlier stage — across all three cap kinds.
+
+    - (a) Full acquire of all three succeeds, in order.
+    - (b) With the queue-cap slot held, a second acquire is denied AT THE
+      QUEUE CAP (source="reservation", bucket is the queue-cap name) —
+      the fleet-wide cap binds first.
+    - (c) After actor completion (release_for_actor: reservation slots
+      freed, token permanently consumed), a re-acquire is denied AT THE
+      RATE LIMIT; the rollback releases the queue-cap slot and the keyed
+      reservation slot it had just acquired — no cross-kind leak.
+    """
+    from taskq.ratelimit.refs import KeyedRateLimitRef, KeyedReservationRef
+
+    clock = FakeClock(_START)
+    reg = RateLimitRegistry()
+
+    queue_cap = queue_concurrency_reservation_name("orders")
+    reg.register_queue_cap_reservation(
+        _reservation(queue_cap, slots=1, lease=timedelta(minutes=5), clock=clock)
+    )
+    # Pre-register the keyed concrete primitives with in-memory backends.
+    reg.register(_reservation("session-cap:s1", slots=1, lease=timedelta(minutes=5), clock=clock))
+    reg.register(
+        TokenBucket(name="api-per-tenant:t1", capacity=1, refill_per_second=0, backend="memory")
+    )
+
+    res_ref = KeyedReservationRef(
+        base_name="session-cap",
+        key_fn=lambda p: str(p["session_id"]),
+        slots=1,
+        lease=timedelta(minutes=5),
+    )
+    rl_ref = KeyedRateLimitRef(
+        base_name="api-per-tenant",
+        key_fn=lambda p: str(p["tenant_id"]),
+        capacity=1,
+        refill_per_second=0,
+    )
+    payload: dict[str, object] = {"session_id": "s1", "tenant_id": "t1"}
+
+    # ── (a) Full acquire: queue cap first (as dispatch prepends it). ──
+    acquired = await reg.acquire_for_actor(
+        rate_limits=[rl_ref],
+        reservations=[queue_cap, res_ref],
+        job_id=new_uuid(),
+        worker_id=new_uuid(),
+        payload=payload,
+        clock=clock,
+    )
+    assert [h.name for h in acquired] == [queue_cap, "session-cap:s1", "api-per-tenant:t1"]
+
+    # ── (b) Queue-cap binds first while its slot is held. ──
+    with pytest.raises(ReservationUnavailable) as exc_info:
+        await reg.acquire_for_actor(
+            rate_limits=[rl_ref],
+            reservations=[queue_cap, res_ref],
+            job_id=new_uuid(),
+            worker_id=new_uuid(),
+            payload=payload,
+            clock=clock,
+        )
+    assert exc_info.value.source == "reservation"
+    assert exc_info.value.bucket_name == queue_cap
+
+    # ── (c) Actor completes: slots freed, token consumed permanently. ──
+    await reg.release_for_actor(acquired)
+
+    # Re-acquire: queue cap + keyed reservation acquire fine, rate limit
+    # denies (its single token was consumed) → rollback frees both slots.
+    with pytest.raises(ReservationUnavailable) as exc_info_2:
+        await reg.acquire_for_actor(
+            rate_limits=[rl_ref],
+            reservations=[queue_cap, res_ref],
+            job_id=new_uuid(),
+            worker_id=new_uuid(),
+            payload=payload,
+            clock=clock,
+        )
+    assert exc_info_2.value.source == "rate_limit"
+    assert exc_info_2.value.bucket_name == "api-per-tenant:t1"
+
+    # No cross-kind leak: both reservation slots are free again.
+    assert reg.get_reservation(queue_cap).table.peek_slots(queue_cap) == (1, 0)
+    assert reg.get_reservation("session-cap:s1").table.peek_slots("session-cap:s1") == (1, 0)
+
+
+async def test_keyed_reservation_denial_rolls_back_queue_cap() -> None:
+    """A denial at the keyed-reservation stage (after the queue-cap slot
+    was acquired) releases the queue-cap slot — the fleet-wide cap is
+    never leaked by a later stage's denial."""
+    from taskq.ratelimit.refs import KeyedReservationRef
+
+    clock = FakeClock(_START)
+    reg = RateLimitRegistry()
+
+    queue_cap = queue_concurrency_reservation_name("orders")
+    queue_cap_res = _reservation(queue_cap, slots=1, lease=timedelta(minutes=5), clock=clock)
+    reg.register_queue_cap_reservation(queue_cap_res)
+    keyed_res = _reservation("session-cap:s1", slots=1, lease=timedelta(minutes=5), clock=clock)
+    reg.register(keyed_res)
+
+    # Another holder occupies the keyed reservation's only slot.
+    await keyed_res.acquire(new_uuid(), new_uuid())
+
+    res_ref = KeyedReservationRef(
+        base_name="session-cap",
+        key_fn=lambda p: str(p["session_id"]),
+        slots=1,
+        lease=timedelta(minutes=5),
+    )
+
+    with pytest.raises(ReservationUnavailable) as exc_info:
+        await reg.acquire_for_actor(
+            rate_limits=[],
+            reservations=[queue_cap, res_ref],
+            job_id=new_uuid(),
+            worker_id=new_uuid(),
+            payload={"session_id": "s1"},
+        )
+    assert exc_info.value.bucket_name == "session-cap:s1"
+
+    # The queue-cap slot acquired moments earlier was rolled back.
+    assert queue_cap_res.table.peek_slots(queue_cap) == (1, 0)
+
+
+# ── dispatch.py prepend logic (_effective_reservations) ──
 
 
 def test_dispatch_no_queue_cap_preserves_actor_reservations() -> None:
-    """Regression: when the registry has NO queue-cap reservation for the
-    job's queue, ``dispatch.py``'s conditional must leave
-    ``effective_reservations`` unchanged — the prepend branch is skipped.
+    """When the registry has NO queue-cap reservation for the job's queue,
+    ``_effective_reservations`` returns the actor's reservations unchanged
+    — same object, no per-job copy on the hot path."""
+    from taskq.worker.dispatch import _effective_reservations
 
-    This mirrors the exact conditional from ``dispatch.py``::
-
-        effective_reservations = list(actor_ref.reservations)
-        if rl_registry is not None:
-            queue_cap_name = queue_concurrency_reservation_name(job.queue)
-            if queue_cap_name in rl_registry.reservations:
-                effective_reservations.insert(0, queue_cap_name)
-
-    A registry-level test is the appropriate granularity here — the full
-    ``dispatch_one_job`` function requires extensive scaffolding (backend,
-    DI scopes, WorkerDeps, etc.) and the correctness of this branch
-    reduces to the ``in rl_registry.reservations`` membership check.
-    """
     reg = RateLimitRegistry()
     actor_reservations = ["my_res_1", "my_res_2"]
 
-    # No queue-cap registered → effective_reservations unchanged.
-    effective = list(actor_reservations)
-    queue_cap_name = queue_concurrency_reservation_name("default")
-    if queue_cap_name in reg.reservations:
-        effective.insert(0, queue_cap_name)
+    effective = _effective_reservations(actor_reservations, "default", reg)
     assert effective == actor_reservations
+    assert effective is actor_reservations  # no copy when nothing to prepend
 
-    # Register a queue-cap → it IS prepended.
+
+def test_dispatch_queue_cap_prepended_before_actor_reservations() -> None:
+    """When a queue-cap IS registered, its name is prepended ahead of the
+    actor-declared reservations (acquired first, released last)."""
+    from taskq.worker.dispatch import _effective_reservations
+
+    reg = RateLimitRegistry()
+    actor_reservations = ["my_res_1", "my_res_2"]
+    queue_cap_name = queue_concurrency_reservation_name("default")
     reg.register_queue_cap_reservation(
         _reservation(queue_cap_name, slots=5, lease=timedelta(seconds=30), clock=FakeClock(_START))
     )
-    effective = list(actor_reservations)
-    if queue_cap_name in reg.reservations:
-        effective.insert(0, queue_cap_name)
-    assert effective[0] == queue_cap_name
-    assert effective[1:] == actor_reservations
+
+    effective = _effective_reservations(actor_reservations, "default", reg)
+    assert list(effective) == [queue_cap_name, "my_res_1", "my_res_2"]
+    # The actor's own list is not mutated by the prepend.
+    assert actor_reservations == ["my_res_1", "my_res_2"]
+
+
+def test_dispatch_queue_cap_only_prepended_for_matching_queue() -> None:
+    """A cap registered for queue A is not prepended for jobs on queue B."""
+    from taskq.worker.dispatch import _effective_reservations
+
+    reg = RateLimitRegistry()
+    reg.register_queue_cap_reservation(
+        _reservation(
+            queue_concurrency_reservation_name("orders"),
+            slots=5,
+            lease=timedelta(seconds=30),
+            clock=FakeClock(_START),
+        )
+    )
+    actor_reservations = ["my_res_1"]
+
+    effective = _effective_reservations(actor_reservations, "emails", reg)
+    assert effective is actor_reservations
+
+
+def test_dispatch_no_rl_registry_leaves_reservations_unchanged() -> None:
+    """rl_registry=None (rate limiting not wired) → unchanged reservations."""
+    from taskq.worker.dispatch import _effective_reservations
+
+    actor_reservations = ["my_res_1"]
+    effective = _effective_reservations(actor_reservations, "default", None)
+    assert effective is actor_reservations
+
+
+def test_effective_reservations_never_copies_registry_dict(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: the dispatch hot path must NOT read the ``reservations``
+    property, which defensively copies the whole dict — an O(n)-per-dispatch
+    stall at high keyed-entry cardinality.
+
+    Patches the property to raise on ANY access; if the queue-cap check is
+    ever re-implemented in terms of ``rl_registry.reservations`` (or another
+    copying accessor), this test fails.
+    """
+    from taskq.worker.dispatch import _effective_reservations
+
+    def _boom(self: RateLimitRegistry) -> dict[str, ConcurrencyReservation]:
+        raise AssertionError("dispatch hot path copied the reservations dict")
+
+    monkeypatch.setattr(
+        RateLimitRegistry, "reservations", property(_boom)  # type: ignore[arg-type]
+    )
+
+    reg = RateLimitRegistry()
+    queue_cap_name = queue_concurrency_reservation_name("default")
+    reg.register_queue_cap_reservation(
+        _reservation(queue_cap_name, slots=5, lease=timedelta(seconds=30), clock=FakeClock(_START))
+    )
+
+    # Both branches (cap registered / not registered) must work without
+    # touching the copying property.
+    effective = _effective_reservations(["my_res"], "default", reg)
+    assert list(effective) == [queue_cap_name, "my_res"]
+    effective_no_cap = _effective_reservations(["my_res"], "other", reg)
+    assert list(effective_no_cap) == ["my_res"]
+
+
+def test_has_reservation_correct_at_large_registry_size() -> None:
+    """``has_reservation`` stays correct for hits and misses at 10k entries
+    (the cardinality where the copy-based check it replaces was a problem).
+    The no-copy guarantee itself is pinned by
+    ``test_effective_reservations_never_copies_registry_dict``."""
+    reg = RateLimitRegistry()
+    for i in range(10_000):
+        reg.register(_reservation(f"res-{i}", slots=1, lease=timedelta(seconds=30)))
+    assert reg.has_reservation("res-9999") is True
+    assert reg.has_reservation("res-0") is True
+    assert reg.has_reservation("nope") is False
+    assert reg.has_rate_limit("res-0") is False  # separate namespace
+
+
+def test_has_accessors_membership() -> None:
+    """``has_reservation`` / ``has_rate_limit`` reflect their own dicts only."""
+    reg = RateLimitRegistry()
+    reg.register(_reservation("gpu", slots=2, lease=timedelta(seconds=30)))
+    reg.register(TokenBucket(name="api", capacity=10, refill_per_second=1.0, backend="memory"))
+
+    assert reg.has_reservation("gpu") is True
+    assert reg.has_reservation("api") is False
+    assert reg.has_rate_limit("api") is True
+    assert reg.has_rate_limit("gpu") is False
+
+
+# ── Queue-cap saturation: operator-visible denial ──
+
+
+async def test_queue_cap_saturation_snoozes_with_operator_visible_awaiting() -> None:
+    """When the fleet-wide queue cap is saturated, the job is snoozed (not
+    failed, not silently dropped) with metadata telling an operator exactly
+    WHY it isn't dispatching: ``awaiting: reservation:taskq:global:queue:<q>``.
+
+    Uses the real registry + acquire path (not a stub): the queue-cap
+    reservation is held by another worker, so ``acquire_for_actor`` raises
+    ``ReservationUnavailable(source="reservation")`` and
+    ``consume_one_job`` routes it to the reservation-denied snooze path.
+    """
+    from pydantic import BaseModel
+
+    from taskq.backend.clock import Clock
+    from taskq.context import JobContext
+    from taskq.testing.actor import FakeBackend, as_backend, default_actor_config
+    from taskq.testing.jobs import make_job_row
+    from taskq.worker._consumer import consume_one_job
+    from taskq.worker.dispatch import _effective_reservations
+
+    clock = FakeClock(_START)
+    reg = RateLimitRegistry()
+    queue_cap_name = queue_concurrency_reservation_name("orders")
+    cap_res = _reservation(queue_cap_name, slots=1, lease=timedelta(minutes=5), clock=clock)
+    reg.register_queue_cap_reservation(cap_res)
+
+    # Another worker holds the only slot → the cap is saturated.
+    await cap_res.acquire(new_uuid(), new_uuid())
+
+    # The dispatch-time prepend produces the queue-cap-first acquire list.
+    reservations = _effective_reservations([], "orders", reg)
+    assert list(reservations) == [queue_cap_name]
+
+    backend = FakeBackend()
+
+    async def never_called_actor(_job: object, _ctx: JobContext[BaseModel]) -> object:
+        raise AssertionError("actor body must not run when the queue cap denies")
+
+    clk: Clock = clock
+    outcome = await consume_one_job(
+        as_backend(backend),
+        make_job_row(queue="orders"),
+        new_uuid(),
+        run_actor=never_called_actor,
+        actor_config=default_actor_config(),
+        payload_type=BaseModel,
+        clock=clk,
+        rate_limit_registry=reg,
+        rate_limits=[],
+        reservations=list(reservations),
+    )
+
+    assert outcome == "scheduled"
+    assert len(backend.mark_snoozed_calls) == 1
+    snooze_call = backend.mark_snoozed_calls[0]
+    assert snooze_call["metadata_update"] == {
+        "awaiting": "reservation:taskq:global:queue:orders"
+    }
+    assert snooze_call["outcome"] == "reservation_denied"
 
 
 # ── Reserved prefix protection (Fix 2) ──────────────────────────────

@@ -590,6 +590,68 @@ async def test_cap_hit_with_nothing_idle_still_raises_reservation_unavailable(
     assert "api-per-tenant:k2" in reg.rate_limits
 
 
+async def test_opportunistic_eviction_scan_is_amortized_under_sustained_denials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Rate-limit twin of the reservation amortization test: the O(n)
+    opportunistic eviction scan runs at most once per
+    ``_OPPORTUNISTIC_EVICT_MIN_INTERVAL`` — sustained cap-hit denials stay
+    O(1) per request.
+
+    1. Fill the cap at t=1000 (nothing idle).
+    2. First denied new key → scan runs (first cap-hit always scans).
+    3. Second denied new key immediately after → scan is GATED, not run.
+    4. Advance past the 30s min-interval → third denied new key → scan
+       runs again.
+    """
+    from importlib import import_module
+
+    registry_mod = import_module("taskq.ratelimit.registry")
+
+    settings = _hardening_settings(max_keyed=2)
+    reg = RateLimitRegistry()
+    ref = _rate_limit_ref(base_name="api-per-tenant")
+
+    scan_calls: list[timedelta] = []
+    real_evict = reg.evict_idle_keyed_rate_limits
+
+    def _spy_evict(*, idle_for: timedelta) -> int:
+        scan_calls.append(idle_for)
+        return real_evict(idle_for=idle_for)
+
+    monkeypatch.setattr(reg, "evict_idle_keyed_rate_limits", _spy_evict)
+
+    fake_time = 1000.0
+    monkeypatch.setattr(registry_mod, "monotonic", lambda: fake_time)
+    await reg._resolve_rate_limit_name(ref, payload={"tenant_id": "k1"}, settings=settings)  # pyright: ignore[reportPrivateUsage]
+    await reg._resolve_rate_limit_name(ref, payload={"tenant_id": "k2"}, settings=settings)  # pyright: ignore[reportPrivateUsage]
+    assert len(reg._keyed_rate_limit_last_used) == 2  # pyright: ignore[reportPrivateUsage]
+    assert scan_calls == []
+
+    # 2. First denied new key — the scan runs once (nothing idle to reclaim).
+    with pytest.raises(ReservationUnavailable):
+        await reg._resolve_rate_limit_name(  # pyright: ignore[reportPrivateUsage]
+            ref, payload={"tenant_id": "k3"}, settings=settings
+        )
+    assert len(scan_calls) == 1
+
+    # 3. Immediate second denial — the scan is gated: no rescan.
+    with pytest.raises(ReservationUnavailable):
+        await reg._resolve_rate_limit_name(  # pyright: ignore[reportPrivateUsage]
+            ref, payload={"tenant_id": "k4"}, settings=settings
+        )
+    assert len(scan_calls) == 1, "scan must be amortized — no rescan within the min interval"
+
+    # 4. Past the min interval, the next cap-hit scans again. (The lambda
+    # closes over fake_time, so no re-setattr is needed.)
+    fake_time = 1000.0 + 31.0
+    with pytest.raises(ReservationUnavailable):
+        await reg._resolve_rate_limit_name(  # pyright: ignore[reportPrivateUsage]
+            ref, payload={"tenant_id": "k5"}, settings=settings
+        )
+    assert len(scan_calls) == 2
+
+
 # ── Refill-over-time correctness for a keyed bucket ────────────
 
 
@@ -699,6 +761,75 @@ async def test_keyed_bucket_refill_over_time_correctness() -> None:
         )
 
 
+# ── composition log events stay JSON-serializable with keyed refs ──
+
+
+async def test_composition_log_events_are_json_serializable_with_keyed_refs() -> None:
+    """Regression: ``composition-acquired`` / ``composition-denied`` log
+    events must not contain raw pydantic ref instances — orjson (the
+    production structlog serializer) raises ``TypeError`` on them, which
+    drops the log event inside the logging handler. Refs are rendered as
+    ``ClassName(base_name)`` strings instead.
+    """
+    from structlog.testing import capture_logs
+
+    from taskq._json import dumps_str
+    from taskq.ratelimit.refs import KeyedReservationRef
+    from taskq.ratelimit.reservation import ConcurrencyReservation
+
+    clock = FakeClock(_START)
+    reg = RateLimitRegistry()
+    reg.register(
+        TokenBucket(name="api-per-tenant:a", capacity=1, refill_per_second=0, backend="memory")
+    )
+    reg.register(
+        ConcurrencyReservation(name="session-cap:s1", slots=1, lease=timedelta(minutes=5), clock=clock)
+    )
+    reg.register(
+        ConcurrencyReservation(name="session-cap:s2", slots=1, lease=timedelta(minutes=5), clock=clock)
+    )
+    rl_ref = _rate_limit_ref(base_name="api-per-tenant", capacity=1, refill_per_second=0)
+    res_ref = KeyedReservationRef(
+        base_name="session-cap",
+        key_fn=lambda p: str(p["session_id"]),
+        slots=1,
+        lease=timedelta(minutes=5),
+    )
+
+    # ── Success path: composition-acquired carries both keyed refs. ──
+    with capture_logs() as logs:
+        acquired = await reg.acquire_for_actor(
+            rate_limits=[rl_ref],
+            reservations=[res_ref],
+            job_id=new_uuid(),
+            worker_id=new_uuid(),
+            payload={"tenant_id": "a", "session_id": "s1"},
+            clock=clock,
+        )
+    assert len(acquired) == 2
+    acquired_events = [e for e in logs if e.get("event") == "composition-acquired"]
+    assert len(acquired_events) == 1
+    dumps_str(acquired_events[0])  # must not raise TypeError
+    assert acquired_events[0]["rate_limits"] == ["KeyedRateLimitRef(api-per-tenant)"]
+    assert acquired_events[0]["reservations"] == ["KeyedReservationRef(session-cap)"]
+
+    # ── Denial path: a fresh reservation (s2) acquires fine but the
+    # exhausted token bucket denies → composition-denied log. ──
+    with capture_logs() as logs, pytest.raises(ReservationUnavailable):
+        await reg.acquire_for_actor(
+            rate_limits=[rl_ref],
+            reservations=[res_ref],
+            job_id=new_uuid(),
+            worker_id=new_uuid(),
+            payload={"tenant_id": "a", "session_id": "s2"},
+            clock=clock,
+        )
+    denied_events = [e for e in logs if e.get("event") == "composition-denied"]
+    assert len(denied_events) == 1
+    dumps_str(denied_events[0])  # must not raise TypeError
+    assert denied_events[0]["rate_limits"] == ["KeyedRateLimitRef(api-per-tenant)"]
+
+
 # ── acquire_for_actor: AND-composition with keyed rate limits ──
 
 
@@ -782,6 +913,112 @@ async def test_plain_string_rate_limit_alone_still_works() -> None:
             worker_id=new_uuid(),
             clock=clock,
         )
+
+
+# ── Cap bounds growth only, never static reuse ──────────────────
+
+
+async def test_keyed_rate_limit_cap_does_not_deny_static_colliding_reuse() -> None:
+    """Rate-limit twin: with the keyed tracking dict AT the cap, resolving
+    a key whose concrete name was STATICALLY pre-registered still succeeds
+    — the cap bounds keyed-materialized growth, and static reuse grows
+    nothing."""
+    settings = _hardening_settings(max_keyed=2)
+    reg = RateLimitRegistry()
+    ref = _rate_limit_ref(base_name="api-per-tenant")
+
+    # Fill the keyed cap with two fresh materialized keys.
+    await reg._resolve_rate_limit_name(ref, payload={"tenant_id": "k1"}, settings=settings)  # pyright: ignore[reportPrivateUsage]
+    await reg._resolve_rate_limit_name(ref, payload={"tenant_id": "k2"}, settings=settings)  # pyright: ignore[reportPrivateUsage]
+    assert len(reg._keyed_rate_limit_last_used) == 2  # pyright: ignore[reportPrivateUsage]
+
+    # A statically pre-registered bucket whose name collides with the ref's
+    # concrete name for key "t1".
+    reg.register(
+        TokenBucket(name="api-per-tenant:t1", capacity=10, refill_per_second=1.0, backend="memory")
+    )
+
+    # Must NOT raise ReservationUnavailable despite the full cap.
+    name = await reg._resolve_rate_limit_name(  # pyright: ignore[reportPrivateUsage]
+        ref, payload={"tenant_id": "t1"}, settings=settings
+    )
+    assert name == "api-per-tenant:t1"
+    # Static entry stays untracked (never evictable by the keyed sweep).
+    assert "api-per-tenant:t1" not in reg._keyed_rate_limit_last_used  # pyright: ignore[reportPrivateUsage]
+
+
+# ── Concrete-name collision behavior ────────────────────────────
+
+
+async def test_colliding_concrete_names_same_config_share_bucket() -> None:
+    """Two refs whose concrete names collide resolve to the SAME registered
+    bucket when their configs are identical — pins the documented collision
+    behavior for the rate-limit twin."""
+    reg = RateLimitRegistry()
+    ref_a = _rate_limit_ref(base_name="a")
+    ref_ab = _rate_limit_ref(base_name="a:b")
+
+    name_a = await reg._resolve_rate_limit_name(  # pyright: ignore[reportPrivateUsage]
+        ref_a, payload={"tenant_id": "b:c"}, settings=None
+    )
+    name_ab = await reg._resolve_rate_limit_name(  # pyright: ignore[reportPrivateUsage]
+        ref_ab, payload={"tenant_id": "c"}, settings=None
+    )
+
+    assert name_a == name_ab == "a:b:c"
+    assert len(reg.rate_limits) == 1
+    bucket = reg.get_rate_limit("a:b:c")
+    assert isinstance(bucket, TokenBucket)
+    assert bucket.capacity == ref_a.capacity
+
+
+async def test_colliding_concrete_names_different_config_raise_value_error() -> None:
+    """Rate-limit twin: a concrete-name collision with different configs
+    fails loudly with ``ValueError`` naming the collision."""
+    reg = RateLimitRegistry()
+    ref_a = _rate_limit_ref(base_name="a", capacity=10)
+    ref_ab = _rate_limit_ref(base_name="a:b", capacity=99)
+
+    await reg._resolve_rate_limit_name(  # pyright: ignore[reportPrivateUsage]
+        ref_a, payload={"tenant_id": "b:c"}, settings=None
+    )
+    with pytest.raises(ValueError, match="concrete-name collision"):
+        await reg._resolve_rate_limit_name(  # pyright: ignore[reportPrivateUsage]
+            ref_ab, payload={"tenant_id": "c"}, settings=None
+        )
+
+    bucket = reg.get_rate_limit("a:b:c")
+    assert isinstance(bucket, TokenBucket)
+    assert bucket.capacity == 10
+
+
+async def test_statically_preregistered_entry_is_never_keyed_evicted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A statically pre-registered bucket whose name happens to match a
+    keyed ref's concrete name is reused as-is and NOT stamped into the
+    keyed tracking dict — the idle-eviction sweep must never evict a
+    user's static entry just because a keyed ref resolved to it."""
+    from importlib import import_module
+
+    registry_mod = import_module("taskq.ratelimit.registry")
+
+    reg = RateLimitRegistry()
+    reg.register(
+        TokenBucket(name="api-per-tenant:t1", capacity=10, refill_per_second=1.0, backend="memory")
+    )
+    ref = _rate_limit_ref(base_name="api-per-tenant")
+
+    monkeypatch.setattr(registry_mod, "monotonic", lambda: 1000.0)
+    name = await reg._resolve_rate_limit_name(ref, payload={"tenant_id": "t1"}, settings=None)  # pyright: ignore[reportPrivateUsage]
+    assert name == "api-per-tenant:t1"
+    assert len(reg._keyed_rate_limit_last_used) == 0  # pyright: ignore[reportPrivateUsage]
+
+    # Far past the idle threshold: the static entry survives the sweep.
+    monkeypatch.setattr(registry_mod, "monotonic", lambda: 99999.0)
+    evicted = reg.evict_idle_keyed_rate_limits(idle_for=timedelta(hours=1))
+    assert evicted == 0
+    assert "api-per-tenant:t1" in reg.rate_limits
 
 
 # ── evict_idle_keyed_rate_limits ───────────────────────────────

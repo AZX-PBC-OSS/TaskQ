@@ -30,9 +30,13 @@ As a defence-in-depth measure, the acquisition path
 (``_resolve_reservation_name`` / ``_resolve_rate_limit_name``) also
 performs an *opportunistic* eviction when the keyed-entry cap would
 otherwise be hit — so reclaiming idle capacity never depends solely on
-sweep timing.  A cap hit after opportunistic eviction is a genuine
-sustained-high-cardinality denial, not an artefact of when the sweep
-last ran.
+sweep timing.  The opportunistic scan is amortized to at most one per
+``_OPPORTUNISTIC_EVICT_MIN_INTERVAL`` (30 s), so a registry at cap under
+sustained denials stays O(1) per request instead of rescanning the whole
+tracking dict on every denied acquisition; idle capacity is still
+reclaimed within the sweep's own 30-second SLA.  A cap hit after
+opportunistic eviction is a genuine sustained-high-cardinality denial,
+not an artefact of when the sweep last ran.
 
 Over-acquisition window on rollback failure:
 
@@ -113,6 +117,23 @@ opportunistic eviction on the acquisition path in
 the two paths never drift apart.
 """
 
+_OPPORTUNISTIC_EVICT_MIN_INTERVAL = timedelta(seconds=30)
+"""Minimum interval between opportunistic eviction scans on the acquire path.
+
+The scan itself is O(number of tracked keyed entries). Without a gate, a
+registry sitting at its keyed-entry cap under sustained denials would pay
+that O(n) scan on EVERY denied acquisition — at the default 10k-entry cap
+and 1k denials/sec that is ~10M dict entries scanned per second on the
+hottest path in the system, reclaiming nothing. Entries only become
+evictable as wall-clock time passes (idle ≥ ``_KEYED_IDLE_THRESHOLD``),
+so rescanning more often than the leader sweep's own 30-second cadence
+buys nothing: a gated scan reclaims idle capacity at most 30 s after it
+became reclaimable, identical to the sweep's documented SLA. The gate
+makes the denied-cap-hit path O(1) amortized while preserving the
+defence-in-depth guarantee that reclaiming idle capacity never depends
+solely on sweep timing.
+"""
+
 
 def queue_concurrency_reservation_name(queue: str) -> str:
     """Return the registry name for the fleet-wide concurrency cap of *queue*.
@@ -126,6 +147,20 @@ def queue_concurrency_reservation_name(queue: str) -> str:
     giving a true fleet-wide cap per queue.
     """
     return f"{QUEUE_CONCURRENCY_PREFIX}{queue}"
+
+
+def _ref_display(ref: "str | KeyedRateLimitRef | KeyedReservationRef") -> str:
+    """Log-safe display string for a rate-limit / reservation ref.
+
+    Refs are pydantic ``BaseModel``s, which orjson (the structlog JSON
+    serializer used in production) cannot serialize — passing a ref
+    instance as a log kwarg raises ``TypeError`` inside the logging
+    handler and the event is silently dropped. Plain names pass through
+    unchanged; refs render as ``ClassName(base_name)``.
+    """
+    if isinstance(ref, str):
+        return ref
+    return f"{type(ref).__name__}({ref.base_name})"
 
 
 def _same_config(
@@ -189,6 +224,15 @@ class RateLimitRegistry:
         # evict_idle_keyed_rate_limits() to bound registry growth under
         # high key cardinality. Never consulted by acquire_for_actor.
         self._keyed_rate_limit_last_used: dict[str, float] = {}
+        # Monotonic timestamps of the last opportunistic eviction scan on
+        # each acquisition path, used to amortize the O(n) scan to at most
+        # once per _OPPORTUNISTIC_EVICT_MIN_INTERVAL under sustained cap-hit
+        # denials (see the constant's docstring). -inf so the first cap-hit
+        # after startup always scans. evict_idle_keyed_*() are synchronous
+        # with no await points, so check-and-stamp is atomic within the
+        # event loop — concurrent scanners cannot pile up.
+        self._keyed_reservation_last_eviction_scan: float = float("-inf")
+        self._keyed_rate_limit_last_eviction_scan: float = float("-inf")
 
     @property
     def rate_limits(self) -> dict[str, TokenBucket | SlidingWindow]:
@@ -205,6 +249,23 @@ class RateLimitRegistry:
     @property
     def has_keyed_rate_limits(self) -> bool:
         return bool(self._keyed_rate_limit_last_used)
+
+    def has_reservation(self, name: str) -> bool:
+        """O(1) membership test against the live reservations dict.
+
+        Unlike the :attr:`reservations` property this does NOT defensively
+        copy the dict — use it on per-job hot paths (e.g. the dispatch
+        queue-cap check), where copying the whole registry per call is
+        prohibitive at high keyed-entry cardinality.
+        """
+        return name in self._reservations
+
+    def has_rate_limit(self, name: str) -> bool:
+        """O(1) membership test against the live rate-limits dict.
+
+        See :meth:`has_reservation` — the same no-copy guarantee applies.
+        """
+        return name in self._rate_limits
 
     def register(
         self,
@@ -390,9 +451,23 @@ class RateLimitRegistry:
         :meth:`register`). A :class:`KeyedReservationRef` derives
         ``f"{ref.base_name}:{key}"`` by calling ``ref.key_fn(payload)`` and
         lazily registers a matching :class:`ConcurrencyReservation` on
-        first use — subsequent calls for the same key reuse it (``register``
-        is idempotent for identical config, which every call for a given
-        ref always produces since ``slots``/``lease`` are fixed on the ref).
+        first use — subsequent calls for the same key reuse it. Two reuse
+        cases are distinguished:
+
+        - **Keyed-materialized entry** (tracked in
+          ``_keyed_reservation_last_used``): recency is refreshed, and the
+          existing entry's ``slots``/``lease`` are checked against the
+          ref's — a mismatch means two refs collided on the same concrete
+          name with different configs (one ref's ``base_name`` is a prefix
+          of the other's concrete name, since ``:`` is an allowed key
+          character), which raises ``ValueError`` rather than silently
+          over- or under-admitting relative to one ref's declared config.
+          The guard covers live tracked entries only: if the colliding
+          entry was idle-evicted in between, the second ref re-materializes
+          its own config without error — eviction resets the guard.
+        - **Statically pre-registered entry** (not tracked): reused as-is,
+          and deliberately NOT stamped into ``_keyed_reservation_last_used``
+          so the idle-eviction sweep can never evict a user's static entry.
 
         The ``key_fn`` return value is validated: it must be non-empty, at
         most ``_MAX_KEYED_KEY_LEN`` characters, and match
@@ -410,7 +485,11 @@ class RateLimitRegistry:
         hitting the cap is never purely an artefact of sweep timing, only a
         genuine sustained-high-cardinality condition.  Only if the cap is
         still exceeded after the opportunistic eviction does the method
-        raise :class:`~taskq.exceptions.ReservationUnavailable`.
+        raise :class:`~taskq.exceptions.ReservationUnavailable`.  The
+        opportunistic scan is amortized to at most one per
+        ``_OPPORTUNISTIC_EVICT_MIN_INTERVAL`` so sustained cap-hit denials
+        stay O(1) on this hot path (see
+        :meth:`_opportunistic_evict_reservations`).
 
         The reservation is built with ``schema=settings.schema_name`` (not
         the ``ConcurrencyReservation`` default) so it targets the same
@@ -444,12 +523,17 @@ class RateLimitRegistry:
             empty_key_msg="an empty key or non-string value",
         )
         concrete_name = f"{ref.base_name}:{key}"
+        # The cap bounds keyed-materialized GROWTH. It must not fire when
+        # the concrete name already exists — neither for a tracked keyed
+        # entry (recency refresh grows nothing) nor for a statically
+        # pre-registered entry (reused as-is, never tracked, grows nothing).
         if (
-            concrete_name not in self._keyed_reservation_last_used
+            concrete_name not in self._reservations
+            and concrete_name not in self._keyed_reservation_last_used
             and settings is not None
             and len(self._keyed_reservation_last_used) >= settings.max_keyed_reservations
         ):
-            self.evict_idle_keyed_reservations(idle_for=_KEYED_IDLE_THRESHOLD)
+            self._opportunistic_evict_reservations()
             if len(self._keyed_reservation_last_used) >= settings.max_keyed_reservations:
                 logger.warning(
                     "registry-keyed-reservation-limit-exceeded",
@@ -468,12 +552,52 @@ class RateLimitRegistry:
                 name=concrete_name, slots=ref.slots, lease=ref.lease, schema=schema
             )
             self.register(new_reservation)
+            # Stamp BEFORE the ensure_slots await so that a concurrent
+            # evict_idle_keyed_reservations cannot evict the in-flight
+            # key; re-stamp after the await in case an aggressive eviction
+            # removed both entries anyway (belt-and-suspenders).
             self._keyed_reservation_last_used[concrete_name] = monotonic()
             if pg_pool is not None:
-                await new_reservation.ensure_slots(pg_pool)
+                try:
+                    await new_reservation.ensure_slots(pg_pool)
+                except Exception:
+                    # Unwind the materialization: leaving the entry
+                    # registered would poison this key permanently — the
+                    # reuse branch below would skip ensure_slots forever,
+                    # acquire() would find no slot rows and keep denying,
+                    # and each attempt would re-stamp recency so the entry
+                    # is never idle-evicted either. ensure_slots is
+                    # idempotent (ON CONFLICT DO NOTHING), so the next
+                    # attempt simply re-materializes and retries.
+                    self._reservations.pop(concrete_name, None)
+                    self._keyed_reservation_last_used.pop(concrete_name, None)
+                    raise
                 if concrete_name not in self._reservations:
                     self.register(new_reservation)
-        self._keyed_reservation_last_used[concrete_name] = monotonic()
+                self._keyed_reservation_last_used[concrete_name] = monotonic()
+        elif concrete_name in self._keyed_reservation_last_used:
+            # Keyed-materialized entry reused for the same concrete name:
+            # refresh recency, and guard against a concrete-name COLLISION
+            # between two refs with different configs (one ref's base_name
+            # can be a prefix of another's concrete name since ':' is an
+            # allowed key character). Silently reusing the existing entry
+            # would over- or under-admit relative to the colliding ref's
+            # declared config — fail loudly instead.
+            existing = self._reservations[concrete_name]
+            if existing.slots != ref.slots or existing.lease != ref.lease:
+                raise ValueError(
+                    f"KeyedReservationRef(base_name={ref.base_name!r}) resolved to "
+                    f"{concrete_name!r}, which is already materialized with a different "
+                    f"config (existing slots={existing.slots}, lease={existing.lease}; "
+                    f"ref declares slots={ref.slots}, lease={ref.lease}) — concrete-name "
+                    f"collision between keyed refs; choose distinct base_names "
+                    f"(':' in keys can make one ref's base_name a prefix of another's "
+                    f"concrete name)"
+                )
+            self._keyed_reservation_last_used[concrete_name] = monotonic()
+        # else: the concrete name was STATICALLY pre-registered (not keyed-
+        # materialized) — reuse it as-is and never stamp the tracking dict,
+        # so the sweep can never evict a user's static entry.
         return concrete_name
 
     async def _resolve_rate_limit_name(
@@ -490,10 +614,15 @@ class RateLimitRegistry:
         :meth:`register`). A :class:`KeyedRateLimitRef` derives
         ``f"{ref.base_name}:{key}"`` by calling ``ref.key_fn(payload)`` and
         lazily registers a matching :class:`TokenBucket` on first use —
-        subsequent calls for the same key reuse it (``register`` is
-        idempotent for identical config, which every call for a given ref
-        always produces since ``capacity``/``refill_per_second`` are fixed
-        on the ref).
+        subsequent calls for the same key reuse it. As in
+        :meth:`_resolve_reservation_name`, two reuse cases are
+        distinguished: a keyed-materialized (tracked) entry has its
+        recency refreshed and its config checked against the ref's — a
+        ``capacity``/``refill_per_second``/``backend`` mismatch means a
+        concrete-name collision between refs and raises ``ValueError``;
+        a statically pre-registered (untracked) entry is reused as-is and
+        never stamped, so the idle-eviction sweep can never evict a user's
+        static entry.
 
         The ``key_fn`` return value is validated with the same rules as
         keyed reservations: it must be a ``str``, non-empty, at most
@@ -513,7 +642,11 @@ class RateLimitRegistry:
         hitting the cap is never purely an artefact of sweep timing, only a
         genuine sustained-high-cardinality condition.  Only if the cap is
         still exceeded after the opportunistic eviction does the method
-        raise :class:`~taskq.exceptions.ReservationUnavailable`.
+        raise :class:`~taskq.exceptions.ReservationUnavailable`.  The
+        opportunistic scan is amortized to at most one per
+        ``_OPPORTUNISTIC_EVICT_MIN_INTERVAL`` so sustained cap-hit denials
+        stay O(1) on this hot path (see
+        :meth:`_opportunistic_evict_rate_limits`).
 
         Unlike reservations there is no PG slot pre-allocation step — a
         :class:`TokenBucket` is immediately usable after ``register()``
@@ -538,12 +671,17 @@ class RateLimitRegistry:
             payload,
         )
         concrete_name = f"{ref.base_name}:{key}"
+        # The cap bounds keyed-materialized GROWTH. It must not fire when
+        # the concrete name already exists — neither for a tracked keyed
+        # entry (recency refresh grows nothing) nor for a statically
+        # pre-registered entry (reused as-is, never tracked, grows nothing).
         if (
-            concrete_name not in self._keyed_rate_limit_last_used
+            concrete_name not in self._rate_limits
+            and concrete_name not in self._keyed_rate_limit_last_used
             and settings is not None
             and len(self._keyed_rate_limit_last_used) >= settings.max_keyed_rate_limits
         ):
-            self.evict_idle_keyed_rate_limits(idle_for=_KEYED_IDLE_THRESHOLD)
+            self._opportunistic_evict_rate_limits()
             if len(self._keyed_rate_limit_last_used) >= settings.max_keyed_rate_limits:
                 logger.warning(
                     "registry-keyed-rate-limit-limit-exceeded",
@@ -565,7 +703,38 @@ class RateLimitRegistry:
             )
             self.register(new_bucket)
             self._keyed_rate_limit_last_used[concrete_name] = monotonic()
-        self._keyed_rate_limit_last_used[concrete_name] = monotonic()
+        elif concrete_name in self._keyed_rate_limit_last_used:
+            # Keyed-materialized entry reused for the same concrete name:
+            # refresh recency, and guard against a concrete-name COLLISION
+            # between two refs with different configs (see the reservation
+            # twin in _resolve_reservation_name for the full rationale).
+            existing = self._rate_limits[concrete_name]
+            if (
+                not isinstance(existing, TokenBucket)
+                or existing.capacity != ref.capacity
+                or existing.refill_per_second != ref.refill_per_second
+                or existing.backend != ref.backend
+            ):
+                existing_config = (
+                    f"capacity={existing.capacity}, refill_per_second="
+                    f"{existing.refill_per_second}, backend={existing.backend}"
+                    if isinstance(existing, TokenBucket)
+                    else f"SlidingWindow(limit={existing.limit}, window={existing.window})"
+                )
+                raise ValueError(
+                    f"KeyedRateLimitRef(base_name={ref.base_name!r}) resolved to "
+                    f"{concrete_name!r}, which is already materialized with a different "
+                    f"config (existing {existing_config}; ref declares "
+                    f"capacity={ref.capacity}, refill_per_second={ref.refill_per_second}, "
+                    f"backend={ref.backend}) — concrete-name collision between keyed "
+                    f"refs; choose distinct base_names "
+                    f"(':' in keys can make one ref's base_name a prefix of another's "
+                    f"concrete name)"
+                )
+            self._keyed_rate_limit_last_used[concrete_name] = monotonic()
+        # else: the concrete name was STATICALLY pre-registered (not keyed-
+        # materialized) — reuse it as-is and never stamp the tracking dict,
+        # so the sweep can never evict a user's static entry.
         return concrete_name
 
     async def acquire_for_actor(
@@ -647,10 +816,10 @@ class RateLimitRegistry:
                     logger.info(
                         "composition-denied",
                         job_id=str(job_id),
-                        rate_limits=rate_limits,
-                        reservations=reservations,
+                        rate_limits=[_ref_display(r) for r in rate_limits],
+                        reservations=[_ref_display(r) for r in reservations],
                         allowed=False,
-                        retry_after=retry_td,
+                        retry_after_seconds=retry_td.total_seconds(),
                         failed_bucket=rl_name,
                     )
                     raise ReservationUnavailable(
@@ -675,8 +844,8 @@ class RateLimitRegistry:
             logger.debug(
                 "composition-acquired",
                 job_id=str(job_id),
-                rate_limits=rate_limits,
-                reservations=reservations,
+                rate_limits=[_ref_display(r) for r in rate_limits],
+                reservations=[_ref_display(r) for r in reservations],
                 allowed=True,
                 retry_after=None,
                 handle_count=len(acquired),
@@ -836,6 +1005,38 @@ class RateLimitRegistry:
                     acquired_count=len(acquired),
                 )
                 record_ratelimit_refund_failure(handle.name, backend)
+
+    def _opportunistic_evict_reservations(self) -> None:
+        """Idle-reservation scan, amortized to one per min-interval.
+
+        Called on the acquisition path when the keyed-reservation cap is
+        hit. The scan is O(tracked entries); without amortization a
+        registry at cap under sustained denials would pay O(n) per denied
+        request and reclaim nothing (see
+        ``_OPPORTUNISTIC_EVICT_MIN_INTERVAL``). Idle capacity is still
+        reclaimed within max(sweep cadence, min-interval) of becoming
+        reclaimable — the scan just can't be stampeded.
+        """
+        now = monotonic()
+        if (
+            now - self._keyed_reservation_last_eviction_scan
+            >= _OPPORTUNISTIC_EVICT_MIN_INTERVAL.total_seconds()
+        ):
+            self._keyed_reservation_last_eviction_scan = now
+            self.evict_idle_keyed_reservations(idle_for=_KEYED_IDLE_THRESHOLD)
+
+    def _opportunistic_evict_rate_limits(self) -> None:
+        """Idle-rate-limit scan, amortized to one per min-interval.
+
+        Rate-limit twin of :meth:`_opportunistic_evict_reservations`.
+        """
+        now = monotonic()
+        if (
+            now - self._keyed_rate_limit_last_eviction_scan
+            >= _OPPORTUNISTIC_EVICT_MIN_INTERVAL.total_seconds()
+        ):
+            self._keyed_rate_limit_last_eviction_scan = now
+            self.evict_idle_keyed_rate_limits(idle_for=_KEYED_IDLE_THRESHOLD)
 
     def _evict_idle_keyed(
         self,

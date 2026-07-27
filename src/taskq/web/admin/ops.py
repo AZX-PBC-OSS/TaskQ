@@ -582,9 +582,18 @@ def register(router: APIRouter) -> None:
         _queue_cap_prefix = QUEUE_CONCURRENCY_PREFIX
 
         configured_reservations: list[dict[str, object]] = []
-        reservation_primitives = list(rl_registry.reservations.values())
+        # Filter by the admin's own schema before displaying or syncing —
+        # the process-global registry may carry reservations declared for
+        # OTHER schemas (same reason worker/_bootstrap.py filters): syncing
+        # a foreign-schema reservation here would insert/delete rows in the
+        # local schema's reservation_slots table for a name it does not own.
+        reservation_primitives = [
+            res for res in rl_registry.reservations.values() if res.schema == schema
+        ]
 
         for name, prim in sorted(rl_registry.reservations.items()):
+            if prim.schema != schema:
+                continue
             configured_reservations.append(
                 {
                     "bucket_name": name,

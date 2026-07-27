@@ -661,7 +661,7 @@ dispatch. Registration is idempotent for identical config, which every acquisiti
     acquired within `idle_for`. It does **not** touch the underlying Postgres
     `reservation_slots` rows for that name — those are reclaimed independently by the existing
     lock-expiry sweep. A key that is acquired again after eviction is simply re-registered on
-    next use, so calling     `evict_idle_keyed_reservations()` is always safe, including while other
+    next use, so calling `evict_idle_keyed_reservations()` is always safe, including while other
     keys are mid-acquisition.
 
 ---
@@ -739,6 +739,17 @@ Unlike keyed reservations, there is no PG slot pre-allocation step — a `TokenB
 immediately usable after `register()` (there is no `ensure_slots` equivalent). The bucket is
 ready as soon as it is registered.
 
+!!! warning "Concrete-name collisions"
+    Because `:` is an allowed character in keys, one ref's `base_name` can be a prefix of
+    another ref's concrete name: `base_name="a"` with key `"b:c"` and `base_name="a:b"` with
+    key `"c"` both resolve to `a:b:c`. If two refs collide with **identical** configs they
+    silently share the primitive (bounded, but probably not what you meant); with
+    **different** configs the second resolution raises `ValueError` rather than silently
+    over- or under-admitting relative to one ref's declared config. Choose distinct
+    `base_name`s to avoid ambiguity. The same rule applies to `KeyedReservationRef`.
+    A concrete name you registered **statically** (via `registry.register(...)`) is reused
+    as-is when a keyed ref resolves to it, and is never removed by idle-key eviction.
+
 ### Bounding registry growth
 
 Concrete per-key `TokenBucket` instances are never removed automatically. Under high key
@@ -758,7 +769,10 @@ mechanisms bound this growth:
    otherwise deny a new key because the `max_keyed_rate_limits` cap has been reached, it
    first attempts an opportunistic eviction of idle entries — so hitting the cap is never
    purely an artefact of sweep timing. Only if the cap is still exceeded after the
-   opportunistic eviction does the method raise `ReservationUnavailable`.
+   opportunistic eviction does the method raise `ReservationUnavailable`. The scan is
+   amortized to at most one per 30 seconds (`_OPPORTUNISTIC_EVICT_MIN_INTERVAL`), so a
+   registry sitting at its cap under sustained denials stays O(1) per request rather than
+   rescanning the whole tracking dict on every denied acquisition.
 
 3. **Redis TTL (self-bounding Redis memory).** Independently of the in-process registry,
    when the underlying `TokenBucket` uses the Redis backend, each key's Redis hash has its own
