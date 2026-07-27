@@ -75,7 +75,16 @@ __all__ = [
 ]
 
 # ── Protocol version ───────────────────────────────────────────────────
-BACKEND_PROTOCOL_VERSION: Final[int] = 2
+# Bump rule: increment when a change alters an existing protocol member's
+# observable contract such that an implementation written against the
+# previous version would *silently* misbehave (wrong results, ignored
+# inputs) instead of failing loudly.  Purely additive changes an old
+# implementation can ignore without producing incorrect behaviour do not
+# require a bump.  See docs/architecture.md §Backend protocol.
+# v3: list_jobs — JobFilter.status widened to accept a sequence and the
+#     `active` meta-filter was added; a v2 implementation returns wrong
+#     rows for both shapes without erroring.
+BACKEND_PROTOCOL_VERSION: Final[int] = 3
 
 # ── Type aliases (PEP 695) ─────────────────────────────────────────────
 

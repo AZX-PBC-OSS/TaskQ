@@ -137,7 +137,7 @@ __all__ = [
 
 logger = structlog.get_logger("taskq.testing.in_memory")
 
-_EXPECTED_PROTOCOL_VERSION = 2
+_EXPECTED_PROTOCOL_VERSION = 3
 if BACKEND_PROTOCOL_VERSION != _EXPECTED_PROTOCOL_VERSION:
     raise RuntimeError(
         f"InMemoryBackend was built for protocol v{_EXPECTED_PROTOCOL_VERSION}; "

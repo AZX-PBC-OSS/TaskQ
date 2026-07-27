@@ -11,6 +11,7 @@ from pydantic import BaseModel
 
 from taskq._ids import new_job_id, new_uuid
 from taskq.backend._protocol import (
+    BACKEND_PROTOCOL_VERSION,
     AttemptOutcome,
     AttemptRow,
     Backend,
@@ -99,7 +100,10 @@ def _make_job_row() -> JobRow:
 class FakeBackend:
     """Minimal backend recording method calls for assertions."""
 
-    BACKEND_PROTOCOL_VERSION: int = 2
+    # Bound to the canonical constant (not a literal) so the fake can
+    # never drift behind a protocol bump — a hardcoded 2 here previously
+    # survived the v2→v3 list_jobs contract change unnoticed.
+    BACKEND_PROTOCOL_VERSION: int = BACKEND_PROTOCOL_VERSION
     supports_transactional_simulation: bool = False
 
     def __init__(

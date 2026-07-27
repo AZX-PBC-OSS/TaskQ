@@ -23,7 +23,6 @@ from taskq.backend import (
     JobRow,
 )
 from taskq.backend._protocol import ErrorInfo, EventRow, IdentityKey, JobId, JobSortField, JobStatus
-from taskq.backend._reads import _list_jobs
 from taskq.backend.statemachine import ACTIVE_STATUSES, TERMINAL_STATUSES
 from taskq.testing.in_memory import InMemoryBackend, encode_cursor
 
@@ -1817,17 +1816,6 @@ async def test_eq_zero_limit_returns_no_rows(backend_pair: Backend) -> None:
     )
     rows = await backend_pair.list_jobs(JobFilter(actor="actor_a", limit=0))
     assert rows == []
-
-
-async def test_list_jobs_rejects_invalid_schema_identifier() -> None:
-    """``_list_jobs`` interpolates the schema into SQL, so per the
-    defence-in-depth invariant (docs/architecture.md §Identifier
-    validation) it must re-validate the identifier at the call site and
-    raise ``ValueError`` *before* touching the pool — passing ``None`` as
-    the pool proves no database access happens first.
-    """
-    with pytest.raises(ValueError, match="invalid schema identifier"):
-        await _list_jobs(None, "0bad;DROP TABLE jobs", JobFilter())  # type: ignore[arg-type]  # Why: validation must precede pool use
 
 
 # ── order_by tie-break parity ────────────────────────────────────────

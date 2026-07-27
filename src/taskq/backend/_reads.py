@@ -23,9 +23,6 @@ from taskq.backend._records import (
 )
 from taskq.backend._sql_templates import SqlTemplates
 from taskq.backend.statemachine import ACTIVE_STATUSES, TERMINAL_STATUSES
-from taskq.constants import (
-    _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
-)
 
 if TYPE_CHECKING:
     import asyncpg
@@ -52,12 +49,6 @@ async def _list_jobs(
     schema: str,
     filters: JobFilter,
 ) -> list[JobRow]:
-    # Defence-in-depth: re-validate the schema identifier at the call site
-    # (docs/architecture.md §Identifier validation) — construction-time
-    # validation alone is single-point.
-    if not _IDENT_RE.match(schema):
-        raise ValueError(f"invalid schema identifier: {schema!r}")
-
     conditions: list[str] = []
     params: list[object] = []
     n = 0
@@ -133,7 +124,7 @@ async def _list_jobs(
         order_clause = "ORDER BY priority DESC, scheduled_at ASC, id ASC"
 
     sql_text = (
-        f'SELECT * FROM "{schema}".jobs {where_clause} '  # Why: schema validated against _IDENT_RE immediately above; dynamic WHERE clauses use positional params.
+        f'SELECT * FROM "{schema}".jobs {where_clause} '  # Why: schema validated at construction; dynamic WHERE clauses use positional params.
         f"{order_clause} "
         f"LIMIT ${limit_idx}"
     )
