@@ -554,8 +554,12 @@ LIMIT $2""",
 -- actual miss: this cannot see whether that transaction will insert a
 -- job_events row at all, only that it has held the table open unusually
 -- long. Excludes this query's own backend.
+-- The ::float8 cast matters: EXTRACT returns numeric, which asyncpg
+-- hands back as Decimal — but LongRunningJobEventsWriter.xact_age_seconds
+-- is a float, and Decimal is not JSON-serializable for the monitoring
+-- loop this diagnostic feeds.
 SELECT a.pid, a.xact_start,
-       EXTRACT(EPOCH FROM (clock_timestamp() - a.xact_start)) AS xact_age_seconds
+       EXTRACT(EPOCH FROM (clock_timestamp() - a.xact_start))::float8 AS xact_age_seconds
 FROM pg_locks l
 JOIN pg_stat_activity a ON a.pid = l.pid
 WHERE l.relation = '"{s}".job_events'::regclass

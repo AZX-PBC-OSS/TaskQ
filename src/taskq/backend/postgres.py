@@ -498,10 +498,14 @@ class PostgresBackend:
         ``poll_reclaim_events`` event (see
         ``taskq.constants.RECLAIM_EVENT_VISIBILITY_DELAY``).
 
-        Intended for a periodic monitoring/alerting loop, not the per-poll
-        hot path — this issues its own query against ``pg_locks`` /
-        ``pg_stat_activity`` and is not free.  A non-empty result is a
-        proxy warning, not proof of an actual missed event.
+        Run automatically by every ``TaskQ.watch_reclaims`` consumer on a
+        slow cadence (``taskq.client._taskq._VISIBILITY_RISK_CHECK_INTERVAL``,
+        default 60s) so a violated margin assumption is loud by default;
+        also callable directly from a dedicated monitoring/alerting loop
+        that wants a tighter cadence or its own sink.  Either way this is
+        not for the per-poll hot path — it issues its own query against
+        ``pg_locks`` / ``pg_stat_activity`` and is not free.  A non-empty
+        result is a proxy warning, not proof of an actual missed event.
         """
         delay = (
             visibility_delay

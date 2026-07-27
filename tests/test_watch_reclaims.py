@@ -25,6 +25,7 @@ Covers:
 # identifiers. Same suppression as test_stream.py.
 
 import asyncio
+import contextlib
 import shutil
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -32,11 +33,12 @@ from uuid import UUID
 
 import asyncpg
 import pytest
+import structlog
 
 from taskq._ids import new_base62, new_uuid
 from taskq.backend._protocol import EventRow, JobId
 from taskq.client._jobs import JobsClient
-from taskq.client._taskq import TaskQ
+from taskq.client._taskq import TaskQ, _watch_reclaims_pg
 from taskq.settings import TaskQSettings
 from taskq.testing.clock import FakeClock
 from taskq.testing.in_memory import InMemoryBackend
@@ -199,6 +201,302 @@ async def test_watch_reclaims_resumption_does_not_replay() -> None:
     assert all(e.event_id > last_seen for e in second_batch)
 
 
+# ── Visibility-delay risk probe (unit, no Docker) ─────────────────
+
+
+async def test_watch_reclaims_visibility_risk_probe_warns_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The watcher wires check_reclaim_visibility_delay_risk in by default
+    (the operator does not have to know the diagnostic exists): when the
+    backend reports a job_events writer transaction open longer than the
+    margin, the watcher logs a loud structured
+    'watch_reclaims-visibility-delay-at-risk' warning on its own cadence."""
+    from taskq.backend._protocol import LongRunningJobEventsWriter
+
+    monkeypatch.setattr("taskq.client._taskq._VISIBILITY_RISK_CHECK_INTERVAL", 0.0)
+    backend = _make_backend()
+
+    async def _fake_check(*, visibility_delay: Any = None) -> list[Any]:
+        return [
+            LongRunningJobEventsWriter(
+                pid=4242,
+                xact_start=_START,
+                xact_age_seconds=7.5,
+            )
+        ]
+
+    # raising=False: InMemoryBackend has no such method — that is exactly
+    # why the probe must discover it via getattr at runtime.
+    monkeypatch.setattr(backend, "check_reclaim_visibility_delay_risk", _fake_check, raising=False)
+
+    tq = _inject_poll_only_tq(backend, poll_timeout=0.02)
+
+    async def _produce_after_delay() -> None:
+        await asyncio.sleep(0.1)
+        await _make_running_row(backend)
+
+    producer = asyncio.create_task(_produce_after_delay())
+    with structlog.testing.capture_logs() as captured:
+        try:
+            events = await asyncio.wait_for(
+                _collect(tq.watch_reclaims(after_id=0), n=1), timeout=5.0
+            )
+        finally:
+            await producer
+
+    assert len(events) == 1, "delivery must continue alongside the probe"
+    warnings = [e for e in captured if e["event"] == "watch_reclaims-visibility-delay-at-risk"]
+    assert warnings, "expected the built-in probe to warn about the long-open writer"
+    assert warnings[0]["pid"] == 4242
+    assert warnings[0]["xact_age_seconds"] == 7.5
+
+
+async def test_watch_reclaims_visibility_risk_probe_failure_never_kills_watcher(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failing probe (permissions on pg_locks, a transient pool error)
+    is logged as 'watch_reclaims-visibility-risk-probe-failed' and
+    swallowed — a monitoring path must never take down the delivery path
+    it monitors."""
+    monkeypatch.setattr("taskq.client._taskq._VISIBILITY_RISK_CHECK_INTERVAL", 0.0)
+    backend = _make_backend()
+
+    async def _failing_check(*, visibility_delay: Any = None) -> list[Any]:
+        raise OSError("simulated probe failure")
+
+    # raising=False: see the companion test above.
+    monkeypatch.setattr(
+        backend, "check_reclaim_visibility_delay_risk", _failing_check, raising=False
+    )
+
+    tq = _inject_poll_only_tq(backend, poll_timeout=0.02)
+
+    async def _produce_after_delay() -> None:
+        await asyncio.sleep(0.1)
+        await _make_running_row(backend)
+
+    producer = asyncio.create_task(_produce_after_delay())
+    with structlog.testing.capture_logs() as captured:
+        try:
+            events = await asyncio.wait_for(
+                _collect(tq.watch_reclaims(after_id=0), n=1), timeout=5.0
+            )
+        finally:
+            await producer
+
+    assert len(events) == 1, "probe failure must not interrupt delivery"
+    assert any(e["event"] == "watch_reclaims-visibility-risk-probe-failed" for e in captured)
+
+
+# ── PG LISTEN transport state machine (unit, fake connection) ──────
+
+
+class _FakeListenConn:
+    """Minimal asyncpg.Connection stand-in for _watch_reclaims_pg unit tests.
+
+    Mirrors exactly the interaction surface the transport uses:
+    add_listener / remove_listener / add/remove_termination_listener /
+    is_closed / close.  kill() simulates a server-side drop
+    (pg_terminate_backend): the connection dies, termination listeners
+    fire, and — critically — no exception is ever raised into the
+    consuming coroutine, matching real asyncpg behaviour.  This is why
+    detection must go through is_closed() + the termination listener,
+    not an except clause around the consume loop.
+    """
+
+    def __init__(self) -> None:
+        self._closed = False
+        self._notify_callbacks: list[tuple[str, Any]] = []
+        self._termination_listeners: list[Any] = []
+        self.listener_channels: list[str] = []
+        self.close_calls = 0
+
+    async def add_listener(self, channel: str, callback: Any) -> None:
+        if self._closed:
+            raise asyncpg.InterfaceError("connection is closed")
+        self.listener_channels.append(channel)
+        self._notify_callbacks.append((channel, callback))
+
+    async def remove_listener(self, channel: str, callback: Any) -> None:
+        self._notify_callbacks = [
+            (ch, cb) for ch, cb in self._notify_callbacks if not (ch == channel and cb is callback)
+        ]
+
+    def add_termination_listener(self, callback: Any) -> None:
+        self._termination_listeners.append(callback)
+
+    def remove_termination_listener(self, callback: Any) -> None:
+        if callback in self._termination_listeners:
+            self._termination_listeners.remove(callback)
+
+    def is_closed(self) -> bool:
+        return self._closed
+
+    async def close(self) -> None:
+        self.close_calls += 1
+        self._die()
+
+    def kill(self) -> None:
+        """Simulate pg_terminate_backend: the conn dies server-side."""
+        self._die()
+
+    def _die(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        for cb in list(self._termination_listeners):
+            cb(self)
+
+    def fire_notify(self) -> None:
+        for ch, cb in list(self._notify_callbacks):
+            cb(self, 0, ch, "")
+
+
+async def test_watch_reclaims_pg_reconnects_after_listen_conn_death(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Killing the dedicated LISTEN connection is *detected* (asyncpg never
+    raises into the consume loop — notifications just stop), the generator
+    falls back to polling, re-establishes the LISTEN connection via the
+    factory after _RECONNECT_POLL_INTERVAL poll iterations, logs
+    'watch_reclaims-listen-reconnected', and keeps delivering."""
+    monkeypatch.setattr("taskq.client._taskq._RECONNECT_POLL_INTERVAL", 2)
+    backend = _make_backend()
+    client = _make_client(backend)
+    conns: list[_FakeListenConn] = []
+
+    async def _factory() -> _FakeListenConn:
+        conn = _FakeListenConn()
+        conns.append(conn)
+        return conn
+
+    gen = _watch_reclaims_pg(
+        None,
+        _UNIT_SCHEMA_LABEL,
+        client,
+        0.02,
+        pg_conn_factory=_factory,  # type: ignore[arg-type]  # Why: fake conn stand-in for asyncpg.Connection
+    )
+    with structlog.testing.capture_logs() as captured:
+        task = asyncio.create_task(_collect(gen, n=1))
+        await asyncio.sleep(0.05)  # first poll + LISTEN registration settle
+        assert len(conns) == 1
+        conns[0].kill()
+        await asyncio.sleep(0.2)  # detection + fallback polls + reconnect (interval=2 @ 0.02s)
+        await _make_running_row(backend)
+        events = await asyncio.wait_for(task, timeout=5.0)
+
+    assert len(events) == 1
+    assert len(conns) == 2, "the dead LISTEN connection was never re-established"
+    assert conns[1].listener_channels, "reconnected conn never re-registered LISTEN"
+    assert any(e["event"] == "watch_reclaims-listen-reconnected" for e in captured)
+
+
+async def test_watch_reclaims_pg_caller_owned_conn_death_permanent_poll_fallback() -> None:
+    """A caller-supplied listen_conn cannot be reconnected (the caller owns
+    its lifecycle): on death the generator logs
+    'watch_reclaims-listen-connection-lost' once and settles into the
+    permanent poll fallback — the documented limitation — still delivering
+    events, without closing the caller's connection."""
+    backend = _make_backend()
+    client = _make_client(backend)
+    conn = _FakeListenConn()
+
+    gen = _watch_reclaims_pg(
+        None,
+        _UNIT_SCHEMA_LABEL,
+        client,
+        0.02,
+        listen_conn=conn,  # type: ignore[arg-type]  # Why: fake conn stand-in for asyncpg.Connection
+    )
+    with structlog.testing.capture_logs() as captured:
+        task = asyncio.create_task(_collect(gen, n=1))
+        await asyncio.sleep(0.05)
+        conn.kill()
+        await asyncio.sleep(0.1)
+        await _make_running_row(backend)
+        events = await asyncio.wait_for(task, timeout=5.0)
+
+    assert len(events) == 1
+    lost = [e for e in captured if e["event"] == "watch_reclaims-listen-connection-lost"]
+    assert len(lost) == 1
+    assert conn.close_calls == 0, "generator must not close a caller-owned connection"
+
+
+async def test_watch_reclaims_pg_pool_error_propagates_not_misdiagnosed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An InterfaceError raised by poll_reclaim_events is a *pool/backend*
+    failure, not a LISTEN failure: it must propagate to the caller (who
+    can resume from the last-seen cursor) rather than being swallowed by
+    the listen-failure fallback, which would hide a real backend outage
+    behind a 'watch_reclaims-listen-connection-lost' misdiagnosis."""
+    backend = _make_backend()
+    client = _make_client(backend)
+    conn = _FakeListenConn()
+
+    real_poll = backend.poll_reclaim_events
+    calls = {"n": 0}
+
+    async def _fail_second_call(after_id: int, *args: Any, **kwargs: Any) -> Any:
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise asyncpg.InterfaceError("transient pool failure")
+        return await real_poll(after_id, *args, **kwargs)
+
+    monkeypatch.setattr(backend, "poll_reclaim_events", _fail_second_call)
+
+    # poll_timeout is huge so the generator parks in wake.wait() after the
+    # first (empty, successful) poll; fire_notify() then drives the
+    # failure specifically through _catch_up_after_notify — the call site
+    # the old except clause misdiagnosed as a LISTEN failure.
+    gen = _watch_reclaims_pg(
+        None,
+        _UNIT_SCHEMA_LABEL,
+        client,
+        30.0,
+        listen_conn=conn,  # type: ignore[arg-type]  # Why: fake conn stand-in for asyncpg.Connection
+    )
+
+    async def _first_event() -> EventRow:
+        async with contextlib.aclosing(gen) as agen:
+            async for evt in agen:
+                return evt
+        raise AssertionError("generator finished without yielding")
+
+    task = asyncio.create_task(_first_event())
+    await asyncio.sleep(0.05)  # first poll done; parked in wake.wait()
+    conn.fire_notify()
+    with pytest.raises(asyncpg.InterfaceError):
+        await asyncio.wait_for(task, timeout=2.0)
+
+
+async def test_watch_reclaims_pg_full_batch_drains_without_waiting() -> None:
+    """A backlog larger than one batch drains immediately: after yielding
+    a full batch the loop re-polls instead of waiting poll_timeout —
+    otherwise a >100-event crash storm drains at ~100 events per
+    poll_timeout (a minute for 250 events at the 30s default), in exactly
+    the scenario watch_reclaims exists for."""
+    backend = _make_backend()
+    for _ in range(150):
+        await _make_running_row(backend)
+    client = _make_client(backend)
+    conn = _FakeListenConn()  # alive the whole time; never fires a notify
+
+    gen = _watch_reclaims_pg(
+        None,
+        _UNIT_SCHEMA_LABEL,
+        client,
+        30.0,  # poll_timeout deliberately huge: draining must not wait on it
+        listen_conn=conn,  # type: ignore[arg-type]  # Why: fake conn stand-in for asyncpg.Connection
+    )
+    events = await asyncio.wait_for(_collect(gen, n=150), timeout=5.0)
+
+    assert len(events) == 150
+    assert [e.event_id for e in events] == sorted(e.event_id for e in events)
+
+
 # ── PG LISTEN transport + chaos (integration, Docker) ──────────────
 
 
@@ -303,9 +601,14 @@ async def test_watch_reclaims_pg_listen_delivers_promptly(pg_dsn: str) -> None:
 async def test_watch_reclaims_survives_listen_connection_kill(pg_dsn: str) -> None:
     """pg_terminate_backend kills watch_reclaims()'s dedicated LISTEN
     connection mid-stream (same technique as test_stream.py's
-    test_tc1_pg_listen_connection_dropped_stream_recovers); the generator
-    does not propagate an unhandled exception and keeps delivering
-    correctly via the poll-timeout fallback."""
+    test_tc1_pg_listen_connection_dropped_stream_recovers).  asyncpg does
+    NOT raise into the consume loop when this happens — the death is
+    detected via the termination listener / is_closed() checks; the
+    generator falls back to polling and delivers the pending event, then
+    RE-ESTABLISHES the LISTEN connection — asserted via the
+    'watch_reclaims-listen-reconnected' log line AND a live LISTEN pid in
+    pg_stat_activity, so the reconnect machinery cannot silently rot —
+    and keeps delivering afterwards."""
     from taskq.backend.postgres import PostgresBackend
     from taskq.testing.pg import create_running_job
 
@@ -317,55 +620,103 @@ async def test_watch_reclaims_survives_listen_connection_kill(pg_dsn: str) -> No
 
         gen = tq.watch_reclaims(after_id=0)
 
-        # Start consuming in the background so the LISTEN connection is
-        # actually opened before we kill it.
-        collect_task = asyncio.create_task(asyncio.wait_for(_collect(gen, n=1), timeout=10.0))
-        await asyncio.sleep(0.2)
+        with structlog.testing.capture_logs() as captured:
+            # Start consuming in the background so the LISTEN connection is
+            # actually opened before we kill it.
+            collect_task = asyncio.create_task(asyncio.wait_for(_collect(gen, n=2), timeout=30.0))
+            await asyncio.sleep(0.2)
 
-        assert tq._pool is not None
-        async with tq._pool.acquire() as conn:
-            listen_pids = await conn.fetch(
-                "SELECT pid FROM pg_stat_activity "
-                "WHERE query LIKE '%LISTEN%' AND datname = current_database() "
-                "AND pid != pg_backend_pid()"
-            )
-        psql_path = shutil.which("psql")
-        assert psql_path is not None, "psql not found on PATH"
-        for row in listen_pids:
-            proc = await asyncio.create_subprocess_exec(
-                psql_path,
-                pg_dsn,
-                "-c",
-                f"SELECT pg_terminate_backend({int(row['pid'])})",
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-            await proc.wait()
+            assert tq._pool is not None
+            async with tq._pool.acquire() as conn:
+                listen_pids = await conn.fetch(
+                    "SELECT pid FROM pg_stat_activity "
+                    "WHERE query LIKE '%LISTEN%' AND datname = current_database() "
+                    "AND pid != pg_backend_pid()"
+                )
+            killed_pids = {int(row["pid"]) for row in listen_pids}
+            assert killed_pids, "no LISTEN connection found to kill"
+            psql_path = shutil.which("psql")
+            assert psql_path is not None, "psql not found on PATH"
+            for pid in killed_pids:
+                proc = await asyncio.create_subprocess_exec(
+                    psql_path,
+                    pg_dsn,
+                    "-c",
+                    f"SELECT pg_terminate_backend({pid})",
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
+                )
+                await proc.wait()
 
-        await asyncio.sleep(0.3)
+            await asyncio.sleep(0.3)
 
-        # Now produce the crash-reclaim event; the poll-fallback loop
-        # (not the dead LISTEN connection) must still pick it up.
-        async with tq._pool.acquire() as conn:
-            job_id = await create_running_job(
-                conn,
-                schema,
-                worker_id,
-                lock_expires_at=datetime.now(UTC) - timedelta(seconds=10),
-                max_attempts=1,
-                retry_kind="transient",
-                attempt=1,
-            )
-            await PostgresBackend.sweep_expired_locks(
-                conn,
-                datetime.now(UTC),
-                _GRACE,
-                _GRACE,
-                schema=schema,
-            )
+            # Produce the first crash-reclaim event; the poll-fallback
+            # loop (not the dead LISTEN connection) must still pick it up.
+            async with tq._pool.acquire() as conn:
+                job_id_1 = await create_running_job(
+                    conn,
+                    schema,
+                    worker_id,
+                    lock_expires_at=datetime.now(UTC) - timedelta(seconds=10),
+                    max_attempts=1,
+                    retry_kind="transient",
+                    attempt=1,
+                )
+                await PostgresBackend.sweep_expired_locks(
+                    conn,
+                    datetime.now(UTC),
+                    _GRACE,
+                    _GRACE,
+                    schema=schema,
+                )
 
-        events = await collect_task
-        assert len(events) == 1
-        assert events[0].job_id == JobId(job_id)
+            # The generator must now detect the dead connection, fall back
+            # to polling, and re-establish the LISTEN connection (every
+            # _RECONNECT_POLL_INTERVAL poll iterations).  Assert on the
+            # recovery log line — without it this test passed historically
+            # without ever entering the reconnect branch.
+            deadline = asyncio.get_running_loop().time() + 15.0
+            while not any(e["event"] == "watch_reclaims-listen-reconnected" for e in captured):
+                assert asyncio.get_running_loop().time() < deadline, (
+                    "LISTEN connection was never re-established "
+                    "(no 'watch_reclaims-listen-reconnected' log line)"
+                )
+                await asyncio.sleep(0.1)
+
+            # And a real, live LISTEN connection must exist — not just a
+            # log line claiming one does.
+            async with tq._pool.acquire() as conn:
+                relisten = await conn.fetch(
+                    "SELECT pid FROM pg_stat_activity "
+                    "WHERE query LIKE '%LISTEN%' AND datname = current_database() "
+                    "AND pid != pg_backend_pid()"
+                )
+            assert relisten, "no live LISTEN connection after 'reconnected' log line"
+            assert killed_pids.isdisjoint({int(row["pid"]) for row in relisten})
+
+            # Produce a second event — the re-established stream must keep
+            # delivering.
+            async with tq._pool.acquire() as conn:
+                job_id_2 = await create_running_job(
+                    conn,
+                    schema,
+                    worker_id,
+                    lock_expires_at=datetime.now(UTC) - timedelta(seconds=10),
+                    max_attempts=1,
+                    retry_kind="transient",
+                    attempt=1,
+                )
+                await PostgresBackend.sweep_expired_locks(
+                    conn,
+                    datetime.now(UTC),
+                    _GRACE,
+                    _GRACE,
+                    schema=schema,
+                )
+
+            events = await collect_task
+
+        assert len(events) == 2
+        assert {events[0].job_id, events[1].job_id} == {JobId(job_id_1), JobId(job_id_2)}
     finally:
         await tq.close()

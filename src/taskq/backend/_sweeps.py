@@ -69,6 +69,21 @@ _SWEEP_1_SQL = """\
 -- section of docs/architecture.md) extra headroom to complete on its own
 -- before the crash-recovery path pre-empts it, so a merely-slow (not
 -- actually crashed) cancellation isn't mistaken for a crash.
+--
+-- Cancel-state handling on reclaim (a deliberate, documented tradeoff):
+-- * Retry branch ('pending'): cancel_phase/cancel_requested_at are
+--   RESET, so the next dispatch doesn't immediately re-cancel the
+--   retried job — crash-reclaim starts the new attempt with a clean
+--   cancellation slate.  A caller's cancel therefore does not survive
+--   into a retried attempt; phase-2 escalation only ever runs on the
+--   (dead) lock-holding worker, so there is no other path that could
+--   honor it there.
+-- * Exhausted branch: a job whose cancel was still in-flight lands on
+--   'cancelled', NOT 'crashed' — the caller's explicit request is the
+--   honest terminal label (and 'crashed' would invite a retry_job the
+--   caller asked never to run).  Jobs with no cancel in-flight still
+--   land on 'crashed' as before.  The job_attempts row records
+--   outcome='crashed' either way: that IS what happened to the attempt.
 WITH snap AS (
     SELECT id, locked_by_worker
     FROM "{schema}".jobs
@@ -82,6 +97,8 @@ UPDATE "{schema}".jobs j
 SET status = CASE
         WHEN j.attempt < j.max_attempts AND j.retry_kind != 'non_retryable'
             THEN 'pending'::"{schema}".job_status
+        WHEN j.cancel_phase != 0
+            THEN 'cancelled'::"{schema}".job_status
         ELSE 'crashed'::"{schema}".job_status
     END,
     locked_by_worker = NULL,
@@ -181,12 +198,20 @@ async def sweep_expired_locks(
 
     - If attempts remain and retry is allowed: transition to
       ``'pending'`` with ``scheduled_at = now() + 5s`` backoff.
-    - Otherwise: transition to ``'crashed'`` with
-      ``finished_at = clock_timestamp()``.
+    - Otherwise, if a cancel request was still in-flight
+      (``cancel_phase != 0``): transition to ``'cancelled'`` — the
+      caller's explicit request is the honest terminal label.
+    - Otherwise: transition to ``'crashed'``.
 
-    Both branches write a ``job_attempts`` row (outcome ``'crashed'``,
-    error_class ``'WorkerCrashed'``) and a ``job_events`` row (kind
-    ``'state_change'``, reason ``'lock_expired'``).
+    Both terminal branches set ``finished_at = clock_timestamp()``, and
+    all branches reset ``cancel_phase``/``cancel_requested_at`` — see the
+    ``_SWEEP_1_SQL`` comment for the deliberate tradeoff this makes on
+    the retry branch.
+
+    All branches write a ``job_attempts`` row (outcome ``'crashed'``,
+    error_class ``'WorkerCrashed'`` — that IS what happened to the
+    attempt, regardless of the job's terminal label) and a ``job_events``
+    row (kind ``'state_change'``, reason ``'lock_expired'``).
 
     *now* is accepted for API consistency; PG uses server-side
     ``clock_timestamp()`` for WHERE comparisons and finished-at timestamps

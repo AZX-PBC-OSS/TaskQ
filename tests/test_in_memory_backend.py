@@ -1113,6 +1113,53 @@ class TestReclaimExpiredLocks:
         assert updated.cancel_phase == 0
         assert updated.cancel_requested_at is None
 
+    async def test_deeply_expired_cancel_exhausted_is_labelled_cancelled(self) -> None:
+        """Retries-exhausted reclaim of a job with an in-flight cancel
+        request terminates as 'cancelled', not 'crashed': the worker died
+        mid-cancel-protocol, and 'crashed' would mislabel the caller's
+        explicit cancel (and invite a retry_job the caller asked never to
+        run).  The attempt row still records outcome='crashed'
+        (WorkerCrashed) — that IS what happened to the attempt — while
+        the job status and the job_events outbox row carry the honest
+        caller-visible terminal label."""
+        backend = _make_backend()
+        job_id, _ = await _make_running_row(backend, max_attempts=1, retry_kind="transient")
+
+        from dataclasses import replace as _replace
+
+        # Threshold is cancel_grace + cleanup_grace + 60s = 30+30+60 = 120s.
+        deep_past = _START - timedelta(seconds=180)
+        row = backend._jobs[job_id]  # type: ignore[reportPrivateUsage]  # Why: test-only private access
+        backend._jobs[job_id] = _replace(  # type: ignore[reportPrivateUsage]  # Why: test-only private access
+            row,
+            lock_expires_at=deep_past,
+            cancel_requested_at=_START,
+            cancel_phase=1,
+        )
+
+        count = await backend.reclaim_expired_locks(
+            _START + timedelta(seconds=1),
+            _GRACE,
+            _GRACE,
+        )
+        assert count == 1
+
+        updated = await backend.get(job_id)
+        assert updated is not None
+        assert updated.status == "cancelled"
+        assert updated.cancel_phase == 0
+        assert updated.cancel_requested_at is None
+        assert updated.finished_at is not None
+
+        attempts = await backend.get_attempts(job_id)
+        assert attempts[-1].outcome == "crashed"
+        assert attempts[-1].error_class == "WorkerCrashed"
+
+        events = await backend.get_events(job_id)
+        reclaim_events = [e for e in events if e.detail.get("reason") == "lock_expired"]
+        assert len(reclaim_events) == 1
+        assert reclaim_events[0].detail["to_state"] == "cancelled"
+
 
 # ── Read methods ──────────────────────────────────────────────────────
 

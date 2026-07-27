@@ -346,7 +346,13 @@ async def test_isolate_self_transitions_cancel_phase_gt_zero(
 ) -> None:
     """isolate_self transitions jobs with cancel_phase > 0.
     Job with cancel_phase=1 is transitioned (status no longer 'running'),
-    and cancel_phase is preserved on the row."""
+    and — mirroring _SWEEP_1_SQL branch-for-branch (see
+    tests/test_leader_property.py's isolate≡sweep invariant) — its cancel
+    state is RESET: a reclaimed attempt starts with a clean cancellation
+    slate, so the next worker's cancel-poll does not immediately re-cancel
+    the retried job (the retry loop the sweep's identical reset fixes).
+    A caller's cancel therefore does not survive into a retried attempt —
+    the same documented tradeoff the crash-reclaim sweep makes."""
     stack, deps, schema = await _setup_fast(module_pg_schema)
     try:
         async with deps.heartbeat_pool.acquire() as conn:
@@ -367,8 +373,8 @@ async def test_isolate_self_transitions_cancel_phase_gt_zero(
                 job_id,
             )
             assert row is not None
-            assert row["status"] != "running"
-            assert row["cancel_phase"] == 1
+            assert row["status"] == "pending"
+            assert row["cancel_phase"] == 0
     finally:
         await stack.aclose()
 

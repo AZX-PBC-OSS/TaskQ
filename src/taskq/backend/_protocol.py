@@ -365,6 +365,10 @@ class LongRunningJobEventsWriter:
     not a guarantee that this specific transaction will write to
     ``job_events`` again or actually cause a miss — a proxy signal for an
     operator to investigate, not proof of an incident.
+
+    Not directly ``json.dumps``-safe: ``xact_start`` is a
+    :class:`~datetime.datetime`. Serialise with a datetime-aware encoder
+    (or ``str()``/``.isoformat()``) in the monitoring loop consuming this.
     """
 
     pid: int
@@ -798,7 +802,24 @@ class Backend(Protocol):
         limit: int = 100,
         *,
         visibility_delay: timedelta | None = None,
-    ) -> list[EventRow]: ...
+    ) -> list[EventRow]:
+        """Return up to *limit* crash-reclaim events with ``event_id >
+        after_id``, ascending — the durable cursor behind
+        ``TaskQ.watch_reclaims``.
+
+        **An event can be silently missed if a ``job_events`` writer
+        transaction stays open longer than the visibility-delay margin
+        between its INSERT and its COMMIT** — ids are allocated at INSERT
+        time but transactions commit out of order, so a late-committing
+        lower-id row can land behind an already-advanced cursor.  Rows
+        are therefore held back by a trailing-watermark filter
+        (*visibility_delay*; backend-configured default when ``None`` —
+        see :data:`taskq.constants.RECLAIM_EVENT_VISIBILITY_DELAY` for
+        the exact assumption and its violation modes, and
+        ``PostgresBackend.check_reclaim_visibility_delay_risk`` for the
+        diagnostic that makes a violation operator-visible).
+        """
+        ...
 
     # ── Cancel signals ──────────────────────────────────────────────────
     async def write_cancel_request(

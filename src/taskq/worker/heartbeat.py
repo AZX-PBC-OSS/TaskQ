@@ -173,15 +173,28 @@ _SELECT_RUNNING_JOBS_SQL_TEMPLATE = (
 # 'WorkerCrashed' — a heartbeat-lost worker may still be alive but
 # partitioned, while Sweep 1 assumes the worker is gone.
 
+# Branch-for-branch mirror of _sweeps.py's _SWEEP_1_SQL SET clause — the
+# property test tests/test_leader_property.py asserts row-state
+# equivalence between this path and the sweep, so any branch change there
+# (cancel-state reset on retry, 'cancelled' label for an exhausted
+# cancel-in-flight reclaim, clock_timestamp() for terminal timestamps)
+# must be mirrored here.  Isolate writes no job_events row (a graceful
+# shutdown is not a crash-reclaim), so the visibility-delay
+# co-monotonicity motivation for clock_timestamp() does not apply — it is
+# kept anyway so the two templates stay structurally identical.
 _ISOLATE_JOB_SQL_TEMPLATE = """\
 UPDATE "{schema}".jobs
 SET status = CASE
         WHEN attempt < max_attempts AND retry_kind != 'non_retryable'
             THEN 'pending'::"{schema}".job_status
+        WHEN cancel_phase != 0
+            THEN 'cancelled'::"{schema}".job_status
         ELSE 'crashed'::"{schema}".job_status
     END,
     locked_by_worker = NULL,
     lock_expires_at = NULL,
+    cancel_phase = 0,
+    cancel_requested_at = NULL,
     scheduled_at = CASE
         WHEN attempt < max_attempts AND retry_kind != 'non_retryable'
             THEN now() + interval '5 seconds'
@@ -189,7 +202,7 @@ SET status = CASE
     END,
     finished_at = CASE
         WHEN NOT (attempt < max_attempts AND retry_kind != 'non_retryable')
-            THEN now()
+            THEN clock_timestamp()
         ELSE finished_at
     END
 WHERE id = $1 AND status = 'running' AND locked_by_worker = $2"""

@@ -105,12 +105,17 @@ async def _reclaim_expired_locks(
     cancel_grace: timedelta,
     cleanup_grace: timedelta,
 ) -> int:
-    # Mirrors PostgresBackend._SWEEP_1_SQL's carve-out exactly: a job with
-    # an in-flight cancel request (cancel_phase != 0) is normally left for
-    # the cancellation protocol to finish, but is still reclaimed once its
-    # lock has been expired for cancel_grace + cleanup_grace + a flat 60s
-    # safety margin (see _sweeps.py's _SWEEP_1_SQL comment) — otherwise a
-    # worker that died mid-cancellation would never be recovered.
+    # Mirrors PostgresBackend._SWEEP_1_SQL exactly, in both directions:
+    # * carve-out — a job with an in-flight cancel request
+    #   (cancel_phase != 0) is normally left for the cancellation
+    #   protocol to finish, but is still reclaimed once its lock has been
+    #   expired for cancel_grace + cleanup_grace + a flat 60s safety
+    #   margin (see _sweeps.py's _SWEEP_1_SQL comment) — otherwise a
+    #   worker that died mid-cancellation would never be recovered;
+    # * terminal labels — the retry branch resets cancel state (clean
+    #   slate for the next dispatch); the exhausted branch lands on
+    #   'cancelled' when a cancel was in-flight, 'crashed' otherwise,
+    #   while the attempt row records outcome='crashed' either way.
     deep_expiry_margin = cancel_grace + cleanup_grace + timedelta(seconds=60)
     count = 0
     for job_id, row in list(self._jobs.items()):
@@ -167,9 +172,12 @@ async def _reclaim_expired_locks(
                     job_id=str(job_id),
                 )
             else:
+                # Exhausted: an in-flight cancel request makes 'cancelled'
+                # the honest terminal label (mirrors _SWEEP_1_SQL's CASE).
+                new_status = "cancelled" if row.cancel_phase != CancelPhase.NONE else "crashed"
                 self._jobs[job_id] = replace(
                     row,
-                    status="crashed",
+                    status=new_status,
                     finished_at=now,
                     cancel_phase=CancelPhase.NONE,
                     cancel_requested_at=None,
@@ -177,7 +185,7 @@ async def _reclaim_expired_locks(
                 self._append_state_change_event(
                     job_id,
                     from_state="running",
-                    to_state="crashed",
+                    to_state=new_status,
                     now=now,
                     worker_id=row.locked_by_worker,
                     reason="lock_expired",
@@ -186,7 +194,7 @@ async def _reclaim_expired_locks(
                     "state_change",
                     kind="state_change",
                     from_state="running",
-                    to_state="crashed",
+                    to_state=new_status,
                     job_id=str(job_id),
                 )
             for event in self._wake_subscribers:

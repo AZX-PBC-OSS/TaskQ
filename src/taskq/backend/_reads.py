@@ -215,8 +215,12 @@ async def _check_reclaim_visibility_risk(
     longer than *visibility_delay* — a candidate cause of a silently
     missed ``poll_reclaim_events`` event. See
     :class:`LongRunningJobEventsWriter`. Not part of the ``Backend``
-    protocol (diagnostic, not a core operation); opt-in, intended for a
-    monitoring/alerting loop rather than the per-poll hot path.
+    protocol (diagnostic, not a core operation). Wired into
+    ``TaskQ.watch_reclaims`` on a slow cadence by default (see
+    ``taskq.client._taskq._probe_visibility_risk``); also callable
+    directly from a dedicated monitoring/alerting loop that wants a
+    tighter cadence or its own sink. Deliberately not on the per-poll
+    hot path.
     """
     delay = visibility_delay if visibility_delay is not None else RECLAIM_EVENT_VISIBILITY_DELAY
     async with pool.acquire() as conn:
