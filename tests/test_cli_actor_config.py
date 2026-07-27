@@ -7,9 +7,10 @@ behavior (covered by the integration tier in test_actor_config_ops.py).
 """
 
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, cast
 
 import pytest
+import typer.main
 from pydantic import BaseModel
 from typer.testing import CliRunner
 
@@ -131,10 +132,18 @@ def test_set_unknown_actor_exit_one(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_set_help_lists_all_capacity_fields() -> None:
-    result = runner.invoke(app, ["actor-config", "set", "--help"])
-    assert result.exit_code == 0
+    """`actor-config set` exposes a flag for every capacity field.
+
+    Asserted against the declared parameters rather than rendered ``--help``
+    text: Rich wraps help output to the terminal width, so a substring check
+    on the rendering fails on narrow terminals (e.g. CI) even though the flag
+    is present.
+    """
+    root = cast(Any, typer.main.get_command(app))
+    set_cmd = root.commands["actor-config"].commands["set"]
+    declared = {opt for param in set_cmd.params for opt in param.opts}
     for flag in ("--max-concurrent", "--max-pending", "--result-ttl", "--clear-max-pending"):
-        assert flag in result.output, f"{flag} missing from set --help"
+        assert flag in declared, f"{flag} missing from `actor-config set`"
 
 
 # ── get / list ───────────────────────────────────────────────────────────

@@ -215,9 +215,9 @@ class TestRuntimeCheckable:
 
 
 class TestMethodCount:
-    def test_exactly_thirty_five_public_members(self) -> None:
+    def test_exactly_thirty_six_public_members(self) -> None:
         public = [m for m in dir(Backend) if not m.startswith("_")]
-        assert len(public) == 35, f"Expected 35 public members, got {len(public)}: {public}"
+        assert len(public) == 36, f"Expected 36 public members, got {len(public)}: {public}"
 
     def test_all_member_names_present(self) -> None:
         expected = {
