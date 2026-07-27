@@ -562,8 +562,7 @@ class TestApplicationEnqueuePathDuringPreOnlyWindow:
             assert isinstance(exc_info.value.__cause__, asyncpg.UniqueViolationError)
             # Nothing from the aborted COPY persisted.
             remaining = await pg_conn.fetchval(
-                f'SELECT count(*) FROM "{settings.schema_name}".jobs '
-                "WHERE idempotency_key = $1",
+                f'SELECT count(*) FROM "{settings.schema_name}".jobs WHERE idempotency_key = $1',
                 "app-path-batch-fast-fresh-key",
             )
             assert remaining == 0
