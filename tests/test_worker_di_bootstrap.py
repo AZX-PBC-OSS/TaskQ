@@ -70,16 +70,17 @@ class _LoopToTransient:
     pass
 
 
-def _settings() -> WorkerSettings:
-    return WorkerSettings.load_from_dict(
-        {
-            "PG_DSN": "postgres://u:p@localhost:5432/db",
-            "LOCK_LEASE": 60,
-            "HEARTBEAT_INTERVAL": 10,
-            # _main starts a real HealthServer — never the shared default path.
-            "TASKQ_HEALTH_SOCKET_PATH": unique_health_sock_path("worker_di_bootstrap"),
-        },
-    )
+def _settings(redis_url: str | None = None) -> WorkerSettings:
+    config: dict[str, object] = {
+        "PG_DSN": "postgres://u:p@localhost:5432/db",
+        "LOCK_LEASE": 60,
+        "HEARTBEAT_INTERVAL": 10,
+        # _main starts a real HealthServer — never the shared default path.
+        "TASKQ_HEALTH_SOCKET_PATH": unique_health_sock_path("worker_di_bootstrap"),
+    }
+    if redis_url is not None:
+        config["TASKQ_REDIS_URL"] = redis_url
+    return WorkerSettings.load_from_dict(config)
 
 
 def _make_scopes_and_bootstrap(
@@ -442,6 +443,96 @@ async def test_fresh_registry_auto_registers_system_clock() -> None:
     clock_entry = registry.get(Clock)
     assert isinstance(clock_entry.impl, SystemClock)
     assert clock_entry.scope == Scope.PROCESS
+
+
+# ── bootstrap registers the Redis rate-limit pool provider ────────
+
+
+async def test_bootstrap_registers_redis_pool_provider() -> None:
+    """_main registers a redis.asyncio.Redis provider at LOOP scope.
+
+    Regression: worker/dispatch.py resolves the rate-limit Redis client
+    from DI; bootstrap must register it alongside RateLimitRegistry or
+    Redis-backed rate limits fail at dispatch time. Registration is
+    conditional on redis_url being configured because LoopScope.bootstrap
+    eagerly resolves LOOP providers and get_redis_pool raises when
+    redis_url is None (the no-Redis boot path is covered by the Clock
+    bootstrap tests above, which run with redis_url unset).
+    """
+    import redis.asyncio as redis_async
+
+    from taskq.ratelimit._provider import get_redis_pool
+
+    registry = ProviderRegistry()
+    settings = _settings(redis_url="redis://localhost:6379/0")
+    registry.register_value(WorkerSettings, Scope.PROCESS, settings)
+
+    assert registry.has_provider(redis_async.Redis) is False
+
+    result = await _run_main_with_mocked_deps(settings, _registry=registry)
+    assert result == 0
+
+    assert registry.has_provider(redis_async.Redis) is True
+    redis_entry = registry.get(redis_async.Redis)
+    assert redis_entry.scope == Scope.LOOP
+    assert redis_entry.kind == "factory"
+    assert redis_entry.impl is get_redis_pool
+
+
+# ── fail fast when a Redis-backend rate limit lacks TASKQ_REDIS_URL ──
+
+
+async def test_bootstrap_fails_fast_on_redis_rate_limit_without_redis_url() -> None:
+    """_main raises at bootstrap when a backend="redis" rate limit is
+    registered but redis_url is None.
+
+    Regression: without the startup check, the misconfiguration surfaced
+    per-dispatch as a confusing RuntimeError from get_redis_pool — after
+    the job had already burned retries. Bootstrap must fail fast and name
+    the offending limiter(s).
+    """
+    from taskq.ratelimit.registry import registry as rl_registry
+    from taskq.ratelimit.token_bucket import TokenBucket
+
+    rl_registry.register(
+        TokenBucket(
+            name="redis_bucket_requires_url",
+            capacity=10.0,
+            refill_per_second=1.0,
+            backend="redis",
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="redis_bucket_requires_url"):
+        await _run_main_with_mocked_deps(_settings())
+
+
+# ── caller-supplied registry auto-registers WorkerSettings ────────
+
+
+async def test_caller_registry_auto_registers_worker_settings() -> None:
+    """_main registers WorkerSettings at PROCESS scope even when the caller
+    supplied ``_registry`` without it.
+
+    Pins the worker_main docstring contract ("WorkerSettings and Clock are
+    registered automatically if not already present") — required by
+    providers with a WorkerSettings dep edge (e.g. the Redis rate-limit
+    pool factory) when di_registry carries only user providers, as in the
+    e2e worker container topology.
+    """
+    registry = ProviderRegistry()
+    settings = _settings()
+    registry.register_factory(_ProcessDep, Scope.PROCESS, lambda: _ProcessDep())
+
+    assert registry.has_provider(WorkerSettings) is False
+
+    result = await _run_main_with_mocked_deps(settings, _registry=registry)
+    assert result == 0
+
+    assert registry.has_provider(WorkerSettings) is True
+    settings_entry = registry.get(WorkerSettings)
+    assert settings_entry.scope == Scope.PROCESS
+    assert settings_entry.impl is settings
 
 
 # ── Integration tests ─────────────────────────────────────────────────

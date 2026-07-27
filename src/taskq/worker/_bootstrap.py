@@ -37,7 +37,7 @@ from taskq.cron import (
 from taskq.exceptions import MissingProvider
 from taskq.obs import set_otel_enabled, setup_logging
 from taskq.progress._flush import progress_flush_loop
-from taskq.ratelimit._provider import register_rate_limit_registry
+from taskq.ratelimit._provider import register_rate_limit_registry, register_redis_pool
 from taskq.ratelimit.registry import registry as rl_registry
 from taskq.settings import WorkerSettings
 from taskq.worker.actor_config import ActorConfig
@@ -157,7 +157,7 @@ async def _main(
     )
 
     registry = _registry if _registry is not None else ProviderRegistry()
-    if _registry is None:
+    if not registry.has_provider(WorkerSettings):
         registry.register_value(WorkerSettings, Scope.PROCESS, settings)
 
     if not registry.has_provider(Clock):
@@ -188,6 +188,26 @@ async def _main(
             list(actor_registry.values()) if actor_registry else None
         )
         register_rate_limit_registry(registry, rl_registry)
+        if settings.redis_url is None:
+            # Why: a Redis-backed rate limit with no TASKQ_REDIS_URL only
+            # fails per-dispatch (get_redis_pool raises after the job has
+            # burned retries) — fail fast at bootstrap, naming the
+            # offending limiter(s).
+            redis_backed = sorted(
+                name for name, prim in rl_registry.rate_limits.items() if prim.backend == "redis"
+            )
+            if redis_backed:
+                msg = (
+                    "Redis-backed rate limit(s) registered but TASKQ_REDIS_URL is not set: "
+                    f"{', '.join(redis_backed)}. TASKQ_REDIS_URL is required for "
+                    'backend="redis" rate limits.'
+                )
+                raise RuntimeError(msg)
+        if settings.redis_url is not None:
+            # Why: LoopScope.bootstrap eagerly resolves every LOOP provider,
+            # and get_redis_pool raises when redis_url is None — registering
+            # unconditionally would crash workers that don't use Redis.
+            register_redis_pool(registry)
         registry.validate(actors=actors_list, rate_limit_registry=rl_registry)
 
         from taskq.ratelimit import sync_rate_limit_buckets, sync_slots
