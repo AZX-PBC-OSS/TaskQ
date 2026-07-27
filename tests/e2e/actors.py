@@ -1,0 +1,388 @@
+"""E2E actors — deterministic workloads shared by the test process and the worker container.
+
+The test process imports this module as ``tests.e2e.actors`` (ActorRef
+handles + payload models); the worker container imports it as
+``e2e.actors`` (PYTHONPATH=/app). Imports are limited to stdlib, pydantic,
+asyncpg, and the taskq public API so both environments load it cleanly.
+The one exception is a relative sibling import (``from .di import
+FakeHttpClient``): TaskQ's DI solver keys providers by type identity
+(:func:`taskq._di.solver.solve_dependencies`), so the injected type must
+resolve in this module's namespace at decoration time — the relative form
+resolves under both package roots where an absolute ``e2e.di`` /
+``tests.e2e.di`` import would break one of them.
+
+All workloads are deterministic: simulated fetches via ``asyncio.sleep`` +
+static data, failure injection only via payload flags. No external
+services, no randomness.
+"""
+
+import asyncio
+import json
+from datetime import timedelta
+from functools import lru_cache
+from typing import Literal
+from uuid import uuid4
+
+import asyncpg
+from pydantic import BaseModel, Field
+
+from taskq import EnqueueItem, JobContext, RetryPolicy, Snooze, actor
+from taskq.ratelimit import TokenBucket, registry
+from taskq.settings import WorkerSettings
+
+from .di import FakeHttpClient
+
+
+@lru_cache(maxsize=1)
+def _effects_schema() -> str:
+    """Return the TaskQ schema name from worker env (``TASKQ_SCHEMA_NAME``).
+
+    Cached once per process — the worker container's env is fixed at start.
+    """
+    return WorkerSettings.load().schema_name
+
+
+async def _record_effect[P: BaseModel](
+    pool: asyncpg.Pool,
+    ctx: JobContext[P],
+    kind: str,
+    detail: dict[str, object],
+) -> None:
+    """Append one row to the ``e2e_effects`` scratch table (test ground truth).
+
+    The schema identifier is operator-controlled and validated as an
+    identifier at settings load; every value is bound as an asyncpg
+    parameter. ``detail`` is JSON-encoded for the JSONB column.
+    """
+    schema = _effects_schema()
+    await pool.execute(
+        f'INSERT INTO "{schema}".e2e_effects (actor, job_id, attempt, kind, detail) '
+        "VALUES ($1, $2, $3, $4, $5::jsonb)",
+        ctx.actor,
+        ctx.job_id,
+        ctx.attempt,
+        kind,
+        json.dumps(detail),
+    )
+
+
+class WelcomeEmailPayload(BaseModel):
+    run_id: str
+    user_id: str
+    email: str
+
+
+class WelcomeEmailResult(BaseModel):
+    message_id: str
+    sent: bool
+
+
+@actor(
+    name="send_welcome_email",
+    queue="e2e",
+    retry=RetryPolicy(max_attempts=2, base=timedelta(milliseconds=200)),
+    result_ttl=timedelta(hours=1),
+)
+async def send_welcome_email(
+    payload: WelcomeEmailPayload,
+    ctx: JobContext[WelcomeEmailPayload],
+    *,
+    pool: asyncpg.Pool,
+) -> WelcomeEmailResult:
+    """Simulates template render + SMTP send as two progress steps."""
+    await ctx.progress(step=1, percent=50.0, detail="render template")
+    await asyncio.sleep(0.05)
+    await ctx.progress(step=2, percent=100.0, detail="smtp send")
+    await asyncio.sleep(0.05)
+    message_id = f"msg-{payload.user_id}"
+    await _record_effect(
+        pool,
+        ctx,
+        "send",
+        {"run_id": payload.run_id, "email": payload.email, "message_id": message_id},
+    )
+    return WelcomeEmailResult(message_id=message_id, sent=True)
+
+
+class PermanentSyncError(Exception):
+    """Non-retryable sync failure — proves the permanent-failure taxonomy."""
+
+
+class SyncUserProfilePayload(BaseModel):
+    run_id: str
+    user_id: str
+    fail_times: int = Field(default=0, ge=0)
+    fail_kind: Literal["transient", "permanent", "snooze"] = "transient"
+    fetch_latency_ms: int = Field(default=50, ge=0)
+
+
+@actor(
+    name="sync_user_profile",
+    queue="e2e",
+    retry=RetryPolicy(max_attempts=3, base=timedelta(milliseconds=200)),
+    non_retryable_exceptions=(PermanentSyncError,),
+)
+async def sync_user_profile(
+    payload: SyncUserProfilePayload,
+    ctx: JobContext[SyncUserProfilePayload],
+    *,
+    pool: asyncpg.Pool,
+) -> None:
+    """Simulates an external profile-API sync with scripted failure injection."""
+    await _record_effect(
+        pool,
+        ctx,
+        "fetch",
+        {"run_id": payload.run_id, "user_id": payload.user_id, "attempt": ctx.attempt},
+    )
+    if ctx.attempt <= payload.fail_times:
+        if payload.fail_kind == "permanent":
+            raise PermanentSyncError(f"permanent sync failure for user {payload.user_id}")
+        if payload.fail_kind == "snooze":
+            raise Snooze(timedelta(milliseconds=200))
+        raise RuntimeError("simulated fetch failure")
+    await asyncio.sleep(payload.fetch_latency_ms / 1000)
+    profile = {"user_id": payload.user_id, "display_name": "E2E User", "timezone": "UTC"}
+    await _record_effect(
+        pool,
+        ctx,
+        "synced",
+        {"run_id": payload.run_id, "user_id": payload.user_id, "profile": profile},
+    )
+
+
+class GenerateReportPayload(BaseModel):
+    run_id: str
+    report_id: str
+    stages: int = Field(default=4, ge=1)
+    stage_latency_ms: int = Field(default=300, ge=0)
+
+
+class ReportResult(BaseModel):
+    stages_completed: int
+
+
+_STAGE_NAMES = ("fetch", "aggregate", "render", "store")
+
+
+@actor(name="generate_report", queue="e2e")
+async def generate_report(
+    payload: GenerateReportPayload,
+    ctx: JobContext[GenerateReportPayload],
+    *,
+    pool: asyncpg.Pool,
+) -> ReportResult:
+    """Staged pipeline with per-stage progress and cooperative cancellation."""
+    for i in range(payload.stages):
+        ctx.check_cancelled()
+        stage_name = _STAGE_NAMES[i % len(_STAGE_NAMES)]
+        await ctx.progress(
+            step=i + 1,
+            percent=round((i + 1) / payload.stages * 100, 1),
+            detail=f"stage {i + 1} {stage_name}",
+        )
+        await asyncio.sleep(payload.stage_latency_ms / 1000)
+        await _record_effect(
+            pool,
+            ctx,
+            "stage",
+            {"run_id": payload.run_id, "report_id": payload.report_id, "stage": i + 1},
+        )
+    await _record_effect(
+        pool,
+        ctx,
+        "done",
+        {"run_id": payload.run_id, "report_id": payload.report_id},
+    )
+    return ReportResult(stages_completed=payload.stages)
+
+
+class ImportContactsChunkPayload(BaseModel):
+    run_id: str
+    upload_id: str
+    chunk_id: int
+    start_row: int
+    end_row: int
+
+
+@actor(
+    name="import_contacts_chunk",
+    queue="e2e",
+    retry=RetryPolicy(max_attempts=2, base=timedelta(milliseconds=200)),
+)
+async def import_contacts_chunk(
+    payload: ImportContactsChunkPayload,
+    ctx: JobContext[ImportContactsChunkPayload],
+    *,
+    pool: asyncpg.Pool,
+) -> None:
+    """Processes one CSV chunk (deterministic, no I/O)."""
+    await asyncio.sleep(0.02)
+    await _record_effect(
+        pool,
+        ctx,
+        "chunk_done",
+        {
+            "run_id": payload.run_id,
+            "upload_id": payload.upload_id,
+            "chunk_id": payload.chunk_id,
+            "rows_processed": payload.end_row - payload.start_row,
+        },
+    )
+
+
+class ImportContactsPayload(BaseModel):
+    run_id: str
+    upload_id: str
+    rows: int = Field(default=2500, ge=1)
+    chunk_size: int = Field(default=500, ge=1)
+
+
+@actor(name="import_contacts_csv", queue="e2e")
+async def import_contacts_csv(
+    payload: ImportContactsPayload,
+    ctx: JobContext[ImportContactsPayload],
+    *,
+    pool: asyncpg.Pool,
+) -> None:
+    """Simulates CSV parse/validate, then fans out chunk jobs as one batch.
+
+    The explicit ``batch_id`` is recorded on the ``dispatched`` effect so
+    tests can correlate with ``wait_for_batch``.
+    """
+    await ctx.progress(step=1, percent=50.0, detail="parse csv")
+    await asyncio.sleep(0.02)
+    await ctx.progress(step=2, percent=100.0, detail="validate rows")
+    await asyncio.sleep(0.02)
+
+    items = [
+        EnqueueItem(
+            actor_ref=import_contacts_chunk,
+            payload=ImportContactsChunkPayload(
+                run_id=payload.run_id,
+                upload_id=payload.upload_id,
+                chunk_id=index,
+                start_row=start_row,
+                end_row=min(start_row + payload.chunk_size, payload.rows),
+            ),
+            metadata={"run_id": payload.run_id, "upload_id": payload.upload_id},
+        )
+        for index, start_row in enumerate(range(0, payload.rows, payload.chunk_size))
+    ]
+    batch_id = uuid4()
+    await ctx.jobs.enqueue_batch(items, batch_id=batch_id)
+    await _record_effect(
+        pool,
+        ctx,
+        "dispatched",
+        {
+            "run_id": payload.run_id,
+            "upload_id": payload.upload_id,
+            "chunks": len(items),
+            "batch_id": str(batch_id),
+        },
+    )
+
+
+# Import-time registration is intentional: the worker syncs rate-limit
+# buckets from this registry at startup (mirrors examples/actors/ratelimit.py).
+registry.register(
+    TokenBucket(
+        name="e2e_webhook_delivery",
+        capacity=5,
+        refill_per_second=5.0,
+        backend="redis",
+    )
+)
+
+
+class DeliverWebhookPayload(BaseModel):
+    run_id: str
+    endpoint_id: str
+
+
+@actor(name="deliver_webhook", queue="e2e", rate_limits=["e2e_webhook_delivery"])
+async def deliver_webhook(
+    payload: DeliverWebhookPayload,
+    ctx: JobContext[DeliverWebhookPayload],
+    *,
+    pool: asyncpg.Pool,
+) -> None:
+    """Simulates a webhook POST gated by a Redis token bucket (cap 5, refill 5/s)."""
+    await asyncio.sleep(0.03)
+    await _record_effect(
+        pool,
+        ctx,
+        "delivered",
+        {"run_id": payload.run_id, "endpoint_id": payload.endpoint_id},
+    )
+
+
+class RebuildSearchIndexPayload(BaseModel):
+    run_id: str
+    index_name: str
+
+
+@actor(name="rebuild_search_index", queue="e2e", unique_for=timedelta(minutes=10))
+async def rebuild_search_index(
+    payload: RebuildSearchIndexPayload,
+    ctx: JobContext[RebuildSearchIndexPayload],
+    *,
+    pool: asyncpg.Pool,
+) -> None:
+    """Simulates a search-index rebuild.
+
+    ``unique_for`` dedup fires only when the enqueue also passes an
+    ``identity_key`` — that is the test's enqueue-time responsibility.
+    """
+    await asyncio.sleep(0.05)
+    await _record_effect(
+        pool,
+        ctx,
+        "rebuilt",
+        {"run_id": payload.run_id, "index_name": payload.index_name},
+    )
+
+
+class EnrichOrderPayload(BaseModel):
+    run_id: str
+    order_id: str
+    fail_fetch: bool = False
+
+
+class EnrichResult(BaseModel):
+    order_id: str
+    enriched: bool
+
+
+@actor(name="enrich_order", queue="e2e")
+async def enrich_order(
+    payload: EnrichOrderPayload,
+    ctx: JobContext[EnrichOrderPayload],
+    *,
+    http: FakeHttpClient,
+    pool: asyncpg.Pool,
+) -> EnrichResult:
+    """Simulates order enrichment via the DI-injected fake HTTP client.
+
+    ``http`` resolves from the TRANSIENT-scope provider (fresh instance per
+    invocation); ``pool`` from the LOOP-scope provider — together they prove
+    DI bootstrap inside a real worker container.
+    """
+    path = f"/orders/{payload.order_id}/enrichment"
+    data = await http.get(path)
+    if payload.fail_fetch:
+        raise RuntimeError("simulated enrichment fetch failure")
+    await _record_effect(
+        pool,
+        ctx,
+        "fetch",
+        {"run_id": payload.run_id, "order_id": payload.order_id, "path": path},
+    )
+    await _record_effect(
+        pool,
+        ctx,
+        "enriched",
+        {"run_id": payload.run_id, "order_id": payload.order_id, "status": data["status"]},
+    )
+    return EnrichResult(order_id=payload.order_id, enriched=True)

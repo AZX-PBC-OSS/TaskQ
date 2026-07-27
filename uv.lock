@@ -526,6 +526,20 @@ wheels = [
 ]
 
 [[package]]
+name = "containerspec"
+version = "0.1.7"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/6b/f3/7681b2274048bd896b44320b7984a37f93417c02519e3ab91417356be3f8/containerspec-0.1.7.tar.gz", hash = "sha256:9b6f0f189a9501fa4031f7f074058592746929441299bf8c9519c9c0d11375b4", size = 144512, upload-time = "2026-07-22T22:59:31.325Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/71/9b/c0ec4723759d6293a5e5bbec9b71265a6214cd6e44ebfe183237854ab4e5/containerspec-0.1.7-py3-none-any.whl", hash = "sha256:76d21f64b7c62424331331e6c116c596d64bd5a3fc7ceb45a325d5764b16ecfc", size = 34877, upload-time = "2026-07-22T22:59:30.22Z" },
+]
+
+[package.optional-dependencies]
+build = [
+    { name = "docker" },
+]
+
+[[package]]
 name = "coverage"
 version = "7.15.2"
 source = { registry = "https://pypi.org/simple" }
@@ -2739,6 +2753,7 @@ dev = [
     { name = "anyio" },
     { name = "asyncpg-stubs" },
     { name = "authlib" },
+    { name = "containerspec", extra = ["build"] },
     { name = "httpx" },
     { name = "httpx2" },
     { name = "hypothesis" },
@@ -2804,6 +2819,7 @@ dev = [
     { name = "anyio", specifier = ">=4.14.2" },
     { name = "asyncpg-stubs", specifier = ">=0.31.3" },
     { name = "authlib", specifier = ">=1.7.2" },
+    { name = "containerspec", extras = ["build"], specifier = ">=0.1.7" },
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "httpx2", specifier = ">=2.7.0" },
     { name = "hypothesis", specifier = ">=6.157.1" },

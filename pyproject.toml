@@ -170,6 +170,9 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S101", "S105", "S106"]
+# Same rationale — schema name validated against _IDENT_RE; all
+# user-supplied values use $N parameter binding.
+"tests/e2e/**" = ["S608"]
 "tests/test_workgroup.py" = ["S108", "ASYNC110"]
 # Exception class names follow the project glossary verbatim
 # (Snooze, RetryAfter, ResultTooLarge, ScopeViolation, etc.).
@@ -449,6 +452,8 @@ addopts = [
     "--strict-config",
     "--dist=loadgroup",
     "--timeout=300",
+    "-m",
+    "not e2e",
 ]
 filterwarnings = [
     "ignore::DeprecationWarning:testcontainers.*",
@@ -460,6 +465,7 @@ markers = [
     "integration: marks tests requiring testcontainers",
     "redis: marks tests requiring the [redis] extra and a Redis container",
     "examples: marks tests for the example app (excluded from default CI run)",
+    "e2e: end-to-end tests with containerized workers (manual-only; run with -m e2e)",
 ]
 
 [tool.coverage.run]
@@ -482,6 +488,7 @@ dev = [
     "anyio>=4.14.2",
     "asyncpg-stubs>=0.31.3",
     "authlib>=1.7.2",
+    "containerspec[build]>=0.1.7",
     "httpx>=0.28.1",
     "httpx2>=2.7.0",
     "hypothesis>=6.157.1",
