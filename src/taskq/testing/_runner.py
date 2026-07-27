@@ -263,18 +263,23 @@ def register_actor_config(
     *,
     actor: str,
     max_concurrent: int | None = None,
+    max_pending: int | None = None,
     queue: str = "default",
     metadata: dict[str, object] | None = None,
 ) -> None:
     """Register a single actor configuration for dispatch simulation.
 
     Builds an ``ActorConfig`` from keyword arguments and stores it
-    in ``_actor_configs_meta``.  Only ``max_concurrent`` is read by
-    dispatch; ``queue`` and ``metadata`` are stored for future use.
+    in ``_actor_configs_meta``.  ``max_concurrent`` is read by dispatch;
+    ``max_pending`` is read by the client-side capacity cache
+    (:meth:`InMemoryBackend.get_actor_max_pending`) — registering here is
+    the in-memory analog of ``taskq actor-config set``. ``queue`` and
+    ``metadata`` are stored for future use.
     """
     backend._actor_configs_meta[actor] = ActorConfig(  # pyright: ignore[reportPrivateUsage]  # Why: test runner helper intentionally accesses private InMemoryBackend state; this module is co-located with the backend and owns this access pattern.
         actor=actor,
         max_concurrent=max_concurrent,
+        max_pending=max_pending,
         queue=queue,
         metadata=metadata if metadata is not None else {},
     )

@@ -124,6 +124,7 @@ class SqlTemplates:
     poll_reclaim_events: str
     check_reclaim_visibility_risk: str
     count_pending_jobs: str
+    list_actor_max_pending: str
 
     # ── Admin operations ───────────────────────────────────────────
     retry_job: str
@@ -580,6 +581,9 @@ WHERE l.relation = '"{s}".job_events'::regclass
             f"AND status IN ('pending', 'scheduled') "
             f"GROUP BY actor"
         ),
+        # One row per actor — the client-side capacity cache reads the
+        # whole table at most once per TTL window per process.
+        list_actor_max_pending=f'SELECT actor, max_pending FROM "{s}".actor_config',
         # ── Admin operations ───────────────────────────────────────
         retry_job=f"""\
 UPDATE "{s}".jobs

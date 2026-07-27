@@ -5,22 +5,25 @@ only ever *seeds* a row's capacity fields (``max_concurrent``,
 ``max_pending``, ``result_ttl``) on first registration and otherwise
 leaves them untouched. This module is how an operator changes them
 afterwards — on a live deployment, without a code change or a worker
-restart for the fields the dispatch/consume paths re-read per operation
-(``max_concurrent`` at every dispatch cycle, ``result_ttl`` at every
-terminal write; see ``taskq/backend/_dispatch_sql.py`` and
-``taskq/backend/_sql_templates.py::mark_succeeded`` respectively).
+restart. All three are re-read by the engine without a restart:
 
-``max_pending`` has **no live effect**: `enqueue()`'s pre-flight limit
-check compares against the in-process ``@actor(max_pending=...)``
-literal (``taskq/client/_args.py``), never against this table. Because
-of that, ``taskq actor-config set`` deliberately does NOT expose a
-``--max-pending`` flag — a flag whose write is never read by the engine
-is exactly the "documented capability the engine doesn't deliver"
-defect this module exists to avoid. :func:`set_actor_config_capacity`
-still accepts a ``max_pending`` keyword for callers with a legitimate
-reason to touch the stored value directly (observability tooling,
-re-seeding a dropped row) — that is a conscious asymmetry between the
-function and the CLI, not an oversight.
+* ``max_concurrent`` — the dispatch query joins ``actor_config`` fresh
+  on every dispatch cycle (``taskq/backend/_dispatch_sql.py``); a change
+  is effective immediately.
+* ``result_ttl`` — the terminal-write UPDATE recomputes
+  ``result_expires_at`` from the stored value for every completing job
+  (``taskq/backend/_sql_templates.py::mark_succeeded``); a change is
+  effective for jobs completing after the write.
+* ``max_pending`` — enqueue-side processes hold a TTL-bounded cache of
+  this table (``taskq/client/_capacity.py``, default 5s staleness); a
+  change is effective fleet-wide within seconds, with no redeploy.
+
+Clearing semantics differ by field on purpose. ``--clear-max-concurrent``
+writes NULL, which the dispatch SQL reads as *unlimited* — the SQL
+cannot see the code literal once the row exists. ``--clear-max-pending``
+and ``--clear-result-ttl`` write NULL, which their enforcement paths
+read as *fall back to the ``@actor(...)`` literal* — clearing reverts an
+override to the code default.
 """
 
 from dataclasses import dataclass
@@ -28,6 +31,7 @@ from typing import Final
 
 import asyncpg
 
+from taskq._json import loads
 from taskq.backend._protocol import ConnLike
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining it
@@ -62,17 +66,20 @@ class ActorConfigRow:
     max_pending: int | None
     queue: str
     result_ttl: float | None
+    metadata: dict[str, object]
     updated_at: str
 
 
 _LIST_ACTOR_CONFIG_SQL = """
-SELECT actor, max_concurrent, max_pending, queue, result_ttl, updated_at::text AS updated_at
+SELECT actor, max_concurrent, max_pending, queue, result_ttl,
+       metadata::text AS metadata, updated_at::text AS updated_at
   FROM "{schema}".actor_config
  ORDER BY actor
 """.strip()
 
 _GET_ACTOR_CONFIG_SQL = """
-SELECT actor, max_concurrent, max_pending, queue, result_ttl, updated_at::text AS updated_at
+SELECT actor, max_concurrent, max_pending, queue, result_ttl,
+       metadata::text AS metadata, updated_at::text AS updated_at
   FROM "{schema}".actor_config
  WHERE actor = $1
 """.strip()
@@ -88,7 +95,8 @@ UPDATE "{schema}".actor_config
        result_ttl     = CASE WHEN $6 THEN $7 ELSE result_ttl END,
        updated_at     = now()
  WHERE actor = $1
-RETURNING actor, max_concurrent, max_pending, queue, result_ttl, updated_at::text AS updated_at
+RETURNING actor, max_concurrent, max_pending, queue, result_ttl,
+          metadata::text AS metadata, updated_at::text AS updated_at
 """.strip()
 
 
@@ -99,6 +107,7 @@ def _row_to_dataclass(row: asyncpg.Record) -> ActorConfigRow:
         max_pending=row["max_pending"],
         queue=row["queue"],
         result_ttl=row["result_ttl"],
+        metadata=loads(row["metadata"]),
         updated_at=row["updated_at"],
     )
 
@@ -133,11 +142,16 @@ async def set_actor_config_capacity(
     """Update capacity fields on an existing `{schema}.actor_config` row.
 
     Only fields passed as something other than :data:`UNSET` are
-    changed; pass ``None`` explicitly to clear a field back to
-    unlimited/default. Returns ``None`` if *actor* has no stored row —
-    a row is only created by :func:`taskq.worker.startup.sync_actor_config`
-    at worker startup, so an actor must have been registered by at least
-    one worker before its capacity can be tuned here.
+    changed. Pass ``None`` explicitly to clear a field — precisely what
+    that means depends on the field's enforcement path: clearing
+    ``max_concurrent`` makes the actor *unlimited* (the dispatch SQL
+    reads a stored NULL as no cap), while clearing ``max_pending`` or
+    ``result_ttl`` reverts enforcement to the ``@actor(...)`` literal
+    (those paths can still see the code default). Returns ``None`` if
+    *actor* has no stored row — a row is only created by
+    :func:`taskq.worker.startup.sync_actor_config` at worker startup, so
+    an actor must have been registered by at least one worker before its
+    capacity can be tuned here.
 
     Raises :class:`ValueError` if ``max_concurrent`` or ``max_pending``
     is a negative integer — the same guard ``@actor(...)`` applies at

@@ -30,6 +30,7 @@ from taskq.backend._protocol import (
 from taskq.backend.clock import Clock, SystemClock
 from taskq.batch import EnqueueItem
 from taskq.client._args import build_batch_args, build_enqueue_args, enqueue_span
+from taskq.client._capacity import ActorCapacityCache
 from taskq.client._handle import JobHandle
 from taskq.exceptions import PartialBatchError, SubEnqueueError
 
@@ -60,11 +61,15 @@ class SubJobEnqueuer:
         backend: Backend,
         *,
         clock: Clock | None = None,
+        capacity_cache: ActorCapacityCache | None = None,
     ) -> None:
         self._loop_scope_resolved = loop_scope_resolved
         self._worker_pool = worker_pool
         self._backend = backend
         self._clock = clock if clock is not None else SystemClock()
+        self._capacity_cache = (
+            capacity_cache if capacity_cache is not None else ActorCapacityCache(backend)
+        )
         self._pending_buffer: list[EnqueueArgs] = []
         self._loop_enqueue_args: list[EnqueueArgs] = []
         self._autonomous_enqueue_count: int = 0
@@ -86,6 +91,10 @@ class SubJobEnqueuer:
         unique_states: tuple[JobStatus, ...] | None = None,
         max_pending: int | None = None,
     ) -> JobHandle[R]:
+        """Enqueue a sub-job. ``max_pending`` is a per-call override of the
+        actor's declared limit — but a non-NULL *stored*
+        ``actor_config.max_pending`` (operator-set) is authoritative and
+        wins over both this parameter and the ``@actor(...)`` literal."""
         resolved_queue = actor_ref.queue
         identity_key_str = str(identity_key) if identity_key is not None else ""
 
@@ -94,6 +103,10 @@ class SubJobEnqueuer:
             extracted_trace_id,
             extracted_span_id,
         ):
+            effective_max_pending = await self._capacity_cache.effective_max_pending(
+                actor_ref.name,
+                max_pending if max_pending is not None else actor_ref.max_pending,
+            )
             args = build_enqueue_args(
                 actor_ref,
                 payload,
@@ -108,7 +121,7 @@ class SubJobEnqueuer:
                 span_id=extracted_span_id,
                 unique_for=unique_for,
                 unique_states=unique_states,
-                max_pending=max_pending,
+                max_pending=effective_max_pending,
                 clock=self._clock,
             )
             span.set_attribute("messaging.message.id", str(args.id))
@@ -194,7 +207,16 @@ class SubJobEnqueuer:
         conn, from_loop_scope = self._resolve_connection(connection)
 
         if conn is not None:
-            args_list = build_batch_args(items, resolved_batch_id, self._clock)
+            effective_mp: dict[str, int | None] = {}
+            for item in items:
+                ref = item.actor_ref
+                if ref.name not in effective_mp:
+                    effective_mp[ref.name] = await self._capacity_cache.effective_max_pending(
+                        ref.name, ref.max_pending
+                    )
+            args_list = build_batch_args(
+                items, resolved_batch_id, self._clock, max_pending_by_actor=effective_mp
+            )
 
             if from_loop_scope and self._backend.supports_transactional_simulation:
                 for args in args_list:

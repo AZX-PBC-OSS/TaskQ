@@ -59,6 +59,7 @@ from taskq.backend._reads import (
     _check_reclaim_visibility_risk,
     _count_pending_jobs,
     _get,
+    _get_actor_max_pending,
     _get_attempts,
     _get_events,
     _list_jobs,
@@ -694,6 +695,9 @@ class PostgresBackend:
 
     async def count_pending_jobs(self, actors: list[str]) -> dict[str, int]:
         return await _count_pending_jobs(self._worker_pool, self._sql, actors)
+
+    async def get_actor_max_pending(self) -> dict[str, int | None]:
+        return await _get_actor_max_pending(self._worker_pool, self._sql)
 
     # ── NOTIFY hook ─────────────────────────────────────────────────────
 

@@ -52,7 +52,7 @@ async def process_order(payload: OrderPayload) -> OrderResult: ...
 | `result_ttl` | `timedelta \| None` | `None` | How long the result JSONB is retained after a job succeeds. `None` means retain indefinitely. Only the *seed* value: once a worker has synced this actor once, the stored `actor_config.result_ttl` is authoritative and this literal is ignored — see [ActorConfig sync](workers.md#actorconfig-sync). |
 | `singleton` | `bool` | `False` | Enforce at most one active job of this actor fleet-wide — see [Singleton actors](#singleton-actors). |
 | `max_concurrent` | `int \| None` | `None` | Fleet-wide concurrency cap. `None` = unbounded. `0` = drain mode (no jobs dispatched). May transiently exceed the configured value by up to `(num_active_producers - 1) * max_concurrent` under contention; use a `ConcurrencyReservation` for strict enforcement. Only the *seed* value: once a worker has synced this actor once, the stored `actor_config.max_concurrent` is authoritative and this literal is ignored — tune it live with `taskq actor-config set`, see [ActorConfig sync](workers.md#actorconfig-sync). |
-| `max_pending` | `int \| None` | `None` | Queue-depth backpressure cap — see [`max_pending` backpressure](#max_pending-backpressure). Unlike `max_concurrent` and `result_ttl`, this literal is what `enqueue()` actually enforces, always — the stored `actor_config.max_pending` row is descriptive only and has no live effect on enforcement. |
+| `max_pending` | `int \| None` | `None` | Queue-depth backpressure cap — see [`max_pending` backpressure](#max_pending-backpressure). Only the *seed* value: once a worker has synced this actor once, a non-NULL stored `actor_config.max_pending` is authoritative and this literal is ignored — tune it live with `taskq actor-config set`, see [ActorConfig sync](workers.md#actorconfig-sync). |
 | `metadata` | `dict[str, object] \| None` | `{}` | Arbitrary key-value metadata stored in `actor_config.metadata` (JSONB). Must be a plain `dict`; mapping proxies and frozendicts are rejected at decoration time. The key `"singleton"` is reserved by the library. |
 | `unique_for` | `timedelta \| None` | `None` | Deduplication window — see [`unique_for` deduplication](#unique_for-deduplication). |
 | `unique_states` | `tuple[JobStatus, ...]` | `("pending", "scheduled", "running")` | Job statuses considered "active" for `unique_for` dedup. Terminal states are excluded by default so a completed job does not block re-enqueue. |
@@ -458,6 +458,15 @@ except MaxPendingExceededError as exc:
 **Evaluation order at enqueue:** `unique_for` dedup → singleton pre-flight →
 `max_pending` count check → `idempotency_key` upsert → job INSERT. A `unique_for` hit
 bypasses all remaining checks. A singleton collision fires before `max_pending`.
+
+**Operator-owned limit.** The enforced limit is the *effective* `max_pending`: a non-NULL
+stored `actor_config.max_pending` (set with `taskq actor-config set <actor> --max-pending N`)
+wins over this literal; a cleared (`--clear-max-pending`) or absent stored value falls back
+to the literal. Enqueue-side processes read the stored value through a TTL-bounded cache
+(default 5s), so an operator change takes effect fleet-wide within seconds — no redeploy,
+no worker restart. Run `taskq actor-config diff --actors myapp.actors:registry` to see the
+literal, the stored value, and which one is currently enforced. See
+[ActorConfig sync](workers.md#actorconfig-sync).
 
 ---
 

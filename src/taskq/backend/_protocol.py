@@ -972,6 +972,26 @@ class Backend(Protocol):
         """
         ...
 
+    async def get_actor_max_pending(self) -> dict[str, int | None]:
+        """Return the stored ``actor_config.max_pending`` for every actor
+        with a row.
+
+        Key present with an ``int`` value: the stored (operator-owned)
+        limit. Key present with ``None``: a row exists but the column is
+        NULL (a cleared override). Key absent: no stored row. Client-side
+        capacity resolution
+        (:class:`taskq.client._capacity.ActorCapacityCache`) treats
+        "absent" and "NULL" identically — both fall back to the
+        ``@actor(...)`` literal; the distinction is preserved here only
+        so observability callers can tell them apart.
+
+        This is the enqueue-path analog of the dispatch CTE's per-cycle
+        ``actor_config`` join: one small whole-table read, consumed
+        through a TTL-bounded cache so the hot path pays no per-enqueue
+        query.
+        """
+        ...
+
     # ── NOTIFY hook ─────────────────────────────────────────────────────
     def subscribe_wake(self) -> AsyncContextManager[asyncio.Event]: ...
 

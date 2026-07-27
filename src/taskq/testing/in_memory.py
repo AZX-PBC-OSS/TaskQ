@@ -61,6 +61,7 @@ from taskq.testing._enqueue import (
 from taskq.testing._reads import (
     _count_pending_jobs,
     _get,
+    _get_actor_max_pending,
     _get_attempts,
     _get_events,
     _list_jobs,
@@ -369,6 +370,7 @@ class InMemoryBackend:
         *,
         actor: str,
         max_concurrent: int | None = None,
+        max_pending: int | None = None,
         queue: str = "default",
         metadata: dict[str, object] | None = None,
     ) -> None:
@@ -376,6 +378,7 @@ class InMemoryBackend:
             self,
             actor=actor,
             max_concurrent=max_concurrent,
+            max_pending=max_pending,
             queue=queue,
             metadata=metadata,
         )
@@ -680,6 +683,9 @@ class InMemoryBackend:
 
     async def count_pending_jobs(self, actors: list[str]) -> dict[str, int]:
         return await _count_pending_jobs(self, actors)
+
+    async def get_actor_max_pending(self) -> dict[str, int | None]:
+        return await _get_actor_max_pending(self)
 
     # ── NOTIFY hook ────────────────────────────────────────────────────
 

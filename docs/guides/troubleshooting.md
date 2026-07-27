@@ -424,6 +424,7 @@ Read the stderr output. `ActorConfigDriftList` produces a clean one-line error; 
 ```shell
 taskq migrate status
 taskq actor-config list
+taskq actor-config diff --actors myapp.actors:registry
 ```
 
 ```sql

@@ -285,12 +285,23 @@ Inspect and tune stored `{schema}.actor_config` capacity fields without a code c
 taskq actor-config list
 taskq actor-config get checkout_charge
 taskq actor-config set checkout_charge --max-concurrent 20
-taskq actor-config set checkout_charge --clear-max-concurrent
+taskq actor-config set checkout_charge --max-pending 5000
+taskq actor-config set checkout_charge --clear-max-pending
 ```
 
-`--max-concurrent` and `--result-ttl` take effect immediately for every worker in the fleet — the dispatch query re-reads `max_concurrent` every dispatch cycle, and the terminal-write path re-reads `result_ttl` on every job completion.
+All three capacity fields are live. `--max-concurrent` and `--result-ttl` take effect immediately for every worker in the fleet — the dispatch query re-reads `max_concurrent` every dispatch cycle, and the terminal-write path re-reads `result_ttl` on every job completion. `--max-pending` is enforced by every enqueue-side process (your web app, your workers' sub-job enqueues) through a TTL-bounded cache of the table (default 5s staleness), so a change propagates fleet-wide within seconds — no redeploy, no worker restart.
 
-`taskq actor-config set` only accepts `--max-concurrent`, `--result-ttl`, and their `--clear-*` counterparts. There is deliberately no `--max-pending` flag: `enqueue()`'s pending-queue-depth check always compares against the actor's `@actor(max_pending=...)` code literal, never against the stored `actor_config` row, so a flag to set it here would have no enforcement effect. Change `max_pending` by editing the decorator and redeploying. `queue` and `metadata` are structural and are only ever changed by redeploying with a new `@actor(...)` registration (plus `--force-update-actor-config` if a stored row already exists).
+Clearing a field writes NULL, which means different things per field on purpose: `--clear-max-concurrent` makes the actor *unlimited* (the dispatch SQL cannot see the code literal once a row exists), while `--clear-max-pending` / `--clear-result-ttl` *revert to the `@actor(...)` literal* — clearing undoes your override and restores the code default.
+
+To see why a change is (or isn't) taking effect, diff the stored rows against the code literals in your registry:
+
+```shell
+taskq actor-config diff --actors myapp.actors:registry
+```
+
+Per actor and capacity field this prints the `@actor(...)` literal, the stored value, and the value the engine currently enforces (`effective`). It also flags `queue`/`metadata` mismatches — those are structural and block the next worker startup with `ActorConfigDriftList` — actors with no stored row yet, and leftover rows whose actor is no longer registered.
+
+`taskq actor-config set` requires the actor to have a stored row already (created by a worker startup that registered it). `queue` and `metadata` are structural and are only ever changed by redeploying with a new `@actor(...)` registration (plus `--force-update-actor-config` if a stored row already exists).
 
 ### Exit codes
 

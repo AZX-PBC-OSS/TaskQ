@@ -488,13 +488,21 @@ The sync uses a transactional SELECT-then-UPSERT to prevent races between concur
 
 ```shell
 taskq actor-config set checkout_charge --max-concurrent 20
+taskq actor-config set checkout_charge --max-pending 5000
 taskq actor-config get checkout_charge
 taskq actor-config list
+taskq actor-config diff --actors myapp.actors:registry
 ```
 
-`max_concurrent` and `result_ttl` take effect immediately, with no worker restart: the dispatch query re-reads `actor_config.max_concurrent` on every dispatch cycle, and the terminal-write UPDATE re-reads `actor_config.result_ttl` on every job completion.
+All three capacity fields take effect without a worker restart, through three different mechanisms:
 
-`taskq actor-config set` deliberately has **no `--max-pending` flag**. `enqueue()`'s pending-queue-depth check always compares against the actor's `@actor(max_pending=...)` code literal (`taskq/client/_args.py`), never against the stored `actor_config` row — the stored `max_pending` column is seed/observability-only. A CLI flag to set it would update a value the engine never reads, which is exactly the "documented capability the engine doesn't deliver" defect this surface exists to avoid. To change `max_pending`, edit the decorator and redeploy — there is no live-tuning path for it.
+- `max_concurrent` — the dispatch query re-reads `actor_config.max_concurrent` on every dispatch cycle. Effective immediately.
+- `result_ttl` — the terminal-write UPDATE re-reads `actor_config.result_ttl` on every job completion. Effective immediately for jobs completing after the change.
+- `max_pending` — every enqueue-side process (web apps, workers' sub-job enqueues) holds a TTL-bounded in-process snapshot of the table (`taskq/client/_capacity.py`) and refreshes it at most once per TTL (default 5s). Effective fleet-wide within seconds. The cache fails open: if the refresh query fails, enqueue falls back to the last good snapshot (or the code literal) and retries no sooner than the TTL, so a sick database never turns into a per-enqueue failing query storm.
+
+Clearing a field (`--clear-max-concurrent` etc.) writes NULL. For `max_concurrent` that means *unlimited* — the dispatch SQL cannot see the code literal once a row exists. For `max_pending` and `result_ttl` NULL means *revert to the `@actor(...)` literal* — clearing undoes the operator override and restores the code default.
+
+**Upgrading note.** Before this change, stored capacity always matched the last deployed literal (any drift blocked startup, or `--force-update-actor-config` rewrote it), so existing deployments upgrade seamlessly: enforcement simply continues from the stored values. Do not run `taskq actor-config set` until every pod runs the new version — an old-version pod that *restarts* mid-rollout still crashes on capacity drift.
 
 The fields checked for structural drift are: `queue` and `metadata`. Actor name changes require a migration; rename detection is not implemented.
 

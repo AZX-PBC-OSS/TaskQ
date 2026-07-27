@@ -34,6 +34,7 @@ __all__ = [
     "_check_reclaim_visibility_risk",
     "_count_pending_jobs",
     "_get",
+    "_get_actor_max_pending",
     "_get_attempts",
     "_get_events",
     "_list_jobs",
@@ -150,6 +151,21 @@ async def _count_pending_jobs(
     async with pool.acquire() as conn:
         records = await conn.fetch(sql.count_pending_jobs, actors)
     return {str(rec["actor"]): int(rec["cnt"]) for rec in records}
+
+
+async def _get_actor_max_pending(
+    pool: "asyncpg.Pool",
+    sql: SqlTemplates,
+) -> dict[str, int | None]:
+    """Whole-table ``actor_config.max_pending`` snapshot.
+
+    Rows appear with an ``int`` limit or ``None`` (cleared override);
+    actors without a row are simply absent. Consumed through the
+    client-side TTL cache, never per enqueue.
+    """
+    async with pool.acquire() as conn:
+        records = await conn.fetch(sql.list_actor_max_pending)
+    return {str(rec["actor"]): rec["max_pending"] for rec in records}
 
 
 async def _get_attempts(

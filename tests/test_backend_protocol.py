@@ -250,6 +250,7 @@ class TestMethodCount:
             "get",
             "list_jobs",
             "count_pending_jobs",
+            "get_actor_max_pending",
             "subscribe_wake",
             "subscribe_cancel_wake",
             "create_schedule",

@@ -9,7 +9,7 @@ determinism.
 
 import contextlib
 import re
-from collections.abc import Generator, Sequence
+from collections.abc import Generator, Mapping, Sequence
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
@@ -179,16 +179,31 @@ def build_batch_args(
     items: Sequence["EnqueueItem[Any, Any]"],
     batch_id: UUID,
     clock: Clock,
+    *,
+    max_pending_by_actor: Mapping[str, int | None] | None = None,
 ) -> list[EnqueueArgs]:
     """Build EnqueueArgs for every item in a batch, merging ``batch_id`` into metadata.
 
     Shared by :class:`~taskq.client.JobsClient` and
     :class:`~taskq.client.SubJobEnqueuer` to avoid duplicating the
     metadata-merge + ``build_enqueue_args`` loop.
+
+    ``max_pending_by_actor`` optionally carries the caller-resolved
+    *effective* ``max_pending`` per actor name (operator-owned stored
+    value when set, else the ``@actor(...)`` literal — see
+    :class:`taskq.client._capacity.ActorCapacityCache`). Pass it so the
+    per-item args enforce the same limit the caller's aggregated check
+    just admitted; when omitted, each actor's literal is used, exactly
+    as before.
     """
     args_list: list[EnqueueArgs] = []
     for item in items:
         merged_metadata: dict[str, object] = dict(item.metadata) | {"batch_id": str(batch_id)}
+        item_max_pending = (
+            max_pending_by_actor.get(item.actor_ref.name)
+            if max_pending_by_actor is not None
+            else None
+        )
         args = build_enqueue_args(
             item.actor_ref,
             item.payload,
@@ -200,6 +215,7 @@ def build_batch_args(
             idempotency_scope=item.idempotency_scope,
             metadata=merged_metadata,
             start_to_close=item.start_to_close,
+            max_pending=item_max_pending,
             tags=item.tags,
             clock=clock,
         )

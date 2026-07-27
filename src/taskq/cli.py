@@ -14,6 +14,7 @@ import asyncio
 import contextlib
 import importlib
 from collections.abc import AsyncGenerator, Mapping
+from datetime import timedelta
 from pathlib import Path
 from typing import Annotated, Any, Final, cast
 
@@ -74,6 +75,56 @@ actor_config_app = typer.Typer(
 app.add_typer(actor_config_app, name="actor-config")
 
 
+def _load_actor_registry(actors: str) -> Mapping[str, ActorRef[Any, Any]]:
+    """Resolve a ``module:attr`` reference to an actor registry.
+
+    Accepts either ``Mapping[str, ActorRef]`` or an iterable of
+    ``ActorRef`` (keyed by name). On any failure prints the reason to
+    stderr and raises ``typer.Exit(code=1)`` — shared by ``worker`` and
+    ``actor-config diff``.
+    """
+    module_name, sep, attr_name = actors.partition(":")
+    if not sep or not module_name or not attr_name:
+        typer.echo(
+            f"expected module:attr syntax (e.g. myapp.actors:registry); got {actors!r}",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    try:
+        module = importlib.import_module(module_name)
+    except ModuleNotFoundError:
+        typer.echo(f"module not found: {module_name}", err=True)
+        raise typer.Exit(code=1) from None
+    except Exception as exc:
+        typer.echo(f"failed to import module {module_name}: {exc}", err=True)
+        raise typer.Exit(code=1) from None
+
+    try:
+        raw = getattr(module, attr_name)
+    except AttributeError:
+        typer.echo(
+            f"attribute {attr_name!r} not found in module {module_name}",
+            err=True,
+        )
+        raise typer.Exit(code=1) from None
+
+    if isinstance(raw, Mapping):
+        return cast(Mapping[str, ActorRef[Any, Any]], raw)
+    if (
+        not isinstance(raw, (str, bytes))
+        and hasattr(raw, "__iter__")
+        and all(isinstance(r, ActorRef) for r in raw)  # type: ignore[arg-type]  # Why: raw is object; pyright cannot verify iterability for the isinstance call.
+    ):
+        return {r.name: r for r in raw}  # type: ignore[union-attr]  # Why: the isinstance check ensures raw is Iterable[ActorRef]; pyright cannot narrow across the all() predicate inside elif.
+    typer.echo(
+        "expected Mapping[str, ActorRef] or Iterable[ActorRef] at "
+        f"{actors}; got {type(raw).__name__}",
+        err=True,
+    )
+    raise typer.Exit(code=1)
+
+
 @worker_app.callback(invoke_without_command=True)
 def worker(
     actors: str = typer.Option(
@@ -132,47 +183,7 @@ def worker(
     ),
 ) -> None:
     """Start a TaskQ worker consuming from the given actor registry."""
-    module_name, sep, attr_name = actors.partition(":")
-    if not sep or not module_name or not attr_name:
-        typer.echo(
-            f"expected module:attr syntax (e.g. myapp.actors:registry); got {actors!r}",
-            err=True,
-        )
-        raise typer.Exit(code=1)
-
-    try:
-        module = importlib.import_module(module_name)
-    except ModuleNotFoundError:
-        typer.echo(f"module not found: {module_name}", err=True)
-        raise typer.Exit(code=1) from None
-    except Exception as exc:
-        typer.echo(f"failed to import module {module_name}: {exc}", err=True)
-        raise typer.Exit(code=1) from None
-
-    try:
-        raw = getattr(module, attr_name)
-    except AttributeError:
-        typer.echo(
-            f"attribute {attr_name!r} not found in module {module_name}",
-            err=True,
-        )
-        raise typer.Exit(code=1) from None
-
-    if isinstance(raw, Mapping):
-        registry: Mapping[str, ActorRef[Any, Any]] = cast(Mapping[str, ActorRef[Any, Any]], raw)
-    elif (
-        not isinstance(raw, (str, bytes))
-        and hasattr(raw, "__iter__")
-        and all(isinstance(r, ActorRef) for r in raw)  # type: ignore[arg-type]  # Why: raw is object; pyright cannot verify iterability for the isinstance call.
-    ):
-        registry = {r.name: r for r in raw}  # type: ignore[union-attr]  # Why: the isinstance check ensures raw is Iterable[ActorRef]; pyright cannot narrow across the all() predicate inside elif.
-    else:
-        typer.echo(
-            "expected Mapping[str, ActorRef] or Iterable[ActorRef] at "
-            f"{actors}; got {type(raw).__name__}",
-            err=True,
-        )
-        raise typer.Exit(code=1)
+    registry = _load_actor_registry(actors)
 
     settings = WorkerSettings.load()
     if force_update_actor_config:
@@ -387,6 +398,23 @@ def actor_config_set(
     clear_max_concurrent: Annotated[
         bool, typer.Option("--clear-max-concurrent", help="Set max_concurrent back to unlimited.")
     ] = False,
+    max_pending: Annotated[
+        int | None,
+        typer.Option(
+            "--max-pending",
+            min=0,
+            help="New queue-depth backpressure cap. Takes effect within seconds on every "
+            "enqueue-side process (bounded by each client's capacity-cache TTL, default 5s) "
+            "— no redeploy, no worker restart.",
+        ),
+    ] = None,
+    clear_max_pending: Annotated[
+        bool,
+        typer.Option(
+            "--clear-max-pending",
+            help="Clear the stored override; enforcement reverts to the @actor(max_pending=...) literal.",
+        ),
+    ] = False,
     result_ttl: Annotated[
         float | None,
         typer.Option(
@@ -407,16 +435,19 @@ def actor_config_set(
     stored row (created by a worker startup that registered it) before
     its capacity can be tuned here.
 
-    ``max_pending`` is deliberately NOT exposed here: ``enqueue()``'s
-    pending-queue-depth check always compares against the actor's
-    ``@actor(max_pending=...)`` code literal (``taskq/client/_args.py``),
-    never against the stored `actor_config` row, so a CLI flag to set it
-    would have no enforcement effect — exactly the "documented capability
-    the engine doesn't deliver" defect this surface exists to avoid.
-    Change ``max_pending`` by editing the decorator and redeploying.
+    All three fields are live: ``--max-concurrent`` is re-read by the
+    dispatch query every cycle and ``--result-ttl`` by the terminal-write
+    path on every job completion (both immediate); ``--max-pending`` is
+    re-read by every enqueue-side process through a TTL-bounded cache
+    (default 5s staleness). No redeploy and no worker restart for any of
+    them. Use ``taskq actor-config diff`` to see the stored value, the
+    code literal, and which one the engine currently enforces.
     """
     if max_concurrent is not None and clear_max_concurrent:
         typer.echo("--max-concurrent and --clear-max-concurrent are mutually exclusive", err=True)
+        raise typer.Exit(code=1)
+    if max_pending is not None and clear_max_pending:
+        typer.echo("--max-pending and --clear-max-pending are mutually exclusive", err=True)
         raise typer.Exit(code=1)
     if result_ttl is not None and clear_result_ttl:
         typer.echo("--result-ttl and --clear-result-ttl are mutually exclusive", err=True)
@@ -428,27 +459,35 @@ def actor_config_set(
     elif max_concurrent is not None:
         mc = max_concurrent
 
+    mp: int | None | Unset = UNSET
+    if clear_max_pending:
+        mp = None
+    elif max_pending is not None:
+        mp = max_pending
+
     rt: float | None | Unset = UNSET
     if clear_result_ttl:
         rt = None
     elif result_ttl is not None:
         rt = result_ttl
 
-    if isinstance(mc, Unset) and isinstance(rt, Unset):
+    if isinstance(mc, Unset) and isinstance(mp, Unset) and isinstance(rt, Unset):
         typer.echo(
-            "nothing to change — pass at least one --max-concurrent/--result-ttl or --clear-* flag",
+            "nothing to change — pass at least one --max-concurrent/--max-pending/--result-ttl "
+            "or --clear-* flag",
             err=True,
         )
         raise typer.Exit(code=1)
 
     settings = TaskQSettings.load()
-    asyncio.run(_actor_config_set(settings, actor, mc, rt))
+    asyncio.run(_actor_config_set(settings, actor, mc, mp, rt))
 
 
 async def _actor_config_set(
     settings: TaskQSettings,
     actor: str,
     max_concurrent: int | None | Unset,
+    max_pending: int | None | Unset,
     result_ttl: float | None | Unset,
 ) -> None:
     conn = await asyncpg.connect(str(settings.pg_dsn))
@@ -457,6 +496,7 @@ async def _actor_config_set(
             conn,
             actor,
             max_concurrent=max_concurrent,
+            max_pending=max_pending,
             result_ttl=result_ttl,
             schema=settings.schema_name,
         )
@@ -470,6 +510,127 @@ async def _actor_config_set(
         )
         raise typer.Exit(code=1)
     _print_actor_config_row(row)
+
+
+_CAPACITY_DIFF_FIELDS = ("max_concurrent", "max_pending", "result_ttl")
+
+
+def _literal_for_field(ref: ActorRef[Any, Any], field: str) -> object:
+    value: object = getattr(ref, field)
+    if field == "result_ttl" and value is not None:
+        # The stored column is float seconds; show the literal in the same unit.
+        return cast("timedelta", value).total_seconds()
+    return value
+
+
+def _effective_capacity(field: str, literal: object, row: ActorConfigRow) -> tuple[object, str]:
+    """The value the engine enforces for one capacity field, and its source.
+
+    Mirrors the enforcement semantics field by field: ``max_concurrent``
+    is read by the dispatch SQL, which cannot see the code literal — once
+    a row exists, the stored column is fully authoritative and NULL means
+    unlimited. ``max_pending`` / ``result_ttl`` fall back to the literal
+    when the stored value is NULL (clearing reverts to the code default).
+    """
+    stored = getattr(row, field)
+    if field == "max_concurrent":
+        return ("unlimited" if stored is None else stored, "stored")
+    if stored is not None:
+        return (stored, "stored")
+    return (literal, "literal")
+
+
+def _print_actor_diff(
+    name: str, ref: ActorRef[Any, Any] | None, row: ActorConfigRow | None
+) -> None:
+    typer.echo(f"{name}:")
+    if row is None:
+        # Registry-only actor: nothing has ever seeded a row.
+        assert ref is not None  # row is None only when the name came from the registry
+        typer.echo(
+            "  no stored row — never synced; the code literal applies and "
+            "seeds the row at the next worker startup"
+        )
+        for field in _CAPACITY_DIFF_FIELDS:
+            literal = _literal_for_field(ref, field)
+            typer.echo(f"  {field:<15} literal={literal}  effective={literal} (literal)")
+        typer.echo(f"  {'queue':<15} literal={ref.queue}")
+        return
+    if ref is None:
+        typer.echo(
+            "  stored row's actor is not in the registry — leftover row; "
+            "only already-queued jobs can still reference it"
+        )
+        _print_actor_config_row(row)
+        return
+    for field in _CAPACITY_DIFF_FIELDS:
+        literal = _literal_for_field(ref, field)
+        stored = getattr(row, field)
+        effective, source = _effective_capacity(field, literal, row)
+        typer.echo(
+            f"  {field:<15} literal={literal}  stored={stored}  effective={effective} ({source})"
+        )
+    if ref.queue != row.queue:
+        typer.echo(
+            f"  {'queue':<15} literal={ref.queue}  stored={row.queue}  MISMATCH — structural "
+            "drift; the next worker startup raises ActorConfigDriftList unless run with "
+            "--force-update-actor-config"
+        )
+    else:
+        typer.echo(f"  {'queue':<15} {row.queue} (match)")
+    if dict(ref.metadata) != row.metadata:
+        typer.echo(
+            f"  {'metadata':<15} literal={dict(ref.metadata)}  stored={row.metadata}  MISMATCH — "
+            "structural drift; the next worker startup raises ActorConfigDriftList unless run "
+            "with --force-update-actor-config"
+        )
+    else:
+        typer.echo(f"  {'metadata':<15} (match)")
+
+
+@actor_config_app.command("diff")
+def actor_config_diff(
+    actors: Annotated[
+        str,
+        typer.Option(
+            "--actors",
+            help="Module:attr reference to the actor registry (e.g. myapp.actors:registry). "
+            "Stored rows are compared against these code literals.",
+        ),
+    ],
+) -> None:
+    """Diff stored actor_config rows against the code literals in a registry.
+
+    Per actor and field, shows the @actor(...) literal, the stored value,
+    and the value the engine actually enforces right now ("effective").
+    Reach for this when debugging "why is my change not taking effect":
+    a capacity literal that differs from the stored row is IGNORED at
+    runtime — the stored value wins; tune it with `taskq actor-config
+    set` — while a queue/metadata mismatch blocks the next worker
+    startup with ActorConfigDriftList.
+    """
+    registry = _load_actor_registry(actors)
+    settings = TaskQSettings.load()
+    asyncio.run(_actor_config_diff(settings, registry))
+
+
+async def _actor_config_diff(
+    settings: TaskQSettings,
+    registry: Mapping[str, ActorRef[Any, Any]],
+) -> None:
+    conn = await asyncpg.connect(str(settings.pg_dsn))
+    try:
+        rows = await list_actor_configs(conn, schema=settings.schema_name)
+    finally:
+        await conn.close()
+    stored_by_actor = {row.actor: row for row in rows}
+
+    names = sorted(set(registry) | set(stored_by_actor))
+    if not names:
+        typer.echo("no actors in the registry and no stored actor_config rows")
+        return
+    for name in names:
+        _print_actor_diff(name, registry.get(name), stored_by_actor.get(name))
 
 
 async def _health_request(settings: WorkerSettings, path: str) -> int:
