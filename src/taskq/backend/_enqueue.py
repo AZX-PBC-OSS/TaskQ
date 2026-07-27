@@ -60,6 +60,59 @@ _SINGLETON_CONSTRAINT_NAME = "jobs_singleton_uniq"
 _LEGACY_IDEMPOTENCY_KEY_CONSTRAINT_NAME = "jobs_idempotency_key_uniq"
 
 
+class _LegacyIdempotencyKeyConflictError(Exception):
+    """Internal marker: the INSERT violated the legacy single-column
+    idempotency index (non-arbiter for this release's ON CONFLICT target).
+
+    Two distinct causes, indistinguishable at the point of the violation:
+
+    1. Genuine cross-scope reuse during the rolling-deploy window: the
+       (scope, key) pair is new but the bare key exists under a DIFFERENT
+       scope. Must surface as ScopedIdempotencyMigrationPendingError.
+    2. A same-pair race: a concurrent transaction was inserting the SAME
+       (scope, key) pair (e.g. a not-yet-upgraded worker's old-shape
+       INSERT, whose own arbiter is the legacy index, or another upgraded
+       worker whose speculative insert touched the legacy index first).
+       Postgres reports in-flight conflicts against non-arbiter indexes
+       unconditionally, so the legacy index can "win" the report even
+       though our own composite arbiter would have deduped cleanly.
+
+    Because a unique-violation report means the conflicting transaction
+    COMMITTED (had it rolled back, our insert would have proceeded), the
+    pool-owning wrappers (_enqueue / _enqueue_batch) retry exactly once on
+    a fresh transaction: cause 2 then dedupes via the composite arbiter,
+    cause 1 violates the legacy index again and is converted to the public
+    typed error. Callers on a borrowed connection (enqueue_with_conn /
+    enqueue_batch(connection=...)) cannot retry -- their transaction is
+    already aborted -- so they convert immediately, preserving this
+    release's documented behavior for that path.
+    """
+
+    def __init__(
+        self,
+        *,
+        actor: str | None = None,
+        idempotency_key: str | None = None,
+        idempotency_scope: str | None = None,
+        detail: str | None = None,
+        original: BaseException | None = None,
+    ) -> None:
+        self.actor = actor
+        self.idempotency_key = idempotency_key
+        self.idempotency_scope = idempotency_scope
+        self.detail = detail
+        self.original = original
+        super().__init__(detail or "legacy idempotency_key index conflict")
+
+    def to_public(self) -> ScopedIdempotencyMigrationPendingError:
+        return ScopedIdempotencyMigrationPendingError(
+            actor=self.actor,
+            idempotency_key=self.idempotency_key,
+            idempotency_scope=self.idempotency_scope,
+            detail=self.detail,
+        )
+
+
 async def _enqueue_on_conn(
     conn: ConnLike,
     sql: SqlTemplates,
@@ -193,25 +246,24 @@ async def _enqueue_on_conn(
         if exc.constraint_name == _LEGACY_IDEMPOTENCY_KEY_CONSTRAINT_NAME:
             # Rolling-deploy overlap window: the old single-column index
             # still exists alongside the new composite one (see
-            # 01.00.03_01_pre_idempotency_scope.sql). This row's
-            # (idempotency_scope, idempotency_key) pair is new -- our own
-            # ON CONFLICT target didn't fire -- but the bare
-            # idempotency_key already exists under a DIFFERENT scope, and
-            # that legacy index isn't covered by our conflict target, so
-            # Postgres raises unconditionally. See
-            # ScopedIdempotencyMigrationPendingError's docstring for why
-            # this is surfaced explicitly rather than silently resolved
-            # against the wrong scope's row.
-            logger.warning(
-                "scoped-idempotency-migration-pending",
+            # 01.00.03_01_pre_idempotency_scope.sql). Raised either by a
+            # genuine cross-scope reuse or by a same-pair race against a
+            # concurrent old-shape INSERT -- see
+            # _LegacyIdempotencyKeyConflictError for how the pool-owning
+            # wrapper distinguishes the two. Surfaced explicitly rather
+            # than silently resolved against another scope's row; see
+            # ScopedIdempotencyMigrationPendingError's docstring for why.
+            logger.info(
+                "scoped-idempotency-legacy-index-conflict",
                 actor=args.actor,
                 idempotency_key=args.idempotency_key,
                 idempotency_scope=args.idempotency_scope,
             )
-            raise ScopedIdempotencyMigrationPendingError(
+            raise _LegacyIdempotencyKeyConflictError(
                 actor=args.actor,
                 idempotency_key=str(args.idempotency_key),
                 idempotency_scope=args.idempotency_scope,
+                original=exc,
             ) from exc
         raise
     if rec is not None:
@@ -268,7 +320,17 @@ async def _enqueue_with_conn(
     clock: Clock,
     args: EnqueueArgs,
 ) -> JobRow:
-    return await _enqueue_on_conn(conn, sql, schema, clock, args)
+    try:
+        return await _enqueue_on_conn(conn, sql, schema, clock, args)
+    except _LegacyIdempotencyKeyConflictError as exc:
+        # Caller owns the (now aborted) transaction -- cannot retry here.
+        logger.warning(
+            "scoped-idempotency-migration-pending",
+            actor=exc.actor,
+            idempotency_key=exc.idempotency_key,
+            idempotency_scope=exc.idempotency_scope,
+        )
+        raise exc.to_public() from exc.original or exc
 
 
 async def _enqueue(
@@ -278,9 +340,30 @@ async def _enqueue(
     clock: Clock,
     args: EnqueueArgs,
 ) -> JobRow:
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            return await _enqueue_on_conn(conn, sql, schema, clock, args)
+    try:
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                return await _enqueue_on_conn(conn, sql, schema, clock, args)
+    except _LegacyIdempotencyKeyConflictError as exc:
+        public = exc.to_public()
+
+    # One retry on a fresh transaction. If the violation was a same-pair
+    # race, the conflicting row is now committed (a unique-violation report
+    # means the other transaction committed) and the composite arbiter
+    # dedupes cleanly below. If it was genuine cross-scope reuse, the
+    # legacy index violates again and the public typed error is raised.
+    try:
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                return await _enqueue_on_conn(conn, sql, schema, clock, args)
+    except _LegacyIdempotencyKeyConflictError as exc:
+        logger.warning(
+            "scoped-idempotency-migration-pending",
+            actor=public.actor,
+            idempotency_key=public.idempotency_key,
+            idempotency_scope=public.idempotency_scope,
+        )
+        raise public from exc.original or exc
 
 
 async def _enqueue_batch(
@@ -380,20 +463,19 @@ async def _enqueue_batch(
             if exc.constraint_name == _LEGACY_IDEMPOTENCY_KEY_CONSTRAINT_NAME:
                 # Rolling-deploy overlap window (see
                 # _enqueue_on_conn's matching except-branch and
-                # ScopedIdempotencyMigrationPendingError's docstring).
-                # Unlike the single-enqueue path, this INSERT is one
-                # statement covering the whole batch: a single
-                # cross-scope collision against the legacy index aborts
-                # the ENTIRE batch, not just the offending item --
-                # Postgres gives us no cheaper way to identify which
-                # item(s) caused it without re-inserting one row at a
-                # time, which isn't warranted for a purely transitional
-                # migration-window condition.
-                logger.warning(
-                    "scoped-idempotency-migration-pending-batch",
+                # _LegacyIdempotencyKeyConflictError). Unlike the
+                # single-enqueue path, this INSERT is one statement
+                # covering the whole batch: a single cross-scope collision
+                # against the legacy index aborts the ENTIRE batch, not
+                # just the offending item -- Postgres gives us no cheaper
+                # way to identify which item(s) caused it without
+                # re-inserting one row at a time, which isn't warranted
+                # for a purely transitional migration-window condition.
+                logger.info(
+                    "scoped-idempotency-legacy-index-conflict-batch",
                     batch_size=len(args_list),
                 )
-                raise ScopedIdempotencyMigrationPendingError(detail=str(exc)) from exc
+                raise _LegacyIdempotencyKeyConflictError(detail=str(exc), original=exc) from exc
             raise
 
         inserted_ids: set[UUID] = {rec["id"] for rec in returning_recs}
@@ -456,10 +538,31 @@ async def _enqueue_batch(
         return result
 
     if connection is not None:
-        return await _enqueue_batch_on_conn(connection)
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            return await _enqueue_batch_on_conn(conn)
+        try:
+            return await _enqueue_batch_on_conn(connection)
+        except _LegacyIdempotencyKeyConflictError as exc:
+            # Caller owns the (now aborted) transaction -- cannot retry.
+            logger.warning("scoped-idempotency-migration-pending-batch")
+            raise exc.to_public() from exc.original or exc
+    try:
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                return await _enqueue_batch_on_conn(conn)
+    except _LegacyIdempotencyKeyConflictError as exc:
+        public = exc.to_public()
+    # One retry on a fresh transaction (see _enqueue for the rationale).
+    # The first attempt's statement failure aborted its transaction, so
+    # nothing from it persisted and the whole batch re-executes cleanly;
+    # same-pair-raced items now dedupe via the composite arbiter and the
+    # follow-up fetch, while genuine cross-scope reuse violates the legacy
+    # index again and surfaces as the public typed error.
+    try:
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                return await _enqueue_batch_on_conn(conn)
+    except _LegacyIdempotencyKeyConflictError as exc:
+        logger.warning("scoped-idempotency-migration-pending-batch")
+        raise public from exc.original or exc
 
 
 async def _enqueue_batch_fast(

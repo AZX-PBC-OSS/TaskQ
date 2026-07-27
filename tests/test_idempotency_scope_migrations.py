@@ -33,6 +33,7 @@ Covers:
   scope's row.
 """
 
+import asyncio
 from datetime import UTC, datetime
 
 import asyncpg
@@ -627,3 +628,373 @@ class TestApplicationEnqueuePathDuringPreOnlyWindow:
             assert row1.id != row2.id
         finally:
             await stack.aclose()
+
+
+# ── Concurrent rolling-deploy overlap: old + new code hammered ──
+#
+# TestPrePhaseOverlapWindow and TestApplicationEnqueuePathDuringPreOnlyWindow
+# are sequential. This class simulates the actual deploy: old-code writers
+# (the exact pre-release INSERT shape, on raw connections standing in for
+# not-yet-upgraded workers) and new-code writers (PostgresBackend.enqueue)
+# firing concurrently against the same pre-only schema, then again after
+# the post phase. Asserts the window's three invariants: no duplicate job,
+# no lost job, and ScopedIdempotencyMigrationPendingError exactly on
+# cross-scope reuse and nowhere else.
+
+
+async def _insert_job_old_shape_returning_status(
+    conn: asyncpg.Connection,
+    schema: str,
+    *,
+    idempotency_key: str | None,
+) -> str:
+    """Like _insert_job_old_shape but returns the command status
+    (``INSERT 0 1`` = row won the race, ``INSERT 0 0`` = deduped)."""
+    return await conn.execute(
+        f'INSERT INTO "{schema}".jobs '
+        f"(id, actor, queue, payload, max_attempts, retry_kind, scheduled_at, idempotency_key) "
+        f"VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8) "
+        f"ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING",
+        new_uuid(),
+        "direct_actor",
+        "default",
+        "{}",
+        3,
+        "transient",
+        datetime.now(UTC),
+        idempotency_key,
+    )
+
+
+async def _count_jobs_by_key(
+    conn: asyncpg.Connection, schema: str, key: str, scope: str | None = None
+) -> int:
+    if scope is None:
+        return int(
+            await conn.fetchval(
+                f'SELECT count(*) FROM "{schema}".jobs WHERE idempotency_key = $1', key
+            )
+        )
+    return int(
+        await conn.fetchval(
+            f'SELECT count(*) FROM "{schema}".jobs '
+            f"WHERE idempotency_scope = $1 AND idempotency_key = $2",
+            scope,
+            key,
+        )
+    )
+
+
+class TestConcurrentOverlapWindow:
+    """Old-code and new-code writers racing on a pre-only schema."""
+
+    async def test_concurrent_old_and_new_unscoped_same_key_exactly_one_job(
+        self, pg_conn: asyncpg.Connection, settings: TaskQSettings
+    ) -> None:
+        """The core no-outage invariant under concurrency: old-code
+        INSERTs and new-code enqueues with the SAME unscoped key,
+        interleaved arbitrarily, must produce exactly one row.
+
+        New-code callers must NEVER see an error for this same-pair race:
+        if the legacy non-arbiter index reports the in-flight conflict to
+        the new-code INSERT, the backend retries once on a fresh
+        transaction and dedupes via the composite arbiter (see
+        _LegacyIdempotencyKeyConflictError). Old-code callers, unfixable
+        retroactively, may see a raw UniqueViolationError from the
+        composite index in the same race -- a documented transitional
+        hazard of the window (see the RESIDUAL RISK note in the pre
+        migration)."""
+        await migrate_mod.apply_pending(pg_conn, schema=settings.schema_name, phase="pre")
+
+        stack, _deps, backend = await _open_pg_backend_on_schema(
+            str(settings.pg_dsn), settings.schema_name
+        )
+        old_pool = await asyncpg.create_pool(str(settings.pg_dsn), min_size=4, max_size=8)
+        try:
+            key = "overlap-concurrent-unscoped"
+
+            async def old_write() -> str | asyncpg.UniqueViolationError:
+                try:
+                    async with old_pool.acquire() as conn:
+                        return await _insert_job_old_shape_returning_status(
+                            conn, settings.schema_name, idempotency_key=key
+                        )
+                except asyncpg.UniqueViolationError as exc:
+                    return exc
+
+            async def new_write() -> str:
+                row = await backend.enqueue(make_enqueue_args(idempotency_key=key))
+                return str(row.id)
+
+            results = await asyncio.gather(
+                *(old_write() for _ in range(6)),
+                *(new_write() for _ in range(6)),
+            )
+            # Exactly one row survives; no job duplicated, none lost.
+            assert await _count_jobs_by_key(pg_conn, settings.schema_name, key) == 1
+
+            old_results = results[:6]
+            new_results = results[6:]
+            # New code: every call succeeded and returned the surviving row.
+            assert len(set(new_results)) == 1
+            # Old code: deduped, inserted, or (transitionally) crashed on
+            # the composite non-arbiter index -- at most one actual insert.
+            statuses = [r for r in old_results if isinstance(r, str)]
+            assert statuses.count("INSERT 0 1") <= 1
+            for r in old_results:
+                if isinstance(r, asyncpg.UniqueViolationError):
+                    assert r.constraint_name == "jobs_idempotency_scope_key_uniq"
+        finally:
+            await old_pool.close()
+            await stack.aclose()
+
+    async def test_concurrent_new_code_same_scope_same_key_exactly_one_job(
+        self, pg_conn: asyncpg.Connection, settings: TaskQSettings
+    ) -> None:
+        """Same scope + same key hammered concurrently through the real
+        backend during the window: exactly one job, every caller gets its
+        id, no ScopedIdempotencyMigrationPendingError (same scope never
+        trips the legacy index)."""
+        await migrate_mod.apply_pending(pg_conn, schema=settings.schema_name, phase="pre")
+
+        stack, _deps, backend = await _open_pg_backend_on_schema(
+            str(settings.pg_dsn), settings.schema_name
+        )
+        try:
+            key = "overlap-concurrent-same-scope"
+            scope = "run-A"
+            rows = await asyncio.gather(
+                *(
+                    backend.enqueue(
+                        make_enqueue_args(idempotency_key=key, idempotency_scope=scope)
+                    )
+                    for _ in range(8)
+                )
+            )
+            assert len({str(r.id) for r in rows}) == 1
+            assert await _count_jobs_by_key(pg_conn, settings.schema_name, key, scope) == 1
+        finally:
+            await stack.aclose()
+
+    async def test_concurrent_cross_scope_exactly_one_survives_rest_raise_typed(
+        self, pg_conn: asyncpg.Connection, settings: TaskQSettings
+    ) -> None:
+        """Same key, two different scopes, hammered concurrently during
+        the window: the legacy index serializes the race -- exactly one
+        scope's row survives, every losing enqueue raises
+        ScopedIdempotencyMigrationPendingError (never a raw driver error,
+        never a silent wrong-scope return), and every enqueue for the
+        surviving scope dedupes onto the one row."""
+        await migrate_mod.apply_pending(pg_conn, schema=settings.schema_name, phase="pre")
+
+        stack, _deps, backend = await _open_pg_backend_on_schema(
+            str(settings.pg_dsn), settings.schema_name
+        )
+        try:
+            key = "overlap-concurrent-cross-scope"
+
+            async def scoped_write(scope: str) -> object:
+                try:
+                    return await backend.enqueue(
+                        make_enqueue_args(idempotency_key=key, idempotency_scope=scope)
+                    )
+                except ScopedIdempotencyMigrationPendingError as exc:
+                    return exc
+
+            results = await asyncio.gather(
+                *(scoped_write("run-A") for _ in range(5)),
+                *(scoped_write("run-B") for _ in range(5)),
+            )
+            rows = [r for r in results if not isinstance(r, Exception)]
+            errors = [r for r in results if isinstance(r, Exception)]
+
+            # Exactly one row total across both scopes; no job lost, none duplicated.
+            assert await _count_jobs_by_key(pg_conn, settings.schema_name, key) == 1
+            # Every non-raising call returned the same surviving row.
+            assert len({str(r.id) for r in rows}) == 1 if rows else True
+            assert rows, "at least the winning scope's first enqueue must succeed"
+            # Every failure is the typed migration-pending error -- and all
+            # of them name the LOSING scope (the one whose insert lost the race).
+            assert errors, "cross-scope race during pre-only window must raise"
+            for exc in errors:
+                assert isinstance(exc, ScopedIdempotencyMigrationPendingError)
+                assert isinstance(exc.__cause__, asyncpg.UniqueViolationError)
+            losing_scopes = {e.idempotency_scope for e in errors}
+            assert len(losing_scopes) == 1
+            surviving_scope = next(iter({"run-A", "run-B"} - losing_scopes))
+            assert all(r.idempotency_scope == surviving_scope for r in rows)
+        finally:
+            await stack.aclose()
+
+    async def test_losing_scope_enqueue_succeeds_once_post_applied(
+        self, pg_conn: asyncpg.Connection, settings: TaskQSettings
+    ) -> None:
+        """End-to-end window exit: after the race above, applying the post
+        phase lets the previously-losing scope enqueue the same key --
+        the window's error was transitional, not a lost job."""
+        await migrate_mod.apply_pending(pg_conn, schema=settings.schema_name, phase="pre")
+
+        stack, _deps, backend = await _open_pg_backend_on_schema(
+            str(settings.pg_dsn), settings.schema_name
+        )
+        try:
+            key = "overlap-window-exit"
+            row_a = await backend.enqueue(
+                make_enqueue_args(idempotency_key=key, idempotency_scope="run-A")
+            )
+            with pytest.raises(ScopedIdempotencyMigrationPendingError):
+                await backend.enqueue(
+                    make_enqueue_args(idempotency_key=key, idempotency_scope="run-B")
+                )
+
+            await migrate_mod.apply_pending(pg_conn, schema=settings.schema_name, phase="post")
+
+            row_b = await backend.enqueue(
+                make_enqueue_args(idempotency_key=key, idempotency_scope="run-B")
+            )
+            assert row_a.id != row_b.id
+            assert await _count_jobs_by_key(pg_conn, settings.schema_name, key) == 2
+        finally:
+            await stack.aclose()
+
+
+# ── Post-phase: pre-release code is now hard-broken ────────────
+#
+# The post migration's header documents this as the reason the post phase
+# must wait for a fully-upgraded fleet. These tests lock the claim in
+# executable form: after the post phase, the old INSERT shape fails with
+# SQLSTATE 42P10 -- for keyed AND unkeyed inserts alike, because Postgres
+# resolves the ON CONFLICT arbiter statically at plan time.
+
+
+class TestPostPhaseOldCodeFails:
+    async def test_old_shape_keyed_insert_fails_after_post(
+        self, pg_conn: asyncpg.Connection, settings: TaskQSettings
+    ) -> None:
+        await migrate_mod.apply_pending(pg_conn, schema=settings.schema_name)
+
+        with pytest.raises(asyncpg.InvalidColumnReferenceError) as exc_info:
+            await _insert_job_old_shape(pg_conn, settings.schema_name, idempotency_key="k1")
+        assert exc_info.value.sqlstate == "42P10"
+
+    async def test_old_shape_null_key_insert_also_fails_after_post(
+        self, pg_conn: asyncpg.Connection, settings: TaskQSettings
+    ) -> None:
+        """Even a NULL-key old-shape insert fails: the ON CONFLICT clause
+        is in the statement regardless of row values and its arbiter index
+        is gone. This is why the post phase is gated on full fleet
+        upgrade, not just on 'no keyed enqueues in flight'."""
+        await migrate_mod.apply_pending(pg_conn, schema=settings.schema_name)
+
+        with pytest.raises(asyncpg.InvalidColumnReferenceError) as exc_info:
+            await _insert_job_old_shape(pg_conn, settings.schema_name, idempotency_key=None)
+        assert exc_info.value.sqlstate == "42P10"
+
+    async def test_new_code_unaffected_after_post(
+        self, pg_conn: asyncpg.Connection, settings: TaskQSettings
+    ) -> None:
+        await migrate_mod.apply_pending(pg_conn, schema=settings.schema_name)
+
+        stack, _deps, backend = await _open_pg_backend_on_schema(
+            str(settings.pg_dsn), settings.schema_name
+        )
+        try:
+            row = await backend.enqueue(make_enqueue_args(idempotency_key="post-new-code"))
+            assert row.id is not None
+        finally:
+            await stack.aclose()
+
+
+# ── Phase-ordering guard ───────────────────────────────────────
+#
+# 01.00.03_01:post is the first post-phase migration this project ships,
+# so the runner's phase-ordering semantics are this feature's
+# responsibility. Applying a post migration before its same-version pre
+# counterpart would (a) drop the old idempotency index out from under
+# not-yet-upgraded workers immediately and (b) record the post as applied
+# so a later plain `migrate up` reports 'no pending migrations' with the
+# overlap protection never having existed. The runner refuses.
+
+
+class TestPhaseOrderingGuard:
+    async def test_post_refused_before_pre_on_existing_schema(
+        self, pg_conn: asyncpg.Connection, settings: TaskQSettings
+    ) -> None:
+        """An existing deployment (migrated through 01.00.01) whose
+        operator runs `--phase post` first must get a loud error, and the
+        old index must survive untouched."""
+        schema = settings.schema_name
+        await migrate_mod.apply_pending(pg_conn, schema=schema, target="01.00.01_01")
+
+        with pytest.raises(ValueError, match="cannot be applied before its pre-phase"):
+            await migrate_mod.apply_pending(pg_conn, schema=schema, phase="post")
+
+        # Nothing recorded, nothing dropped.
+        applied = await migrate_mod.list_applied(pg_conn, schema)
+        assert "01.00.03_01:post" not in applied
+        row = await pg_conn.fetchrow(
+            """
+            SELECT indexname FROM pg_indexes
+            WHERE schemaname = $1 AND indexname = 'jobs_idempotency_key_uniq'
+            """,
+            schema,
+        )
+        assert row is not None, "guard must have prevented the index drop"
+
+        # The documented sequence still works afterwards.
+        await migrate_mod.apply_pending(pg_conn, schema=schema, phase="pre")
+        await migrate_mod.apply_pending(pg_conn, schema=schema, phase="post")
+        applied = await migrate_mod.list_applied(pg_conn, schema)
+        assert "01.00.03_01:pre" in applied
+        assert "01.00.03_01:post" in applied
+
+    async def test_post_refused_on_fresh_schema(
+        self, pg_conn: asyncpg.Connection, settings: TaskQSettings
+    ) -> None:
+        with pytest.raises(ValueError, match="cannot be applied before its pre-phase"):
+            await migrate_mod.apply_pending(pg_conn, schema=settings.schema_name, phase="post")
+
+    async def test_plain_up_applies_pre_before_post_in_one_run(
+        self, pg_conn: asyncpg.Connection, settings: TaskQSettings
+    ) -> None:
+        """The guard must not reject the normal single-run path: a plain
+        `migrate up` on a fresh schema applies 01.00.03_01:pre and
+        01.00.03_01:post in that order."""
+        applied = await migrate_mod.apply_pending(pg_conn, schema=settings.schema_name)
+        keys = [m.key for m in applied]
+        assert keys.index("01.00.03_01:pre") < keys.index("01.00.03_01:post")
+
+
+# ── Re-run idempotency ─────────────────────────────────────────
+
+
+class TestMigrationReRunIdempotency:
+    async def test_apply_pending_is_a_noop_when_nothing_pending(
+        self, pg_conn: asyncpg.Connection, settings: TaskQSettings
+    ) -> None:
+        await migrate_mod.apply_pending(pg_conn, schema=settings.schema_name)
+        assert await migrate_mod.apply_pending(pg_conn, schema=settings.schema_name) == []
+        assert (
+            await migrate_mod.apply_pending(pg_conn, schema=settings.schema_name, phase="pre")
+            == []
+        )
+        assert (
+            await migrate_mod.apply_pending(pg_conn, schema=settings.schema_name, phase="post")
+            == []
+        )
+
+    async def test_rendered_sql_is_reentrant_against_lost_migration_record(
+        self, pg_conn: asyncpg.Connection, settings: TaskQSettings
+    ) -> None:
+        """Every statement in both phase files must tolerate re-execution
+        (IF NOT EXISTS / IF EXISTS guards) -- this is what makes a failed
+        apply safe to retry and a manually-repaired schema_migrations
+        table non-fatal."""
+        schema = settings.schema_name
+        await migrate_mod.apply_pending(pg_conn, schema=schema)
+
+        for migration in migrate_mod.discover():
+            if not migration.version.startswith("01.00.03"):
+                continue
+            # Re-executing the fully-applied SQL verbatim must not raise.
+            await pg_conn.execute(migration.render(schema))

@@ -11,10 +11,12 @@
 -- `ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL`, which
 -- only resolves against the single-column `jobs_idempotency_key_uniq`
 -- index -- it does NOT match the new composite index. If this migration
--- dropped the old index, every enqueue with an idempotency_key issued by a
--- not-yet-upgraded worker during the rolling-deploy window would fail with
--- "there is no unique or exclusion constraint matching the ON CONFLICT
--- specification" -- a full outage of the idempotency-keyed enqueue path.
+-- dropped the old index, EVERY enqueue issued by a not-yet-upgraded worker
+-- during the rolling-deploy window would fail with "there is no unique or
+-- exclusion constraint matching the ON CONFLICT specification" (SQLSTATE
+-- 42P10) -- Postgres resolves the ON CONFLICT arbiter index statically at
+-- plan time, so this fires even for rows with no idempotency_key: a full
+-- outage of the enqueue path, not just the idempotency-keyed one.
 -- So this `pre` migration ADDS the composite index and leaves the old
 -- index in place. Both indexes coexist during the overlap, and this keeps
 -- PRE-THIS-RELEASE code (unscoped, unaware idempotency_scope exists)
@@ -85,6 +87,31 @@
 -- sweep window (TASKQ_PRUNE_SCHEDULE_UTC, default 03:00 UTC) relative to
 -- your rollout, or force leader re-election onto an upgraded worker
 -- immediately after deploying.
+--
+-- SECOND RESIDUAL RISK, FOUND BY CONCURRENCY TESTING OF THIS WINDOW
+-- (tests/test_idempotency_scope_migrations.py::TestConcurrentOverlapWindow):
+-- an OLD-code worker and an UPGRADED worker inserting the SAME unscoped
+-- idempotency_key at the SAME instant. Postgres reports in-flight
+-- speculative-insertion conflicts against NON-arbiter unique indexes
+-- unconditionally, so when the composite index (non-arbiter for the old
+-- statement) happens to report the conflict, the OLD worker's enqueue
+-- crashes with a raw UniqueViolationError where pre-migration code would
+-- have deduped cleanly. This cannot be fixed from the library side -- the
+-- failing statement is the old release's code -- but it is BOUNDED to the
+-- overlap window, requires a mixed-version fleet plus a same-key
+-- same-instant race, is NON-DESTRUCTIVE (the losing transaction rolls
+-- back; exactly one row survives; a caller retry then dedupes against the
+-- winner), and SELF-HEALING once the post phase drops the old index. The
+-- symmetric case for UPGRADED code IS handled on the pool-owning enqueue
+-- paths (enqueue / enqueue_batch): this release's backend retries once on
+-- a fresh transaction and dedupes via the composite arbiter, so those
+-- callers never see an error for a same-pair race (see
+-- _LegacyIdempotencyKeyConflictError in src/taskq/backend/_enqueue.py).
+-- Borrowed-connection callers (enqueue_with_conn, enqueue_batch with an
+-- explicit connection) cannot retry -- their transaction is already
+-- aborted by the violation -- and get ScopedIdempotencyMigrationPendingError
+-- instead; the enqueue_batch_fast COPY path has no ON CONFLICT handling at
+-- all (duplicate keys abort the batch, as before this feature).
 
 -- The empty-string sentinel ('') is the default/global scope.  We use NOT NULL
 -- deliberately: Postgres unique indexes treat NULL as distinct, so a nullable
