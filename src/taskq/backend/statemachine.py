@@ -40,6 +40,9 @@ ACTIVE_STATUSES: frozenset[JobStatus] = frozenset(VALID_TRANSITIONS) - TERMINAL_
 """Non-terminal job statuses — the complement of :data:`TERMINAL_STATUSES`
 over the full :data:`JobStatus` set.
 
+Despite the name, this is not Celery/Flower's 'active' (currently
+executing = ``running`` only): 'active' here means 'not yet finished'.
+
 Derived from ``VALID_TRANSITIONS`` keys so that adding a new non-terminal
 state to the state machine automatically includes it here without a
 second edit.  Used by ``JobFilter(active=True)``.

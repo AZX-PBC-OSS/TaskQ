@@ -22,7 +22,8 @@ from taskq.backend import (
     JobFilter,
     JobRow,
 )
-from taskq.backend._protocol import ErrorInfo, EventRow, IdentityKey, JobId, JobStatus
+from taskq.backend._protocol import ErrorInfo, EventRow, IdentityKey, JobId, JobSortField, JobStatus
+from taskq.backend._reads import _list_jobs
 from taskq.backend.statemachine import ACTIVE_STATUSES, TERMINAL_STATUSES
 from taskq.testing.in_memory import InMemoryBackend, encode_cursor
 
@@ -1779,3 +1780,294 @@ async def test_eq_multi_status_cursor_pagination(backend_pair: Backend) -> None:
     returned_ids = [r.id for r in collected]
     assert returned_ids == expected_ids
     assert len(returned_ids) == len(set(returned_ids))
+
+
+async def test_eq_status_filter_duplicate_statuses(
+    backend_pair: Backend,
+    all_statuses_seeded: dict[str, JobId],
+) -> None:
+    """Duplicate statuses in the sequence are harmless — the result is the
+    same union (in the same order) as the deduplicated form on both
+    backends."""
+    ids = all_statuses_seeded
+    rows = await backend_pair.list_jobs(
+        JobFilter(
+            actor="actor_a",
+            status=["running", "pending", "running", "pending"],
+            limit=100,
+        )
+    )
+    # Seeded priorities: pending=70, running=50 — exact order, not just set.
+    assert [r.id for r in rows] == [ids["pending"], ids["running"]]
+
+
+async def test_eq_zero_limit_returns_no_rows(backend_pair: Backend) -> None:
+    """``limit=0`` returns no rows on both backends — PG ``LIMIT 0`` and
+    the in-memory slice agree."""
+    await backend_pair.enqueue(
+        EnqueueArgs(
+            id=new_job_id(),
+            actor="actor_a",
+            queue="default",
+            payload={},
+            max_attempts=3,
+            retry_kind="transient",
+            scheduled_at=_START,
+        )
+    )
+    rows = await backend_pair.list_jobs(JobFilter(actor="actor_a", limit=0))
+    assert rows == []
+
+
+async def test_list_jobs_rejects_invalid_schema_identifier() -> None:
+    """``_list_jobs`` interpolates the schema into SQL, so per the
+    defence-in-depth invariant (docs/architecture.md §Identifier
+    validation) it must re-validate the identifier at the call site and
+    raise ``ValueError`` *before* touching the pool — passing ``None`` as
+    the pool proves no database access happens first.
+    """
+    with pytest.raises(ValueError, match="invalid schema identifier"):
+        await _list_jobs(None, "0bad;DROP TABLE jobs", JobFilter())  # type: ignore[arg-type]  # Why: validation must precede pool use
+
+
+# ── order_by tie-break parity ────────────────────────────────────────
+
+
+async def test_eq_order_by_created_at_desc_ties_break_id_asc(backend_pair: Backend) -> None:
+    """PG orders ``created_at DESC, id ASC``. Rows tied on ``created_at``
+    must break by ``id ASC`` on both backends."""
+    ids = [new_job_id() for _ in range(4)]
+    for jid in ids:
+        await backend_pair.enqueue(
+            EnqueueArgs(
+                id=jid,
+                actor="actor_a",
+                queue="default",
+                payload={},
+                max_attempts=3,
+                retry_kind="transient",
+                scheduled_at=_START,
+            )
+        )
+    tie_time = _START + timedelta(hours=1)
+    for jid in ids:
+        await _force_job_state(backend_pair, jid, created_at=tie_time)
+
+    rows = await backend_pair.list_jobs(
+        JobFilter(actor="actor_a", order_by=JobSortField.CREATED_AT_DESC, limit=10)
+    )
+    assert [r.id for r in rows] == sorted(ids)
+
+
+async def test_eq_order_by_finished_at_desc_ties_break_id_asc(backend_pair: Backend) -> None:
+    """PG orders ``finished_at DESC NULLS LAST, id ASC``. Ties among
+    finished rows *and* among unfinished (NULL) rows must break by
+    ``id ASC`` on both backends."""
+    finished_ids = [new_job_id() for _ in range(2)]
+    unfinished_ids = [new_job_id() for _ in range(2)]
+    for jid in (*finished_ids, *unfinished_ids):
+        await backend_pair.enqueue(
+            EnqueueArgs(
+                id=jid,
+                actor="actor_a",
+                queue="default",
+                payload={},
+                max_attempts=3,
+                retry_kind="transient",
+                scheduled_at=_START,
+            )
+        )
+    tie_time = _START + timedelta(hours=1)
+    for jid in finished_ids:
+        await _force_job_state(backend_pair, jid, finished_at=tie_time)
+
+    rows = await backend_pair.list_jobs(
+        JobFilter(actor="actor_a", order_by=JobSortField.FINISHED_AT_DESC, limit=10)
+    )
+    assert [r.id for r in rows] == [*sorted(finished_ids), *sorted(unfinished_ids)]
+
+
+# ── cursor pagination: ties and mid-pagination mutation ────────────────
+
+
+async def test_eq_cursor_pagination_ties_on_default_sort_key(backend_pair: Backend) -> None:
+    """Jobs tied on ``(priority, scheduled_at)`` sort by ``id ASC`` and
+    paginate without skips or duplicates — the cursor's id tie-breaker
+    works identically on both backends."""
+    ids = [new_job_id() for _ in range(5)]
+    for jid in ids:
+        await backend_pair.enqueue(
+            EnqueueArgs(
+                id=jid,
+                actor="actor_a",
+                queue="default",
+                payload={},
+                max_attempts=3,
+                retry_kind="transient",
+                scheduled_at=_START,
+                priority=0,
+            )
+        )
+    expected = sorted(ids)
+
+    collected: list[JobId] = []
+    cursor: str | None = None
+    for _ in range(10):
+        page = await backend_pair.list_jobs(JobFilter(actor="actor_a", limit=2, cursor=cursor))
+        if not page:
+            break
+        collected.extend(r.id for r in page)
+        cursor = encode_cursor(page[-1].priority, page[-1].scheduled_at, page[-1].id)
+
+    assert collected == expected
+    assert len(collected) == len(set(collected))
+
+
+async def test_eq_cursor_stable_when_rows_change_status_mid_pagination(
+    backend_pair: Backend,
+) -> None:
+    """Keyset cursors stay consistent when rows change status between page
+    fetches: a row that stops matching drops out of later pages, a row
+    that keeps matching under a new status still appears, and stable rows
+    are neither skipped nor duplicated — identically on both backends."""
+    priorities = [50, 40, 30, 20, 10]
+    ids = [new_job_id() for _ in range(5)]
+    for jid, pri in zip(ids, priorities, strict=True):
+        await backend_pair.enqueue(
+            EnqueueArgs(
+                id=jid,
+                actor="actor_a",
+                queue="default",
+                payload={},
+                max_attempts=3,
+                retry_kind="transient",
+                scheduled_at=_START,
+                priority=pri,
+            )
+        )
+
+    page1 = await backend_pair.list_jobs(
+        JobFilter(actor="actor_a", status=["pending", "running"], limit=2)
+    )
+    assert [r.id for r in page1] == ids[:2]  # priorities 50, 40
+
+    # Mid-pagination mutations: p30 keeps matching under a new status
+    # (running), p20 stops matching (succeeded).
+    await _force_job_state(backend_pair, ids[2], status="running")
+    await _force_job_state(backend_pair, ids[3], status="succeeded")
+
+    cursor = encode_cursor(page1[-1].priority, page1[-1].scheduled_at, page1[-1].id)
+    page2 = await backend_pair.list_jobs(
+        JobFilter(actor="actor_a", status=["pending", "running"], limit=2, cursor=cursor)
+    )
+    # p30 (now running) and p10 (still pending); p20 dropped out.
+    assert [r.id for r in page2] == [ids[2], ids[4]]
+
+    cursor2 = encode_cursor(page2[-1].priority, page2[-1].scheduled_at, page2[-1].id)
+    page3 = await backend_pair.list_jobs(
+        JobFilter(actor="actor_a", status=["pending", "running"], limit=2, cursor=cursor2)
+    )
+    assert page3 == []
+
+
+# ── active meta-filter: cursor pagination and non-default order_by ──────
+
+
+async def test_eq_active_true_cursor_pagination(backend_pair: Backend) -> None:
+    """Cursor-paginate ``active=True`` across both backends: exactly the
+    non-terminal jobs are returned, in keyset order, with no skips or
+    duplicates; terminal jobs never leak through."""
+    priorities = [10, 8, 5, 3, 1]
+    statuses = ["pending", "scheduled", "running", "pending", "scheduled"]
+    ids = [new_job_id() for _ in range(5)]
+    for jid, pri, st in zip(ids, priorities, statuses, strict=True):
+        await backend_pair.enqueue(
+            EnqueueArgs(
+                id=jid,
+                actor="actor_a",
+                queue="default",
+                payload={},
+                max_attempts=3,
+                retry_kind="transient",
+                scheduled_at=_START,
+                priority=pri,
+            )
+        )
+        if st != "pending":
+            await _force_job_state(backend_pair, jid, status=st)
+
+    # Terminal jobs that must never appear in active=True results.
+    for st in ("succeeded", "failed", "cancelled"):
+        jid = new_job_id()
+        await backend_pair.enqueue(
+            EnqueueArgs(
+                id=jid,
+                actor="actor_a",
+                queue="default",
+                payload={},
+                max_attempts=3,
+                retry_kind="transient",
+                scheduled_at=_START,
+                priority=99,
+            )
+        )
+        await _force_job_state(backend_pair, jid, status=st)
+
+    collected: list[JobRow] = []
+    cursor: str | None = None
+    for _ in range(10):
+        page = await backend_pair.list_jobs(
+            JobFilter(actor="actor_a", active=True, limit=2, cursor=cursor)
+        )
+        if not page:
+            break
+        collected.extend(page)
+        cursor = encode_cursor(page[-1].priority, page[-1].scheduled_at, page[-1].id)
+
+    returned_ids = [r.id for r in collected]
+    assert returned_ids == ids
+    assert len(returned_ids) == len(set(returned_ids))
+
+
+async def test_eq_active_true_with_created_at_desc(backend_pair: Backend) -> None:
+    """``active=True`` combined with ``order_by=CREATED_AT_DESC`` returns
+    only non-terminal jobs, newest-created first, identically on both
+    backends — terminal jobs are excluded entirely, not just re-sorted."""
+    t0 = _START
+    oldest_active = new_job_id()
+    middle_active = new_job_id()
+    newest_active = new_job_id()
+    old_terminal = new_job_id()
+    new_terminal = new_job_id()
+    created_map = {
+        oldest_active: t0,
+        middle_active: t0 + timedelta(minutes=10),
+        newest_active: t0 + timedelta(minutes=20),
+        old_terminal: t0 + timedelta(minutes=5),
+        new_terminal: t0 + timedelta(minutes=15),
+    }
+    status_map = {
+        oldest_active: "pending",
+        middle_active: "running",
+        newest_active: "scheduled",
+        old_terminal: "succeeded",
+        new_terminal: "failed",
+    }
+    for jid, created_at in created_map.items():
+        await backend_pair.enqueue(
+            EnqueueArgs(
+                id=jid,
+                actor="actor_a",
+                queue="default",
+                payload={},
+                max_attempts=3,
+                retry_kind="transient",
+                scheduled_at=_START,
+            )
+        )
+        await _force_job_state(backend_pair, jid, created_at=created_at, status=status_map[jid])
+
+    rows = await backend_pair.list_jobs(
+        JobFilter(actor="actor_a", active=True, order_by=JobSortField.CREATED_AT_DESC, limit=10)
+    )
+    assert [r.id for r in rows] == [newest_active, middle_active, oldest_active]

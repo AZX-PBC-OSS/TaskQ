@@ -125,13 +125,17 @@ class Backend(Protocol):
 `JobStatus` or a sequence of statuses (e.g. `["pending", "running"]`).  The
 PG backend renders a single status as `status = $n` and a sequence as
 `status = ANY($n)` with bound parameters.  An empty sequence
-(`status=[]`) matches no jobs, not all jobs.  The `active` meta-filter
-selects non-terminal statuses (`active=True` → pending, scheduled,
-running) or terminal statuses (`active=False`); the non-terminal set is
-derived from `ACTIVE_STATUSES` in `statemachine.py`.  This 'active'
-semantics is deliberately broader than Celery/Flower's 'active', which
-refers only to currently-executing tasks.  `status` and `active` are
-mutually exclusive — specifying both raises `ValueError`.
+(`status=[]`) matches no jobs, not all jobs; unknown status values are
+rejected with `ValueError` at `JobFilter` construction so both backends
+fail identically.  `status` and `active` are mutually exclusive —
+specifying both raises `ValueError`.
+
+The `active` meta-filter selects statuses by terminality.  **Despite the
+name, this is not Celery/Flower's 'active'** (currently-executing tasks
+only): `active=True` selects all non-terminal statuses (pending,
+scheduled, running — 'not yet finished') and `active=False` the terminal
+ones; the non-terminal set is derived from `ACTIVE_STATUSES` in
+`statemachine.py`.
 
 `BACKEND_PROTOCOL_VERSION` is a `ClassVar[int]` (currently `2`). Both backends
 assert this constant matches at import time, preventing silent protocol drift.

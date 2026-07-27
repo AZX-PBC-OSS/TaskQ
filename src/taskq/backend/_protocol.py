@@ -26,6 +26,7 @@ from typing import (
     NewType,
     Protocol,
     cast,
+    get_args,
     runtime_checkable,
 )
 from uuid import UUID
@@ -43,6 +44,7 @@ from pydantic import AfterValidator, BaseModel, ConfigDict
 
 __all__ = [
     "BACKEND_PROTOCOL_VERSION",
+    "JOB_STATUS_VALUES",
     "AttemptOutcome",
     "AttemptRow",
     "Backend",
@@ -87,6 +89,18 @@ type JobStatus = Literal[
     "crashed",
     "abandoned",
 ]
+
+# PEP-695 ``type`` aliases are ``TypeAliasType`` objects; ``get_args``
+# returns ``()`` on the alias itself — unwrap via ``__value__`` to reach
+# the ``Literal[...]`` and enumerate its members at runtime.
+JOB_STATUS_VALUES: Final[frozenset[str]] = frozenset(get_args(JobStatus.__value__))
+"""Runtime membership set of every :data:`JobStatus` literal value.
+
+Derived from the ``JobStatus`` Literal itself (the canonical declaration)
+so validation can never drift from the type.  Used by
+:meth:`JobFilter.__post_init__` to reject unknown statuses before they
+reach a backend.
+"""
 
 type AttemptOutcome = Literal[
     "succeeded",
@@ -368,10 +382,17 @@ class CancelFlag:
 
 @dataclass(frozen=True, slots=True)
 class JobFilter:
-    """Filter parameters for :meth:`Backend.list_jobs`.  ``cursor`` is an
-    opaque keyset-pagination token encoding ``(priority, scheduled_at, id)``
-    from the last row of the previous page.  Both backends must
-    agree on cursor encoding and comparison semantics.
+    """Filter parameters for :meth:`Backend.list_jobs`.
+
+    Heads-up: ``active=True`` is **not** Celery's 'active' — Celery's
+    means 'currently executing' (``running`` only), TaskQ's means 'not
+    yet finished' (``pending`` + ``scheduled`` + ``running``).  Read the
+    ``active`` section below before relying on the name.
+
+    ``cursor`` is an opaque keyset-pagination token encoding
+    ``(priority, scheduled_at, id)`` from the last row of the previous
+    page.  Both backends must agree on cursor encoding and comparison
+    semantics.
 
     ``batch_id`` is a :class:`UUID`. The PG backend converts it to its
     canonical string form at the SQL boundary; the in-memory backend
@@ -383,21 +404,24 @@ class JobFilter:
     compatible — e.g. ``JobFilter(status="pending")``) or a sequence of
     statuses (e.g. ``JobFilter(status=["pending", "running"])``).
     An empty sequence (``status=[]``) matches no jobs — it is not
-    treated as 'no filter'.
+    treated as 'no filter'.  Unknown status values raise
+    :class:`ValueError` in :meth:`__post_init__`, so untrusted input
+    fails identically on both backends instead of surfacing as a PG
+    enum-cast error or a silent empty result.
     The PG backend renders a single status as ``status = $n`` and a
     sequence as ``status = ANY($n)``; the in-memory backend performs a
     membership check in both cases.
 
-    ``active`` is a meta-filter that selects statuses by terminality:
+    ``active`` is a meta-filter that selects statuses by terminality.
+    **This is not Celery's 'active'.**  Celery/Flower use 'active' for
+    tasks currently executing on a worker (``running`` only); here it
+    means 'not yet finished' — a superset that also includes work that
+    has not started yet:
 
     - ``active=True`` → non-terminal statuses (pending, scheduled, running)
     - ``active=False`` → terminal statuses (succeeded, failed, cancelled,
       crashed, abandoned)
     - ``active=None`` (default) → no status-terminality filter
-
-    This is deliberately broader than the 'active' terminology in tools
-    like Celery/Flower, which refers only to currently-executing tasks;
-    here it means 'not yet finished'.
 
     The non-terminal set is derived from
     :data:`~taskq.backend.statemachine.ACTIVE_STATUSES`, which is itself
@@ -423,9 +447,16 @@ class JobFilter:
     cursor: str | None = None
     tags: tuple[str, ...] | None = None
     order_by: JobSortField | None = None
+    # Not Celery's 'active' ('currently executing') — True selects every
+    # non-terminal status, i.e. 'not yet finished'. See the class docstring.
     active: bool | None = None
 
     def __post_init__(self) -> None:
+        # A negative limit diverges across backends: PG raises
+        # "LIMIT must not be negative" while the in-memory slice would
+        # silently drop rows.  Reject it here so both fail identically.
+        if self.limit < 0:
+            raise ValueError(f"limit must be >= 0, got {self.limit}")
         if (
             self.cursor is not None
             and self.order_by is not None
@@ -436,6 +467,14 @@ class JobFilter:
                 "(order_by=None or JobSortField.SCHEDULED_AT_ASC); "
                 "non-default order_by changes the keyset the cursor encodes"
             )
+        if self.status is not None:
+            values = (self.status,) if isinstance(self.status, str) else tuple(self.status)
+            unknown = [v for v in values if v not in JOB_STATUS_VALUES]
+            if unknown:
+                raise ValueError(
+                    f"unknown job status value(s): {list(dict.fromkeys(unknown))!r}; "
+                    f"valid statuses are {sorted(JOB_STATUS_VALUES)}"
+                )
         if self.status is not None and self.active is not None:
             raise ValueError(
                 "status and active are mutually exclusive; "
@@ -858,8 +897,9 @@ class Backend(Protocol):
 
         ``filters.status`` accepts a single :data:`JobStatus` or a
         sequence of statuses; ``filters.active`` is a meta-filter for
-        non-terminal (``True``) or terminal (``False``) statuses.
-        See :class:`JobFilter` for details.
+        non-terminal (``True``) or terminal (``False``) statuses —
+        'active' here means 'not yet finished', not Celery's 'currently
+        executing'.  See :class:`JobFilter` for details.
         """
         ...
 

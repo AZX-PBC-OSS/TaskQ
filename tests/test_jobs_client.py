@@ -276,6 +276,31 @@ class TestList:
         assert len(page.jobs) == 3
         assert page.next_cursor is None
 
+    async def test_list_order_by_scheduled_at_asc_still_returns_cursor(self) -> None:
+        """The cursor-suppression fix must not over-suppress: explicit
+        SCHEDULED_AT_ASC is the default ordering, so a full page still
+        produces a usable cursor that paginates to the end.
+        """
+        backend, client = _make_client()
+
+        for _ in range(5):
+            args = make_enqueue_args(scheduled_at=_START)
+            await backend.enqueue(args)
+
+        page1 = await client.list(JobFilter(limit=3, order_by=JobSortField.SCHEDULED_AT_ASC))
+        assert len(page1.jobs) == 3
+        assert page1.next_cursor is not None
+
+        page2 = await client.list(
+            JobFilter(limit=3, order_by=JobSortField.SCHEDULED_AT_ASC, cursor=page1.next_cursor)
+        )
+        assert len(page2.jobs) == 2
+        assert page2.next_cursor is None
+
+        page1_ids = {j.id for j in page1.jobs}
+        page2_ids = {j.id for j in page2.jobs}
+        assert page1_ids.isdisjoint(page2_ids)
+
 
 # ── Singleton metadata injection helpers ─────────────────────────────────
 

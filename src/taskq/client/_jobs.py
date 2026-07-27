@@ -542,11 +542,12 @@ class JobsClient:
 
         ``filter.status`` accepts a single :data:`JobStatus` or a
         sequence of statuses (e.g. ``JobFilter(status=["pending",
-        "running"])``).  ``filter.active`` is a meta-filter:
-        ``active=True`` selects non-terminal statuses (pending,
-        scheduled, running) and ``active=False`` selects terminal ones
-        ('active' here is broader than Celery/Flower, meaning 'not yet
-        finished' rather than 'currently-executing').  See
+        "running"])``).
+
+        ``filter.active`` is a meta-filter — **not Celery's 'active'**:
+        ``active=True`` selects *non-terminal* statuses (pending,
+        scheduled, running — 'not yet finished', not 'currently
+        executing') and ``active=False`` selects terminal ones.  See
         :class:`JobFilter` for full semantics.
 
         ``next_cursor`` is always ``None`` when a non-default

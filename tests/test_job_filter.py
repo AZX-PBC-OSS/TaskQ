@@ -12,7 +12,7 @@ import pytest
 
 from taskq._ids import new_job_id
 from taskq.backend._cursor import encode_cursor
-from taskq.backend._protocol import JobFilter, JobId, JobRow, JobSortField
+from taskq.backend._protocol import JOB_STATUS_VALUES, JobFilter, JobId, JobRow, JobSortField
 from taskq.backend.statemachine import ACTIVE_STATUSES, TERMINAL_STATUSES
 from taskq.testing.clock import FakeClock
 from taskq.testing.in_memory import InMemoryBackend
@@ -235,6 +235,72 @@ def test_job_filter_status_and_active_raises() -> None:
         JobFilter(status="pending", active=True)
     with pytest.raises(ValueError, match="mutually exclusive"):
         JobFilter(status=["pending", "running"], active=False)
+
+
+# ── Unknown status validation ──────────────────────────────────────────
+
+
+def test_job_filter_unknown_single_status_raises() -> None:
+    """An unknown single status raises ValueError at construction, before
+    any backend is involved — identical behaviour for PG (which would
+    otherwise fail with an enum-cast DataError) and in-memory (which
+    would otherwise silently return nothing)."""
+    with pytest.raises(ValueError, match="unknown job status"):
+        JobFilter(status="bogus")  # type: ignore[arg-type]  # Why: untrusted runtime input, deliberately not a JobStatus
+
+
+def test_job_filter_unknown_status_in_sequence_raises() -> None:
+    """One bad member in a sequence is rejected, and the message names it."""
+    with pytest.raises(ValueError, match=r"unknown job status value\(s\): \['bogus'\]"):
+        JobFilter(status=["pending", "bogus"])  # type: ignore[list-item]  # Why: untrusted runtime input
+
+
+def test_job_filter_unknown_status_message_lists_valid_values() -> None:
+    """The error message tells the operator which statuses are valid."""
+    with pytest.raises(ValueError, match="valid statuses are"):
+        JobFilter(status=["bogus"])  # type: ignore[list-item]  # Why: untrusted runtime input
+
+
+def test_job_filter_non_string_status_in_sequence_raises() -> None:
+    """A non-string member (e.g. an int from a config file) is rejected by
+    the same validation rather than passing through to a backend."""
+    with pytest.raises(ValueError, match="unknown job status"):
+        JobFilter(status=[42])  # type: ignore[list-item]  # Why: untrusted runtime input
+
+
+def test_job_filter_all_known_statuses_accepted() -> None:
+    """Every JobStatus literal value is accepted, single or in a sequence."""
+    for status in JOB_STATUS_VALUES:
+        JobFilter(status=status)  # type: ignore[arg-type]  # Why: JOB_STATUS_VALUES is frozenset[str]; members are all JobStatus
+    JobFilter(status=list(JOB_STATUS_VALUES))  # type: ignore[arg-type]  # Why: same
+    JobFilter(status=[])  # empty sequence is valid — matches no jobs
+
+
+# ── limit validation ───────────────────────────────────────────────────
+
+
+def test_job_filter_negative_limit_raises() -> None:
+    """A negative limit raises ValueError at construction — PG would raise
+    "LIMIT must not be negative" mid-query while the in-memory slice would
+    silently drop rows; both backends must fail identically up front."""
+    with pytest.raises(ValueError, match="limit must be >= 0"):
+        JobFilter(limit=-1)
+
+
+def test_job_filter_zero_limit_is_valid() -> None:
+    """limit=0 is well-defined (returns no rows) and consistent across
+    backends — it stays allowed."""
+    assert JobFilter(limit=0).limit == 0
+
+
+async def test_list_jobs_zero_limit_returns_no_rows() -> None:
+    """limit=0 returns an empty page even with matching jobs present."""
+    backend = _backend()
+    job = _job(status="pending")
+    backend._jobs[job.id] = job
+
+    rows = await backend.list_jobs(JobFilter(actor="test_actor", limit=0))
+    assert rows == []
 
 
 def test_job_filter_active_defaults_to_none() -> None:

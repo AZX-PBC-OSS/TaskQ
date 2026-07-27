@@ -601,7 +601,8 @@ Frozen dataclass. All fields are optional.
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `queue` | `str \| None` | `None` | Filter by queue name. |
-| `status` | `JobStatus \| None` | `None` | Filter by current status. |
+| `status` | `JobStatus \| Sequence[JobStatus] \| None` | `None` | Filter by current status — a single status (`"pending"`) or a sequence (`["pending", "running"]`). An empty sequence matches no jobs; unknown values raise `ValueError`. Mutually exclusive with `active`. |
+| `active` | `bool \| None` | `None` | Meta-filter by terminality: `True` selects non-terminal statuses (pending, scheduled, running), `False` selects terminal ones. **Not Celery's 'active'** (currently-executing only) — here it means 'not yet finished'. Mutually exclusive with `status`. |
 | `actor` | `str \| None` | `None` | Filter by actor name. |
 | `identity_key` | `IdentityKey \| None` | `None` | Filter by identity key. |
 | `batch_id` | `UUID \| None` | `None` | Filter by batch ID. |
@@ -609,6 +610,14 @@ Frozen dataclass. All fields are optional.
 | `order_by` | `JobSortField \| None` | `None` | Sort order for results. `None` resolves to `JobSortField.SCHEDULED_AT_ASC` — see [JobSortField](#jobsortfield). |
 | `limit` | `int` | `100` | Maximum number of rows to return. |
 | `cursor` | `str \| None` | `None` | Opaque keyset-pagination token from `JobPage.next_cursor`. |
+
+```python
+# "Everything still in flight" — pending + scheduled + running:
+page = await client.list(JobFilter(queue="payments", active=True, limit=50))
+
+# A specific set of statuses:
+page = await client.list(JobFilter(status=["pending", "running"], limit=50))
+```
 
 ### `JobSortField`
 
