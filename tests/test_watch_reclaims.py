@@ -137,6 +137,19 @@ async def _collect(gen: Any, *, n: int) -> list[EventRow]:
     return collected
 
 
+async def _wait_for_log(captured: list[dict[str, Any]], event: str) -> None:
+    """Poll a structlog ``capture_logs()`` list until an entry named
+    *event* appears — proof the generator actually reached the code path
+    that emits it.  Never substitute a bare sleep: without this wait a
+    test can pass while the path under test never runs."""
+    deadline = asyncio.get_running_loop().time() + 5.0
+    while not any(e["event"] == event for e in captured):
+        assert asyncio.get_running_loop().time() < deadline, (
+            f"generator never logged {event!r} — the code path under test was never entered"
+        )
+        await asyncio.sleep(0.01)
+
+
 # ── Poll-only transport (unit, no Docker) ──────────────────────────
 
 
@@ -156,18 +169,30 @@ async def test_watch_reclaims_poll_only_yields_ascending() -> None:
     assert all(e.detail["reason"] == "lock_expired" for e in events)
 
 
-async def test_watch_reclaims_poll_timeout_sleep_branch() -> None:
-    """When nothing new is available, the poll loop sleeps for
-    poll_timeout before checking again — exercised by starting with an
-    empty backend and asserting no event arrives until one is created
-    after the first sleep would have elapsed."""
+async def test_watch_reclaims_poll_timeout_sleep_branch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When nothing new is available, the poll loop sleeps poll_timeout
+    between polls — pinned by counting polls over a fixed window: at
+    poll_timeout=0.1 with an event arriving at ~0.25s only a handful of
+    polls can have run, where a busy-repoll (the sleep regressed away)
+    would have burned thousands in the same window."""
     backend = _make_backend()
-    tq = _inject_poll_only_tq(backend, poll_timeout=0.05)
+    tq = _inject_poll_only_tq(backend, poll_timeout=0.1)
+
+    calls = {"n": 0}
+    real_poll = backend.poll_reclaim_events
+
+    async def _counting_poll(after_id: int, *args: Any, **kwargs: Any) -> Any:
+        calls["n"] += 1
+        return await real_poll(after_id, *args, **kwargs)
+
+    monkeypatch.setattr(backend, "poll_reclaim_events", _counting_poll)
 
     gen = tq.watch_reclaims(after_id=0)
 
     async def _produce_after_delay() -> None:
-        await asyncio.sleep(0.15)
+        await asyncio.sleep(0.25)
         await _make_running_row(backend)
 
     producer = asyncio.create_task(_produce_after_delay())
@@ -176,6 +201,12 @@ async def test_watch_reclaims_poll_timeout_sleep_branch() -> None:
         assert len(events) == 1
     finally:
         await producer
+
+    assert calls["n"] <= 25, (
+        f"expected ~4 polls at poll_timeout=0.1; got {calls['n']} — either the "
+        "sleep regressed away (busy-repoll: observed ~120k polls in this window) "
+        "or the event loop stalled"
+    )
 
 
 async def test_watch_reclaims_resumption_does_not_replay() -> None:
@@ -498,13 +529,24 @@ async def test_watch_reclaims_pg_full_batch_drains_without_waiting() -> None:
 
 
 async def test_watch_reclaims_pg_degraded_loop_drains_full_batches() -> None:
-    """The degraded (connection-lost) poll fallback drains backlogs at the
-    same speed as the healthy loop: full batch → immediate re-poll, not a
-    poll_timeout sleep.  A crash storm landing while the LISTEN connection
-    is down must not take N/100 x poll_timeout to deliver."""
+    """The caller-owned degraded (connection-lost) poll fallback drains
+    backlogs at the same speed as the healthy loop: full batch →
+    immediate re-poll, not a poll_timeout sleep.  A crash storm landing
+    while the LISTEN connection is down must not take N/100 x
+    poll_timeout to deliver.
+
+    Ordering is the whole pin: the 250-event backlog is created only
+    AFTER the 'watch_reclaims-listen-connection-lost' log line proves
+    the generator is inside the fallback loop.  Events created before
+    the kill would drain through the *healthy* loop's full-batch
+    continue and the fallback loop would never run — an earlier revision
+    of this test did exactly that and pinned nothing.
+
+    poll_timeout is 1.0s by construction: the fallback sleeps one
+    poll_timeout before its first poll, so with the full-batch re-poll
+    the backlog drains in ~1 x poll_timeout; without it, three batches
+    cost ~3 x poll_timeout — past the collection deadline."""
     backend = _make_backend()
-    for _ in range(250):
-        await _make_running_row(backend)
     client = _make_client(backend)
     conn = _FakeListenConn()
 
@@ -512,16 +554,68 @@ async def test_watch_reclaims_pg_degraded_loop_drains_full_batches() -> None:
         None,
         _UNIT_SCHEMA_LABEL,
         client,
-        30.0,  # poll_timeout deliberately huge: draining must not wait on it
+        1.0,
         listen_conn=conn,  # type: ignore[arg-type]  # Why: fake conn stand-in for asyncpg.Connection
     )
-    task = asyncio.create_task(_collect(gen, n=250))
-    await asyncio.sleep(0.05)  # LISTEN registered, first poll done
-    conn.kill()  # into the caller-owned permanent poll fallback
-    events = await asyncio.wait_for(task, timeout=5.0)
+    with structlog.testing.capture_logs() as captured:
+        task = asyncio.create_task(_collect(gen, n=250))
+        await asyncio.sleep(0.05)  # LISTEN registered, first (empty) poll done
+        assert conn.listener_channels, (
+            "generator never registered LISTEN — settle sleep insufficient"
+        )
+        conn.kill()  # into the caller-owned permanent poll fallback
+        await _wait_for_log(captured, "watch_reclaims-listen-connection-lost")
+        for _ in range(250):
+            await _make_running_row(backend)
+        events = await asyncio.wait_for(task, timeout=2.0)
 
     assert len(events) == 250
     assert [e.event_id for e in events] == sorted(e.event_id for e in events)
+
+
+async def test_watch_reclaims_pg_owned_conn_degraded_loop_drains_full_batches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Same pin as the caller-owned variant above, for the owned-conn
+    (pg_conn_factory) degraded poll/reconnect loop: its full-batch →
+    immediate re-poll must keep working while the LISTEN connection is
+    down — until a reconnect succeeds this loop is the only live
+    delivery path.  Reconnect attempts are gated far apart
+    (_RECONNECT_POLL_INTERVAL huge) so the drain provably happens inside
+    the degraded loop, which the final len(conns) == 1 assertion
+    confirms."""
+    monkeypatch.setattr("taskq.client._taskq._RECONNECT_POLL_INTERVAL", 1000)
+    backend = _make_backend()
+    client = _make_client(backend)
+    conns: list[_FakeListenConn] = []
+
+    async def _factory() -> _FakeListenConn:
+        conn = _FakeListenConn()
+        conns.append(conn)
+        return conn
+
+    gen = _watch_reclaims_pg(
+        None,
+        _UNIT_SCHEMA_LABEL,
+        client,
+        1.0,
+        pg_conn_factory=_factory,  # type: ignore[arg-type]  # Why: fake conn stand-in for asyncpg.Connection
+    )
+    with structlog.testing.capture_logs() as captured:
+        task = asyncio.create_task(_collect(gen, n=250))
+        await asyncio.sleep(0.05)  # factory conn opened, LISTEN registered
+        assert len(conns) == 1
+        conns[0].kill()  # into the owned-conn poll/reconnect fallback
+        await _wait_for_log(captured, "watch_reclaims-listen-connection-lost")
+        for _ in range(250):
+            await _make_running_row(backend)
+        events = await asyncio.wait_for(task, timeout=2.0)
+
+    assert len(events) == 250
+    assert [e.event_id for e in events] == sorted(e.event_id for e in events)
+    assert len(conns) == 1, (
+        "a reconnect fired mid-test — the drain did not happen in the degraded loop"
+    )
 
 
 async def test_watch_reclaims_pg_reconnect_attempt_is_timeboxed(
