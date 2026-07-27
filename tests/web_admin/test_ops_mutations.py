@@ -495,9 +495,7 @@ def test_reservations_page_excludes_foreign_schema_reservations(
     foreign = ConcurrencyReservation(
         "foreign-res", slots=5, lease=timedelta(seconds=30), schema="other_schema"
     )
-    monkeypatch.setattr(
-        rl_registry, "_reservations", {"local-res": local, "foreign-res": foreign}
-    )
+    monkeypatch.setattr(rl_registry, "_reservations", {"local-res": local, "foreign-res": foreign})
 
     synced: list[list[str]] = []
 

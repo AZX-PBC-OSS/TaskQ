@@ -545,7 +545,9 @@ async def test_keyed_cap_does_not_deny_static_colliding_reuse() -> None:
     # A statically pre-registered entry whose name collides with the ref's
     # concrete name for key "s1".
     reg.register(
-        ConcurrencyReservation(name="session-cap:s1", slots=1, lease=timedelta(minutes=5), clock=clock)
+        ConcurrencyReservation(
+            name="session-cap:s1", slots=1, lease=timedelta(minutes=5), clock=clock
+        )
     )
 
     # Must NOT raise ReservationUnavailable despite the full cap.
@@ -653,7 +655,9 @@ async def test_statically_preregistered_reservation_is_never_keyed_evicted(
     clock = FakeClock(datetime(2025, 1, 1, tzinfo=UTC))
     reg = RateLimitRegistry()
     reg.register(
-        ConcurrencyReservation(name="session-cap:s1", slots=1, lease=timedelta(minutes=5), clock=clock)
+        ConcurrencyReservation(
+            name="session-cap:s1", slots=1, lease=timedelta(minutes=5), clock=clock
+        )
     )
     ref = _keyed_ref(base_name="session-cap")
 

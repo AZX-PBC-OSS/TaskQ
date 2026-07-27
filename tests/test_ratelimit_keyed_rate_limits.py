@@ -898,10 +898,14 @@ async def test_composition_log_events_are_json_serializable_with_keyed_refs() ->
         TokenBucket(name="api-per-tenant:a", capacity=1, refill_per_second=0, backend="memory")
     )
     reg.register(
-        ConcurrencyReservation(name="session-cap:s1", slots=1, lease=timedelta(minutes=5), clock=clock)
+        ConcurrencyReservation(
+            name="session-cap:s1", slots=1, lease=timedelta(minutes=5), clock=clock
+        )
     )
     reg.register(
-        ConcurrencyReservation(name="session-cap:s2", slots=1, lease=timedelta(minutes=5), clock=clock)
+        ConcurrencyReservation(
+            name="session-cap:s2", slots=1, lease=timedelta(minutes=5), clock=clock
+        )
     )
     rl_ref = _rate_limit_ref(base_name="api-per-tenant", capacity=1, refill_per_second=0)
     res_ref = KeyedReservationRef(

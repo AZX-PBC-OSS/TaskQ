@@ -380,7 +380,9 @@ def test_effective_reservations_never_copies_registry_dict(
         raise AssertionError("dispatch hot path copied the reservations dict")
 
     monkeypatch.setattr(
-        RateLimitRegistry, "reservations", property(_boom)  # type: ignore[arg-type]
+        RateLimitRegistry,
+        "reservations",
+        property(_boom),  # type: ignore[arg-type]
     )
 
     reg = RateLimitRegistry()
@@ -508,9 +510,7 @@ async def test_queue_cap_saturation_snoozes_with_operator_visible_awaiting() -> 
     assert outcome == "scheduled"
     assert len(backend.mark_snoozed_calls) == 1
     snooze_call = backend.mark_snoozed_calls[0]
-    assert snooze_call["metadata_update"] == {
-        "awaiting": "reservation:taskq:global:queue:orders"
-    }
+    assert snooze_call["metadata_update"] == {"awaiting": "reservation:taskq:global:queue:orders"}
     assert snooze_call["outcome"] == "reservation_denied"
 
 
