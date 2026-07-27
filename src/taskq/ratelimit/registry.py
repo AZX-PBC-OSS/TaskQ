@@ -48,7 +48,7 @@ Over-acquisition window on rollback failure:
   within 30 seconds at most.
 """
 
-from collections.abc import AsyncGenerator, Sequence
+from collections.abc import AsyncGenerator, Callable, Sequence
 from contextlib import asynccontextmanager
 from datetime import timedelta
 from time import monotonic
@@ -61,6 +61,7 @@ from taskq.constants import (
     _KEYED_KEY_RE,  # pyright: ignore[reportPrivateUsage]
     _MAX_KEYED_KEY_LEN,  # pyright: ignore[reportPrivateUsage]
     DEFAULT_RESERVATION_BACKOFF,
+    QUEUE_CONCURRENCY_PREFIX,
 )
 from taskq.exceptions import ReservationUnavailable
 from taskq.obs import record_ratelimit_refund_failure
@@ -86,16 +87,9 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger("taskq.ratelimit.registry")
 
-QUEUE_CONCURRENCY_PREFIX = "taskq:global:queue:"
-"""Reserved namespace for fleet-wide per-queue concurrency cap reservations.
-
-Primitives whose name starts with this prefix are internal to TaskQ's
-queue-cap bootstrap path and must be registered via
-:meth:`RateLimitRegistry.register_queue_cap_reservation`, not via the
-public :meth:`RateLimitRegistry.register`. The public ``register`` rejects
-any primitive whose name starts with this prefix to prevent accidental or
-malicious shadowing of an internal queue cap.
-"""
+# QUEUE_CONCURRENCY_PREFIX is defined in taskq.constants (imported above)
+# and re-exported here for backwards compatibility with existing imports
+# from this module.
 
 __all__ = [
     "QUEUE_CONCURRENCY_PREFIX",
@@ -199,6 +193,16 @@ def _same_config(
             a.name == b.name and a.slots == b.slots and a.lease == b.lease and a.schema == b.schema
         )
     return False
+
+
+def _preserves_memory_fixed_quota_state(prim: TokenBucket | SlidingWindow) -> bool:
+    """Eviction-exemption predicate for keyed rate limits.
+
+    Exempts a memory-backed fixed-quota TokenBucket holding consumed quota
+    state (see :meth:`TokenBucket.holds_consumed_memory_quota`) from idle
+    eviction — evicting it would silently reset the drained quota.
+    """
+    return isinstance(prim, TokenBucket) and prim.holds_consumed_memory_quota()
 
 
 class RateLimitRegistry:
@@ -420,8 +424,14 @@ class RateLimitRegistry:
         identify which ref type produced the invalid key.  *empty_key_msg*
         controls the wording of the empty/non-string error (the two
         call-sites historically used slightly different phrasing).
+
+        ``isinstance`` (not an exact-type check) accepts ``str``
+        subclasses — a ``class Tenant(str, Enum)`` member or a domain
+        wrapper deriving from ``str`` is a natural ``key_fn`` return value
+        and behaves identically to a plain ``str`` for namespacing, Redis
+        keys, and dict lookups.
         """
-        if type(key) is not str or not key:
+        if not isinstance(key, str) or not key:
             raise ValueError(f"{ref_repr}.key_fn returned {empty_key_msg} for payload {payload!r}")
         if len(key) > _MAX_KEYED_KEY_LEN:
             raise ValueError(
@@ -435,7 +445,12 @@ class RateLimitRegistry:
                 f"key {key!r} which contains characters outside the allowed set "
                 f"[A-Za-z0-9_\\-:.]"
             )
-        return key
+        # Normalize to a base ``str``: ``f"{base_name}:{key}"`` at the
+        # call sites would render a str-Enum member via ``Enum.__format__``
+        # (``'Tenant.ACME'``) instead of its value (``'acme'``), and the
+        # registry should key on the canonical plain-string form. A full
+        # slice returns a base ``str`` with identical content.
+        return key[:]
 
     async def _resolve_reservation_name(
         self,
@@ -606,6 +621,7 @@ class RateLimitRegistry:
         payload: dict[str, object] | None,
         *,
         settings: "WorkerSettings | None",
+        pg_pool: "asyncpg.Pool | None" = None,
     ) -> str:
         """Return the concrete registry name for *ref*.
 
@@ -656,6 +672,11 @@ class RateLimitRegistry:
         on the bucket's hash; :meth:`evict_idle_keyed_rate_limits` only
         bounds this Python-process-local registry dict, not Redis itself.
         These are two independent growth bounds.
+
+        On materialization with a ``pg_pool`` available, the new bucket is
+        also published to the ``rate_limit_buckets`` table (best-effort,
+        idempotent) so the admin UI can surface keyed buckets discovered
+        after worker startup — see the inline note at the publish site.
         """
         if isinstance(ref, str):
             return ref
@@ -695,6 +716,7 @@ class RateLimitRegistry:
                     source="rate_limit",
                 )
         if concrete_name not in self._rate_limits:
+            schema = settings.schema_name if settings is not None else "taskq"
             new_bucket = TokenBucket(
                 name=concrete_name,
                 capacity=ref.capacity,
@@ -703,6 +725,28 @@ class RateLimitRegistry:
             )
             self.register(new_bucket)
             self._keyed_rate_limit_last_used[concrete_name] = monotonic()
+            # Publish the freshly-materialized bucket to PG (best-effort)
+            # so the admin UI's rate-limits page surfaces it in ANY
+            # topology: statically registered buckets are published at
+            # worker startup by sync_rate_limit_buckets, but a keyed bucket
+            # materialized long after startup would otherwise be invisible
+            # to a standalone admin process — whose registry singleton
+            # never dispatches jobs — making an active per-tenant throttle
+            # look like "no limiter configured". Unlike ensure_slots for
+            # keyed reservations (a correctness precondition for acquire),
+            # this row is observability metadata, so a publish failure
+            # must NOT fail the acquisition — warn and continue.
+            if pg_pool is not None:
+                try:
+                    await _upsert_rate_limit_bucket_row(
+                        pg_pool, schema, concrete_name, "token_bucket"
+                    )
+                except Exception:
+                    logger.warning(
+                        "keyed-rate-limit-bucket-publish-failed",
+                        bucket_name=concrete_name,
+                        exc_info=True,
+                    )
         elif concrete_name in self._keyed_rate_limit_last_used:
             # Keyed-materialized entry reused for the same concrete name:
             # refresh recency, and guard against a concrete-name COLLISION
@@ -790,7 +834,9 @@ class RateLimitRegistry:
                 )
 
             for rl_ref in rate_limits:
-                rl_name = await self._resolve_rate_limit_name(rl_ref, payload, settings=settings)
+                rl_name = await self._resolve_rate_limit_name(
+                    rl_ref, payload, settings=settings, pg_pool=pg_pool
+                )
                 rl = self._rate_limits[rl_name]
                 if isinstance(rl, TokenBucket):
                     result = await rl.acquire(
@@ -852,6 +898,18 @@ class RateLimitRegistry:
             )
             return acquired
         except Exception:
+            # CancelledError deliberately bypasses this rollback:
+            # asyncio.CancelledError derives from BaseException, not
+            # Exception, so a cancellation landing mid-composition leaves
+            # any already-acquired handles in place. That is an accepted,
+            # bounded, self-healing leak — NOT an oversight: leaked
+            # reservation slots are reclaimed by lease expiry (the
+            # lock-expiry sweep, within ~30s), and consumed rate-limit
+            # tokens are bounded by the bucket's Redis EXPIRE TTL. Rolling
+            # back here would mean network I/O (handle.release()) while the
+            # task is being torn down — delaying cancellation, with a
+            # second cancel able to interrupt the release itself — which is
+            # worse than a leak with an existing reclaim path.
             for handle in reversed(acquired):
                 try:
                     await handle.release()
@@ -1044,15 +1102,30 @@ class RateLimitRegistry:
         primitive_dict: dict[str, _P],
         idle_for: timedelta,
         event_name: str,
+        *,
+        preserve: Callable[[_P], bool] | None = None,
     ) -> int:
         """Evict stale entries from *tracking_dict* and *primitive_dict*.
 
         Removes entries whose ``last_used`` timestamp is older than
         ``monotonic() - idle_for`` from both dicts, logs *event_name*
         with the evicted count, and returns that count.
+
+        *preserve*, when given, exempts an entry from eviction when the
+        predicate returns True for its primitive — the entry keeps its
+        tracking timestamp and is re-scanned on the next sweep. Use for
+        primitives whose in-instance state eviction would destroy
+        irrecoverably (see :meth:`evict_idle_keyed_rate_limits`).
         """
         cutoff = monotonic() - idle_for.total_seconds()
-        stale = [name for name, last_used in tracking_dict.items() if last_used < cutoff]
+        stale: list[str] = []
+        for name, last_used in tracking_dict.items():
+            if last_used >= cutoff:
+                continue
+            prim = primitive_dict.get(name)
+            if preserve is not None and prim is not None and preserve(prim):
+                continue
+            stale.append(name)
         for name in stale:
             primitive_dict.pop(name, None)
             del tracking_dict[name]
@@ -1110,6 +1183,22 @@ class RateLimitRegistry:
         keys. Token buckets are not automatically removed from Redis; their
         independent TTL handles that side.
 
+        **Exemption — memory fixed-quota buckets.** A ``backend="memory"``
+        bucket with ``refill_per_second == 0`` that has consumed any of its
+        quota is NOT evicted (see
+        :meth:`TokenBucket.holds_consumed_memory_quota`): its token state
+        lives on the instance, so eviction would silently reset the drained
+        quota to full on next acquire — whereas Redis deliberately retains
+        that same state for 24 h. The exemption applies to both callers of
+        this method (the leader sweep and the cap-pressure opportunistic
+        eviction). Trade-off, deliberately chosen: an exempt bucket counts
+        against ``settings.max_keyed_rate_limits`` until its quota returns
+        to full (refund/reset) or the process restarts, so under sustained
+        high-cardinality fixed-quota keys the cardinality cap can
+        permanently fill and deny NEW keys — the cap fails CLOSED with a
+        warning rather than silently resetting quotas, which is the correct
+        failure direction for a limiter.
+
         Returns the number of entries evicted.
         """
         return self._evict_idle_keyed(
@@ -1117,7 +1206,36 @@ class RateLimitRegistry:
             self._rate_limits,
             idle_for,
             "registry-evicted-idle-keyed-rate-limits",
+            preserve=_preserves_memory_fixed_quota_state,
         )
+
+
+async def _upsert_rate_limit_bucket_row(
+    pool: "asyncpg.Pool",
+    schema: str,
+    name: str,
+    kind: str,
+) -> None:
+    """Insert one ``rate_limit_buckets`` row (idempotent).
+
+    Shared by :func:`sync_rate_limit_buckets` (startup bulk publish of
+    statically registered primitives) and the keyed-materialization path
+    in :meth:`RateLimitRegistry._resolve_rate_limit_name` (publish on
+    first acquisition), so both write identical rows.
+
+    Uses ``ON CONFLICT DO NOTHING`` so concurrent workers and restarts
+    are idempotent.
+    """
+    if not _IDENT_RE.match(schema):
+        raise ValueError(f"invalid schema identifier: {schema!r}")
+
+    upsert_sql = (
+        f'INSERT INTO "{schema}".rate_limit_buckets (bucket_name, kind, state, updated_at) '  # noqa: S608
+        f"VALUES ($1, $2, '{{}}'::jsonb, now()) "
+        f"ON CONFLICT (bucket_name) DO NOTHING"
+    )
+    async with pool.acquire() as conn:
+        await conn.execute(upsert_sql, name, kind)
 
 
 async def sync_rate_limit_buckets(
@@ -1130,7 +1248,10 @@ async def sync_rate_limit_buckets(
 
     Each worker calls this at startup so the admin UI can discover
     configured buckets from PG without depending on the in-memory
-    singleton being populated in the admin process.
+    singleton being populated in the admin process.  Keyed buckets
+    materialized lazily AFTER startup are published individually by the
+    acquisition path — see
+    :meth:`RateLimitRegistry._resolve_rate_limit_name`.
 
     Uses ``ON CONFLICT DO NOTHING`` so concurrent workers and restarts
     are idempotent.  Only PG-backed primitives are written; memory-only
@@ -1138,12 +1259,6 @@ async def sync_rate_limit_buckets(
     """
     if not _IDENT_RE.match(schema):
         raise ValueError(f"invalid schema identifier: {schema!r}")
-
-    upsert_sql = (
-        f'INSERT INTO "{schema}".rate_limit_buckets (bucket_name, kind, state, updated_at) '  # noqa: S608
-        f"VALUES ($1, $2, '{{}}'::jsonb, now()) "
-        f"ON CONFLICT (bucket_name) DO NOTHING"
-    )
 
     for name, prim in rl_registry.rate_limits.items():
         if isinstance(prim, TokenBucket):
@@ -1154,8 +1269,7 @@ async def sync_rate_limit_buckets(
             else:
                 continue
 
-        async with pool.acquire() as conn:
-            await conn.execute(upsert_sql, name, kind)
+        await _upsert_rate_limit_bucket_row(pool, schema, name, kind)
 
         logger.debug(
             "rl-bucket-synced",

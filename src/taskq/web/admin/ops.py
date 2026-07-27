@@ -444,6 +444,21 @@ def register(router: APIRouter) -> None:
                 d = dict(r)
                 pg_state[str(d["bucket_name"])] = d
 
+        # Keyed buckets materialized after worker startup are published to
+        # PG by the acquisition path; in a standalone admin process they
+        # exist ONLY as pg_state rows (the in-process registry never
+        # dispatches jobs). Include them in the live-Redis fetch so their
+        # per-key state (tokens / GCRA TAT) is visible too.
+        redis_known = {name for name, _kind in redis_names}
+        for pg_name, pg_row in pg_state.items():
+            if pg_name in redis_known:
+                continue
+            pg_kind = pg_row.get("kind")
+            if pg_kind == "token_bucket":
+                redis_names.append((pg_name, "token_bucket"))
+            elif pg_kind == "gcra":
+                redis_names.append((pg_name, "sliding_window_gcra"))
+
         # Attempt live peek for non-memory backends if dependencies are available.
         live_states: dict[str, object] = {}
         try:

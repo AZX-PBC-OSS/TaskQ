@@ -292,6 +292,9 @@ ignore = [
 # variable, not a missing async-with timeout pattern.  S110: pool.close()
 # in finally after PG restart may fail if pool was already broken.
 "tests/test_ratelimit_reservation_chaos.py" = ["S608", "ASYNC109", "S110"]
+# Same rationale — schema name is a per-test unique identifier derived from
+# new_base62 (alphanumeric only); all user-supplied values use $N binding.
+"tests/test_ratelimit_keyed_rate_limits_pg.py" = ["S608"]
 # Schema name validated against _IDENT_RE before interpolation; same as above.
 "tests/test_integration_fixtures.py" = ["S608"]
 # Same rationale — schema name is a worker-scoped constant derived from

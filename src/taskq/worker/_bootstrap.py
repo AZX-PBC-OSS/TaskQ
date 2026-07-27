@@ -365,6 +365,19 @@ async def _main(
             queue_cap_reservations.append(reservation)
 
         if queue_cap_reservations:
+            # Fail loudly — deliberately NOT warn-and-continue. The
+            # reservations were registered above, and dispatch prepends the
+            # cap name as a plain string, so the acquire path has no
+            # ensure_slots retry: a sync_slots failure here would leave the
+            # cap registered with zero (or stale) slot rows, and EVERY
+            # dispatch on those queues would snooze with
+            # ReservationUnavailable until a human restarted the worker —
+            # a whole queue silently refusing work. Crashing startup
+            # instead lets the process supervisor retry, and sync_slots is
+            # idempotent, so the next boot reconciles the rows. Same
+            # rationale as the missing-column raise above, with a larger
+            # blast radius: a queue silently refusing all work is worse
+            # than a worker that will not start.
             try:
                 await sync_slots(
                     queue_cap_reservations,
@@ -372,10 +385,15 @@ async def _main(
                     schema=settings.schema_name,
                 )
             except Exception as exc:
-                _startup_log.warning(
-                    "sync_slots_failed",
-                    error=str(exc),
-                )
+                raise RuntimeError(
+                    f"failed to sync slot rows for queue-cap reservations "
+                    f"{[r.name for r in queue_cap_reservations]} in schema "
+                    f"{settings.schema_name!r}: {exc!r} — refusing to start "
+                    f"with queue caps registered but unslotted, which would "
+                    f"deny every dispatch on those queues until restart. Fix "
+                    f"the underlying error and restart the worker; startup "
+                    f"retries re-run this sync idempotently."
+                ) from exc
 
         if _cron_registry:
             for spec in _cron_registry:

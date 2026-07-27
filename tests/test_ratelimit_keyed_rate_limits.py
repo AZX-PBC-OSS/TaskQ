@@ -15,9 +15,11 @@ Redis or PG instance required, so every call passes ``redis_client=None`` and
 import asyncio
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
+from enum import Enum, StrEnum
 
 import pytest
 import redis.asyncio as redis_async
+import structlog.testing
 
 from taskq._ids import new_base62, new_uuid
 from taskq.backend.clock import SystemClock
@@ -135,6 +137,28 @@ class TestKeyedRateLimitRefValidation:
     def test_accepts_valid_base_name_with_allowed_punctuation(self) -> None:
         ref = _rate_limit_ref(base_name="api_per-tenant:1.0")
         assert ref.base_name == "api_per-tenant:1.0"
+
+    def test_rejects_base_name_inside_reserved_queue_cap_prefix(self) -> None:
+        """A base_name already inside the reserved queue-cap namespace would
+        derive concrete names (f"{base_name}:{key}") that the register()
+        prefix guard rejects — failing at CONSTRUCTION surfaces the
+        misconfiguration at startup instead of a per-job ValueError for
+        every job on the actor, forever."""
+        with pytest.raises(ValueError, match="reserved queue-cap namespace"):
+            _rate_limit_ref(base_name="taskq:global:queue:evil")
+
+    def test_rejects_base_name_that_prefix_completes_reserved_namespace(self) -> None:
+        """The ':' separator completes the reserved prefix: base_name
+        'taskq:global:queue' + ':' + key lands inside the namespace even
+        though the base_name alone does not start with it."""
+        with pytest.raises(ValueError, match="reserved queue-cap namespace"):
+            _rate_limit_ref(base_name="taskq:global:queue")
+
+    def test_accepts_base_names_sharing_segments_with_reserved_prefix(self) -> None:
+        """Names that merely SHARE segments with the reserved prefix but
+        cannot derive into it must remain valid."""
+        for base_name in ("taskq:global", "taskq:queue:cap", "taskq:global:queueX"):
+            assert _rate_limit_ref(base_name=base_name).base_name == base_name
 
     def test_rejects_zero_capacity(self) -> None:
         with pytest.raises(ValueError, match="capacity must be > 0"):
@@ -400,6 +424,47 @@ async def test_resolve_keyed_ref_key_fn_returning_non_str_raises_value_error() -
         await reg._resolve_rate_limit_name(ref, payload={"tenant_id": "t1"}, settings=None)  # pyright: ignore[reportPrivateUsage]
 
 
+async def test_resolve_keyed_ref_pg_publish_failure_is_best_effort() -> None:
+    """A failing PG publish on materialization does NOT fail the
+    acquisition — the ``rate_limit_buckets`` row is observability metadata
+    (admin UI discovery), not a correctness precondition. Contrast with
+    ``ensure_slots`` for keyed reservations, whose failure unwinds the
+    materialization and raises because slot rows ARE a precondition."""
+
+    class _BoomPool:
+        """asyncpg.Pool stub whose conn.execute always raises."""
+
+        def acquire(self) -> object:
+            class _Ctx:
+                async def __aenter__(self) -> "_Ctx":
+                    return self
+
+                async def __aexit__(self, *a: object) -> None:
+                    pass
+
+                async def execute(self, *a: object) -> None:
+                    raise RuntimeError("pg down")
+
+            return _Ctx()
+
+    reg = RateLimitRegistry()
+    ref = _rate_limit_ref(base_name="api-per-tenant")
+
+    with structlog.testing.capture_logs() as captured:
+        name = await reg._resolve_rate_limit_name(  # pyright: ignore[reportPrivateUsage]
+            ref,
+            payload={"tenant_id": "acme"},
+            settings=None,
+            pg_pool=_BoomPool(),  # type: ignore[arg-type]  # Why: duck-typed pool stub; the publish path only needs acquire()->conn->execute
+        )
+
+    # Materialization succeeded despite the failed publish…
+    assert name == "api-per-tenant:acme"
+    assert name in reg.rate_limits
+    # …and the failure was logged as a warning, not swallowed silently.
+    assert any(e.get("event") == "keyed-rate-limit-bucket-publish-failed" for e in captured)
+
+
 async def test_resolve_keyed_ref_oversized_key_raises_value_error() -> None:
     """A key longer than 255 characters raises ValueError."""
     reg = RateLimitRegistry()
@@ -417,6 +482,56 @@ async def test_resolve_keyed_ref_key_with_disallowed_chars_raises_value_error() 
 
     with pytest.raises(ValueError, match="outside the allowed set"):
         await reg._resolve_rate_limit_name(ref, payload={"tenant_id": "x"}, settings=None)  # pyright: ignore[reportPrivateUsage]
+
+
+async def test_resolve_keyed_ref_str_subclass_key_uses_value_content() -> None:
+    """A key_fn returning a ``str`` subclass (domain wrapper) is accepted
+    and normalized to its plain-str content: the concrete name and the
+    registry dict key are true ``str``, identical to returning a plain
+    string."""
+
+    class TenantKey(str):
+        """Domain wrapper deriving from str."""
+
+    reg = RateLimitRegistry()
+    ref = _rate_limit_ref(base_name="api-per-tenant", key_fn=lambda p: TenantKey("t1"))
+
+    name = await reg._resolve_rate_limit_name(ref, payload={"tenant_id": "t1"}, settings=None)  # pyright: ignore[reportPrivateUsage]
+
+    assert name == "api-per-tenant:t1"
+    assert type(name) is str
+    assert name in reg.rate_limits
+    assert all(type(k) is str for k in reg.rate_limits)
+
+
+async def test_resolve_keyed_ref_str_enum_key_uses_member_value_not_repr() -> None:
+    """A key_fn returning a ``str``-derived Enum member resolves to the
+    member's VALUE (``'acme'``), not its Enum rendering — dict lookups,
+    Redis keys, and PG text columns would all treat the member as its
+    value, so the registry name must match.
+
+    Covers both flavors: the classic ``(str, Enum)`` mixin (whose
+    ``__str__``/``__format__`` render ``'Tenant.ACME'`` — the exact trap
+    the key normalization guards against) and ``StrEnum``.
+    """
+
+    class Tenant(str, Enum):  # noqa: UP042  # Why: issue #32 explicitly names the classic (str, Enum) mixin; its __format__ trap is what this test pins. StrEnum is covered below.
+        ACME = "acme"
+
+    class TenantSE(StrEnum):
+        GLOBEX = "globex"
+
+    reg = RateLimitRegistry()
+    for member, expected in ((Tenant.ACME, "acme"), (TenantSE.GLOBEX, "globex")):
+        ref = _rate_limit_ref(base_name="api-per-tenant", key_fn=lambda p, m=member: m)
+
+        name = await reg._resolve_rate_limit_name(
+            ref, payload={"tenant_id": expected}, settings=None
+        )  # pyright: ignore[reportPrivateUsage]
+
+        assert name == f"api-per-tenant:{expected}"
+        assert type(name) is str
+        assert name in reg.rate_limits
 
 
 async def test_resolve_keyed_ref_key_fn_exception_propagates() -> None:
@@ -1089,6 +1204,180 @@ async def test_evict_idle_keyed_rate_limits_returns_zero_when_nothing_stale(
 
     assert evicted == 0
     assert "api-per-tenant:recent" in reg.rate_limits
+
+
+# ── Memory fixed-quota buckets are exempt from idle eviction ──
+
+
+async def test_drained_memory_fixed_quota_bucket_survives_idle_eviction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: evicting a drained memory fixed-quota keyed bucket must NOT
+    reset its quota.
+
+    Token state for ``backend="memory"`` lives on the bucket instance, so
+    popping the registry entry destroys it: the next acquire would
+    materialize a fresh bucket at FULL capacity, silently reviving a quota
+    designed to never refill — while the Redis backend deliberately holds
+    the same state for 24h. Drain -> idle 1h -> sweep -> must stay denied.
+    """
+    from importlib import import_module
+
+    registry_mod = import_module("taskq.ratelimit.registry")
+
+    clock = FakeClock(_START)
+    reg = RateLimitRegistry()
+    ref = KeyedRateLimitRef(
+        base_name="api-per-tenant",
+        key_fn=lambda p: str(p["tenant_id"]),
+        capacity=2,
+        refill_per_second=0,
+        backend="memory",
+    )
+    payload: dict[str, object] = {"tenant_id": "acme"}
+
+    fake_time = 1000.0
+    monkeypatch.setattr(registry_mod, "monotonic", lambda: fake_time)
+
+    # Drain the keyed bucket fully (capacity=2) via the registry's own
+    # composition path; the third acquire is denied.
+    for _ in range(2):
+        await reg.acquire_for_actor(
+            rate_limits=[ref],
+            reservations=[],
+            job_id=new_uuid(),
+            worker_id=new_uuid(),
+            payload=payload,
+            clock=clock,
+        )
+    with pytest.raises(ReservationUnavailable):
+        await reg.acquire_for_actor(
+            rate_limits=[ref],
+            reservations=[],
+            job_id=new_uuid(),
+            worker_id=new_uuid(),
+            payload=payload,
+            clock=clock,
+        )
+
+    # Idle for over an hour, then sweep (what the 30s leader sweep does).
+    fake_time += 3601.0
+    evicted = reg.evict_idle_keyed_rate_limits(idle_for=timedelta(hours=1))
+
+    assert evicted == 0
+    assert "api-per-tenant:acme" in reg.rate_limits
+
+    # The quota is still exhausted — eviction did not reset it.
+    with pytest.raises(ReservationUnavailable):
+        await reg.acquire_for_actor(
+            rate_limits=[ref],
+            reservations=[],
+            job_id=new_uuid(),
+            worker_id=new_uuid(),
+            payload=payload,
+            clock=clock,
+        )
+
+
+async def test_full_memory_fixed_quota_bucket_is_still_idle_evicted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A memory fixed-quota bucket that never consumed any quota holds no
+    state worth preserving — eviction remains a pure no-op for it, so the
+    cardinality bound still applies."""
+    from importlib import import_module
+
+    registry_mod = import_module("taskq.ratelimit.registry")
+
+    reg = RateLimitRegistry()
+    ref = KeyedRateLimitRef(
+        base_name="api-per-tenant",
+        key_fn=lambda p: str(p["tenant_id"]),
+        capacity=2,
+        refill_per_second=0,
+        backend="memory",
+    )
+
+    monkeypatch.setattr(registry_mod, "monotonic", lambda: 1000.0)
+    # Materialize (register + stamp tracking) WITHOUT acquiring — quota full.
+    await reg._resolve_rate_limit_name(ref, payload={"tenant_id": "acme"}, settings=None)  # pyright: ignore[reportPrivateUsage]
+
+    monkeypatch.setattr(registry_mod, "monotonic", lambda: 99999.0)
+    evicted = reg.evict_idle_keyed_rate_limits(idle_for=timedelta(hours=1))
+
+    assert evicted == 1
+    assert "api-per-tenant:acme" not in reg.rate_limits
+
+
+async def test_refilling_memory_bucket_is_still_idle_evicted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A memory bucket with refill_per_second > 0 self-heals after eviction
+    (its state converges back toward full on its own), so it is NOT exempt —
+    the eviction feature itself is preserved."""
+    from importlib import import_module
+
+    registry_mod = import_module("taskq.ratelimit.registry")
+
+    clock = FakeClock(_START)
+    reg = RateLimitRegistry()
+    ref = KeyedRateLimitRef(
+        base_name="api-per-tenant",
+        key_fn=lambda p: str(p["tenant_id"]),
+        capacity=2,
+        refill_per_second=0.001,  # slow refill: partially refilled at eviction time
+        backend="memory",
+    )
+    payload: dict[str, object] = {"tenant_id": "acme"}
+
+    fake_time = 1000.0
+    monkeypatch.setattr(registry_mod, "monotonic", lambda: fake_time)
+
+    # Consume one token so the bucket is mid-refill at sweep time.
+    await reg.acquire_for_actor(
+        rate_limits=[ref],
+        reservations=[],
+        job_id=new_uuid(),
+        worker_id=new_uuid(),
+        payload=payload,
+        clock=clock,
+    )
+
+    fake_time += 3601.0
+    evicted = reg.evict_idle_keyed_rate_limits(idle_for=timedelta(hours=1))
+
+    assert evicted == 1
+    assert "api-per-tenant:acme" not in reg.rate_limits
+
+
+async def test_redis_backend_fixed_quota_bucket_is_still_idle_evicted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Redis-backed buckets keep state in Redis (24h TTL for fixed quota),
+    not on the instance — registry eviction loses nothing, so they are NOT
+    exempt. Pins that the exemption is memory-only and does not disable the
+    cardinality bound for the default backend."""
+    from importlib import import_module
+
+    registry_mod = import_module("taskq.ratelimit.registry")
+
+    reg = RateLimitRegistry()
+    ref = KeyedRateLimitRef(
+        base_name="api-per-tenant",
+        key_fn=lambda p: str(p["tenant_id"]),
+        capacity=2,
+        refill_per_second=0,
+        backend="redis",
+    )
+
+    monkeypatch.setattr(registry_mod, "monotonic", lambda: 1000.0)
+    await reg._resolve_rate_limit_name(ref, payload={"tenant_id": "acme"}, settings=None)  # pyright: ignore[reportPrivateUsage]
+
+    monkeypatch.setattr(registry_mod, "monotonic", lambda: 99999.0)
+    evicted = reg.evict_idle_keyed_rate_limits(idle_for=timedelta(hours=1))
+
+    assert evicted == 1
+    assert "api-per-tenant:acme" not in reg.rate_limits
 
 
 async def test_evict_idle_keyed_rate_limits_re_registration_after_eviction_is_idempotent() -> None:

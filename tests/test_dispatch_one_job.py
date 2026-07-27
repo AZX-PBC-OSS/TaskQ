@@ -1148,3 +1148,108 @@ async def test_dispatch_one_job_acquires_registered_queue_cap() -> None:
         assert actor_ran == 1
         assert len(fake_backend.mark_succeeded_calls) == 1
         assert cap_res.table.peek_slots(queue_cap_name) == (1, 0)
+
+
+async def test_dispatch_one_job_nth_plus_one_denied_while_cap_slot_held() -> None:
+    """The (N+1)th job on a capped queue is denied while N dispatched jobs
+    hold the cap slots — the e2e proof that ``dispatch_one_job`` ITSELF
+    acquires the fleet-wide cap through the DI-provided registry, not just
+    that an externally saturated cap blocks dispatch.
+
+    With ``slots=1``: job 1 dispatches and its actor blocks mid-run,
+    HOLDING the cap slot via the real acquire path; job 2 (the N+1th
+    concurrent dispatch on the same queue) is snoozed with
+    operator-visible ``awaiting`` metadata and its actor never runs;
+    letting job 1 finish frees the slot and job 3 then dispatches
+    successfully.
+
+    Mutation target: if the queue-cap prepend/lookup in dispatch.py is
+    ever broken (cap name derivation drift, dropped prepend, membership
+    check against the wrong name), job 2 wrongly runs and this test fails.
+    """
+    from taskq.ratelimit._provider import register_rate_limit_registry
+    from taskq.ratelimit.registry import (
+        RateLimitRegistry,
+        queue_concurrency_reservation_name,
+    )
+    from taskq.ratelimit.reservation import ConcurrencyReservation
+
+    clock = FakeClock(_NOW)
+    rl_registry = RateLimitRegistry()
+    queue_cap_name = queue_concurrency_reservation_name("default")
+    cap_res = ConcurrencyReservation(
+        name=queue_cap_name, slots=1, lease=timedelta(minutes=5), clock=clock
+    )
+    rl_registry.register_queue_cap_reservation(cap_res)
+
+    di_registry = ProviderRegistry()
+    register_rate_limit_registry(di_registry, rl_registry)
+
+    job1_started = asyncio.Event()
+    job1_release = asyncio.Event()
+    job1_finished = False
+    job2_ran = False
+    job3_ran = False
+
+    async def blocking_actor(payload: _Payload, ctx: JobContext[_Payload]) -> None:
+        nonlocal job1_finished
+        job1_started.set()
+        await job1_release.wait()
+        job1_finished = True
+
+    async def job2_actor(payload: _Payload, ctx: JobContext[_Payload]) -> None:
+        nonlocal job2_ran
+        job2_ran = True
+
+    async def job3_actor(payload: _Payload, ctx: JobContext[_Payload]) -> None:
+        nonlocal job3_ran
+        job3_ran = True
+
+    async with _ScopeStack(di_registry) as scopes:
+        fake_backend = FakeBackend()
+        fake_deps = _FakeWorkerDeps()
+
+        async def _dispatch(actor_fn: Any) -> None:
+            await dispatch_one_job(
+                backend=as_backend(fake_backend),
+                deps=_as_deps(fake_deps),
+                job=make_job_row(payload={"value": 42}),
+                worker_id=_WORKER_ID,
+                registry=scopes.registry,
+                process_scope=scopes.process_scope,
+                thread_scope=scopes.thread_scope,
+                loop_scope=scopes.loop_scope,
+                actor_ref=_make_actor_ref(actor_fn),  # type: ignore[arg-type]  # Why: same ActorRef generic-widening pattern as the tests above.
+                actor_config=StubActorConfig(retry=RetryPolicy()),
+                clock=clock,
+                enqueuer=SubJobEnqueuer(
+                    backend=as_backend(fake_backend), loop_scope_resolved=None, worker_pool=None
+                ),
+            )
+
+        # 1. Job 1 dispatches and blocks inside the actor — it must be
+        #    HOLDING the queue-cap slot through the real acquire path.
+        task1 = asyncio.create_task(_dispatch(blocking_actor))
+        await asyncio.wait_for(job1_started.wait(), timeout=5.0)
+        assert cap_res.table.peek_slots(queue_cap_name) == (0, 1)
+
+        # 2. The (N+1)th job on the same queue is denied: snoozed with
+        #    operator-visible awaiting metadata, actor never runs.
+        await _dispatch(job2_actor)
+        assert not job2_ran
+        assert len(fake_backend.mark_snoozed_calls) == 1
+        assert fake_backend.mark_snoozed_calls[0]["metadata_update"] == {
+            "awaiting": "reservation:taskq:global:queue:default"
+        }
+
+        # 3. Job 1 finishes → its slot is released → job 3 dispatches.
+        job1_release.set()
+        await asyncio.wait_for(task1, timeout=5.0)
+        assert job1_finished
+        assert cap_res.table.peek_slots(queue_cap_name) == (1, 0)
+
+        await _dispatch(job3_actor)
+        assert job3_ran
+        assert len(fake_backend.mark_succeeded_calls) == 2
+        # And job 3's slot was released after its actor completed.
+        assert cap_res.table.peek_slots(queue_cap_name) == (1, 0)

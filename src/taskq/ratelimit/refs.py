@@ -28,9 +28,52 @@ from datetime import timedelta
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from taskq.backend._protocol import RateLimitBackend
-from taskq.constants import _KEYED_KEY_RE, _MAX_KEYED_KEY_LEN
+from taskq.constants import (
+    _KEYED_KEY_RE,  # pyright: ignore[reportPrivateUsage]
+    _MAX_KEYED_KEY_LEN,  # pyright: ignore[reportPrivateUsage]
+    base_name_collides_with_reserved_prefix,
+)
 
 __all__ = ["KeyedRateLimitRef", "KeyedReservationRef", "RateLimitRef", "ReservationRef"]
+
+
+def _validate_keyed_base_name(v: str) -> str:
+    """Shared ``base_name`` validation for both keyed ref types.
+
+    The two keyed paths resolve concrete names identically
+    (``f"{base_name}:{key}"``) and are deliberately kept on the same
+    validation strictness — keep any change to one in the other by
+    changing it HERE, once.
+
+    Beyond charset/length, rejects a ``base_name`` whose derived concrete
+    names would land inside the reserved queue-cap namespace
+    (:data:`~taskq.constants.QUEUE_CONCURRENCY_PREFIX`): the character
+    allowlist includes ``":"``, so such a ``base_name`` would pass the
+    charset check, sail through DI validation (which skips keyed refs —
+    their concrete names only exist at acquire time), and then make EVERY
+    job on the actor die with ``ValueError`` from the ``register()``
+    prefix guard — forever, since registration never succeeds and the
+    failing path is retried per job. Failing here instead surfaces the
+    misconfiguration at ref construction (startup/import time), like
+    every other invalid ref.
+    """
+    if not v:
+        raise ValueError("base_name must not be empty")
+    if len(v) > _MAX_KEYED_KEY_LEN:
+        raise ValueError(
+            f"base_name must be at most {_MAX_KEYED_KEY_LEN} characters, got length {len(v)}"
+        )
+    if not _KEYED_KEY_RE.match(v):
+        raise ValueError(
+            f"base_name {v!r} contains characters outside the allowed set [A-Za-z0-9_\\-:.]"
+        )
+    if base_name_collides_with_reserved_prefix(v):
+        raise ValueError(
+            f"base_name {v!r} would derive concrete names inside the reserved "
+            f"queue-cap namespace 'taskq:global:queue:' — choose a base_name "
+            f"outside that prefix"
+        )
+    return v
 
 
 class RateLimitRef(BaseModel):
@@ -78,17 +121,7 @@ class KeyedReservationRef(BaseModel):
     @field_validator("base_name")
     @classmethod
     def _validate_base_name(cls, v: str) -> str:
-        if not v:
-            raise ValueError("base_name must not be empty")
-        if len(v) > _MAX_KEYED_KEY_LEN:
-            raise ValueError(
-                f"base_name must be at most {_MAX_KEYED_KEY_LEN} characters, got length {len(v)}"
-            )
-        if not _KEYED_KEY_RE.match(v):
-            raise ValueError(
-                f"base_name {v!r} contains characters outside the allowed set [A-Za-z0-9_\\-:.]"
-            )
-        return v
+        return _validate_keyed_base_name(v)
 
     @field_validator("slots")
     @classmethod
@@ -176,17 +209,7 @@ class KeyedRateLimitRef(BaseModel):
     @field_validator("base_name")
     @classmethod
     def _validate_base_name(cls, v: str) -> str:
-        if not v:
-            raise ValueError("base_name must not be empty")
-        if len(v) > _MAX_KEYED_KEY_LEN:
-            raise ValueError(
-                f"base_name must be at most {_MAX_KEYED_KEY_LEN} characters, got length {len(v)}"
-            )
-        if not _KEYED_KEY_RE.match(v):
-            raise ValueError(
-                f"base_name {v!r} contains characters outside the allowed set [A-Za-z0-9_\\-:.]"
-            )
-        return v
+        return _validate_keyed_base_name(v)
 
     @field_validator("capacity")
     @classmethod

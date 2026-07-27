@@ -18,9 +18,11 @@ __all__ = [
     "MAX_RESULT_BYTES",
     "PROGRESS_CHANNEL_FMT",
     "PROGRESS_GLOBAL_CHANNEL_FMT",
+    "QUEUE_CONCURRENCY_PREFIX",
     "RECLAIM_EVENT_VISIBILITY_DELAY",
     "WAKE_CHANNEL_FMT",
     "WORKER_CHANNEL_FMT",
+    "base_name_collides_with_reserved_prefix",
     "events_channel",
     "progress_channel",
     "progress_global_channel",
@@ -152,6 +154,46 @@ _MAX_KEYED_KEY_LEN = 255
 Bounds storage growth from attacker-controlled keys and base names — the
 same rationale as the character regex above.
 """
+
+QUEUE_CONCURRENCY_PREFIX: Final[str] = "taskq:global:queue:"
+"""Reserved namespace for fleet-wide per-queue concurrency cap reservations.
+
+Primitives whose name starts with this prefix are internal to TaskQ's
+queue-cap bootstrap path and must be registered via
+``RateLimitRegistry.register_queue_cap_reservation``, not via the public
+``RateLimitRegistry.register`` (which rejects prefixed names to prevent
+accidental or malicious shadowing of an internal queue cap). Keyed refs
+must never derive concrete names into this namespace either — see the
+``base_name`` validators in ``taskq.ratelimit.refs``.
+
+Lives here (rather than in ``ratelimit.registry``) because
+``ratelimit.refs`` must reference it in its validators, and ``refs`` is
+imported BY ``registry`` — defining it in ``registry`` would be circular.
+"""
+
+
+def base_name_collides_with_reserved_prefix(base_name: str) -> bool:
+    """True if a keyed ref's ``f"{base_name}:{key}"`` names ALWAYS land in
+    the reserved queue-cap namespace.
+
+    The concrete name is ``f"{base_name}:{key}"``; every such name starts
+    with ``QUEUE_CONCURRENCY_PREFIX`` exactly when ``base_name`` itself
+    starts with the prefix (e.g. ``"taskq:global:queue:x"``) or equals it
+    minus the trailing colon (``"taskq:global:queue"`` — the ``":"``
+    separator then completes the prefix for ANY key). Both are rejected at
+    ref-construction time so the collision surfaces at startup instead of
+    as a per-job ``ValueError`` from the ``register()`` prefix guard.
+
+    A shallower ``base_name`` sharing segments with the prefix (e.g.
+    ``"taskq:global"``) only collides when the *key* completes the
+    remaining segments (key ``"queue:x"`` → concrete
+    ``"taskq:global:queue:x"``); keys are per-job dynamic values, so they
+    cannot be rejected at construction — that case remains covered, loudly,
+    by the ``register()`` prefix guard at materialization time.
+    """
+    return base_name.startswith(QUEUE_CONCURRENCY_PREFIX) or (
+        f"{base_name}:" == QUEUE_CONCURRENCY_PREFIX
+    )
 
 
 def quote_ident(identifier: str) -> str:

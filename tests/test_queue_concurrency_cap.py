@@ -423,6 +423,34 @@ def test_has_accessors_membership() -> None:
     assert reg.has_rate_limit("gpu") is False
 
 
+def test_has_rate_limit_never_copies_registry_dict(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``has_rate_limit`` carries the same no-copy guarantee as
+    ``has_reservation`` (pinned by
+    ``test_effective_reservations_never_copies_registry_dict``): the
+    ``rate_limits`` property defensively copies the whole dict — fine at
+    startup/admin cadence, prohibitive per call at high keyed-entry
+    cardinality. Patches the property to raise on ANY access, so a
+    re-implementation of membership checks in terms of the copying
+    property fails loudly."""
+
+    def _boom(self: RateLimitRegistry) -> dict[str, object]:
+        raise AssertionError("membership check copied the rate_limits dict")
+
+    monkeypatch.setattr(
+        RateLimitRegistry,
+        "rate_limits",
+        property(_boom),  # type: ignore[arg-type]
+    )
+
+    reg = RateLimitRegistry()
+    reg.register(TokenBucket(name="api", capacity=10, refill_per_second=1.0, backend="memory"))
+
+    assert reg.has_rate_limit("api") is True
+    assert reg.has_rate_limit("nope") is False
+
+
 # ── Queue-cap saturation: operator-visible denial ──
 
 

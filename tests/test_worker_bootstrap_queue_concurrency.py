@@ -13,8 +13,9 @@ direct SQL, runs the ``_main`` bootstrap sequence, and asserts:
     that bucket name (proving ``sync_slots`` actually ran).
   - Queues with ``max_concurrent IS NULL`` or not in ``settings.queues``
     produce NO registry entry and NO slot rows.
-  - A failing ``sync_slots`` for the queue-cap path is caught, logged,
-    and does not crash worker startup.
+  - A failing ``sync_slots`` for the queue-cap path CRASHES worker startup
+    loudly (a registered-but-unslotted cap would deny every dispatch on
+    the queue until a manual restart).
   - Lowering ``max_concurrent`` and re-running bootstrap (simulating a
     worker restart) shrinks the slot rows — the core regression test for
     the ``sync_slots`` fix that replaced the purely-additive
@@ -27,10 +28,10 @@ from typing import Any
 
 import asyncpg
 import pytest
-import structlog
 
 from taskq._ids import new_base62
 from taskq.ratelimit.registry import (
+    QUEUE_CONCURRENCY_PREFIX,
     queue_concurrency_reservation_name,
 )
 from taskq.ratelimit.registry import (
@@ -374,20 +375,34 @@ async def test_queue_cap_not_in_settings_queues_produces_no_reservation(pg_dsn: 
     await _cleanup_schema_for(pg_dsn, schema)
 
 
-# ── sync_slots failure: caught, logged, bootstrap continues ──────────
+# ── sync_slots failure on the queue-cap path: crash loudly ───────────
 
 
 @pytest.mark.asyncio
-async def test_queue_cap_sync_slots_failure_logged_and_bootstrap_continues(
+async def test_queue_cap_sync_slots_failure_crashes_bootstrap(
     pg_dsn: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A failing queue-cap ``sync_slots`` is caught, logged as
-    ``sync_slots_failed``, and does not crash worker startup — mirroring
-    ``test_sync_rate_limit_buckets_and_sync_slots_failure_logged`` for the
-    actor-config path.  After the fix that replaced ``ensure_slots`` with
-    ``sync_slots``, slot creation failures are caught by the
-    ``sync_slots`` try/except, not the per-row
-    ``queue_concurrency_cap_setup_failed`` handler."""
+    """A failing queue-cap ``sync_slots`` CRASHES worker startup with a
+    ``RuntimeError`` naming the affected queue-cap reservations.
+
+    The reservations are registered BEFORE ``sync_slots`` runs, and
+    dispatch prepends the cap name as a plain string (no ensure_slots
+    retry on the acquire path) — so warn-and-continue would leave the cap
+    registered with zero slot rows and every dispatch on that queue
+    snoozed with ``ReservationUnavailable`` until a manual restart.
+    Crash-and-let-the-supervisor-retry self-heals, because ``sync_slots``
+    is idempotent.
+
+    This pins the QUEUE-CAP sync_slots block specifically — a previous
+    version of this test patched ``sync_slots`` to always raise and
+    asserted on the FIRST ``sync_slots_failed`` log event, which always
+    came from the actor-path call ~100 lines earlier in ``_main``;
+    coverage showed the queue-cap block never executed. The patched
+    ``sync_slots`` below raises ONLY when called with queue-cap
+    reservations (names under the reserved prefix) and delegates
+    otherwise, so the actor-path warn-and-continue behavior cannot shadow
+    the block under test.
+    """
     schema = f"twbqc_{new_base62()}".lower()
     await _prepare_schema_for(pg_dsn, schema)
 
@@ -405,10 +420,16 @@ async def test_queue_cap_sync_slots_failure_logged_and_bootstrap_continues(
 
     settings = _settings_for(pg_dsn, schema, queues=queue_name)
 
-    async def _raise_sync_slots(reservations: object, pool: object, *, schema: str) -> None:
-        raise RuntimeError("sync_slots boom")
+    import taskq.ratelimit as ratelimit_mod
 
-    monkeypatch.setattr("taskq.ratelimit.sync_slots", _raise_sync_slots)
+    real_sync_slots = ratelimit_mod.sync_slots
+
+    async def _raise_for_queue_caps(reservations: list[Any], pool: Any, *, schema: str) -> Any:
+        if any(r.name.startswith(QUEUE_CONCURRENCY_PREFIX) for r in reservations):
+            raise RuntimeError("sync_slots boom")
+        return await real_sync_slots(reservations, pool, schema=schema)
+
+    monkeypatch.setattr("taskq.ratelimit.sync_slots", _raise_for_queue_caps)
 
     cap_name = queue_concurrency_reservation_name(queue_name)
 
@@ -416,28 +437,35 @@ async def test_queue_cap_sync_slots_failure_logged_and_bootstrap_continues(
         with contextlib.suppress(asyncio.CancelledError):
             await _main(settings)
 
+    task = asyncio.create_task(_run())
+    deadline = asyncio.get_running_loop().time() + 30.0
+    while asyncio.get_running_loop().time() < deadline:
+        if task.done():
+            break
+        await asyncio.sleep(0.05)
+
     try:
-        with structlog.testing.capture_logs() as captured:
-            task = asyncio.create_task(_run())
-            deadline = asyncio.get_running_loop().time() + 30.0
-            while asyncio.get_running_loop().time() < deadline:
-                if any(e.get("event") == "sync_slots_failed" for e in captured):
-                    break
-                if task.done():
-                    break
-                await asyncio.sleep(0.05)
-            if not task.done():
-                task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await task
+        if not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+            pytest.fail(
+                "bootstrap kept running despite the queue-cap sync_slots "
+                "failure — it must crash loudly instead of leaving a "
+                "registered-but-unslotted cap that denies every dispatch"
+            )
+
+        exc = task.exception()
+        assert exc is not None, "bootstrap should have raised on queue-cap sync_slots failure"
+        assert isinstance(exc, RuntimeError), (
+            f"expected RuntimeError, got {type(exc).__name__}: {exc}"
+        )
+        assert "failed to sync slot rows for queue-cap reservations" in str(exc)
+        assert cap_name in str(exc)
+        assert "sync_slots boom" in str(exc)
     finally:
         rl_registry._reservations.pop(cap_name, None)  # pyright: ignore[reportPrivateUsage]
-
-    matches = [e for e in captured if e.get("event") == "sync_slots_failed"]
-    assert len(matches) >= 1
-    assert "sync_slots boom" in matches[0]["error"]
-
-    await _cleanup_schema_for(pg_dsn, schema)
+        await _cleanup_schema_for(pg_dsn, schema)
 
 
 # ── Missing migration: bootstrap must crash, not silently continue ──

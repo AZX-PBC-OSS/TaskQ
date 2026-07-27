@@ -287,6 +287,12 @@ helper (which returns `f"taskq:global:queue:{queue}"`) and pre-allocates its slo
 the exact same distributed, leased-slot machinery as any other `ConcurrencyReservation`
 (Postgres `FOR UPDATE SKIP LOCKED`, heartbeat-renewed leases), not a new mechanism.
 
+If the slot-sync step fails, **worker startup crashes loudly** rather than continuing: the cap
+is registered before its slot rows are synced, and dispatch has no retry path, so a
+warn-and-continue would leave every dispatch on that queue denied until a manual restart. A
+crashed worker is retried by the process supervisor, and the sync is idempotent — the next boot
+reconciles the rows.
+
 ### At dispatch time
 
 If a job's queue has a registered cap, the worker prepends that reservation to the job's
@@ -739,6 +745,13 @@ Unlike keyed reservations, there is no PG slot pre-allocation step — a `TokenB
 immediately usable after `register()` (there is no `ensure_slots` equivalent). The bucket is
 ready as soon as it is registered.
 
+**Admin UI visibility.** Each freshly materialized keyed bucket is also published to the
+`rate_limit_buckets` table (best-effort, idempotent) on first acquisition, so the
+`/admin/rate-limits` page surfaces it alongside statically registered buckets — including in a
+standalone `taskq ui serve` deployment whose in-process registry never dispatches jobs. When
+Redis is configured, the page also fetches the live per-key state (tokens / GCRA TAT) for these
+PG-published rows. A publish failure only logs a warning; it never fails the acquisition.
+
 !!! warning "Concrete-name collisions"
     Because `:` is an allowed character in keys, one ref's `base_name` can be a prefix of
     another ref's concrete name: `base_name="a"` with key `"b:c"` and `base_name="a:b"` with
@@ -782,6 +795,18 @@ mechanisms bound this growth:
 
 These are three independent bounds, not one mechanism: the sweep and opportunistic eviction
 bound the Python-process-local registry dict; the Redis TTL bounds Redis memory.
+
+!!! note "Memory fixed-quota buckets are exempt from idle eviction"
+    A `backend="memory"` bucket with `refill_per_second=0` that has consumed any of its quota
+    is **not** idle-evicted (neither by the leader sweep nor by opportunistic eviction): its
+    token state lives only on the in-process bucket instance, so eviction would silently reset
+    the drained quota to full — whereas the Redis backend deliberately retains that same state
+    for 24h. The trade-off is deliberate: such buckets count against `max_keyed_rate_limits`
+    until their quota returns to full (refund/reset) or the process restarts, so under
+    sustained high-cardinality fixed-quota keys the cap can fill permanently and deny *new*
+    keys. The cap fails closed rather than silently resetting quotas. Buckets that are full
+    (no quota consumed) and refilling buckets are evicted normally — the latter self-heal
+    because their state converges back toward full on its own.
 
 !!! note "Independent caps for keyed reservations and keyed rate limits"
     `settings.max_keyed_reservations` (default `10_000`) governs keyed
