@@ -107,7 +107,10 @@ async def test_max_steps_truncation_does_not_trip_guard(monkeypatch: Any) -> Non
     conn = _FakeMigrateConn(applied={"01.00.00_01:pre", "01.00.03_01:pre"})
 
     applied = await migrate_mod.apply_pending(
-        conn, schema="taskq", phase="post", max_steps=1  # type: ignore[arg-type]
+        conn,
+        schema="taskq",
+        phase="post",
+        max_steps=1,  # type: ignore[arg-type]
     )
 
     assert [m.key for m in applied] == ["01.00.03_01:post"]
@@ -120,7 +123,10 @@ async def test_target_truncation_does_not_trip_guard(monkeypatch: Any) -> None:
     conn = _FakeMigrateConn(applied={"01.00.00_01:pre", "01.00.03_01:pre"})
 
     applied = await migrate_mod.apply_pending(
-        conn, schema="taskq", phase="post", target="01.00.03_01"  # type: ignore[arg-type]
+        conn,
+        schema="taskq",
+        phase="post",
+        target="01.00.03_01",  # type: ignore[arg-type]
     )
 
     assert [m.key for m in applied] == ["01.00.03_01:post"]
@@ -136,7 +142,10 @@ async def test_guard_still_refuses_unguarded_post_within_truncation(
 
     with pytest.raises(ValueError, match="cannot be applied before its pre-phase"):
         await migrate_mod.apply_pending(
-            conn, schema="taskq", phase="post", max_steps=2  # type: ignore[arg-type]
+            conn,
+            schema="taskq",
+            phase="post",
+            max_steps=2,  # type: ignore[arg-type]
         )
 
 

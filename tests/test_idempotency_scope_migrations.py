@@ -765,9 +765,7 @@ class TestConcurrentOverlapWindow:
             scope = "run-A"
             rows = await asyncio.gather(
                 *(
-                    backend.enqueue(
-                        make_enqueue_args(idempotency_key=key, idempotency_scope=scope)
-                    )
+                    backend.enqueue(make_enqueue_args(idempotency_key=key, idempotency_scope=scope))
                     for _ in range(8)
                 )
             )
@@ -975,8 +973,7 @@ class TestMigrationReRunIdempotency:
         await migrate_mod.apply_pending(pg_conn, schema=settings.schema_name)
         assert await migrate_mod.apply_pending(pg_conn, schema=settings.schema_name) == []
         assert (
-            await migrate_mod.apply_pending(pg_conn, schema=settings.schema_name, phase="pre")
-            == []
+            await migrate_mod.apply_pending(pg_conn, schema=settings.schema_name, phase="pre") == []
         )
         assert (
             await migrate_mod.apply_pending(pg_conn, schema=settings.schema_name, phase="post")

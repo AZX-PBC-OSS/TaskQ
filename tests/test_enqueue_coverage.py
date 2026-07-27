@@ -554,7 +554,12 @@ async def test_enqueue_batch_with_conn_legacy_violation_converts_without_retry()
 
     with pytest.raises(ScopedIdempotencyMigrationPendingError) as exc_info:
         await _enqueue_batch(
-            None, _SQL, _SCHEMA_LABEL, clock, [_make_args(idempotency_key="k")], connection=conn  # type: ignore[arg-type]
+            None,
+            _SQL,
+            _SCHEMA_LABEL,
+            clock,
+            [_make_args(idempotency_key="k")],
+            connection=conn,  # type: ignore[arg-type]
         )
 
     assert isinstance(exc_info.value.__cause__, asyncpg.UniqueViolationError)
