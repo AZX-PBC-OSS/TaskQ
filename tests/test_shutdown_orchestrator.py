@@ -750,6 +750,63 @@ async def test_leader_conn_none_skips_close(monkeypatch: pytest.MonkeyPatch) -> 
     )
 
 
+async def test_orchestrate_shutdown_terminates_hung_leader_close(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A hung leader_conn.close() (dead PG) cannot wedge shutdown: after the
+    bounded teardown timeout the conn is terminated and still nulled."""
+    import taskq.worker.deps as deps_mod
+    import taskq.worker.shutdown as shutdown_mod
+
+    registry = FakeActiveJobRegistry([])
+    settings = _worker_settings()
+    pool = MagicMock()
+    leader_conn = MagicMock(spec=asyncpg.Connection)
+
+    hang_forever = asyncio.Event()  # never set — close() blocks indefinitely
+
+    async def _hung_close() -> None:
+        await hang_forever.wait()
+
+    leader_conn.close = AsyncMock(side_effect=_hung_close)
+
+    deps = WorkerDeps(
+        settings=settings,
+        dispatcher_pool=pool,  # type: ignore[arg-type]
+        heartbeat_pool=pool,  # type: ignore[arg-type]
+        worker_pool=pool,  # type: ignore[arg-type]
+        notify_conn=None,
+        leader_conn=leader_conn,
+        owns_leader_conn=True,  # Why: exercises the TaskQ-owned bounded-close path.
+    )
+    deps.active_jobs = registry  # type: ignore[assignment]
+
+    backend = AsyncMock(spec=Backend)
+    mock_drain = AsyncMock(return_value=0)
+    monkeypatch.setattr(shutdown_mod, "drain_local_queue_to_pending", mock_drain)
+    # Shrink the teardown bound so the test doesn't wait the full 5s default.
+    monkeypatch.setattr(deps_mod, "_TEARDOWN_CLOSE_TIMEOUT_SECS", 0.05)
+
+    shut_event = asyncio.Event()
+
+    # Why the outer timeout: pre-fix orchestrate_shutdown awaited
+    # leader_conn.close() unbounded, so the RED state would hang forever
+    # instead of failing fast.
+    async with asyncio.timeout(5):
+        result = await orchestrate_shutdown(
+            deps,
+            deps.settings,
+            new_uuid(),
+            shut_event,
+            None,
+            backend=backend,
+        )
+
+    assert result == 0
+    leader_conn.terminate.assert_called_once()
+    assert deps.leader_conn is None
+
+
 # ── Hypothesis grace-budget invariant ────────────────────────────
 
 

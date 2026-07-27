@@ -7,8 +7,6 @@ Marked ``integration`` so they are skipped in non-integration runs.
 # ruff: noqa: SIM117 # Why: pytest.raises must wrap the async with statement; combined with-form is not valid here.
 
 import asyncio
-from contextlib import AsyncExitStack
-from typing import cast
 
 import asyncpg
 import pytest
@@ -246,22 +244,20 @@ async def test_partial_open_lifo_teardown_with_pg_failure(
 
     monkeypatch.setattr(deps_mod, "open_dedicated_conn", _fail_on_notify)
 
-    # Capture pools as AsyncExitStack registers them so we can assert they
-    # were closed. Patching the stack's enter_async_context is the cleanest
-    # observation point — every pool flows through it before notify_conn opens.
+    # Capture pools as teardown closes them so we can assert they were
+    # closed. Patching the _close_pool_bounded module global is the cleanest
+    # observation point — every pool teardown callback reads it at call time
+    # (pools are no longer entered via AsyncExitStack.enter_async_context).
     captured_pools: list[asyncpg.Pool] = []
-    original_enter = AsyncExitStack.enter_async_context
+    original_close_bounded = deps_mod._close_pool_bounded
 
-    async def _capturing_enter(self: AsyncExitStack, cm: object) -> object:
-        # Why: AsyncExitStack.enter_async_context returns the entered value;
-        # asyncpg.Pool is generic in record-class which we don't care about
-        # here, so we observe via isinstance and re-cast to object on return.
-        raw = await original_enter(self, cm)  # pyright: ignore[reportArgumentType, reportUnknownVariableType]
-        if isinstance(raw, asyncpg.Pool):
-            captured_pools.append(raw)  # pyright: ignore[reportUnknownArgumentType]
-        return cast(object, raw)
+    async def _capturing_close_bounded(
+        pool: asyncpg.Pool, label: str, drain_timeout: float
+    ) -> None:
+        captured_pools.append(pool)
+        await original_close_bounded(pool, label, drain_timeout)
 
-    monkeypatch.setattr(AsyncExitStack, "enter_async_context", _capturing_enter)
+    monkeypatch.setattr(deps_mod, "_close_pool_bounded", _capturing_close_bounded)
 
     with pytest.raises(asyncpg.PostgresConnectionError, match="simulated PG failure mid-startup"):
         async with open_worker_deps(settings):

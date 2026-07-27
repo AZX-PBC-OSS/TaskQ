@@ -16,7 +16,6 @@ orchestrator is already past CANCELLING.
 """
 
 import asyncio
-import contextlib
 import os
 import signal
 import sys
@@ -226,8 +225,15 @@ async def orchestrate_shutdown(
         # advisory lock early so a replacement pod can take over before
         # the SIGTERM budget expires.
         if deps.leader_conn is not None and deps.owns_leader_conn:
-            with contextlib.suppress(asyncpg.PostgresConnectionError, OSError):
-                await deps.leader_conn.close()
+            # Why a function-local import of private names: deps.py imports
+            # ShutdownPhase from THIS module, so a module-level import of
+            # deps.py would cycle. The bounded helper never raises (timeout
+            # → terminate, error → log), so the old suppress-wrapper around
+            # a bare conn.close() is dropped — a dead PG can no longer wedge
+            # shutdown on an unbounded close.
+            from taskq.worker.deps import _TEARDOWN_CLOSE_TIMEOUT_SECS, _close_conn_bounded
+
+            await _close_conn_bounded(deps.leader_conn, "leader", _TEARDOWN_CLOSE_TIMEOUT_SECS)
             deps.leader_conn = None
 
         return 0
