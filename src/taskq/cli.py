@@ -303,7 +303,8 @@ async def _status(settings: TaskQSettings) -> None:
     typer.echo(f"applied: {len(applied)}")
     for migration in migrate_mod.discover():
         marker = "✔" if migration.key in applied else " "
-        typer.echo(f"  [{marker}] {migration.filename}")
+        suffix = "" if migration.use_transaction else " (no transaction)"
+        typer.echo(f"  [{marker}] {migration.filename}{suffix}")
 
 
 async def _up(

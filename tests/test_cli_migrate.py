@@ -164,6 +164,35 @@ def test_migrate_status_hung_close_does_not_mask_body_error_exit_code(
     assert fake_conn.terminated is True
 
 
+def test_migrate_status_marks_no_transaction_migrations(monkeypatch: Any) -> None:
+    """migrate status annotates migrations that run outside a transaction so
+    operators can tell online-safe migrations from blocking ones."""
+    _patch_connect(monkeypatch)
+    transactional = _make_migration("01.00.00_01", "pre", "01.00.00_01_pre_normal.sql")
+    no_transaction = Migration(
+        version="01.00.02_01",
+        phase="post",
+        description="concurrent index",
+        filename="01.00.02_01_post_concurrent_idx.sql",
+        sql_template="SELECT 1;",
+        use_transaction=False,
+    )
+
+    monkeypatch.setattr(cli_mod.migrate_mod, "list_applied", AsyncMock(return_value=set()))
+    monkeypatch.setattr(
+        cli_mod.migrate_mod,
+        "discover",
+        lambda: [transactional, no_transaction],
+    )
+
+    result = runner.invoke(app, ["migrate", "status"])
+    assert result.exit_code == 0, f"stderr: {result.stderr}"
+    plain = plain_cli_output(result.output)
+    assert "01.00.02_01_post_concurrent_idx.sql (no transaction)" in plain
+    assert "01.00.00_01_pre_normal.sql (no transaction)" not in plain
+    assert "01.00.00_01_pre_normal.sql" in plain
+
+
 # ── migrate up ─────────────────────────────────────────────────────────────
 
 
