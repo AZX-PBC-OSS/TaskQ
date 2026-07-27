@@ -127,6 +127,52 @@ class TestSameKeyDifferentScope:
         assert len(ids) == 3
 
 
+# ── Batch parity: scope semantics hold through enqueue_batch ────
+
+
+class TestEnqueueBatchScopeParity:
+    """InMemoryBackend.enqueue_batch delegates to the single-enqueue path
+    per item; scope semantics must match the single-enqueue behavior and
+    the Postgres batch path (tests/test_postgres_batch_scope_collision.py)."""
+
+    async def test_batch_cross_scope_same_key_all_distinct(self) -> None:
+        backend = _make_backend()
+
+        rows = await backend.enqueue_batch(
+            [
+                make_enqueue_args(
+                    idempotency_key="k1", idempotency_scope="run-A", scheduled_at=_START
+                ),
+                make_enqueue_args(
+                    idempotency_key="k1", idempotency_scope="run-B", scheduled_at=_START
+                ),
+                make_enqueue_args(idempotency_key="k1", scheduled_at=_START),
+            ]
+        )
+
+        assert len({str(r.id) for r in rows}) == 3
+
+    async def test_batch_same_scope_same_key_dedupes(self) -> None:
+        backend = _make_backend()
+
+        rows = await backend.enqueue_batch(
+            [
+                make_enqueue_args(
+                    idempotency_key="k1", idempotency_scope="run-A", scheduled_at=_START
+                ),
+                make_enqueue_args(
+                    idempotency_key="k1",
+                    idempotency_scope="run-A",
+                    payload={"second": True},
+                    scheduled_at=_START,
+                ),
+            ]
+        )
+
+        assert len(rows) == 2
+        assert rows[0].id == rows[1].id
+
+
 # ── Same key AND same scope → dedupes ──────────────────────────
 
 

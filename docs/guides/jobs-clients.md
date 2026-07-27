@@ -196,6 +196,35 @@ remaining steps. Later steps only execute when earlier ones did not match or rai
 - **Rolling-deploy note:** mid-upgrade (the `pre` migration applied, `post` not yet), reusing a
   key under two *different* scopes raises `ScopedIdempotencyMigrationPendingError` instead of
   silently deduping against the wrong scope's job. Unscoped/same-scope calls are unaffected.
+  The error message tells the operator to run `taskq migrate up --phase post`.
+
+**Migrating from key-string embedding to scopes.** If you previously embedded a run/batch id into
+the key string to work around global uniqueness, move it to the scope and keep the key as the
+pure business key:
+
+```python
+# Before: run id baked into the key string
+await client.enqueue(
+    sync_actor,
+    payload,
+    idempotency_key=f"fetch:{sync_run_id}:{doc.id}",
+)
+
+# After: scope carries the run id, key carries the business key
+await client.enqueue(
+    sync_actor,
+    payload,
+    idempotency_key=f"fetch:{doc.id}",
+    idempotency_scope=sync_run_id,
+)
+```
+
+Both forms dedupe within one run; the scoped form additionally lets the same `doc.id` be
+re-fetched by a *later* run without waiting for prune. Note the two forms do **not** dedupe
+against each other — a key written as `fetch:{run}:{doc}` is a different key than `fetch:{doc}`
+in scope `{run}`. Cut over per-actor at a quiet point, or keep the old embedding for in-flight
+runs and scope only new ones.
+
 - `idempotency_key` does **not** bypass `max_pending`. The idempotency check fires at step 5,
   after the `max_pending` check at step 4. On the **first** call with a new key, `max_pending` is
   evaluated normally — if the queue is full, `MaxPendingExceededError` is raised and the job is
