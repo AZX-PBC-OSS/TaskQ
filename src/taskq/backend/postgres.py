@@ -143,7 +143,7 @@ _cancel_notify_sent_counter = _meter.create_counter(
     description="Total pg_notify calls fired for running-job cancel requests.",
 )
 
-_EXPECTED_PROTOCOL_VERSION = 2
+_EXPECTED_PROTOCOL_VERSION = 3
 if BACKEND_PROTOCOL_VERSION != _EXPECTED_PROTOCOL_VERSION:
     raise RuntimeError(
         f"PostgresBackend was built for protocol v{_EXPECTED_PROTOCOL_VERSION}; "

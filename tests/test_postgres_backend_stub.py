@@ -3,7 +3,7 @@
 Covers:
 - Importing PostgresBackend succeeds (version guard does not fire)
 - Static type compatibility: takes_backend(PostgresBackend(...)) type-checks
-- BACKEND_PROTOCOL_VERSION accessible from the postgres module equals 2
+- BACKEND_PROTOCOL_VERSION accessible from the postgres module equals 3
 - Stub can be constructed with Mock deps without a live PG
 """
 
@@ -51,8 +51,8 @@ class TestImportSucceeds:
 
         assert _ is PostgresBackend
 
-    def test_backend_protocol_version_is_two(self) -> None:
-        assert BACKEND_PROTOCOL_VERSION == 2
+    def test_backend_protocol_version_is_three(self) -> None:
+        assert BACKEND_PROTOCOL_VERSION == 3
 
     def test_backend_protocol_version_is_int(self) -> None:
         assert isinstance(BACKEND_PROTOCOL_VERSION, int)

@@ -22,6 +22,7 @@ from taskq.backend._records import (
     jsonb_to_dict,
 )
 from taskq.backend._sql_templates import SqlTemplates
+from taskq.backend.statemachine import ACTIVE_STATUSES, TERMINAL_STATUSES
 
 if TYPE_CHECKING:
     import asyncpg
@@ -57,12 +58,25 @@ async def _list_jobs(
         n += 1
         return f"{expr} = ${n}"
 
+    def _next_any_param(expr: str) -> str:
+        nonlocal n
+        n += 1
+        return f"{expr} = ANY(${n})"
+
     if filters.queue is not None:
         conditions.append(_next_param("queue"))
         params.append(filters.queue)
     if filters.status is not None:
-        conditions.append(_next_param("status"))
-        params.append(filters.status)
+        if isinstance(filters.status, str):
+            conditions.append(_next_param("status"))
+            params.append(filters.status)
+        else:
+            conditions.append(_next_any_param("status"))
+            params.append(list(filters.status))
+    elif filters.active is not None:
+        statuses = list(ACTIVE_STATUSES) if filters.active else list(TERMINAL_STATUSES)
+        conditions.append(_next_any_param("status"))
+        params.append(statuses)
     if filters.actor is not None:
         conditions.append(_next_param("actor"))
         params.append(filters.actor)

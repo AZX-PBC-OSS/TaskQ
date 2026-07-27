@@ -25,7 +25,7 @@ from pydantic import BaseModel, TypeAdapter
 
 from taskq._ids import new_job_id
 from taskq.actor import actor
-from taskq.backend._protocol import EnqueueArgs, JobFilter, ScheduleRecord
+from taskq.backend._protocol import EnqueueArgs, JobFilter, JobSortField, ScheduleRecord
 from taskq.client import CancelResult, JobHandle, JobsClient
 from taskq.client._args import build_enqueue_args
 from taskq.cron import ScheduleHandle
@@ -237,6 +237,69 @@ class TestList:
         page = await client.list(JobFilter(queue="alpha"))
         assert len(page.jobs) == 2
         assert all(j.queue == "alpha" for j in page.jobs)
+
+    async def test_list_order_by_created_at_desc_never_returns_cursor(self) -> None:
+        """Regression: next_cursor was always encoded from the default
+        (priority, scheduled_at, id) keyset regardless of order_by,
+        producing a non-None cursor that JobFilter.__post_init__ would
+        reject if the caller tried to use it.  With a non-default
+        order_by the cursor must be None even on a full page.
+        """
+        backend, client = _make_client()
+
+        # Enqueue 5 jobs (more than limit=3) so the page is exactly full.
+        for _ in range(5):
+            args = make_enqueue_args(scheduled_at=_START)
+            await backend.enqueue(args)
+
+        page = await client.list(JobFilter(limit=3, order_by=JobSortField.CREATED_AT_DESC))
+        assert len(page.jobs) == 3
+        assert page.next_cursor is None
+
+    async def test_list_order_by_finished_at_desc_never_returns_cursor(self) -> None:
+        """Regression: same bug as CREATED_AT_DESC — next_cursor was
+        always encoded from the default keyset.  Here jobs are run to
+        completion so finished_at is set, the page is full, and the
+        cursor must still be None.
+        """
+        backend, client = _make_client()
+
+        # Enqueue 5 jobs and run them to completion so finished_at is set.
+        for _ in range(5):
+            args = make_enqueue_args(scheduled_at=_START)
+            await backend.enqueue(args)
+
+        backend.register_stub("test_actor", lambda payload, ctx: {"ok": True})
+        await backend.run_until_drained()
+
+        page = await client.list(JobFilter(limit=3, order_by=JobSortField.FINISHED_AT_DESC))
+        assert len(page.jobs) == 3
+        assert page.next_cursor is None
+
+    async def test_list_order_by_scheduled_at_asc_still_returns_cursor(self) -> None:
+        """The cursor-suppression fix must not over-suppress: explicit
+        SCHEDULED_AT_ASC is the default ordering, so a full page still
+        produces a usable cursor that paginates to the end.
+        """
+        backend, client = _make_client()
+
+        for _ in range(5):
+            args = make_enqueue_args(scheduled_at=_START)
+            await backend.enqueue(args)
+
+        page1 = await client.list(JobFilter(limit=3, order_by=JobSortField.SCHEDULED_AT_ASC))
+        assert len(page1.jobs) == 3
+        assert page1.next_cursor is not None
+
+        page2 = await client.list(
+            JobFilter(limit=3, order_by=JobSortField.SCHEDULED_AT_ASC, cursor=page1.next_cursor)
+        )
+        assert len(page2.jobs) == 2
+        assert page2.next_cursor is None
+
+        page1_ids = {j.id for j in page1.jobs}
+        page2_ids = {j.id for j in page2.jobs}
+        assert page1_ids.isdisjoint(page2_ids)
 
 
 # ── Singleton metadata injection helpers ─────────────────────────────────

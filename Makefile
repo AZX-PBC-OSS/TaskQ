@@ -19,13 +19,14 @@ test:
 	uv run pytest -n 4
 
 test-cov:
-	uv run pytest -n 4 --cov=taskq --cov-report=term-missing --cov-report=html
+	uv run pytest -n 4 --cov=taskq --cov-report=term-missing --cov-report=html --cov-fail-under=90
 
 test-fast:
 	uv run pytest -n 4 -m "not integration"
 
 lint:
 	uv run ruff check .
+	uv run ruff format --check .
 
 format:
 	uv run ruff format .

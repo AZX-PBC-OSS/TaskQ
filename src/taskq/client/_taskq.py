@@ -379,7 +379,12 @@ class TaskQ:
         return await self._require_open().get(job_id, result_adapter=result_adapter)
 
     async def list(self, filter: JobFilter) -> JobPage:
-        """List jobs matching *filter*, returning a :class:`JobPage`."""
+        """List jobs matching *filter*, returning a :class:`JobPage`.
+
+        Delegates to :meth:`JobsClient.list` — note ``filter.active``
+        is not Celery's 'active' ('currently executing'); it selects by
+        terminality ('not yet finished').  See :class:`JobFilter`.
+        """
         return await self._require_open().list(filter)
 
     async def cancel(

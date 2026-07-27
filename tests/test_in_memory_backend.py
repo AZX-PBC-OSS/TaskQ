@@ -125,8 +125,8 @@ async def _make_running_row(
 
 
 class TestProtocolVersion:
-    def test_version_is_two(self) -> None:
-        assert BACKEND_PROTOCOL_VERSION == 2
+    def test_version_is_three(self) -> None:
+        assert BACKEND_PROTOCOL_VERSION == 3
 
     def test_version_matches_backend(self) -> None:
         from taskq.backend import BACKEND_PROTOCOL_VERSION as backend_ver  # noqa: N811, I001  # Why: alias avoids shadowing the un-aliased import above; inline import avoids name collision
