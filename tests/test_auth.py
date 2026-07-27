@@ -305,6 +305,52 @@ async def test_make_pg_pool_factory_refetches_credential_per_invocation() -> Non
     assert provider.calls == 2
 
 
+async def test_make_pg_pool_factory_forwards_init_hook_verbatim() -> None:
+    """init= reaches asyncpg.create_pool as-is, alongside the factory's own
+    kwargs — the per-connection hook for e.g. pgvector codec registration."""
+    provider = _FakePgProvider(password="tok-555")
+
+    async def init(conn: Any) -> None:
+        await conn.set_type_codec("vector", encoder=lambda v: v, decoder=lambda v: v, format="text")
+
+    factory = make_pg_pool_factory(
+        "postgresql://user@host:5432/db", provider, command_timeout=5, init=init
+    )
+
+    fake_pool = MagicMock()
+    with patch("asyncpg.create_pool", new=AsyncMock(return_value=fake_pool)) as mock_create:
+        await factory()
+
+    call_kwargs = mock_create.call_args.kwargs
+    # Identity — the caller's coroutine function itself, never a wrapper.
+    assert call_kwargs["init"] is init
+    # Composition: the factory's own kwargs are untouched by the hook.
+    assert call_kwargs["password"] == "tok-555"
+    assert call_kwargs["command_timeout"] == 5
+    assert "sslmode=require" in call_kwargs["dsn"]
+
+    # Drive the hook the way asyncpg does — once per new physical
+    # connection — and verify it registers a codec ON THAT CONNECTION
+    # (the pgvector use case), not merely that a callable was passed.
+    conn = MagicMock()
+    conn.set_type_codec = AsyncMock()
+    await call_kwargs["init"](conn)
+    conn.set_type_codec.assert_awaited_once()
+    assert conn.set_type_codec.call_args.args[0] == "vector"
+
+
+async def test_make_pg_pool_factory_omits_init_when_not_provided() -> None:
+    """Without init=, no init kwarg reaches create_pool — existing callers
+    are byte-for-byte unaffected (same forwarding contract as command_timeout)."""
+    provider = _FakePgProvider(password="tok")
+    factory = make_pg_pool_factory("postgresql://user@host/db", provider)
+
+    with patch("asyncpg.create_pool", new=AsyncMock(return_value=MagicMock())) as mock_create:
+        await factory()
+
+    assert "init" not in mock_create.call_args.kwargs
+
+
 # ── make_dedicated_conn_factory ────────────────────────────────────────
 
 

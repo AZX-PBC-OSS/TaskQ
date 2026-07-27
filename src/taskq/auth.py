@@ -42,6 +42,7 @@ adapter.
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from urllib.parse import parse_qs, quote, urlencode, urlparse, urlunparse
@@ -207,6 +208,7 @@ def make_pg_pool_factory(
     max_size: int = 4,
     max_inactive_connection_lifetime: float = 300.0,
     command_timeout: float | None = None,
+    init: Callable[[asyncpg.Connection], Awaitable[None]] | None = None,
 ) -> PoolFactory:
     """Build a :data:`~taskq.connections.PoolFactory` backed by *provider*.
 
@@ -225,6 +227,21 @@ def make_pg_pool_factory(
     — this factory is re-invoked automatically to rebuild the pool with a
     fresh credential (see ``taskq.worker.deps.reload_credentials``); no
     restart needed.
+
+    Per-connection setup: *init* is forwarded verbatim to
+    ``asyncpg.create_pool`` and runs **once per new physical connection**
+    — on the connections opened at pool creation, on connections opened
+    later by pool growth, and again on replacements opened after
+    ``max_inactive_connection_lifetime`` recycles an idle connection.
+    That lifecycle is exactly why this setup (registering type codecs —
+    e.g. ``pgvector.asyncpg.register_vector`` — preparing statements,
+    setting session GUCs) cannot be done correctly after pool creation:
+    a connection configured by hand is silently replaced under load or
+    after an idle period. This factory installs no per-connection setup
+    of its own (credential rotation happens per factory invocation, at
+    pool construction — not per connection), so a caller-supplied *init*
+    is the only hook: it is passed through unwrapped and can never
+    silently replace internal setup.
     """
     import asyncpg  # Why: deferred so this module is import-safe without asyncpg at module load.
 
@@ -241,6 +258,8 @@ def make_pg_pool_factory(
             kwargs["user"] = credential.username
         if command_timeout is not None:
             kwargs["command_timeout"] = command_timeout
+        if init is not None:
+            kwargs["init"] = init
         pool = await asyncpg.create_pool(**kwargs)
         assert pool is not None  # asyncpg returns None only for record_class paths
         return pool
