@@ -215,7 +215,10 @@ async def _check_reclaim_visibility_risk(
     longer than *visibility_delay* — a candidate cause of a silently
     missed ``poll_reclaim_events`` event. See
     :class:`LongRunningJobEventsWriter`. Not part of the ``Backend``
-    protocol (diagnostic, not a core operation). Wired into
+    protocol (diagnostic, not a core operation) — ``InMemoryBackend``
+    therefore has no equivalent, so a dedicated monitoring loop consuming
+    this must branch on backend type (or ``getattr``-probe, as
+    ``taskq.client._taskq._probe_visibility_risk`` does). Wired into
     ``TaskQ.watch_reclaims`` on a slow cadence by default (see
     ``taskq.client._taskq._probe_visibility_risk``); also callable
     directly from a dedicated monitoring/alerting loop that wants a

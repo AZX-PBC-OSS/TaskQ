@@ -498,6 +498,11 @@ class PostgresBackend:
         ``poll_reclaim_events`` event (see
         ``taskq.constants.RECLAIM_EVENT_VISIBILITY_DELAY``).
 
+        Postgres-only: it is deliberately not on the ``Backend`` protocol,
+        so ``InMemoryBackend`` has no equivalent and a monitoring loop
+        consuming this must branch on backend type (or ``getattr``-probe,
+        as ``taskq.client._taskq._probe_visibility_risk`` does).
+
         Run automatically by every ``TaskQ.watch_reclaims`` consumer on a
         slow cadence (``taskq.client._taskq._VISIBILITY_RISK_CHECK_INTERVAL``,
         default 60s) so a violated margin assumption is loud by default;

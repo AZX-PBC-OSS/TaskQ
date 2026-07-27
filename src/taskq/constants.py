@@ -32,24 +32,34 @@ __all__ = [
 RECLAIM_EVENT_VISIBILITY_DELAY: Final[timedelta] = timedelta(seconds=2)
 """Trailing-watermark safety margin for ``poll_reclaim_events``.
 
-``job_events.id`` (bigserial) and ``occurred_at`` (``clock_timestamp()``)
-are both stamped at INSERT time within the same statement, so they are
-co-monotonic: whichever row was inserted first always has both the lower
-``id`` and the earlier ``occurred_at``. A plain ``SELECT`` can never see
+``job_events.id`` (bigserial ``nextval``) and ``occurred_at``
+(``clock_timestamp()``) are both stamped at INSERT time within the same
+statement, so they are co-monotonic: whichever row was inserted first has
+both the lower ``id`` and the earlier ``occurred_at``. Strictly, this
+co-monotonicity is itself an assumption, not a guarantee: the two values
+come from separate volatile calls which Postgres does not evaluate
+atomically with respect to concurrent transactions, so in principle one
+transaction can evaluate both of its own between another transaction's
+``nextval`` and ``clock_timestamp()``, stamping a lower ``id`` with a
+later ``occurred_at`` — the exact inversion the watermark exists to
+prevent. The window is nanosecond-scale and no occurrence is known, but
+"by construction" is too strong a claim. A plain ``SELECT`` can never see
 an uncommitted sibling row at all (it is invisible under MVCC, not just
 filtered out), so no snapshot- or transaction-id-based predicate computed
 only over *visible* rows can detect one. Instead, ``poll_reclaim_events``
 only returns rows whose ``occurred_at`` is older than this margin: by the
 time a row clears it, any transaction that could have inserted a
-still-lower ``id`` has, by construction, had at least as long to commit —
+still-lower ``id`` has had at least as long to commit —
 so it must have either committed already (and is returned, correctly
 ordered, in this or an earlier poll) or aborted (permanently gone, safe
 to skip).
 
-**This guarantee is conditional, not unconditional.** It assumes no
-``job_events`` writer takes longer than this margin between its INSERT
-and its COMMIT. Sweep and terminal-write transactions are a handful of
-single-round-trip statements with no external I/O, so this is a generous
+**This guarantee is conditional, not unconditional.** It assumes (a) the
+non-interleaving of ``nextval``/``clock_timestamp()`` described above,
+and (b) that no ``job_events`` writer takes longer than this margin
+between its INSERT and its COMMIT. Sweep and terminal-write transactions
+are a handful of single-round-trip statements with no external I/O, so
+this is a generous
 bound under normal operation — but it is an assumption enforced by
 nothing in the SQL itself, not a property the query guarantees on its
 own. Known ways it can be violated: lock contention delaying commit

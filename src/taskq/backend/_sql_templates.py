@@ -527,9 +527,13 @@ ORDER BY occurred_at, event_id""",
 -- (a transaction that commits first can hold a lower transaction id but
 -- a HIGHER event_id than one still open with a LOWER event_id).
 --
--- id (bigserial) and occurred_at (clock_timestamp()) are stamped at the
--- same INSERT instant, so they are co-monotonic: an earlier id always
--- has an earlier-or-equal occurred_at.  Only rows older than
+-- id (bigserial nextval) and occurred_at (clock_timestamp()) are stamped
+-- by the same INSERT statement, so they are co-monotonic: an earlier id
+-- has an earlier-or-equal occurred_at — provided the two volatile calls
+-- do not interleave across concurrent transactions within a single
+-- INSERT (Postgres gives no such atomicity; the window is nanosecond-
+-- scale — see taskq.constants.RECLAIM_EVENT_VISIBILITY_DELAY).  Only
+-- rows older than
 -- RECLAIM_EVENT_VISIBILITY_DELAY are returned: by the time a row clears
 -- that margin, any transaction that could have inserted a still-lower
 -- id has had at least as long to commit, so it must have either

@@ -240,9 +240,16 @@ reasons worth recording so they aren't retried:
   not to depend on them here without deeper investigation.)
 
 Instead, `poll_reclaim_events` uses a **trailing-watermark (visibility delay)
-filter**: `id` and `occurred_at` (`clock_timestamp()`) are stamped at the same
-INSERT instant, so they are co-monotonic — an earlier id always has an
-earlier-or-equal `occurred_at`. Only rows older than
+filter**: `id` (`nextval`) and `occurred_at` (`clock_timestamp()`) are stamped
+by the same INSERT statement, so they are co-monotonic — an earlier id has an
+earlier-or-equal `occurred_at`. (Co-monotonicity itself is an assumption, not
+a guarantee: the two values come from separate volatile calls that Postgres
+does not evaluate atomically across concurrent transactions, so one
+transaction can in principle evaluate both of its own between another's
+`nextval` and `clock_timestamp()`, stamping a lower id with a later
+`occurred_at` — the window is nanosecond-scale and no occurrence is known,
+but the watermark is only as exact as this non-interleaving assumption.)
+Only rows older than
 `taskq.constants.RECLAIM_EVENT_VISIBILITY_DELAY` (2 seconds by default) are
 returned: by the time a row clears that margin, any transaction that could
 have inserted a still-lower id has had at least as long to commit, so it must
