@@ -165,7 +165,7 @@ See [observability.md](observability.md) for OTel configuration.
 
 | Env Var | Type | Default | Description | Constraints |
 |---|---|---|---|---|
-| `TASKQ_FORCE_UPDATE_ACTOR_CONFIG` | `bool` | `false` | When `true`, silently overwrites stored `actor_config` rows that differ from registered values. When `false`, drift raises `ActorConfigDriftList` and the worker refuses to start. Use for one deploy when intentionally changing `max_concurrent`, `queue`, or `metadata`, then unset. | — |
+| `TASKQ_FORCE_UPDATE_ACTOR_CONFIG` | `bool` | `false` | When `true`, silently overwrites a stored `actor_config` row's `queue` or `metadata` if they differ from the registered values. When `false`, that structural drift raises `ActorConfigDriftList` and the worker refuses to start. Does not affect `max_concurrent` / `max_pending` / `result_ttl` — those are operator-owned once a row exists and are never overwritten by the registered literal regardless of this flag; use `taskq actor-config set` to change them. Use for one deploy when intentionally re-routing an actor's `queue` or `metadata`, then unset. | — |
 
 ### Cron Scheduler
 

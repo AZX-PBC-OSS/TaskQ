@@ -110,9 +110,9 @@ def test_drift_error_produces_exit_one_and_hint(monkeypatch: Any) -> None:
     """ActorConfigDriftList caught at CLI — exit 1 with drift message and hint."""
     drift_error = ActorConfigDriftError(
         actor="test_actor",
-        field="max_concurrent",
-        registered=3,
-        stored=5,
+        field="queue",
+        registered="critical",
+        stored="default",
     )
     drift_list = ActorConfigDriftList((drift_error,))
 

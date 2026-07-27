@@ -301,16 +301,23 @@ _ACTOR_CONFIG_DRIFT_HINT = (
 
 
 class ActorConfigDriftError(TaskQError):
-    """One actor whose registered config differs from the stored row."""
+    """One actor whose registered *structural* config differs from the stored row.
+
+    Only ``queue`` and ``metadata`` are structural — a mismatch there means
+    a stale worker is routing an actor to the wrong place, which is a
+    correctness bug. Capacity fields (``max_concurrent``, ``max_pending``,
+    ``result_ttl``) are operator-owned and never raise this error; see
+    :func:`taskq.worker.startup.sync_actor_config`.
+    """
 
     hint = _ACTOR_CONFIG_DRIFT_HINT
 
     def __init__(
         self,
         actor: str,
-        field: Literal["max_concurrent", "max_pending", "queue", "result_ttl", "metadata"],
-        registered: int | float | str | dict[str, object] | None,
-        stored: int | float | str | dict[str, object] | None,
+        field: Literal["queue", "metadata"],
+        registered: str | dict[str, object] | None,
+        stored: str | dict[str, object] | None,
     ) -> None:
         self.actor = actor
         self.field = field

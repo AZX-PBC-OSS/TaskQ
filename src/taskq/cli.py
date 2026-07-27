@@ -31,6 +31,14 @@ from taskq._close import (
 from taskq.actor import ActorRef
 from taskq.exceptions import ActorConfigDriftList
 from taskq.settings import TaskQSettings, WorkerSettings
+from taskq.worker.actor_config_ops import (
+    UNSET,
+    ActorConfigRow,
+    Unset,
+    get_actor_config,
+    list_actor_configs,
+    set_actor_config_capacity,
+)
 from taskq.worker.dev import dev_watch_loop
 from taskq.worker.run import worker_main as _worker_main
 
@@ -59,6 +67,12 @@ workgroup_app = typer.Typer(
 )
 app.add_typer(workgroup_app, name="workgroup")
 
+actor_config_app = typer.Typer(
+    no_args_is_help=True,
+    help="Inspect and tune stored actor_config capacity fields on a live deployment.",
+)
+app.add_typer(actor_config_app, name="actor-config")
+
 
 @worker_app.callback(invoke_without_command=True)
 def worker(
@@ -71,15 +85,17 @@ def worker(
     force_update_actor_config: bool = typer.Option(
         False,
         "--force-update-actor-config",
-        help="Allow sync_actor_config to overwrite stored actor_config rows that differ from "
-        "the registered values. Use for one deploy to deliberately change a stored "
-        "max_concurrent / queue / metadata, then unset. Equivalent to env var "
+        help="Allow sync_actor_config to overwrite a stored actor_config row whose queue "
+        "or metadata differ from the registered values. Use for one deploy to "
+        "deliberately re-route an actor, then unset. Capacity fields "
+        "(max_concurrent / max_pending / result_ttl) are unaffected — use "
+        "`taskq actor-config set` for those. Equivalent to env var "
         "TASKQ_FORCE_UPDATE_ACTOR_CONFIG=true.",
     ),
     queues: list[str] | None = typer.Option(
         None,
         "--queues",
-        help="Comma-separated list of queue names to consume from. Overrides TASKQ_QUEUES.",
+        help="Queue names to consume from (repeat the flag once per queue). Overrides TASKQ_QUEUES.",
     ),
     max_concurrency: int | None = typer.Option(
         None,
@@ -305,6 +321,155 @@ async def _up(
     typer.echo(f"applied {len(applied)} migration(s):")
     for migration in applied:
         typer.echo(f"  {migration.filename}")
+
+
+def _print_actor_config_row(row: ActorConfigRow) -> None:
+    typer.echo(
+        f"  {row.actor}: max_concurrent={row.max_concurrent} "
+        f"max_pending={row.max_pending} queue={row.queue} "
+        f"result_ttl={row.result_ttl} updated_at={row.updated_at}"
+    )
+
+
+@actor_config_app.command("list")
+def actor_config_list() -> None:
+    """List every stored actor_config row."""
+    settings = TaskQSettings.load()
+    asyncio.run(_actor_config_list(settings))
+
+
+async def _actor_config_list(settings: TaskQSettings) -> None:
+    conn = await asyncpg.connect(str(settings.pg_dsn))
+    try:
+        rows = await list_actor_configs(conn, schema=settings.schema_name)
+    finally:
+        await conn.close()
+    if not rows:
+        typer.echo("no actor_config rows")
+        return
+    for row in rows:
+        _print_actor_config_row(row)
+
+
+@actor_config_app.command("get")
+def actor_config_get(
+    actor: Annotated[str, typer.Argument(help="Actor name.")],
+) -> None:
+    """Show the stored actor_config row for one actor."""
+    settings = TaskQSettings.load()
+    asyncio.run(_actor_config_get(settings, actor))
+
+
+async def _actor_config_get(settings: TaskQSettings, actor: str) -> None:
+    conn = await asyncpg.connect(str(settings.pg_dsn))
+    try:
+        row = await get_actor_config(conn, actor, schema=settings.schema_name)
+    finally:
+        await conn.close()
+    if row is None:
+        typer.echo(f"no stored actor_config row for actor {actor!r}", err=True)
+        raise typer.Exit(code=1)
+    _print_actor_config_row(row)
+
+
+@actor_config_app.command("set")
+def actor_config_set(
+    actor: Annotated[str, typer.Argument(help="Actor name.")],
+    max_concurrent: Annotated[
+        int | None,
+        typer.Option(
+            "--max-concurrent",
+            min=0,
+            help="New fleet-wide concurrency cap. Takes effect on the next dispatch cycle "
+            "(no worker restart) — the dispatch query re-reads this column every cycle.",
+        ),
+    ] = None,
+    clear_max_concurrent: Annotated[
+        bool, typer.Option("--clear-max-concurrent", help="Set max_concurrent back to unlimited.")
+    ] = False,
+    result_ttl: Annotated[
+        float | None,
+        typer.Option(
+            "--result-ttl",
+            min=0,
+            help="New result TTL in seconds. Takes effect for jobs completing after this "
+            "change (no worker restart) — the terminal-write UPDATE re-reads this column "
+            "for every job.",
+        ),
+    ] = None,
+    clear_result_ttl: Annotated[
+        bool, typer.Option("--clear-result-ttl", help="Set result_ttl back to unset.")
+    ] = False,
+) -> None:
+    """Update capacity fields on an existing actor_config row.
+
+    Only flags actually passed are changed. An actor must already have a
+    stored row (created by a worker startup that registered it) before
+    its capacity can be tuned here.
+
+    ``max_pending`` is deliberately NOT exposed here: ``enqueue()``'s
+    pending-queue-depth check always compares against the actor's
+    ``@actor(max_pending=...)`` code literal (``taskq/client/_args.py``),
+    never against the stored `actor_config` row, so a CLI flag to set it
+    would have no enforcement effect — exactly the "documented capability
+    the engine doesn't deliver" defect this surface exists to avoid.
+    Change ``max_pending`` by editing the decorator and redeploying.
+    """
+    if max_concurrent is not None and clear_max_concurrent:
+        typer.echo("--max-concurrent and --clear-max-concurrent are mutually exclusive", err=True)
+        raise typer.Exit(code=1)
+    if result_ttl is not None and clear_result_ttl:
+        typer.echo("--result-ttl and --clear-result-ttl are mutually exclusive", err=True)
+        raise typer.Exit(code=1)
+
+    mc: int | None | Unset = UNSET
+    if clear_max_concurrent:
+        mc = None
+    elif max_concurrent is not None:
+        mc = max_concurrent
+
+    rt: float | None | Unset = UNSET
+    if clear_result_ttl:
+        rt = None
+    elif result_ttl is not None:
+        rt = result_ttl
+
+    if isinstance(mc, Unset) and isinstance(rt, Unset):
+        typer.echo(
+            "nothing to change — pass at least one --max-concurrent/--result-ttl or --clear-* flag",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    settings = TaskQSettings.load()
+    asyncio.run(_actor_config_set(settings, actor, mc, rt))
+
+
+async def _actor_config_set(
+    settings: TaskQSettings,
+    actor: str,
+    max_concurrent: int | None | Unset,
+    result_ttl: float | None | Unset,
+) -> None:
+    conn = await asyncpg.connect(str(settings.pg_dsn))
+    try:
+        row = await set_actor_config_capacity(
+            conn,
+            actor,
+            max_concurrent=max_concurrent,
+            result_ttl=result_ttl,
+            schema=settings.schema_name,
+        )
+    finally:
+        await conn.close()
+    if row is None:
+        typer.echo(
+            f"no stored actor_config row for actor {actor!r} — it must be registered by a "
+            "worker startup first",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    _print_actor_config_row(row)
 
 
 async def _health_request(settings: WorkerSettings, path: str) -> int:

@@ -713,12 +713,16 @@ class WorkerSettings(TaskQSettings):
     force_update_actor_config: bool = Field(
         default=False,
         description=(
-            "When True, sync_actor_config silently overwrites stored "
-            "actor_config rows that differ from the registered values. "
-            "When False (the default), drift raises ActorConfigDriftList "
-            "and the worker refuses to start. Set to True for one deploy "
-            "to deliberately change a stored max_concurrent / queue / "
-            "metadata, then unset. Env var: TASKQ_FORCE_UPDATE_ACTOR_CONFIG."
+            "When True, sync_actor_config silently overwrites a stored "
+            "actor_config row whose queue or metadata differ from the "
+            "registered values. When False (the default), that structural "
+            "drift raises ActorConfigDriftList and the worker refuses to "
+            "start. Capacity fields (max_concurrent, max_pending, "
+            "result_ttl) are unaffected by this flag: once a row exists, "
+            "the stored value is always authoritative and is never "
+            "overwritten by the registered @actor(...) literal, "
+            "regardless of force. Use `taskq actor-config set` to change "
+            "a stored capacity value. Env var: TASKQ_FORCE_UPDATE_ACTOR_CONFIG."
         ),
     )
 

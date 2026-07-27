@@ -316,6 +316,82 @@ async def test_sync_ordering_bootstrap_to_dispatch(
     assert row["cnt"] == 3, f"expected 3 pending, got {row['cnt']}"
 
 
+# ── Live capacity change (no worker restart) ────────────────────
+
+
+@pytest.mark.asyncio
+async def test_live_capacity_change_takes_effect_without_restart(
+    jobs_app: JobsApp,
+) -> None:
+    """A stored max_concurrent change is visible to the very next dispatch
+    call — no ``sync_actor_config`` re-run, no worker restart.
+
+    This is the load-bearing claim behind treating max_concurrent as an
+    operator-tunable field: the dispatch CTE joins ``actor_config`` fresh
+    on every call (``taskq/backend/_dispatch_sql.py``), so an out-of-band
+    UPDATE — exactly what ``taskq actor-config set`` issues — is picked
+    up immediately.
+
+    Oracle: sync with max_concurrent=2, dispatch once (2 running, cap
+    reached). Directly UPDATE the stored row to max_concurrent=4 —
+    simulating an operator running `taskq actor-config set` while the
+    worker keeps running. Dispatch again with the same worker/backend
+    and assert 2 MORE jobs start running (4 total), proving the second
+    dispatch call read the new cap.
+    """
+    deps = jobs_app.deps
+    backend = jobs_app.backend
+    schema = deps.settings.schema_name
+
+    await register_worker(deps.dispatcher_pool, deps.settings)
+
+    configs = [ActorConfig(actor="S", max_concurrent=2, queue="default", metadata={})]
+    async with deps.dispatcher_pool.acquire() as conn:
+        await sync_actor_config(
+            conn,  # type: ignore[arg-type] # Why: PoolConnectionProxy is a transparent proxy delegating to the real Connection; asyncpg's public API accepts it interchangeably
+            configs,
+            force=False,
+            schema=schema,
+        )
+
+    for _i in range(8):
+        await backend.enqueue(make_enqueue_args(actor="S"))
+
+    worker_id = new_uuid()
+
+    first = await backend.dispatch_batch(
+        worker_id=worker_id,
+        queues=["default"],
+        limit=10,
+        lock_lease=_LEASE,
+    )
+    assert len(first) == 2, f"expected 2 running at max_concurrent=2, got {len(first)}"
+
+    # Operator override, out of band — exactly what `taskq actor-config
+    # set S --max-concurrent 4` does under the hood. No sync_actor_config
+    # call, no worker restart.
+    async with deps.dispatcher_pool.acquire() as conn:
+        await conn.execute(
+            f'UPDATE "{schema}".actor_config SET max_concurrent = 4 WHERE actor = $1',
+            "S",
+        )
+
+    second = await backend.dispatch_batch(
+        worker_id=worker_id,
+        queues=["default"],
+        limit=10,
+        lock_lease=_LEASE,
+    )
+    assert len(second) == 2, (
+        f"expected 2 MORE jobs to start after raising max_concurrent to 4 "
+        f"without a restart, got {len(second)}"
+    )
+
+    async with deps.worker_pool.acquire() as conn:
+        running = await _count_running(conn, schema, "S")
+    assert running == 4, f"expected 4 running after the live cap change, got {running}"
+
+
 # ── Lock expiry during dispatch (chaos) ─────────────────────────
 
 

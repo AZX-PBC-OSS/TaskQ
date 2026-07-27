@@ -22,6 +22,17 @@ SELECT actor, max_concurrent, max_pending, queue, result_ttl, metadata
  WHERE actor = ANY($1::text[])
 """.strip()
 
+# ``max_concurrent``, ``max_pending``, and ``result_ttl`` are deliberately
+# absent from the ``DO UPDATE SET`` clause: Postgres leaves an unlisted
+# column at its current value on conflict, so an existing row's capacity
+# fields survive every subsequent startup untouched no matter what the
+# ``@actor(...)`` literal says. Those columns are only ever populated via
+# the ``INSERT`` list — i.e. the first time a row is created (seeding) — or
+# via `taskq actor-config set` (operator override). ``queue`` and
+# ``metadata`` remain structural: they are always re-written from the
+# registered value, which is safe because `sync_actor_config` has already
+# raised (or the caller passed ``force=True``) for any structural drift
+# before this statement runs.
 _UPSERT_ACTOR_CONFIG_SQL = """
 INSERT INTO "{schema}".actor_config (actor, max_concurrent, max_pending, queue, result_ttl, metadata)
 SELECT actor, max_concurrent, max_pending, queue, result_ttl, metadata::jsonb
@@ -29,13 +40,22 @@ SELECT actor, max_concurrent, max_pending, queue, result_ttl, metadata::jsonb
       $1::text[], $2::int[], $3::int[], $4::text[], $5::float[], $6::text[]
   ) AS t(actor, max_concurrent, max_pending, queue, result_ttl, metadata)
 ON CONFLICT (actor) DO UPDATE SET
-    max_concurrent = EXCLUDED.max_concurrent,
-    max_pending    = EXCLUDED.max_pending,
     queue          = EXCLUDED.queue,
-    result_ttl     = EXCLUDED.result_ttl,
     metadata       = EXCLUDED.metadata,
     updated_at     = now()
 """.strip()
+
+# Fields whose stored value is operator-owned once a row exists: the
+# ``@actor(...)`` literal only seeds the row on first registration
+# (`stored_row is None` branch below); on every subsequent startup the
+# stored value wins and a differing literal is *expected*, not an error.
+_CAPACITY_FIELDS = ("max_concurrent", "max_pending", "result_ttl")
+
+# Fields where a stored/registered mismatch indicates a real correctness
+# bug (e.g. a stale pod routing an actor at the wrong queue) rather than a
+# deliberate operator override, and therefore still raise unless
+# ``force=True``.
+_STRUCTURAL_FIELDS = ("queue", "metadata")
 
 
 async def sync_actor_config(
@@ -49,17 +69,28 @@ async def sync_actor_config(
 
     Two-phase write:
       1. SELECT existing rows for the registered actors.
-      2. For each registered actor whose stored row differs from the
-         registered values, collect one ``ActorConfigDriftError`` per
-         differing field. If ``force=False``
-         and one or more drifts exist, raise ``ActorConfigDriftList``
-         containing all collected drifts. If ``force=True``, log
-         ``actor-config-drift-overwrite`` at error level for each drift
-         and continue.
+      2. For each registered actor with a stored row, compare the
+         registered value to the stored value field by field:
+
+         - **Capacity fields** (``max_concurrent``, ``max_pending``,
+           ``result_ttl``) are operator-owned once a row exists. A
+           differing registered literal is logged at
+           ``actor-config-capacity-override`` (info level — this is an
+           expected operator override, not a bug) and never raises. The
+           stored value is left untouched by the UPSERT below.
+         - **Structural fields** (``queue``, ``metadata``) still raise:
+           one ``ActorConfigDriftError`` per differing field, collected
+           into ``ActorConfigDriftList`` and raised unless ``force=True``.
+           With ``force=True`` the mismatch is logged at
+           ``actor-config-drift-overwrite`` (error level) and the UPSERT
+           overwrites the stored value.
       3. Upsert all registered rows via ``INSERT ... ON CONFLICT (actor)
-         DO UPDATE SET max_concurrent = EXCLUDED.max_concurrent,
-         queue = EXCLUDED.queue, metadata = EXCLUDED.metadata,
-         updated_at = now()``.
+         DO UPDATE SET queue = EXCLUDED.queue, metadata =
+         EXCLUDED.metadata, updated_at = now()`` — capacity columns are
+         omitted from the ``SET`` clause so an existing row's
+         ``max_concurrent`` / ``max_pending`` / ``result_ttl`` survive
+         unchanged; they are populated by the ``INSERT`` list only when
+         the row is first created.
 
     Both phases run inside a single ``async with conn.transaction():``
     block so a SELECT-then-UPSERT race is impossible against another
@@ -97,97 +128,48 @@ async def sync_actor_config(
             if stored_row is None:
                 continue
 
-            stored_mc = stored_row["max_concurrent"]
-            stored_mp = stored_row["max_pending"]
-            stored_queue = stored_row["queue"]
-            stored_result_ttl = stored_row["result_ttl"]
-            stored_metadata_raw: str = stored_row["metadata"]
-            stored_metadata: dict[str, object] = loads(stored_metadata_raw)
+            stored_metadata: dict[str, object] = loads(stored_row["metadata"])
 
-            if cfg.max_concurrent != stored_mc:
-                drift = ActorConfigDriftError(
-                    actor=cfg.actor,
-                    field="max_concurrent",
-                    registered=cfg.max_concurrent,
-                    stored=stored_mc,
-                )
-                drifts.append(drift)
-                logger.error(
-                    "actor-config-drift-overwrite",
-                    actor=cfg.actor,
-                    field="max_concurrent",
-                    registered=cfg.max_concurrent,
-                    stored=stored_mc,
-                    force=force,
-                )
+            capacity_values: dict[str, int | float | None] = {
+                "max_concurrent": stored_row["max_concurrent"],
+                "max_pending": stored_row["max_pending"],
+                "result_ttl": stored_row["result_ttl"],
+            }
+            for field in _CAPACITY_FIELDS:
+                registered_value = getattr(cfg, field)
+                stored_value = capacity_values[field]
+                if registered_value != stored_value:
+                    logger.info(
+                        "actor-config-capacity-override",
+                        actor=cfg.actor,
+                        field=field,
+                        registered=registered_value,
+                        stored=stored_value,
+                    )
 
-            if cfg.max_pending != stored_mp:
-                drift = ActorConfigDriftError(
-                    actor=cfg.actor,
-                    field="max_pending",
-                    registered=cfg.max_pending,
-                    stored=stored_mp,
-                )
-                drifts.append(drift)
-                logger.error(
-                    "actor-config-drift-overwrite",
-                    actor=cfg.actor,
-                    field="max_pending",
-                    registered=cfg.max_pending,
-                    stored=stored_mp,
-                    force=force,
-                )
-
-            if cfg.queue != stored_queue:
-                drift = ActorConfigDriftError(
-                    actor=cfg.actor,
-                    field="queue",
-                    registered=cfg.queue,
-                    stored=stored_queue,
-                )
-                drifts.append(drift)
-                logger.error(
-                    "actor-config-drift-overwrite",
-                    actor=cfg.actor,
-                    field="queue",
-                    registered=cfg.queue,
-                    stored=stored_queue,
-                    force=force,
-                )
-
-            if cfg.result_ttl != stored_result_ttl:
-                drift = ActorConfigDriftError(
-                    actor=cfg.actor,
-                    field="result_ttl",
-                    registered=cfg.result_ttl,
-                    stored=stored_result_ttl,
-                )
-                drifts.append(drift)
-                logger.error(
-                    "actor-config-drift-overwrite",
-                    actor=cfg.actor,
-                    field="result_ttl",
-                    registered=cfg.result_ttl,
-                    stored=stored_result_ttl,
-                    force=force,
-                )
-
-            if cfg.metadata != stored_metadata:
-                drift = ActorConfigDriftError(
-                    actor=cfg.actor,
-                    field="metadata",
-                    registered=cfg.metadata,
-                    stored=stored_metadata,
-                )
-                drifts.append(drift)
-                logger.error(
-                    "actor-config-drift-overwrite",
-                    actor=cfg.actor,
-                    field="metadata",
-                    registered=cfg.metadata,
-                    stored=stored_metadata,
-                    force=force,
-                )
+            structural_values: dict[str, str | dict[str, object]] = {
+                "queue": stored_row["queue"],
+                "metadata": stored_metadata,
+            }
+            for field in _STRUCTURAL_FIELDS:
+                registered_value = getattr(cfg, field)
+                stored_value = structural_values[field]
+                if registered_value != stored_value:
+                    drift = ActorConfigDriftError(
+                        actor=cfg.actor,
+                        field=field,  # type: ignore[arg-type]  # Why: field iterates over _STRUCTURAL_FIELDS, a subset of ActorConfigDriftError's Literal; pyright cannot narrow str -> Literal across the loop variable.
+                        registered=registered_value,
+                        stored=stored_value,
+                    )
+                    drifts.append(drift)
+                    if force:
+                        logger.error(
+                            "actor-config-drift-overwrite",
+                            actor=cfg.actor,
+                            field=field,
+                            registered=registered_value,
+                            stored=stored_value,
+                        )
 
         if drifts and not force:
             raise ActorConfigDriftList(tuple(drifts))

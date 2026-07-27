@@ -181,9 +181,16 @@ async def test_bootstrap_populates_actor_config(pg_dsn: str) -> None:
 
 @pytest.mark.asyncio
 async def test_drift_refuses_start(pg_dsn: str) -> None:
+    """Structural drift (queue) still refuses startup.
+
+    max_concurrent is deliberately NOT the oracle here anymore: it is a
+    capacity field, operator-owned once a row exists, and never raises
+    regardless of how it differs from the registered literal — see
+    test_capacity_drift_does_not_block_start below.
+    """
     await _prepare_schema(pg_dsn)
 
-    @actor(name="X", max_concurrent=3)  # type: ignore[call-overload] # Why: test-only stub.
+    @actor(name="X", queue="critical")  # type: ignore[call-overload] # Why: test-only stub.
     async def actor_x(payload: _Payload) -> None: ...
 
     registry: Mapping[str, ActorRef[Any, Any]] = {
@@ -207,9 +214,49 @@ async def test_drift_refuses_start(pg_dsn: str) -> None:
     drift_list = exc_info.value
     assert len(drift_list.drifts) == 1
     assert drift_list.drifts[0].actor == "X"
-    assert drift_list.drifts[0].field == "max_concurrent"
-    assert drift_list.drifts[0].registered == 3
-    assert drift_list.drifts[0].stored == 5
+    assert drift_list.drifts[0].field == "queue"
+    assert drift_list.drifts[0].registered == "critical"
+    assert drift_list.drifts[0].stored == "default"
+
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        row = await conn.fetchrow(
+            f"SELECT queue FROM {_SCHEMA_LABEL}.actor_config WHERE actor = 'X'"
+        )
+        assert row is not None
+        assert row["queue"] == "default"
+    finally:
+        await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_capacity_drift_does_not_block_start(pg_dsn: str) -> None:
+    """max_concurrent divergence never raises and never blocks startup.
+
+    Registers max_concurrent=3 against a stored row of 5; _main must run
+    past config sync without raising, and the stored 5 must survive.
+    """
+    await _prepare_schema(pg_dsn)
+
+    @actor(name="X", max_concurrent=3)  # type: ignore[call-overload] # Why: test-only stub.
+    async def actor_x(payload: _Payload) -> None: ...
+
+    registry: Mapping[str, ActorRef[Any, Any]] = {
+        "X": actor_x,  # type: ignore[dict-item] # Why: registry holds heterogeneous ActorRef types.
+    }
+
+    settings = _settings(pg_dsn)
+
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        await conn.execute(
+            f"INSERT INTO {_SCHEMA_LABEL}.actor_config (actor, max_concurrent, queue, metadata) "
+            "VALUES ('X', 5, 'default', '{}'::jsonb)"
+        )
+    finally:
+        await conn.close()
+
+    await _run_and_cancel(lambda: _main(settings, actor_registry=registry), sleep=2.0)
 
     conn = await asyncpg.connect(pg_dsn)
     try:
@@ -217,7 +264,7 @@ async def test_drift_refuses_start(pg_dsn: str) -> None:
             f"SELECT max_concurrent FROM {_SCHEMA_LABEL}.actor_config WHERE actor = 'X'"
         )
         assert row is not None
-        assert row["max_concurrent"] == 5
+        assert row["max_concurrent"] == 5, "stored capacity must survive a differing literal"
     finally:
         await conn.close()
 
@@ -229,9 +276,13 @@ async def test_drift_refuses_start(pg_dsn: str) -> None:
 
 @pytest.mark.asyncio
 async def test_drift_force_overwrites(pg_dsn: str) -> None:
+    """force=True overwrites structural drift (queue) but leaves capacity
+    (max_concurrent) untouched — it was never gated by force in the first
+    place.
+    """
     await _prepare_schema(pg_dsn)
 
-    @actor(name="X", max_concurrent=3)  # type: ignore[call-overload] # Why: test-only stub.
+    @actor(name="X", queue="critical", max_concurrent=3)  # type: ignore[call-overload] # Why: test-only stub.
     async def actor_x(payload: _Payload) -> None: ...
 
     registry: Mapping[str, ActorRef[Any, Any]] = {
@@ -249,26 +300,16 @@ async def test_drift_force_overwrites(pg_dsn: str) -> None:
     finally:
         await conn.close()
 
-    async def _runner() -> None:
-        with contextlib.suppress(asyncio.CancelledError):
-            await _main(settings, actor_registry=registry)
-
-    task = asyncio.create_task(_runner())
-    await asyncio.sleep(2.0)
-    if not task.done():
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
-    else:
-        await task
+    await _run_and_cancel(lambda: _main(settings, actor_registry=registry), sleep=2.0)
 
     conn = await asyncpg.connect(pg_dsn)
     try:
         row = await conn.fetchrow(
-            f"SELECT max_concurrent FROM {_SCHEMA_LABEL}.actor_config WHERE actor = 'X'"
+            f"SELECT max_concurrent, queue FROM {_SCHEMA_LABEL}.actor_config WHERE actor = 'X'"
         )
         assert row is not None
-        assert row["max_concurrent"] == 3
+        assert row["queue"] == "critical", "force=True must overwrite structural drift"
+        assert row["max_concurrent"] == 5, "force=True must not touch capacity fields"
     finally:
         await conn.close()
 
