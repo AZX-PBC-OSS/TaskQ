@@ -335,7 +335,9 @@ async def test_sub_enqueuer_stored_wins_over_per_call_param() -> None:
     backend.register_actor_config(actor="cap_sub", max_pending=1)
     enqueuer = SubJobEnqueuer(
         loop_scope_resolved=None,
-        worker_pool=cast("asyncpg.Pool", object()),  # Why: only the None-check reads the pool on this path; the backend does the work.
+        worker_pool=cast(
+            "asyncpg.Pool", object()
+        ),  # Why: only the None-check reads the pool on this path; the backend does the work.
         backend=backend,
         capacity_cache=ActorCapacityCache(backend),
     )
