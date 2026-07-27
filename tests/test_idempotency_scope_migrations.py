@@ -501,6 +501,75 @@ class TestApplicationEnqueuePathDuringPreOnlyWindow:
         finally:
             await stack.aclose()
 
+    async def test_scoped_first_then_unscoped_raises_typed_error(
+        self, pg_conn: asyncpg.Connection, settings: TaskQSettings
+    ) -> None:
+        """The reverse direction of the cross-scope case: a key first
+        written under a non-default scope, then reused by an UNSCOPED
+        call, hits the legacy global index identically -- the trigger is
+        the key existing under a different scope, not the caller passing
+        idempotency_scope. (Before the message fix, the raised error said
+        "idempotency_scope was used" while printing idempotency_scope=''
+        on the same line; this test also pins the corrected message.)"""
+        await migrate_mod.apply_pending(pg_conn, schema=settings.schema_name, phase="pre")
+
+        stack, _deps, backend = await _open_pg_backend_on_schema(
+            str(settings.pg_dsn), settings.schema_name
+        )
+        try:
+            key = "app-path-scoped-then-unscoped-pre-only"
+            await backend.enqueue(make_enqueue_args(idempotency_key=key, idempotency_scope="run-A"))
+            with pytest.raises(ScopedIdempotencyMigrationPendingError) as exc_info:
+                await backend.enqueue(make_enqueue_args(idempotency_key=key))
+            assert exc_info.value.idempotency_key == key
+            assert exc_info.value.idempotency_scope == ""
+            assert isinstance(exc_info.value.__cause__, asyncpg.UniqueViolationError)
+            message = str(exc_info.value)
+            # The message must report the call's actual (empty) scope and
+            # must not claim the caller "used" idempotency_scope.
+            assert "idempotency_scope=''" in message
+            assert "idempotency_scope was used" not in message
+            assert key in message
+            # It must name the corrective action for the on-call operator.
+            assert "taskq migrate up --phase post" in message
+        finally:
+            await stack.aclose()
+
+    async def test_enqueue_batch_fast_cross_scope_raises_typed_error(
+        self, pg_conn: asyncpg.Connection, settings: TaskQSettings
+    ) -> None:
+        """The COPY path translates the legacy-index violation too: during
+        the pre-only window, a batch-fast item whose bare key already
+        exists under a different scope must surface
+        ScopedIdempotencyMigrationPendingError -- the same typed error as
+        every other enqueue path -- not a raw asyncpg.UniqueViolationError.
+        The all-or-nothing contract is unchanged: no rows are written."""
+        await migrate_mod.apply_pending(pg_conn, schema=settings.schema_name, phase="pre")
+
+        stack, _deps, backend = await _open_pg_backend_on_schema(
+            str(settings.pg_dsn), settings.schema_name
+        )
+        try:
+            key = "app-path-batch-fast-cross-scope-pre-only"
+            await backend.enqueue(make_enqueue_args(idempotency_key=key, idempotency_scope="run-A"))
+            with pytest.raises(ScopedIdempotencyMigrationPendingError) as exc_info:
+                await backend.enqueue_batch_fast(
+                    [
+                        make_enqueue_args(idempotency_key="app-path-batch-fast-fresh-key"),
+                        make_enqueue_args(idempotency_key=key, idempotency_scope="run-B"),
+                    ]
+                )
+            assert isinstance(exc_info.value.__cause__, asyncpg.UniqueViolationError)
+            # Nothing from the aborted COPY persisted.
+            remaining = await pg_conn.fetchval(
+                f'SELECT count(*) FROM "{settings.schema_name}".jobs '
+                "WHERE idempotency_key = $1",
+                "app-path-batch-fast-fresh-key",
+            )
+            assert remaining == 0
+        finally:
+            await stack.aclose()
+
     async def test_enqueue_batch_cross_scope_collision_raises_typed_error(
         self, pg_conn: asyncpg.Connection, settings: TaskQSettings
     ) -> None:

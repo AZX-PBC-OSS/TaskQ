@@ -639,12 +639,35 @@ async def _enqueue_batch_fast(
         )
 
     async def _copy_on_conn(conn: ConnLike) -> int:
-        result = await conn.copy_records_to_table(
-            "jobs",
-            records=records,
-            columns=sql.copy_from_columns,
-            schema_name=schema,
-        )
+        try:
+            result = await conn.copy_records_to_table(
+                "jobs",
+                records=records,
+                columns=sql.copy_from_columns,
+                schema_name=schema,
+            )
+        except UniqueViolationError as exc:
+            if exc.constraint_name == _LEGACY_IDEMPOTENCY_KEY_CONSTRAINT_NAME:
+                # Rolling-deploy overlap window (see _enqueue_on_conn's
+                # matching except-branch and
+                # ScopedIdempotencyMigrationPendingError's docstring): an
+                # item's bare idempotency_key already exists under a
+                # DIFFERENT scope. Translated here too -- not just in the
+                # single/batch paths -- so every enqueue API surfaces the
+                # same typed, catchable error during the window instead of
+                # a raw driver error. Unlike those paths there is no
+                # retry: COPY has no ON CONFLICT arbiter, so a same-pair
+                # race cannot dedupe on a second attempt -- the retried
+                # COPY would simply violate again (composite or legacy
+                # index, raw). Any unique violation aborts the whole COPY
+                # before a single row is written, so nothing persists from
+                # this attempt either way.
+                logger.info(
+                    "scoped-idempotency-legacy-index-conflict-batch-fast",
+                    batch_size=len(args_list),
+                )
+                raise ScopedIdempotencyMigrationPendingError(detail=str(exc)) from exc
+            raise
         count = int(result.split()[-1])
         await conn.execute(
             sql.enqueue_notify,

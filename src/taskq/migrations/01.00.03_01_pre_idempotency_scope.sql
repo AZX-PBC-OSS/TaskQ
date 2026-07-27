@@ -32,10 +32,11 @@
 -- taskq.exceptions.ScopedIdempotencyMigrationPendingError instead of
 -- letting the raw driver error crash the caller -- see that exception's
 -- docstring for why it is a loud, typed error rather than a silent
--- cross-scope fallback. Unscoped calls and same-scope-repeated calls are
--- entirely unaffected during the overlap; only a caller who actively
--- reuses a key under a different scope before the post migration hits
--- this. Once the old index is dropped by
+-- cross-scope fallback. The trigger is a key existing under a DIFFERENT
+-- scope, in EITHER direction: an unscoped call that reuses a key first
+-- written under a non-default scope hits this too (verified against live
+-- PostgreSQL). Only brand-new keys and same-scope-repeated calls are
+-- unaffected during the overlap. Once the old index is dropped by
 -- 01.00.03_01_post_idempotency_scope_drop_old_index.sql, that error stops
 -- occurring and scoped dedupe activates for real. This is the same
 -- forward-only ADD-only contract documented in docs/architecture.md
@@ -110,8 +111,11 @@
 -- Borrowed-connection callers (enqueue_with_conn, enqueue_batch with an
 -- explicit connection) cannot retry -- their transaction is already
 -- aborted by the violation -- and get ScopedIdempotencyMigrationPendingError
--- instead; the enqueue_batch_fast COPY path has no ON CONFLICT handling at
--- all (duplicate keys abort the batch, as before this feature).
+-- instead. The enqueue_batch_fast COPY path has no ON CONFLICT handling at
+-- all (duplicate keys abort the batch, as before this feature) and no
+-- retry (a COPY has no arbiter to dedupe against on a second attempt),
+-- but it DOES translate the legacy-index cross-scope violation into
+-- ScopedIdempotencyMigrationPendingError like every other enqueue path.
 
 -- The empty-string sentinel ('') is the default/global scope.  We use NOT NULL
 -- deliberately: Postgres unique indexes treat NULL as distinct, so a nullable

@@ -195,8 +195,10 @@ remaining steps. Later steps only execute when earlier ones did not match or rai
   string yourself for now.
 - **Rolling-deploy note:** mid-upgrade (the `pre` migration applied, `post` not yet), reusing a
   key under two *different* scopes raises `ScopedIdempotencyMigrationPendingError` instead of
-  silently deduping against the wrong scope's job. Unscoped/same-scope calls are unaffected.
-  The error message tells the operator to run `taskq migrate up --phase post`.
+  silently deduping against the wrong scope's job — in either direction, so an unscoped call
+  that reuses a key first written under a non-default scope raises it too. Only brand-new keys
+  and same-scope repeats are unaffected. The error message tells the operator to run
+  `taskq migrate up --phase post`.
 
 **Migrating from key-string embedding to scopes.** If you previously embedded a run/batch id into
 the key string to work around global uniqueness, move it to the scope and keep the key as the

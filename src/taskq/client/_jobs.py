@@ -261,10 +261,13 @@ class JobsClient:
           yet applied), reusing the same ``idempotency_key`` under two
           *different* ``idempotency_scope`` values raises
           :class:`~taskq.exceptions.ScopedIdempotencyMigrationPendingError`
-          rather than silently dedupe against the wrong scope's job.
-          Unscoped and same-scope-repeated calls are unaffected. See that
-          exception's docstring and the migration file's header comment
-          for the full rationale.
+          rather than silently dedupe against the wrong scope's job. The
+          trigger is a key existing under a different scope, in *either*
+          direction — an unscoped call reusing a key first written under
+          a non-default scope raises it too. Only brand-new keys and
+          same-scope repeats are unaffected. See that exception's
+          docstring and the migration file's header comment for the full
+          rationale.
 
         **unique_for:**
 
@@ -495,7 +498,11 @@ class JobsClient:
 
         - **No idempotency-key collision handling.** A duplicate key
           aborts the entire batch with ``asyncpg.UniqueViolationError``.
-          Callers must pre-deduplicate.
+          Callers must pre-deduplicate. One carve-out: during the
+          ``01.00.03`` pre→post migration window, a key reused across
+          *different* scopes raises
+          :class:`~taskq.exceptions.ScopedIdempotencyMigrationPendingError`
+          instead, matching the other enqueue paths.
         - **No max_pending check.** The caller is responsible for
           ensuring the batch won't exceed actor limits.
         - **No JobHandle instances.** Only the inserted row count is

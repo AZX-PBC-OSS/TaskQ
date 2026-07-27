@@ -408,10 +408,16 @@ class ScopedIdempotencyMigrationPendingError(TaskQError):
     condition. Raised instead of letting the raw
     ``asyncpg.UniqueViolationError`` propagate.
 
-    Unscoped calls (``idempotency_scope=None`` or ``""``) are NEVER
-    affected — a repeated unscoped key always conflicts identically
-    against both indexes for the exact same row, which ``ON CONFLICT DO
-    NOTHING`` on the composite index resolves cleanly.
+    Any call — scoped or unscoped — is affected whenever its
+    ``idempotency_key`` already exists under a *different* scope: an
+    unscoped call that reuses a key first written under a non-default
+    scope raises this error just as a scoped call reusing an unscoped
+    key does (verified against live PostgreSQL). Only brand-new keys and
+    same-scope repeats are unaffected — a repeated key under the *same*
+    scope (including two unscoped calls, which share the default ``''``
+    scope) conflicts identically against both indexes for the exact same
+    row, which ``ON CONFLICT DO NOTHING`` on the composite index resolves
+    cleanly.
 
     Resolution: confirm every worker is running the release that shipped
     ``idempotency_scope``, then apply
@@ -433,18 +439,29 @@ class ScopedIdempotencyMigrationPendingError(TaskQError):
         self.idempotency_scope = idempotency_scope
         self.detail = detail
         if idempotency_key is not None:
-            where = f"idempotency_key={idempotency_key!r} idempotency_scope={idempotency_scope!r}"
+            what = (
+                f"idempotency_key={idempotency_key!r} is already enqueued under a "
+                "different idempotency_scope (this call: "
+            )
             if actor is not None:
-                where = f"actor={actor!r} {where}"
+                what += f"actor={actor!r}, "
+            what += f"idempotency_scope={idempotency_scope!r})"
         else:
-            where = "one or more items in the batch"
+            what = (
+                "one or more items in the batch reuse an idempotency_key that "
+                "already exists under a different idempotency_scope"
+            )
         message = (
-            f"idempotency_scope was used ({where}) but this schema has not yet had "
-            "01.00.03_01_post_idempotency_scope_drop_old_index.sql applied -- the old "
-            "global jobs_idempotency_key_uniq index is still enforcing idempotency_key "
-            "uniqueness across ALL scopes. Confirm every worker is on this release, then "
-            "run `taskq migrate up --phase post` to activate scoped dedupe, or do not "
-            "pass idempotency_scope until that migration has run."
+            f"enqueue rejected: {what}. This schema has not yet had "
+            "01.00.03_01_post_idempotency_scope_drop_old_index.sql applied, so the "
+            "legacy global jobs_idempotency_key_uniq index still enforces "
+            "idempotency_key uniqueness across ALL scopes, and cross-scope key reuse "
+            "is rejected rather than silently deduped against the wrong scope's job. "
+            "No row was inserted or modified. To resolve: confirm every worker is on "
+            "this release, then run `taskq migrate up --phase post` to activate "
+            "scoped dedupe. Until then, do not reuse an idempotency_key under more "
+            "than one scope (including the default '' scope) -- this fires in either "
+            "direction, scoped-then-unscoped included."
         )
         if detail is not None:
             message = f"{message} (postgres detail: {detail})"
