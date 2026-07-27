@@ -80,10 +80,10 @@ _SWEEP_1_SQL = """\
 --   honor it there.
 -- * Exhausted branch: a job whose cancel was still in-flight lands on
 --   'cancelled', NOT 'crashed' — the caller's explicit request is the
---   honest terminal label (and 'crashed' would invite a retry_job the
---   caller asked never to run).  Jobs with no cancel in-flight still
---   land on 'crashed' as before.  The job_attempts row records
---   outcome='crashed' either way: that IS what happened to the attempt.
+--   honest terminal label: anyone reconciling terminal states sees the
+--   cancel was honored.  Jobs with no cancel in-flight still land on
+--   'crashed' as before.  The job_attempts row records outcome='crashed'
+--   either way: that IS what happened to the attempt.
 WITH snap AS (
     SELECT id, locked_by_worker
     FROM "{schema}".jobs

@@ -157,14 +157,15 @@ async def heartbeat_loop(
 
 
 _SELECT_RUNNING_JOBS_SQL_TEMPLATE = (
-    "SELECT id, attempt, started_at, max_attempts, retry_kind "
+    "SELECT id, attempt, started_at, max_attempts, retry_kind, cancel_phase "
     'FROM "{schema}".jobs '
     "WHERE locked_by_worker = $1 AND status = 'running'"
 )
 
-# Recovery transitions via isolate_self: running→scheduled when retries
-# remain; running→crashed when exhausted.  Both are present in
-# VALID_TRANSITIONS.  The heartbeat-pool failure forces a fresh asyncpg
+# Recovery transitions via isolate_self: running→pending when retries
+# remain; running→cancelled when exhausted with a cancel in-flight;
+# running→crashed otherwise.  All are present in VALID_TRANSITIONS.
+# The heartbeat-pool failure forces a fresh asyncpg
 # connection, so the worker cannot rely on its in-memory status being
 # current.  The SQL self-guards via WHERE status='running' AND
 # locked_by_worker=$2, which atomically serialises the read+write and
@@ -178,7 +179,13 @@ _SELECT_RUNNING_JOBS_SQL_TEMPLATE = (
 # equivalence between this path and the sweep, so any branch change there
 # (cancel-state reset on retry, 'cancelled' label for an exhausted
 # cancel-in-flight reclaim, clock_timestamp() for terminal timestamps)
-# must be mirrored here.  Isolate writes no job_events row (a graceful
+# must be mirrored here.  Note the mirror covers the SET clause, NOT the
+# selection predicate: the sweep leaves cancel-in-flight jobs alone until
+# cancel_grace + cleanup_grace + 60s has passed (a merely-slow
+# cancellation isn't pre-empted), while isolate applies the 'cancelled'
+# arm immediately — deliberate asymmetry, since isolate means THIS worker
+# is going away now and there is no lock-holder left to complete the
+# cooperative protocol.  Isolate writes no job_events row (a graceful
 # shutdown is not a crash-reclaim), so the visibility-delay
 # co-monotonicity motivation for clock_timestamp() does not apply — it is
 # kept anyway so the two templates stay structurally identical.
@@ -224,25 +231,31 @@ async def isolate_self(
     insert_attempt_sql = INSERT_ATTEMPT_SQL.format(schema=schema)
     jobs_pending_count = 0
     jobs_crashed_count = 0
+    jobs_cancelled_count = 0
 
     try:
         conn = await asyncpg.connect(pg_dsn, timeout=5.0)  # pyright: ignore[reportCallIssue, reportUnknownVariableType]  # Why: asyncpg-stubs does not declare timeout kwarg on connect(); the parameter exists at runtime at 0.31.0.  asyncpg default is 60s — far too long when PG is already problematic.
         try:
 
-            async def _inner() -> tuple[int, int]:
+            async def _inner() -> tuple[int, int, int]:
                 pending = 0
                 crashed = 0
+                cancelled = 0
                 async with conn.transaction():
                     rows = await conn.fetch(  # pyright: ignore[reportUnknownVariableType]  # Why: conn type suppressed above due to asyncpg-stubs limitation on connect().
                         select_running_jobs_sql, worker_id
                     )
-                    for row in rows:  # pyright: ignore[reportUnknownVariableType]  # Why: rows type suppressed above — propagates from conn.fetch() return.
+                    for row in rows:  # pyright: ignore[reportUnknownVariableType]  # Why: rows type suppressed above — propagates from conn.fetch() suppression.
                         is_pending = (  # pyright: ignore[reportUnknownVariableType]  # Why: row column accessor types unknown — propagates from conn.fetch() suppression.
                             row["attempt"] < row["max_attempts"]
                             and row["retry_kind"] != "non_retryable"
                         )
                         if is_pending:
                             pending += 1
+                        elif row["cancel_phase"] != 0:
+                            # Mirrors _ISOLATE_JOB_SQL_TEMPLATE's CASE arm:
+                            # exhausted + cancel in-flight → 'cancelled'.
+                            cancelled += 1
                         else:
                             crashed += 1
                         await conn.execute(isolate_job_sql, row["id"], worker_id)
@@ -260,9 +273,11 @@ async def isolate_self(
                             worker_id,
                             dumps_str(metadata),
                         )
-                return pending, crashed
+                return pending, crashed, cancelled
 
-            jobs_pending_count, jobs_crashed_count = await asyncio.shield(_inner())
+            jobs_pending_count, jobs_crashed_count, jobs_cancelled_count = await asyncio.shield(
+                _inner()
+            )
         finally:
             await conn.close()
     except Exception as exc:
@@ -280,4 +295,5 @@ async def isolate_self(
             worker_id=str(worker_id),
             jobs_pending_count=jobs_pending_count,
             jobs_crashed_count=jobs_crashed_count,
+            jobs_cancelled_count=jobs_cancelled_count,
         )

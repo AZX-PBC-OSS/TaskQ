@@ -38,7 +38,7 @@ import structlog
 from taskq._ids import new_base62, new_uuid
 from taskq.backend._protocol import EventRow, JobId
 from taskq.client._jobs import JobsClient
-from taskq.client._taskq import TaskQ, _watch_reclaims_pg
+from taskq.client._taskq import TaskQ, _watch_reclaims_pg, _watch_reclaims_poll
 from taskq.settings import TaskQSettings
 from taskq.testing.clock import FakeClock
 from taskq.testing.in_memory import InMemoryBackend
@@ -495,6 +495,303 @@ async def test_watch_reclaims_pg_full_batch_drains_without_waiting() -> None:
 
     assert len(events) == 150
     assert [e.event_id for e in events] == sorted(e.event_id for e in events)
+
+
+async def test_watch_reclaims_pg_degraded_loop_drains_full_batches() -> None:
+    """The degraded (connection-lost) poll fallback drains backlogs at the
+    same speed as the healthy loop: full batch → immediate re-poll, not a
+    poll_timeout sleep.  A crash storm landing while the LISTEN connection
+    is down must not take N/100 x poll_timeout to deliver."""
+    backend = _make_backend()
+    for _ in range(250):
+        await _make_running_row(backend)
+    client = _make_client(backend)
+    conn = _FakeListenConn()
+
+    gen = _watch_reclaims_pg(
+        None,
+        _UNIT_SCHEMA_LABEL,
+        client,
+        30.0,  # poll_timeout deliberately huge: draining must not wait on it
+        listen_conn=conn,  # type: ignore[arg-type]  # Why: fake conn stand-in for asyncpg.Connection
+    )
+    task = asyncio.create_task(_collect(gen, n=250))
+    await asyncio.sleep(0.05)  # LISTEN registered, first poll done
+    conn.kill()  # into the caller-owned permanent poll fallback
+    events = await asyncio.wait_for(task, timeout=5.0)
+
+    assert len(events) == 250
+    assert [e.event_id for e in events] == sorted(e.event_id for e in events)
+
+
+async def test_watch_reclaims_pg_reconnect_attempt_is_timeboxed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A hanging reconnect attempt must not stall the degraded poll loop —
+    the only live delivery path at that point.  asyncpg.connect() defaults
+    to a 60s timeout and a user pg_conn_factory is unbounded, so the
+    attempt is capped at poll_timeout; a TimeoutError is just another
+    failed attempt (warning, keep polling)."""
+    monkeypatch.setattr("taskq.client._taskq._RECONNECT_POLL_INTERVAL", 2)
+    backend = _make_backend()
+    client = _make_client(backend)
+    conns: list[_FakeListenConn] = []
+
+    async def _factory() -> _FakeListenConn:
+        if not conns:
+            conn = _FakeListenConn()
+            conns.append(conn)
+            return conn
+        await asyncio.sleep(30.0)  # hangs like a partitioned DSN/factory
+        raise AssertionError("unreachable")
+
+    gen = _watch_reclaims_pg(
+        None,
+        _UNIT_SCHEMA_LABEL,
+        client,
+        0.02,
+        pg_conn_factory=_factory,  # type: ignore[arg-type]  # Why: fake conn stand-in for asyncpg.Connection
+    )
+    task = asyncio.create_task(_collect(gen, n=1))
+    await asyncio.sleep(0.05)
+    conns[0].kill()
+    await asyncio.sleep(0.2)  # several reconnect attempts, each capped at poll_timeout
+    await _make_running_row(backend)
+    events = await asyncio.wait_for(task, timeout=5.0)
+
+    assert len(events) == 1
+
+
+async def test_watch_reclaims_pg_reconnect_failure_warns_on_a_cadence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Persistent reconnect failure must not go quiet after one warning:
+    the first failure and every 10th subsequent failure log
+    'watch_reclaims-reconnect-still-failing', matching the docstring's
+    'logged at a cadence' promise — a multi-hour outage leaves evidence
+    the watcher is still degraded without spamming every attempt."""
+    monkeypatch.setattr("taskq.client._taskq._RECONNECT_POLL_INTERVAL", 1)
+    backend = _make_backend()
+    client = _make_client(backend)
+    conns: list[_FakeListenConn] = []
+
+    async def _factory() -> _FakeListenConn:
+        if not conns:
+            conn = _FakeListenConn()
+            conns.append(conn)
+            return conn
+        raise ConnectionRefusedError("pg still down")
+
+    gen = _watch_reclaims_pg(
+        None,
+        _UNIT_SCHEMA_LABEL,
+        client,
+        0.01,
+        pg_conn_factory=_factory,  # type: ignore[arg-type]  # Why: fake conn stand-in for asyncpg.Connection
+    )
+    with structlog.testing.capture_logs() as captured:
+        task = asyncio.create_task(_collect(gen, n=1))
+        await asyncio.sleep(0.05)
+        conns[0].kill()
+        await asyncio.sleep(0.7)  # ~50+ failed attempts at poll_timeout=0.01
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    warnings = [e for e in captured if e["event"] == "watch_reclaims-reconnect-still-failing"]
+    assert len(warnings) >= 3, (
+        f"expected cadence logging (attempts 1, 10, 20, ...), got {len(warnings)} warning(s)"
+    )
+
+
+class _UnlistenFailsConn(_FakeListenConn):
+    """remove_listener raises — connection dropped mid-teardown."""
+
+    async def remove_listener(self, channel: str, callback: Any) -> None:
+        raise asyncpg.InterfaceError("connection dropped mid-teardown")
+
+
+async def test_watch_reclaims_pg_teardown_removes_termination_listener_when_unlisten_fails() -> (
+    None
+):
+    """If UNLISTEN fails during teardown (connection dropped mid-shutdown),
+    the termination listener must STILL be removed — otherwise a shared,
+    caller-owned listen_conn accumulates dead callbacks closing over dead
+    generator frames on every watch_reclaims() call."""
+    backend = _make_backend()
+    client = _make_client(backend)
+    conn = _UnlistenFailsConn()
+    await _make_running_row(backend)
+
+    gen = _watch_reclaims_pg(
+        None,
+        _UNIT_SCHEMA_LABEL,
+        client,
+        0.02,
+        listen_conn=conn,  # type: ignore[arg-type]  # Why: fake conn stand-in for asyncpg.Connection
+    )
+    events = await _collect(gen, n=1)
+
+    assert len(events) == 1
+    assert conn._termination_listeners == [], (
+        "termination listener leaked on the caller's connection"
+    )
+
+
+async def test_watch_reclaims_pg_cancellation_inside_degraded_loop_closes_owned_conn() -> None:
+    """Cancelling the consumer while the generator sits in the degraded
+    poll/reconnect fallback runs the finally teardown: the owned (dead)
+    connection is closed exactly once."""
+    backend = _make_backend()
+    client = _make_client(backend)
+    conns: list[_FakeListenConn] = []
+
+    async def _factory() -> _FakeListenConn:
+        conn = _FakeListenConn()
+        conns.append(conn)
+        return conn
+
+    gen = _watch_reclaims_pg(
+        None,
+        _UNIT_SCHEMA_LABEL,
+        client,
+        0.02,
+        pg_conn_factory=_factory,  # type: ignore[arg-type]  # Why: fake conn stand-in for asyncpg.Connection
+    )
+    task = asyncio.create_task(_collect(gen, n=1))
+    await asyncio.sleep(0.05)
+    conns[0].kill()
+    await asyncio.sleep(0.1)  # generator is now parked in the degraded loop
+
+    task.cancel()  # CancelledError unwinds through the fallback loop → finally
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+    assert conns[0].close_calls == 1, "owned connection must be closed exactly once on teardown"
+
+
+async def test_watch_reclaims_pg_notify_during_backlog_drain_not_discarded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A NOTIFY arriving mid-drain must not be silently discarded by
+    wake.clear(): after a full batch the loop re-polls, and if that poll
+    still comes up empty (the notified row is inside the visibility
+    margin) the pending wake must fire the wait immediately — otherwise
+    delivery stalls up to poll_timeout for an event that DID notify.
+
+    InMemoryBackend has no visibility margin, so the test simulates one
+    from inside the poll wrapper (deterministically): the NOTIFY fires
+    mid-drain of the first (full) batch, the new row commits right after,
+    and exactly one subsequent poll withholds it as "inside the margin"."""
+    backend = _make_backend()
+    for _ in range(100):
+        await _make_running_row(backend)
+    client = _make_client(backend)
+    conn = _FakeListenConn()
+
+    real_poll = backend.poll_reclaim_events
+    calls = {"n": 0}
+
+    async def _withhold_one_poll(after_id: int, *args: Any, **kwargs: Any) -> Any:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            events = await real_poll(after_id, *args, **kwargs)
+            # A new reclaim commits AND notifies while the loop is still
+            # draining this batch — the wake must survive until the loop
+            # next waits on it.
+            conn.fire_notify()
+            await _make_running_row(backend)
+            return events
+        if calls["n"] == 2:
+            return []  # notified row still "inside the margin"
+        return await real_poll(after_id, *args, **kwargs)
+
+    monkeypatch.setattr(backend, "poll_reclaim_events", _withhold_one_poll)
+
+    gen = _watch_reclaims_pg(
+        None,
+        _UNIT_SCHEMA_LABEL,
+        client,
+        30.0,  # poll_timeout huge: only a surviving wake beats the deadline
+        listen_conn=conn,  # type: ignore[arg-type]  # Why: fake conn stand-in for asyncpg.Connection
+    )
+    events = await asyncio.wait_for(_collect(gen, n=101), timeout=3.0)
+
+    assert len(events) == 101
+
+
+# ── Visibility-risk probe (unit) ────────────────────────────────────
+
+
+async def test_visibility_probe_hang_does_not_stall_delivery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A hung visibility-risk probe (pool exhaustion, slow catalog scan)
+    must not stall event delivery: the probe is timeboxed and its failure
+    swallowed — a monitoring path never takes down the delivery path it
+    monitors, by hanging any more than by raising."""
+    monkeypatch.setattr("taskq.client._taskq._VISIBILITY_RISK_CHECK_INTERVAL", 0.0)
+    # raising=False: the constant is introduced by the fix under test.
+    monkeypatch.setattr("taskq.client._taskq._VISIBILITY_PROBE_TIMEOUT", 0.05, raising=False)
+    backend = _make_backend()
+    client = _make_client(backend)
+
+    async def _hanging_check(*args: Any, **kwargs: Any) -> Any:
+        await asyncio.sleep(30.0)
+
+    monkeypatch.setattr(
+        backend, "check_reclaim_visibility_delay_risk", _hanging_check, raising=False
+    )
+
+    gen = _watch_reclaims_poll(client, 0.02, after_id=0)
+
+    async def _produce_after_first_probe() -> None:
+        await asyncio.sleep(0.1)  # first (empty) poll has run; probe is now hung
+        await _make_running_row(backend)
+
+    producer = asyncio.create_task(_produce_after_first_probe())
+    try:
+        events = await asyncio.wait_for(_collect(gen, n=1), timeout=3.0)
+        assert len(events) == 1
+    finally:
+        await producer
+
+
+async def test_visibility_probe_runs_at_most_once_per_interval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The probe is time-gated: with a nonzero interval it runs at most
+    once per _VISIBILITY_RISK_CHECK_INTERVAL, never once per poll — one
+    extra catalog query per watcher per interval, not on the hot path."""
+    monkeypatch.setattr("taskq.client._taskq._VISIBILITY_RISK_CHECK_INTERVAL", 0.2)
+    backend = _make_backend()
+    client = _make_client(backend)
+    calls = {"n": 0}
+
+    async def _counting_check(*args: Any, **kwargs: Any) -> list[Any]:
+        calls["n"] += 1
+        return []
+
+    monkeypatch.setattr(
+        backend, "check_reclaim_visibility_delay_risk", _counting_check, raising=False
+    )
+
+    gen = _watch_reclaims_poll(client, 0.01, after_id=0)
+
+    async def _spin() -> None:
+        async with contextlib.aclosing(gen) as agen:
+            async for _ in agen:
+                pass
+
+    task = asyncio.create_task(_spin())
+    await asyncio.sleep(0.55)
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+    # Gate opens at t≈0.2 and t≈0.4 → 2 probes (±1 for scheduling jitter);
+    # ~55 poll iterations without gating would mean ~55 probes.
+    assert 1 <= calls["n"] <= 3
 
 
 # ── PG LISTEN transport + chaos (integration, Docker) ──────────────

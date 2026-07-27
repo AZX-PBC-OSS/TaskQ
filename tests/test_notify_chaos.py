@@ -253,13 +253,18 @@ async def test_tc2_pg_container_stop_start(
                 deps.notify_conn_factory = _new_notify_factory
                 await asyncio.sleep(0.5)
 
-                deadline = asyncio.get_running_loop().time() + 30.0
+                # 45s, not 30s: worst-case reconnect is health-check
+                # detection (≤1s) + backoff sequence (1+2+4+8+16=31s) + PG
+                # boot after `wrapped.start()` — already >31s unloaded, so
+                # a 30s deadline is a real race under full-suite parallel
+                # Docker load, not just flake margin.
+                deadline = asyncio.get_running_loop().time() + 45.0
                 reconnect_ok = False
                 while asyncio.get_running_loop().time() < deadline and not reconnect_ok:
                     await asyncio.sleep(0.5)
                     reconnect_ok = len(reconnect_counter_adds) >= 1
                 assert reconnect_ok, (
-                    "listener did not reconnect within 30 s after container restart"
+                    "listener did not reconnect within 45 s after container restart"
                 )
 
                 async with backend.subscribe_wake() as post_event:
@@ -269,7 +274,9 @@ async def test_tc2_pg_container_stop_start(
                     finally:
                         await verify_conn.close()
 
-                    await asyncio.wait_for(post_event.wait(), timeout=5.0)
+                    # 10s, not 5s: the freshly-restarted container is at its
+                    # slowest right here, under full-suite parallel load.
+                    await asyncio.wait_for(post_event.wait(), timeout=10.0)
                     assert post_event.is_set()
 
                 shutdown.set()

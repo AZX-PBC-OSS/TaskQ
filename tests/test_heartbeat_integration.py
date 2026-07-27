@@ -13,6 +13,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 import pytest
+import structlog
 
 from taskq.backend.postgres import _SWEEP_1_SQL
 from taskq.testing.assertions import assert_job_status
@@ -375,6 +376,63 @@ async def test_isolate_self_transitions_cancel_phase_gt_zero(
             assert row is not None
             assert row["status"] == "pending"
             assert row["cancel_phase"] == 0
+    finally:
+        await stack.aclose()
+
+
+async def test_isolate_self_cancel_in_flight_exhausted_lands_cancelled(
+    module_pg_schema: ModulePgSchema,
+) -> None:
+    """Mirror of the sweep's exhausted branch: a job with an in-flight
+    cancel request and no retries remaining lands on 'cancelled' — the
+    caller's explicit request is the honest terminal label.  Cancel state
+    is cleared, the attempt row still records outcome='crashed'/
+    error_class='HeartbeatLost' (that IS what happened to the attempt),
+    and isolate-self-complete telemetry counts the job as cancelled, not
+    crashed."""
+    stack, deps, schema = await _setup_fast(module_pg_schema)
+    try:
+        async with deps.heartbeat_pool.acquire() as conn:
+            worker_id, job_id = await setup_running_job(
+                conn,
+                schema,
+                attempt=1,
+                max_attempts=1,
+                cancel_phase=1,
+                cancel_requested_at=datetime.now(UTC),
+                lock_expires_at=datetime.now(UTC) + timedelta(seconds=_LOCK_LEASE),
+            )
+
+        shutdown = asyncio.Event()
+        with structlog.testing.capture_logs() as captured:
+            await isolate_self(deps, worker_id, shutdown)
+        assert shutdown.is_set()
+
+        async with deps.heartbeat_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f"SELECT status, cancel_phase, cancel_requested_at, finished_at "
+                f'FROM "{schema}".jobs WHERE id = $1',
+                job_id,
+            )
+            attempt_row = await conn.fetchrow(
+                f'SELECT outcome, error_class FROM "{schema}".job_attempts WHERE job_id = $1',
+                job_id,
+            )
+
+        assert row is not None
+        assert row["status"] == "cancelled"
+        assert row["cancel_phase"] == 0
+        assert row["cancel_requested_at"] is None
+        assert row["finished_at"] is not None
+
+        assert attempt_row is not None
+        assert attempt_row["outcome"] == "crashed"
+        assert attempt_row["error_class"] == "HeartbeatLost"
+
+        complete = [e for e in captured if e["event"] == "isolate-self-complete"]
+        assert len(complete) == 1
+        assert complete[0]["jobs_cancelled_count"] == 1
+        assert complete[0]["jobs_crashed_count"] == 0
     finally:
         await stack.aclose()
 

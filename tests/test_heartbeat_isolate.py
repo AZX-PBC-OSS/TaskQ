@@ -147,6 +147,7 @@ async def test_isolate_self_writes_attempt_row_per_job() -> None:
             "started_at": "2025-01-01T00:00:00Z",
             "max_attempts": 3,
             "retry_kind": "transient",
+            "cancel_phase": 0,
         },
         {
             "id": new_uuid(),
@@ -154,6 +155,7 @@ async def test_isolate_self_writes_attempt_row_per_job() -> None:
             "started_at": "2025-01-01T00:00:01Z",
             "max_attempts": 2,
             "retry_kind": "non_retryable",
+            "cancel_phase": 0,
         },
     ]
 
@@ -212,6 +214,7 @@ async def test_isolate_self_honours_fr12_case_shape() -> None:
                     "started_at": "2025-01-01T00:00:00Z",
                     "max_attempts": 3,
                     "retry_kind": "transient",
+                    "cancel_phase": 0,
                 }
             ]
 

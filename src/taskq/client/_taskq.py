@@ -859,6 +859,16 @@ implement the diagnostic (e.g. InMemoryBackend), so the poll-only
 transport and the PG LISTEN transport share it unconditionally."""
 
 
+_VISIBILITY_PROBE_TIMEOUT = 5.0
+"""Timeout for a single visibility-risk probe query, in seconds.  The
+probe runs inline on the delivery loop, so it must be timeboxed: pool
+exhaustion or a slow catalog scan must stall the watcher for at most
+this long — a monitoring path must never take down the delivery path it
+monitors, by hanging any more than by raising.  Generous for a
+``pg_locks``/``pg_stat_activity`` join.  Module-level so tests can
+shrink it."""
+
+
 async def _probe_visibility_risk(client: JobsClient) -> None:
     """Run the backend's visibility-delay risk diagnostic, if it has one,
     and log a loud structured warning for every long-open ``job_events``
@@ -871,14 +881,15 @@ async def _probe_visibility_risk(client: JobsClient) -> None:
     silently missed event.  Running the diagnostic here turns "the
     operator must know ``check_reclaim_visibility_delay_risk`` exists and
     opt in" into "the watcher notices and says so loudly".  Probe
-    failures are logged and swallowed — a monitoring path must never take
-    down the delivery path it monitors.
+    failures — including a hang past ``_VISIBILITY_PROBE_TIMEOUT`` — are
+    logged and swallowed: a monitoring path must never take down the
+    delivery path it monitors.
     """
     check = getattr(client.backend, "check_reclaim_visibility_delay_risk", None)
     if check is None:
         return
     try:
-        writers = await check()
+        writers = await asyncio.wait_for(check(), timeout=_VISIBILITY_PROBE_TIMEOUT)
     except Exception:
         logger.warning("watch_reclaims-visibility-risk-probe-failed", exc_info=True)
         return
@@ -995,11 +1006,13 @@ async def _watch_reclaims_pg(
     * owned connection (``pg_conn_factory`` / ``dsn``) — the generator
       polls as a fallback and, every ``_RECONNECT_POLL_INTERVAL`` poll
       iterations, attempts to re-establish the LISTEN connection via the
-      same factory/DSN path.  On success it logs
+      same factory/DSN path (timeboxed at *poll_timeout* so a hanging
+      factory/DSN cannot stall delivery).  On success it logs
       ``watch_reclaims-listen-reconnected`` and resumes the LISTEN-driven
       loop.  On failure it keeps polling and retries after the same
-      interval — repeated-failure warnings are logged at a cadence (not
-      every attempt) to avoid log spam.
+      interval; ``watch_reclaims-reconnect-still-failing`` is logged on
+      the first failure and every 10th thereafter — a long outage leaves
+      evidence without spamming every attempt.
 
     Backend (pool) errors from ``poll_reclaim_events`` are NOT swallowed
     or mistaken for LISTEN failure — they propagate to the caller, who
@@ -1080,7 +1093,7 @@ async def _watch_reclaims_pg(
                 # Owned connection — poll as fallback while periodically
                 # attempting to re-establish the LISTEN connection.
                 poll_iters = 0
-                reconnect_failed_logged = False
+                failed_attempts = 0
                 full_batch = False
                 while True:
                     if not full_batch:
@@ -1099,18 +1112,23 @@ async def _watch_reclaims_pg(
                         continue
                     new_conn = None
                     try:
-                        new_conn = await _open_listen_conn()
+                        # Timeboxed at poll_timeout: asyncpg.connect()
+                        # defaults to 60s and a user pg_conn_factory is
+                        # unbounded — a hanging attempt must not stall the
+                        # degraded poll loop, the only live delivery path.
+                        new_conn = await asyncio.wait_for(_open_listen_conn(), timeout=poll_timeout)
                         await new_conn.add_listener(channel, _on_notify)  # pyright: ignore[reportArgumentType]  # Why: same asyncpg stub narrowing as above
                     except Exception:
                         if new_conn is not None:
                             with contextlib.suppress(Exception):
                                 await new_conn.close()
-                        if not reconnect_failed_logged:
+                        failed_attempts += 1
+                        if failed_attempts == 1 or failed_attempts % 10 == 0:
                             logger.warning(
                                 "watch_reclaims-reconnect-still-failing",
                                 poll_attempts=poll_iters,
+                                failed_attempts=failed_attempts,
                             )
-                            reconnect_failed_logged = True
                         continue
                     # Success — swap the dead connection for the new one
                     # and resume the LISTEN-driven outer loop.
@@ -1125,7 +1143,6 @@ async def _watch_reclaims_pg(
                     )
                     break
                 continue
-            wake.clear()
             events = await client.backend.poll_reclaim_events(cursor, _WATCH_RECLAIMS_BATCH_LIMIT)
             if events:
                 for evt in events:
@@ -1139,6 +1156,11 @@ async def _watch_reclaims_pg(
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(wake.wait(), timeout=poll_timeout)
                 woke_via_notify = True
+            # Clear AFTER the wait, not before the poll: a NOTIFY arriving
+            # mid-poll or mid-drain (full-batch loop) is then consumed
+            # exactly once here instead of being silently discarded — which
+            # would stall a notified event for up to poll_timeout.
+            wake.clear()
             if conn.is_closed():
                 # Died during the wait (the termination listener woke us,
                 # or poll_timeout elapsed) — handled at the top of the loop.
@@ -1161,9 +1183,16 @@ async def _watch_reclaims_pg(
                     cursor = evt.event_id
                     yield evt
     finally:
+        # Separate suppress blocks, termination listener first: it is
+        # synchronous (cannot fail on the wire), while remove_listener
+        # issues an UNLISTEN query that CAN raise on a live connection
+        # dropped mid-teardown — grouping them would skip the removal and
+        # leak _on_terminate (closing over this frame) on a caller-owned
+        # connection reused across watch_reclaims() calls.
+        with contextlib.suppress(Exception):
+            conn.remove_termination_listener(_on_terminate)  # pyright: ignore[reportArgumentType]  # Why: same asyncpg stub narrowing as add_termination_listener
         with contextlib.suppress(Exception):
             await conn.remove_listener(channel, _on_notify)  # pyright: ignore[reportArgumentType]  # Why: same pattern as _stream_pg
-            conn.remove_termination_listener(_on_terminate)  # pyright: ignore[reportArgumentType]  # Why: same asyncpg stub narrowing as add_termination_listener
         if owns_conn:
             with contextlib.suppress(Exception):
                 await conn.close()

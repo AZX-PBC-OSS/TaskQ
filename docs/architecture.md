@@ -583,8 +583,8 @@ with the in-flight cancel state is a deliberate tradeoff:
   job. A caller's cancel therefore does **not** survive into a retried attempt —
   with the lock-holding worker dead, no other path could honor it there anyway.
 - **Exhausted branch** (no retries remaining): the job lands on **`cancelled`**,
-  not `crashed` — the caller's explicit request is the honest terminal label
-  (and `crashed` would invite a `retry_job` the caller asked never to run). The
+  not `crashed` — the caller's explicit request is the honest terminal label:
+  anyone reconciling terminal states sees the cancel was honored. The
   `job_attempts` row still records `outcome='crashed'` (`WorkerCrashed`): that
   IS what happened to the attempt.
 

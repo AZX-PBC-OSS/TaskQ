@@ -1116,12 +1116,12 @@ class TestReclaimExpiredLocks:
     async def test_deeply_expired_cancel_exhausted_is_labelled_cancelled(self) -> None:
         """Retries-exhausted reclaim of a job with an in-flight cancel
         request terminates as 'cancelled', not 'crashed': the worker died
-        mid-cancel-protocol, and 'crashed' would mislabel the caller's
-        explicit cancel (and invite a retry_job the caller asked never to
-        run).  The attempt row still records outcome='crashed'
-        (WorkerCrashed) — that IS what happened to the attempt — while
-        the job status and the job_events outbox row carry the honest
-        caller-visible terminal label."""
+        mid-cancel-protocol, and the caller's explicit cancel is the
+        honest terminal label — anyone reconciling terminal states sees
+        the cancel was honored.  The attempt row still records
+        outcome='crashed' (WorkerCrashed) — that IS what happened to the
+        attempt — while the job status and the job_events outbox row
+        carry the honest caller-visible terminal label."""
         backend = _make_backend()
         job_id, _ = await _make_running_row(backend, max_attempts=1, retry_kind="transient")
 
