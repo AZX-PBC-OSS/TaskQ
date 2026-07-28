@@ -57,8 +57,12 @@ docker-compose.override.yaml
 # Postgres data volume if a future compose maps it as a bind mount
 postgres-data/
 
+/docs/superpowers/
+
 # Agent workspace
 .claude/
 .serena/
 
 .shipwright/
+# Local review artifacts (agent-delegated reviews)
+.review/

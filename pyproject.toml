@@ -20,7 +20,7 @@ classifiers = [
 dependencies = [
     "asyncpg>=0.31.0,<1",
     "croniter>=6.2.4",
-    "dotenvmodel>=0.5.0,<1",
+    "dotenvmodel>=0.6.3,<1",
     "opentelemetry-api>=1.44.0",
     "orjson>=3.11.9",
     "pydantic>=2.13.4,<3",
@@ -44,7 +44,7 @@ redis = [
     "redis>=8.0.1,<9",
 ]
 fastapi = [
-    "fastapi>=0.139.2,<1",
+    "fastapi>=0.140.0,<1",
     "humanize>=4.16.0",
     "jinja2>=3.1.6",
     "sse-starlette>=3.4.6",
@@ -67,7 +67,7 @@ prometheus = [
     # (opentelemetry-python #5055); earlier releases hard-coded the global
     # REGISTRY, which is not safe for isolated metric scrapes.
     "opentelemetry-exporter-prometheus>=0.63b0,<1",
-    "prometheus-client>=0.25.0,<1",
+    "prometheus-client>=0.26.0,<1",
 ]
 oidc = [
     # OAuth2/OIDC client, discovery, and JWT/JWKS validation. Vendor-neutral —
@@ -79,7 +79,7 @@ oidc = [
     "httpx>=0.28.1,<1",
     # HTTP client for direct OIDC calls (discovery, JWKS fetch). httpx2 is the
     # Pydantic-maintained successor to httpx with the same API surface.
-    "httpx2>=2.7.0",
+    "httpx2>=2.9.1",
     # Signed session cookies (shared with the SAML backend via _session.py).
     "itsdangerous>=2.2.0,<3",
 ]
@@ -100,12 +100,12 @@ aad = [
     # treats aiohttp as a soft dependency, but constructing any async
     # credential (e.g. aio.DefaultAzureCredential) raises ImportError
     # without it.
-    "aiohttp>=3.14.2,<4",
+    "aiohttp>=3.14.3,<4",
 ]
 aws = [
     # AWS IAM database authentication for Amazon RDS Postgres. Used by the
     # credential providers in taskq.aws; see docs/guides/managed-identities.md.
-    "boto3>=1.43.52,<2",
+    "boto3>=1.43.56,<2",
 ]
 vault = [
     # HashiCorp Vault database secrets engine dynamic credentials. Used by
@@ -114,6 +114,11 @@ vault = [
 ]
 
 [tool.uv]
+# Exact pin: setup-uv in CI resolves exact versions without fetching the
+# versions manifest from raw.githubusercontent.com, which is a transient
+# network failure point that has failed whole CI matrices. Also keeps local
+# dev on the same uv that generated uv.lock.
+required-version = "==0.11.19"
 # Supply-chain hardening: never resolve to distributions published within the
 # last 24 hours, giving time for malicious releases to be detected and yanked.
 exclude-newer = "24 hours"
