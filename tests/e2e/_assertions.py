@@ -173,9 +173,13 @@ async def wait_for_worker_ready(
     *,
     timeout: float = 30.0,  # noqa: ASYNC109  # Why: forwarded to poll_until as a polling deadline, not an asyncio.timeout-style wrapper.
 ) -> None:
-    """Readiness gate: poll ``{schema}.workers`` until a row exists whose
-    heartbeat (``last_seen_at``) is fresh — within the last 10s, so a stale row
-    from a crashed prior run can never satisfy the gate."""
+    """Readiness gate: poll ``{schema}.workers`` until a row shows a fresh
+    POST-REGISTER heartbeat (``last_seen_at > started_at``, within the last
+    10s). Requiring a heartbeat after registration means a worker that
+    crashes mid-bootstrap (after ``register_worker`` but before its first
+    tick — e.g. an actor-config failure) never satisfies the gate, so the
+    fixture dumps the container logs with the actual traceback instead of
+    letting the test proceed against a dead worker."""
 
     async def _fresh_heartbeat() -> bool:
         return (
@@ -183,6 +187,7 @@ async def wait_for_worker_ready(
                 f"""
                 SELECT 1 FROM "{schema}".workers
                 WHERE last_seen_at > now() - interval '10 seconds'
+                  AND last_seen_at > started_at
                 LIMIT 1
                 """
             )
@@ -192,5 +197,5 @@ async def wait_for_worker_ready(
     await poll_until(
         _fresh_heartbeat,
         timeout=timeout,
-        description=f"fresh worker heartbeat in {schema}.workers",
+        description=f"fresh post-register worker heartbeat in {schema}.workers",
     )

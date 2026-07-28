@@ -591,12 +591,15 @@ async def clean_e2e_state(request: pytest.FixtureRequest) -> AsyncIterator[None]
     )
 
     # F1: the idle gate cannot distinguish "drained" from "dead worker" —
-    # verify the container is still alive before the DELETEs. Every infra
-    # test requests ``e2e_worker`` explicitly, so this lazy getfixturevalue
-    # always returns the already-running module container (never boots a new
-    # one); the early-yield guard above keeps it off the infra-free path.
-    worker: E2EWorker = request.getfixturevalue("e2e_worker")
-    await asyncio.to_thread(_raise_if_worker_crashed, worker)
+    # verify the container is still alive before the DELETEs. The lazy
+    # getfixturevalue runs ONLY when the test requested e2e_worker itself:
+    # booting the module worker lazily from inside this running async
+    # fixture would drive the sync e2e_worker_image body (asyncio.run)
+    # inside an already-running loop and raise. Tests with their own
+    # dedicated containers (cron, crash-recovery) skip this check.
+    if "e2e_worker" in request.fixturenames:
+        worker: E2EWorker = request.getfixturevalue("e2e_worker")
+        await asyncio.to_thread(_raise_if_worker_crashed, worker)
 
     async with e2e_pg_pool.acquire() as conn:
         for table in _DELETE_ORDER:
