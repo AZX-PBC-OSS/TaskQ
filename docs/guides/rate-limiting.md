@@ -416,9 +416,21 @@ def rl_registry() -> RateLimitRegistry:
   `_main(..., rate_limit_registry=...)`; actor-declared instances
   auto-populate it.
 - Calling `acquire_for_actor` directly (no bootstrap) with actor-declared
-  instances? Register them first —
-  `for rl in actor_ref.rate_limits: rl_registry.register(rl)` — registration
-  is the worker's job, not the acquisition path's.
+  instances? Register them first — registration is the worker's job, not the
+  acquisition path's. Filter to instances: mixed lists may also contain
+  `str` names and keyed refs, which `register()` does not accept:
+
+  ```python
+  from taskq.ratelimit import ConcurrencyReservation, SlidingWindow, TokenBucket
+
+  for entry in actor_ref.rate_limits:
+      if isinstance(entry, TokenBucket | SlidingWindow):
+          rl_registry.register(entry)
+  for entry in actor_ref.reservations:
+      if isinstance(entry, ConcurrencyReservation):
+          rl_registry.register(entry)
+  ```
+
 - If you must use the module singleton, `registry.clear()` resets all state
   between tests (test aid only — NOT safe to call while a worker runs).
 
@@ -731,20 +743,25 @@ dispatch. Registration is idempotent for identical config, which every acquisiti
 `KeyedReservationRef` always produces (its `slots`/`lease` are fixed).
 
 !!! warning "Registry growth under high key cardinality"
-    Concrete per-key reservations are never removed automatically. Under high key cardinality —
-    for example, one reservation per customer session over a long-running worker's lifetime —
-    the in-memory registry entry count grows without bound unless you prune it.
+    Concrete per-key reservations are registered lazily and, absent eviction, never removed.
+    Under high key cardinality — for example, one reservation per customer session over a
+    long-running worker's lifetime — the in-memory registry entry count would grow without
+    bound.
 
-    Call `RateLimitRegistry.evict_idle_keyed_reservations(idle_for)` periodically from your own
-    maintenance code (a scheduled task, an admin CLI command, whatever fits your deployment —
-    TaskQ does not schedule this automatically anywhere) to bound registry growth:
+    Eviction is scheduled for you: every worker's 30-second sweep calls
+    `RateLimitRegistry.evict_idle_keyed_reservations(idle_for=...)` against its own registry
+    (process-local, not leader-gated) with a 1-hour idle threshold (`_KEYED_IDLE_THRESHOLD`).
+    Call it directly — against the registry your workers use — only for custom eviction
+    windows, e.g. a shorter `idle_for` from your own maintenance code (a scheduled task, an
+    admin CLI command, whatever fits your deployment):
 
     ```python
     from datetime import timedelta
     from taskq.ratelimit import registry
 
-    # e.g. run this once an hour from a cron actor or an external scheduler.
-    evicted = registry.evict_idle_keyed_reservations(idle_for=timedelta(hours=1))
+    # e.g. a tighter 15-minute window, run hourly from a cron actor or external
+    # scheduler — on your owned instance if you pass one to worker_main().
+    evicted = registry.evict_idle_keyed_reservations(idle_for=timedelta(minutes=15))
     ```
 
     Eviction only removes the in-memory registry bookkeeping (the registered
