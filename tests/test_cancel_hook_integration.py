@@ -693,7 +693,20 @@ async def test_worker_dies_phase1(pg_dsn: str) -> None:
 async def test_pg_drop_during_phase2(pg_dsn: str) -> None:
     """PG connection drop during phase-2 write (chaos)."""
     worker_id = new_uuid()
-    async with _test_infra(pg_dsn, worker_id) as (deps, backend, settings):
+    # cleanup_grace_period=2.0s keeps the phase-2 fast-abandon threshold
+    # (cancel_grace 0.5s + cleanup_grace, measured from the phase-1 observation)
+    # unreachable by the retried escalation: with the 0.5s default the retry
+    # margin was only ~0.3s, and CI load flaked the job to 'abandoned'.
+    # lock_lease/termination_grace_period are bumped only to satisfy the
+    # settings invariants (cancel_grace + cleanup_grace must be < lock_lease
+    # and < termination_grace_period - 5.0); neither path is exercised here.
+    async with _test_infra(
+        pg_dsn,
+        worker_id,
+        cleanup_grace_period="2.0",
+        lock_lease="3.0",
+        termination_grace_period="8.0",
+    ) as (deps, backend, settings):
         client = JobsClient(backend)
         lock_lease = timedelta(seconds=settings.lock_lease)
         job_id, job = await _enqueue_and_dispatch(client, backend, worker_id, lock_lease)
