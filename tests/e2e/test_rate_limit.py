@@ -39,6 +39,7 @@ in.
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import TYPE_CHECKING
 
 import pytest
@@ -108,24 +109,43 @@ async def test_rate_limit_state_survives_in_dragonfly(
 
     The autouse ``clean_e2e_state`` reset FLUSHDBs the module's logical DB
     between tests, so cross-test bucket survival is unobservable by design —
-    this test instead drains the bucket with 5 jobs (``run_id + "-drain"``)
-    and immediately enqueues 6 more (``run_id``) without waiting in between.
-    If the bucket state were lost between the batches, the 6 would face a
-    full capacity-5 bucket and finish within ~0.3s. Because the drained
-    state persists, they are paced purely by the 5/s refill: FIFO dispatch
-    (``scheduled_at`` order) lets the 5 drain jobs claim the initial tokens,
-    so the 6 measured jobs land at ~0.2s … ~1.2s (≈1.0s spread; worse-case
-    interleavings only push the last measured effect later).
+    this test drains the bucket with 5 jobs (``run_id + "-drain"``), waits
+    for them to complete, then enqueues 6 more (``run_id``). Waiting for
+    the drain to finish guarantees the bucket is fully depleted (0 tokens
+    remaining) before the measured batch is dispatched, making the denial
+    count deterministic rather than dependent on the scheduling-dependent
+    interleaving of drain and measured jobs in a concurrently-claimed
+    first batch.
 
-    Two guards make the persistence proof airtight (F2). (1) No drain job
-    may be snoozed: ``mark_snoozed`` (the rate-limit denial path) is the
-    only healthy-lifecycle writer that bumps ``jobs.max_attempts``, so any
-    snoozed drain reads configured+1 — a sticky, timing-free discriminator,
-    immune to the execution slowness that flaked the old effect-spread
-    guard under CI load. (2) The measured-spread threshold is 0.8s: just
-    below the ~1.0s theory, well above the ~0.3s bucket-lost baseline. The
-    old 0.5s bar was only ~1.7x baseline and could pass on a
-    partially-drained bucket.
+    The previous design enqueued both batches back-to-back without waiting,
+    relying on FIFO claiming to let drain jobs win the initial tokens.
+    That proved fragile: with a 5/s refill rate, 0.2 s of dispatch skew
+    (plausible in CI from DI resolution, Redis round-trips, and scheduling
+    overhead) refills one extra token, allowing an additional measured job
+    to win and reducing the denial count below the threshold.
+
+    Two guards make the persistence proof airtight (F2), both asserted on
+    the MEASURED batch.
+    (1) At least 2 of the 6 measured jobs must carry the rate-limit denial
+    marker: the reservation-denial handler is the only writer of
+    ``metadata.awaiting = "rate_limit:<bucket>"`` (sticky through later
+    success), so it proves denial-by-bucket specifically — not actor
+    ``Snooze`` and not actor-not-found release — with no clocks involved.
+    After the drain completes, the bucket has 0 tokens and refills at 5/s
+    (1 token per 0.2 s). The test process enqueues 6 measured jobs
+    immediately after the drain's ``gather`` returns; the time between
+    drain completion and the worker dispatching the measured batch is
+    bounded by the producer's poll interval (well under 1 s), so at most
+    ~5 tokens have refilled — but the first 5 measured jobs that acquire
+    consume those refilled tokens, leaving the 6th (and possibly the 5th)
+    denied. A persisted-drained bucket typically denies ≥ 4; a LOST bucket
+    (fresh capacity-5) denies ≤ 1. The ≥ 2 threshold sits comfortably
+    above the lost-bucket ceiling with generous headroom for refill
+    trickle.
+    (2) The measured-spread threshold is 0.8s — corroborating evidence
+    only: under a lost bucket the lone denied job is re-promoted on the
+    1.0s wake tick, so its phase-dependent spread ([0.2s, 1.2s]) can clear
+    0.8s by luck; guard (1) does the real discriminating.
     """
     drain_id = f"{run_id}-drain"
     drain_handles = [
@@ -135,6 +155,15 @@ async def test_rate_limit_state_survives_in_dragonfly(
         )
         for i in range(_DRAIN_SIZE)
     ]
+
+    # Wait for the drain batch to complete so the bucket is fully
+    # depleted before the measured batch is enqueued. This makes the
+    # denial count deterministic: the measured batch faces a guaranteed
+    # 0-token bucket (refilling at 5/s) rather than competing with drain
+    # jobs for the initial capacity-5 tokens in a scheduling-dependent
+    # first batch.
+    await asyncio.gather(*(handle.wait(timeout=90) for handle in drain_handles))
+
     measured_handles = [
         await e2e_client.enqueue(
             deliver_webhook,
@@ -143,38 +172,50 @@ async def test_rate_limit_state_survives_in_dragonfly(
         for i in range(_FOLLOWUP_SIZE)
     ]
 
-    await asyncio.gather(
-        *(handle.wait(timeout=90) for handle in [*drain_handles, *measured_handles])
-    )
+    await asyncio.gather(*(handle.wait(timeout=90) for handle in measured_handles))
 
-    # Exactly-once delivery of the drain batch (orthogonal to the snooze
+    # Exactly-once delivery of the drain batch (orthogonal to the denial
     # guard below).
     drain_rows = await fetch_effects(
         e2e_pg_pool, e2e_schema.schema_name, drain_id, kind="delivered"
     )
     assert len(drain_rows) == _DRAIN_SIZE
 
-    # Burst-consumption proof (F2): no drain job may have been snoozed.
-    # mark_snoozed (the rate-limit denial path) is the ONLY healthy-lifecycle
-    # writer that bumps jobs.max_attempts (both snooze SQL templates do
-    # max_attempts = j.max_attempts + 1; enqueue sets it once from the
-    # actor's RetryPolicy). A snoozed drain therefore reads configured+1 —
-    # a sticky, timing-free discriminator with no clock, latency, or
-    # refill-arithmetic assumptions, immune to the execution-slowness flake
-    # that killed the old 0.3s effect-spread guard under CI load.
-    drain_job_rows = await fetch_job_rows(
-        e2e_pg_pool, e2e_schema.schema_name, [h.job_id for h in drain_handles]
+    # Persistence proof (F2), asserted on the MEASURED batch: at least 2
+    # of the 6 measured jobs must carry the rate-limit denial marker. The
+    # reservation-denial handler (_handlers.py) is the ONLY writer of
+    # metadata.awaiting = "<class>:<bucket_name>" — sticky through
+    # later success (mark_succeeded never touches metadata) — so it proves
+    # denial-by-bucket specifically, not actor Snooze, not actor-not-found
+    # release, and (unlike the max_attempts bump, which it accompanies)
+    # names the exact bucket. After the drain completes the bucket has 0
+    # tokens; the 6 measured jobs are enqueued immediately, so the worker
+    # dispatches them into a depleted bucket. At most ~5 tokens refill in
+    # the ~1s between drain completion and the first measured dispatch
+    # (producer poll + wake tick), so 5 measured jobs may win refilled
+    # tokens, but the 6th is denied — and typically ≥ 4 are denied because
+    # the refill trickle is sub-second. A LOST bucket (fresh capacity-5)
+    # denies ≤ 1; the ≥ 2 threshold clears that ceiling with headroom.
+    measured_job_rows = await fetch_job_rows(
+        e2e_pg_pool, e2e_schema.schema_name, [h.job_id for h in measured_handles]
     )
-    assert len(drain_job_rows) == _DRAIN_SIZE
-    snoozed = {
-        row["id"]: row["max_attempts"]
-        for row in drain_job_rows
-        if row["max_attempts"] != deliver_webhook.retry.max_attempts
+    assert len(measured_job_rows) == _FOLLOWUP_SIZE
+    configured = deliver_webhook.retry.max_attempts
+    # Bucket name derived from the actor's declaration — the awaiting
+    # prefix is an internal taxonomy string (e.g. "rate_limit:") the test
+    # must not couple to (a prefix rename must not silently vacate the guard).
+    bucket = deliver_webhook.rate_limits[0]
+    per_job = {
+        row["id"]: (row["max_attempts"], json.loads(row["metadata"]).get("awaiting"))
+        for row in measured_job_rows
     }
-    assert not snoozed, (
-        f"drain job(s) snoozed before first execution (max_attempts bumped): "
-        f"{', '.join(f'{j}:{a}' for j, a in sorted(snoozed.items()))} — "
-        "initial burst tokens not consumed by the drain batch?"
+    denied = {j: (a, w) for j, (a, w) in per_job.items() if w is not None and w.endswith(bucket)}
+    assert len(denied) >= 2, (
+        f"only {len(denied)}/{_FOLLOWUP_SIZE} measured jobs were "
+        f"rate-limit-denied (persisted-drained-bucket ⇒ ≥4, lost bucket ⇒ ≤1); "
+        f"per-job (max_attempts, awaiting) with configured={configured}: "
+        f"{', '.join(f'{j}:{a}/{w}' for j, (a, w) in sorted(per_job.items()))} — "
+        "drained bucket state did not survive in Dragonfly?"
     )
 
     rows = await fetch_effects(e2e_pg_pool, e2e_schema.schema_name, run_id, kind="delivered")
