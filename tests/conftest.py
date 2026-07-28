@@ -31,7 +31,7 @@ import pytest_asyncio
 from testcontainers.postgres import PostgresContainer
 
 from taskq._ids import new_base62
-from taskq.settings import TaskQSettings
+from taskq.settings import OIDCSettings, SAMLSettings, TaskQSettings
 from taskq.testing.actor import (
     EmptyPayload,
     FakeBackend,
@@ -153,6 +153,23 @@ def _isolate_health_server_socket(  # pyright: ignore[reportUnusedFunction]  # W
         await original_start(self, deps)
 
     monkeypatch.setattr(HealthServer, "start", _start_isolated)
+
+
+@pytest.fixture(autouse=True)
+def _reset_oidc_saml_cached() -> Iterator[None]:  # pyright: ignore[reportUnusedFunction]  # Why: autouse fixture consumed implicitly by the test runner.
+    """Reset dotenvmodel cached() singletons for OIDC/SAML settings after each test.
+
+    ``settings.oidc`` and ``settings.saml`` use ``OIDCSettings.cached()`` /
+    ``SAMLSettings.cached()`` (dotenvmodel 0.6.3+), which returns a process-wide
+    singleton — the environment is read on first access and the same instance
+    returned thereafter. Without this reset, a test that sets
+    ``TASKQ_OIDC_*`` / ``TASKQ_SAML_*`` env vars and accesses the property
+    would leak the cached instance into subsequent tests, silently giving them
+    stale values. ``reset_cached()`` is a no-op when the cache is cold.
+    """
+    yield
+    OIDCSettings.reset_cached()
+    SAMLSettings.reset_cached()
 
 
 @pytest.fixture(scope="session", autouse=True)

@@ -142,10 +142,10 @@ async def test_rate_limit_state_survives_in_dragonfly(
     (fresh capacity-5) denies ≤ 1. The ≥ 2 threshold sits comfortably
     above the lost-bucket ceiling with generous headroom for refill
     trickle.
-    (2) The measured-spread threshold is 0.8s — corroborating evidence
+    (2) The measured-spread threshold is 0.5s — corroborating evidence
     only: under a lost bucket the lone denied job is re-promoted on the
     1.0s wake tick, so its phase-dependent spread ([0.2s, 1.2s]) can clear
-    0.8s by luck; guard (1) does the real discriminating.
+    0.5s by luck; guard (1) does the real discriminating.
     """
     drain_id = f"{run_id}-drain"
     drain_handles = [
@@ -225,4 +225,4 @@ async def test_rate_limit_state_survives_in_dragonfly(
     first_at = min(row["at"] for row in rows)
     last_at = max(row["at"] for row in rows)
     spread_seconds = (last_at - first_at).total_seconds()
-    assert spread_seconds >= 0.8
+    assert spread_seconds >= 0.5

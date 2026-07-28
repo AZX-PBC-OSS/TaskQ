@@ -2821,7 +2821,7 @@ dev = [
     { name = "authlib", specifier = ">=1.7.2" },
     { name = "containerspec", extras = ["build"], specifier = ">=0.1.7" },
     { name = "httpx", specifier = ">=0.28.1" },
-    { name = "httpx2", specifier = ">=2.7.0" },
+    { name = "httpx2", specifier = ">=2.9.1" },
     { name = "hypothesis", specifier = ">=6.157.1" },
     { name = "itsdangerous", specifier = ">=2.2.0" },
     { name = "jsonschema", specifier = ">=4.26.0" },

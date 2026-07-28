@@ -220,7 +220,7 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                         worker_id=str(ctx.worker_id),
                         error=repr(exc),
                     )
-        await asyncio.sleep(30.0)
+        await asyncio.sleep(ctx.deps.settings.sweep_interval)
 
 
 async def _prune_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
@@ -397,7 +397,7 @@ async def _queue_depth_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                     worker_id=str(ctx.worker_id),
                     error=repr(exc),
                 )
-        await asyncio.sleep(15.0)
+        await asyncio.sleep(ctx.deps.settings.queue_depth_interval)
 
 
 async def _reservation_slots_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
@@ -420,7 +420,7 @@ async def _reservation_slots_loop(ctx: SweepContext, shutdown: asyncio.Event) ->
                     worker_id=str(ctx.worker_id),
                     error=repr(exc),
                 )
-        await asyncio.sleep(15.0)
+        await asyncio.sleep(ctx.deps.settings.reservation_slots_interval)
 
 
 async def _stranded_jobs_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
@@ -446,7 +446,7 @@ async def _stranded_jobs_loop(ctx: SweepContext, shutdown: asyncio.Event) -> Non
     sql = _stranded_sql.format(schema=schema)
 
     while not shutdown.is_set():
-        await asyncio.sleep(60.0)
+        await asyncio.sleep(ctx.deps.settings.stranded_jobs_interval)
         if not ctx.deps.is_leader.is_set():
             continue
         try:

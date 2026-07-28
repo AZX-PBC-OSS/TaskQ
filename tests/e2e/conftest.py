@@ -399,6 +399,10 @@ async def e2e_schema(
         "TASKQ_CANCELLATION_GRACE_PERIOD": "1.0",
         "TASKQ_CLEANUP_GRACE_PERIOD": "1.0",
         "TASKQ_TERMINATION_GRACE_PERIOD": "15.0",
+        "TASKQ_SWEEP_INTERVAL": "2.0",
+        "TASKQ_QUEUE_DEPTH_INTERVAL": "2.0",
+        "TASKQ_RESERVATION_SLOTS_INTERVAL": "2.0",
+        "TASKQ_STRANDED_JOBS_INTERVAL": "2.0",
     }
 
     yield E2ESchema(

@@ -17,8 +17,11 @@ from e2e.actors import (
     generate_report,
     import_contacts_chunk,
     import_contacts_csv,
+    long_running_job,
+    quick_result,
     rebuild_search_index,
     send_welcome_email,
+    slow_deliver_webhook,
     sync_user_profile,
 )
 from e2e.di import build_registry
@@ -37,6 +40,9 @@ ACTORS: dict[str, ActorRef[Any, Any]] = {
     "rebuild_search_index": rebuild_search_index,
     "enrich_order": enrich_order,
     "capped_worker": capped_worker,
+    "quick_result": quick_result,
+    "slow_deliver_webhook": slow_deliver_webhook,
+    "long_running_job": long_running_job,
 }
 
 if __name__ == "__main__":

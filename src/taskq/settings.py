@@ -415,6 +415,36 @@ class WorkerSettings(TaskQSettings):
         "failures before the worker self-terminates.",
     )
 
+    # ── Leader sweep intervals ─────────────────────────────────
+    sweep_interval: float = Field(
+        default=30.0,
+        ge=1.0,
+        description="TASKQ_SWEEP_INTERVAL (seconds). Period between leader "
+        "sweep loop iterations — reclaim_expired_locks, "
+        "sweep_expired_results, cleanup_stale_workers, and idle keyed-ref "
+        "eviction. Lower values reduce recovery latency for crashed workers "
+        "at the cost of more frequent PG queries.",
+    )
+    queue_depth_interval: float = Field(
+        default=15.0,
+        ge=1.0,
+        description="TASKQ_QUEUE_DEPTH_INTERVAL (seconds). Period between "
+        "queue-depth metrics sampling iterations.",
+    )
+    reservation_slots_interval: float = Field(
+        default=15.0,
+        ge=1.0,
+        description="TASKQ_RESERVATION_SLOTS_INTERVAL (seconds). Period "
+        "between reservation-slot metrics sampling iterations.",
+    )
+    stranded_jobs_interval: float = Field(
+        default=60.0,
+        ge=1.0,
+        description="TASKQ_STRANDED_JOBS_INTERVAL (seconds). Period between "
+        "stranded-jobs (pending jobs whose actor has no actor_config) "
+        "warning checks.",
+    )
+
     # ── Cancellation and cleanup grace periods ───────────
     termination_grace_period: float = Field(
         default=60.0,

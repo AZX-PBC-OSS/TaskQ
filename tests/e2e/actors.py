@@ -481,3 +481,115 @@ async def capped_worker(
         "capped_finished",
         {"run_id": payload.run_id, "job_index": payload.job_index},
     )
+
+
+# ── Result TTL actor ─────────────────────────────────────────────────────
+# Short result_ttl (2 s) so the e2e result-TTL-expiry test can observe the
+# sweep clearing the stored result within a reasonable wall-clock budget.
+
+
+class QuickResultPayload(BaseModel):
+    run_id: str
+    value: str
+
+
+class QuickResultResult(BaseModel):
+    value: str
+
+
+@actor(
+    name="quick_result",
+    queue="e2e",
+    result_ttl=timedelta(seconds=2),
+)
+async def quick_result(
+    payload: QuickResultPayload,
+    ctx: JobContext[QuickResultPayload],
+    *,
+    pool: asyncpg.Pool,
+) -> QuickResultResult:
+    """Minimal actor with a short result_ttl for sweep-expiry verification."""
+    await asyncio.sleep(0.05)
+    await _record_effect(
+        pool,
+        ctx,
+        "quick_result",
+        {"run_id": payload.run_id, "value": payload.value},
+    )
+    return QuickResultResult(value=payload.value)
+
+
+# ── Slow deliver webhook actor (shutdown drain test) ─────────────────────
+
+
+class SlowDeliverPayload(BaseModel):
+    run_id: str
+    endpoint_id: str
+
+
+@actor(
+    name="slow_deliver_webhook",
+    queue="e2e",
+    retry=RetryPolicy(max_attempts=2, base=timedelta(milliseconds=200)),
+)
+async def slow_deliver_webhook(
+    payload: SlowDeliverPayload,
+    ctx: JobContext[SlowDeliverPayload],
+    *,
+    pool: asyncpg.Pool,
+) -> None:
+    """Long-running webhook delivery that outlives a SIGTERM grace period.
+
+    Records ``started`` immediately, sleeps 3 s (longer than the shutdown
+    drain window), then records ``finished`` — proving whether the worker
+    drained or killed the in-flight job.
+    """
+    await _record_effect(
+        pool,
+        ctx,
+        "started",
+        {"run_id": payload.run_id, "endpoint_id": payload.endpoint_id},
+    )
+    await asyncio.sleep(3.0)
+    await _record_effect(
+        pool,
+        ctx,
+        "finished",
+        {"run_id": payload.run_id, "endpoint_id": payload.endpoint_id},
+    )
+
+
+# ── Long-running job actor (crash recovery test) ─────────────────────────
+
+
+class LongRunningPayload(BaseModel):
+    run_id: str
+
+
+@actor(
+    name="long_running_job",
+    queue="e2e",
+    retry=RetryPolicy(max_attempts=3, base=timedelta(seconds=5)),
+)
+async def long_running_job(
+    payload: LongRunningPayload,
+    ctx: JobContext[LongRunningPayload],
+    *,
+    pool: asyncpg.Pool,
+) -> None:
+    """Job that outlives the 3 s lock lease so a worker crash mid-run
+    triggers the expired-lock recovery sweep and a clean re-dispatch.
+    """
+    await _record_effect(
+        pool,
+        ctx,
+        "started",
+        {"run_id": payload.run_id, "attempt": ctx.attempt},
+    )
+    await asyncio.sleep(30.0)
+    await _record_effect(
+        pool,
+        ctx,
+        "finished",
+        {"run_id": payload.run_id, "attempt": ctx.attempt},
+    )
