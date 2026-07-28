@@ -172,7 +172,9 @@ def _resolve_rl_registry(
 ) -> RateLimitRegistry:
     """Resolve this worker's ``RateLimitRegistry`` (documented order).
 
-    1. An explicit ``rate_limit_registry=`` argument wins.
+    1. An explicit ``rate_limit_registry=`` argument wins — but co-present
+       with a DI ``RateLimitRegistry`` provider it raises ``TypeError``
+       (ambiguous: bootstrap and dispatch would diverge).
     2. A ``RateLimitRegistry`` provider pre-registered in *di_registry* —
        **value providers only**: a factory/class provider would split-brain
        (bootstrap using one instance while LOOP-scope dispatch resolution
@@ -183,6 +185,12 @@ def _resolve_rl_registry(
     (container); the returned object is the ``RateLimitRegistry``
     (primitive store). They are unrelated despite the similar names.
     """
+    if explicit is not None and di_registry.has_provider(RateLimitRegistry):
+        raise TypeError(
+            "rate_limit_registry= was passed explicitly AND a RateLimitRegistry "
+            "provider is registered in di_registry — ambiguous configuration; "
+            "pass one or the other, not both"
+        )
     if explicit is not None:
         return explicit
     if di_registry.has_provider(RateLimitRegistry):

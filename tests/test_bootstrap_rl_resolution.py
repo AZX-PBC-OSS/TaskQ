@@ -17,13 +17,21 @@ from taskq.worker._bootstrap import (
 )
 
 
-def test_explicit_argument_wins_over_di_and_singleton() -> None:
+def test_explicit_argument_wins_over_singleton() -> None:
     explicit = RateLimitRegistry()
-    di_valued = RateLimitRegistry()
-    di = ProviderRegistry()
-    di.register_value(RateLimitRegistry, Scope.LOOP, di_valued)
 
-    assert _resolve_rl_registry(explicit, di) is explicit
+    assert _resolve_rl_registry(explicit, ProviderRegistry()) is explicit
+
+
+def test_explicit_arg_plus_di_provider_raises_typeerror() -> None:
+    """Co-presence is ambiguous: bootstrap would use the explicit instance
+    while LOOP-scope dispatch resolved the DI one — fail fast."""
+    explicit = RateLimitRegistry()
+    di = ProviderRegistry()
+    di.register_value(RateLimitRegistry, Scope.LOOP, RateLimitRegistry())
+
+    with pytest.raises(TypeError, match="ambiguous"):
+        _resolve_rl_registry(explicit, di)
 
 
 def test_di_value_provider_wins_over_singleton() -> None:
