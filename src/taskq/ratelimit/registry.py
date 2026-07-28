@@ -14,17 +14,16 @@ permanently. Both ``reservations`` and ``rate_limits`` entries may be plain
 names (statically pre-registered) or :class:`KeyedReservationRef` /
 :class:`KeyedRateLimitRef` instances that lazily materialize a per-key
 primitive from the job payload on first acquisition; registry growth from
-high key cardinality is bounded by the leader-sweep eviction methods.
+high key cardinality is bounded by the per-worker sweep eviction methods.
 
-Every worker process unconditionally participates in leader election
-(see ``src/taskq/worker/_bootstrap.py`` — ``MaintenanceLeader`` is
-started inside the main ``TaskGroup`` without any settings flag), so the
-30-second sweep that calls ``evict_idle_keyed_reservations`` /
-``evict_idle_keyed_rate_limits`` always eventually runs in any topology
-that is capable of materializing keyed primitives in the first place
-(keyed materialisation only happens from a worker's job-dispatch path,
-and that worker — or a peer — always wins leader election within the
-documented failover SLA).  This is not a silent-forever-leak bug.
+Every worker's 30-second sweep calls ``evict_idle_keyed_reservations`` /
+``evict_idle_keyed_rate_limits`` against that worker's OWN registry —
+eviction is process-local bookkeeping and deliberately NOT leader-gated
+(a non-leader's registry would otherwise receive no periodic eviction),
+so it always runs in any topology that is capable of materializing keyed
+primitives in the first place (keyed materialisation only happens from a
+worker's job-dispatch path, and that worker sweeps its own registry
+every 30 seconds).  This is not a silent-forever-leak bug.
 
 As a defence-in-depth measure, the acquisition path
 (``_resolve_reservation_name`` / ``_resolve_rate_limit_name``) also
@@ -104,7 +103,7 @@ _P = TypeVar("_P")
 _KEYED_IDLE_THRESHOLD = timedelta(hours=1)
 """Idle duration before a keyed entry is eligible for eviction.
 
-Used both by the leader sweep (``_leader_sweeps.py``) and by the
+Used both by the per-worker sweep (``_leader_sweeps.py``) and by the
 opportunistic eviction on the acquisition path in
 :meth:`~RateLimitRegistry._resolve_reservation_name` /
 :meth:`~RateLimitRegistry._resolve_rate_limit_name`. Centralised here so
@@ -120,7 +119,7 @@ that O(n) scan on EVERY denied acquisition — at the default 10k-entry cap
 and 1k denials/sec that is ~10M dict entries scanned per second on the
 hottest path in the system, reclaiming nothing. Entries only become
 evictable as wall-clock time passes (idle ≥ ``_KEYED_IDLE_THRESHOLD``),
-so rescanning more often than the leader sweep's own 30-second cadence
+so rescanning more often than the per-worker sweep's own 30-second cadence
 buys nothing: a gated scan reclaims idle capacity at most 30 s after it
 became reclaimable, identical to the sweep's documented SLA. The gate
 makes the denied-cap-hit path O(1) amortized while preserving the
@@ -211,6 +210,15 @@ class RateLimitRegistry:
     Stores two separate dicts: ``_rate_limits`` for ``TokenBucket`` /
     ``SlidingWindow`` and ``_reservations`` for ``ConcurrencyReservation``.
     Cross-dict name collision is allowed — they live in separate namespaces.
+
+    **Ownership.** A registry is an ordinary ownable object: construct one
+    per process and pass it to ``worker_main(..., rate_limit_registry=...)``
+    / ``create_router(..., rate_limit_registry=...)``, or rely on the
+    module-level ``registry`` singleton (the default at every entry point).
+    Actor-declared primitive instances are registered by the worker
+    bootstrap's collection pass; use explicit ``.register()`` for
+    primitives shared outside actor dispatch. :meth:`clear` resets all
+    state and is a test aid only — NOT safe while a worker is running.
     """
 
     def __init__(self) -> None:
@@ -493,8 +501,9 @@ class RateLimitRegistry:
         ``settings.max_keyed_reservations``, a new key raises
         :class:`~taskq.exceptions.ReservationUnavailable`.
 
-        Capacity is normally reclaimed by the leader's 30-second sweep
-        (``evict_idle_keyed_reservations``).  However, an acquisition that
+        Capacity is normally reclaimed by each worker's own 30-second
+        sweep (``evict_idle_keyed_reservations`` — per-worker, not
+        leader-gated).  However, an acquisition that
         would otherwise be denied purely because idle entries haven't been
         swept yet gets one *opportunistic* eviction attempt first — so
         hitting the cap is never purely an artefact of sweep timing, only a
@@ -651,8 +660,9 @@ class RateLimitRegistry:
         limits reaches ``settings.max_keyed_rate_limits``, a new key
         raises :class:`~taskq.exceptions.ReservationUnavailable`.
 
-        Capacity is normally reclaimed by the leader's 30-second sweep
-        (``evict_idle_keyed_rate_limits``).  However, an acquisition that
+        Capacity is normally reclaimed by each worker's own 30-second
+        sweep (``evict_idle_keyed_rate_limits`` — per-worker, not
+        leader-gated).  However, an acquisition that
         would otherwise be denied purely because idle entries haven't been
         swept yet gets one *opportunistic* eviction attempt first — so
         hitting the cap is never purely an artefact of sweep timing, only a
@@ -1156,9 +1166,10 @@ class RateLimitRegistry:
         Reservations derived from a :class:`KeyedReservationRef` are
         registered lazily and never removed automatically — under high key
         cardinality (e.g. one reservation per import session over a long
-        worker lifetime) this dict grows without bound. The leader sweep
-        calls this automatically with a 1-hour idle threshold; call directly
-        for custom eviction windows.
+        worker lifetime) this dict grows without bound. Each worker's
+        30-second sweep calls this automatically against its own registry
+        (not leader-gated) with a 1-hour idle threshold; call directly for
+        custom eviction windows.
 
         Only removes the in-memory registry entry and its
         acquire-recency tracking — it does NOT touch the underlying
@@ -1185,9 +1196,9 @@ class RateLimitRegistry:
         Rate limits derived from a :class:`KeyedRateLimitRef` are registered
         lazily and never removed automatically — under high key cardinality
         (e.g. one token bucket per tenant over a long worker lifetime) this
-        dict grows without bound. The leader sweep calls this automatically
-        with a 1-hour idle threshold; call directly for custom eviction
-        windows.
+        dict grows without bound. Each worker's 30-second sweep calls this
+        automatically against its own registry (not leader-gated) with a
+        1-hour idle threshold; call directly for custom eviction windows.
 
         Only removes the in-memory registry entry and its acquire-recency
         tracking — it does NOT touch the underlying Redis hash for that
@@ -1207,7 +1218,7 @@ class RateLimitRegistry:
         lives on the instance, so eviction would silently reset the drained
         quota to full on next acquire — whereas Redis deliberately retains
         that same state for 24 h. The exemption applies to both callers of
-        this method (the leader sweep and the cap-pressure opportunistic
+        this method (the per-worker sweep and the cap-pressure opportunistic
         eviction). Trade-off, deliberately chosen: an exempt bucket counts
         against ``settings.max_keyed_rate_limits`` until its quota returns
         to full (refund/reset) or the process restarts, so under sustained
@@ -1241,6 +1252,11 @@ class RateLimitRegistry:
         **Not safe to call while a worker is running** — concurrent
         dispatch / sweep iteration over the dicts would observe
         inconsistent state. Use for per-test isolation only.
+
+        Like the eviction methods, this resets IN-PROCESS bookkeeping
+        only — it does NOT touch Redis bucket hashes or Postgres
+        ``reservation_slots`` rows; backend state persists and will be
+        observed on next acquire.
         """
         self._rate_limits.clear()
         self._reservations.clear()

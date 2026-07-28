@@ -395,6 +395,38 @@ The `/admin/rate-limits` page shows decoded peek state. A **Reset** button per b
 
 ---
 
+## Testing
+
+Construct a fresh registry per test — isolation by construction, nothing to
+clean up:
+
+```python
+import pytest
+from taskq.ratelimit import RateLimitRegistry, TokenBucket
+
+@pytest.fixture
+def rl_registry() -> RateLimitRegistry:
+    return RateLimitRegistry()
+```
+
+- Unit tests: `backend="memory"` primitives need no Redis/Postgres — pass a
+  `FakeClock` via `acquire(clock=...)` (`TokenBucket` / `SlidingWindow`) or
+  the `clock=` constructor parameter (`ConcurrencyReservation`).
+- Worker-level tests: pass the fresh instance to
+  `_main(..., rate_limit_registry=...)`; actor-declared instances
+  auto-populate it.
+- Calling `acquire_for_actor` directly (no bootstrap) with actor-declared
+  instances? Register them first —
+  `for rl in actor_ref.rate_limits: rl_registry.register(rl)` — registration
+  is the worker's job, not the acquisition path's.
+- If you must use the module singleton, `registry.clear()` resets all state
+  between tests (test aid only — NOT safe to call while a worker runs).
+
+For full `FakeClock` walkthroughs of each primitive, see
+[Testing Rate Limits](#testing-rate-limits).
+
+---
+
 ## Backends
 
 | Backend | Value | Storage | Notes |
@@ -442,15 +474,50 @@ class RateLimitRegistry:
 - `register()` raises `ValueError` if a primitive with the same name is already registered in the same namespace. `TokenBucket`/`SlidingWindow` and `ConcurrencyReservation` live in separate namespaces, so the same name can be used in both.
 - `get_rate_limit()` and `get_reservation()` raise `KeyError` if the name is not found.
 
-### `registry` singleton
+### Ownership: where the registry lives
 
-```python
-from taskq.ratelimit import registry
-```
+`RateLimitRegistry` is an ordinary object — you can own one:
 
-A module-level `RateLimitRegistry` instance. The DI system used internally by the worker resolves the same object. Primitives registered on this singleton are visible to actors at dispatch time.
+- **Declare on the actor (primary).** `@actor(rate_limits=[...], reservations=[...])`
+  accepts primitive *instances* alongside names and keyed refs:
 
-**Warning for tests:** use a fresh `RateLimitRegistry()` instance rather than the module-level `registry` singleton in tests, to avoid cross-test contamination. The singleton is shared across the entire test process.
+  ```python
+  @actor(
+      queue="io",
+      rate_limits=[TokenBucket("graph", capacity=300, refill_per_second=5, backend="redis")],
+      reservations=[ConcurrencyReservation("sharepoint", slots=4, lease=timedelta(minutes=2))],
+  )
+  async def sync_binding(payload: SyncPayload) -> None: ...
+  ```
+
+  At bootstrap the worker collects every instance declared across its actor
+  registry and registers them into its resolved registry before validation
+  runs. Same name + identical config re-registered = no-op; same name +
+  different config = `ValueError` at startup (fail fast).
+
+- **Own an instance (shared / non-job use).** Construct a
+  `RateLimitRegistry()`, `.register()` primitives on it, and pass it to
+  `worker_main(..., rate_limit_registry=rl)` and/or
+  `create_router(..., rate_limit_registry=rl)`. Use this when a primitive is
+  shared outside actor dispatch (a non-job `registry.acquire()` in a FastAPI
+  handler, or one primitive referenced by name from many actors). In a
+  multi-process deployment, construct a same-configured instance in EACH
+  process — Python objects cannot cross process boundaries; the underlying
+  limiter state (Redis hashes, PG rows) is shared.
+
+- **The default registry (convenience).** `from taskq.ratelimit import registry`
+  is a module-level singleton and remains the default at every entry point:
+  import-time `.register()` plus `worker_main(...)` with no
+  `rate_limit_registry` argument behaves exactly as before. New code should
+  prefer one of the two owned patterns above.
+
+**Decision rule:** default to declaring instances on the actor; use an
+explicit registry + `.register()` when a primitive is shared outside
+dispatch.
+
+**Warning for tests:** use a fresh `RateLimitRegistry()` instance rather
+than the module-level `registry` singleton in tests, to avoid cross-test
+contamination. The singleton is shared across the entire test process.
 
 ### `acquire()` context manager (non-job code)
 
@@ -498,8 +565,23 @@ async def send_email(payload: SendEmailPayload) -> None:
     ...
 ```
 
-The `rate_limits` parameter accepts plain `list[str]` names and/or `KeyedRateLimitRef` entries;
-`reservations` accepts plain `list[str]` names and/or `KeyedReservationRef` entries. Names are
+You can also declare the primitive **instances** directly — no separate
+registration step needed; the worker registers them at bootstrap:
+
+```python
+@actor(
+    rate_limits=[TokenBucket("mailgun_per_minute", capacity=100, refill_per_second=2, backend="redis")],
+    reservations=[ConcurrencyReservation("email_slots", slots=4, lease=timedelta(minutes=2))],
+)
+async def send_email(payload: SendEmailPayload) -> None:
+    ...
+```
+
+Names, instances, and keyed refs may be mixed freely in one list.
+
+The `rate_limits` parameter accepts plain names, `TokenBucket` / `SlidingWindow` instances, and/or
+`KeyedRateLimitRef` entries; `reservations` accepts plain names, `ConcurrencyReservation`
+instances, and/or `KeyedReservationRef` entries. Names are
 resolved against the registry at dispatch time. See
 [`KeyedRateLimitRef`](#keyedratelimitref-dynamic-per-key-token-buckets) and
 [`KeyedReservationRef`](#keyedreservationref-dynamic-per-key-concurrency-caps) for the keyed
@@ -541,7 +623,10 @@ If `RateLimitDecision.retry_after` is `None` (fixed quota with `refill_per_secon
 
 **Queue depth under sustained rate limiting:** Jobs accumulate as `snoozed` under sustained rate-limit pressure. They do not consume retry budget. There is no built-in backpressure beyond `max_pending` on the actor — monitor queue depth via the admin UI or OTel metrics.
 
-Primitives must be registered on `registry` before the worker starts:
+Primitives referenced **by name** must be registered before the worker starts (actor-declared
+**instances** are registered by the worker at bootstrap instead — see
+[Ownership](#ownership-where-the-registry-lives)). Registration on the module-level `registry`
+singleton looks like:
 
 ```python
 from taskq.ratelimit import registry, TokenBucket, SlidingWindow, ConcurrencyReservation
@@ -770,11 +855,10 @@ cardinality — for example, one bucket per tenant over a long-running worker's 
 in-memory registry dict grows without bound unless pruned. Three distinct, complementary
 mechanisms bound this growth:
 
-1. **Leader sweep eviction.** The leader sweep calls
-   `RateLimitRegistry.evict_idle_keyed_rate_limits(idle_for=...)` every 30 seconds, gated on
-   leader election. Every worker process unconditionally participates in leader election (see
-   `src/taskq/worker/_bootstrap.py` — `MaintenanceLeader` is started inside the main
-   `TaskGroup` without any settings flag), so this always eventually runs in any topology
+1. **Per-worker sweep eviction.** Every worker's 30-second sweep calls
+   `RateLimitRegistry.evict_idle_keyed_rate_limits(idle_for=...)` against its own registry —
+   eviction is process-local bookkeeping and is deliberately not leader-gated (a non-leader's
+   registry would otherwise receive no periodic eviction), so this always runs in any topology
    capable of materializing keyed primitives in the first place. The default idle threshold is
    1 hour (`_KEYED_IDLE_THRESHOLD`).
 
@@ -798,7 +882,7 @@ bound the Python-process-local registry dict; the Redis TTL bounds Redis memory.
 
 !!! note "Memory fixed-quota buckets are exempt from idle eviction"
     A `backend="memory"` bucket with `refill_per_second=0` that has consumed any of its quota
-    is **not** idle-evicted (neither by the leader sweep nor by opportunistic eviction): its
+    is **not** idle-evicted (neither by the per-worker sweep nor by opportunistic eviction): its
     token state lives only on the in-process bucket instance, so eviction would silently reset
     the drained quota to full — whereas the Redis backend deliberately retains that same state
     for 24h. The trade-off is deliberate: such buckets count against `max_keyed_rate_limits`

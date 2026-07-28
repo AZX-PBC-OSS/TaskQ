@@ -211,8 +211,11 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
         # non-leader's registry would otherwise receive no periodic
         # eviction). Always safe to call; with the singleton default this
         # is a no-op behavior change — N workers idempotently evict the
-        # same shared registry. ctx.rate_limit_registry is None for direct
-        # SweepContext constructions → module-singleton fallback.
+        # same shared registry (in a multi-process fleet each process has
+        # its OWN singleton copy, so non-leader processes previously got
+        # NO periodic eviction and now sweep their own copy).
+        # ctx.rate_limit_registry is None for direct SweepContext
+        # constructions → module-singleton fallback.
         rl = ctx.rate_limit_registry or rl_registry
         if rl.has_keyed_reservations:
             try:

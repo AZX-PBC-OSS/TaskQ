@@ -760,8 +760,9 @@ Source: `src/taskq/ratelimit/`.
 
 ### `RateLimitRegistry`
 
-Actors declare rate limits via `rate_limits: list[str | KeyedRateLimitRef]` and concurrency
-reservations via `reservations: list[str | KeyedReservationRef]` on the `@actor` decorator.
+Actors declare rate limits via `rate_limits: list[str | KeyedRateLimitRef | TokenBucket | SlidingWindow]`
+and concurrency
+reservations via `reservations: list[str | KeyedReservationRef | ConcurrencyReservation]` on the `@actor` decorator.
 Plain entries are name strings resolved against statically pre-registered primitives;
 `KeyedReservationRef` / `KeyedRateLimitRef` entries lazily materialize a per-key primitive
 from the job payload on first acquisition. At startup,
@@ -770,6 +771,18 @@ validation algorithm in `src/taskq/_di/_validate.py::run_validation`, which
 includes a phase that checks each actor's static `rate_limits` and `reservations`
 name entries against the `RateLimitRegistry`'s registered names, raising
 `MissingProvider` for unknown names.
+
+The registry is an ownable, injectable dependency. `worker_main`/`_main`
+accept `rate_limit_registry=`; resolution order is explicit argument →
+`RateLimitRegistry` **value** provider in the user DI registry (factory/class
+providers raise `TypeError` at bootstrap; explicit+DI co-presence likewise)
+→ the module-level `registry` singleton (the backwards-compatible default).
+Actor-declared primitive instances are collected into the resolved registry
+at bootstrap before `validate()` runs. The admin app mirrors the same default
+via `create_router(..., rate_limit_registry=)` → `app.state.rate_limit_registry`
+→ `Depends(get_rl_registry)`. Keyed idle-eviction sweeps run on every
+worker's own registry (not leader-gated) since eviction is process-local
+bookkeeping.
 
 In addition to actor-declared reservations, the worker registers a fleet-wide
 `ConcurrencyReservation` per queue at startup when the `queues.max_concurrent` column is set
