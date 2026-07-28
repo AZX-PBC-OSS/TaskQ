@@ -7,7 +7,7 @@ from dotenvmodel import ConstraintViolationError, ValidationError
 from hypothesis import given
 from hypothesis import strategies as st
 
-from taskq.settings import TaskQSettings, WorkerSettings
+from taskq.settings import OIDCSettings, SAMLSettings, TaskQSettings, WorkerSettings
 
 _DSN = "postgresql://taskq:taskq@localhost:5432/taskq"
 
@@ -860,3 +860,55 @@ def test_cron_catch_up_window_zero_accepted() -> None:
     """cron_catch_up_window=timedelta(0) is accepted."""
     s = _load(TASKQ_CRON_CATCH_UP_WINDOW="0")
     assert s.cron_catch_up_window == timedelta(0)
+
+
+# ── OIDC/SAML sub-config singletons (dotenvmodel cached()) ──────────────
+
+
+def test_oidc_property_returns_cached_singleton() -> None:
+    """Repeated settings.oidc accesses return the same cached instance."""
+    s = TaskQSettings.load_from_dict({"TASKQ_PG_DSN": _DSN})
+    try:
+        assert s.oidc is s.oidc
+        assert s.oidc is OIDCSettings.cached()
+    finally:
+        OIDCSettings.reset_cached()
+
+
+def test_saml_property_returns_cached_singleton() -> None:
+    """Repeated settings.saml accesses return the same cached instance."""
+    s = TaskQSettings.load_from_dict({"TASKQ_PG_DSN": _DSN})
+    try:
+        assert s.saml is s.saml
+        assert s.saml is SAMLSettings.cached()
+    finally:
+        SAMLSettings.reset_cached()
+
+
+def test_oidc_reload_picks_up_new_env_in_place(monkeypatch: pytest.MonkeyPatch) -> None:
+    """SIGHUP-style reload: reload() mutates the cached instance in place."""
+    monkeypatch.setenv("TASKQ_OIDC_ISSUER", "https://idp-a.example")
+    s = TaskQSettings.load_from_dict({"TASKQ_PG_DSN": _DSN})
+    try:
+        first = s.oidc
+        assert first.issuer == "https://idp-a.example"
+        monkeypatch.setenv("TASKQ_OIDC_ISSUER", "https://idp-b.example")
+        first.reload()
+        assert s.oidc is first
+        assert s.oidc.issuer == "https://idp-b.example"
+    finally:
+        OIDCSettings.reset_cached()
+
+
+def test_oidc_reset_cached_forces_reload(monkeypatch: pytest.MonkeyPatch) -> None:
+    """reset_cached() forces the next access to re-read the environment."""
+    monkeypatch.setenv("TASKQ_OIDC_ISSUER", "https://idp-a.example")
+    s = TaskQSettings.load_from_dict({"TASKQ_PG_DSN": _DSN})
+    try:
+        first = s.oidc
+        monkeypatch.setenv("TASKQ_OIDC_ISSUER", "https://idp-b.example")
+        OIDCSettings.reset_cached()
+        assert s.oidc is not first
+        assert s.oidc.issuer == "https://idp-b.example"
+    finally:
+        OIDCSettings.reset_cached()

@@ -279,13 +279,29 @@ class TaskQSettings(DotEnvConfig):
 
     @property
     def oidc(self) -> OIDCSettings:
-        """Lazily loaded OIDC sub-config (``TASKQ_OIDC_*`` env vars)."""
-        return OIDCSettings.load()
+        """Lazily loaded OIDC sub-config (``TASKQ_OIDC_*`` env vars).
+
+        Backed by dotenvmodel's ``cached()`` singleton: the environment is
+        read on first access and the same instance returned thereafter.
+
+        Reload (e.g. on SIGHUP): call ``OIDCSettings.cached().reload()`` to
+        re-read the environment and mutate the shared instance in place —
+        every holder observes the new values — or
+        ``OIDCSettings.reset_cached()`` to force the next access to
+        re-load. Tests that change ``TASKQ_OIDC_*`` mid-process must do
+        the same (or use ``cached_override()``).
+        """
+        return OIDCSettings.cached()
 
     @property
     def saml(self) -> SAMLSettings:
-        """Lazily loaded SAML sub-config (``TASKQ_SAML_*`` env vars)."""
-        return SAMLSettings.load()
+        """Lazily loaded SAML sub-config (``TASKQ_SAML_*`` env vars).
+
+        See :attr:`oidc` for the singleton/caching semantics and the
+        SIGHUP-style reload recipe (``SAMLSettings.cached().reload()`` /
+        ``SAMLSettings.reset_cached()``).
+        """
+        return SAMLSettings.cached()
 
 
 def _parse_groups(raw: str) -> frozenset[str]:
