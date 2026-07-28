@@ -346,9 +346,17 @@ class PostgresBackend:
         result: dict[str, object] | None,
         progress_seq: int = 0,
         progress_state: dict[str, object] | None = None,
+        fallback_result_ttl: timedelta | None = None,
     ) -> bool:
         return await _mark_succeeded_on_conn(
-            conn, self._sql, job_id, worker_id, result, progress_seq, progress_state
+            conn,
+            self._sql,
+            job_id,
+            worker_id,
+            result,
+            progress_seq,
+            progress_state,
+            fallback_result_ttl,
         )
 
     async def mark_succeeded(
@@ -358,9 +366,17 @@ class PostgresBackend:
         result: dict[str, object] | None,
         progress_seq: int = 0,
         progress_state: dict[str, object] | None = None,
+        fallback_result_ttl: timedelta | None = None,
     ) -> bool:
         return await _mark_succeeded(
-            self._worker_pool, self._sql, job_id, worker_id, result, progress_seq, progress_state
+            self._worker_pool,
+            self._sql,
+            job_id,
+            worker_id,
+            result,
+            progress_seq,
+            progress_state,
+            fallback_result_ttl,
         )
 
     async def mark_failed_or_retry(

@@ -291,7 +291,7 @@ taskq actor-config set checkout_charge --clear-max-pending
 
 All three capacity fields are live. `--max-concurrent` and `--result-ttl` take effect immediately for every worker in the fleet — the dispatch query re-reads `max_concurrent` every dispatch cycle, and the terminal-write path re-reads `result_ttl` on every job completion. `--max-pending` is enforced by every enqueue-side process (your web app, your workers' sub-job enqueues) through a TTL-bounded cache of the table (default 5s staleness), so a change propagates fleet-wide within seconds — no redeploy, no worker restart.
 
-Clearing a field writes NULL, which means different things per field on purpose: `--clear-max-concurrent` makes the actor *unlimited* (the dispatch SQL cannot see the code literal once a row exists), while `--clear-max-pending` / `--clear-result-ttl` *revert to the `@actor(...)` literal* — clearing undoes your override and restores the code default.
+Clearing a field writes NULL, which means different things per field on purpose: `--clear-max-concurrent` makes the actor *unlimited* (the dispatch SQL cannot see the code literal once a row exists), while `--clear-max-pending` / `--clear-result-ttl` *revert to the `@actor(...)` literal* — clearing undoes your override and restores the code default. For `result_ttl` the reverted literal is applied from each job's **completion** timestamp by the completing worker (never re-pinned to the enqueue time), so a job that sat in the queue longer than its TTL still gets its full result lifetime.
 
 To see why a change is (or isn't) taking effect, diff the stored rows against the code literals in your registry:
 
@@ -299,7 +299,7 @@ To see why a change is (or isn't) taking effect, diff the stored rows against th
 taskq actor-config diff --actors myapp.actors:registry
 ```
 
-Per actor and capacity field this prints the `@actor(...)` literal, the stored value, and the value the engine currently enforces (`effective`). It also flags `queue`/`metadata` mismatches — those are structural and block the next worker startup with `ActorConfigDriftList` — actors with no stored row yet, and leftover rows whose actor is no longer registered.
+Per actor and capacity field this prints the `@actor(...)` literal, the stored value, and the value the engine currently enforces (`effective`). It also flags `queue`/`metadata` mismatches — those are structural and block the next worker startup with `ActorConfigDriftList` — actors with no stored row yet, and leftover rows whose actor is no longer registered. Note the no-row case is field-dependent: an actor with no stored row **does not dispatch at all** (`max_concurrent` shows `effective=0` — the dispatch capacity gate reads only `actor_config` rows until a worker startup seeds it), while `max_pending` / `result_ttl` fall back to the code literal.
 
 `taskq actor-config set` requires the actor to have a stored row already (created by a worker startup that registered it). `queue` and `metadata` are structural and are only ever changed by redeploying with a new `@actor(...)` registration (plus `--force-update-actor-config` if a stored row already exists).
 

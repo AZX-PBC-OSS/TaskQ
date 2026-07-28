@@ -91,10 +91,15 @@ class SubJobEnqueuer:
         unique_states: tuple[JobStatus, ...] | None = None,
         max_pending: int | None = None,
     ) -> JobHandle[R]:
-        """Enqueue a sub-job. ``max_pending`` is a per-call override of the
-        actor's declared limit — but a non-NULL *stored*
-        ``actor_config.max_pending`` (operator-set) is authoritative and
-        wins over both this parameter and the ``@actor(...)`` literal."""
+        """Enqueue a sub-job. ``max_pending`` is a per-call limit resolved
+        against the operator-owned stored cap and the ``@actor(...)``
+        literal: against a non-NULL *stored* ``actor_config.max_pending``
+        the tighter of the two wins (``min(stored, per_call)`` — an
+        explicit caller shedding load is never widened by an operator
+        override, and no code path can raise an operator's fleet cap);
+        with no stored value this parameter wins outright over the
+        literal (historical behavior — actor code may loosen its own
+        declaration)."""
         resolved_queue = actor_ref.queue
         identity_key_str = str(identity_key) if identity_key is not None else ""
 
@@ -105,7 +110,8 @@ class SubJobEnqueuer:
         ):
             effective_max_pending = await self._capacity_cache.effective_max_pending(
                 actor_ref.name,
-                max_pending if max_pending is not None else actor_ref.max_pending,
+                actor_ref.max_pending,
+                per_call=max_pending,
             )
             args = build_enqueue_args(
                 actor_ref,

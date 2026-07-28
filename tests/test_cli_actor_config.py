@@ -131,6 +131,46 @@ def test_set_unknown_actor_exit_one(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "no stored actor_config row" in result.stderr
 
 
+def _patch_connect_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fake only asyncpg.connect; let the REAL ops function run.
+
+    Validation in set_actor_config_capacity happens before any I/O, so a
+    bare fake connection is enough to exercise it end-to-end through the
+    CLI — this is how NaN/±inf (which typer's min=0 cannot see) must be
+    rejected with a clean operator-facing message instead of a traceback.
+    """
+
+    class _FakeConn:
+        async def close(self) -> None: ...
+
+    async def fake_connect(dsn: str) -> Any:
+        return _FakeConn()
+
+    monkeypatch.setattr("taskq.cli.asyncpg.connect", fake_connect)
+
+
+def test_set_result_ttl_nan_rejected_cleanly(monkeypatch: pytest.MonkeyPatch) -> None:
+    """--result-ttl nan parses (float('nan')) and typer's min=0 cannot see
+    it (nan < 0 is False), but writing it would break every completion
+    for the actor: now() + NaN * interval '1 second' raises
+    'interval out of range' in the terminal-write UPDATE. The ops-layer
+    finite guard rejects it, and the CLI prints the reason, not a
+    traceback."""
+    _patch_connect_only(monkeypatch)
+    result = runner.invoke(app, ["actor-config", "set", "diff_actor", "--result-ttl", "nan"])
+    assert result.exit_code == 1
+    assert "finite" in result.stderr
+    assert "Traceback" not in result.output
+
+
+def test_set_result_ttl_inf_rejected_cleanly(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_connect_only(monkeypatch)
+    result = runner.invoke(app, ["actor-config", "set", "diff_actor", "--result-ttl", "inf"])
+    assert result.exit_code == 1
+    assert "finite" in result.stderr
+    assert "Traceback" not in result.output
+
+
 def test_set_help_lists_all_capacity_fields() -> None:
     """`actor-config set` exposes a flag for every capacity field.
 
@@ -195,13 +235,21 @@ def test_diff_flags_structural_drift_as_startup_blocking(
 
 
 def test_diff_marks_actor_without_stored_row(monkeypatch: pytest.MonkeyPatch) -> None:
-    """An actor the registry declares but no worker has synced yet: the
-    literal applies and will seed the row at the next startup."""
+    """An actor the registry declares but no worker has synced yet.
+
+    max_concurrent must NOT show the literal as effective: the dispatch
+    capacity gate builds FROM actor_config (inner join), so with no row
+    the actor is never dispatched — effective is 0. max_pending /
+    result_ttl enforcement can see the code literal, so those do fall
+    back to it.
+    """
     _patch_db(monkeypatch, list_result=[])
     result = runner.invoke(app, ["actor-config", "diff", "--actors", _REGISTRY_PATH])
     assert result.exit_code == 0, f"stderr: {result.stderr}"
     assert "no stored row" in result.output
-    assert "literal applies" in result.output
+    assert "DOES NOT DISPATCH" in result.output
+    assert "max_concurrent  literal=4  effective=0 (no stored row" in result.output
+    assert "max_pending     literal=100  effective=100 (literal)" in result.output
 
 
 def test_diff_marks_leftover_row_not_in_registry(monkeypatch: pytest.MonkeyPatch) -> None:

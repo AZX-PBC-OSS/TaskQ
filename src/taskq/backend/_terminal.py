@@ -166,6 +166,7 @@ async def _mark_succeeded_on_conn(
     result: dict[str, object] | None,
     progress_seq: int = 0,
     progress_state: dict[str, object] | None = None,
+    fallback_result_ttl: timedelta | None = None,
 ) -> bool:
     serialized_result = jsonb_param(result)
     result_size = len(serialized_result.encode("utf-8")) if serialized_result is not None else None
@@ -179,6 +180,7 @@ async def _mark_succeeded_on_conn(
         result_size,
         progress_seq,
         jsonb_param(progress_state),
+        fallback_result_ttl,
     )
     if rec is None:
         return False
@@ -229,11 +231,19 @@ async def _mark_succeeded(
     result: dict[str, object] | None,
     progress_seq: int = 0,
     progress_state: dict[str, object] | None = None,
+    fallback_result_ttl: timedelta | None = None,
 ) -> bool:
     async with pool.acquire() as conn:
         async with conn.transaction():
             return await _mark_succeeded_on_conn(
-                conn, sql, job_id, worker_id, result, progress_seq, progress_state
+                conn,
+                sql,
+                job_id,
+                worker_id,
+                result,
+                progress_seq,
+                progress_state,
+                fallback_result_ttl,
             )
 
 

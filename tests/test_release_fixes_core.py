@@ -323,6 +323,11 @@ async def test_sub_job_enqueuer_enqueue_batch_uses_supplied_batch_id() -> None:
             base = make_job_row(actor=args.actor, queue=args.queue, payload=args.payload)
             return dataclasses.replace(base, id=args.id, metadata=dict(args.metadata))
 
+        async def get_actor_max_pending(self) -> dict[str, int | None]:
+            # No stored rows → capacity resolution falls back to literals,
+            # the pre-operator-ownership behavior this test exercises.
+            return {}
+
     backend = _EnqueueOnlyBackend()
     enqueuer = SubJobEnqueuer(
         loop_scope_resolved=None,

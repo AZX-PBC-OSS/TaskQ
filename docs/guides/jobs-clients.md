@@ -792,6 +792,13 @@ Enqueues a single sub-job. Accepts the same options as `JobsClient.enqueue()` ex
 - `connection` may be passed to use a specific `asyncpg.Connection` rather than the LOOP-scope
   connection.
 
+The per-call `max_pending=` argument is resolved against the operator-owned stored cap and
+the `@actor(...)` literal, not in place of them: against a non-NULL stored
+`actor_config.max_pending` the tighter of the two wins (`min(stored, per_call)`) — explicit
+load shedding is never widened by an operator override, and no code path can raise the
+operator's cap. With nothing stored, the per-call argument wins outright over the literal
+(historical behavior — actor code may loosen its own declaration).
+
 ### `enqueue_batch()`
 
 ```python

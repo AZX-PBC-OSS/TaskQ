@@ -500,6 +500,11 @@ async def _actor_config_set(
             result_ttl=result_ttl,
             schema=settings.schema_name,
         )
+    except ValueError as exc:
+        # Validation failures (negative, NaN/±inf, bool) are operator
+        # errors — print the reason, not a traceback.
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from None
     finally:
         await conn.close()
     if row is None:
@@ -545,15 +550,27 @@ def _print_actor_diff(
 ) -> None:
     typer.echo(f"{name}:")
     if row is None:
-        # Registry-only actor: nothing has ever seeded a row.
+        # Registry-only actor: nothing has ever seeded a row. Enforcement
+        # differs per field: the dispatch CTE builds its candidate gate
+        # FROM actor_config (inner join), so with no row the actor is
+        # NEVER dispatched — max_concurrent is effectively 0, not the
+        # literal. max_pending / result_ttl enforcement can see the code
+        # literal, so those fall back to it.
         assert ref is not None  # row is None only when the name came from the registry
         typer.echo(
-            "  no stored row — never synced; the code literal applies and "
-            "seeds the row at the next worker startup"
+            "  no stored row — never synced; the row is seeded at the next "
+            "worker startup. Until then the actor DOES NOT DISPATCH (the "
+            "dispatch capacity gate reads only actor_config rows)."
         )
         for field in _CAPACITY_DIFF_FIELDS:
             literal = _literal_for_field(ref, field)
-            typer.echo(f"  {field:<15} literal={literal}  effective={literal} (literal)")
+            if field == "max_concurrent":
+                typer.echo(
+                    f"  {field:<15} literal={literal}  effective=0 (no stored row — "
+                    "actor cannot dispatch)"
+                )
+            else:
+                typer.echo(f"  {field:<15} literal={literal}  effective={literal} (literal)")
         typer.echo(f"  {'queue':<15} literal={ref.queue}")
         return
     if ref is None:

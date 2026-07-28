@@ -8,10 +8,14 @@ a TTL-bounded :class:`~taskq.client._capacity.ActorCapacityCache`
 snapshot of the table (default 5s staleness bound, explicit invalidation
 via ``JobsClient.invalidate_actor_capacity_cache``).
 
-Resolution rule, matching ``result_ttl``'s existing precedent:
-**a non-NULL stored value wins; otherwise the code literal applies**
+Resolution rule: **a non-NULL stored value wins over the code literal**
 (no row → literal; row with NULL → literal — "clear" reverts to the
-code default).
+code default). An explicit per-call ``max_pending=`` argument is honored
+in the tightening direction against a stored cap (``min(stored,
+per_call)`` — load shedding is never widened by an operator override),
+and wins outright against the literal when nothing is stored
+(historical behavior — actor code may loosen its own declaration, never
+an operator's cap).
 
 Unit tier here uses ``InMemoryBackend`` whose ``_actor_configs_meta``
 map plays the role of the stored table; PG integration coverage lives in
@@ -20,6 +24,7 @@ tests.
 """
 
 import asyncio
+import time
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, cast
 
@@ -27,6 +32,7 @@ import pytest
 from pydantic import BaseModel
 
 from taskq.actor import ActorRef, actor
+from taskq.backend._protocol import Backend
 from taskq.batch import EnqueueItem
 from taskq.client._capacity import ActorCapacityCache
 from taskq.client._enqueuer import SubJobEnqueuer
@@ -131,6 +137,114 @@ async def test_stored_zero_rejects_every_enqueue() -> None:
         await client.enqueue(ref, _Payload(value=1))
 
 
+# ── Per-call argument resolution ────────────────────────────────────────
+
+
+async def test_per_call_tighter_than_stored_is_honored() -> None:
+    """Load shedding: an explicit per-call cap tighter than the stored
+    (operator) value must be honored — ``min(stored, per_call)``.
+
+    The stored value here is 100 only because the seeding path copied a
+    literal into the row; that must not widen a caller explicitly asking
+    to admit at most 1 pending job.
+    """
+    backend = _make_backend()
+    backend.register_actor_config(actor="cap_shed", max_pending=100)
+    enqueuer = SubJobEnqueuer(
+        loop_scope_resolved=None,
+        worker_pool=cast(
+            "asyncpg.Pool", object()
+        ),  # Why: only the None-check reads the pool on this path; the backend does the work.
+        backend=backend,
+    )
+    ref = _uncapped("cap_shed")
+
+    await enqueuer.enqueue(ref, _Payload(value=1), max_pending=1)
+    with pytest.raises(MaxPendingExceededError):
+        await enqueuer.enqueue(ref, _Payload(value=2), max_pending=1)
+
+
+async def test_per_call_looser_than_stored_does_not_widen() -> None:
+    """The other direction of the same rule: no code path can raise an
+    operator's fleet cap — min(stored=1, per_call=100) stays 1."""
+    backend = _make_backend()
+    backend.register_actor_config(actor="cap_sub", max_pending=1)
+    enqueuer = SubJobEnqueuer(
+        loop_scope_resolved=None,
+        worker_pool=cast(
+            "asyncpg.Pool", object()
+        ),  # Why: only the None-check reads the pool on this path; the backend does the work.
+        backend=backend,
+        capacity_cache=ActorCapacityCache(backend),
+    )
+    ref = _uncapped("cap_sub")
+
+    await enqueuer.enqueue(ref, _Payload(value=1), max_pending=100)
+    with pytest.raises(MaxPendingExceededError):
+        await enqueuer.enqueue(ref, _Payload(value=2), max_pending=100)
+
+
+async def test_per_call_widens_past_literal_when_nothing_stored() -> None:
+    """Historical behavior preserved: with no stored cap, an explicit
+    per-call argument may loosen the actor's own literal — actor code
+    owns its declaration; only the operator cap is a hard ceiling."""
+    backend = _make_backend()
+    enqueuer = SubJobEnqueuer(
+        loop_scope_resolved=None,
+        worker_pool=cast("asyncpg.Pool", object()),  # Why: see above.
+        backend=backend,
+    )
+    ref = _literal_capped("cap_loosen", 1)
+
+    await enqueuer.enqueue(ref, _Payload(value=1), max_pending=100)
+    # Literal is 1 — pre-change resolution would raise here; the explicit
+    # per-call widening wins because nothing is stored.
+    await enqueuer.enqueue(ref, _Payload(value=2), max_pending=100)
+
+
+async def test_per_call_without_stored_row_keeps_tighter_param() -> None:
+    """No stored row: the explicit per-call param behaves exactly as before."""
+    backend = _make_backend()
+    enqueuer = SubJobEnqueuer(
+        loop_scope_resolved=None,
+        worker_pool=cast("asyncpg.Pool", object()),  # Why: see above.
+        backend=backend,
+    )
+    ref = _uncapped("cap_sub_param")
+
+    await enqueuer.enqueue(ref, _Payload(value=1), max_pending=1)
+    with pytest.raises(MaxPendingExceededError):
+        await enqueuer.enqueue(ref, _Payload(value=2), max_pending=1)
+
+
+# ── Construction guards ────────────────────────────────────────────────
+
+
+async def test_first_use_rejects_backend_without_get_actor_max_pending() -> None:
+    """Contract drift fails fast at first use, not silently.
+
+    A backend built before ``get_actor_max_pending`` existed would
+    otherwise hit AttributeError inside the fail-open handler on every
+    refresh and silently enforce code literals forever — the exact
+    silent drift the protocol version exists to prevent. Construction
+    stays cheap and harmless for partial doubles; the first capacity
+    resolution raises.
+    """
+
+    class _LegacyBackend:
+        pass
+
+    cache = ActorCapacityCache(cast("Backend", _LegacyBackend()))
+    with pytest.raises(TypeError, match="get_actor_max_pending"):
+        await cache.effective_max_pending("any_actor", None)
+
+
+def test_constructor_rejects_non_positive_read_timeout() -> None:
+    backend = _make_backend()
+    with pytest.raises(ValueError, match="read_timeout"):
+        ActorCapacityCache(backend, read_timeout=0.0)
+
+
 # ── Staleness, invalidation, refresh ────────────────────────────────────
 
 
@@ -171,6 +285,30 @@ async def test_zero_ttl_refreshes_on_every_enqueue() -> None:
     await client.enqueue(ref, _Payload(value=2))
 
 
+async def test_positive_ttl_expires_naturally_then_refresh_picks_it_up() -> None:
+    """A positive TTL bounds staleness: once the window elapses, the next
+    read refreshes on its own — no explicit invalidation required.
+
+    The within-TTL staleness test and the ttl=0 tests both survive the
+    narrower mutation (a positive-TTL snapshot that never expires) —
+    only a test that lets the window actually elapse catches it.
+    """
+    backend = _make_backend()
+    backend.register_actor_config(actor="cap_aging", max_pending=1)
+    client = JobsClient(backend, capacity_cache_ttl=0.05)
+    ref = _uncapped("cap_aging")
+
+    await client.enqueue(ref, _Payload(value=1))
+    with pytest.raises(MaxPendingExceededError):
+        await client.enqueue(ref, _Payload(value=2))
+
+    # Operator raises the cap; nobody invalidates. Once the TTL has
+    # elapsed, the very next enqueue must see the new value.
+    backend.register_actor_config(actor="cap_aging", max_pending=100)
+    await asyncio.sleep(0.1)
+    await client.enqueue(ref, _Payload(value=2))
+
+
 async def test_refresh_failure_falls_back_to_literal_then_recovers() -> None:
     """A failed refresh must not break enqueue: fall back to the literal
     (or last-known snapshot), log, and retry no sooner than the TTL."""
@@ -199,25 +337,145 @@ async def test_refresh_failure_falls_back_to_literal_then_recovers() -> None:
     assert calls == 2
 
 
+async def test_failed_refresh_retains_last_good_snapshot() -> None:
+    """The module's fail-open contract is 'fall back to the LAST GOOD
+    SNAPSHOT' — not to an empty table.
+
+    Prime a good snapshot (stored cap 1), then make every refresh fail:
+    the retained rows must keep enforcing the cap. A regression that
+    reset ``_rows`` on failure would silently drop enforcement to the
+    (uncapped) literal — and the previous suite could not see it because
+    every failure test started from an empty table, where {} and
+    'retained' look identical.
+    """
+    backend = _make_backend()
+    backend.register_actor_config(actor="cap_retain", max_pending=1)
+    client = JobsClient(backend, capacity_cache_ttl=0.0)  # refresh on every call
+    ref = _uncapped("cap_retain")
+
+    # Prime the snapshot: stored cap 1 is enforced.
+    await client.enqueue(ref, _Payload(value=1))
+    with pytest.raises(MaxPendingExceededError):
+        await client.enqueue(ref, _Payload(value=2))
+
+    async def always_fails() -> dict[str, int | None]:
+        raise OSError("down")
+
+    object.__setattr__(backend, "get_actor_max_pending", always_fails)
+
+    # Refresh now fails on every call: the retained snapshot (cap 1)
+    # must still reject the overflow — not silently reset to uncapped.
+    with pytest.raises(MaxPendingExceededError):
+        await client.enqueue(ref, _Payload(value=3))
+
+
 async def test_concurrent_enqueues_share_one_refresh() -> None:
     """Single-flight: N concurrent enqueues with a cold cache trigger
-    exactly one backend read, not N."""
+    exactly one backend read, not N.
+
+    The backend double genuinely suspends (an asyncio.Event gate), so
+    ``calls == 1`` holds because of the single-flight lock, not because
+    the in-memory read happens to complete without yielding — deleting
+    the lock makes every waiter start its own read and this fails.
+    """
     backend = _make_backend()
     real_impl = backend.get_actor_max_pending
     calls = 0
+    started = asyncio.Event()
+    release = asyncio.Event()
 
-    async def spy() -> dict[str, int | None]:
+    async def gated() -> dict[str, int | None]:
         nonlocal calls
         calls += 1
+        started.set()
+        await release.wait()  # genuine suspension point
         return await real_impl()
 
-    object.__setattr__(backend, "get_actor_max_pending", spy)
+    object.__setattr__(backend, "get_actor_max_pending", gated)
 
     client = JobsClient(backend)  # default TTL; cache cold at gather time
     ref = _uncapped("cap_single_flight")
 
-    await asyncio.gather(*(client.enqueue(ref, _Payload(value=i)) for i in range(10)))
+    tasks = [asyncio.create_task(client.enqueue(ref, _Payload(value=i))) for i in range(10)]
+    # Let the first task reach the gated read and the rest queue on the
+    # single-flight lock before releasing the gate.
+    await started.wait()
+    await asyncio.sleep(0)
+    release.set()
+    await asyncio.gather(*tasks)
     assert calls == 1
+
+
+async def test_invalidate_during_in_flight_refresh_discards_result() -> None:
+    """Behavioral contract of ``invalidate()``: "the next read refreshes
+    from the backend" — even when a read was already in flight.
+
+    Scenario: a refresh reads cap=1 but its response is delayed; while
+    it is in flight the operator raises the cap to 5 and invalidates the
+    cache. When the delayed read completes it carries the PRE-change
+    snapshot. If that result were allowed to re-stamp the cache, every
+    caller would keep seeing cap=1 for another full TTL — the opposite
+    of what the invalidation was for. Callers must see cap=5 on the
+    very next read.
+    """
+    backend = _make_backend()
+    backend.register_actor_config(actor="cap_inv", max_pending=1)
+    real_impl = backend.get_actor_max_pending
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def delayed() -> dict[str, int | None]:
+        snapshot = await real_impl()  # reads cap=1 ...
+        started.set()
+        await release.wait()  # ... but the response lands later
+        return snapshot
+
+    object.__setattr__(backend, "get_actor_max_pending", delayed)
+
+    cache = ActorCapacityCache(backend)  # default 5s TTL
+    first = asyncio.create_task(cache.effective_max_pending("cap_inv", None))
+    await started.wait()
+
+    # Operator raises the cap and tells the cache to drop its snapshot.
+    backend.register_actor_config(actor="cap_inv", max_pending=5)
+    cache.invalidate()
+
+    # The delayed pre-change read now completes.
+    release.set()
+    await first
+
+    # The next caller must see the operator's new value, not the
+    # pre-invalidation snapshot — inside the TTL window.
+    assert await cache.effective_max_pending("cap_inv", None) == 5
+
+
+async def test_refresh_read_timeout_fails_open_instead_of_hanging() -> None:
+    """An exhausted/dead backend pool must not wedge enqueue behind the
+    single-flight lock.
+
+    Without the wait_for, a pool whose connections are all checked out
+    blocks the refresh indefinitely *while holding the lock*, stacking
+    up every other enqueue in the process. The timeout turns the hang
+    into the module's documented fail-open, and the lock is released.
+    """
+    backend = _make_backend()
+    never = asyncio.Event()
+
+    async def hangs() -> dict[str, int | None]:
+        await never.wait()
+        return {}
+
+    object.__setattr__(backend, "get_actor_max_pending", hangs)
+
+    cache = ActorCapacityCache(backend, read_timeout=0.05)
+    start = time.monotonic()
+    # Literal fallback applies and the call returns promptly.
+    assert await cache.effective_max_pending("cap_timeout", 7) == 7
+    assert time.monotonic() - start < 2.0
+    # The lock was released: the next caller takes the same bounded
+    # fail-open path (failure stamped → no retry within the TTL).
+    assert await cache.effective_max_pending("cap_timeout", 7) == 7
+    assert time.monotonic() - start < 2.0
 
 
 async def test_refresh_failure_is_retried_no_more_often_than_ttl() -> None:
@@ -322,45 +580,6 @@ async def test_two_clients_enforce_the_same_stored_limit() -> None:
     await client_a.enqueue(ref, _Payload(value=1))
     with pytest.raises(MaxPendingExceededError):
         await client_b.enqueue(ref, _Payload(value=2))
-
-
-# ── SubJobEnqueuer path ─────────────────────────────────────────────────
-
-
-async def test_sub_enqueuer_stored_wins_over_per_call_param() -> None:
-    """An operator-set stored value is authoritative even over an explicit
-    per-call ``max_pending=`` argument: capacity is operator-owned, so no
-    code path can assert its own."""
-    backend = _make_backend()
-    backend.register_actor_config(actor="cap_sub", max_pending=1)
-    enqueuer = SubJobEnqueuer(
-        loop_scope_resolved=None,
-        worker_pool=cast(
-            "asyncpg.Pool", object()
-        ),  # Why: only the None-check reads the pool on this path; the backend does the work.
-        backend=backend,
-        capacity_cache=ActorCapacityCache(backend),
-    )
-    ref = _uncapped("cap_sub")
-
-    await enqueuer.enqueue(ref, _Payload(value=1), max_pending=100)
-    with pytest.raises(MaxPendingExceededError):
-        await enqueuer.enqueue(ref, _Payload(value=2), max_pending=100)
-
-
-async def test_sub_enqueuer_without_stored_row_keeps_per_call_param() -> None:
-    """No stored row: the explicit per-call param behaves exactly as before."""
-    backend = _make_backend()
-    enqueuer = SubJobEnqueuer(
-        loop_scope_resolved=None,
-        worker_pool=cast("asyncpg.Pool", object()),  # Why: see above.
-        backend=backend,
-    )
-    ref = _uncapped("cap_sub_param")
-
-    await enqueuer.enqueue(ref, _Payload(value=1), max_pending=1)
-    with pytest.raises(MaxPendingExceededError):
-        await enqueuer.enqueue(ref, _Payload(value=2), max_pending=1)
 
 
 # ── Backend surface ─────────────────────────────────────────────────────

@@ -218,6 +218,7 @@ async def consume_one_job(
     worker_pool: asyncpg.Pool | None = None,
     settings: WorkerSettings | None = None,
     error_reporter: ErrorReporter | None = None,
+    fallback_result_ttl: timedelta | None = None,
 ) -> AttemptOutcome:
     """Run one job's full  try/except sequence.
 
@@ -440,6 +441,7 @@ async def consume_one_job(
                         settings=_effective_settings,
                         worker_pool=_effective_pool,
                         error_reporter=error_reporter,
+                        fallback_result_ttl=fallback_result_ttl,
                     )
                     _completion = _OK if tx_outcome == "succeeded" else None
                     if tx_outcome == "succeeded":
@@ -466,6 +468,7 @@ async def consume_one_job(
                         redis_client=_effective_redis,
                         settings=_effective_settings,
                         worker_pool=_effective_pool,
+                        fallback_result_ttl=fallback_result_ttl,
                     )
                     consumer_span.add_event(
                         "lifecycle.succeeded",
@@ -611,6 +614,7 @@ async def _consume_transactional(
     settings: WorkerSettings | None = None,
     worker_pool: asyncpg.Pool | None = None,
     error_reporter: ErrorReporter | None = None,
+    fallback_result_ttl: timedelta | None = None,
 ) -> AttemptOutcome:
     """Transactional success/failure path when a LOOP-scope conn is available.
 
@@ -666,6 +670,7 @@ async def _consume_transactional(
                         result_dict,
                         progress_seq=_pseq,
                         progress_state=_pstate,
+                        fallback_result_ttl=fallback_result_ttl,
                     )
                 except _TERMINAL_WRITE_INFRA_EXCEPTIONS as infra_exc:
                     _log_terminal_write_failed(log, job, None, infra_exc)
@@ -808,6 +813,7 @@ async def _consume_autonomous(
     redis_client: "redis_async.Redis | None" = None,
     settings: WorkerSettings | None = None,
     worker_pool: asyncpg.Pool | None = None,
+    fallback_result_ttl: timedelta | None = None,
 ) -> None:
     """Autonomous success path — no LOOP-scope connection."""
     _auto_redis = (
@@ -883,6 +889,7 @@ async def _consume_autonomous(
                 result_dict,
                 progress_seq=_pseq,
                 progress_state=_pstate,
+                fallback_result_ttl=fallback_result_ttl,
             )
         )
     except _TERMINAL_WRITE_INFRA_EXCEPTIONS as infra_exc:

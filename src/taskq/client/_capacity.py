@@ -21,21 +21,52 @@ seconds. Consequences, all by design:
 * **Bounded cost.** At most one refresh query per ``ttl`` per process,
   regardless of enqueue rate; concurrent enqueues share a single
   refresh (single-flight lock).
+* **Bounded wait.** The refresh read is wrapped in
+  ``asyncio.wait_for(..., read_timeout)`` (default 2s). Without it, an
+  exhausted backend pool would block the read — and, because the read
+  runs under the single-flight lock, every other enqueue in the process
+  behind it — indefinitely. A timeout becomes an ordinary refresh
+  failure and takes the fail-open path below.
 * **Fail-open to the code literal.** A failed refresh logs a warning
   and the resolver falls back to the last good snapshot (or the
   ``@actor`` literal if none), retrying no sooner than ``ttl`` — a sick
   database never turns into a per-enqueue failing query storm.
 * **Explicit invalidation.** :meth:`invalidate` drops the snapshot so
   the next read refreshes immediately (tests, and operator tooling that
-  knows it just changed the table).
+  knows it just changed the table). An epoch counter makes this safe
+  against a refresh already in flight: a read that started before the
+  invalidation is discarded on completion instead of re-stamping the
+  pre-invalidation snapshot for another full TTL.
+* **Fail-fast on contract drift.** The first capacity resolution
+  requires the backend to implement ``get_actor_max_pending``
+  (``BACKEND_PROTOCOL_VERSION`` 3) and raises ``TypeError`` if it does
+  not. A backend built against an older protocol would otherwise hit
+  ``AttributeError`` inside the fail-open handler on every refresh and
+  silently enforce code literals forever — exactly the silent drift the
+  protocol version exists to prevent. The check fires at first *use*,
+  not at construction, so partial backend doubles that never exercise
+  the enqueue path are unaffected.
 
-Resolution rule (shared by every enqueue path):
-**a non-NULL stored value wins; otherwise the literal applies.** "No
-row" and "row with NULL" both fall through to the literal — clearing an
-override (``--clear-max-pending``) reverts to the code default, exactly
-like ``result_ttl``. This deliberately differs from ``max_concurrent``,
-where a stored NULL means *unlimited*: the dispatch SQL cannot see the
-code literal, while this resolver can.
+Resolution rule (shared by every enqueue path), given the stored value,
+the ``@actor`` literal, and an optional per-call ``max_pending=``
+argument:
+
+1. A non-NULL **stored** value wins over the literal — the operator's
+   cap is authoritative and can both loosen and tighten it ("no row"
+   and "row with NULL" both fall through to the literal; clearing an
+   override reverts to the code default, exactly like ``result_ttl``).
+2. An explicit **per-call** argument is always honored in the tightening
+   direction and never weakened: with a stored cap the effective limit is
+   ``min(stored, per_call)`` — a caller shedding load must not be
+   widened by an operator override. Against the *literal* (no stored
+   value) the per-call argument wins outright, in both directions —
+   actor code may loosen its own declaration; that is the historical
+   behavior. Against the *stored* value it may not: the operator cap is
+   a fleet ceiling no code path can raise.
+
+This deliberately differs from ``max_concurrent``, where a stored NULL
+means *unlimited*: the dispatch SQL cannot see the code literal, while
+this resolver can.
 """
 
 import asyncio
@@ -43,14 +74,23 @@ import time
 
 import structlog
 
-from taskq.backend._protocol import Backend
+from taskq.backend._protocol import BACKEND_PROTOCOL_VERSION, Backend
 
-__all__ = ["DEFAULT_CAPACITY_CACHE_TTL", "ActorCapacityCache"]
+__all__ = ["DEFAULT_CAPACITY_CACHE_TTL", "DEFAULT_CAPACITY_READ_TIMEOUT", "ActorCapacityCache"]
 
 logger: structlog.stdlib.BoundLogger = structlog.get_logger(__name__)
 
 DEFAULT_CAPACITY_CACHE_TTL: float = 5.0
 """Seconds a snapshot is reused before the next read refreshes it."""
+
+DEFAULT_CAPACITY_READ_TIMEOUT: float = 2.0
+"""Seconds a single refresh read may take before it fails open.
+
+Aligned with the 2s ``command_timeout`` the worker uses for heartbeat
+writes (``taskq/worker/deps.py``): long enough for a healthy small
+whole-table read, short enough that an exhausted pool fails open before
+enqueue latency becomes an outage.
+"""
 
 
 class ActorCapacityCache:
@@ -61,13 +101,23 @@ class ActorCapacityCache:
     threads or event loops — the owning client's loop drives it.
     """
 
-    def __init__(self, backend: Backend, *, ttl: float = DEFAULT_CAPACITY_CACHE_TTL) -> None:
+    def __init__(
+        self,
+        backend: Backend,
+        *,
+        ttl: float = DEFAULT_CAPACITY_CACHE_TTL,
+        read_timeout: float = DEFAULT_CAPACITY_READ_TIMEOUT,
+    ) -> None:
         if ttl < 0:
             raise ValueError(f"capacity cache ttl must be >= 0, got {ttl!r}")
+        if read_timeout <= 0:
+            raise ValueError(f"capacity cache read_timeout must be > 0, got {read_timeout!r}")
         self._backend = backend
         self._ttl = ttl
+        self._read_timeout = read_timeout
         self._rows: dict[str, int | None] = {}
         self._refreshed_at: float | None = None
+        self._epoch = 0
         self._lock = asyncio.Lock()
 
     def _stale(self) -> bool:
@@ -79,8 +129,15 @@ class ActorCapacityCache:
         async with self._lock:
             if not self._stale():
                 return  # another task refreshed while we waited
+            epoch = self._epoch
             try:
-                self._rows = await self._backend.get_actor_max_pending()
+                # wait_for bounds the whole read — pool acquisition
+                # included. Without it an exhausted pool blocks here
+                # (asyncpg acquire has no default timeout) while the lock
+                # is held, stacking up every enqueue in the process.
+                rows = await asyncio.wait_for(
+                    self._backend.get_actor_max_pending(), timeout=self._read_timeout
+                )
             except Exception as exc:
                 # Fail-open: keep the last good snapshot (or empty → the
                 # caller's literal). Stamping refreshed_at bounds the
@@ -91,20 +148,61 @@ class ActorCapacityCache:
                     error_class=type(exc).__name__,
                     error=str(exc),
                 )
+            else:
+                if epoch == self._epoch:
+                    self._rows = rows
+            if epoch != self._epoch:
+                # invalidate() fired while the read was in flight: the
+                # result may predate the change the caller wanted
+                # re-read. Do not stamp — the next read refreshes.
+                return
             self._refreshed_at = time.monotonic()
 
-    async def effective_max_pending(self, actor: str, fallback: int | None) -> int | None:
+    async def effective_max_pending(
+        self, actor: str, literal: int | None, *, per_call: int | None = None
+    ) -> int | None:
         """Return the enforced ``max_pending`` for *actor*.
 
-        A non-NULL stored value wins; otherwise *fallback* (the
-        ``@actor(...)`` literal, or a per-call override the caller
-        resolved) applies. Refreshing lazily when stale — see the module
-        docstring for the staleness/cost bounds.
+        *literal* is the ``@actor(max_pending=...)`` declaration; it
+        applies whenever no non-NULL stored value exists. *per_call* is
+        an explicit ``max_pending=`` argument from the enqueue call
+        itself: honored in the tightening direction against a stored cap
+        (``min(stored, per_call)`` — load-shedding callers are never
+        widened), and winning outright against the literal (the
+        historical behavior — actor code may loosen its own declaration,
+        but never an operator's cap). See the module docstring for the
+        full rule. Refreshes lazily when stale.
+
+        Raises :class:`TypeError` if the backend does not implement
+        ``get_actor_max_pending`` — contract drift fails fast here, at
+        first use, rather than degrading silently through the fail-open
+        path (see the module docstring).
         """
+        # Why hasattr rather than callable(): test doubles (MagicMock et
+        # al.) auto-vivify attributes, often as non-callable children —
+        # those doubles are fine. The drift case this guards is a backend
+        # CLASS built before the method existed, where the attribute is
+        # genuinely absent.
+        if not hasattr(self._backend, "get_actor_max_pending"):
+            raise TypeError(
+                f"{type(self._backend).__name__} does not implement get_actor_max_pending "
+                f"(BACKEND_PROTOCOL_VERSION {BACKEND_PROTOCOL_VERSION}). A backend built "
+                "against an older protocol would silently enforce @actor literals "
+                "forever through this cache's fail-open path — failing fast at "
+                "first use instead. Implement the method or upgrade the backend."
+            )
         await self._refresh()
         stored = self._rows.get(actor)
-        return stored if stored is not None else fallback
+        if stored is not None:
+            return min(stored, per_call) if per_call is not None else stored
+        return per_call if per_call is not None else literal
 
     def invalidate(self) -> None:
-        """Drop the snapshot; the next read refreshes from the backend."""
+        """Drop the snapshot; the next read refreshes from the backend.
+
+        Bumps the refresh epoch so a read already in flight is discarded
+        on completion rather than re-stamping the pre-invalidation
+        snapshot for another full TTL.
+        """
         self._refreshed_at = None
+        self._epoch += 1

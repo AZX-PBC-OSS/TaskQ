@@ -18,6 +18,7 @@ from taskq.backend._protocol import EnqueueArgs, ErrorInfo, JobId, RetryKind
 from taskq.exceptions import WorkerOwnershipMismatch
 from taskq.testing.clock import FakeClock
 from taskq.testing.in_memory import InMemoryBackend
+from taskq.worker.actor_config import ActorConfig
 
 # ── Helpers ────────────────────────────────────────────────────────────
 
@@ -1380,3 +1381,112 @@ class TestMarkRetryAfterClearsLastHeartbeat:
         row = await backend.get(job_id)
         assert row is not None
         assert row.last_heartbeat_at is None
+
+
+class TestMarkSucceededResultExpiryFallback:
+    """result_expires_at resolution at completion: stored override →
+    worker-supplied fallback (the @actor literal) → enqueue-time value,
+    each applied from the COMPLETION timestamp, never re-pinned to the
+    enqueue one.
+    """
+
+    async def _enqueue_with_ttl_and_age(
+        self,
+        backend: InMemoryBackend,
+        clock: FakeClock,
+        ttl: timedelta,
+        queue_wait: timedelta,
+    ) -> tuple[JobId, UUID]:
+        """Enqueue with a literal TTL, then age the clock as if the job
+        sat in the queue past its TTL before completing."""
+        args = EnqueueArgs(
+            id=new_job_id(),
+            actor="test_actor",
+            queue="default",
+            payload={"key": "value"},
+            max_attempts=3,
+            retry_kind="transient",
+            scheduled_at=clock.now(),
+            result_ttl=ttl,
+        )
+        await backend.enqueue(args)
+        worker_id = backend._worker_id  # type: ignore[reportPrivateUsage]  # Why: test-only private access
+        dispatched = await backend.dispatch_batch(
+            worker_id, ["default"], limit=1, lock_lease=timedelta(seconds=60)
+        )
+        assert len(dispatched) == 1
+        clock.advance(queue_wait)
+        return dispatched[0].id, worker_id
+
+    async def test_cleared_stored_ttl_falls_back_to_literal_at_completion(self) -> None:
+        """The reported bug: stored result_ttl cleared to NULL, job sat in
+        the queue longer than its TTL — the result must NOT complete
+        already expired. The worker's fallback literal is applied from
+        the completion timestamp, so the result outlives the sweep."""
+        clock = FakeClock(_START)
+        backend = InMemoryBackend(clock=clock)
+        # Row exists with result_ttl NULL — the operator's cleared override.
+        backend.register_actor_configs(
+            [ActorConfig(actor="test_actor", max_concurrent=None, queue="default")]
+        )
+
+        ttl = timedelta(seconds=5)
+        job_id, wid = await self._enqueue_with_ttl_and_age(
+            backend, clock, ttl, queue_wait=timedelta(seconds=45)
+        )
+
+        ok = await backend.mark_succeeded(job_id, wid, {"ok": True}, fallback_result_ttl=ttl)
+        assert ok is True
+
+        row = await backend.get(job_id)
+        assert row is not None
+        assert row.result == {"ok": True}
+        # Completion happened at _START + 45s; expiry must be completion+5s,
+        # a future timestamp — not the enqueue-pinned _START+5s (40s past).
+        assert row.result_expires_at == clock.now() + ttl
+
+    async def test_stored_ttl_wins_over_fallback_at_completion(self) -> None:
+        """Operator override beats the worker's fallback literal."""
+        clock = FakeClock(_START)
+        backend = InMemoryBackend(clock=clock)
+        backend.register_actor_configs(
+            [
+                ActorConfig(
+                    actor="test_actor",
+                    max_concurrent=None,
+                    queue="default",
+                    result_ttl=300.0,
+                )
+            ]
+        )
+
+        ttl = timedelta(seconds=5)
+        job_id, wid = await self._enqueue_with_ttl_and_age(
+            backend, clock, ttl, queue_wait=timedelta(seconds=45)
+        )
+
+        ok = await backend.mark_succeeded(job_id, wid, {"ok": True}, fallback_result_ttl=ttl)
+        assert ok is True
+
+        row = await backend.get(job_id)
+        assert row is not None
+        assert row.result_expires_at == clock.now() + timedelta(seconds=300)
+
+    async def test_no_stored_no_fallback_keeps_enqueue_pinned_value(self) -> None:
+        """Third COALESCE arm: neither a stored override nor a fallback
+        literal (e.g. a completing worker that predates the literal) —
+        the enqueue-time value is all there is to keep."""
+        clock = FakeClock(_START)
+        backend = InMemoryBackend(clock=clock)
+
+        ttl = timedelta(seconds=5)
+        job_id, wid = await self._enqueue_with_ttl_and_age(
+            backend, clock, ttl, queue_wait=timedelta(seconds=45)
+        )
+
+        ok = await backend.mark_succeeded(job_id, wid, {"ok": True})
+        assert ok is True
+
+        row = await backend.get(job_id)
+        assert row is not None
+        assert row.result_expires_at == _START + ttl

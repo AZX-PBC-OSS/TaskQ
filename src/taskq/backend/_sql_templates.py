@@ -146,6 +146,18 @@ def render(schema: str) -> SqlTemplates:
 
     return SqlTemplates(
         # ── Terminal-write UPDATE statements ───────────────────────
+        # result_expires_at resolution, first non-NULL wins: the stored
+        # (operator-owned) result_ttl applied at completion; then the
+        # caller-supplied fallback ($7 — the @actor literal the SQL cannot
+        # see, also applied at completion, so a long-queued job does not
+        # complete already expired); then the enqueue-time value.
+        # Why clock_timestamp() and not now(): in the LOOP-scope
+        # transactional path now() is the TRANSACTION start (≈ actor
+        # start), so an actor whose runtime exceeds its TTL would
+        # complete already expired — the same bug class as queue-time
+        # pinning, one path over. clock_timestamp() is the wall-clock
+        # time the write actually executes. finished_at keeps now() —
+        # pre-existing semantics, unchanged by this fix.
         mark_succeeded=f"""\
 UPDATE "{s}".jobs
 SET status = 'succeeded',
@@ -155,7 +167,8 @@ SET status = 'succeeded',
     result = $3::jsonb,
     result_size_bytes = $4,
     result_expires_at = COALESCE(
-        (SELECT now() + result_ttl * interval '1 second' FROM "{s}".actor_config WHERE actor = "{s}".jobs.actor),
+        (SELECT clock_timestamp() + result_ttl * interval '1 second' FROM "{s}".actor_config WHERE actor = "{s}".jobs.actor),
+        clock_timestamp() + $7::interval,
         result_expires_at
     ),
     progress_seq = $5,

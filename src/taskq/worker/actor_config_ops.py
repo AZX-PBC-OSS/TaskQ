@@ -26,6 +26,7 @@ read as *fall back to the ``@actor(...)`` literal* — clearing reverts an
 override to the code default.
 """
 
+import math
 from dataclasses import dataclass
 from typing import Final
 
@@ -130,6 +131,36 @@ async def get_actor_config(
     return _row_to_dataclass(row) if row is not None else None
 
 
+def _validate_int_field(name: str, value: int | None | Unset) -> None:
+    """Reject the two shapes that slip past ``isinstance(x, int) and x < 0``:
+    ``bool`` (an ``int`` subclass — ``False`` would be written as 0, flooring
+    the dispatch residual ``GREATEST(cap - in_flight, 0)`` and silently
+    pausing the actor) and negative values."""
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be a non-negative integer; got {value!r} (bool)")
+    if isinstance(value, int) and value < 0:
+        raise ValueError(f"{name} must be a non-negative integer; got {value!r}")
+
+
+def _validate_result_ttl(value: float | None | Unset) -> None:
+    """Reject bool, negative, and non-finite ``result_ttl``.
+
+    NaN sails through ``value < 0`` (NaN compares False) and then breaks
+    every completion for the actor — ``now() + NaN * interval '1 second'``
+    raises ``interval out of range`` in the terminal-write UPDATE. ±inf is
+    rejected on the same grounds (``interval out of range`` / meaningless
+    expiry)."""
+    if isinstance(value, bool):
+        raise ValueError(
+            f"result_ttl must be a non-negative number of seconds; got {value!r} (bool)"
+        )
+    if isinstance(value, (int, float)):
+        if not math.isfinite(value):
+            raise ValueError(f"result_ttl must be finite; got {value!r}")
+        if value < 0:
+            raise ValueError(f"result_ttl must be a non-negative number of seconds; got {value!r}")
+
+
 async def set_actor_config_capacity(
     conn: ConnLike,
     actor: str,
@@ -154,24 +185,24 @@ async def set_actor_config_capacity(
     capacity can be tuned here.
 
     Raises :class:`ValueError` if ``max_concurrent`` or ``max_pending``
-    is a negative integer — the same guard ``@actor(...)`` applies at
-    decoration time (``taskq/actor.py``). Without it, an operator typo
-    here (e.g. ``--max-concurrent -5``) would write silently into the
-    dispatch CTE's ``GREATEST(ac.max_concurrent - in_flight, 0)``
-    residual calculation, floor to zero, and pause the actor
-    indefinitely with no error anywhere in the path.  ``result_ttl``
-    is likewise rejected when negative — a negative TTL would set
-    ``result_expires_at`` to a past timestamp in the terminal-write
-    UPDATE, silently expiring every result the moment it is written.
+    is a negative integer or a ``bool`` — the same guard ``@actor(...)``
+    applies at decoration time (``taskq/actor.py``), plus the bool case
+    (``False`` is an ``int`` and would be written as 0). Without these,
+    an operator typo here (e.g. ``--max-concurrent -5``) would write
+    silently into the dispatch CTE's ``GREATEST(ac.max_concurrent -
+    in_flight, 0)`` residual calculation, floor to zero, and pause the
+    actor indefinitely with no error anywhere in the path. ``result_ttl``
+    is likewise rejected when negative, non-finite, or ``bool`` — a
+    negative TTL would set ``result_expires_at`` to a past timestamp in
+    the terminal-write UPDATE (silently expiring every result the moment
+    it is written), and NaN/±inf raise ``interval out of range`` in that
+    same UPDATE, failing every completion for the actor.
     """
     if not _IDENT_RE.match(schema):
         raise ValueError(f"invalid schema identifier: {schema!r}")
-    if isinstance(max_concurrent, int) and max_concurrent < 0:
-        raise ValueError(f"max_concurrent must be a non-negative integer; got {max_concurrent!r}")
-    if isinstance(max_pending, int) and max_pending < 0:
-        raise ValueError(f"max_pending must be a non-negative integer; got {max_pending!r}")
-    if isinstance(result_ttl, (int, float)) and result_ttl < 0:
-        raise ValueError(f"result_ttl must be a non-negative number of seconds; got {result_ttl!r}")
+    _validate_int_field("max_concurrent", max_concurrent)
+    _validate_int_field("max_pending", max_pending)
+    _validate_result_ttl(result_ttl)
 
     row = await conn.fetchrow(
         _SET_ACTOR_CONFIG_CAPACITY_SQL.format(schema=schema),

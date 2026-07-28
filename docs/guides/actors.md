@@ -468,6 +468,13 @@ no worker restart. Run `taskq actor-config diff --actors myapp.actors:registry` 
 literal, the stored value, and which one is currently enforced. See
 [ActorConfig sync](workers.md#actorconfig-sync).
 
+**Per-call argument.** `SubJobEnqueuer.enqueue(..., max_pending=N)` (inside an actor body)
+is resolved against the effective limit, not in place of it: against a *stored* cap the
+tighter of the two wins (`min(stored, N)`) — an explicit caller shedding load is never
+widened by an operator override, and no code path can raise the operator's fleet cap.
+With nothing stored, the per-call argument wins outright over this literal, in both
+directions — actor code may loosen its own declaration.
+
 ---
 
 ## Rate limits and reservations

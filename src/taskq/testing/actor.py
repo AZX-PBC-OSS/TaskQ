@@ -149,6 +149,7 @@ class FakeBackend:
         result: dict[str, object] | None,
         progress_seq: int = 0,
         progress_state: dict[str, object] | None = None,
+        fallback_result_ttl: timedelta | None = None,
     ) -> bool:
         self.mark_succeeded_calls.append((job_id, worker_id, result))
         return True
@@ -161,8 +162,11 @@ class FakeBackend:
         result: dict[str, object] | None,
         progress_seq: int = 0,
         progress_state: dict[str, object] | None = None,
+        fallback_result_ttl: timedelta | None = None,
     ) -> bool:
-        return await self.mark_succeeded(job_id, worker_id, result, progress_seq, progress_state)
+        return await self.mark_succeeded(
+            job_id, worker_id, result, progress_seq, progress_state, fallback_result_ttl
+        )
 
     async def mark_failed_or_retry(
         self,

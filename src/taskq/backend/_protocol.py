@@ -82,9 +82,17 @@ __all__ = [
 # inputs) instead of failing loudly.  Purely additive changes an old
 # implementation can ignore without producing incorrect behaviour do not
 # require a bump.  See docs/architecture.md §Backend protocol.
-# v3: list_jobs — JobFilter.status widened to accept a sequence and the
-#     `active` meta-filter was added; a v2 implementation returns wrong
-#     rows for both shapes without erroring.
+# v3 (unreleased; folds in every protocol change since the last shipped
+#     release): list_jobs — JobFilter.status widened to accept a sequence
+#     and the `active` meta-filter was added; a v2 implementation returns
+#     wrong rows for both shapes without erroring. get_actor_max_pending
+#     added (required) — a v2 implementation lacks the method, and the
+#     client capacity cache's fail-open would otherwise swallow the
+#     AttributeError and silently enforce code literals forever.
+#     mark_succeeded / mark_succeeded_with_conn gained the
+#     `fallback_result_ttl` keyword — without it a v2 implementation
+#     keeps the enqueue-pinned result_expires_at when the stored
+#     result_ttl is cleared, silently expiring results at completion.
 BACKEND_PROTOCOL_VERSION: Final[int] = 3
 
 # ── Type aliases (PEP 695) ─────────────────────────────────────────────
@@ -804,7 +812,21 @@ class Backend(Protocol):
         result: dict[str, object] | None,
         progress_seq: int = 0,
         progress_state: dict[str, object] | None = None,
-    ) -> bool: ...
+        fallback_result_ttl: timedelta | None = None,
+    ) -> bool:
+        """Mark a job succeeded, computing ``result_expires_at`` at completion.
+
+        Expiry resolution, first match wins: a non-NULL stored
+        ``actor_config.result_ttl`` (operator-owned) applies; otherwise
+        *fallback_result_ttl* — the worker-side ``@actor(result_ttl=...)``
+        literal, which the terminal-write SQL cannot see — applies;
+        otherwise the row's existing ``result_expires_at`` is kept. The
+        computed arms use ``clock_timestamp()`` — the wall-clock time the
+        write executes, not the transaction start — so neither a long
+        queue wait nor a long actor runtime can make a job complete
+        already expired and have its result reaped immediately.
+        """
+        ...
 
     async def mark_succeeded_with_conn(
         self,
@@ -814,6 +836,7 @@ class Backend(Protocol):
         result: dict[str, object] | None,
         progress_seq: int = 0,
         progress_state: dict[str, object] | None = None,
+        fallback_result_ttl: timedelta | None = None,
     ) -> bool:
         """Mark a job succeeded using the supplied connection.
 
@@ -823,6 +846,9 @@ class Backend(Protocol):
         The connection MUST already be in an open transaction; this
         method does NOT open or close one. The autonomous variant
         ``mark_succeeded(...)`` acquires its own connection.
+
+        ``fallback_result_ttl`` follows the same resolution rule as
+        :meth:`mark_succeeded`.
         """
         ...
 

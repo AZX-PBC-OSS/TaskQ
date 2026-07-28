@@ -294,6 +294,7 @@ async def test_consume_shielded_writes_complete_when_task_is_cancelled() -> None
             result: dict[str, object] | None,
             progress_seq: int = 0,
             progress_state: dict[str, object] | None = None,
+            fallback_result_ttl: object = None,
         ) -> bool:
             await asyncio.sleep(0.05)
             write_completed.set()
