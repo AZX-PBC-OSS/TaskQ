@@ -27,7 +27,7 @@ import asyncpg
 from pydantic import BaseModel, Field
 
 from taskq import EnqueueItem, JobContext, RetryPolicy, Snooze, actor
-from taskq.ratelimit import TokenBucket, registry
+from taskq.ratelimit import KeyedRateLimitRef, TokenBucket, registry
 from taskq.settings import WorkerSettings
 
 from .di import FakeHttpClient
@@ -386,3 +386,98 @@ async def enrich_order(
         {"run_id": payload.run_id, "order_id": payload.order_id, "status": data["status"]},
     )
     return EnrichResult(order_id=payload.order_id, enriched=True)
+
+
+# ── KeyedRateLimitRef actor ──────────────────────────────────────────────
+# Per-tenant token bucket: each tenant gets an independent capacity-3 /
+# 1-refill-per-second bucket materialized lazily on first acquisition.
+# The key_fn extracts tenant_id from the validated payload, so two tenants
+# share NO token budget — draining tenant A's bucket does not affect
+# tenant B's bucket at all.
+
+
+class DeliverTenantWebhookPayload(BaseModel):
+    run_id: str
+    tenant_id: str
+    endpoint_id: str
+
+
+@actor(
+    name="deliver_tenant_webhook",
+    queue="e2e",
+    rate_limits=[
+        KeyedRateLimitRef(
+            base_name="e2e_per_tenant",
+            key_fn=lambda p: p["tenant_id"],
+            capacity=3,
+            refill_per_second=1.0,
+            backend="redis",
+        )
+    ],
+)
+async def deliver_tenant_webhook(
+    payload: DeliverTenantWebhookPayload,
+    ctx: JobContext[DeliverTenantWebhookPayload],
+    *,
+    pool: asyncpg.Pool,
+) -> None:
+    """Simulates a per-tenant webhook POST gated by a keyed token bucket.
+
+    Each ``tenant_id`` gets its own independent capacity-3 / 1-refill-per-second
+    bucket (materialized lazily via :class:`KeyedRateLimitRef`). Draining one
+    tenant's bucket has no effect on another tenant's bucket — the e2e test
+    proves this independence.
+    """
+    await asyncio.sleep(0.03)
+    await _record_effect(
+        pool,
+        ctx,
+        "tenant_delivered",
+        {
+            "run_id": payload.run_id,
+            "tenant_id": payload.tenant_id,
+            "endpoint_id": payload.endpoint_id,
+        },
+    )
+
+
+# ── Queue concurrency cap actor ──────────────────────────────────────────
+# Uses the "e2e_capped" queue, which is created with max_concurrent=2 in
+# the queue-concurrency-cap test module's fixture. The worker reads
+# max_concurrent at startup and registers a ConcurrencyReservation; the
+# dispatch path transparently prepends the queue-cap reservation name
+# via _effective_reservations, so this actor needs no rate_limits or
+# reservations declaration — the cap is purely queue-level.
+
+
+class CappedWorkerPayload(BaseModel):
+    run_id: str
+    job_index: int
+
+
+@actor(name="capped_worker", queue="e2e_capped")
+async def capped_worker(
+    payload: CappedWorkerPayload,
+    ctx: JobContext[CappedWorkerPayload],
+    *,
+    pool: asyncpg.Pool,
+) -> None:
+    """Simulates work on a queue with a fleet-wide concurrency cap.
+
+    Records "started" and "finished" effects so the test can compute the
+    maximum number of simultaneously-running jobs and verify it never
+    exceeds the queue's ``max_concurrent``.
+    """
+    await _record_effect(
+        pool,
+        ctx,
+        "capped_started",
+        {"run_id": payload.run_id, "job_index": payload.job_index},
+    )
+    await asyncio.sleep(1.0)
+    await _record_effect(
+        pool,
+        ctx,
+        "capped_finished",
+        {"run_id": payload.run_id, "job_index": payload.job_index},
+    )

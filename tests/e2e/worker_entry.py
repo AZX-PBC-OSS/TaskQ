@@ -10,6 +10,8 @@ import sys
 from typing import Any
 
 from e2e.actors import (
+    capped_worker,
+    deliver_tenant_webhook,
     deliver_webhook,
     enrich_order,
     generate_report,
@@ -31,8 +33,10 @@ ACTORS: dict[str, ActorRef[Any, Any]] = {
     "import_contacts_csv": import_contacts_csv,
     "import_contacts_chunk": import_contacts_chunk,
     "deliver_webhook": deliver_webhook,
+    "deliver_tenant_webhook": deliver_tenant_webhook,
     "rebuild_search_index": rebuild_search_index,
     "enrich_order": enrich_order,
+    "capped_worker": capped_worker,
 }
 
 if __name__ == "__main__":
