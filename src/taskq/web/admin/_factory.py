@@ -312,7 +312,11 @@ def setup_admin_state(app: _AppLike, bundle: AdminBundle) -> None:
     app.state.settings = bundle.settings
     app.state.base_path = bundle.base_path
     app.state.backend = bundle.backend
-    app.state.rate_limit_registry = bundle.rate_limit_registry or _rl_singleton
+    app.state.rate_limit_registry = (
+        bundle.rate_limit_registry
+        if bundle.rate_limit_registry is not None
+        else _rl_singleton
+    )
 
 
 def create_router(
