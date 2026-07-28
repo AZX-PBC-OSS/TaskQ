@@ -783,8 +783,8 @@ class RateLimitRegistry:
 
     async def acquire_for_actor(
         self,
-        rate_limits: Sequence["str | KeyedRateLimitRef"],
-        reservations: Sequence["str | KeyedReservationRef"],
+        rate_limits: Sequence["str | KeyedRateLimitRef | TokenBucket | SlidingWindow"],
+        reservations: Sequence["str | KeyedReservationRef | ConcurrencyReservation"],
         *,
         job_id: "UUID",
         worker_id: "UUID",
@@ -797,11 +797,16 @@ class RateLimitRegistry:
         """AND-composition: acquire reservations first, then rate limits.
 
         ``reservations`` entries may be plain names (resolved against
-        statically pre-registered primitives) or :class:`KeyedReservationRef`
+        statically pre-registered primitives), :class:`KeyedReservationRef`
         instances (resolved dynamically per job from ``payload`` — see
-        :meth:`_resolve_reservation_name`). ``rate_limits`` entries may
-        likewise be plain names or :class:`KeyedRateLimitRef` instances
-        (resolved dynamically via :meth:`_resolve_rate_limit_name`).
+        :meth:`_resolve_reservation_name`), or
+        :class:`ConcurrencyReservation` instances (normalized to their
+        ``.name`` up front — the instance must already be registered,
+        e.g. by the worker bootstrap's actor-declaration collection
+        pass; an unregistered instance raises ``KeyError`` exactly like
+        an unknown name). ``rate_limits`` entries may likewise be plain
+        names, :class:`KeyedRateLimitRef` instances, or
+        :class:`TokenBucket` / :class:`SlidingWindow` instances.
         ``payload`` is required if any entry is a ``KeyedReservationRef``
         or ``KeyedRateLimitRef``.
 
@@ -810,9 +815,22 @@ class RateLimitRegistry:
         internally before re-raising (already-acquired resources released in
         reverse order, each failure logged at ERROR).
         """
+        # Normalize primitive instances to their names BEFORE any use —
+        # _ref_display (below) only handles str | keyed refs and would
+        # AttributeError on a primitive instance, and every dict lookup
+        # and handle construction sees names only. No acquisition-time
+        # auto-registration: bootstrap is the fail-fast point; an
+        # unregistered instance raises KeyError from the dict lookups below.
+        rl_seq: list[str | KeyedRateLimitRef] = [
+            rl.name if isinstance(rl, TokenBucket | SlidingWindow) else rl for rl in rate_limits
+        ]
+        res_seq: list[str | KeyedReservationRef] = [
+            res.name if isinstance(res, ConcurrencyReservation) else res
+            for res in reservations
+        ]
         acquired: list[AcquiredResource] = []
         try:
-            for res_ref in reservations:
+            for res_ref in res_seq:
                 res_name = await self._resolve_reservation_name(
                     res_ref, payload, pg_pool=pg_pool, settings=settings
                 )
@@ -833,7 +851,7 @@ class RateLimitRegistry:
                     )
                 )
 
-            for rl_ref in rate_limits:
+            for rl_ref in rl_seq:
                 rl_name = await self._resolve_rate_limit_name(
                     rl_ref, payload, settings=settings, pg_pool=pg_pool
                 )
@@ -862,8 +880,8 @@ class RateLimitRegistry:
                     logger.info(
                         "composition-denied",
                         job_id=str(job_id),
-                        rate_limits=[_ref_display(r) for r in rate_limits],
-                        reservations=[_ref_display(r) for r in reservations],
+                        rate_limits=[_ref_display(r) for r in rl_seq],
+                        reservations=[_ref_display(r) for r in res_seq],
                         allowed=False,
                         retry_after_seconds=retry_td.total_seconds(),
                         failed_bucket=rl_name,
@@ -890,8 +908,8 @@ class RateLimitRegistry:
             logger.debug(
                 "composition-acquired",
                 job_id=str(job_id),
-                rate_limits=[_ref_display(r) for r in rate_limits],
-                reservations=[_ref_display(r) for r in reservations],
+                rate_limits=[_ref_display(r) for r in rl_seq],
+                reservations=[_ref_display(r) for r in res_seq],
                 allowed=True,
                 retry_after=None,
                 handle_count=len(acquired),
