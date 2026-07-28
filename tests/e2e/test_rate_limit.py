@@ -43,7 +43,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from ._assertions import fetch_effects
+from ._assertions import fetch_effects, fetch_job_rows
 from .actors import DeliverWebhookPayload, deliver_webhook
 
 if TYPE_CHECKING:
@@ -117,14 +117,15 @@ async def test_rate_limit_state_survives_in_dragonfly(
     so the 6 measured jobs land at ~0.2s … ~1.2s (≈1.0s spread; worse-case
     interleavings only push the last measured effect later).
 
-    Two guards make the persistence proof airtight (F2). (1) The 5 drain
-    jobs' effect timestamps must cluster within 0.3s, proving they consumed
-    the initial capacity-5 burst in parallel (~0.03s actor latency) rather
-    than being partially snoozed — a snoozed drain would leave the measured
-    jobs a partially-full bucket and a sub-threshold spread. (2) The
-    measured-spread threshold is 0.8s: just below the ~1.0s theory, well
-    above the ~0.3s bucket-lost baseline. The old 0.5s bar was only ~1.7x
-    baseline and could pass on a partially-drained bucket.
+    Two guards make the persistence proof airtight (F2). (1) No drain job
+    may be snoozed: ``mark_snoozed`` (the rate-limit denial path) is the
+    only healthy-lifecycle writer that bumps ``jobs.max_attempts``, so any
+    snoozed drain reads configured+1 — a sticky, timing-free discriminator,
+    immune to the execution slowness that flaked the old effect-spread
+    guard under CI load. (2) The measured-spread threshold is 0.8s: just
+    below the ~1.0s theory, well above the ~0.3s bucket-lost baseline. The
+    old 0.5s bar was only ~1.7x baseline and could pass on a
+    partially-drained bucket.
     """
     drain_id = f"{run_id}-drain"
     drain_handles = [
@@ -146,20 +147,33 @@ async def test_rate_limit_state_survives_in_dragonfly(
         *(handle.wait(timeout=90) for handle in [*drain_handles, *measured_handles])
     )
 
-    # Burst-consumption proof (F2): the drain jobs must have run in parallel
-    # on the initial capacity-5 tokens, so their effect timestamps cluster
-    # tightly. A wider cluster means some were snoozed, which would leave
-    # the measured jobs a partially-full bucket and invalidate the spread
-    # assertion below.
+    # Exactly-once delivery of the drain batch (orthogonal to the snooze
+    # guard below).
     drain_rows = await fetch_effects(
         e2e_pg_pool, e2e_schema.schema_name, drain_id, kind="delivered"
     )
     assert len(drain_rows) == _DRAIN_SIZE
-    drain_spread_seconds = (
-        max(row["at"] for row in drain_rows) - min(row["at"] for row in drain_rows)
-    ).total_seconds()
-    assert drain_spread_seconds <= 0.3, (
-        f"drain jobs spread over {drain_spread_seconds:.2f}s — "
+
+    # Burst-consumption proof (F2): no drain job may have been snoozed.
+    # mark_snoozed (the rate-limit denial path) is the ONLY healthy-lifecycle
+    # writer that bumps jobs.max_attempts (both snooze SQL templates do
+    # max_attempts = j.max_attempts + 1; enqueue sets it once from the
+    # actor's RetryPolicy). A snoozed drain therefore reads configured+1 —
+    # a sticky, timing-free discriminator with no clock, latency, or
+    # refill-arithmetic assumptions, immune to the execution-slowness flake
+    # that killed the old 0.3s effect-spread guard under CI load.
+    drain_job_rows = await fetch_job_rows(
+        e2e_pg_pool, e2e_schema.schema_name, [h.job_id for h in drain_handles]
+    )
+    assert len(drain_job_rows) == _DRAIN_SIZE
+    snoozed = {
+        row["id"]: row["max_attempts"]
+        for row in drain_job_rows
+        if row["max_attempts"] != deliver_webhook.retry.max_attempts
+    }
+    assert not snoozed, (
+        f"drain job(s) snoozed before first execution (max_attempts bumped): "
+        f"{', '.join(f'{j}:{a}' for j, a in sorted(snoozed.items()))} — "
         "initial burst tokens not consumed by the drain batch?"
     )
 

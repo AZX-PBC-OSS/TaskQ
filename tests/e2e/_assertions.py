@@ -12,7 +12,8 @@ Design spec: docs/superpowers/specs/2026-07-27-e2e-test-suite-design.md
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
+from uuid import UUID
 
 import asyncpg
 from pydantic import BaseModel
@@ -21,6 +22,7 @@ from taskq.client import JobHandle
 
 __all__ = [
     "fetch_effects",
+    "fetch_job_rows",
     "poll_until",
     "wait_for_effects",
     "wait_for_handle_status",
@@ -28,6 +30,10 @@ __all__ = [
 ]
 
 _EFFECTS_COLUMNS = "seq, at, actor, job_id, attempt, kind, detail"
+_JOBS_COLUMNS = (
+    "id, actor, queue, status, attempt, max_attempts, created_at, scheduled_at, "
+    "started_at, finished_at"
+)
 
 
 async def poll_until(
@@ -108,6 +114,28 @@ async def fetch_effects(
         """,
         run_id,
         kind,
+    )
+
+
+async def fetch_job_rows(
+    pool: asyncpg.Pool,
+    schema: str,
+    job_ids: Sequence[UUID],
+) -> list[asyncpg.Record]:
+    """One-shot read of ``{schema}.jobs`` rows by id, ordered by ``created_at``.
+
+    For terminal-state assertions after a wait (e.g. ``max_attempts`` as a
+    snooze discriminator — ``mark_snoozed`` is the only healthy-lifecycle
+    writer that bumps it) — pair with ``JobHandle.wait`` so no polling is
+    needed.
+    """
+    return await pool.fetch(
+        f"""
+        SELECT {_JOBS_COLUMNS} FROM "{schema}".jobs
+        WHERE id = ANY($1::uuid[])
+        ORDER BY created_at
+        """,
+        job_ids,
     )
 
 
