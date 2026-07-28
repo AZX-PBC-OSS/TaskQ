@@ -1,6 +1,6 @@
 """Result TTL expiry e2e — result cleared after TTL, job status preserved.
 
-Design spec scenario row (docs/superpowers/specs/2026-07-27-e2e-test-suite-design.md):
+Scenario:
 actor with ``result_ttl=2 s``; result retrievable immediately after success;
 after the TTL elapses and the leader's ``sweep_expired_results`` sweep runs,
 ``jobs.result`` is NULL while ``jobs.status`` remains ``succeeded``.

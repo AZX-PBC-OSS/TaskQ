@@ -1,7 +1,6 @@
 """Stale worker cleanup e2e — dead worker's row removed by leader sweep.
 
-Design spec scenario row
-(docs/superpowers/specs/2026-07-27-e2e-test-suite-design.md):
+Scenario:
 kill a worker, verify ``cleanup_stale_workers`` sweep removes its row
 from the ``workers`` table while the surviving worker's row remains.
 

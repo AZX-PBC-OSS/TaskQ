@@ -1,6 +1,6 @@
 """Retry exhaustion e2e — job fails all attempts, lands in 'failed'.
 
-Design spec scenario row (docs/superpowers/specs/2026-07-27-e2e-test-suite-design.md):
+Scenario:
 transient ``fail_times=3`` with ``max_attempts=3`` → every attempt fails →
 job terminal status is ``failed``; ``handle.wait()`` raises ``JobFailed``;
 exactly 3 ``fetch`` effects with attempts [1, 2, 3]; zero ``synced`` effects.

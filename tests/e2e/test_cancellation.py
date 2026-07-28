@@ -1,6 +1,6 @@
 """Cancellation e2e — cooperative cancel mid-run + clean pre-dispatch cancel.
 
-Design spec scenario row (docs/superpowers/specs/2026-07-27-e2e-test-suite-design.md):
+Scenario:
 long report → ``wait_for_handle_status(handle, "running")`` →
 ``handle.cancel()`` → terminal ``cancelled``; effects show only early stages.
 

@@ -1,6 +1,6 @@
 """Batch enqueue from client e2e — enqueue_batch with explicit batch_id.
 
-Design spec scenario row (docs/superpowers/specs/2026-07-27-e2e-test-suite-design.md):
+Scenario:
 client-side ``enqueue_batch`` with an explicit ``batch_id`` UUID; all jobs
 share that UUID in ``metadata.batch_id``; ``handle.wait()`` on every child
 succeeds; effects rows match the enqueued set 1:1.

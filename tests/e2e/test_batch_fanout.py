@@ -1,6 +1,6 @@
 """Batch fan-out e2e — ``import_contacts_csv`` fans out 5 chunk jobs as one batch.
 
-Design spec scenario row (docs/superpowers/specs/2026-07-27-e2e-test-suite-design.md):
+Scenario:
 2500 rows / 500-chunk → parent fans out 5 chunk jobs →
 ``wait_for_batch(conn, batch_id, schema=...)`` on an ``e2e_pg_pool``
 connection → all complete; 5 chunk effects, rows partitioned without overlap.

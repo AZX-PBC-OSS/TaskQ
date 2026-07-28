@@ -1,6 +1,6 @@
 """Rate-limit e2e — the Dragonfly-backed token bucket paces cross-container dispatch.
 
-Design spec scenario row (docs/superpowers/specs/2026-07-27-e2e-test-suite-design.md):
+Scenario:
 token bucket capacity 5, refill 5/s; burst 12 webhook jobs → last-vs-first
 completion spread ≥ 1.0s (theory ~1.4s; un-throttled would be <0.3s); all
 succeed. Ground truth: ``e2e_effects.at``.

@@ -1,7 +1,6 @@
 """Scheduling e2e — delayed dispatch, queue routing, retry backoff spacing.
 
-Closes the scheduling coverage gaps in
-docs/superpowers/specs/2026-07-27-e2e-test-suite-design.md (the spec covers
+Closes the scheduling coverage gaps in the e2e suite (the suite covers
 dispatch, retries, and cancellation; these three scenarios pin the timing
 behaviour underneath them), with semantics verified against the library:
 

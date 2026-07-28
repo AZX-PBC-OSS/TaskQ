@@ -1,6 +1,6 @@
 """Multi-worker e2e — two worker containers share one queue with no double execution.
 
-Design spec scenario row (docs/superpowers/specs/2026-07-27-e2e-test-suite-design.md):
+Scenario:
 second worker container on the same queue; 30 jobs with small latency → all
 succeed; each job_id appears exactly once in effects; both workers
 participate. Ground truth: ``e2e_effects`` distinctness + per-attempt

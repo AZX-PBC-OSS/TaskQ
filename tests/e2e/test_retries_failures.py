@@ -1,6 +1,6 @@
 """Retries & failure-taxonomy e2e — transient retry, permanent fail, snooze requeue.
 
-Design spec scenario row (docs/superpowers/specs/2026-07-27-e2e-test-suite-design.md):
+Scenario:
 transient ``fail_times=2`` with ``max_attempts=3`` → succeeded on attempt 3;
 permanent → ``failed`` (``pytest.raises(JobFailed)`` on ``handle.wait()``);
 snooze → completes after requeue. Ground truth: ``jobs.attempt``,

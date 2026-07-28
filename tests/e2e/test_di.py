@@ -1,6 +1,6 @@
 """DI e2e — provider bootstrap inside a real worker container.
 
-Design spec scenario row (docs/superpowers/specs/2026-07-27-e2e-test-suite-design.md):
+Scenario:
 ``enrich_order`` → effects include injected-http fetch + pool write; proves
 DI bootstrap inside a real worker container. Ground truth: ``e2e_effects``
 plus the ``jobs`` error columns on the failure path.

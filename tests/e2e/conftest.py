@@ -1,6 +1,6 @@
 """E2E suite fixtures: real worker containers against real PG + Dragonfly.
 
-Topology (design spec: docs/superpowers/specs/2026-07-27-e2e-test-suite-design.md):
+Topology:
 
 - Session: one Docker network, one PG container (alias ``pg``), one Dragonfly
   container (alias ``dragonfly``), one worker image built from the fresh wheel.

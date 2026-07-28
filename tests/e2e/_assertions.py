@@ -6,7 +6,6 @@ in-process ``asyncio.Event`` and ``wait_for_job_status`` requires an in-process
 process is a pure client, so these helpers poll externally observable state
 (``JobHandle`` reads and PG rows) with wall-clock deadlines instead.
 
-Design spec: docs/superpowers/specs/2026-07-27-e2e-test-suite-design.md
 """
 
 from __future__ import annotations
