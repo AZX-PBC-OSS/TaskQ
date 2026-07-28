@@ -97,9 +97,10 @@ class SweepContext:
     backend: Backend
     clock: Clock
     worker_id: UUID
-    # The worker's resolved rate-limit registry (Task 5 wires the sweep
-    # sites that consume it); None for ad-hoc SweepContext constructions
-    # outside worker bootstrap.
+    # The worker's resolved rate-limit registry, consumed by the de-gated
+    # keyed-eviction block in ``_sweep_loop`` (every worker sweeps its own
+    # registry each tick, leader or not); None for ad-hoc SweepContext
+    # constructions outside worker bootstrap → module-singleton fallback.
     rate_limit_registry: RateLimitRegistry | None = None
 
 
