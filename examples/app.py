@@ -81,6 +81,7 @@ from taskq import (
     TaskQ,
 )
 from taskq.migrate import apply_pending_locked
+from taskq.ratelimit import ConcurrencyReservation, RateLimitRegistry, SlidingWindow, TokenBucket
 from taskq.settings import TaskQSettings
 from taskq.web.admin import create_router, setup_admin_state
 
@@ -124,6 +125,27 @@ ACTORS: dict[str, ActorRef[Any, Any]] = {
 
 settings = TaskQSettings.load()
 
+# Owned rate-limit registry for this process. The example's actors reference
+# primitives by NAME, so they are registered explicitly here — the
+# worker-side pattern is instead to declare primitive INSTANCES on the actor
+# (@actor(rate_limits=[TokenBucket(...)])) and let the worker bootstrap's
+# collection pass register them automatically. Configs mirror
+# examples/actors/ratelimit.py, which still registers on the module singleton
+# for the worker process's default resolution path.
+rl_registry = RateLimitRegistry()
+rl_registry.register(
+    SlidingWindow(name="example_window", limit=3, window=timedelta(seconds=15), backend="redis")
+)
+rl_registry.register(
+    TokenBucket(name="example_token", capacity=3, refill_per_second=1.0, backend="redis")
+)
+rl_registry.register(
+    SlidingWindow(name="example_inmemory", limit=2, window=timedelta(seconds=10), backend="memory")
+)
+rl_registry.register(
+    ConcurrencyReservation(name="example_concurrency", slots=2, lease=timedelta(seconds=30))
+)
+
 _templates = Environment(
     autoescape=True,
     loader=FileSystemLoader(Path(__file__).parent / "templates"),
@@ -164,6 +186,7 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None]:
             schema=settings.schema_name,
             redis_client=redis_client,
             base_path="/taskq",
+            rate_limit_registry=rl_registry,
         )
         setup_admin_state(application, admin_bundle)
         application.include_router(admin_bundle.router, prefix="/taskq")
@@ -414,7 +437,6 @@ async def peek_rate_limits(request: Request) -> JSONResponse:
     redis_client = getattr(request.app.state, "redis_client", None)
     pg_pool = getattr(request.app.state, "pg_pool", None)
 
-    from taskq.ratelimit.registry import registry as rl_registry
     from taskq.settings import WorkerSettings
 
     rl_settings = WorkerSettings.load_from_dict(

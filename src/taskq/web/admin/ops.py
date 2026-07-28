@@ -26,6 +26,7 @@ from taskq.cron import (
     compute_next_fire_after,
     resolve_payload,
 )
+from taskq.ratelimit.registry import RateLimitRegistry
 from taskq.settings import TaskQSettings
 from taskq.web.admin._factory import (
     get_backend,
@@ -34,6 +35,7 @@ from taskq.web.admin._factory import (
     get_pg_pool,
     get_realtime_ctx,
     get_redis_client,
+    get_rl_registry,
     get_schema,
     get_settings,
     get_templates,
@@ -393,8 +395,8 @@ def register(router: APIRouter) -> None:
         settings: Any = Depends(get_settings),
         realtime_ctx: tuple[str, str] = Depends(get_realtime_ctx),
         csrf_token: str = Depends(get_csrf_token),
+        rl_registry: RateLimitRegistry = Depends(get_rl_registry),
     ) -> HTMLResponse:
-        from taskq.ratelimit.registry import registry as rl_registry
         from taskq.ratelimit.token_bucket import TokenBucket
         from taskq.worker.deps import WorkerSettings
 
@@ -558,8 +560,8 @@ def register(router: APIRouter) -> None:
         schema: str = Depends(get_schema),
         settings: Any = Depends(get_settings),
         base_path: str = Depends(get_base_path),
+        rl_registry: RateLimitRegistry = Depends(get_rl_registry),
     ) -> RedirectResponse:
-        from taskq.ratelimit.registry import registry as rl_registry
         from taskq.worker.deps import WorkerSettings
 
         allow_reset = getattr(settings, "admin_ui_allow_rate_limit_reset", False)
@@ -589,9 +591,9 @@ def register(router: APIRouter) -> None:
         schema: str = Depends(get_schema),
         tmpl: Environment = Depends(get_templates),
         realtime_ctx: tuple[str, str] = Depends(get_realtime_ctx),
+        rl_registry: RateLimitRegistry = Depends(get_rl_registry),
     ) -> HTMLResponse:
         from taskq.ratelimit.registry import QUEUE_CONCURRENCY_PREFIX
-        from taskq.ratelimit.registry import registry as rl_registry
         from taskq.ratelimit.reservation import sync_slots
 
         _queue_cap_prefix = QUEUE_CONCURRENCY_PREFIX
