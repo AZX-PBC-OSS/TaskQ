@@ -52,6 +52,7 @@ async def test_stranded_jobs_loop_logs_once_per_actor() -> None:
     deps.is_leader = asyncio.Event()
     deps.is_leader.set()
     deps.settings.schema_name = "taskq"
+    deps.settings.stranded_jobs_interval = 0.01
 
     fake_conn = _FakeConn(rows=[{"actor": "orphan_actor", "cnt": 5}])
     deps.worker_pool = _FakePool(fake_conn)
@@ -62,18 +63,17 @@ async def test_stranded_jobs_loop_logs_once_per_actor() -> None:
     shutdown = asyncio.Event()
     log_calls: list[tuple[str, dict[str, Any]]] = []
 
-    sleep_count = 0
+    real_fetch = fake_conn.fetch
 
-    async def fast_sleep(duration: float) -> None:
-        nonlocal sleep_count
-        sleep_count += 1
-        if sleep_count >= 2:
+    async def _fetch_then_shutdown(sql: str) -> list[dict[str, Any]]:
+        rows = await real_fetch(sql)
+        if fake_conn.fetch_calls >= 2:
             shutdown.set()
+        return rows
 
-    with (
-        patch("taskq.worker._leader_sweeps.asyncio.sleep", fast_sleep),
-        patch("taskq.worker._leader_sweeps.log") as mock_log,
-    ):
+    fake_conn.fetch = _fetch_then_shutdown  # type: ignore[method-assign]  # Why: test drives loop exit via the fetch path, not by patching library internals.
+
+    with patch("taskq.worker._leader_sweeps.log") as mock_log:
         mock_log.warning = lambda event, **kw: log_calls.append((event, kw))
         await leader._stranded_jobs_loop(shutdown)
 

@@ -67,6 +67,21 @@ __all__ = [
 log: structlog.stdlib.BoundLogger = get_logger(__name__)
 
 
+async def _sleep_interruptible(shutdown: asyncio.Event, seconds: float) -> None:
+    """Sleep that returns as soon as *shutdown* is set.
+
+    ``MaintenanceLeader.run``'s TaskGroup waits for its children on exit,
+    so a bare ``asyncio.sleep(interval)`` keeps the worker hanging for the
+    full in-flight sleep after SIGTERM — with an operator-configured
+    interval (e.g. ``TASKQ_STRANDED_JOBS_INTERVAL=3600``) that is an
+    hour-long shutdown hang. Same pattern as the cron waits in
+    ``_prune_loop`` / ``_archive_expiry_loop``; callers re-check
+    ``shutdown.is_set()`` at the top of their ``while`` loop.
+    """
+    with contextlib.suppress(TimeoutError):
+        await asyncio.wait_for(shutdown.wait(), timeout=seconds)
+
+
 async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
     warned_sweep_1 = warned_sweep_2 = False
     while not shutdown.is_set():
@@ -220,7 +235,7 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                         worker_id=str(ctx.worker_id),
                         error=repr(exc),
                     )
-        await asyncio.sleep(ctx.deps.settings.sweep_interval)
+        await _sleep_interruptible(shutdown, ctx.deps.settings.sweep_interval)
 
 
 async def _prune_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
@@ -397,7 +412,7 @@ async def _queue_depth_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                     worker_id=str(ctx.worker_id),
                     error=repr(exc),
                 )
-        await asyncio.sleep(ctx.deps.settings.queue_depth_interval)
+        await _sleep_interruptible(shutdown, ctx.deps.settings.queue_depth_interval)
 
 
 async def _reservation_slots_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
@@ -420,7 +435,7 @@ async def _reservation_slots_loop(ctx: SweepContext, shutdown: asyncio.Event) ->
                     worker_id=str(ctx.worker_id),
                     error=repr(exc),
                 )
-        await asyncio.sleep(ctx.deps.settings.reservation_slots_interval)
+        await _sleep_interruptible(shutdown, ctx.deps.settings.reservation_slots_interval)
 
 
 async def _stranded_jobs_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
@@ -446,7 +461,7 @@ async def _stranded_jobs_loop(ctx: SweepContext, shutdown: asyncio.Event) -> Non
     sql = _stranded_sql.format(schema=schema)
 
     while not shutdown.is_set():
-        await asyncio.sleep(ctx.deps.settings.stranded_jobs_interval)
+        await _sleep_interruptible(shutdown, ctx.deps.settings.stranded_jobs_interval)
         if not ctx.deps.is_leader.is_set():
             continue
         try:
