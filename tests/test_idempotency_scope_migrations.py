@@ -41,6 +41,7 @@ import pytest
 
 from taskq import migrate as migrate_mod
 from taskq._ids import new_uuid
+from taskq.backend._protocol import JobRow
 from taskq.exceptions import ScopedIdempotencyMigrationPendingError
 from taskq.settings import TaskQSettings
 from taskq.testing.fixtures import _open_pg_backend_on_schema
@@ -860,7 +861,7 @@ class TestConcurrentOverlapWindow:
         try:
             key = "overlap-concurrent-cross-scope"
 
-            async def scoped_write(scope: str) -> object:
+            async def scoped_write(scope: str) -> JobRow | ScopedIdempotencyMigrationPendingError:
                 try:
                     return await backend.enqueue(
                         make_enqueue_args(idempotency_key=key, idempotency_scope=scope)
@@ -872,8 +873,8 @@ class TestConcurrentOverlapWindow:
                 *(scoped_write("run-A") for _ in range(5)),
                 *(scoped_write("run-B") for _ in range(5)),
             )
-            rows = [r for r in results if not isinstance(r, Exception)]
-            errors = [r for r in results if isinstance(r, Exception)]
+            rows = [r for r in results if isinstance(r, JobRow)]
+            errors = [r for r in results if isinstance(r, ScopedIdempotencyMigrationPendingError)]
 
             # Exactly one row total across both scopes; no job lost, none duplicated.
             assert await _count_jobs_by_key(pg_conn, settings.schema_name, key) == 1
