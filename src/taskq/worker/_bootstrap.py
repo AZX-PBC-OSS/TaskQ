@@ -55,6 +55,49 @@ __all__ = ["_emit_sub_enqueue_startup_warnings", "_main", "worker_main"]
 _startup_log: structlog.stdlib.BoundLogger = structlog.get_logger("taskq.worker.run.startup")
 
 
+def _redis_configured(settings: WorkerSettings, registry: ProviderRegistry) -> bool:
+    """Redis is available to rate limiters via TASKQ_REDIS_URL or DI.
+
+    A user-supplied ``redis.asyncio.Redis`` provider is the documented
+    alternative to ``TASKQ_REDIS_URL`` (``register_redis_pool`` defers to
+    user registrations), so a registered provider satisfies the requirement
+    even when the env var is unset.
+    """
+    if settings.redis_url is not None:
+        return True
+    try:
+        import redis.asyncio as redis_async
+    except ImportError:
+        return False
+    return registry.has_provider(redis_async.Redis)
+
+
+def _served_redis_rate_limits(
+    actor_registry: Mapping[str, ActorRef[Any, Any]] | None,
+) -> list[str]:
+    """Names of redis-backed rate limits declared by this worker's actors.
+
+    Scoped to served actors: the rate-limit registry is process-global and
+    may carry limits for actors this worker never dispatches — a global
+    scan would brick an unrelated worker. Walks both named limits
+    (resolved against the registry) and :class:`KeyedRateLimitRef`
+    declarations, whose concrete buckets materialize only at first acquire
+    and are therefore invisible to a registry scan.
+    """
+    if not actor_registry:
+        return []
+    offending: set[str] = set()
+    for ref in actor_registry.values():
+        for limit in ref.rate_limits:
+            if isinstance(limit, str):
+                prim = rl_registry.rate_limits.get(limit)
+                if prim is not None and prim.backend == "redis":
+                    offending.add(limit)
+            elif limit.backend == "redis":
+                offending.add(limit.base_name)
+    return sorted(offending)
+
+
 def _emit_sub_enqueue_startup_warnings(
     loop_scope: LoopScope,
     settings: WorkerSettings,
@@ -188,19 +231,17 @@ async def _main(
             list(actor_registry.values()) if actor_registry else None
         )
         register_rate_limit_registry(registry, rl_registry)
-        if settings.redis_url is None:
-            # Why: a Redis-backed rate limit with no TASKQ_REDIS_URL only
+        if not _redis_configured(settings, registry):
+            # Why: a Redis-backed rate limit with no Redis configured only
             # fails per-dispatch (get_redis_pool raises after the job has
             # burned retries) — fail fast at bootstrap, naming the
             # offending limiter(s).
-            redis_backed = sorted(
-                name for name, prim in rl_registry.rate_limits.items() if prim.backend == "redis"
-            )
+            redis_backed = _served_redis_rate_limits(actor_registry)
             if redis_backed:
                 msg = (
-                    "Redis-backed rate limit(s) registered but TASKQ_REDIS_URL is not set: "
-                    f"{', '.join(redis_backed)}. TASKQ_REDIS_URL is required for "
-                    'backend="redis" rate limits.'
+                    "Redis-backed rate limit(s) declared by served actors but no Redis "
+                    f"is configured: {', '.join(redis_backed)}. Set TASKQ_REDIS_URL or "
+                    "register a redis.asyncio.Redis DI provider."
                 )
                 raise RuntimeError(msg)
         if settings.redis_url is not None:
