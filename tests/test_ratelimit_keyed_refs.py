@@ -13,6 +13,7 @@ given — that path is exercised against real Postgres in
 
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
+from enum import Enum, StrEnum
 
 import pytest
 
@@ -62,6 +63,48 @@ class TestKeyedReservationRefValidation:
     def test_rejects_empty_base_name(self) -> None:
         with pytest.raises(ValueError, match="base_name must not be empty"):
             _keyed_ref(base_name="")
+
+    def test_rejects_base_name_with_space(self) -> None:
+        with pytest.raises(ValueError, match="outside the allowed set"):
+            _keyed_ref(base_name="session cap")
+
+    def test_rejects_base_name_with_slash(self) -> None:
+        with pytest.raises(ValueError, match="outside the allowed set"):
+            _keyed_ref(base_name="session/cap")
+
+    def test_rejects_base_name_with_control_char(self) -> None:
+        with pytest.raises(ValueError, match="outside the allowed set"):
+            _keyed_ref(base_name="session\tcap")
+
+    def test_rejects_base_name_exceeding_length_cap(self) -> None:
+        with pytest.raises(ValueError, match="at most 255 characters"):
+            _keyed_ref(base_name="a" * 256)
+
+    def test_accepts_valid_base_name_with_allowed_punctuation(self) -> None:
+        ref = _keyed_ref(base_name="session_cap:1.0")
+        assert ref.base_name == "session_cap:1.0"
+
+    def test_rejects_base_name_inside_reserved_queue_cap_prefix(self) -> None:
+        """A base_name already inside the reserved queue-cap namespace would
+        derive concrete names (f"{base_name}:{key}") that the register()
+        prefix guard rejects — failing at CONSTRUCTION surfaces the
+        misconfiguration at startup instead of a per-job ValueError for
+        every job on the actor, forever."""
+        with pytest.raises(ValueError, match="reserved queue-cap namespace"):
+            _keyed_ref(base_name="taskq:global:queue:evil")
+
+    def test_rejects_base_name_that_prefix_completes_reserved_namespace(self) -> None:
+        """The ':' separator completes the reserved prefix: base_name
+        'taskq:global:queue' + ':' + key lands inside the namespace even
+        though the base_name alone does not start with it."""
+        with pytest.raises(ValueError, match="reserved queue-cap namespace"):
+            _keyed_ref(base_name="taskq:global:queue")
+
+    def test_accepts_base_names_sharing_segments_with_reserved_prefix(self) -> None:
+        """Names that merely SHARE segments with the reserved prefix but
+        cannot derive into it must remain valid."""
+        for base_name in ("taskq:global", "taskq:queue:cap", "taskq:global:queueX"):
+            assert _keyed_ref(base_name=base_name).base_name == base_name
 
     def test_rejects_slots_below_one(self) -> None:
         with pytest.raises(ValueError, match="slots must be >= 1"):
@@ -271,6 +314,70 @@ async def test_resolve_keyed_ref_key_fn_missing_dict_key_propagates_keyerror() -
         )  # pyright: ignore[reportPrivateUsage]
 
 
+async def test_resolve_keyed_ref_key_fn_returning_non_str_raises_value_error() -> None:
+    """key_fn returning a non-str (e.g. int) raises ValueError — a broken
+    key_fn can never silently resolve to a shared/global reservation."""
+    reg = RateLimitRegistry()
+    ref = _keyed_ref(base_name="session-cap", key_fn=lambda p: 42)
+
+    with pytest.raises(ValueError, match="empty key or non-string value"):
+        await reg._resolve_reservation_name(
+            ref, payload={"session_id": "s1"}, pg_pool=None, settings=None
+        )  # pyright: ignore[reportPrivateUsage]
+
+
+async def test_resolve_keyed_ref_str_subclass_key_uses_value_content() -> None:
+    """A key_fn returning a ``str`` subclass (domain wrapper) is accepted
+    and normalized to its plain-str content: the concrete name and the
+    registry dict key are true ``str``, identical to returning a plain
+    string."""
+
+    class TenantKey(str):
+        """Domain wrapper deriving from str."""
+
+    reg = RateLimitRegistry()
+    ref = _keyed_ref(base_name="session-cap", key_fn=lambda p: TenantKey("s1"))
+
+    name = await reg._resolve_reservation_name(
+        ref, payload={"session_id": "s1"}, pg_pool=None, settings=None
+    )  # pyright: ignore[reportPrivateUsage]
+
+    assert name == "session-cap:s1"
+    assert type(name) is str
+    assert name in reg.reservations
+    assert all(type(k) is str for k in reg.reservations)
+
+
+async def test_resolve_keyed_ref_str_enum_key_uses_member_value_not_repr() -> None:
+    """A key_fn returning a ``str``-derived Enum member resolves to the
+    member's VALUE (``'acme'``), not its Enum rendering — dict lookups,
+    Redis keys, and PG text columns would all treat the member as its
+    value, so the registry name must match.
+
+    Covers both flavors: the classic ``(str, Enum)`` mixin (whose
+    ``__str__``/``__format__`` render ``'Tenant.ACME'`` — the exact trap
+    the key normalization guards against) and ``StrEnum``.
+    """
+
+    class Tenant(str, Enum):  # noqa: UP042  # Why: issue #32 explicitly names the classic (str, Enum) mixin; its __format__ trap is what this test pins. StrEnum is covered below.
+        ACME = "acme"
+
+    class TenantSE(StrEnum):
+        GLOBEX = "globex"
+
+    reg = RateLimitRegistry()
+    for member, expected in ((Tenant.ACME, "acme"), (TenantSE.GLOBEX, "globex")):
+        ref = _keyed_ref(base_name="session-cap", key_fn=lambda p, m=member: m)
+
+        name = await reg._resolve_reservation_name(
+            ref, payload={"session_id": expected}, pg_pool=None, settings=None
+        )  # pyright: ignore[reportPrivateUsage]
+
+        assert name == f"session-cap:{expected}"
+        assert type(name) is str
+        assert name in reg.reservations
+
+
 # ── acquire_for_actor: AND-composition with keyed reservations ──
 
 
@@ -450,3 +557,36 @@ async def test_evict_idle_keyed_reservations_re_registration_after_eviction_is_i
 
     assert name == "session-cap:s1"
     assert len(reg.reservations) == 1
+
+
+# ── _clean_rate_limit_registry fixture isolation ──────────────────────
+
+
+def test_singleton_keyed_tracking_dicts_empty_at_start() -> None:
+    """Regression test for the ``_clean_rate_limit_registry`` autouse fixture.
+
+    The fixture in ``tests/conftest.py`` clears the singleton
+    ``registry``'s ``_keyed_reservation_last_used`` and
+    ``_keyed_rate_limit_last_used`` dicts before each unit test.  If a
+    prior test materialized a keyed ref against the real singleton
+    (instead of a fresh local ``RateLimitRegistry()``) and the fixture
+    failed to clean up, those dicts would still hold entries here.
+
+    This is the simpler substitute for a cross-test-boundary regression
+    test (which would require a nested pytest run via ``pytester``):
+    a direct assertion that both dicts are empty at the start, proving
+    no prior test leaked tracking state into this one.  Every test in
+    this file uses a fresh local ``RateLimitRegistry()`` to avoid the
+    singleton, but the fixture is the safety net for any future test
+    that does not — this test guards that safety net.
+    """
+    from taskq.ratelimit.registry import registry as _rl
+
+    assert len(_rl._keyed_reservation_last_used) == 0, (  # pyright: ignore[reportPrivateUsage]
+        f"_keyed_reservation_last_used leaked from a prior test: "
+        f"{dict(_rl._keyed_reservation_last_used)}"  # pyright: ignore[reportPrivateUsage]
+    )
+    assert len(_rl._keyed_rate_limit_last_used) == 0, (  # pyright: ignore[reportPrivateUsage]
+        f"_keyed_rate_limit_last_used leaked from a prior test: "
+        f"{dict(_rl._keyed_rate_limit_last_used)}"  # pyright: ignore[reportPrivateUsage]
+    )

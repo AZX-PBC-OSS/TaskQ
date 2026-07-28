@@ -750,14 +750,22 @@ Source: `src/taskq/ratelimit/`.
 
 ### `RateLimitRegistry`
 
-Actors declare rate limits via `rate_limits: list[str]` and concurrency
-reservations via `reservations: list[str]` on the `@actor` decorator — plain
-named-bucket strings, not typed ref objects. At startup,
+Actors declare rate limits via `rate_limits: list[str | KeyedRateLimitRef]` and concurrency
+reservations via `reservations: list[str | KeyedReservationRef]` on the `@actor` decorator.
+Plain entries are name strings resolved against statically pre-registered primitives;
+`KeyedReservationRef` / `KeyedRateLimitRef` entries lazily materialize a per-key primitive
+from the job payload on first acquisition. At startup,
 `ProviderRegistry.validate(...)` (`src/taskq/_di/registry.py`) runs the DI
 validation algorithm in `src/taskq/_di/_validate.py::run_validation`, which
-includes a phase that checks each actor's `rate_limits` and `reservations`
-name lists against the `RateLimitRegistry`'s registered names, raising
+includes a phase that checks each actor's static `rate_limits` and `reservations`
+name entries against the `RateLimitRegistry`'s registered names, raising
 `MissingProvider` for unknown names.
+
+In addition to actor-declared reservations, the worker registers a fleet-wide
+`ConcurrencyReservation` per queue at startup when the `queues.max_concurrent` column is set
+(via `queue_concurrency_reservation_name(queue)`), and prepends it to the acquire list at
+dispatch time — see the [Queue-level concurrency cap](guides/rate-limiting.md#queue-level-concurrency-cap)
+guide section for details.
 
 ### Dispatch integration
 

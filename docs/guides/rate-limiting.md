@@ -256,6 +256,56 @@ finally:
 
 ---
 
+## Queue-level concurrency cap
+
+`actor_config.max_concurrent` (set via `@actor(max_concurrent=...)`) caps concurrency per
+actor, per worker. There was no way to cap "at most N jobs from queue X, fleet-wide"
+independent of which or how many actors publish to that queue. The queue-level concurrency
+cap fills this gap.
+
+### Mechanism
+
+Set the `max_concurrent` column on the `"{schema}".queues` table row for a queue:
+
+```sql
+UPDATE "taskq".queues SET max_concurrent = 20 WHERE name = 'external-api';
+```
+
+The column is nullable — `NULL` means uncapped, matching the `actor_config.max_concurrent`
+convention. This is DB configuration, not a decorator argument, deliberately: a per-worker
+settings/env-var approach was considered and rejected because it risks configuration drift
+across a fleet during rolling deploys (two workers disagreeing on a queue's cap would make
+`RateLimitRegistry.register()`'s idempotency check raise `ValueError`). A single
+Postgres-resident value read at worker startup avoids that drift, mirroring how `queues.mode`
+already works for dispatch fairness.
+
+### At worker startup
+
+For every queue in `settings.queues` with a non-null `max_concurrent`, the worker registers a
+`ConcurrencyReservation` named via the internal `queue_concurrency_reservation_name(queue)`
+helper (which returns `f"taskq:global:queue:{queue}"`) and pre-allocates its slots — reusing
+the exact same distributed, leased-slot machinery as any other `ConcurrencyReservation`
+(Postgres `FOR UPDATE SKIP LOCKED`, heartbeat-renewed leases), not a new mechanism.
+
+If the slot-sync step fails, **worker startup crashes loudly** rather than continuing: the cap
+is registered before its slot rows are synced, and dispatch has no retry path, so a
+warn-and-continue would leave every dispatch on that queue denied until a manual restart. A
+crashed worker is retried by the process supervisor, and the sync is idempotent — the next boot
+reconciles the rows.
+
+### At dispatch time
+
+If a job's queue has a registered cap, the worker prepends that reservation to the job's
+acquire list before running the actor — transparent to actor code, no `@actor` argument
+needed. This is the "implicit, not per-actor opt-in" behavior the issue asked for.
+
+### Prior art
+
+This mirrors Oban Pro's `global_limit` with queue partitioning — a fleet-wide cap applied
+per-queue rather than opted into per worker/actor.
+
+---
+
 ## `RateLimitDecision`
 
 Returned by every `acquire()` call. Frozen dataclass.
@@ -448,7 +498,36 @@ async def send_email(payload: SendEmailPayload) -> None:
     ...
 ```
 
-The `rate_limits` and `reservations` parameters on `@actor` accept plain `list[str]` name lists. Names are resolved against the registry at dispatch time.
+The `rate_limits` parameter accepts plain `list[str]` names and/or `KeyedRateLimitRef` entries;
+`reservations` accepts plain `list[str]` names and/or `KeyedReservationRef` entries. Names are
+resolved against the registry at dispatch time. See
+[`KeyedRateLimitRef`](#keyedratelimitref-dynamic-per-key-token-buckets) and
+[`KeyedReservationRef`](#keyedreservationref-dynamic-per-key-concurrency-caps) for the keyed
+variants.
+
+A mixed list of static names and keyed refs is allowed:
+
+```python
+from taskq.actor import actor
+from taskq.ratelimit import KeyedRateLimitRef, KeyedReservationRef
+
+@actor(
+    rate_limits=["global-bucket", KeyedRateLimitRef(
+        base_name="api-per-tenant",
+        key_fn=lambda payload: payload["tenant_id"],
+        capacity=10,
+        refill_per_second=1.0,
+    )],
+    reservations=["global-slots", KeyedReservationRef(
+        base_name="session-slots",
+        key_fn=lambda payload: payload["session_id"],
+        slots=3,
+        lease=timedelta(minutes=5),
+    )],
+)
+async def my_actor(payload: MyPayload) -> None:
+    ...
+```
 
 At dispatch time the worker calls `registry.acquire_for_actor()`:
 
@@ -501,7 +580,7 @@ ref = RateLimitRef(name="stripe_api", count=2.0)
 res_ref = ReservationRef(name="gpu_slots")
 ```
 
-These are Pydantic models for callers that resolve primitives manually and need structured metadata. The `@actor` decorator stores plain `list[str]` name lists — `RateLimitRef` objects are not accepted by `@actor`, and the `count` field has no effect at dispatch time. The dispatch path always acquires exactly `1.0` token per rate-limit name.
+These are Pydantic models for callers that resolve primitives manually and need structured metadata. The `@actor` decorator accepts `list[str | KeyedRateLimitRef]` for `rate_limits` and `list[str | KeyedReservationRef]` for `reservations` — `RateLimitRef` objects are not accepted by `@actor`, and the `count` field has no effect at dispatch time. The dispatch path always acquires exactly `1.0` token per rate-limit name.
 
 ---
 
@@ -590,6 +669,165 @@ dispatch. Registration is idempotent for identical config, which every acquisiti
     lock-expiry sweep. A key that is acquired again after eviction is simply re-registered on
     next use, so calling `evict_idle_keyed_reservations()` is always safe, including while other
     keys are mid-acquisition.
+
+---
+
+## `KeyedRateLimitRef` — dynamic per-key token buckets
+
+A static `rate_limits=["name"]` entry caps request rate globally: every job that declares it
+draws from the same token bucket. Some workloads need a rate limit scoped to a value computed
+from the job's own payload — e.g. capping API calls per tenant so that one noisy tenant can't
+exhaust a shared budget even though the global cap has room to spare.
+
+`KeyedRateLimitRef` (from `taskq.ratelimit`) does this by deriving a concrete `TokenBucket`
+per job from the validated payload, layered on top of — not instead of — a static rate limit:
+
+> **Concurrency caps vs. rate limits.** A reservation (`ConcurrencyReservation` /
+> `KeyedReservationRef`) bounds *how many jobs run at once*. A token bucket (`TokenBucket` /
+> `KeyedRateLimitRef`) bounds *how many requests per unit time*. N concurrent slots with fast
+> responses can still burst well past a per-second budget, so the two primitives answer
+> different questions and are often needed together on the same actor.
+
+```python
+from pydantic import BaseModel
+from taskq.actor import actor
+from taskq.ratelimit import registry, TokenBucket, KeyedRateLimitRef
+
+
+class ApiRequest(BaseModel):
+    tenant_id: str
+    endpoint: str
+
+
+registry.register(TokenBucket(
+    name="api-global",
+    capacity=100,
+    refill_per_second=10,
+    backend="redis",
+))
+
+
+@actor(
+    rate_limits=[
+        "api-global",
+        KeyedRateLimitRef(
+            base_name="api-per-tenant",
+            key_fn=lambda payload: payload["tenant_id"],
+            capacity=10,
+            refill_per_second=1.0,
+        ),
+    ],
+)
+async def call_external_api(payload: ApiRequest) -> None:
+    # At most 100 burst / 10/sec globally, AND at most 10 burst / 1/sec
+    # for any single tenant_id.
+    ...
+```
+
+`key_fn` receives the actor's validated payload as a `dict[str, object]` (the same shape stored
+on the job row) and must return a non-empty string. `base_name` namespaces the derived buckets —
+the concrete name registered for a given key is `f"{base_name}:{key}"` — so distinct
+`KeyedRateLimitRef` declarations never collide. `capacity` and `refill_per_second` apply
+identically to every key derived from a given ref; use a separate `KeyedRateLimitRef` if
+different keys need different budgets. The optional `backend` field (default `"redis"`)
+controls which storage backend the materialized `TokenBucket` uses, mirroring the `backend`
+constructor parameter on a static `TokenBucket` — set `backend="postgres"` or
+`backend="memory"` in deployments without Redis configured.
+
+### Lazy registration and reuse
+
+The concrete `TokenBucket` for a given key is registered the first time that key is seen, and
+reused for every subsequent job with the same key — it is not re-created on every dispatch.
+Registration is idempotent for identical config, which every acquisition for a given
+`KeyedRateLimitRef` always produces (its `capacity`/`refill_per_second` are fixed).
+
+Unlike keyed reservations, there is no PG slot pre-allocation step — a `TokenBucket` is
+immediately usable after `register()` (there is no `ensure_slots` equivalent). The bucket is
+ready as soon as it is registered.
+
+**Admin UI visibility.** Each freshly materialized keyed bucket is also published to the
+`rate_limit_buckets` table (best-effort, idempotent) on first acquisition, so the
+`/admin/rate-limits` page surfaces it alongside statically registered buckets — including in a
+standalone `taskq ui serve` deployment whose in-process registry never dispatches jobs. When
+Redis is configured, the page also fetches the live per-key state (tokens / GCRA TAT) for these
+PG-published rows. A publish failure only logs a warning; it never fails the acquisition.
+
+!!! warning "Concrete-name collisions"
+    Because `:` is an allowed character in keys, one ref's `base_name` can be a prefix of
+    another ref's concrete name: `base_name="a"` with key `"b:c"` and `base_name="a:b"` with
+    key `"c"` both resolve to `a:b:c`. If two refs collide with **identical** configs they
+    silently share the primitive (bounded, but probably not what you meant); with
+    **different** configs the second resolution raises `ValueError` rather than silently
+    over- or under-admitting relative to one ref's declared config. Choose distinct
+    `base_name`s to avoid ambiguity. The same rule applies to `KeyedReservationRef`.
+    A concrete name you registered **statically** (via `registry.register(...)`) is reused
+    as-is when a keyed ref resolves to it, and is never removed by idle-key eviction.
+
+### Bounding registry growth
+
+Concrete per-key `TokenBucket` instances are never removed automatically. Under high key
+cardinality — for example, one bucket per tenant over a long-running worker's lifetime — the
+in-memory registry dict grows without bound unless pruned. Three distinct, complementary
+mechanisms bound this growth:
+
+1. **Leader sweep eviction.** The leader sweep calls
+   `RateLimitRegistry.evict_idle_keyed_rate_limits(idle_for=...)` every 30 seconds, gated on
+   leader election. Every worker process unconditionally participates in leader election (see
+   `src/taskq/worker/_bootstrap.py` — `MaintenanceLeader` is started inside the main
+   `TaskGroup` without any settings flag), so this always eventually runs in any topology
+   capable of materializing keyed primitives in the first place. The default idle threshold is
+   1 hour (`_KEYED_IDLE_THRESHOLD`).
+
+2. **Opportunistic eviction on the acquisition path.** When `_resolve_rate_limit_name` would
+   otherwise deny a new key because the `max_keyed_rate_limits` cap has been reached, it
+   first attempts an opportunistic eviction of idle entries — so hitting the cap is never
+   purely an artefact of sweep timing. Only if the cap is still exceeded after the
+   opportunistic eviction does the method raise `ReservationUnavailable`. The scan is
+   amortized to at most one per 30 seconds (`_OPPORTUNISTIC_EVICT_MIN_INTERVAL`), so a
+   registry sitting at its cap under sustained denials stays O(1) per request rather than
+   rescanning the whole tracking dict on every denied acquisition.
+
+3. **Redis TTL (self-bounding Redis memory).** Independently of the in-process registry,
+   when the underlying `TokenBucket` uses the Redis backend, each key's Redis hash has its own
+   `EXPIRE` TTL set by the Lua script (computed from `capacity`/`refill_per_second`). Redis
+   memory is therefore self-bounding regardless of the in-process registry dict — even if
+   eviction has not yet run, stale keys expire in Redis on their own schedule.
+
+These are three independent bounds, not one mechanism: the sweep and opportunistic eviction
+bound the Python-process-local registry dict; the Redis TTL bounds Redis memory.
+
+!!! note "Memory fixed-quota buckets are exempt from idle eviction"
+    A `backend="memory"` bucket with `refill_per_second=0` that has consumed any of its quota
+    is **not** idle-evicted (neither by the leader sweep nor by opportunistic eviction): its
+    token state lives only on the in-process bucket instance, so eviction would silently reset
+    the drained quota to full — whereas the Redis backend deliberately retains that same state
+    for 24h. The trade-off is deliberate: such buckets count against `max_keyed_rate_limits`
+    until their quota returns to full (refund/reset) or the process restarts, so under
+    sustained high-cardinality fixed-quota keys the cap can fill permanently and deny *new*
+    keys. The cap fails closed rather than silently resetting quotas. Buckets that are full
+    (no quota consumed) and refilling buckets are evicted normally — the latter self-heal
+    because their state converges back toward full on its own.
+
+!!! note "Independent caps for keyed reservations and keyed rate limits"
+    `settings.max_keyed_reservations` (default `10_000`) governs keyed
+    **reservations** only, and `settings.max_keyed_rate_limits` (default
+    `10_000`) governs keyed **rate limits** only. Each kind is tracked
+    against its own independent counter and cap, so a high cardinality of
+    one kind cannot starve the other.
+
+!!! note "Redis-unavailable behavior is identical to a static bucket"
+    A keyed bucket is a plain `TokenBucket` under the hood — `_resolve_rate_limit_name`
+    constructs it with the `backend` from the `KeyedRateLimitRef` (default `"redis"`) and calls
+    its normal `.acquire()`. The existing `with_pg_fallback` path in
+    `token_bucket._acquire_redis_wrapped` (see `src/taskq/ratelimit/_redis_utils.py`) is
+    therefore inherited automatically: on Redis `ConnectionError`/`TimeoutError`, the acquire
+    falls back to the PG `rate_limit_buckets` table governed by
+    `settings.rate_limit_pg_fallback_enabled`. No second fallback mechanism is built or needed —
+    a keyed bucket behaves identically to a static bucket when Redis is unavailable, with zero
+    special-casing. In a deployment without Redis configured at all, set
+    `backend="postgres"` or `backend="memory"` on the `KeyedRateLimitRef` to avoid the
+    Redis-required failure mode (a `"redis"` backend with no `redis_client` raises
+    `RuntimeError` on acquire, which is not caught by `with_pg_fallback`).
 
 ---
 

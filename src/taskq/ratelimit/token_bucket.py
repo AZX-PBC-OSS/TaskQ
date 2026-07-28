@@ -272,6 +272,36 @@ class TokenBucket:
     def ttl(self) -> timedelta:
         return self._ttl
 
+    def holds_consumed_memory_quota(self) -> bool:
+        """True if idle-evicting this bucket's registry entry would silently reset a consumed fixed quota.
+
+        Only the memory backend stores token state on the instance
+        (``_mem_bucket``); Redis and PG keep state in the store — Redis
+        deliberately for 24 h for fixed-quota buckets (see
+        ``_compute_ttl_seconds``) — so a re-materialized bucket seamlessly
+        resumes prior state there, and eviction of those backends' registry
+        entries is always state-safe.
+
+        For a memory fixed-quota (``refill_per_second == 0``) bucket that
+        has consumed any of its quota, eviction destroys that state
+        permanently: the next acquire materializes a fresh instance at FULL
+        capacity, silently resetting a quota designed to never refill.
+        (Refilling buckets are not exempt: their state converges back
+        toward full on its own, so eviction loses at most one refill
+        window's worth of tokens — an accepted, bounded divergence.)
+
+        Reads ``_tokens`` without the bucket's async lock; safe because the
+        only caller (the registry's idle-eviction sweep) runs synchronously
+        in the event loop with no await between this read and the dict pop,
+        so the value is consistent at the sweep instant.
+        """
+        return (
+            self._backend == "memory"
+            and self._refill == 0.0
+            and self._mem_bucket is not None
+            and self._mem_bucket._tokens < self._capacity
+        )
+
     async def acquire(
         self,
         count: float = 1.0,

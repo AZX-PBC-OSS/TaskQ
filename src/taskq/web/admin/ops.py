@@ -444,6 +444,21 @@ def register(router: APIRouter) -> None:
                 d = dict(r)
                 pg_state[str(d["bucket_name"])] = d
 
+        # Keyed buckets materialized after worker startup are published to
+        # PG by the acquisition path; in a standalone admin process they
+        # exist ONLY as pg_state rows (the in-process registry never
+        # dispatches jobs). Include them in the live-Redis fetch so their
+        # per-key state (tokens / GCRA TAT) is visible too.
+        redis_known = {name for name, _kind in redis_names}
+        for pg_name, pg_row in pg_state.items():
+            if pg_name in redis_known:
+                continue
+            pg_kind = pg_row.get("kind")
+            if pg_kind == "token_bucket":
+                redis_names.append((pg_name, "token_bucket"))
+            elif pg_kind == "gcra":
+                redis_names.append((pg_name, "sliding_window_gcra"))
+
         # Attempt live peek for non-memory backends if dependencies are available.
         live_states: dict[str, object] = {}
         try:
@@ -575,18 +590,31 @@ def register(router: APIRouter) -> None:
         tmpl: Environment = Depends(get_templates),
         realtime_ctx: tuple[str, str] = Depends(get_realtime_ctx),
     ) -> HTMLResponse:
+        from taskq.ratelimit.registry import QUEUE_CONCURRENCY_PREFIX
         from taskq.ratelimit.registry import registry as rl_registry
         from taskq.ratelimit.reservation import sync_slots
 
+        _queue_cap_prefix = QUEUE_CONCURRENCY_PREFIX
+
         configured_reservations: list[dict[str, object]] = []
-        reservation_primitives = list(rl_registry.reservations.values())
+        # Filter by the admin's own schema before displaying or syncing —
+        # the process-global registry may carry reservations declared for
+        # OTHER schemas (same reason worker/_bootstrap.py filters): syncing
+        # a foreign-schema reservation here would insert/delete rows in the
+        # local schema's reservation_slots table for a name it does not own.
+        reservation_primitives = [
+            res for res in rl_registry.reservations.values() if res.schema == schema
+        ]
 
         for name, prim in sorted(rl_registry.reservations.items()):
+            if prim.schema != schema:
+                continue
             configured_reservations.append(
                 {
                     "bucket_name": name,
                     "configured_slots": prim.slots,
                     "lease": str(prim.lease),
+                    "is_queue_cap": name.startswith(_queue_cap_prefix),
                 }
             )
 
@@ -642,6 +670,7 @@ def register(router: APIRouter) -> None:
                         "held_count": pg_row.get("held_count", 0),
                         "free_count": pg_row.get("free_count", 0),
                         "total_slots": pg_row.get("total_slots", 0),
+                        "is_queue_cap": name.startswith(_queue_cap_prefix),
                     }
                 )
 

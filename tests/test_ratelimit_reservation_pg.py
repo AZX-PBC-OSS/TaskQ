@@ -361,6 +361,144 @@ async def test_sync_slots_skips_held(
     assert set(deleted_indices) | set(held_indices) == {2, 3}
 
 
+# ── sync_slots() shrink with all excess live-held ──────────────────
+
+
+async def test_sync_slots_all_excess_live_held_shrink_deletes_nothing_pg(
+    module_pg_schema: ModulePgSchema,
+    module_pg_pool: asyncpg.Pool,
+) -> None:
+    """Shrink below current in-flight against real PG: ALL excess rows
+    live-held → nothing deleted, both reported skipped_held, and the
+    acquire CTE still admits the above-cap rows (the new cap takes effect
+    as holders drain — a live holder is never preempted)."""
+    schema = module_pg_schema.schema_name
+    bucket = _unique_name()
+
+    res_original = ConcurrencyReservation(name=bucket, slots=4, lease=_LEASE, schema=schema)
+    await res_original.ensure_slots(module_pg_pool)
+
+    worker = new_uuid()
+    for _ in range(4):
+        await res_original.acquire(new_uuid(), worker, module_pg_pool)
+
+    res_reduced = ConcurrencyReservation(name=bucket, slots=2, lease=_LEASE, schema=schema)
+    result = await sync_slots([res_reduced], module_pg_pool, schema=schema)
+
+    assert result.inserted == []
+    assert result.deleted == []
+    assert sorted(i for _, i in result.skipped_held) == [2, 3]
+
+    async with module_pg_pool.acquire() as conn:
+        rows = await conn.fetch(
+            f'SELECT slot_index FROM "{schema}".reservation_slots '
+            "WHERE bucket_name = $1 ORDER BY slot_index",
+            bucket,
+        )
+    assert [r["slot_index"] for r in rows] == [0, 1, 2, 3]
+
+
+# ── sync_slots() deletes expired-lease excess rows ─────────────────
+
+
+async def test_sync_slots_deletes_expired_lease_excess_rows(
+    module_pg_schema: ModulePgSchema,
+    module_pg_pool: asyncpg.Pool,
+) -> None:
+    """sync_slots() treats an excess row with an EXPIRED lease as free and
+    deletes it — regression for over-admission during shrink.
+
+    The acquire CTE's free condition is ``job_id IS NULL OR
+    lease_expires_at < now()``. If sync_slots instead treated every
+    ``job_id IS NOT NULL`` row as held, a dead worker's leaked rows would
+    survive a shrink and remain acquirable — the old larger cap would keep
+    being honored indefinitely. 4 rows (2 excess held by a dead worker
+    with expired leases) → shrink to 2 → both excess rows deleted, nothing
+    skipped, and a subsequent sync observes a clean table.
+    """
+    schema = module_pg_schema.schema_name
+    bucket = _unique_name()
+
+    res_original = ConcurrencyReservation(name=bucket, slots=4, lease=_LEASE, schema=schema)
+    await res_original.ensure_slots(module_pg_pool)
+
+    dead_worker = new_uuid()
+    for _ in range(4):
+        idx = await res_original.acquire(new_uuid(), dead_worker, module_pg_pool)
+        assert idx in (0, 1, 2, 3)
+
+    # The dead worker never releases: force every lease into the past.
+    async with module_pg_pool.acquire() as conn:
+        await conn.execute(
+            f'UPDATE "{schema}".reservation_slots '
+            "SET lease_expires_at = now() - interval '1 second' "
+            "WHERE bucket_name = $1",
+            bucket,
+        )
+
+    res_reduced = ConcurrencyReservation(name=bucket, slots=2, lease=_LEASE, schema=schema)
+    result = await sync_slots([res_reduced], module_pg_pool, schema=schema)
+
+    assert result.inserted == []
+    assert result.skipped_held == []
+    assert sorted(i for _, i in result.deleted) == [2, 3]
+
+    async with module_pg_pool.acquire() as conn:
+        rows = await conn.fetch(
+            f'SELECT slot_index FROM "{schema}".reservation_slots '
+            "WHERE bucket_name = $1 ORDER BY slot_index",
+            bucket,
+        )
+    assert [r["slot_index"] for r in rows] == [0, 1]
+
+
+async def test_sync_slots_skips_live_held_but_deletes_expired_pg(
+    module_pg_schema: ModulePgSchema,
+    module_pg_pool: asyncpg.Pool,
+) -> None:
+    """Mixed shrink against real PG: the live-held excess row is skipped
+    while the expired-lease excess row is deleted — the held/free
+    definition matches the acquire CTE's exactly."""
+    schema = module_pg_schema.schema_name
+    bucket = _unique_name()
+
+    res_original = ConcurrencyReservation(name=bucket, slots=4, lease=_LEASE, schema=schema)
+    await res_original.ensure_slots(module_pg_pool)
+
+    alive_worker = new_uuid()
+    for _ in range(2):
+        await res_original.acquire(new_uuid(), alive_worker, module_pg_pool)  # slots 0, 1
+    dead_idx = await res_original.acquire(new_uuid(), new_uuid(), module_pg_pool)  # slot 2
+    live_idx = await res_original.acquire(new_uuid(), alive_worker, module_pg_pool)  # slot 3
+    assert dead_idx == 2
+    assert live_idx == 3
+
+    # Expire only the dead worker's row (slot 2); slot 3 stays live-held.
+    async with module_pg_pool.acquire() as conn:
+        await conn.execute(
+            f'UPDATE "{schema}".reservation_slots '
+            "SET lease_expires_at = now() - interval '1 second' "
+            "WHERE bucket_name = $1 AND slot_index = $2",
+            bucket,
+            dead_idx,
+        )
+
+    res_reduced = ConcurrencyReservation(name=bucket, slots=2, lease=_LEASE, schema=schema)
+    result = await sync_slots([res_reduced], module_pg_pool, schema=schema)
+
+    assert result.inserted == []
+    assert [i for _, i in result.deleted] == [dead_idx]
+    assert [i for _, i in result.skipped_held] == [live_idx]
+
+    async with module_pg_pool.acquire() as conn:
+        rows = await conn.fetch(
+            f'SELECT slot_index FROM "{schema}".reservation_slots '
+            "WHERE bucket_name = $1 ORDER BY slot_index",
+            bucket,
+        )
+    assert [r["slot_index"] for r in rows] == [0, 1, 3]
+
+
 # ── Release with wrong worker_id ───────────────────────────────────
 
 

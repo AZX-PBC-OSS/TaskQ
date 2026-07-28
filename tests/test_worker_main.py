@@ -31,7 +31,7 @@ from taskq.worker.run import (
     register_worker,
     worker_main,
 )
-from tests.conftest import unique_health_sock_path
+from tests.conftest import _FakePool, unique_health_sock_path
 
 # ── Fixtures ────────────────────────────────────────────────────────────
 
@@ -57,7 +57,7 @@ def settings() -> WorkerSettings:
 
 
 def _stub_deps(settings: WorkerSettings) -> WorkerDeps:
-    pool: object = object()
+    pool = _FakePool()
     deps = WorkerDeps(
         settings=settings,
         dispatcher_pool=pool,  # type: ignore[arg-type]
@@ -301,6 +301,33 @@ async def test_wiring_shape_siblings_called_once(settings: WorkerSettings) -> No
     assert h.leader_count == 1
     assert h.producer_count == 1
     assert h.consumer_count == settings.max_concurrency
+
+
+async def test_maintenance_leader_unconditionally_started_regardless_of_settings() -> None:
+    """MaintenanceLeader.run is always started inside _main's TaskGroup —
+    there is no settings flag that gates it.  This test varies several
+    settings (health_enabled=False, max_concurrency=1) that might plausibly
+    be suspected of short-circuiting the leader, and asserts leader_count
+    is still exactly 1 — proving the unconditional wiring in
+    ``src/taskq/worker/_bootstrap.py``.
+    """
+    varied_settings = WorkerSettings.load_from_dict(
+        {
+            "TASKQ_PG_DSN": "postgresql://x:x@localhost/x",
+            "TASKQ_CANCELLATION_GRACE_PERIOD": "30.0",
+            "TASKQ_CLEANUP_GRACE_PERIOD": "10.0",
+            "TASKQ_TERMINATION_GRACE_PERIOD": "60.0",
+            "TASKQ_LOCK_LEASE": "45.0",
+            "TASKQ_HEARTBEAT_INTERVAL": "5.0",
+            "TASKQ_MAX_CONCURRENCY": "1",
+            "TASKQ_HEALTH_ENABLED": "false",
+            "TASKQ_HEALTH_SOCKET_PATH": unique_health_sock_path("worker_main_leader"),
+        }
+    )
+    with _use_test_harness(varied_settings) as h:
+        await _main(varied_settings)
+
+    assert h.leader_count == 1
 
 
 async def test_wiring_shape_backend_instance_identity(settings: WorkerSettings) -> None:

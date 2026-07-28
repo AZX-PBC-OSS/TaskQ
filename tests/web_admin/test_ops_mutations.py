@@ -482,6 +482,37 @@ def test_reservations_page_sync_slots_success_refetches(monkeypatch: pytest.Monk
     assert "premium-api" in resp.text  # pyright: ignore[reportUnknownMemberType]
 
 
+def test_reservations_page_excludes_foreign_schema_reservations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A registry reservation declared for a DIFFERENT schema is neither
+    displayed nor passed to sync_slots — the process-global registry may
+    carry foreign-schema reservations (the worker bootstrap filters for
+    the same reason), and syncing one here would insert/delete rows in the
+    local schema's reservation_slots table for a name it does not own."""
+    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
+    local = ConcurrencyReservation("local-res", slots=5, lease=timedelta(seconds=30))
+    foreign = ConcurrencyReservation(
+        "foreign-res", slots=5, lease=timedelta(seconds=30), schema="other_schema"
+    )
+    monkeypatch.setattr(rl_registry, "_reservations", {"local-res": local, "foreign-res": foreign})
+
+    synced: list[list[str]] = []
+
+    async def _spy_sync_slots(reservations: object, pool: object, *, schema: str) -> None:
+        synced.append([r.name for r in reservations])  # type: ignore[union-attr]  # Why: test spy recording the names sync_slots was asked to reconcile.
+
+    monkeypatch.setattr("taskq.ratelimit.reservation.sync_slots", _spy_sync_slots)
+
+    conn = _ScriptedConnection(fetch_results=[[], [], [], []])
+    client = _make_app(_ScriptedPool(conn))
+    resp = client.get("/reservations")
+    assert resp.status_code == 200  # pyright: ignore[reportUnknownMemberType]
+    assert "local-res" in resp.text  # pyright: ignore[reportUnknownMemberType]
+    assert "foreign-res" not in resp.text  # pyright: ignore[reportUnknownMemberType]
+    assert synced == [["local-res"]]
+
+
 # ── Schedules page: UndefinedTableError branch ──────────────────────────
 
 

@@ -260,6 +260,85 @@ async def test_sync_slots_skips_held() -> None:
         assert slot.job_id is not None
 
 
+async def test_sync_slots_all_excess_live_held_shrink_deletes_nothing() -> None:
+    """Shrink below current in-flight: ALL excess slots live-held → nothing
+    deleted, both reported skipped_held, table stays at 4. The new cap
+    takes effect as holders drain — a live holder is never preempted, and
+    the above-cap rows remain acquirable-on-release until the next sync,
+    which is the documented drain semantics of a shrink."""
+    clock = FakeClock(_START)
+    table = _InMemorySlotTable(clock)
+    table.ensure_slots("gpu", 4)
+
+    worker = new_uuid()
+    for _ in range(4):
+        table.acquire("gpu", new_uuid(), worker, _LEASE)
+
+    result = table.sync_slots("gpu", 2)
+
+    assert result.inserted == []
+    assert result.deleted == []
+    assert sorted(i for _, i in result.skipped_held) == [2, 3]
+    assert table.get_slot_count("gpu") == 4
+
+
+async def test_sync_slots_deletes_expired_lease_excess_slots() -> None:
+    """sync_slots: expired-lease excess slots are DELETED, not skipped_held.
+
+    Regression: a dead worker's leaked slots (``job_id`` set, lease expired)
+    are acquirable per the acquire path's free condition, so treating them
+    as "held" during a shrink would let the old larger cap keep being
+    honored indefinitely — over-admission relative to the new cap.
+    """
+    clock = FakeClock(_START)
+    table = _InMemorySlotTable(clock)
+    table.ensure_slots("gpu", 4)
+
+    dead_worker = new_uuid()
+    table.acquire("gpu", new_uuid(), dead_worker, _LEASE)  # slot 0
+    table.acquire("gpu", new_uuid(), dead_worker, _LEASE)  # slot 1
+    table.acquire("gpu", new_uuid(), dead_worker, _LEASE)  # slot 2 (excess after shrink)
+    table.acquire("gpu", new_uuid(), dead_worker, _LEASE)  # slot 3 (excess after shrink)
+
+    # Worker dies without releasing: every lease expires.
+    clock.advance(_LEASE + timedelta(seconds=1))
+
+    result = table.sync_slots("gpu", 2)
+
+    assert result.inserted == []
+    assert result.skipped_held == []
+    assert sorted(i for _, i in result.deleted) == [2, 3]
+    assert table.get_slot_count("gpu") == 2
+
+
+async def test_sync_slots_skips_live_held_but_deletes_expired() -> None:
+    """Mixed shrink: a live-held excess slot is still skipped while an
+    expired-lease excess slot is deleted in the same sync — the held/free
+    definition matches the acquire path's exactly."""
+    clock = FakeClock(_START)
+    table = _InMemorySlotTable(clock)
+    table.ensure_slots("gpu", 4)
+
+    alive_worker = new_uuid()
+    dead_worker = new_uuid()
+    table.acquire("gpu", new_uuid(), alive_worker, timedelta(hours=1))  # slot 0
+    table.acquire("gpu", new_uuid(), alive_worker, timedelta(hours=1))  # slot 1
+    table.acquire("gpu", new_uuid(), dead_worker, _LEASE)  # slot 2 — lease expires below
+    table.acquire("gpu", new_uuid(), alive_worker, timedelta(hours=1))  # slot 3
+
+    # Only slot 2's (short) lease expires; slots 0/1/3 remain genuinely held.
+    clock.advance(_LEASE + timedelta(seconds=1))
+
+    result = table.sync_slots("gpu", 2)
+
+    assert [i for _, i in result.deleted] == [2]
+    assert [i for _, i in result.skipped_held] == [3]
+    assert table.get_slot_count("gpu") == 3
+    kept = table.get_slot("gpu", 3)
+    assert kept is not None
+    assert kept.job_id is not None
+
+
 # ── _InMemorySlotTable: missing-bucket branches ─────────────────
 
 

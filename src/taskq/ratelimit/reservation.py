@@ -80,7 +80,7 @@ _SYNC_DELETE_SQL_TEMPLATE = """\
 DELETE FROM "{schema}".reservation_slots
 WHERE bucket_name = $1
   AND slot_index = ANY($2)
-  AND job_id IS NULL
+  AND (job_id IS NULL OR lease_expires_at < now())
 RETURNING slot_index"""
 
 _SYNC_HELD_SQL_TEMPLATE = """\
@@ -88,6 +88,7 @@ SELECT slot_index FROM "{schema}".reservation_slots
 WHERE bucket_name = $1
   AND slot_index = ANY($2)
   AND job_id IS NOT NULL
+  AND (lease_expires_at >= now() OR lease_expires_at IS NULL)
 ORDER BY slot_index"""
 
 
@@ -243,7 +244,14 @@ class _InMemorySlotTable:
         shrinks), deletes excess free slots, and reports held slots that
         cannot be deleted. Slot indices are persistent keys and never shift
         — matching the PG model.
+
+        "Free" uses the same definition as ``acquire``: a slot with an
+        EXPIRED lease is acquirable, hence deletable — only slots with a
+        live (unexpired) lease are skipped. Skipping expired-lease slots
+        would let a dead worker's leaked slots defeat a shrink indefinitely
+        (they stay acquirable, so the old larger cap keeps being honored).
         """
+        now = self._clock.now()
         inserted: list[tuple[str, int]] = []
         deleted: list[tuple[str, int]] = []
         skipped_held: list[tuple[str, int]] = []
@@ -264,10 +272,12 @@ class _InMemorySlotTable:
                     continue
                 slot = bucket.get(i)
                 if slot is not None and slot.job_id is not None:
-                    skipped_held.append((bucket_name, i))
-                else:
-                    del bucket[i]
-                    deleted.append((bucket_name, i))
+                    expired = slot.lease_expires_at is not None and slot.lease_expires_at < now
+                    if not expired:
+                        skipped_held.append((bucket_name, i))
+                        continue
+                del bucket[i]
+                deleted.append((bucket_name, i))
 
         return SyncResult(
             inserted=inserted,
@@ -332,8 +342,8 @@ class ConcurrencyReservation:
             logger.warning(
                 "reservation-lease-shorter-than-lock-lease",
                 bucket_name=name,
-                lease=lease_td,
-                lock_lease=lock_lease,
+                lease_seconds=lease_td.total_seconds(),
+                lock_lease_seconds=lock_lease.total_seconds(),
             )
 
         _validate_schema(schema)
@@ -536,6 +546,23 @@ async def sync_slots(
     For each reservation: insert missing slots (filling gaps from prior
     held-slot-preserving shrinks), delete excess free slots, and report
     held slots that could not be deleted.
+
+    "Free" / "held" use the same definition as the acquire CTE: a slot row
+    with an EXPIRED lease is acquirable, hence deletable; only rows with a
+    live (unexpired) lease are reported as ``skipped_held``. The anomalous
+    ``job_id NOT NULL / lease_expires_at NULL`` state (no code path
+    produces it, but the nullable schema permits it) is conservatively
+    reported as held rather than deleted — matching the in-memory table.
+    Treating expired-lease rows as held would let a dead worker's leaked slots
+    defeat a shrink indefinitely — the rows stay acquirable, so the old
+    larger cap would keep being honored. Deleting an expired-lease row is
+    safe: lease expiry is the design's abandonment signal (the acquire CTE
+    would hand the same slot to a new job anyway), and a late release by
+    the old holder is a harmless no-op (``worker_id`` mismatch or missing
+    row). A row acquired concurrently with the delete is protected by its
+    row lock: the delete blocks, then re-evaluates its predicate against
+    the post-acquire row (``job_id`` now set, lease in the future) and
+    skips it.
     """
     _validate_schema(schema)
 

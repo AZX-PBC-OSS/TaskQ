@@ -26,7 +26,7 @@
                 <tbody class="divide-y divide-slate-100 dark:divide-slate-800">
                 {% for r in reservations %}
                     <tr class="even:bg-slate-50/50 dark:even:bg-slate-800/50 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors">
-                        <td class="px-4 py-2.5 font-medium">{{ r.bucket_name }}</td>
+                        <td class="px-4 py-2.5 font-medium">{{ r.bucket_name }}{% if r.is_queue_cap %} <span class="ml-1.5 px-1.5 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300">queue cap</span>{% endif %}</td>
                         <td class="px-4 py-2.5 text-xs text-slate-500">{{ r.configured_slots }}</td>
                         <td class="px-4 py-2.5 text-xs font-mono text-slate-500">{{ r.lease }}</td>
                         <td class="px-4 py-2.5">

@@ -292,11 +292,17 @@ ignore = [
 # variable, not a missing async-with timeout pattern.  S110: pool.close()
 # in finally after PG restart may fail if pool was already broken.
 "tests/test_ratelimit_reservation_chaos.py" = ["S608", "ASYNC109", "S110"]
+# Same rationale — schema name is a per-test unique identifier derived from
+# new_base62 (alphanumeric only); all user-supplied values use $N binding.
+"tests/test_ratelimit_keyed_rate_limits_pg.py" = ["S608"]
 # Schema name validated against _IDENT_RE before interpolation; same as above.
 "tests/test_integration_fixtures.py" = ["S608"]
 # Same rationale — schema name is a worker-scoped constant derived from
 # PYTEST_XDIST_WORKER; all user-supplied values use $N parameter binding.
 "tests/test_worker_bootstrap.py" = ["S608"]
+# Same rationale — schema name validated against _IDENT_RE; all user-supplied
+# values use $N parameter binding.
+"tests/test_worker_bootstrap_queue_concurrency.py" = ["S608"]
 # ASYNC109: fake_connect mirrors asyncpg.connect(timeout=...) signature; the
 # `timeout` parameter is part of the mocked API surface, not a missing timeout
 # context-manager pattern.

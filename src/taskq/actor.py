@@ -52,7 +52,7 @@ import structlog
 from pydantic import BaseModel, TypeAdapter
 
 from taskq.backend._protocol import JobStatus
-from taskq.ratelimit.refs import KeyedReservationRef
+from taskq.ratelimit.refs import KeyedRateLimitRef, KeyedReservationRef
 from taskq.retry import OnRetryExhausted, OnSuccess, RetryClassifierHook, RetryPolicy
 
 if TYPE_CHECKING:
@@ -213,7 +213,7 @@ class ActorRef[P: BaseModel, R: BaseModel | None]:
         unique_for: timedelta | None = None,
         unique_states: tuple[JobStatus, ...] = ("pending", "scheduled", "running"),
         start_to_close: timedelta | None = None,
-        rate_limits: list[str] | None = None,
+        rate_limits: list[str | KeyedRateLimitRef] | None = None,
         reservations: list[str | KeyedReservationRef] | None = None,
         non_retryable_exceptions: tuple[type[BaseException], ...] = (),
         retry_classifier: RetryClassifierHook | None = None,
@@ -343,7 +343,7 @@ def actor[P: BaseModel, R: BaseModel | None](  # pyright: ignore[reportInvalidTy
     unique_for: timedelta | None = None,
     unique_states: tuple[JobStatus, ...] = ("pending", "scheduled", "running"),
     start_to_close: timedelta | None = None,
-    rate_limits: list[str] | None = None,
+    rate_limits: list[str | KeyedRateLimitRef] | None = None,
     reservations: list[str | KeyedReservationRef] | None = None,
     non_retryable_exceptions: tuple[type[BaseException], ...] = (),
     retry_classifier: RetryClassifierHook | None = None,
@@ -368,7 +368,7 @@ def actor[P: BaseModel, R: BaseModel | None](  # pyright: ignore[reportInvalidTy
     unique_for: timedelta | None = None,
     unique_states: tuple[JobStatus, ...] = ("pending", "scheduled", "running"),
     start_to_close: timedelta | None = None,
-    rate_limits: list[str] | None = None,
+    rate_limits: list[str | KeyedRateLimitRef] | None = None,
     reservations: list[str | KeyedReservationRef] | None = None,
     non_retryable_exceptions: tuple[type[BaseException], ...] = (),
     retry_classifier: RetryClassifierHook | None = None,
@@ -541,7 +541,7 @@ def _build_ref[P: BaseModel, R: BaseModel | None](  # pyright: ignore[reportInva
     unique_for: timedelta | None = None,
     unique_states: tuple[JobStatus, ...] = ("pending", "scheduled", "running"),
     start_to_close: timedelta | None = None,
-    rate_limits: list[str] | None = None,
+    rate_limits: list[str | KeyedRateLimitRef] | None = None,
     reservations: list[str | KeyedReservationRef] | None = None,
     non_retryable_exceptions: tuple[type[BaseException], ...] = (),
     retry_classifier: RetryClassifierHook | None = None,

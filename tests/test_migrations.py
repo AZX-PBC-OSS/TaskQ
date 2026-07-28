@@ -282,3 +282,26 @@ async def test_cron_schedules_has_consecutive_failures_column(
     assert col["data_type"] == "integer"
     assert col["is_nullable"] == "NO"
     assert col["column_default"] == "0"
+
+
+async def test_queues_has_max_concurrent_column(
+    pg_conn: asyncpg.Connection, settings: TaskQSettings
+) -> None:
+    """The ``01.00.04_01_pre_queue_concurrency`` migration adds a nullable
+    ``max_concurrent int`` column to the ``queues`` table."""
+    await migrate_mod.apply_pending(pg_conn, schema=settings.schema_name)
+
+    rows = await pg_conn.fetch(
+        """
+        SELECT column_name, data_type, is_nullable
+        FROM information_schema.columns
+        WHERE table_schema = $1
+            AND table_name = 'queues'
+            AND column_name = 'max_concurrent'
+        """,
+        settings.schema_name,
+    )
+    assert len(rows) == 1, "max_concurrent column missing from queues"
+    col = rows[0]
+    assert col["data_type"] == "integer"
+    assert col["is_nullable"] == "YES"

@@ -479,6 +479,15 @@ class WorkerSettings(TaskQSettings):
         "is reached, new keyed reservations raise ReservationUnavailable. "
         "Tune to your workload's expected key cardinality.",
     )
+    max_keyed_rate_limits: int = Field(
+        default=10000,
+        ge=1,
+        description="TASKQ_MAX_KEYED_RATE_LIMITS. Guardrail on the number of "
+        "distinct keyed-rate-limit entries tracked in memory. When the limit "
+        "is reached, new keyed rate limits raise ReservationUnavailable. "
+        "Independent from max_keyed_reservations, which governs keyed "
+        "reservations only. Tune to your workload's expected key cardinality.",
+    )
 
     # ── Prometheus standalone metrics server ──────────────────
     metrics_port: int = Field(

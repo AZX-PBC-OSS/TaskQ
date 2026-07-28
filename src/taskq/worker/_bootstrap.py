@@ -27,6 +27,9 @@ from taskq.backend.clock import Clock, SystemClock
 from taskq.backend.postgres import PostgresBackend
 from taskq.client._enqueuer import SubJobEnqueuer
 from taskq.connections import WorkerConnections
+from taskq.constants import (
+    _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex for defence-in-depth schema validation at this SQL interpolation site, per architecture.md §8 Invariant 4
+)
 from taskq.cron import (
     CronScheduleSpec,
     compute_next_fire_after,
@@ -298,6 +301,99 @@ async def _main(
                         bucket_name=res.name,
                         error=str(exc),
                     )
+
+        # Fleet-wide per-queue concurrency caps (DB-driven): query the
+        # queues table for queues this worker consumes that have a
+        # max_concurrent set, register a ConcurrencyReservation for each,
+        # and sync their slot rows to match. The DB is the single source
+        # of truth — read at worker startup, avoiding configuration drift
+        # across a fleet of workers during rolling deploys (the footgun
+        # the settings-based design had). The lease is set to lock_lease
+        # so the heartbeat extends it in lockstep with job locks; if a
+        # worker dies, both the job lock and the queue reservation slot
+        # expire at roughly the same time and the recovery sweep reclaims
+        # them. register_queue_cap_reservation() is idempotent for identical
+        # config (the public register() rejects names in the reserved
+        # queue-cap namespace to prevent user shadowing). sync_slots
+        # (not ensure_slots) is used so that BOTH growing AND shrinking a
+        # cap take effect on restart — ensure_slots is purely additive
+        # (INSERT ... ON CONFLICT DO NOTHING) and could never remove
+        # excess slots, so lowering max_concurrent was a silent no-op.
+        # sync_slots inserts missing slots, deletes excess free slots, and
+        # skips held slots (reporting them) — a strict superset of
+        # ensure_slots, so initial registration works identically.
+        from taskq.ratelimit.registry import queue_concurrency_reservation_name
+        from taskq.ratelimit.reservation import ConcurrencyReservation
+
+        if not _IDENT_RE.match(settings.schema_name):
+            raise ValueError(f"invalid schema identifier: {settings.schema_name!r}")
+        # This query is as hard-required as sync_actor_config / register_worker
+        # elsewhere in this same _main function — neither of those is wrapped
+        # in a broad try/except. The only exception we catch specifically is
+        # UndefinedColumnError, which signals that migration 01.00.04 has not
+        # been applied (the queues.max_concurrent column is absent). That is
+        # a deployment mistake that must crash startup loudly, not a
+        # best-effort condition to warn about. Any other exception (connection
+        # errors, etc.) propagates and crashes startup exactly like every
+        # other hard-required startup step in this function already does —
+        # this is a deliberate consistency choice, not an oversight.
+        try:
+            async with deps.dispatcher_pool.acquire() as conn:
+                cap_rows = await conn.fetch(
+                    f'SELECT name, max_concurrent FROM "{settings.schema_name}".queues '  # noqa: S608  # Why: schema validated at construction and re-checked above; asyncpg cannot bind identifiers.
+                    f"WHERE name = ANY($1) AND max_concurrent IS NOT NULL",
+                    settings.queues,
+                )
+        except asyncpg.exceptions.UndefinedColumnError as exc:
+            raise RuntimeError(
+                f"queues.max_concurrent column is missing in schema "
+                f"{settings.schema_name!r} — migration "
+                f"01.00.04_01_pre_queue_concurrency.sql has not been applied. "
+                f"Apply pending migrations before starting workers."
+            ) from exc
+
+        queue_cap_reservations: list[ConcurrencyReservation] = []
+        for row in cap_rows:
+            res_name = queue_concurrency_reservation_name(row["name"])
+            reservation = ConcurrencyReservation(
+                name=res_name,
+                slots=row["max_concurrent"],
+                lease=timedelta(seconds=settings.lock_lease),
+                schema=settings.schema_name,
+            )
+            rl_registry.register_queue_cap_reservation(reservation)
+            queue_cap_reservations.append(reservation)
+
+        if queue_cap_reservations:
+            # Fail loudly — deliberately NOT warn-and-continue. The
+            # reservations were registered above, and dispatch prepends the
+            # cap name as a plain string, so the acquire path has no
+            # ensure_slots retry: a sync_slots failure here would leave the
+            # cap registered with zero (or stale) slot rows, and EVERY
+            # dispatch on those queues would snooze with
+            # ReservationUnavailable until a human restarted the worker —
+            # a whole queue silently refusing work. Crashing startup
+            # instead lets the process supervisor retry, and sync_slots is
+            # idempotent, so the next boot reconciles the rows. Same
+            # rationale as the missing-column raise above, with a larger
+            # blast radius: a queue silently refusing all work is worse
+            # than a worker that will not start.
+            try:
+                await sync_slots(
+                    queue_cap_reservations,
+                    deps.dispatcher_pool,
+                    schema=settings.schema_name,
+                )
+            except Exception as exc:
+                raise RuntimeError(
+                    f"failed to sync slot rows for queue-cap reservations "
+                    f"{[r.name for r in queue_cap_reservations]} in schema "
+                    f"{settings.schema_name!r}: {exc!r} — refusing to start "
+                    f"with queue caps registered but unslotted, which would "
+                    f"deny every dispatch on those queues until restart. Fix "
+                    f"the underlying error and restart the worker; startup "
+                    f"retries re-run this sync idempotently."
+                ) from exc
 
         if _cron_registry:
             for spec in _cron_registry:

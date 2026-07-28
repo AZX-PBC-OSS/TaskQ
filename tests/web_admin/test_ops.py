@@ -1175,6 +1175,94 @@ def test_rate_limits_page_with_pg_state_and_redis(
     assert "orphan-bucket" in body
 
 
+def test_rate_limits_page_shows_materialized_keyed_bucket(
+    monkeypatch: pytest.MonkeyPatch, clean_rl_registry: Any
+) -> None:
+    """A lazily materialized keyed bucket (registered into the registry on
+    first acquisition, long after worker startup) appears on the
+    rate-limits admin page — an operator debugging a tenant throttle must
+    see that a limiter exists."""
+    import asyncio
+
+    from taskq.ratelimit.refs import KeyedRateLimitRef
+
+    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
+    ref = KeyedRateLimitRef(
+        base_name="api-per-tenant",
+        key_fn=lambda p: str(p["tenant_id"]),
+        capacity=5,
+        refill_per_second=0.5,
+        backend="memory",
+    )
+    # Materialize as the dispatch path does (pg_pool=None: no publish).
+    asyncio.run(
+        clean_rl_registry._resolve_rate_limit_name(  # pyright: ignore[reportPrivateUsage]
+            ref, {"tenant_id": "acme"}, settings=None
+        )
+    )
+    try:
+        conn = _ScriptedConn(fetch_map={"rate_limit_buckets ORDER": []})
+        client = _make_client_with_pool(_ScriptedPool(conn))
+        resp = client.get("/rate-limits")
+        assert resp.status_code == 200
+        assert "api-per-tenant:acme" in resp.text
+    finally:
+        clean_rl_registry._keyed_rate_limit_last_used.pop(  # pyright: ignore[reportPrivateUsage]
+            "api-per-tenant:acme", None
+        )
+
+
+def test_rate_limits_page_fetches_redis_state_for_pg_only_keyed_buckets(
+    monkeypatch: pytest.MonkeyPatch, clean_rl_registry: Any
+) -> None:
+    """Standalone topology: a keyed bucket the worker published to PG
+    (absent from the admin process's registry) is included in the
+    live-Redis state fetch, so its per-key token state is visible."""
+    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
+    # The registry stays EMPTY — the bucket exists only as a PG row.
+    conn = _ScriptedConn(
+        fetch_map={
+            "rate_limit_buckets ORDER": [
+                StubRecord(
+                    {
+                        "bucket_name": "api-per-tenant:acme",
+                        "kind": "token_bucket",
+                        "state": "",
+                        "updated_at": "",
+                    }
+                ),
+            ],
+        },
+    )
+
+    fetched_keys: list[str] = []
+
+    class _FakeRedis:
+        async def hmget(self, key: object, fields: object) -> list[object]:
+            return [None, None]
+
+        async def hgetall(self, key: object) -> dict[str, str]:
+            fetched_keys.append(str(key))
+            return {}
+
+        async def get(self, key: object) -> str | None:
+            return None
+
+        async def zcard(self, key: object) -> int:
+            return 0
+
+        async def ping(self) -> bool:
+            return True
+
+    client = _make_client_with_pool(_ScriptedPool(conn), redis_client=_FakeRedis())
+    resp = client.get("/rate-limits")
+    assert resp.status_code == 200
+    assert "api-per-tenant:acme" in resp.text
+    assert any("api-per-tenant:acme" in key for key in fetched_keys), (
+        f"PG-only keyed bucket was not included in the live-Redis fetch: {fetched_keys}"
+    )
+
+
 # ── Rate limit reset ────────────────────────────────────────────────────
 
 

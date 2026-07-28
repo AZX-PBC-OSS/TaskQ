@@ -10,7 +10,7 @@ reservation denied, generic) live in :mod:`taskq.worker._handlers`.
 """
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from datetime import timedelta
 from typing import TYPE_CHECKING, Literal
 from uuid import UUID
@@ -54,7 +54,7 @@ from taskq.progress._buffer import (
 from taskq.progress._flush import _flush_buffer, _flush_buffer_immediate
 from taskq.progress._publish import _publish_state_change_event
 from taskq.ratelimit.composition import AcquiredResource
-from taskq.ratelimit.refs import KeyedReservationRef
+from taskq.ratelimit.refs import KeyedRateLimitRef, KeyedReservationRef
 from taskq.ratelimit.registry import RateLimitRegistry
 from taskq.retry import (
     ActorConfigLike,
@@ -212,8 +212,8 @@ async def consume_one_job(
     loop_conn: asyncpg.Connection | None = None,
     validated_payload: BaseModel | None = None,
     rate_limit_registry: RateLimitRegistry | None = None,
-    rate_limits: list[str] | None = None,
-    reservations: list[str | KeyedReservationRef] | None = None,
+    rate_limits: Sequence[str | KeyedRateLimitRef] | None = None,
+    reservations: Sequence[str | KeyedReservationRef] | None = None,
     redis_client: "redis_async.Redis | None" = None,
     worker_pool: asyncpg.Pool | None = None,
     settings: WorkerSettings | None = None,
@@ -286,8 +286,10 @@ async def consume_one_job(
         batch_id=batch_id,
     )
 
-    _rl_limits = rate_limits if rate_limits is not None else []
-    _rl_reservations = reservations if reservations is not None else []
+    _rl_limits: Sequence[str | KeyedRateLimitRef] = rate_limits if rate_limits is not None else ()
+    _rl_reservations: Sequence[str | KeyedReservationRef] = (
+        reservations if reservations is not None else ()
+    )
     _needs_acquire = bool(_rl_limits or _rl_reservations) and rate_limit_registry is not None
 
     acquired: list[AcquiredResource] = []

@@ -41,7 +41,7 @@ from taskq.settings import WorkerSettings
 from taskq.testing.clock import FakeClock
 from taskq.worker.deps import WorkerDeps
 from taskq.worker.run import _main
-from tests.conftest import unique_health_sock_path
+from tests.conftest import _FakePool, unique_health_sock_path
 
 # ── Helpers ────────────────────────────────────────────────────────
 
@@ -138,7 +138,7 @@ def _backend_methods_stub() -> Backend:
 
 
 def _stub_deps(settings: WorkerSettings) -> WorkerDeps:
-    pool: object = object()
+    pool = _FakePool()
     return WorkerDeps(
         settings=settings,
         dispatcher_pool=pool,  # type: ignore[arg-type]
