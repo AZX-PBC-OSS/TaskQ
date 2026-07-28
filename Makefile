@@ -26,7 +26,7 @@ test-fast:
 	uv run pytest -n 4 -m "not integration"
 
 test-e2e:
-	uv run pytest -m e2e tests/e2e
+	uv run --group e2e pytest --e2e -m e2e tests/e2e
 
 lint:
 	uv run ruff check .

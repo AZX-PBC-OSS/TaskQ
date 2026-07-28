@@ -452,8 +452,6 @@ addopts = [
     "--strict-config",
     "--dist=loadgroup",
     "--timeout=300",
-    "-m",
-    "not e2e",
 ]
 filterwarnings = [
     "ignore::DeprecationWarning:testcontainers.*",
@@ -488,7 +486,6 @@ dev = [
     "anyio>=4.14.2",
     "asyncpg-stubs>=0.31.3",
     "authlib>=1.7.2",
-    "containerspec[build]>=0.1.7",
     "httpx>=0.28.1",
     "httpx2>=2.9.1",
     "hypothesis>=6.157.1",
@@ -510,4 +507,11 @@ dev = [
     "respx>=0.23.1",
     "ruff>=0.15.22",
     "testcontainers[postgres,redis]>=4.14.2",
+]
+# Manual-only e2e tier (tests/e2e): container image builds for worker
+# containers. Kept out of the default dev group so plain `uv sync` and
+# non-e2e CI legs don't pull the docker SDK; collection of the tier is
+# gated separately via pytest --e2e (tests/conftest.py).
+e2e = [
+    "containerspec[build]>=0.1.7",
 ]

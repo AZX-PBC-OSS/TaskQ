@@ -2753,7 +2753,6 @@ dev = [
     { name = "anyio" },
     { name = "asyncpg-stubs" },
     { name = "authlib" },
-    { name = "containerspec", extra = ["build"] },
     { name = "httpx" },
     { name = "httpx2" },
     { name = "hypothesis" },
@@ -2775,6 +2774,9 @@ dev = [
     { name = "respx" },
     { name = "ruff" },
     { name = "testcontainers", extra = ["redis"] },
+]
+e2e = [
+    { name = "containerspec", extra = ["build"] },
 ]
 
 [package.metadata]
@@ -2819,7 +2821,6 @@ dev = [
     { name = "anyio", specifier = ">=4.14.2" },
     { name = "asyncpg-stubs", specifier = ">=0.31.3" },
     { name = "authlib", specifier = ">=1.7.2" },
-    { name = "containerspec", extras = ["build"], specifier = ">=0.1.7" },
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "httpx2", specifier = ">=2.9.1" },
     { name = "hypothesis", specifier = ">=6.157.1" },
@@ -2842,6 +2843,7 @@ dev = [
     { name = "ruff", specifier = ">=0.15.22" },
     { name = "testcontainers", extras = ["postgres", "redis"], specifier = ">=4.14.2" },
 ]
+e2e = [{ name = "containerspec", extras = ["build"], specifier = ">=0.1.7" }]
 
 [[package]]
 name = "testcontainers"

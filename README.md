@@ -264,9 +264,10 @@ uv run pytest -m "not integration" # skip the testcontainers tier
 
 A manual-only end-to-end tier (`tests/e2e/`) runs workers as real Docker
 containers — built from the packaged wheel — against testcontainers Postgres
-and Dragonfly. It requires Docker, is excluded from default test runs, and is
-not wired into CI yet. Run it serially with `make test-e2e` (or
-`uv run pytest -m e2e tests/e2e`).
+and Dragonfly. It requires Docker and the `e2e` dependency group, is excluded
+from default test runs (collection is gated behind pytest's `--e2e` flag), and
+is not wired into CI yet. Run it serially with `make test-e2e` (or
+`uv run --group e2e pytest --e2e -m e2e tests/e2e`).
 
 Type checking and linting:
 
