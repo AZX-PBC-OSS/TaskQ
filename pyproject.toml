@@ -114,10 +114,10 @@ vault = [
 ]
 
 [tool.uv]
-# Exact pin: setup-uv in CI resolves exact versions without fetching the
-# versions manifest from raw.githubusercontent.com, which is a transient
-# network failure point that has failed whole CI matrices. Also keeps local
-# dev on the same uv that generated uv.lock.
+# Pin the exact uv toolchain: setup-uv reads required-version from pyproject
+# and installs it directly, skipping the "latest" manifest fetch
+# (raw.githubusercontent.com/astral-sh/versions) whose transient network
+# failures took down every test job in a CI run at once.
 required-version = "==0.11.19"
 # Supply-chain hardening: never resolve to distributions published within the
 # last 24 hours, giving time for malicious releases to be detected and yanked.
