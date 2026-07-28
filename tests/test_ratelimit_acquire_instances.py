@@ -32,7 +32,7 @@ async def test_unregistered_rate_limit_instance_raises_keyerror() -> None:
 
     with pytest.raises(KeyError):
         await reg.acquire_for_actor(
-            rate_limits=[_tb("ghost")],  # type: ignore[list-item]  # Why: pre-widening signature; runtime behavior under test
+            rate_limits=[_tb("ghost")],
             reservations=[],
             job_id=new_uuid(),
             worker_id=new_uuid(),
@@ -45,7 +45,7 @@ async def test_unregistered_reservation_instance_raises_keyerror() -> None:
     with pytest.raises(KeyError):
         await reg.acquire_for_actor(
             rate_limits=[],
-            reservations=[_res("ghost")],  # type: ignore[list-item]  # Why: pre-widening signature; runtime behavior under test
+            reservations=[_res("ghost")],
             job_id=new_uuid(),
             worker_id=new_uuid(),
         )
@@ -61,11 +61,11 @@ async def test_mixed_instance_and_name_declaration_both_resolve() -> None:
     reg.register(res)
 
     acquired = await reg.acquire_for_actor(
-        rate_limits=[inst, "b"],  # type: ignore[list-item]  # Why: pre-widening signature; runtime behavior under test
-        reservations=[res],  # type: ignore[list-item]  # Why: pre-widening signature; runtime behavior under test
+        rate_limits=[inst, "b"],
+        reservations=[res],
         job_id=new_uuid(),
         worker_id=new_uuid(),
         clock=FakeClock(_START),
     )
 
-    assert len(acquired) == 3
+    assert [h.name for h in acquired] == ["r1", "a", "b"]

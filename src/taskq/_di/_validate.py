@@ -28,6 +28,9 @@ from taskq.exceptions import (
     MissingProvider,
     ScopeViolation,
 )
+from taskq.ratelimit.reservation import ConcurrencyReservation
+from taskq.ratelimit.sliding_window import SlidingWindow
+from taskq.ratelimit.token_bucket import TokenBucket
 
 if TYPE_CHECKING:
     from taskq.actor import ActorRef
@@ -379,9 +382,11 @@ def run_validation(
     ``reservations`` string lists against the registry's dicts.
     Unknown names raise ``MissingProvider`` at startup.
 
-    Phase 2b intentionally name-checks only plain ``str`` entries.
-    ``KeyedRateLimitRef`` / ``KeyedReservationRef`` instances are
-    non-frozen pydantic ``BaseModel`` s (unhashable), so an
+    Phase 2b name-checks plain ``str`` entries and primitive INSTANCES
+    (``TokenBucket`` / ``SlidingWindow`` / ``ConcurrencyReservation`` —
+    checked by ``.name`` membership; post-bootstrap-registration they
+    always resolve). ``KeyedRateLimitRef`` / ``KeyedReservationRef``
+    instances are non-frozen pydantic ``BaseModel`` s (unhashable), so an
     ``x not in some_dict`` membership test on a ref instance raises
     ``TypeError`` rather than returning a clean boolean — and there is
     nothing meaningful to validate ahead of time anyway, since a ref's
@@ -391,7 +396,7 @@ def run_validation(
     already enforce non-empty ``base_name`` / positive ``slots`` /
     positive ``capacity`` etc. at construction time, and runtime
     key-validation enforces the rest — so this static startup pass
-    skips ref instances entirely and only checks string entries.
+    skips keyed-ref instances entirely.
     """
     actor_edges: list[tuple[str, type, Scope | None]] = []
     if actors is not None:
@@ -412,26 +417,45 @@ def run_validation(
             )
 
     # Phase 2b — Rate-limit / reservation name check
-    # Why: only plain str entries are name-checked here — a
-    # KeyedRateLimitRef / KeyedReservationRef instance is an unhashable
-    # pydantic BaseModel, so ``x not in some_dict`` would raise TypeError
-    # (not return False), and its concrete per-key name only materializes
-    # at acquisition time anyway. See the run_validation docstring.
+    # Why: plain str entries are checked by name; primitive instances by
+    # their .name (post-registration they always resolve). Keyed refs are
+    # skipped — unhashable pydantic models whose concrete name only
+    # materializes at acquisition time. See the run_validation docstring.
     if rate_limit_registry is not None and actors is not None:
         rl_names = rate_limit_registry.rate_limits
         res_names = rate_limit_registry.reservations
         for actor in actors:
-            for rl_name in actor.rate_limits:
-                if isinstance(rl_name, str) and rl_name not in rl_names:
+            for rl_entry in actor.rate_limits:
+                rl_name: str | None = None
+                if isinstance(rl_entry, str):
+                    rl_name = rl_entry
+                elif isinstance(rl_entry, TokenBucket | SlidingWindow):
+                    rl_name = rl_entry.name
+                if rl_name is not None and rl_name not in rl_names:
                     raise MissingProvider(
                         type_name="RateLimit",
-                        required_by=f"actor:{actor.name}:rate_limits:{rl_name}",
+                        required_by=(
+                            f"actor:{actor.name}:rate_limits:{rl_name} — "
+                            "declare the primitive on the actor "
+                            "(rate_limits=[TokenBucket(...)]) or register it "
+                            "on the worker's rate-limit registry"
+                        ),
                     )
-            for res_name in actor.reservations:
-                if isinstance(res_name, str) and res_name not in res_names:
+            for res_entry in actor.reservations:
+                res_name: str | None = None
+                if isinstance(res_entry, str):
+                    res_name = res_entry
+                elif isinstance(res_entry, ConcurrencyReservation):
+                    res_name = res_entry.name
+                if res_name is not None and res_name not in res_names:
                     raise MissingProvider(
                         type_name="ConcurrencyReservation",
-                        required_by=f"actor:{actor.name}:reservations:{res_name}",
+                        required_by=(
+                            f"actor:{actor.name}:reservations:{res_name} — "
+                            "declare the primitive on the actor "
+                            "(reservations=[ConcurrencyReservation(...)]) or "
+                            "register it on the worker's rate-limit registry"
+                        ),
                     )
 
     # Phase 3 — DependencyCycle detection
