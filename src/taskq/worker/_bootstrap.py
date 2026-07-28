@@ -248,10 +248,12 @@ async def _main(
     ``rate_limit_registry`` is the :class:`RateLimitRegistry` this worker
     owns and dispatches against.  Resolution order: explicit argument →
     ``RateLimitRegistry`` value provider in ``_registry`` → module
-    singleton (see :func:`_resolve_rl_registry`).  Actor-declared
-    primitive instances (``@actor(rate_limits=[TokenBucket(...)])``) are
-    collected and registered into the resolved registry before
-    ``validate()`` runs.
+    singleton (see :func:`_resolve_rl_registry`).  Co-present with a
+    ``RateLimitRegistry`` provider in ``_registry`` this raises
+    ``TypeError`` (ambiguous — bootstrap and dispatch would diverge);
+    pass one or the other.  Actor-declared primitive instances
+    (``@actor(rate_limits=[TokenBucket(...)])``) are collected and
+    registered into the resolved registry before ``validate()`` runs.
 
     Returns the exit code from the orchestrator (read from the holder), or
     0 when no signal arrived (clean shutdown via external shutdown_event.set()).
@@ -296,7 +298,10 @@ async def _main(
     # registry BEFORE validate() runs. Conflict semantics are register()'s
     # own (_same_config): identical config = debug-log no-op; same name
     # with different config = ValueError at startup (fail fast). Actors
-    # decorated but absent from the mapping are NOT collected.
+    # decorated but absent from the mapping are NOT collected. The startup
+    # log counts DECLARATIONS (not distinct new registrations) — the same
+    # instance declared on two actors logs rate_limit_count=2 but
+    # registers once (idempotent no-op).
     if actor_registry is not None:
         collected_rl_names: list[str] = []
         collected_res_names: list[str] = []
@@ -1044,7 +1049,10 @@ def worker_main(
     deployment).  When ``None``, resolution falls back to a
     ``RateLimitRegistry`` value provider in ``di_registry``, then to the
     module singleton — import-time ``.register()`` on the singleton keeps
-    working exactly as before.  Forwarded to :func:`_main`.
+    working exactly as before.  Co-present with a ``RateLimitRegistry``
+    provider in ``di_registry`` this raises ``TypeError`` (ambiguous —
+    bootstrap and dispatch would diverge); pass one or the other.
+    Forwarded to :func:`_main`.
 
     ``cron_registry`` is an optional list of :class:`CronScheduleSpec`
     objects to auto-register at startup.  When ``None`` (the default),
