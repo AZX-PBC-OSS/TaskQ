@@ -825,8 +825,7 @@ class RateLimitRegistry:
             rl.name if isinstance(rl, TokenBucket | SlidingWindow) else rl for rl in rate_limits
         ]
         res_seq: list[str | KeyedReservationRef] = [
-            res.name if isinstance(res, ConcurrencyReservation) else res
-            for res in reservations
+            res.name if isinstance(res, ConcurrencyReservation) else res for res in reservations
         ]
         acquired: list[AcquiredResource] = []
         try:
