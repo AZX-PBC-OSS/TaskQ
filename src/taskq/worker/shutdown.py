@@ -226,12 +226,20 @@ async def orchestrate_shutdown(
         # advisory lock early so a replacement pod can take over before
         # the SIGTERM budget expires.
         #
-        # Why the identity guard below: the bounded close can park for
-        # seconds, so shutdown_event is set FIRST to stop the election
-        # loop — otherwise a still-live loop could drop the closing conn
-        # and swap in a fresh (possibly lock-holding) one mid-park, and an
-        # unconditional null would orphan it. The guard leaves a swapped-in
-        # conn in place; the deps exit-stack guard closes it.
+        # Why set → null → close, in that order (two races, one ordering):
+        # (a) the bounded close can park for seconds, so shutdown_event is
+        # set FIRST to stop the election loop — a still-live loop could
+        # otherwise drop the closing conn and swap in a fresh (possibly
+        # lock-holding) one mid-park. (b) the early set also releases
+        # _main's ``await shutdown_event.wait()`` INSIDE the
+        # open_worker_deps context (the orchestrator is awaited only after
+        # that context exits), so the deps exit-stack guard unwinds
+        # CONCURRENTLY with this parked close — nulling BEFORE the park is
+        # what stops the guard entering a second close_conn_bounded on the
+        # same conn (one closer's terminate would abort the other's
+        # in-flight close and log a spurious conn-teardown-close-error on
+        # real asyncpg). A conn swapped in mid-park keeps its reference
+        # (nothing nulls after the park); the exit-stack guard closes it.
         conn = deps.leader_conn
         if conn is not None and deps.owns_leader_conn:
             # Why this can be a module-level import from taskq._close:
@@ -241,9 +249,12 @@ async def orchestrate_shutdown(
             # (timeout → terminate, error → log), so a dead PG cannot wedge
             # shutdown on an unbounded close.
             shutdown_event.set()  # stop the election loop BEFORE the close park
+            # BEFORE the park: the deps exit-stack guard unwinds concurrently
+            # once shutdown_event is set; it must not enter a second
+            # close_conn_bounded on this same conn while the close below is
+            # parked.
+            deps.leader_conn = None
             await close_conn_bounded(conn, "leader", CLOSE_TIMEOUT_SECS)
-            if deps.leader_conn is conn:
-                deps.leader_conn = None
 
         return 0
     finally:

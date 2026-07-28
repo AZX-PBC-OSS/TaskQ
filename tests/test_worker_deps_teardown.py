@@ -55,6 +55,7 @@ class _FakePool:
         self.name = name
         self.closed = False
         self.terminated = False
+        self.terminate_calls = 0
         self.close_calls = 0
         self.aexit_calls = 0
         self.close_wait = asyncio.Event()
@@ -68,12 +69,19 @@ class _FakePool:
             return  # close-after-close/terminate is a no-op on a real pool
         await self.close_wait.wait()
         if self.close_error is not None:
+            # Real-semantics error path (asyncpg 0.31 Pool.close()): on ANY
+            # close error the pool calls self.terminate() and sets
+            # self._closed = True in the finally before re-raising — so a
+            # raising close still leaves the pool terminated AND closed.
+            self.terminated = True
+            self.closed = True
             raise self.close_error
         self.closed = True
         if self._close_events is not None:
             self._close_events.append(self.name)
 
     def terminate(self) -> None:
+        self.terminate_calls += 1
         self.terminated = True
         self.closed = True
         self.close_wait.set()  # aborts any in-flight close() wait
@@ -324,7 +332,13 @@ async def test_teardown_close_error_does_not_propagate(
         pass
 
     assert heartbeat.close_calls == 1
-    assert heartbeat.closed is False  # raise happened before the close completed
+    # Real asyncpg Pool.close() self-terminates and marks the pool closed
+    # before re-raising a close error (asyncpg 0.31: except -> terminate(),
+    # finally -> _closed = True) — the fake mirrors that, so the pool IS
+    # terminated/closed even though the HELPER never called terminate().
+    assert heartbeat.terminate_calls == 0
+    assert heartbeat.terminated is True
+    assert heartbeat.closed is True
     assert worker.closed is True
     # dispatcher unwinds AFTER heartbeat (LIFO) — proof the error was contained.
     assert dispatcher.closed is True
@@ -466,6 +480,9 @@ async def test_teardown_bounds_redis_close(
     timeout_events = [e for e in captured if e.get("event") == "redis-teardown-close-timeout"]
     assert len(timeout_events) == 1, f"expected 1 redis timeout event, got {captured!r}"
     event = timeout_events[0]
+    assert event.get("label") == "worker", (
+        f"expected label= identifying the hung client, got {event!r}"
+    )
     assert event.get("close_timeout") == 0.05, f"expected close_timeout= field, got {event!r}"
     assert "drain_timeout" not in event, (
         f"drain_timeout= belongs to the reload path's drain events, got {event!r}"

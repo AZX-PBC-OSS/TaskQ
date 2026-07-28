@@ -14,12 +14,13 @@ from hypothesis import strategies as st
 from taskq._ids import new_uuid
 from taskq.backend._protocol import Backend, CancelPhase, JobId
 from taskq.client._enqueuer import SubJobEnqueuer
+from taskq.connections import ConnFactory, PoolFactory, WorkerConnections
 from taskq.context import JobContext
 from taskq.obs import bind_job_context
 from taskq.settings import WorkerSettings
 from taskq.testing.in_memory import PassthroughPayload
 from taskq.worker.cancel import _ActiveJob
-from taskq.worker.deps import WorkerDeps
+from taskq.worker.deps import WorkerDeps, open_worker_deps
 from taskq.worker.shutdown import orchestrate_shutdown
 
 # ── Helpers ─────────────────────────────────────────────────────────────
@@ -815,8 +816,9 @@ async def test_orchestrate_shutdown_does_not_null_swapped_leader_conn(
 
     While the bounded close is parked, a still-live election loop can drop
     the closing conn and reopen a fresh one. Nulling unconditionally would
-    orphan that fresh (possibly lock-holding) conn; the identity guard must
-    leave it in place so the deps exit-stack guard closes it later.
+    orphan that fresh (possibly lock-holding) conn; the orchestrator nulls
+    only before the park, so the swapped-in conn keeps its reference and
+    the deps exit-stack guard closes it later.
     """
     import taskq.worker.shutdown as shutdown_mod
 
@@ -931,6 +933,162 @@ async def test_orchestrate_shutdown_sets_shutdown_event_before_leader_close(
 
     leader_conn.close.assert_called_once()
     assert event_set_at_close == [True]
+
+
+# ── Round-3 race: orchestrator close vs deps exit-stack guard ─────────────
+
+
+class _InstantPool:
+    """Fake asyncpg.Pool whose close() completes immediately."""
+
+    def __init__(self) -> None:
+        self.close_calls = 0
+        self.terminated = False
+
+    async def close(self) -> None:
+        self.close_calls += 1
+
+    def terminate(self) -> None:
+        self.terminated = True
+
+
+class _ListenConn:
+    """Fake notify-role conn: accepts LISTEN, close() completes immediately."""
+
+    def __init__(self) -> None:
+        self.executed: list[str] = []
+        self.close_calls = 0
+
+    async def execute(self, sql: str, *_args: object) -> str:
+        self.executed.append(sql)
+        return "OK"
+
+    async def close(self) -> None:
+        self.close_calls += 1
+
+    def terminate(self) -> None:
+        pass
+
+
+class _GatedLeaderConn:
+    """Fake leader conn whose close() blocks on a gate.
+
+    Counts close() entries and the maximum number of concurrently in-flight
+    closes — the double-close oracle. terminate() opens the gate, aborting
+    any in-flight close the way a real conn abort unblocks _protocol.close().
+    """
+
+    def __init__(self) -> None:
+        self.close_entries = 0
+        self.in_flight = 0
+        self.max_in_flight = 0
+        self.close_entered = asyncio.Event()
+        self.close_gate = asyncio.Event()  # never set by the test: close() hangs
+        self.terminate_calls = 0
+
+    async def close(self) -> None:
+        self.close_entries += 1
+        self.in_flight += 1
+        self.max_in_flight = max(self.max_in_flight, self.in_flight)
+        try:
+            self.close_entered.set()
+            await self.close_gate.wait()
+        finally:
+            self.in_flight -= 1
+
+    def terminate(self) -> None:
+        self.terminate_calls += 1
+        self.close_gate.set()
+
+
+def _pool_factory(pool: _InstantPool) -> PoolFactory:
+    async def factory() -> asyncpg.Pool:
+        return pool  # type: ignore[return-value]  # Why: hand-rolled fake; asyncpg.Pool is a C-extension type tests cannot subclass.
+
+    return factory
+
+
+def _conn_factory(conn: _ListenConn | _GatedLeaderConn) -> ConnFactory:
+    async def factory() -> asyncpg.Connection:
+        return conn  # type: ignore[return-value]  # Why: hand-rolled fake; asyncpg.Connection is a C-extension type tests cannot subclass.
+
+    return factory
+
+
+async def test_orchestrate_shutdown_does_not_double_close_leader_conn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Race regression: the deps exit-stack guard must not double-close the
+    leader conn while the orchestrator's bounded close is parked.
+
+    _bootstrap wiring: ``await shutdown_event.wait()`` runs INSIDE
+    ``async with open_worker_deps(...)``; the orchestrator task is awaited
+    only AFTER the context exits. The early ``shutdown_event.set()`` (round-2
+    fix — stops the election loop before the close park) therefore releases
+    the exit-stack unwind CONCURRENTLY with the parked close, and the
+    guard's ``_close_leader_conn`` enters a second ``close_conn_bounded`` on
+    the same conn unless ``deps.leader_conn`` is nulled BEFORE the park. On
+    a real asyncpg conn one closer's terminate aborts the other's in-flight
+    close, logging a spurious conn-teardown-close-error.
+    """
+    import taskq.worker.shutdown as shutdown_mod
+    from taskq.worker import deps as deps_mod
+
+    # Shrink both bounded-close seams so the hung close resolves fast: the
+    # orchestrator reads shutdown_mod.CLOSE_TIMEOUT_SECS; the exit-stack
+    # guard reads deps_mod.CLOSE_TIMEOUT_SECS.
+    monkeypatch.setattr(shutdown_mod, "CLOSE_TIMEOUT_SECS", 0.05)
+    monkeypatch.setattr(deps_mod, "CLOSE_TIMEOUT_SECS", 0.05)
+
+    settings = _worker_settings()
+    dispatcher, heartbeat, worker = _InstantPool(), _InstantPool(), _InstantPool()
+    notify = _ListenConn()
+    leader = _GatedLeaderConn()
+
+    conns = WorkerConnections(
+        dispatcher_pool_factory=_pool_factory(dispatcher),
+        heartbeat_pool_factory=_pool_factory(heartbeat),
+        worker_pool_factory=_pool_factory(worker),
+        notify_conn_factory=_conn_factory(notify),
+        leader_conn_factory=_conn_factory(leader),
+    )
+
+    backend = AsyncMock(spec=Backend)
+    monkeypatch.setattr(shutdown_mod, "drain_local_queue_to_pending", AsyncMock(return_value=0))
+
+    shut_event = asyncio.Event()
+
+    # Why the outer timeout: on the race the second close parks on the same
+    # gate — the fail-fast bound keeps a broken state from hanging the suite;
+    # the shrunk CLOSE_TIMEOUT_SECS resolves the parked close(s) in ~0.05s.
+    async with asyncio.timeout(5):
+        async with open_worker_deps(settings, connections=conns) as deps:
+            # Mirror _bootstrap: the orchestrator is a bare create_task that
+            # is NOT joined before the open_worker_deps context exits.
+            orch_task = asyncio.ensure_future(
+                orchestrate_shutdown(
+                    deps,
+                    deps.settings,
+                    new_uuid(),
+                    shut_event,
+                    None,
+                    backend=backend,
+                )
+            )
+            # Wait until the orchestrator is parked in its bounded close —
+            # shutdown_event is already set by then, and leaving the
+            # with-body below releases the exit-stack unwind.
+            await leader.close_entered.wait()
+        result = await orch_task  # joined after the context exits, like _main
+
+    assert result == 0
+    assert leader.close_entries == 1, (
+        "deps exit-stack guard entered a second close on the same conn while "
+        f"the orchestrator's close was parked: entries={leader.close_entries}, "
+        f"max_in_flight={leader.max_in_flight}"
+    )
+    assert leader.max_in_flight == 1
+    assert deps.leader_conn is None
 
 
 # ── Hypothesis grace-budget invariant ────────────────────────────

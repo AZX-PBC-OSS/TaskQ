@@ -14,6 +14,7 @@ from uuid import UUID
 
 import asyncpg
 import pytest
+import structlog.testing
 
 from taskq._ids import new_job_id, new_uuid
 from taskq.backend._protocol import CancelPhase, JobId, JobRow
@@ -2166,6 +2167,175 @@ async def test_close_leader_owned_conns_fast_close_not_terminated() -> None:
     assert leader._cron_conn is None
     assert leader._leader_monitor_conn is None
     assert not deps.is_leader.is_set()
+
+
+class _CloseEntryConn(FakeConn):
+    """FakeConn that signals when close() has been ENTERED (not completed).
+
+    Used to observe in-flight closes: the hang gate (close_wait) parks the
+    close AFTER entry, so close_entered marks the exact window in which a
+    dead-PG close is in progress.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.close_entered = asyncio.Event()
+
+    async def close(self) -> None:
+        self.close_entered.set()
+        await super().close()
+
+
+async def test_close_leader_owned_conns_clears_is_leader_before_closes_complete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Demotion is observable IMMEDIATELY: is_leader clears before the
+    bounded closes complete, not after. On a dead PG the closes can park
+    for seconds, and is_leader backs the taskq.maintenance_leader.is_leader
+    gauge, /metrics, and the health report — a pod parked in a hung close
+    must not keep advertising leadership while its replacement should be
+    taking over (review N2)."""
+    import taskq.worker.leader as leader_mod
+
+    monkeypatch.setattr(leader_mod, "CLOSE_TIMEOUT_SECS", 0.05)
+    leader, deps, _backend, _, _, _shutdown = await _make_leader()
+    deps.is_leader.set()
+    cron = _CloseEntryConn()
+    monitor = _CloseEntryConn()
+    leader._cron_conn = cron  # type: ignore[reportAttributeAccessIssue]
+    leader._leader_monitor_conn = monitor  # type: ignore[reportAttributeAccessIssue]
+    cron.close_wait.clear()  # both close()s block forever from now on
+    monitor.close_wait.clear()
+
+    # Why the outer timeout: pre-fix the clear runs only after BOTH bounded
+    # closes finish, so the RED state's assertion window is bounded by the
+    # 0.05s shrink seam; the guard keeps a regression from hanging.
+    async with asyncio.timeout(5):
+        task = asyncio.create_task(leader._close_leader_owned_conns())
+        # Wait until BOTH close()s have been ENTERED (not completed)...
+        await cron.close_entered.wait()
+        await monitor.close_entered.wait()
+        # ...then, while the closes are still parked, the flag must ALREADY
+        # be clear. Pre-fix it stays set until both closes finish → RED.
+        assert not monitor.is_closed()
+        assert not deps.is_leader.is_set()
+        await task
+
+    assert cron.terminated is True
+    assert monitor.terminated is True
+    assert leader._cron_conn is None
+    assert leader._leader_monitor_conn is None
+    assert not deps.is_leader.is_set()
+
+
+async def test_close_leader_owned_conns_mid_run_false_logs_teardown_family(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Final teardown is not a mid-run emergency: called with mid_run=False,
+    a hung close logs the ``conn-teardown-close-*`` family and NEVER the
+    mid-run ``conn-close-*`` family, so an ordinary shutdown does not page
+    as an unexpected mid-run close timeout (review N6)."""
+    import taskq.worker.leader as leader_mod
+
+    monkeypatch.setattr(leader_mod, "CLOSE_TIMEOUT_SECS", 0.05)
+    leader, deps, _backend, _, _, _shutdown = await _make_leader()
+    deps.is_leader.set()
+    cron = FakeConn()
+    leader._cron_conn = cron  # type: ignore[reportAttributeAccessIssue]
+    cron.close_wait.clear()  # close() blocks forever from now on
+
+    with structlog.testing.capture_logs() as captured:
+        # Why the outer timeout: if the 0.05s bound regresses, fail fast
+        # instead of hanging until pytest-timeout.
+        async with asyncio.timeout(5):
+            await leader._close_leader_owned_conns(mid_run=False)
+
+    assert cron.terminated is True
+    assert cron.close_calls == 1
+    timeout_events = [
+        e for e in captured if e.get("event") == "conn-teardown-close-timeout-terminating"
+    ]
+    assert len(timeout_events) == 1, f"expected 1 teardown timeout event, got {captured!r}"
+    assert timeout_events[0].get("label") == "cron_conn"
+    mid_run_events = [e for e in captured if str(e.get("event", "")).startswith("conn-close-")]
+    assert mid_run_events == [], f"mid-run family must not fire on teardown: {captured!r}"
+
+
+async def test_close_leader_owned_conns_default_mid_run_logs_mid_run_family(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The default stays the mid-run family: the watchdog/election/cron
+    demotion paths call without mid_run, and a conn so dead that even
+    close() hung while the worker is alive must keep paging as
+    ``conn-close-*`` (existing behaviour pinned — passes pre- and
+    post-fix)."""
+    import taskq.worker.leader as leader_mod
+
+    monkeypatch.setattr(leader_mod, "CLOSE_TIMEOUT_SECS", 0.05)
+    leader, deps, _backend, _, _, _shutdown = await _make_leader()
+    deps.is_leader.set()
+    cron = FakeConn()
+    leader._cron_conn = cron  # type: ignore[reportAttributeAccessIssue]
+    cron.close_wait.clear()  # close() blocks forever from now on
+
+    with structlog.testing.capture_logs() as captured:
+        # Why the outer timeout: if the 0.05s bound regresses, fail fast
+        # instead of hanging until pytest-timeout.
+        async with asyncio.timeout(5):
+            await leader._close_leader_owned_conns()
+
+    assert cron.terminated is True
+    assert cron.close_calls == 1
+    timeout_events = [e for e in captured if e.get("event") == "conn-close-timeout-terminating"]
+    assert len(timeout_events) == 1, f"expected 1 mid-run timeout event, got {captured!r}"
+    assert timeout_events[0].get("label") == "cron_conn"
+    teardown_events = [
+        e for e in captured if str(e.get("event", "")).startswith("conn-teardown-close-")
+    ]
+    assert teardown_events == [], f"teardown family must not fire mid-run: {captured!r}"
+
+
+async def test_run_final_teardown_closes_leader_conns_with_teardown_family(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """run()'s finally is final teardown, not a mid-run demotion: it must
+    close leader-owned conns with the ``conn-teardown-close-*`` family so an
+    ordinary shutdown of a leader pod never pages as a mid-run close
+    failure. Drives run() end-to-end with shutdown pre-set — every loop
+    observes the set event and exits immediately, so only the finally's
+    close path does any work (review N6 wiring pin)."""
+    import taskq.worker.leader as leader_mod
+
+    monkeypatch.setattr(leader_mod, "CLOSE_TIMEOUT_SECS", 0.05)
+    leader, deps, _backend, _, _, shutdown = await _make_leader()
+    deps.is_leader.set()
+    cron = FakeConn()
+    monitor = FakeConn()
+    leader._cron_conn = cron  # type: ignore[reportAttributeAccessIssue]
+    leader._leader_monitor_conn = monitor  # type: ignore[reportAttributeAccessIssue]
+    cron.close_wait.clear()  # close() blocks forever from now on
+    shutdown.set()  # all loops exit immediately; only the finally does work
+
+    with structlog.testing.capture_logs() as captured:
+        # Why the outer timeout: if the 0.05s bound regresses, fail fast
+        # instead of hanging until pytest-timeout.
+        async with asyncio.timeout(5):
+            await leader.run(shutdown)
+
+    assert cron.terminated is True
+    assert cron.close_calls == 1
+    assert monitor.is_closed()
+    assert monitor.terminated is False
+    assert leader._cron_conn is None
+    assert leader._leader_monitor_conn is None
+    assert not deps.is_leader.is_set()
+    timeout_events = [
+        e for e in captured if e.get("event") == "conn-teardown-close-timeout-terminating"
+    ]
+    assert len(timeout_events) == 1, f"expected 1 teardown timeout event, got {captured!r}"
+    assert timeout_events[0].get("label") == "cron_conn"
+    mid_run_events = [e for e in captured if str(e.get("event", "")).startswith("conn-close-")]
+    assert mid_run_events == [], f"mid-run family must not fire on teardown: {captured!r}"
 
 
 async def test_drop_leader_conn_terminates_hung_taskq_owned_close(

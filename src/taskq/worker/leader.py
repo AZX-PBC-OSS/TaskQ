@@ -110,7 +110,20 @@ class MaintenanceLeader:
         self._leader_monitor_conn: asyncpg.Connection | None = None
         self._cron_conn: asyncpg.Connection | None = None
 
-    async def _close_leader_owned_conns(self) -> None:
+    async def _close_leader_owned_conns(self, *, mid_run: bool = True) -> None:
+        """Close the leader-owned dedicated conns (cron, monitor), bounded.
+
+        Two call contexts: mid-run demotion (watchdog/election/cron
+        conn-died paths — the default ``mid_run=True``, the ``conn-close-*``
+        alert family) and ``run()``'s finally (final teardown — passes
+        ``mid_run=False`` for the ``conn-teardown-close-*`` family), so an
+        ordinary shutdown never pages as an unexpected mid-run close
+        timeout.
+        """
+        # Why first: demotion must be observable immediately — the bounded
+        # closes below can park for seconds on a dead PG, and this flag
+        # backs the leader gauge, /metrics, and the health report.
+        self._deps.is_leader.clear()
         for attr in ("_cron_conn", "_leader_monitor_conn"):
             conn = getattr(self, attr)
             if conn is not None and not conn.is_closed():
@@ -124,10 +137,9 @@ class MaintenanceLeader:
                     conn,
                     attr.removeprefix("_"),
                     CLOSE_TIMEOUT_SECS,
-                    mid_run=True,
+                    mid_run=mid_run,
                 )
             setattr(self, attr, None)
-        self._deps.is_leader.clear()
 
     async def _drop_leader_conn(self, *, reason: str) -> None:
         """Null ``deps.leader_conn``, closing it only when TaskQ-owned.
@@ -234,7 +246,10 @@ class MaintenanceLeader:
                 tg.create_task(self._stranded_jobs_loop(shutdown), name="leader.stranded_jobs")
                 await shutdown.wait()
         finally:
-            await self._close_leader_owned_conns()
+            # Final teardown, not a mid-run demotion: close with the
+            # conn-teardown-close-* family so an ordinary shutdown never
+            # pages as an unexpected mid-run close timeout.
+            await self._close_leader_owned_conns(mid_run=False)
             _active_leaders.discard(self)
 
     async def _election_loop(self, shutdown: asyncio.Event) -> None:

@@ -496,7 +496,7 @@ def _ui_serve(
                     # close_redis_bounded / CLOSE_TIMEOUT_SECS as
                     # observation and timeout-shrink seams (same convention as
                     # the pool close above).
-                    await close_redis_bounded(client, CLOSE_TIMEOUT_SECS)
+                    await close_redis_bounded(client, "ui-admin", CLOSE_TIMEOUT_SECS)
 
                 # Why push BEFORE initialize(): from_url() has already
                 # allocated the connection pool, so if initialize() raises

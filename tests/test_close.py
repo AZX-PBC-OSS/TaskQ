@@ -29,21 +29,35 @@ from taskq._close import close_conn_bounded, close_pool_bounded, close_redis_bou
 
 
 class _FakePool:
-    """Minimal asyncpg.Pool fake: close() that can raise; terminate tracking."""
+    """Minimal asyncpg.Pool fake: close() that can raise; terminate tracking.
+
+    Real-semantics error path (asyncpg 0.31 ``Pool.close()``): on ANY close
+    error the pool calls ``self.terminate()`` and sets ``self._closed = True``
+    in the ``finally`` before re-raising — so a raising close still leaves
+    the pool terminated AND closed. ``terminate_calls`` counts only EXTERNAL
+    terminate() invocations, so tests can still pin "the helper never
+    terminates on the error path".
+    """
 
     def __init__(self) -> None:
         self.closed = False
         self.terminated = False
+        self.terminate_calls = 0
         self.close_calls = 0
         self.close_error: BaseException | None = None
 
     async def close(self) -> None:
         self.close_calls += 1
         if self.close_error is not None:
+            # Mirrors asyncpg Pool.close(): except -> terminate(); finally ->
+            # _closed = True; then re-raise.
+            self.terminated = True
+            self.closed = True
             raise self.close_error
         self.closed = True
 
     def terminate(self) -> None:
+        self.terminate_calls += 1
         self.terminated = True
         self.closed = True
 
@@ -63,6 +77,10 @@ class _FakeConn:
         self.close_calls += 1
         await self.close_wait.wait()
         if self.close_error is not None:
+            # Mirrors asyncpg 0.31 Connection.close(): on ANY close error it
+            # calls self._abort() before re-raising, so is_closed() is True
+            # afterwards — a raising close still leaves the conn closed.
+            self.closed = True
             raise self.close_error
         self.closed = True
 
@@ -114,7 +132,7 @@ async def test_close_redis_bounded_propagates_cancelled_error() -> None:
     client.aclose_error = asyncio.CancelledError()
 
     with pytest.raises(asyncio.CancelledError):
-        await close_redis_bounded(client, 0.05)
+        await close_redis_bounded(client, "redis", 0.05)
 
 
 # ── mid_run event-family pins ──────────────────────────────────────────
@@ -176,8 +194,9 @@ async def test_close_conn_bounded_teardown_timeout_logs_teardown_family() -> Non
 
 async def test_close_conn_bounded_mid_run_error_logs_conn_close_error() -> None:
     """A mid-run conn close() that raises is logged as ``conn-close-error``
-    and swallowed (never-raise); the conn is NOT terminated — termination is
-    the timeout path only."""
+    and swallowed (never-raise); the HELPER does not terminate — termination
+    is the timeout path only. The conn IS still closed: real asyncpg aborts
+    the conn before re-raising a close error, which the fake mirrors."""
     conn = _FakeConn()
     boom = RuntimeError("simulated PG close failure")
     conn.close_error = boom
@@ -186,7 +205,8 @@ async def test_close_conn_bounded_mid_run_error_logs_conn_close_error() -> None:
         await close_conn_bounded(conn, "x", 0.05, mid_run=True)  # must not raise
 
     assert conn.close_calls == 1
-    assert conn.terminated is False
+    assert conn.terminated is False  # helper never terminates on the error path
+    assert conn.closed is True  # real asyncpg Connection.close() aborts, then re-raises
     error_events = [e for e in captured if e.get("event") == "conn-close-error"]
     assert len(error_events) == 1, f"expected 1 mid-run error event, got {captured!r}"
     event = error_events[0]
@@ -205,7 +225,8 @@ async def test_close_conn_bounded_teardown_error_logs_teardown_family() -> None:
         await close_conn_bounded(conn, "x", 0.05)  # mid_run defaults to False
 
     assert conn.close_calls == 1
-    assert conn.terminated is False
+    assert conn.terminated is False  # helper never terminates on the error path
+    assert conn.closed is True  # real asyncpg Connection.close() aborts, then re-raises
     error_events = [e for e in captured if e.get("event") == "conn-teardown-close-error"]
     assert len(error_events) == 1, f"expected 1 teardown error event, got {captured!r}"
     event = error_events[0]
@@ -218,8 +239,10 @@ async def test_close_conn_bounded_teardown_error_logs_teardown_family() -> None:
 
 async def test_close_pool_bounded_error_logs_pool_teardown_close_error() -> None:
     """A pool close() that raises is logged as ``pool-teardown-close-error``
-    and swallowed (never-raise); the pool is NOT terminated — termination is
-    the timeout path only."""
+    and swallowed (never-raise); the HELPER does not terminate — termination
+    by the helper is the timeout path only. The pool IS still terminated and
+    closed: real asyncpg Pool.close() self-terminates and marks the pool
+    closed before re-raising a close error, which the fake mirrors."""
     pool = _FakePool()
     boom = RuntimeError("simulated PG close failure")
     pool.close_error = boom
@@ -228,7 +251,9 @@ async def test_close_pool_bounded_error_logs_pool_teardown_close_error() -> None
         await close_pool_bounded(pool, "pool", 0.05)  # must not raise
 
     assert pool.close_calls == 1
-    assert pool.terminated is False
+    assert pool.terminate_calls == 0  # helper never terminates on the error path
+    assert pool.terminated is True  # real Pool.close() self-terminates on close error
+    assert pool.closed is True  # ... and sets _closed=True in the finally
     error_events = [e for e in captured if e.get("event") == "pool-teardown-close-error"]
     assert len(error_events) == 1, f"expected 1 pool error event, got {captured!r}"
     event = error_events[0]
@@ -239,16 +264,18 @@ async def test_close_pool_bounded_error_logs_pool_teardown_close_error() -> None
 async def test_close_redis_bounded_error_logs_redis_teardown_close_error() -> None:
     """A redis aclose() that raises is logged as
     ``redis-teardown-close-error`` and swallowed (never-raise), so teardown
-    keeps unwinding."""
+    keeps unwinding. The event carries ``label=`` identifying which client
+    errored, matching the pool/conn siblings (review N7)."""
     client = _FakeRedisClient()
     boom = RuntimeError("simulated Redis close failure")
     client.aclose_error = boom
 
     with structlog.testing.capture_logs() as captured:
-        await close_redis_bounded(client, 0.05)  # must not raise
+        await close_redis_bounded(client, "redis", 0.05)  # must not raise
 
     assert client.aclose_calls == 1
     error_events = [e for e in captured if e.get("event") == "redis-teardown-close-error"]
     assert len(error_events) == 1, f"expected 1 redis error event, got {captured!r}"
     event = error_events[0]
     assert event.get("error") == repr(boom)
+    assert event.get("label") == "redis"

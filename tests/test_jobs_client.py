@@ -1494,8 +1494,11 @@ class _FakeRedisInitializeRaises(_FakeRedisClient):
 class TestRedisCloseBounded:
     async def test_close_bounds_hung_redis_aclose(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A hung Redis aclose() is bounded: JobsClient.close() logs and
-        continues (no terminate on Redis) instead of hanging."""
+        continues (no terminate on Redis) instead of hanging. The timeout
+        event carries ``label=jobs-client`` identifying which client hung
+        (review N7)."""
         import redis.asyncio as redis_async
+        import structlog.testing
 
         import taskq.client._jobs as jobs_mod
         from taskq.settings import TaskQSettings
@@ -1513,11 +1516,17 @@ class TestRedisCloseBounded:
         # Why the outer timeout: pre-fix close() awaited aclose() unbounded
         # (via Redis.__aexit__), so the RED state would hang forever instead
         # of failing fast.
-        async with asyncio.timeout(5):
-            await client.close()
+        with structlog.testing.capture_logs() as captured:
+            async with asyncio.timeout(5):
+                await client.close()
 
         assert fake.aclose_calls == 1
         assert client._redis_client is None
+        timeout_events = [e for e in captured if e.get("event") == "redis-teardown-close-timeout"]
+        assert len(timeout_events) == 1, f"expected 1 redis timeout event, got {captured!r}"
+        assert timeout_events[0].get("label") == "jobs-client", (
+            f"expected label=jobs-client on the timeout event, got {timeout_events[0]!r}"
+        )
 
     async def test_close_fast_redis_aclose(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Healthy aclose(): the client is closed exactly once during

@@ -10,9 +10,12 @@ terminal scenarios where the generator exits naturally, or read until a
 specific marker and then close the connection.
 """
 
+import asyncio
 import json
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from unittest.mock import MagicMock
 from uuid import UUID
 
 import pytest
@@ -20,10 +23,13 @@ import pytest
 pytest.importorskip("fastapi")
 pytest.importorskip("sse_starlette")
 
+import structlog.testing
 from fastapi import FastAPI, HTTPException
+from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 from sse_starlette.event import ServerSentEvent
 
+import taskq.web.progress as progress_mod
 from taskq.backend.statemachine import TERMINAL_STATUSES
 from taskq.constants import progress_channel
 from taskq.progress._events import ProgressEvent
@@ -156,6 +162,79 @@ class _StubRedis:
 
     def pubsub(self) -> _StubPubSub:
         return self._pubsub
+
+
+class _HungPubSub(_StubPubSub):
+    """_StubPubSub whose aclose() hangs on a gate (dead broker) and whose
+    subscribe() can be made to raise — drives the bounded pubsub-close pins
+    (review N5)."""
+
+    def __init__(
+        self,
+        messages: list[dict[str, Any] | None | object],
+        *,
+        subscribe_error: Exception | None = None,
+    ) -> None:
+        super().__init__(messages)
+        self.aclose_calls = 0
+        self._aclose_wait = asyncio.Event()  # never set — aclose() hangs forever
+        self._subscribe_error = subscribe_error
+
+    async def subscribe(self, channel: str | bytes) -> None:
+        if self._subscribe_error is not None:
+            raise self._subscribe_error
+        await super().subscribe(channel)
+
+    async def aclose(self) -> None:
+        self.aclose_calls += 1
+        await self._aclose_wait.wait()
+
+
+class _RaisingPool:
+    """Pool stub whose acquire() raises (PG down) — drives the :359 error path."""
+
+    def __init__(self, exc: Exception) -> None:
+        self._exc = exc
+
+    def acquire(self, *, timeout: float | None = None) -> Any:
+        raise self._exc
+
+
+def _make_stream_endpoint(
+    pg_pool: Any,
+    pubsub: _StubPubSub,
+) -> Callable[..., Awaitable[Any]]:
+    """Build the router and return the raw ``progress_stream`` endpoint.
+
+    Driving the handler body directly (instead of via TestClient) lets async
+    tests wrap the call in ``asyncio.timeout`` so a hung cleanup wedges the
+    RED state fast instead of blocking a portal thread.
+    """
+    router = create_router(
+        pg_pool,
+        _StubRedis(pubsub),
+        schema=_SCHEMA_LABEL,
+        sse_heartbeat_interval=_HEARTBEAT,
+    )
+    for route in router.routes:
+        if isinstance(route, APIRoute) and route.path.endswith("/progress/stream"):
+            return route.endpoint
+    raise AssertionError("progress stream route not found")
+
+
+def _mock_request() -> MagicMock:
+    request = MagicMock()
+    request.headers.get.return_value = None  # no Last-Event-ID header
+    return request
+
+
+def _assert_web_progress_timeout_event(captured: list[dict[str, Any]]) -> None:
+    """Pin the bounded-close timeout event and its web-progress label (N5)."""
+    timeout_events = [e for e in captured if e.get("event") == "redis-teardown-close-timeout"]
+    assert len(timeout_events) == 1, f"expected 1 redis timeout event, got {captured!r}"
+    assert timeout_events[0].get("label") == "web-progress", (
+        f"expected label=web-progress on the timeout event, got {timeout_events[0]!r}"
+    )
 
 
 def _make_app(
@@ -625,3 +704,96 @@ def test_resolve_last_event_id_priority() -> None:
     req_no_header.headers.get.return_value = None
     assert _resolve_last_event_id(req_no_header, 3) == 3
     assert _resolve_last_event_id(req_no_header, None) is None
+
+
+# ── Bounded pubsub closes (review N5) ──────────────────────────────
+#
+# Every pubsub close the SSE bridge initiates (generator finally :233,
+# subscribe-failed :342, PG-error :359, 404 :366) is bounded via
+# close_redis_bounded — the "every TaskQ-initiated close is bounded" claim
+# has no counterexamples. The shrink seam is the same module-global
+# monkeypatch convention as the other teardown tests. Why raising=False on
+# the setattr: pre-fix the module has no CLOSE_TIMEOUT_SECS seam, so the
+# RED state must demonstrate the cleanup wedge (outer timeout), not an
+# AttributeError from the shrink. Why the outer asyncio.timeout(5): pre-fix
+# each path awaited pubsub.aclose() unbounded, so the RED state wedges
+# instead of failing fast.
+
+
+@pytest.mark.asyncio
+async def test_generator_finally_bounds_hung_pubsub_close(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Generator finally (:233): a hung pubsub aclose() is bounded — the
+    stream finalizer logs and completes instead of wedging."""
+    monkeypatch.setattr(progress_mod, "CLOSE_TIMEOUT_SECS", 0.05, raising=False)
+    terminal_event = _make_event(seq=6, terminal=True)
+    pubsub = _HungPubSub([_redis_msg(terminal_event)])
+
+    with structlog.testing.capture_logs() as captured:
+        async with asyncio.timeout(5):
+            await _drive_generator(_pg_row(), pubsub)
+
+    assert pubsub.unsubscribed is True  # suppress kept on unsubscribe
+    assert pubsub.aclose_calls == 1
+    _assert_web_progress_timeout_event(captured)
+
+
+@pytest.mark.asyncio
+async def test_subscribe_failed_bounds_hung_pubsub_close(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Subscribe-failed path (:342): cleanup after a failed subscribe is
+    bounded — the 503 response is returned instead of wedging."""
+    monkeypatch.setattr(progress_mod, "CLOSE_TIMEOUT_SECS", 0.05, raising=False)
+    pubsub = _HungPubSub([], subscribe_error=ConnectionError("broker down"))
+    endpoint = _make_stream_endpoint(_StubPool(_pg_row()), pubsub)
+
+    with structlog.testing.capture_logs() as captured:
+        async with asyncio.timeout(5):
+            response = await endpoint(job_id=_JOB_ID, request=_mock_request(), last_event_id=None)
+
+    assert response.status_code == 503
+    assert pubsub.aclose_calls == 1
+    _assert_web_progress_timeout_event(captured)
+
+
+@pytest.mark.asyncio
+async def test_pg_error_bounds_hung_pubsub_close(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PG-error path (:359): cleanup is bounded AND the original PG error is
+    re-raised (bounded cleanup must not mask the primary exception)."""
+    monkeypatch.setattr(progress_mod, "CLOSE_TIMEOUT_SECS", 0.05, raising=False)
+    pubsub = _HungPubSub([])
+    endpoint = _make_stream_endpoint(_RaisingPool(ConnectionError("pg down")), pubsub)
+
+    with structlog.testing.capture_logs() as captured:
+        async with asyncio.timeout(5):
+            with pytest.raises(ConnectionError, match="pg down"):
+                await endpoint(job_id=_JOB_ID, request=_mock_request(), last_event_id=None)
+
+    assert pubsub.unsubscribed is True
+    assert pubsub.aclose_calls == 1
+    _assert_web_progress_timeout_event(captured)
+
+
+@pytest.mark.asyncio
+async def test_job_not_found_bounds_hung_pubsub_close(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """404 path (:366): cleanup is bounded AND the 404 HTTPException is
+    raised instead of wedging."""
+    monkeypatch.setattr(progress_mod, "CLOSE_TIMEOUT_SECS", 0.05, raising=False)
+    pubsub = _HungPubSub([])
+    endpoint = _make_stream_endpoint(_StubPool(None), pubsub)
+
+    with structlog.testing.capture_logs() as captured:
+        async with asyncio.timeout(5):
+            with pytest.raises(HTTPException) as exc_info:
+                await endpoint(job_id=_JOB_ID, request=_mock_request(), last_event_id=None)
+
+    assert exc_info.value.status_code == 404
+    assert pubsub.unsubscribed is True
+    assert pubsub.aclose_calls == 1
+    _assert_web_progress_timeout_event(captured)

@@ -521,7 +521,7 @@ async def open_worker_deps(
                 # teardown.
                 client = deps.redis_client
                 if client is not None:
-                    await close_redis_bounded(client, CLOSE_TIMEOUT_SECS)
+                    await close_redis_bounded(client, "worker", CLOSE_TIMEOUT_SECS)
                     deps.redis_client = None
 
             stack.push_async_callback(_close_redis_client)

@@ -578,6 +578,11 @@ async def test_ui_serve_lifespan_bounds_hung_redis_close(
     assert len(timeout_events) == 1, (
         f"expected 1 redis-teardown-close-timeout log, got {captured!r}"
     )
+    # label= identifies WHICH client hung (review N7) — the UI admin client,
+    # matching the ui-admin pool label.
+    assert timeout_events[0].get("label") == "ui-admin", (
+        f"expected label=ui-admin on the timeout event, got {timeout_events[0]!r}"
+    )
 
 
 async def test_ui_serve_lifespan_fast_redis_close_once(

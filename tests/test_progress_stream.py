@@ -8,6 +8,7 @@ Covers:
 - JobsClient lifecycle: _open_redis, close, redis_client passthrough to JobHandle
 """
 
+import asyncio
 import dataclasses
 from datetime import UTC, datetime
 from typing import cast
@@ -15,6 +16,7 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID
 
 import pytest
+import structlog.testing
 from pydantic import TypeAdapter
 
 from taskq.backend._protocol import Backend, JobId, JobRow, JobStatus
@@ -460,3 +462,87 @@ async def test_jobs_client_enqueue_passes_redis_and_settings_to_handle() -> None
     assert handle._redis_client is None
     assert handle._handle_settings == settings
     await client.close()
+
+
+# ── Bounded pubsub close in redis_event_stream (review N5) ────────────
+
+
+class _HungPubSub:
+    """Fake redis PubSub whose aclose() hangs on a gate (dead broker).
+
+    get_message always returns None (poll timeout), so the stream only
+    terminates via the caller's terminal ``on_timeout`` event — after which
+    the finally's pubsub close is what wedges pre-fix.
+    """
+
+    def __init__(self) -> None:
+        self.aclose_calls = 0
+        self.unsubscribed = False
+        self._aclose_wait = asyncio.Event()  # never set — aclose() hangs forever
+
+    async def subscribe(self, channel: str) -> None:
+        pass
+
+    async def get_message(
+        self,
+        *,
+        ignore_subscribe_messages: bool = True,
+        timeout: float = 0,  # noqa: ASYNC109  # Why: mirrors redis-py PubSub.get_message signature.
+    ) -> None:
+        return None
+
+    async def unsubscribe(self, channel: str) -> None:
+        self.unsubscribed = True
+
+    async def aclose(self) -> None:
+        self.aclose_calls += 1
+        await self._aclose_wait.wait()
+
+
+async def test_transport_bounds_hung_pubsub_close(monkeypatch: pytest.MonkeyPatch) -> None:
+    """redis_event_stream's finally: a hung pubsub aclose() (dead broker) is
+    bounded — the stream logs ``redis-teardown-close-timeout``
+    (label=client-transport) and completes instead of wedging the stream
+    finalizer (review N5). Docker-free fake pubsub driven through the REAL
+    redis_event_stream."""
+    import taskq.client._transport as transport_mod
+    from taskq.client._transport import redis_event_stream
+
+    # Why raising=False: pre-fix the module has no CLOSE_TIMEOUT_SECS seam,
+    # so the RED state must demonstrate the finalizer wedge (outer timeout),
+    # not an AttributeError from the shrink.
+    monkeypatch.setattr(transport_mod, "CLOSE_TIMEOUT_SECS", 0.05, raising=False)
+    pubsub = _HungPubSub()
+    redis_client = MagicMock(spec=["pubsub"])
+    redis_client.pubsub.return_value = pubsub
+
+    terminal_event = ProgressEvent(
+        kind="state_change",
+        job_id=_JOB_ID,
+        actor=_ACTOR,
+        ts=datetime.now(UTC),
+        seq=1,
+        status="succeeded",
+        terminal=True,
+    )
+
+    async def _decode(raw: str) -> ProgressEvent | None:
+        return None
+
+    async def _on_timeout() -> ProgressEvent | None:
+        return terminal_event
+
+    # Why the outer timeout: pre-fix the finally awaited pubsub.aclose()
+    # unbounded, so the RED state wedges here instead of failing fast.
+    with structlog.testing.capture_logs() as captured:
+        async with asyncio.timeout(5):
+            async for _ in redis_event_stream(redis_client, "chan", 0.01, _decode, _on_timeout):
+                pass
+
+    assert pubsub.unsubscribed is True  # suppress kept on unsubscribe
+    assert pubsub.aclose_calls == 1
+    timeout_events = [e for e in captured if e.get("event") == "redis-teardown-close-timeout"]
+    assert len(timeout_events) == 1, f"expected 1 redis timeout event, got {captured!r}"
+    assert timeout_events[0].get("label") == "client-transport", (
+        f"expected label=client-transport on the timeout event, got {timeout_events[0]!r}"
+    )

@@ -8,7 +8,7 @@ and without a deps↔shutdown module cycle.
 
 import asyncio
 from contextlib import suppress
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 from taskq.obs import get_logger
 
@@ -16,7 +16,6 @@ if TYPE_CHECKING:
     # Annotation-only imports: keep this leaf import-weight-free (taskq.testing
     # pins that importing it must not transitively import asyncpg).
     import asyncpg
-    import redis.asyncio as redis_async
 
 __all__ = [
     "CLOSE_TIMEOUT_SECS",
@@ -103,16 +102,30 @@ async def close_conn_bounded(
             logger.warning("conn-teardown-close-error", label=label, error=repr(exc))
 
 
-async def close_redis_bounded(client: "redis_async.Redis", close_timeout: float) -> None:  # type: ignore[type-arg]  # Why: redis_async is under TYPE_CHECKING; string annotation avoids runtime import. type-arg: redis-py stubs expose Redis as an unparameterised generic.
-    """Close a Redis client during teardown, bounded by ``close_timeout``.
+class _AsyncCloseable(Protocol):
+    """Structural boundary for Redis resources: an async ``aclose()``.
+
+    Covers ``redis.asyncio.Redis`` clients and ``redis.asyncio.client.PubSub``
+    (pub/sub closes are bounded by the same helper) without a runtime import
+    of the optional ``[redis]`` extra — this module must stay a leaf.
+    """
+
+    async def aclose(self) -> None: ...
+
+
+async def close_redis_bounded(client: _AsyncCloseable, label: str, close_timeout: float) -> None:
+    """Close a Redis client/pubsub during teardown, bounded by ``close_timeout``.
 
     On timeout log-and-continue (Redis has no ``terminate()``); any other
     error is logged and swallowed so teardown keeps unwinding. Never raises
-    — ``CancelledError`` (a ``BaseException``) still propagates.
+    — ``CancelledError`` (a ``BaseException``) still propagates. ``label``
+    identifies which resource hung/errored and is carried on both log
+    events, matching the pool/conn siblings' ``resource, label, timeout``
+    signature order.
     """
     try:
         await asyncio.wait_for(client.aclose(), timeout=close_timeout)
     except TimeoutError:
-        logger.warning("redis-teardown-close-timeout", close_timeout=close_timeout)
+        logger.warning("redis-teardown-close-timeout", label=label, close_timeout=close_timeout)
     except Exception as exc:
-        logger.warning("redis-teardown-close-error", error=repr(exc))
+        logger.warning("redis-teardown-close-error", label=label, error=repr(exc))
