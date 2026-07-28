@@ -5,6 +5,7 @@
 ``(pool, sql: SqlTemplates, ...)`` parameters.
 """
 
+from datetime import timedelta
 from typing import TYPE_CHECKING
 
 from taskq._json import dumps_str
@@ -16,6 +17,7 @@ from taskq.backend._protocol import (
     JobId,
     JobRow,
     JobSortField,
+    LongRunningJobEventsWriter,
 )
 from taskq.backend._records import (
     _job_row_from_record,
@@ -23,16 +25,19 @@ from taskq.backend._records import (
 )
 from taskq.backend._sql_templates import SqlTemplates
 from taskq.backend.statemachine import ACTIVE_STATUSES, TERMINAL_STATUSES
+from taskq.constants import RECLAIM_EVENT_VISIBILITY_DELAY
 
 if TYPE_CHECKING:
     import asyncpg
 
 __all__ = [
+    "_check_reclaim_visibility_risk",
     "_count_pending_jobs",
     "_get",
     "_get_attempts",
     "_get_events",
     "_list_jobs",
+    "_poll_reclaim_events",
 ]
 
 
@@ -186,6 +191,62 @@ async def _get_events(
             occurred_at=rec["occurred_at"],
             kind=rec["kind"],  # type: ignore[arg-type]  # Why: asyncpg returns PG value as str; EventKind is Literal[str, ...]
             detail=jsonb_to_dict(rec["detail"]) or {},
+        )
+        for rec in records
+    ]
+
+
+async def _poll_reclaim_events(
+    pool: "asyncpg.Pool",
+    sql: SqlTemplates,
+    after_id: int,
+    limit: int = 100,
+    *,
+    visibility_delay: timedelta | None = None,
+) -> list[EventRow]:
+    delay = visibility_delay if visibility_delay is not None else RECLAIM_EVENT_VISIBILITY_DELAY
+    async with pool.acquire() as conn:
+        records = await conn.fetch(sql.poll_reclaim_events, after_id, limit, delay)
+    return [
+        EventRow(
+            event_id=rec["event_id"],
+            job_id=JobId(rec["job_id"]),
+            occurred_at=rec["occurred_at"],
+            kind=rec["kind"],  # type: ignore[arg-type]  # Why: asyncpg returns PG value as str; EventKind is Literal[str, ...]
+            detail=jsonb_to_dict(rec["detail"]) or {},
+        )
+        for rec in records
+    ]
+
+
+async def _check_reclaim_visibility_risk(
+    pool: "asyncpg.Pool",
+    sql: SqlTemplates,
+    *,
+    visibility_delay: timedelta | None = None,
+) -> list[LongRunningJobEventsWriter]:
+    """Diagnostic: transactions holding a lock on ``job_events`` for
+    longer than *visibility_delay* — a candidate cause of a silently
+    missed ``poll_reclaim_events`` event. See
+    :class:`LongRunningJobEventsWriter`. Not part of the ``Backend``
+    protocol (diagnostic, not a core operation) — ``InMemoryBackend``
+    therefore has no equivalent, so a dedicated monitoring loop consuming
+    this must branch on backend type (or ``getattr``-probe, as
+    ``taskq.client._taskq._probe_visibility_risk`` does). Wired into
+    ``TaskQ.watch_reclaims`` on a slow cadence by default (see
+    ``taskq.client._taskq._probe_visibility_risk``); also callable
+    directly from a dedicated monitoring/alerting loop that wants a
+    tighter cadence or its own sink. Deliberately not on the per-poll
+    hot path.
+    """
+    delay = visibility_delay if visibility_delay is not None else RECLAIM_EVENT_VISIBILITY_DELAY
+    async with pool.acquire() as conn:
+        records = await conn.fetch(sql.check_reclaim_visibility_risk, delay)
+    return [
+        LongRunningJobEventsWriter(
+            pid=rec["pid"],
+            xact_start=rec["xact_start"],
+            xact_age_seconds=rec["xact_age_seconds"],
         )
         for rec in records
     ]

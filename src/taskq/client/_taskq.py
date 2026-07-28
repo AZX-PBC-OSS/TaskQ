@@ -53,6 +53,7 @@ if TYPE_CHECKING:
 from taskq.actor import ActorRef
 from taskq.backend._protocol import (
     DstStrategy,
+    EventRow,
     IdempotencyKey,
     IdentityKey,
     JobFilter,
@@ -67,12 +68,12 @@ from taskq.backend.statemachine import TERMINAL_STATUSES
 from taskq.batch import BatchHandle, EnqueueItem
 from taskq.client._handle import JobHandle
 from taskq.client._jobs import JobsClient
-from taskq.constants import progress_channel, wake_channel
+from taskq.constants import RECLAIM_EVENT_VISIBILITY_DELAY, progress_channel, wake_channel
 from taskq.cron import ScheduleHandle
 from taskq.progress._events import ProgressEvent
 from taskq.types import CancelResult
 
-__all__ = ["JobEvent", "TaskQ"]
+__all__ = ["EventRow", "JobEvent", "TaskQ"]
 
 logger = structlog.get_logger("taskq.client._taskq")
 
@@ -188,6 +189,7 @@ class TaskQ:
         pg_conn_factory: "ConnFactory | None" = None,
         listen_conn: "asyncpg.Connection | None" = None,
         poll_timeout: float = 30.0,
+        reclaim_event_visibility_delay: timedelta | None = None,
     ) -> None:
         if dsn is None and pool is None:
             raise ValueError("TaskQ requires either 'dsn' or 'pool'")
@@ -208,6 +210,12 @@ class TaskQ:
         self._pg_conn_factory = pg_conn_factory
         self._listen_conn = listen_conn
         self._poll_timeout = poll_timeout
+        # Passed through to the constructed PostgresBackend's poll_reclaim_events
+        # default — see RECLAIM_EVENT_VISIBILITY_DELAY. Must match whatever
+        # margin the worker fleet's sweep-adjacent backend uses, since the
+        # margin's correctness depends on writer transaction duration, not
+        # reader preference.
+        self._reclaim_event_visibility_delay = reclaim_event_visibility_delay
         self._owns_pool = pool is None
         self._client: JobsClient | None = None
 
@@ -252,6 +260,11 @@ class TaskQ:
             clock=SystemClock(),
             cancellation_grace_period=timedelta(seconds=30),
             cleanup_grace_period=timedelta(seconds=10),
+            reclaim_event_visibility_delay=(
+                self._reclaim_event_visibility_delay
+                if self._reclaim_event_visibility_delay is not None
+                else RECLAIM_EVENT_VISIBILITY_DELAY
+            ),
         )
         settings = TaskQSettings.load_from_dict(
             {"TASKQ_SCHEMA_NAME": self._schema},
@@ -529,6 +542,118 @@ class TaskQ:
                 if evt.terminal:
                     return
 
+    async def watch_reclaims(
+        self,
+        after_id: int = 0,
+        *,
+        poll_timeout: float | None = None,
+    ) -> AsyncIterator[EventRow]:
+        """Stream fleet-wide crash-reclaim events as :class:`EventRow` objects.
+
+        **Delivery guarantee.** At-least-once, and gap-free *only under a
+        bounded writer-transaction assumption*: an event is **silently and
+        permanently missed** if a ``job_events`` writer transaction stays
+        open longer than ``reclaim_event_visibility_delay`` (default 2s —
+        see :data:`taskq.constants.RECLAIM_EVENT_VISIBILITY_DELAY`)
+        between its INSERT and its COMMIT.  Ids are allocated at INSERT
+        time but transactions commit out of order, so a late-committing
+        lower-id row can land *behind* the cursor after the cursor has
+        already advanced past its position; no error is raised anywhere.
+        Sweep and terminal-write transactions are a handful of
+        single-round-trip statements, so 2s is a generous bound under
+        normal operation — but it is an assumption enforced by nothing in
+        the SQL, not a property the query guarantees.  So this watcher
+        does not leave detection to chance: on a slow cadence
+        (``_VISIBILITY_RISK_CHECK_INTERVAL``, 60s) it runs the backend's
+        ``check_reclaim_visibility_delay_risk`` diagnostic (when the
+        backend implements it — PostgresBackend does) and logs a loud
+        ``watch_reclaims-visibility-delay-at-risk`` warning for every
+        long-open ``job_events`` writer it finds.  That is a proxy
+        warning, not proof of an actual miss.
+
+        Yields ``job_events`` rows with ``kind='state_change'`` and
+        ``detail['reason']='lock_expired'``, ordered by the monotonic
+        ``event_id`` cursor ascending.  ``to_state`` is ``'pending'`` for
+        a retried reclaim, ``'crashed'`` or ``'cancelled'`` (cancel was
+        in-flight when the worker died) for a terminal one.
+
+        Cursor and duplicate semantics
+        ------------------------------
+        The caller persists the last-seen ``event_id`` and passes it back
+        as *after_id* on resumption.  Persist the cursor **after**
+        processing each event: a crash between processing and persisting
+        re-delivers that event on the next run — delivery is
+        at-least-once, so consumers must dedupe on ``event_id``.  The
+        cursor is a watermark, not a reference: pruning ``job_events``
+        rows at or below it is always safe, but rows pruned *before* the
+        consumer reads them are gone for good — only prune rows older
+        than your slowest consumer's cursor.  A cursor far behind after
+        a long outage drains at query speed (full batches are re-polled
+        immediately, not one batch per *poll_timeout*).
+
+        Shutdown and backpressure
+        -------------------------
+        This is a pull-based async generator: events are fetched only as
+        fast as the consumer iterates, so a slow consumer simply polls
+        slower — no internal buffer grows.  To stop, break out of the
+        ``async for`` (or cancel the consuming task); generator cleanup
+        removes the LISTEN registration and closes any owned connection.
+
+        Transport
+        ---------
+        On Postgres with a LISTEN transport source (``dsn``,
+        ``pg_conn_factory``, or ``listen_conn``), the method LISTENs on
+        ``wake_channel(schema)`` purely as a low-latency wakeup, but
+        always polls ``backend.poll_reclaim_events(after_id)`` as the
+        durable source of truth — NOTIFY is an optimisation, never the
+        only path, and a dropped LISTEN connection degrades to (and
+        recovers from) polling automatically.  Without a LISTEN
+        transport or on Redis-configured backends, a plain poll loop
+        against ``poll_reclaim_events`` runs on ``poll_timeout``.
+
+        Usage::
+
+            cursor = await load_cursor()  # your own durable store
+            async for evt in tq.watch_reclaims(after_id=cursor):
+                outstanding -= 1          # fan-out completion tracking
+                cursor = evt.event_id
+                await save_cursor(cursor)  # persist AFTER processing
+
+        Raises
+        ------
+        RuntimeError
+            Called before ``tq.open()`` or outside an ``async with`` block.
+        """
+        client = self._require_open()
+        timeout = poll_timeout if poll_timeout is not None else self._poll_timeout
+
+        has_listen_source = (
+            self._dsn is not None
+            or self._pg_conn_factory is not None
+            or self._listen_conn is not None
+        )
+        if self._redis_client is None and has_listen_source:
+            gen: AsyncGenerator[EventRow, None] = _watch_reclaims_pg(
+                self._dsn,
+                self._schema,
+                client,
+                timeout,
+                after_id=after_id,
+                pg_conn_factory=self._pg_conn_factory,
+                listen_conn=self._listen_conn,
+                visibility_delay=(
+                    self._reclaim_event_visibility_delay
+                    if self._reclaim_event_visibility_delay is not None
+                    else RECLAIM_EVENT_VISIBILITY_DELAY
+                ),
+            )
+        else:
+            gen = _watch_reclaims_poll(client, timeout, after_id=after_id)
+
+        async with contextlib.aclosing(gen) as agen:
+            async for evt in agen:
+                yield evt
+
 
 async def _stream_pg(
     dsn: str | None,
@@ -688,3 +813,391 @@ async def _stream_redis(
         on_timeout=_refetch,
     ):
         yield event
+
+
+async def _watch_reclaims_poll(
+    client: JobsClient,
+    poll_timeout: float,
+    *,
+    after_id: int = 0,
+) -> AsyncGenerator[EventRow, None]:
+    """Poll-only transport for :meth:`TaskQ.watch_reclaims`.
+
+    Repeatedly calls ``backend.poll_reclaim_events(cursor)`` and yields
+    events in ascending ``event_id`` order.  Sleeps for *poll_timeout*
+    when no new events are available; a non-empty batch is drained
+    immediately (no sleep between pages), so a consumer resuming far
+    behind catches up at query speed.
+    """
+    cursor = after_id
+    last_risk_probe = asyncio.get_running_loop().time()
+    while True:
+        events = await client.backend.poll_reclaim_events(cursor, limit=_WATCH_RECLAIMS_BATCH_LIMIT)
+        if events:
+            for evt in events:
+                cursor = evt.event_id
+                yield evt
+        else:
+            await asyncio.sleep(poll_timeout)
+        last_risk_probe = await _maybe_probe_visibility_risk(client, last_risk_probe)
+
+
+_NOTIFY_CATCHUP_INTERVAL = 0.25
+"""Retry cadence for :func:`_catch_up_after_notify`, in seconds."""
+
+_RECONNECT_POLL_INTERVAL = 10
+"""Poll iterations between LISTEN-reconnect attempts in
+:func:`_watch_reclaims_pg`'s degraded (connection-lost) fallback loop."""
+
+_WATCH_RECLAIMS_BATCH_LIMIT = 100
+"""Batch size for ``poll_reclaim_events`` calls in the watch_reclaims
+transports.  Passed explicitly (rather than relying on the protocol
+default) so a *full* batch can be detected and drained by re-polling
+immediately — see :func:`_watch_reclaims_pg`."""
+
+_VISIBILITY_RISK_CHECK_INTERVAL = 60.0
+"""Cadence (seconds) between built-in ``check_reclaim_visibility_delay_risk``
+probes in the watch_reclaims transports — one extra ``pg_locks`` /
+``pg_stat_activity`` query per watcher per interval.  Module-level so
+tests can shrink it.  The probe is a no-op on backends that do not
+implement the diagnostic (e.g. InMemoryBackend), so the poll-only
+transport and the PG LISTEN transport share it unconditionally."""
+
+
+_VISIBILITY_PROBE_TIMEOUT = 5.0
+"""Timeout for a single visibility-risk probe query, in seconds.  The
+probe runs inline on the delivery loop, so it must be timeboxed: pool
+exhaustion or a slow catalog scan must stall the watcher for at most
+this long — a monitoring path must never take down the delivery path it
+monitors, by hanging any more than by raising.  Generous for a
+``pg_locks``/``pg_stat_activity`` join.  Module-level so tests can
+shrink it."""
+
+
+async def _probe_visibility_risk(client: JobsClient) -> None:
+    """Run the backend's visibility-delay risk diagnostic, if it has one,
+    and log a loud structured warning for every long-open ``job_events``
+    writer it finds.
+
+    This is the detection half of the ``RECLAIM_EVENT_VISIBILITY_DELAY``
+    contract, wired in *by default*: the trailing-watermark filter
+    assumes every ``job_events`` writer commits within the margin of its
+    INSERT, nothing in SQL enforces that, and a violation is otherwise a
+    silently missed event.  Running the diagnostic here turns "the
+    operator must know ``check_reclaim_visibility_delay_risk`` exists and
+    opt in" into "the watcher notices and says so loudly".  Probe
+    failures — including a hang past ``_VISIBILITY_PROBE_TIMEOUT`` — are
+    logged and swallowed: a monitoring path must never take down the
+    delivery path it monitors.
+    """
+    check = getattr(client.backend, "check_reclaim_visibility_delay_risk", None)
+    if check is None:
+        return
+    try:
+        writers = await asyncio.wait_for(check(), timeout=_VISIBILITY_PROBE_TIMEOUT)
+    except Exception:
+        logger.warning("watch_reclaims-visibility-risk-probe-failed", exc_info=True)
+        return
+    for w in writers:
+        logger.warning(
+            "watch_reclaims-visibility-delay-at-risk",
+            pid=w.pid,
+            xact_age_seconds=round(w.xact_age_seconds, 3),
+            xact_start=w.xact_start.isoformat(),
+            action=(
+                "a job_events writer transaction has been open longer than "
+                "the visibility-delay margin; if it commits a lower-id row "
+                "after the cursor passes it, that event is silently missed — "
+                "investigate the stalled writer or raise "
+                "reclaim_event_visibility_delay"
+            ),
+        )
+
+
+async def _maybe_probe_visibility_risk(client: JobsClient, last_probe: float) -> float:
+    """Time-gated wrapper for :func:`_probe_visibility_risk`: runs at most
+    once per ``_VISIBILITY_RISK_CHECK_INTERVAL`` seconds.  Returns the
+    timestamp of the probe actually run, or *last_probe* unchanged."""
+    now = asyncio.get_running_loop().time()
+    if now - last_probe < _VISIBILITY_RISK_CHECK_INTERVAL:
+        return last_probe
+    await _probe_visibility_risk(client)
+    return now
+
+
+async def _catch_up_after_notify(
+    client: JobsClient,
+    cursor: int,
+    visibility_delay: timedelta = RECLAIM_EVENT_VISIBILITY_DELAY,
+) -> AsyncGenerator[EventRow, None]:
+    """Bounded short-interval re-poll after a NOTIFY-driven wake finds
+    nothing yet, bridging ``visibility_delay`` without waiting for a full
+    (possibly much longer) ``poll_timeout`` cycle.
+
+    Gives up once *visibility_delay* has elapsed since the wake — at that
+    point either the event has appeared (yielded already) or the writing
+    transaction is taking longer than the margin assumes, in which case
+    the caller's normal poll_timeout cadence takes back over.
+
+    *visibility_delay* must match the value used by
+    ``backend.poll_reclaim_events`` so the catch-up retries for exactly
+    as long as the trailing watermark holds rows back. The default falls
+    back to ``RECLAIM_EVENT_VISIBILITY_DELAY`` for standalone use.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + visibility_delay.total_seconds()
+    while loop.time() < deadline:
+        events = await client.backend.poll_reclaim_events(cursor)
+        if events:
+            for evt in events:
+                cursor = evt.event_id
+                yield evt
+            return
+        await asyncio.sleep(_NOTIFY_CATCHUP_INTERVAL)
+
+
+async def _watch_reclaims_pg(
+    dsn: str | None,
+    schema: str,
+    client: JobsClient,
+    poll_timeout: float,
+    *,
+    after_id: int = 0,
+    pg_conn_factory: "ConnFactory | None" = None,
+    listen_conn: "asyncpg.Connection | None" = None,
+    visibility_delay: timedelta = RECLAIM_EVENT_VISIBILITY_DELAY,
+) -> AsyncGenerator[EventRow, None]:
+    """PG LISTEN/NOTIFY transport for :meth:`TaskQ.watch_reclaims`.
+
+    Opens a dedicated asyncpg connection, registers a LISTEN callback on
+    ``wake_channel(schema)``, and polls ``poll_reclaim_events`` on each
+    wakeup or timeout.  NOTIFY is a low-latency optimisation; the
+    durable source of truth is the ``poll_reclaim_events`` cursor.  A
+    NOTIFY-triggered poll can still come up empty if the event hasn't
+    cleared ``poll_reclaim_events``' visibility delay yet — see
+    :func:`_catch_up_after_notify`, which bridges that margin on a short
+    cadence instead of falling back to a full (possibly much longer)
+    ``poll_timeout`` wait.
+
+    Connection sources, in priority order:
+    * ``listen_conn`` — pre-constructed, caller-owned; NOT closed here.
+    * ``pg_conn_factory`` — zero-arg async factory; closed in ``finally``.
+    * ``dsn`` — ``asyncpg.connect(dsn=...)``; closed in ``finally``.
+
+    If none of the three is provided, falls back to pure polling via
+    :func:`_watch_reclaims_poll` (does NOT raise, matching
+    ``watch_reclaims``'s contract).
+
+    LISTEN-connection-loss detection
+    --------------------------------
+    asyncpg does NOT raise into a coroutine that isn't awaiting on the
+    connection: when the LISTEN connection dies (``pg_terminate_backend``,
+    network drop), notifications simply stop and nothing in the consume
+    loop ever sees an exception.  Connection death is therefore
+    *detected*, not caught: a termination listener wakes the loop
+    promptly, and ``conn.is_closed()`` is checked every iteration, so
+    detection is bounded by *poll_timeout* even if the wakeup is somehow
+    missed.  (An earlier revision wrapped ``wake.wait()`` in
+    ``except (asyncpg.InterfaceError, OSError)`` — unreachable from a
+    real LISTEN drop for the reason above, and reachable only from
+    ``_catch_up_after_notify``'s *pool* polls, which it misdiagnosed.)
+
+    Once detected:
+
+    * caller-supplied ``listen_conn`` — the caller owns the connection's
+      lifecycle, so reconnection is impossible; the generator logs one
+      ``watch_reclaims-listen-connection-lost`` warning and settles into
+      a permanent poll fallback (documented limitation).
+    * owned connection (``pg_conn_factory`` / ``dsn``) — the generator
+      polls as a fallback and, every ``_RECONNECT_POLL_INTERVAL`` poll
+      iterations, attempts to re-establish the LISTEN connection via the
+      same factory/DSN path (timeboxed at *poll_timeout* so a hanging
+      factory/DSN cannot stall delivery).  On success it logs
+      ``watch_reclaims-listen-reconnected`` and resumes the LISTEN-driven
+      loop.  On failure it keeps polling and retries after the same
+      interval; ``watch_reclaims-reconnect-still-failing`` is logged on
+      the first failure and every 10th thereafter — a long outage leaves
+      evidence without spamming every attempt.
+
+    Backend (pool) errors from ``poll_reclaim_events`` are NOT swallowed
+    or mistaken for LISTEN failure — they propagate to the caller, who
+    can resume from the last-seen cursor.
+
+    Backlog draining
+    ----------------
+    After yielding a *full* batch (``len ==
+    _WATCH_RECLAIMS_BATCH_LIMIT``) the loop re-polls immediately instead
+    of waiting for NOTIFY/timeout — a crash storm larger than one batch
+    would otherwise drain at only ``_WATCH_RECLAIMS_BATCH_LIMIT`` events
+    per *poll_timeout* (a minute for 250 events at the 30s default).
+    """
+    if listen_conn is None and pg_conn_factory is None and dsn is None:
+        async for evt in _watch_reclaims_poll(client, poll_timeout, after_id=after_id):
+            yield evt
+        return
+
+    import asyncpg
+
+    wake = asyncio.Event()
+    channel = wake_channel(schema)
+    cursor = after_id
+    owns_conn = listen_conn is None
+    last_risk_probe = asyncio.get_running_loop().time()
+
+    def _on_notify(
+        conn: asyncpg.Connection,
+        pid: int,
+        ch: str,
+        payload: str,
+    ) -> None:
+        wake.set()
+
+    def _on_terminate(conn: asyncpg.Connection) -> None:
+        # Fires on any termination — server-side kill, network drop, or a
+        # deliberate close().  Wake the consume loop so the dead
+        # connection is noticed at the next is_closed() check instead of
+        # waiting out the full poll_timeout.
+        wake.set()
+
+    async def _open_listen_conn() -> asyncpg.Connection:
+        if pg_conn_factory is not None:
+            return await pg_conn_factory()
+        return await asyncpg.connect(dsn=str(dsn))
+
+    if listen_conn is not None:
+        conn = listen_conn
+    elif pg_conn_factory is not None:
+        conn = await pg_conn_factory()
+    else:
+        conn = await asyncpg.connect(dsn=str(dsn))
+    try:
+        await conn.add_listener(channel, _on_notify)  # pyright: ignore[reportArgumentType]  # Why: asyncpg stubs over-narrow the callback type — same pattern as _stream_pg
+        conn.add_termination_listener(_on_terminate)  # pyright: ignore[reportArgumentType]  # Why: asyncpg stubs over-narrow the callback type — same pattern as add_listener above
+        while True:
+            last_risk_probe = await _maybe_probe_visibility_risk(client, last_risk_probe)
+            if conn.is_closed():
+                logger.warning("watch_reclaims-listen-connection-lost")
+                if not owns_conn:
+                    # Caller-supplied connection — cannot reconnect;
+                    # permanent poll-fallback is the documented limitation.
+                    full_batch = False
+                    while True:
+                        if not full_batch:
+                            await asyncio.sleep(poll_timeout)
+                        last_risk_probe = await _maybe_probe_visibility_risk(
+                            client, last_risk_probe
+                        )
+                        events = await client.backend.poll_reclaim_events(
+                            cursor, _WATCH_RECLAIMS_BATCH_LIMIT
+                        )
+                        if events:
+                            for evt in events:
+                                cursor = evt.event_id
+                                yield evt
+                        full_batch = len(events) == _WATCH_RECLAIMS_BATCH_LIMIT
+                # Owned connection — poll as fallback while periodically
+                # attempting to re-establish the LISTEN connection.
+                poll_iters = 0
+                failed_attempts = 0
+                full_batch = False
+                while True:
+                    if not full_batch:
+                        await asyncio.sleep(poll_timeout)
+                    last_risk_probe = await _maybe_probe_visibility_risk(client, last_risk_probe)
+                    events = await client.backend.poll_reclaim_events(
+                        cursor, _WATCH_RECLAIMS_BATCH_LIMIT
+                    )
+                    if events:
+                        for evt in events:
+                            cursor = evt.event_id
+                            yield evt
+                    full_batch = len(events) == _WATCH_RECLAIMS_BATCH_LIMIT
+                    poll_iters += 1
+                    if poll_iters % _RECONNECT_POLL_INTERVAL != 0:
+                        continue
+                    new_conn = None
+                    try:
+                        # Timeboxed at poll_timeout: asyncpg.connect()
+                        # defaults to 60s and a user pg_conn_factory is
+                        # unbounded — a hanging attempt must not stall the
+                        # degraded poll loop, the only live delivery path.
+                        new_conn = await asyncio.wait_for(_open_listen_conn(), timeout=poll_timeout)
+                        await new_conn.add_listener(channel, _on_notify)  # pyright: ignore[reportArgumentType]  # Why: same asyncpg stub narrowing as above
+                    except Exception:
+                        if new_conn is not None:
+                            with contextlib.suppress(Exception):
+                                await new_conn.close()
+                        failed_attempts += 1
+                        if failed_attempts == 1 or failed_attempts % 10 == 0:
+                            logger.warning(
+                                "watch_reclaims-reconnect-still-failing",
+                                poll_attempts=poll_iters,
+                                failed_attempts=failed_attempts,
+                            )
+                        continue
+                    # Success — swap the dead connection for the new one
+                    # and resume the LISTEN-driven outer loop.
+                    new_conn.add_termination_listener(_on_terminate)  # pyright: ignore[reportArgumentType]  # Why: same asyncpg stub narrowing as the initial registration
+                    with contextlib.suppress(Exception):
+                        await conn.close()
+                    conn = new_conn
+                    wake = asyncio.Event()
+                    logger.info(
+                        "watch_reclaims-listen-reconnected",
+                        poll_attempts=poll_iters,
+                    )
+                    break
+                continue
+            events = await client.backend.poll_reclaim_events(cursor, _WATCH_RECLAIMS_BATCH_LIMIT)
+            if events:
+                for evt in events:
+                    cursor = evt.event_id
+                    yield evt
+            if len(events) == _WATCH_RECLAIMS_BATCH_LIMIT:
+                # Full batch — the backlog is likely not drained; re-poll
+                # immediately instead of waiting out poll_timeout.
+                continue
+            woke_via_notify = False
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(wake.wait(), timeout=poll_timeout)
+                woke_via_notify = True
+            # Clear AFTER the wait, not before the poll: a NOTIFY arriving
+            # mid-poll or mid-drain (full-batch loop) is then consumed
+            # exactly once here instead of being silently discarded — which
+            # would stall a notified event for up to poll_timeout.
+            wake.clear()
+            if conn.is_closed():
+                # Died during the wait (the termination listener woke us,
+                # or poll_timeout elapsed) — handled at the top of the loop.
+                continue
+            if woke_via_notify:
+                # A NOTIFY fired, but the event that triggered it may
+                # not have cleared poll_reclaim_events' configured
+                # visibility delay yet (see visibility_delay,
+                # threaded through from watch_reclaims) — an
+                # immediate re-poll (top of the next loop iteration)
+                # can still come up empty.  Retry on a short, bounded
+                # cadence until it appears, rather than falling back
+                # to the full (possibly much longer) poll_timeout —
+                # otherwise the low-latency wakeup this LISTEN
+                # transport exists for would be silently defeated by
+                # that margin.
+                async for evt in _catch_up_after_notify(
+                    client, cursor, visibility_delay=visibility_delay
+                ):
+                    cursor = evt.event_id
+                    yield evt
+    finally:
+        # Separate suppress blocks, termination listener first: it is
+        # synchronous (cannot fail on the wire), while remove_listener
+        # issues an UNLISTEN query that CAN raise on a live connection
+        # dropped mid-teardown — grouping them would skip the removal and
+        # leak _on_terminate (closing over this frame) on a caller-owned
+        # connection reused across watch_reclaims() calls.
+        with contextlib.suppress(Exception):
+            conn.remove_termination_listener(_on_terminate)  # pyright: ignore[reportArgumentType]  # Why: same asyncpg stub narrowing as add_termination_listener
+        with contextlib.suppress(Exception):
+            await conn.remove_listener(channel, _on_notify)  # pyright: ignore[reportArgumentType]  # Why: same pattern as _stream_pg
+        if owns_conn:
+            with contextlib.suppress(Exception):
+                await conn.close()

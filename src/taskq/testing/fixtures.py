@@ -519,6 +519,16 @@ async def backend_pair(request: pytest.FixtureRequest) -> AsyncIterator[Backend]
 # FLUSHDB — all verified); pinned by tag for reproducibility.
 _DRAGONFLY_IMAGE = "docker.dragonflydb.io/dragonflydb/dragonfly:v1.39.0"
 
+# Dragonfly sizes its memory requirement as proactor_threads x 0.25GiB and
+# EXITS at startup if host RAM doesn't cover it ("There are N threads, so
+# X GiB are required. Exiting...").  On high-core hosts (32-core WSL2 dev
+# boxes) that demand (8GiB) exceeds what the Docker VM offers, the
+# container dies before readiness, and testcontainers hangs until the
+# pytest timeout — every redis fixture ERRORs.  Pin 2 threads / 512MiB:
+# functional chaos/ratelimit tests need neither cores nor RAM, and the
+# pins make startup deterministic regardless of host size.
+_DRAGONFLY_RESOURCE_FLAGS = "--proactor_threads 2 --maxmemory 512mb"
+
 # Logical DBs available for per-module / per-test allocation (dragonfly
 # caps --dbnum at 1024; DB 0 is reserved for ad-hoc use).
 _REDIS_DB_POOL_SIZE = 1024
@@ -544,7 +554,9 @@ def redis_container() -> Iterator[RedisContainer]:
             category=DeprecationWarning,
             module="testcontainers.redis",
         )
-        with RedisContainer(image=_DRAGONFLY_IMAGE).with_command("--dbnum 1024") as rc:
+        with RedisContainer(image=_DRAGONFLY_IMAGE).with_command(
+            f"--dbnum 1024 {_DRAGONFLY_RESOURCE_FLAGS}"
+        ) as rc:
             yield rc
 
 
@@ -567,7 +579,7 @@ def killable_redis_container() -> Iterator[RedisContainer]:
             category=DeprecationWarning,
             module="testcontainers.redis",
         )
-        with RedisContainer(image=_DRAGONFLY_IMAGE) as rc:
+        with RedisContainer(image=_DRAGONFLY_IMAGE).with_command(_DRAGONFLY_RESOURCE_FLAGS) as rc:
             yield rc
 
 

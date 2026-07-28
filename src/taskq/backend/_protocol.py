@@ -63,6 +63,7 @@ __all__ = [
     "JobRow",
     "JobSortField",
     "JobStatus",
+    "LongRunningJobEventsWriter",
     "QueueMode",
     "QueueName",
     "RateLimitBackend",
@@ -379,6 +380,27 @@ class EventRow:
 
 
 @dataclass(frozen=True, slots=True)
+class LongRunningJobEventsWriter:
+    """A transaction holding a lock on ``job_events`` for longer than a
+    ``poll_reclaim_events`` visibility-delay margin — a candidate cause of
+    a silently missed reclaim event (see
+    ``taskq.constants.RECLAIM_EVENT_VISIBILITY_DELAY``). Diagnostic only:
+    reported by ``PostgresBackend.check_reclaim_visibility_delay_risk``,
+    not a guarantee that this specific transaction will write to
+    ``job_events`` again or actually cause a miss — a proxy signal for an
+    operator to investigate, not proof of an incident.
+
+    Not directly ``json.dumps``-safe: ``xact_start`` is a
+    :class:`~datetime.datetime`. Serialise with a datetime-aware encoder
+    (or ``str()``/``.isoformat()``) in the monitoring loop consuming this.
+    """
+
+    pid: int
+    xact_start: datetime
+    xact_age_seconds: float
+
+
+@dataclass(frozen=True, slots=True)
 class CancelFlag:
     """Carries exactly the two fields returned by the heartbeat cancel-poll
     query: ``job_id`` and ``cancel_phase``.  ``cancel_requested_at``
@@ -658,8 +680,8 @@ class BackendDeps(Protocol):
 class Backend(Protocol):
     """Contract that both PostgresBackend and InMemoryBackend satisfy.
 
-    30 async methods plus two sync methods (``subscribe_wake`` and
-    ``subscribe_cancel_wake``) (32 methods total) covering enqueue,
+    31 async methods plus two sync methods (``subscribe_wake`` and
+    ``subscribe_cancel_wake``) (33 methods total) covering enqueue,
     dispatch, heartbeat, terminal writes, attempt history, cancel
     signals, scheduling / sweeps, read, NOTIFY hook, and schedule CRUD.
     Method order grouped for review-grep ergonomics.
@@ -863,6 +885,31 @@ class Backend(Protocol):
     async def get_attempts(self, job_id: JobId) -> list[AttemptRow]: ...
 
     async def get_events(self, job_id: JobId) -> list[EventRow]: ...
+
+    async def poll_reclaim_events(
+        self,
+        after_id: int,
+        limit: int = 100,
+        *,
+        visibility_delay: timedelta | None = None,
+    ) -> list[EventRow]:
+        """Return up to *limit* crash-reclaim events with ``event_id >
+        after_id``, ascending — the durable cursor behind
+        ``TaskQ.watch_reclaims``.
+
+        **An event can be silently missed if a ``job_events`` writer
+        transaction stays open longer than the visibility-delay margin
+        between its INSERT and its COMMIT** — ids are allocated at INSERT
+        time but transactions commit out of order, so a late-committing
+        lower-id row can land behind an already-advanced cursor.  Rows
+        are therefore held back by a trailing-watermark filter
+        (*visibility_delay*; backend-configured default when ``None`` —
+        see :data:`taskq.constants.RECLAIM_EVENT_VISIBILITY_DELAY` for
+        the exact assumption and its violation modes, and
+        ``PostgresBackend.check_reclaim_visibility_delay_risk`` for the
+        diagnostic that makes a violation operator-visible).
+        """
+        ...
 
     # ── Cancel signals ──────────────────────────────────────────────────
     async def write_cancel_request(

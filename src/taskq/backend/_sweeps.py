@@ -5,6 +5,17 @@ schema, hold no instance state), so they live here as module-level
 functions.  :class:`~taskq.backend.postgres.PostgresBackend` exposes
 thin ``@staticmethod`` wrappers that delegate here, preserving the
 existing ``PostgresBackend.sweep_*`` call surface.
+
+Every finished-at / terminal timestamp written in these sweeps uses
+``clock_timestamp()``, not ``now()``: ``now()`` is fixed at transaction
+*start*, so within a long-held sweep transaction it can disagree both
+with other ``clock_timestamp()``-derived values in the same row and with
+``job_events.occurred_at`` (also ``clock_timestamp()``, via
+``INSERT_EVENT_SQL`` — see ``taskq.constants.RECLAIM_EVENT_VISIBILITY_
+DELAY`` for why that column's co-monotonicity with ``job_events.id``
+matters). Python-side ``duration_ms`` computations use
+``datetime.now(UTC)`` for the same reason — matching ``clock_timestamp()``
+wall-clock semantics, not transaction-start ``now()``.
 """
 
 from datetime import UTC, datetime, timedelta
@@ -46,11 +57,33 @@ logger: structlog.stdlib.BoundLogger = get_logger(__name__)
 # that the transition is valid.
 
 _SWEEP_1_SQL = """\
--- Sweep 1 runs on every worker, not just the leader.  FOR UPDATE SKIP
--- LOCKED lets sibling workers run concurrently without blocking — each
--- worker reclaims a disjoint subset of expired-lock rows.  Vendor
--- parallel: Oban's lifeline plugin runs this on every instance, not just
--- the elected leader.
+-- Leader-only reclaim sweep (per architecture §Leader Election).  FOR
+-- UPDATE SKIP LOCKED is kept so the SQL is safe if the sweep is ever run
+-- concurrently; the production leader loop serializes it.
+--
+-- The cancel_phase != 0 carve-out below adds a flat extra 60 seconds on
+-- top of cancel_grace + cleanup_grace before a job with an in-flight
+-- cancel request becomes eligible for crash-reclaim.  This is a fixed
+-- safety margin, not derived from any other setting: it gives the
+-- cooperative-cancel/escalation protocol (see the cancellation-protocol
+-- section of docs/architecture.md) extra headroom to complete on its own
+-- before the crash-recovery path pre-empts it, so a merely-slow (not
+-- actually crashed) cancellation isn't mistaken for a crash.
+--
+-- Cancel-state handling on reclaim (a deliberate, documented tradeoff):
+-- * Retry branch ('pending'): cancel_phase/cancel_requested_at are
+--   RESET, so the next dispatch doesn't immediately re-cancel the
+--   retried job — crash-reclaim starts the new attempt with a clean
+--   cancellation slate.  A caller's cancel therefore does not survive
+--   into a retried attempt; phase-2 escalation only ever runs on the
+--   (dead) lock-holding worker, so there is no other path that could
+--   honor it there.
+-- * Exhausted branch: a job whose cancel was still in-flight lands on
+--   'cancelled', NOT 'crashed' — the caller's explicit request is the
+--   honest terminal label: anyone reconciling terminal states sees the
+--   cancel was honored.  Jobs with no cancel in-flight still land on
+--   'crashed' as before.  The job_attempts row records outcome='crashed'
+--   either way: that IS what happened to the attempt.
 WITH snap AS (
     SELECT id, locked_by_worker
     FROM "{schema}".jobs
@@ -64,10 +97,14 @@ UPDATE "{schema}".jobs j
 SET status = CASE
         WHEN j.attempt < j.max_attempts AND j.retry_kind != 'non_retryable'
             THEN 'pending'::"{schema}".job_status
+        WHEN j.cancel_phase != 0
+            THEN 'cancelled'::"{schema}".job_status
         ELSE 'crashed'::"{schema}".job_status
     END,
     locked_by_worker = NULL,
     lock_expires_at = NULL,
+    cancel_phase = 0,
+    cancel_requested_at = NULL,
     scheduled_at = CASE
         WHEN j.attempt < j.max_attempts AND j.retry_kind != 'non_retryable'
             THEN now() + interval '5 seconds'
@@ -75,7 +112,7 @@ SET status = CASE
     END,
     finished_at = CASE
         WHEN NOT (j.attempt < j.max_attempts AND j.retry_kind != 'non_retryable')
-            THEN now()
+            THEN clock_timestamp()
         ELSE j.finished_at
     END
 FROM snap
@@ -93,7 +130,7 @@ WITH snap AS (
 )
 UPDATE "{schema}".jobs j
 SET status = 'failed'::"{schema}".job_status,
-    finished_at = now(),
+    finished_at = clock_timestamp(),
     error_class = 'DeadlineExceeded',
     error_message = 'schedule_to_close reached before next dispatch'
 FROM snap
@@ -138,13 +175,13 @@ _SWEEP_1_ATTEMPT_SQL = """\
 INSERT INTO "{schema}".job_attempts
 (job_id, attempt, started_at, finished_at, outcome,
  error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
-VALUES ($1, $2, $3, now(), $4, $5, $6, $7, $8, $9, $10::jsonb)"""
+VALUES ($1, $2, $3, clock_timestamp(), $4, $5, $6, $7, $8, $9, $10::jsonb)"""
 
 _SWEEP_2_ATTEMPT_SQL = """\
 INSERT INTO "{schema}".job_attempts
 (job_id, attempt, started_at, finished_at, outcome,
  error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
-VALUES ($1, $2, COALESCE($3, now()), now(), $4, $5, $6, $7, $8, $9, $10::jsonb)"""
+VALUES ($1, $2, COALESCE($3, now()), clock_timestamp(), $4, $5, $6, $7, $8, $9, $10::jsonb)"""
 
 
 async def sweep_expired_locks(
@@ -160,17 +197,43 @@ async def sweep_expired_locks(
     For each reclaimed job:
 
     - If attempts remain and retry is allowed: transition to
-      ``'scheduled'`` with 5-second backoff.
-    - Otherwise: transition to ``'crashed'`` with ``finished_at = now()``.
+      ``'pending'`` with ``scheduled_at = now() + 5s`` backoff.
+    - Otherwise, if a cancel request was still in-flight
+      (``cancel_phase != 0``): transition to ``'cancelled'`` — the
+      caller's explicit request is the honest terminal label.
+    - Otherwise: transition to ``'crashed'``.
 
-    Both branches write a ``job_attempts`` row (outcome ``'crashed'``,
-    error_class ``'WorkerCrashed'``) and a ``job_events`` row (kind
-    ``'state_change'``, reason ``'lock_expired'``).
+    Both terminal branches set ``finished_at = clock_timestamp()``, and
+    all branches reset ``cancel_phase``/``cancel_requested_at`` — see the
+    ``_SWEEP_1_SQL`` comment for the deliberate tradeoff this makes on
+    the retry branch.
 
-    *now* is accepted for API consistency; PG uses server-side ``now()``.
+    All branches write a ``job_attempts`` row (outcome ``'crashed'``,
+    error_class ``'WorkerCrashed'`` — that IS what happened to the
+    attempt, regardless of the job's terminal label) and a ``job_events``
+    row (kind ``'state_change'``, reason ``'lock_expired'``).
+
+    *now* is accepted for API consistency; PG uses server-side
+    ``clock_timestamp()`` for WHERE comparisons and finished-at timestamps
+    (not ``now()``, which is transaction-start time — see the module
+    docstring's note on why a long-held sweep transaction must not mix the
+    two for timestamps that need to agree with each other or with
+    ``job_events.occurred_at``).
 
     A CTE snapshots ``locked_by_worker`` before the UPDATE clears it, so
     the ``job_attempts.worker_id`` is populated correctly.
+
+    One ``pg_notify`` is fired per sweep call that reclaims at least one
+    row (not one per row) so that fleet-wide consumers using
+    ``watch_reclaims`` get a low-latency wakeup on both branches.
+
+    .. note:: This is a **channel-semantics change**, not purely a
+       bugfix: ``wake_channel`` previously meant "new dispatchable work"
+       (enqueue, scheduled-to-pending promotion); it now *also* means
+       "something changed on job_events."  Every crash-reclaim therefore
+       wakes every subscriber — including pure-dispatch workers with no
+       interest in reclaim events.  Crashes are rare so the cost is low,
+       but the wake channel is no longer exclusively a dispatch signal.
 
     Returns the count of affected rows.
     """
@@ -233,8 +296,7 @@ async def sweep_expired_locks(
                 }
             )
 
-        _pending_count = sum(1 for info in swept_rows if info["new_status"] == "pending")
-        if _pending_count > 0:
+        if swept_rows:
             await conn.execute(
                 "SELECT pg_notify($1, '')",
                 wake_channel(schema),

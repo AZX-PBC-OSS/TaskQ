@@ -1,12 +1,12 @@
 """Coverage tests for taskq.migrate: list_applied edge cases and the
 apply_pending / apply_pending_locked early-stop and drift-logging paths.
 
-The bundled migration set currently contains exactly one migration, so
-the phase/target/max_steps early-stop branches are exercised against a
-schema whose `discover()` is monkeypatched to return synthetic
-migrations layered on top of the real bootstrap migration. Every test
-uses its own schema name (``new_base62()``-suffixed) to avoid colliding
-with other test modules/agents sharing the same PG instance.
+The bundled migration set is small, so the phase/target/max_steps
+early-stop branches are exercised against a schema whose `discover()` is
+monkeypatched to return synthetic migrations layered on top of the real
+bundled migrations. Every test uses its own schema name
+(``new_base62()``-suffixed) to avoid colliding with other test
+modules/agents sharing the same PG instance.
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ import structlog.testing
 
 from taskq import migrate as migrate_mod
 from taskq._ids import new_base62
+from taskq.backend._sql_templates import render as sql_render
 from taskq.migrate import Migration
 
 pytestmark = pytest.mark.integration
@@ -314,3 +315,62 @@ async def test_apply_pending_locked_wraps_failure_in_system_exit(pg_dsn: str) ->
             await _drop_schema(conn, schema)
         finally:
             await conn.close()
+
+
+# ── bundled migration contents ────────────────────────────────────────────
+
+
+async def test_job_events_reclaim_partial_index_applies_and_is_usable(pg_dsn: str) -> None:
+    """apply_pending applies 01.00.02_01_pre_job_events_outbox.sql cleanly
+    and creates the partial job_events_reclaim_idx index that
+    poll_reclaim_events' fleet-wide cursor query depends on.
+
+    Two assertions beyond "the migration ran": the index carries the exact
+    predicate the poll query filters on (otherwise the cursor query
+    silently falls back to scanning all of job_events), and the planner
+    can actually use it for the poll query's shape.  The plan check uses
+    the real SQL template (PREPARE + EXPLAIN EXECUTE) with seq scans
+    disabled — an empty table would otherwise legitimately prefer a seq
+    scan, so planner choice alone cannot prove applicability.
+    """
+    schema = f"mig_cov_reclaim_idx_{new_base62()}".lower()
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        await _drop_schema(conn, schema)
+        applied = await migrate_mod.apply_pending(conn, schema=schema)
+        assert "01.00.02_01:pre" in {m.key for m in applied}, (
+            "the job_events_outbox migration did not apply"
+        )
+
+        indexdef = await conn.fetchval(
+            "SELECT indexdef FROM pg_indexes "
+            "WHERE schemaname = $1 AND tablename = 'job_events' "
+            "AND indexname = 'job_events_reclaim_idx'",
+            schema,
+        )
+        assert indexdef is not None, (
+            "job_events_reclaim_idx missing after apply_pending — "
+            "poll_reclaim_events would scan the full job_events table"
+        )
+        # The partial predicate must match the poll query's WHERE clause.
+        # pg_indexes renders `detail->>'reason'` with spaces and casts.
+        normalised = " ".join(str(indexdef).split())
+        assert "kind = 'state_change'" in normalised
+        assert "detail ->> 'reason'" in normalised
+        assert "'lock_expired'" in normalised
+
+        poll_sql = sql_render(schema).poll_reclaim_events
+        await conn.execute("SET enable_seqscan = off")
+        try:
+            await conn.execute(f"PREPARE poll_q AS {poll_sql}")
+            plan_rows = await conn.fetch("EXPLAIN (COSTS OFF) EXECUTE poll_q(0, 100, '2 seconds')")
+        finally:
+            await conn.execute("SET enable_seqscan = on")
+        plan = "\n".join(str(r["QUERY PLAN"]) for r in plan_rows)
+        assert "job_events_reclaim_idx" in plan, (
+            f"planner cannot use the partial index for poll_reclaim_events' "
+            f"query shape — its predicate must have drifted from the index's:\n{plan}"
+        )
+    finally:
+        await _drop_schema(conn, schema)
+        await conn.close()

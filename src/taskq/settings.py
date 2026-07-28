@@ -23,6 +23,8 @@ from typing import Self
 from dotenvmodel import DotEnvConfig, Field, ValidationError, ValidatorContext
 from dotenvmodel.types import PostgresDsn, RedisDsn
 
+from taskq.constants import RECLAIM_EVENT_VISIBILITY_DELAY
+
 __all__ = ["OIDCSettings", "SAMLSettings", "TaskQSettings", "WorkerSettings"]
 
 
@@ -414,6 +416,19 @@ class WorkerSettings(TaskQSettings):
         default=10.0,
         ge=0.0,
         description="TASKQ_CLEANUP_GRACE_PERIOD (seconds). Force-cancel cleanup grace.",
+    )
+    reclaim_event_visibility_delay: float = Field(
+        default=RECLAIM_EVENT_VISIBILITY_DELAY.total_seconds(),
+        ge=0.0,
+        description="TASKQ_RECLAIM_EVENT_VISIBILITY_DELAY (seconds). Trailing-watermark "
+        "margin poll_reclaim_events()/TaskQ.watch_reclaims() apply before returning a "
+        "job_events row, so an out-of-commit-order sibling with a lower event_id has "
+        "time to appear first (see docs/architecture.md's crash-reclaim section). "
+        "Correctness assumes every job_events writer transaction commits within this "
+        "margin of its INSERT; raise it if sweeps run under heavy lock contention or "
+        "against very large batches, lower it if latency matters more and writes are "
+        "known to be fast. A writer that exceeds the margin can cause a silently "
+        "missed event — this is a real, not merely theoretical, risk under misconfiguration.",
     )
 
     # ── Retry backoff ceiling ───────────────────────────────────────────

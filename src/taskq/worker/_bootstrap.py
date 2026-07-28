@@ -244,6 +244,9 @@ async def _main(
             clock=_clock,
             cancellation_grace_period=timedelta(seconds=settings.cancellation_grace_period),
             cleanup_grace_period=timedelta(seconds=settings.cleanup_grace_period),
+            reclaim_event_visibility_delay=timedelta(
+                seconds=settings.reclaim_event_visibility_delay
+            ),
         )
 
         enqueuer = SubJobEnqueuer(

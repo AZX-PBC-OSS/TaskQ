@@ -33,7 +33,7 @@ format:
 	uv run ruff check --fix .
 
 type-check:
-	uv run pyright src/taskq
+	uv run pyright src/taskq tests
 
 clean:
 	rm -rf build/

@@ -235,10 +235,158 @@ extends the active filter without a second edit.
 | running → failed | Consumer after error / deadline |
 | running → scheduled | Consumer on `Snooze` / `RetryAfter` / transient retry |
 | running → cancelled | Consumer after cancel_phase=1 (cooperative) |
+| running → cancelled | `reclaim_expired_locks` sweep (leader, Sweep 1 — cancel in-flight, retries exhausted) |
 | running → abandoned | `CancelController.run_post_tx` (heartbeat, post-phase-3) |
 | running → crashed | `reclaim_expired_locks` sweep (leader, Sweep 1) |
 | pending/scheduled → cancelled | `write_cancel_request` (client) |
 | pending/scheduled → failed | `deadline_sweep` (leader, Sweep 2) |
+
+Sweep 1 (`running → crashed` / `running → cancelled` / `running → pending`)
+additionally writes a fleet-wide-pollable `job_events` outbox row in the same
+transaction as the reclaim UPDATE.  Consumers observe crash-reclaimed jobs via
+`Backend.poll_reclaim_events(after_id)` or `TaskQ.watch_reclaims(after_id)`
+without enumerating every `job_id`.
+
+Delivery is **at-least-once, and gap-free under a bounded-transaction-duration
+assumption** — not an unconditional guarantee. `job_events.id` (`bigserial`)
+is allocated at INSERT time, so under concurrent sweep transactions, id
+allocation order and commit order can diverge: a transaction holding a lower
+id can commit *after* one holding a higher id. A naive `id > cursor` poll
+would return the higher-id row immediately, advance the cursor past it, and
+permanently lose the lower-id row once its transaction finally committed.
+
+Two SQL-only fixes were tried and both failed to close this gap, for
+reasons worth recording so they aren't retried:
+
+- A per-row filter comparing each row's inserting-transaction id against
+  `pg_snapshot_xmin(pg_current_snapshot())` only checks whether *that row's
+  own* transaction is complete — it cannot detect a *different*,
+  still-uncommitted transaction sitting at a lower `event_id`, because that
+  row is invisible under MVCC to any plain `SELECT`, not merely filtered out.
+  No predicate computed only over visible rows can bound something it cannot
+  see.
+- A gap-detection variant (treat any hole in the visible `id` sequence as
+  "possibly still forthcoming" while `pg_current_snapshot()` reports any
+  transaction in progress) fails for a structural reason: `job_events` is a
+  shared, multi-kind table (state changes, cancel requests, progress) written
+  continuously by unrelated code paths, so some transaction is touching it
+  almost continuously in a live system — the "anything in progress" signal is
+  effectively always true, which would stall reclaim-event delivery
+  indefinitely rather than only during genuine contention. (Separately, this
+  environment's `pg_snapshot_xmin`/`pg_snapshot_xmax` did not reflect a
+  confirmed-active concurrent transaction in ad hoc testing — a further reason
+  not to depend on them here without deeper investigation.)
+
+Instead, `poll_reclaim_events` uses a **trailing-watermark (visibility delay)
+filter**: `id` (`nextval`) and `occurred_at` (`clock_timestamp()`) are stamped
+by the same INSERT statement, so they are co-monotonic — an earlier id has an
+earlier-or-equal `occurred_at`. (Co-monotonicity itself is an assumption, not
+a guarantee: the two values come from separate volatile calls that Postgres
+does not evaluate atomically across concurrent transactions, so one
+transaction can in principle evaluate both of its own between another's
+`nextval` and `clock_timestamp()`, stamping a lower id with a later
+`occurred_at` — the window is nanosecond-scale and no occurrence is known,
+but the watermark is only as exact as this non-interleaving assumption.)
+Only rows older than
+`taskq.constants.RECLAIM_EVENT_VISIBILITY_DELAY` (2 seconds by default) are
+returned: by the time a row clears that margin, any transaction that could
+have inserted a still-lower id has had at least as long to commit, so it must
+have either committed (returned, correctly ordered, in this or an earlier
+poll) or aborted (permanently gone, safe to skip). **This assumes no
+`job_events` writer takes longer than the margin between its INSERT and its
+commit** — true for TaskQ's short, single-round-trip sweep and terminal-write
+transactions, but not something the SQL itself enforces; an abnormally
+long-held writing transaction could still, in principle, exceed the margin
+and reproduce the gap. Consumers must be idempotent (dedupe on `event_id`).
+Configurable via `WorkerSettings.reclaim_event_visibility_delay` /
+`TASKQ_RECLAIM_EVENT_VISIBILITY_DELAY` (and per-call via
+`poll_reclaim_events(..., visibility_delay=...)`) — raise it under heavy
+sweep contention or large batches, lower it if latency matters more and
+writes are known to be fast.
+
+**Detecting a violation.** A silent-failure mode nobody can see is worse
+than a slower one that's visible, so detection is wired in by default,
+not left for operators to discover: every `TaskQ.watch_reclaims()`
+consumer runs `PostgresBackend.check_reclaim_visibility_delay_risk` on a
+slow cadence (once a minute — cheap, and far outside the per-poll hot
+path, which is why the diagnostic is *not* part of the `Backend`
+protocol) and logs a loud structured
+`watch_reclaims-visibility-delay-at-risk` warning for every transaction
+it finds holding `job_events` open past the margin. The diagnostic
+itself — `PostgresBackend.check_reclaim_visibility_delay_risk` — queries
+`pg_locks`/`pg_stat_activity` and returns `LongRunningJobEventsWriter`
+rows; it remains available standalone for a dedicated
+monitoring/alerting loop that wants tighter cadence or its own sink.
+Either way it is a *proxy* signal, not proof of an actual miss — it
+cannot see whether that transaction will insert a `job_events` row
+before committing, only that it has held the table open unusually long,
+so it can both false-positive (an unrelated long-running transaction
+that merely touched `job_events` once) and false-negative (a writer
+that inserts and commits within the margin every time, even if some
+other assumption about the deployment is wrong).
+
+**Worked example: fan-out completion.** The motivating use case — a
+producer fans out N jobs and must fire a callback when *all* of them
+reach a terminal state. Without a reclaim feed, a SIGKILLed worker
+leaves the counter stuck at 1 forever (the job is retried or crashed in
+SQL, and nobody in application code hears about it):
+
+```python
+outstanding = len(job_ids)
+
+async def track_completions(tq: TaskQ) -> None:
+    global outstanding
+    cursor = await load_reclaim_cursor()  # your own durable store
+    async for evt in tq.watch_reclaims(after_id=cursor):
+        # evt.detail: from_state/to_state ('pending' retry, or terminal
+        # 'crashed'/'cancelled'), reason='lock_expired', worker_id.
+        if evt.detail["to_state"] != "pending":  # terminal reclaim only;
+            outstanding -= 1                     # retries redispatch normally
+        cursor = evt.event_id
+        await save_reclaim_cursor(cursor)  # persist AFTER processing —
+        # a crash before this re-delivers the event (at-least-once;
+        # dedupe on event_id if your decrement isn't idempotent)
+        if outstanding == 0:
+            await fire_completion_callback()
+```
+
+Terminal states reached on the normal path (success, failure,
+cooperative cancel) are counted as each job's own result is recorded —
+`watch_reclaims` exists to close the crash gap, where *no* application
+code runs. Only terminal reclaims decrement the counter: a
+`to_state='pending'` event means the job was rescheduled and will be
+counted when it eventually lands terminal. The producer must only prune
+`job_events` rows older than every live consumer's persisted cursor —
+rows pruned before a slow consumer reads them are permanently lost to
+that consumer.
+
+`TaskQ.watch_reclaims()`'s PG LISTEN transport wakes on the reclaim
+`pg_notify` for low latency, but a NOTIFY-triggered poll can still come up
+empty if the event hasn't cleared the visibility-delay margin yet — it then
+retries on a short, bounded cadence (`_catch_up_after_notify`) until the
+margin elapses, rather than falling back to a full — possibly much longer —
+`poll_timeout` wait.
+This is the standard "polling publisher" mitigation for the transactional
+outbox pattern's well-known bigserial-ordering hazard — the alternative,
+fully exact fix is to read commit order directly off the WAL (logical
+decoding / CDC), which is out of scope here.
+
+Sweep 1 now fires one `pg_notify` per sweep call that reclaims at least one
+row of *either* kind (previously only when the retry branch produced a
+row), which is a **wake-channel semantics change**, not purely a bugfix —
+`wake_channel` previously meant only "new dispatchable work"; it now also
+means "something changed on job_events," so every crash-reclaim wakes every
+subscriber (including pure-dispatch workers with no interest in it).
+Crashes are rare so the added wakeup cost is low, but the channel's meaning
+has broadened.
+
+The index added by migration `01.00.02_01_pre_job_events_outbox.sql` uses
+`CREATE INDEX` (not `CONCURRENTLY`, since `migrate.py` applies each migration
+inside a transaction and Postgres forbids `CONCURRENTLY` there) and takes an
+exclusive lock on `job_events` for the duration of the build, which can stall
+writes to that heavily-written table — operators with a large/populated table
+should run the equivalent `CREATE INDEX CONCURRENTLY` manually during a
+maintenance window (see the migration file for details).
 
 ---
 
@@ -459,6 +607,24 @@ After `cancellation_grace_period + cleanup_grace_period` elapses:
 The consumer skips `mark_cancelled` when `cancel_phase >= ABANDON_PENDING` (phase 3).
 `run_post_tx` owns the terminal write for phase-3 jobs. This prevents a race where
 both the consumer and the heartbeat attempt a terminal write.
+
+### Crash-reclaim interaction
+
+The phases above only ever advance on the lock-holding worker. If that worker
+dies mid-protocol, Sweep 1 (`reclaim_expired_locks`) eventually reclaims the job
+— after a flat extra 60s of headroom on top of `cancel_grace + cleanup_grace`,
+so a merely-slow cancellation isn't mistaken for a crash. What the reclaim does
+with the in-flight cancel state is a deliberate tradeoff:
+
+- **Retry branch** (`running → pending`): `cancel_phase`/`cancel_requested_at`
+  are **reset**, so the next dispatch doesn't immediately re-cancel the retried
+  job. A caller's cancel therefore does **not** survive into a retried attempt —
+  with the lock-holding worker dead, no other path could honor it there anyway.
+- **Exhausted branch** (no retries remaining): the job lands on **`cancelled`**,
+  not `crashed` — the caller's explicit request is the honest terminal label:
+  anyone reconciling terminal states sees the cancel was honored. The
+  `job_attempts` row still records `outcome='crashed'` (`WorkerCrashed`): that
+  IS what happened to the attempt.
 
 ### `CancelController` Protocol
 

@@ -1206,6 +1206,38 @@ async def test_reclaim_expired_locks_retryable_job_writes_events_row(
     assert evt.detail.get("to_state") == "pending"
 
 
+# ── poll_reclaim_events equivalence ──────────────────────────────
+
+
+async def test_poll_reclaim_events_equivalence(backend_pair: Backend) -> None:
+    """poll_reclaim_events returns equivalent results from both backends
+    after a crash-reclaim: same to_state, reason, from_state, and kind.
+    Follows the existing convention of ignoring backend-specific fields
+    like exact timestamps.
+    """
+    # max_attempts=1 → no retry → crashes
+    job_id, _wid = await _enqueue_dispatch_any(backend_pair, max_attempts=1)
+
+    # Force lock_expires_at to the past
+    expired_at = _now_for(backend_pair) - timedelta(seconds=1)
+    await _force_job_state(backend_pair, job_id, lock_expires_at=expired_at)
+
+    await backend_pair.reclaim_expired_locks(
+        _now_for(backend_pair),
+        cancel_grace=timedelta(seconds=30),
+        cleanup_grace=timedelta(seconds=10),
+    )
+
+    events = await backend_pair.poll_reclaim_events(0, visibility_delay=timedelta(0))
+    assert len(events) == 1
+    evt = events[0]
+    assert evt.kind == "state_change"
+    assert evt.detail["to_state"] == "crashed"
+    assert evt.detail["reason"] == "lock_expired"
+    assert evt.detail["from_state"] == "running"
+    assert evt.job_id == job_id
+
+
 # ── mark_snoozed deadline boundary (delay == remaining_budget) ──
 
 

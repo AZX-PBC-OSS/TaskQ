@@ -5,6 +5,7 @@
 ``self: InMemoryBackend`` as the first parameter.
 """
 
+from datetime import timedelta
 from typing import TYPE_CHECKING
 
 from taskq.backend._cursor import decode_cursor
@@ -27,6 +28,7 @@ __all__ = [
     "_get_attempts",
     "_get_events",
     "_list_jobs",
+    "_poll_reclaim_events",
 ]
 
 
@@ -115,3 +117,26 @@ async def _get_events(self: "InMemoryBackend", job_id: JobId) -> list[EventRow]:
     from taskq.testing._runner import get_events as _get_events_impl
 
     return await _get_events_impl(self, job_id)
+
+
+async def _poll_reclaim_events(
+    self: "InMemoryBackend",
+    after_id: int,
+    limit: int = 100,
+    *,
+    visibility_delay: timedelta | None = None,
+) -> list[EventRow]:
+    """InMemoryBackend is single-threaded and synchronous, so ``event_id``
+    order already equals insertion order — there is no concurrent-commit
+    race for a *visibility_delay* to guard against here, unlike
+    PostgresBackend (see ``taskq.constants.RECLAIM_EVENT_VISIBILITY_DELAY``).
+    The parameter is accepted and ignored purely so callers can pass it
+    uniformly across both backends.
+    """
+    return [
+        e
+        for e in sorted(self._events, key=lambda ev: ev.event_id)
+        if e.event_id > after_id
+        and e.kind == "state_change"
+        and e.detail.get("reason") == "lock_expired"
+    ][:limit]

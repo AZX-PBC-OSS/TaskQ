@@ -120,6 +120,8 @@ class SqlTemplates:
 
     # ── Static read SQL ────────────────────────────────────────────
     get_events: str
+    poll_reclaim_events: str
+    check_reclaim_visibility_risk: str
     count_pending_jobs: str
 
     # ── Admin operations ───────────────────────────────────────────
@@ -515,6 +517,59 @@ SELECT id AS event_id, job_id, occurred_at, kind, detail
 FROM "{s}".job_events
 WHERE job_id = $1
 ORDER BY occurred_at, event_id""",
+        poll_reclaim_events=f"""\
+-- Trailing-watermark filter, NOT a snapshot/xact-id predicate.
+-- A per-row transaction-id check against pg_snapshot_xmin() is
+-- insufficient: an uncommitted sibling row is invisible under MVCC to
+-- this SELECT no matter what predicate is used, so no boundary computed
+-- only over *visible* rows can ever detect (or bound) it — this was
+-- verified to still lose events under an inverted allocation order
+-- (a transaction that commits first can hold a lower transaction id but
+-- a HIGHER event_id than one still open with a LOWER event_id).
+--
+-- id (bigserial nextval) and occurred_at (clock_timestamp()) are stamped
+-- by the same INSERT statement, so they are co-monotonic: an earlier id
+-- has an earlier-or-equal occurred_at — provided the two volatile calls
+-- do not interleave across concurrent transactions within a single
+-- INSERT (Postgres gives no such atomicity; the window is nanosecond-
+-- scale — see taskq.constants.RECLAIM_EVENT_VISIBILITY_DELAY).  Only
+-- rows older than
+-- RECLAIM_EVENT_VISIBILITY_DELAY are returned: by the time a row clears
+-- that margin, any transaction that could have inserted a still-lower
+-- id has had at least as long to commit, so it must have either
+-- committed (and is returned, correctly ordered, in this or an earlier
+-- poll) or aborted (permanently gone).  See
+-- taskq.constants.RECLAIM_EVENT_VISIBILITY_DELAY for the bound this
+-- assumes on writer transaction duration.
+SELECT id AS event_id, job_id, occurred_at, kind, detail
+FROM "{s}".job_events
+WHERE kind = 'state_change'
+  AND (detail->>'reason') = 'lock_expired'
+  AND id > $1
+  AND occurred_at < clock_timestamp() - $3::interval
+ORDER BY id ASC
+LIMIT $2""",
+        check_reclaim_visibility_risk=f"""\
+-- Diagnostic only (see LongRunningJobEventsWriter): a proxy signal for
+-- "poll_reclaim_events' visibility-delay assumption may currently be
+-- violated" — any transaction holding a lock on job_events for longer
+-- than the margin is a candidate cause (lock contention, an overloaded
+-- scan, a stalled/GC-paused worker, an oversized batch). Not proof of an
+-- actual miss: this cannot see whether that transaction will insert a
+-- job_events row at all, only that it has held the table open unusually
+-- long. Excludes this query's own backend.
+-- The ::float8 cast matters: EXTRACT returns numeric, which asyncpg
+-- hands back as Decimal — but LongRunningJobEventsWriter.xact_age_seconds
+-- is a float, and Decimal is not JSON-serializable for the monitoring
+-- loop this diagnostic feeds.
+SELECT a.pid, a.xact_start,
+       EXTRACT(EPOCH FROM (clock_timestamp() - a.xact_start))::float8 AS xact_age_seconds
+FROM pg_locks l
+JOIN pg_stat_activity a ON a.pid = l.pid
+WHERE l.relation = '"{s}".job_events'::regclass
+  AND l.locktype = 'relation'
+  AND a.pid != pg_backend_pid()
+  AND a.xact_start < clock_timestamp() - $1::interval""",
         count_pending_jobs=(
             f'SELECT actor, count(*)::int AS cnt FROM "{s}".jobs '
             f"WHERE actor = ANY($1::text[]) "

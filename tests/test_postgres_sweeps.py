@@ -5,8 +5,11 @@ Covers Sweep 1 (sweep_expired_locks), Sweep 2
 and Sweep 4 (sweep_leaked_reservation_slots).
 """
 
+import asyncio
+import contextlib
+import json
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 import asyncpg
@@ -14,7 +17,9 @@ import pytest
 
 from taskq._ids import new_uuid
 from taskq.backend._protocol import JobId
+from taskq.backend.clock import SystemClock
 from taskq.backend.postgres import PostgresBackend
+from taskq.constants import RECLAIM_EVENT_VISIBILITY_DELAY, wake_channel
 from taskq.testing.fixtures import JobsApp
 from taskq.testing.pg import create_pending_job, create_running_job, create_worker
 
@@ -305,6 +310,158 @@ class TestSweepExpiredLocks:
         assert row is not None
         assert row["status"] in ("pending", "crashed")
 
+    async def test_cancel_state_cleared_on_deeply_expired_retry(
+        self, clean_jobs_app: JobsApp
+    ) -> None:
+        """A deeply expired lock with an in-flight cancel request is
+        reclaimed; the retry branch must reset cancel_phase and
+        cancel_requested_at so the next worker does not immediately
+        re-cancel the job.
+
+        The second half reproduces the full retry loop the reset
+        prevents: the retried job is dispatched to a *new* worker
+        (simulated by the same UPDATE the dispatch CTE performs), and the
+        new worker's heartbeat cancel-poll must NOT return it.  On the
+        pre-fix code (cancel_phase/cancel_requested_at left set by the
+        reclaim) the cancel-poll returns the job and the worker
+        re-cancels it — an infinite cancel/reclaim/retry loop."""
+        deps = clean_jobs_app.deps
+        backend = clean_jobs_app.backend
+        schema = deps.settings.schema_name
+        worker_id = new_uuid()
+
+        deep_past = datetime.now(UTC) - timedelta(seconds=180)
+
+        async with deps.worker_pool.acquire() as conn:
+            await create_worker(conn, schema, worker_id)
+            job_id = await create_running_job(
+                conn,
+                schema,
+                worker_id,
+                lock_expires_at=deep_past,
+                cancel_phase=1,
+                cancel_requested_at=datetime.now(UTC),
+            )
+
+            count = await PostgresBackend.sweep_expired_locks(
+                conn,
+                datetime.now(UTC),
+                _CANCEL_GRACE,
+                _CLEANUP_GRACE,
+                schema=schema,
+            )
+
+        assert count == 1
+
+        async with deps.worker_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f'SELECT status, cancel_phase, cancel_requested_at FROM "{schema}".jobs WHERE id = $1',
+                job_id,
+            )
+
+        assert row is not None
+        assert row["status"] == "pending"
+        assert row["cancel_phase"] == 0
+        assert row["cancel_requested_at"] is None
+
+        # Reproduce the retry loop's mechanism: the retried job is
+        # dispatched to a new worker (same UPDATE the dispatch CTE
+        # performs), and the new worker's heartbeat cancel-poll runs.
+        next_worker_id = new_uuid()
+        async with deps.worker_pool.acquire() as conn:
+            await create_worker(conn, schema, next_worker_id)
+            await conn.execute(
+                f'UPDATE "{schema}".jobs SET '
+                "status = 'running', locked_by_worker = $2, "
+                "lock_expires_at = $3, started_at = $3, last_heartbeat_at = $3 "
+                "WHERE id = $1",
+                job_id,
+                next_worker_id,
+                datetime.now(UTC) + timedelta(seconds=30),
+            )
+
+        flags = await backend.poll_cancel_flags(next_worker_id)
+        assert flags == [], (
+            "the retried job must not be returned by the next worker's "
+            "cancel-poll — on the pre-fix code cancel_requested_at was left "
+            "set, so the job was immediately re-cancelled (retry loop)"
+        )
+
+    async def test_deeply_expired_cancel_exhausted_labelled_cancelled(
+        self, clean_jobs_app: JobsApp
+    ) -> None:
+        """A deeply-expired lock with an in-flight cancel request and no
+        retries remaining terminates as 'cancelled' (the caller's explicit
+        request), not 'crashed' — reconciling terminal states must show
+        the cancel was honored.  The job_events outbox row carries
+        to_state='cancelled' so watch_reclaims consumers see the honest
+        label, while job_attempts still records outcome='crashed'
+        (WorkerCrashed): that IS what happened to the attempt."""
+        deps = clean_jobs_app.deps
+        schema = deps.settings.schema_name
+        worker_id = new_uuid()
+
+        deep_past = datetime.now(UTC) - timedelta(seconds=180)
+
+        async with deps.worker_pool.acquire() as conn:
+            await create_worker(conn, schema, worker_id)
+            job_id = await create_running_job(
+                conn,
+                schema,
+                worker_id,
+                lock_expires_at=deep_past,
+                cancel_phase=1,
+                cancel_requested_at=datetime.now(UTC),
+                max_attempts=1,
+                attempt=1,
+            )
+
+            count = await PostgresBackend.sweep_expired_locks(
+                conn,
+                datetime.now(UTC),
+                _CANCEL_GRACE,
+                _CLEANUP_GRACE,
+                schema=schema,
+            )
+
+        assert count == 1
+
+        async with deps.worker_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f"SELECT status, cancel_phase, cancel_requested_at, finished_at "
+                f'FROM "{schema}".jobs WHERE id = $1',
+                job_id,
+            )
+            event_rows = await conn.fetch(
+                f'SELECT kind, detail FROM "{schema}".job_events WHERE job_id = $1 ORDER BY id',
+                job_id,
+            )
+            attempt_row = await conn.fetchrow(
+                f'SELECT outcome, error_class FROM "{schema}".job_attempts '
+                f"WHERE job_id = $1 ORDER BY started_at DESC LIMIT 1",
+                job_id,
+            )
+
+        assert row is not None
+        assert row["status"] == "cancelled"
+        assert row["cancel_phase"] == 0
+        assert row["cancel_requested_at"] is None
+        assert row["finished_at"] is not None
+
+        reclaim_events = []
+        for e in event_rows:
+            detail = e["detail"]
+            if isinstance(detail, str):
+                detail = json.loads(detail)
+            if detail.get("reason") == "lock_expired":
+                reclaim_events.append(detail)
+        assert len(reclaim_events) == 1
+        assert reclaim_events[0]["to_state"] == "cancelled"
+
+        assert attempt_row is not None
+        assert attempt_row["outcome"] == "crashed"
+        assert attempt_row["error_class"] == "WorkerCrashed"
+
     async def test_event_detail_contains_reason(self, clean_jobs_app: JobsApp) -> None:
         """job_events detail should include reason='lock_expired'."""
         deps = clean_jobs_app.deps
@@ -361,6 +518,645 @@ class TestSweepExpiredLocks:
             )
 
         assert count == 0
+
+
+# ── poll_reclaim_events ─────────────────────────────────────────
+
+
+class _FailingEventConn:
+    """Wraps a pool connection to make the event INSERT fail, proving
+    the outbox write and state change share transactional fate."""
+
+    def __init__(self, conn: _Conn) -> None:
+        self._conn: Any = conn  # Why: asyncpg Connection is TYPE_CHECKING-only; wrapper needs runtime method access
+        self._execute_count = 0
+
+    async def fetch(
+        self, sql: str, *args: object
+    ) -> Any:  # Why: asyncpg returns list[Record]; not statically exported
+        return await self._conn.fetch(sql, *args)
+
+    async def execute(self, sql: str, *args: object) -> str:
+        self._execute_count += 1
+        if self._execute_count == 2:
+            raise RuntimeError("simulated event INSERT failure")
+        result: str = await self._conn.execute(sql, *args)
+        return result
+
+    def transaction(
+        self,
+    ) -> Any:  # Why: asyncpg transaction context manager type is not statically exported
+        return self._conn.transaction()
+
+
+class TestPollReclaimEvents:
+    """poll_reclaim_events — fleet-wide cursor-based reclaim event polling.
+
+    A consumer tracking completion of a fan-out of N jobs via an
+    outstanding-work counter can observe crash-reclaimed jobs without
+    enumerating every job_id.
+    """
+
+    async def test_terminal_branch_emits_observable_event(self, clean_jobs_app: JobsApp) -> None:
+        """Crash-reclaim with retries exhausted → poll_reclaim_events
+        returns the row with to_state='crashed', reason='lock_expired'."""
+        deps = clean_jobs_app.deps
+        backend = clean_jobs_app.backend
+        schema = deps.settings.schema_name
+        worker_id = new_uuid()
+
+        async with deps.worker_pool.acquire() as conn:
+            await create_worker(conn, schema, worker_id)
+            job_id = await create_running_job(
+                conn,
+                schema,
+                worker_id,
+                lock_expires_at=datetime.now(UTC) - timedelta(seconds=10),
+                max_attempts=1,
+                retry_kind="transient",
+                attempt=1,
+            )
+            await PostgresBackend.sweep_expired_locks(
+                conn,
+                datetime.now(UTC),
+                _CANCEL_GRACE,
+                _CLEANUP_GRACE,
+                schema=schema,
+            )
+
+        events = await backend.poll_reclaim_events(0, visibility_delay=timedelta(0))
+        assert len(events) == 1
+        evt = events[0]
+        assert evt.detail["to_state"] == "crashed"
+        assert evt.detail["reason"] == "lock_expired"
+        assert evt.detail["from_state"] == "running"
+        assert evt.kind == "state_change"
+        assert evt.job_id == JobId(job_id)
+
+    async def test_retry_branch_emits_observable_event(self, clean_jobs_app: JobsApp) -> None:
+        """Crash-reclaim with retries remaining → poll_reclaim_events
+        returns the row with to_state='pending', reason='lock_expired'."""
+        deps = clean_jobs_app.deps
+        backend = clean_jobs_app.backend
+        schema = deps.settings.schema_name
+        worker_id = new_uuid()
+
+        async with deps.worker_pool.acquire() as conn:
+            await create_worker(conn, schema, worker_id)
+            job_id = await create_running_job(
+                conn,
+                schema,
+                worker_id,
+                lock_expires_at=datetime.now(UTC) - timedelta(seconds=10),
+                max_attempts=3,
+                retry_kind="transient",
+            )
+            await PostgresBackend.sweep_expired_locks(
+                conn,
+                datetime.now(UTC),
+                _CANCEL_GRACE,
+                _CLEANUP_GRACE,
+                schema=schema,
+            )
+
+        events = await backend.poll_reclaim_events(0, visibility_delay=timedelta(0))
+        assert len(events) == 1
+        evt = events[0]
+        assert evt.detail["to_state"] == "pending"
+        assert evt.detail["reason"] == "lock_expired"
+        assert evt.detail["from_state"] == "running"
+        assert evt.job_id == JobId(job_id)
+
+    async def test_cursor_semantics(self, clean_jobs_app: JobsApp) -> None:
+        """after_id filtering excludes already-seen events; limit is
+        respected; results are ordered ascending by event_id."""
+        deps = clean_jobs_app.deps
+        backend = clean_jobs_app.backend
+        schema = deps.settings.schema_name
+        worker_id = new_uuid()
+
+        async with deps.worker_pool.acquire() as conn:
+            await create_worker(conn, schema, worker_id)
+            for _ in range(2):
+                await create_running_job(
+                    conn,
+                    schema,
+                    worker_id,
+                    lock_expires_at=datetime.now(UTC) - timedelta(seconds=10),
+                    max_attempts=1,
+                    retry_kind="transient",
+                    attempt=1,
+                )
+            await PostgresBackend.sweep_expired_locks(
+                conn,
+                datetime.now(UTC),
+                _CANCEL_GRACE,
+                _CLEANUP_GRACE,
+                schema=schema,
+            )
+
+        # limit=1 → only 1 event
+        first_batch = await backend.poll_reclaim_events(0, limit=1, visibility_delay=timedelta(0))
+        assert len(first_batch) == 1
+
+        # after_id filtering → excludes already-seen event
+        first_id = first_batch[0].event_id
+        second_batch = await backend.poll_reclaim_events(
+            first_id, limit=100, visibility_delay=timedelta(0)
+        )
+        assert len(second_batch) == 1
+        assert second_batch[0].event_id > first_id
+
+        # full query → ascending order
+        all_events = await backend.poll_reclaim_events(0, limit=100, visibility_delay=timedelta(0))
+        assert len(all_events) == 2
+        assert all_events[0].event_id < all_events[1].event_id
+
+    async def test_atomicity_event_insert_failure_rolls_back_state(
+        self, clean_jobs_app: JobsApp
+    ) -> None:
+        """If the event INSERT fails inside the transaction, both the
+        state change and the event row are rolled back — no partial
+        observation."""
+        deps = clean_jobs_app.deps
+        backend = clean_jobs_app.backend
+        schema = deps.settings.schema_name
+        worker_id = new_uuid()
+
+        async with deps.worker_pool.acquire() as conn:
+            await create_worker(conn, schema, worker_id)
+            job_id = await create_running_job(
+                conn,
+                schema,
+                worker_id,
+                lock_expires_at=datetime.now(UTC) - timedelta(seconds=10),
+                max_attempts=1,
+                retry_kind="transient",
+                attempt=1,
+            )
+
+        # Wrap a fresh connection to make the event INSERT fail
+        async with deps.worker_pool.acquire() as conn:
+            wrapped = _FailingEventConn(conn)
+            with pytest.raises(RuntimeError, match="simulated event INSERT failure"):
+                await PostgresBackend.sweep_expired_locks(
+                    wrapped,
+                    datetime.now(UTC),
+                    _CANCEL_GRACE,
+                    _CLEANUP_GRACE,
+                    schema=schema,
+                )
+
+        # Job status should still be 'running' (UPDATE rolled back)
+        row = await backend.get(JobId(job_id))
+        assert row is not None
+        assert row.status == "running"
+
+        # No reclaim events should be observable (INSERT rolled back)
+        events = await backend.poll_reclaim_events(0, visibility_delay=timedelta(0))
+        assert len(events) == 0
+
+    async def test_no_duplicate_across_repeated_sweeps(self, clean_jobs_app: JobsApp) -> None:
+        """Running sweep twice on the same job → second run affects 0
+        rows and poll_reclaim_events returns exactly one event."""
+        deps = clean_jobs_app.deps
+        backend = clean_jobs_app.backend
+        schema = deps.settings.schema_name
+        worker_id = new_uuid()
+
+        async with deps.worker_pool.acquire() as conn:
+            await create_worker(conn, schema, worker_id)
+            await create_running_job(
+                conn,
+                schema,
+                worker_id,
+                lock_expires_at=datetime.now(UTC) - timedelta(seconds=10),
+                max_attempts=1,
+                retry_kind="transient",
+                attempt=1,
+            )
+
+            count1 = await PostgresBackend.sweep_expired_locks(
+                conn,
+                datetime.now(UTC),
+                _CANCEL_GRACE,
+                _CLEANUP_GRACE,
+                schema=schema,
+            )
+            assert count1 == 1
+
+            count2 = await PostgresBackend.sweep_expired_locks(
+                conn,
+                datetime.now(UTC),
+                _CANCEL_GRACE,
+                _CLEANUP_GRACE,
+                schema=schema,
+            )
+            assert count2 == 0
+
+        events = await backend.poll_reclaim_events(0, visibility_delay=timedelta(0))
+        assert len(events) == 1
+
+    async def test_no_duplicate_across_concurrent_sweeps(self, clean_jobs_app: JobsApp) -> None:
+        """Two concurrent sweeps over shared expired-lock jobs → total
+        event count equals jobs reclaimed exactly once each
+        (FOR UPDATE SKIP LOCKED guarantees disjoint ownership)."""
+        deps = clean_jobs_app.deps
+        backend = clean_jobs_app.backend
+        schema = deps.settings.schema_name
+        worker_id = new_uuid()
+        num_jobs = 4
+
+        async with deps.worker_pool.acquire() as conn:
+            await create_worker(conn, schema, worker_id)
+            for _ in range(num_jobs):
+                await create_running_job(
+                    conn,
+                    schema,
+                    worker_id,
+                    lock_expires_at=datetime.now(UTC) - timedelta(seconds=10),
+                    max_attempts=1,
+                    retry_kind="transient",
+                    attempt=1,
+                )
+
+        async def _sweep() -> int:
+            async with deps.worker_pool.acquire() as conn:
+                return await PostgresBackend.sweep_expired_locks(
+                    conn,
+                    datetime.now(UTC),
+                    _CANCEL_GRACE,
+                    _CLEANUP_GRACE,
+                    schema=schema,
+                )
+
+        counts = await asyncio.gather(_sweep(), _sweep())
+        total_swept = sum(counts)
+        assert total_swept == num_jobs
+
+        events = await backend.poll_reclaim_events(0, visibility_delay=timedelta(0))
+        assert len(events) == num_jobs
+
+    async def test_out_of_order_commit_does_not_lose_event(self, clean_jobs_app: JobsApp) -> None:
+        """``job_events.id`` (bigserial) is allocated at INSERT time, but
+        transactions can commit out of order under real contention (lock
+        waits, a slower sweep pass, GC pauses): a transaction holding a
+        LOWER id can commit AFTER one holding a HIGHER id.
+
+        With ``visibility_delay=0`` (no protection — reproduces the bug
+        directly against the real query, not a reverted copy of it),
+        polling right after the higher-id transaction commits returns it
+        immediately; a cursor advanced to that id would then permanently
+        exclude the lower-id transaction's event once it finally commits.
+
+        The production default (``RECLAIM_EVENT_VISIBILITY_DELAY``) holds
+        back freshly-committed rows until enough wall-clock time has
+        passed that any transaction which could hold a lower id is
+        guaranteed to have already committed or aborted — ``id`` and
+        ``occurred_at`` are stamped at the same INSERT instant, so they
+        are co-monotonic, and this is why waiting on ``occurred_at``
+        alone is sufficient once it clears the margin.
+        """
+        deps = clean_jobs_app.deps
+        backend = clean_jobs_app.backend
+        schema = deps.settings.schema_name
+        dsn = str(deps.settings.pg_dsn)
+        worker_id = new_uuid()
+
+        detail_json = json.dumps(
+            {"reason": "lock_expired", "to_state": "crashed", "from_state": "running"}
+        )
+
+        async with deps.worker_pool.acquire() as conn:
+            await create_worker(conn, schema, worker_id)
+            job_a = await create_running_job(
+                conn,
+                schema,
+                worker_id,
+                lock_expires_at=datetime.now(UTC) - timedelta(seconds=10),
+                max_attempts=1,
+                retry_kind="transient",
+                attempt=1,
+            )
+            job_b = await create_running_job(
+                conn,
+                schema,
+                worker_id,
+                lock_expires_at=datetime.now(UTC) - timedelta(seconds=10),
+                max_attempts=1,
+                retry_kind="transient",
+                attempt=1,
+            )
+
+        conn_a = await asyncpg.connect(dsn)
+        conn_b = await asyncpg.connect(dsn)
+        tx_a = conn_a.transaction()
+        tx_b = conn_b.transaction()
+        try:
+            # A inserts first, grabbing the LOWER event_id, then stays open.
+            await tx_a.start()
+            await conn_a.execute(
+                f'INSERT INTO "{schema}".'
+                "job_events (job_id, kind, detail) "
+                "VALUES ($1, 'state_change', $2::jsonb)",
+                job_a,
+                detail_json,
+            )
+
+            # B inserts second, grabbing the HIGHER event_id, and commits
+            # immediately — out of order relative to A.
+            await tx_b.start()
+            await conn_b.execute(
+                f'INSERT INTO "{schema}".'
+                "job_events (job_id, kind, detail) "
+                "VALUES ($1, 'state_change', $2::jsonb)",
+                job_b,
+                detail_json,
+            )
+            await tx_b.commit()
+
+            # Reproduces the bug directly: with no visibility delay, B's
+            # event is returned right away and a cursor advanced to it
+            # would permanently exclude A once A finally commits.
+            unsafe = await backend.poll_reclaim_events(0, visibility_delay=timedelta(0))
+            assert len(unsafe) == 1
+            assert unsafe[0].job_id == JobId(job_b)
+
+            # The fix: the production default margin holds B back.
+            protected = await backend.poll_reclaim_events(0)
+            assert protected == [], (
+                "visibility_delay should hold back a freshly-committed row "
+                "while an earlier-id transaction may still be uncommitted"
+            )
+
+            # A finally commits, comfortably within the margin.
+            await tx_a.commit()
+            await asyncio.sleep(RECLAIM_EVENT_VISIBILITY_DELAY.total_seconds() + 0.3)
+
+            settled = await backend.poll_reclaim_events(0)
+            assert len(settled) == 2
+            assert settled[0].event_id < settled[1].event_id
+            assert settled[0].job_id == JobId(job_a)
+            assert settled[1].job_id == JobId(job_b)
+        finally:
+            with contextlib.suppress(Exception):
+                await tx_a.rollback()
+            with contextlib.suppress(Exception):
+                await tx_b.rollback()
+            with contextlib.suppress(Exception):
+                await conn_a.close()
+            with contextlib.suppress(Exception):
+                await conn_b.close()
+
+    async def test_check_reclaim_visibility_delay_risk_detects_long_open_writer(
+        self, clean_jobs_app: JobsApp
+    ) -> None:
+        """check_reclaim_visibility_delay_risk reports a transaction that
+        has held job_events open longer than a (deliberately tiny) margin,
+        and reports nothing once that transaction commits."""
+        backend = clean_jobs_app.backend
+        deps = clean_jobs_app.deps
+        schema = deps.settings.schema_name
+        dsn = str(deps.settings.pg_dsn)
+
+        detail_json = json.dumps(
+            {"reason": "lock_expired", "to_state": "crashed", "from_state": "running"}
+        )
+
+        async with deps.worker_pool.acquire() as conn:
+            worker_id = new_uuid()
+            await create_worker(conn, schema, worker_id)
+            job_id = await create_running_job(
+                conn,
+                schema,
+                worker_id,
+                lock_expires_at=datetime.now(UTC) - timedelta(seconds=10),
+                max_attempts=1,
+                retry_kind="transient",
+                attempt=1,
+            )
+
+        conn_a = await asyncpg.connect(dsn)
+        tx_a = conn_a.transaction()
+        try:
+            await tx_a.start()
+            await conn_a.execute(
+                f'INSERT INTO "{schema}".'
+                "job_events (job_id, kind, detail) "
+                "VALUES ($1, 'state_change', $2::jsonb)",
+                job_id,
+                detail_json,
+            )
+
+            tiny_margin = timedelta(milliseconds=50)
+            await asyncio.sleep(0.15)
+
+            risky = await backend.check_reclaim_visibility_delay_risk(visibility_delay=tiny_margin)
+            assert len(risky) == 1
+            assert risky[0].xact_age_seconds >= tiny_margin.total_seconds()
+            # EXTRACT(EPOCH ...) returns numeric → asyncpg Decimal without
+            # the ::float8 cast; Decimal >= float compares fine (so the
+            # assertion above can't catch it) but json.dumps(Decimal)
+            # raises TypeError in the monitoring loop this diagnostic feeds.
+            assert isinstance(risky[0].xact_age_seconds, float)
+
+            await tx_a.commit()
+
+            settled = await backend.check_reclaim_visibility_delay_risk(
+                visibility_delay=tiny_margin
+            )
+            assert settled == []
+        finally:
+            with contextlib.suppress(Exception):
+                await tx_a.rollback()
+            with contextlib.suppress(Exception):
+                await conn_a.close()
+
+    async def test_settings_configured_visibility_delay_is_the_default(
+        self, clean_jobs_app: JobsApp
+    ) -> None:
+        """A PostgresBackend constructed with a custom
+        reclaim_event_visibility_delay applies that margin as
+        poll_reclaim_events' default when no per-call override is given —
+        the end-to-end path from WorkerSettings.reclaim_event_visibility_delay
+        (via PostgresBackend.__init__) down to the SQL, not just the
+        per-call visibility_delay= parameter exercised elsewhere."""
+        deps = clean_jobs_app.deps
+        schema = deps.settings.schema_name
+        worker_id = new_uuid()
+        custom_delay = timedelta(milliseconds=300)
+
+        configured_backend = PostgresBackend(
+            deps,
+            clock=SystemClock(),
+            cancellation_grace_period=_CANCEL_GRACE,
+            cleanup_grace_period=_CLEANUP_GRACE,
+            reclaim_event_visibility_delay=custom_delay,
+        )
+
+        async with deps.worker_pool.acquire() as conn:
+            await create_worker(conn, schema, worker_id)
+            await create_running_job(
+                conn,
+                schema,
+                worker_id,
+                lock_expires_at=datetime.now(UTC) - timedelta(seconds=10),
+                max_attempts=1,
+                retry_kind="transient",
+                attempt=1,
+            )
+            await PostgresBackend.sweep_expired_locks(
+                conn,
+                datetime.now(UTC),
+                _CANCEL_GRACE,
+                _CLEANUP_GRACE,
+                schema=schema,
+            )
+
+        # No visibility_delay= override: relies entirely on the
+        # constructor-configured default.
+        immediate = await configured_backend.poll_reclaim_events(0)
+        assert immediate == [], (
+            "expected the configured 300ms margin to hold the event back "
+            "immediately after the sweep, not the library default (2s) or "
+            "no margin at all"
+        )
+
+        await asyncio.sleep(custom_delay.total_seconds() + 0.2)
+
+        settled = await configured_backend.poll_reclaim_events(0)
+        assert len(settled) == 1
+
+    async def test_cursor_on_empty_table(self, clean_jobs_app: JobsApp) -> None:
+        """Cursor semantics on an empty table: polling returns nothing at
+        cursor 0, and a cursor arbitrarily far ahead of the table's max id
+        (e.g. persisted before a schema reset, or mis-restored from a
+        backup) also returns nothing rather than erroring — the cursor is
+        a watermark compared with `>`, never dereferenced."""
+        backend = clean_jobs_app.backend
+
+        assert await backend.poll_reclaim_events(0, visibility_delay=timedelta(0)) == []
+        assert await backend.poll_reclaim_events(2**40, visibility_delay=timedelta(0)) == []
+
+    async def test_cursor_survives_pruning_of_seen_rows(self, clean_jobs_app: JobsApp) -> None:
+        """Interaction with job_events pruning: a consumer's cursor may
+        point at a row an operator later prunes.  Because the cursor is a
+        watermark (`id > cursor`), deleting rows at or below it changes
+        nothing — the next poll still returns exactly the un-pruned rows
+        ahead of it, with no error and no replay.  (The dangerous
+        direction — pruning rows AHEAD of a slow consumer's cursor —
+        permanently loses those events for that consumer; that is an
+        operational policy constraint, not something the SQL can guard
+        against, and is documented in watch_reclaims.)"""
+        deps = clean_jobs_app.deps
+        backend = clean_jobs_app.backend
+        schema = deps.settings.schema_name
+        worker_id = new_uuid()
+
+        async with deps.worker_pool.acquire() as conn:
+            await create_worker(conn, schema, worker_id)
+            for _ in range(3):
+                await create_running_job(
+                    conn,
+                    schema,
+                    worker_id,
+                    lock_expires_at=datetime.now(UTC) - timedelta(seconds=10),
+                    max_attempts=1,
+                    retry_kind="transient",
+                    attempt=1,
+                )
+            await PostgresBackend.sweep_expired_locks(
+                conn,
+                datetime.now(UTC),
+                _CANCEL_GRACE,
+                _CLEANUP_GRACE,
+                schema=schema,
+            )
+
+        events = await backend.poll_reclaim_events(0, visibility_delay=timedelta(0))
+        assert len(events) == 3
+        cursor = events[0].event_id
+
+        # Operator prunes the two oldest rows — one AT the consumer's
+        # cursor, one AHEAD of it (simulating a too-aggressive prune).
+        async with deps.worker_pool.acquire() as conn:
+            await conn.execute(
+                f'DELETE FROM "{schema}".job_events WHERE id = ANY($1::bigint[])',
+                [events[0].event_id, events[1].event_id],
+            )
+
+        # The pruned cursor row neither errors nor replays; the consumer
+        # simply never sees the second (pruned-ahead) event, and resumes
+        # cleanly at the first surviving row past its cursor.
+        remaining = await backend.poll_reclaim_events(cursor, visibility_delay=timedelta(0))
+        assert [e.event_id for e in remaining] == [events[2].event_id]
+
+    async def test_single_pg_notify_per_sweep_with_rows(self, clean_jobs_app: JobsApp) -> None:
+        """The sweep fires exactly ONE pg_notify per call that reclaims at
+        least one row (not one per row), and none when nothing is swept —
+        wake storms on a crash-reclaim of N jobs would punish every
+        subscriber for a single sweep pass."""
+        deps = clean_jobs_app.deps
+        schema = deps.settings.schema_name
+        dsn = str(deps.settings.pg_dsn)
+        worker_id = new_uuid()
+
+        listen_conn = await asyncpg.connect(dsn)
+        notifications: list[str] = []
+
+        def _on_notify(conn: object, pid: int, channel: str, payload: str) -> None:
+            notifications.append(channel)
+
+        try:
+            await listen_conn.add_listener(
+                wake_channel(schema),
+                _on_notify,  # type: ignore[arg-type]  # Why: asyncpg stubs over-narrow the callback type — same suppression as the transports under test
+            )
+
+            async with deps.worker_pool.acquire() as conn:
+                await create_worker(conn, schema, worker_id)
+                for _ in range(3):
+                    await create_running_job(
+                        conn,
+                        schema,
+                        worker_id,
+                        lock_expires_at=datetime.now(UTC) - timedelta(seconds=10),
+                        max_attempts=1,
+                        retry_kind="transient",
+                        attempt=1,
+                    )
+                count = await PostgresBackend.sweep_expired_locks(
+                    conn,
+                    datetime.now(UTC),
+                    _CANCEL_GRACE,
+                    _CLEANUP_GRACE,
+                    schema=schema,
+                )
+            assert count == 3
+
+            # NOTIFY delivery is asynchronous even after the sweep's
+            # commit — give the loop a beat to deliver.
+            await asyncio.sleep(0.3)
+            assert len(notifications) == 1, (
+                f"expected exactly one wake notification for a 3-row sweep, "
+                f"got {len(notifications)}"
+            )
+
+            # A no-op sweep fires nothing.
+            notifications.clear()
+            async with deps.worker_pool.acquire() as conn:
+                count = await PostgresBackend.sweep_expired_locks(
+                    conn,
+                    datetime.now(UTC),
+                    _CANCEL_GRACE,
+                    _CLEANUP_GRACE,
+                    schema=schema,
+                )
+            assert count == 0
+            await asyncio.sleep(0.3)
+            assert notifications == []
+        finally:
+            await listen_conn.close()
 
 
 # ── sweep_deadline_exceeded ────────────────────────────────────
