@@ -6,11 +6,13 @@ NOT run here: the e2e conftest migrates the module schema before the
 container starts (``TASKQ_MIGRATE_ON_START=false``).
 """
 
+import os
 import sys
 from typing import Any
 
 from e2e.actors import (
     capped_worker,
+    cron_heartbeat,
     deliver_tenant_webhook,
     deliver_webhook,
     enrich_order,
@@ -26,6 +28,7 @@ from e2e.actors import (
 )
 from e2e.di import build_registry
 from taskq import ActorRef
+from taskq.cron import CronScheduleSpec
 from taskq.settings import WorkerSettings
 from taskq.worker.run import worker_main
 
@@ -43,8 +46,35 @@ ACTORS: dict[str, ActorRef[Any, Any]] = {
     "quick_result": quick_result,
     "slow_deliver_webhook": slow_deliver_webhook,
     "long_running_job": long_running_job,
+    "cron_heartbeat": cron_heartbeat,
 }
+
+
+def _e2e_cron_registry() -> list[CronScheduleSpec] | None:
+    """Cron schedules for the cron e2e module only.
+
+    Gated on TASKQ_E2E_CRON so the schedule fires solely inside the
+    dedicated cron-test container — a once-a-minute job in every e2e
+    worker would break the other modules' idle gates.
+    """
+    if os.environ.get("TASKQ_E2E_CRON") != "1":
+        return None
+    return [
+        CronScheduleSpec(
+            actor="cron_heartbeat",
+            cron_expr="* * * * *",
+            static_payload={"run_id": "cron-static", "beat": 0},
+        )
+    ]
+
 
 if __name__ == "__main__":
     settings = WorkerSettings.load()
-    sys.exit(worker_main(settings, actor_registry=ACTORS, di_registry=build_registry()))
+    sys.exit(
+        worker_main(
+            settings,
+            actor_registry=ACTORS,
+            di_registry=build_registry(),
+            cron_registry=_e2e_cron_registry(),
+        )
+    )

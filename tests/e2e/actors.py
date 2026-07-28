@@ -497,6 +497,27 @@ class QuickResultResult(BaseModel):
     value: str
 
 
+class CronHeartbeatPayload(BaseModel):
+    run_id: str
+    beat: int = 0
+
+
+@actor(name="cron_heartbeat", queue="e2e")
+async def cron_heartbeat(
+    payload: CronHeartbeatPayload,
+    ctx: JobContext[CronHeartbeatPayload],
+    *,
+    pool: asyncpg.Pool,
+) -> None:
+    """Cron-fired marker: records one effect per schedule fire."""
+    await _record_effect(
+        pool,
+        ctx,
+        "cron-tick",
+        {"run_id": payload.run_id, "beat": payload.beat, "attempt": ctx.attempt},
+    )
+
+
 @actor(
     name="quick_result",
     queue="e2e",
