@@ -326,6 +326,58 @@ class _FakeAsyncCM:
         self.exited = True
 
 
+class _FakeRedis:
+    """Fake redis.asyncio.Redis for UI-lifespan bounded-close tests.
+
+    Supports both lifecycle styles: async-CM (pre-fix enter_async_context
+    path) and explicit initialize() + pushed bounded-aclose callback
+    (post-fix path). aclose() blocks while aclose_wait is cleared (hung
+    broker). Mirrors the _FakeRedisClient conventions in
+    tests/test_jobs_client.py.
+    """
+
+    def __init__(self) -> None:
+        self.initialize_calls = 0
+        self.aclose_calls = 0
+        self.aclose_wait = asyncio.Event()
+        self.aclose_wait.set()  # aclose() completes instantly by default
+
+    async def initialize(self) -> "_FakeRedis":
+        self.initialize_calls += 1
+        return self
+
+    async def aclose(self) -> None:
+        self.aclose_calls += 1
+        await self.aclose_wait.wait()
+
+    async def __aenter__(self) -> "_FakeRedis":
+        return self
+
+    async def __aexit__(self, *_: object) -> None:
+        await self.aclose()
+
+
+class _FakeRedisInitializeRaises(_FakeRedis):
+    """_FakeRedis whose initialize() fails (broker down at startup).
+
+    from_url() has already allocated the connection pool by the time
+    initialize() runs, so a raising eager setup must still be followed by
+    aclose() during unwind.
+    """
+
+    async def initialize(self) -> "_FakeRedis":
+        self.initialize_calls += 1
+        raise ConnectionError("broker down")
+
+
+class _FakeRedisAcloseRaises(_FakeRedis):
+    """_FakeRedis whose aclose() fails (broker error at teardown)."""
+
+    async def aclose(self) -> None:
+        self.aclose_calls += 1
+        raise ConnectionError("broker gone")
+
+
 def test_ui_serve_lifespan_creates_pool_and_redirects_root(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -387,8 +439,16 @@ def test_ui_serve_lifespan_creates_pool_and_redirects_root(
 # (not via TestClient) so ``asyncio.timeout`` can bound the RED state.
 
 
-def _capture_app_for_lifespan(monkeypatch: pytest.MonkeyPatch, pool: _FakePool) -> object:
-    """Run _ui_serve with a stubbed uvicorn.run and return the FastAPI app."""
+def _capture_app_for_lifespan(
+    monkeypatch: pytest.MonkeyPatch,
+    pool: _FakePool,
+    redis_client: _FakeRedis | None = None,
+) -> object:
+    """Run _ui_serve with a stubbed uvicorn.run and return the FastAPI app.
+
+    When redis_client is given, redis.asyncio.from_url is patched to return
+    it and _ui_serve is invoked with a redis_url set.
+    """
     import uvicorn
 
     import taskq.cli as cli_mod
@@ -401,13 +461,20 @@ def _capture_app_for_lifespan(monkeypatch: pytest.MonkeyPatch, pool: _FakePool) 
     monkeypatch.setattr(uvicorn, "run", _fake_uvicorn_run)
     monkeypatch.setattr(cli_mod.asyncpg, "create_pool", lambda *a, **kw: pool)
 
+    redis_url: str | None = None
+    if redis_client is not None:
+        import redis.asyncio as aioredis
+
+        monkeypatch.setattr(aioredis, "from_url", lambda *a, **kw: redis_client)
+        redis_url = "redis://localhost:6379/0"
+
     from taskq.cli import _ui_serve
 
     settings = _dev_settings(monkeypatch)
     _ui_serve(
         pg_dsn="postgresql://u:p@h:5432/db",
         schema="taskq",
-        redis_url=None,
+        redis_url=redis_url,
         host="127.0.0.1",
         port=9999,
         run_migrate=False,
@@ -423,7 +490,7 @@ async def test_ui_serve_lifespan_terminates_hung_pool_close(
     bounded timeout and lifespan shutdown completes."""
     import taskq.cli as cli_mod
 
-    monkeypatch.setattr(cli_mod, "_TEARDOWN_CLOSE_TIMEOUT_SECS", 0.05, raising=False)
+    monkeypatch.setattr(cli_mod, "_TEARDOWN_CLOSE_TIMEOUT_SECS", 0.05)
     pool = _FakePool()
     pool.close_wait.clear()  # close() blocks forever from now on
     app = _capture_app_for_lifespan(monkeypatch, pool)
@@ -460,6 +527,119 @@ async def test_ui_serve_lifespan_fast_pool_close_not_terminated(
     assert pool.closed is True
     assert pool.close_calls == 1
     assert pool.terminated is False
+
+
+# ── Bounded redis close at lifespan exit (#38 follow-up) ────────────────
+#
+# The lifespan entered the redis client on the AsyncExitStack
+# (``Redis.__aexit__`` → shielded, unbounded ``aclose()``) — a hung broker
+# could wedge UI shutdown. These tests pin the bounded-close discipline
+# (asyncio.wait_for, log-and-continue — Redis has no terminate()) applied
+# via ``_close_redis_bounded``, and the preserved eager-initialize
+# semantics of ``Redis.__aenter__``. The shrink seam is the same
+# module-global monkeypatch convention as the pool tests above; the
+# lifespan is driven directly so ``asyncio.timeout`` can bound the RED
+# state.
+
+
+async def test_ui_serve_lifespan_bounds_hung_redis_close(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A hung redis aclose at lifespan exit (hung broker) is bounded: the
+    lifespan shutdown logs and continues instead of hanging (no terminate
+    on redis — it has none)."""
+    import structlog
+
+    import taskq.cli as cli_mod
+
+    monkeypatch.setattr(cli_mod, "_TEARDOWN_CLOSE_TIMEOUT_SECS", 0.05)
+    redis_client = _FakeRedis()
+    redis_client.aclose_wait.clear()  # aclose() blocks forever from now on
+    app = _capture_app_for_lifespan(monkeypatch, _FakePool(), redis_client)
+
+    from fastapi import FastAPI
+
+    assert isinstance(app, FastAPI)
+    # Why the outer timeout: pre-fix lifespan exit awaited Redis.__aexit__
+    # (shielded, unbounded aclose), so the RED state would hang forever
+    # instead of failing fast.
+    with structlog.testing.capture_logs() as captured:
+        async with asyncio.timeout(5):
+            async with app.router.lifespan_context(app):
+                pass
+
+    assert redis_client.initialize_calls == 1
+    assert redis_client.aclose_calls == 1
+    # Why the log assertion: redis has no terminate(), so the
+    # redis-teardown-close-timeout event is the only positive signal that
+    # the TimeoutError branch fired (as opposed to the generic
+    # except-Exception branch, which logs redis-teardown-close-error).
+    timeout_events = [e for e in captured if e.get("event") == "redis-teardown-close-timeout"]
+    assert len(timeout_events) == 1, (
+        f"expected 1 redis-teardown-close-timeout log, got {captured!r}"
+    )
+
+
+async def test_ui_serve_lifespan_fast_redis_close_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Healthy redis close at lifespan exit: aclose happens exactly once.
+    Pins the no-regression behaviour (passes pre- and post-fix)."""
+    redis_client = _FakeRedis()
+    app = _capture_app_for_lifespan(monkeypatch, _FakePool(), redis_client)
+
+    from fastapi import FastAPI
+
+    assert isinstance(app, FastAPI)
+    async with asyncio.timeout(5):
+        async with app.router.lifespan_context(app):
+            pass
+
+    assert redis_client.aclose_calls == 1
+
+
+async def test_ui_serve_lifespan_redis_initialize_failure_still_closes_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A redis client whose initialize() fails (broker down at startup) is
+    still closed during lifespan unwind: from_url() has already allocated
+    the connection pool, so failed eager setup must not leak it. Pins that
+    the bounded-close callback is pushed BEFORE initialize() is awaited."""
+    redis_client = _FakeRedisInitializeRaises()
+    app = _capture_app_for_lifespan(monkeypatch, _FakePool(), redis_client)
+
+    from fastapi import FastAPI
+
+    assert isinstance(app, FastAPI)
+    with pytest.raises(ConnectionError, match="broker down"):
+        async with asyncio.timeout(5):
+            async with app.router.lifespan_context(app):
+                pass
+
+    assert redis_client.initialize_calls == 1
+    assert redis_client.aclose_calls == 1
+
+
+async def test_ui_serve_lifespan_redis_aclose_error_does_not_abort_teardown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A redis aclose() that raises at lifespan exit does not abort the
+    remaining teardown: the bounded close swallows the error and the pool
+    close callback (pushed earlier, so unwound after redis — LIFO) still
+    executes."""
+    pool = _FakePool()
+    redis_client = _FakeRedisAcloseRaises()
+    app = _capture_app_for_lifespan(monkeypatch, pool, redis_client)
+
+    from fastapi import FastAPI
+
+    assert isinstance(app, FastAPI)
+    async with asyncio.timeout(5):
+        async with app.router.lifespan_context(app):
+            pass
+
+    assert redis_client.aclose_calls == 1
+    assert pool.close_calls == 1
 
 
 def test_ui_serve_lifespan_runs_migration_when_requested(
@@ -515,49 +695,27 @@ def test_ui_serve_lifespan_runs_migration_when_requested(
 def test_ui_serve_lifespan_creates_redis_client_when_redis_url_set(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """_ui_serve's lifespan enters the redis async context manager when redis_url is set."""
-    import redis.asyncio as aioredis
-    import uvicorn
+    """_ui_serve's lifespan initializes the redis client eagerly when redis_url is set
+    and closes it on shutdown.
 
-    import taskq.cli as cli_mod
-
-    captured: dict[str, object] = {}
-
-    def _fake_uvicorn_run(app: object, **kwargs: object) -> None:
-        captured["app"] = app
-
-    monkeypatch.setattr(uvicorn, "run", _fake_uvicorn_run)
-
-    pool = _FakePool()
-    monkeypatch.setattr(cli_mod.asyncpg, "create_pool", lambda *a, **kw: pool)
-    redis_cm = _FakeAsyncCM(object())
-    monkeypatch.setattr(aioredis, "from_url", lambda *a, **kw: redis_cm)
-
-    from taskq.cli import _ui_serve
-
-    settings = _dev_settings(monkeypatch)
-
-    _ui_serve(
-        pg_dsn="postgresql://u:p@h:5432/db",
-        schema="taskq",
-        redis_url="redis://localhost:6379/0",
-        host="127.0.0.1",
-        port=9999,
-        run_migrate=False,
-        settings=settings,
-    )
+    Pins the post-#38 wiring: explicit ``initialize()`` (preserving
+    ``Redis.__aenter__``'s eager-setup semantics) plus a pushed
+    bounded-aclose callback, instead of entering the client as an async
+    context manager (whose ``__aexit__`` closes unbounded).
+    """
+    redis_client = _FakeRedis()
+    app = _capture_app_for_lifespan(monkeypatch, _FakePool(), redis_client)
 
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
-    app = captured["app"]
     assert isinstance(app, FastAPI)
 
     with TestClient(app):
         pass
 
-    assert redis_cm.entered is True
-    assert redis_cm.exited is True
+    assert redis_client.initialize_calls == 1
+    assert redis_client.aclose_calls == 1
 
 
 def test_ui_serve_lifespan_redis_import_error_wrapped_with_install_hint(
