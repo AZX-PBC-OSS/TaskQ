@@ -85,11 +85,16 @@ def register_rate_limit_registry(
     di_registry: ProviderRegistry,
     rl_registry: RateLimitRegistry,
 ) -> None:
-    """Idempotent registration of the LOOP-scope RateLimitRegistry singleton.
+    """Idempotent registration of the resolved RateLimitRegistry instance.
 
     Registers the given :class:`RateLimitRegistry` as a ``Scope.LOOP`` value
-    so it is available at dispatch time via DI resolution.  The same object
-    is also importable as :data:`taskq.ratelimit.registry.registry` — both
+    so it is available at dispatch time via DI resolution.  Skips when a
+    provider is already registered — a user pre-registered value provider
+    wins (bootstrap resolution rule 2); after the bootstrap
+    ``kind == "value"`` check the DI-cached instance and the bootstrap
+    instance are provably the same object.  When the module singleton is
+    resolved (the default), the DI-registered instance and
+    :data:`taskq.ratelimit.registry.registry` are the same object — both
     paths observe identical state.
     """
     if di_registry.has_provider(RateLimitRegistry):

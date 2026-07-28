@@ -39,7 +39,11 @@ from taskq.exceptions import MissingProvider
 from taskq.obs import get_meter, set_otel_enabled, setup_logging
 from taskq.progress._flush import progress_flush_loop
 from taskq.ratelimit._provider import register_rate_limit_registry, register_redis_pool
+from taskq.ratelimit.registry import RateLimitRegistry
 from taskq.ratelimit.registry import registry as rl_registry
+from taskq.ratelimit.reservation import ConcurrencyReservation
+from taskq.ratelimit.sliding_window import SlidingWindow
+from taskq.ratelimit.token_bucket import TokenBucket
 from taskq.settings import WorkerSettings
 from taskq.worker._watchdog import LoopLagWatchdog, ShutdownWatchdog, loop_watchdog_loop
 from taskq.worker.actor_config import ActorConfig
@@ -162,6 +166,37 @@ def _emit_sub_enqueue_startup_warnings(
         )
 
 
+def _resolve_rl_registry(
+    explicit: RateLimitRegistry | None,
+    di_registry: ProviderRegistry,
+) -> RateLimitRegistry:
+    """Resolve this worker's ``RateLimitRegistry`` (documented order).
+
+    1. An explicit ``rate_limit_registry=`` argument wins.
+    2. A ``RateLimitRegistry`` provider pre-registered in *di_registry* —
+       **value providers only**: a factory/class provider would split-brain
+       (bootstrap using one instance while LOOP-scope dispatch resolution
+       produced another), so it fails fast with ``TypeError``.
+    3. The module singleton (unchanged backwards-compatible default).
+
+    Naming: ``_registry`` / *di_registry* is the DI ``ProviderRegistry``
+    (container); the returned object is the ``RateLimitRegistry``
+    (primitive store). They are unrelated despite the similar names.
+    """
+    if explicit is not None:
+        return explicit
+    if di_registry.has_provider(RateLimitRegistry):
+        entry = di_registry.get(RateLimitRegistry)
+        if entry.kind != "value":
+            raise TypeError(
+                "RateLimitRegistry must be registered as a value provider "
+                f"(register_value), got kind={entry.kind!r} — the worker must "
+                "resolve one concrete instance at bootstrap"
+            )
+        return cast(RateLimitRegistry, entry.impl)
+    return rl_registry
+
+
 async def _main(
     settings: WorkerSettings,
     *,
@@ -170,6 +205,7 @@ async def _main(
     _registry: ProviderRegistry | None = None,
     _cron_registry: list[CronScheduleSpec] | None = None,
     connections: WorkerConnections | None = None,
+    rate_limit_registry: RateLimitRegistry | None = None,
 ) -> int:
     """Worker bootstrap: open deps, wire TaskGroup of siblings, run to shutdown.
 
@@ -200,6 +236,14 @@ async def _main(
     is called with a :class:`ScheduleCreateArgs` inside ``try/except
     asyncpg.UniqueViolationError: pass`` — the ``(actor, name)`` UNIQUE
     constraint makes this registration pass create-only and skip-on-conflict.
+
+    ``rate_limit_registry`` is the :class:`RateLimitRegistry` this worker
+    owns and dispatches against.  Resolution order: explicit argument →
+    ``RateLimitRegistry`` value provider in ``_registry`` → module
+    singleton (see :func:`_resolve_rl_registry`).  Actor-declared
+    primitive instances (``@actor(rate_limits=[TokenBucket(...)])``) are
+    collected and registered into the resolved registry before
+    ``validate()`` runs.
 
     Returns the exit code from the orchestrator (read from the holder), or
     0 when no signal arrived (clean shutdown via external shutdown_event.set()).
@@ -236,6 +280,35 @@ async def _main(
     if not registry.has_provider(Clock):
         registry.register_value(Clock, Scope.PROCESS, SystemClock())
 
+    resolved_rl_registry = _resolve_rl_registry(rate_limit_registry, registry)
+
+    # Actor-declared primitive instances (the primary registration path):
+    # collect every TokenBucket / SlidingWindow / ConcurrencyReservation
+    # declared on actors in this worker's actor_registry into the resolved
+    # registry BEFORE validate() runs. Conflict semantics are register()'s
+    # own (_same_config): identical config = debug-log no-op; same name
+    # with different config = ValueError at startup (fail fast). Actors
+    # decorated but absent from the mapping are NOT collected.
+    if actor_registry is not None:
+        collected_rl_names: list[str] = []
+        collected_res_names: list[str] = []
+        for actor_ref in actor_registry.values():
+            for rl_entry in actor_ref.rate_limits:
+                if isinstance(rl_entry, TokenBucket | SlidingWindow):
+                    resolved_rl_registry.register(rl_entry)
+                    collected_rl_names.append(rl_entry.name)
+            for res_entry in actor_ref.reservations:
+                if isinstance(res_entry, ConcurrencyReservation):
+                    resolved_rl_registry.register(res_entry)
+                    collected_res_names.append(res_entry.name)
+        _startup_log.info(
+            "ratelimit-actor-primitives-registered",
+            rate_limit_count=len(collected_rl_names),
+            reservation_count=len(collected_res_names),
+            rate_limit_names=collected_rl_names,
+            reservation_names=collected_res_names,
+        )
+
     scope_containers: dict[Scope, ProcessScope | ThreadScope | LoopScope] = {}
     resolver = make_resolver(registry, scope_containers)  # type: ignore[arg-type]  # Why: make_resolver expects dict[Scope, ScopeContainerProtocol]; scope_containers holds concrete subclasses that satisfy the Protocol — pyright cannot verify dict covariance across the Protocol boundary
 
@@ -260,7 +333,7 @@ async def _main(
         actors_list: list[ActorRef[Any, Any]] | None = (
             list(actor_registry.values()) if actor_registry else None
         )
-        register_rate_limit_registry(registry, rl_registry)
+        register_rate_limit_registry(registry, resolved_rl_registry)
         if not _redis_configured(settings, registry):
             # Why: a Redis-backed rate limit with no Redis configured only
             # fails per-dispatch (get_redis_pool raises after the job has
@@ -294,22 +367,24 @@ async def _main(
             # and get_redis_pool raises when redis_url is None — registering
             # unconditionally would crash workers that don't use Redis.
             register_redis_pool(registry)
-        registry.validate(actors=actors_list, rate_limit_registry=rl_registry)
+        registry.validate(actors=actors_list, rate_limit_registry=resolved_rl_registry)
 
         from taskq.ratelimit import sync_rate_limit_buckets, sync_slots
 
-        # The rate-limit registry is a process-global singleton — it may
-        # carry reservations declared for OTHER schemas/databases (e.g.
-        # sibling apps in the same process). Only this worker's own schema
-        # is in scope: touching another schema's slot tables here would
-        # write into the wrong database or fail noisily.
+        # The resolved rate-limit registry may carry reservations declared
+        # for OTHER schemas/databases (e.g. sibling apps sharing one
+        # registry). Only this worker's own schema is in scope: touching
+        # another schema's slot tables here would write into the wrong
+        # database or fail noisily.
         own_reservations = [
-            res for res in rl_registry.reservations.values() if res.schema == settings.schema_name
+            res
+            for res in resolved_rl_registry.reservations.values()
+            if res.schema == settings.schema_name
         ]
 
         try:
             await sync_rate_limit_buckets(
-                rl_registry, deps.worker_pool, schema=settings.schema_name
+                resolved_rl_registry, deps.worker_pool, schema=settings.schema_name
             )
         except Exception as exc:
             _startup_log.warning(
@@ -429,7 +504,6 @@ async def _main(
         # skips held slots (reporting them) — a strict superset of
         # ensure_slots, so initial registration works identically.
         from taskq.ratelimit.registry import queue_concurrency_reservation_name
-        from taskq.ratelimit.reservation import ConcurrencyReservation
 
         if not _IDENT_RE.match(settings.schema_name):
             raise ValueError(f"invalid schema identifier: {settings.schema_name!r}")
@@ -467,7 +541,7 @@ async def _main(
                 lease=timedelta(seconds=settings.lock_lease),
                 schema=settings.schema_name,
             )
-            rl_registry.register_queue_cap_reservation(reservation)
+            resolved_rl_registry.register_queue_cap_reservation(reservation)
             queue_cap_reservations.append(reservation)
 
         if queue_cap_reservations:
@@ -661,6 +735,7 @@ async def _main(
                             worker_id,
                             backend,
                             clock=_clock,
+                            rate_limit_registry=resolved_rl_registry,
                         ).run(shutdown_event)
                     )
                     _spawn(
@@ -937,6 +1012,7 @@ def worker_main(
     di_registry: ProviderRegistry | None = None,
     cron_registry: list[CronScheduleSpec] | None = None,
     connections: WorkerConnections | None = None,
+    rate_limit_registry: RateLimitRegistry | None = None,
 ) -> int:
     """Worker process entry point.
 
@@ -954,6 +1030,13 @@ def worker_main(
     passing it here; the worker calls ``validate()`` as part of its bootstrap
     sequence.  ``WorkerSettings`` and ``Clock`` are registered automatically
     if not already present.
+
+    ``rate_limit_registry`` is an optional owned :class:`RateLimitRegistry`
+    for this worker (e.g. one instance per process in a multi-process
+    deployment).  When ``None``, resolution falls back to a
+    ``RateLimitRegistry`` value provider in ``di_registry``, then to the
+    module singleton — import-time ``.register()`` on the singleton keeps
+    working exactly as before.  Forwarded to :func:`_main`.
 
     ``cron_registry`` is an optional list of :class:`CronScheduleSpec`
     objects to auto-register at startup.  When ``None`` (the default),
@@ -982,5 +1065,6 @@ def worker_main(
                 _registry=di_registry,
                 _cron_registry=schedule_specs,
                 connections=connections,
+                rate_limit_registry=rate_limit_registry,
             )
         )

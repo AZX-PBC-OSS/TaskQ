@@ -17,6 +17,7 @@ from taskq.actor import ActorRef
 from taskq.exceptions import MissingProvider
 from taskq.ratelimit.registry import RateLimitRegistry
 from taskq.ratelimit.reservation import ConcurrencyReservation
+from taskq.ratelimit.sliding_window import SlidingWindow
 from taskq.ratelimit.token_bucket import TokenBucket
 from taskq.retry import RetryPolicy
 
@@ -96,3 +97,27 @@ def test_unregistered_reservation_instance_fails_with_remediation() -> None:
     assert exc_info.value.type_name == "ConcurrencyReservation"
     assert "ghost_res" in exc_info.value.required_by
     assert "register it on the worker's rate-limit registry" in exc_info.value.required_by
+
+
+def test_registered_reservation_instance_passes_validation() -> None:
+    rl = RateLimitRegistry()
+    res = ConcurrencyReservation(name="db_seats", slots=2, lease=timedelta(seconds=30))
+    rl.register(res)
+    actor = _make_actor("a", reservations=[res])
+
+    _di_registry().validate(actors=[actor], rate_limit_registry=rl)
+
+
+def test_registered_sliding_window_instance_passes_validation() -> None:
+    rl = RateLimitRegistry()
+    sw = SlidingWindow(
+        name="api_sw",
+        limit=5,
+        window=timedelta(seconds=10),
+        backend="memory",
+        style="log",
+    )
+    rl.register(sw)
+    actor = _make_actor("a", rate_limits=[sw])
+
+    _di_registry().validate(actors=[actor], rate_limit_registry=rl)
