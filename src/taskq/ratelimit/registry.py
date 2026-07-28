@@ -1209,6 +1209,29 @@ class RateLimitRegistry:
             preserve=_preserves_memory_fixed_quota_state,
         )
 
+    def clear(self) -> None:
+        """Reset ALL mutable registry state — a test aid, NOT safe while running.
+
+        Clears the four dicts (``_rate_limits``, ``_reservations``,
+        ``_keyed_reservation_last_used``, ``_keyed_rate_limit_last_used``)
+        AND resets the two opportunistic-eviction scan timestamps
+        (``_keyed_reservation_last_eviction_scan`` /
+        ``_keyed_rate_limit_last_eviction_scan``) to ``float("-inf")``.
+        Omitting the timestamps would leave the opportunistic-eviction
+        throttle stamped, silently suppressing scans for up to
+        ``_OPPORTUNISTIC_EVICT_MIN_INTERVAL`` (30 s) in the next test.
+
+        **Not safe to call while a worker is running** — concurrent
+        dispatch / sweep iteration over the dicts would observe
+        inconsistent state. Use for per-test isolation only.
+        """
+        self._rate_limits.clear()
+        self._reservations.clear()
+        self._keyed_reservation_last_used.clear()
+        self._keyed_rate_limit_last_used.clear()
+        self._keyed_reservation_last_eviction_scan = float("-inf")
+        self._keyed_rate_limit_last_eviction_scan = float("-inf")
+
 
 async def _upsert_rate_limit_bucket_row(
     pool: "asyncpg.Pool",
