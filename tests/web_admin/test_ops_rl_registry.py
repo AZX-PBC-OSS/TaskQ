@@ -55,10 +55,15 @@ def test_rate_limits_page_uses_bundle_provided_registry(
 
 def test_rate_limits_page_falls_back_to_singleton(
     make_app: Callable[..., Any],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    singleton.register(
-        _bucket("singleton_bucket")
-    )  # conftest clears the singleton before each test
+    # Self-isolating: the patched dict is reverted at teardown, so this test
+    # leaves the process-global singleton exactly as it found it regardless of
+    # fixture ordering. (The root autouse fixture would also clear it before
+    # the next test — this removes the dependency on that discipline.)
+    monkeypatch.setattr(
+        singleton, "_rate_limits", {"singleton_bucket": _bucket("singleton_bucket")}
+    )
     client = make_app()
 
     response = client.get("/rate-limits")
