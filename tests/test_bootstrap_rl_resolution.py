@@ -3,7 +3,9 @@
 1. Explicit ``rate_limit_registry=`` argument wins.
 2. A DI *value* provider wins over the singleton.
 3. A DI factory/class provider raises TypeError (fail fast — a factory
-   would split-brain bootstrap vs. LOOP-scope dispatch resolution).
+   would split-brain bootstrap vs. LOOP-scope dispatch resolution); a value
+   provider at a non-LOOP scope raises TypeError for the same reason
+   (dispatch resolves from the LOOP-scope cache only).
 4. Default: the module singleton.
 
 Plus the actor-declaration collection pass in ``_main``: a same-name
@@ -79,6 +81,19 @@ def test_di_class_provider_raises_typeerror() -> None:
         _resolve_rl_registry(None, di)
 
 
+@pytest.mark.parametrize("scope", [Scope.PROCESS, Scope.THREAD, Scope.TRANSIENT])
+def test_di_value_provider_non_loop_scope_raises_typeerror(scope: Scope) -> None:
+    """Scope has the same split-brain failure mode as kind: dispatch reads
+    the LOOP-scope cache only (dispatch.py), so a non-LOOP value provider
+    bootstraps against one instance while dispatch finds none — silently
+    disabling rate-limit acquisition. Fail fast, same as the kind guard."""
+    di = ProviderRegistry()
+    di.register_value(RateLimitRegistry, scope, RateLimitRegistry())
+
+    with pytest.raises(TypeError, match=r"Scope\.LOOP"):
+        _resolve_rl_registry(None, di)
+
+
 def test_default_is_module_singleton() -> None:
     assert _resolve_rl_registry(None, ProviderRegistry()) is singleton
 
@@ -99,6 +114,21 @@ async def test_main_raises_typeerror_for_factory_provider_before_opening_pools()
     )
 
     with pytest.raises(TypeError, match="value provider"):
+        await _main(settings, _registry=di)
+
+
+async def test_main_raises_typeerror_for_process_scope_provider_before_opening_pools() -> None:
+    """The scope guard fails fast in _main BEFORE open_worker_deps (no PG needed)."""
+    from taskq.settings import WorkerSettings
+    from taskq.worker.run import _main
+
+    di = ProviderRegistry()
+    di.register_value(RateLimitRegistry, Scope.PROCESS, RateLimitRegistry())
+    settings = WorkerSettings.load_from_dict(
+        {"pg_dsn": "postgresql://x:x@localhost/x"}, validate=False
+    )
+
+    with pytest.raises(TypeError, match=r"Scope\.LOOP"):
         await _main(settings, _registry=di)
 
 

@@ -774,8 +774,9 @@ name entries against the `RateLimitRegistry`'s registered names, raising
 
 The registry is an ownable, injectable dependency. `worker_main`/`_main`
 accept `rate_limit_registry=`; resolution order is explicit argument →
-`RateLimitRegistry` **value** provider in the user DI registry (factory/class
-providers raise `TypeError` at bootstrap; explicit+DI co-presence likewise)
+`RateLimitRegistry` **value** provider at `Scope.LOOP` in the user DI registry
+(factory/class providers raise `TypeError` at bootstrap; non-LOOP scope and
+explicit+DI co-presence likewise)
 → the module-level `registry` singleton (the backwards-compatible default).
 Actor-declared primitive instances are collected into the resolved registry
 at bootstrap before `validate()` runs. The admin app mirrors the same default

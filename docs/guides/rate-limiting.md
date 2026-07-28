@@ -518,6 +518,13 @@ class RateLimitRegistry:
   process — Python objects cannot cross process boundaries; the underlying
   limiter state (Redis hashes, PG rows) is shared.
 
+- **Inject via DI (worker bootstrap).** Register the owned instance as a
+  **value** provider at `Scope.LOOP` in your `di_registry`; the worker
+  resolves it at bootstrap, equivalent to the explicit argument. Factory/
+  class providers and non-LOOP scopes raise `TypeError` (dispatch resolves
+  the registry from the LOOP-scope cache only), as does passing both the
+  argument and a DI provider (ambiguous).
+
 - **The default registry (convenience).** `from taskq.ratelimit import registry`
   is a module-level singleton and remains the default at every entry point:
   import-time `.register()` plus `worker_main(...)` with no

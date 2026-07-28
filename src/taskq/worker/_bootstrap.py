@@ -176,9 +176,13 @@ def _resolve_rl_registry(
        with a DI ``RateLimitRegistry`` provider it raises ``TypeError``
        (ambiguous: bootstrap and dispatch would diverge).
     2. A ``RateLimitRegistry`` provider pre-registered in *di_registry* —
-       **value providers only**: a factory/class provider would split-brain
-       (bootstrap using one instance while LOOP-scope dispatch resolution
-       produced another), so it fails fast with ``TypeError``.
+       **value providers only, at ``Scope.LOOP``**: a factory/class provider
+       would split-brain (bootstrap using one instance while LOOP-scope
+       dispatch resolution produced another), so it fails fast with
+       ``TypeError``.  A non-LOOP scope fails fast too — dispatch resolves
+       the registry from the LOOP-scope cache, so any other scope would
+       bootstrap against one instance while dispatch found none (silently
+       disabling rate limiting).
     3. The module singleton (unchanged backwards-compatible default).
 
     Naming: ``_registry`` / *di_registry* is the DI ``ProviderRegistry``
@@ -200,6 +204,14 @@ def _resolve_rl_registry(
                 "RateLimitRegistry must be registered as a value provider "
                 f"(register_value), got kind={entry.kind!r} — the worker must "
                 "resolve one concrete instance at bootstrap"
+            )
+        if entry.scope is not Scope.LOOP:
+            raise TypeError(
+                "RateLimitRegistry value provider must be registered at "
+                f"Scope.LOOP (got {entry.scope!r}) — dispatch resolves the "
+                "registry from the LOOP-scope cache; a non-LOOP registration "
+                "bootstraps against one instance while dispatch finds none, "
+                "silently disabling rate limiting"
             )
         return cast(RateLimitRegistry, entry.impl)
     return rl_registry
@@ -247,8 +259,8 @@ async def _main(
 
     ``rate_limit_registry`` is the :class:`RateLimitRegistry` this worker
     owns and dispatches against.  Resolution order: explicit argument →
-    ``RateLimitRegistry`` value provider in ``_registry`` → module
-    singleton (see :func:`_resolve_rl_registry`).  Co-present with a
+    ``RateLimitRegistry`` value provider at ``Scope.LOOP`` in ``_registry``
+    → module singleton (see :func:`_resolve_rl_registry`).  Co-present with a
     ``RateLimitRegistry`` provider in ``_registry`` this raises
     ``TypeError`` (ambiguous — bootstrap and dispatch would diverge);
     pass one or the other.  Actor-declared primitive instances
@@ -1047,11 +1059,12 @@ def worker_main(
     ``rate_limit_registry`` is an optional owned :class:`RateLimitRegistry`
     for this worker (e.g. one instance per process in a multi-process
     deployment).  When ``None``, resolution falls back to a
-    ``RateLimitRegistry`` value provider in ``di_registry``, then to the
-    module singleton — import-time ``.register()`` on the singleton keeps
-    working exactly as before.  Co-present with a ``RateLimitRegistry``
-    provider in ``di_registry`` this raises ``TypeError`` (ambiguous —
-    bootstrap and dispatch would diverge); pass one or the other.
+    ``RateLimitRegistry`` value provider at ``Scope.LOOP`` in
+    ``di_registry``, then to the module singleton — import-time
+    ``.register()`` on the singleton keeps working exactly as before.
+    Co-present with a ``RateLimitRegistry`` provider in ``di_registry``
+    this raises ``TypeError`` (ambiguous — bootstrap and dispatch would
+    diverge); pass one or the other.
     Forwarded to :func:`_main`.
 
     ``cron_registry`` is an optional list of :class:`CronScheduleSpec`
