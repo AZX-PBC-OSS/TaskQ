@@ -6,11 +6,11 @@ participates in the DI dep-edge graph automatically because its
 ``settings: WorkerSettings`` parameter is introspected by
 ``_collect_dep_edges``.
 
-Also registers the module-level :data:`RateLimitRegistry` singleton as a
-LOOP-scope value so the consumer can resolve it at dispatch time.  The
-DI-registered instance and the module singleton are the same object —
-callers that import the singleton directly see the same state as
-DI-resolved consumers.
+Also registers the resolved :class:`RateLimitRegistry` instance as a
+LOOP-scope value so the consumer can resolve it at dispatch time.  When
+the module singleton is resolved (the default), the DI-registered
+instance and the singleton are the same object — callers that import
+the singleton directly see the same state as DI-resolved consumers.
 """
 
 from __future__ import annotations

@@ -215,8 +215,8 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
         # its OWN singleton copy, so non-leader processes previously got
         # NO periodic eviction and now sweep their own copy).
         # ctx.rate_limit_registry is None for direct SweepContext
-        # constructions → module-singleton fallback.
-        rl = ctx.rate_limit_registry or rl_registry
+        # constructions → fall back to the module singleton when None.
+        rl = ctx.rate_limit_registry if ctx.rate_limit_registry is not None else rl_registry
         if rl.has_keyed_reservations:
             try:
                 evicted = rl.evict_idle_keyed_reservations(idle_for=_KEYED_IDLE_THRESHOLD)

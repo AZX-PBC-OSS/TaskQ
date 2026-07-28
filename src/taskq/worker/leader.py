@@ -115,7 +115,6 @@ class MaintenanceLeader:
         self._worker_id = worker_id
         self._backend = backend
         self._clock = clock
-        self._rate_limit_registry = rate_limit_registry
         self._sweep_ctx = SweepContext(
             deps=deps,
             backend=backend,
