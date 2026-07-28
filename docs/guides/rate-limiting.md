@@ -867,7 +867,8 @@ PG-published rows. A publish failure only logs a warning; it never fails the acq
 
 ### Bounding registry growth
 
-Concrete per-key `TokenBucket` instances are never removed automatically. Under high key
+Concrete per-key `TokenBucket` instances are registered lazily and, absent eviction, never
+removed. Under high key
 cardinality — for example, one bucket per tenant over a long-running worker's lifetime — the
 in-memory registry dict grows without bound unless pruned. Three distinct, complementary
 mechanisms bound this growth:
