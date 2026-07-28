@@ -64,7 +64,7 @@ postgres-data/
 
 .shipwright/
 
-# Agent-delegated review artifacts
+# Local review artifacts
 .review/
-# Agent workflow artifacts (specs/plans/reviews)
+# Local workflow artifacts (specs/plans/reviews)
 docs/superpowers/
