@@ -2,6 +2,8 @@
 
 import asyncio
 
+import pytest
+
 from taskq._ids import new_uuid
 from taskq.settings import WorkerSettings
 from taskq.worker.deps import WorkerDeps
@@ -25,6 +27,13 @@ class FakeConn:
         self._fetch_rows = fetch_rows or []
         self._fail_execute_with = fail_execute_with
         self._execute_count = 0
+        # Hang-gate + terminate tracking for bounded-close tests (mirrors the
+        # _FakeConn conventions in tests/test_worker_deps_teardown.py):
+        # clear close_wait to make close() block forever (dead PG).
+        self.close_calls = 0
+        self.close_wait = asyncio.Event()
+        self.close_wait.set()  # close() completes instantly by default
+        self.terminated = False
 
     async def execute(self, sql: str, *args: object) -> str:
         self._execute_count += 1
@@ -38,7 +47,12 @@ class FakeConn:
         return list(self._fetch_rows)
 
     async def close(self) -> None:
-        return
+        self.close_calls += 1
+        await self.close_wait.wait()
+
+    def terminate(self) -> None:
+        self.terminated = True
+        self.close_wait.set()  # aborts any in-flight close() wait
 
     def transaction(self) -> "_FakeTransaction":
         self.transaction_calls += 1
@@ -291,3 +305,65 @@ async def test_isolate_self_shields_terminal_writes() -> None:
             apg.connect = orig_pg_connect  # type: ignore[method-assign]
     finally:
         hb_mod.asyncio.shield = _real_shield  # type: ignore[method-assign]
+
+
+# ── Bounded conn close in the finally path (#38) ────────────────────────
+#
+# isolate_self only runs when PG is already suspected dead (heartbeat
+# failures exceeded); its ``finally: await conn.close()`` could then block
+# indefinitely on exactly the dead PG that triggered it, wedging the
+# worker's shutdown signalling. These tests pin the bounded-close
+# discipline (asyncio.wait_for + terminate on timeout) applied via
+# ``close_conn_bounded``; the shrink seam is the same module-global
+# monkeypatch convention as tests/test_worker_deps_teardown.py.
+
+
+async def test_isolate_self_terminates_hung_conn_close(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A hung conn.close() in isolate_self's finally is terminated after the
+    bounded timeout; isolate_self still completes and signals shutdown."""
+    import taskq.worker.heartbeat as hb_mod
+
+    monkeypatch.setattr(hb_mod, "CLOSE_TIMEOUT_SECS", 0.05)
+    conn = FakeConn()
+    conn.close_wait.clear()  # close() blocks forever from now on
+
+    async def fake_connect(dsn: str, *, timeout: float) -> FakeConn:
+        return conn
+
+    import asyncpg as apg
+
+    monkeypatch.setattr(apg, "connect", fake_connect)  # type: ignore[method-assign]
+    deps = _make_deps()
+    shutdown = asyncio.Event()
+    # Why the outer timeout: pre-fix the finally awaited conn.close()
+    # unbounded, so the RED state would hang forever instead of failing fast.
+    async with asyncio.timeout(5):
+        await isolate_self(deps, new_uuid(), shutdown)
+
+    assert conn.terminated is True
+    assert conn.close_calls == 1
+    assert shutdown.is_set()
+
+
+async def test_isolate_self_fast_close_not_terminated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Healthy close(): the isolate-self conn is closed once and never
+    terminated. Pins the no-regression behaviour (passes pre/post-fix)."""
+    conn = FakeConn()
+
+    async def fake_connect(dsn: str, *, timeout: float) -> FakeConn:
+        return conn
+
+    import asyncpg as apg
+
+    monkeypatch.setattr(apg, "connect", fake_connect)  # type: ignore[method-assign]
+    deps = _make_deps()
+    shutdown = asyncio.Event()
+    await isolate_self(deps, new_uuid(), shutdown)
+
+    assert conn.close_calls == 1
+    assert conn.terminated is False
+    assert shutdown.is_set()

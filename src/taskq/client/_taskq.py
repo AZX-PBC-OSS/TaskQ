@@ -50,6 +50,7 @@ if TYPE_CHECKING:
 
     from taskq.connections import ConnFactory
 
+from taskq._close import CLOSE_TIMEOUT_SECS, close_conn_bounded, close_pool_bounded
 from taskq.actor import ActorRef
 from taskq.backend._protocol import (
     DstStrategy,
@@ -287,7 +288,9 @@ class TaskQ:
             await self._client.close()
             self._client = None
         if self._owns_pool and self._pool is not None:
-            await self._pool.close()
+            # Why bounded: an enqueue in flight at close time can stall
+            # Pool.close() indefinitely against a dead PG.
+            await close_pool_bounded(self._pool, "client", CLOSE_TIMEOUT_SECS)
             self._pool = None
 
     async def __aenter__(self) -> "TaskQ":
@@ -758,8 +761,12 @@ async def _stream_pg(
         with contextlib.suppress(Exception):
             await conn.remove_listener(channel, _on_notify)  # pyright: ignore[reportArgumentType]  # Why: asyncpg stubs over-narrow the callback type — same pattern as worker/notify.py
         if owns_conn:
-            with contextlib.suppress(Exception):
-                await conn.close()
+            # Why bounded: suppress(Exception) catches errors but not hangs —
+            # asyncpg's close() passes no timeout underneath, so a dead PG
+            # would wedge stream teardown (#37). The helper bounds the wait,
+            # terminates on timeout, and never raises — subsuming the old
+            # suppress.
+            await close_conn_bounded(conn, "stream-pg", CLOSE_TIMEOUT_SECS)
 
 
 async def _stream_redis(
@@ -1127,8 +1134,18 @@ async def _watch_reclaims_pg(
                         await new_conn.add_listener(channel, _on_notify)  # pyright: ignore[reportArgumentType]  # Why: same asyncpg stub narrowing as above
                     except Exception:
                         if new_conn is not None:
-                            with contextlib.suppress(Exception):
-                                await new_conn.close()
+                            # Why bounded: a conn that failed LISTEN setup may
+                            # be half-dead, and an unbounded close against a
+                            # dead PG would wedge the degraded poll loop — the
+                            # only live delivery path at this point. Matches
+                            # the notify.py reconnect close this PR converted;
+                            # the helper never raises.
+                            await close_conn_bounded(
+                                new_conn,
+                                "watch-reclaims-reconnect",
+                                CLOSE_TIMEOUT_SECS,
+                                mid_run=True,
+                            )
                         failed_attempts += 1
                         if failed_attempts == 1 or failed_attempts % 10 == 0:
                             logger.warning(
@@ -1140,8 +1157,15 @@ async def _watch_reclaims_pg(
                     # Success — swap the dead connection for the new one
                     # and resume the LISTEN-driven outer loop.
                     new_conn.add_termination_listener(_on_terminate)  # pyright: ignore[reportArgumentType]  # Why: same asyncpg stub narrowing as the initial registration
-                    with contextlib.suppress(Exception):
-                        await conn.close()
+                    # Why bounded: the conn being swapped out was already
+                    # diagnosed dead — the sharpest close()-hang case, and
+                    # suppress(Exception) cannot stop a call that never
+                    # returns (asyncpg passes no close timeout underneath).
+                    # Same mid-run class as the failed-reconnect close above
+                    # and the notify.py old-conn close this PR converted.
+                    await close_conn_bounded(
+                        conn, "watch-reclaims-reconnect", CLOSE_TIMEOUT_SECS, mid_run=True
+                    )
                     conn = new_conn
                     wake = asyncio.Event()
                     logger.info(
@@ -1201,5 +1225,6 @@ async def _watch_reclaims_pg(
         with contextlib.suppress(Exception):
             await conn.remove_listener(channel, _on_notify)  # pyright: ignore[reportArgumentType]  # Why: same pattern as _stream_pg
         if owns_conn:
-            with contextlib.suppress(Exception):
-                await conn.close()
+            # Why bounded: same dead-PG close()-hang class as _stream_pg
+            # above (#37) — suppress cannot stop a close that never returns.
+            await close_conn_bounded(conn, "watch-reclaims", CLOSE_TIMEOUT_SECS)

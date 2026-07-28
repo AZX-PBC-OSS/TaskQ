@@ -22,6 +22,12 @@ import structlog
 import typer
 
 from taskq import migrate as migrate_mod
+from taskq._close import (
+    CLOSE_TIMEOUT_SECS,
+    close_conn_bounded,
+    close_pool_bounded,
+    close_redis_bounded,
+)
 from taskq.actor import ActorRef
 from taskq.exceptions import ActorConfigDriftList
 from taskq.settings import TaskQSettings, WorkerSettings
@@ -261,7 +267,11 @@ async def _status(settings: TaskQSettings) -> None:
     try:
         applied = await migrate_mod.list_applied(conn, settings.schema_name)
     finally:
-        await conn.close()
+        # Why bounded: a dead PG can block close() indefinitely, wedging even
+        # this one-shot command before process exit (#38 follow-up). The
+        # helper terminates on timeout and never raises, so a close error can
+        # no longer mask an in-flight exception from list_applied.
+        await close_conn_bounded(conn, "migrate-status", CLOSE_TIMEOUT_SECS)
     typer.echo(f"schema: {settings.schema_name}")
     typer.echo(f"applied: {len(applied)}")
     for migration in migrate_mod.discover():
@@ -286,7 +296,9 @@ async def _up(
             max_steps=max_steps,
         )
     finally:
-        await conn.close()
+        # Why bounded: same dead-PG wedge risk as _status above (#38
+        # follow-up); terminate-on-timeout, never raises.
+        await close_conn_bounded(conn, "migrate-up", CLOSE_TIMEOUT_SECS)
     if not applied:
         typer.echo("no pending migrations")
         return
@@ -443,11 +455,22 @@ def _ui_serve(
             await migrate_mod.apply_pending_locked(pg_dsn, schema=schema)
 
         async with AsyncExitStack() as stack:
-            pg_pool = await stack.enter_async_context(
-                asyncpg.create_pool(pg_dsn, min_size=1, max_size=4)
-            )  # type: ignore[arg-type]  # Why: asyncpg.create_pool returns AsyncContextManager[Pool | None]; enter_async_context expects AsyncContextManager[T]; pyright cannot resolve the generic across the conditional pool-return.
+            pg_pool = await asyncpg.create_pool(pg_dsn, min_size=1, max_size=4)
             assert pg_pool is not None, "asyncpg.create_pool returned None"
             pool = pg_pool
+
+            async def _close_ui_pool() -> None:
+                # Why module-global reads at call time: tests monkeypatch
+                # close_pool_bounded / CLOSE_TIMEOUT_SECS as
+                # observation and timeout-shrink seams (same convention as
+                # taskq.worker.deps).
+                await close_pool_bounded(pool, "ui-admin", CLOSE_TIMEOUT_SECS)
+
+            # Why a pushed callback instead of stack.enter_async_context(pool):
+            # Pool.__aexit__ closes UNBOUNDED — a dead PG would wedge UI
+            # shutdown (#38). The bounded helper terminates the pool on
+            # timeout and never raises.
+            stack.push_async_callback(_close_ui_pool)
 
             redis_client: object | None = None
             if redis_url is not None:
@@ -459,7 +482,31 @@ def _ui_serve(
                         "Install it with: pip install 'taskq[redis]'"
                     ) from exc
 
-                redis_client = await stack.enter_async_context(aioredis.from_url(redis_url))  # type: ignore[arg-type]  # Why: aioredis.from_url returns Redis which is an async context manager; pyright cannot resolve the generic across the object | None erasure boundary.
+                client = aioredis.from_url(redis_url)
+
+                # Why not stack.enter_async_context(client): Redis.__aexit__
+                # calls aclose() UNBOUNDED (and shielded) — a hung broker
+                # would wedge UI shutdown (#38 follow-up). initialize()
+                # preserves __aenter__'s eager-setup semantics; the pushed
+                # callback bounds the close instead (taskq._close
+                # pattern; redis has no terminate(), so it is
+                # log-and-continue).
+                async def _close_ui_redis() -> None:
+                    # Why module-global reads at call time: tests monkeypatch
+                    # close_redis_bounded / CLOSE_TIMEOUT_SECS as
+                    # observation and timeout-shrink seams (same convention as
+                    # the pool close above).
+                    await close_redis_bounded(client, "ui-admin", CLOSE_TIMEOUT_SECS)
+
+                # Why push BEFORE initialize(): from_url() has already
+                # allocated the connection pool, so if initialize() raises
+                # (broker down) the failed eager setup must still release it
+                # — the unwind runs the pushed callback through the bounded
+                # close (never raises; aclose() on a never-initialized client
+                # is a no-op).
+                stack.push_async_callback(_close_ui_redis)
+                await client.initialize()
+                redis_client = client
 
             bundle = create_router(
                 pool,

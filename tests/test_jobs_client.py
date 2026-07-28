@@ -17,6 +17,7 @@ Covers:
 Integration tests live in ``test_jobs_client_integration.py``.
 """
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
@@ -1433,3 +1434,145 @@ class TestDeleteSchedule:
         handle = await client.create_schedule("my_actor", "0 * * * *")
         await client.delete_schedule(handle.schedule_id)
         await client.delete_schedule(handle.schedule_id)
+
+
+# ── Bounded Redis close at client teardown (#38) ────────────────────────
+#
+# _open_redis entered the Redis client on the exit stack
+# (``Redis.__aexit__`` → unbounded ``aclose()``) — a hung broker could
+# wedge ``JobsClient.close()``. These tests pin the bounded-close
+# discipline (asyncio.wait_for, log-and-continue — Redis has no
+# terminate()); the shrink seam is the same module-global monkeypatch
+# convention as tests/test_worker_deps_teardown.py.
+
+
+class _FakeRedisClient:
+    """Fake redis.asyncio.Redis for JobsClient._open_redis tests.
+
+    Supports both lifecycle styles: async-CM (pre-fix enter_async_context
+    path) and explicit initialize() + pushed bounded-aclose callback
+    (post-fix path). aclose() blocks while aclose_wait is cleared (hung
+    broker). Mirrors the _FakeRedisClient conventions in
+    tests/test_worker_deps_teardown.py.
+    """
+
+    def __init__(self) -> None:
+        self.initialize_calls = 0
+        self.aclose_calls = 0
+        self.aclose_wait = asyncio.Event()
+        self.aclose_wait.set()  # aclose() completes instantly by default
+
+    async def initialize(self) -> "_FakeRedisClient":
+        self.initialize_calls += 1
+        return self
+
+    async def aclose(self) -> None:
+        self.aclose_calls += 1
+        await self.aclose_wait.wait()
+
+    async def __aenter__(self) -> "_FakeRedisClient":
+        return self
+
+    async def __aexit__(self, *_: object) -> None:
+        await self.aclose()
+
+
+class _FakeRedisInitializeRaises(_FakeRedisClient):
+    """_FakeRedisClient whose initialize() fails (broker down at startup).
+
+    from_url() has already allocated the connection pool by the time
+    initialize() runs, so a raising eager setup must still be followed by
+    aclose() during unwind. Mirrors _FakeRedisInitializeRaises in
+    tests/test_cli_ui.py.
+    """
+
+    async def initialize(self) -> "_FakeRedisClient":
+        self.initialize_calls += 1
+        raise ConnectionError("broker down")
+
+
+class TestRedisCloseBounded:
+    async def test_close_bounds_hung_redis_aclose(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A hung Redis aclose() is bounded: JobsClient.close() logs and
+        continues (no terminate on Redis) instead of hanging. The timeout
+        event carries ``label=jobs-client`` identifying which client hung
+        (review N7)."""
+        import redis.asyncio as redis_async
+        import structlog.testing
+
+        import taskq.client._jobs as jobs_mod
+        from taskq.settings import TaskQSettings
+
+        monkeypatch.setattr(jobs_mod, "CLOSE_TIMEOUT_SECS", 0.05)
+        _backend, client = _make_client()
+        fake = _FakeRedisClient()
+        monkeypatch.setattr(redis_async, "from_url", lambda *a, **kw: fake)
+
+        settings = TaskQSettings.load_from_dict({"TASKQ_REDIS_URL": "redis://localhost:6379/0"})
+        await client._open_redis(settings)
+        assert client._redis_client is fake
+
+        fake.aclose_wait.clear()  # aclose() blocks forever from now on
+        # Why the outer timeout: pre-fix close() awaited aclose() unbounded
+        # (via Redis.__aexit__), so the RED state would hang forever instead
+        # of failing fast.
+        with structlog.testing.capture_logs() as captured:
+            async with asyncio.timeout(5):
+                await client.close()
+
+        assert fake.aclose_calls == 1
+        assert client._redis_client is None
+        timeout_events = [e for e in captured if e.get("event") == "redis-teardown-close-timeout"]
+        assert len(timeout_events) == 1, f"expected 1 redis timeout event, got {captured!r}"
+        assert timeout_events[0].get("label") == "jobs-client", (
+            f"expected label=jobs-client on the timeout event, got {timeout_events[0]!r}"
+        )
+
+    async def test_close_fast_redis_aclose(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Healthy aclose(): the client is closed exactly once during
+        JobsClient.close(). Pins the no-regression behaviour (passes pre-
+        and post-fix)."""
+        import redis.asyncio as redis_async
+
+        from taskq.settings import TaskQSettings
+
+        _backend, client = _make_client()
+        fake = _FakeRedisClient()
+        monkeypatch.setattr(redis_async, "from_url", lambda *a, **kw: fake)
+
+        settings = TaskQSettings.load_from_dict({"TASKQ_REDIS_URL": "redis://localhost:6379/0"})
+        await client._open_redis(settings)
+        assert client._redis_client is fake
+
+        async with asyncio.timeout(5):
+            await client.close()
+
+        assert fake.aclose_calls == 1
+        assert client._redis_client is None
+
+    async def test_open_redis_initialize_failure_still_closes_client(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A redis client whose initialize() fails (broker down at startup) is
+        still closed during JobsClient.close(): from_url() has already
+        allocated the connection pool, so the failed eager setup must not
+        leak it. Pins that the bounded-close callback is pushed BEFORE
+        initialize() is awaited."""
+        import redis.asyncio as redis_async
+
+        from taskq.settings import TaskQSettings
+
+        _backend, client = _make_client()
+        fake = _FakeRedisInitializeRaises()
+        monkeypatch.setattr(redis_async, "from_url", lambda *a, **kw: fake)
+
+        settings = TaskQSettings.load_from_dict({"TASKQ_REDIS_URL": "redis://localhost:6379/0"})
+        with pytest.raises(ConnectionError, match="broker down"):
+            async with asyncio.timeout(5):
+                await client._open_redis(settings)
+        # Why the timeout: a bounded-close callback not pushed before initialize() hangs this unwind.
+        async with asyncio.timeout(5):
+            await client.close()
+
+        assert fake.initialize_calls == 1
+        assert fake.aclose_calls == 1

@@ -7,6 +7,7 @@ from typing import Any
 
 import structlog
 
+from taskq._close import CLOSE_TIMEOUT_SECS, close_redis_bounded
 from taskq.backend._protocol import JobRow, JobStatus
 
 logger = structlog.get_logger("taskq.client._transport")
@@ -77,8 +78,11 @@ async def redis_event_stream[EventT](
     finally:
         with contextlib.suppress(Exception):
             await pubsub.unsubscribe(channel)
-        with contextlib.suppress(Exception):
-            await pubsub.aclose()
+        # Why bounded: keeps "every TaskQ-initiated close is bounded" true —
+        # the helper never raises, so the redundant suppress is dropped and a
+        # hung broker cannot wedge the stream finalizer. Module-global read
+        # at call time: tests monkeypatch CLOSE_TIMEOUT_SECS to shrink it.
+        await close_redis_bounded(pubsub, "client-transport", CLOSE_TIMEOUT_SECS)
 
 
 async def pg_poll_event_stream[EventT](

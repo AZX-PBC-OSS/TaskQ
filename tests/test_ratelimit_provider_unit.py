@@ -2,12 +2,15 @@
 
 register_redis_pool is idempotent.
 get_redis_pool raises RuntimeError when redis_url is None.
+get_redis_pool bounds its teardown redis close (review N4).
 """
 
+import asyncio
 import contextlib
 
 import pytest
 import redis.asyncio as redis_async
+import structlog.testing
 
 from taskq._di.registry import ProviderRegistry
 from taskq._di.scope import Scope
@@ -91,3 +94,53 @@ async def test_get_redis_pool_error_message_mentions_both_primitives() -> None:
     msg = exc_info.value.args[0]
     assert "TokenBucket" in msg
     assert "SlidingWindow" in msg
+
+
+# ── Bounded redis teardown close (review N4) ──────────────────
+
+
+class _HungRedis:
+    """Docker-free fake Redis whose aclose() hangs on a gate (dead broker)."""
+
+    def __init__(self) -> None:
+        self.aclose_calls = 0
+        self.aclose_wait = asyncio.Event()  # never set — aclose() hangs forever
+
+    async def aclose(self) -> None:
+        self.aclose_calls += 1
+        await self.aclose_wait.wait()
+
+
+async def test_get_redis_pool_bounds_teardown_close(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A hung redis aclose() at provider teardown is bounded: the LOOP-scope
+    shutdown logs ``redis-teardown-close-timeout`` (label=ratelimit) and
+    completes instead of adding an unaccounted ~5s tail to worker teardown
+    (review N4). Docker-free: ``redis_async.from_url`` is patched to a fake
+    whose aclose() never returns."""
+    import taskq.ratelimit._provider as provider_mod
+
+    # Why raising=False: pre-fix the module has no CLOSE_TIMEOUT_SECS seam,
+    # so the RED state must demonstrate the teardown wedge (outer timeout),
+    # not an AttributeError from the shrink.
+    monkeypatch.setattr(provider_mod, "CLOSE_TIMEOUT_SECS", 0.05, raising=False)
+    fake = _HungRedis()
+    monkeypatch.setattr(redis_async, "from_url", lambda *a, **kw: fake)
+
+    settings = WorkerSettings.load_from_dict(
+        {"pg_dsn": "postgresql://u:p@h/d", "redis_url": "redis://localhost:6379/0"}
+    )
+
+    # Why the outer timeout: pre-fix the provider's finally awaited
+    # client.aclose() unbounded, so the RED state wedges here instead of
+    # failing fast.
+    with structlog.testing.capture_logs() as captured:
+        async with asyncio.timeout(5):
+            async for _ in get_redis_pool(settings):
+                pass
+
+    assert fake.aclose_calls == 1
+    timeout_events = [e for e in captured if e.get("event") == "redis-teardown-close-timeout"]
+    assert len(timeout_events) == 1, f"expected 1 redis timeout event, got {captured!r}"
+    assert timeout_events[0].get("label") == "ratelimit", (
+        f"expected label=ratelimit on the timeout event, got {timeout_events[0]!r}"
+    )

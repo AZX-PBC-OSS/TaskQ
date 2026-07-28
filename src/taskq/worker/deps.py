@@ -20,6 +20,12 @@ from uuid import UUID
 import asyncpg
 import structlog
 
+from taskq._close import (
+    CLOSE_TIMEOUT_SECS,
+    close_conn_bounded,
+    close_pool_bounded,
+    close_redis_bounded,
+)
 from taskq._dsn import dsn_host as _dsn_host
 from taskq.connections import ConnFactory, PoolFactory, RedisFactory, WorkerConnections
 from taskq.constants import wake_channel
@@ -489,16 +495,18 @@ async def open_worker_deps(
         if owns_notify:
 
             async def _close_notify_conn() -> None:
-                if deps.notify_conn is not None:
-                    await deps.notify_conn.close()
+                conn = deps.notify_conn
+                if conn is not None:
+                    await close_conn_bounded(conn, "notify", CLOSE_TIMEOUT_SECS)
                     deps.notify_conn = None
 
             stack.push_async_callback(_close_notify_conn)
         if owns_leader:
 
             async def _close_leader_conn() -> None:
-                if deps.leader_conn is not None:
-                    await deps.leader_conn.close()
+                conn = deps.leader_conn
+                if conn is not None:
+                    await close_conn_bounded(conn, "leader", CLOSE_TIMEOUT_SECS)
                     deps.leader_conn = None
 
             stack.push_async_callback(_close_leader_conn)
@@ -508,9 +516,13 @@ async def open_worker_deps(
                 # Closes through ``deps.redis_client`` — NOT the startup
                 # instance — so a client swapped in by reload_credentials is
                 # the one closed here (reload drains the old one itself).
-                # Mirrors the notify/leader guards above.
-                if deps.redis_client is not None:
-                    await deps.redis_client.aclose()
+                # Mirrors the notify/leader guards above: bounded close, then
+                # null the attr so nothing can touch the closed client after
+                # teardown.
+                client = deps.redis_client
+                if client is not None:
+                    await close_redis_bounded(client, "worker", CLOSE_TIMEOUT_SECS)
+                    deps.redis_client = None
 
             stack.push_async_callback(_close_redis_client)
 
@@ -570,8 +582,8 @@ async def _resolve_pool(
 
     Exactly one of the three must be non-``None``; the caller ensures this
     by building ``dsn_factory`` only when the DSN is available and the role
-    is not overridden. TaskQ-owned pools are entered on ``stack`` for LIFO
-    close.
+    is not overridden. TaskQ-owned pools register a bounded-close callback
+    (:func:`taskq._close.close_pool_bounded`) on ``stack`` for LIFO teardown.
     """
     if concrete is not None:
         logger.info("pool-using-provided", pool=label, ownership="caller")
@@ -581,7 +593,20 @@ async def _resolve_pool(
         f"{label} pool has no source — provide a concrete pool, factory, or DSN"
     )
     pool = await chosen()
-    await stack.enter_async_context(pool)
+
+    async def _close_pool(p: asyncpg.Pool = pool, lbl: str = label) -> None:
+        # Why default-arg binding: keeps this closure loop-safe, matching the
+        # reload_credentials registration site (a late-bound capture inside
+        # that loop would close the wrong pool).
+        # Why module-global reads at call time: tests monkeypatch
+        # close_pool_bounded / CLOSE_TIMEOUT_SECS as observation
+        # and timeout-shrink seams.
+        await close_pool_bounded(p, lbl, CLOSE_TIMEOUT_SECS)
+
+    # Why a pushed callback instead of stack.enter_async_context(pool):
+    # Pool.__aexit__ closes unbounded; the bounded helper above terminates
+    # on timeout so a dead PG cannot wedge final teardown.
+    stack.push_async_callback(_close_pool)
     logger.info(
         "pool-opened",
         pool=label,
@@ -678,7 +703,17 @@ async def reload_credentials(
             try:
                 old_pool: asyncpg.Pool = getattr(deps, pool_attr)
                 new_pool = await asyncio.wait_for(factory(), timeout=factory_timeout)
-                await stack.enter_async_context(new_pool)
+
+                async def _close_pool(p: asyncpg.Pool = new_pool, lbl: str = label) -> None:
+                    # Why default-arg binding: this closure is defined inside
+                    # the pool loop — a late-bound capture of new_pool/label
+                    # would close the LAST iteration's pool N times and leak
+                    # the rest.
+                    await close_pool_bounded(p, lbl, CLOSE_TIMEOUT_SECS)
+
+                # Same bounded-teardown contract as _resolve_pool: never an
+                # unbounded enter_async_context close.
+                stack.push_async_callback(_close_pool)
                 setattr(deps, pool_attr, new_pool)
                 _drain_old_pool(old_pool, label, drain_timeout)
                 reloaded.append(label)

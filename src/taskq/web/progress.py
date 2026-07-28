@@ -41,6 +41,7 @@ from sse_starlette.event import ServerSentEvent
 from sse_starlette.sse import EventSourceResponse
 
 from taskq import _json
+from taskq._close import CLOSE_TIMEOUT_SECS, close_redis_bounded
 from taskq.backend.statemachine import TERMINAL_STATUSES
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining it
@@ -229,8 +230,11 @@ async def _event_generator(
         # must not mask the primary exception.
         with contextlib.suppress(Exception):
             await pubsub.unsubscribe(channel)
-        with contextlib.suppress(Exception):
-            await pubsub.aclose()
+        # Why bounded: keeps "every TaskQ-initiated close is bounded" true —
+        # the helper never raises, so the redundant suppress is dropped and a
+        # hung broker cannot wedge the stream finalizer. Module-global read
+        # at call time: tests monkeypatch CLOSE_TIMEOUT_SECS to shrink it.
+        await close_redis_bounded(pubsub, "web-progress", CLOSE_TIMEOUT_SECS)
 
 
 # ------------------------------------------------------------------
@@ -338,8 +342,10 @@ def create_router(
                 channel=channel,
                 error=str(exc),
             )
-            with contextlib.suppress(Exception):
-                await pubsub.aclose()
+            # Why bounded: same close contract as the generator finally —
+            # helper never raises (suppress dropped), hung broker cannot
+            # wedge the 503 path.
+            await close_redis_bounded(pubsub, "web-progress", CLOSE_TIMEOUT_SECS)
             return JSONResponse(  # pyright: ignore[reportReturnType]  # Why: FastAPI accepts any Response subclass here; JSONResponse is returned for the 503 before SSE upgrade.
                 status_code=503,
                 content=_REDIS_503_BODY,
@@ -355,15 +361,17 @@ def create_router(
             # Cleanup must not mask the original exception from the PG query.
             with contextlib.suppress(Exception):
                 await pubsub.unsubscribe(channel)
-            with contextlib.suppress(Exception):
-                await pubsub.aclose()
+            # Why bounded: helper never raises (suppress dropped), so the
+            # original PG error always propagates even with a dead broker.
+            await close_redis_bounded(pubsub, "web-progress", CLOSE_TIMEOUT_SECS)
             raise
 
         if row is None:
             with contextlib.suppress(Exception):
                 await pubsub.unsubscribe(channel)
-            with contextlib.suppress(Exception):
-                await pubsub.aclose()
+            # Why bounded: helper never raises (suppress dropped), so the 404
+            # is raised even with a dead broker.
+            await close_redis_bounded(pubsub, "web-progress", CLOSE_TIMEOUT_SECS)
             raise HTTPException(status_code=404, detail="job not found")
 
         # Extract snapshot data from PG row.

@@ -16,6 +16,7 @@ from uuid import UUID
 import asyncpg
 import structlog
 
+from taskq._close import CLOSE_TIMEOUT_SECS, close_conn_bounded
 from taskq._dsn import dsn_host
 from taskq._json import dumps_str
 from taskq.backend._sql import (
@@ -279,7 +280,13 @@ async def isolate_self(
                 _inner()
             )
         finally:
-            await conn.close()
+            # Why bounded: isolate_self only runs when PG is already
+            # suspected dead (heartbeat failures exceeded), so this close is
+            # exactly the dead-PG hang case (#38) — unbounded, it would
+            # wedge shutdown.set() below. The helper never raises, so a
+            # close error can no longer mask an in-flight exception or be
+            # misreported as an isolate-self failure.
+            await close_conn_bounded(conn, "isolate-self", CLOSE_TIMEOUT_SECS, mid_run=True)
     except Exception as exc:
         logger.warning(
             "isolate-self-failure",

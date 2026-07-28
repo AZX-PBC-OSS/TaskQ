@@ -18,6 +18,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from typing import Any
 
+from taskq._close import CLOSE_TIMEOUT_SECS, close_redis_bounded
 from taskq._di.registry import ProviderRegistry
 from taskq._di.scope import Scope
 from taskq.ratelimit.registry import RateLimitRegistry
@@ -52,7 +53,13 @@ async def get_redis_pool(
     try:
         yield client
     finally:
-        await client.aclose()
+        # Why bounded: this close runs on the worker exit stack, which unwinds
+        # each teardown bare — an unbounded close here is a teardown tail
+        # outside the accounted budget. One close bound, one mental model:
+        # same CLOSE_TIMEOUT_SECS module-global seam as every other
+        # TaskQ-initiated redis close (taskq._close; read at call time so
+        # tests can shrink it).
+        await close_redis_bounded(client, "ratelimit", CLOSE_TIMEOUT_SECS)
 
 
 def register_redis_pool(registry: ProviderRegistry) -> None:

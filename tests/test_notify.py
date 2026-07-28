@@ -1012,6 +1012,187 @@ class TestReconnectKeepalive:
         keepalive_mock.assert_called_once_with(new_conn, label="notify")
 
 
+# ── Bounded closes on reconnect/health-check error paths (#38) ──────────
+#
+# The reconnect LISTEN-setup-failure cleanup, the post-reconnect old-conn
+# drain, and the health-check error path all closed conns with a bare
+# ``await conn.close()`` — a dead PG can block that indefinitely, stalling
+# the listener/reconnect loop. These tests pin the bounded-close discipline
+# (asyncio.wait_for + terminate on timeout) applied via
+# ``close_conn_bounded``; the shrink seam is the same module-global
+# monkeypatch convention as tests/test_worker_deps_teardown.py.
+
+
+class TestBoundedConnClose:
+    async def test_reconnect_close_of_new_conn_on_listener_setup_failure_is_bounded(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """LISTEN setup fails on the freshly-built conn and its cleanup
+        close() hangs (dead PG): the close is terminated after the bound
+        and the original setup error — not a hang — propagates."""
+        import taskq.worker.notify as notify_mod
+
+        monkeypatch.setattr(notify_mod, "CLOSE_TIMEOUT_SECS", 0.05)
+        deps = _make_mock_deps()
+        backend = _make_backend()
+        channels = _make_channels(backend)
+
+        hang = asyncio.Event()  # never set → close() blocks forever
+        new_conn = _mock_conn()
+        new_conn.add_listener = Mock(side_effect=RuntimeError("listener setup failed"))
+        new_conn.close = Mock(side_effect=lambda: hang.wait())
+
+        async def factory() -> Mock:
+            return new_conn
+
+        deps.notify_conn_factory = factory
+
+        # Why the outer timeout: pre-fix the cleanup awaited conn.close()
+        # unbounded, so the RED state would hang forever instead of failing
+        # fast.
+        async with asyncio.timeout(5):
+            with pytest.raises(RuntimeError, match="listener setup failed"):
+                await reconnect_notify_conn(deps, backend, channels)
+
+        new_conn.terminate.assert_called_once()
+
+    async def test_reconnect_close_of_new_conn_on_listener_setup_failure_fast_close(
+        self,
+    ) -> None:
+        """Same path with a healthy close(): the fresh conn is closed once,
+        never terminated, and the setup error propagates. Pins the
+        no-regression behaviour (passes pre- and post-fix)."""
+        deps = _make_mock_deps()
+        backend = _make_backend()
+        channels = _make_channels(backend)
+
+        new_conn = _mock_conn()
+        new_conn.add_listener = Mock(side_effect=RuntimeError("listener setup failed"))
+
+        async def factory() -> Mock:
+            return new_conn
+
+        deps.notify_conn_factory = factory
+
+        with pytest.raises(RuntimeError, match="listener setup failed"):
+            await reconnect_notify_conn(deps, backend, channels)
+
+        new_conn.close.assert_called_once()
+        new_conn.terminate.assert_not_called()
+
+    async def test_reconnect_close_old_conn_is_bounded(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """close_old=True (SIGHUP reload path): the background close of the
+        replaced conn hangs — it is terminated after the bound while the
+        swap to the new conn still completes."""
+        import taskq.worker.notify as notify_mod
+
+        monkeypatch.setattr(notify_mod, "CLOSE_TIMEOUT_SECS", 0.05)
+        deps = _make_mock_deps()
+        backend = _make_backend()
+        channels = _make_channels(backend)
+
+        old_conn = deps.notify_conn
+        hang = asyncio.Event()  # never set → close() blocks forever
+        old_conn.close = Mock(side_effect=lambda: hang.wait())
+
+        new_conn = _mock_conn()
+
+        async def factory() -> Mock:
+            return new_conn
+
+        deps.notify_conn_factory = factory
+
+        # Why the outer timeout: pre-fix the background close awaited
+        # old_conn.close() unbounded, so terminate is never reached and the
+        # poll below would spin forever in the RED state.
+        async with asyncio.timeout(5):
+            await reconnect_notify_conn(deps, backend, channels, close_old=True)
+            assert deps.notify_conn is new_conn
+            for _ in range(500):
+                if old_conn.terminate.called:
+                    break
+                await asyncio.sleep(0.01)
+
+        old_conn.terminate.assert_called_once()
+
+    async def test_reconnect_close_old_conn_fast_close_not_terminated(self) -> None:
+        """close_old=True with a healthy close(): the old conn is closed
+        once, never terminated. Pins the no-regression behaviour (passes
+        pre- and post-fix)."""
+        deps = _make_mock_deps()
+        backend = _make_backend()
+        channels = _make_channels(backend)
+
+        old_conn = deps.notify_conn
+        new_conn = _mock_conn()
+
+        async def factory() -> Mock:
+            return new_conn
+
+        deps.notify_conn_factory = factory
+
+        async with asyncio.timeout(5):
+            await reconnect_notify_conn(deps, backend, channels, close_old=True)
+            for _ in range(500):
+                if old_conn.close.called:
+                    break
+                await asyncio.sleep(0.01)
+
+        old_conn.close.assert_called_once()
+        old_conn.terminate.assert_not_called()
+
+    async def test_health_check_error_path_close_is_bounded(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Health-check failure on a TaskQ-owned conn whose close() hangs:
+        the close is terminated after the bound and the reconnect loop
+        proceeds to swap in the factory-built conn."""
+        import taskq.worker.notify as notify_mod
+
+        monkeypatch.setattr(notify_mod, "CLOSE_TIMEOUT_SECS", 0.05)
+        deps = _make_mock_deps()
+        backend = _make_backend()
+        channels = _make_channels(backend)
+        shutdown = asyncio.Event()
+
+        old_conn = deps.notify_conn
+        old_conn.execute = AsyncMock(
+            side_effect=asyncpg.PostgresConnectionError("simulated failure")
+        )
+        hang = asyncio.Event()  # never set → close() blocks forever
+        old_conn.close = Mock(side_effect=lambda: hang.wait())
+
+        new_conn = _mock_conn()
+
+        async def factory() -> Mock:
+            return new_conn
+
+        deps.notify_conn_factory = factory
+
+        task = asyncio.create_task(_health_check_loop(deps, backend, shutdown, channels))
+        try:
+            # Why the outer timeout: pre-fix the error path awaited
+            # conn.close() unbounded, so the swap never happens and the
+            # poll below would spin forever in the RED state.
+            async with asyncio.timeout(5):
+                for _ in range(500):
+                    if deps.notify_conn is new_conn:
+                        break
+                    await asyncio.sleep(0.01)
+                shutdown.set()
+                await task
+        finally:
+            if not task.done():
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+
+        old_conn.terminate.assert_called_once()
+        assert deps.notify_conn is new_conn
+
+
 # ── notify_reconnect_fn registration ────────────────────────────────────
 
 

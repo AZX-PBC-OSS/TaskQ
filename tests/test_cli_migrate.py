@@ -1,26 +1,45 @@
 """Tests for taskq migrate CLI subcommand: status and up."""
 
+import asyncio
 from typing import Any
 from unittest.mock import AsyncMock
 
+import pytest
 from typer.testing import CliRunner
 
 import taskq.cli as cli_mod
 from taskq.cli import app
 from taskq.migrate import Migration
+from taskq.settings import TaskQSettings
 from taskq.testing.assertions import plain_cli_output
 
 runner = CliRunner()
 
 
 class _FakeConn:
-    """Stands in for the asyncpg connection returned by asyncpg.connect."""
+    """Stands in for the asyncpg connection returned by asyncpg.connect.
+
+    close()/terminate() tracking with a hang gate for bounded-close tests:
+    clear close_wait to make close() block forever (dead PG). Mirrors the
+    _FakePool conventions in tests/test_cli_ui.py.
+    """
 
     def __init__(self) -> None:
+        self.close_calls = 0
+        self.close_wait = asyncio.Event()
+        self.close_wait.set()  # close() completes instantly by default
         self.closed = False
+        self.terminated = False
 
     async def close(self) -> None:
+        self.close_calls += 1
+        await self.close_wait.wait()
         self.closed = True
+
+    def terminate(self) -> None:
+        self.terminated = True
+        self.closed = True
+        self.close_wait.set()
 
 
 def _make_migration(version: str, phase: str, filename: str) -> Migration:
@@ -69,7 +88,11 @@ def test_migrate_status_shows_applied_and_pending(monkeypatch: Any) -> None:
 
 
 def test_migrate_status_closes_connection(monkeypatch: Any) -> None:
-    """migrate status closes the asyncpg connection even when the command succeeds."""
+    """migrate status closes the asyncpg connection even when the command succeeds.
+
+    No-regression pin for the bounded close (#38 follow-up): a healthy conn
+    is closed exactly once and never terminated (passes pre- and post-fix).
+    """
     fake_conn = _patch_connect(monkeypatch)
     monkeypatch.setattr(cli_mod.migrate_mod, "list_applied", AsyncMock(return_value=set()))
     monkeypatch.setattr(cli_mod.migrate_mod, "discover", lambda: [])
@@ -77,6 +100,68 @@ def test_migrate_status_closes_connection(monkeypatch: Any) -> None:
     result = runner.invoke(app, ["migrate", "status"])
     assert result.exit_code == 0, f"stderr: {result.stderr}"
     assert fake_conn.closed is True
+    assert fake_conn.close_calls == 1
+    assert fake_conn.terminated is False
+
+
+async def test_migrate_status_terminates_hung_conn_close(monkeypatch: Any) -> None:
+    """A hung conn close at migrate status exit (dead PG) is terminated after
+    the bounded timeout and the command body completes."""
+    fake_conn = _patch_connect(monkeypatch)
+    fake_conn.close_wait.clear()  # close() blocks forever from now on
+    monkeypatch.setattr(cli_mod.migrate_mod, "list_applied", AsyncMock(return_value=set()))
+    monkeypatch.setattr(cli_mod.migrate_mod, "discover", lambda: [])
+    monkeypatch.setattr(cli_mod, "CLOSE_TIMEOUT_SECS", 0.05)
+
+    # Why the outer timeout: pre-fix _status awaited conn.close() unbounded,
+    # so the RED state would hang forever instead of failing fast. Driven via
+    # the command coroutine directly (not runner.invoke) so asyncio.timeout
+    # can bound the RED state.
+    async with asyncio.timeout(5):
+        await cli_mod._status(TaskQSettings.load())
+
+    assert fake_conn.terminated is True
+    assert fake_conn.close_calls == 1
+
+
+async def test_migrate_status_hung_close_does_not_mask_body_error(monkeypatch: Any) -> None:
+    """A hung conn close cannot mask an in-flight body error: list_applied's
+    RuntimeError propagates while the bounded close times out, terminates
+    the conn, and never raises (so the finally-block close cannot swallow
+    or replace the original exception)."""
+    fake_conn = _patch_connect(monkeypatch)
+    fake_conn.close_wait.clear()  # close() blocks forever from now on
+    monkeypatch.setattr(
+        cli_mod.migrate_mod, "list_applied", AsyncMock(side_effect=RuntimeError("boom"))
+    )
+    monkeypatch.setattr(cli_mod, "CLOSE_TIMEOUT_SECS", 0.05)
+
+    # Why the outer timeout: pre-fix _status awaited conn.close() unbounded,
+    # so the RED state would hang forever (masking "boom") instead of
+    # failing fast.
+    async with asyncio.timeout(5):
+        with pytest.raises(RuntimeError, match="boom"):
+            await cli_mod._status(TaskQSettings.load())
+
+    assert fake_conn.terminated is True
+
+
+def test_migrate_status_hung_close_does_not_mask_body_error_exit_code(
+    monkeypatch: Any,
+) -> None:
+    """CLI surface of the masking test above: the body error reaches the
+    Typer boundary (exit codes are only produced there) instead of wedging
+    the process on the hung close."""
+    fake_conn = _patch_connect(monkeypatch)
+    fake_conn.close_wait.clear()  # close() blocks forever from now on
+    monkeypatch.setattr(
+        cli_mod.migrate_mod, "list_applied", AsyncMock(side_effect=RuntimeError("boom"))
+    )
+    monkeypatch.setattr(cli_mod, "CLOSE_TIMEOUT_SECS", 0.05)
+
+    result = runner.invoke(app, ["migrate", "status"])
+    assert result.exit_code == 1
+    assert fake_conn.terminated is True
 
 
 # ── migrate up ─────────────────────────────────────────────────────────────
@@ -139,10 +224,35 @@ def test_migrate_up_forwards_phase_target_max_steps(monkeypatch: Any) -> None:
 
 
 def test_migrate_up_closes_connection(monkeypatch: Any) -> None:
-    """migrate up closes the asyncpg connection even when no migrations are pending."""
+    """migrate up closes the asyncpg connection even when no migrations are pending.
+
+    No-regression pin for the bounded close (#38 follow-up): a healthy conn
+    is closed exactly once and never terminated (passes pre- and post-fix).
+    """
     fake_conn = _patch_connect(monkeypatch)
     monkeypatch.setattr(cli_mod.migrate_mod, "apply_pending", AsyncMock(return_value=[]))
 
     result = runner.invoke(app, ["migrate", "up"])
     assert result.exit_code == 0, f"stderr: {result.stderr}"
     assert fake_conn.closed is True
+    assert fake_conn.close_calls == 1
+    assert fake_conn.terminated is False
+
+
+async def test_migrate_up_terminates_hung_conn_close(monkeypatch: Any) -> None:
+    """A hung conn close at migrate up exit (dead PG) is terminated after
+    the bounded timeout and the command body completes."""
+    fake_conn = _patch_connect(monkeypatch)
+    fake_conn.close_wait.clear()  # close() blocks forever from now on
+    monkeypatch.setattr(cli_mod.migrate_mod, "apply_pending", AsyncMock(return_value=[]))
+    monkeypatch.setattr(cli_mod, "CLOSE_TIMEOUT_SECS", 0.05)
+
+    # Why the outer timeout: pre-fix _up awaited conn.close() unbounded,
+    # so the RED state would hang forever instead of failing fast. Driven via
+    # the command coroutine directly (not runner.invoke) so asyncio.timeout
+    # can bound the RED state.
+    async with asyncio.timeout(5):
+        await cli_mod._up(TaskQSettings.load(), phase=None, target=None, max_steps=None)
+
+    assert fake_conn.terminated is True
+    assert fake_conn.close_calls == 1

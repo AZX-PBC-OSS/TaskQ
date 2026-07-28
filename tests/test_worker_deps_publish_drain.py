@@ -65,6 +65,12 @@ class _FakePool:
     async def __aexit__(self, *exc: object) -> None:
         self.closing = True
 
+    async def close(self) -> None:
+        # Why: teardown closes TaskQ-owned pools via close_pool_bounded →
+        # pool.close() (not __aexit__); without this the fake would raise
+        # AttributeError into the helper's except-Exception branch.
+        self.closing = True
+
     def is_closing(self) -> bool:
         return self.closing
 

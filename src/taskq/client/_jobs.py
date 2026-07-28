@@ -24,6 +24,7 @@ import structlog
 from croniter import croniter
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
+from taskq._close import CLOSE_TIMEOUT_SECS, close_redis_bounded
 from taskq.actor import ActorRef
 from taskq.backend._cursor import encode_cursor
 from taskq.backend._protocol import (
@@ -115,8 +116,9 @@ class JobsClient:
         """Open a Redis client when ``settings.redis_url`` is not ``None``.
 
         Called by :class:`TaskQ.open()` after constructing the client.
-        The Redis client is entered on :attr:`_exit_stack` for LIFO teardown.
-        Uses ``decode_responses=False`` (bytes mode) consistent with the
+        The Redis client is registered on :attr:`_exit_stack` for LIFO
+        teardown via a bounded-close callback. Uses
+        ``decode_responses=False`` (bytes mode) consistent with the
         LOOP-scoped client pattern.
 
         Raises :class:`ImportError` when ``redis_url`` is set but the
@@ -130,9 +132,28 @@ class JobsClient:
                     "redis_url is configured but the [redis] extra is not installed. "
                     "Install it with: pip install 'taskq[redis]'"
                 ) from exc
-            self._redis_client = await self._exit_stack.enter_async_context(
-                redis_async.from_url(str(settings.redis_url), decode_responses=False)
-            )
+            client = redis_async.from_url(str(settings.redis_url), decode_responses=False)
+
+            # Why not stack.enter_async_context(client): Redis.__aexit__
+            # calls aclose() UNBOUNDED — a hung broker would wedge
+            # JobsClient.close() (#38). initialize() preserves
+            # __aenter__'s eager-setup semantics; the pushed callback
+            # bounds the close instead (b072692 pattern).
+            async def _close_client() -> None:
+                # Why module-global reads at call time: tests monkeypatch
+                # close_redis_bounded / CLOSE_TIMEOUT_SECS as
+                # observation and timeout-shrink seams (same convention as
+                # taskq.worker.deps).
+                await close_redis_bounded(client, "jobs-client", CLOSE_TIMEOUT_SECS)
+
+            # Why push BEFORE initialize(): from_url() has already allocated
+            # the connection pool, so if initialize() raises (broker down)
+            # the failed eager setup must still release it — the unwind runs
+            # the pushed callback through the bounded close (never raises;
+            # aclose() on a never-initialized client is a no-op).
+            self._exit_stack.push_async_callback(_close_client)
+            await client.initialize()
+            self._redis_client = client
         self._settings = settings
 
     async def close(self) -> None:

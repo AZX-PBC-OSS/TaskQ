@@ -12,7 +12,6 @@ Failover SLA:
 """
 
 import asyncio
-import contextlib
 import time
 from collections.abc import Iterable
 from uuid import UUID
@@ -21,6 +20,7 @@ import asyncpg
 import structlog
 from opentelemetry.metrics import CallbackOptions, Observation
 
+from taskq._close import CLOSE_TIMEOUT_SECS, close_conn_bounded
 from taskq.backend._protocol import Backend
 from taskq.backend.clock import Clock
 from taskq.constants import (
@@ -110,14 +110,36 @@ class MaintenanceLeader:
         self._leader_monitor_conn: asyncpg.Connection | None = None
         self._cron_conn: asyncpg.Connection | None = None
 
-    async def _close_leader_owned_conns(self) -> None:
+    async def _close_leader_owned_conns(self, *, mid_run: bool = True) -> None:
+        """Close the leader-owned dedicated conns (cron, monitor), bounded.
+
+        Two call contexts: mid-run demotion (watchdog/election/cron
+        conn-died paths — the default ``mid_run=True``, the ``conn-close-*``
+        alert family) and ``run()``'s finally (final teardown — passes
+        ``mid_run=False`` for the ``conn-teardown-close-*`` family), so an
+        ordinary shutdown never pages as an unexpected mid-run close
+        timeout.
+        """
+        # Why first: demotion must be observable immediately — the bounded
+        # closes below can park for seconds on a dead PG, and this flag
+        # backs the leader gauge, /metrics, and the health report.
+        self._deps.is_leader.clear()
         for attr in ("_cron_conn", "_leader_monitor_conn"):
             conn = getattr(self, attr)
             if conn is not None and not conn.is_closed():
-                with contextlib.suppress(asyncpg.PostgresConnectionError, OSError):
-                    await conn.close()
+                # Why bounded: a dead PG can block conn.close() indefinitely,
+                # which stalled the election/watchdog/cron paths that call
+                # this (#38). The helper never raises — a superset of the
+                # previous suppress(PostgresConnectionError, OSError) — and
+                # terminates the conn on timeout. Labels match the keepalive
+                # labels ("cron_conn" / "leader_monitor_conn").
+                await close_conn_bounded(
+                    conn,
+                    attr.removeprefix("_"),
+                    CLOSE_TIMEOUT_SECS,
+                    mid_run=mid_run,
+                )
             setattr(self, attr, None)
-        self._deps.is_leader.clear()
 
     async def _drop_leader_conn(self, *, reason: str) -> None:
         """Null ``deps.leader_conn``, closing it only when TaskQ-owned.
@@ -134,7 +156,12 @@ class MaintenanceLeader:
             return
         if self._deps.owns_leader_conn:
             if not conn.is_closed():
-                await conn.close()
+                # Why bounded: same dead-PG stall risk on the watchdog/
+                # election drop path (#38). The helper never raises, so
+                # leader_conn is always nulled below and the loop can
+                # rebuild — previously a close error propagated out of the
+                # drop path and skipped the nulling.
+                await close_conn_bounded(conn, "leader_conn", CLOSE_TIMEOUT_SECS, mid_run=True)
         else:
             log.warning(
                 "leader-conn-abandoned-caller-owned",
@@ -219,7 +246,10 @@ class MaintenanceLeader:
                 tg.create_task(self._stranded_jobs_loop(shutdown), name="leader.stranded_jobs")
                 await shutdown.wait()
         finally:
-            await self._close_leader_owned_conns()
+            # Final teardown, not a mid-run demotion: close with the
+            # conn-teardown-close-* family so an ordinary shutdown never
+            # pages as an unexpected mid-run close timeout.
+            await self._close_leader_owned_conns(mid_run=False)
             _active_leaders.discard(self)
 
     async def _election_loop(self, shutdown: asyncio.Event) -> None:
