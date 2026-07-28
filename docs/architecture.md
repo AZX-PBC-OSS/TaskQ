@@ -761,8 +761,8 @@ Source: `src/taskq/ratelimit/`.
 ### `RateLimitRegistry`
 
 Actors declare rate limits via `rate_limits: list[str | KeyedRateLimitRef | TokenBucket | SlidingWindow]`
-and concurrency
-reservations via `reservations: list[str | KeyedReservationRef | ConcurrencyReservation]` on the `@actor` decorator.
+and concurrency reservations via `reservations: list[str | KeyedReservationRef | ConcurrencyReservation]`
+on the `@actor` decorator.
 Plain entries are name strings resolved against statically pre-registered primitives;
 `KeyedReservationRef` / `KeyedRateLimitRef` entries lazily materialize a per-key primitive
 from the job payload on first acquisition. At startup,

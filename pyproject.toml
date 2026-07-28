@@ -114,13 +114,10 @@ vault = [
 ]
 
 [tool.uv]
-# Pin the uv toolchain to the validated 0.11.x line: setup-uv reads
-# required-version from pyproject and installs the highest match in CI.
-# A range (not ==) so contributors on any 0.11.x patch can run uv locally —
-# an exact pin hard-fails every local uv command on any other version —
-# while <0.12 keeps CI and local on the same validated minor line.
-# Trade-off vs. an exact pin: setup-uv must consult the versions manifest to
-# resolve the range (the fetch an exact pin skips); accepted per review.
+# Version range: setup-uv in CI resolves versions without fetching the
+# versions manifest from raw.githubusercontent.com, which is a transient
+# network failure point that has failed whole CI matrices. The range keeps
+# local dev on a uv that can still read the committed uv.lock.
 required-version = ">=0.11.19,<0.12"
 # Supply-chain hardening: never resolve to distributions published within the
 # last 24 hours, giving time for malicious releases to be detected and yanked.
