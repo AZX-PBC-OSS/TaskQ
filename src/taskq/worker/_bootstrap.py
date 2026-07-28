@@ -11,6 +11,7 @@ resolution and warns about PgBouncer transaction-mode footguns.
 
 import asyncio
 import contextlib
+import importlib.util
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
@@ -55,6 +56,11 @@ __all__ = ["_emit_sub_enqueue_startup_warnings", "_main", "worker_main"]
 _startup_log: structlog.stdlib.BoundLogger = structlog.get_logger("taskq.worker.run.startup")
 
 
+def _redis_extra_installed() -> bool:
+    """Whether the ``[redis]`` extra is importable in this environment."""
+    return importlib.util.find_spec("redis.asyncio") is not None
+
+
 def _redis_configured(settings: WorkerSettings, registry: ProviderRegistry) -> bool:
     """Redis is available to rate limiters via TASKQ_REDIS_URL or DI.
 
@@ -65,10 +71,10 @@ def _redis_configured(settings: WorkerSettings, registry: ProviderRegistry) -> b
     """
     if settings.redis_url is not None:
         return True
-    try:
-        import redis.asyncio as redis_async
-    except ImportError:
+    if not _redis_extra_installed():
         return False
+    import redis.asyncio as redis_async
+
     return registry.has_provider(redis_async.Redis)
 
 
@@ -199,6 +205,23 @@ async def _main(
         register_worker,
     )
 
+    if actor_registry is not None:
+        # Why: a mismapped entry (key != ref.name) surfaces deep in
+        # sync_actor_config as a raw CardinalityViolation ("ON CONFLICT DO
+        # UPDATE command cannot affect row a second time") when two refs
+        # share a .name. Dispatch looks actors up by registry key, so
+        # key == ref.name is the load-bearing invariant; enforcing it here
+        # also makes duplicate names impossible (same name means same key,
+        # so the dict itself dedupes at construction).
+        mismatched = sorted(
+            (key, ref.name) for key, ref in actor_registry.items() if key != ref.name
+        )
+        if mismatched:
+            pairs = ", ".join(f"{key!r} -> {name!r}" for key, name in mismatched)
+            raise ValueError(
+                f"actor_registry keys must equal each ActorRef's name; mismatches: {pairs}"
+            )
+
     registry = _registry if _registry is not None else ProviderRegistry()
     if not registry.has_provider(WorkerSettings):
         registry.register_value(WorkerSettings, Scope.PROCESS, settings)
@@ -245,6 +268,21 @@ async def _main(
                 )
                 raise RuntimeError(msg)
         if settings.redis_url is not None:
+            if not _redis_extra_installed():
+                # Why: without this check the missing extra surfaces later as
+                # a bare MissingProvider at DI validate — no hint that the
+                # fix is installing the package. Only raise when Redis is
+                # actually required: a URL set without redis-backed limits
+                # is harmless (register_redis_pool silently skips).
+                redis_backed = _served_redis_rate_limits(actor_registry)
+                if redis_backed:
+                    msg = (
+                        "TASKQ_REDIS_URL is set but the [redis] extra is not "
+                        "installed; it is required by rate limit(s): "
+                        f"{', '.join(redis_backed)}. Install it with: "
+                        "pip install 'taskq[redis]'"
+                    )
+                    raise RuntimeError(msg)
             # Why: LoopScope.bootstrap eagerly resolves every LOOP provider,
             # and get_redis_pool raises when redis_url is None — registering
             # unconditionally would crash workers that don't use Redis.

@@ -613,6 +613,73 @@ async def test_bootstrap_ignores_redis_rate_limit_of_unserved_actor() -> None:
     assert result == 0
 
 
+async def test_bootstrap_clear_error_when_redis_extra_missing() -> None:
+    """TASKQ_REDIS_URL set + served redis limits + [redis] extra missing
+    raises an actionable bootstrap error naming the extra and the limits.
+
+    Regression: this configuration previously surfaced as a bare
+    ``MissingProvider`` at DI validate, with no hint that the fix is
+    installing the extra.
+    """
+    from taskq.ratelimit.registry import registry as rl_registry
+    from taskq.ratelimit.token_bucket import TokenBucket
+
+    rl_registry.register(
+        TokenBucket(
+            name="redis_bucket_needs_extra",
+            capacity=10.0,
+            refill_per_second=1.0,
+            backend="redis",
+        )
+    )
+
+    @actor(rate_limits=["redis_bucket_needs_extra"])
+    async def served_actor(payload: EmptyPayload) -> None:
+        pass
+
+    with (
+        patch("taskq.worker._bootstrap._redis_extra_installed", lambda: False),
+        pytest.raises(RuntimeError, match=r"taskq\[redis\]"),
+    ):
+        await _run_main_with_mocked_deps(
+            _settings(redis_url="redis://localhost:6379/0"),
+            actor_registry={served_actor.name: served_actor},
+        )
+
+
+async def test_bootstrap_redis_url_without_extra_and_no_redis_limits_boots() -> None:
+    """TASKQ_REDIS_URL set with the extra missing but no served redis-backed
+    limits is harmless: the worker boots (register_redis_pool silently skips
+    and nothing requires the provider)."""
+    with patch("taskq.worker._bootstrap._redis_extra_installed", lambda: False):
+        result = await _run_main_with_mocked_deps(_settings(redis_url="redis://localhost:6379/0"))
+    assert result == 0
+
+
+async def test_bootstrap_rejects_actor_registry_key_name_mismatch() -> None:
+    """An actor_registry entry whose key differs from its ActorRef's name
+    fails fast at bootstrap, naming the mismatch.
+
+    Regression: a mismapped entry (e.g. ``{"quick_result": <ref named
+    "enrich_order">}``) previously surfaced deep in ``sync_actor_config``
+    as a raw ``ON CONFLICT DO UPDATE command cannot affect row a second
+    time`` CardinalityViolation — the batch UPSERT hits the same actor row
+    twice when two refs share a ``.name``. The key-equals-name check also
+    makes duplicate names impossible (same name means same key, so the
+    dict itself dedupes at construction).
+    """
+
+    @actor(name="enrich_order", queue="e2e")
+    async def mismapped(payload: EmptyPayload) -> None:
+        pass
+
+    with pytest.raises((RuntimeError, ValueError), match=r"quick_result.*enrich_order"):
+        await _run_main_with_mocked_deps(
+            _settings(),
+            actor_registry={"quick_result": mismapped},
+        )
+
+
 # ── caller-supplied registry auto-registers WorkerSettings ────────
 
 
