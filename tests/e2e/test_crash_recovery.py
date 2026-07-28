@@ -1,7 +1,6 @@
 """Crash recovery e2e — SIGKILL worker mid-job, surviving worker reclaims.
 
-Design spec scenario row
-(docs/superpowers/specs/2026-07-27-e2e-test-suite-design.md):
+Scenario:
 kill a worker mid-job with SIGKILL; the surviving worker's leader sweep
 reclaims the expired lock and re-dispatches the job.
 
@@ -49,6 +48,7 @@ if TYPE_CHECKING:
     from testcontainers.core.network import Network
 
     from taskq import TaskQ
+    from taskq.backend._protocol import EventRow
 
     from .conftest import E2EDragonfly, E2ESchema
 
@@ -246,3 +246,24 @@ async def test_sigkill_crash_recovery(
     assert len(finished) == 1, (
         f"expected 1 'finished' effect (surviving worker completed the job), got {len(finished)}"
     )
+
+    # ── Fleet-wide reclaim observability ──────────────────────────────
+    # The sweep's reclaim writes a job_events outbox row in the same
+    # transaction as the state change; watch_reclaims exposes it
+    # fleet-wide behind a durable cursor. The event is already persisted
+    # by the time the job succeeds, so following from after_id=0 surfaces
+    # it without needing a watcher running concurrently with the crash.
+    reclaim_event: EventRow | None = None
+    with contextlib.suppress(TimeoutError):
+        async with asyncio.timeout(30):
+            async for event in e2e_client.watch_reclaims(after_id=0, poll_timeout=2.0):
+                if event.job_id == handle.job_id:
+                    reclaim_event = event
+                    break
+    assert reclaim_event is not None, (
+        f"no lock_expired reclaim event for job {handle.job_id} surfaced via watch_reclaims"
+    )
+    assert reclaim_event.kind == "state_change"
+    assert reclaim_event.detail["reason"] == "lock_expired"
+    # max_attempts=3 with a crashed first attempt → retried reclaim re-pends.
+    assert reclaim_event.detail["to_state"] == "pending"

@@ -1,10 +1,17 @@
-"""``unique_for`` dedup e2e — same identity dedupes, distinct identities both run.
+"""Dedup e2e — ``unique_for``/``identity_key`` and scoped ``idempotency_key``.
 
-Design spec scenario row (docs/superpowers/specs/2026-07-27-e2e-test-suite-design.md):
-``rebuild_search_index`` is decorated with ``unique_for=timedelta(minutes=10)``;
-dedup fires only when the enqueue also passes an ``identity_key``. Two enqueues
-with the same identity inside the window → single execution (one effects row);
-the second handle's ``was_existing`` is True.
+Two distinct dedup mechanisms, both exercised through the real client:
+
+- ``unique_for`` window dedup: ``rebuild_search_index`` is decorated with
+  ``unique_for=timedelta(minutes=10)``; dedup fires only when the enqueue
+  also passes an ``identity_key``. Two enqueues with the same identity
+  inside the window → single execution; the second handle's
+  ``was_existing`` is True.
+- Scoped idempotency: the ``(idempotency_scope, idempotency_key)`` unique
+  index dedupes retries/duplicates within a scope. Same key in the SAME
+  scope → ``was_existing``; same key in DIFFERENT scopes → two distinct
+  jobs. ``idempotency_scope`` does NOT partition ``identity_key`` dedup —
+  it is orthogonal to ``unique_for``.
 
 Dedup mechanics, verified against the library (not guessed):
 
@@ -36,7 +43,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from taskq import IdentityKey
+from taskq import IdempotencyKey, IdentityKey
 
 from ._assertions import fetch_effects
 from .actors import RebuildSearchIndexPayload, rebuild_search_index
@@ -118,3 +125,79 @@ async def test_distinct_identity_keys_both_run(
     assert {row["job_id"] for row in rows} == {handle_a.job_id, handle_b.job_id}
     details: list[dict[str, str]] = [json.loads(row["detail"]) for row in rows]
     assert {detail["index_name"] for detail in details} == {"idx-a", "idx-b"}
+
+
+async def test_same_key_same_scope_dedupes(
+    e2e_client: TaskQ,
+    e2e_worker: E2EWorker,
+    e2e_pg_pool: asyncpg.Pool,
+    e2e_schema: E2ESchema,
+    run_id: str,
+) -> None:
+    """Scoped idempotency: same (idempotency_key, scope) twice → dedup.
+
+    No ``identity_key`` is passed, so the ``unique_for`` preflight stays out
+    of play and only the ``(idempotency_scope, idempotency_key)`` unique
+    index is exercised.
+    """
+    payload = RebuildSearchIndexPayload(run_id=run_id, index_name=f"idx-{run_id[:8]}")
+    key = IdempotencyKey(f"rebuild-{run_id[:12]}")
+
+    first = await e2e_client.enqueue(
+        rebuild_search_index, payload, idempotency_key=key, idempotency_scope="scope-a"
+    )
+    second = await e2e_client.enqueue(
+        rebuild_search_index, payload, idempotency_key=key, idempotency_scope="scope-a"
+    )
+
+    assert first.was_existing is False
+    assert second.was_existing is True
+    assert second.job_id == first.job_id
+
+    await first.wait(timeout=60)
+    await second.wait(timeout=60)
+
+    rows = await fetch_effects(e2e_pg_pool, e2e_schema.schema_name, run_id, kind="rebuilt")
+    assert len(rows) == 1
+    assert rows[0]["job_id"] == first.job_id
+
+
+async def test_same_key_different_scopes_both_run(
+    e2e_client: TaskQ,
+    e2e_worker: E2EWorker,
+    e2e_pg_pool: asyncpg.Pool,
+    e2e_schema: E2ESchema,
+    run_id: str,
+) -> None:
+    """Scoped idempotency: same idempotency_key in two scopes → both run.
+
+    Uniqueness on idempotency_key alone (no scope column) would dedupe
+    this pair into a single job — this test fails against that behaviour.
+    """
+    key = IdempotencyKey(f"rebuild-{run_id[:12]}")
+
+    handle_a = await e2e_client.enqueue(
+        rebuild_search_index,
+        RebuildSearchIndexPayload(run_id=run_id, index_name="idx-scope-a"),
+        idempotency_key=key,
+        idempotency_scope="scope-a",
+    )
+    handle_b = await e2e_client.enqueue(
+        rebuild_search_index,
+        RebuildSearchIndexPayload(run_id=run_id, index_name="idx-scope-b"),
+        idempotency_key=key,
+        idempotency_scope="scope-b",
+    )
+
+    assert handle_a.was_existing is False
+    assert handle_b.was_existing is False
+    assert handle_a.job_id != handle_b.job_id
+
+    await handle_a.wait(timeout=60)
+    await handle_b.wait(timeout=60)
+
+    rows = await fetch_effects(e2e_pg_pool, e2e_schema.schema_name, run_id, kind="rebuilt")
+    assert len(rows) == 2
+    assert {row["job_id"] for row in rows} == {handle_a.job_id, handle_b.job_id}
+    details: list[dict[str, str]] = [json.loads(row["detail"]) for row in rows]
+    assert {detail["index_name"] for detail in details} == {"idx-scope-a", "idx-scope-b"}

@@ -1,6 +1,6 @@
 """Core lifecycle e2e — enqueue → cross-container dispatch → typed result round-trip.
 
-Design spec scenario row (docs/superpowers/specs/2026-07-27-e2e-test-suite-design.md):
+Scenario:
 enqueue → ``handle.wait()`` → succeeded; typed result retrievable after
 completion; transition sequence pending→running→succeeded; effects row present.
 Ground truth: ``jobs``, ``job_events``, ``e2e_effects``.
@@ -23,13 +23,22 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from ._assertions import fetch_effects
-from .actors import WelcomeEmailPayload, WelcomeEmailResult, send_welcome_email
+from taskq import JobFilter
+
+from ._assertions import fetch_effects, poll_until
+from .actors import (
+    LongRunningPayload,
+    WelcomeEmailPayload,
+    WelcomeEmailResult,
+    long_running_job,
+    send_welcome_email,
+)
 
 if TYPE_CHECKING:
     import asyncpg
 
     from taskq import TaskQ
+    from taskq.backend._protocol import JobId
 
     from .conftest import E2ESchema, E2EWorker
 
@@ -147,3 +156,51 @@ async def test_result_retrievable_after_completion(
     assert stored == waited
     assert stored.sent is True
     assert stored.message_id == "msg-u-1"
+
+
+async def test_job_filter_status_and_active(
+    e2e_client: TaskQ,
+    e2e_worker: E2EWorker,
+    run_id: str,
+) -> None:
+    """``JobFilter`` multi-status + ``active`` meta-filter against a live fleet.
+
+    In flight the job is visible under ``status=["pending", "running"]`` and
+    ``active=True``; after a forced cancel it leaves ``active`` and appears
+    under ``status=["cancelled"]``. ``status=[]`` matches nothing (documented
+    semantics — an empty sequence is not 'no filter'). The 30 s
+    ``long_running_job`` actor keeps the in-flight arm deterministic; the
+    cancel ends the test without waiting out the actor.
+    """
+
+    async def _ids(filter: JobFilter) -> set[JobId]:
+        page = await e2e_client.list(filter)
+        return {job.id for job in page.jobs}
+
+    handle = await e2e_client.enqueue(long_running_job, LongRunningPayload(run_id=run_id))
+
+    async def _visible_in_flight() -> bool:
+        return handle.job_id in await _ids(JobFilter(status=["pending", "running"]))
+
+    await poll_until(
+        _visible_in_flight,
+        timeout=30.0,
+        description="job visible via JobFilter(status=[pending, running])",
+    )
+    assert handle.job_id in await _ids(JobFilter(active=True))
+    assert await _ids(JobFilter(status=[])) == set()
+
+    cancel_result = await handle.cancel()
+    assert cancel_result.cancellation_initiated
+
+    # Forced cancel lands ~1 s after the worker observes the request
+    # (TASKQ_CANCELLATION_GRACE_PERIOD=1 in e2e); poll to the terminal row.
+    async def _visible_cancelled() -> bool:
+        return handle.job_id in await _ids(JobFilter(status=["cancelled"]))
+
+    await poll_until(
+        _visible_cancelled,
+        timeout=30.0,
+        description="job visible via JobFilter(status=[cancelled]) after cancel",
+    )
+    assert handle.job_id not in await _ids(JobFilter(active=True))
