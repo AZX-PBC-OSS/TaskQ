@@ -41,7 +41,6 @@ from taskq.backend._protocol import (
     EnqueueArgs,
     ErrorInfo,
     EventRow,
-    IdempotencyKey,
     JobFilter,
     JobId,
     JobRow,
@@ -183,7 +182,7 @@ class InMemoryBackend:
         self._jobs: dict[JobId, JobRow] = {}
         self._attempts: dict[JobId, list[AttemptRow]] = {}
         self._events: list[EventRow] = []
-        self._idempotency_index: dict[IdempotencyKey, JobId] = {}
+        self._idempotency_index: dict[tuple[str, str], JobId] = {}
         self._event_seq: int = 0
         self._cancel_observed_at: dict[JobId, datetime] = {}
         self._cancel_events: dict[JobId, asyncio.Event] = {}

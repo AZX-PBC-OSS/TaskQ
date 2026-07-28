@@ -108,6 +108,7 @@ def _stub_job_row(
         result_size_bytes=None,
         result_expires_at=None,
         idempotency_key=None,
+        idempotency_scope="",
         trace_id=None,
         span_id=None,
         metadata={},

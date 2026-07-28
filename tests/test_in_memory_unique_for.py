@@ -318,14 +318,14 @@ async def test_tu8_unique_for_match_skips_idempotency_insert() -> None:
     args1 = _unique_for_args(identity_key=identity, idempotency_key=key)
     row1 = await backend.enqueue(args1)
 
-    assert backend._idempotency_index.get(IdempotencyKey(key)) == row1.id
+    assert backend._idempotency_index.get(("", key)) == row1.id
 
     args2 = _unique_for_args(identity_key=identity, idempotency_key=key)
     row2 = await backend.enqueue(args2)
 
     assert row1.id == row2.id
     assert len(backend._jobs) == 1
-    assert backend._idempotency_index.get(IdempotencyKey(key)) == row1.id
+    assert backend._idempotency_index.get(("", key)) == row1.id
 
 
 # ── unique_for matches, idempotency_key differs → returns existing
@@ -345,7 +345,7 @@ async def test_tu9_unique_for_match_ignores_different_idempotency_key() -> None:
 
     assert row1.id == row2.id
     assert len(backend._jobs) == 1
-    assert IdempotencyKey("z") not in backend._idempotency_index
+    assert ("", "z") not in backend._idempotency_index
 
 
 # ── idempotency_key=None twice → both new ──────────────────────

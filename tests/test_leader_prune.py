@@ -16,6 +16,7 @@ import pytest
 
 from taskq import migrate as migrate_mod
 from taskq._json import dumps_str
+from taskq.backend._sql_templates import COPY_FROM_COLUMNS
 from taskq.settings import TaskQSettings
 from taskq.worker.leader import archive_expiry_sweep, prune_terminal_jobs
 
@@ -384,6 +385,138 @@ async def test_atomicity_on_error(pg_conn: asyncpg.Connection, settings: TaskQSe
 
     row = await pg_conn.fetchrow(f"SELECT id FROM {schema}.jobs WHERE id = $1", jid)  # noqa: S608
     assert row is not None, "original row should remain in jobs"
+
+
+# ── Column round-trip fidelity (positional-hazard regression) ──
+#
+# The archive INSERT used to be `INSERT INTO jobs_archive SELECT j.*, now(),
+# now() + $4` -- relying on `jobs` and `jobs_archive` sharing physical column
+# order. ALTER TABLE ADD COLUMN appends at the end of each table's own order
+# (e.g. idempotency_scope), silently breaking that assumption: the new column
+# landed in archived_at's position and the sweep failed with a type error.
+# The sweep now names every column explicitly on both sides
+# (_JOBS_COLUMNS_CSV in _leader_shared.py). These tests lock the mapping in:
+# EVERY mirrored column must round-trip byte-for-byte, and the two
+# archive-only trailing columns must be real timestamps. On the pre-fix SQL
+# the first test fails outright (text → timestamptz type error).
+
+
+async def _seed_fully_distinctive_terminal_job(
+    conn: asyncpg.Connection,
+    schema: str,
+    *,
+    idempotency_scope: str,
+) -> uuid.UUID:
+    jid = uuid.uuid4()
+    now = datetime.now(UTC)
+    old = now - timedelta(days=31)
+    await conn.execute(
+        f"""INSERT INTO {schema}.jobs (
+            id, actor, queue, identity_key, fairness_key,
+            payload, payload_schema_ver, status, priority, attempt,
+            max_attempts, retry_kind, schedule_to_close, start_to_close,
+            heartbeat_timeout, created_at, scheduled_at, started_at, finished_at,
+            last_heartbeat_at, locked_by_worker, lock_expires_at,
+            cancel_requested_at, cancel_phase, error_class, error_message,
+            error_traceback, progress_state, progress_seq, result,
+            result_size_bytes, result_expires_at, idempotency_scope, idempotency_key,
+            trace_id, span_id, metadata, tags
+        ) VALUES (
+            $1, 'archive_actor', 'archive_q', 'ident-1', 'fair-1',
+            $2::jsonb, 2, 'succeeded'::{schema}.job_status, 7, 2,
+            5, 'indefinite', $3, $4,
+            $5, $6, $6, $6, $7,
+            $6, NULL, NULL,
+            NULL, 1, 'ValueError', 'boom',
+            'tb-line', $8::jsonb, 9, $9::jsonb,
+            123, $10, $11, 'archive-key',
+            'trace-1', 'span-1', $12::jsonb, $13::text[]
+        )""",  # noqa: S608
+        jid,
+        '{"v": 42}',
+        old + timedelta(hours=2),
+        timedelta(minutes=5),
+        timedelta(minutes=1),
+        old,
+        old + timedelta(hours=1),
+        '{"pct": 50}',
+        '{"r": 1}',
+        old + timedelta(days=2),
+        idempotency_scope,
+        '{"m": 1}',
+        ["tag-a", "tag-b"],
+    )
+    return jid
+
+
+async def _fetch_single(
+    conn: asyncpg.Connection, schema: str, table: str, jid: uuid.UUID
+) -> asyncpg.Record:
+    row = await conn.fetchrow(f"SELECT * FROM {schema}.{table} WHERE id = $1", jid)  # noqa: S608
+    assert row is not None, f"expected row in {table}"
+    return row
+
+
+async def test_archive_move_preserves_every_mirrored_column(
+    pg_conn: asyncpg.Connection, settings: TaskQSettings
+) -> None:
+    """Seed a terminal job with a distinctive value in EVERY mirrored
+    column (including a non-default idempotency_scope) and assert the
+    archived row is byte-for-byte identical in every one of them."""
+    await _apply(pg_conn, settings)
+    schema = settings.schema_name
+    jid = await _seed_fully_distinctive_terminal_job(
+        pg_conn, schema, idempotency_scope="run-archive"
+    )
+    await _seed_job_attempt(pg_conn, jid, schema=schema)
+
+    before = await _fetch_single(pg_conn, schema, "jobs", jid)
+
+    result = await prune_terminal_jobs(
+        pg_conn,
+        retention_per_status={"succeeded": timedelta(days=30)},
+        archive_retention=timedelta(days=365),
+        batch_size=100,
+        schema=schema,
+    )
+    assert result.archived == 1
+
+    after = await _fetch_single(pg_conn, schema, "jobs_archive", jid)
+    for col in COPY_FROM_COLUMNS:
+        assert after[col] == before[col], f"column {col!r} diverged during archive"
+
+    # The two archive-only trailing columns must be genuine timestamps --
+    # the canary that catches positional misalignment.
+    assert isinstance(after["archived_at"], datetime)
+    assert isinstance(after["expire_at"], datetime)
+    assert after["expire_at"] > after["archived_at"]
+
+
+async def test_archive_move_preserves_scope_via_actor_override_path(
+    pg_conn: asyncpg.Connection, settings: TaskQSettings
+) -> None:
+    """The per-actor archive CTE (_ARCHIVE_CTE_ACTOR_SQL) has the same
+    explicit-column contract; exercise it with a non-default scope."""
+    await _apply(pg_conn, settings)
+    schema = settings.schema_name
+    jid = await _seed_fully_distinctive_terminal_job(
+        pg_conn, schema, idempotency_scope="run-actor-archive"
+    )
+
+    result = await prune_terminal_jobs(
+        pg_conn,
+        retention_per_status={"succeeded": timedelta(days=30)},
+        archive_retention=timedelta(days=365),
+        batch_size=100,
+        schema=schema,
+        actor_overrides={"archive_actor": timedelta(days=15)},
+    )
+    assert result.archived == 1
+
+    after = await _fetch_single(pg_conn, schema, "jobs_archive", jid)
+    assert after["idempotency_scope"] == "run-actor-archive"
+    assert after["idempotency_key"] == "archive-key"
+    assert isinstance(after["archived_at"], datetime)
 
 
 # ── job_attempts cascade ──────────────────────────────────────────

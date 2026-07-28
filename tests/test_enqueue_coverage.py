@@ -6,6 +6,8 @@ asyncpg connection so no database is required:
 - ``_enqueue_on_conn``: ``unique_for`` preflight dedup, singleton
   preflight collision, ``max_pending`` exceeded, singleton
   ``UniqueViolationError`` catch, and ``result_ttl`` → ``result_expires_at``.
+- ``_enqueue`` / ``_enqueue_batch``: legacy-index violation retry logic
+  (rolling-deploy overlap window).
 - ``_enqueue_batch``: empty ``args_list`` raises ``ValueError``.
 - ``_enqueue_batch_fast``: empty ``args_list`` raises ``ValueError`` and
   ``schedule_to_close_interval`` resolution.
@@ -19,13 +21,19 @@ import pytest
 
 from taskq._ids import new_job_id
 from taskq.backend._enqueue import (
+    _enqueue,
     _enqueue_batch,
     _enqueue_batch_fast,
     _enqueue_on_conn,
+    _enqueue_with_conn,
 )
 from taskq.backend._protocol import EnqueueArgs, IdentityKey, JobRow
 from taskq.backend._sql_templates import render as render_sql
-from taskq.exceptions import MaxPendingExceededError, SingletonCollisionError
+from taskq.exceptions import (
+    MaxPendingExceededError,
+    ScopedIdempotencyMigrationPendingError,
+    SingletonCollisionError,
+)
 from taskq.testing.clock import FakeClock
 
 _SCHEMA_LABEL = "taskq"
@@ -73,6 +81,7 @@ def _full_record(*, job_id: UUID | None = None) -> dict[str, object]:
         "result_size_bytes": None,
         "result_expires_at": None,
         "idempotency_key": None,
+        "idempotency_scope": "",
         "trace_id": None,
         "span_id": None,
         "metadata": "{}",
@@ -160,6 +169,7 @@ def _make_args(
     result_ttl: timedelta | None = None,
     schedule_to_close_interval: timedelta | None = None,
     idempotency_key: str | None = None,
+    idempotency_scope: str = "",
     scheduled_at: datetime | None = None,
 ) -> EnqueueArgs:
     metadata: dict[str, object] = {}
@@ -176,6 +186,7 @@ def _make_args(
         priority=0,
         schedule_to_close=None,
         idempotency_key=idempotency_key,
+        idempotency_scope=idempotency_scope,
         identity_key=IdentityKey(identity_key) if identity_key is not None else None,
         unique_for=unique_for,
         unique_states=("pending", "scheduled", "running"),
@@ -316,7 +327,7 @@ async def test_idempotency_key_conflict_returns_existing_row() -> None:
     existing_id = new_job_id()
     existing_rec = _Record(_full_record(job_id=existing_id))
     conn = _FakeEnqueueConn(
-        fetchrow_map={"idempotency_key = $1": existing_rec},
+        fetchrow_map={"idempotency_key = $2": existing_rec},
         # INSERT RETURNING returns None (conflict) — default fetchrow returns None.
     )
     args = _make_args(idempotency_key="idem-1")
@@ -400,6 +411,158 @@ class _FakePool:
 
     def acquire(self) -> "_PoolCtx":
         return _PoolCtx(self._conn)
+
+
+class _FakePoolSequence:
+    """Pool stand-in handing out a different fake connection per acquire,
+    so retry logic can be driven deterministically."""
+
+    def __init__(self, conns: list[_FakeEnqueueConn]) -> None:
+        self._conns = conns
+        self.acquire_count = 0
+
+    def acquire(self) -> "_PoolCtx":
+        conn = self._conns[self.acquire_count]
+        self.acquire_count += 1
+        return _PoolCtx(conn)
+
+
+def _legacy_violation() -> asyncpg.UniqueViolationError:
+    exc = asyncpg.UniqueViolationError("duplicate key")
+    exc.constraint_name = "jobs_idempotency_key_uniq"  # type: ignore[attr-defined]  # Why: asyncpg sets constraint_name at runtime; assigning for test setup.
+    return exc
+
+
+class _LegacyFailConn(_FakeEnqueueConn):
+    """Connection whose INSERT raises a legacy-index UniqueViolationError."""
+
+    def __init__(self, exc: asyncpg.UniqueViolationError, **kwargs: object) -> None:
+        super().__init__(**kwargs)  # type: ignore[arg-type]
+        self._exc = exc
+
+    async def fetchrow(self, sql: str, *args: object) -> object | None:
+        if "INSERT" in sql.upper():
+            raise self._exc
+        return await super().fetchrow(sql, *args)
+
+    async def fetch(self, sql: str, *args: object) -> list[_Record]:
+        if "INSERT" in sql.upper():
+            raise self._exc
+        return await super().fetch(sql, *args)
+
+
+# ── _enqueue: legacy-index violation retry (rolling-deploy window) ───────
+#
+# During the pre/post overlap window the legacy single-column idempotency
+# index is a non-arbiter index for this release's INSERTs. A violation
+# against it means either genuine cross-scope reuse (must raise the typed
+# migration-pending error) or a same-pair race against a concurrent
+# old-shape INSERT (must dedupe cleanly after one retry, because a
+# unique-violation report implies the conflicting transaction committed).
+
+
+async def test_legacy_violation_same_pair_race_retries_and_dedupes() -> None:
+    """First attempt violates the legacy index (same-pair race); the retry
+    on a fresh transaction finds the raced row via the composite arbiter
+    and returns it -- no error surfaces to the caller."""
+    existing_id = new_job_id()
+    existing_rec = _Record(_full_record(job_id=existing_id))
+    first = _LegacyFailConn(_legacy_violation())
+    # Retry: INSERT ON CONFLICT DO NOTHING returns nothing (the row the
+    # racing transaction committed now conflicts via the composite
+    # arbiter); the follow-up SELECT by (scope, key) returns it.
+    second = _FakeEnqueueConn(fetchrow_map={"idempotency_key = $2": existing_rec})
+    pool = _FakePoolSequence([first, second])
+    clock = FakeClock(_NOW)
+
+    row = await _enqueue(pool, _SQL, _SCHEMA_LABEL, clock, _make_args(idempotency_key="k"))  # type: ignore[arg-type]
+
+    assert isinstance(row, JobRow)
+    assert row.id == existing_id
+    assert pool.acquire_count == 2
+
+
+async def test_legacy_violation_twice_raises_typed_migration_error() -> None:
+    """Genuine cross-scope reuse violates the legacy index on both
+    attempts; the caller gets ScopedIdempotencyMigrationPendingError with
+    the raw driver error as __cause__."""
+    first = _LegacyFailConn(_legacy_violation())
+    second = _LegacyFailConn(_legacy_violation())
+    pool = _FakePoolSequence([first, second])
+    clock = FakeClock(_NOW)
+    args = _make_args(idempotency_key="k", idempotency_scope="run-B")
+
+    with pytest.raises(ScopedIdempotencyMigrationPendingError) as exc_info:
+        await _enqueue(pool, _SQL, _SCHEMA_LABEL, clock, args)  # type: ignore[arg-type]
+
+    err = exc_info.value
+    assert err.idempotency_key == "k"
+    assert err.idempotency_scope == "run-B"
+    assert isinstance(err.__cause__, asyncpg.UniqueViolationError)
+    assert pool.acquire_count == 2
+
+
+async def test_enqueue_with_conn_legacy_violation_converts_without_retry() -> None:
+    """On a caller-owned connection the transaction is already aborted, so
+    the typed error is raised immediately -- no retry is possible."""
+    conn = _LegacyFailConn(_legacy_violation())
+    clock = FakeClock(_NOW)
+
+    with pytest.raises(ScopedIdempotencyMigrationPendingError) as exc_info:
+        await _enqueue_with_conn(conn, _SQL, _SCHEMA_LABEL, clock, _make_args(idempotency_key="k"))
+
+    assert isinstance(exc_info.value.__cause__, asyncpg.UniqueViolationError)
+
+
+async def test_enqueue_batch_legacy_violation_retries_and_dedupes() -> None:
+    """Batch path: same-pair race on the first attempt aborts the whole
+    batch statement; the retry dedupes the raced item via the composite
+    arbiter and the follow-up fetch."""
+    existing_id = new_job_id()
+    existing_rec = _Record({**_full_record(job_id=existing_id), "idempotency_key": "k"})
+    first = _LegacyFailConn(_legacy_violation())
+    # Retry: the multi-row INSERT dedupes (RETURNING empty); the existing
+    # row is fetched via the (scope, key) pairs join.
+    second = _FakeEnqueueConn(fetch_map={"JOIN unnest": [existing_rec]})
+    pool = _FakePoolSequence([first, second])
+    clock = FakeClock(_NOW)
+    args = _make_args(idempotency_key="k")
+
+    rows = await _enqueue_batch(pool, _SQL, _SCHEMA_LABEL, clock, [args])  # type: ignore[arg-type]
+
+    assert len(rows) == 1
+    assert rows[0].id == existing_id
+    assert pool.acquire_count == 2
+
+
+async def test_enqueue_batch_legacy_violation_twice_raises_typed_error() -> None:
+    first = _LegacyFailConn(_legacy_violation())
+    second = _LegacyFailConn(_legacy_violation())
+    pool = _FakePoolSequence([first, second])
+    clock = FakeClock(_NOW)
+
+    with pytest.raises(ScopedIdempotencyMigrationPendingError) as exc_info:
+        await _enqueue_batch(pool, _SQL, _SCHEMA_LABEL, clock, [_make_args(idempotency_key="k")])  # type: ignore[arg-type]
+
+    assert isinstance(exc_info.value.__cause__, asyncpg.UniqueViolationError)
+    assert pool.acquire_count == 2
+
+
+async def test_enqueue_batch_with_conn_legacy_violation_converts_without_retry() -> None:
+    conn = _LegacyFailConn(_legacy_violation())
+    clock = FakeClock(_NOW)
+
+    with pytest.raises(ScopedIdempotencyMigrationPendingError) as exc_info:
+        await _enqueue_batch(
+            None,
+            _SQL,
+            _SCHEMA_LABEL,
+            clock,
+            [_make_args(idempotency_key="k")],
+            connection=conn,  # type: ignore[arg-type]
+        )
+
+    assert isinstance(exc_info.value.__cause__, asyncpg.UniqueViolationError)
 
 
 class _PoolCtx:

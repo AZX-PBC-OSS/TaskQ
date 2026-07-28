@@ -58,6 +58,7 @@ class EnqueueItem(BaseModel):
     priority: int | None = None
     fairness_key: str | None = None
     idempotency_key: IdempotencyKey | str | None = None
+    idempotency_scope: str | None = None
     identity_key: IdentityKey | None = None
     metadata: dict[str, object] = Field(default_factory=dict)
     tags: list[str] | None = None

@@ -81,6 +81,7 @@ class SubJobEnqueuer:
         metadata: dict[str, object] | None = None,
         identity_key: IdentityKey | None = None,
         idempotency_key: IdempotencyKey | str | None = None,
+        idempotency_scope: str | None = None,
         unique_for: timedelta | None = None,
         unique_states: tuple[JobStatus, ...] | None = None,
         max_pending: int | None = None,
@@ -102,6 +103,7 @@ class SubJobEnqueuer:
                 metadata=metadata,
                 identity_key=identity_key,
                 idempotency_key=idempotency_key,
+                idempotency_scope=idempotency_scope,
                 trace_id=extracted_trace_id,
                 span_id=extracted_span_id,
                 unique_for=unique_for,
@@ -242,6 +244,7 @@ class SubJobEnqueuer:
                     fairness_key=item.fairness_key,
                     metadata=item_metadata,
                     idempotency_key=item.idempotency_key,
+                    idempotency_scope=item.idempotency_scope,
                     identity_key=item.identity_key,
                 )
                 handles.append(handle)
@@ -341,6 +344,7 @@ class SubJobEnqueuer:
             result_size_bytes=None,
             result_expires_at=None,
             idempotency_key=args.idempotency_key,
+            idempotency_scope=args.idempotency_scope,
             trace_id=args.trace_id,
             span_id=args.span_id,
             metadata=args.metadata,

@@ -189,8 +189,41 @@ async def apply_pending(
     if phase is not None:
         pending = [m for m in pending if m.phase == phase]
 
-    applied_now: list[Migration] = []
+    # Truncate to the prefix this run will actually apply (target is
+    # inclusive; max_steps caps the count) BEFORE validating phase ordering,
+    # so the guard below reasons about exactly this run's apply list and
+    # cannot refuse over a migration the truncation would have skipped.
+    effective: list[Migration] = []
     for migration in pending:
+        effective.append(migration)
+        if target is not None and migration.version == target:
+            break
+        if max_steps is not None and len(effective) >= max_steps:
+            break
+
+    # A post-phase migration is only eligible once its same-version pre-phase
+    # counterpart is applied (or will be applied earlier in this same run).
+    # Post-phase migrations remove the structures pre-phase migrations add —
+    # e.g. 01.00.03_01:post drops the old idempotency index the rolling-deploy
+    # overlap window depends on. Applying one first (e.g. `migrate up --phase
+    # post` against a schema whose pre phase hasn't run) both strands the pre
+    # phase's protections permanently (the post is already recorded) and can
+    # break not-yet-upgraded workers immediately. Refuse loudly instead.
+    pre_versions: set[str] = {m.version for m in all_migrations if m.phase == "pre"}
+    eligible_keys = set(applied_keys)
+    for m in effective:
+        if m.phase == "post" and m.version in pre_versions:
+            pre_key = f"{m.version}:pre"
+            if pre_key not in eligible_keys:
+                raise ValueError(
+                    f"migration {m.key} cannot be applied before its pre-phase "
+                    f"counterpart {pre_key}. Run `taskq migrate up --phase pre` "
+                    f"(or a plain `taskq migrate up`) first."
+                )
+        eligible_keys.add(m.key)
+
+    applied_now: list[Migration] = []
+    for migration in effective:
         async with conn.transaction():
             await conn.execute(migration.render(schema))
             await conn.execute(
@@ -199,10 +232,6 @@ async def apply_pending(
                 migration.checksum(schema),
             )
         applied_now.append(migration)
-        if target is not None and migration.version == target:
-            break
-        if max_steps is not None and len(applied_now) >= max_steps:
-            break
     return applied_now
 
 

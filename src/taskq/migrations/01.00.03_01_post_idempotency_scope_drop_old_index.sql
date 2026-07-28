@@ -1,0 +1,35 @@
+-- Drop the old single-column jobs_idempotency_key_uniq index now that the
+-- composite jobs_idempotency_scope_key_uniq index (added by
+-- 01.00.03_01_pre_idempotency_scope.sql) has taken over enforcing
+-- idempotency-key uniqueness. Forward-only; there is no down migration.
+-- To revert, restore from backup. The literal "{schema}" token is
+-- substituted at apply time by the migration runner.
+--
+-- DO NOT apply this migration (`taskq migrate up --phase post`, or a plain
+-- `taskq migrate up` once the pre phase is already applied) until every
+-- worker in the fleet is confirmed running the release that shipped
+-- 01.00.03_01_pre_idempotency_scope.sql. Pre-that-release code issues
+-- `ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL`, which
+-- can only resolve against the single-column index this file drops.
+-- Postgres resolves the ON CONFLICT arbiter index statically, at plan
+-- time -- it does not matter whether the row being inserted actually
+-- carries an idempotency_key -- so dropping the old index while any
+-- pre-that-release worker is still running turns EVERY enqueue from that
+-- worker into a hard failure ("there is no unique or exclusion constraint
+-- matching the ON CONFLICT specification", SQLSTATE 42P10), keyed or not.
+-- The migration runner additionally refuses to apply a post migration
+-- before its same-version pre counterpart (see apply_pending in
+-- src/taskq/migrate.py), so `taskq migrate up --phase post` cannot be
+-- used to trigger this state accidentally ahead of the pre phase. See
+-- the "PHASE OBLIGATIONS" note at the top of
+-- 01.00.03_01_pre_idempotency_scope.sql for the full rationale and the
+-- three-step deployment sequence this migration is step 3 of.
+--
+-- Until this migration runs, idempotency_scope is present and read/written
+-- correctly by upgraded code, but the OLD single-column index still
+-- enforces "idempotency_key unique across ALL scopes" -- strictly stronger
+-- than the new composite constraint -- so two enqueues with the same key
+-- in different scopes will still collide against the old index. Only after
+-- this migration drops that index does the same key in different scopes
+-- actually both succeed.
+DROP INDEX IF EXISTS "{schema}".jobs_idempotency_key_uniq;

@@ -9,6 +9,7 @@ import asyncpg
 import pytest
 
 from taskq import migrate as migrate_mod
+from taskq.backend._sql_templates import COPY_FROM_COLUMNS
 from taskq.settings import TaskQSettings
 
 pytestmark = pytest.mark.integration
@@ -84,6 +85,34 @@ async def test_dispatch_index_exists(pg_conn: asyncpg.Connection, settings: Task
 
 
 # ── Archive tables () ──────────────────────────────────
+
+
+async def test_copy_from_columns_match_jobs_table_exactly(
+    pg_conn: asyncpg.Connection, settings: TaskQSettings
+) -> None:
+    """COPY_FROM_COLUMNS is the single source of truth for both the
+    enqueue_batch_fast COPY tuple and the archive sweep's explicit column
+    lists. If a future migration adds a column to `jobs` without updating
+    it, the archive sweep would silently stop archiving that column (data
+    loss on prune) and the COPY path would fail or misalign. Lock the
+    tuple to the actual table definition: exact set equality, no missing,
+    no extras."""
+    await migrate_mod.apply_pending(pg_conn, schema=settings.schema_name)
+
+    rows = await pg_conn.fetch(
+        """
+        SELECT column_name FROM information_schema.columns
+        WHERE table_schema = $1 AND table_name = 'jobs'
+        """,
+        settings.schema_name,
+    )
+    actual = {r["column_name"] for r in rows}
+    declared = set(COPY_FROM_COLUMNS)
+    assert declared == actual, (
+        f"COPY_FROM_COLUMNS drifted from jobs table: "
+        f"missing from tuple: {sorted(actual - declared)}, "
+        f"not in table: {sorted(declared - actual)}"
+    )
 
 
 async def test_jobs_archive_columns_match_jobs_plus_archive_fields(

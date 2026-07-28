@@ -552,6 +552,82 @@ class TestIdempotencyKeyValidation:
         assert not reached[0], "backend was reached before validation fired"
 
 
+# ── idempotency_scope input validation ──────────────────────────────
+
+
+class TestIdempotencyScopeValidation:
+    """idempotency_scope rejects over-length values; unlike idempotency_key,
+    empty string is a valid, meaningful value (the default/global scope),
+    not rejected."""
+
+    @staticmethod
+    def _make_client() -> tuple[InMemoryBackend, JobsClient]:
+        backend = InMemoryBackend(clock=FakeClock(_START))
+        client = JobsClient(backend)
+        return backend, client
+
+    async def test_over_length_raises_value_error(self) -> None:
+        _, client = self._make_client()
+        payload = _SingletonPayload(value=1)
+        too_long = "x" * 257
+        with pytest.raises(
+            ValueError, match="idempotency_scope must be at most 256 characters, got 257"
+        ):
+            await client.enqueue(
+                _singleton_actor,
+                payload,
+                idempotency_key="k",
+                idempotency_scope=too_long,
+            )
+
+    async def test_boundary_256_chars_is_accepted(self) -> None:
+        _, client = self._make_client()
+        payload = _SingletonPayload(value=1)
+        scope = "x" * 256
+        handle = await client.enqueue(
+            _singleton_actor, payload, idempotency_key="k", idempotency_scope=scope
+        )
+        assert handle.job_id is not None
+
+    async def test_empty_string_is_accepted_as_default_scope(self) -> None:
+        """Unlike idempotency_key, an empty idempotency_scope is valid --
+        it is equivalent to the default (None) global scope, not an error."""
+        _, client = self._make_client()
+        payload = _SingletonPayload(value=1)
+        handle = await client.enqueue(
+            _singleton_actor, payload, idempotency_key="k", idempotency_scope=""
+        )
+        assert handle.job_id is not None
+
+    async def test_none_is_accepted(self) -> None:
+        _, client = self._make_client()
+        payload = _SingletonPayload(value=1)
+        handle = await client.enqueue(
+            _singleton_actor, payload, idempotency_key="k", idempotency_scope=None
+        )
+        assert handle.job_id is not None
+
+    async def test_validation_runs_before_backend_call(self) -> None:
+        backend, client = self._make_client()
+        reached: list[bool] = [False]
+
+        async def raise_immediately(_args: EnqueueArgs):
+            reached[0] = True
+            raise RuntimeError("backend should not be reached")
+
+        object.__setattr__(backend, "enqueue", raise_immediately)
+
+        payload = _SingletonPayload(value=1)
+        with pytest.raises(ValueError, match="idempotency_scope must be at most 256 characters"):
+            await client.enqueue(
+                _singleton_actor,
+                payload,
+                idempotency_key="k",
+                idempotency_scope="x" * 257,
+            )
+        assert not reached[0], "backend was reached before validation fired"
+
+
 # ── was_existing in JobsClient.enqueue ─────────────────────────────────
 
 

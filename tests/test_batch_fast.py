@@ -592,6 +592,116 @@ class TestTI8DuplicateIdempotencyKeyFails:
 
 
 @pytest.mark.integration
+class TestTIScopeRoundTripThroughCopy:
+    """idempotency_scope and idempotency_key must land in the right columns
+    through the positional COPY record tuple. The tuple is built by hand in
+    _enqueue_batch_fast and aligned to COPY_FROM_COLUMNS by position only --
+    a misalignment here inserts successfully but writes values into the
+    wrong columns, exactly the bug class the archive-sweep fix addresses.
+    """
+
+    async def test_scope_and_key_land_in_correct_columns(self, pg_dsn: str) -> None:
+        import asyncpg
+
+        from taskq import TaskQ
+        from taskq.migrate import apply_pending
+
+        schema = "taskq_test_batch_fast_scope_rt"
+        conn = await asyncpg.connect(pg_dsn)
+        try:
+            await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+            await apply_pending(conn, schema=schema)
+        finally:
+            await conn.close()
+
+        key = f"copy-key-{uuid4()}"
+        items = [
+            EnqueueItem(
+                actor_ref=_test_actor,
+                payload=_Payload(value=1),
+                idempotency_key=key,
+                idempotency_scope="run-A",
+            ),
+            # Same key in a different scope: accepted by the composite index.
+            EnqueueItem(
+                actor_ref=_test_actor,
+                payload=_Payload(value=2),
+                idempotency_key=key,
+                idempotency_scope="run-B",
+            ),
+            # Default/global scope.
+            EnqueueItem(
+                actor_ref=_test_actor,
+                payload=_Payload(value=3),
+                idempotency_key=f"{key}-other",
+            ),
+        ]
+
+        async with TaskQ(dsn=pg_dsn, schema=schema) as tq:
+            count = await tq.enqueue_batch_fast(items)
+
+        assert count == 3
+
+        conn = await asyncpg.connect(pg_dsn)
+        try:
+            rows = await conn.fetch(
+                f'SELECT payload, idempotency_scope, idempotency_key FROM "{schema}".jobs'  # noqa: S608
+            )
+            by_scope = {r["idempotency_scope"]: r for r in rows}
+            assert by_scope["run-A"]["idempotency_key"] == key
+            assert by_scope["run-B"]["idempotency_key"] == key
+            assert by_scope[""]["idempotency_key"] == f"{key}-other"
+            # And not bled into neighboring text columns.
+            assert all(r["idempotency_scope"] in ("run-A", "run-B", "") for r in rows)
+        finally:
+            await conn.close()
+
+    async def test_same_scope_duplicate_key_aborts_batch(self, pg_dsn: str) -> None:
+        """The composite-index analogue of TestTI8: same key AND same
+        explicit scope within one COPY batch violates
+        jobs_idempotency_scope_key_uniq and aborts the whole batch."""
+        import asyncpg
+
+        from taskq import TaskQ
+        from taskq.migrate import apply_pending
+
+        schema = "taskq_test_batch_fast_scope_dup"
+        conn = await asyncpg.connect(pg_dsn)
+        try:
+            await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+            await apply_pending(conn, schema=schema)
+        finally:
+            await conn.close()
+
+        key = f"copy-dup-{uuid4()}"
+        items = [
+            EnqueueItem(
+                actor_ref=_test_actor,
+                payload=_Payload(value=1),
+                idempotency_key=key,
+                idempotency_scope="run-A",
+            ),
+            EnqueueItem(
+                actor_ref=_test_actor,
+                payload=_Payload(value=2),
+                idempotency_key=key,
+                idempotency_scope="run-A",
+            ),
+        ]
+
+        async with TaskQ(dsn=pg_dsn, schema=schema) as tq:
+            with pytest.raises(asyncpg.UniqueViolationError):
+                await tq.enqueue_batch_fast(items)
+
+        conn = await asyncpg.connect(pg_dsn)
+        try:
+            count = await conn.fetchval(f'SELECT count(*) FROM "{schema}".jobs')  # noqa: S608
+            assert count == 0
+        finally:
+            await conn.close()
+
+
+@pytest.mark.integration
 class TestTI9PayloadValidationFailureIntegration:
     """Payload validation failure — entire batch rejected, no partial insert."""
 

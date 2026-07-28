@@ -29,6 +29,7 @@ from taskq.backend.clock import Clock
 from taskq.constants import wake_channel
 from taskq.exceptions import (
     MaxPendingExceededError,
+    ScopedIdempotencyMigrationPendingError,
     SingletonCollisionError,
 )
 from taskq.obs import (
@@ -50,6 +51,66 @@ __all__ = [
 logger: structlog.stdlib.BoundLogger = get_logger(__name__)
 
 _SINGLETON_CONSTRAINT_NAME = "jobs_singleton_uniq"
+
+# The old single-column idempotency index, still present alongside the new
+# composite one during the rolling-deploy window between
+# 01.00.03_01_pre_idempotency_scope.sql and
+# 01.00.03_01_post_idempotency_scope_drop_old_index.sql. See
+# ScopedIdempotencyMigrationPendingError for the full rationale.
+_LEGACY_IDEMPOTENCY_KEY_CONSTRAINT_NAME = "jobs_idempotency_key_uniq"
+
+
+class _LegacyIdempotencyKeyConflictError(Exception):
+    """Internal marker: the INSERT violated the legacy single-column
+    idempotency index (non-arbiter for this release's ON CONFLICT target).
+
+    Two distinct causes, indistinguishable at the point of the violation:
+
+    1. Genuine cross-scope reuse during the rolling-deploy window: the
+       (scope, key) pair is new but the bare key exists under a DIFFERENT
+       scope. Must surface as ScopedIdempotencyMigrationPendingError.
+    2. A same-pair race: a concurrent transaction was inserting the SAME
+       (scope, key) pair (e.g. a not-yet-upgraded worker's old-shape
+       INSERT, whose own arbiter is the legacy index, or another upgraded
+       worker whose speculative insert touched the legacy index first).
+       Postgres reports in-flight conflicts against non-arbiter indexes
+       unconditionally, so the legacy index can "win" the report even
+       though our own composite arbiter would have deduped cleanly.
+
+    Because a unique-violation report means the conflicting transaction
+    COMMITTED (had it rolled back, our insert would have proceeded), the
+    pool-owning wrappers (_enqueue / _enqueue_batch) retry exactly once on
+    a fresh transaction: cause 2 then dedupes via the composite arbiter,
+    cause 1 violates the legacy index again and is converted to the public
+    typed error. Callers on a borrowed connection (enqueue_with_conn /
+    enqueue_batch(connection=...)) cannot retry -- their transaction is
+    already aborted -- so they convert immediately, preserving this
+    release's documented behavior for that path.
+    """
+
+    def __init__(
+        self,
+        *,
+        actor: str | None = None,
+        idempotency_key: str | None = None,
+        idempotency_scope: str | None = None,
+        detail: str | None = None,
+        original: BaseException | None = None,
+    ) -> None:
+        self.actor = actor
+        self.idempotency_key = idempotency_key
+        self.idempotency_scope = idempotency_scope
+        self.detail = detail
+        self.original = original
+        super().__init__(detail or "legacy idempotency_key index conflict")
+
+    def to_public(self) -> ScopedIdempotencyMigrationPendingError:
+        return ScopedIdempotencyMigrationPendingError(
+            actor=self.actor,
+            idempotency_key=self.idempotency_key,
+            idempotency_scope=self.idempotency_scope,
+            detail=self.detail,
+        )
 
 
 async def _enqueue_on_conn(
@@ -161,6 +222,7 @@ async def _enqueue_on_conn(
             args.start_to_close,
             args.heartbeat_timeout,
             scheduled_at_param,
+            args.idempotency_scope,
             args.idempotency_key,
             args.trace_id,
             args.span_id,
@@ -181,18 +243,42 @@ async def _enqueue_on_conn(
                 blocking_job_id=None,
                 retry_after=None,
             ) from exc
+        if exc.constraint_name == _LEGACY_IDEMPOTENCY_KEY_CONSTRAINT_NAME:
+            # Rolling-deploy overlap window: the old single-column index
+            # still exists alongside the new composite one (see
+            # 01.00.03_01_pre_idempotency_scope.sql). Raised either by a
+            # genuine cross-scope reuse or by a same-pair race against a
+            # concurrent old-shape INSERT -- see
+            # _LegacyIdempotencyKeyConflictError for how the pool-owning
+            # wrapper distinguishes the two. Surfaced explicitly rather
+            # than silently resolved against another scope's row; see
+            # ScopedIdempotencyMigrationPendingError's docstring for why.
+            logger.info(
+                "scoped-idempotency-legacy-index-conflict",
+                actor=args.actor,
+                idempotency_key=args.idempotency_key,
+                idempotency_scope=args.idempotency_scope,
+            )
+            raise _LegacyIdempotencyKeyConflictError(
+                actor=args.actor,
+                idempotency_key=str(args.idempotency_key),
+                idempotency_scope=args.idempotency_scope,
+                original=exc,
+            ) from exc
         raise
     if rec is not None:
         is_new = True
     else:
         rec = await conn.fetchrow(
             sql.enqueue_select_by_key,
+            args.idempotency_scope,
             args.idempotency_key,
         )
         if rec is None:
             raise RuntimeError(
                 "enqueue ON CONFLICT fired but follow-up SELECT "
-                f"found no row for idempotency_key={args.idempotency_key!r}"
+                f"found no row for idempotency_scope={args.idempotency_scope!r} "
+                f"idempotency_key={args.idempotency_key!r}"
             )
 
     row = _job_row_from_record(rec)
@@ -219,6 +305,7 @@ async def _enqueue_on_conn(
             queue=row.queue,
             identity_key=row.identity_key,
             idempotency_key=row.idempotency_key,
+            idempotency_scope=row.idempotency_scope,
             existing_job_id=str(row.id),
             dedup_reason="idempotency_key",
         )
@@ -233,7 +320,17 @@ async def _enqueue_with_conn(
     clock: Clock,
     args: EnqueueArgs,
 ) -> JobRow:
-    return await _enqueue_on_conn(conn, sql, schema, clock, args)
+    try:
+        return await _enqueue_on_conn(conn, sql, schema, clock, args)
+    except _LegacyIdempotencyKeyConflictError as exc:
+        # Caller owns the (now aborted) transaction -- cannot retry here.
+        logger.warning(
+            "scoped-idempotency-migration-pending",
+            actor=exc.actor,
+            idempotency_key=exc.idempotency_key,
+            idempotency_scope=exc.idempotency_scope,
+        )
+        raise exc.to_public() from exc.original or exc
 
 
 async def _enqueue(
@@ -243,9 +340,30 @@ async def _enqueue(
     clock: Clock,
     args: EnqueueArgs,
 ) -> JobRow:
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            return await _enqueue_on_conn(conn, sql, schema, clock, args)
+    try:
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                return await _enqueue_on_conn(conn, sql, schema, clock, args)
+    except _LegacyIdempotencyKeyConflictError as exc:
+        public = exc.to_public()
+
+    # One retry on a fresh transaction. If the violation was a same-pair
+    # race, the conflicting row is now committed (a unique-violation report
+    # means the other transaction committed) and the composite arbiter
+    # dedupes cleanly below. If it was genuine cross-scope reuse, the
+    # legacy index violates again and the public typed error is raised.
+    try:
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                return await _enqueue_on_conn(conn, sql, schema, clock, args)
+    except _LegacyIdempotencyKeyConflictError as exc:
+        logger.warning(
+            "scoped-idempotency-migration-pending",
+            actor=public.actor,
+            idempotency_key=public.idempotency_key,
+            idempotency_scope=public.idempotency_scope,
+        )
+        raise public from exc.original or exc
 
 
 async def _enqueue_batch(
@@ -276,6 +394,7 @@ async def _enqueue_batch(
     scheduled_ats: list[datetime | None] = []
     metadatas: list[str] = []
     idempotency_keys: list[str | None] = []
+    idempotency_scopes: list[str] = []
     trace_ids: list[str | None] = []
     span_ids: list[str | None] = []
     result_expires_ats: list[datetime | None] = []
@@ -305,6 +424,7 @@ async def _enqueue_batch(
         idempotency_keys.append(
             str(args.idempotency_key) if args.idempotency_key is not None else None
         )
+        idempotency_scopes.append(args.idempotency_scope)
         trace_ids.append(args.trace_id)
         span_ids.append(args.span_id)
         result_expires_at: datetime | None = None
@@ -314,29 +434,49 @@ async def _enqueue_batch(
         tag_jsons.append(dumps_str(list(args.tags)))
 
     async def _enqueue_batch_on_conn(conn: ConnLike) -> list[JobRow]:
-        returning_recs = await conn.fetch(
-            sql.enqueue_batch,
-            ids,
-            actors,
-            queues,
-            identity_keys,
-            fairness_keys,
-            payloads,
-            payload_schema_vers,
-            priorities,
-            max_attempts_list,
-            retry_kinds,
-            schedule_to_closes,
-            start_to_closes,
-            heartbeat_timeouts,
-            scheduled_ats,
-            metadatas,
-            idempotency_keys,
-            trace_ids,
-            span_ids,
-            result_expires_ats,
-            tag_jsons,
-        )
+        try:
+            returning_recs = await conn.fetch(
+                sql.enqueue_batch,
+                ids,
+                actors,
+                queues,
+                identity_keys,
+                fairness_keys,
+                payloads,
+                payload_schema_vers,
+                priorities,
+                max_attempts_list,
+                retry_kinds,
+                schedule_to_closes,
+                start_to_closes,
+                heartbeat_timeouts,
+                scheduled_ats,
+                metadatas,
+                idempotency_scopes,
+                idempotency_keys,
+                trace_ids,
+                span_ids,
+                result_expires_ats,
+                tag_jsons,
+            )
+        except UniqueViolationError as exc:
+            if exc.constraint_name == _LEGACY_IDEMPOTENCY_KEY_CONSTRAINT_NAME:
+                # Rolling-deploy overlap window (see
+                # _enqueue_on_conn's matching except-branch and
+                # _LegacyIdempotencyKeyConflictError). Unlike the
+                # single-enqueue path, this INSERT is one statement
+                # covering the whole batch: a single cross-scope collision
+                # against the legacy index aborts the ENTIRE batch, not
+                # just the offending item -- Postgres gives us no cheaper
+                # way to identify which item(s) caused it without
+                # re-inserting one row at a time, which isn't warranted
+                # for a purely transitional migration-window condition.
+                logger.info(
+                    "scoped-idempotency-legacy-index-conflict-batch",
+                    batch_size=len(args_list),
+                )
+                raise _LegacyIdempotencyKeyConflictError(detail=str(exc), original=exc) from exc
+            raise
 
         inserted_ids: set[UUID] = {rec["id"] for rec in returning_recs}
         if inserted_ids:
@@ -347,10 +487,10 @@ async def _enqueue_batch(
 
         new_rows_by_id: dict[UUID, object] = {rec["id"]: rec for rec in returning_recs}
 
-        collision_keys: list[str] = []
+        collision_pairs: list[tuple[str, str]] = []
         for args in args_list:
             if args.idempotency_key is not None and UUID(bytes=args.id.bytes) not in inserted_ids:
-                collision_keys.append(str(args.idempotency_key))
+                collision_pairs.append((args.idempotency_scope, str(args.idempotency_key)))
 
         new_item_ids = list(inserted_ids)
         full_new_recs: dict[UUID, object] = {}
@@ -362,23 +502,30 @@ async def _enqueue_batch(
             for rec in recs:
                 full_new_recs[UUID(bytes=rec["id"].bytes)] = rec
 
-        existing_by_idem: dict[str, object] = {}
-        if collision_keys:
+        existing_by_idem: dict[tuple[str, str], object] = {}
+        if collision_pairs:
+            collision_scopes = [p[0] for p in collision_pairs]
+            collision_keys = [p[1] for p in collision_pairs]
             recs = await conn.fetch(
                 sql.enqueue_batch_fetch_existing,
+                collision_scopes,
                 collision_keys,
             )
             for rec in recs:
-                idem_key = rec["idempotency_key"]
-                existing_by_idem[idem_key] = rec
+                pair = (rec["idempotency_scope"], str(rec["idempotency_key"]))
+                existing_by_idem[pair] = rec
 
         result: list[JobRow] = []
         for args in args_list:
             arg_uuid = UUID(bytes=args.id.bytes)
             if arg_uuid in full_new_recs:
                 result.append(_job_row_from_record(full_new_recs[arg_uuid]))  # type: ignore[arg-type]  # Why: asyncpg Record is duck-typed; _job_row_from_record accepts asyncpg.Record at runtime
-            elif args.idempotency_key is not None and str(args.idempotency_key) in existing_by_idem:
-                result.append(_job_row_from_record(existing_by_idem[str(args.idempotency_key)]))  # type: ignore[arg-type]  # Why: asyncpg Record is duck-typed; _job_row_from_record accepts asyncpg.Record at runtime
+            elif (
+                args.idempotency_key is not None
+                and (args.idempotency_scope, str(args.idempotency_key)) in existing_by_idem
+            ):
+                rec = existing_by_idem[(args.idempotency_scope, str(args.idempotency_key))]
+                result.append(_job_row_from_record(rec))  # type: ignore[arg-type]  # Why: asyncpg Record is duck-typed; _job_row_from_record accepts asyncpg.Record at runtime
             else:
                 partial = new_rows_by_id.get(arg_uuid)
                 if partial is not None:
@@ -391,10 +538,31 @@ async def _enqueue_batch(
         return result
 
     if connection is not None:
-        return await _enqueue_batch_on_conn(connection)
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            return await _enqueue_batch_on_conn(conn)
+        try:
+            return await _enqueue_batch_on_conn(connection)
+        except _LegacyIdempotencyKeyConflictError as exc:
+            # Caller owns the (now aborted) transaction -- cannot retry.
+            logger.warning("scoped-idempotency-migration-pending-batch")
+            raise exc.to_public() from exc.original or exc
+    try:
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                return await _enqueue_batch_on_conn(conn)
+    except _LegacyIdempotencyKeyConflictError as exc:
+        public = exc.to_public()
+    # One retry on a fresh transaction (see _enqueue for the rationale).
+    # The first attempt's statement failure aborted its transaction, so
+    # nothing from it persisted and the whole batch re-executes cleanly;
+    # same-pair-raced items now dedupe via the composite arbiter and the
+    # follow-up fetch, while genuine cross-scope reuse violates the legacy
+    # index again and surfaces as the public typed error.
+    try:
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                return await _enqueue_batch_on_conn(conn)
+    except _LegacyIdempotencyKeyConflictError as exc:
+        logger.warning("scoped-idempotency-migration-pending-batch")
+        raise public from exc.original or exc
 
 
 async def _enqueue_batch_fast(
@@ -461,6 +629,7 @@ async def _enqueue_batch_fast(
                 None,
                 None,
                 result_expires_at,
+                args.idempotency_scope,
                 str(args.idempotency_key) if args.idempotency_key is not None else None,
                 args.trace_id,
                 args.span_id,
@@ -470,12 +639,35 @@ async def _enqueue_batch_fast(
         )
 
     async def _copy_on_conn(conn: ConnLike) -> int:
-        result = await conn.copy_records_to_table(
-            "jobs",
-            records=records,
-            columns=sql.copy_from_columns,
-            schema_name=schema,
-        )
+        try:
+            result = await conn.copy_records_to_table(
+                "jobs",
+                records=records,
+                columns=sql.copy_from_columns,
+                schema_name=schema,
+            )
+        except UniqueViolationError as exc:
+            if exc.constraint_name == _LEGACY_IDEMPOTENCY_KEY_CONSTRAINT_NAME:
+                # Rolling-deploy overlap window (see _enqueue_on_conn's
+                # matching except-branch and
+                # ScopedIdempotencyMigrationPendingError's docstring): an
+                # item's bare idempotency_key already exists under a
+                # DIFFERENT scope. Translated here too -- not just in the
+                # single/batch paths -- so every enqueue API surfaces the
+                # same typed, catchable error during the window instead of
+                # a raw driver error. Unlike those paths there is no
+                # retry: COPY has no ON CONFLICT arbiter, so a same-pair
+                # race cannot dedupe on a second attempt -- the retried
+                # COPY would simply violate again (composite or legacy
+                # index, raw). Any unique violation aborts the whole COPY
+                # before a single row is written, so nothing persists from
+                # this attempt either way.
+                logger.info(
+                    "scoped-idempotency-legacy-index-conflict-batch-fast",
+                    batch_size=len(args_list),
+                )
+                raise ScopedIdempotencyMigrationPendingError(detail=str(exc)) from exc
+            raise
         count = int(result.split()[-1])
         await conn.execute(
             sql.enqueue_notify,

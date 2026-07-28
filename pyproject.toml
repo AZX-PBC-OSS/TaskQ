@@ -206,6 +206,12 @@ ignore = [
 # binding — only the schema identifier is interpolated, and it is
 # validated at construction time.
 "src/taskq/worker/dispatch.py" = ["S608"]
+# Schema name is validated against _IDENT_RE before interpolation, same
+# rationale as migrate.py. The archive-sweep column list is also
+# interpolated via f-string, but it is built from COPY_FROM_COLUMNS — a
+# static module-level tuple of column names, not user input — so there is
+# no injection surface; all row values still use $N parameter binding.
+"src/taskq/worker/_leader_shared.py" = ["S608"]
 "tests/test_postgres_terminal_writes.py" = ["S608"]
 # Same rationale as test_postgres_terminal_writes.py — schema name is
 # validated against _IDENT_RE before interpolation; all user-supplied
@@ -216,6 +222,9 @@ ignore = [
 # Same rationale — schema name validated against _IDENT_RE; all
 # user-supplied values use $N parameter binding.
 "tests/test_postgres_enqueue.py" = ["S608"]
+# Same rationale — schema name validated against _IDENT_RE; all user-supplied
+# values use $N parameter binding.
+"tests/test_idempotency_scope_migrations.py" = ["S608"]
 # Same rationale — schema name validated against _IDENT_RE; all
 # user-supplied values use $N parameter binding.
 # SIM117: conn.transaction() depends on conn from pool.acquire();

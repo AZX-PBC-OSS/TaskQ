@@ -62,6 +62,7 @@ COPY_FROM_COLUMNS: Final[tuple[str, ...]] = (
     "result",
     "result_size_bytes",
     "result_expires_at",
+    "idempotency_scope",
     "idempotency_key",
     "trace_id",
     "span_id",
@@ -412,9 +413,9 @@ INSERT INTO "{s}".jobs
  max_attempts, retry_kind,
  schedule_to_close, start_to_close, heartbeat_timeout,
  scheduled_at,
- idempotency_key, trace_id, span_id, metadata, result_expires_at, tags)
-VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, CASE WHEN COALESCE($14, clock_timestamp()) > clock_timestamp() THEN 'scheduled'::"{s}".job_status ELSE 'pending'::"{s}".job_status END, $8, $9, $10, $11, $12, $13, COALESCE($14, clock_timestamp()), $15, $16, $17, $18::jsonb, $19, $20::text[])
-ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL
+ idempotency_scope, idempotency_key, trace_id, span_id, metadata, result_expires_at, tags)
+VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, CASE WHEN COALESCE($14, clock_timestamp()) > clock_timestamp() THEN 'scheduled'::"{s}".job_status ELSE 'pending'::"{s}".job_status END, $8, $9, $10, $11, $12, $13, COALESCE($14, clock_timestamp()), $15, $16, $17, $18, $19::jsonb, $20, $21::text[])
+ON CONFLICT (idempotency_scope, idempotency_key) WHERE idempotency_key IS NOT NULL
 DO NOTHING
 RETURNING *""",
         enqueue_with_interval=f"""\
@@ -424,9 +425,9 @@ INSERT INTO "{s}".jobs
  max_attempts, retry_kind,
  schedule_to_close, start_to_close, heartbeat_timeout,
  scheduled_at,
- idempotency_key, trace_id, span_id, metadata, result_expires_at, tags)
-VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, CASE WHEN COALESCE($14, clock_timestamp()) > clock_timestamp() THEN 'scheduled'::"{s}".job_status ELSE 'pending'::"{s}".job_status END, $8, $9, $10, clock_timestamp() + $11::interval, $12, $13, COALESCE($14, clock_timestamp()), $15, $16, $17, $18::jsonb, $19, $20::text[])
-ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL
+ idempotency_scope, idempotency_key, trace_id, span_id, metadata, result_expires_at, tags)
+VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, CASE WHEN COALESCE($14, clock_timestamp()) > clock_timestamp() THEN 'scheduled'::"{s}".job_status ELSE 'pending'::"{s}".job_status END, $8, $9, $10, clock_timestamp() + $11::interval, $12, $13, COALESCE($14, clock_timestamp()), $15, $16, $17, $18, $19::jsonb, $20, $21::text[])
+ON CONFLICT (idempotency_scope, idempotency_key) WHERE idempotency_key IS NOT NULL
 DO NOTHING
 RETURNING *""",
         enqueue_unique_for_preflight=f"""\
@@ -446,7 +447,7 @@ LIMIT 1""",
 SELECT count(*) FROM "{s}".jobs
 WHERE actor = $1 AND status IN ('pending', 'scheduled')""",
         enqueue_select_by_key=f"""\
-SELECT * FROM "{s}".jobs WHERE idempotency_key = $1""",
+SELECT * FROM "{s}".jobs WHERE idempotency_scope = $1 AND idempotency_key = $2""",
         enqueue_notify="SELECT pg_notify($1, '')",
         enqueue_batch=f"""\
 INSERT INTO "{s}".jobs (
@@ -454,7 +455,7 @@ INSERT INTO "{s}".jobs (
     payload, payload_schema_ver,
     status, priority, attempt, max_attempts, retry_kind,
     schedule_to_close, start_to_close, heartbeat_timeout,
-    scheduled_at, metadata, idempotency_key, trace_id, span_id,
+    scheduled_at, metadata, idempotency_scope, idempotency_key, trace_id, span_id,
     result_expires_at, tags
 )
 SELECT
@@ -475,12 +476,13 @@ SELECT
     t.heartbeat_timeout,
     COALESCE(t.scheduled_at, now()),
     t.metadata,
+    t.idempotency_scope,
     t.idempotency_key,
     t.trace_id,
     t.span_id,
     t.result_expires_at,
     -- Pg text[][] does not support jagged arrays (empty sub-array () has different
-    -- dimensionality from ('a','b')).  We pass tags via jsonb[] transit ($20::jsonb[])
+    -- dimensionality from ('a','b')).  We pass tags via jsonb[] transit ($21::jsonb[])
     -- and unpack each element into text[] with jsonb_array_elements_text(…)::text[].
     (SELECT COALESCE(array_agg(elem::text), '{{}}'::text[]) FROM jsonb_array_elements_text(t.tags_jsonb) AS elem)
 FROM unnest(
@@ -488,18 +490,20 @@ FROM unnest(
     $6::jsonb[], $7::int[],
     $8::int[], $9::int[], $10::text[],
     $11::timestamptz[], $12::interval[], $13::interval[],
-    $14::timestamptz[], $15::jsonb[], $16::text[], $17::text[], $18::text[],
-    $19::timestamptz[], $20::jsonb[]
+    $14::timestamptz[], $15::jsonb[], $16::text[], $17::text[], $18::text[], $19::text[],
+    $20::timestamptz[], $21::jsonb[]
 ) AS t(id, actor, queue, identity_key, fairness_key,
     payload, payload_schema_ver,
     priority, max_attempts, retry_kind,
     schedule_to_close, start_to_close, heartbeat_timeout,
-    scheduled_at, metadata, idempotency_key, trace_id, span_id,
+    scheduled_at, metadata, idempotency_scope, idempotency_key, trace_id, span_id,
     result_expires_at, tags_jsonb)
-ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
-RETURNING id, actor, queue, identity_key, status, idempotency_key""",
+ON CONFLICT (idempotency_scope, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
+RETURNING id, actor, queue, identity_key, status, idempotency_key, idempotency_scope""",
         enqueue_batch_fetch_existing=f"""\
-SELECT * FROM "{s}".jobs WHERE idempotency_key = ANY($1::text[])""",
+SELECT j.* FROM "{s}".jobs j
+JOIN unnest($1::text[], $2::text[]) AS pairs(scope, key)
+  ON j.idempotency_scope = pairs.scope AND j.idempotency_key = pairs.key""",
         enqueue_batch_fetch_by_ids=f"""\
 SELECT * FROM "{s}".jobs WHERE id = ANY($1::uuid[])""",
         # ── Read SQL templates ─────────────────────────────────────

@@ -280,6 +280,7 @@ class EnqueueArgs:
     identity_key: IdentityKey | None = None
     fairness_key: str | None = None
     idempotency_key: IdempotencyKey | None = None
+    idempotency_scope: str = ""
     trace_id: str | None = None
     span_id: str | None = None
     result_ttl: timedelta | None = None
@@ -338,6 +339,7 @@ class JobRow:
     result_size_bytes: int | None
     result_expires_at: datetime | None
     idempotency_key: IdempotencyKey | None
+    idempotency_scope: str
     trace_id: str | None
     span_id: str | None
     metadata: dict[str, object]

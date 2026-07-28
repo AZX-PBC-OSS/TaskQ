@@ -718,6 +718,7 @@ def _insert_job(
         result_size_bytes=None,
         result_expires_at=None,
         idempotency_key=None,
+        idempotency_scope="",
         trace_id=None,
         span_id=None,
         identity_key=None,

@@ -177,6 +177,7 @@ class JobsClient:
         identity_key: IdentityKey | None = None,
         fairness_key: str | None = None,
         idempotency_key: IdempotencyKey | None = None,
+        idempotency_scope: str | None = None,
         trace_id: str | None = None,
         span_id: str | None = None,
         metadata: dict[str, object] | None = None,
@@ -221,13 +222,52 @@ class JobsClient:
 
         **idempotency_key:**
 
-        - ``idempotency_key`` is **globally unique** (not per-actor scoped).
-          Callers must namespace keys to avoid collisions between actors
-          (e.g. ``"actor_name:delivery_id"``).
+        - ``idempotency_key`` is unique within its ``idempotency_scope``
+          (composite ``(idempotency_scope, idempotency_key)`` uniqueness).
+          The default scope (``idempotency_scope=None`` or ``""``) preserves
+          the prior global-until-prune behavior exactly, so existing callers
+          see zero behavior change. Passing an explicit scope (e.g. a
+          run/batch/epoch id) lets two enqueues with the same business key
+          in different scopes both succeed, decoupling the dedupe horizon
+          from ``prune_retention_*``.
 
         - Key length is bounded at **256 characters**. Empty keys and
           whitespace-only keys raise :class:`ValueError` at the client
-          boundary before any backend call.
+          boundary before any backend call. The same **256-character**
+          bound applies to ``idempotency_scope``; an empty scope (``""``)
+          is valid and equivalent to ``None`` (the default/global scope).
+
+        - **No time-based (TTL) dedupe window.** ``idempotency_scope``
+          decouples the dedupe horizon from ``prune_retention_*`` by
+          namespace, not by time — there is no ``idempotency_ttl`` or
+          equivalent "dedupe for the next N seconds" parameter. A key
+          within a given scope still dedupes **until pruned**, exactly
+          like the pre-scope global behavior, just scoped to that
+          namespace. This is a deliberate scope decision, not an
+          oversight: a real sliding-window TTL cannot be expressed as a
+          single static unique index the way scope can — every mature
+          job queue that offers one (Oban, River) either gives up the
+          atomic ``INSERT ... ON CONFLICT`` for a check-then-insert lock
+          (weaker concurrency guarantee) or buckets time into the key
+          itself (coarser, edge-artifact-prone semantics). If your use
+          case genuinely needs "dedupe for the next hour, not forever,"
+          encode the window into the scope yourself (e.g. a
+          time-bucketed scope string) until/unless a TTL parameter ships
+          as a separate feature.
+
+        - Rolling-deploy note: if this schema is mid-upgrade (the
+          ``01.00.03_01_pre_idempotency_scope.sql`` migration applied but
+          ``01.00.03_01_post_idempotency_scope_drop_old_index.sql`` not
+          yet applied), reusing the same ``idempotency_key`` under two
+          *different* ``idempotency_scope`` values raises
+          :class:`~taskq.exceptions.ScopedIdempotencyMigrationPendingError`
+          rather than silently dedupe against the wrong scope's job. The
+          trigger is a key existing under a different scope, in *either*
+          direction — an unscoped call reusing a key first written under
+          a non-default scope raises it too. Only brand-new keys and
+          same-scope repeats are unaffected. See that exception's
+          docstring and the migration file's header comment for the full
+          rationale.
 
         **unique_for:**
 
@@ -259,6 +299,7 @@ class JobsClient:
                 metadata=metadata,
                 identity_key=identity_key,
                 idempotency_key=idempotency_key,
+                idempotency_scope=idempotency_scope,
                 trace_id=extracted_trace_id,
                 span_id=extracted_span_id,
                 schedule_to_close=schedule_to_close,
@@ -361,6 +402,11 @@ class JobsClient:
                         f"idempotency_key for item {i} must be at most 256 characters, "
                         f"got {len(item.idempotency_key)}"
                     )
+            if item.idempotency_scope is not None and len(item.idempotency_scope) > 256:
+                raise ValueError(
+                    f"idempotency_scope for item {i} must be at most 256 characters, "
+                    f"got {len(item.idempotency_scope)}"
+                )
 
         # Phase 2: Aggregated max_pending check (one query for the whole batch)
         # Collect actors that declare max_pending
@@ -452,7 +498,11 @@ class JobsClient:
 
         - **No idempotency-key collision handling.** A duplicate key
           aborts the entire batch with ``asyncpg.UniqueViolationError``.
-          Callers must pre-deduplicate.
+          Callers must pre-deduplicate. One carve-out: during the
+          ``01.00.03`` pre→post migration window, a key reused across
+          *different* scopes raises
+          :class:`~taskq.exceptions.ScopedIdempotencyMigrationPendingError`
+          instead, matching the other enqueue paths.
         - **No max_pending check.** The caller is responsible for
           ensuring the batch won't exceed actor limits.
         - **No JobHandle instances.** Only the inserted row count is
