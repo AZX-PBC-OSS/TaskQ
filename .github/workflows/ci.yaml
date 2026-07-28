@@ -50,7 +50,10 @@ jobs:
         run: uv python install 3.12
 
       - name: Install dependencies
-        run: uv sync --all-extras --group dev
+        # The e2e group is required here: tests/e2e type-checks against
+        # containerspec (TYPE_CHECKING imports of BuiltImage), which the
+        # default dev group deliberately does not include.
+        run: uv sync --all-extras --group dev --group e2e
 
       - name: Type check with pyright
         run: uv run pyright src/taskq tests

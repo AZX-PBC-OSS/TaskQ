@@ -37,7 +37,7 @@ format:
 	uv run ruff check --fix .
 
 type-check:
-	uv run pyright src/taskq tests
+	uv run --group e2e pyright src/taskq tests
 
 clean:
 	rm -rf build/
