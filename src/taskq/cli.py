@@ -25,6 +25,10 @@ from taskq import migrate as migrate_mod
 from taskq.actor import ActorRef
 from taskq.exceptions import ActorConfigDriftList
 from taskq.settings import TaskQSettings, WorkerSettings
+from taskq.worker.deps import (
+    _TEARDOWN_CLOSE_TIMEOUT_SECS,  # pyright: ignore[reportPrivateUsage]  # Why: the CLI already hard-depends on the worker subsystem (dev/run/health imports below); the shared bound keeps one close-timeout mental model, and deps is transitively loaded via taskq.worker.run regardless.
+    _close_pool_bounded,  # pyright: ignore[reportPrivateUsage]  # Why: canonical bounded-close discipline for every TaskQ-owned pool; same dependency rationale as above.
+)
 from taskq.worker.dev import dev_watch_loop
 from taskq.worker.run import worker_main as _worker_main
 
@@ -443,11 +447,22 @@ def _ui_serve(
             await migrate_mod.apply_pending_locked(pg_dsn, schema=schema)
 
         async with AsyncExitStack() as stack:
-            pg_pool = await stack.enter_async_context(
-                asyncpg.create_pool(pg_dsn, min_size=1, max_size=4)
-            )  # type: ignore[arg-type]  # Why: asyncpg.create_pool returns AsyncContextManager[Pool | None]; enter_async_context expects AsyncContextManager[T]; pyright cannot resolve the generic across the conditional pool-return.
+            pg_pool = await asyncpg.create_pool(pg_dsn, min_size=1, max_size=4)
             assert pg_pool is not None, "asyncpg.create_pool returned None"
             pool = pg_pool
+
+            async def _close_ui_pool() -> None:
+                # Why module-global reads at call time: tests monkeypatch
+                # _close_pool_bounded / _TEARDOWN_CLOSE_TIMEOUT_SECS as
+                # observation and timeout-shrink seams (same convention as
+                # taskq.worker.deps).
+                await _close_pool_bounded(pool, "ui-admin", _TEARDOWN_CLOSE_TIMEOUT_SECS)
+
+            # Why a pushed callback instead of stack.enter_async_context(pool):
+            # Pool.__aexit__ closes UNBOUNDED — a dead PG would wedge UI
+            # shutdown (#38). The bounded helper terminates the pool on
+            # timeout and never raises.
+            stack.push_async_callback(_close_ui_pool)
 
             redis_client: object | None = None
             if redis_url is not None:

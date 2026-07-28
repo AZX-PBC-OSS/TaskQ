@@ -17,6 +17,7 @@ Covers:
 Integration tests live in ``test_jobs_client_integration.py``.
 """
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
@@ -1433,3 +1434,95 @@ class TestDeleteSchedule:
         handle = await client.create_schedule("my_actor", "0 * * * *")
         await client.delete_schedule(handle.schedule_id)
         await client.delete_schedule(handle.schedule_id)
+
+
+# ── Bounded Redis close at client teardown (#38) ────────────────────────
+#
+# _open_redis entered the Redis client on the exit stack
+# (``Redis.__aexit__`` → unbounded ``aclose()``) — a hung broker could
+# wedge ``JobsClient.close()``. These tests pin the bounded-close
+# discipline (asyncio.wait_for, log-and-continue — Redis has no
+# terminate()); the shrink seam is the same module-global monkeypatch
+# convention as tests/test_worker_deps_teardown.py.
+
+
+class _FakeRedisClient:
+    """Fake redis.asyncio.Redis for JobsClient._open_redis tests.
+
+    Supports both lifecycle styles: async-CM (pre-fix enter_async_context
+    path) and explicit initialize() + pushed bounded-aclose callback
+    (post-fix path). aclose() blocks while aclose_wait is cleared (hung
+    broker). Mirrors the _FakeRedisClient conventions in
+    tests/test_worker_deps_teardown.py.
+    """
+
+    def __init__(self) -> None:
+        self.initialize_calls = 0
+        self.aclose_calls = 0
+        self.aclose_wait = asyncio.Event()
+        self.aclose_wait.set()  # aclose() completes instantly by default
+
+    async def initialize(self) -> "_FakeRedisClient":
+        self.initialize_calls += 1
+        return self
+
+    async def aclose(self) -> None:
+        self.aclose_calls += 1
+        await self.aclose_wait.wait()
+
+    async def __aenter__(self) -> "_FakeRedisClient":
+        return self
+
+    async def __aexit__(self, *_: object) -> None:
+        await self.aclose()
+
+
+class TestRedisCloseBounded:
+    async def test_close_bounds_hung_redis_aclose(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A hung Redis aclose() is bounded: JobsClient.close() logs and
+        continues (no terminate on Redis) instead of hanging."""
+        import redis.asyncio as redis_async
+
+        import taskq.client._jobs as jobs_mod
+        from taskq.settings import TaskQSettings
+
+        monkeypatch.setattr(jobs_mod, "_REDIS_CLOSE_TIMEOUT_SECS", 0.05, raising=False)
+        _backend, client = _make_client()
+        fake = _FakeRedisClient()
+        monkeypatch.setattr(redis_async, "from_url", lambda *a, **kw: fake)
+
+        settings = TaskQSettings.load_from_dict({"TASKQ_REDIS_URL": "redis://localhost:6379/0"})
+        await client._open_redis(settings)
+        assert client._redis_client is fake
+
+        fake.aclose_wait.clear()  # aclose() blocks forever from now on
+        # Why the outer timeout: pre-fix close() awaited aclose() unbounded
+        # (via Redis.__aexit__), so the RED state would hang forever instead
+        # of failing fast.
+        async with asyncio.timeout(5):
+            await client.close()
+
+        assert fake.aclose_calls == 1
+        assert client._redis_client is None
+
+    async def test_close_fast_redis_aclose(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Healthy aclose(): the client is closed exactly once during
+        JobsClient.close(). Pins the no-regression behaviour (passes pre-
+        and post-fix)."""
+        import redis.asyncio as redis_async
+
+        from taskq.settings import TaskQSettings
+
+        _backend, client = _make_client()
+        fake = _FakeRedisClient()
+        monkeypatch.setattr(redis_async, "from_url", lambda *a, **kw: fake)
+
+        settings = TaskQSettings.load_from_dict({"TASKQ_REDIS_URL": "redis://localhost:6379/0"})
+        await client._open_redis(settings)
+        assert client._redis_client is fake
+
+        async with asyncio.timeout(5):
+            await client.close()
+
+        assert fake.aclose_calls == 1
+        assert client._redis_client is None

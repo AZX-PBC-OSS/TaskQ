@@ -29,7 +29,9 @@ from taskq.backend.postgres import PostgresBackend
 from taskq.constants import events_channel, wake_channel, worker_channel
 from taskq.obs import get_logger, get_meter
 from taskq.worker.deps import (
+    _TEARDOWN_CLOSE_TIMEOUT_SECS,
     WorkerDeps,
+    _close_conn_bounded,
     _drain_tasks,  # pyright: ignore[reportPrivateUsage]  # Why: module-level drain-task set for fire-and-forget background close; accessed at module scope by both notify.py and deps.py.
     apply_keepalive_to_conn,
 )
@@ -250,8 +252,14 @@ async def reconnect_notify_conn(
             # BaseException: CancelledError (e.g. reload's factory_timeout
             # firing mid-LISTEN-setup) must also close the freshly-built
             # conn — otherwise it leaks until GC with a ResourceWarning.
-            with contextlib.suppress(Exception):
-                await new_conn.close()
+            # Why bounded: the conn being closed here failed LISTEN setup,
+            # so it may already be half-dead; an unbounded close could
+            # stall the reconnect loop (#38). The helper never raises
+            # (except CancelledError, which must propagate), so the
+            # original exception is always re-raised below.
+            await _close_conn_bounded(
+                new_conn, "notify", _TEARDOWN_CLOSE_TIMEOUT_SECS, mid_run=True
+            )
             raise
         deps.notify_conn = new_conn
         # Simulate a wake notify so any pending subscribers are unblocked after reconnect.
@@ -271,8 +279,15 @@ async def reconnect_notify_conn(
         if close_old and old_conn is not None and old_conn is not new_conn:
 
             async def _close_old() -> None:
-                with contextlib.suppress(Exception):
-                    await old_conn.close()
+                # Why bounded: this is the same dead-PG hang class as
+                # deps._drain_old_conn (#38) — an unbounded close would
+                # leak the background task forever (never completing,
+                # never collected). The helper bounds the wait, terminates
+                # on timeout, and never raises, subsuming the old
+                # suppress(Exception).
+                await _close_conn_bounded(
+                    old_conn, "notify", _TEARDOWN_CLOSE_TIMEOUT_SECS, mid_run=True
+                )
 
             # Store the reference so the task is not garbage-collected before
             # completing. The set is module-level (single event loop, async-safe).
@@ -321,10 +336,15 @@ async def _health_check_loop(
                 # on the error path. The remove_listener calls above are kept
                 # unconditionally: harmless on a caller's conn, needed before
                 # a rebuild.
-                with contextlib.suppress(
-                    Exception
-                ):  # Why:  — close can raise on a half-dead socket and must be swallowed to enter the reconnect loop
-                    await conn.close()
+                # Why bounded: close can raise on a half-dead socket and must
+                # be swallowed to enter the reconnect loop — and a dead PG
+                # can block close() indefinitely, which would stall the
+                # health-check loop before reconnect even starts (#38). The
+                # helper bounds the wait, terminates on timeout, and never
+                # raises, subsuming the old suppress(Exception).
+                await _close_conn_bounded(
+                    conn, "notify", _TEARDOWN_CLOSE_TIMEOUT_SECS, mid_run=True
+                )
 
             delay = float(deps.settings.notify_reconnect_backoff_initial)
             attempt = 0

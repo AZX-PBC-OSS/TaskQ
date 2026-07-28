@@ -12,7 +12,6 @@ Failover SLA:
 """
 
 import asyncio
-import contextlib
 import time
 from collections.abc import Iterable
 from uuid import UUID
@@ -55,7 +54,9 @@ from taskq.worker._leader_sweeps import (
 )
 from taskq.worker.cron_loop import tick_cron
 from taskq.worker.deps import (
+    _TEARDOWN_CLOSE_TIMEOUT_SECS,
     WorkerDeps,
+    _close_conn_bounded,
     apply_keepalive_to_conn,
     open_dedicated_conn,
 )
@@ -114,8 +115,18 @@ class MaintenanceLeader:
         for attr in ("_cron_conn", "_leader_monitor_conn"):
             conn = getattr(self, attr)
             if conn is not None and not conn.is_closed():
-                with contextlib.suppress(asyncpg.PostgresConnectionError, OSError):
-                    await conn.close()
+                # Why bounded: a dead PG can block conn.close() indefinitely,
+                # which stalled the election/watchdog/cron paths that call
+                # this (#38). The helper never raises — a superset of the
+                # previous suppress(PostgresConnectionError, OSError) — and
+                # terminates the conn on timeout. Labels match the keepalive
+                # labels ("cron_conn" / "leader_monitor_conn").
+                await _close_conn_bounded(
+                    conn,
+                    attr.removeprefix("_"),
+                    _TEARDOWN_CLOSE_TIMEOUT_SECS,
+                    mid_run=True,
+                )
             setattr(self, attr, None)
         self._deps.is_leader.clear()
 
@@ -134,7 +145,14 @@ class MaintenanceLeader:
             return
         if self._deps.owns_leader_conn:
             if not conn.is_closed():
-                await conn.close()
+                # Why bounded: same dead-PG stall risk on the watchdog/
+                # election drop path (#38). The helper never raises, so
+                # leader_conn is always nulled below and the loop can
+                # rebuild — previously a close error propagated out of the
+                # drop path and skipped the nulling.
+                await _close_conn_bounded(
+                    conn, "leader_conn", _TEARDOWN_CLOSE_TIMEOUT_SECS, mid_run=True
+                )
         else:
             log.warning(
                 "leader-conn-abandoned-caller-owned",

@@ -94,6 +94,12 @@ class FakeConn:
         self._on_fetchval = on_fetchval
         self._on_execute = on_execute
         self._on_close = on_close
+        # Hang-gate + terminate tracking for bounded-close tests (mirrors the
+        # _FakeConn conventions in tests/test_worker_deps_teardown.py):
+        # clear close_wait to make close() block forever (dead PG).
+        self.close_wait = asyncio.Event()
+        self.close_wait.set()  # close() completes instantly by default
+        self.terminated = False
 
     async def fetchval(self, sql: str, *args: object) -> object:
         self.fetchval_calls.append((sql, args))
@@ -112,9 +118,15 @@ class FakeConn:
 
     async def close(self) -> None:
         self.close_calls += 1
+        await self.close_wait.wait()
         self._closed = True
         if self._on_close is not None:
             self._on_close()
+
+    def terminate(self) -> None:
+        self.terminated = True
+        self._closed = True
+        self.close_wait.set()  # aborts any in-flight close() wait
 
     def is_closed(self) -> bool:
         return self._closed
@@ -2090,6 +2102,109 @@ async def test_watchdog_closes_taskq_owned_leader_conn() -> None:
 
     assert leader_conn.is_closed()
     assert leader_conn.close_calls == 1
+    assert deps.leader_conn is None
+
+
+# ── Bounded closes: hung close is terminated, fast close is not ─────────
+#
+# Issue #38: the election/watchdog/cron paths closed leader-owned dedicated
+# conns with a bare ``await conn.close()`` — a dead PG can block that
+# indefinitely, stalling the watchdog. These tests pin the bounded-close
+# discipline (asyncio.wait_for + terminate on timeout) applied via
+# ``_close_conn_bounded``; the shrink seam is the same module-global
+# monkeypatch convention as tests/test_worker_deps_teardown.py.
+
+
+async def test_close_leader_owned_conns_terminates_hung_close(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A hung close on a leader-owned dedicated conn (dead PG) is terminated
+    after the bounded timeout; the loop still closes the remaining conn
+    gracefully, nulls both attrs, and clears is_leader."""
+    import taskq.worker.leader as leader_mod
+
+    monkeypatch.setattr(leader_mod, "_TEARDOWN_CLOSE_TIMEOUT_SECS", 0.05, raising=False)
+    leader, deps, _backend, _, _, _shutdown = await _make_leader()
+    deps.is_leader.set()
+    cron = FakeConn()
+    monitor = FakeConn()
+    leader._cron_conn = cron  # type: ignore[reportAttributeAccessIssue]
+    leader._leader_monitor_conn = monitor  # type: ignore[reportAttributeAccessIssue]
+    monitor.close_wait.clear()  # close() blocks forever from now on
+
+    # Why the outer timeout: pre-fix this awaited conn.close() unbounded, so
+    # the RED state would hang forever instead of failing fast.
+    async with asyncio.timeout(5):
+        await leader._close_leader_owned_conns()
+
+    assert monitor.terminated is True
+    assert monitor.close_calls == 1
+    assert cron.is_closed()
+    assert cron.terminated is False
+    assert leader._cron_conn is None
+    assert leader._leader_monitor_conn is None
+    assert not deps.is_leader.is_set()
+
+
+async def test_close_leader_owned_conns_fast_close_not_terminated() -> None:
+    """Healthy close(): both leader-owned conns close gracefully — nothing is
+    terminated; attrs nulled; is_leader cleared. Pins the no-regression
+    behaviour (passes pre- and post-fix)."""
+    leader, deps, _backend, _, _, _shutdown = await _make_leader()
+    deps.is_leader.set()
+    cron = FakeConn()
+    monitor = FakeConn()
+    leader._cron_conn = cron  # type: ignore[reportAttributeAccessIssue]
+    leader._leader_monitor_conn = monitor  # type: ignore[reportAttributeAccessIssue]
+
+    await leader._close_leader_owned_conns()
+
+    for conn in (cron, monitor):
+        assert conn.is_closed()
+        assert conn.close_calls == 1
+        assert conn.terminated is False
+    assert leader._cron_conn is None
+    assert leader._leader_monitor_conn is None
+    assert not deps.is_leader.is_set()
+
+
+async def test_drop_leader_conn_terminates_hung_taskq_owned_close(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A hung close on a TaskQ-owned leader_conn is terminated after the
+    bound and deps.leader_conn is nulled, so the watchdog/election drop
+    path completes instead of stalling."""
+    import taskq.worker.leader as leader_mod
+
+    monkeypatch.setattr(leader_mod, "_TEARDOWN_CLOSE_TIMEOUT_SECS", 0.05, raising=False)
+    leader_conn = FakeConn(fetchval_result=True)
+    leader, deps, _backend, _, _, _shutdown = await _make_leader(leader_conn=leader_conn)
+    deps.owns_leader_conn = True
+    leader_conn.close_wait.clear()  # close() blocks forever from now on
+
+    # Why the outer timeout: pre-fix this awaited conn.close() unbounded, so
+    # the RED state would hang forever instead of failing fast.
+    async with asyncio.timeout(5):
+        await leader._drop_leader_conn(reason="test_hung_close")
+
+    assert leader_conn.terminated is True
+    assert leader_conn.close_calls == 1
+    assert deps.leader_conn is None
+
+
+async def test_drop_leader_conn_fast_close_not_terminated() -> None:
+    """TaskQ-owned leader_conn with a healthy close(): closed once, never
+    terminated, reference dropped. Pins the no-regression behaviour
+    (passes pre- and post-fix)."""
+    leader_conn = FakeConn(fetchval_result=True)
+    leader, deps, _backend, _, _, _shutdown = await _make_leader(leader_conn=leader_conn)
+    deps.owns_leader_conn = True
+
+    await leader._drop_leader_conn(reason="test_fast_close")
+
+    assert leader_conn.is_closed()
+    assert leader_conn.close_calls == 1
+    assert leader_conn.terminated is False
     assert deps.leader_conn is None
 
 

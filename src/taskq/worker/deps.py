@@ -864,23 +864,44 @@ async def _close_pool_bounded(pool: asyncpg.Pool, label: str, drain_timeout: flo
         logger.warning("pool-teardown-close-error", pool=label, error=repr(exc))
 
 
-async def _close_conn_bounded(conn: asyncpg.Connection, label: str, drain_timeout: float) -> None:
-    """Close a dedicated connection during final teardown, bounded by ``drain_timeout``.
+async def _close_conn_bounded(
+    conn: asyncpg.Connection, label: str, drain_timeout: float, *, mid_run: bool = False
+) -> None:
+    """Close a dedicated connection, bounded by ``drain_timeout``.
 
     Same never-raise contract as :func:`_close_pool_bounded`: timeout →
     warning log + ``terminate()``; any other error → warning log only.
     ``CancelledError`` propagates. Mirrors :func:`_drain_old_conn`.
+
+    ``mid_run`` selects the structlog event family: the default
+    ``conn-teardown-close-*`` family marks final teardown (where a dead PG
+    at shutdown is expected-ish); mid-run callers (leader watchdog/
+    election, notify reconnect, isolate-self) pass ``mid_run=True`` for
+    the ``conn-close-*`` family so an unexpected mid-run close timeout —
+    worker alive, conn so dead that even close() hung — stays
+    distinguishable in log alerts. Event names are kept as literals in
+    both branches so they remain grep-able.
     """
     try:
         await asyncio.wait_for(conn.close(), timeout=drain_timeout)
     except TimeoutError:
-        logger.warning(
-            "conn-teardown-close-timeout-terminating", label=label, drain_timeout=drain_timeout
-        )
+        if mid_run:
+            logger.warning(
+                "conn-close-timeout-terminating", label=label, drain_timeout=drain_timeout
+            )
+        else:
+            logger.warning(
+                "conn-teardown-close-timeout-terminating",
+                label=label,
+                drain_timeout=drain_timeout,
+            )
         with suppress(Exception):
             conn.terminate()
     except Exception as exc:
-        logger.warning("conn-teardown-close-error", label=label, error=repr(exc))
+        if mid_run:
+            logger.warning("conn-close-error", label=label, error=repr(exc))
+        else:
+            logger.warning("conn-teardown-close-error", label=label, error=repr(exc))
 
 
 def _drain_old_pool(pool: asyncpg.Pool, label: str, drain_timeout: float) -> None:

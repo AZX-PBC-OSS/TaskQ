@@ -1045,6 +1045,161 @@ async def test_run_forever_graceful_shutdown_via_signal() -> None:
     assert signal.SIGTERM in fake_proc._signals or fake_proc._returncode is not None
 
 
+# ── Bounded health-pool close at supervisor shutdown (#38) ──────────────
+#
+# run_forever closed its health-check pool with a bare
+# ``await pg_pool.close()`` — a dead PG can block that indefinitely,
+# wedging the supervisor between "shutdown_begin" and "shutdown_complete".
+# These tests pin the bounded-close discipline (asyncio.wait_for +
+# terminate on timeout) applied via ``_close_pool_bounded``; the shrink
+# seam is the same module-global monkeypatch convention as
+# tests/test_worker_deps_teardown.py.
+
+
+class _FakeHealthPool:
+    """Fake asyncpg.Pool for run_forever health-pool lifecycle tests.
+
+    close() blocks while close_wait is cleared (dead PG); terminate()
+    releases the gate. Mirrors the _FakePool conventions in
+    tests/test_worker_deps_teardown.py.
+    """
+
+    def __init__(self) -> None:
+        self.close_calls = 0
+        self.close_wait = asyncio.Event()
+        self.close_wait.set()  # close() completes instantly by default
+        self.closed = False
+        self.terminated = False
+
+    async def close(self) -> None:
+        self.close_calls += 1
+        await self.close_wait.wait()
+        self.closed = True
+
+    def terminate(self) -> None:
+        self.terminated = True
+        self.closed = True
+        self.close_wait.set()
+
+
+def _make_health_enabled_config() -> WorkgroupConfig:
+    """Config with one health-checked worker so run_forever builds a pool.
+
+    health_pg_dsn is set explicitly so run_forever skips
+    WorkerSettings.load() and never touches the environment.
+    """
+    return WorkgroupConfig(
+        actors="myapp.actors:registry",
+        supervisor=SupervisorConfig(
+            shutdown_grace=1.0,
+            health_pg_dsn="postgresql://fake:fake@fake:5432/fake",
+        ),
+        workers=[
+            WorkerSpec(
+                name="w1",
+                queues=["default"],
+                poll_interval=0.1,
+                max_concurrency=2,
+                health=WorkerHealthConfig(
+                    enabled=True,
+                    check_interval=0.05,
+                    startup_grace=0.0,
+                ),
+            )
+        ],
+    )
+
+
+def _install_run_forever_patches(
+    config: WorkgroupConfig,
+    fake_proc: FakeProcess,
+    fake_pool: _FakeHealthPool,
+    signal_handlers: dict[int, Any],
+) -> Any:
+    """Wire the standard run_forever stub patches; returns the context manager."""
+
+    async def fake_exec(*args: Any, **kwargs: Any) -> FakeProcess:
+        return fake_proc
+
+    def capture_handler(sig: int, handler: Any) -> None:
+        signal_handlers[sig] = handler
+
+    mock_loop = patch("asyncio.get_running_loop")
+    patches = contextlib.ExitStack()
+    patches.enter_context(
+        patch("taskq.worker.workgroup.load_workgroup_config", return_value=config)
+    )
+    patches.enter_context(patch("asyncio.create_subprocess_exec", side_effect=fake_exec))
+    loop_mock = patches.enter_context(mock_loop)
+    loop_mock.return_value.add_signal_handler = capture_handler
+    pool_mock = patches.enter_context(
+        patch("taskq.worker.workgroup.asyncpg.create_pool", new_callable=AsyncMock)
+    )
+    pool_mock.return_value = fake_pool
+    health_mock = patches.enter_context(
+        patch("taskq.worker.workgroup._child_health_check", new_callable=AsyncMock)
+    )
+    health_mock.return_value = True
+    return patches
+
+
+@pytest.mark.asyncio
+async def test_run_forever_terminates_hung_health_pool_close(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A hung pg_pool.close() during supervisor shutdown (dead PG) is
+    terminated after the bounded timeout so run_forever completes."""
+    import taskq.worker.workgroup as workgroup_mod
+
+    monkeypatch.setattr(workgroup_mod, "_TEARDOWN_CLOSE_TIMEOUT_SECS", 0.05, raising=False)
+    fake_proc = FakeProcess(returncode=None)
+    fake_pool = _FakeHealthPool()
+    fake_pool.close_wait.clear()  # close() blocks forever from now on
+    signal_handlers: dict[int, Any] = {}
+
+    with _install_run_forever_patches(
+        _make_health_enabled_config(), fake_proc, fake_pool, signal_handlers
+    ):
+        from taskq.worker.workgroup import run_forever
+
+        task = asyncio.create_task(run_forever(Path("/tmp/fake_wg_bounded_pool.toml")))
+        await asyncio.sleep(0.2)
+
+        signal_handlers[signal.SIGTERM]()
+        fake_proc._returncode = 0
+        # Why wait_for: pre-fix shutdown awaited pg_pool.close() unbounded,
+        # so the RED state would hang forever instead of failing fast.
+        await asyncio.wait_for(task, timeout=5)
+
+    assert fake_pool.terminated is True
+    assert fake_pool.close_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_run_forever_fast_health_pool_close_not_terminated() -> None:
+    """Healthy pool close at supervisor shutdown: closed once, never
+    terminated. Pins the no-regression behaviour (passes pre/post-fix)."""
+    fake_proc = FakeProcess(returncode=None)
+    fake_pool = _FakeHealthPool()
+    signal_handlers: dict[int, Any] = {}
+
+    with _install_run_forever_patches(
+        _make_health_enabled_config(), fake_proc, fake_pool, signal_handlers
+    ):
+        from taskq.worker.workgroup import run_forever
+
+        task = asyncio.create_task(run_forever(Path("/tmp/fake_wg_fast_pool.toml")))
+        await asyncio.sleep(0.2)
+
+        signal_handlers[signal.SIGTERM]()
+        fake_proc._returncode = 0
+        await asyncio.wait_for(task, timeout=5)
+
+    assert fake_pool.closed is True
+    assert fake_pool.close_calls == 1
+    assert fake_pool.terminated is False
+
+
 @pytest.mark.asyncio
 async def test_run_forever_liveness_restarts_crashed_child() -> None:
     """Liveness monitor detects a crashed child and restarts it."""

@@ -34,7 +34,7 @@ from taskq.obs import (
     update_heartbeat_consecutive_failures,
 )
 from taskq.worker.cancel import CancelController
-from taskq.worker.deps import WorkerDeps
+from taskq.worker.deps import _TEARDOWN_CLOSE_TIMEOUT_SECS, WorkerDeps, _close_conn_bounded
 
 logger: structlog.stdlib.BoundLogger = get_logger(__name__)
 
@@ -279,7 +279,15 @@ async def isolate_self(
                 _inner()
             )
         finally:
-            await conn.close()
+            # Why bounded: isolate_self only runs when PG is already
+            # suspected dead (heartbeat failures exceeded), so this close is
+            # exactly the dead-PG hang case (#38) — unbounded, it would
+            # wedge shutdown.set() below. The helper never raises, so a
+            # close error can no longer mask an in-flight exception or be
+            # misreported as an isolate-self failure.
+            await _close_conn_bounded(
+                conn, "isolate-self", _TEARDOWN_CLOSE_TIMEOUT_SECS, mid_run=True
+            )
     except Exception as exc:
         logger.warning(
             "isolate-self-failure",

@@ -56,6 +56,7 @@ from taskq.constants import (
     _IDENT_RE as _SCHEMA_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining; same pattern as run.py.
 )
 from taskq.obs import get_logger
+from taskq.worker.deps import _TEARDOWN_CLOSE_TIMEOUT_SECS, _close_pool_bounded
 
 __all__ = [
     "WorkerSpec",
@@ -773,6 +774,11 @@ async def run_forever(config_path: Path) -> None:
                     await t
 
     if pg_pool:
-        await pg_pool.close()
+        # Why bounded: the supervisor's health-pool close is the same
+        # dead-PG hang class as worker teardown (#38) — an unbounded close
+        # would wedge the supervisor between shutdown_begin and
+        # shutdown_complete. The helper never raises and terminates the
+        # pool on timeout.
+        await _close_pool_bounded(pg_pool, "workgroup-health", _TEARDOWN_CLOSE_TIMEOUT_SECS)
 
     logger.info("workgroup.shutdown_complete")

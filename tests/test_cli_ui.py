@@ -1,5 +1,8 @@
 """Tests for taskq.cli ui sub-app: serve command and settings resolution."""
 
+import asyncio
+from collections.abc import Generator
+
 import pytest
 from typer.testing import CliRunner
 
@@ -258,16 +261,62 @@ def test_ui_serve_calls_uvicorn_run_with_correct_args(monkeypatch: pytest.Monkey
 
 
 class _FakePool:
-    """Minimal asyncpg.Pool stand-in accepted by create_router."""
+    """Fake asyncpg.Pool stand-in accepted by create_router.
+
+    Awaitable and an async context manager (mirroring the real Pool, whose
+    ``__aexit__`` calls ``close()``), with close()/terminate() tracking and
+    a hang gate for bounded-close tests: clear close_wait to make close()
+    block forever (dead PG). Mirrors the _FakePool conventions in
+    tests/test_worker_deps_teardown.py.
+    """
+
+    def __init__(self) -> None:
+        self.close_calls = 0
+        self.close_wait = asyncio.Event()
+        self.close_wait.set()  # close() completes instantly by default
+        self.closed = False
+        self.terminated = False
+
+    def __await__(self) -> Generator[object, None, "_FakePool"]:
+        async def _self() -> "_FakePool":
+            return self
+
+        return _self().__await__()
+
+    async def __aenter__(self) -> "_FakePool":
+        return self
+
+    async def __aexit__(self, *_: object) -> None:
+        await self.close()  # mirrors real Pool.__aexit__
+
+    async def close(self) -> None:
+        self.close_calls += 1
+        await self.close_wait.wait()
+        self.closed = True
+
+    def terminate(self) -> None:
+        self.terminated = True
+        self.closed = True
+        self.close_wait.set()
 
 
 class _FakeAsyncCM:
-    """Generic async context manager yielding a fixed value."""
+    """Generic async context manager yielding a fixed value.
+
+    Also awaitable (returns the value), mirroring asyncpg.create_pool's
+    return — the lifespan code can either enter it as a CM or await it.
+    """
 
     def __init__(self, value: object) -> None:
         self._value = value
         self.entered = False
         self.exited = False
+
+    def __await__(self) -> Generator[object, None, object]:
+        async def _value() -> object:
+            return self._value
+
+        return _value().__await__()
 
     async def __aenter__(self) -> object:
         self.entered = True
@@ -295,8 +344,8 @@ def test_ui_serve_lifespan_creates_pool_and_redirects_root(
 
     monkeypatch.setattr(uvicorn, "run", _fake_uvicorn_run)
 
-    pool_cm = _FakeAsyncCM(_FakePool())
-    monkeypatch.setattr(cli_mod.asyncpg, "create_pool", lambda *a, **kw: pool_cm)
+    pool = _FakePool()
+    monkeypatch.setattr(cli_mod.asyncpg, "create_pool", lambda *a, **kw: pool)
 
     from taskq.cli import _ui_serve
 
@@ -323,8 +372,94 @@ def test_ui_serve_lifespan_creates_pool_and_redirects_root(
         assert response.status_code == 307
         assert response.headers["location"] == "/admin/"
 
-    assert pool_cm.entered is True
-    assert pool_cm.exited is True
+    assert pool.closed is True
+    assert pool.terminated is False
+
+
+# ── Bounded pool close at lifespan exit (#38) ───────────────────────────
+#
+# The lifespan entered the pool on the AsyncExitStack (``Pool.__aexit__``
+# → unbounded ``close()``) — a dead PG could wedge UI shutdown. These
+# tests pin the bounded-close discipline (asyncio.wait_for + terminate on
+# timeout) applied via ``_close_pool_bounded``; the shrink seam is the
+# same module-global monkeypatch convention as
+# tests/test_worker_deps_teardown.py. The lifespan is driven directly
+# (not via TestClient) so ``asyncio.timeout`` can bound the RED state.
+
+
+def _capture_app_for_lifespan(monkeypatch: pytest.MonkeyPatch, pool: _FakePool) -> object:
+    """Run _ui_serve with a stubbed uvicorn.run and return the FastAPI app."""
+    import uvicorn
+
+    import taskq.cli as cli_mod
+
+    captured: dict[str, object] = {}
+
+    def _fake_uvicorn_run(app: object, **kwargs: object) -> None:
+        captured["app"] = app
+
+    monkeypatch.setattr(uvicorn, "run", _fake_uvicorn_run)
+    monkeypatch.setattr(cli_mod.asyncpg, "create_pool", lambda *a, **kw: pool)
+
+    from taskq.cli import _ui_serve
+
+    settings = _dev_settings(monkeypatch)
+    _ui_serve(
+        pg_dsn="postgresql://u:p@h:5432/db",
+        schema="taskq",
+        redis_url=None,
+        host="127.0.0.1",
+        port=9999,
+        run_migrate=False,
+        settings=settings,
+    )
+    return captured["app"]
+
+
+async def test_ui_serve_lifespan_terminates_hung_pool_close(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A hung pool close at lifespan exit (dead PG) is terminated after the
+    bounded timeout and lifespan shutdown completes."""
+    import taskq.cli as cli_mod
+
+    monkeypatch.setattr(cli_mod, "_TEARDOWN_CLOSE_TIMEOUT_SECS", 0.05, raising=False)
+    pool = _FakePool()
+    pool.close_wait.clear()  # close() blocks forever from now on
+    app = _capture_app_for_lifespan(monkeypatch, pool)
+
+    from fastapi import FastAPI
+
+    assert isinstance(app, FastAPI)
+    # Why the outer timeout: pre-fix lifespan exit awaited Pool.__aexit__
+    # (unbounded close), so the RED state would hang forever instead of
+    # failing fast.
+    async with asyncio.timeout(5):
+        async with app.router.lifespan_context(app):
+            pass
+
+    assert pool.terminated is True
+    assert pool.close_calls == 1
+
+
+async def test_ui_serve_lifespan_fast_pool_close_not_terminated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Healthy pool close at lifespan exit: closed once, never terminated.
+    Pins the no-regression behaviour (passes pre- and post-fix)."""
+    pool = _FakePool()
+    app = _capture_app_for_lifespan(monkeypatch, pool)
+
+    from fastapi import FastAPI
+
+    assert isinstance(app, FastAPI)
+    async with asyncio.timeout(5):
+        async with app.router.lifespan_context(app):
+            pass
+
+    assert pool.closed is True
+    assert pool.close_calls == 1
+    assert pool.terminated is False
 
 
 def test_ui_serve_lifespan_runs_migration_when_requested(
@@ -344,8 +479,8 @@ def test_ui_serve_lifespan_runs_migration_when_requested(
 
     monkeypatch.setattr(uvicorn, "run", _fake_uvicorn_run)
 
-    pool_cm = _FakeAsyncCM(_FakePool())
-    monkeypatch.setattr(cli_mod.asyncpg, "create_pool", lambda *a, **kw: pool_cm)
+    pool = _FakePool()
+    monkeypatch.setattr(cli_mod.asyncpg, "create_pool", lambda *a, **kw: pool)
     apply_pending_locked_mock = AsyncMock(return_value=[])
     monkeypatch.setattr(cli_mod.migrate_mod, "apply_pending_locked", apply_pending_locked_mock)
 
@@ -393,8 +528,8 @@ def test_ui_serve_lifespan_creates_redis_client_when_redis_url_set(
 
     monkeypatch.setattr(uvicorn, "run", _fake_uvicorn_run)
 
-    pool_cm = _FakeAsyncCM(_FakePool())
-    monkeypatch.setattr(cli_mod.asyncpg, "create_pool", lambda *a, **kw: pool_cm)
+    pool = _FakePool()
+    monkeypatch.setattr(cli_mod.asyncpg, "create_pool", lambda *a, **kw: pool)
     redis_cm = _FakeAsyncCM(object())
     monkeypatch.setattr(aioredis, "from_url", lambda *a, **kw: redis_cm)
 
@@ -494,6 +629,12 @@ class _HealthFakeAcquire:
 class _HealthFakePool:
     def acquire(self) -> _HealthFakeAcquire:
         return _HealthFakeAcquire()
+
+    async def close(self) -> None:
+        pass
+
+    def terminate(self) -> None:
+        pass
 
 
 def _capture_app(monkeypatch: pytest.MonkeyPatch) -> tuple[dict[str, object], pytest.MonkeyPatch]:
