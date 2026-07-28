@@ -41,6 +41,7 @@ import pytest
 
 from taskq import migrate as migrate_mod
 from taskq._ids import new_uuid
+from taskq.backend._protocol import JobRow
 from taskq.exceptions import ScopedIdempotencyMigrationPendingError
 from taskq.settings import TaskQSettings
 from taskq.testing.fixtures import _open_pg_backend_on_schema
@@ -215,10 +216,11 @@ class TestMigrationUpgradePath:
         key = "upgrade-path-pre-existing"
         await _insert_job_raw(pg_conn, settings.schema_name, idempotency_key=key)
 
-        # 3. Apply the remaining migrations (01.00.03_01 pre + post)
+        # 3. Apply the remaining migrations (01.00.02_01 + 01.00.03_01 pre + post)
         applied = await migrate_mod.apply_pending(pg_conn, schema=settings.schema_name)
         assert len(applied) >= 1
-        assert applied[0].version == "01.00.03_01"
+        applied_versions = {m.version for m in applied}
+        assert "01.00.03_01" in applied_versions
 
         # 4. Assert the existing row now has idempotency_scope = ''
         row = await pg_conn.fetchrow(
@@ -859,7 +861,7 @@ class TestConcurrentOverlapWindow:
         try:
             key = "overlap-concurrent-cross-scope"
 
-            async def scoped_write(scope: str) -> object:
+            async def scoped_write(scope: str) -> JobRow | ScopedIdempotencyMigrationPendingError:
                 try:
                     return await backend.enqueue(
                         make_enqueue_args(idempotency_key=key, idempotency_scope=scope)
@@ -871,8 +873,8 @@ class TestConcurrentOverlapWindow:
                 *(scoped_write("run-A") for _ in range(5)),
                 *(scoped_write("run-B") for _ in range(5)),
             )
-            rows = [r for r in results if not isinstance(r, Exception)]
-            errors = [r for r in results if isinstance(r, Exception)]
+            rows = [r for r in results if isinstance(r, JobRow)]
+            errors = [r for r in results if isinstance(r, ScopedIdempotencyMigrationPendingError)]
 
             # Exactly one row total across both scopes; no job lost, none duplicated.
             assert await _count_jobs_by_key(pg_conn, settings.schema_name, key) == 1
