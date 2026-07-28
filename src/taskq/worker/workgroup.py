@@ -51,12 +51,12 @@ from uuid import UUID
 import asyncpg
 import structlog
 
+from taskq._close import CLOSE_TIMEOUT_SECS, close_pool_bounded
 from taskq._ids import new_uuid
 from taskq.constants import (
     _IDENT_RE as _SCHEMA_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining; same pattern as run.py.
 )
 from taskq.obs import get_logger
-from taskq.worker.deps import _TEARDOWN_CLOSE_TIMEOUT_SECS, _close_pool_bounded
 
 __all__ = [
     "WorkerSpec",
@@ -779,6 +779,6 @@ async def run_forever(config_path: Path) -> None:
         # would wedge the supervisor between shutdown_begin and
         # shutdown_complete. The helper never raises and terminates the
         # pool on timeout.
-        await _close_pool_bounded(pg_pool, "workgroup-health", _TEARDOWN_CLOSE_TIMEOUT_SECS)
+        await close_pool_bounded(pg_pool, "workgroup-health", CLOSE_TIMEOUT_SECS)
 
     logger.info("workgroup.shutdown_complete")

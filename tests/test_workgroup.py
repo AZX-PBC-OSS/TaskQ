@@ -1051,7 +1051,7 @@ async def test_run_forever_graceful_shutdown_via_signal() -> None:
 # ``await pg_pool.close()`` — a dead PG can block that indefinitely,
 # wedging the supervisor between "shutdown_begin" and "shutdown_complete".
 # These tests pin the bounded-close discipline (asyncio.wait_for +
-# terminate on timeout) applied via ``_close_pool_bounded``; the shrink
+# terminate on timeout) applied via ``close_pool_bounded``; the shrink
 # seam is the same module-global monkeypatch convention as
 # tests/test_worker_deps_teardown.py.
 
@@ -1151,7 +1151,7 @@ async def test_run_forever_terminates_hung_health_pool_close(
     terminated after the bounded timeout so run_forever completes."""
     import taskq.worker.workgroup as workgroup_mod
 
-    monkeypatch.setattr(workgroup_mod, "_TEARDOWN_CLOSE_TIMEOUT_SECS", 0.05, raising=False)
+    monkeypatch.setattr(workgroup_mod, "CLOSE_TIMEOUT_SECS", 0.05)
     fake_proc = FakeProcess(returncode=None)
     fake_pool = _FakeHealthPool()
     fake_pool.close_wait.clear()  # close() blocks forever from now on

@@ -50,6 +50,7 @@ if TYPE_CHECKING:
 
     from taskq.connections import ConnFactory
 
+from taskq._close import CLOSE_TIMEOUT_SECS, close_pool_bounded
 from taskq.actor import ActorRef
 from taskq.backend._protocol import (
     DstStrategy,
@@ -287,7 +288,9 @@ class TaskQ:
             await self._client.close()
             self._client = None
         if self._owns_pool and self._pool is not None:
-            await self._pool.close()
+            # Why bounded: an enqueue in flight at close time can stall
+            # Pool.close() indefinitely against a dead PG.
+            await close_pool_bounded(self._pool, "client", CLOSE_TIMEOUT_SECS)
             self._pool = None
 
     async def __aenter__(self) -> "TaskQ":

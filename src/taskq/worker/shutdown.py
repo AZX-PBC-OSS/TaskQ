@@ -26,6 +26,7 @@ from uuid import UUID
 import asyncpg
 import structlog
 
+from taskq._close import CLOSE_TIMEOUT_SECS, close_conn_bounded
 from taskq.backend._protocol import Backend, CancelPhase
 from taskq.backend._sql import (
     parse_rowcount,  # pyright: ignore[reportPrivateUsage]  # Why: parse_rowcount is the canonical command-tag parser; used identically in worker/cancel.py.
@@ -224,17 +225,25 @@ async def orchestrate_shutdown(
         # mid-shutdown. For TaskQ-owned conns, close+null releases the
         # advisory lock early so a replacement pod can take over before
         # the SIGTERM budget expires.
-        if deps.leader_conn is not None and deps.owns_leader_conn:
-            # Why a function-local import of private names: deps.py imports
-            # ShutdownPhase from THIS module, so a module-level import of
-            # deps.py would cycle. The bounded helper never raises (timeout
-            # → terminate, error → log), so the old suppress-wrapper around
-            # a bare conn.close() is dropped — a dead PG can no longer wedge
+        #
+        # Why the identity guard below: the bounded close can park for
+        # seconds, so shutdown_event is set FIRST to stop the election
+        # loop — otherwise a still-live loop could drop the closing conn
+        # and swap in a fresh (possibly lock-holding) one mid-park, and an
+        # unconditional null would orphan it. The guard leaves a swapped-in
+        # conn in place; the deps exit-stack guard closes it.
+        conn = deps.leader_conn
+        if conn is not None and deps.owns_leader_conn:
+            # Why this can be a module-level import from taskq._close:
+            # taskq._close imports nothing from taskq.worker, so the
+            # deps↔shutdown cycle (deps imports ShutdownPhase from THIS
+            # module) is not re-introduced. The bounded helper never raises
+            # (timeout → terminate, error → log), so a dead PG cannot wedge
             # shutdown on an unbounded close.
-            from taskq.worker.deps import _TEARDOWN_CLOSE_TIMEOUT_SECS, _close_conn_bounded
-
-            await _close_conn_bounded(deps.leader_conn, "leader", _TEARDOWN_CLOSE_TIMEOUT_SECS)
-            deps.leader_conn = None
+            shutdown_event.set()  # stop the election loop BEFORE the close park
+            await close_conn_bounded(conn, "leader", CLOSE_TIMEOUT_SECS)
+            if deps.leader_conn is conn:
+                deps.leader_conn = None
 
         return 0
     finally:

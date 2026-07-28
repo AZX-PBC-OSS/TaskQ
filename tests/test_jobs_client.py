@@ -1477,6 +1477,20 @@ class _FakeRedisClient:
         await self.aclose()
 
 
+class _FakeRedisInitializeRaises(_FakeRedisClient):
+    """_FakeRedisClient whose initialize() fails (broker down at startup).
+
+    from_url() has already allocated the connection pool by the time
+    initialize() runs, so a raising eager setup must still be followed by
+    aclose() during unwind. Mirrors _FakeRedisInitializeRaises in
+    tests/test_cli_ui.py.
+    """
+
+    async def initialize(self) -> "_FakeRedisClient":
+        self.initialize_calls += 1
+        raise ConnectionError("broker down")
+
+
 class TestRedisCloseBounded:
     async def test_close_bounds_hung_redis_aclose(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A hung Redis aclose() is bounded: JobsClient.close() logs and
@@ -1486,7 +1500,7 @@ class TestRedisCloseBounded:
         import taskq.client._jobs as jobs_mod
         from taskq.settings import TaskQSettings
 
-        monkeypatch.setattr(jobs_mod, "_REDIS_CLOSE_TIMEOUT_SECS", 0.05, raising=False)
+        monkeypatch.setattr(jobs_mod, "CLOSE_TIMEOUT_SECS", 0.05)
         _backend, client = _make_client()
         fake = _FakeRedisClient()
         monkeypatch.setattr(redis_async, "from_url", lambda *a, **kw: fake)
@@ -1526,3 +1540,30 @@ class TestRedisCloseBounded:
 
         assert fake.aclose_calls == 1
         assert client._redis_client is None
+
+    async def test_open_redis_initialize_failure_still_closes_client(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A redis client whose initialize() fails (broker down at startup) is
+        still closed during JobsClient.close(): from_url() has already
+        allocated the connection pool, so the failed eager setup must not
+        leak it. Pins that the bounded-close callback is pushed BEFORE
+        initialize() is awaited."""
+        import redis.asyncio as redis_async
+
+        from taskq.settings import TaskQSettings
+
+        _backend, client = _make_client()
+        fake = _FakeRedisInitializeRaises()
+        monkeypatch.setattr(redis_async, "from_url", lambda *a, **kw: fake)
+
+        settings = TaskQSettings.load_from_dict({"TASKQ_REDIS_URL": "redis://localhost:6379/0"})
+        with pytest.raises(ConnectionError, match="broker down"):
+            async with asyncio.timeout(5):
+                await client._open_redis(settings)
+        # Why the timeout: a bounded-close callback not pushed before initialize() hangs this unwind.
+        async with asyncio.timeout(5):
+            await client.close()
+
+        assert fake.initialize_calls == 1
+        assert fake.aclose_calls == 1

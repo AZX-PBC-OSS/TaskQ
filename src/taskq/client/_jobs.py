@@ -14,7 +14,6 @@ either an :class:`~taskq.testing.in_memory.InMemoryBackend` (tests) or a
 :class:`taskq.backend.postgres.PostgresBackend` (production).
 """
 
-import asyncio
 from collections.abc import Generator
 from contextlib import AsyncExitStack, contextmanager
 from datetime import UTC, datetime, timedelta
@@ -25,6 +24,7 @@ import structlog
 from croniter import croniter
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
+from taskq._close import CLOSE_TIMEOUT_SECS, close_redis_bounded
 from taskq.actor import ActorRef
 from taskq.backend._cursor import encode_cursor
 from taskq.backend._protocol import (
@@ -58,31 +58,6 @@ if TYPE_CHECKING:
 __all__ = ["JobsClient"]
 
 logger: structlog.stdlib.BoundLogger = structlog.get_logger(__name__)
-
-# Why a local copy of the worker's bound (taskq.worker.deps
-# ._TEARDOWN_CLOSE_TIMEOUT_SECS = 5.0 — one close bound, one mental model):
-# the client package must not import taskq.worker — worker modules already
-# import taskq.client._enqueuer, and pulling worker internals into every
-# producer-side client for a ten-line Redis close would invert the
-# layering and its import weight.
-_REDIS_CLOSE_TIMEOUT_SECS: float = 5.0
-
-
-async def _close_redis_bounded(client: "redis_async.Redis", drain_timeout: float) -> None:  # type: ignore[type-arg]  # Why: redis_async is under TYPE_CHECKING; string annotation avoids runtime import. type-arg: redis-py stubs expose Redis as an unparameterised generic.
-    """Close a Redis client during client teardown, bounded by ``drain_timeout``.
-
-    Mirrors the ``_close_redis_client`` pattern in ``taskq.worker.deps``
-    (b072692): on timeout log-and-continue (Redis has no ``terminate()``);
-    any other error is logged and swallowed so ``JobsClient.close()`` keeps
-    unwinding. Never raises — ``CancelledError`` (a ``BaseException``)
-    still propagates.
-    """
-    try:
-        await asyncio.wait_for(client.aclose(), timeout=drain_timeout)
-    except TimeoutError:
-        logger.warning("redis-teardown-close-timeout", drain_timeout=drain_timeout)
-    except Exception as exc:
-        logger.warning("redis-teardown-close-error", error=repr(exc))
 
 
 class JobsClient:
@@ -158,22 +133,27 @@ class JobsClient:
                     "Install it with: pip install 'taskq[redis]'"
                 ) from exc
             client = redis_async.from_url(str(settings.redis_url), decode_responses=False)
+
             # Why not stack.enter_async_context(client): Redis.__aexit__
             # calls aclose() UNBOUNDED — a hung broker would wedge
             # JobsClient.close() (#38). initialize() preserves
             # __aenter__'s eager-setup semantics; the pushed callback
             # bounds the close instead (b072692 pattern).
-            await client.initialize()
-            self._redis_client = client
-
             async def _close_client() -> None:
                 # Why module-global reads at call time: tests monkeypatch
-                # _close_redis_bounded / _REDIS_CLOSE_TIMEOUT_SECS as
+                # close_redis_bounded / CLOSE_TIMEOUT_SECS as
                 # observation and timeout-shrink seams (same convention as
                 # taskq.worker.deps).
-                await _close_redis_bounded(client, _REDIS_CLOSE_TIMEOUT_SECS)
+                await close_redis_bounded(client, CLOSE_TIMEOUT_SECS)
 
+            # Why push BEFORE initialize(): from_url() has already allocated
+            # the connection pool, so if initialize() raises (broker down)
+            # the failed eager setup must still release it — the unwind runs
+            # the pushed callback through the bounded close (never raises;
+            # aclose() on a never-initialized client is a no-op).
             self._exit_stack.push_async_callback(_close_client)
+            await client.initialize()
+            self._redis_client = client
         self._settings = settings
 
     async def close(self) -> None:

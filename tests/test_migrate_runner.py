@@ -5,11 +5,16 @@ and a fake connection -- no real database needed.
 The integration scenarios against the real 01.00.03 migration set live in
 tests/test_idempotency_scope_migrations.py::TestPhaseOrderingGuard; these
 tests cover the branches that set cannot reach (a post-only version, and
-``target``/``max_steps`` truncation interacting with the guard).
+``target``/``max_steps`` truncation interacting with the guard). The tail
+section pins the bounded teardown in apply_pending_locked's ``finally``
+(dead-PG unlock-execute and owned-conn-close hangs).
 """
 
+import asyncio
+from collections.abc import Awaitable, Callable
 from typing import Any
 
+import asyncpg
 import pytest
 
 from taskq import migrate as migrate_mod
@@ -164,3 +169,108 @@ async def test_guard_passes_when_pre_applied_earlier_in_same_run(
     assert keys.index("02.00.00_01:pre") < keys.index("02.00.00_01:post")
     # Every migration executed inside its own transaction, in order.
     assert conn.executed.count("SELECT 1;") == 5
+
+
+# ── apply_pending_locked: bounded finally teardown (dead PG) ────────────
+
+
+class _HangCloseMigrateConn(_FakeMigrateConn):
+    """_FakeMigrateConn whose close() wedges forever (dead PG).
+
+    Mirrors the _FakeConn hang gate in tests/test_cli_migrate.py:
+    close_wait is never set, so close() blocks until cancelled;
+    terminate() is the only way out and unblocks any in-flight close().
+    """
+
+    def __init__(self, applied: set[str]) -> None:
+        super().__init__(applied)
+        self.close_calls = 0
+        self.close_wait = asyncio.Event()  # never set: close() blocks forever
+        self.closed = False
+        self.terminated = False
+
+    async def close(self) -> None:
+        self.close_calls += 1
+        await self.close_wait.wait()
+        self.closed = True
+
+    def terminate(self) -> None:
+        self.terminated = True
+        self.closed = True
+        self.close_wait.set()
+
+
+class _HangUnlockMigrateConn(_FakeMigrateConn):
+    """_FakeMigrateConn whose pg_advisory_unlock execute wedges forever
+    (dead PG); every other SQL and close() complete normally.
+    """
+
+    def __init__(self, applied: set[str]) -> None:
+        super().__init__(applied)
+        self.unlock_wait = asyncio.Event()  # never set: unlock blocks forever
+        self.closed = False
+
+    async def execute(self, sql: str, *args: object) -> str:
+        if "pg_advisory_unlock" in sql:
+            await self.unlock_wait.wait()
+        return await super().execute(sql, *args)
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+def _make_conn_factory(
+    fake: _FakeMigrateConn,
+) -> Callable[[], Awaitable[asyncpg.Connection]]:
+    async def factory() -> asyncpg.Connection:
+        return fake  # type: ignore[return-value]  # Why: test fake; asyncpg.Connection is a C-extension type that cannot be subclassed.
+
+    return factory
+
+
+async def test_apply_pending_locked_bounds_hung_conn_close(monkeypatch: Any) -> None:
+    """A dead PG can wedge conn.close() forever; the owned-conn close in
+    apply_pending_locked's finally must be bounded and terminate the conn
+    on timeout, so a dead PG at startup cannot wedge CLI/UI startup before
+    the lifespan exit stack exists."""
+    _patch_discover(monkeypatch, [_make_migration("01.00.00_01", "pre")])
+    conn = _HangCloseMigrateConn(applied=set())
+    # Shrink seam: CLOSE_TIMEOUT_SECS is read from migrate_mod's module
+    # globals at call time, and the outer timeout below is what makes the
+    # RED hang fail fast.
+    monkeypatch.setattr(migrate_mod, "CLOSE_TIMEOUT_SECS", 0.05)
+
+    # Why the outer timeout: pre-fix apply_pending_locked awaited c.close()
+    # unbounded in its finally, so the RED state hangs forever instead of
+    # failing fast. Mirrors the CLI bounded-close tests.
+    async with asyncio.timeout(5):
+        applied = await migrate_mod.apply_pending_locked(
+            schema="taskq",
+            conn_factory=_make_conn_factory(conn),
+        )
+
+    assert [m.key for m in applied] == ["01.00.00_01:pre"]
+    assert conn.terminated is True
+    assert conn.close_calls == 1
+
+
+async def test_apply_pending_locked_bounds_hung_unlock_execute(monkeypatch: Any) -> None:
+    """A dead PG can wedge the advisory-unlock execute forever; it must be
+    bounded so the finally still reaches the owned-conn close (itself
+    bounded) instead of hanging before the lifespan exit stack exists."""
+    _patch_discover(monkeypatch, [_make_migration("01.00.00_01", "pre")])
+    conn = _HangUnlockMigrateConn(applied=set())
+    # See the sibling test for the shrink-seam rationale.
+    monkeypatch.setattr(migrate_mod, "CLOSE_TIMEOUT_SECS", 0.05)
+
+    # Why the outer timeout: pre-fix the unlock execute was awaited
+    # unbounded in the finally, so the RED state hangs forever instead of
+    # failing fast.
+    async with asyncio.timeout(5):
+        applied = await migrate_mod.apply_pending_locked(
+            schema="taskq",
+            conn_factory=_make_conn_factory(conn),
+        )
+
+    assert [m.key for m in applied] == ["01.00.00_01:pre"]
+    assert conn.closed is True

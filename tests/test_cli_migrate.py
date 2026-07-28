@@ -111,7 +111,7 @@ async def test_migrate_status_terminates_hung_conn_close(monkeypatch: Any) -> No
     fake_conn.close_wait.clear()  # close() blocks forever from now on
     monkeypatch.setattr(cli_mod.migrate_mod, "list_applied", AsyncMock(return_value=set()))
     monkeypatch.setattr(cli_mod.migrate_mod, "discover", lambda: [])
-    monkeypatch.setattr(cli_mod, "_TEARDOWN_CLOSE_TIMEOUT_SECS", 0.05)
+    monkeypatch.setattr(cli_mod, "CLOSE_TIMEOUT_SECS", 0.05)
 
     # Why the outer timeout: pre-fix _status awaited conn.close() unbounded,
     # so the RED state would hang forever instead of failing fast. Driven via
@@ -134,7 +134,7 @@ async def test_migrate_status_hung_close_does_not_mask_body_error(monkeypatch: A
     monkeypatch.setattr(
         cli_mod.migrate_mod, "list_applied", AsyncMock(side_effect=RuntimeError("boom"))
     )
-    monkeypatch.setattr(cli_mod, "_TEARDOWN_CLOSE_TIMEOUT_SECS", 0.05)
+    monkeypatch.setattr(cli_mod, "CLOSE_TIMEOUT_SECS", 0.05)
 
     # Why the outer timeout: pre-fix _status awaited conn.close() unbounded,
     # so the RED state would hang forever (masking "boom") instead of
@@ -157,7 +157,7 @@ def test_migrate_status_hung_close_does_not_mask_body_error_exit_code(
     monkeypatch.setattr(
         cli_mod.migrate_mod, "list_applied", AsyncMock(side_effect=RuntimeError("boom"))
     )
-    monkeypatch.setattr(cli_mod, "_TEARDOWN_CLOSE_TIMEOUT_SECS", 0.05)
+    monkeypatch.setattr(cli_mod, "CLOSE_TIMEOUT_SECS", 0.05)
 
     result = runner.invoke(app, ["migrate", "status"])
     assert result.exit_code == 1
@@ -245,7 +245,7 @@ async def test_migrate_up_terminates_hung_conn_close(monkeypatch: Any) -> None:
     fake_conn = _patch_connect(monkeypatch)
     fake_conn.close_wait.clear()  # close() blocks forever from now on
     monkeypatch.setattr(cli_mod.migrate_mod, "apply_pending", AsyncMock(return_value=[]))
-    monkeypatch.setattr(cli_mod, "_TEARDOWN_CLOSE_TIMEOUT_SECS", 0.05)
+    monkeypatch.setattr(cli_mod, "CLOSE_TIMEOUT_SECS", 0.05)
 
     # Why the outer timeout: pre-fix _up awaited conn.close() unbounded,
     # so the RED state would hang forever instead of failing fast. Driven via

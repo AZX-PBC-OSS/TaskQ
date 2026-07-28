@@ -314,7 +314,7 @@ async def test_isolate_self_shields_terminal_writes() -> None:
 # indefinitely on exactly the dead PG that triggered it, wedging the
 # worker's shutdown signalling. These tests pin the bounded-close
 # discipline (asyncio.wait_for + terminate on timeout) applied via
-# ``_close_conn_bounded``; the shrink seam is the same module-global
+# ``close_conn_bounded``; the shrink seam is the same module-global
 # monkeypatch convention as tests/test_worker_deps_teardown.py.
 
 
@@ -325,7 +325,7 @@ async def test_isolate_self_terminates_hung_conn_close(
     bounded timeout; isolate_self still completes and signals shutdown."""
     import taskq.worker.heartbeat as hb_mod
 
-    monkeypatch.setattr(hb_mod, "_TEARDOWN_CLOSE_TIMEOUT_SECS", 0.05, raising=False)
+    monkeypatch.setattr(hb_mod, "CLOSE_TIMEOUT_SECS", 0.05)
     conn = FakeConn()
     conn.close_wait.clear()  # close() blocks forever from now on
 

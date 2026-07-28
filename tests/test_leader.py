@@ -2111,7 +2111,7 @@ async def test_watchdog_closes_taskq_owned_leader_conn() -> None:
 # conns with a bare ``await conn.close()`` — a dead PG can block that
 # indefinitely, stalling the watchdog. These tests pin the bounded-close
 # discipline (asyncio.wait_for + terminate on timeout) applied via
-# ``_close_conn_bounded``; the shrink seam is the same module-global
+# ``close_conn_bounded``; the shrink seam is the same module-global
 # monkeypatch convention as tests/test_worker_deps_teardown.py.
 
 
@@ -2123,7 +2123,7 @@ async def test_close_leader_owned_conns_terminates_hung_close(
     gracefully, nulls both attrs, and clears is_leader."""
     import taskq.worker.leader as leader_mod
 
-    monkeypatch.setattr(leader_mod, "_TEARDOWN_CLOSE_TIMEOUT_SECS", 0.05, raising=False)
+    monkeypatch.setattr(leader_mod, "CLOSE_TIMEOUT_SECS", 0.05)
     leader, deps, _backend, _, _, _shutdown = await _make_leader()
     deps.is_leader.set()
     cron = FakeConn()
@@ -2176,7 +2176,7 @@ async def test_drop_leader_conn_terminates_hung_taskq_owned_close(
     path completes instead of stalling."""
     import taskq.worker.leader as leader_mod
 
-    monkeypatch.setattr(leader_mod, "_TEARDOWN_CLOSE_TIMEOUT_SECS", 0.05, raising=False)
+    monkeypatch.setattr(leader_mod, "CLOSE_TIMEOUT_SECS", 0.05)
     leader_conn = FakeConn(fetchval_result=True)
     leader, deps, _backend, _, _, _shutdown = await _make_leader(leader_conn=leader_conn)
     deps.owns_leader_conn = True

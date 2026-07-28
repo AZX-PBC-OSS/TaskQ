@@ -114,11 +114,14 @@ vault = [
 ]
 
 [tool.uv]
-# Pin the exact uv toolchain: setup-uv reads required-version from pyproject
-# and installs it directly, skipping the "latest" manifest fetch
-# (raw.githubusercontent.com/astral-sh/versions) whose transient network
-# failures took down every test job in a CI run at once.
-required-version = "==0.11.19"
+# Pin the uv toolchain to the validated 0.11.x line: setup-uv reads
+# required-version from pyproject and installs the highest match in CI.
+# A range (not ==) so contributors on any 0.11.x patch can run uv locally —
+# an exact pin hard-fails every local uv command on any other version —
+# while <0.12 keeps CI and local on the same validated minor line.
+# Trade-off vs. an exact pin: setup-uv must consult the versions manifest to
+# resolve the range (the fetch an exact pin skips); accepted per review.
+required-version = ">=0.11.19,<0.12"
 # Supply-chain hardening: never resolve to distributions published within the
 # last 24 hours, giving time for malicious releases to be detected and yanked.
 exclude-newer = "24 hours"

@@ -16,6 +16,7 @@ from uuid import UUID
 import asyncpg
 import structlog
 
+from taskq._close import CLOSE_TIMEOUT_SECS, close_conn_bounded
 from taskq._dsn import dsn_host
 from taskq._json import dumps_str
 from taskq.backend._sql import (
@@ -34,7 +35,7 @@ from taskq.obs import (
     update_heartbeat_consecutive_failures,
 )
 from taskq.worker.cancel import CancelController
-from taskq.worker.deps import _TEARDOWN_CLOSE_TIMEOUT_SECS, WorkerDeps, _close_conn_bounded
+from taskq.worker.deps import WorkerDeps
 
 logger: structlog.stdlib.BoundLogger = get_logger(__name__)
 
@@ -285,9 +286,7 @@ async def isolate_self(
             # wedge shutdown.set() below. The helper never raises, so a
             # close error can no longer mask an in-flight exception or be
             # misreported as an isolate-self failure.
-            await _close_conn_bounded(
-                conn, "isolate-self", _TEARDOWN_CLOSE_TIMEOUT_SECS, mid_run=True
-            )
+            await close_conn_bounded(conn, "isolate-self", CLOSE_TIMEOUT_SECS, mid_run=True)
     except Exception as exc:
         logger.warning(
             "isolate-self-failure",

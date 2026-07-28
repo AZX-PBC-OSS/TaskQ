@@ -20,6 +20,7 @@ import asyncpg
 import structlog
 from opentelemetry.metrics import CallbackOptions, Observation
 
+from taskq._close import CLOSE_TIMEOUT_SECS, close_conn_bounded
 from taskq.backend._protocol import Backend
 from taskq.backend.clock import Clock
 from taskq.constants import (
@@ -54,9 +55,7 @@ from taskq.worker._leader_sweeps import (
 )
 from taskq.worker.cron_loop import tick_cron
 from taskq.worker.deps import (
-    _TEARDOWN_CLOSE_TIMEOUT_SECS,
     WorkerDeps,
-    _close_conn_bounded,
     apply_keepalive_to_conn,
     open_dedicated_conn,
 )
@@ -121,10 +120,10 @@ class MaintenanceLeader:
                 # previous suppress(PostgresConnectionError, OSError) — and
                 # terminates the conn on timeout. Labels match the keepalive
                 # labels ("cron_conn" / "leader_monitor_conn").
-                await _close_conn_bounded(
+                await close_conn_bounded(
                     conn,
                     attr.removeprefix("_"),
-                    _TEARDOWN_CLOSE_TIMEOUT_SECS,
+                    CLOSE_TIMEOUT_SECS,
                     mid_run=True,
                 )
             setattr(self, attr, None)
@@ -150,9 +149,7 @@ class MaintenanceLeader:
                 # leader_conn is always nulled below and the loop can
                 # rebuild — previously a close error propagated out of the
                 # drop path and skipped the nulling.
-                await _close_conn_bounded(
-                    conn, "leader_conn", _TEARDOWN_CLOSE_TIMEOUT_SECS, mid_run=True
-                )
+                await close_conn_bounded(conn, "leader_conn", CLOSE_TIMEOUT_SECS, mid_run=True)
         else:
             log.warning(
                 "leader-conn-abandoned-caller-owned",

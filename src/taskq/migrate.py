@@ -11,6 +11,7 @@ Forward-only by design. The runner:
 There is no ``down`` operation. To revert, restore from a database backup.
 """
 
+import asyncio
 import contextlib
 import hashlib
 import re
@@ -22,6 +23,7 @@ from typing import Literal, TypeAlias
 import asyncpg
 import structlog
 
+from taskq._close import CLOSE_TIMEOUT_SECS, close_conn_bounded
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining it.
 )
@@ -294,8 +296,18 @@ async def apply_pending_locked(
         raise SystemExit(f"migration failed, aborting startup: {exc}") from exc
     finally:
         if c is not None:
+            # Why the bounds: contextlib.suppress(Exception) catches errors
+            # but cannot stop a call that never returns — a dead PG wedges
+            # the unlock execute / conn close indefinitely, and this finally
+            # runs before the lifespan exit stack exists, so an unbounded
+            # teardown here would wedge CLI/UI startup forever. The unlock
+            # is bounded by wait_for (+suppress); the owned close goes
+            # through close_conn_bounded, which terminates the conn on
+            # timeout — worst case 2 x CLOSE_TIMEOUT_SECS instead of forever.
             with contextlib.suppress(Exception):
-                await c.execute("SELECT pg_advisory_unlock($1)", _MIGRATION_LOCK_KEY)
+                await asyncio.wait_for(
+                    c.execute("SELECT pg_advisory_unlock($1)", _MIGRATION_LOCK_KEY),
+                    timeout=CLOSE_TIMEOUT_SECS,
+                )
             if owns_conn:
-                with contextlib.suppress(Exception):
-                    await c.close()
+                await close_conn_bounded(c, "migrate", CLOSE_TIMEOUT_SECS)

@@ -23,15 +23,14 @@ import asyncpg
 import structlog
 from opentelemetry.metrics import CallbackOptions, Observation
 
+from taskq._close import CLOSE_TIMEOUT_SECS, close_conn_bounded
 from taskq._dsn import dsn_host
 from taskq._json import loads as json_loads
 from taskq.backend.postgres import PostgresBackend
 from taskq.constants import events_channel, wake_channel, worker_channel
 from taskq.obs import get_logger, get_meter
 from taskq.worker.deps import (
-    _TEARDOWN_CLOSE_TIMEOUT_SECS,
     WorkerDeps,
-    _close_conn_bounded,
     _drain_tasks,  # pyright: ignore[reportPrivateUsage]  # Why: module-level drain-task set for fire-and-forget background close; accessed at module scope by both notify.py and deps.py.
     apply_keepalive_to_conn,
 )
@@ -257,9 +256,7 @@ async def reconnect_notify_conn(
             # stall the reconnect loop (#38). The helper never raises
             # (except CancelledError, which must propagate), so the
             # original exception is always re-raised below.
-            await _close_conn_bounded(
-                new_conn, "notify", _TEARDOWN_CLOSE_TIMEOUT_SECS, mid_run=True
-            )
+            await close_conn_bounded(new_conn, "notify", CLOSE_TIMEOUT_SECS, mid_run=True)
             raise
         deps.notify_conn = new_conn
         # Simulate a wake notify so any pending subscribers are unblocked after reconnect.
@@ -285,9 +282,7 @@ async def reconnect_notify_conn(
                 # never collected). The helper bounds the wait, terminates
                 # on timeout, and never raises, subsuming the old
                 # suppress(Exception).
-                await _close_conn_bounded(
-                    old_conn, "notify", _TEARDOWN_CLOSE_TIMEOUT_SECS, mid_run=True
-                )
+                await close_conn_bounded(old_conn, "notify", CLOSE_TIMEOUT_SECS, mid_run=True)
 
             # Store the reference so the task is not garbage-collected before
             # completing. The set is module-level (single event loop, async-safe).
@@ -342,9 +337,7 @@ async def _health_check_loop(
                 # health-check loop before reconnect even starts (#38). The
                 # helper bounds the wait, terminates on timeout, and never
                 # raises, subsuming the old suppress(Exception).
-                await _close_conn_bounded(
-                    conn, "notify", _TEARDOWN_CLOSE_TIMEOUT_SECS, mid_run=True
-                )
+                await close_conn_bounded(conn, "notify", CLOSE_TIMEOUT_SECS, mid_run=True)
 
             delay = float(deps.settings.notify_reconnect_backoff_initial)
             attempt = 0

@@ -20,6 +20,12 @@ from uuid import UUID
 import asyncpg
 import structlog
 
+from taskq._close import (
+    CLOSE_TIMEOUT_SECS,
+    close_conn_bounded,
+    close_pool_bounded,
+    close_redis_bounded,
+)
 from taskq._dsn import dsn_host as _dsn_host
 from taskq.connections import ConnFactory, PoolFactory, RedisFactory, WorkerConnections
 from taskq.constants import wake_channel
@@ -46,13 +52,6 @@ logger: structlog.stdlib.BoundLogger = get_logger(__name__)
 # Hold references to background drain tasks so they are not garbage-collected
 # before completing. Cleared as each task finishes via done-callbacks.
 _drain_tasks: set[asyncio.Task[None]] = set()
-
-# Why: bounds every graceful close during FINAL teardown (pools, dedicated
-# conns, redis). Mirrors the reload path's drain_timeout default below —
-# without it a dead PG can block asyncpg's Pool.close()/Connection.close()
-# indefinitely and wedge shutdown (observed in CI: >300s hang after a chaos
-# test force-removed the PG container).
-_TEARDOWN_CLOSE_TIMEOUT_SECS: float = 5.0
 
 # TCP keepalive parameters
 _TCP_KEEPIDLE = 30
@@ -498,7 +497,7 @@ async def open_worker_deps(
             async def _close_notify_conn() -> None:
                 conn = deps.notify_conn
                 if conn is not None:
-                    await _close_conn_bounded(conn, "notify", _TEARDOWN_CLOSE_TIMEOUT_SECS)
+                    await close_conn_bounded(conn, "notify", CLOSE_TIMEOUT_SECS)
                     deps.notify_conn = None
 
             stack.push_async_callback(_close_notify_conn)
@@ -507,7 +506,7 @@ async def open_worker_deps(
             async def _close_leader_conn() -> None:
                 conn = deps.leader_conn
                 if conn is not None:
-                    await _close_conn_bounded(conn, "leader", _TEARDOWN_CLOSE_TIMEOUT_SECS)
+                    await close_conn_bounded(conn, "leader", CLOSE_TIMEOUT_SECS)
                     deps.leader_conn = None
 
             stack.push_async_callback(_close_leader_conn)
@@ -517,23 +516,13 @@ async def open_worker_deps(
                 # Closes through ``deps.redis_client`` — NOT the startup
                 # instance — so a client swapped in by reload_credentials is
                 # the one closed here (reload drains the old one itself).
-                # Mirrors the notify/leader guards above.
+                # Mirrors the notify/leader guards above: bounded close, then
+                # null the attr so nothing can touch the closed client after
+                # teardown.
                 client = deps.redis_client
                 if client is not None:
-                    # Why bounded: a hung Redis close must not wedge final
-                    # teardown (same failure mode as the PG chaos hang).
-                    # Redis has no terminate() — log and move on.
-                    try:
-                        await asyncio.wait_for(
-                            client.aclose(), timeout=_TEARDOWN_CLOSE_TIMEOUT_SECS
-                        )
-                    except TimeoutError:
-                        logger.warning(
-                            "redis-teardown-close-timeout",
-                            drain_timeout=_TEARDOWN_CLOSE_TIMEOUT_SECS,
-                        )
-                    except Exception as exc:
-                        logger.warning("redis-teardown-close-error", error=repr(exc))
+                    await close_redis_bounded(client, CLOSE_TIMEOUT_SECS)
+                    deps.redis_client = None
 
             stack.push_async_callback(_close_redis_client)
 
@@ -594,7 +583,7 @@ async def _resolve_pool(
     Exactly one of the three must be non-``None``; the caller ensures this
     by building ``dsn_factory`` only when the DSN is available and the role
     is not overridden. TaskQ-owned pools register a bounded-close callback
-    (:func:`_close_pool_bounded`) on ``stack`` for LIFO teardown.
+    (:func:`taskq._close.close_pool_bounded`) on ``stack`` for LIFO teardown.
     """
     if concrete is not None:
         logger.info("pool-using-provided", pool=label, ownership="caller")
@@ -610,9 +599,9 @@ async def _resolve_pool(
         # reload_credentials registration site (a late-bound capture inside
         # that loop would close the wrong pool).
         # Why module-global reads at call time: tests monkeypatch
-        # _close_pool_bounded / _TEARDOWN_CLOSE_TIMEOUT_SECS as observation
+        # close_pool_bounded / CLOSE_TIMEOUT_SECS as observation
         # and timeout-shrink seams.
-        await _close_pool_bounded(p, lbl, _TEARDOWN_CLOSE_TIMEOUT_SECS)
+        await close_pool_bounded(p, lbl, CLOSE_TIMEOUT_SECS)
 
     # Why a pushed callback instead of stack.enter_async_context(pool):
     # Pool.__aexit__ closes unbounded; the bounded helper above terminates
@@ -720,7 +709,7 @@ async def reload_credentials(
                     # the pool loop — a late-bound capture of new_pool/label
                     # would close the LAST iteration's pool N times and leak
                     # the rest.
-                    await _close_pool_bounded(p, lbl, _TEARDOWN_CLOSE_TIMEOUT_SECS)
+                    await close_pool_bounded(p, lbl, CLOSE_TIMEOUT_SECS)
 
                 # Same bounded-teardown contract as _resolve_pool: never an
                 # unbounded enter_async_context close.
@@ -839,69 +828,6 @@ async def reload_credentials(
             drain_timeout=drain_timeout,
         )
         return reloaded, failed
-
-
-async def _close_pool_bounded(pool: asyncpg.Pool, label: str, drain_timeout: float) -> None:
-    """Close a pool during final teardown, bounded by ``drain_timeout``.
-
-    NEVER raises: on timeout the pool is *terminated* — ``close()`` waits
-    for checked-out connections to be released, which a dead PG can block
-    indefinitely (the CI chaos hang this helper exists to prevent), so
-    ``terminate()`` kills them immediately. Any other error is logged and
-    swallowed so teardown keeps unwinding. ``CancelledError`` (a
-    ``BaseException``) is deliberately not caught, so outer cancellation
-    still unwinds promptly. Mirrors :func:`_drain_old_pool`.
-    """
-    try:
-        await asyncio.wait_for(pool.close(), timeout=drain_timeout)
-    except TimeoutError:
-        logger.warning(
-            "pool-teardown-close-timeout-terminating", pool=label, drain_timeout=drain_timeout
-        )
-        with suppress(Exception):
-            pool.terminate()
-    except Exception as exc:
-        logger.warning("pool-teardown-close-error", pool=label, error=repr(exc))
-
-
-async def _close_conn_bounded(
-    conn: asyncpg.Connection, label: str, drain_timeout: float, *, mid_run: bool = False
-) -> None:
-    """Close a dedicated connection, bounded by ``drain_timeout``.
-
-    Same never-raise contract as :func:`_close_pool_bounded`: timeout →
-    warning log + ``terminate()``; any other error → warning log only.
-    ``CancelledError`` propagates. Mirrors :func:`_drain_old_conn`.
-
-    ``mid_run`` selects the structlog event family: the default
-    ``conn-teardown-close-*`` family marks final teardown (where a dead PG
-    at shutdown is expected-ish); mid-run callers (leader watchdog/
-    election, notify reconnect, isolate-self) pass ``mid_run=True`` for
-    the ``conn-close-*`` family so an unexpected mid-run close timeout —
-    worker alive, conn so dead that even close() hung — stays
-    distinguishable in log alerts. Event names are kept as literals in
-    both branches so they remain grep-able.
-    """
-    try:
-        await asyncio.wait_for(conn.close(), timeout=drain_timeout)
-    except TimeoutError:
-        if mid_run:
-            logger.warning(
-                "conn-close-timeout-terminating", label=label, drain_timeout=drain_timeout
-            )
-        else:
-            logger.warning(
-                "conn-teardown-close-timeout-terminating",
-                label=label,
-                drain_timeout=drain_timeout,
-            )
-        with suppress(Exception):
-            conn.terminate()
-    except Exception as exc:
-        if mid_run:
-            logger.warning("conn-close-error", label=label, error=repr(exc))
-        else:
-            logger.warning("conn-teardown-close-error", label=label, error=repr(exc))
 
 
 def _drain_old_pool(pool: asyncpg.Pool, label: str, drain_timeout: float) -> None:

@@ -15,6 +15,7 @@ Test plan IDs map to the spec in the task description:
 
 import asyncio
 from datetime import UTC, datetime, timedelta
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID
 
@@ -201,6 +202,68 @@ class TestLifecycle:
             assert result == 1
         finally:
             await pool.close()
+
+
+# ---------------------------------------------------------------------------
+# TestCloseBounded — owned-pool close is bounded (#37 review)
+# ---------------------------------------------------------------------------
+
+
+class _FakeHungClosePool:
+    """Hand-rolled pool stand-in whose close() hangs while close_wait is cleared.
+
+    asyncpg is a C extension — spec-mocks cannot express a hang gate — so
+    this mirrors the _FakePool conventions in tests/test_cli_ui.py.
+    terminate() releases the gate, mirroring the real Pool whose terminate()
+    kills connections immediately.
+    """
+
+    def __init__(self) -> None:
+        self.close_calls = 0
+        self.close_wait = asyncio.Event()
+        self.close_wait.set()
+        self.closed = False
+        self.terminated = False
+
+    async def close(self) -> None:
+        self.close_calls += 1
+        await self.close_wait.wait()
+        self.closed = True
+
+    def terminate(self) -> None:
+        self.terminated = True
+        self.closed = True
+        self.close_wait.set()
+
+
+class TestCloseBounded:
+    """TaskQ.close() bounds the owned-pool close — a dead PG cannot wedge it."""
+
+    async def test_close_bounds_hung_owned_pool_close(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An owned pool whose close() hangs (an enqueue in flight at close
+        time against a dead PG): TaskQ.close() bounds the wait, terminates
+        the pool, nulls ``_pool``, and returns instead of hanging forever.
+        """
+        import taskq.client._taskq as taskq_mod
+
+        monkeypatch.setattr(taskq_mod, "CLOSE_TIMEOUT_SECS", 0.05)
+        tq = TaskQ(dsn="postgresql://u:p@h:5432/db", schema=_SCHEMA_LABEL)
+        fake_pool = _FakeHungClosePool()
+        fake_pool.close_wait.clear()  # close() blocks forever from now on
+        # Owned pool: dsn mode → _owns_pool is True, so close() must close it.
+        tq._pool = cast(asyncpg.Pool, fake_pool)
+
+        # Why the outer timeout: pre-fix close() awaits pool.close()
+        # unbounded, so the RED state would hang forever instead of failing
+        # fast.
+        async with asyncio.timeout(5):
+            await tq.close()
+
+        assert fake_pool.close_calls == 1
+        assert fake_pool.terminated is True
+        assert tq._pool is None
 
 
 # ---------------------------------------------------------------------------

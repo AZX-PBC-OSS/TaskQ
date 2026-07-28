@@ -7,7 +7,7 @@ dead PG (e.g. a chaos-killed container) can block ``Pool.close()``
 indefinitely — a CI chaos run hung >300s that way. The reload path
 already bounds its closes (``_drain_old_pool``/``_drain_old_conn`` with
 ``drain_timeout`` + ``terminate()``); these tests pin the same bound for
-the final teardown path via ``_TEARDOWN_CLOSE_TIMEOUT_SECS``.
+the final teardown path via ``CLOSE_TIMEOUT_SECS``.
 
 Docker-free: hand-rolled fakes wired through the REAL ``open_worker_deps``
 via ``WorkerConnections`` factories (asyncpg types are C-extensions — no
@@ -25,6 +25,7 @@ from typing import Any, Self
 
 import asyncpg
 import pytest
+import structlog.testing
 
 from taskq.connections import WorkerConnections
 from taskq.settings import WorkerSettings
@@ -168,7 +169,7 @@ def _make_conn_factory(fakes: list[_FakeConn]) -> Any:
 
 def _shrink_teardown_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
     """Shrink the teardown close bound so hung-close tests stay fast."""
-    monkeypatch.setattr(deps_mod, "_TEARDOWN_CLOSE_TIMEOUT_SECS", 0.05)
+    monkeypatch.setattr(deps_mod, "CLOSE_TIMEOUT_SECS", 0.05)
 
 
 # ── Bounded pool teardown ──────────────────────────────────────────────
@@ -434,7 +435,10 @@ async def test_teardown_bounds_redis_close(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A hung Redis aclose() is bounded: teardown logs and continues (Redis
-    has no terminate()) — no exception escapes."""
+    has no terminate()) — no exception escapes. The timeout event carries
+    ``close_timeout=`` — NOT ``drain_timeout=``, the reload path's
+    drain-event field — so the teardown close bound stays distinguishable
+    from the reload drain bound in log alerts (review C9)."""
     _shrink_teardown_timeout(monkeypatch)
     settings = _make_settings()
     redis_client = _FakeRedisClient()
@@ -452,9 +456,82 @@ async def test_teardown_bounds_redis_close(
     )
     # Why the outer timeout: pre-fix teardown awaited redis_client.aclose()
     # unbounded, so the RED state would hang forever instead of failing fast.
-    async with asyncio.timeout(5):
-        async with open_worker_deps(settings, connections=conns) as deps:
-            assert deps.redis_client is redis_client
-            redis_client.aclose_wait.clear()  # aclose() blocks forever from now on
+    with structlog.testing.capture_logs() as captured:
+        async with asyncio.timeout(5):
+            async with open_worker_deps(settings, connections=conns) as deps:
+                assert deps.redis_client is redis_client
+                redis_client.aclose_wait.clear()  # aclose() blocks forever from now on
 
     assert redis_client.aclose_calls == 1
+    timeout_events = [e for e in captured if e.get("event") == "redis-teardown-close-timeout"]
+    assert len(timeout_events) == 1, f"expected 1 redis timeout event, got {captured!r}"
+    event = timeout_events[0]
+    assert event.get("close_timeout") == 0.05, f"expected close_timeout= field, got {event!r}"
+    assert "drain_timeout" not in event, (
+        f"drain_timeout= belongs to the reload path's drain events, got {event!r}"
+    )
+
+
+async def test_teardown_nulls_redis_client_after_close() -> None:
+    """After teardown closes a TaskQ-owned Redis client, ``deps.redis_client``
+    is None — mirroring the notify/leader conn guards (review C6). Reload
+    interplay is safe: ``reload_credentials`` swaps the attr and drains the old
+    client itself, so the guard reads the attr once, closes, and nulls — the
+    same lifecycle as the conn siblings."""
+    settings = _make_settings()
+    redis_client = _FakeRedisClient()
+
+    async def redis_factory() -> Any:
+        return redis_client
+
+    conns = WorkerConnections(
+        dispatcher_pool=_FakePool("dispatcher"),  # type: ignore[arg-type]
+        heartbeat_pool=_FakePool("heartbeat"),  # type: ignore[arg-type]
+        worker_pool=_FakePool("worker"),  # type: ignore[arg-type]
+        notify_conn=_FakeConn("notify"),  # type: ignore[arg-type]
+        leader_conn=_FakeConn("leader"),  # type: ignore[arg-type]
+        redis_client_factory=redis_factory,
+    )
+    async with open_worker_deps(settings, connections=conns) as deps:
+        assert deps.redis_client is redis_client
+
+    assert redis_client.aclose_calls == 1
+    assert deps.redis_client is None
+
+
+# ── C9: teardown close events carry close_timeout=, not drain_timeout= ──
+
+
+async def test_teardown_close_timeout_logs_close_timeout_field(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The bounded-close timeout event carries ``close_timeout=`` — NOT
+    ``drain_timeout=``, which is the reload path's drain-event field
+    (``pool-draining``, ``pool-drain-timeout-terminating``). Sharing the
+    field name conflates the teardown close bound with the reload drain
+    bound in log alerts (review C9)."""
+    _shrink_teardown_timeout(monkeypatch)
+    settings = _make_settings()
+    dispatcher = _FakePool("dispatcher")
+
+    conns = WorkerConnections(
+        dispatcher_pool_factory=_make_pool_factory([dispatcher]),
+        heartbeat_pool=_FakePool("heartbeat"),  # type: ignore[arg-type]
+        worker_pool=_FakePool("worker"),  # type: ignore[arg-type]
+        notify_conn=_FakeConn("notify"),  # type: ignore[arg-type]
+        leader_conn=_FakeConn("leader"),  # type: ignore[arg-type]
+    )
+    with structlog.testing.capture_logs() as captured:
+        async with asyncio.timeout(5):
+            async with open_worker_deps(settings, connections=conns):
+                dispatcher.close_wait.clear()  # close() blocks forever from now on
+
+    timeout_events = [
+        e for e in captured if e.get("event") == "pool-teardown-close-timeout-terminating"
+    ]
+    assert len(timeout_events) == 1, f"expected 1 timeout event, got {captured!r}"
+    event = timeout_events[0]
+    assert event.get("close_timeout") == 0.05, f"expected close_timeout= field, got {event!r}"
+    assert "drain_timeout" not in event, (
+        f"drain_timeout= belongs to the reload path's drain events, got {event!r}"
+    )

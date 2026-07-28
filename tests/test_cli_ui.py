@@ -433,7 +433,7 @@ def test_ui_serve_lifespan_creates_pool_and_redirects_root(
 # The lifespan entered the pool on the AsyncExitStack (``Pool.__aexit__``
 # → unbounded ``close()``) — a dead PG could wedge UI shutdown. These
 # tests pin the bounded-close discipline (asyncio.wait_for + terminate on
-# timeout) applied via ``_close_pool_bounded``; the shrink seam is the
+# timeout) applied via ``close_pool_bounded``; the shrink seam is the
 # same module-global monkeypatch convention as
 # tests/test_worker_deps_teardown.py. The lifespan is driven directly
 # (not via TestClient) so ``asyncio.timeout`` can bound the RED state.
@@ -490,7 +490,7 @@ async def test_ui_serve_lifespan_terminates_hung_pool_close(
     bounded timeout and lifespan shutdown completes."""
     import taskq.cli as cli_mod
 
-    monkeypatch.setattr(cli_mod, "_TEARDOWN_CLOSE_TIMEOUT_SECS", 0.05)
+    monkeypatch.setattr(cli_mod, "CLOSE_TIMEOUT_SECS", 0.05)
     pool = _FakePool()
     pool.close_wait.clear()  # close() blocks forever from now on
     app = _capture_app_for_lifespan(monkeypatch, pool)
@@ -535,7 +535,7 @@ async def test_ui_serve_lifespan_fast_pool_close_not_terminated(
 # (``Redis.__aexit__`` → shielded, unbounded ``aclose()``) — a hung broker
 # could wedge UI shutdown. These tests pin the bounded-close discipline
 # (asyncio.wait_for, log-and-continue — Redis has no terminate()) applied
-# via ``_close_redis_bounded``, and the preserved eager-initialize
+# via ``close_redis_bounded``, and the preserved eager-initialize
 # semantics of ``Redis.__aenter__``. The shrink seam is the same
 # module-global monkeypatch convention as the pool tests above; the
 # lifespan is driven directly so ``asyncio.timeout`` can bound the RED
@@ -552,7 +552,7 @@ async def test_ui_serve_lifespan_bounds_hung_redis_close(
 
     import taskq.cli as cli_mod
 
-    monkeypatch.setattr(cli_mod, "_TEARDOWN_CLOSE_TIMEOUT_SECS", 0.05)
+    monkeypatch.setattr(cli_mod, "CLOSE_TIMEOUT_SECS", 0.05)
     redis_client = _FakeRedis()
     redis_client.aclose_wait.clear()  # aclose() blocks forever from now on
     app = _capture_app_for_lifespan(monkeypatch, _FakePool(), redis_client)

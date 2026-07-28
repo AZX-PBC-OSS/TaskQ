@@ -245,19 +245,19 @@ async def test_partial_open_lifo_teardown_with_pg_failure(
     monkeypatch.setattr(deps_mod, "open_dedicated_conn", _fail_on_notify)
 
     # Capture pools as teardown closes them so we can assert they were
-    # closed. Patching the _close_pool_bounded module global is the cleanest
+    # closed. Patching the close_pool_bounded module global is the cleanest
     # observation point — every pool teardown callback reads it at call time
     # (pools are no longer entered via AsyncExitStack.enter_async_context).
     captured_pools: list[asyncpg.Pool] = []
-    original_close_bounded = deps_mod._close_pool_bounded
+    original_close_bounded = deps_mod.close_pool_bounded
 
     async def _capturing_close_bounded(
-        pool: asyncpg.Pool, label: str, drain_timeout: float
+        pool: asyncpg.Pool, label: str, close_timeout: float
     ) -> None:
         captured_pools.append(pool)
-        await original_close_bounded(pool, label, drain_timeout)
+        await original_close_bounded(pool, label, close_timeout)
 
-    monkeypatch.setattr(deps_mod, "_close_pool_bounded", _capturing_close_bounded)
+    monkeypatch.setattr(deps_mod, "close_pool_bounded", _capturing_close_bounded)
 
     with pytest.raises(asyncpg.PostgresConnectionError, match="simulated PG failure mid-startup"):
         async with open_worker_deps(settings):

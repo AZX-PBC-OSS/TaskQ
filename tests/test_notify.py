@@ -1019,7 +1019,7 @@ class TestReconnectKeepalive:
 # ``await conn.close()`` — a dead PG can block that indefinitely, stalling
 # the listener/reconnect loop. These tests pin the bounded-close discipline
 # (asyncio.wait_for + terminate on timeout) applied via
-# ``_close_conn_bounded``; the shrink seam is the same module-global
+# ``close_conn_bounded``; the shrink seam is the same module-global
 # monkeypatch convention as tests/test_worker_deps_teardown.py.
 
 
@@ -1032,7 +1032,7 @@ class TestBoundedConnClose:
         and the original setup error — not a hang — propagates."""
         import taskq.worker.notify as notify_mod
 
-        monkeypatch.setattr(notify_mod, "_TEARDOWN_CLOSE_TIMEOUT_SECS", 0.05, raising=False)
+        monkeypatch.setattr(notify_mod, "CLOSE_TIMEOUT_SECS", 0.05)
         deps = _make_mock_deps()
         backend = _make_backend()
         channels = _make_channels(backend)
@@ -1088,7 +1088,7 @@ class TestBoundedConnClose:
         swap to the new conn still completes."""
         import taskq.worker.notify as notify_mod
 
-        monkeypatch.setattr(notify_mod, "_TEARDOWN_CLOSE_TIMEOUT_SECS", 0.05, raising=False)
+        monkeypatch.setattr(notify_mod, "CLOSE_TIMEOUT_SECS", 0.05)
         deps = _make_mock_deps()
         backend = _make_backend()
         channels = _make_channels(backend)
@@ -1151,7 +1151,7 @@ class TestBoundedConnClose:
         proceeds to swap in the factory-built conn."""
         import taskq.worker.notify as notify_mod
 
-        monkeypatch.setattr(notify_mod, "_TEARDOWN_CLOSE_TIMEOUT_SECS", 0.05, raising=False)
+        monkeypatch.setattr(notify_mod, "CLOSE_TIMEOUT_SECS", 0.05)
         deps = _make_mock_deps()
         backend = _make_backend()
         channels = _make_channels(backend)

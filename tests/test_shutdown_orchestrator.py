@@ -755,7 +755,6 @@ async def test_orchestrate_shutdown_terminates_hung_leader_close(
 ) -> None:
     """A hung leader_conn.close() (dead PG) cannot wedge shutdown: after the
     bounded teardown timeout the conn is terminated and still nulled."""
-    import taskq.worker.deps as deps_mod
     import taskq.worker.shutdown as shutdown_mod
 
     registry = FakeActiveJobRegistry([])
@@ -785,7 +784,9 @@ async def test_orchestrate_shutdown_terminates_hung_leader_close(
     mock_drain = AsyncMock(return_value=0)
     monkeypatch.setattr(shutdown_mod, "drain_local_queue_to_pending", mock_drain)
     # Shrink the teardown bound so the test doesn't wait the full 5s default.
-    monkeypatch.setattr(deps_mod, "_TEARDOWN_CLOSE_TIMEOUT_SECS", 0.05)
+    # The seam lives on shutdown_mod: orchestrate_shutdown reads the
+    # CLOSE_TIMEOUT_SECS module global imported into taskq.worker.shutdown.
+    monkeypatch.setattr(shutdown_mod, "CLOSE_TIMEOUT_SECS", 0.05)
 
     shut_event = asyncio.Event()
 
@@ -805,6 +806,131 @@ async def test_orchestrate_shutdown_terminates_hung_leader_close(
     assert result == 0
     leader_conn.terminate.assert_called_once()
     assert deps.leader_conn is None
+
+
+async def test_orchestrate_shutdown_does_not_null_swapped_leader_conn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Race regression: a leader conn swapped in mid-close must not be nulled.
+
+    While the bounded close is parked, a still-live election loop can drop
+    the closing conn and reopen a fresh one. Nulling unconditionally would
+    orphan that fresh (possibly lock-holding) conn; the identity guard must
+    leave it in place so the deps exit-stack guard closes it later.
+    """
+    import taskq.worker.shutdown as shutdown_mod
+
+    registry = FakeActiveJobRegistry([])
+    settings = _worker_settings()
+    pool = MagicMock()
+
+    conn_a = MagicMock(spec=asyncpg.Connection)
+    close_began = asyncio.Event()
+    close_gate = asyncio.Event()
+
+    async def _gated_close() -> None:
+        close_began.set()
+        await close_gate.wait()
+
+    conn_a.close = AsyncMock(side_effect=_gated_close)
+    conn_b = MagicMock(spec=asyncpg.Connection)
+    conn_b.close = AsyncMock()
+
+    deps = WorkerDeps(
+        settings=settings,
+        dispatcher_pool=pool,  # type: ignore[arg-type]
+        heartbeat_pool=pool,  # type: ignore[arg-type]
+        worker_pool=pool,  # type: ignore[arg-type]
+        notify_conn=None,
+        leader_conn=conn_a,
+        owns_leader_conn=True,  # Why: exercises the TaskQ-owned bounded-close path.
+    )
+    deps.active_jobs = registry  # type: ignore[assignment]
+
+    backend = AsyncMock(spec=Backend)
+    monkeypatch.setattr(shutdown_mod, "drain_local_queue_to_pending", AsyncMock(return_value=0))
+
+    shut_event = asyncio.Event()
+
+    orch_task = asyncio.ensure_future(
+        orchestrate_shutdown(
+            deps,
+            deps.settings,
+            new_uuid(),
+            shut_event,
+            None,
+            backend=backend,
+        )
+    )
+
+    # Why the outer timeout: the close gate parks the orchestrator, so a
+    # broken RED state must fail fast rather than hang the suite.
+    async with asyncio.timeout(5):
+        await close_began.wait()
+        # Simulate the election loop's health probe dropping the closing
+        # conn and reopening a fresh one mid-park.
+        deps.leader_conn = conn_b
+        close_gate.set()
+        result = await orch_task
+
+    assert result == 0
+    conn_a.close.assert_called_once()
+    conn_b.close.assert_not_called()
+    assert deps.leader_conn is conn_b
+
+
+async def test_orchestrate_shutdown_sets_shutdown_event_before_leader_close(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The election loop must be stopped BEFORE the bounded close parks.
+
+    The conn records shutdown_event.is_set() at the moment its close() is
+    entered; on unfixed code the event fires only in the finally, leaving
+    the election loop live for the whole close park — the swap window.
+    """
+    import taskq.worker.shutdown as shutdown_mod
+
+    registry = FakeActiveJobRegistry([])
+    settings = _worker_settings()
+    pool = MagicMock()
+    leader_conn = MagicMock(spec=asyncpg.Connection)
+
+    shut_event = asyncio.Event()
+    event_set_at_close: list[bool] = []
+
+    async def _recording_close() -> None:
+        event_set_at_close.append(shut_event.is_set())
+
+    leader_conn.close = AsyncMock(side_effect=_recording_close)
+
+    deps = WorkerDeps(
+        settings=settings,
+        dispatcher_pool=pool,  # type: ignore[arg-type]
+        heartbeat_pool=pool,  # type: ignore[arg-type]
+        worker_pool=pool,  # type: ignore[arg-type]
+        notify_conn=None,
+        leader_conn=leader_conn,
+        owns_leader_conn=True,  # Why: exercises the TaskQ-owned bounded-close path.
+    )
+    deps.active_jobs = registry  # type: ignore[assignment]
+
+    backend = AsyncMock(spec=Backend)
+    monkeypatch.setattr(shutdown_mod, "drain_local_queue_to_pending", AsyncMock(return_value=0))
+
+    # Why the outer timeout: matches the hung-close test convention so a
+    # RED state fails fast instead of hanging.
+    async with asyncio.timeout(5):
+        await orchestrate_shutdown(
+            deps,
+            deps.settings,
+            new_uuid(),
+            shut_event,
+            None,
+            backend=backend,
+        )
+
+    leader_conn.close.assert_called_once()
+    assert event_set_at_close == [True]
 
 
 # ── Hypothesis grace-budget invariant ────────────────────────────
