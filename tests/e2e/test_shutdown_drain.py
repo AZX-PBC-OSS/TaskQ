@@ -1,7 +1,6 @@
 """Graceful shutdown drain e2e — SIGTERM with in-flight jobs, no lost tasks.
 
-Design spec scenario row
-(docs/superpowers/specs/2026-07-27-e2e-test-suite-design.md):
+Scenario:
 SIGTERM a worker with a running job; verify the job is cooperatively
 cancelled and no tasks are lost.
 
@@ -64,10 +63,6 @@ if TYPE_CHECKING:
     from .conftest import E2EDragonfly, E2ESchema
 
 pytestmark = [pytest.mark.e2e, pytest.mark.timeout(900)]
-
-# Cancellation grace (1.0 s) + cleanup grace (1.0 s) = 2.0 s, plus buffer
-# for signal delivery, PG writes, and process exit.
-_SHUTDOWN_WAIT = 4.0
 
 
 # ── Module-local clean_e2e_state override ─────────────────────────────────
@@ -165,20 +160,28 @@ async def test_sigterm_drains_inflight_job(
     wrapped = e2e_worker.container.get_wrapped_container()
     await asyncio.to_thread(wrapped.kill, signal="TERM")
 
-    # Wait for the four-phase shutdown to complete.
-    await asyncio.sleep(_SHUTDOWN_WAIT)
+    # ── Phase 1 assertions: drain orchestration wrote a terminal state ──
+    # Poll to cancelled/abandoned — the test's actual docstring contract.
+    # A worker with NO drain orchestration at all (hard SIGTERM death, row
+    # stuck 'running') previously passed the fixed-sleep + != succeeded
+    # checks; polling to a drain-written terminal state closes that hole.
+    async def _drained_terminal() -> bool:
+        rows = await fetch_job_rows(e2e_pg_pool, e2e_schema.schema_name, [handle.job_id])
+        return bool(rows) and rows[0]["status"] in ("cancelled", "abandoned")
 
-    # ── Phase 1 assertions: job was cancelled, not finished ───────────
+    await poll_until(
+        _drained_terminal,
+        timeout=30.0,
+        description=(
+            f"job {handle.job_id} reaching cancelled/abandoned via the SIGTERM drain orchestration"
+        ),
+    )
+
     finished = await fetch_effects(e2e_pg_pool, e2e_schema.schema_name, run_id, kind="finished")
     assert finished == [], (
         "job should not have a 'finished' effect — the actor was "
         "cancelled mid-sleep by the SIGTERM shutdown orchestration"
     )
-
-    rows = await fetch_job_rows(e2e_pg_pool, e2e_schema.schema_name, [handle.job_id])
-    assert len(rows) == 1
-    status: str = rows[0]["status"]
-    assert status != "succeeded", f"job should not be 'succeeded' after SIGTERM, got {status!r}"
 
     # ── Phase 2: replacement worker, verify system functional ─────────
     # Wait for the terminated worker's heartbeat to go stale (>10s old)

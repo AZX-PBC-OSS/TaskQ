@@ -1,6 +1,6 @@
 """Progress e2e — progress persisted to PG and fanned out over Redis pub/sub.
 
-Design spec scenario row (docs/superpowers/specs/2026-07-27-e2e-test-suite-design.md):
+Scenario:
 ``generate_report`` 4 stages → ``progress_state``/``progress_seq`` reach 100%
 via ``e2e_pg_pool``; pub/sub verified by subscribing to the **global** progress
 channel (``progress_global_channel(schema)``) **before** enqueueing — the
@@ -36,12 +36,13 @@ import pytest
 from taskq.constants import progress_global_channel
 from taskq.progress import ProgressEvent
 
-from .actors import GenerateReportPayload, generate_report
+from .actors import GenerateReportPayload, ReportResult, generate_report
 
 if TYPE_CHECKING:
     import asyncpg
 
     from taskq import TaskQ
+    from taskq.client import JobHandle
 
     from .conftest import E2EDragonfly, E2ESchema, E2EWorker
 
@@ -105,15 +106,14 @@ async def test_progress_fanout_pubsub(
     filtered by ``job_id`` (not ``run_id``): the wire payload is a
     ``ProgressEvent``, which carries no ``run_id``.
 
-    Resilience (F3): the ``pubsub.listen()`` consumption tolerates
-    Redis-connection and timeout failures — under container resource
-    pressure a dropped pub/sub socket must not fail the test with a
-    transport error. On such a failure the test falls through to the PG
-    ground-truth assertion (``progress_state``/``progress_seq`` on the jobs
-    row), which always runs and is the authority on progress delivery. The
-    pub/sub assertions still run at full strength whenever the complete
-    event stream (through the terminal event) arrives — the fanout proof is
-    only skipped on connection/teardown failure.
+    Resilience (F3): a dropped pub/sub socket under container resource
+    pressure is retried with a fresh SUBSCRIBE inside an overall 90 s
+    deadline — pub/sub events missed during the reconnect window are lost
+    (fire-and-forget), but the fanout must still deliver the terminal event
+    afterwards. A stalled listen (``TimeoutError``) FAILS the test: a fanout
+    that stops delivering is a regression signal, not a skip-shaped pass.
+    The PG ground-truth assertion (``progress_state``/``progress_seq``)
+    always runs as the authority on progress persistence.
     """
     import redis.asyncio as redis_async
 
@@ -121,21 +121,27 @@ async def test_progress_fanout_pubsub(
     url = f"{e2e_dragonfly.host_url}/{e2e_schema.redis_db}"
     redis_client = redis_async.from_url(url, decode_responses=False)
     received: list[ProgressEvent] = []
-    fanout_complete = False
+    handle: JobHandle[ReportResult] | None = None
+    terminal_seen = False
     try:
-        pubsub = redis_client.pubsub()
-        try:
-            await pubsub.subscribe(channel)
-            async with asyncio.timeout(10):
-                while True:
-                    ack = await pubsub.get_message(ignore_subscribe_messages=False, timeout=1.0)
-                    if ack is not None and ack["type"] == "subscribe":
-                        break
-
-            handle = await e2e_client.enqueue(generate_report, _report_payload(run_id))
-
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + 90.0
+        while not terminal_seen:
+            pubsub = redis_client.pubsub()
             try:
-                async with asyncio.timeout(60):
+                await pubsub.subscribe(channel)
+                # SUBSCRIBE-first is mandatory: read the ack back explicitly
+                # so the enqueue cannot race registration server-side.
+                async with asyncio.timeout(10):
+                    while True:
+                        ack = await pubsub.get_message(ignore_subscribe_messages=False, timeout=1.0)
+                        if ack is not None and ack["type"] == "subscribe":
+                            break
+
+                if handle is None:
+                    handle = await e2e_client.enqueue(generate_report, _report_payload(run_id))
+
+                async with asyncio.timeout(max(0.0, deadline - loop.time())):
                     async for msg in pubsub.listen():
                         if msg.get("type") != "message":
                             continue
@@ -144,18 +150,18 @@ async def test_progress_fanout_pubsub(
                             continue
                         received.append(event)
                         if event.terminal:
-                            fanout_complete = True
+                            terminal_seen = True
                             break
-            except (redis_async.ConnectionError, TimeoutError):
-                # Pub/sub is best-effort evidence: a dropped connection or a
-                # stalled listen under container resource pressure falls
-                # through — the PG ground-truth assertion below is the
-                # authority on progress delivery.
-                pass
-        finally:
-            await pubsub.aclose()
+            except redis_async.ConnectionError:
+                # F3 transport flake: dropped pub/sub socket — resubscribe
+                # and keep listening within the overall deadline.
+                continue
+            finally:
+                await pubsub.aclose()
     finally:
         await redis_client.aclose()
+
+    assert handle is not None
 
     await handle.wait(timeout=60)
 
@@ -173,16 +179,14 @@ async def test_progress_fanout_pubsub(
     state: dict[str, object] = json.loads(row["progress_state"])
     assert state == {"step": 4, "percent": 100.0, "detail": "stage 4 store"}
 
-    # Fanout proof — only when the complete event stream arrived; on a
-    # connection/teardown failure the PG assertion above has already carried
-    # the test.
-    if fanout_complete:
-        progress_events = [event for event in received if event.kind == "progress"]
-        assert progress_events, (
-            f"expected >= 1 progress event for job {handle.job_id} on {channel!r}; "
-            f"received {[(event.kind, event.seq) for event in received]}"
-        )
-        assert all(event.actor == "generate_report" for event in received)
-        assert received[-1].kind == "state_change"
-        assert received[-1].terminal is True
-        assert received[-1].status == "succeeded"
+    # Fanout proof — unconditional: the listen loop only exits with the
+    # terminal event in hand (a stall raises TimeoutError and fails above).
+    progress_events = [event for event in received if event.kind == "progress"]
+    assert progress_events, (
+        f"expected >= 1 progress event for job {handle.job_id} on {channel!r}; "
+        f"received {[(event.kind, event.seq) for event in received]}"
+    )
+    assert all(event.actor == "generate_report" for event in received)
+    assert received[-1].kind == "state_change"
+    assert received[-1].terminal is True
+    assert received[-1].status == "succeeded"
