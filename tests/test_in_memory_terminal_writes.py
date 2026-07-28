@@ -1490,3 +1490,46 @@ class TestMarkSucceededResultExpiryFallback:
         row = await backend.get(job_id)
         assert row is not None
         assert row.result_expires_at == _START + ttl
+
+    async def test_run_until_drained_wires_stub_result_ttl_as_fallback(self) -> None:
+        """Wiring pin: ``register_stub(result_ttl=...)`` must reach the
+        terminal write as ``fallback_result_ttl`` through
+        ``run_until_drained`` → ``consume_one_job`` → ``mark_succeeded``.
+
+        Every other test in this class calls ``mark_succeeded`` directly,
+        so a dropped kwarg anywhere in the dispatch/runner chain would
+        silently restore the complete-already-expired bug with a green
+        suite. This job sits 45s in the queue past its 5s TTL: only the
+        fallback applied from the completion timestamp saves the result.
+        """
+        clock = FakeClock(_START)
+        backend = InMemoryBackend(clock=clock)
+        ttl = timedelta(seconds=5)
+
+        def stub(payload: object, ctx: object) -> dict[str, object]:
+            return {"ok": True}
+
+        backend.register_stub("ttl_stub_actor", stub, result_ttl=ttl)
+
+        args = EnqueueArgs(
+            id=new_job_id(),
+            actor="ttl_stub_actor",
+            queue="default",
+            payload={},
+            max_attempts=3,
+            retry_kind="transient",
+            scheduled_at=clock.now(),
+            result_ttl=ttl,
+        )
+        await backend.enqueue(args)
+        clock.advance(timedelta(seconds=45))
+
+        await backend.run_until_drained()
+
+        row = await backend.get(args.id)
+        assert row is not None
+        assert row.status == "succeeded"
+        assert row.result == {"ok": True}
+        # Completion happened at _START + 45s; the stub's literal applied
+        # from completion — not the enqueue-pinned _START + 5s (40s past).
+        assert row.result_expires_at == clock.now() + ttl

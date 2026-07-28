@@ -243,6 +243,11 @@ async def consume_one_job(
     ``error_reporter`` is an optional :class:`~taskq.obs.ErrorReporter`
     invoked when a job reaches a terminal failure state (retry exhausted
     or non-retryable error).  When ``None``, no error reporting occurs.
+
+    ``fallback_result_ttl`` is the worker-side ``@actor(result_ttl=...)``
+    literal, forwarded to the success terminal write so a cleared stored
+    override still computes ``result_expires_at`` from completion rather
+    than keeping the enqueue-pinned value.
     The reporter call is wrapped in a try/except — a failing reporter
     never crashes the worker.
 
@@ -625,6 +630,9 @@ async def _consume_transactional(
     Returns the job outcome — ``"succeeded"`` on successful commit,
     ``"failed"`` or ``"scheduled"`` when an exception was handled
     internally.
+
+    ``fallback_result_ttl`` is forwarded to ``mark_succeeded_with_conn``
+    on the success path — see ``consume_one_job``.
     """
     completion: object = None
     _tx_result: object = None
@@ -815,7 +823,11 @@ async def _consume_autonomous(
     worker_pool: asyncpg.Pool | None = None,
     fallback_result_ttl: timedelta | None = None,
 ) -> None:
-    """Autonomous success path — no LOOP-scope connection."""
+    """Autonomous success path — no LOOP-scope connection.
+
+    ``fallback_result_ttl`` is forwarded to ``mark_succeeded`` — see
+    ``consume_one_job``.
+    """
     _auto_redis = (
         redis_client
         if redis_client is not None
