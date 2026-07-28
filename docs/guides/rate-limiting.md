@@ -16,7 +16,8 @@ TaskQ provides three rate-limiting primitives backed by Redis, Postgres, or an i
 
 - For Redis backends: install the `taskq-py[redis]` extra (`uv sync --extra redis`).
 - For Postgres backends: run `taskq migrate up` to create the `rate_limit_buckets` and `rate_limit_window_entries` tables.
-- Primitives must be registered before the worker starts. See [Wiring to actors](#wiring-to-actors).
+- Primitives referenced **by name** must be registered before the worker starts;
+  actor-declared **instances** are registered by the worker at bootstrap. See [Wiring to actors](#wiring-to-actors).
 
 ---
 
@@ -402,7 +403,7 @@ clean up:
 
 ```python
 import pytest
-from taskq.ratelimit import RateLimitRegistry, TokenBucket
+from taskq.ratelimit import RateLimitRegistry
 
 @pytest.fixture
 def rl_registry() -> RateLimitRegistry:
@@ -434,7 +435,7 @@ def rl_registry() -> RateLimitRegistry:
 - If you must use the module singleton, `registry.clear()` resets all state
   between tests (test aid only — NOT safe to call while a worker runs).
 
-For full `FakeClock` walkthroughs of each primitive, see
+For full `FakeClock` walkthroughs, see
 [Testing Rate Limits](#testing-rate-limits).
 
 ---
