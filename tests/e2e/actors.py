@@ -18,6 +18,7 @@ services, no randomness.
 
 import asyncio
 import json
+import time
 from datetime import timedelta
 from functools import lru_cache
 from typing import Literal
@@ -578,6 +579,25 @@ async def slow_deliver_webhook(
         "finished",
         {"run_id": payload.run_id, "endpoint_id": payload.endpoint_id},
     )
+
+
+# ── Loop-blocker actor (watchdog detector-4 e2e) ─────────────────────────
+
+
+class LoopBlockerPayload(BaseModel):
+    run_id: str
+    block_seconds: float = 600.0
+
+
+@actor(name="loop_blocker_job", queue="e2e")
+async def loop_blocker_job(
+    payload: LoopBlockerPayload,
+    ctx: JobContext[LoopBlockerPayload],
+) -> None:
+    """Blocks the entire event loop with a synchronous sleep: the only way
+    to prove the loop-lag watchdog (detector 4) fires. Never enqueued by
+    any module except the watchdog e2e."""
+    time.sleep(payload.block_seconds)  # noqa: ASYNC251 # Why: deliberately blocks the event loop to trip the loop-lag watchdog.
 
 
 # ── Long-running job actor (crash recovery test) ─────────────────────────

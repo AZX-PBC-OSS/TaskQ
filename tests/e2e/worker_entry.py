@@ -20,6 +20,7 @@ from e2e.actors import (
     import_contacts_chunk,
     import_contacts_csv,
     long_running_job,
+    loop_blocker_job,
     quick_result,
     rebuild_search_index,
     send_welcome_email,
@@ -46,6 +47,7 @@ ACTORS: dict[str, ActorRef[Any, Any]] = {
     "quick_result": quick_result,
     "slow_deliver_webhook": slow_deliver_webhook,
     "long_running_job": long_running_job,
+    "loop_blocker_job": loop_blocker_job,
     "cron_heartbeat": cron_heartbeat,
 }
 
