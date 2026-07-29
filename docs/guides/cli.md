@@ -148,6 +148,8 @@ taskq migrate up [OPTIONS]
 
 The command is idempotent: each migration is recorded in `{schema}.schema_migrations` and is skipped on subsequent runs. Running `taskq migrate up` with no options applies all pending migrations.
 
+On failure (exit code 1) the command never prints a traceback. When a migration fails during apply, the command diagnoses itself: it names the failed migration, reports the state the schema was left in — a clean rollback for transactional migrations, or for `-- taskq:no-transaction` migrations the statements that remain applied plus any INVALID indexes found — and prints the single action to take. When the database connection itself cannot be established, there is nothing to diagnose, so it prints a short report naming the connection error and the same re-run action.
+
 **Example: apply all pending:**
 
 ```shell

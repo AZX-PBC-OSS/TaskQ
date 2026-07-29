@@ -32,6 +32,9 @@ then executes the file statement by statement with no wrapping transaction
   migration itself::
 
       -- taskq:no-transaction
+      -- NOT redundant with IF NOT EXISTS below: an interrupted CREATE INDEX
+      -- CONCURRENTLY leaves an INVALID index that IF NOT EXISTS alone would
+      -- silently skip rebuilding, so drop the debris first.
       DROP INDEX CONCURRENTLY IF EXISTS "{schema}".jobs_foo_idx;
       CREATE INDEX CONCURRENTLY IF NOT EXISTS jobs_foo_idx ON "{schema}".jobs (foo);
 
@@ -65,13 +68,17 @@ from taskq.constants import (
 )
 
 __all__ = [
+    "ApplyFailureDiagnosis",
     "Migration",
     "Phase",
     "apply_pending",
     "apply_pending_locked",
+    "diagnose_apply_failure",
     "discover",
     "list_applied",
+    "list_invalid_indexes",
     "render",
+    "render_apply_failure_lines",
     "split_statements",
 ]
 
@@ -83,35 +90,43 @@ _NAME_RE = re.compile(
     r"^(?P<ver>\d{2}\.\d{2}\.\d{2})_(?P<seq>\d{2})_(?P<phase>pre|post)_(?P<desc>[a-z0-9_]+)\.sql$"
 )
 
-_NO_TRANSACTION_DIRECTIVE_RE = re.compile(r"--\s*taskq:no-transaction")
-
-# First keyword of a split statement, skipping any leading line/block
-# comments the splitter left attached. Used to reject transaction control in
-# non-transactional migrations.
-_TXN_CONTROL_RE = re.compile(
-    r"\A(?:(?:--[^\n]*(?:\n|\r|$))|(?:/\*.*?\*/)|\s)*"
-    r"(begin|commit|rollback|end|abort|start)\b",
-    re.IGNORECASE | re.DOTALL,
-)
+# Prefix match (not fullmatch): a trailing note after the token is the common
+# real-world form ("-- taskq:no-transaction — CIC cannot run inside a
+# transaction"). Case-insensitive like SQL itself. \b stops prefix drift, so
+# "-- taskq:no-transactional" does NOT match — but see the near-miss warning
+# in _uses_transaction, which keeps such typos from failing silently.
+_NO_TRANSACTION_DIRECTIVE_RE = re.compile(r"--\s*taskq:no-transaction\b", re.IGNORECASE)
 
 _DOLLAR_TAG_RE = re.compile(
     r"\$[^\W\d][\w]*\$|\$\$"
 )  # tags follow identifier rules (Unicode-aware, no digits first)
 
 
-def _uses_transaction(sql_template: str) -> bool:
+def _uses_transaction(sql_template: str, filename: str) -> bool:
     """Parse the ``-- taskq:no-transaction`` header directive.
 
     The directive is only honored in the file's *leading comment block* —
     the blank lines and ``--`` comments before the first SQL token — so a
     stray mention later in the file cannot silently flip a migration's
     semantics.
+
+    A ``--`` line that mentions ``taskq:`` without matching the directive
+    (a typo, or drift like ``taskq:no-transactional``) is nearly always an
+    attempted opt-out that will silently run transactional — the worst
+    outcome for a lock-duration-motivated migration. Warn so the author
+    notices; the warning names the file because discovery parses many.
     """
     for line in sql_template.splitlines():
         stripped = line.strip()
         if stripped == "" or stripped.startswith("--"):
-            if _NO_TRANSACTION_DIRECTIVE_RE.fullmatch(stripped):
+            if _NO_TRANSACTION_DIRECTIVE_RE.match(stripped):
                 return False
+            if "taskq:" in stripped.lower():
+                logger.warning(
+                    "migration-directive-unrecognized",
+                    filename=filename,
+                    line=stripped,
+                )
             continue
         break
     return True
@@ -169,7 +184,7 @@ def discover() -> list[Migration]:
                 description=match.group("desc"),
                 filename=entry.name,
                 sql_template=sql_template,
-                use_transaction=_uses_transaction(sql_template),
+                use_transaction=_uses_transaction(sql_template, entry.name),
             )
         )
     found.sort(key=lambda m: (m.version, 0 if m.phase == "pre" else 1))
@@ -253,7 +268,19 @@ def split_statements(sql: str) -> list[str]:
                 buf.append(ch)
                 buf.append(nxt)
                 i += 2
-            elif ch == "$" and (m := _DOLLAR_TAG_RE.match(sql, i)) is not None:
+            elif (
+                ch == "$"
+                # A dollar-quote tag cannot immediately follow an identifier
+                # char — ``a$b$c`` is a legal identifier, not a quoted body
+                # (same rule as the E'...' detection above). buf holds
+                # everything since the last flush; empty buf (right after a
+                # ``;``) means no previous char, so the branch stays allowed.
+                # Why: isalnum() approximates PG's identifier-char rule (any
+                # char >= 0x80 counts as an identifier char there) — close
+                # enough for a splitter, and consistent with the E'...' gate.
+                and not (buf and (buf[-1].isalnum() or buf[-1] in "_$"))
+                and (m := _DOLLAR_TAG_RE.match(sql, i)) is not None
+            ):
                 state = "dollar"
                 dollar_tag = m.group(0)
                 has_content = True
@@ -326,20 +353,101 @@ def split_statements(sql: str) -> list[str]:
     return statements
 
 
+def _skip_sql_trivia(sql: str, i: int) -> int:
+    """Advance past whitespace and comments (``--`` line, nested ``/* */``).
+
+    Comments are valid trivia here because Postgres treats them as
+    whitespace when scanning keywords — ``SET /* x */ LOCAL`` is the same
+    statement to the server as ``SET LOCAL``, and block comments NEST, which
+    no single regex can skip. The guard must therefore skip exactly what the
+    server skips, or comment-wrapped forms slide past as silent no-ops.
+    """
+    n = len(sql)
+    while i < n:
+        if sql[i].isspace():
+            i += 1
+        elif sql.startswith("--", i):
+            # Postgres ends -- comments at CR too (CR-only files).
+            end = i + 2
+            while end < n and sql[end] not in "\r\n":
+                end += 1
+            i = end
+        elif sql.startswith("/*", i):
+            depth = 1
+            i += 2
+            while i < n and depth > 0:
+                if sql.startswith("/*", i):
+                    depth += 1
+                    i += 2
+                elif sql.startswith("*/", i):
+                    depth -= 1
+                    i += 2
+                else:
+                    i += 1
+            # An unterminated block comment consumes the rest of the
+            # statement; the word read after it finds nothing and the guard
+            # defers to Postgres' own syntax error — same as split_statements.
+        else:
+            break
+    return i
+
+
+def _read_sql_word(sql: str, i: int) -> tuple[str, int]:
+    """Read one keyword-shaped word (identifier chars) starting at ``i``,
+    lowercased, plus the index just past it."""
+    start = i
+    n = len(sql)
+    while i < n and (sql[i].isalnum() or sql[i] in "_$"):
+        i += 1
+    return sql[start:i].lower(), i
+
+
+_TXN_CONTROL_WORDS = frozenset(
+    {"begin", "commit", "rollback", "end", "abort", "start", "savepoint", "release"}
+)
+
+
+def _transaction_control_word(statement: str) -> str | None:
+    """Uppercase transaction-control keyword the statement opens with
+    (``'SET LOCAL'`` / ``'SET TRANSACTION'`` for the two-word forms), or
+    ``None`` when the statement is allowed.
+
+    Beyond BEGIN/COMMIT and friends this covers SAVEPOINT/RELEASE (only
+    valid inside a transaction) and SET LOCAL / SET TRANSACTION (silent
+    no-ops outside one — the author believes a setting applied when it did
+    not). Plain SET / SET SESSION stays allowed: it is session-scoped and
+    behaves identically either way.
+    """
+    i = _skip_sql_trivia(statement, 0)
+    word, i = _read_sql_word(statement, i)
+    if word in _TXN_CONTROL_WORDS:
+        return word.upper()
+    if word == "set":
+        second, _ = _read_sql_word(statement, _skip_sql_trivia(statement, i))
+        if second in ("local", "transaction"):
+            return f"SET {second.upper()}"
+    return None
+
+
 def _reject_transaction_control(migration: Migration, statements: list[str]) -> None:
     """Forbid transaction-control statements in a non-transactional migration.
 
     ``BEGIN``/``COMMIT`` and friends would silently re-open an explicit
     transaction (defeating ``CREATE INDEX CONCURRENTLY``) and, on failure,
-    leave the caller's connection in an aborted transaction. Checked before
-    any statement executes, so a rejected file applies nothing.
+    leave the caller's connection in an aborted transaction. ``SET LOCAL`` /
+    ``SET TRANSACTION`` are rejected for the opposite reason: outside a
+    transaction they are SILENT no-ops (server WARNING only), so an author
+    could believe e.g. ``statement_timeout`` was disabled for a long index
+    build when it was not. ``SAVEPOINT``/``RELEASE`` would fail loudly at
+    execution time, but the guard's value is rejecting the whole file before
+    any statement executes — a rejected file applies nothing.
     """
     for statement in statements:
-        match = _TXN_CONTROL_RE.match(statement)
-        if match is not None:
+        word = _transaction_control_word(statement)
+        if word is not None:
             raise ValueError(
                 f"migration {migration.filename!r} is marked no-transaction but contains "
-                f"transaction-control statement {match.group(1).upper()!r}; remove it — "
+                f"transaction-control statement {word!r}; remove it — "
                 "the runner manages transactions"
             )
 
@@ -368,6 +476,31 @@ async def list_applied(conn: asyncpg.Connection, schema: str) -> set[str]:
     for r in rows:
         applied_keys.add(r["version"])
     return applied_keys
+
+
+async def list_invalid_indexes(conn: asyncpg.Connection, schema: str) -> list[str]:
+    """Return the names of INVALID indexes in ``schema``, sorted by name.
+
+    An interrupted ``CREATE INDEX CONCURRENTLY`` leaves an INVALID index
+    behind: the query planner ignores it, but writers still maintain it, so
+    it is pure overhead (and blocks the re-run's ``IF NOT EXISTS``). The CLI
+    surfaces these in its failure report so users never have to query the
+    catalogs by hand.
+    """
+    if not _IDENT_RE.match(schema):
+        raise ValueError(f"invalid schema name {schema!r}")
+    rows = await conn.fetch(
+        """
+        SELECT c.relname
+        FROM pg_class c
+        JOIN pg_index i ON i.indexrelid = c.oid
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = $1 AND NOT i.indisvalid
+        ORDER BY c.relname
+        """,
+        schema,
+    )
+    return [r["relname"] for r in rows]
 
 
 async def apply_pending(
@@ -479,31 +612,41 @@ async def apply_pending(
 
     applied_now: list[Migration] = []
     for migration in effective:
-        if migration.use_transaction:
-            async with conn.transaction():
-                await conn.execute(migration.render(schema))
+        try:
+            if migration.use_transaction:
+                async with conn.transaction():
+                    await conn.execute(migration.render(schema))
+                    if not ledger_ready:
+                        await _ensure_ledger_use_transaction_column(conn, schema)
+                        ledger_ready = True
+                    await _record_applied(conn, schema, migration)
+            else:
+                # No wrapping transaction: each statement commits on its own, so
+                # the ledger is written only after every statement succeeds. A
+                # failure leaves earlier statements in place and nothing recorded;
+                # idempotency makes the re-run safe (see module docstring).
+                logger.warning(
+                    "migration-no-transaction",
+                    key=migration.key,
+                    filename=migration.filename,
+                )
+                statements = split_statements(migration.render(schema))
+                _reject_transaction_control(migration, statements)
+                for statement in statements:
+                    await conn.execute(statement)
                 if not ledger_ready:
                     await _ensure_ledger_use_transaction_column(conn, schema)
                     ledger_ready = True
                 await _record_applied(conn, schema, migration)
-        else:
-            # No wrapping transaction: each statement commits on its own, so
-            # the ledger is written only after every statement succeeds. A
-            # failure leaves earlier statements in place and nothing recorded;
-            # idempotency makes the re-run safe (see module docstring).
-            logger.warning(
-                "migration-no-transaction",
-                key=migration.key,
-                filename=migration.filename,
-            )
-            statements = split_statements(migration.render(schema))
-            _reject_transaction_control(migration, statements)
-            for statement in statements:
-                await conn.execute(statement)
-            if not ledger_ready:
-                await _ensure_ledger_use_transaction_column(conn, schema)
-                ledger_ready = True
-            await _record_applied(conn, schema, migration)
+        except Exception as exc:
+            # Why tag and re-raise: diagnose_apply_failure's first-unrecorded
+            # heuristic misattributes the failure under --phase (an
+            # earlier-version pending migration of the OTHER phase sorts
+            # first in discover() order). The exception object itself is the
+            # reliable channel to the diagnosis — tagging, not wrapping, so
+            # the caller-visible exception type is unchanged.
+            exc.__dict__["taskq_failed_migration"] = migration
+            raise
         applied_now.append(migration)
     return applied_now
 
@@ -535,6 +678,170 @@ async def _record_applied(conn: asyncpg.Connection, schema: str, migration: Migr
 
 
 _MIGRATION_LOCK_KEY: int = 1_234_567
+
+
+# ── apply-failure self-diagnosis ──────────────────────────────────────────────
+
+# Why this lives here and not in the CLI: both failure surfaces (``migrate
+# up`` and worker/UI startup via ``apply_pending_locked``) need the same
+# report, and the gathering logic reads ``discover``/``list_applied``/
+# ``list_invalid_indexes`` from this module — a helper module would
+# circular-import them.
+
+# Why a separate action line for startup: a worker/startup apply failure is
+# retried by restarting the process (migrations are idempotent and the
+# runner self-heals on retry), not by re-running the CLI — the CLI guidance
+# would send operators down the wrong path. Escalate to the CLI only when
+# the restart loop does not heal.
+_STARTUP_ACTION_LINE = (
+    "Action: restart is safe — migrations are idempotent and self-heal on retry; "
+    "if the failure repeats, run `taskq migrate up` and report the output."
+)
+
+
+@dataclass(frozen=True, slots=True)
+class ApplyFailureDiagnosis:
+    """Self-diagnosis of a failed migration apply, gathered on the still-open
+    connection by :func:`diagnose_apply_failure` and rendered by
+    :func:`render_apply_failure_lines`."""
+
+    headline: str
+    """First line of the original error (asyncpg messages can be multiline)."""
+
+    failed_filename: str | None
+    """Filename of the migration that failed — taken from the exception's
+    ``taskq_failed_migration`` tag when :func:`apply_pending` attached one,
+    else the first unrecorded migration in ``discover()`` order (a heuristic
+    that misattributes under ``--phase``); ``None`` when it could not be
+    determined."""
+
+    use_transaction: bool | None
+    """``Migration.use_transaction`` of the failed migration; ``None`` when
+    the failed migration could not be determined."""
+
+    invalid_indexes: tuple[str, ...]
+    """INVALID indexes in the schema — debris of an interrupted ``CREATE
+    INDEX CONCURRENTLY``; only gathered for no-transaction failures."""
+
+    # Why carried here: the INVALID-index line names the schema and the
+    # renderer must stay pure (no re-querying), so the diagnosis owns every
+    # value the report needs.
+    schema: str
+    """Schema the report names in the INVALID-index line."""
+
+    def __post_init__(self) -> None:
+        # Why: the renderer branches on use_transaction whenever
+        # failed_filename is set, so the pair must stay consistent — a
+        # filename with use_transaction=None would silently render the
+        # no-transaction wording for a failure whose nature is unknown.
+        if self.failed_filename is not None and self.use_transaction is None:
+            raise ValueError(
+                "ApplyFailureDiagnosis: use_transaction is required when failed_filename is set"
+            )
+
+
+def _exception_headline(exc: Exception) -> str:
+    """First line of ``str(exc)`` — or the type name when that line is empty
+    or whitespace, so a report never opens with ``migration failed: `` and a
+    blank headline. asyncpg messages can be multiline (DETAIL/HINT lines);
+    the report keeps the first line only."""
+    message = str(exc)
+    first_line = message.splitlines()[0] if message else ""
+    return first_line if first_line.strip() else type(exc).__name__
+
+
+async def diagnose_apply_failure(
+    conn: asyncpg.Connection, schema: str, exc: Exception
+) -> ApplyFailureDiagnosis:
+    """Gather a self-diagnosis of a failed apply on the still-open conn.
+
+    Both apply paths leave the connection reusable (a transactional failure
+    rolls back; the no-transaction path never opened one), so the same conn
+    can report what failed and what state the schema is in. Diagnosis must
+    NEVER mask the original error: every read is individually suppressed,
+    and whatever could not be gathered degrades to the generic report
+    (``failed_filename=None``).
+    """
+    headline = _exception_headline(exc)
+
+    failed: Migration | None = None
+    # apply_pending tags the exception with the migration that failed before
+    # re-raising — trust the tag over any heuristic. The isinstance guard
+    # keeps an exotic/mocked attribute from steering the report.
+    tagged = getattr(exc, "taskq_failed_migration", None)
+    if isinstance(tagged, Migration):
+        failed = tagged
+    else:
+        applied: set[str] | None = None
+        with contextlib.suppress(Exception):
+            applied = await list_applied(conn, schema)
+        if applied is not None:
+            # Fallback for exceptions from non-loop paths (e.g. the ledger
+            # ensure): apply_pending applies in discover() order and stops
+            # at the first failure, so the first unrecorded migration is the
+            # one that failed. Best-effort only — this misattributes under
+            # --phase, which is exactly why the loop tags.
+            with contextlib.suppress(Exception):
+                failed = next((m for m in discover() if m.key not in applied), None)
+
+    invalid: list[str] = []
+    if failed is not None and not failed.use_transaction:
+        with contextlib.suppress(Exception):
+            invalid = await list_invalid_indexes(conn, schema)
+
+    return ApplyFailureDiagnosis(
+        headline=headline,
+        failed_filename=failed.filename if failed is not None else None,
+        use_transaction=failed.use_transaction if failed is not None else None,
+        invalid_indexes=tuple(invalid),
+        schema=schema,
+    )
+
+
+def render_apply_failure_lines(d: ApplyFailureDiagnosis, *, startup: bool = False) -> list[str]:
+    """Render a diagnosis as report lines (CLI stderr / startup SystemExit).
+
+    ``startup=False`` reproduces the ``migrate up`` CLI report verbatim;
+    ``startup=True`` swaps only the action line for the restart-safe
+    variant (:data:`_STARTUP_ACTION_LINE`).
+    """
+    if startup:
+        action = _STARTUP_ACTION_LINE
+    elif d.failed_filename is None:
+        action = (
+            "Action: fix the error and re-run `taskq migrate up` — already-applied "
+            "migrations are skipped."
+        )
+    elif d.use_transaction:
+        action = "Action: fix the error and re-run `taskq migrate up`."
+    else:
+        action = (
+            "Action: re-run `taskq migrate up` — the migration is idempotent and "
+            "drops/rebuilds the debris itself."
+        )
+
+    if d.failed_filename is None:
+        return [f"migration failed: {d.headline}", action]
+    if d.use_transaction:
+        return [
+            f"migration {d.failed_filename} failed: {d.headline}",
+            "It ran in a transaction and rolled back: nothing from the migration was applied.",
+            action,
+        ]
+    lines = [
+        f"migration {d.failed_filename} failed: {d.headline}",
+        "It ran WITHOUT a transaction (-- taskq:no-transaction): statements "
+        "before the failure remain applied, and the migration was NOT recorded "
+        "in the ledger.",
+    ]
+    if d.invalid_indexes:
+        names = ", ".join(d.invalid_indexes)
+        lines.append(
+            f'INVALID index(es) in schema "{d.schema}": {names} — an interrupted '
+            "CREATE INDEX CONCURRENTLY left them behind."
+        )
+    lines.append(action)
+    return lines
 
 
 async def apply_pending_locked(
@@ -590,7 +897,28 @@ async def apply_pending_locked(
             logger.info("no pending migrations")
         return applied
     except Exception as exc:
-        raise SystemExit(f"migration failed, aborting startup: {exc}") from exc
+        if c is None:
+            # The conn was never acquired (conn_factory/asyncpg.connect
+            # raised): there is nothing to diagnose on — keep the generic
+            # wrap.
+            raise SystemExit(f"migration failed, aborting startup: {exc}") from exc
+        diagnosis: ApplyFailureDiagnosis | None = None
+        with contextlib.suppress(Exception):
+            # Best-effort: the conn is still open (both apply paths leave it
+            # reusable), so report which migration failed and what state the
+            # schema is in instead of escaping a raw error. Diagnosis must
+            # never mask the original error — any surprise falls back to the
+            # generic wrap below.
+            diagnosis = await diagnose_apply_failure(c, schema, exc)
+        if diagnosis is None:
+            raise SystemExit(f"migration failed, aborting startup: {exc}") from exc
+        # Why one " — "-joined line: startup logs are grepped, not read as
+        # paragraphs, and the prefix stays stable for existing alerting
+        # rules pinned on it.
+        raise SystemExit(
+            "migration failed, aborting startup: "
+            + " — ".join(render_apply_failure_lines(diagnosis, startup=True))
+        ) from exc
     finally:
         if c is not None:
             # Why the bounds: contextlib.suppress(Exception) catches errors

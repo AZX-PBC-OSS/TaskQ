@@ -171,6 +171,73 @@ async def test_guard_passes_when_pre_applied_earlier_in_same_run(
     assert conn.executed.count("SELECT 1;") == 5
 
 
+# ── apply_pending: failure tagging for self-diagnosis ───────────────────
+
+
+class _FailOnMarkerConn(_FakeMigrateConn):
+    """_FakeMigrateConn whose execute raises when the SQL contains a marker.
+
+    Lets a test fail ONE specific migration mid-apply while every other
+    migration executes normally.
+    """
+
+    def __init__(self, applied: set[str], fail_marker: str) -> None:
+        super().__init__(applied)
+        self._fail_marker = fail_marker
+
+    async def execute(self, sql: str, *args: object) -> str:
+        if self._fail_marker in sql:
+            raise RuntimeError(f"synthetic apply failure: {self._fail_marker}")
+        return await super().execute(sql, *args)
+
+
+def _failing_migration(
+    version: str, phase: str, marker: str, *, use_transaction: bool
+) -> Migration:
+    return Migration(
+        version=version,
+        phase=phase,  # type: ignore[arg-type]  # Why: test fixture; Phase is Literal["pre", "post"].
+        description="fabricated failing",
+        filename=f"{version}_{phase}_fabricated.sql",
+        sql_template=f"SELECT '{marker}';",
+        use_transaction=use_transaction,
+    )
+
+
+async def test_apply_pending_tags_exception_with_failing_transactional_migration(
+    monkeypatch: Any,
+) -> None:
+    """The self-diagnosis can only name the right file if the failure
+    carries WHICH migration failed — the first-unrecorded-in-discover-order
+    heuristic is wrong under ``--phase``. apply_pending must tag the raised
+    exception with the failing migration and re-raise the SAME object (the
+    type pins in test_migrate_no_transaction.py forbid wrapping)."""
+    failing = _failing_migration("02.00.00_01", "pre", "tx-fail-marker", use_transaction=True)
+    _patch_discover(monkeypatch, [_make_migration("01.00.00_01", "pre"), failing])
+    conn = _FailOnMarkerConn(applied={"01.00.00_01:pre"}, fail_marker="tx-fail-marker")
+
+    with pytest.raises(RuntimeError, match="synthetic apply failure") as excinfo:
+        await migrate_mod.apply_pending(conn, schema="taskq")  # type: ignore[arg-type]
+
+    assert getattr(excinfo.value, "taskq_failed_migration", None) is failing
+
+
+async def test_apply_pending_tags_exception_from_no_transaction_statement(
+    monkeypatch: Any,
+) -> None:
+    """The no-transaction statement loop gets the same tagging: a mid-file
+    statement failure is attributed to its own migration, not to whatever
+    sorts first in discover() order."""
+    failing = _failing_migration("02.00.00_01", "pre", "nt-fail-marker", use_transaction=False)
+    _patch_discover(monkeypatch, [_make_migration("01.00.00_01", "pre"), failing])
+    conn = _FailOnMarkerConn(applied={"01.00.00_01:pre"}, fail_marker="nt-fail-marker")
+
+    with pytest.raises(RuntimeError, match="synthetic apply failure") as excinfo:
+        await migrate_mod.apply_pending(conn, schema="taskq")  # type: ignore[arg-type]
+
+    assert getattr(excinfo.value, "taskq_failed_migration", None) is failing
+
+
 # ── apply_pending_locked: bounded finally teardown (dead PG) ────────────
 
 

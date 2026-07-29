@@ -391,12 +391,18 @@ Crashes are rare so the added wakeup cost is low, but the channel's meaning
 has broadened.
 
 The index added by migration `01.00.02_01_pre_job_events_outbox.sql` uses
-`CREATE INDEX` (not `CONCURRENTLY`, since `migrate.py` applies each migration
-inside a transaction and Postgres forbids `CONCURRENTLY` there) and takes an
-exclusive lock on `job_events` for the duration of the build, which can stall
-writes to that heavily-written table — operators with a large/populated table
-should run the equivalent `CREATE INDEX CONCURRENTLY` manually during a
-maintenance window (see the migration file for details).
+`CREATE INDEX` (not `CONCURRENTLY`) and takes an exclusive lock on
+`job_events` for the duration of the build, which can stall writes to that
+heavily-written table. The migration runner supports a per-migration opt-out
+from its default transaction wrapper — the `-- taskq:no-transaction` header
+directive, which unlocks `CONCURRENTLY` forms (see
+[Non-transactional migrations](guides/upgrading.md#non-transactional-migrations)) —
+but bundled migrations deliberately remain transactional (pinned by
+`test_bundled_migrations_are_all_transactional`), so operators with a
+large/populated table should still run the equivalent `CREATE INDEX
+CONCURRENTLY` manually during a maintenance window (see the migration file
+for details). Future index migrations on hot tables can adopt the directive
+instead.
 
 ---
 
@@ -961,8 +967,10 @@ These invariants must remain true across all changes.
    documentation; the `_single_threaded()` guard is a no-op.
 
 7. **Migration files are append-only** — never modify an applied migration.
-   The migration runner stores a checksum of each applied file in
-   `schema_migrations` and rejects re-runs with a checksum mismatch.
+   The migration runner stores a SHA-256 checksum of each applied file's
+   rendered SQL in `schema_migrations` and logs a `migration-checksum-drift`
+   warning when an applied file no longer matches, so tampering surfaces in
+   logs (drift is warned on, not rejected — applied migrations never re-run).
 
 8. **`BACKEND_PROTOCOL_VERSION` is checked at import time** — both
    `PostgresBackend` and `InMemoryBackend` assert the version constant at module

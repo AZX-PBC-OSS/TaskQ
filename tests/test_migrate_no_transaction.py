@@ -19,21 +19,30 @@ per-migration transaction wrapper, making ``CREATE INDEX CONCURRENTLY`` /
   self-healed onto pre-upgrade ledgers.
 
 Synthetic migrations are layered on top of the bundled set by monkeypatching
-``discover()`` (same pattern as ``test_migrate_coverage.py``). Each test uses
-its own ``new_base62()``-suffixed schema name.
+``discover()`` (same pattern as ``test_migrate_coverage.py``) — except
+``test_discover_directive_parsing_applies_end_to_end``, which patches
+``importlib.resources.files`` instead so the REAL ``discover()`` directive
+parsing is exercised against a real database. Each test uses its own
+``new_base62()``-suffixed schema name.
 """
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
+from importlib import resources
+from pathlib import Path
 
 import asyncpg
 import pytest
 import structlog.testing
+from typer.testing import CliRunner
 
 from taskq import migrate as migrate_mod
 from taskq._ids import new_base62
+from taskq.cli import app
 from taskq.migrate import Migration
+from taskq.testing.assertions import plain_cli_output
 
 pytestmark = pytest.mark.integration
 
@@ -168,6 +177,57 @@ async def test_apply_pending_locked_applies_no_transaction_migration(
             await _drop_schema(conn, schema)
         finally:
             await conn.close()
+
+
+# ── Directive parsing end-to-end (REAL discover()) ─────────────────────────
+
+
+async def test_discover_directive_parsing_applies_end_to_end(
+    pg_dsn: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Every other test here hand-sets ``use_transaction=False``, so the
+    directive-parsing path itself was never exercised against a real DB. This
+    test goes through the REAL ``discover()``: the synthetic file carries the
+    directive WITH a trailing note (the common real-world form), and the
+    migration must be applied non-transactionally based on that parse alone."""
+    schema = f"mig_nt_disc_{new_base62()}".lower()
+    # Resolve and copy the bundled *.sql files BEFORE patching
+    # resources.files — apply_pending re-discovers on every call, so the
+    # patched dir must contain the full bundled set plus the synthetic file.
+    real_dir = resources.files("taskq.migrations")
+    for entry in real_dir.iterdir():
+        if entry.is_file() and entry.name.endswith(".sql"):
+            (tmp_path / entry.name).write_bytes(entry.read_bytes())
+    synth_name = "90.05.00_01_post_directive_file.sql"
+    (tmp_path / synth_name).write_text(
+        "-- taskq:no-transaction — CIC cannot run inside a transaction\n"
+        'DROP INDEX CONCURRENTLY IF EXISTS "{schema}".nt_discovered_idx;\n'
+        "CREATE INDEX CONCURRENTLY IF NOT EXISTS nt_discovered_idx "
+        'ON "{schema}".jobs (queue);\n',
+        encoding="utf-8",
+    )
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        await _drop_schema(conn, schema)
+        # Bootstrap via the REAL package dir; only then patch, so the
+        # synthetic file is applied from the patched discovery below.
+        await _bootstrap(conn, schema)
+        monkeypatch.setattr(migrate_mod.resources, "files", lambda _pkg: tmp_path)
+
+        applied = await migrate_mod.apply_pending(conn, schema=schema)
+
+        # Parsed from the file — not hand-set. Asserted AFTER apply_pending
+        # so a parsing regression surfaces as its DB-level symptom
+        # (ActiveSQLTransactionError above) rather than a local assert.
+        m = next(x for x in migrate_mod.discover() if x.filename == synth_name)
+        assert m.use_transaction is False, "directive must be parsed from the file"
+        assert [x.key for x in applied] == [m.key]
+        assert await _index_validity(conn, schema, "nt_discovered_idx") is True
+        ledger = await _ledger_transactions(conn, schema)
+        assert ledger[m.key] is False
+    finally:
+        await _drop_schema(conn, schema)
+        await conn.close()
 
 
 # ── Default path: still transactional ───────────────────────────────────────
@@ -395,6 +455,50 @@ async def test_interrupted_concurrent_build_remedy_drop_and_rebuild(
         await conn.close()
 
 
+async def test_list_invalid_indexes_reports_then_clears_staged_debris(pg_dsn: str) -> None:
+    """The CLI's failure report leans on ``list_invalid_indexes``: after an
+    interrupted CREATE INDEX CONCURRENTLY leaves an INVALID index behind, the
+    helper must name it; once the debris is dropped, it must report nothing."""
+    schema = f"mig_nt_lii_{new_base62()}".lower()
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        await _drop_schema(conn, schema)
+        await _bootstrap(conn, schema)
+
+        # Same staging pattern as
+        # test_interrupted_concurrent_build_remedy_drop_and_rebuild: a
+        # 2M-row table + 100ms statement_timeout cancels CIC mid-build,
+        # leaving an INVALID index (retry — the cancel can instead land
+        # before catalog registration on a loaded runner).
+        await conn.execute(
+            f'CREATE TABLE "{schema}".lii_stage AS SELECT generate_series(1, 2000000) AS id'
+        )
+        staged = False
+        for _attempt in range(3):
+            await conn.execute(f'DROP INDEX IF EXISTS "{schema}".lii_stage_idx')
+            await conn.execute("SET statement_timeout = '100ms'")
+            try:
+                with contextlib.suppress(asyncpg.QueryCanceledError):
+                    await conn.execute(
+                        f'CREATE INDEX CONCURRENTLY lii_stage_idx ON "{schema}".lii_stage (id)'
+                    )
+            finally:
+                await conn.execute("RESET statement_timeout")
+            validity = await _index_validity(conn, schema, "lii_stage_idx")
+            if validity is False:
+                staged = True
+                break
+        assert staged, "could not stage an INVALID index via statement_timeout"
+
+        assert await migrate_mod.list_invalid_indexes(conn, schema) == ["lii_stage_idx"]
+
+        await conn.execute(f'DROP INDEX "{schema}".lii_stage_idx')
+        assert await migrate_mod.list_invalid_indexes(conn, schema) == []
+    finally:
+        await _drop_schema(conn, schema)
+        await conn.close()
+
+
 async def test_no_transaction_migration_rejects_transaction_control_statements(
     pg_dsn: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -481,6 +585,155 @@ async def test_runner_self_heals_ledger_column_and_backfills_default(
             tx.key: True,
             nt.key: False,
         }
+    finally:
+        await _drop_schema(conn, schema)
+        await conn.close()
+
+
+# ── CLI failure report (end-to-end) ─────────────────────────────────────────
+
+
+def test_migrate_up_cli_reports_failed_no_transaction_migration(
+    pg_dsn: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Owner requirement, end-to-end: a failed no-transaction ``migrate up``
+    must itself report what failed, the state it left the schema in, and the
+    one action to take — never a traceback, never a manual-inspection
+    runbook. The partial table existing afterwards proves the report told
+    the truth."""
+    schema = f"mig_nt_cli_{new_base62()}".lower()
+
+    async def _setup() -> list[Migration]:
+        conn = await asyncpg.connect(pg_dsn)
+        try:
+            await _drop_schema(conn, schema)
+            return await _bootstrap(conn, schema)
+        finally:
+            await conn.close()
+
+    real = asyncio.run(_setup())
+    m = _fake_migration(
+        "90.10.00_01",
+        "post",
+        "-- taskq:no-transaction\n"
+        'CREATE TABLE "{schema}".nt_cli_persist (id int);\n'
+        "THIS IS NOT VALID SQL;\n",
+        use_transaction=False,
+    )
+    monkeypatch.setattr(migrate_mod, "discover", lambda: [*real, m])
+    monkeypatch.setenv("TASKQ_PG_DSN", pg_dsn)
+    monkeypatch.setenv("TASKQ_SCHEMA_NAME", schema)
+
+    # CliRunner runs in-process, so the monkeypatched discover and the env
+    # vars apply to the real CLI; it is synchronous, so this test drives
+    # async setup/verify/teardown through asyncio.run and must itself stay
+    # sync (asyncpg connections are bound to the loop that created them —
+    # one asyncio.run per phase, like conftest's _pg_admin).
+    result = CliRunner().invoke(app, ["migrate", "up"])
+
+    async def _table_exists() -> bool:
+        conn = await asyncpg.connect(pg_dsn)
+        try:
+            return bool(
+                await conn.fetchval(
+                    """
+                    SELECT EXISTS (
+                        SELECT 1 FROM information_schema.tables
+                        WHERE table_schema = $1 AND table_name = 'nt_cli_persist'
+                    )
+                    """,
+                    schema,
+                )
+            )
+        finally:
+            await conn.close()
+
+    async def _cleanup() -> None:
+        conn = await asyncpg.connect(pg_dsn)
+        try:
+            await _drop_schema(conn, schema)
+        finally:
+            await conn.close()
+
+    try:
+        assert result.exit_code == 1
+        plain = plain_cli_output(result.output)
+        assert m.filename in plain
+        assert "WITHOUT a transaction" in plain
+        assert "NOT recorded" in plain
+        assert "taskq migrate up" in plain
+        assert "Traceback" not in plain
+        assert asyncio.run(_table_exists()) is True, (
+            "the first statement must remain applied — the report said so"
+        )
+    finally:
+        asyncio.run(_cleanup())
+
+
+# ── apply_pending_locked startup failure self-diagnosis ──────────────────────
+
+
+async def test_apply_pending_locked_failure_self_diagnoses(
+    pg_dsn: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Owner requirement, startup path: a migration failing under
+    ``apply_pending_locked`` (worker/UI startup) must abort with the SAME
+    self-diagnosis the CLI prints — which migration failed, the partial
+    state it left, the INVALID indexes it found, and the single action —
+    joined into ONE greppable SystemExit line, never a raw traceback."""
+    schema = f"mig_nt_se_{new_base62()}".lower()
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        await _drop_schema(conn, schema)
+        real = await _bootstrap(conn, schema)
+
+        # Stage INVALID-index debris (same statement_timeout pattern as
+        # test_list_invalid_indexes_reports_then_clears_staged_debris): an
+        # interrupted CIC leaves an INVALID index the diagnosis must name.
+        await conn.execute(
+            f'CREATE TABLE "{schema}".se_stage AS SELECT generate_series(1, 2000000) AS id'
+        )
+        staged = False
+        for _attempt in range(3):
+            await conn.execute(f'DROP INDEX IF EXISTS "{schema}".se_stage_idx')
+            await conn.execute("SET statement_timeout = '100ms'")
+            try:
+                with contextlib.suppress(asyncpg.QueryCanceledError):
+                    await conn.execute(
+                        f'CREATE INDEX CONCURRENTLY se_stage_idx ON "{schema}".se_stage (id)'
+                    )
+            finally:
+                await conn.execute("RESET statement_timeout")
+            validity = await _index_validity(conn, schema, "se_stage_idx")
+            if validity is False:
+                staged = True
+                break
+        assert staged, "could not stage an INVALID index via statement_timeout"
+
+        m = _fake_migration(
+            "90.11.00_01",
+            "post",
+            "-- taskq:no-transaction\n"
+            'CREATE TABLE "{schema}".se_persist (id int);\n'
+            "THIS IS NOT VALID SQL;\n",
+            use_transaction=False,
+        )
+        monkeypatch.setattr(migrate_mod, "discover", lambda: [*real, m])
+
+        async def _conn_factory() -> asyncpg.Connection:
+            return await asyncpg.connect(pg_dsn)
+
+        with pytest.raises(SystemExit) as excinfo:
+            await migrate_mod.apply_pending_locked(schema=schema, conn_factory=_conn_factory)
+        message = str(excinfo.value)
+        assert "migration failed, aborting startup" in message
+        assert m.filename in message
+        assert "WITHOUT a transaction" in message
+        assert "NOT recorded" in message
+        assert f'INVALID index(es) in schema "{schema}": se_stage_idx' in message
+        assert "restart is safe" in message
+        assert "\n" not in message, "the startup report must be one greppable line"
+        assert "Traceback" not in message
     finally:
         await _drop_schema(conn, schema)
         await conn.close()
