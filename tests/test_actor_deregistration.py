@@ -335,6 +335,13 @@ async def test_deregister_force_with_running_and_pending_only_reports_running(
     assert "pending" not in exc_info.value.status_counts
     # Row still exists — transaction rolled back.
     assert await get_actor_config(pg_conn, "mix_actor", schema=schema) is not None
+    # The pending job must still be pending — the transaction rolled back
+    # on the raise, so the cancel UPDATE never committed.
+    pending_count = await pg_conn.fetchval(
+        f"SELECT count(*) FROM \"{schema}\".jobs WHERE actor = $1 AND status = 'pending'",  # noqa: S608  # Why: schema validated by _IDENT_RE in apply_pending; actor/status are test constants.
+        "mix_actor",
+    )
+    assert pending_count == 1
 
 
 async def test_deregister_force_keeps_terminal_history(pg_conn: asyncpg.Connection) -> None:
@@ -429,3 +436,84 @@ async def test_deregister_without_purge_queue_keeps_queue(
 
     assert result.queue_purged is False
     assert await _queue_exists(pg_conn, schema, "kept_queue") is True
+
+
+# ── idempotency ─────────────────────────────────────────────────────────
+
+
+async def test_double_deregister_raises_not_found(pg_conn: asyncpg.Connection) -> None:
+    """A second deregister call on an already-deregistered actor raises ActorNotFoundError.
+
+    This is the primary consumer pattern (cleanup loops using try/except ActorNotFoundError).
+    The idempotency guarantee must be tested — an implementation bug that silently returns
+    actor_config_deleted=False instead of raising would not be caught otherwise.
+    """
+    schema = _make_schema()
+    await _ensure_schema(pg_conn, schema)
+    await sync_actor_config(
+        pg_conn,
+        [ActorConfig(actor="idem_actor", max_concurrent=5, queue="default")],
+        schema=schema,
+    )
+
+    result = await deregister_actor(pg_conn, "idem_actor", schema=schema)
+    assert result.actor_config_deleted is True
+
+    with pytest.raises(ActorNotFoundError, match="no stored actor_config row"):
+        await deregister_actor(pg_conn, "idem_actor", schema=schema)
+
+
+# ── combined force + purge_queue ────────────────────────────────────────
+
+
+async def test_deregister_force_with_purge_queue(
+    pg_conn: asyncpg.Connection,
+) -> None:
+    """force=True + purge_queue=True simultaneously — the exact pattern downstream
+    consumers (aacrtool) use for ephemeral actor cleanup."""
+    schema = _make_schema()
+    await _ensure_schema(pg_conn, schema)
+    await _insert_queue(pg_conn, schema, "ephemeral_queue")
+    await sync_actor_config(
+        pg_conn,
+        [ActorConfig(actor="ephemeral_actor", max_concurrent=5, queue="ephemeral_queue")],
+        schema=schema,
+    )
+    await _insert_job(pg_conn, schema, actor="ephemeral_actor", status="pending")
+    await _insert_job(pg_conn, schema, actor="ephemeral_actor", status="scheduled")
+
+    result = await deregister_actor(
+        pg_conn, "ephemeral_actor", force=True, purge_queue=True, schema=schema
+    )
+
+    assert result.actor_config_deleted is True
+    assert result.jobs_cancelled == 2
+    assert result.queue_purged is True
+    assert await get_actor_config(pg_conn, "ephemeral_actor", schema=schema) is None
+    assert await _queue_exists(pg_conn, schema, "ephemeral_queue") is False
+
+
+async def test_deregister_purge_queue_noop_when_queue_row_absent(
+    pg_conn: asyncpg.Connection,
+) -> None:
+    """purge_queue=True is a safe no-op when the queues row was never created.
+
+    The queues table is metadata-only and not always populated — operator-managed
+    deployments may never create a row. The DELETE returns 0 rows and
+    queue_purged is False, which is correct.
+    """
+    schema = _make_schema()
+    await _ensure_schema(pg_conn, schema)
+    await sync_actor_config(
+        pg_conn,
+        [ActorConfig(actor="noqueue_actor", max_concurrent=5, queue="never_created")],
+        schema=schema,
+    )
+    # Deliberately do NOT create a queues row for "never_created".
+
+    result = await deregister_actor(
+        pg_conn, "noqueue_actor", purge_queue=True, schema=schema
+    )
+
+    assert result.actor_config_deleted is True
+    assert result.queue_purged is False
