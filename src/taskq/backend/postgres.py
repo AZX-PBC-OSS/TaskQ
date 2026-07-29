@@ -15,6 +15,7 @@ cancel signals, NOTIFY, and schedule CRUD wiring.
 """
 
 import asyncio
+from collections.abc import Iterable
 from contextlib import AbstractAsyncContextManager as AsyncContextManager
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, ClassVar, Literal
@@ -41,6 +42,9 @@ from taskq.backend._protocol import (
     AttemptOutcome,
     AttemptRow,
     BackendDeps,
+    BatchCounts,
+    BatchFilter,
+    BatchRow,
     CancelFlag,
     ConnLike,
     EnqueueArgs,
@@ -753,3 +757,77 @@ class PostgresBackend:
 
     async def delete_schedule(self, schedule_id: UUID) -> None:
         await _delete_schedule(self._worker_pool, self._schedule_sql, schedule_id)
+
+    # ── Batch operations (Task 6 implements these) ─────────────────────
+
+    async def enqueue_batch_atomic(
+        self,
+        items: Iterable[EnqueueArgs],
+        *,
+        batch_id: UUID,
+        queue: str,
+        batch_row: BatchRow | None,
+        finalizer_args: EnqueueArgs | None,
+        chunk_size: int = 1000,
+    ) -> list[JobRow]:
+        raise NotImplementedError
+
+    async def create_batch(
+        self,
+        batch_id: UUID,
+        queue: str,
+        expected_size: int,
+        failure_threshold: int | None,
+        finalizer_job_id: UUID | None,
+        originating_actor: str | None,
+        *,
+        connection: ConnLike | None = None,
+    ) -> None:
+        raise NotImplementedError
+
+    async def increment_batch_failures(
+        self,
+        batch_id: UUID,
+        *,
+        connection: ConnLike | None = None,
+    ) -> tuple[int, int | None, int]:
+        raise NotImplementedError
+
+    async def reset_batch_failures(
+        self,
+        batch_id: UUID,
+        *,
+        connection: ConnLike | None = None,
+    ) -> int:
+        raise NotImplementedError
+
+    async def abort_batch(
+        self,
+        batch_id: UUID,
+        *,
+        connection: ConnLike | None = None,
+    ) -> int:
+        raise NotImplementedError
+
+    async def complete_batch(
+        self,
+        batch_id: UUID,
+        *,
+        connection: ConnLike | None = None,
+    ) -> None:
+        raise NotImplementedError
+
+    async def get_batch(self, batch_id: UUID) -> BatchRow | None:
+        raise NotImplementedError
+
+    async def list_batches(
+        self,
+        filter: BatchFilter,
+    ) -> list[tuple[BatchRow, BatchCounts]]:
+        raise NotImplementedError
+
+    async def count_batch_non_terminal(self, batch_id: UUID) -> int:
+        raise NotImplementedError
+
+    async def prune_old_batches(self, cutoff: datetime) -> int:
+        raise NotImplementedError
