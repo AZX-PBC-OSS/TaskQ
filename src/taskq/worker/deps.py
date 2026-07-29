@@ -237,6 +237,16 @@ class WorkerDeps:
     :func:`reload_credentials` (via ``notify_reconnect_fn``) can both trigger
     a reconnect; without mutual exclusion both build a new conn and the
     loser's LISTEN-registered conn leaks."""
+    drain_failures: int = 0
+    """Count of jobs that reached a non-success terminal state during
+    until-idle drain mode. Incremented by di_consumer_loop when
+    dispatch_one_job returns ``"failed"`` — the only AttemptOutcome value
+    that indicates a terminal failure. ``"cancelled"`` propagates as
+    CancelledError (not caught by the consumer's ``except Exception``),
+    so it never reaches the increment. ``"scheduled"`` (snooze/retry) is
+    excluded because a retried job is not a drain failure.
+    Read by the drain monitor to determine the exit code. Always 0
+    in non-idle mode."""
 
     def request_reload(self) -> None:
         """Programmatic credential hot-reload trigger for embedders.
