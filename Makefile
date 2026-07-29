@@ -1,4 +1,4 @@
-.PHONY: help install test test-fast test-e2e test-cov lint format type-check clean build css
+.PHONY: help install test test-fast test-e2e test-cov lint format type-check clean build css security docs docs-serve
 
 help:
 	@echo "Available commands:"
@@ -12,6 +12,9 @@ help:
 	@echo "  make clean        - Clean build artifacts"
 	@echo "  make build        - Clean and build package"
 	@echo "  make css          - Rebuild admin UI CSS from Tailwind source"
+	@echo "  make security     - Run pip-audit vulnerability scan"
+	@echo "  make docs         - Build docs with mkdocs (--strict)"
+	@echo "  make docs-serve   - Serve docs locally for preview"
 
 install:
 	uv sync --all-extras --group dev
@@ -56,3 +59,12 @@ build: clean
 css:
 	npm install
 	npm run build
+
+security:
+	uv run --with pip-audit pip-audit
+
+docs:
+	uv run mkdocs build --strict
+
+docs-serve:
+	uv run mkdocs serve
