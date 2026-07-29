@@ -15,20 +15,20 @@ from taskq.backend._protocol import JobFilter
 class TestBuildFilterConditions:
     def test_empty_filter_produces_no_conditions(self) -> None:
         result = build_filter_conditions(JobFilter())
-        assert result.conditions == []
-        assert result.params == []
+        assert result.conditions == ()
+        assert result.params == ()
 
     def test_queue_filter(self) -> None:
         result = build_filter_conditions(JobFilter(queue="default"))
         assert len(result.conditions) == 1
         assert "queue" in result.conditions[0]
-        assert result.params == ["default"]
+        assert result.params == ("default",)
 
     def test_tags_filter(self) -> None:
         result = build_filter_conditions(JobFilter(tags=("alpha", "beta")))
         assert len(result.conditions) == 1
         assert "tags" in result.conditions[0]
-        assert result.params == [["alpha", "beta"]]
+        assert result.params == (["alpha", "beta"],)
 
     def test_batch_id_filter(self) -> None:
         bid = uuid4()
@@ -53,4 +53,4 @@ class TestBuildFilterConditions:
         result = build_filter_conditions(
             JobFilter(cursor="some-cursor", order_by=None),
         )
-        assert result.conditions == []
+        assert result.conditions == ()

@@ -55,7 +55,7 @@ async def _list_jobs(
     filters: JobFilter,
 ) -> list[JobRow]:
     filter_sql = build_filter_conditions(filters)
-    conditions = filter_sql.conditions
+    conditions: list[str] = list(filter_sql.conditions)
     params: list[object] = list(filter_sql.params)
     n = len(params)
 

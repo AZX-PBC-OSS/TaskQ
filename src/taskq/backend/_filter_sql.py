@@ -5,9 +5,15 @@ cancel) reuses the exact same filter logic. Only predicate fields
 (queue, status, actor, identity_key, batch_id, tags, active) are
 translated to conditions. The ``cursor``, ``limit``, and ``order_by``
 fields are NOT handled here — callers apply them separately.
+
+This module is SQL-only; the in-memory backend filters via its own
+implementation in ``testing/_reads.py``. Backend equivalence is enforced
+by the shared test suite (``test_backend_equivalence.py``), not shared
+code — the two filter-matching strategies (SQL WHERE vs Python
+predicates) do not share a trivial interface.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from taskq._json import dumps_str
 from taskq.backend._protocol import JobFilter
@@ -18,10 +24,15 @@ __all__ = ["FilterSQL", "build_filter_conditions"]
 
 @dataclass(frozen=True, slots=True)
 class FilterSQL:
-    """Built SQL fragments and parameters from a JobFilter."""
+    """Built SQL fragments and parameters from a JobFilter.
 
-    conditions: list[str] = field(default_factory=list[str])
-    params: list[object] = field(default_factory=list[object])
+    ``conditions`` and ``params`` are stored as tuples so the frozen
+    contract is meaningful (mutable list fields in a frozen dataclass
+    only prevent reassignment, not in-place mutation).
+    """
+
+    conditions: tuple[str, ...] = ()
+    params: tuple[object, ...] = ()
 
 
 def build_filter_conditions(filter: JobFilter) -> FilterSQL:
@@ -88,4 +99,4 @@ def build_filter_conditions(filter: JobFilter) -> FilterSQL:
         conditions.append(f"tags && ${n}::text[]")
         params.append(list(filter.tags))
 
-    return FilterSQL(conditions=conditions, params=params)
+    return FilterSQL(conditions=tuple(conditions), params=tuple(params))
