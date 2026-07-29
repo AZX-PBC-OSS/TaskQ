@@ -67,6 +67,7 @@ from taskq.backend._protocol import (
 )
 from taskq.backend.statemachine import TERMINAL_STATUSES
 from taskq.batch import BatchHandle, EnqueueItem
+from taskq.client._actors import ActorsClient
 from taskq.client._handle import JobHandle
 from taskq.client._jobs import JobsClient
 from taskq.constants import RECLAIM_EVENT_VISIBILITY_DELAY, progress_channel, wake_channel
@@ -74,7 +75,7 @@ from taskq.cron import ScheduleHandle
 from taskq.progress._events import ProgressEvent
 from taskq.types import CancelResult
 
-__all__ = ["EventRow", "JobEvent", "TaskQ"]
+__all__ = ["ActorsClient", "EventRow", "JobEvent", "TaskQ"]
 
 logger = structlog.get_logger("taskq.client._taskq")
 
@@ -219,6 +220,7 @@ class TaskQ:
         self._reclaim_event_visibility_delay = reclaim_event_visibility_delay
         self._owns_pool = pool is None
         self._client: JobsClient | None = None
+        self._actors_client: ActorsClient | None = None
 
     # ── Lifecycle ──────────────────────────────────────────────────────────
 
@@ -273,6 +275,7 @@ class TaskQ:
         if self._redis_url is not None:
             settings.redis_url = self._redis_url  # type: ignore[assignment]  # Why: dotenvmodel PostgresDsn/RedisDsn fields accept str values at runtime but pyright cannot verify the coercion through the model's __setattr__.
         self._client = JobsClient(backend, settings=settings)
+        self._actors_client = ActorsClient(pool, schema=self._schema)
         if self._redis_client is not None:
             self._client._redis_client = self._redis_client  # pyright: ignore[reportPrivateUsage]  # Why: TaskQ owns the JobsClient lifecycle; assigning the caller-owned redis_client directly bypasses _open_redis so the client is NOT entered on the exit stack — TaskQ.close() must not close a caller-owned client.
         elif self._redis_url is not None:
@@ -287,6 +290,7 @@ class TaskQ:
         if self._client is not None:
             await self._client.close()
             self._client = None
+            self._actors_client = None
         if self._owns_pool and self._pool is not None:
             # Why bounded: an enqueue in flight at close time can stall
             # Pool.close() indefinitely against a dead PG.
@@ -308,6 +312,21 @@ class TaskQ:
                 "TaskQ is not open. Call 'await tq.open()' or use 'async with TaskQ(...) as tq:'"
             )
         return self._client
+
+    # ── Actor configuration ────────────────────────────────────────────────
+
+    @property
+    def actors(self) -> ActorsClient:
+        """Actor configuration client — list, get, set capacity, deregister.
+
+        Raises RuntimeError if called before ``open()`` or outside an
+        ``async with`` block.
+        """
+        if self._actors_client is None:
+            raise RuntimeError(
+                "TaskQ is not open. Call 'await tq.open()' or use 'async with TaskQ(...) as tq:'"
+            )
+        return self._actors_client
 
     # ── Job operations ─────────────────────────────────────────────────────
 

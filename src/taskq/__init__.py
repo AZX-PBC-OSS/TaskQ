@@ -38,6 +38,7 @@ from taskq.backend._protocol import (
 )
 from taskq.batch import BatchCompletionStatus, BatchHandle, EnqueueItem, wait_for_batch
 from taskq.client import CancelResult, JobEvent, JobHandle, JobsClient, TaskQ
+from taskq.client._actors import ActorsClient
 from taskq.client._enqueuer import SubJobEnqueuer
 from taskq.connections import ConnFactory, PoolFactory, RedisFactory, WorkerConnections
 from taskq.context import JobContext
@@ -45,6 +46,10 @@ from taskq.cron import CronScheduleSpec, ScheduleHandle, cron
 from taskq.exceptions import (
     ActorConfigDriftError,
     ActorConfigDriftList,
+    ActorDeregistrationError,
+    ActorHasActiveJobsError,
+    ActorHasEnabledSchedulesError,
+    ActorNotFoundError,
     BackpressureError,
     DependencyCycle,
     DIError,
@@ -82,14 +87,20 @@ from taskq.retry import (
     RetryPolicy,
 )
 from taskq.scheduler import register_cron
+from taskq.worker.actor_config_ops import DeregisterResult
 
 __all__ = [
     "ActorConfigDriftError",
     "ActorConfigDriftList",
+    "ActorDeregistrationError",
     "ActorFn",
     "ActorFnWithCtx",
     "ActorHandler",
+    "ActorHasActiveJobsError",
+    "ActorHasEnabledSchedulesError",
+    "ActorNotFoundError",
     "ActorRef",
+    "ActorsClient",
     "BackpressureError",
     "BatchCompletionStatus",
     "BatchHandle",
@@ -99,6 +110,7 @@ __all__ = [
     "CronScheduleSpec",
     "DIError",
     "DependencyCycle",
+    "DeregisterResult",
     "DstStrategy",
     "EnqueueItem",
     "ErrorReporter",

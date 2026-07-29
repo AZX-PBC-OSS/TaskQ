@@ -9,6 +9,7 @@ names).
 anchors:  (public API ownership).
 """
 
+from taskq.client._actors import ActorsClient
 from taskq.client._enqueuer import SubJobEnqueuer
 from taskq.client._handle import JobHandle
 from taskq.client._jobs import JobsClient
@@ -16,6 +17,7 @@ from taskq.client._taskq import JobEvent, TaskQ
 from taskq.types import CancelResult
 
 __all__ = [
+    "ActorsClient",
     "CancelResult",
     "JobEvent",
     "JobHandle",
