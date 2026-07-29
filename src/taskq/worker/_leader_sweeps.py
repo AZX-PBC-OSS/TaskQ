@@ -299,7 +299,7 @@ async def _prune_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                     last_pruned_date = today_utc
                     for status, count in result.by_status.items():
                         log.info(
-                            "prune completed",
+                            "prune-completed",
                             kind="prune",
                             status=status,
                             count=count,
@@ -307,7 +307,7 @@ async def _prune_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                             duration_ms=result.duration_ms,
                         )
                 except Exception as exc:
-                    log.error("prune failed", kind="prune", error=repr(exc))
+                    log.error("prune-failed", kind="prune", error=repr(exc))
                 finally:
                     with contextlib.suppress(*TRANSIENT_PG_ERRORS):
                         await conn.execute(
@@ -371,7 +371,7 @@ async def _archive_expiry_loop(ctx: SweepContext, shutdown: asyncio.Event) -> No
                     last_expiry_date = today_utc
                     for status, count in result.by_status.items():
                         log.info(
-                            "archive expiry completed",
+                            "archive-expiry-completed",
                             kind="archive_expiry",
                             status=status,
                             count=count,

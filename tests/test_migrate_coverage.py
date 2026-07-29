@@ -276,12 +276,12 @@ async def test_apply_pending_locked_happy_path_then_noop(pg_dsn: str) -> None:
         with structlog.testing.capture_logs() as captured:
             first = await migrate_mod.apply_pending_locked(pg_dsn, schema=schema)
         assert first, "expected the bundled migration to apply"
-        assert any(e.get("event") == "applied migrations before startup" for e in captured)
+        assert any(e.get("event") == "migrations-applied-before-startup" for e in captured)
 
         with structlog.testing.capture_logs() as captured_second:
             second = await migrate_mod.apply_pending_locked(pg_dsn, schema=schema)
         assert second == []
-        assert any(e.get("event") == "no pending migrations" for e in captured_second)
+        assert any(e.get("event") == "no-pending-migrations" for e in captured_second)
     finally:
         conn = await asyncpg.connect(pg_dsn)
         try:

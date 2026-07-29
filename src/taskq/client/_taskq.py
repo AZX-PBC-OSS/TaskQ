@@ -905,7 +905,7 @@ async def _probe_visibility_risk(client: JobsClient) -> None:
     try:
         writers = await asyncio.wait_for(check(), timeout=_VISIBILITY_PROBE_TIMEOUT)
     except Exception:
-        logger.warning("watch_reclaims-visibility-risk-probe-failed", exc_info=True)
+        logger.warning("watch-reclaims-visibility-risk-probe-failed", exc_info=True)
         return
     for w in writers:
         logger.warning(
@@ -1015,7 +1015,7 @@ async def _watch_reclaims_pg(
 
     * caller-supplied ``listen_conn`` — the caller owns the connection's
       lifecycle, so reconnection is impossible; the generator logs one
-      ``watch_reclaims-listen-connection-lost`` warning and settles into
+      ``watch-reclaims-listen-connection-lost`` warning and settles into
       a permanent poll fallback (documented limitation).
     * owned connection (``pg_conn_factory`` / ``dsn``) — the generator
       polls as a fallback and, every ``_RECONNECT_POLL_INTERVAL`` poll
@@ -1085,7 +1085,7 @@ async def _watch_reclaims_pg(
         while True:
             last_risk_probe = await _maybe_probe_visibility_risk(client, last_risk_probe)
             if conn.is_closed():
-                logger.warning("watch_reclaims-listen-connection-lost")
+                logger.warning("watch-reclaims-listen-connection-lost")
                 if not owns_conn:
                     # Caller-supplied connection — cannot reconnect;
                     # permanent poll-fallback is the documented limitation.

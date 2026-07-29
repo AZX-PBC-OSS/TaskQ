@@ -518,7 +518,7 @@ async def _handle_child_exit(
         return None
 
     rc = proc.returncode
-    logger.info("workgroup.child_exit", worker=child.spec.name, exit_code=rc)
+    logger.info("workgroup-child-exit", worker=child.spec.name, exit_code=rc)
 
     child.process = None
 
@@ -527,7 +527,7 @@ async def _handle_child_exit(
 
     if not _prune_burst(child, scfg):
         logger.critical(
-            "workgroup.burst_limit_exceeded",
+            "workgroup-burst-limit-exceeded",
             worker=child.spec.name,
             restarts=len(child.restart_times),
             window_s=scfg.burst_window,
@@ -628,7 +628,7 @@ async def run_forever(config_path: Path) -> None:
 
     def _on_signal() -> None:
         if not shutting_down.is_set():
-            logger.info("workgroup.shutdown_signal")
+            logger.info("workgroup-shutdown-signal")
             shutting_down.set()
 
     for sig in (signal.SIGTERM, signal.SIGINT):
@@ -696,7 +696,7 @@ async def run_forever(config_path: Path) -> None:
                         child, pg_pool, pg_schema, child.spec.health, wg_instance
                     )
                     if not healthy:
-                        logger.warning("workgroup.health_kill", worker=child.spec.name)
+                        logger.warning("workgroup-health-kill", worker=child.spec.name)
                         await _kill_child(child)
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(
@@ -719,7 +719,7 @@ async def run_forever(config_path: Path) -> None:
             await shutting_down.wait()
     except* Exception as eg:
         for exc in eg.exceptions:
-            logger.error("workgroup.background_task_failed", error=str(exc))
+            logger.error("workgroup-background-task-failed", error=str(exc))
         # Reset child state to a safe baseline before shutdown.
         for child in children.values():
             async with child.restart_lock:
@@ -727,7 +727,7 @@ async def run_forever(config_path: Path) -> None:
                     child.process = None
 
     # ── Graceful shutdown ─────────────────────────────────────────────
-    logger.info("workgroup.shutdown_begin", grace_s=scfg.shutdown_grace)
+    logger.info("workgroup-shutdown-begin", grace_s=scfg.shutdown_grace)
 
     # Forward SIGTERM to all living children (under lock).
     for child in children.values():
@@ -776,9 +776,9 @@ async def run_forever(config_path: Path) -> None:
     if pg_pool:
         # Why bounded: the supervisor's health-pool close is the same
         # dead-PG hang class as worker teardown (#38) — an unbounded close
-        # would wedge the supervisor between shutdown_begin and
-        # shutdown_complete. The helper never raises and terminates the
+        # would wedge the supervisor between workgroup-shutdown-begin and
+        # workgroup-shutdown-complete. The helper never raises and terminates the
         # pool on timeout.
         await close_pool_bounded(pg_pool, "workgroup-health", CLOSE_TIMEOUT_SECS)
 
-    logger.info("workgroup.shutdown_complete")
+    logger.info("workgroup-shutdown-complete")

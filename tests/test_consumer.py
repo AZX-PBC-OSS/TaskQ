@@ -721,7 +721,7 @@ async def test_generic_exception_logs_traceback(
 ) -> None:
     """_handle_generic_exception logs job_exception at WARNING with
     error_class, error_message, and error_traceback on every attempt, and
-    exactly one terminal job_failed at ERROR after the write persists."""
+    exactly one terminal job-failed at ERROR after the write persists."""
 
     async def actor(_job: object, _ctx: JobContext[BaseModel]) -> object:
         raise RuntimeError("boom")
@@ -770,8 +770,8 @@ async def test_generic_exception_logs_traceback(
     assert kwargs["actor"] == job.actor
     assert kwargs["attempt"] == job.attempt
 
-    error_calls = [c for c in mock_log.error.call_args_list if c.args and c.args[0] == "job_failed"]
-    assert len(error_calls) == 1, f"expected 1 job_failed log, got {len(error_calls)}"
+    error_calls = [c for c in mock_log.error.call_args_list if c.args and c.args[0] == "job-failed"]
+    assert len(error_calls) == 1, f"expected 1 job-failed log, got {len(error_calls)}"
     kwargs = error_calls[0].kwargs
     assert kwargs["cause"] == "RuntimeError"
     assert kwargs["error_class"] == "RuntimeError"
@@ -830,8 +830,8 @@ async def test_timeout_logs_actual_exception_details(
     assert str(job.id) == kwargs["job_id"]
     assert kwargs["actor"] == job.actor
 
-    error_calls = [c for c in mock_log.error.call_args_list if c.args and c.args[0] == "job_failed"]
-    assert len(error_calls) == 1, f"expected 1 job_failed log, got {len(error_calls)}"
+    error_calls = [c for c in mock_log.error.call_args_list if c.args and c.args[0] == "job-failed"]
+    assert len(error_calls) == 1, f"expected 1 job-failed log, got {len(error_calls)}"
     kwargs = error_calls[0].kwargs
     assert kwargs["cause"] == "TimeoutError"
     assert kwargs["error_class"] == "TimeoutError"
@@ -914,7 +914,7 @@ async def test_timeout_terminal_emits_log_state_change() -> None:
 async def test_snooze_terminal_failure_logs_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """_handle_snooze terminal 'failed' outcome logs job_failed at ERROR level."""
+    """_handle_snooze terminal 'failed' outcome logs job-failed at ERROR level."""
 
     async def actor(_job: object, _ctx: JobContext[BaseModel]) -> object:
         raise Snooze(timedelta(seconds=1))
@@ -951,8 +951,8 @@ async def test_snooze_terminal_failure_logs_error(
             logger=mock_log,
         )
 
-    error_calls = [c for c in mock_log.error.call_args_list if c.args and c.args[0] == "job_failed"]
-    assert len(error_calls) == 1, f"expected 1 job_failed log, got {len(error_calls)}"
+    error_calls = [c for c in mock_log.error.call_args_list if c.args and c.args[0] == "job-failed"]
+    assert len(error_calls) == 1, f"expected 1 job-failed log, got {len(error_calls)}"
     kwargs = error_calls[0].kwargs
     assert kwargs["cause"] == "DeadlineExceeded"
     assert kwargs["error_class"] == "DeadlineExceeded"
@@ -965,7 +965,7 @@ async def test_snooze_terminal_failure_logs_error(
 async def test_retry_after_terminal_failure_logs_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """_handle_retry_after terminal 'failed' outcome logs job_failed at ERROR level."""
+    """_handle_retry_after terminal 'failed' outcome logs job-failed at ERROR level."""
 
     async def actor(_job: object, _ctx: JobContext[BaseModel]) -> object:
         raise RetryAfter(timedelta(seconds=1))
@@ -1002,8 +1002,8 @@ async def test_retry_after_terminal_failure_logs_error(
             logger=mock_log,
         )
 
-    error_calls = [c for c in mock_log.error.call_args_list if c.args and c.args[0] == "job_failed"]
-    assert len(error_calls) == 1, f"expected 1 job_failed log, got {len(error_calls)}"
+    error_calls = [c for c in mock_log.error.call_args_list if c.args and c.args[0] == "job-failed"]
+    assert len(error_calls) == 1, f"expected 1 job-failed log, got {len(error_calls)}"
     kwargs = error_calls[0].kwargs
     assert kwargs["cause"] == "DeadlineExceeded"
     assert kwargs["error_class"] == "DeadlineExceeded"
@@ -1014,7 +1014,7 @@ async def test_retry_after_terminal_failure_logs_error(
 async def test_reservation_denied_terminal_failure_logs_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """_handle_reservation_class_denied terminal 'failed' outcome logs job_failed at ERROR level."""
+    """_handle_reservation_class_denied terminal 'failed' outcome logs job-failed at ERROR level."""
 
     async def actor(_job: object, _ctx: JobContext[BaseModel]) -> object:
         raise ReservationUnavailable(bucket_name="test-bucket", retry_after=timedelta(seconds=1))
@@ -1051,8 +1051,8 @@ async def test_reservation_denied_terminal_failure_logs_error(
             logger=mock_log,
         )
 
-    error_calls = [c for c in mock_log.error.call_args_list if c.args and c.args[0] == "job_failed"]
-    assert len(error_calls) == 1, f"expected 1 job_failed log, got {len(error_calls)}"
+    error_calls = [c for c in mock_log.error.call_args_list if c.args and c.args[0] == "job-failed"]
+    assert len(error_calls) == 1, f"expected 1 job-failed log, got {len(error_calls)}"
     kwargs = error_calls[0].kwargs
     assert kwargs["cause"] == "DeadlineExceeded"
     assert kwargs["bucket_name"] == "test-bucket"
@@ -1762,7 +1762,7 @@ async def test_generic_exception_retry_path_logs_warning_only(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Retryable generic exception logs job_exception at WARNING and
-    nothing at ERROR — the single job_failed ERROR is reserved for the
+    nothing at ERROR — the single job-failed ERROR is reserved for the
     terminal failure."""
 
     async def actor(_job: object, _ctx: JobContext[BaseModel]) -> object:
@@ -1867,7 +1867,7 @@ async def test_timeout_retry_path_logs_warning_only(
     assert call["next_scheduled_at"] is not None
 
 
-# ── Ownership mismatch: terminal write lost → NO job_failed ─────────────
+# ── Ownership mismatch: terminal write lost → NO job-failed ─────────────
 
 
 class _OwnershipMismatchBackend(_FakeBackend):
@@ -1889,7 +1889,7 @@ async def test_generic_exception_terminal_ownership_mismatch_logs_no_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Terminal generic exception whose write loses the ownership race emits
-    NO job_failed ERROR — the job is not dead by our hand. The per-attempt
+    NO job-failed ERROR — the job is not dead by our hand. The per-attempt
     job_exception diagnostic and the ownership-mismatch WARNING still fire."""
 
     async def actor(_job: object, _ctx: JobContext[BaseModel]) -> object:
@@ -1950,7 +1950,7 @@ async def test_timeout_terminal_ownership_mismatch_logs_no_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Terminal timeout whose write loses the ownership race emits NO
-    job_failed ERROR — the job is not dead by our hand. The per-attempt
+    job-failed ERROR — the job is not dead by our hand. The per-attempt
     job_timeout diagnostic and the ownership-mismatch WARNING still fire."""
 
     async def actor(_job: object, _ctx: JobContext[BaseModel]) -> object:

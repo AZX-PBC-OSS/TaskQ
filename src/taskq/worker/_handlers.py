@@ -192,7 +192,7 @@ def _log_job_failed(
     if error_traceback is not None:
         fields["error_traceback"] = error_traceback
     fields.update(context)
-    log.error("job_failed", **fields)
+    log.error("job-failed", **fields)
 
 
 async def _handle_timeout(
