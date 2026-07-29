@@ -185,6 +185,11 @@ uv add taskq-py
 | `taskq-py[fastapi]` | `fastapi`, `jinja2`, `sse-starlette`, `uvicorn` | Admin UI (`taskq ui serve`), SSE progress bridge, Prometheus metrics router |
 | `taskq-py[prometheus]` | `opentelemetry-exporter-prometheus` | Prometheus metric scrapes |
 | `taskq-py[reload]` | `watchfiles` | Autoreload of workers and the admin UI during local development |
+| `taskq-py[oidc]` | `authlib`, `httpx`, `itsdangerous` | OIDC/SSO auth backend for the admin UI; see [SSO / SAML](guides/sso.md) |
+| `taskq-py[saml]` | `python3-saml`, `itsdangerous` | SAML/SSO auth backend for the admin UI; see [SSO / SAML](guides/sso.md) |
+| `taskq-py[aad]` | `azure-identity`, `aiohttp` | Azure Entra ID managed-identity DB auth; see [Managed Identities](guides/managed-identities.md) |
+| `taskq-py[aws]` | `boto3` | AWS IAM RDS auth for Postgres; see [Managed Identities](guides/managed-identities.md) |
+| `taskq-py[vault]` | `hvac` | HashiCorp Vault dynamic credentials; see [Managed Identities](guides/managed-identities.md) |
 
 ```bash
 pip install "taskq-py[redis,otel,fastapi,prometheus]"     # full
