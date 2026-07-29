@@ -247,7 +247,7 @@ async def test_isolate_self_honours_fr12_case_shape() -> None:
         await isolate_self(deps, new_uuid(), shutdown)
         assert runner is not None
         assert "attempt < max_attempts AND retry_kind != 'non_retryable'" in runner
-        assert "now() + interval '5 seconds'" in runner
+        assert "clock_timestamp() + interval '5 seconds'" in runner
         assert "NOT (attempt < max_attempts AND retry_kind != 'non_retryable')" in runner
         assert "WHERE id = $1" in runner
         assert "locked_by_worker = $2" in runner

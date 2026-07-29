@@ -329,7 +329,7 @@ class MaintenanceLeader:
                     raise ValueError(f"invalid schema identifier: {schema_name!r}")
                 upsert_sql = (
                     f'INSERT INTO "{schema_name}".maintenance_leader (singleton, worker_id, elected_at, last_seen_at) '  # noqa: S608  # Why: schema_name validated against _IDENT_RE before interpolation; asyncpg cannot bind identifiers as parameters.
-                    "VALUES (true, $1, now(), now()) "
+                    "VALUES (true, $1, clock_timestamp(), clock_timestamp()) "
                     "ON CONFLICT (singleton) DO UPDATE SET "
                     "worker_id = EXCLUDED.worker_id, "
                     "elected_at = EXCLUDED.elected_at, "

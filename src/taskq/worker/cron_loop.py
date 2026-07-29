@@ -85,7 +85,7 @@ async def tick_cron(
         f"SELECT id, actor, cron_expr, timezone, payload_factory, "
         f"metadata, last_fired_at, consecutive_failures, next_fire_at, identity_key "
         f'FROM "{schema}".cron_schedules '
-        f"WHERE enabled = true AND next_fire_at <= now() "
+        f"WHERE enabled = true AND next_fire_at <= clock_timestamp() "
         f"ORDER BY next_fire_at"
     )
     rows = await conn.fetch(_cron_tick_sql)
@@ -206,7 +206,7 @@ async def fire_schedule(
                 )
             await conn.execute(
                 f'UPDATE "{schema}".cron_schedules '
-                f"SET last_fired_at = now(), last_fire_error = NULL, "
+                f"SET last_fired_at = clock_timestamp(), last_fire_error = NULL, "
                 f"consecutive_failures = 0, next_fire_at = $2 "
                 f"WHERE id = $1",
                 row["id"],

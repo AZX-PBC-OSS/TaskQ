@@ -107,7 +107,7 @@ SET status = CASE
     cancel_requested_at = NULL,
     scheduled_at = CASE
         WHEN j.attempt < j.max_attempts AND j.retry_kind != 'non_retryable'
-            THEN now() + interval '5 seconds'
+            THEN clock_timestamp() + interval '5 seconds'
         ELSE j.scheduled_at
     END,
     finished_at = CASE
@@ -181,7 +181,7 @@ _SWEEP_2_ATTEMPT_SQL = """\
 INSERT INTO "{schema}".job_attempts
 (job_id, attempt, started_at, finished_at, outcome,
  error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
-VALUES ($1, $2, COALESCE($3, now()), clock_timestamp(), $4, $5, $6, $7, $8, $9, $10::jsonb)"""
+VALUES ($1, $2, COALESCE($3, clock_timestamp()), clock_timestamp(), $4, $5, $6, $7, $8, $9, $10::jsonb)"""
 
 
 async def sweep_expired_locks(
@@ -197,7 +197,7 @@ async def sweep_expired_locks(
     For each reclaimed job:
 
     - If attempts remain and retry is allowed: transition to
-      ``'pending'`` with ``scheduled_at = now() + 5s`` backoff.
+      ``'pending'`` with ``scheduled_at = clock_timestamp() + 5s`` backoff.
     - Otherwise, if a cancel request was still in-flight
       (``cancel_phase != 0``): transition to ``'cancelled'`` — the
       caller's explicit request is the honest terminal label.

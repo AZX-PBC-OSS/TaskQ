@@ -170,10 +170,10 @@ class PostgresBackend:
     ``taskq.worker.deps``); unpacking its fields at this layer would
     duplicate the wiring and make it fragile to pool additions.
 
-    ``clock`` is stored for future SQL paths that need wall-clock ``now()``
-    (e.g. ``scheduled_to_pending``), but is unused in the terminal-write
-    methods which use server-side ``clock_timestamp()`` for WHERE
-    comparisons and ``now()`` for SET values.
+    ``clock`` is stored for future SQL paths that need wall-clock
+    ``now()`` (e.g. ``scheduled_to_pending``), but is unused in the
+    terminal-write methods which use server-side ``clock_timestamp()``
+    for all timestamp values — both WHERE comparisons and SET clauses.
 
     ``cancellation_grace_period`` and ``cleanup_grace_period`` are the
     ``timedelta`` values used by :meth:`reclaim_expired_locks`.

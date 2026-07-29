@@ -50,7 +50,7 @@ Check worker logs for `dispatch-actor-not-found` or `stranded-jobs-no-actor-conf
 - **Wrong queue:** add the actor's queue — `TASKQ_QUEUES=default,email taskq worker --actors myapp.actors:registry`.
 - **Actor not in registry:** ensure the actor is decorated with `@actor` and exported from the registry module. Verify the `module:attr` string resolves to a `Mapping[str, ActorRef]` or `Iterable[ActorRef]` at import time.
 - **Stranded jobs:** re-add the actor to the registry and restart, or cancel the orphaned jobs via `JobsClient.cancel()`. The detector only warns — it does not delete or reassign.
-- **`max_concurrent` saturated:** increase the actor's `max_concurrent` in `@actor(...)`, then deploy with `--force-update-actor-config` on the first pod. See [workers.md](workers.md#actorconfig-sync).
+- **`max_concurrent` saturated:** run `taskq actor-config set <actor> --max-concurrent N` — takes effect on the next dispatch cycle, no restart. See [workers.md](workers.md#actorconfig-sync).
 - **Generator registry:** if the registry attribute is a generator, the CLI iterates it twice and silently builds an empty registry. Use a `list`, `tuple`, or `dict` instead.
 
 ---
@@ -480,7 +480,7 @@ Check dispatch latency via OTel or the `/metrics` endpoint (`taskq health metric
 - **Reduce oversampling:** `TASKQ_DISPATCH_OVERSAMPLE=1` if you do not use `identity_key` and run a single-producer deployment.
 - **Enable scoped dispatch:** `TASKQ_DISPATCH_SCOPE_BY_HOME_QUEUE=true` filters the `per_actor_capacity` CTE to actors whose home queue is in the worker's subscribed list. Lowers probe count but excludes `enqueue(queue=...)` override jobs.
 - **Tune pool sizes:** increase `TASKQ_DISPATCHER_POOL_SIZE` and `TASKQ_HEARTBEAT_POOL_SIZE` if `acquire()` timeouts appear. Keep `worker_pool_size` derived.
-- **Tune `max_concurrent`:** set the actor's `max_concurrent` to match external resource capacity. Re-deploy with `--force-update-actor-config` on the first pod.
+- **Tune `max_concurrent`:** run `taskq actor-config set <actor> --max-concurrent N` to match external resource capacity. Takes effect on the next dispatch cycle, no restart.
 - **Switch to `round_robin`:** for multi-tenant queues where one tenant starves others:
   ```sql
   UPDATE {schema}.queues SET mode = 'round_robin' WHERE name = 'multi';

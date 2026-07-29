@@ -42,7 +42,7 @@ SELECT actor, max_concurrent, max_pending, queue, result_ttl, metadata::jsonb
 ON CONFLICT (actor) DO UPDATE SET
     queue          = EXCLUDED.queue,
     metadata       = EXCLUDED.metadata,
-    updated_at     = now()
+    updated_at     = clock_timestamp()
 """.strip()
 
 # Fields whose stored value is operator-owned once a row exists: the

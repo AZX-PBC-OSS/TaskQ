@@ -205,7 +205,7 @@ async def _refund_pg_gcra(
 
     refund_sql = (
         f'UPDATE "{schema}".rate_limit_buckets '  # noqa: S608  # Why: schema_name is pre-validated against _IDENT_RE at settings load time; bucket_name is $1-bound
-        f"SET state = jsonb_set(state, '{{tat}}', to_jsonb($2::float)), updated_at = now() "
+        f"SET state = jsonb_set(state, '{{tat}}', to_jsonb($2::float)), updated_at = clock_timestamp() "
         f"WHERE bucket_name = $1 "
         f"AND kind = 'gcra' "
         f"AND (state->>'tat')::float = $3::float"
@@ -357,7 +357,7 @@ async def _acquire_pg_gcra(
     )
     upsert_sql = (
         f'INSERT INTO "{schema}".rate_limit_buckets (bucket_name, kind, state, updated_at) '  # noqa: S608  # Why: schema_name pre-validated; values are $1/$2-bound
-        f"VALUES ($1, 'gcra', $2::jsonb, now()) "
+        f"VALUES ($1, 'gcra', $2::jsonb, clock_timestamp()) "
         f"ON CONFLICT (bucket_name) DO UPDATE "
         f"SET state = EXCLUDED.state, updated_at = EXCLUDED.updated_at "
         f"WHERE rate_limit_buckets.kind = 'gcra' "

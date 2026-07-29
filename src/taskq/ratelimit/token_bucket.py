@@ -575,7 +575,7 @@ class TokenBucket:
         select_sql = (
             f'SELECT state FROM "{schema}".rate_limit_buckets WHERE bucket_name=$1 FOR UPDATE'  # noqa: S608  # Why: schema_name is pre-validated against _IDENT_RE at settings load time; bucket_name is $1-bound
         )
-        update_sql = f'UPDATE "{schema}".rate_limit_buckets SET state=$1::jsonb, updated_at=now() WHERE bucket_name=$2'  # noqa: S608  # Why: schema_name is pre-validated against _IDENT_RE at settings load time; values are $1/$2-bound
+        update_sql = f'UPDATE "{schema}".rate_limit_buckets SET state=$1::jsonb, updated_at=clock_timestamp() WHERE bucket_name=$2'  # noqa: S608  # Why: schema_name is pre-validated against _IDENT_RE at settings load time; values are $1/$2-bound
 
         async with pg_pool.acquire() as conn, conn.transaction():
             row = await conn.fetchrow(select_sql, self._name)
@@ -708,7 +708,7 @@ class TokenBucket:
         # pre-validated against _IDENT_RE at WorkerSettings load time.
         preseed_sql = (
             f'INSERT INTO "{schema}".rate_limit_buckets (bucket_name, kind, state, updated_at) '  # noqa: S608  # Why: schema_name pre-validated; values are $1/$2-bound
-            f"VALUES ($1, 'token_bucket', $2::jsonb, now()) "
+            f"VALUES ($1, 'token_bucket', $2::jsonb, clock_timestamp()) "
             f"ON CONFLICT (bucket_name) DO NOTHING"
         )
         select_sql = (
@@ -716,8 +716,8 @@ class TokenBucket:
         )
         upsert_sql = (
             f'INSERT INTO "{schema}".rate_limit_buckets (bucket_name, kind, state, updated_at) '  # noqa: S608  # Why: schema_name pre-validated; values are $1/$2-bound
-            f"VALUES ($1, 'token_bucket', $2::jsonb, now()) "
-            f"ON CONFLICT (bucket_name) DO UPDATE SET state=EXCLUDED.state, updated_at=now()"
+            f"VALUES ($1, 'token_bucket', $2::jsonb, clock_timestamp()) "
+            f"ON CONFLICT (bucket_name) DO UPDATE SET state=EXCLUDED.state, updated_at=clock_timestamp()"
         )
 
         async with pg_pool.acquire() as conn, conn.transaction():

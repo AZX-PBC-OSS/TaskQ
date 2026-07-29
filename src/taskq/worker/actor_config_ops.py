@@ -94,7 +94,7 @@ UPDATE "{schema}".actor_config
    SET max_concurrent = CASE WHEN $2 THEN $3 ELSE max_concurrent END,
        max_pending    = CASE WHEN $4 THEN $5 ELSE max_pending END,
        result_ttl     = CASE WHEN $6 THEN $7 ELSE result_ttl END,
-       updated_at     = now()
+       updated_at     = clock_timestamp()
  WHERE actor = $1
 RETURNING actor, max_concurrent, max_pending, queue, result_ttl,
           metadata::text AS metadata, updated_at::text AS updated_at

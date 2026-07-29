@@ -255,12 +255,12 @@ SET status = CASE
     lock_expires_at = NULL,
     scheduled_at = CASE
         WHEN j.attempt < j.max_attempts AND j.retry_kind != 'non_retryable'
-            THEN now() + interval '5 seconds'
+            THEN clock_timestamp() + interval '5 seconds'
         ELSE j.scheduled_at
     END,
     finished_at = CASE
         WHEN NOT (j.attempt < j.max_attempts AND j.retry_kind != 'non_retryable')
-            THEN now()
+            THEN clock_timestamp()
         ELSE j.finished_at
     END
 FROM snap
