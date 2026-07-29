@@ -105,6 +105,55 @@ Extends `TaskQSettings`. All fields below apply to the worker process only.
 
 See [workers.md](workers.md) for the shutdown sequence these values control.
 
+### Watchdog (hang and deadlock detection)
+
+Four independent detectors catch a worker that has stopped making
+progress but is still running — a state that liveness probes miss,
+because the event loop can be perfectly responsive while every loop that
+matters has stopped. On a trip the worker logs the detector and a dump of
+every asyncio task (name, coroutine, await site), then **force-exits with
+code 2** so the supervisor restarts it.
+
+| Env Var | Type | Default | Description | Constraints |
+|---|---|---|---|---|
+| `TASKQ_WATCHDOG_ENABLED` | `bool` | `true` | Master switch for the shutdown-deadline, stale-tick, and loop-lag detectors. The sibling-contract check stays armed even when this is `false`. | — |
+| `TASKQ_WATCHDOG_CHECK_INTERVAL` | `float` (seconds) | `1.0` | Poll cadence for the stale-tick sweep and the loop-lag thread. | Min: > 0 |
+| `TASKQ_WATCHDOG_TICK_GRACE_FACTOR` | `float` | `5.0` | Multiplier on a loop's own iteration period before its tick counts as stale. | Min: > 0 |
+| `TASKQ_WATCHDOG_STALE_FLOOR` | `float` (seconds) | `10.0` | Lower bound on any staleness budget, so a short interval cannot produce a hair-trigger. | Min: > 0 |
+| `TASKQ_WATCHDOG_LOOP_LAG_BUDGET` | `float` (seconds) | `30.0` | How long the event loop may fail to schedule before the lag detector trips. | Min: > 0 |
+| `TASKQ_WATCHDOG_LOOP_LAG_STARTUP_GRACE` | `float` (seconds) | `30.0` | Grace before the lag detector arms, covering import-heavy startup and DI bootstrap. | Min: ≥ 0 |
+| `TASKQ_WATCHDOG_DUMP_INTERVAL` | `float` (seconds) | `5.0` | How often to log still-alive siblings while a shutdown is in progress. | Min: > 0 |
+
+The shutdown deadline is **not** a separate knob: it reuses
+`TASKQ_TERMINATION_GRACE_PERIOD`, measured from the *first* shutdown
+signal. That is what finally enforces the total budget the
+[termination-budget constraint](#termination-budget) already validates.
+
+#### Choosing values
+
+Every trip is terminal, so the defaults err heavily towards *missing* a
+hang rather than killing a healthy worker — a false trip under a
+supervisor can become a restart loop. Two rules follow:
+
+- **Raise budgets, don't lower them,** on constrained or heavily
+  oversubscribed hosts. A loaded host with slow scheduling looks exactly
+  like a mildly wedged one.
+- **Effective staleness budget** for a loop is
+  `max(period × TASKQ_WATCHDOG_TICK_GRACE_FACTOR, TASKQ_WATCHDOG_STALE_FLOOR)`,
+  where `period` is that loop's own interval. With the defaults, a 2 s
+  sweep loop tolerates 10 s of silence and a 30 s loop tolerates 150 s.
+
+Only loops with an unconditional periodic iteration are watched
+(heartbeat, progress flush, producer, the leader loops). Loops that
+legitimately park indefinitely — the NOTIFY listener, job consumers
+waiting on an empty queue, the credential reload coordinator — are
+deliberately excluded, since a staleness budget would fire on an idle
+worker. They are covered by the other three detectors.
+
+Set `TASKQ_WATCHDOG_ENABLED=false` to disable detection entirely. Prefer
+raising the budgets first: with it off, a wedged worker stays wedged and
+silent, which is the failure mode this exists to remove.
+
 ### Retry
 
 | Env Var | Type | Default | Description | Constraints |
@@ -129,6 +178,19 @@ See [rate-limiting.md](rate-limiting.md) for the fallback behaviour.
 | `TASKQ_HEALTH_ENABLED` | `bool` | `true` | Enable the Unix-socket health server. | — |
 | `TASKQ_HEALTH_SOCKET_PATH` | `str` | `/tmp/taskq_health.sock` | Unix socket path for the health server. | — |
 | `TASKQ_HEALTH_PG_PING_TIMEOUT` | `float` (seconds) | `0.2` | Timeout for the readiness PG ping. | Min: 0.0 |
+| `TASKQ_HEALTH_TASKS_ENABLED` | `bool` | `false` | Expose the `/tasks` asyncio stack-dump endpoint for live debugging of a stuck worker. Off by default; see below. | — |
+
+`/tasks` returns every live task's name, coroutine and await site — never
+locals or payload values. It is off by default because that still reveals
+code structure and file paths. Enabling it also tightens the health
+socket to mode `0600` (owner-only). It is served on the Unix socket only
+and is never mounted on the admin UI surface.
+
+The same dump is available without enabling the endpoint by sending
+**`SIGUSR2`** to the worker, which writes it to the log. Reach for either
+when a worker is alive but idle and you need to know what it is waiting
+on — that question previously required rebuilding the image with
+instrumentation.
 
 ### NOTIFY Listener
 

@@ -561,6 +561,70 @@ class WorkerSettings(TaskQSettings):
         "dispatcher_pool.acquire() in the readiness PG ping. "
         "Default 200ms .",
     )
+    health_tasks_enabled: bool = Field(
+        default=False,
+        description="TASKQ_HEALTH_TASKS_ENABLED. Expose the privileged "
+        "/tasks asyncio stack-dump endpoint on the Unix health socket. "
+        "Off by default: the dump reveals code structure, file paths, and "
+        "task names (never locals or payload values). Enabling it also "
+        "tightens the socket to mode 0600 (owner-only). Unix socket only — "
+        "never mounted on the admin UI surface.",
+    )
+
+    # ── In-worker watchdog (hang/deadlock detection) ────────────
+    watchdog_enabled: bool = Field(
+        default=True,
+        description="TASKQ_WATCHDOG_ENABLED. Master switch for the in-worker "
+        "watchdog detectors (shutdown deadline, stale loop ticks, sibling "
+        "contract, event-loop lag). A detector trip dumps the asyncio task "
+        "stacks and force-exits non-zero so the supervisor restarts the "
+        "worker instead of leaving it wedged.",
+    )
+    watchdog_loop_lag_budget: float = Field(
+        default=30.0,
+        gt=0.0,
+        description="TASKQ_WATCHDOG_LOOP_LAG_BUDGET (seconds). How long the "
+        "event loop may go without scheduling before the lag watchdog trips. "
+        "Deliberately far beyond any legitimate pause (GC, a slow tick) "
+        "because the trip is terminal.",
+    )
+    watchdog_loop_lag_startup_grace: float = Field(
+        default=30.0,
+        ge=0.0,
+        description="TASKQ_WATCHDOG_LOOP_LAG_STARTUP_GRACE (seconds). Grace "
+        "before the lag watchdog arms, covering import-heavy startup, DI "
+        "bootstrap, and first dispatch. Anchored to thread start; the lag "
+        "detector also arms early once the first loop liveness tick lands.",
+    )
+    watchdog_tick_grace_factor: float = Field(
+        default=5.0,
+        gt=0.0,
+        description="TASKQ_WATCHDOG_TICK_GRACE_FACTOR. Multiplier on a "
+        "loop's iteration period before its liveness tick is declared "
+        "stale (floor 10s). Generous on purpose: a terminal detector must "
+        "never fire on a merely loaded host.",
+    )
+    watchdog_dump_interval: float = Field(
+        default=5.0,
+        gt=0.0,
+        description="TASKQ_WATCHDOG_DUMP_INTERVAL (seconds). Interval "
+        "between straggler logs (names + await sites of still-alive "
+        "siblings) while a shutdown is in progress.",
+    )
+    watchdog_stale_floor: float = Field(
+        default=10.0,
+        gt=0.0,
+        description="TASKQ_WATCHDOG_STALE_FLOOR (seconds). Minimum "
+        "staleness budget for any loop (period x grace_factor, floored at "
+        "this value). Guards tiny intervals against false trips under "
+        "host starvation — a terminal detector must never fire on load.",
+    )
+    watchdog_check_interval: float = Field(
+        default=1.0,
+        gt=0.0,
+        description="TASKQ_WATCHDOG_CHECK_INTERVAL (seconds). Poll cadence "
+        "for the stale-tick sweep and the loop-lag watchdog thread.",
+    )
 
     # ── Polling and NOTIFY listener ────────────────────────
     poll_interval: float = Field(

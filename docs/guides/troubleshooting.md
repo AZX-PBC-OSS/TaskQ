@@ -491,6 +491,40 @@ Check dispatch latency via OTel or the `/metrics` endpoint (`taskq health metric
 
 ---
 
+## 13. Worker hangs or wedged shutdown
+
+### Symptom
+
+The worker stops dispatching but the process stays alive, or it ignores SIGTERM and does not exit within `termination_grace_period`. `/ready` returns 503 with a `stale_loops` reason, or `loop_tick_ages` in the `/ready` body keeps growing.
+
+### Cause
+
+Something has wedged inside the process: a blocked event loop (CPU-bound or synchronous work inside an actor), a deadlocked interval-driven sibling loop, a sibling that returned silently while no shutdown was in progress, or a shutdown that cannot complete because a sibling is hanging the TaskGroup exit. The in-worker watchdog (`TASKQ_WATCHDOG_ENABLED=true`, the default) covers all four cases. On a trip it logs `worker-watchdog-trip` at CRITICAL (labelled by detector), dumps every live asyncio task, and force-exits with code 2. In-flight jobs are reclaimed by the leader sweep once `lock_lease` expires, and the non-zero exit makes the supervisor restart the worker.
+
+### Diagnosis
+
+Get the live task stacks first; they name what every task is waiting on:
+
+```shell
+# On-demand dump to the worker's log and stderr (not available on Windows):
+kill -USR2 <worker-pid>
+
+# Same payload as JSON, when the endpoint is enabled:
+curl --unix-socket /tmp/taskq_health.sock http://localhost/tasks
+```
+
+- `GET /tasks` is privileged and disabled by default (`TASKQ_HEALTH_TASKS_ENABLED=false`): the dump reveals code structure, file paths, and task names (never locals or payload values). Enabling it also tightens the health socket to mode `0600`. While disabled, the endpoint returns 404, indistinguishable from a missing route.
+- Read `loop_tick_ages` and `shutdown_elapsed_seconds` in the `/ready` body to see which loop went silent and how long shutdown has been in progress.
+- Correlate with the OTel metrics `taskq.worker.watchdog_trips_total` (by detector), `taskq.worker.loop_tick_age_seconds` (by loop), and `taskq.worker.sibling_crashes_total` (by loop).
+
+### Fix
+
+- Read the await-site frames in the dump to find the blocked call; move CPU-bound or blocking work off the event loop with `run_in_executor()`.
+- If trips fire under legitimate load (large GC pauses, host starvation), raise `TASKQ_WATCHDOG_LOOP_LAG_BUDGET`, `TASKQ_WATCHDOG_TICK_GRACE_FACTOR`, or `TASKQ_WATCHDOG_STALE_FLOOR` rather than disabling the watchdog. See [configuration.md](configuration.md#watchdog-hang-and-deadlock-detection).
+- Ensure the supervisor restarts on any non-zero exit; watchdog trips always exit with code 2.
+
+---
+
 ## See also
 
 - [workers.md](workers.md) — worker internals, settings, PgBouncer
