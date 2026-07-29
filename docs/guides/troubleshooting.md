@@ -414,15 +414,17 @@ The worker process exits immediately with a non-zero exit code and an error or t
 | Migration not applied | TaskQ tables do not exist; queries raise `UndefinedTableError`. |
 | Actor registry import error | `module:attr` does not resolve: module not found, attribute missing, or wrong type. |
 | DI validation failure | `MissingProvider`, `ScopeViolation`, or `DependencyCycle` during `registry.validate()`. |
-| `ActorConfigDriftList` | Registered config differs from stored `actor_config` rows; `--force-update-actor-config` not set. |
+| `ActorConfigDriftList` | Registered `queue` or `metadata` differs from the stored `actor_config` row (structural drift); `--force-update-actor-config` not set. `max_concurrent` / `max_pending` / `result_ttl` never cause this — those are operator-owned and cannot drift; see [ActorConfig sync](workers.md#actorconfig-sync). |
 | Timing invariant violation | `lock_lease < 4 * heartbeat_interval`, or `cancellation + cleanup >= termination_grace - 5.0` or `>= lock_lease`. |
 
 ### Diagnosis
 
-Read the stderr output. `ActorConfigDriftList` produces a clean one-line error; other failures produce a traceback. Check migration status and actor config, and compare against your `@actor` decorator parameters:
+Read the stderr output. `ActorConfigDriftList` produces a clean one-line error; other failures produce a traceback. Check migration status and actor config, and compare against your `@actor` decorator parameters (only `queue` and `metadata` participate in drift; `max_concurrent`, `max_pending`, and `result_ttl` are operator-owned once a row exists):
 
 ```shell
 taskq migrate status
+taskq actor-config list
+taskq actor-config diff --actors myapp.actors:registry
 ```
 
 ```sql
@@ -437,7 +439,7 @@ SELECT actor, max_concurrent, max_pending, queue FROM {schema}.actor_config ORDE
   python -c "from myapp.actors import registry; print(type(registry))"
   ```
 - **DI validation failure:** `MissingProvider` = missing provider. `ScopeViolation` = wider scope depends on narrower. `DependencyCycle` = provider cycle. Register the missing provider or fix the scope/cycle. See [dependency-injection.md](dependency-injection.md).
-- **ActorConfigDriftList:** deploy the first pod with `--force-update-actor-config`, then remaining pods without it. Do not leave it set permanently.
+- **ActorConfigDriftList:** this is always a `queue` or `metadata` mismatch. Deploy the first pod with `--force-update-actor-config`, then remaining pods without it. Do not leave it set permanently. If you only meant to change `max_concurrent` / `max_pending` / `result_ttl`, you don't need this flag at all — deploy normally, then run `taskq actor-config set <actor> ...`.
 - **Timing invariant violations:** adjust settings so `lock_lease >= 4 * heartbeat_interval` and `cancellation + cleanup < termination_grace - 5.0` and `< lock_lease`.
 
 ---

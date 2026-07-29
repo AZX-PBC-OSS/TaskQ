@@ -42,7 +42,7 @@ queues = ["default"]        # queue names this worker consumes
 max_concurrency = 8         # concurrent job limit
 poll_interval = 0.5         # producer polling cadence (seconds)
 worker_group = "default"    # observability span group name
-force_update_actor_config = false  # set true for one deploy when actor config changes
+force_update_actor_config = false  # set true for one deploy when an actor's queue/metadata changes
 
 # Optional: per-worker health checking via the database.
 [workers.health]

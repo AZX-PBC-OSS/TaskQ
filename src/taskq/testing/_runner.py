@@ -122,6 +122,7 @@ class _InMemoryActorConfig:
     on_retry_exhausted_timeout: float = 3.0
     on_success: OnSuccess | None = None
     on_success_timeout: float = 3.0
+    result_ttl: timedelta | None = None
     payload_type: type[BaseModel] = PassthroughPayload
 
 
@@ -204,6 +205,7 @@ def register_stub(
     on_retry_exhausted_timeout: float = 3.0,
     on_success: OnSuccess | None = None,
     on_success_timeout: float = 3.0,
+    result_ttl: timedelta | None = None,
     payload_type: type[BaseModel] | None = None,
 ) -> None:
     """Record a stub function for *actor_name*. Re-registration overwrites
@@ -222,8 +224,11 @@ def register_stub(
 
     Actor config fields (retry, non_retryable_exceptions,
     retry_classifier, on_retry_exhausted, on_retry_exhausted_timeout,
-    on_success, on_success_timeout) are stored alongside the stub and
-    used by ``run_until_drained`` when calling ``decide_after_failure``.
+    on_success, on_success_timeout, result_ttl) are stored alongside the
+    stub and used by ``run_until_drained`` when calling
+    ``decide_after_failure`` and the terminal writes. ``result_ttl`` is
+    the worker-side literal passed as the terminal write's
+    ``fallback_result_ttl`` (applied when no stored override exists).
     The default ``RetryPolicy(jitter=0.0)`` matches the historical inline
     ``5 * 2^(attempt-1)`` backoff formula exactly, preserving existing
     test behaviour.
@@ -237,6 +242,7 @@ def register_stub(
         on_retry_exhausted_timeout=on_retry_exhausted_timeout,
         on_success=on_success,
         on_success_timeout=on_success_timeout,
+        result_ttl=result_ttl,
         payload_type=payload_type if payload_type is not None else PassthroughPayload,
     )
     # Ensure the stub-registered actor can dispatch —
@@ -263,18 +269,23 @@ def register_actor_config(
     *,
     actor: str,
     max_concurrent: int | None = None,
+    max_pending: int | None = None,
     queue: str = "default",
     metadata: dict[str, object] | None = None,
 ) -> None:
     """Register a single actor configuration for dispatch simulation.
 
     Builds an ``ActorConfig`` from keyword arguments and stores it
-    in ``_actor_configs_meta``.  Only ``max_concurrent`` is read by
-    dispatch; ``queue`` and ``metadata`` are stored for future use.
+    in ``_actor_configs_meta``.  ``max_concurrent`` is read by dispatch;
+    ``max_pending`` is read by the client-side capacity cache
+    (:meth:`InMemoryBackend.get_actor_max_pending`) — registering here is
+    the in-memory analog of ``taskq actor-config set``. ``queue`` and
+    ``metadata`` are stored for future use.
     """
     backend._actor_configs_meta[actor] = ActorConfig(  # pyright: ignore[reportPrivateUsage]  # Why: test runner helper intentionally accesses private InMemoryBackend state; this module is co-located with the backend and owns this access pattern.
         actor=actor,
         max_concurrent=max_concurrent,
+        max_pending=max_pending,
         queue=queue,
         metadata=metadata if metadata is not None else {},
     )
@@ -578,6 +589,7 @@ async def run_until_drained(backend: "InMemoryBackend") -> None:
             actor_config=actor_cfg,
             payload_type=actor_cfg.payload_type,
             clock=backend._clock,  # pyright: ignore[reportPrivateUsage]  # Why: test runner helper intentionally accesses private InMemoryBackend state; this module is co-located with the backend and owns this access pattern.
+            fallback_result_ttl=actor_cfg.result_ttl,
         )
 
 

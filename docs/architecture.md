@@ -146,9 +146,19 @@ against the previous version would *silently* misbehave — return wrong rows,
 ignore inputs — instead of failing loudly.  Purely additive changes that an old
 implementation can ignore without producing incorrect behaviour (a new optional
 method with a default, a new carrier field old code simply never reads) do not
-require a bump.  History: **v3** — `list_jobs`; `JobFilter.status` widened to
-accept a sequence and the `active` meta-filter was added (a v2 implementation
-returns 0 rows for `status=[...]` and ignores `active`, with no error).
+require a bump.  History: **v3** (unreleased — folds in every protocol
+change since the last shipped release) — `list_jobs`; `JobFilter.status`
+widened to accept a sequence and the `active` meta-filter was added (a v2
+implementation returns 0 rows for `status=[...]` and ignores `active`, with
+no error).  `get_actor_max_pending` added as a required method (a v2
+implementation lacks it; the client capacity cache's fail-open would
+otherwise swallow the `AttributeError` and silently enforce code literals
+forever — the cache raises `TypeError` at first use instead).
+`mark_succeeded` / `mark_succeeded_with_conn` gained the
+`fallback_result_ttl` keyword (without it, a cleared stored `result_ttl`
+keeps the enqueue-pinned `result_expires_at`, silently expiring results at
+completion; a v2 implementation errors loudly on the unexpected keyword at
+the first succeeded job).
 
 Third-party backends should declare the version they implement as
 `BACKEND_PROTOCOL_VERSION: ClassVar[int]` and assert it against the canonical

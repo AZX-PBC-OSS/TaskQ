@@ -201,9 +201,10 @@ class TestMigrationCorrectness:
 
 class TestMigrationUpgradePath:
     """Apply migrations up through 01.00.01 (before idempotency_scope),
-    insert a job row with idempotency_key, then apply 01.00.03 and verify
-    the existing row is backfilled with idempotency_scope = '' and the
-    composite unique index still enforces dedupe for the pre-existing row.
+    insert a job row with idempotency_key, then apply remaining migrations
+    (including 01.00.03) and verify the existing row is backfilled with
+    idempotency_scope = '' and the composite unique index still enforces
+    dedupe for the pre-existing row.
     """
 
     async def test_pre_existing_row_gets_default_scope(

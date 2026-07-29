@@ -49,10 +49,10 @@ async def process_order(payload: OrderPayload) -> OrderResult: ...
 | `name` | `str \| None` | `fn.__qualname__` | Actor name stored in the `actor_config` table and on every job row. Override when the qualified name would be unstable across refactors. |
 | `queue` | `str` | `"default"` | Queue this actor is dispatched on. Must match `[A-Za-z_][A-Za-z0-9_.-]*`. Can be overridden per-enqueue. |
 | `retry` | `RetryPolicy \| None` | `RetryPolicy()` | Retry policy — see [Retry policy](#retry-policy). `None` resolves to the default `RetryPolicy()`. |
-| `result_ttl` | `timedelta \| None` | `None` | How long the result JSONB is retained after a job succeeds. `None` means retain indefinitely. |
+| `result_ttl` | `timedelta \| None` | `None` | How long the result JSONB is retained after a job succeeds. `None` means retain indefinitely. Only the *seed* value: once a worker has synced this actor once, the stored `actor_config.result_ttl` is authoritative and this literal is ignored — see [ActorConfig sync](workers.md#actorconfig-sync). |
 | `singleton` | `bool` | `False` | Enforce at most one active job of this actor fleet-wide — see [Singleton actors](#singleton-actors). |
-| `max_concurrent` | `int \| None` | `None` | Fleet-wide concurrency cap. `None` = unbounded. `0` = drain mode (no jobs dispatched). May transiently exceed the configured value by up to `(num_active_producers - 1) * max_concurrent` under contention; use a `ConcurrencyReservation` for strict enforcement. |
-| `max_pending` | `int \| None` | `None` | Queue-depth backpressure cap — see [`max_pending` backpressure](#max_pending-backpressure). |
+| `max_concurrent` | `int \| None` | `None` | Fleet-wide concurrency cap. `None` = unbounded. `0` = drain mode (no jobs dispatched). May transiently exceed the configured value by up to `(num_active_producers - 1) * max_concurrent` under contention; use a `ConcurrencyReservation` for strict enforcement. Only the *seed* value: once a worker has synced this actor once, the stored `actor_config.max_concurrent` is authoritative and this literal is ignored — tune it live with `taskq actor-config set`, see [ActorConfig sync](workers.md#actorconfig-sync). |
+| `max_pending` | `int \| None` | `None` | Queue-depth backpressure cap — see [`max_pending` backpressure](#max_pending-backpressure). Only the *seed* value: once a worker has synced this actor once, a non-NULL stored `actor_config.max_pending` is authoritative and this literal is ignored — tune it live with `taskq actor-config set`, see [ActorConfig sync](workers.md#actorconfig-sync). |
 | `metadata` | `dict[str, object] \| None` | `{}` | Arbitrary key-value metadata stored in `actor_config.metadata` (JSONB). Must be a plain `dict`; mapping proxies and frozendicts are rejected at decoration time. The key `"singleton"` is reserved by the library. |
 | `unique_for` | `timedelta \| None` | `None` | Deduplication window — see [`unique_for` deduplication](#unique_for-deduplication). |
 | `unique_states` | `tuple[JobStatus, ...]` | `("pending", "scheduled", "running")` | Job statuses considered "active" for `unique_for` dedup. Terminal states are excluded by default so a completed job does not block re-enqueue. |
@@ -458,6 +458,22 @@ except MaxPendingExceededError as exc:
 **Evaluation order at enqueue:** `unique_for` dedup → singleton pre-flight →
 `max_pending` count check → `idempotency_key` upsert → job INSERT. A `unique_for` hit
 bypasses all remaining checks. A singleton collision fires before `max_pending`.
+
+**Operator-owned limit.** The enforced limit is the *effective* `max_pending`: a non-NULL
+stored `actor_config.max_pending` (set with `taskq actor-config set <actor> --max-pending N`)
+wins over this literal; a cleared (`--clear-max-pending`) or absent stored value falls back
+to the literal. Enqueue-side processes read the stored value through a TTL-bounded cache
+(default 5s), so an operator change takes effect fleet-wide within seconds — no redeploy,
+no worker restart. Run `taskq actor-config diff --actors myapp.actors:registry` to see the
+literal, the stored value, and which one is currently enforced. See
+[ActorConfig sync](workers.md#actorconfig-sync).
+
+**Per-call argument.** `SubJobEnqueuer.enqueue(..., max_pending=N)` (inside an actor body)
+is resolved against the effective limit, not in place of it: against a *stored* cap the
+tighter of the two wins (`min(stored, N)`) — an explicit caller shedding load is never
+widened by an operator override, and no code path can raise the operator's fleet cap.
+With nothing stored, the per-call argument wins outright over this literal, in both
+directions — actor code may loosen its own declaration.
 
 ---
 

@@ -59,6 +59,7 @@ from taskq.backend._reads import (
     _check_reclaim_visibility_risk,
     _count_pending_jobs,
     _get,
+    _get_actor_max_pending,
     _get_attempts,
     _get_events,
     _list_jobs,
@@ -345,9 +346,17 @@ class PostgresBackend:
         result: dict[str, object] | None,
         progress_seq: int = 0,
         progress_state: dict[str, object] | None = None,
+        fallback_result_ttl: timedelta | None = None,
     ) -> bool:
         return await _mark_succeeded_on_conn(
-            conn, self._sql, job_id, worker_id, result, progress_seq, progress_state
+            conn,
+            self._sql,
+            job_id,
+            worker_id,
+            result,
+            progress_seq,
+            progress_state,
+            fallback_result_ttl,
         )
 
     async def mark_succeeded(
@@ -357,9 +366,17 @@ class PostgresBackend:
         result: dict[str, object] | None,
         progress_seq: int = 0,
         progress_state: dict[str, object] | None = None,
+        fallback_result_ttl: timedelta | None = None,
     ) -> bool:
         return await _mark_succeeded(
-            self._worker_pool, self._sql, job_id, worker_id, result, progress_seq, progress_state
+            self._worker_pool,
+            self._sql,
+            job_id,
+            worker_id,
+            result,
+            progress_seq,
+            progress_state,
+            fallback_result_ttl,
         )
 
     async def mark_failed_or_retry(
@@ -694,6 +711,9 @@ class PostgresBackend:
 
     async def count_pending_jobs(self, actors: list[str]) -> dict[str, int]:
         return await _count_pending_jobs(self._worker_pool, self._sql, actors)
+
+    async def get_actor_max_pending(self) -> dict[str, int | None]:
+        return await _get_actor_max_pending(self._worker_pool, self._sql)
 
     # ── NOTIFY hook ─────────────────────────────────────────────────────
 

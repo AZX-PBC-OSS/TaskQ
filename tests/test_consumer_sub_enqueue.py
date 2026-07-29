@@ -118,6 +118,7 @@ class _FakeBackend(FakeBackend):
         result: dict[str, object] | None,
         progress_seq: int = 0,
         progress_state: dict[str, object] | None = None,
+        fallback_result_ttl: object = None,
     ) -> bool:
         self.mark_succeeded_with_conn_calls.append((conn, job_id, worker_id, result))
         return await self.mark_succeeded(job_id, worker_id, result, progress_seq, progress_state)

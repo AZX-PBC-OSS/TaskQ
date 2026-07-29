@@ -262,18 +262,46 @@ Do not pass a comma-separated string directly to `--queues` on the command line.
 TASKQ_QUEUES=default,priority,email taskq worker --actors myapp.actors:registry
 ```
 
-The help text for `--queues` currently says "Comma-separated list of queue names" — this refers to the `TASKQ_QUEUES` environment variable format, not the CLI flag invocation. On the command line the flag must be repeated once per queue.
+On the command line the flag must be repeated once per queue.
 
 ### `--force-update-actor-config`
 
-At startup the worker compares each registered actor's `max_concurrent`, `max_pending`, `queue`, and `metadata` values against the stored rows in `{schema}.actor_config`. If any field differs and this flag is absent, the worker refuses to start and prints:
+At startup the worker compares each registered actor's `queue` and `metadata` values against the stored row in `{schema}.actor_config`. If either differs and this flag is absent, the worker refuses to start and prints:
 
 ```
 ActorConfigDriftList: ...
 Re-run with --force-update-actor-config to overwrite, or set TASKQ_FORCE_UPDATE_ACTOR_CONFIG=true.
 ```
 
-Use this flag on the first new pod of a rolling deploy when actor config has changed (`max_concurrent`, `queue`, `metadata`). Remove it for subsequent pods — it is not safe to run permanently as it allows silent config drift. See [workers.md](workers.md#actorconfig-sync) for the full drift protocol.
+`max_concurrent`, `max_pending`, and `result_ttl` never appear in this error — they are operator-owned once a stored row exists (the `@actor(...)` literal only seeds them the first time) and can never drift. Use `taskq actor-config set` to change those; see [ActorConfig sync](workers.md#actorconfig-sync).
+
+Use this flag on the first new pod of a rolling deploy when an actor's `queue` or `metadata` has changed. Remove it for subsequent pods — it is not safe to run permanently as it allows silent structural drift. See [workers.md](workers.md#actorconfig-sync) for the full drift protocol.
+
+### `taskq actor-config`
+
+Inspect and tune stored `{schema}.actor_config` capacity fields without a code change or a worker restart:
+
+```shell
+taskq actor-config list
+taskq actor-config get checkout_charge
+taskq actor-config set checkout_charge --max-concurrent 20
+taskq actor-config set checkout_charge --max-pending 5000
+taskq actor-config set checkout_charge --clear-max-pending
+```
+
+All three capacity fields are live. `--max-concurrent` and `--result-ttl` take effect immediately for every worker in the fleet — the dispatch query re-reads `max_concurrent` every dispatch cycle, and the terminal-write path re-reads `result_ttl` on every job completion. `--max-pending` is enforced by every enqueue-side process (your web app, your workers' sub-job enqueues) through a TTL-bounded cache of the table (default 5s staleness), so a change propagates fleet-wide within seconds — no redeploy, no worker restart.
+
+Clearing a field writes NULL, which means different things per field on purpose: `--clear-max-concurrent` makes the actor *unlimited* (the dispatch SQL cannot see the code literal once a row exists), while `--clear-max-pending` / `--clear-result-ttl` *revert to the `@actor(...)` literal* — clearing undoes your override and restores the code default. For `result_ttl` the reverted literal is applied from each job's **completion** timestamp by the completing worker (never re-pinned to the enqueue time), so a job that sat in the queue longer than its TTL still gets its full result lifetime.
+
+To see why a change is (or isn't) taking effect, diff the stored rows against the code literals in your registry:
+
+```shell
+taskq actor-config diff --actors myapp.actors:registry
+```
+
+Per actor and capacity field this prints the `@actor(...)` literal, the stored value, and the value the engine currently enforces (`effective`). It also flags `queue`/`metadata` mismatches — those are structural and block the next worker startup with `ActorConfigDriftList` — actors with no stored row yet, and leftover rows whose actor is no longer registered. Note the no-row case is field-dependent: an actor with no stored row **does not dispatch at all** (`max_concurrent` shows `effective=0` — the dispatch capacity gate reads only `actor_config` rows until a worker startup seeds it), while `max_pending` / `result_ttl` fall back to the code literal.
+
+`taskq actor-config set` requires the actor to have a stored row already (created by a worker startup that registered it). `queue` and `metadata` are structural and are only ever changed by redeploying with a new `@actor(...)` registration (plus `--force-update-actor-config` if a stored row already exists).
 
 ### Exit codes
 

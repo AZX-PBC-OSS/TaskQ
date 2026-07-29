@@ -108,11 +108,22 @@ async def _run_main_with_mocked_deps(
     from unittest.mock import create_autospec
 
     class _Methods:
-        async def mark_succeeded(self, job_id: object, worker_id: object, result: object) -> bool:
+        async def mark_succeeded(
+            self,
+            job_id: object,
+            worker_id: object,
+            result: object,
+            fallback_result_ttl: object = None,
+        ) -> bool:
             return True
 
         async def mark_succeeded_with_conn(
-            self, conn: object, job_id: object, worker_id: object, result: object
+            self,
+            conn: object,
+            job_id: object,
+            worker_id: object,
+            result: object,
+            fallback_result_ttl: object = None,
         ) -> bool:
             return True
 

@@ -964,3 +964,133 @@ class TestMarkRetryAfterHeartbeat:
             )
         assert row is not None
         assert row["last_heartbeat_at"] is None
+
+
+class TestMarkSucceededResultExpiryFallback:
+    """result_expires_at resolution at completion against real PG:
+    stored override → fallback literal ($7) → enqueue-time value.
+
+    Regression tier for the cleared-result_ttl bug: with the stored
+    override cleared to NULL, the terminal write used to keep the
+    enqueue-pinned expiry, so a job that sat in the queue longer than
+    its TTL completed already expired and the sweep ate its result
+    milliseconds later.
+    """
+
+    async def _seed_cleared_ttl_and_aged_job(
+        self,
+        jobs_app: JobsApp,
+        conn: "_Conn",
+        *,
+        ttl_seconds: float = 5.0,
+        queue_wait_seconds: float = 45.0,
+    ) -> tuple[object, object]:
+        """Run the reported repro's setup: an operator sets then CLEARS the
+        stored result_ttl override, and a running job whose
+        result_expires_at is pinned in the past — the state the enqueue
+        path leaves behind (enqueue_now + literal) after the job sat in
+        the queue longer than its TTL."""
+        from taskq.worker.actor_config_ops import set_actor_config_capacity
+
+        deps = jobs_app.deps
+        schema = deps.settings.schema_name
+        await set_actor_config_capacity(conn, "test_actor", result_ttl=ttl_seconds, schema=schema)
+        row = await set_actor_config_capacity(conn, "test_actor", result_ttl=None, schema=schema)
+        assert row is not None and row.result_ttl is None
+
+        worker_id, job_id = await setup_running_job(conn, schema)
+        await conn.execute(
+            f'UPDATE "{schema}"."jobs" SET result_expires_at = now() + make_interval(secs => $1) WHERE id = $2',
+            ttl_seconds - queue_wait_seconds,  # negative → pinned in the past
+            job_id,
+        )
+        return worker_id, job_id
+
+    async def test_cleared_result_ttl_falls_back_to_literal_at_completion(
+        self, clean_jobs_app: JobsApp
+    ) -> None:
+        deps = clean_jobs_app.deps
+        backend = clean_jobs_app.backend
+        schema = deps.settings.schema_name
+
+        async with deps.worker_pool.acquire() as conn:
+            worker_id, job_id = await self._seed_cleared_ttl_and_aged_job(clean_jobs_app, conn)
+
+        ttl = timedelta(seconds=5)
+        ok = await backend.mark_succeeded(job_id, worker_id, {"ok": True}, fallback_result_ttl=ttl)
+        assert ok is True
+
+        async with deps.worker_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f'SELECT result, result_expires_at, finished_at FROM "{schema}".jobs WHERE id = $1',
+                job_id,
+            )
+            assert row is not None
+            assert row["result"] is not None
+            # Expiry recomputed from completion (clock_timestamp() at the
+            # write — it may lead finished_at = now() by statement
+            # execution time): ≈ completion+5s, never 40s in the past.
+            skew = row["result_expires_at"] - row["finished_at"]
+            assert timedelta(seconds=4) < skew < timedelta(seconds=6)
+
+            # The sweep must leave the result alone.
+            swept = await backend.sweep_expired_results(conn, datetime.now(UTC), schema=schema)
+            assert swept == 0
+            row2 = await conn.fetchrow(f'SELECT result FROM "{schema}".jobs WHERE id = $1', job_id)
+            assert row2 is not None and row2["result"] is not None
+
+    async def test_cleared_result_ttl_without_fallback_is_reaped(
+        self, clean_jobs_app: JobsApp
+    ) -> None:
+        """Control: no fallback (a completing worker that has no literal)
+        keeps the enqueue-pinned expiry — the old bug path — and the
+        sweep reaps the result. Pins both what the fallback fixes and
+        that the fix, not something else, is what saves the result."""
+        deps = clean_jobs_app.deps
+        backend = clean_jobs_app.backend
+        schema = deps.settings.schema_name
+
+        async with deps.worker_pool.acquire() as conn:
+            worker_id, job_id = await self._seed_cleared_ttl_and_aged_job(clean_jobs_app, conn)
+
+        ok = await backend.mark_succeeded(job_id, worker_id, {"ok": True})
+        assert ok is True
+
+        async with deps.worker_pool.acquire() as conn:
+            swept = await backend.sweep_expired_results(conn, datetime.now(UTC), schema=schema)
+            assert swept == 1
+            row = await conn.fetchrow(f'SELECT result FROM "{schema}".jobs WHERE id = $1', job_id)
+            assert row is not None and row["result"] is None
+
+    async def test_stored_result_ttl_wins_over_fallback_at_completion(
+        self, clean_jobs_app: JobsApp
+    ) -> None:
+        """Operator override (stored 300s) beats the worker's fallback
+        literal (5s) for jobs completing after the override."""
+        from taskq.worker.actor_config_ops import set_actor_config_capacity
+
+        deps = clean_jobs_app.deps
+        backend = clean_jobs_app.backend
+        schema = deps.settings.schema_name
+
+        async with deps.worker_pool.acquire() as conn:
+            await set_actor_config_capacity(conn, "test_actor", result_ttl=300.0, schema=schema)
+            worker_id, job_id = await setup_running_job(conn, schema)
+            await conn.execute(
+                f'UPDATE "{schema}"."jobs" SET result_expires_at = now() - interval \'40 seconds\' WHERE id = $1',
+                job_id,
+            )
+
+        ok = await backend.mark_succeeded(
+            job_id, worker_id, {"ok": True}, fallback_result_ttl=timedelta(seconds=5)
+        )
+        assert ok is True
+
+        async with deps.worker_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f'SELECT result_expires_at, finished_at FROM "{schema}".jobs WHERE id = $1',
+                job_id,
+            )
+            assert row is not None
+            skew = row["result_expires_at"] - row["finished_at"]
+            assert timedelta(seconds=299) < skew < timedelta(seconds=301)

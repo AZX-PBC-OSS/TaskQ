@@ -63,6 +63,7 @@ async def _mark_succeeded(
     result: dict[str, object] | None,
     progress_seq: int = 0,
     progress_state: dict[str, object] | None = None,
+    fallback_result_ttl: timedelta | None = None,
 ) -> bool:
     row = self._jobs.get(job_id)
     if row is None:
@@ -78,10 +79,15 @@ async def _mark_succeeded(
         raise ResultTooLarge(
             f"result size {result_size_bytes} bytes exceeds {MAX_RESULT_BYTES} byte cap"
         )
+    # Mirror the PG COALESCE: stored (operator-owned) result_ttl applied at
+    # completion; then the worker-supplied fallback (the @actor literal),
+    # also at completion; then the enqueue-time value.
     new_result_expires_at = row.result_expires_at
     actor_cfg = self._actor_configs_meta.get(row.actor)
     if actor_cfg is not None and actor_cfg.result_ttl is not None:
         new_result_expires_at = now + timedelta(seconds=actor_cfg.result_ttl)
+    elif fallback_result_ttl is not None:
+        new_result_expires_at = now + fallback_result_ttl
     merged_progress = _merge_progress(row.progress_state, progress_state)
     self._jobs[job_id] = replace(
         row,
@@ -129,8 +135,11 @@ async def _mark_succeeded_with_conn(
     result: dict[str, object] | None,
     progress_seq: int = 0,
     progress_state: dict[str, object] | None = None,
+    fallback_result_ttl: timedelta | None = None,
 ) -> bool:
-    return await _mark_succeeded(self, job_id, worker_id, result, progress_seq, progress_state)
+    return await _mark_succeeded(
+        self, job_id, worker_id, result, progress_seq, progress_state, fallback_result_ttl
+    )
 
 
 async def _mark_failed_or_retry(

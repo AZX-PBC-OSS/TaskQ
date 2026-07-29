@@ -61,6 +61,7 @@ from taskq.testing._enqueue import (
 from taskq.testing._reads import (
     _count_pending_jobs,
     _get,
+    _get_actor_max_pending,
     _get_attempts,
     _get_events,
     _list_jobs,
@@ -223,6 +224,7 @@ class InMemoryBackend:
         on_retry_exhausted_timeout: float = 3.0,
         on_success: OnSuccess | None = None,
         on_success_timeout: float = 3.0,
+        result_ttl: timedelta | None = None,
         payload_type: type[BaseModel] | None = None,
     ) -> None:
         _register_stub(
@@ -236,6 +238,7 @@ class InMemoryBackend:
             on_retry_exhausted_timeout=on_retry_exhausted_timeout,
             on_success=on_success,
             on_success_timeout=on_success_timeout,
+            result_ttl=result_ttl,
             payload_type=payload_type,
         )
 
@@ -369,6 +372,7 @@ class InMemoryBackend:
         *,
         actor: str,
         max_concurrent: int | None = None,
+        max_pending: int | None = None,
         queue: str = "default",
         metadata: dict[str, object] | None = None,
     ) -> None:
@@ -376,6 +380,7 @@ class InMemoryBackend:
             self,
             actor=actor,
             max_concurrent=max_concurrent,
+            max_pending=max_pending,
             queue=queue,
             metadata=metadata,
         )
@@ -440,8 +445,11 @@ class InMemoryBackend:
         result: dict[str, object] | None,
         progress_seq: int = 0,
         progress_state: dict[str, object] | None = None,
+        fallback_result_ttl: timedelta | None = None,
     ) -> bool:
-        return await _mark_succeeded(self, job_id, worker_id, result, progress_seq, progress_state)
+        return await _mark_succeeded(
+            self, job_id, worker_id, result, progress_seq, progress_state, fallback_result_ttl
+        )
 
     async def mark_succeeded_with_conn(
         self,
@@ -451,9 +459,10 @@ class InMemoryBackend:
         result: dict[str, object] | None,
         progress_seq: int = 0,
         progress_state: dict[str, object] | None = None,
+        fallback_result_ttl: timedelta | None = None,
     ) -> bool:
         return await _mark_succeeded_with_conn(
-            self, conn, job_id, worker_id, result, progress_seq, progress_state
+            self, conn, job_id, worker_id, result, progress_seq, progress_state, fallback_result_ttl
         )
 
     async def mark_failed_or_retry(
@@ -680,6 +689,9 @@ class InMemoryBackend:
 
     async def count_pending_jobs(self, actors: list[str]) -> dict[str, int]:
         return await _count_pending_jobs(self, actors)
+
+    async def get_actor_max_pending(self) -> dict[str, int | None]:
+        return await _get_actor_max_pending(self)
 
     # ── NOTIFY hook ────────────────────────────────────────────────────
 

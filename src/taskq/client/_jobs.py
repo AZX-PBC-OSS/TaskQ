@@ -43,6 +43,7 @@ from taskq.backend._protocol import (
 from taskq.backend.clock import Clock, SystemClock
 from taskq.batch import BatchHandle, EnqueueItem
 from taskq.client._args import build_batch_args, build_enqueue_args, enqueue_span
+from taskq.client._capacity import DEFAULT_CAPACITY_CACHE_TTL, ActorCapacityCache
 from taskq.client._handle import JobHandle
 from taskq.exceptions import PayloadValidationError, SchemaNotMigratedError
 from taskq.types import CancelResult
@@ -76,6 +77,7 @@ class JobsClient:
         *,
         clock: Clock | None = None,
         settings: "TaskQSettings | None" = None,
+        capacity_cache_ttl: float = DEFAULT_CAPACITY_CACHE_TTL,
     ) -> None:
         self._backend = backend
         self._clock = clock if clock is not None else SystemClock()
@@ -83,6 +85,7 @@ class JobsClient:
         self._redis_client: "redis_async.Redis | None" = None  # type: ignore[type-arg]  # noqa: UP037  # Why: redis_async is under TYPE_CHECKING; string annotation avoids runtime import. type-arg: redis-py stubs expose Redis as an unparameterised generic.
         self._exit_stack: AsyncExitStack = AsyncExitStack()
         self._warned_unique_for: set[str] = set()
+        self._capacity_cache = ActorCapacityCache(backend, ttl=capacity_cache_ttl)
 
     @property
     def backend(self) -> Backend:
@@ -161,6 +164,17 @@ class JobsClient:
         await self._exit_stack.aclose()
         self._redis_client = None
 
+    def invalidate_actor_capacity_cache(self) -> None:
+        """Drop the cached ``actor_config.max_pending`` snapshot.
+
+        The next enqueue refreshes from the backend instead of waiting
+        out the TTL. Not needed in normal operation (staleness is
+        bounded by ``capacity_cache_ttl``, default 5s); intended for
+        tests and for tooling that knows it just changed the table and
+        cannot wait out the TTL.
+        """
+        self._capacity_cache.invalidate()
+
     # ── Enqueue ────────────────────────────────────────────────────────
 
     def _maybe_warn_unique_for_no_identity[P: BaseModel, R: BaseModel | None](
@@ -221,11 +235,22 @@ class JobsClient:
 
         **max_pending:**
 
-        - When the actor's ``max_pending`` is set, a pre-flight count of
-          ``pending`` + ``scheduled`` jobs for the actor is compared to the
-          limit. If ``count >= max_pending``, :class:`MaxPendingExceededError`
-          is raised synchronously — the caller decides whether to retry,
-          fail, or wait; the library does not block on capacity.
+        - When the actor's effective ``max_pending`` is set, a pre-flight
+          count of ``pending`` + ``scheduled`` jobs for the actor is
+          compared to the limit. If ``count >= max_pending``,
+          :class:`MaxPendingExceededError` is raised synchronously — the
+          caller decides whether to retry, fail, or wait; the library
+          does not block on capacity.
+
+        - The effective limit is **operator-owned**: a non-NULL stored
+          ``actor_config.max_pending`` (set via
+          ``taskq actor-config set --max-pending``) wins over the
+          ``@actor(max_pending=...)`` literal; a cleared or absent
+          stored value falls back to the literal. The client reads the
+          stored value through a TTL-bounded cache (default 5s
+          staleness; see :class:`taskq.client._capacity.ActorCapacityCache`),
+          so an operator change takes effect fleet-wide within seconds
+          without any redeploy or restart.
 
         - Evaluation order at enqueue: ``unique_for`` dedup →
           singleton pre-flight → ``max_pending`` count check →
@@ -310,6 +335,9 @@ class JobsClient:
             extracted_trace_id,
             extracted_span_id,
         ):
+            effective_max_pending = await self._capacity_cache.effective_max_pending(
+                ref.name, ref.max_pending
+            )
             args = build_enqueue_args(
                 ref,
                 payload,
@@ -326,6 +354,7 @@ class JobsClient:
                 schedule_to_close=schedule_to_close,
                 start_to_close=start_to_close,
                 heartbeat_timeout=heartbeat_timeout,
+                max_pending=effective_max_pending,
                 tags=tags,
                 clock=self._clock,
             )
@@ -379,7 +408,9 @@ class JobsClient:
         **max_pending:**
 
         One aggregated ``SELECT actor, count(*) … WHERE actor = ANY($1)
-        GROUP BY actor`` is issued for the entire batch.  Per-actor limits
+        GROUP BY actor`` is issued for the entire batch.  Per-actor
+        effective limits (operator-owned stored value when set, else the
+        ``@actor(...)`` literal — same resolution as :meth:`enqueue`)
         are checked before the INSERT; any violation raises
         :class:`~taskq.exceptions.MaxPendingExceededError`.
 
@@ -430,13 +461,16 @@ class JobsClient:
                 )
 
         # Phase 2: Aggregated max_pending check (one query for the whole batch)
-        # Collect actors that declare max_pending
-        actors_with_limit: dict[str, int] = {}
+        # Resolve the effective limit per actor (stored value wins over the
+        # @actor literal — same resolution as enqueue), then count.
+        effective_mp: dict[str, int | None] = {}
         for item in items:
             ref = item.actor_ref
-            mp = ref.max_pending
-            if mp is not None and ref.name not in actors_with_limit:
-                actors_with_limit[ref.name] = mp
+            if ref.name not in effective_mp:
+                effective_mp[ref.name] = await self._capacity_cache.effective_max_pending(
+                    ref.name, ref.max_pending
+                )
+        actors_with_limit = {name: mp for name, mp in effective_mp.items() if mp is not None}
 
         if actors_with_limit:
             # One aggregated query for all actors that declare max_pending.
@@ -453,8 +487,12 @@ class JobsClient:
                         max_pending=limit,
                     )
 
-        # Phase 3: Build per-item EnqueueArgs
-        args_list = build_batch_args(items, resolved_batch_id, self._clock)
+        # Phase 3: Build per-item EnqueueArgs — carrying the resolved
+        # limits so a per-item backend check enforces the same value the
+        # aggregated check just admitted.
+        args_list = build_batch_args(
+            items, resolved_batch_id, self._clock, max_pending_by_actor=effective_mp
+        )
 
         # Phase 4: Batch INSERT via backend
         rows = await self._backend.enqueue_batch(args_list, connection=connection)  # type: ignore[call-arg]  # Why: asyncpg.Connection is compatible with the protocol's connection parameter at runtime

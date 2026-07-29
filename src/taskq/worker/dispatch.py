@@ -284,6 +284,7 @@ async def dispatch_one_job(
                         redis_client=redis_client,
                         worker_pool=deps.worker_pool,
                         settings=deps.settings,
+                        fallback_result_ttl=actor_ref.result_ttl,
                     )
                     outcome = result
 

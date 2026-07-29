@@ -473,28 +473,38 @@ Probe these from a Kubernetes sidecar or `taskq health live` / `taskq health rea
 
 ## ActorConfig sync
 
-At startup, after `register_worker`, the worker calls `sync_actor_config` for every registered actor. This writes (or updates) rows in `{schema}.actor_config` with `max_concurrent`, `max_pending`, `queue`, `result_ttl`, and `metadata` values taken from the `ActorRef`.
+At startup, after `register_worker`, the worker calls `sync_actor_config` for every registered actor. This writes (or updates) rows in `{schema}.actor_config`, and treats the row's fields as two different kinds of state:
 
-The sync uses a transactional SELECT-then-UPSERT to prevent races between concurrent worker startups. If the stored row for an actor differs from the registered values (a "drift"), two outcomes are possible:
+- **Capacity fields** — `max_concurrent`, `max_pending`, `result_ttl` — are **operator-owned**. The `@actor(...)` literal only *seeds* the value the first time a row is created for that actor. On every subsequent startup, the stored value wins: a registered literal that differs from the stored value is expected (an operator tuned it), is never an error, and is logged at info level as `actor-config-capacity-override`. The UPSERT never writes these columns back on conflict, so nothing a worker does at startup can clobber an operator's change.
+- **Structural fields** — `queue`, `metadata` — still guard against real bugs (e.g. a stale pod routing an actor to the wrong queue) and behave exactly as before:
+  - **`force=False` (default):** a mismatch raises `ActorConfigDriftList` and the worker refuses to start. The CLI prints the drift details and instructs the operator to re-run with `--force-update-actor-config`.
+  - **`force=True`:** logs `actor-config-drift-overwrite` at ERROR for each drifted field and overwrites the stored value.
 
-- **`force=False` (default):** raises `ActorConfigDriftList` and the worker refuses to start. The CLI prints the drift details and instructs the operator to re-run with `--force-update-actor-config`.
-- **`force=True`:** logs `actor-config-drift-overwrite` at ERROR for each drifted field and overwrites the stored value.
+The sync uses a transactional SELECT-then-UPSERT to prevent races between concurrent worker startups.
 
-**`ActorConfigDriftList` wraps one `ActorConfigDriftError` per drifted field per actor.** A single startup check can produce multiple `ActorConfigDriftError` instances — one for each combination of actor × field that differs. For example, if two actors each have two drifted fields, the list will contain four errors.
+**`ActorConfigDriftList` wraps one `ActorConfigDriftError` per drifted *structural* field per actor.** A single startup check can produce multiple `ActorConfigDriftError` instances — one for each combination of actor × structural field that differs.
 
-**Drift logs are emitted even when `force=True`.** The `actor-config-drift-overwrite` ERROR log is written regardless of whether the overwrite was intentional. To distinguish intentional overwrites from unexpected drift, filter log lines by the `force=true` field: lines with `force=true` were intentional; lines with `force=false` blocked startup.
-
-**Typical deployment workflow when changing `max_concurrent`:**
+**Tuning capacity on a live deployment.** Since a worker restart never changes a stored capacity value, use `taskq actor-config set` instead:
 
 ```shell
-# Deploy once with the flag to overwrite:
-TASKQ_FORCE_UPDATE_ACTOR_CONFIG=true taskq worker --actors myapp.actors:registry
-
-# Subsequent deploys without the flag (drift is now gone):
-taskq worker --actors myapp.actors:registry
+taskq actor-config set checkout_charge --max-concurrent 20
+taskq actor-config set checkout_charge --max-pending 5000
+taskq actor-config get checkout_charge
+taskq actor-config list
+taskq actor-config diff --actors myapp.actors:registry
 ```
 
-The fields checked for drift are: `max_concurrent`, `max_pending`, `queue`, `result_ttl`, and `metadata`. Actor name changes require a migration; rename detection is not implemented.
+All three capacity fields take effect without a worker restart, through three different mechanisms:
+
+- `max_concurrent` — the dispatch query re-reads `actor_config.max_concurrent` on every dispatch cycle. Effective immediately.
+- `result_ttl` — the terminal-write UPDATE re-reads `actor_config.result_ttl` on every job completion. Effective immediately for jobs completing after the change.
+- `max_pending` — every enqueue-side process (web apps, workers' sub-job enqueues) holds a TTL-bounded in-process snapshot of the table (`taskq/client/_capacity.py`) and refreshes it at most once per TTL (default 5s). Effective fleet-wide within seconds. The cache fails open: if the refresh query fails, enqueue falls back to the last good snapshot (or the code literal) and retries no sooner than the TTL, so a sick database never turns into a per-enqueue failing query storm.
+
+Clearing a field (`--clear-max-concurrent` etc.) writes NULL. For `max_concurrent` that means *unlimited* — the dispatch SQL cannot see the code literal once a row exists. For `max_pending` and `result_ttl` NULL means *revert to the `@actor(...)` literal* — clearing undoes the operator override and restores the code default. The reverted `result_ttl` literal is supplied by the completing worker and applied from the job's **completion** timestamp — a job that sat in the queue longer than its TTL still gets its full result lifetime rather than completing already expired.
+
+**Upgrading note.** Before this change, stored capacity always matched the last deployed literal (any drift blocked startup, or `--force-update-actor-config` rewrote it), so existing deployments upgrade seamlessly: enforcement simply continues from the stored values. Do not run `taskq actor-config set` until every pod runs the new version — an old-version pod that *restarts* mid-rollout still crashes on capacity drift.
+
+The fields checked for structural drift are: `queue` and `metadata`. Actor name changes require a migration; rename detection is not implemented.
 
 ---
 
@@ -506,12 +516,14 @@ Multiple worker processes against the same database are fully supported. Each pr
 
 **Single leader.** Only one worker holds the `taskq:maintenance_leader` advisory lock at a time. Other workers retry election on every `heartbeat_interval` tick. If the leader pod dies, the lock is released when the connection closes, and another worker wins the next election.
 
-**Rolling deploy gotcha.** If old and new worker versions declare different `max_concurrent`, `queue`, or `metadata` for the same actor name, new worker pods will fail startup with `ActorConfigDriftList`. Best practice for rolling deploys:
+**Rolling deploy gotcha.** If old and new worker versions declare different `queue` or `metadata` for the same actor name, new worker pods will fail startup with `ActorConfigDriftList`. Best practice for rolling deploys:
 
-1. Deploy the first new pod with `--force-update-actor-config` (or `TASKQ_FORCE_UPDATE_ACTOR_CONFIG=true`). This overwrites the stored config and logs the change at ERROR with `force=true`.
+1. Deploy the first new pod with `--force-update-actor-config` (or `TASKQ_FORCE_UPDATE_ACTOR_CONFIG=true`). This overwrites the stored structural config and logs the change at ERROR with `force=true`.
 2. Deploy all remaining pods without the flag. By the time they start, the stored config already matches the new registration, so no drift is detected.
 
-Do not leave `--force-update-actor-config` set permanently. It allows any future config drift to be silently overwritten, removing the startup guard that protects against accidental actor-config changes.
+Do not leave `--force-update-actor-config` set permanently. It allows any future structural drift (`queue` / `metadata`) to be silently overwritten, removing the startup guard that protects against accidental mis-routing.
+
+A rolling deploy that only changes `max_concurrent`, `max_pending`, or `result_ttl` in the `@actor(...)` decorator needs none of this — those fields no longer participate in drift detection at all. Old and new pods can register different literals for the same actor simultaneously without either one failing to start; the stored row (whatever it currently is) stays authoritative throughout the rollout. Use `taskq actor-config set` if you actually want the new literal to take effect.
 
 ---
 

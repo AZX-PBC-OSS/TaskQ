@@ -146,39 +146,36 @@ async def _select_configs(conn: asyncpg.Connection, schema: str) -> list[dict[st
 
 
 @pytest.mark.asyncio
-async def test_drift_max_concurrent_raises_drift_list() -> None:
-    """max_concurrent drift with force=False raises ActorConfigDriftList.
+async def test_capacity_divergence_max_concurrent_does_not_raise() -> None:
+    """max_concurrent divergence is an expected operator override, not an error.
 
     Pre-populate SELECT with max_concurrent=5 for actor "X"; register
-    max_concurrent=3. Assert ActorConfigDriftList raised with one drift.
+    max_concurrent=3. sync_actor_config must NOT raise — the stored
+    value is authoritative and capacity divergence is never fatal,
+    regardless of ``force``.
     """
     fake_conn = FakeAsyncpgConnection()
     fake_conn.set_select_rows([_make_record("X", max_concurrent=5, queue="default")])
 
-    with pytest.raises(ActorConfigDriftList) as exc_info:
-        await sync_actor_config(
-            fake_conn,  # pyright: ignore[reportArgumentType] Why: FakeAsyncpgConnection is a unit-test double; real asyncpg.Connection subtyping would require protocol-level mocking
-            [_make_config("X", max_concurrent=3)],
-            force=False,
-        )
+    await sync_actor_config(
+        fake_conn,  # pyright: ignore[reportArgumentType] Why: FakeAsyncpgConnection is a unit-test double; real asyncpg.Connection subtyping would require protocol-level mocking
+        [_make_config("X", max_concurrent=3)],
+        force=False,
+    )
 
-    drift_list = exc_info.value
-    assert isinstance(drift_list, ActorConfigDriftList)
-    assert len(drift_list.drifts) == 1
-    drift = drift_list.drifts[0]
-    assert drift.field == "max_concurrent"
-    assert drift.stored == 5
-    assert drift.registered == 3
-    assert drift.actor == "X"
+    # UPSERT still executed; capacity divergence never blocks startup.
+    assert len(fake_conn._execute_calls) == 1
 
 
 # ── Multi-field drift ────────────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_multi_field_drift_three_drifts() -> None:
-    """Multi-field drift: pre-populate all three fields differently;
-    assert three ActorConfigDriftError instances (one per field).
+async def test_multi_field_drift_only_structural_fields_raise() -> None:
+    """Mixed drift: max_concurrent (capacity) + queue + metadata (structural) differ.
+
+    Only the two structural fields raise; max_concurrent divergence is
+    silently accepted as an operator override.
     """
     fake_conn = FakeAsyncpgConnection()
     fake_conn.set_select_rows(
@@ -207,10 +204,10 @@ async def test_multi_field_drift_three_drifts() -> None:
         )
 
     drift_list = exc_info.value
-    assert len(drift_list.drifts) == 3
+    assert len(drift_list.drifts) == 2
 
     fields = {d.field for d in drift_list.drifts}
-    assert fields == {"max_concurrent", "queue", "metadata"}
+    assert fields == {"queue", "metadata"}
 
 
 # ── force=True path ──────────────────────────────────────────────────────────
@@ -380,33 +377,75 @@ async def test_max_pending_none_in_upsert_array() -> None:
 
 
 @pytest.mark.asyncio
-async def test_drift_max_pending_raises_drift_list() -> None:
-    """max_pending drift with force=False raises ActorConfigDriftList.
+async def test_capacity_divergence_max_pending_does_not_raise() -> None:
+    """max_pending divergence with force=False does not raise.
 
     Pre-populate SELECT with max_pending=50 for actor "X"; register
-    max_pending=100. Assert ActorConfigDriftList raised with one
-    drift carrying field="max_pending", registered=100, stored=50.
+    max_pending=100. sync_actor_config must not raise, and the UPSERT
+    still runs (the stored 50 is preserved by the UPSERT's SQL, not by
+    control flow — see test_upsert_sql_preserves_capacity_on_conflict).
     """
     fake_conn = FakeAsyncpgConnection()
     fake_conn.set_select_rows(
         [_make_record("X", max_concurrent=None, max_pending=50, queue="default")]
     )
 
-    with pytest.raises(ActorConfigDriftList) as exc_info:
-        await sync_actor_config(
-            fake_conn,  # pyright: ignore[reportArgumentType] Why: FakeAsyncpgConnection is a unit-test double; real asyncpg.Connection subtyping would require protocol-level mocking
-            [_make_config("X", max_concurrent=None, max_pending=100)],
-            force=False,
-        )
+    await sync_actor_config(
+        fake_conn,  # pyright: ignore[reportArgumentType] Why: FakeAsyncpgConnection is a unit-test double; real asyncpg.Connection subtyping would require protocol-level mocking
+        [_make_config("X", max_concurrent=None, max_pending=100)],
+        force=False,
+    )
 
-    drift_list = exc_info.value
-    assert isinstance(drift_list, ActorConfigDriftList)
-    assert len(drift_list.drifts) == 1
-    drift = drift_list.drifts[0]
-    assert drift.field == "max_pending"
-    assert drift.stored == 50
-    assert drift.registered == 100
-    assert drift.actor == "X"
+    assert len(fake_conn._execute_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_capacity_divergence_result_ttl_does_not_raise() -> None:
+    """result_ttl divergence is an expected operator override, not an error.
+
+    Pre-populate SELECT with result_ttl=60.0 for actor "X"; register
+    result_ttl=120.0. sync_actor_config must NOT raise — the stored
+    value is authoritative and capacity divergence is never fatal,
+    regardless of ``force``.
+    """
+    fake_conn = FakeAsyncpgConnection()
+    fake_conn.set_select_rows([_make_record("X", result_ttl=60.0, queue="default")])
+
+    await sync_actor_config(
+        fake_conn,  # pyright: ignore[reportArgumentType] Why: FakeAsyncpgConnection is a unit-test double; real asyncpg.Connection subtyping would require protocol-level mocking
+        [_make_config("X", result_ttl=120.0)],
+        force=False,
+    )
+
+    assert len(fake_conn._execute_calls) == 1
+
+
+# ── UPSERT SQL shape ─────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_upsert_sql_omits_capacity_columns_from_conflict_set() -> None:
+    """The rendered UPSERT's ON CONFLICT clause never assigns capacity columns.
+
+    This is what actually preserves a stored capacity value across
+    startups — the SELECT/compare logic above only decides whether to
+    raise, never what gets written.
+    """
+    fake_conn = FakeAsyncpgConnection()
+    fake_conn.set_select_rows([])
+
+    await sync_actor_config(
+        fake_conn,  # pyright: ignore[reportArgumentType] Why: FakeAsyncpgConnection is a unit-test double; real asyncpg.Connection subtyping would require protocol-level mocking
+        [_make_config("X", max_concurrent=3, max_pending=100, result_ttl=60.0)],
+    )
+
+    sql, _params = fake_conn._execute_calls[0]
+    on_conflict = sql.split("DO UPDATE SET", 1)[1]
+    assert "max_concurrent" not in on_conflict
+    assert "max_pending" not in on_conflict
+    assert "result_ttl" not in on_conflict
+    assert "queue" in on_conflict
+    assert "metadata" in on_conflict
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -477,11 +516,38 @@ async def test_integration_resync_no_changes_no_error(
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_integration_drift_force_false_raises_table_unchanged(
+async def test_integration_structural_drift_force_false_raises_table_unchanged(
     pg_conn: asyncpg.Connection,
 ) -> None:
-    """Re-sync with drift and force=False: ActorConfigDriftList raised;
-    table is unchanged.
+    """Re-sync with a differing queue (structural) and force=False:
+    ActorConfigDriftList raised; table is unchanged.
+    """
+    schema = f"tacs_{new_base62()}".lower()
+    await _ensure_schema(pg_conn, schema)
+
+    original = _make_config("a", max_concurrent=5, queue="default")
+    await sync_actor_config(pg_conn, [original], schema=schema)
+
+    changed = [_make_config("a", max_concurrent=5, queue="critical")]
+
+    with pytest.raises(ActorConfigDriftList) as exc_info:
+        await sync_actor_config(pg_conn, changed, force=False, schema=schema)
+
+    assert {d.field for d in exc_info.value.drifts} == {"queue"}
+
+    rows = await _select_configs(pg_conn, schema)
+    assert len(rows) == 1
+    assert rows[0]["max_concurrent"] == 5
+    assert rows[0]["queue"] == "default"
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_integration_capacity_drift_force_false_does_not_raise(
+    pg_conn: asyncpg.Connection,
+) -> None:
+    """Re-sync with a differing max_concurrent (capacity) and force=False:
+    no exception, and the stored value is unchanged (operator-owned).
     """
     schema = f"tacs_{new_base62()}".lower()
     await _ensure_schema(pg_conn, schema)
@@ -490,13 +556,11 @@ async def test_integration_drift_force_false_raises_table_unchanged(
     await sync_actor_config(pg_conn, [original], schema=schema)
 
     changed = [_make_config("a", max_concurrent=3, queue="default")]
-
-    with pytest.raises(ActorConfigDriftList):
-        await sync_actor_config(pg_conn, changed, force=False, schema=schema)
+    await sync_actor_config(pg_conn, changed, force=False, schema=schema)
 
     rows = await _select_configs(pg_conn, schema)
     assert len(rows) == 1
-    assert rows[0]["max_concurrent"] == 5
+    assert rows[0]["max_concurrent"] == 5, "stored capacity must survive a differing literal"
     assert rows[0]["queue"] == "default"
 
 
@@ -505,24 +569,48 @@ async def test_integration_drift_force_false_raises_table_unchanged(
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_integration_drift_force_true_overwrites(
+async def test_integration_structural_drift_force_true_overwrites(
     pg_conn: asyncpg.Connection,
 ) -> None:
-    """Re-sync with force=True: stored values updated."""
+    """Re-sync with a differing queue and force=True: the stored queue is updated."""
     schema = f"tacs_{new_base62()}".lower()
     await _ensure_schema(pg_conn, schema)
 
     original = _make_config("a", max_concurrent=5, queue="default")
     await sync_actor_config(pg_conn, [original], schema=schema)
 
-    changed = [_make_config("a", max_concurrent=3, queue="default")]
+    changed = [_make_config("a", max_concurrent=5, queue="critical")]
 
     await sync_actor_config(pg_conn, changed, force=True, schema=schema)
 
     rows = await _select_configs(pg_conn, schema)
     assert len(rows) == 1
-    assert rows[0]["max_concurrent"] == 3
-    assert rows[0]["queue"] == "default"
+    assert rows[0]["queue"] == "critical"
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_integration_force_true_never_overwrites_capacity(
+    pg_conn: asyncpg.Connection,
+) -> None:
+    """force=True overwrites structural drift but never touches capacity fields.
+
+    Registers a differing max_concurrent *and* queue simultaneously with
+    force=True: queue is overwritten, max_concurrent is not.
+    """
+    schema = f"tacs_{new_base62()}".lower()
+    await _ensure_schema(pg_conn, schema)
+
+    original = _make_config("a", max_concurrent=5, queue="default")
+    await sync_actor_config(pg_conn, [original], schema=schema)
+
+    changed = [_make_config("a", max_concurrent=3, queue="critical")]
+    await sync_actor_config(pg_conn, changed, force=True, schema=schema)
+
+    rows = await _select_configs(pg_conn, schema)
+    assert len(rows) == 1
+    assert rows[0]["queue"] == "critical"
+    assert rows[0]["max_concurrent"] == 5, "force=True must not overwrite capacity fields"
 
 
 # ── max_pending persistence ───────────────────────────────────────────────
@@ -547,12 +635,11 @@ async def test_integration_max_pending_persisted(
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_integration_drift_max_pending(
+async def test_integration_max_pending_divergence_survives_resync(
     pg_conn: asyncpg.Connection,
 ) -> None:
     """Pre-seed actor_config with max_pending=50, register with max_pending=100,
-    sync_actor_config, assert ActorConfigDriftError raised with field="max_pending",
-    registered=100, stored=50.
+    sync_actor_config: no exception, and the stored 50 is preserved (operator-owned).
     """
     schema = f"tacs_{new_base62()}".lower()
     await _ensure_schema(pg_conn, schema)
@@ -561,17 +648,34 @@ async def test_integration_drift_max_pending(
     await sync_actor_config(pg_conn, [original], schema=schema)
 
     changed = [_make_config("a", max_concurrent=None, max_pending=100)]
+    await sync_actor_config(pg_conn, changed, force=False, schema=schema)
 
-    with pytest.raises(ActorConfigDriftList) as exc_info:
-        await sync_actor_config(pg_conn, changed, force=False, schema=schema)
+    rows = await _select_configs(pg_conn, schema)
+    assert len(rows) == 1
+    assert rows[0]["max_pending"] == 50
 
-    drift_list = exc_info.value
-    assert len(drift_list.drifts) == 1
-    drift = drift_list.drifts[0]
-    assert drift.field == "max_pending"
-    assert drift.registered == 100
-    assert drift.stored == 50
-    assert drift.actor == "a"
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_integration_result_ttl_divergence_survives_resync(
+    pg_conn: asyncpg.Connection,
+) -> None:
+    """Pre-seed actor_config with result_ttl=60.0, register with result_ttl=120.0,
+    sync_actor_config: no exception, and the stored 60.0 is preserved (operator-owned).
+    """
+    schema = f"tacs_{new_base62()}".lower()
+    await _ensure_schema(pg_conn, schema)
+
+    original = _make_config("a", max_concurrent=5, queue="default", result_ttl=60.0)
+    await sync_actor_config(pg_conn, [original], schema=schema)
+
+    changed = [_make_config("a", max_concurrent=5, queue="default", result_ttl=120.0)]
+    await sync_actor_config(pg_conn, changed, force=False, schema=schema)
+
+    rows = await _select_configs(pg_conn, schema)
+    assert len(rows) == 1
+    assert rows[0]["result_ttl"] == 60.0, "stored capacity must survive a differing literal"
+    assert rows[0]["queue"] == "default"
 
 
 @pytest.mark.asyncio

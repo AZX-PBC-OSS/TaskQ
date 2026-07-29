@@ -113,17 +113,20 @@ def test_exceptions_importable_from_taskq() -> None:
 # ── ActorConfigDriftError construction and message shape ─────────────────────
 
 
-def test_drift_error_max_concurrent() -> None:
-    """str() contains actor, field, registered, and stored values."""
+def test_drift_error_numeric_values_inside_metadata() -> None:
+    """str() contains actor, field, and the numeric values nested in a
+    metadata dict — ActorConfigDriftError formats whatever registered/stored
+    hold via repr(), regardless of what's inside.
+    """
     exc = ActorConfigDriftError(
         actor="my_actor",
-        field="max_concurrent",
-        registered=5,
-        stored=10,
+        field="metadata",
+        registered={"limit": 5},
+        stored={"limit": 10},
     )
     msg = str(exc)
     assert "my_actor" in msg
-    assert "max_concurrent" in msg
+    assert "metadata" in msg
     assert "5" in msg
     assert "10" in msg
 
@@ -159,10 +162,15 @@ def test_drift_error_metadata() -> None:
 
 
 def test_drift_error_none_values() -> None:
-    """str() renders None registered/stored as None."""
+    """str() renders None registered/stored as None.
+
+    registered/stored are typed ``str | dict[str, object] | None`` —
+    production call sites (sync_actor_config) never pass None for queue
+    or metadata, but the constructor stays defensively None-safe.
+    """
     exc = ActorConfigDriftError(
         actor="my_actor",
-        field="max_concurrent",
+        field="queue",
         registered=None,
         stored=None,
     )
@@ -191,7 +199,7 @@ def test_drift_list_one_drift() -> None:
 
 def test_drift_list_three_drifts() -> None:
     """str() shows three indented drift lines."""
-    d1 = ActorConfigDriftError(actor="a1", field="max_concurrent", registered=1, stored=2)
+    d1 = ActorConfigDriftError(actor="a1", field="queue", registered="q3", stored="q4")
     d2 = ActorConfigDriftError(actor="a2", field="queue", registered="q1", stored="q2")
     d3 = ActorConfigDriftError(actor="a3", field="metadata", registered={"k": "v"}, stored=None)
     exc = ActorConfigDriftList((d1, d2, d3))
@@ -207,7 +215,7 @@ def test_drift_list_three_drifts() -> None:
 
 def test_drift_error_isinstance_taskqerror() -> None:
     """ActorConfigDriftError is a TaskQError subclass."""
-    exc = ActorConfigDriftError(actor="a", field="max_concurrent", registered=1, stored=2)
+    exc = ActorConfigDriftError(actor="a", field="queue", registered="q1", stored="q2")
     assert isinstance(exc, TaskQError)
 
 
@@ -222,7 +230,7 @@ def test_drift_list_isinstance_taskqerror() -> None:
 
 def test_drift_list_drifts_is_tuple() -> None:
     """The drifts field is a tuple, not a list."""
-    d1 = ActorConfigDriftError(actor="a", field="max_concurrent", registered=1, stored=2)
+    d1 = ActorConfigDriftError(actor="a", field="queue", registered="q1", stored="q2")
     exc = ActorConfigDriftList((d1,))
     assert type(exc.drifts) is tuple
 
@@ -230,7 +238,7 @@ def test_drift_list_drifts_is_tuple() -> None:
 def test_drift_list_drifts_is_iterable() -> None:
     """The drifts tuple is iterable for diagnostic logging."""
     d1 = ActorConfigDriftError(actor="a1", field="queue", registered="q1", stored="q2")
-    d2 = ActorConfigDriftError(actor="a2", field="max_concurrent", registered=3, stored=4)
+    d2 = ActorConfigDriftError(actor="a2", field="queue", registered="q3", stored="q4")
     exc = ActorConfigDriftList((d1, d2))
     items = list(exc.drifts)
     assert len(items) == 2
