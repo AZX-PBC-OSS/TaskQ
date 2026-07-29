@@ -58,6 +58,11 @@ Applies to all commands: `worker`, `migrate`, `ui serve`, `health`.
 | `TASKQ_ADMIN_URL` | `str` | `http://localhost:8080` | Public base URL of the admin UI as seen from a browser. Used to construct redirect URLs. Override when admin and app run on different hosts or ports. | ui serve |
 | `TASKQ_ADMIN_UI_POLLING_INTERVAL_SECONDS` | `float` | `2.0` | How often the admin UI polls PG when in polling/degraded mode. Min: 0.1. | ui serve |
 | `TASKQ_ADMIN_UI_ALLOW_RATE_LIMIT_RESET` | `bool` | `false` | When `True`, the admin UI shows a reset button on the rate-limits page and serves the `POST /rate-limits/{bucket_name}/reset` endpoint. Default `False` for safety. | ui serve |
+| `TASKQ_ADMIN_UI_REQUIRE_AUTH` | `bool` | `true` | When `true` (the default), `create_router` raises `RuntimeError` if `auth_dependency` is `None` in a non-dev environment, failing closed. Set to `false` to allow an unauthenticated admin UI in non-dev (not recommended — only for air-gapped or localhost-only deployments). | ui serve |
+| `TASKQ_ADMIN_ACTIONS_ENABLED` | `bool` | `false` | When `true`, the admin UI permits destructive actions (run schedule now, retry job, cancel job). Default `false` — prevents on-demand triggering of registered business logic via the admin UI without explicit opt-in. Separate from `auth_dependency`, which controls read access to all admin routes. | ui serve |
+| `TASKQ_SSO_BACKEND` | `str` | `none` | Selects the SSO backend for the admin UI: `none` (default, unauthenticated/BYO-auth), `oidc` (`taskq[oidc]`), or `saml` (`taskq[saml]`). See [sso.md](sso.md). | ui serve |
+| `TASKQ_HEALTH_TOKEN` | `str` | `""` (empty) | Bearer token for machine-to-machine access to health/metrics endpoints. When set, health and metrics routes require a matching `Authorization: Bearer <token>` header. Leave empty for unauthenticated cluster-internal access — but see `TASKQ_HEALTH_REQUIRE_TOKEN`, which fails closed on an empty token outside dev. | ui serve |
+| `TASKQ_HEALTH_REQUIRE_TOKEN` | `bool` | `true` | When `true` (the default), `taskq ui serve` raises `RuntimeError` if `TASKQ_HEALTH_TOKEN` is empty in a non-dev environment, failing closed. Set to `false` to allow unauthenticated health/metrics endpoints in non-dev (e.g. when relying on network policy instead of a bearer token). | ui serve |
 | `TASKQ_MIGRATE_ON_START` | `bool` | `false` | Apply pending migrations before the process accepts its first request. Aborts startup if migrations fail. | ui serve |
 | `TASKQ_EXAMPLE_HOST` | `str` | `0.0.0.0` | Bind address for the example trigger app. Ignored by worker and admin. | example app |
 | `TASKQ_EXAMPLE_PORT` | `int` | `8000` | Bind port for the example trigger app. Ignored by worker and admin. | example app |
@@ -103,6 +108,7 @@ Extends `TaskQSettings`. All fields below apply to the worker process only.
 | `TASKQ_TERMINATION_GRACE_PERIOD` | `float` (seconds) | `60.0` | Total budget from SIGTERM to forced exit. Must satisfy: `cancellation_grace + cleanup_grace < termination_grace − 5`. | Min: 5.0; see [Validation Constraints](#validation-constraints) |
 | `TASKQ_CANCELLATION_GRACE_PERIOD` | `float` (seconds) | `30.0` | Duration of the cooperative cancel phase before force-cancel. | Min: 0.0 |
 | `TASKQ_CLEANUP_GRACE_PERIOD` | `float` (seconds) | `10.0` | Force-cancel cleanup grace period. | Min: 0.0 |
+| `TASKQ_RECLAIM_EVENT_VISIBILITY_DELAY` | `float` (seconds) | `2.0` | Trailing-watermark margin that `poll_reclaim_events()` / `TaskQ.watch_reclaims()` apply before returning a `job_events` row, so an out-of-commit-order sibling with a lower `event_id` has time to appear first. Correctness assumes every `job_events` writer transaction commits within this margin of its INSERT; raise it if sweeps run under heavy lock contention or against very large batches, lower it if latency matters more and writes are known to be fast. A writer that exceeds the margin can cause a silently missed event. | Min: 0.0 |
 
 See [workers.md](workers.md) for the shutdown sequence these values control.
 
@@ -189,6 +195,8 @@ See [retries.md](retries.md#7-start_to_close-vs-schedule_to_close) for the full 
 | Env Var | Type | Default | Description | Constraints |
 |---|---|---|---|---|
 | `TASKQ_RATE_LIMIT_PG_FALLBACK_ENABLED` | `bool` | `true` | When `false`, Redis errors propagate instead of triggering the Postgres rate-limit fallback. | — |
+| `TASKQ_MAX_KEYED_RESERVATIONS` | `int` | `10000` | Guardrail on the number of distinct keyed-reservation entries tracked in memory. When the limit is reached, new keyed reservations raise `ReservationUnavailable`. Tune to your workload's expected key cardinality. | Min: 1 |
+| `TASKQ_MAX_KEYED_RATE_LIMITS` | `int` | `10000` | Guardrail on the number of distinct keyed-rate-limit entries tracked in memory. When the limit is reached, new keyed rate limits raise `ReservationUnavailable`. Independent from `TASKQ_MAX_KEYED_RESERVATIONS`. Tune to your workload's expected key cardinality. | Min: 1 |
 
 See [rate-limiting.md](rate-limiting.md) for the fallback behaviour.
 
@@ -222,6 +230,13 @@ instrumentation.
 | `TASKQ_NOTIFY_RECONNECT_BACKOFF_INITIAL` | `float` (seconds) | `1.0` | Initial backoff before the first NOTIFY reconnect. Doubles each attempt, capped at 30 s. Sequence: 1, 2, 4, 8, 16, 30. | — |
 | `TASKQ_NOTIFY_ENABLED` | `bool` | `true` | When `true`, the worker uses LISTEN/NOTIFY for near-zero-latency dispatch wakeups with poll interval as fallback. When `false`, the worker uses poll-only dispatch. | — |
 | `TASKQ_NOTIFY_POLL_INTERVAL` | `float` (seconds) | `5.0` | Fallback poll cadence when NOTIFY is enabled. Uses `TASKQ_POLL_INTERVAL` when NOTIFY is disabled. | Min: 0.5 |
+
+### Credential Hot-Reload
+
+| Env Var | Type | Default | Description | Constraints |
+|---|---|---|---|---|
+| `TASKQ_RELOAD_INTERVAL` | `float \| None` (seconds) | `None` (disabled) | When set, the worker periodically triggers a credential hot-reload (the same path as SIGHUP) with no external signal required — the rotation path for platforms without SIGHUP (e.g. Windows) and for hands-off scheduled rotation (e.g. ~720 s for AWS IAM's 15-minute tokens). `None` disables the timer; SIGHUP and `deps.request_reload()` still work. Only factory-backed resources are rebuilt; DSN/static credentials are unaffected. | Must be > 0 |
+| `TASKQ_RELOAD_FACTORY_TIMEOUT` | `float` (seconds) | `30.0` | Bounds each individual factory call during a credential hot-reload — a hung token endpoint is marked failed for that resource instead of wedging the reload coordinator (and all future SIGHUPs). | Must be > 0 |
 
 ### Queue Selection
 
