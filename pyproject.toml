@@ -202,6 +202,7 @@ ignore = [
 "src/taskq/backend/_terminal.py" = ["S608", "SIM117"]
 "src/taskq/backend/_enqueue.py" = ["S608", "SIM117"]
 "src/taskq/backend/_reads.py" = ["S608"]
+"src/taskq/backend/_cancel_bulk.py" = ["S608", "SIM117", "S311"]
 "src/taskq/backend/_dispatch.py" = ["S608", "SIM117"]
 "src/taskq/backend/_sql_templates.py" = ["S608"]
 # SIM117: pool.acquire() and conn.transaction() cannot be flattened into a
@@ -257,6 +258,7 @@ ignore = [
 # Same rationale — schema name validated via PostgresBackend constructor;
 # all user-supplied values use $N parameter binding.
 "tests/test_backend_equivalence.py" = ["S608"]
+"tests/test_cancel_where_pg.py" = ["S608"]
 # Same rationale — schema name validated against _IDENT_RE; all
 # user-supplied values use $N parameter binding.
 "tests/test_heartbeat_integration.py" = ["S608"]

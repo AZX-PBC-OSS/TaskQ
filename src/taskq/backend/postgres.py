@@ -23,6 +23,7 @@ from uuid import UUID
 import structlog
 
 from taskq._json import dumps_str
+from taskq.backend._cancel_bulk import _cancel_where
 from taskq.backend._dispatch import (
     _dispatch_batch as _dispatch,
 )
@@ -41,6 +42,7 @@ from taskq.backend._protocol import (
     AttemptOutcome,
     AttemptRow,
     BackendDeps,
+    BulkCancelResult,
     CancelFlag,
     ConnLike,
     EnqueueArgs,
@@ -618,6 +620,42 @@ class PostgresBackend:
             )
             for rec in recs
         ]
+
+    async def cancel_where(
+        self,
+        filter: JobFilter,
+        reason: str | None,
+    ) -> BulkCancelResult:
+        result, notify_targets = await _cancel_where(
+            self._worker_pool, self._schema_name, self._sql, filter, reason
+        )
+        if notify_targets:
+            channels: list[str] = []
+            payloads: list[str] = []
+            for target in notify_targets:
+                payload = dumps_str(
+                    {
+                        "type": "cancel",
+                        "job_id": str(target.job_id),
+                        "worker_id": str(target.worker_id),
+                    }
+                )
+                channels.extend(
+                    [
+                        events_channel(self._schema_name),
+                        worker_channel(self._schema_name, str(target.worker_id)),
+                    ]
+                )
+                payloads.extend([payload, payload])
+            async with self._worker_pool.acquire() as notify_conn:
+                await notify_conn.execute(
+                    "SELECT pg_notify(channel, payload) "
+                    "FROM unnest($1::text[], $2::text[]) AS t(channel, payload)",
+                    channels,
+                    payloads,
+                )
+            _cancel_notify_sent_counter.add(len(notify_targets), {"schema": self._schema_name})
+        return result
 
     # ── Admin operations ──────────────────────────────────────────────
 
