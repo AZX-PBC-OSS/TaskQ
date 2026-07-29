@@ -43,7 +43,7 @@ from taskq.obs import (
 from taskq.ratelimit.refs import KeyedReservationRef
 from taskq.ratelimit.registry import RateLimitRegistry, queue_concurrency_reservation_name
 from taskq.retry import ActorConfigLike
-from taskq.worker._consumer import consume_one_job
+from taskq.worker._consumer import AttemptOutcome, consume_one_job
 from taskq.worker._handlers import (
     _TERMINAL_WRITE_INFRA_EXCEPTIONS,  # pyright: ignore[reportPrivateUsage]  # Why: dispatch_one_job's direct-call path for _handle_generic_exception needs the same infra guard as _run_terminal_path to prevent false terminal Redis publishes and exception mislabeling.
     _handle_generic_exception,  # pyright: ignore[reportPrivateUsage]  # Why: _handle_generic_exception implements the same exception→retry/fail routing as consume_one_job's inner handlers; dispatch_one_job needs it for DI-resolution failures that escape consume_one_job's own try/except.
@@ -117,7 +117,7 @@ async def dispatch_one_job(
     max_retry_backoff: timedelta = timedelta(hours=24),
     logger_arg: structlog.stdlib.BoundLogger | None = None,
     enqueuer: SubJobEnqueuer,
-) -> None:
+) -> AttemptOutcome:
     """Dispatch one job through the DI-resolved actor scope.
 
     1. Create the CONSUMER span with link to the PRODUCER span.
@@ -167,7 +167,7 @@ async def dispatch_one_job(
     dispatch_log = logger_arg if logger_arg is not None else logger
 
     t0 = time.monotonic()
-    outcome: str = "failed"
+    outcome: AttemptOutcome = "failed"
 
     try:
         with safe_start_span(
@@ -327,3 +327,5 @@ async def dispatch_one_job(
         elapsed = time.monotonic() - t0
         record_consumed_message(job.actor, job.queue, outcome=_to_consumed_outcome(outcome))
         record_process_duration(job.actor, job.queue, elapsed)
+
+    return outcome

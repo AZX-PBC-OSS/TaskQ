@@ -67,6 +67,7 @@ type AttemptOutcome = Literal[
 ]
 
 __all__ = [
+    "AttemptOutcome",
     "_TerminalWriteFailed",
     "_dispatch_exception",
     "_handle_generic_exception",

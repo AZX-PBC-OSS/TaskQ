@@ -490,7 +490,7 @@ async def di_consumer_loop(
             on_success_timeout=actor_ref.on_success_timeout,
         )
         try:
-            await dispatch_one_job(
+            outcome = await dispatch_one_job(
                 backend=backend,
                 deps=deps,
                 job=job,
@@ -505,8 +505,11 @@ async def di_consumer_loop(
                 active_jobs=deps.active_jobs,
                 enqueuer=enqueuer,
             )
+            if outcome == "failed":
+                deps.drain_failures += 1
         except Exception:
             _consumer_log.exception("dispatch-failed", job_id=str(job.id))
+            deps.drain_failures += 1
 
 
 async def register_worker(pool: asyncpg.Pool, settings: WorkerSettings) -> UUID:

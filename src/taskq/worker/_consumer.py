@@ -12,7 +12,7 @@ reservation denied, generic) live in :mod:`taskq.worker._handlers`.
 import asyncio
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import timedelta
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 import asyncpg
@@ -63,6 +63,7 @@ from taskq.retry import (
 from taskq.settings import WorkerSettings
 from taskq.worker._handlers import (
     _TERMINAL_WRITE_INFRA_EXCEPTIONS,
+    AttemptOutcome,
     _dispatch_exception,
     _handle_reservation_class_denied,
     _log_terminal_write_failed,
@@ -73,13 +74,6 @@ from taskq.worker.deps import WorkerDeps
 
 if TYPE_CHECKING:
     import redis.asyncio as redis_async
-
-type AttemptOutcome = Literal[
-    "succeeded",
-    "failed",
-    "cancelled",
-    "scheduled",
-]
 
 _log: structlog.stdlib.BoundLogger = get_logger(__name__)
 
