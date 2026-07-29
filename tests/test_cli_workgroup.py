@@ -117,3 +117,26 @@ def test_workgroup_validate_os_error(monkeypatch: Any, tmp_path: Path) -> None:
     assert result.exit_code == 1, f"stderr: {result.stderr}"
     assert "failed to read config" in result.stderr
     assert "perm denied" in result.stderr
+
+
+# ── python -m taskq entry point ───────────────────────────────────────────
+
+
+def test_python_dash_m_taskq_entrypoint() -> None:
+    """``python -m taskq`` must work: the workgroup supervisor spawns child
+    workers via ``[sys.executable, "-m", "taskq", "worker", ...]``
+    (``workgroup._spawn_child``), so a missing ``taskq.__main__`` kills every
+    spawned worker with ``No module named taskq.__main__``. Regression test:
+    invoke the interpreter flag path in a real subprocess."""
+    import subprocess
+    import sys
+
+    proc = subprocess.run(
+        [sys.executable, "-m", "taskq", "--help"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "workgroup" in proc.stdout
