@@ -476,3 +476,72 @@ def test_missing_provider_isinstance_taskqerror() -> None:
     """MissingProvider is a TaskQError subclass."""
     exc = MissingProvider(type_name="X", required_by="Y")
     assert isinstance(exc, TaskQError)
+
+
+class TestActorDeregistrationErrors:
+    """Tests for the deregistration refusal exception hierarchy."""
+
+    def test_actor_has_active_jobs_error_carries_counts(self) -> None:
+        from taskq.exceptions import ActorHasActiveJobsError
+
+        err = ActorHasActiveJobsError(
+            actor="my-actor.run-123",
+            active_count=3,
+            status_counts={"pending": 2, "running": 1},
+        )
+        assert err.actor == "my-actor.run-123"
+        assert err.active_count == 3
+        assert err.status_counts == {"pending": 2, "running": 1}
+        assert "3 non-terminal" in str(err)
+        assert "force=True" in str(err)
+
+    def test_actor_has_enabled_schedules_error_carries_ids(self) -> None:
+        from taskq.exceptions import ActorHasEnabledSchedulesError
+
+        err = ActorHasEnabledSchedulesError(
+            actor="my-actor.run-123",
+            schedule_ids=["sched-1", "sched-2"],
+        )
+        assert err.actor == "my-actor.run-123"
+        assert err.schedule_ids == ["sched-1", "sched-2"]
+        assert "2 enabled cron schedule" in str(err)
+        assert "force=True" in str(err)
+
+    def test_actor_not_found_error(self) -> None:
+        from taskq.exceptions import ActorNotFoundError
+
+        err = ActorNotFoundError("ghost-actor")
+        assert err.actor == "ghost-actor"
+        assert "no stored actor_config row" in str(err)
+
+    def test_deregistration_errors_inherit_taskq_error(self) -> None:
+        from taskq.exceptions import (
+            ActorDeregistrationError,
+            ActorHasActiveJobsError,
+            ActorHasEnabledSchedulesError,
+            ActorNotFoundError,
+            TaskQError,
+        )
+
+        for cls in (
+            ActorDeregistrationError,
+            ActorHasActiveJobsError,
+            ActorHasEnabledSchedulesError,
+            ActorNotFoundError,
+        ):
+            assert issubclass(cls, TaskQError)
+
+    def test_specific_errors_inherit_deregistration_error(self) -> None:
+        from taskq.exceptions import (
+            ActorDeregistrationError,
+            ActorHasActiveJobsError,
+            ActorHasEnabledSchedulesError,
+            ActorNotFoundError,
+        )
+
+        for cls in (
+            ActorHasActiveJobsError,
+            ActorHasEnabledSchedulesError,
+            ActorNotFoundError,
+        ):
+            assert issubclass(cls, ActorDeregistrationError)
