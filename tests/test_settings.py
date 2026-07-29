@@ -1020,3 +1020,219 @@ def test_oidc_reset_cached_forces_reload(monkeypatch: pytest.MonkeyPatch) -> Non
         assert s.oidc.issuer == "https://idp-b.example"
     finally:
         OIDCSettings.reset_cached()
+
+
+# ── log_level validation ─────────────────────────────────────────────
+
+
+def test_log_level_default() -> None:
+    """log_level defaults to 'INFO'."""
+    s = _load()
+    assert s.log_level == "INFO"
+
+
+def test_log_level_valid_via_dict() -> None:
+    """TASKQ_LOG_LEVEL=DEBUG loads successfully."""
+    s = _load(TASKQ_LOG_LEVEL="DEBUG")
+    assert s.log_level == "DEBUG"
+
+
+def test_log_level_case_insensitive_lower() -> None:
+    """TASKQ_LOG_LEVEL=debug normalizes to 'DEBUG'."""
+    s = _load(TASKQ_LOG_LEVEL="debug")
+    assert s.log_level == "DEBUG"
+
+
+def test_log_level_case_insensitive_mixed() -> None:
+    """TASKQ_LOG_LEVEL=Warning normalizes to 'WARNING'."""
+    s = _load(TASKQ_LOG_LEVEL="Warning")
+    assert s.log_level == "WARNING"
+
+
+def test_log_level_invalid_raises() -> None:
+    """TASKQ_LOG_LEVEL=BOGUS raises ConstraintViolationError."""
+    with pytest.raises(ConstraintViolationError, match=r"log_level must be one of"):
+        _load(TASKQ_LOG_LEVEL="BOGUS")
+
+
+# ── sso_backend validation ───────────────────────────────────────────
+
+
+def test_sso_backend_default() -> None:
+    """sso_backend defaults to 'none'."""
+    s = _load()
+    assert s.sso_backend == "none"
+
+
+def test_sso_backend_valid_via_dict() -> None:
+    """TASKQ_SSO_BACKEND=oidc loads successfully."""
+    s = _load(TASKQ_SSO_BACKEND="oidc")
+    assert s.sso_backend == "oidc"
+
+
+def test_sso_backend_case_insensitive_upper() -> None:
+    """TASKQ_SSO_BACKEND=OIDC normalizes to 'oidc'."""
+    s = _load(TASKQ_SSO_BACKEND="OIDC")
+    assert s.sso_backend == "oidc"
+
+
+def test_sso_backend_case_insensitive_mixed() -> None:
+    """TASKQ_SSO_BACKEND=Saml normalizes to 'saml'."""
+    s = _load(TASKQ_SSO_BACKEND="Saml")
+    assert s.sso_backend == "saml"
+
+
+def test_sso_backend_invalid_raises() -> None:
+    """TASKQ_SSO_BACKEND=bogus raises ConstraintViolationError."""
+    with pytest.raises(ConstraintViolationError, match=r"sso_backend must be one of"):
+        _load(TASKQ_SSO_BACKEND="bogus")
+
+
+# ── poll_interval ge=0.1 ─────────────────────────────────────────────
+
+
+def test_poll_interval_default() -> None:
+    """poll_interval defaults to 1.0."""
+    s = _load()
+    assert s.poll_interval == 1.0
+
+
+def test_poll_interval_at_boundary_accepted() -> None:
+    """poll_interval=0.1 is accepted (ge=0.1 boundary)."""
+    s = _load(TASKQ_POLL_INTERVAL="0.1")
+    assert s.poll_interval == 0.1
+
+
+def test_poll_interval_below_boundary_raises() -> None:
+    """poll_interval=0.05 violates ge=0.1 constraint."""
+    with pytest.raises(ConstraintViolationError, match=r"greater than or equal to 0\.1"):
+        _load(TASKQ_POLL_INTERVAL="0.05")
+
+
+# ── notify_health_check_interval ge=0.1 ──────────────────────────────
+
+
+def test_notify_health_check_interval_at_boundary_accepted() -> None:
+    """notify_health_check_interval=0.1 is accepted (ge=0.1 boundary)."""
+    s = _load(TASKQ_NOTIFY_HEALTH_CHECK_INTERVAL="0.1")
+    assert s.notify_health_check_interval == 0.1
+
+
+def test_notify_health_check_interval_below_boundary_raises() -> None:
+    """notify_health_check_interval=0.05 violates ge=0.1 constraint."""
+    with pytest.raises(ConstraintViolationError, match=r"greater than or equal to 0\.1"):
+        _load(TASKQ_NOTIFY_HEALTH_CHECK_INTERVAL="0.05")
+
+
+# ── notify_reconnect_backoff_initial ge=0.01 ─────────────────────────
+
+
+def test_notify_reconnect_backoff_initial_at_boundary_accepted() -> None:
+    """notify_reconnect_backoff_initial=0.01 is accepted (ge=0.01 boundary)."""
+    s = _load(TASKQ_NOTIFY_RECONNECT_BACKOFF_INITIAL="0.01")
+    assert s.notify_reconnect_backoff_initial == 0.01
+
+
+def test_notify_reconnect_backoff_initial_below_boundary_raises() -> None:
+    """notify_reconnect_backoff_initial=0.005 violates ge=0.01 constraint."""
+    with pytest.raises(ConstraintViolationError, match=r"greater than or equal to 0\.01"):
+        _load(TASKQ_NOTIFY_RECONNECT_BACKOFF_INITIAL="0.005")
+
+
+# ── prune_schedule_utc HH:MM validation ──────────────────────────────
+
+
+def test_prune_schedule_utc_valid_via_dict() -> None:
+    """TASKQ_PRUNE_SCHEDULE_UTC=12:30 loads successfully."""
+    s = _load(TASKQ_PRUNE_SCHEDULE_UTC="12:30")
+    assert s.prune_schedule_utc == "12:30"
+
+
+def test_prune_schedule_utc_midnight_accepted() -> None:
+    """TASKQ_PRUNE_SCHEDULE_UTC=00:00 is accepted."""
+    s = _load(TASKQ_PRUNE_SCHEDULE_UTC="00:00")
+    assert s.prune_schedule_utc == "00:00"
+
+
+def test_prune_schedule_utc_end_of_day_accepted() -> None:
+    """TASKQ_PRUNE_SCHEDULE_UTC=23:59 is accepted."""
+    s = _load(TASKQ_PRUNE_SCHEDULE_UTC="23:59")
+    assert s.prune_schedule_utc == "23:59"
+
+
+def test_prune_schedule_utc_bad_format_raises() -> None:
+    """TASKQ_PRUNE_SCHEDULE_UTC=3:00 (missing leading zero) raises."""
+    with pytest.raises(ConstraintViolationError, match=r"prune_schedule_utc must be HH:MM format"):
+        _load(TASKQ_PRUNE_SCHEDULE_UTC="3:00")
+
+
+def test_prune_schedule_utc_out_of_range_hours_raises() -> None:
+    """TASKQ_PRUNE_SCHEDULE_UTC=24:00 raises (hours must be 00-23)."""
+    with pytest.raises(ConstraintViolationError, match=r"prune_schedule_utc must be HH:MM format"):
+        _load(TASKQ_PRUNE_SCHEDULE_UTC="24:00")
+
+
+def test_prune_schedule_utc_out_of_range_minutes_raises() -> None:
+    """TASKQ_PRUNE_SCHEDULE_UTC=12:60 raises (minutes must be 00-59)."""
+    with pytest.raises(ConstraintViolationError, match=r"prune_schedule_utc must be HH:MM format"):
+        _load(TASKQ_PRUNE_SCHEDULE_UTC="12:60")
+
+
+# ── archive_expiry_schedule_utc HH:MM validation ─────────────────────
+
+
+def test_archive_expiry_schedule_utc_valid_via_dict() -> None:
+    """TASKQ_ARCHIVE_EXPIRY_SCHEDULE_UTC=23:59 loads successfully."""
+    s = _load(TASKQ_ARCHIVE_EXPIRY_SCHEDULE_UTC="23:59")
+    assert s.archive_expiry_schedule_utc == "23:59"
+
+
+def test_archive_expiry_schedule_utc_bad_format_raises() -> None:
+    """TASKQ_ARCHIVE_EXPIRY_SCHEDULE_UTC=foo raises."""
+    with pytest.raises(
+        ConstraintViolationError, match=r"archive_expiry_schedule_utc must be HH:MM format"
+    ):
+        _load(TASKQ_ARCHIVE_EXPIRY_SCHEDULE_UTC="foo")
+
+
+def test_archive_expiry_schedule_utc_out_of_range_hours_raises() -> None:
+    """TASKQ_ARCHIVE_EXPIRY_SCHEDULE_UTC=25:00 raises."""
+    with pytest.raises(
+        ConstraintViolationError, match=r"archive_expiry_schedule_utc must be HH:MM format"
+    ):
+        _load(TASKQ_ARCHIVE_EXPIRY_SCHEDULE_UTC="25:00")
+
+
+# ── prune_cron_expr validation ───────────────────────────────────────
+
+
+def test_prune_cron_expr_valid_via_dict() -> None:
+    """TASKQ_PRUNE_CRON_EXPR=0 3 * * * loads successfully."""
+    s = _load(TASKQ_PRUNE_CRON_EXPR="0 3 * * *")
+    assert s.prune_cron_expr == "0 3 * * *"
+
+
+def test_prune_cron_expr_invalid_raises() -> None:
+    """TASKQ_PRUNE_CRON_EXPR=not-a-cron raises ConstraintViolationError."""
+    with pytest.raises(
+        ConstraintViolationError, match=r"prune_cron_expr must be a valid cron expression"
+    ):
+        _load(TASKQ_PRUNE_CRON_EXPR="not-a-cron")
+
+
+# ── archive_expiry_cron_expr validation ──────────────────────────────
+
+
+def test_archive_expiry_cron_expr_valid_via_dict() -> None:
+    """TASKQ_ARCHIVE_EXPIRY_CRON_EXPR=*/5 * * * * loads successfully."""
+    s = _load(TASKQ_ARCHIVE_EXPIRY_CRON_EXPR="*/5 * * * *")
+    assert s.archive_expiry_cron_expr == "*/5 * * * *"
+
+
+def test_archive_expiry_cron_expr_invalid_raises() -> None:
+    """TASKQ_ARCHIVE_EXPIRY_CRON_EXPR=invalid raises ConstraintViolationError."""
+    with pytest.raises(
+        ConstraintViolationError,
+        match=r"archive_expiry_cron_expr must be a valid cron expression",
+    ):
+        _load(TASKQ_ARCHIVE_EXPIRY_CRON_EXPR="invalid")
