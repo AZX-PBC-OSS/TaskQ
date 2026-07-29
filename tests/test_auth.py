@@ -1,7 +1,7 @@
-"""Tests for taskq.auth — vendor-neutral credential providers and factories.
+"""Tests for taskq.auth - vendor-neutral credential providers and factories.
 
 Verifies the base interfaces (Protocols, credential carriers), the DSN
-enrichment helper, and the factory builders using fake providers — no
+enrichment helper, and the factory builders using fake providers - no
 real Postgres/Redis/Azure/AWS/Vault required.
 
 DSN-semantics tests verify through asyncpg's own resolver
@@ -21,7 +21,7 @@ from urllib.parse import parse_qs, urlparse
 import pytest
 import structlog.testing
 from asyncpg.connect_utils import (
-    _parse_connect_dsn_and_args,  # pyright: ignore[reportAttributeAccessIssue]  # Why: private resolver — the only way to verify DSN semantics through asyncpg's real precedence rules; pinned to asyncpg 0.31.
+    _parse_connect_dsn_and_args,  # pyright: ignore[reportAttributeAccessIssue]  # Why: private resolver - the only way to verify DSN semantics through asyncpg's real precedence rules; pinned to asyncpg 0.31.
 )
 
 from taskq.auth import (
@@ -58,7 +58,7 @@ def _resolve(dsn: str, **kwargs: Any) -> Any:
     return params
 
 
-# ── Fake providers ─────────────────────────────────────────────────────
+# ---- Fake providers --------------------------------------------------------------------------------------------------------
 
 
 class _FakePgProvider:
@@ -88,14 +88,14 @@ class _FakeRedisProvider:
 
 
 class _FakeDualProvider(_FakePgProvider, _FakeRedisProvider):
-    """Implements both Protocols — one instance for PG + Redis."""
+    """Implements both Protocols - one instance for PG + Redis."""
 
     def __init__(self) -> None:
         _FakePgProvider.__init__(self)
         _FakeRedisProvider.__init__(self)
 
 
-# ── Credential carriers ────────────────────────────────────────────────
+# ---- Credential carriers ----------------------------------------------------------------------------------------------
 
 
 def test_pg_credential_defaults_username_none() -> None:
@@ -119,7 +119,7 @@ def test_redis_credential_frozen() -> None:
         cred.password = "new"  # type: ignore[misc]
 
 
-# ── Protocol structural matching ───────────────────────────────────────
+# ---- Protocol structural matching ----------------------------------------------------------------------------
 
 
 def test_pg_provider_protocol_runtime_checkable() -> None:
@@ -134,7 +134,7 @@ def test_redis_provider_protocol_runtime_checkable() -> None:
     assert isinstance(_FakeDualProvider(), RedisCredentialProvider)
 
 
-# ── enrich_pg_dsn ──────────────────────────────────────────────────────
+# ---- enrich_pg_dsn ----------------------------------------------------------------------------------------------------------
 
 
 def test_enrich_pg_dsn_injects_password_and_forces_ssl() -> None:
@@ -164,7 +164,7 @@ def test_enrich_pg_dsn_credential_wins_over_userinfo_password() -> None:
     """A stale userinfo password MUST NOT shadow the injected credential.
 
     asyncpg applies userinfo before query params (both behind
-    ``if password is None`` guards), so a query-string password loses —
+    ``if password is None`` guards), so a query-string password loses -
     the credential must replace the userinfo password itself.
     """
     cred = PgCredential(password="fresh-token")
@@ -193,7 +193,7 @@ def test_enrich_pg_dsn_preserves_user_when_username_none() -> None:
 
 def test_enrich_pg_dsn_preserves_query_carried_user() -> None:
     """A user carried in the QUERY string (no userinfo in the DSN) must
-    survive enrichment — dropping it would silently fall back to the OS
+    survive enrichment - dropping it would silently fall back to the OS
     user at connect time."""
     cred = PgCredential(password="tok")
     result = enrich_pg_dsn("postgresql://host/db?user=principal%40tenant.onmicrosoft.com", cred)
@@ -204,7 +204,7 @@ def test_enrich_pg_dsn_preserves_query_carried_user() -> None:
 
 @pytest.mark.parametrize("mode", ["verify-ca", "verify-full"])
 def test_enrich_pg_dsn_does_not_downgrade_stronger_sslmode(mode: str) -> None:
-    """An explicit sslmode must survive enrichment — require skips
+    """An explicit sslmode must survive enrichment - require skips
     certificate verification, so downgrading verify-* would expose the
     injected token to a MITM. (Asserted on the query param directly:
     resolving verify-* would need a root cert on disk.)"""
@@ -214,7 +214,7 @@ def test_enrich_pg_dsn_does_not_downgrade_stronger_sslmode(mode: str) -> None:
 
 
 def test_enrich_pg_dsn_special_char_password_round_trips() -> None:
-    """AWS IAM tokens contain &=/%:+ — they must survive userinfo encoding."""
+    """AWS IAM tokens contain &=/%:+ - they must survive userinfo encoding."""
     cred = PgCredential(password="X-Amz-Sig=a+b/c==&x%y:z")
     result = enrich_pg_dsn("postgresql://user@host/db", cred)
     params = _resolve(result)
@@ -229,7 +229,7 @@ def test_enrich_pg_dsn_preserves_blank_and_multi_valued_params() -> None:
     assert result.count("x=") == 2
 
 
-# ── make_pg_pool_factory ───────────────────────────────────────────────
+# ---- make_pg_pool_factory --------------------------------------------------------------------------------------------
 
 
 async def test_make_pg_pool_factory_fetches_credential_and_creates_pool() -> None:
@@ -252,7 +252,7 @@ async def test_make_pg_pool_factory_fetches_credential_and_creates_pool() -> Non
     assert call_kwargs["max_size"] == 8
     assert call_kwargs["command_timeout"] == 5
     # The credential travels as kwargs (which beat userinfo and query
-    # params in asyncpg's resolver) — not embedded in the DSN string.
+    # params in asyncpg's resolver) - not embedded in the DSN string.
     assert call_kwargs["password"] == "tok-999"
     assert "tok-999" not in call_kwargs["dsn"]
     assert "sslmode=require" in call_kwargs["dsn"]
@@ -294,7 +294,7 @@ async def test_make_pg_pool_factory_kwargs_beat_stale_userinfo() -> None:
 
 
 async def test_make_pg_pool_factory_refetches_credential_per_invocation() -> None:
-    """Each factory invocation fetches a fresh credential — the SIGHUP rotation contract."""
+    """Each factory invocation fetches a fresh credential - the SIGHUP rotation contract."""
     provider = _FakePgProvider(password="tok")
     factory = make_pg_pool_factory("postgresql://user@host/db", provider)
 
@@ -307,7 +307,7 @@ async def test_make_pg_pool_factory_refetches_credential_per_invocation() -> Non
 
 async def test_make_pg_pool_factory_forwards_init_hook_verbatim() -> None:
     """init= reaches asyncpg.create_pool as-is, alongside the factory's own
-    kwargs — the per-connection hook for e.g. pgvector codec registration."""
+    kwargs - the per-connection hook for e.g. pgvector codec registration."""
     provider = _FakePgProvider(password="tok-555")
 
     async def init(conn: Any) -> None:
@@ -322,15 +322,15 @@ async def test_make_pg_pool_factory_forwards_init_hook_verbatim() -> None:
         await factory()
 
     call_kwargs = mock_create.call_args.kwargs
-    # Identity — the caller's coroutine function itself, never a wrapper.
+    # Identity - the caller's coroutine function itself, never a wrapper.
     assert call_kwargs["init"] is init
     # Composition: the factory's own kwargs are untouched by the hook.
     assert call_kwargs["password"] == "tok-555"
     assert call_kwargs["command_timeout"] == 5
     assert "sslmode=require" in call_kwargs["dsn"]
 
-    # Drive the hook the way asyncpg does — once per new physical
-    # connection — and verify it registers a codec ON THAT CONNECTION
+    # Drive the hook the way asyncpg does - once per new physical
+    # connection - and verify it registers a codec ON THAT CONNECTION
     # (the pgvector use case), not merely that a callable was passed.
     conn = MagicMock()
     conn.set_type_codec = AsyncMock()
@@ -340,7 +340,7 @@ async def test_make_pg_pool_factory_forwards_init_hook_verbatim() -> None:
 
 
 async def test_make_pg_pool_factory_omits_init_when_not_provided() -> None:
-    """Without init=, no init kwarg reaches create_pool — existing callers
+    """Without init=, no init kwarg reaches create_pool - existing callers
     are byte-for-byte unaffected (same forwarding contract as command_timeout)."""
     provider = _FakePgProvider(password="tok")
     factory = make_pg_pool_factory("postgresql://user@host/db", provider)
@@ -351,7 +351,77 @@ async def test_make_pg_pool_factory_omits_init_when_not_provided() -> None:
     assert "init" not in mock_create.call_args.kwargs
 
 
-# ── make_dedicated_conn_factory ────────────────────────────────────────
+# ---- make_pg_pool_factory - server_settings / connection_class / setup ----
+
+
+async def test_make_pg_pool_factory_forwards_server_settings() -> None:
+    """server_settings reaches asyncpg.create_pool kwargs verbatim."""
+    provider = _FakePgProvider(password="tok")
+    settings = {"statement_timeout": "30s", "search_path": "app"}
+
+    factory = make_pg_pool_factory(
+        "postgresql://user@host:5432/db", provider, server_settings=settings
+    )
+
+    fake_pool = MagicMock()
+    with patch("asyncpg.create_pool", new=AsyncMock(return_value=fake_pool)) as mock_create:
+        await factory()
+
+    call_kwargs = mock_create.call_args.kwargs
+    assert call_kwargs["server_settings"] is settings
+
+
+async def test_make_pg_pool_factory_forwards_connection_class() -> None:
+    """connection_class reaches asyncpg.create_pool kwargs verbatim."""
+
+    class CustomConnection:  # stand-in for an asyncpg.Connection subclass
+        pass
+
+    provider = _FakePgProvider(password="tok")
+    factory = make_pg_pool_factory(
+        "postgresql://user@host:5432/db", provider, connection_class=CustomConnection
+    )
+
+    fake_pool = MagicMock()
+    with patch("asyncpg.create_pool", new=AsyncMock(return_value=fake_pool)) as mock_create:
+        await factory()
+
+    call_kwargs = mock_create.call_args.kwargs
+    assert call_kwargs["connection_class"] is CustomConnection
+
+
+async def test_make_pg_pool_factory_forwards_setup() -> None:
+    """setup reaches asyncpg.create_pool kwargs verbatim - the per-acquire hook."""
+    provider = _FakePgProvider(password="tok")
+
+    async def setup(conn: Any) -> None:
+        await conn.execute("SET search_path TO app")
+
+    factory = make_pg_pool_factory("postgresql://user@host:5432/db", provider, setup=setup)
+
+    fake_pool = MagicMock()
+    with patch("asyncpg.create_pool", new=AsyncMock(return_value=fake_pool)) as mock_create:
+        await factory()
+
+    call_kwargs = mock_create.call_args.kwargs
+    assert call_kwargs["setup"] is setup
+
+
+async def test_make_pg_pool_factory_omits_new_params_when_not_provided() -> None:
+    """Without the new params, none reach create_pool - backward-compat guard."""
+    provider = _FakePgProvider(password="tok")
+    factory = make_pg_pool_factory("postgresql://user@host:5432/db", provider)
+
+    with patch("asyncpg.create_pool", new=AsyncMock(return_value=MagicMock())) as mock_create:
+        await factory()
+
+    call_kwargs = mock_create.call_args.kwargs
+    assert "server_settings" not in call_kwargs
+    assert "connection_class" not in call_kwargs
+    assert "setup" not in call_kwargs
+
+
+# ---- make_dedicated_conn_factory ------------------------------------------------------------------------------
 
 
 async def test_make_dedicated_conn_factory_fetches_credential_and_connects() -> None:
@@ -390,7 +460,74 @@ async def test_make_dedicated_conn_factory_with_username_override() -> None:
     assert params.password == "pw"
 
 
-# ── make_redis_client_factory ──────────────────────────────────────────
+# ---- make_dedicated_conn_factory - server_settings / connection_class / setup --
+
+
+async def test_make_dedicated_conn_factory_forwards_server_settings() -> None:
+    """server_settings reaches asyncpg.connect kwargs verbatim."""
+    provider = _FakePgProvider(password="tok")
+    settings = {"statement_timeout": "30s", "search_path": "app"}
+
+    factory = make_dedicated_conn_factory(
+        "postgresql://user@host:5432/db", provider, server_settings=settings
+    )
+
+    with patch("asyncpg.connect", new=AsyncMock(return_value=MagicMock())) as mock_connect:
+        await factory()
+
+    call_kwargs = mock_connect.call_args.kwargs
+    assert call_kwargs["server_settings"] is settings
+
+
+async def test_make_dedicated_conn_factory_forwards_connection_class() -> None:
+    """connection_class reaches asyncpg.connect kwargs verbatim."""
+
+    class CustomConnection:  # stand-in for an asyncpg.Connection subclass
+        pass
+
+    provider = _FakePgProvider(password="tok")
+    factory = make_dedicated_conn_factory(
+        "postgresql://user@host:5432/db", provider, connection_class=CustomConnection
+    )
+
+    with patch("asyncpg.connect", new=AsyncMock(return_value=MagicMock())) as mock_connect:
+        await factory()
+
+    call_kwargs = mock_connect.call_args.kwargs
+    assert call_kwargs["connection_class"] is CustomConnection
+
+
+async def test_make_dedicated_conn_factory_forwards_setup() -> None:
+    """setup reaches asyncpg.connect kwargs verbatim - runs once after connect."""
+    provider = _FakePgProvider(password="tok")
+
+    async def setup(conn: Any) -> None:
+        await conn.execute("SET search_path TO app")
+
+    factory = make_dedicated_conn_factory("postgresql://user@host:5432/db", provider, setup=setup)
+
+    with patch("asyncpg.connect", new=AsyncMock(return_value=MagicMock())) as mock_connect:
+        await factory()
+
+    call_kwargs = mock_connect.call_args.kwargs
+    assert call_kwargs["setup"] is setup
+
+
+async def test_make_dedicated_conn_factory_omits_new_params_when_not_provided() -> None:
+    """Without the new params, none reach connect - backward-compat guard."""
+    provider = _FakePgProvider(password="tok")
+    factory = make_dedicated_conn_factory("postgresql://user@host:5432/db", provider)
+
+    with patch("asyncpg.connect", new=AsyncMock(return_value=MagicMock())) as mock_connect:
+        await factory()
+
+    call_kwargs = mock_connect.call_args.kwargs
+    assert "server_settings" not in call_kwargs
+    assert "connection_class" not in call_kwargs
+    assert "setup" not in call_kwargs
+
+
+# ---- make_redis_client_factory ----------------------------------------------------------------------------------
 
 
 async def test_make_redis_client_factory_raises_when_url_none() -> None:
@@ -417,7 +554,7 @@ async def test_make_redis_client_factory_builds_with_credential_provider() -> No
     assert call_kwargs["decode_responses"] is False
 
     # redis-py's async connection calls get_credentials_async on every
-    # (re)connect — not get_credentials — so that's the method that must
+    # (re)connect - not get_credentials - so that's the method that must
     # actually delegate to the provider.
     adapter = call_kwargs["credential_provider"]
     username, password = await adapter.get_credentials_async()
@@ -431,7 +568,7 @@ async def test_make_redis_client_factory_builds_with_credential_provider() -> No
 
 
 async def test_make_redis_client_factory_warns_on_plaintext_scheme() -> None:
-    """redis:// sends the bearer token unencrypted — the factory must warn."""
+    """redis:// sends the bearer token unencrypted - the factory must warn."""
     provider = _FakeRedisProvider()
     factory = make_redis_client_factory("redis://cache.example.com:6379", provider)
 
@@ -446,7 +583,7 @@ async def test_make_redis_client_factory_warns_on_plaintext_scheme() -> None:
 
 
 async def test_make_redis_client_factory_no_warning_on_tls_scheme() -> None:
-    """rediss:// encrypts the token — no plaintext warning."""
+    """rediss:// encrypts the token - no plaintext warning."""
     provider = _FakeRedisProvider()
     factory = make_redis_client_factory("rediss://cache.example.com:6380", provider)
 

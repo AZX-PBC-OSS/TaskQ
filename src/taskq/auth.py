@@ -1,7 +1,7 @@
 """Vendor-neutral credential providers and connection factories.
 
 This module provides the reusable primitives for **rotating-credential**
-Postgres and Redis connections — the abstract interfaces that any auth
+Postgres and Redis connections - the abstract interfaces that any auth
 provider (Azure Entra ID, AWS IAM RDS, HashiCorp Vault, a custom OAuth
 flow, a secrets manager, …) plugs into. Provider-specific implementations
 live in the ``taskq[aad]``, ``taskq[aws]``, and ``taskq[vault]`` extras;
@@ -14,21 +14,21 @@ See the managed-identities deployment guide (docs/guides/managed-identities.md).
 Design
 ------
 
-* :class:`PgCredentialProvider` — async Protocol returning a
+* :class:`PgCredentialProvider` - async Protocol returning a
   :class:`PgCredential` (a password, optionally a fresh username). AAD
   and AWS IAM RDS return a token-as-password; Vault dynamic DB creds
   return a fresh username + password pair.
-* :class:`RedisCredentialProvider` — async Protocol returning a
+* :class:`RedisCredentialProvider` - async Protocol returning a
   :class:`RedisCredential` (username + password). AAD returns the
   managed-identity object ID + token.
 * :func:`make_pg_pool_factory` / :func:`make_dedicated_conn_factory` /
-  :func:`make_redis_client_factory` — accept any provider implementing
+  :func:`make_redis_client_factory` - accept any provider implementing
   the Protocol and return the zero-arg async factories that
   :class:`~taskq.connections.WorkerConnections` consumes. Credentials
   are passed to asyncpg as ``user=`` / ``password=`` keyword arguments
   (which take precedence over both DSN userinfo and query parameters),
   so the token never appears in the DSN string.
-* :func:`enrich_pg_dsn` — shared DSN helper for callers that need a
+* :func:`enrich_pg_dsn` - shared DSN helper for callers that need a
   self-contained DSN string: the credential is written into the DSN
   userinfo (the only slot asyncpg's resolver never shadows) and
   ``sslmode=require`` is added only when no sslmode is already set.
@@ -67,7 +67,7 @@ __all__ = [
 ]
 
 
-# ── Credential data carriers ───────────────────────────────────────────
+# --- Credential data carriers ---
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,7 +75,7 @@ class PgCredential:
     """A Postgres credential issued by a rotating-credential provider.
 
     ``password`` is always required (a token or dynamic password).
-    ``username``, when set, overrides the DSN's userinfo user — needed by
+    ``username``, when set, overrides the DSN's userinfo user - needed by
     providers that issue a fresh username alongside the password (e.g.
     Vault dynamic DB creds). When ``None``, the DSN's existing user is
     preserved.
@@ -93,7 +93,7 @@ class RedisCredential:
     password: str
 
 
-# ── Provider protocols ─────────────────────────────────────────────────
+# --- Provider protocols ---
 
 
 @runtime_checkable
@@ -103,7 +103,7 @@ class PgCredentialProvider(Protocol):
     Implementations fetch a fresh token / dynamic username+password each
     call. Called by :func:`make_pg_pool_factory` /
     :func:`make_dedicated_conn_factory` at pool / connection construction
-    time — not on each ``acquire()``.
+    time - not on each ``acquire()``.
     """
 
     async def get_pg_credential(self) -> PgCredential:
@@ -125,13 +125,13 @@ class RedisCredentialProvider(Protocol):
         ...
 
 
-# ── DSN enrichment ─────────────────────────────────────────────────────
+# --- DSN enrichment ---
 
 
 def _ensure_sslmode_require(dsn: str) -> str:
     """Add ``sslmode=require`` to *dsn* unless an sslmode is already set.
 
-    An explicit sslmode is never overridden — in particular stronger
+    An explicit sslmode is never overridden - in particular stronger
     modes (``verify-ca`` / ``verify-full``) must not be downgraded:
     ``require`` skips certificate verification, which would expose the
     very token this module injects to a MITM.
@@ -148,7 +148,7 @@ def enrich_pg_dsn(dsn: str, credential: PgCredential) -> str:
     """Apply *credential* to *dsn* and return a self-contained DSN string.
 
     The credential is written into the DSN **userinfo** (percent-encoded),
-    replacing any existing userinfo password — and replacing the userinfo
+    replacing any existing userinfo password - and replacing the userinfo
     user when ``credential.username`` is set (Vault dynamic DB creds).
     This is the only slot that is guaranteed to take effect: asyncpg's
     resolver applies userinfo *before* query parameters (both behind
@@ -157,14 +157,14 @@ def enrich_pg_dsn(dsn: str, credential: PgCredential) -> str:
     the DSN already carries userinfo. A stale ``password=`` query
     parameter is dropped (always shadowed by the userinfo password);
     a ``user=`` query parameter is dropped only when the userinfo
-    carries a user to shadow it — a query-carried user with no userinfo
+    carries a user to shadow it - a query-carried user with no userinfo
     user is the effective principal and is preserved.
 
     ``sslmode=require`` is added only when the DSN has no explicit
     sslmode, so stronger modes (``verify-full``) are never downgraded.
 
     Prefer the factory builders (:func:`make_pg_pool_factory` /
-    :func:`make_dedicated_conn_factory`) where possible — they pass the
+    :func:`make_dedicated_conn_factory`) where possible - they pass the
     credential as keyword arguments instead, keeping the token out of
     the DSN string entirely.
     """
@@ -181,7 +181,7 @@ def enrich_pg_dsn(dsn: str, credential: PgCredential) -> str:
         user = quote(credential.username, safe="")
     if user:
         # The userinfo will carry a user, which shadows any query user= in
-        # asyncpg's resolver — drop the stale query copy. When the userinfo
+        # asyncpg's resolver - drop the stale query copy. When the userinfo
         # has NO user (credential.username unset, none in the DSN), a query
         # user= is the effective principal and must be preserved.
         query.pop("user", None)
@@ -192,7 +192,7 @@ def enrich_pg_dsn(dsn: str, credential: PgCredential) -> str:
     return urlunparse(parsed._replace(netloc=netloc, query=new_query))
 
 
-# ── Factory builders ───────────────────────────────────────────────────
+# --- Factory builders ---
 #
 # All factories are zero-arg async callables matching the ``PoolFactory`` /
 # ``ConnFactory`` / ``RedisFactory`` aliases in :mod:`taskq.connections`.
@@ -209,12 +209,15 @@ def make_pg_pool_factory(
     max_inactive_connection_lifetime: float = 300.0,
     command_timeout: float | None = None,
     init: Callable[[asyncpg.Connection], Awaitable[None]] | None = None,
+    setup: Callable[[asyncpg.Connection], Awaitable[None]] | None = None,
+    server_settings: dict[str, str] | None = None,
+    connection_class: type[asyncpg.Connection] | None = None,
 ) -> PoolFactory:
     """Build a :data:`~taskq.connections.PoolFactory` backed by *provider*.
 
     Each invocation fetches a fresh :class:`PgCredential` from *provider*
     and calls ``asyncpg.create_pool`` with the credential as keyword
-    arguments — ``password=`` always, ``user=`` when the credential
+    arguments - ``password=`` always, ``user=`` when the credential
     carries a username. Keyword arguments take precedence over both DSN
     userinfo and query parameters in asyncpg's resolver, so a stale
     credential baked into *dsn* can never shadow the fresh one, and the
@@ -224,24 +227,42 @@ def make_pg_pool_factory(
     Token refresh: the credential is fetched when the factory is invoked,
     not on each ``acquire()``. For long-lived workers, send ``SIGHUP`` to
     the worker process on a schedule shorter than the credential lifetime
-    — this factory is re-invoked automatically to rebuild the pool with a
+    - this factory is re-invoked automatically to rebuild the pool with a
     fresh credential (see ``taskq.worker.deps.reload_credentials``); no
     restart needed.
 
     Per-connection setup: *init* is forwarded verbatim to
     ``asyncpg.create_pool`` and runs **once per new physical connection**
-    — on the connections opened at pool creation, on connections opened
+    - on the connections opened at pool creation, on connections opened
     later by pool growth, and again on replacements opened after
     ``max_inactive_connection_lifetime`` recycles an idle connection.
-    That lifecycle is exactly why this setup (registering type codecs —
-    e.g. ``pgvector.asyncpg.register_vector`` — preparing statements,
+    That lifecycle is exactly why this setup (registering type codecs -
+    e.g. ``pgvector.asyncpg.register_vector`` - preparing statements,
     setting session GUCs) cannot be done correctly after pool creation:
     a connection configured by hand is silently replaced under load or
     after an idle period. This factory installs no per-connection setup
     of its own (credential rotation happens per factory invocation, at
-    pool construction — not per connection), so a caller-supplied *init*
+    pool construction - not per connection), so a caller-supplied *init*
     is the only hook: it is passed through unwrapped and can never
     silently replace internal setup.
+
+    Per-acquire setup: *setup* is forwarded to ``asyncpg.create_pool``
+    and runs **every time a connection is acquired from the pool**
+    (via ``pool.acquire()``), not just on new-connection creation. Use
+    it for per-checkout work that must run even when a pooled connection
+    is reused - e.g. resetting ``search_path`` or verifying session
+    state. Unlike *init*, *setup* runs on every acquire, so keep it
+    lightweight. Both *init* and *setup* can be provided simultaneously.
+
+    *server_settings* is forwarded to ``asyncpg.create_pool`` and applied
+    as session-level GUCs on every new connection (e.g.
+    ``{"statement_timeout": "30s", "search_path": "app"}``). Useful for
+    per-pool configuration that must be set at connection time.
+
+    *connection_class* is forwarded to ``asyncpg.create_pool`` and sets
+    the :class:`asyncpg.Connection` subclass used by the pool. Use it to
+    install custom codecs or override connection methods across the
+    entire pool.
     """
     import asyncpg  # Why: deferred so this module is import-safe without asyncpg at module load.
 
@@ -260,6 +281,12 @@ def make_pg_pool_factory(
             kwargs["command_timeout"] = command_timeout
         if init is not None:
             kwargs["init"] = init
+        if setup is not None:
+            kwargs["setup"] = setup
+        if server_settings is not None:
+            kwargs["server_settings"] = server_settings
+        if connection_class is not None:
+            kwargs["connection_class"] = connection_class
         pool = await asyncpg.create_pool(**kwargs)
         assert pool is not None  # asyncpg returns None only for record_class paths
         return pool
@@ -270,6 +297,10 @@ def make_pg_pool_factory(
 def make_dedicated_conn_factory(
     dsn: str,
     provider: PgCredentialProvider,
+    *,
+    setup: Callable[[asyncpg.Connection], Awaitable[None]] | None = None,
+    server_settings: dict[str, str] | None = None,
+    connection_class: type[asyncpg.Connection] | None = None,
 ) -> ConnFactory:
     """Build a :data:`~taskq.connections.ConnFactory` backed by *provider*.
 
@@ -278,6 +309,19 @@ def make_dedicated_conn_factory(
     :func:`make_pg_pool_factory`, the credential is passed as keyword
     arguments (precedence over userinfo and query params; the token
     never appears in the DSN string).
+
+    *setup* is forwarded to ``asyncpg.connect`` and runs once after the
+    connection is established (e.g. registering type codecs, setting
+    session GUCs). For a dedicated connection this is equivalent to
+    *init* on a pool - there is no acquire/reuse cycle.
+
+    *server_settings* is forwarded to ``asyncpg.connect`` and applied as
+    session-level GUCs at connect time (e.g.
+    ``{"statement_timeout": "30s", "search_path": "app"}``).
+
+    *connection_class* is forwarded to ``asyncpg.connect`` and sets the
+    :class:`asyncpg.Connection` subclass for this connection. Use it to
+    install custom codecs or override connection methods.
     """
     import asyncpg
 
@@ -289,6 +333,12 @@ def make_dedicated_conn_factory(
         }
         if credential.username is not None:
             kwargs["user"] = credential.username
+        if setup is not None:
+            kwargs["setup"] = setup
+        if server_settings is not None:
+            kwargs["server_settings"] = server_settings
+        if connection_class is not None:
+            kwargs["connection_class"] = connection_class
         return await asyncpg.connect(**kwargs)
 
     return factory
@@ -304,7 +354,7 @@ def make_redis_client_factory(
     ``url`` is the Redis URL **without** credentials. The factory attaches
     a redis-py ``CredentialProvider`` that delegates to *provider*, so
     reconnects re-fetch the credential automatically. Use a ``rediss://``
-    (TLS) URL — with a plain ``redis://`` URL the bearer token is sent
+    (TLS) URL - with a plain ``redis://`` URL the bearer token is sent
     unencrypted, and the factory logs a warning.
 
     If ``url`` is ``None`` the factory raises :class:`RuntimeError` when
@@ -319,7 +369,7 @@ def make_redis_client_factory(
         """redis-py ``CredentialProvider`` → TaskQ ``RedisCredentialProvider``.
 
         redis-py's async connection calls ``get_credentials_async`` (not
-        ``get_credentials``) on every (re)connect — the base class's
+        ``get_credentials``) on every (re)connect - the base class's
         ``get_credentials_async`` only exists for backward compatibility
         and delegates to the *sync* ``get_credentials``, so it must be
         overridden here for the credential to actually rotate.
