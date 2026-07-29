@@ -54,3 +54,83 @@ class TestBuildFilterConditions:
             JobFilter(cursor="some-cursor", order_by=None),
         )
         assert result.conditions == ()
+
+
+class TestSQLInjectionSafety:
+    """Verify user-supplied values are always parameterized, never
+    interpolated into the SQL condition string.
+
+    Every condition must use ``$N`` positional binding — no raw user
+    value may appear in ``conditions``. Column names are hardcoded
+    literals, not derived from input.
+    """
+
+    def test_queue_with_sql_metacharacters_is_parameterized(self) -> None:
+        """A queue name containing SQL injection payload must end up in
+        params, not in the condition string."""
+        payload = "'; DROP TABLE jobs; --"
+        result = build_filter_conditions(JobFilter(queue=payload))
+        assert result.params == (payload,)
+        for cond in result.conditions:
+            assert payload not in cond
+            assert "$" in cond
+
+    def test_actor_with_sql_metacharacters_is_parameterized(self) -> None:
+        payload = "admin' OR '1'='1"
+        result = build_filter_conditions(JobFilter(actor=payload))
+        assert result.params == (payload,)
+        for cond in result.conditions:
+            assert payload not in cond
+
+    def test_tags_with_sql_metacharacters_are_parameterized(self) -> None:
+        payload = ("'; DELETE FROM jobs WHERE '1'='1",)
+        result = build_filter_conditions(JobFilter(tags=payload))
+        assert result.params == (list(payload),)
+        for cond in result.conditions:
+            assert payload[0] not in cond
+
+    def test_identity_key_with_sql_metacharacters_is_parameterized(self) -> None:
+        from taskq.backend._protocol import IdentityKey
+
+        payload = IdentityKey("x'; DROP TABLE jobs; --")
+        result = build_filter_conditions(JobFilter(identity_key=payload))
+        assert result.params == (payload,)
+        for cond in result.conditions:
+            assert str(payload) not in cond
+
+    def test_conditions_only_contain_placeholders_and_column_names(self) -> None:
+        """Every condition string must be composed solely of known column
+        names, operators, and $N placeholders — never raw user input."""
+        result = build_filter_conditions(
+            JobFilter(
+                queue="myqueue",
+                actor="myactor",
+                tags=("tag1", "tag2"),
+                batch_id=uuid4(),
+            )
+        )
+        allowed_substrings = {
+            "queue",
+            "status",
+            "actor",
+            "identity_key",
+            "metadata",
+            "tags",
+            " = $",
+            " = ANY($",
+            " @> $",
+            " && $",
+            "::jsonb",
+            "::text[]",
+        }
+        for cond in result.conditions:
+            stripped = cond
+            for s in allowed_substrings:
+                stripped = stripped.replace(s, "")
+            stripped = stripped.replace("$", "").replace("0", "").replace("1", "")
+            stripped = stripped.replace("2", "").replace("3", "").replace("4", "")
+            stripped = stripped.replace("5", "").replace("6", "").replace("7", "")
+            stripped = stripped.replace("8", "").replace("9", "")
+            assert stripped == "", (
+                f"Unexpected content in condition: {cond!r} (residue: {stripped!r})"
+            )
