@@ -217,7 +217,7 @@ class TestRuntimeCheckable:
 class TestMethodCount:
     def test_exactly_thirty_six_public_members(self) -> None:
         public = [m for m in dir(Backend) if not m.startswith("_")]
-        assert len(public) == 36, f"Expected 36 public members, got {len(public)}: {public}"
+        assert len(public) == 37, f"Expected 37 public members, got {len(public)}: {public}"
 
     def test_all_member_names_present(self) -> None:
         expected = {
@@ -250,6 +250,7 @@ class TestMethodCount:
             "get",
             "list_jobs",
             "count_pending_jobs",
+            "count_active_jobs",
             "get_actor_max_pending",
             "subscribe_wake",
             "subscribe_cancel_wake",

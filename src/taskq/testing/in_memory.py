@@ -50,6 +50,7 @@ from taskq.backend._protocol import (
     ScheduleUpdateArgs,
 )
 from taskq.backend.clock import Clock
+from taskq.backend.statemachine import ACTIVE_STATUSES
 from taskq.retry import OnRetryExhausted, OnSuccess, RetryClassifierHook, RetryPolicy
 from taskq.testing._dispatch import _dispatch_batch, _set_queue_mode
 from taskq.testing._enqueue import (
@@ -689,6 +690,16 @@ class InMemoryBackend:
 
     async def count_pending_jobs(self, actors: list[str]) -> dict[str, int]:
         return await _count_pending_jobs(self, actors)
+
+    async def count_active_jobs(self, queues: list[str]) -> int:
+        if not queues:
+            return 0
+        queue_set = set(queues)
+        return sum(
+            1 for r in self._jobs.values()
+            if r.queue in queue_set
+            and r.status in ACTIVE_STATUSES
+        )
 
     async def get_actor_max_pending(self) -> dict[str, int | None]:
         return await _get_actor_max_pending(self)

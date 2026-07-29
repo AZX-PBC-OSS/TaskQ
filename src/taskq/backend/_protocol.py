@@ -998,6 +998,15 @@ class Backend(Protocol):
         """
         ...
 
+    async def count_active_jobs(self, queues: list[str]) -> int:
+        """Count non-terminal jobs (pending, scheduled, running) in the given queues.
+
+        Returns the total count across all specified queues. Used by the
+        drain monitor to detect when queues are empty. An empty queues
+        list returns 0.
+        """
+        ...
+
     async def get_actor_max_pending(self) -> dict[str, int | None]:
         """Return the stored ``actor_config.max_pending`` for every actor
         with a row.
