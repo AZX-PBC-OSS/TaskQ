@@ -491,3 +491,26 @@ class SubEnqueueError(TaskQError):
         super().__init__(
             f"SubEnqueueError: {len(failed_items)} sub-job(s) failed to enqueue after parent commit"
         )
+
+
+class BatchAbortedError(TaskQError):
+    """A batch was aborted because consecutive failures exceeded the threshold."""
+
+    def __init__(self, batch_id: UUID, consecutive_failures: int, threshold: int) -> None:
+        self.batch_id = batch_id
+        self.consecutive_failures = consecutive_failures
+        self.threshold = threshold
+        super().__init__(
+            f"batch {batch_id} aborted after {consecutive_failures} consecutive failures "
+            f"(threshold={threshold})"
+        )
+
+
+class EmptyBatchError(TaskQError):
+    """A batch has fewer jobs than the expected minimum."""
+
+    def __init__(self, batch_id: UUID, expected: int, actual: int) -> None:
+        self.batch_id = batch_id
+        self.expected = expected
+        self.actual = actual
+        super().__init__(f"batch {batch_id} has {actual} jobs, expected at least {expected}")
