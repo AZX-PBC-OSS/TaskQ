@@ -117,13 +117,19 @@ async def open_dedicated_conn(
     *,
     label: str,
     apply_keepalive: bool = True,
+    command_timeout: float | None = None,
 ) -> asyncpg.Connection:
     """Open a dedicated (non-pooled) asyncpg connection.
 
     If ``apply_keepalive`` is True, sets TCP keepalive
     on the underlying socket after the connection is established.
+    If ``command_timeout`` is set, applies it so a stalled PG cannot
+    hang the caller indefinitely.
     """
-    conn = await asyncpg.connect(dsn)
+    if command_timeout is not None:
+        conn = await asyncpg.connect(dsn, command_timeout=command_timeout)
+    else:
+        conn = await asyncpg.connect(dsn)
     applied = apply_keepalive_to_conn(conn, label=label) if apply_keepalive else False
     logger.info(
         "dedicated-connection-opened",
@@ -334,6 +340,7 @@ async def open_worker_deps(
                     min_size=1,
                     max_size=settings.dispatcher_pool_size,
                     max_inactive_connection_lifetime=_lifetime,
+                    command_timeout=settings.dispatcher_command_timeout,
                 )
                 assert pool is not None
                 return pool

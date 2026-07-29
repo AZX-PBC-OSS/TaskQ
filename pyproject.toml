@@ -463,7 +463,7 @@ markers = [
     "integration: marks tests requiring testcontainers",
     "redis: marks tests requiring the [redis] extra and a Redis container",
     "examples: marks tests for the example app (excluded from default CI run)",
-    "e2e: end-to-end tests with containerized workers (manual-only; run with -m e2e)",
+    "e2e: end-to-end tests with containerized workers (requires --e2e opt-in; CI job 'e2e')",
 ]
 
 [tool.coverage.run]
@@ -509,10 +509,10 @@ dev = [
     "ruff>=0.15.22",
     "testcontainers[postgres,redis]>=4.14.2",
 ]
-# Manual-only e2e tier (tests/e2e): container image builds for worker
+# Containerized e2e tier (tests/e2e): container image builds for worker
 # containers. Kept out of the default dev group so plain `uv sync` and
 # non-e2e CI legs don't pull the docker SDK; collection of the tier is
-# gated separately via pytest --e2e (tests/conftest.py).
+# gated separately via pytest --e2e (root conftest.py).
 e2e = [
     "containerspec[build]>=0.1.7",
 ]

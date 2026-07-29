@@ -227,6 +227,7 @@ class MaintenanceLeader:
             str(dsn),
             label=label,
             apply_keepalive=True,
+            command_timeout=self._deps.settings.dispatcher_command_timeout,
         )
 
     async def run(self, shutdown: asyncio.Event) -> None:

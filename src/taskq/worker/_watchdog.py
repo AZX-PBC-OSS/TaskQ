@@ -47,6 +47,7 @@ from collections.abc import Callable, Iterator
 from typing import Any
 
 import structlog
+from opentelemetry import metrics as otel_metrics
 from opentelemetry.metrics import CallbackOptions, Observation
 
 from taskq.obs import get_logger, get_meter
@@ -74,7 +75,9 @@ _meter = get_meter()
 _shutdown_duration = _meter.create_histogram(
     name="taskq.worker.shutdown_duration_seconds",
     unit="s",
-    description="Wall-clock seconds from shutdown_event to process exit.",
+    description="Wall-clock seconds from the first shutdown signal to clean "
+    "worker teardown. Recorded only on clean exit (watchdog cancel); a "
+    "watchdog trip force-exits without recording.",
 )
 _watchdog_trips = _meter.create_counter(
     "taskq.worker.watchdog_trips_total",
@@ -184,6 +187,10 @@ def trip(detector: str, reason: str) -> None:
     finally:
         sys.stderr.flush()
         sys.stdout.flush()
+        with contextlib.suppress(Exception):
+            _provider = otel_metrics.get_meter_provider()
+            if hasattr(_provider, "force_flush"):
+                _provider.force_flush()  # type: ignore[attr-defined]
         os._exit(EXIT_WATCHDOG)
 
 
@@ -208,10 +215,12 @@ class LoopLiveness:
         self._clock = clock
         self._ticks: dict[str, float] = {}
         self._periods: dict[str, float] = {}
+        self._lock = threading.Lock()
 
     def tick(self, name: str, *, period: float) -> None:
-        self._ticks[name] = self._clock()
-        self._periods[name] = period
+        with self._lock:
+            self._ticks[name] = self._clock()
+            self._periods[name] = period
 
     def forget(self, name: str) -> None:
         """Drop a loop's registration entirely.
@@ -221,25 +230,35 @@ class LoopLiveness:
         lingering registration would false-trip the detector. The loop
         re-registers on its next tick when the gate reopens.
         """
-        self._ticks.pop(name, None)
-        self._periods.pop(name, None)
-        _tick_age_cache.pop(name, None)
+        with self._lock:
+            self._ticks.pop(name, None)
+            self._periods.pop(name, None)
+            _tick_age_cache.pop(name, None)
 
     def ages(self) -> dict[str, float]:
-        """Loop name -> seconds since its last tick (observability)."""
-        now = self._clock()
-        ages = {name: now - ts for name, ts in self._ticks.items()}
-        _tick_age_cache.clear()
-        _tick_age_cache.update(ages)
-        return ages
+        """Loop name -> seconds since its last tick (observability).
+
+        Thread-safe: LoopLagWatchdog._armed() calls this from a daemon
+        thread while the event-loop thread mutates _ticks via tick() and
+        forget(). Without synchronization the dict iteration raises
+        RuntimeError: dictionary changed size during iteration, silently
+        disabling detector 4 for the life of the process.
+        """
+        with self._lock:
+            now = self._clock()
+            ages = {name: now - ts for name, ts in self._ticks.items()}
+            _tick_age_cache.clear()
+            _tick_age_cache.update(ages)
+            return ages
 
     def stale(self) -> list[str]:
-        now = self._clock()
-        return [
-            name
-            for name, ts in self._ticks.items()
-            if now - ts > max(self._periods[name] * self.grace_factor, self.stale_floor)
-        ]
+        with self._lock:
+            now = self._clock()
+            return [
+                name
+                for name, ts in self._ticks.items()
+                if now - ts > max(self._periods[name] * self.grace_factor, self.stale_floor)
+            ]
 
 
 async def loop_watchdog_loop(
@@ -285,6 +304,7 @@ class ShutdownWatchdog:
         on_shutdown_started: Callable[[float], None] | None = None,
         started_at: Callable[[], float | None] | None = None,
         clock: Callable[[], float] = time.monotonic,
+        shutdown_started_event: asyncio.Event | None = None,
     ) -> None:
         self._shutdown_event = shutdown_event
         self._deadline = deadline
@@ -293,6 +313,7 @@ class ShutdownWatchdog:
         self._on_shutdown_started = on_shutdown_started
         self._started_at = started_at
         self._clock = clock
+        self._shutdown_started_event = shutdown_started_event
         self._task: asyncio.Task[None] | None = None
 
     def start(self) -> None:
@@ -304,9 +325,31 @@ class ShutdownWatchdog:
             self._task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._task
+            if self._started_at is not None:
+                anchored = self._started_at()
+                if anchored is not None:
+                    _shutdown_duration.record(self._clock() - anchored)
 
     async def _run(self) -> None:
-        await self._shutdown_event.wait()
+        if self._shutdown_started_event is not None:
+            shutdown_started = asyncio.create_task(self._shutdown_started_event.wait())
+            shutdown_task = asyncio.create_task(self._shutdown_event.wait())
+            try:
+                await asyncio.wait(
+                    {shutdown_started, shutdown_task},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+            finally:
+                # Cancel the loser AND cover our own cancellation: without
+                # the finally, cancelling this task at the wait point leaks
+                # both inner event-wait tasks until loop teardown.
+                for t in (shutdown_started, shutdown_task):
+                    if not t.done():
+                        t.cancel()
+                        with contextlib.suppress(asyncio.CancelledError):
+                            await t
+        else:
+            await self._shutdown_event.wait()
         t0 = self._clock()
         if self._on_shutdown_started is not None:
             self._on_shutdown_started(t0)

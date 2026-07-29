@@ -92,7 +92,11 @@ def _patch_pg_and_dedicated_conns(monkeypatch: pytest.MonkeyPatch) -> None:
         return _FakePool()
 
     async def _fake_open_dedicated_conn(
-        dsn: str, *, label: str, apply_keepalive: bool = True
+        dsn: str,
+        *,
+        label: str,
+        apply_keepalive: bool = True,
+        command_timeout: float | None = None,
     ) -> _FakeConn:
         return _FakeConn()
 

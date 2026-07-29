@@ -605,6 +605,7 @@ async def _main(
                 enabled=settings.watchdog_enabled,
                 on_shutdown_started=_stamp_shutdown_started,
                 started_at=lambda: deps.shutdown_started_at,
+                shutdown_started_event=deps.producer_stop_event,
             )
             # A plain ``async with`` plus one finally satisfies both
             # requirements — see that finally for the ordering rationale. A
@@ -802,23 +803,19 @@ def _make_sibling_spawner(
             or deps.producer_stop_event.is_set()
         )
         if not shutdown_in_progress:
-            # Detector 3 (sibling contract): a long-lived sibling that
-            # returns cleanly while NO shutdown is in progress is a bug —
-            # without this the worker keeps running half-staffed with no
-            # signal. The SIGTERM drain path is allowed: producer_loop
-            # exits on producer_stop_event / phase entry long before
-            # shutdown_event is set at the end of orchestration.
-            shutdown_event.set()
-            msg = (
-                f"sibling {getattr(coro, '__qualname__', repr(coro))} returned "
-                "cleanly while no shutdown was in progress"
-            )
-            _startup_log.error(
-                "sibling-returned-unexpectedly",
-                kind="sibling_returned_unexpectedly",
-                sibling=msg,
-            )
-            raise RuntimeError(msg)
+            _settings = getattr(deps, "settings", None)
+            if getattr(_settings, "watchdog_enabled", True):
+                shutdown_event.set()
+                msg = (
+                    f"sibling {getattr(coro, '__qualname__', repr(coro))} returned "
+                    "cleanly while no shutdown was in progress"
+                )
+                _startup_log.error(
+                    "sibling-returned-unexpectedly",
+                    kind="sibling_returned_unexpectedly",
+                    sibling=msg,
+                )
+                raise RuntimeError(msg)
 
     def _spawn(
         coro: Coroutine[Any, Any, None],

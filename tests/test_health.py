@@ -648,7 +648,7 @@ async def test_tasks_endpoint_disabled_by_default_returns_404() -> None:
 
 async def test_tasks_endpoint_enabled_returns_dump_records() -> None:
     """Enabled: 200 with minimized records (name, coro, await sites) — and
-    the socket is tightened to owner-only (0600)."""
+    the socket is owner-only from bind time (no group/other bits)."""
     sock_path = _next_sock_path()
     deps = _make_deps(
         settings=_make_settings(sock_path, health_tasks_enabled=True),
@@ -656,7 +656,8 @@ async def test_tasks_endpoint_enabled_returns_dump_records() -> None:
     server = HealthServer()
     await server.start(deps)
     try:
-        assert stat.S_IMODE(os.stat(sock_path).st_mode) == 0o600
+        mode = stat.S_IMODE(os.stat(sock_path).st_mode)
+        assert mode & 0o077 == 0, f"socket must be owner-only, got {oct(mode)}"
 
         status_code, _headers, body = await _http_get(sock_path, "/tasks")
         assert status_code == 200

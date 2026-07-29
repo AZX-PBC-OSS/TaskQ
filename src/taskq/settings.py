@@ -363,6 +363,18 @@ class WorkerSettings(TaskQSettings):
         description="TASKQ_DISPATCHER_POOL_SIZE. Max connections for the "
         "dispatcher pool. Bypasses PgBouncer.",
     )
+    dispatcher_command_timeout: float = Field(
+        default=10.0,
+        ge=1.0,
+        description="TASKQ_DISPATCHER_COMMAND_TIMEOUT (seconds). Per-query "
+        "timeout for the dispatcher pool. Bounds leader sweeps and "
+        "scheduled_wake so a stalled PG cannot hang a loop indefinitely. "
+        "Keep this below the watchdog staleness budget (see "
+        "TASKQ_WATCHDOG_STALE_FLOOR): an iteration that runs to the full "
+        "timeout delays the loop's next tick, and a timeout at or above "
+        "the budget can trip the stale-loop detector — the intended "
+        "fail-safe when PG truly stalls, but surprising if misconfigured.",
+    )
     dispatch_oversample: int = Field(
         default=2,
         ge=1,
@@ -567,7 +579,7 @@ class WorkerSettings(TaskQSettings):
         "/tasks asyncio stack-dump endpoint on the Unix health socket. "
         "Off by default: the dump reveals code structure, file paths, and "
         "task names (never locals or payload values). Enabling it also "
-        "tightens the socket to mode 0600 (owner-only). Unix socket only — "
+        "tightens the socket to owner-only (no group/other access). Unix socket only — "
         "never mounted on the admin UI surface.",
     )
 

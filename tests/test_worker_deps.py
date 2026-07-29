@@ -64,11 +64,17 @@ async def test_lifo_teardown_on_leader_conn_failure(
     original_open = deps_mod.open_dedicated_conn
 
     async def _patched_open(
-        dsn: str, *, label: str, apply_keepalive: bool = True
+        dsn: str,
+        *,
+        label: str,
+        apply_keepalive: bool = True,
+        command_timeout: float | None = None,
     ) -> asyncpg.Connection:
         if label == "leader":
             raise asyncpg.PostgresConnectionError("simulated leader_conn failure")
-        return await original_open(dsn, label=label, apply_keepalive=apply_keepalive)
+        return await original_open(
+            dsn, label=label, apply_keepalive=apply_keepalive, command_timeout=command_timeout
+        )
 
     monkeypatch.setattr(deps_mod, "open_dedicated_conn", _patched_open)
 
@@ -235,7 +241,11 @@ async def test_partial_open_lifo_teardown_with_pg_failure(
     from taskq.worker import deps as deps_mod
 
     async def _fail_on_notify(
-        dsn: str, *, label: str, apply_keepalive: bool = True
+        dsn: str,
+        *,
+        label: str,
+        apply_keepalive: bool = True,
+        command_timeout: float | None = None,
     ) -> asyncpg.Connection:
         if label == "notify":
             # Three pools already opened by the time we get here.

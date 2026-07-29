@@ -14,6 +14,7 @@ dependency group (containerspec); it skips cleanly elsewhere.
 from __future__ import annotations
 
 import importlib.util
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -47,6 +48,13 @@ def test_e2e_dir_not_collected_without_opt_in() -> None:
     proc = _collect("tests/e2e")
     assert proc.returncode == 5, proc.stdout[-2000:]
     assert "tests/e2e/" not in proc.stdout
+    # The deselect backstop must REPORT what it strips (pytest_deselected):
+    # without the hook call the summary carries no deselected count, hiding
+    # the stripped tier from xdist/coverage and the -ra summary.
+    match = re.search(r"(\d+) deselected", proc.stdout)
+    assert match is not None and int(match.group(1)) > 0, (
+        f"expected a nonzero deselected count in the summary:\n{proc.stdout[-2000:]}"
+    )
 
 
 def test_e2e_marker_alone_does_not_open_tier() -> None:

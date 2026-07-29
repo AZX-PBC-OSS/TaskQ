@@ -52,8 +52,11 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     """
     if config.getoption("--e2e"):
         return
-    items[:] = [
+    deselected = [
         item
         for item in items
-        if not (item.path.parent.name == "e2e" and item.path.parent.parent.name == "tests")
+        if item.path.parent.name == "e2e" and item.path.parent.parent.name == "tests"
     ]
+    if deselected:
+        config.hook.pytest_deselected(items=deselected)
+    items[:] = [item for item in items if item not in deselected]

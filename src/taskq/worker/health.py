@@ -139,13 +139,12 @@ async def compute_health(deps: WorkerDeps) -> HealthReport:
     # detect the zombie state — so a missing field is a wiring bug and
     # must surface as one.
     tick_ages = deps.liveness.ages()
-    stale_loops = deps.liveness.stale()
-    if stale_loops:
-        # Zombie-ready: an interval-driven loop is silent far past its
-        # budget while PG still pings fine — the readiness probe must
-        # report it, not claim healthy.
-        ready = False
-        reasons.append(f"stale_loops={','.join(stale_loops)}")
+    stale_loops: list[str] = []
+    if getattr(deps.settings, "watchdog_enabled", True):
+        stale_loops = deps.liveness.stale()
+        if stale_loops:
+            ready = False
+            reasons.append(f"stale_loops={','.join(stale_loops)}")
 
     shutdown_elapsed: float | None = None
     if deps.shutdown_started_at is not None:
@@ -228,13 +227,14 @@ class HealthServer:
 
         _unlink_stale_socket(self._socket_path)
 
-        self._server = await asyncio.start_unix_server(self._handle, path=self._socket_path)
         if deps.settings.health_tasks_enabled:
-            # The /tasks stack-dump endpoint is privileged: when it is
-            # explicitly enabled, tighten the socket to owner-only so the
-            # dump surface is limited to the worker's uid.
-            with contextlib.suppress(OSError):
-                os.chmod(self._socket_path, 0o600)
+            old_umask = os.umask(0o077)
+            try:
+                self._server = await asyncio.start_unix_server(self._handle, path=self._socket_path)
+            finally:
+                os.umask(old_umask)
+        else:
+            self._server = await asyncio.start_unix_server(self._handle, path=self._socket_path)
         # Capture the inode we just bound so `stop()` can later verify it
         # still owns this path before unlinking — a slow-shutting-down
         # worker must never delete a *replacement* worker's fresh socket

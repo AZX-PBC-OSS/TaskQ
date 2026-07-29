@@ -261,6 +261,7 @@ async def producer_loop(
 
     reason = "producer_stop_event" if producer_stop_event.is_set() else "shutdown_event"
     _producer_log.info("producer-loop-exit", reason=reason)
+    deps.liveness.forget("producer")
 
 
 async def producer_loop_stub(

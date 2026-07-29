@@ -272,7 +272,11 @@ async def _make_leader(
         import taskq.worker.leader as leader_mod
 
         async def fake_open_conn(
-            dsn: str, *, label: str = "", apply_keepalive: bool = True
+            dsn: str,
+            *,
+            label: str = "",
+            apply_keepalive: bool = True,
+            command_timeout: float | None = None,
         ) -> FakeConn:
             return FakeConn()
 
@@ -413,7 +417,13 @@ async def test_watchdog_continues_after_error_and_reelection(monkeypatch: Any) -
 
     open_calls: list[str] = []
 
-    async def fake_open(dsn: str, *, label: str = "", apply_keepalive: bool = True) -> FakeConn:
+    async def fake_open(
+        dsn: str,
+        *,
+        label: str = "",
+        apply_keepalive: bool = True,
+        command_timeout: float | None = None,
+    ) -> FakeConn:
         open_calls.append(label)
         if label == "leader_conn":
             return new_leader_conn
@@ -453,7 +463,13 @@ async def test_leader_conn_replaced_after_watchdog(monkeypatch: Any) -> None:  #
     sentinel_conn = FakeConn(fetchval_result=True)
     import taskq.worker.leader as leader_mod
 
-    async def fake_open(dsn: str, *, label: str = "", apply_keepalive: bool = True) -> FakeConn:
+    async def fake_open(
+        dsn: str,
+        *,
+        label: str = "",
+        apply_keepalive: bool = True,
+        command_timeout: float | None = None,
+    ) -> FakeConn:
         return sentinel_conn
 
     monkeypatch.setattr(leader_mod, "open_dedicated_conn", fake_open)
