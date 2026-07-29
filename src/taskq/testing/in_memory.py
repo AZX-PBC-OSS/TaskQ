@@ -36,6 +36,7 @@ from taskq.backend._protocol import (
     BACKEND_PROTOCOL_VERSION,
     AttemptOutcome,
     AttemptRow,
+    BulkCancelResult,
     CancelFlag,
     CancelPhase,
     EnqueueArgs,
@@ -51,6 +52,7 @@ from taskq.backend._protocol import (
 )
 from taskq.backend.clock import Clock
 from taskq.retry import OnRetryExhausted, OnSuccess, RetryClassifierHook, RetryPolicy
+from taskq.testing._cancel_bulk import _cancel_where
 from taskq.testing._dispatch import _dispatch_batch, _set_queue_mode
 from taskq.testing._enqueue import (
     _enqueue,
@@ -621,6 +623,13 @@ class InMemoryBackend:
             and row.status == "running"
             and row.locked_by_worker == worker_id
         ]
+
+    async def cancel_where(
+        self,
+        filter: JobFilter,
+        reason: str | None,
+    ) -> BulkCancelResult:
+        return await _cancel_where(self, filter, reason)
 
     # ── Admin operations ──────────────────────────────────────────────
 
