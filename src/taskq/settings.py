@@ -704,20 +704,20 @@ class WorkerSettings(TaskQSettings):
     # ── Polling and NOTIFY listener ────────────────────────
     poll_interval: float = Field(
         default=1.0,
-        ge=0.1,
+        gt=0,
         description="TASKQ_POLL_INTERVAL (seconds). Producer loop fallback "
         "polling cadence when the NOTIFY listener is unavailable.",
     )
     notify_health_check_interval: float = Field(
         default=5.0,
-        ge=0.1,
+        gt=0,
         description="TASKQ_NOTIFY_HEALTH_CHECK_INTERVAL (seconds). How often "
         "_health_check_loop issues SELECT 1 on notify_conn. "
         "Detection latency before reconnect is at most this interval.",
     )
     notify_reconnect_backoff_initial: float = Field(
         default=1.0,
-        ge=0.01,
+        gt=0,
         description="TASKQ_NOTIFY_RECONNECT_BACKOFF_INITIAL (seconds). "
         "Initial exponential backoff delay before the first reconnect "
         "retry. Cap is 30 s (factor 2 per attempt). "

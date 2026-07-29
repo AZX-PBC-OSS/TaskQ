@@ -1088,7 +1088,7 @@ def test_sso_backend_invalid_raises() -> None:
         _load(TASKQ_SSO_BACKEND="bogus")
 
 
-# ── poll_interval ge=0.1 ─────────────────────────────────────────────
+# ── poll_interval gt=0 ───────────────────────────────────────────────
 
 
 def test_poll_interval_default() -> None:
@@ -1097,46 +1097,64 @@ def test_poll_interval_default() -> None:
     assert s.poll_interval == 1.0
 
 
-def test_poll_interval_at_boundary_accepted() -> None:
-    """poll_interval=0.1 is accepted (ge=0.1 boundary)."""
-    s = _load(TASKQ_POLL_INTERVAL="0.1")
-    assert s.poll_interval == 0.1
+def test_poll_interval_small_accepted() -> None:
+    """poll_interval=0.05 is accepted (gt=0 allows any positive value for test speed)."""
+    s = _load(TASKQ_POLL_INTERVAL="0.05")
+    assert s.poll_interval == 0.05
 
 
-def test_poll_interval_below_boundary_raises() -> None:
-    """poll_interval=0.05 violates ge=0.1 constraint."""
-    with pytest.raises(ConstraintViolationError, match=r"greater than or equal to 0\.1"):
-        _load(TASKQ_POLL_INTERVAL="0.05")
+def test_poll_interval_zero_raises() -> None:
+    """poll_interval=0 violates gt=0 constraint."""
+    with pytest.raises(ConstraintViolationError, match=r"greater than 0"):
+        _load(TASKQ_POLL_INTERVAL="0")
 
 
-# ── notify_health_check_interval ge=0.1 ──────────────────────────────
+def test_poll_interval_negative_raises() -> None:
+    """poll_interval=-1 violates gt=0 constraint."""
+    with pytest.raises(ConstraintViolationError, match=r"greater than 0"):
+        _load(TASKQ_POLL_INTERVAL="-1")
 
 
-def test_notify_health_check_interval_at_boundary_accepted() -> None:
-    """notify_health_check_interval=0.1 is accepted (ge=0.1 boundary)."""
-    s = _load(TASKQ_NOTIFY_HEALTH_CHECK_INTERVAL="0.1")
-    assert s.notify_health_check_interval == 0.1
+# ── notify_health_check_interval gt=0 ────────────────────────────────
 
 
-def test_notify_health_check_interval_below_boundary_raises() -> None:
-    """notify_health_check_interval=0.05 violates ge=0.1 constraint."""
-    with pytest.raises(ConstraintViolationError, match=r"greater than or equal to 0\.1"):
-        _load(TASKQ_NOTIFY_HEALTH_CHECK_INTERVAL="0.05")
+def test_notify_health_check_interval_small_accepted() -> None:
+    """notify_health_check_interval=0.001 is accepted (gt=0 allows any positive value)."""
+    s = _load(TASKQ_NOTIFY_HEALTH_CHECK_INTERVAL="0.001")
+    assert s.notify_health_check_interval == 0.001
 
 
-# ── notify_reconnect_backoff_initial ge=0.01 ─────────────────────────
+def test_notify_health_check_interval_zero_raises() -> None:
+    """notify_health_check_interval=0 violates gt=0 constraint."""
+    with pytest.raises(ConstraintViolationError, match=r"greater than 0"):
+        _load(TASKQ_NOTIFY_HEALTH_CHECK_INTERVAL="0")
 
 
-def test_notify_reconnect_backoff_initial_at_boundary_accepted() -> None:
-    """notify_reconnect_backoff_initial=0.01 is accepted (ge=0.01 boundary)."""
-    s = _load(TASKQ_NOTIFY_RECONNECT_BACKOFF_INITIAL="0.01")
-    assert s.notify_reconnect_backoff_initial == 0.01
+def test_notify_health_check_interval_negative_raises() -> None:
+    """notify_health_check_interval=-0.5 violates gt=0 constraint."""
+    with pytest.raises(ConstraintViolationError, match=r"greater than 0"):
+        _load(TASKQ_NOTIFY_HEALTH_CHECK_INTERVAL="-0.5")
 
 
-def test_notify_reconnect_backoff_initial_below_boundary_raises() -> None:
-    """notify_reconnect_backoff_initial=0.005 violates ge=0.01 constraint."""
-    with pytest.raises(ConstraintViolationError, match=r"greater than or equal to 0\.01"):
-        _load(TASKQ_NOTIFY_RECONNECT_BACKOFF_INITIAL="0.005")
+# ── notify_reconnect_backoff_initial gt=0 ────────────────────────────
+
+
+def test_notify_reconnect_backoff_initial_small_accepted() -> None:
+    """notify_reconnect_backoff_initial=0.005 is accepted (gt=0 allows any positive value)."""
+    s = _load(TASKQ_NOTIFY_RECONNECT_BACKOFF_INITIAL="0.005")
+    assert s.notify_reconnect_backoff_initial == 0.005
+
+
+def test_notify_reconnect_backoff_initial_zero_raises() -> None:
+    """notify_reconnect_backoff_initial=0 violates gt=0 constraint."""
+    with pytest.raises(ConstraintViolationError, match=r"greater than 0"):
+        _load(TASKQ_NOTIFY_RECONNECT_BACKOFF_INITIAL="0")
+
+
+def test_notify_reconnect_backoff_initial_negative_raises() -> None:
+    """notify_reconnect_backoff_initial=-0.01 violates gt=0 constraint."""
+    with pytest.raises(ConstraintViolationError, match=r"greater than 0"):
+        _load(TASKQ_NOTIFY_RECONNECT_BACKOFF_INITIAL="-0.01")
 
 
 # ── prune_schedule_utc HH:MM validation ──────────────────────────────
