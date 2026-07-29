@@ -215,9 +215,9 @@ class TestRuntimeCheckable:
 
 
 class TestMethodCount:
-    def test_exactly_thirty_six_public_members(self) -> None:
+    def test_exactly_thirty_seven_public_members(self) -> None:
         public = [m for m in dir(Backend) if not m.startswith("_")]
-        assert len(public) == 36, f"Expected 36 public members, got {len(public)}: {public}"
+        assert len(public) == 37, f"Expected 37 public members, got {len(public)}: {public}"
 
     def test_all_member_names_present(self) -> None:
         expected = {
@@ -243,6 +243,7 @@ class TestMethodCount:
             "get_events",
             "poll_reclaim_events",
             "write_cancel_request",
+            "cancel_where",
             "poll_cancel_flags",
             "scheduled_to_pending",
             "deadline_sweep",
@@ -260,6 +261,13 @@ class TestMethodCount:
         }
         actual = {m for m in dir(Backend) if not m.startswith("_")}
         assert actual == expected
+
+
+async def test_protocol_has_cancel_where() -> None:
+    """Backend protocol declares cancel_where."""
+    from taskq.backend._protocol import Backend
+
+    assert hasattr(Backend, "cancel_where")
 
 
 # ── Return-type annotations ────────────────────────────────────────────

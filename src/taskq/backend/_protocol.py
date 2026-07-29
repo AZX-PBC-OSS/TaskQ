@@ -720,8 +720,8 @@ class BackendDeps(Protocol):
 class Backend(Protocol):
     """Contract that both PostgresBackend and InMemoryBackend satisfy.
 
-    31 async methods plus two sync methods (``subscribe_wake`` and
-    ``subscribe_cancel_wake``) (33 methods total) covering enqueue,
+    32 async methods plus two sync methods (``subscribe_wake`` and
+    ``subscribe_cancel_wake``) (34 methods total) covering enqueue,
     dispatch, heartbeat, terminal writes, attempt history, cancel
     signals, scheduling / sweeps, read, NOTIFY hook, and schedule CRUD.
     Method order grouped for review-grep ergonomics.
@@ -975,6 +975,23 @@ class Backend(Protocol):
         job_id: JobId,
         reason: str | None,
     ) -> bool: ...
+
+    async def cancel_where(
+        self,
+        filter: JobFilter,
+        reason: str | None,
+    ) -> BulkCancelResult:
+        """Cancel all jobs matching *filter* in a set-based operation.
+
+        Pending/scheduled jobs → terminal 'cancelled'.
+        Running jobs → cancel_phase=1 (cooperative cancel + NOTIFY).
+
+        The filter's ``limit``, ``cursor``, and ``order_by`` fields are
+        ignored — this is a bulk write, not a paginated read.
+
+        Returns a :class:`BulkCancelResult` with counts and affected IDs.
+        """
+        ...
 
     async def poll_cancel_flags(
         self,
