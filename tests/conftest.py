@@ -111,6 +111,26 @@ from taskq.worker.health import HealthServer
 _SHARED_DEFAULT_HEALTH_SOCK = "/tmp/taskq_health.sock"  # noqa: S108  # Why: must match the WorkerSettings.health_socket_path default in settings.py; pinned by tests/test_health_socket_isolation.py.
 
 
+def free_host_port() -> int:
+    """An unused localhost TCP port, for pinning a container's host binding.
+
+    Required by any test that stops and restarts a container and keeps
+    using its host-mapped DSN: Docker does NOT preserve a Docker-assigned
+    ephemeral host port across stop/start — it allocates a fresh one on
+    start (measured on Linux: 34252 → 34253), silently invalidating every
+    host DSN derived before the restart. An explicitly published port is
+    part of the container's declared config and is restored verbatim.
+
+    Bind-and-release: a port free now is almost certainly still free when
+    Docker publishes it moments later.
+    """
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
 def unique_health_sock_path(module: str) -> str:
     """Return a unique unix-socket path for one test's health server.
 

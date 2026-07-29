@@ -71,7 +71,7 @@ class _LoopToTransient:
     pass
 
 
-def _settings(redis_url: str | None = None) -> WorkerSettings:
+def _settings(redis_url: str | None = None, **overrides: object) -> WorkerSettings:
     config: dict[str, object] = {
         "PG_DSN": "postgres://u:p@localhost:5432/db",
         "LOCK_LEASE": 60,
@@ -81,6 +81,8 @@ def _settings(redis_url: str | None = None) -> WorkerSettings:
     }
     if redis_url is not None:
         config["TASKQ_REDIS_URL"] = redis_url
+    for key, value in overrides.items():
+        config[key] = value
     return WorkerSettings.load_from_dict(config)
 
 
@@ -528,6 +530,7 @@ async def test_bootstrap_allows_redis_rate_limit_with_user_redis_provider() -> N
     so checking only ``settings.redis_url`` crash-loops those deployments
     at boot. A registered Redis provider must count as "redis available".
     """
+    import fakeredis.aioredis
     import redis.asyncio as redis_async
 
     from taskq.ratelimit.registry import registry as rl_registry
@@ -547,8 +550,8 @@ async def test_bootstrap_allows_redis_rate_limit_with_user_redis_provider() -> N
         pass
 
     registry = ProviderRegistry()
-    # Constructed but never connected — registration shape is what matters.
-    registry.register_value(redis_async.Redis, Scope.LOOP, redis_async.Redis(host="localhost"))
+    # fakeredis: a real async redis client (in-memory), not a hand-rolled double.
+    registry.register_value(redis_async.Redis, Scope.LOOP, fakeredis.aioredis.FakeRedis())
 
     result = await _run_main_with_mocked_deps(
         _settings(),
@@ -1103,3 +1106,15 @@ async def test_di_consumer_loop_releases_job_for_unknown_actor() -> None:
     await loop_scope.shutdown()
     await thread_scope.shutdown()
     await process_scope.shutdown()
+
+
+# ── Watchdog wiring through the real _main bootstrap path ────────
+
+
+async def test_bootstrap_with_watchdog_disabled_does_not_spawn_or_fail() -> None:
+    """TASKQ_WATCHDOG_ENABLED=false must boot cleanly: the stale-tick loop
+    is simply not spawned. An early-return loop with no shutdown in
+    progress would trip detector 3 — the master kill-switch is the one
+    path that must never fail."""
+    result = await _run_main_with_mocked_deps(_settings(TASKQ_WATCHDOG_ENABLED="false"))
+    assert result == 0
