@@ -1,10 +1,13 @@
 """Unit tests for drain monitor and until-idle mode."""
 
 import asyncio
+import contextlib
 import inspect
+from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
 from typing import Any
-from unittest.mock import create_autospec, patch
+from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
+from uuid import uuid4
 
 from pydantic import BaseModel
 
@@ -21,18 +24,22 @@ from taskq.settings import WorkerSettings
 from taskq.testing.clock import FakeClock
 from taskq.worker._consumer import AttemptOutcome
 from taskq.worker.deps import WorkerDeps
+from taskq.worker.drain import drain_monitor_loop
+from taskq.worker.shutdown import ShutdownPhase
 from tests.conftest import _FakePool, unique_health_sock_path
 
 # ── Helpers ────────────────────────────────────────────────────────
 
 
 def _settings() -> WorkerSettings:
-    return WorkerSettings.load_from_dict({
-        "PG_DSN": "postgres://u:p@localhost:5432/db",
-        "LOCK_LEASE": 60,
-        "HEARTBEAT_INTERVAL": 10,
-        "TASKQ_HEALTH_SOCKET_PATH": unique_health_sock_path("worker_drain"),
-    })
+    return WorkerSettings.load_from_dict(
+        {
+            "PG_DSN": "postgres://u:p@localhost:5432/db",
+            "LOCK_LEASE": 60,
+            "HEARTBEAT_INTERVAL": 10,
+            "TASKQ_HEALTH_SOCKET_PATH": unique_health_sock_path("worker_drain"),
+        }
+    )
 
 
 def _make_scopes(
@@ -234,10 +241,12 @@ async def _run_one_job_with_fake_dispatch(
 
 def test_worker_deps_drain_failures_default_zero() -> None:
     """WorkerDeps initializes drain_failures to 0."""
-    settings = WorkerSettings.load_from_dict({
-        "TASKQ_PG_DSN": "postgresql://x:x@localhost/x",
-        "TASKQ_HEALTH_SOCKET_PATH": "/tmp/test_drain_deps.sock",  # noqa: S108
-    })
+    settings = WorkerSettings.load_from_dict(
+        {
+            "TASKQ_PG_DSN": "postgresql://x:x@localhost/x",
+            "TASKQ_HEALTH_SOCKET_PATH": "/tmp/test_drain_deps.sock",  # noqa: S108
+        }
+    )
     pool = _FakePool()
     deps = WorkerDeps(
         settings=settings,
@@ -316,7 +325,299 @@ async def test_di_consumer_loop_increments_on_exception() -> None:
     async def _fake_dispatch(*args: object, **kwargs: object) -> AttemptOutcome:
         raise RuntimeError("boom")
 
-    deps = await _run_one_job_with_fake_dispatch(
-        _fake_dispatch, actor_name="test_drain_fail_exc"
-    )
+    deps = await _run_one_job_with_fake_dispatch(_fake_dispatch, actor_name="test_drain_fail_exc")
     assert deps.drain_failures == 1
+
+
+# ── Drain monitor loop ─────────────────────────────────────────────
+
+
+def _make_mock_deps(*, active_jobs_count: int = 0, drain_failures: int = 0) -> MagicMock:
+    """Build a minimal mock WorkerDeps for drain monitor tests.
+
+    shutdown_phase MUST be the real ShutdownPhase.NONE enum member —
+    _trigger_drain_shutdown's double-orchestration guard is
+    ``deps.shutdown_phase is not ShutdownPhase.NONE``, so a stand-in
+    (string, MagicMock attribute) would trip the guard in EVERY test.
+    """
+    deps = MagicMock()
+    deps.active_jobs.count.return_value = active_jobs_count
+    deps.drain_failures = drain_failures
+    deps.shutdown_phase = ShutdownPhase.NONE
+    deps.settings = MagicMock()
+    deps.settings.queues = ["default"]
+    return deps
+
+
+@contextlib.asynccontextmanager
+async def _mock_orchestrate(
+    exit_code: int = 0,  # Why: exit_code is unused — _drain_orchestrate supplies the exit code; the mock only simulates orchestrate_shutdown's finally-block shutdown_event.set().
+) -> AsyncGenerator[None, None]:
+    """Patch orchestrate_shutdown to set shutdown_event and return 0.
+
+    The drain monitor's wrapper task calls orchestrate_shutdown and then
+    returns the drain exit code. The mock simulates the finally-block
+    shutdown_event.set() so the monitor's loop exits.
+    """
+
+    async def _mock(
+        deps: object,
+        settings: object,
+        worker_id: object,
+        shutdown_event: asyncio.Event,
+        escalate_event: object,
+        *,
+        backend: object,
+    ) -> int:
+        try:
+            await asyncio.sleep(0)  # yield once
+        finally:
+            shutdown_event.set()
+        return 0
+
+    with patch("taskq.worker.drain.orchestrate_shutdown", side_effect=_mock):
+        yield
+
+
+async def test_drain_monitor_triggers_shutdown_when_idle() -> None:
+    """Drain monitor creates orchestrator task when queues are empty
+    and no active jobs after settle window."""
+    deps = _make_mock_deps(active_jobs_count=0)
+    backend = MagicMock()
+    backend.count_active_jobs = AsyncMock(return_value=0)
+
+    shutdown_event = asyncio.Event()
+    escalate_event = asyncio.Event()
+    orchestrator_holder: list[asyncio.Task[int]] = []
+
+    async with _mock_orchestrate():
+        await drain_monitor_loop(
+            deps,
+            deps.settings,
+            uuid4(),
+            shutdown_event,
+            escalate_event,
+            orchestrator_holder,
+            backend,
+            idle_settle_window=0.1,
+            idle_poll_interval=0.05,
+            max_runtime=None,
+        )
+        assert len(orchestrator_holder) == 1
+        exit_code = await orchestrator_holder[0]
+
+    assert exit_code == 0
+    assert shutdown_event.is_set()
+
+
+async def test_drain_monitor_exit_code_2_on_failures() -> None:
+    """Exit code 2 when drain_failures > 0."""
+    deps = _make_mock_deps(active_jobs_count=0, drain_failures=3)
+    backend = MagicMock()
+    backend.count_active_jobs = AsyncMock(return_value=0)
+
+    shutdown_event = asyncio.Event()
+    escalate_event = asyncio.Event()
+    orchestrator_holder: list[asyncio.Task[int]] = []
+
+    async with _mock_orchestrate():
+        await drain_monitor_loop(
+            deps,
+            deps.settings,
+            uuid4(),
+            shutdown_event,
+            escalate_event,
+            orchestrator_holder,
+            backend,
+            idle_settle_window=0.1,
+            idle_poll_interval=0.05,
+            max_runtime=None,
+        )
+        assert len(orchestrator_holder) == 1
+        exit_code = await orchestrator_holder[0]
+
+    assert exit_code == 2
+
+
+async def test_drain_monitor_exit_code_3_on_timeout() -> None:
+    """Exit code 3 when max_runtime is exceeded."""
+    deps = _make_mock_deps(active_jobs_count=1)
+    backend = MagicMock()
+    backend.count_active_jobs = AsyncMock(return_value=5)
+
+    shutdown_event = asyncio.Event()
+    escalate_event = asyncio.Event()
+    orchestrator_holder: list[asyncio.Task[int]] = []
+
+    async with _mock_orchestrate():
+        await drain_monitor_loop(
+            deps,
+            deps.settings,
+            uuid4(),
+            shutdown_event,
+            escalate_event,
+            orchestrator_holder,
+            backend,
+            idle_settle_window=10.0,
+            idle_poll_interval=0.05,
+            max_runtime=0.2,
+        )
+        assert len(orchestrator_holder) == 1
+        exit_code = await orchestrator_holder[0]
+
+    assert exit_code == 3
+    assert shutdown_event.is_set()
+
+
+async def test_drain_monitor_resets_settle_on_new_jobs() -> None:
+    """If a new job appears after idle was detected, the settle timer resets."""
+    call_count = 0
+
+    async def mock_count(queues: list[str]) -> int:
+        nonlocal call_count
+        call_count += 1
+        if call_count <= 2:
+            return 0  # idle
+        return 1  # job appeared
+
+    deps = _make_mock_deps(active_jobs_count=0)
+    backend = MagicMock()
+    backend.count_active_jobs = mock_count
+
+    shutdown_event = asyncio.Event()
+    escalate_event = asyncio.Event()
+    orchestrator_holder: list[asyncio.Task[int]] = []
+
+    async with _mock_orchestrate():
+        task = asyncio.create_task(
+            drain_monitor_loop(
+                deps,
+                deps.settings,
+                uuid4(),
+                shutdown_event,
+                escalate_event,
+                orchestrator_holder,
+                backend,
+                idle_settle_window=0.5,
+                idle_poll_interval=0.05,
+                max_runtime=None,
+            )
+        )
+        await asyncio.sleep(0.3)
+        assert len(orchestrator_holder) == 0
+        assert not shutdown_event.is_set()
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+
+async def test_drain_monitor_does_not_trigger_when_active_jobs() -> None:
+    """Active jobs on this worker prevent drain even if queue is empty."""
+    deps = _make_mock_deps(active_jobs_count=2)
+    backend = MagicMock()
+    backend.count_active_jobs = AsyncMock(return_value=0)
+
+    shutdown_event = asyncio.Event()
+    escalate_event = asyncio.Event()
+    orchestrator_holder: list[asyncio.Task[int]] = []
+
+    async with _mock_orchestrate():
+        task = asyncio.create_task(
+            drain_monitor_loop(
+                deps,
+                deps.settings,
+                uuid4(),
+                shutdown_event,
+                escalate_event,
+                orchestrator_holder,
+                backend,
+                idle_settle_window=0.1,
+                idle_poll_interval=0.05,
+                max_runtime=None,
+            )
+        )
+        await asyncio.sleep(0.3)
+        assert len(orchestrator_holder) == 0
+        assert not shutdown_event.is_set()
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+
+async def test_drain_monitor_skips_when_orchestration_already_active() -> None:
+    """Drain monitor does NOT trigger a second orchestrate_shutdown when
+    one is already in progress (H2: double-orchestration guard)."""
+    deps = _make_mock_deps(active_jobs_count=0)
+    backend = MagicMock()
+    backend.count_active_jobs = AsyncMock(return_value=0)
+
+    shutdown_event = asyncio.Event()
+    escalate_event = asyncio.Event()
+    fake_task = asyncio.create_task(asyncio.sleep(100))
+    orchestrator_holder: list[asyncio.Task[int]] = [
+        fake_task  # type: ignore[list-item]  # Why: fake_task is Task[None] (asyncio.sleep returns None), but orchestrator_holder is typed Task[int] to match the real API; the test only checks holder length, never the task result.
+    ]
+    deps.shutdown_phase = ShutdownPhase.CANCELLING
+
+    async with _mock_orchestrate():
+        task = asyncio.create_task(
+            drain_monitor_loop(
+                deps,
+                deps.settings,
+                uuid4(),
+                shutdown_event,
+                escalate_event,
+                orchestrator_holder,
+                backend,
+                idle_settle_window=0.1,
+                idle_poll_interval=0.05,
+                max_runtime=None,
+            )
+        )
+        await asyncio.sleep(0.3)
+        assert len(orchestrator_holder) == 1
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+    fake_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await fake_task
+
+
+async def test_drain_monitor_continues_after_count_error() -> None:
+    """F4: Drain monitor continues polling after a transient count_active_jobs error."""
+    call_count = 0
+
+    async def mock_count(queues: list[str]) -> int:
+        nonlocal call_count
+        call_count += 1
+        if call_count <= 2:
+            raise TimeoutError("PG timeout")
+        return 0  # recovers
+
+    deps = _make_mock_deps(active_jobs_count=0)
+    backend = MagicMock()
+    backend.count_active_jobs = mock_count
+
+    shutdown_event = asyncio.Event()
+    escalate_event = asyncio.Event()
+    orchestrator_holder: list[asyncio.Task[int]] = []
+
+    async with _mock_orchestrate():
+        await drain_monitor_loop(
+            deps,
+            deps.settings,
+            uuid4(),
+            shutdown_event,
+            escalate_event,
+            orchestrator_holder,
+            backend,
+            idle_settle_window=0.1,
+            idle_poll_interval=0.05,
+            max_runtime=None,
+        )
+        # After recovering from the error, the monitor should have triggered
+        assert len(orchestrator_holder) == 1
+        exit_code = await orchestrator_holder[0]
+
+    assert exit_code == 0
