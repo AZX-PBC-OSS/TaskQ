@@ -2530,3 +2530,193 @@ async def test_reelection_survives_advisory_lock_gap_window(monkeypatch: Any) ->
     # The rebuilt conn is reused across lock attempts — the factory runs
     # once per conn ROLE (leader + monitor + cron), not per attempt.
     assert factory_calls == 3
+
+
+# ── Watchdog shutdown park ────────────────────────────────────────────────
+
+
+async def test_watchdog_loop_exits_on_shutdown_while_awaiting_leadership() -> None:
+    """Shutdown must wake the watchdog's ``is_leader.wait()`` park.
+
+    Regression: when PG is unreachable the watchdog drops leadership and
+    parks on ``is_leader.wait()``; the election loop cannot re-elect (PG
+    down), so nothing ever sets ``is_leader`` again. The TaskGroup in
+    ``MaintenanceLeader.run`` then waits forever and the worker cannot
+    exit — the hang the PG-restart chaos path exposes.
+    """
+    leader, _deps, _backend, _conn, _pool, shutdown = await _make_leader(is_leader=False)
+    task = asyncio.create_task(leader._watchdog_loop(shutdown))
+    await asyncio.sleep(0.05)  # let the watchdog park on is_leader.wait()
+    shutdown.set()
+    # Pre-fix this parks forever; the race wakes it promptly.
+    await asyncio.wait_for(task, timeout=2.0)
+
+
+# ── Leader loops survive PG loss ──────────────────────────────────────────
+#
+# Regression (PG-restart chaos): a maintenance loop that lets an infra
+# connection error escape crashes MaintenanceLeader.run's TaskGroup, which
+# propagates into the worker's TaskGroup and cancels every sibling —
+# WITHOUT setting shutdown_event. The heartbeat is cancelled before it can
+# reach isolate_self, so no job is re-pended and no phase log is written.
+# Every one of these loops must treat PG loss as transient, exactly as
+# their already-guarded siblings do.
+
+
+async def test_sweep_loop_survives_reclaim_connection_loss() -> None:
+    """A dead PG in sweep 1 must not escape ``_sweep_loop``."""
+    leader, _deps, backend, _conn, _pool, shutdown = await _make_leader(is_leader=True)
+
+    async def _dead_pg(*_args: object, **_kw: object) -> int:
+        raise OSError(-2, "Name or service not known")
+
+    backend.reclaim_expired_locks = _dead_pg  # type: ignore[method-assign]  # Why: test-only injection of a dead-PG failure.
+
+    task = asyncio.create_task(leader._sweep_loop(shutdown))
+    await asyncio.sleep(0.05)  # one tick fires before the interval sleep
+    assert not task.done(), f"sweep loop died: {task.exception() if task.done() else None!r}"
+    await _stop_after_tick(task, shutdown, delay=0.0)
+
+
+async def test_sweep_loop_survives_deadline_sweep_connection_loss() -> None:
+    """A dead PG in sweep 2 must not escape ``_sweep_loop``."""
+    leader, _deps, backend, _conn, _pool, shutdown = await _make_leader(is_leader=True)
+
+    async def _dead_pg(*_args: object, **_kw: object) -> int:
+        raise asyncpg.InterfaceError("connection is closed")
+
+    backend.deadline_sweep = _dead_pg  # type: ignore[method-assign]  # Why: test-only injection of a dead-PG failure.
+
+    task = asyncio.create_task(leader._sweep_loop(shutdown))
+    await asyncio.sleep(0.05)
+    assert not task.done(), f"sweep loop died: {task.exception() if task.done() else None!r}"
+    await _stop_after_tick(task, shutdown, delay=0.0)
+
+
+async def test_scheduled_wake_loop_survives_connection_loss() -> None:
+    """A dead PG in ``scheduled_to_pending`` must not escape the wake loop."""
+    leader, _deps, backend, _conn, _pool, shutdown = await _make_leader(is_leader=True)
+
+    async def _dead_pg(**_kw: object) -> int:
+        raise OSError(-2, "Name or service not known")
+
+    backend.scheduled_to_pending = _dead_pg  # type: ignore[method-assign]  # Why: test-only injection of a dead-PG failure.
+
+    task = asyncio.create_task(leader._scheduled_wake_loop(shutdown))
+    await asyncio.sleep(0.05)
+    assert not task.done(), f"wake loop died: {task.exception() if task.done() else None!r}"
+    await _stop_after_tick(task, shutdown, delay=0.0)
+
+
+async def test_scheduled_wake_loop_survives_notify_connection_loss() -> None:
+    """A dead PG in the post-promotion ``pg_notify`` must not escape."""
+
+    class _DeadPool(FakePool):
+        @asynccontextmanager
+        async def acquire(self, *, timeout: float | None = None) -> AsyncGenerator[FakeConn, None]:  # noqa: ASYNC109
+            raise OSError(-2, "Name or service not known")
+            yield FakeConn()  # pragma: no cover  # Why: makes the body a generator.
+
+    leader, _deps, backend, _conn, _pool, shutdown = await _make_leader(
+        is_leader=True,
+        dispatcher_pool=_DeadPool(),
+    )
+    backend.scheduled_to_pending = lambda **_kw: asyncio.sleep(0, result=3)  # type: ignore[method-assign]  # Why: async stub returning a positive promotion count.
+
+    task = asyncio.create_task(leader._scheduled_wake_loop(shutdown))
+    await asyncio.sleep(0.05)
+    assert not task.done(), f"wake loop died: {task.exception() if task.done() else None!r}"
+    await _stop_after_tick(task, shutdown, delay=0.0)
+
+
+async def test_election_upsert_survives_connection_loss(monkeypatch: Any) -> None:
+    """A dead PG in the maintenance_leader UPSERT must not escape the election loop."""
+
+    def _dead_pg() -> None:
+        raise asyncpg.InterfaceError("connection is closed")
+
+    leader_conn = FakeConn(fetchval_result=True, on_execute=_dead_pg)
+    leader, deps, _backend, _conn, _pool, shutdown = await _make_leader(
+        leader_conn=leader_conn,
+        monkeypatch=monkeypatch,
+    )
+
+    task = asyncio.create_task(leader._election_loop(shutdown))
+    await asyncio.sleep(0.05)
+    assert not task.done(), f"election loop died: {task.exception() if task.done() else None!r}"
+    assert not deps.is_leader.is_set(), "leadership must not be claimed when the UPSERT failed"
+    await _stop_after_tick(task, shutdown, delay=0.0)
+
+
+# ── Scheduled-wake loop transient PG guard ─────────────────────────────────
+
+
+async def test_scheduled_wake_loop_survives_transient_pg_errors() -> None:
+    """Transient PG failures from ``scheduled_to_pending`` must not escape
+    into ``MaintenanceLeader.run``'s TaskGroup (same defect class as the
+    unguarded reclaim/deadline sweeps)."""
+
+    class _DeadPgBackend:
+        async def scheduled_to_pending(self, now: datetime) -> int:
+            raise OSError(111, "Connect call failed")
+
+    deps = _make_deps(is_leader=True)
+    leader = MaintenanceLeader(
+        deps,
+        new_uuid(),
+        _DeadPgBackend(),  # type: ignore[arg-type]  # Why: stub satisfying only the called method.
+        clock=FakeClock(datetime(2025, 1, 1, tzinfo=UTC)),
+    )
+    shutdown = asyncio.Event()
+    task = asyncio.create_task(leader._scheduled_wake_loop(shutdown))
+    await asyncio.sleep(0.1)  # several ticks against the dead backend
+    assert not task.done(), "scheduled-wake loop died on a transient PG error"
+    shutdown.set()
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+
+# ── Gated-loop liveness registration ─────────────────────────────────────
+
+
+async def test_watchdog_loop_forgets_tick_registration_on_demotion() -> None:
+    """Demotion must drop the ``leader.watchdog`` liveness registration.
+
+    Regression: the tick is stamped inside the ``is_leader``-gated inner
+    loop, so on demotion (probe failure -> is_leader cleared -> break) the
+    loop re-parks on ``is_leader.wait()`` and stops ticking through no
+    fault of its own. A lingering registration goes stale while parked,
+    so watchdog detector 2 would force-exit a perfectly healthy non-leader
+    worker ~grace seconds after every ordinary leadership change. The
+    ``forget`` must therefore run where the inner loop is LEFT, not after
+    the park (which only returns once is_leader is set again).
+    """
+    from taskq.worker._watchdog import LoopLiveness
+
+    def _boom() -> None:
+        raise OSError("pg gone")
+
+    leader, deps, _backend, _conn, _pool, shutdown = await _make_leader(is_leader=True)
+    now = [1000.0]
+    deps.liveness = LoopLiveness(clock=lambda: now[0])
+    # Drive the real demotion path: the monitor probe raises, which clears
+    # is_leader via _close_leader_owned_conns and breaks the inner loop.
+    leader._leader_monitor_conn = FakeConn(on_fetchval=_boom)  # type: ignore[assignment]  # Why: FakeConn is the asyncpg.Connection stand-in used throughout this module.
+
+    task = asyncio.create_task(leader._watchdog_loop(shutdown))
+    await asyncio.sleep(0.05)
+    assert not deps.is_leader.is_set(), "probe failure should have demoted this worker"
+
+    await asyncio.sleep(0.05)  # the loop has re-parked as a non-leader
+    now[0] += 3600.0  # far beyond any staleness budget
+    stale = deps.liveness.stale()
+
+    shutdown.set()
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+    assert stale == [], (
+        f"stale registrations after demotion would force-exit a healthy worker: {stale}"
+    )

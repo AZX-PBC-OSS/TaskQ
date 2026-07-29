@@ -66,6 +66,7 @@ async def heartbeat_loop(
     ) = build_heartbeat_sql(schema)
 
     while not shutdown.is_set():
+        deps.liveness.tick("heartbeat", period=interval)
         _in_tx_failed = False
         tick_start = time.monotonic()
         try:

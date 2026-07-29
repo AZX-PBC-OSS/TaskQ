@@ -12,6 +12,7 @@ from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: canonical identifier regex; copying would drift the validation pattern.
 )
 from taskq.progress._buffer import _ProgressBuffer
+from taskq.worker._watchdog import LoopLiveness
 
 __all__ = ["_flush_buffer", "_flush_buffer_immediate", "progress_flush_loop"]
 
@@ -115,6 +116,7 @@ async def progress_flush_loop(
     progress_buffers: dict[UUID, _ProgressBuffer],
     coalesce_interval: float,
     shutdown: asyncio.Event,
+    liveness: LoopLiveness | None = None,
 ) -> None:
     """Periodic flush loop: runs until shutdown is set, flushing dirty buffers each tick.
 
@@ -129,6 +131,8 @@ async def progress_flush_loop(
     while not shutdown.is_set():
         await asyncio.sleep(coalesce_interval)
 
+        if liveness is not None:
+            liveness.tick("progress_flush", period=coalesce_interval)
         for job_id, buffer in list(progress_buffers.items()):
             if not buffer.dirty:
                 continue

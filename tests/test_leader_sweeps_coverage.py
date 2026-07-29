@@ -674,3 +674,42 @@ async def test_loop_interval_sleep_is_shutdown_interruptible(
     shutdown.set()
     # Must return promptly — pre-fix this sleeps the full 3600s.
     await asyncio.wait_for(task, timeout=2.0)
+
+
+# ── Transient PG errors must not escape the sweep loops ────────────────────
+
+
+class _DeadPgSweepsBackend:
+    """Backend whose reclaim/deadline sweeps raise transient PG errors
+    (the dead-PG class: DNS/connect failure, not NotImplementedError)."""
+
+    async def reclaim_expired_locks(self, now: datetime, cg: timedelta, ug: timedelta) -> int:
+        raise OSError(111, "Connect call failed")
+
+    async def deadline_sweep(self, now: datetime) -> int:
+        raise OSError(111, "Connect call failed")
+
+
+async def test_sweep_loop_survives_transient_pg_errors() -> None:
+    """Transient PG failures from ``reclaim_expired_locks`` / ``deadline_sweep``
+    must not escape into ``MaintenanceLeader.run``'s TaskGroup.
+
+    Regression: those two calls caught only ``NotImplementedError`` while
+    every sibling block in the same loop guards
+    ``(TimeoutError, PostgresConnectionError, InterfaceError, OSError)`` —
+    a transient PG failure raised into the TaskGroup, which cancelled every
+    worker sibling and hung the worker's shutdown.
+    """
+    deps = _make_deps(is_leader=True)
+    deps.settings.sweep_interval = 0.01
+    ctx = SweepContext(
+        deps=deps,
+        backend=_DeadPgSweepsBackend(),  # type: ignore[arg-type]  # Why: stub satisfying only the called methods.
+        clock=FakeClock(datetime(2025, 1, 1, tzinfo=UTC)),
+        worker_id=new_uuid(),
+    )
+    shutdown = asyncio.Event()
+    task = asyncio.create_task(_leader_sweeps._sweep_loop(ctx, shutdown))
+    await asyncio.sleep(0.1)  # several ticks against the dead backend
+    assert not task.done(), "sweep loop died on a transient PG error"
+    await _stop_loop(task, shutdown, delay=0.0)

@@ -12,7 +12,7 @@ resolution and warns about PgBouncer transaction-mode footguns.
 import asyncio
 import contextlib
 import importlib.util
-from collections.abc import Mapping
+from collections.abc import Callable, Coroutine, Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
@@ -36,11 +36,12 @@ from taskq.cron import (
     compute_next_fire_after,
 )
 from taskq.exceptions import MissingProvider
-from taskq.obs import set_otel_enabled, setup_logging
+from taskq.obs import get_meter, set_otel_enabled, setup_logging
 from taskq.progress._flush import progress_flush_loop
 from taskq.ratelimit._provider import register_rate_limit_registry, register_redis_pool
 from taskq.ratelimit.registry import registry as rl_registry
 from taskq.settings import WorkerSettings
+from taskq.worker._watchdog import LoopLagWatchdog, ShutdownWatchdog, loop_watchdog_loop
 from taskq.worker.actor_config import ActorConfig
 from taskq.worker.cancel import make_cancel_controller
 from taskq.worker.deps import WorkerDeps, open_worker_deps
@@ -48,12 +49,18 @@ from taskq.worker.health import HealthServer
 from taskq.worker.heartbeat import heartbeat_loop
 from taskq.worker.leader import MaintenanceLeader
 from taskq.worker.notify import notify_listener_loop
-from taskq.worker.shutdown import install_signal_handlers
+from taskq.worker.shutdown import ShutdownPhase, install_signal_handlers
 from taskq.worker.startup import sync_actor_config
 
 __all__ = ["_emit_sub_enqueue_startup_warnings", "_main", "worker_main"]
 
 _startup_log: structlog.stdlib.BoundLogger = structlog.get_logger("taskq.worker.run.startup")
+
+_sibling_crashes = get_meter().create_counter(
+    "taskq.worker.sibling_crashes_total",
+    unit="1",
+    description="Sibling task exits by exception, labelled by loop.",
+)
 
 
 def _redis_extra_installed() -> bool:
@@ -576,9 +583,42 @@ async def _main(
                     )
                 )
 
+            deps.liveness.grace_factor = settings.watchdog_tick_grace_factor
+            deps.liveness.stale_floor = settings.watchdog_stale_floor
+            lag_watchdog = LoopLagWatchdog(
+                asyncio.get_running_loop(),
+                deps.liveness,
+                budget=settings.watchdog_loop_lag_budget,
+                startup_grace=settings.watchdog_loop_lag_startup_grace,
+                poll_interval=settings.watchdog_check_interval,
+                enabled=settings.watchdog_enabled,
+            )
+
+            def _stamp_shutdown_started(t: float) -> None:
+                if deps.shutdown_started_at is None:
+                    deps.shutdown_started_at = t
+
+            shutdown_watchdog = ShutdownWatchdog(
+                shutdown_event,
+                deadline=settings.termination_grace_period,
+                dump_interval=settings.watchdog_dump_interval,
+                enabled=settings.watchdog_enabled,
+                on_shutdown_started=_stamp_shutdown_started,
+                started_at=lambda: deps.shutdown_started_at,
+            )
+            # A plain ``async with`` plus one finally satisfies both
+            # requirements — see that finally for the ordering rationale. A
+            # manual __aenter__/__aexit__ pair is NOT needed here and is a
+            # trap: awaiting __aexit__ inside the finally makes everything
+            # after it conditional on the group exiting without raising,
+            # which silently drops deregister_worker on the crash path.
             try:
                 async with asyncio.TaskGroup() as tg:
-                    tg.create_task(
+                    lag_watchdog.start()
+                    shutdown_watchdog.start()
+                    _spawn = _make_sibling_spawner(tg, shutdown_event, deps)
+
+                    _spawn(
                         heartbeat_loop(
                             deps,
                             worker_id,
@@ -587,7 +627,7 @@ async def _main(
                             cancel_wake_event=cancel_wake_event,
                         )
                     )
-                    tg.create_task(
+                    _spawn(
                         progress_flush_loop(
                             # Resolved per flush tick so a credential
                             # hot-reload swap is picked up immediately —
@@ -599,17 +639,21 @@ async def _main(
                             deps.progress_buffers,
                             settings.progress_coalesce_interval,
                             shutdown_event,
+                            liveness=deps.liveness,
                         )
                     )
-                    tg.create_task(
+                    # may_return: the notify listener falling back to
+                    # poll-based dispatch is the one legitimate early return.
+                    _spawn(
                         notify_listener_loop(
                             deps,
                             backend,  # type: ignore[arg-type]  # Why: notify_listener_loop expects PostgresBackend; the instance is PostgresBackend at runtime — pyright cannot narrow the Backend Protocol to the concrete class here
                             shutdown_event,
                             worker_id,
-                        )
+                        ),
+                        may_return=True,
                     )
-                    tg.create_task(
+                    _spawn(
                         MaintenanceLeader(
                             deps,
                             worker_id,
@@ -617,7 +661,7 @@ async def _main(
                             clock=_clock,
                         ).run(shutdown_event)
                     )
-                    tg.create_task(
+                    _spawn(
                         producer_loop(
                             deps,
                             local_queue,
@@ -629,7 +673,7 @@ async def _main(
                     )
                     for _ in range(settings.max_concurrency):
                         if actor_registry is not None:
-                            tg.create_task(
+                            _spawn(
                                 di_consumer_loop(
                                     deps,
                                     local_queue,
@@ -645,7 +689,7 @@ async def _main(
                                 )
                             )
                         else:
-                            tg.create_task(
+                            _spawn(
                                 consumer_loop_stub(
                                     deps,
                                     local_queue,
@@ -655,7 +699,7 @@ async def _main(
                                 )
                             )
 
-                    tg.create_task(
+                    _spawn(
                         _reload_coordinator_loop(
                             deps,
                             shutdown_event,
@@ -664,9 +708,35 @@ async def _main(
                         ),
                         name="worker.reload_coordinator",
                     )
+                    if settings.watchdog_enabled:
+                        # Never spawn the loop disabled: an early return with
+                        # no shutdown in progress trips detector 3 (the master
+                        # kill-switch must be the one path that cannot fail).
+                        _spawn(
+                            loop_watchdog_loop(
+                                deps.liveness,
+                                shutdown_event,
+                                check_interval=settings.watchdog_check_interval,
+                            ),
+                            name="worker.loop_watchdog",
+                        )
 
                     await shutdown_event.wait()
             finally:
+                # The order here matters, and every statement must be
+                # non-raising so the ones after it still run.
+                #
+                # The watchdogs are disarmed only AFTER the TaskGroup's exit
+                # has completed: a wedged sibling hanging that exit is exactly
+                # what detector 1 exists to catch, so cancelling them any
+                # earlier would make the detector dead code on the only path
+                # that matters. Both calls swallow their own errors.
+                await shutdown_watchdog.cancel()
+                lag_watchdog.stop()
+                # deregister_worker must run even when the group exit RAISED
+                # (the sibling-crash path): a crashed worker that leaves its
+                # workers row behind makes the supervisor's staleness check —
+                # the fleet-level backstop — start from a staler picture.
                 try:
                     await deregister_worker(deps.dispatcher_pool, settings, worker_id)
                 except Exception:
@@ -680,6 +750,85 @@ async def _main(
     else:
         exit_code = 0
     return exit_code
+
+
+def _make_sibling_spawner(
+    tg: asyncio.TaskGroup,
+    shutdown_event: asyncio.Event,
+    deps: WorkerDeps,
+) -> Callable[..., asyncio.Task[None]]:
+    """Build the spawner used for every long-lived sibling in ``_main``.
+
+    A sibling that raises already tears the ``TaskGroup`` down, but the
+    group's ``__aexit__`` then *waits* for the remaining siblings — and a
+    cancelled sibling does not reliably stop. Several loops race a park
+    against ``shutdown_event`` and clean up losers with
+    ``suppress(asyncio.CancelledError)``; a cancellation delivered inside
+    that suppress is swallowed, and a consumer that treats
+    ``CancelledError`` as a cooperative job-cancel absorbs it by design.
+    Either way the loop re-checks ``while not shutdown_event.is_set()``,
+    sees it clear, and parks again forever: the worker never exits, and
+    the original exception never surfaces because ``__aexit__`` never
+    returns (observed as a 120 s+ hang with no traceback when a leader
+    sweep hit a dead PG).
+
+    Setting ``shutdown_event`` on the way out of a failing sibling closes
+    that gap: the shutdown flag every loop already honours is raised, so
+    the group drains promptly and the ExceptionGroup propagates. Only the
+    failure path signals — a sibling that returns cleanly (e.g. the notify
+    listener disabling itself and falling back to poll-based dispatch)
+    must not bring the worker down.
+    """
+
+    async def _guarded(coro: Coroutine[Any, Any, None], *, may_return: bool) -> None:
+        try:
+            await coro
+        except asyncio.CancelledError:
+            # Normal cancellation (the group's own cancel logic): not a
+            # crash, not a contract issue, and NOT counted — one real fault
+            # cancelling N siblings must not report N+1 crashes.
+            raise
+        except BaseException:
+            _sibling_crashes.add(1, {"loop": getattr(coro, "__qualname__", repr(coro))})
+            shutdown_event.set()
+            raise
+        if may_return:
+            # may_return skips ONLY the clean-return check; exceptions
+            # above still set shutdown_event and count the crash.
+            return
+        shutdown_in_progress = (
+            shutdown_event.is_set()
+            or deps.shutdown_phase is not ShutdownPhase.NONE
+            or deps.producer_stop_event.is_set()
+        )
+        if not shutdown_in_progress:
+            # Detector 3 (sibling contract): a long-lived sibling that
+            # returns cleanly while NO shutdown is in progress is a bug —
+            # without this the worker keeps running half-staffed with no
+            # signal. The SIGTERM drain path is allowed: producer_loop
+            # exits on producer_stop_event / phase entry long before
+            # shutdown_event is set at the end of orchestration.
+            shutdown_event.set()
+            msg = (
+                f"sibling {getattr(coro, '__qualname__', repr(coro))} returned "
+                "cleanly while no shutdown was in progress"
+            )
+            _startup_log.error(
+                "sibling-returned-unexpectedly",
+                kind="sibling_returned_unexpectedly",
+                sibling=msg,
+            )
+            raise RuntimeError(msg)
+
+    def _spawn(
+        coro: Coroutine[Any, Any, None],
+        *,
+        may_return: bool = False,
+        **kwargs: Any,
+    ) -> asyncio.Task[None]:
+        return tg.create_task(_guarded(coro, may_return=may_return), **kwargs)
+
+    return _spawn
 
 
 async def _reload_coordinator_loop(
@@ -719,7 +868,6 @@ async def _reload_coordinator_loop(
       resources are still live; the operator can SIGHUP again.
     """
     from taskq.worker.deps import reload_credentials
-    from taskq.worker.shutdown import ShutdownPhase
 
     interval = deps.settings.reload_interval
 

@@ -32,6 +32,7 @@ from taskq.constants import wake_channel
 from taskq.obs import get_logger
 from taskq.progress._buffer import _ProgressBuffer
 from taskq.settings import WorkerSettings
+from taskq.worker._watchdog import LoopLiveness
 from taskq.worker.budget import compute_connection_budget
 from taskq.worker.cancel import ActiveJobRegistry
 from taskq.worker.shutdown import ShutdownPhase
@@ -167,6 +168,10 @@ class WorkerDeps:
     producer_stop_event: asyncio.Event = field(default_factory=asyncio.Event)
     active_jobs: ActiveJobRegistry = field(default_factory=ActiveJobRegistry)
     shutdown_phase: ShutdownPhase = ShutdownPhase.NONE
+    # Monotonic timestamp of shutdown initiation (orchestrate_shutdown
+    # start or the ShutdownWatchdog observing shutdown_event, whichever
+    # is first). Feeds the /ready shutdown_elapsed_seconds surface.
+    shutdown_started_at: float | None = None
     heartbeat_failures: int = 0
     progress_buffers: dict[UUID, _ProgressBuffer] = field(
         default_factory=dict[UUID, _ProgressBuffer]
@@ -187,6 +192,11 @@ class WorkerDeps:
     rebuild). Used by :mod:`taskq.worker.notify`'s reconnect loop and by
     :func:`reload_credentials` so a dropped or expiring connection is always
     rebuilt through the same credential source it was opened with."""
+    liveness: LoopLiveness = field(default_factory=LoopLiveness)
+    """Per-loop liveness stamps for the in-worker watchdog (detector 2):
+    interval-driven sibling loops tick once per iteration and the watchdog
+    trips when any tracked loop goes stale. Gated loops must ``forget``
+    their entry when their gate closes."""
     leader_conn_factory: ConnFactory | None = None
     """Resolved factory that (re)builds ``leader_conn``. Same contract as
     ``notify_conn_factory``; used by :mod:`taskq.worker.leader`'s election

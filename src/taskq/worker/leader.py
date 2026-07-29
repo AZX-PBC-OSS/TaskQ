@@ -12,6 +12,7 @@ Failover SLA:
 """
 
 import asyncio
+import contextlib
 import time
 from collections.abc import Iterable
 from uuid import UUID
@@ -254,6 +255,9 @@ class MaintenanceLeader:
 
     async def _election_loop(self, shutdown: asyncio.Event) -> None:
         while not shutdown.is_set():
+            self._deps.liveness.tick(
+                "leader.election", period=self._deps.settings.heartbeat_interval
+            )
             if self._deps.is_leader.is_set():
                 if self._deps.leader_conn is None or self._deps.leader_conn.is_closed():
                     conn_state = "None" if self._deps.leader_conn is None else "closed"
@@ -346,6 +350,28 @@ class MaintenanceLeader:
                     )
                     shutdown.set()
                     return
+                except (
+                    asyncpg.PostgresConnectionError,
+                    asyncpg.InterfaceError,
+                    OSError,
+                ) as exc:
+                    # The advisory lock was won but the conn died before the
+                    # UPSERT landed: transient, and mirrors the lock-attempt
+                    # guard above. Unguarded it escapes into the worker's
+                    # TaskGroup, cancelling every sibling WITHOUT setting
+                    # shutdown_event. is_leader stays clear, so the leader-only
+                    # loops keep gating until a later attempt succeeds.
+                    await self._drop_leader_conn(reason="leader_upsert_failed")
+                    await self._close_leader_owned_conns()
+                    record_election_attempt(str(self._worker_id), won=False)
+                    log.warning(
+                        "leader-upsert-failed",
+                        kind="leader_upsert_failed",
+                        worker_id=str(self._worker_id),
+                        error=repr(exc),
+                    )
+                    await asyncio.sleep(self._deps.settings.heartbeat_interval)
+                    continue
                 try:
                     self._leader_monitor_conn = await self._open_dedicated_conn(
                         "leader_monitor_conn"
@@ -389,8 +415,27 @@ class MaintenanceLeader:
 
     async def _watchdog_loop(self, shutdown: asyncio.Event) -> None:
         while not shutdown.is_set():
-            await self._deps.is_leader.wait()
+            # Parking on is_leader.wait() alone can never wake when PG is
+            # unreachable: the election loop cannot re-elect, so nothing
+            # sets is_leader again — MaintenanceLeader.run's TaskGroup
+            # (and with it the whole worker) would hang on exit after
+            # isolate_self. Race the park against shutdown.
+            leader_wait = asyncio.create_task(self._deps.is_leader.wait())
+            shutdown_wait = asyncio.create_task(shutdown.wait())
+            try:
+                await asyncio.wait(
+                    {leader_wait, shutdown_wait}, return_when=asyncio.FIRST_COMPLETED
+                )
+            finally:
+                for task in (leader_wait, shutdown_wait):
+                    if not task.done():
+                        task.cancel()
+                        with contextlib.suppress(asyncio.CancelledError):
+                            await task
+            if shutdown.is_set():
+                return
             while not shutdown.is_set() and self._deps.is_leader.is_set():
+                self._deps.liveness.tick("leader.watchdog", period=_WATCHDOG_INTERVAL_SECS)
                 conn = self._leader_monitor_conn
                 if conn is None:
                     break
@@ -407,26 +452,52 @@ class MaintenanceLeader:
                     )
                     break
                 await asyncio.sleep(_WATCHDOG_INTERVAL_SECS)
+            # Leaving the inner loop means the gate closed: demotion (the
+            # probe-failure break above, which clears is_leader), a dropped
+            # monitor conn, or shutdown. Drop the registration HERE, before
+            # re-parking on is_leader.wait() — this loop stops ticking through
+            # no fault of its own, and a lingering registration goes stale
+            # while parked, so detector 2 would force-exit a healthy
+            # non-leader worker ~grace seconds after every ordinary
+            # leadership change. Placing this after the park is too late: the
+            # park only returns once is_leader is set again.
+            self._deps.liveness.forget("leader.watchdog")
 
     async def _scheduled_wake_loop(self, shutdown: asyncio.Event) -> None:
         warned = False
         while not shutdown.is_set():
+            self._deps.liveness.tick("leader.scheduled_wake", period=1.0)
             if self._deps.is_leader.is_set():
                 now_utc = self._clock.now()
                 start = time.monotonic()
                 try:
                     count = await self._backend.scheduled_to_pending(now=now_utc)
-                except NotImplementedError as exc:
-                    if not warned:
-                        _err("scheduled_wake_backend_unimplemented", _EK1, self._worker_id, exc)
-                        warned = True
-                else:
                     _metric("scheduled_to_pending", count, start)
                     _dbg("scheduled_wake_tick", "scheduled_wake_tick", count, start)
                     if count > 0:
                         channel = wake_channel(self._deps.settings.schema_name)
                         async with self._deps.dispatcher_pool.acquire() as conn:
                             await conn.execute("SELECT pg_notify($1, '')", channel)
+                except NotImplementedError as exc:
+                    if not warned:
+                        _err("scheduled_wake_backend_unimplemented", _EK1, self._worker_id, exc)
+                        warned = True
+                except (
+                    TimeoutError,
+                    asyncpg.PostgresConnectionError,
+                    asyncpg.InterfaceError,
+                    OSError,
+                ) as exc:
+                    # PG loss is transient: the next tick retries, and a
+                    # missed wake NOTIFY is covered by the producer's poll
+                    # interval. Unguarded it escapes into the worker's
+                    # TaskGroup and wedges shutdown (see _leader_sweeps).
+                    log.warning(
+                        "scheduled-wake-failed",
+                        kind="scheduled_wake_failed",
+                        worker_id=str(self._worker_id),
+                        error=repr(exc),
+                    )
             await asyncio.sleep(1.0)
 
     async def _cron_loop(self, shutdown: asyncio.Event) -> None:
@@ -441,6 +512,7 @@ class MaintenanceLeader:
         clean shutdown.
         """
         while not shutdown.is_set():
+            self._deps.liveness.tick("leader.cron", period=1.0)
             if not self._deps.is_leader.is_set():
                 await asyncio.sleep(1)
                 continue

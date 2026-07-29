@@ -297,6 +297,18 @@ async def _health_check_loop(
     shutdown: asyncio.Event,
     channels: list[tuple[str, Callable[[asyncpg.Connection, int, str, str], None]]],
 ) -> None:
+    # Deliberately does NOT tick LoopLiveness. This loop is exempt from
+    # watchdog detector 2 (see _watchdog's module docstring), for three
+    # independent reasons — a stale registration force-exits the worker:
+    #   1. It returns early on legitimate paths (conn dropped, and the
+    #      notify-listener-disabled poll-fallback that keeps the worker
+    #      running by design), which would leave the entry to go stale.
+    #   2. The reconnect retry loop backs off to 30s between attempts
+    #      without ticking, so a small health-check interval would put the
+    #      budget at the floor and trip during exactly the PG outage the
+    #      reconnect logic exists to survive.
+    #   3. Its cadence tracks IO, not progress.
+    # Detectors 1, 3 and 4 cover this loop instead.
     while not shutdown.is_set():
         await asyncio.sleep(float(deps.settings.notify_health_check_interval))
         if shutdown.is_set():

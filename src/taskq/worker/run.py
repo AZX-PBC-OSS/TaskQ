@@ -205,6 +205,7 @@ async def producer_loop(
                 )
 
         while not (shutdown_event.is_set() or producer_stop_event.is_set()):
+            deps.liveness.tick("producer", period=poll_interval)
             available = local_queue.maxsize - local_queue.qsize()
             if available <= 0:
                 await asyncio.sleep(0.1)

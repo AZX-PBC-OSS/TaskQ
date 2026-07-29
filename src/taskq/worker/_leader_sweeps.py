@@ -85,6 +85,7 @@ async def _sleep_interruptible(shutdown: asyncio.Event, seconds: float) -> None:
 async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
     warned_sweep_1 = warned_sweep_2 = False
     while not shutdown.is_set():
+        ctx.deps.liveness.tick("leader.sweep", period=ctx.deps.settings.sweep_interval)
         if ctx.deps.is_leader.is_set():
             now_utc = ctx.clock.now()
             start = time.monotonic()  # Sweep 1: reclaim_expired_locks
@@ -98,6 +99,24 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                 if not warned_sweep_1:
                     _err("sweep_expired_locks_unimplemented", _EK2, ctx.worker_id, exc)
                     warned_sweep_1 = True
+            except (
+                TimeoutError,
+                asyncpg.PostgresConnectionError,
+                asyncpg.InterfaceError,
+                OSError,
+            ) as exc:
+                # Why: PG loss is transient here, exactly as for the
+                # already-guarded sweeps below. Unguarded, it escapes into
+                # MaintenanceLeader.run's TaskGroup and on into the worker's,
+                # cancelling every sibling WITHOUT setting shutdown_event —
+                # the heartbeat dies before it can reach isolate_self, so no
+                # job is re-pended and the worker cannot exit cleanly.
+                log.warning(
+                    "sweep-expired-locks-failed",
+                    kind="sweep_expired_locks_failed",
+                    worker_id=str(ctx.worker_id),
+                    error=repr(exc),
+                )
             else:
                 _metric("expired_locks", count_1, start)
                 _dbg("sweep_expired_locks_tick", "sweep_expired_locks_tick", count_1, start)
@@ -108,6 +127,19 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                 if not warned_sweep_2:
                     _err("sweep_deadline_exceeded_unimplemented", _EK3, ctx.worker_id, exc)
                     warned_sweep_2 = True
+            except (
+                TimeoutError,
+                asyncpg.PostgresConnectionError,
+                asyncpg.InterfaceError,
+                OSError,
+            ) as exc:
+                # Same transient-PG rationale as sweep 1 above.
+                log.warning(
+                    "sweep-deadline-exceeded-failed",
+                    kind="sweep_deadline_exceeded_failed",
+                    worker_id=str(ctx.worker_id),
+                    error=repr(exc),
+                )
             else:
                 _metric("deadline_exceeded", count_2, start)
                 log.debug(
@@ -399,6 +431,7 @@ async def _queue_depth_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
         return
     sql = _QUERY_QUEUE_DEPTH_SQL_TEMPLATE.format(schema=schema)
     while not shutdown.is_set():
+        ctx.deps.liveness.tick("leader.queue_depth", period=ctx.deps.settings.queue_depth_interval)
         if ctx.deps.is_leader.is_set():
             try:
                 async with ctx.deps.dispatcher_pool.acquire() as conn:
@@ -422,6 +455,9 @@ async def _reservation_slots_loop(ctx: SweepContext, shutdown: asyncio.Event) ->
         return
     sql = _QUERY_RESERVATION_SLOTS_SQL_TEMPLATE.format(schema=schema)
     while not shutdown.is_set():
+        ctx.deps.liveness.tick(
+            "leader.reservation_slots", period=ctx.deps.settings.reservation_slots_interval
+        )
         if ctx.deps.is_leader.is_set():
             try:
                 async with ctx.deps.dispatcher_pool.acquire() as conn:
@@ -461,6 +497,9 @@ async def _stranded_jobs_loop(ctx: SweepContext, shutdown: asyncio.Event) -> Non
     sql = _stranded_sql.format(schema=schema)
 
     while not shutdown.is_set():
+        ctx.deps.liveness.tick(
+            "leader.stranded_jobs", period=ctx.deps.settings.stranded_jobs_interval
+        )
         await _sleep_interruptible(shutdown, ctx.deps.settings.stranded_jobs_interval)
         if not ctx.deps.is_leader.is_set():
             continue
