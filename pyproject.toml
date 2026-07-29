@@ -114,11 +114,6 @@ vault = [
 ]
 
 [tool.uv]
-# Version range: setup-uv in CI resolves versions without fetching the
-# versions manifest from raw.githubusercontent.com, which is a transient
-# network failure point that has failed whole CI matrices. The range keeps
-# local dev on a uv that can still read the committed uv.lock.
-required-version = ">=0.11.19,<0.12"
 # Supply-chain hardening: never resolve to distributions published within the
 # last 24 hours, giving time for malicious releases to be detected and yanked.
 exclude-newer = "24 hours"
