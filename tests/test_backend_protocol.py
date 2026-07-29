@@ -3,7 +3,7 @@
 Covers the Definition of Done items:
 - Protocol is @runtime_checkable
 - BACKEND_PROTOCOL_VERSION == 3
-- All 33 public members present (30 async methods + 2 sync
+- All 46 public members present (43 async methods + 2 sync
   subscribe_wake/subscribe_cancel_wake + supports_transactional_simulation)
 - Five bool-returning terminal-write methods have bool return annotations
 - mark_snoozed returns tri-state Literal; mark_retry_after returns cause-specific failed Literal
@@ -215,9 +215,9 @@ class TestRuntimeCheckable:
 
 
 class TestMethodCount:
-    def test_exactly_thirty_six_public_members(self) -> None:
+    def test_exactly_forty_six_public_members(self) -> None:
         public = [m for m in dir(Backend) if not m.startswith("_")]
-        assert len(public) == 36, f"Expected 36 public members, got {len(public)}: {public}"
+        assert len(public) == 46, f"Expected 46 public members, got {len(public)}: {public}"
 
     def test_all_member_names_present(self) -> None:
         expected = {
@@ -257,6 +257,16 @@ class TestMethodCount:
             "list_schedules",
             "update_schedule",
             "delete_schedule",
+            "enqueue_batch_atomic",
+            "create_batch",
+            "increment_batch_failures",
+            "reset_batch_failures",
+            "abort_batch",
+            "complete_batch",
+            "get_batch",
+            "list_batches",
+            "count_batch_non_terminal",
+            "prune_old_batches",
         }
         actual = {m for m in dir(Backend) if not m.startswith("_")}
         assert actual == expected

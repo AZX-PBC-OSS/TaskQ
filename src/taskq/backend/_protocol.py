@@ -12,7 +12,7 @@ creating a circular dependency through the re-export boundary in
 
 import asyncio
 import re
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from contextlib import AbstractAsyncContextManager as AsyncContextManager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -49,6 +49,9 @@ __all__ = [
     "AttemptRow",
     "Backend",
     "BackendDeps",
+    "BatchCounts",
+    "BatchFilter",
+    "BatchRow",
     "CancelFlag",
     "CancelPhase",
     "DstStrategy",
@@ -636,6 +639,61 @@ class JobPage:
     next_cursor: str | None
 
 
+@dataclass(frozen=True, slots=True)
+class BatchRow:
+    """Read-model of a ``taskq.batches`` row."""
+
+    id: UUID
+    queue: str
+    status: Literal["active", "complete", "aborted"]
+    expected_size: int
+    consecutive_failures: int
+    failure_threshold: int | None
+    finalizer_job_id: UUID | None
+    originating_actor: str | None
+    created_at: datetime
+    completed_at: datetime | None
+    metadata: dict[str, object]
+
+
+@dataclass(frozen=True, slots=True)
+class BatchCounts:
+    """Live job-count aggregate for one batch.
+
+    Mirrors BatchCompletionStatus fields; defined at the protocol layer
+    so backends do not import the client-side batch module.
+    """
+
+    total: int
+    pending: int
+    succeeded: int
+    failed: int
+    cancelled: int
+    crashed: int
+    abandoned: int
+
+
+@dataclass(frozen=True, slots=True)
+class BatchFilter:
+    """Filter parameters for Backend.list_batches.
+
+    Unlike JobFilter, this only carries fields relevant to batch queries:
+    queue, active (status terminality), batch_id, and limit. Job-oriented
+    fields (status, actor, tags, cursor, order_by, identity_key) are
+    intentionally absent — using JobFilter for batch queries would
+    silently ignore those fields, which is a type trap.
+    """
+
+    queue: str | None = None
+    active: bool | None = None
+    batch_id: UUID | None = None
+    limit: int = 100
+
+    def __post_init__(self) -> None:
+        if self.limit < 0:
+            raise ValueError(f"limit must be >= 0, got {self.limit}")
+
+
 # ── Backend deps protocol ───────────────────────────────────────────────
 # Worker-layer dependencies consumed by PostgresBackend at construction time.
 # Typed as a Protocol (not object) so pyright can verify attribute access
@@ -690,11 +748,12 @@ class BackendDeps(Protocol):
 class Backend(Protocol):
     """Contract that both PostgresBackend and InMemoryBackend satisfy.
 
-    31 async methods plus two sync methods (``subscribe_wake`` and
-    ``subscribe_cancel_wake``) (33 methods total) covering enqueue,
+    43 async methods plus two sync methods (``subscribe_wake`` and
+    ``subscribe_cancel_wake``) (45 methods total) covering enqueue,
     dispatch, heartbeat, terminal writes, attempt history, cancel
-    signals, scheduling / sweeps, read, NOTIFY hook, and schedule CRUD.
-    Method order grouped for review-grep ergonomics.
+    signals, scheduling / sweeps, read, NOTIFY hook, schedule CRUD,
+    and batch operations. Method order grouped for review-grep
+    ergonomics.
 
     Why monomorphic (no ``Generic[P, R]``): the backend is the DB
     adapter boundary. Payloads are stored as ``dict[str, object]`` (the
@@ -1047,3 +1106,75 @@ class Backend(Protocol):
     ) -> ScheduleRecord: ...
 
     async def delete_schedule(self, schedule_id: UUID) -> None: ...
+
+    # ── Batch operations ────────────────────────────────────────────
+    async def enqueue_batch_atomic(
+        self,
+        items: Iterable[EnqueueArgs],
+        *,
+        batch_id: UUID,
+        queue: str,
+        batch_row: BatchRow | None,
+        finalizer_args: EnqueueArgs | None,
+        chunk_size: int = 1000,
+    ) -> list[JobRow]: ...
+
+    async def create_batch(
+        self,
+        batch_id: UUID,
+        queue: str,
+        expected_size: int,
+        failure_threshold: int | None,
+        finalizer_job_id: UUID | None,
+        originating_actor: str | None,
+        *,
+        connection: "asyncpg.Connection | None" = None,
+    ) -> None: ...
+
+    async def increment_batch_failures(
+        self,
+        batch_id: UUID,
+        *,
+        connection: "asyncpg.Connection | None" = None,
+    ) -> tuple[int, int | None, int]: ...
+
+    async def reset_batch_failures(
+        self,
+        batch_id: UUID,
+        *,
+        connection: "asyncpg.Connection | None" = None,
+    ) -> int: ...
+
+    async def abort_batch(
+        self,
+        batch_id: UUID,
+        *,
+        connection: "asyncpg.Connection | None" = None,
+    ) -> int: ...
+
+    async def complete_batch(
+        self,
+        batch_id: UUID,
+        *,
+        connection: "asyncpg.Connection | None" = None,
+    ) -> None: ...
+
+    async def get_batch(
+        self,
+        batch_id: UUID,
+    ) -> BatchRow | None: ...
+
+    async def list_batches(
+        self,
+        filter: BatchFilter,
+    ) -> list[tuple[BatchRow, BatchCounts]]: ...
+
+    async def count_batch_non_terminal(
+        self,
+        batch_id: UUID,
+    ) -> int: ...
+
+    async def prune_old_batches(
+        self,
+        cutoff: datetime,
+    ) -> int: ...
