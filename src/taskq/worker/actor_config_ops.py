@@ -37,11 +37,18 @@ from taskq.backend._protocol import ConnLike
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining it
 )
+from taskq.exceptions import (
+    ActorHasActiveJobsError,
+    ActorHasEnabledSchedulesError,
+    ActorNotFoundError,
+)
 
 __all__ = [
     "UNSET",
     "ActorConfigRow",
+    "DeregisterResult",
     "Unset",
+    "deregister_actor",
     "get_actor_config",
     "list_actor_configs",
     "set_actor_config_capacity",
@@ -69,6 +76,19 @@ class ActorConfigRow:
     result_ttl: float | None
     metadata: dict[str, object]
     updated_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class DeregisterResult:
+    """Outcome of a ``deregister_actor`` call."""
+
+    actor: str
+    queue: str
+    actor_config_deleted: bool
+    schedules_disabled: int
+    jobs_cancelled: int
+    terminal_jobs_remaining: int
+    queue_purged: bool
 
 
 _LIST_ACTOR_CONFIG_SQL = """
@@ -215,3 +235,173 @@ async def set_actor_config_capacity(
         None if isinstance(result_ttl, Unset) else result_ttl,
     )
     return _row_to_dataclass(row) if row is not None else None
+
+
+# ── deregister_actor ────────────────────────────────────────────────────
+
+_NON_TERMINAL_STATUSES: tuple[str, ...] = ("pending", "scheduled", "running")
+_RUNNING_STATUS: str = "running"
+
+_DEREGISTER_CHECK_ACTIVE_JOBS_SQL = """
+SELECT status, count(*) AS cnt
+  FROM "{schema}".jobs
+ WHERE actor = $1 AND status = ANY($2::"{schema}".job_status[])
+ GROUP BY status
+""".strip()
+
+_DEREGISTER_CHECK_SCHEDULES_SQL = """
+SELECT id::text FROM "{schema}".cron_schedules
+ WHERE actor = $1 AND enabled = true
+""".strip()
+
+_DEREGISTER_CANCEL_PENDING_SQL = """
+UPDATE "{schema}".jobs
+   SET status = 'cancelled',
+       finished_at = now(),
+       error_class = 'ActorDeregistered',
+       error_message = 'Job cancelled by actor deregistration (force=True)'
+ WHERE actor = $1
+   AND status IN ('pending', 'scheduled')
+""".strip()
+
+_DEREGISTER_DISABLE_SCHEDULES_SQL = """
+UPDATE "{schema}".cron_schedules
+   SET enabled = false
+ WHERE actor = $1 AND enabled = true
+""".strip()
+
+_DEREGISTER_DELETE_ACTOR_CONFIG_SQL = """
+DELETE FROM "{schema}".actor_config WHERE actor = $1
+RETURNING queue
+""".strip()
+
+_DEREGISTER_PURGE_QUEUE_SQL = """
+DELETE FROM "{schema}".queues
+ WHERE name = $1
+   AND NOT EXISTS (
+       SELECT 1 FROM "{schema}".actor_config WHERE queue = $1
+   )
+""".strip()
+
+_DEREGISTER_COUNT_TERMINAL_SQL = """
+SELECT count(*) FROM "{schema}".jobs
+ WHERE actor = $1 AND status NOT IN ('pending', 'scheduled', 'running')
+""".strip()
+
+
+async def deregister_actor(
+    conn: ConnLike,
+    actor: str,
+    *,
+    force: bool = False,
+    purge_queue: bool = False,
+    schema: str = "taskq",
+) -> DeregisterResult:
+    """Deregister an actor: delete its ``actor_config`` row with safety checks.
+
+    **Default (force=False):**
+      1. Refuse if any non-terminal jobs (pending/scheduled/running) reference
+         the actor — raises :class:`ActorHasActiveJobsError`.
+      2. Refuse if any enabled cron schedules reference the actor — raises
+         :class:`ActorHasEnabledSchedulesError`.
+      3. Delete the ``actor_config`` row.
+      4. Optionally purge the orphaned queue (if ``purge_queue=True`` and no
+         other ``actor_config`` row references the same queue).
+
+    **force=True:**
+      1. Refuse if any running jobs reference the actor — raises
+         :class:`ActorHasActiveJobsError`.
+      2. Cancel pending/scheduled jobs for this actor.
+      3. Disable enabled cron schedules for this actor.
+      4. Delete the ``actor_config`` row.
+      5. Optionally purge the orphaned queue.
+
+    Terminal job history is never deleted or modified. The entire operation
+    runs inside a single ``conn.transaction()`` block. If the actor has no
+    stored ``actor_config`` row, raises :class:`ActorNotFoundError`.
+
+    .. warning::
+       **Concurrent enqueue / dispatch race (TOCTOU).** The transaction
+       uses READ COMMITTED isolation. Callers must quiesce the actor first
+       — stop enqueuing, disable cron schedules, and wait for running jobs
+       to reach a terminal state — before calling deregister.
+    """
+    if not _IDENT_RE.match(schema):
+        raise ValueError(f"invalid schema identifier: {schema!r}")
+
+    async with conn.transaction():
+        if not force:
+            active_rows = await conn.fetch(
+                _DEREGISTER_CHECK_ACTIVE_JOBS_SQL.format(schema=schema),
+                actor,
+                list(_NON_TERMINAL_STATUSES),
+            )
+            if active_rows:
+                status_counts = {row["status"]: row["cnt"] for row in active_rows}
+                active_count = sum(status_counts.values())
+                raise ActorHasActiveJobsError(actor, active_count, status_counts)
+
+            schedule_rows = await conn.fetch(
+                _DEREGISTER_CHECK_SCHEDULES_SQL.format(schema=schema),
+                actor,
+            )
+            if schedule_rows:
+                schedule_ids = [row["id"] for row in schedule_rows]
+                raise ActorHasEnabledSchedulesError(actor, schedule_ids)
+
+            jobs_cancelled = 0
+            schedules_disabled = 0
+        else:
+            running_rows = await conn.fetch(
+                _DEREGISTER_CHECK_ACTIVE_JOBS_SQL.format(schema=schema),
+                actor,
+                [_RUNNING_STATUS],
+            )
+            if running_rows:
+                status_counts = {row["status"]: row["cnt"] for row in running_rows}
+                active_count = sum(status_counts.values())
+                raise ActorHasActiveJobsError(actor, active_count, status_counts)
+
+            cancel_result = await conn.execute(
+                _DEREGISTER_CANCEL_PENDING_SQL.format(schema=schema),
+                actor,
+            )
+            jobs_cancelled = int(cancel_result.split()[-1]) if cancel_result else 0
+
+            disable_result = await conn.execute(
+                _DEREGISTER_DISABLE_SCHEDULES_SQL.format(schema=schema),
+                actor,
+            )
+            schedules_disabled = int(disable_result.split()[-1]) if disable_result else 0
+
+        deleted_rows = await conn.fetch(
+            _DEREGISTER_DELETE_ACTOR_CONFIG_SQL.format(schema=schema),
+            actor,
+        )
+        if not deleted_rows:
+            raise ActorNotFoundError(actor)
+
+        queue_name = deleted_rows[0]["queue"]
+
+        terminal_count = await conn.fetchval(
+            _DEREGISTER_COUNT_TERMINAL_SQL.format(schema=schema),
+            actor,
+        )
+
+        queue_purged = False
+        if purge_queue:
+            purge_result = await conn.execute(
+                _DEREGISTER_PURGE_QUEUE_SQL.format(schema=schema),
+                queue_name,
+            )
+            queue_purged = purge_result == "DELETE 1"
+
+    return DeregisterResult(
+        actor=actor,
+        queue=queue_name,
+        actor_config_deleted=True,
+        schedules_disabled=schedules_disabled,
+        jobs_cancelled=jobs_cancelled,
+        terminal_jobs_remaining=terminal_count or 0,
+        queue_purged=queue_purged,
+    )
