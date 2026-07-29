@@ -274,6 +274,9 @@ ignore = [
 # Same rationale — schema name validated against _IDENT_RE; all
 # user-supplied values use $N parameter binding.
 "tests/test_web_admin_integration.py" = ["S608"]
+# Same rationale — schema name validated against _IDENT_RE; all
+# user-supplied values use $N parameter binding.
+"tests/test_web_admin_actors.py" = ["S608"]
 # FastAPI Depends() in test route-handler defaults is the same idiomatic
 # declarative-injection pattern as web/admin — not a real mutable default.
 "tests/test_sso_session.py" = ["B008"]
