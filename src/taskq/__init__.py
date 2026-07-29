@@ -37,7 +37,7 @@ from taskq.backend._protocol import (
     ScheduleRecord,
 )
 from taskq.batch import BatchCompletionStatus, BatchHandle, EnqueueItem, wait_for_batch
-from taskq.client import CancelResult, JobEvent, JobHandle, JobsClient, TaskQ
+from taskq.client import BulkCancelResult, CancelResult, JobEvent, JobHandle, JobsClient, TaskQ
 from taskq.client._enqueuer import SubJobEnqueuer
 from taskq.connections import ConnFactory, PoolFactory, RedisFactory, WorkerConnections
 from taskq.context import JobContext
@@ -48,6 +48,7 @@ from taskq.exceptions import (
     BackpressureError,
     DependencyCycle,
     DIError,
+    EmptyFilterError,
     IllegalStateTransition,
     JobFailed,
     MaxPendingExceededError,
@@ -93,6 +94,7 @@ __all__ = [
     "BackpressureError",
     "BatchCompletionStatus",
     "BatchHandle",
+    "BulkCancelResult",
     "CancelPhase",
     "CancelResult",
     "ConnFactory",
@@ -100,6 +102,7 @@ __all__ = [
     "DIError",
     "DependencyCycle",
     "DstStrategy",
+    "EmptyFilterError",
     "EnqueueItem",
     "ErrorReporter",
     "EventRow",

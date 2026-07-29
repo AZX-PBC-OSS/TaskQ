@@ -1,12 +1,15 @@
 """Client-facing result and event-detail types.
 
-``CancelResult`` is the structured return value of ``JobsClient.cancel()``
- ``StateChangeEvent`` is the JSON payload stored in
+``CancelResult`` is the structured return value of ``JobsClient.cancel()``.
+``BulkCancelResult`` is the structured return value of
+``JobsClient.cancel_where()`` (defined in ``backend._protocol`` to avoid
+a circular import — see its docstring).
+``StateChangeEvent`` is the JSON payload stored in
 ``job_events.detail`` for rows with ``kind='state_change'``.
 
-These types live here — not in ``taskq.backend`` — so the Backend protocol
-remains pydantic-free and the layering contract is enforceable by import
-inspection.
+``BulkCancelResult`` is re-exported here (not defined) because
+``types.py`` imports from ``backend._protocol`` — defining it here would
+create a circular import (``_protocol → types → _protocol``).
 """
 
 from dataclasses import dataclass
@@ -14,9 +17,9 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
 
-from taskq.backend._protocol import JobId, JobStatus
+from taskq.backend._protocol import BulkCancelResult, JobId, JobStatus
 
-__all__ = ["CancelResult", "StateChangeEvent"]
+__all__ = ["BulkCancelResult", "CancelResult", "StateChangeEvent"]
 
 
 class CancelResult(BaseModel):

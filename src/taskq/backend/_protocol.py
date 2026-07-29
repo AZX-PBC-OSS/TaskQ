@@ -49,6 +49,7 @@ __all__ = [
     "AttemptRow",
     "Backend",
     "BackendDeps",
+    "BulkCancelResult",
     "CancelFlag",
     "CancelPhase",
     "DstStrategy",
@@ -614,6 +615,35 @@ class ScheduleRecord(BaseModel):
     consecutive_failures: int
     next_fire_at: datetime
     metadata: dict[str, object]
+
+
+class BulkCancelResult(BaseModel):
+    """Structured outcome of a bulk cancellation request.
+
+    Returned by ``JobsClient.cancel_where()`` so callers can inspect
+    how many jobs were cancelled directly (pending/scheduled → terminal
+    'cancelled') vs how many had cooperative cancel requested (running →
+    cancel_phase=1).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    cancelled_directly: int
+    """Count of pending/scheduled jobs moved straight to terminal 'cancelled'."""
+
+    cancel_requested: int
+    """Count of running jobs with cancel_phase=1 set (cooperative cancel)."""
+
+    cancelled_ids: list[UUID]
+    """IDs of jobs cancelled directly (pending/scheduled → cancelled)."""
+
+    cancel_requested_ids: list[UUID]
+    """IDs of running jobs with cancel requested."""
+
+    @property
+    def total_affected(self) -> int:
+        """Total jobs affected by the bulk cancel."""
+        return self.cancelled_directly + self.cancel_requested
 
 
 @dataclass(frozen=True, slots=True)
