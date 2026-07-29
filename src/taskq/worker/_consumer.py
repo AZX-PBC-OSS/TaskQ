@@ -29,7 +29,7 @@ from taskq.backend._protocol import (
     JobRow,
 )
 from taskq.backend.clock import Clock
-from taskq.client._enqueuer import SubJobEnqueuer
+from taskq.client._enqueuer import SubJobEnqueuer, _parent_tags_var, set_parent_tags
 from taskq.constants import MAX_RESULT_BYTES
 from taskq.context import JobContext
 from taskq.exceptions import (
@@ -353,6 +353,9 @@ async def consume_one_job(
         _buf = _ProgressBuffer(job_id=job.id, base_seq=job.progress_seq)
         _progress_buffers[job.id] = _buf
 
+    _inherit = _effective_settings is None or _effective_settings.sub_job_inherit_tags
+    _parent_tags_token = set_parent_tags(tuple(job.tags)) if _inherit else None
+
     try:
         validated_payload = (
             validated_payload
@@ -567,6 +570,8 @@ async def consume_one_job(
             )
 
         finally:
+            if _parent_tags_token is not None:
+                _parent_tags_var.reset(_parent_tags_token)
             # Best-effort crash flush: ensures partial progress_state reaches PG
             # even when the actor raises unexpectedly ().
             if (

@@ -9,6 +9,7 @@ re-warning fires on the loop-level counter, not per-job.
 
 from __future__ import annotations
 
+import contextvars
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
@@ -39,9 +40,23 @@ if TYPE_CHECKING:
 
     from taskq.actor import ActorRef
 
-__all__ = ["SubJobEnqueuer"]
+__all__ = ["SubJobEnqueuer", "_parent_tags_var", "set_parent_tags"]
 
 _log: structlog.stdlib.BoundLogger = structlog.get_logger(__name__)
+
+_parent_tags_var: contextvars.ContextVar[tuple[str, ...]] = contextvars.ContextVar(
+    "taskq_parent_tags",
+    default=(),
+)
+
+
+def set_parent_tags(tags: tuple[str, ...]) -> contextvars.Token[tuple[str, ...]]:
+    """Set the parent job's tags for sub-job tag inheritance.
+
+    Called by the consumer before actor invocation. The returned token
+    can be used to reset the context after the actor completes.
+    """
+    return _parent_tags_var.set(tags)
 
 
 class SubJobEnqueuer:
@@ -90,6 +105,11 @@ class SubJobEnqueuer:
         unique_for: timedelta | None = None,
         unique_states: tuple[JobStatus, ...] | None = None,
         max_pending: int | None = None,
+        tags: list[str] | None = None,
+        inherit_tags: bool = True,
+        schedule_to_close: datetime | None = None,
+        start_to_close: timedelta | None = None,
+        heartbeat_timeout: timedelta | None = None,
     ) -> JobHandle[R]:
         """Enqueue a sub-job. ``max_pending`` is a per-call limit resolved
         against the operator-owned stored cap and the ``@actor(...)``
@@ -113,6 +133,7 @@ class SubJobEnqueuer:
                 actor_ref.max_pending,
                 per_call=max_pending,
             )
+            resolved_tags = self._resolve_tags(tags, inherit_tags)
             args = build_enqueue_args(
                 actor_ref,
                 payload,
@@ -125,6 +146,10 @@ class SubJobEnqueuer:
                 idempotency_scope=idempotency_scope,
                 trace_id=extracted_trace_id,
                 span_id=extracted_span_id,
+                tags=resolved_tags,
+                schedule_to_close=schedule_to_close,
+                start_to_close=start_to_close,
+                heartbeat_timeout=heartbeat_timeout,
                 unique_for=unique_for,
                 unique_states=unique_states,
                 max_pending=effective_max_pending,
@@ -139,6 +164,36 @@ class SubJobEnqueuer:
             backend=self._backend,
             client=None,
         )
+
+    def _resolve_tags(
+        self,
+        tags: list[str] | None,
+        inherit_tags: bool,
+    ) -> list[str] | None:
+        """Resolve tags with parent inheritance.
+
+        Returns a list suitable for build_enqueue_args, or None for empty.
+        """
+        parent_tags = _parent_tags_var.get() if inherit_tags else ()
+
+        if tags is None:
+            if parent_tags:
+                return list(parent_tags)
+            return None
+
+        if not inherit_tags or not parent_tags:
+            return tags
+
+        if not tags:
+            return list(parent_tags)
+
+        seen: set[str] = set(parent_tags)
+        merged = list(parent_tags)
+        for tag in tags:
+            if tag not in seen:
+                seen.add(tag)
+                merged.append(tag)
+        return merged
 
     def _resolve_connection(
         self,
