@@ -37,6 +37,7 @@ from taskq.backend._protocol import (
     ScheduleRecord,
 )
 from taskq.batch import BatchCompletionStatus, BatchHandle, EnqueueItem, wait_for_batch
+from taskq.batch_policy import AbortBatchAfter, BatchFailurePolicy
 from taskq.client import CancelResult, JobEvent, JobHandle, JobsClient, TaskQ
 from taskq.client._enqueuer import SubJobEnqueuer
 from taskq.connections import ConnFactory, PoolFactory, RedisFactory, WorkerConnections
@@ -84,6 +85,7 @@ from taskq.retry import (
 from taskq.scheduler import register_cron
 
 __all__ = [
+    "AbortBatchAfter",
     "ActorConfigDriftError",
     "ActorConfigDriftList",
     "ActorFn",
@@ -92,6 +94,7 @@ __all__ = [
     "ActorRef",
     "BackpressureError",
     "BatchCompletionStatus",
+    "BatchFailurePolicy",
     "BatchHandle",
     "CancelPhase",
     "CancelResult",
