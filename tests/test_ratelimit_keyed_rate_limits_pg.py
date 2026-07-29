@@ -16,6 +16,7 @@ from datetime import UTC, datetime
 
 import asyncpg
 import pytest
+from pydantic import BaseModel
 
 from taskq._ids import new_base62, new_uuid
 from taskq.migrate import apply_pending
@@ -27,6 +28,10 @@ from taskq.testing.clock import FakeClock
 pytestmark = pytest.mark.integration
 
 _START = datetime(2025, 1, 1, tzinfo=UTC)
+
+
+class _TenantPayload(BaseModel):
+    tenant_id: str
 
 
 async def _prepare_schema(pg_dsn: str, schema: str) -> None:
@@ -61,9 +66,10 @@ async def test_keyed_rate_limit_materialization_publishes_bucket_row(pg_dsn: str
     clock = FakeClock(_START)
     try:
         reg = RateLimitRegistry()
-        ref = KeyedRateLimitRef(
+        ref = KeyedRateLimitRef.typed(
+            _TenantPayload,
             base_name="api-per-tenant",
-            key_fn=lambda p: str(p["tenant_id"]),
+            key_fn=lambda p: p.tenant_id,
             capacity=5,
             refill_per_second=0.5,
             backend="memory",
@@ -74,7 +80,7 @@ async def test_keyed_rate_limit_materialization_publishes_bucket_row(pg_dsn: str
             reservations=[],
             job_id=new_uuid(),
             worker_id=new_uuid(),
-            payload={"tenant_id": "acme"},
+            payload=_TenantPayload(tenant_id="acme"),
             pg_pool=pool,
             clock=clock,
             settings=_settings(pg_dsn, schema),
@@ -99,7 +105,7 @@ async def test_keyed_rate_limit_materialization_publishes_bucket_row(pg_dsn: str
             reservations=[],
             job_id=new_uuid(),
             worker_id=new_uuid(),
-            payload={"tenant_id": "acme"},
+            payload=_TenantPayload(tenant_id="acme"),
             pg_pool=pool,
             clock=clock,
             settings=_settings(pg_dsn, schema),
@@ -124,9 +130,10 @@ async def test_keyed_rate_limit_publish_scoped_to_worker_schema(pg_dsn: str) -> 
     clock = FakeClock(_START)
     try:
         reg = RateLimitRegistry()
-        ref = KeyedRateLimitRef(
+        ref = KeyedRateLimitRef.typed(
+            _TenantPayload,
             base_name="api-per-tenant",
-            key_fn=lambda p: str(p["tenant_id"]),
+            key_fn=lambda p: p.tenant_id,
             capacity=5,
             refill_per_second=0.5,
             backend="memory",
@@ -137,7 +144,7 @@ async def test_keyed_rate_limit_publish_scoped_to_worker_schema(pg_dsn: str) -> 
             reservations=[],
             job_id=new_uuid(),
             worker_id=new_uuid(),
-            payload={"tenant_id": "globex"},
+            payload=_TenantPayload(tenant_id="globex"),
             pg_pool=pool,
             clock=clock,
             settings=_settings(pg_dsn, schema),

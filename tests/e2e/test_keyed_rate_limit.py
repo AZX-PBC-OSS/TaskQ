@@ -4,9 +4,9 @@ Verifies that ``KeyedRateLimitRef`` materializes an independent token
 bucket per key (tenant_id) and that draining one tenant's bucket does not
 affect another tenant's bucket. The actor
 ``deliver_tenant_webhook`` declares
-``rate_limits=[KeyedRateLimitRef(base_name="e2e_per_tenant",
-key_fn=lambda p: p["tenant_id"], capacity=3, refill_per_second=1.0,
-backend="redis")]``, so each tenant gets a capacity-3 / 1-refill-per-second
+``rate_limits=[KeyedRateLimitRef.typed(DeliverTenantWebhookPayload,
+base_name="e2e_per_tenant", key_fn=lambda p: p.tenant_id, capacity=3,
+refill_per_second=1.0, backend="redis")]``, so each tenant gets a capacity-3 / 1-refill-per-second
 bucket in Dragonfly, materialized lazily on first acquisition.
 """
 

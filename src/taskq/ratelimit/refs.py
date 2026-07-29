@@ -9,7 +9,7 @@ time, not at decoration time.
 fixed name, it carries a ``key_fn`` that derives a concrete reservation
 name per job from the validated payload. This is for session/tenant-scoped
 concurrency caps layered on top of a static global cap — e.g. an actor
-declares ``reservations=["geocode-global", KeyedReservationRef(base_name="geocode-session", key_fn=lambda p: p["session_id"], slots=3, lease=timedelta(minutes=5))]``
+declares ``reservations=["geocode-global", KeyedReservationRef.typed(MyPayload, base_name="geocode-session", key_fn=lambda p: p.session_id, slots=3, lease=timedelta(minutes=5))]``
 to cap total concurrent geocode calls globally *and* per import session,
 with each session's cap materializing as its own
 :class:`~taskq.ratelimit.reservation.ConcurrencyReservation` on first use.
@@ -17,7 +17,7 @@ with each session's cap materializing as its own
 ``KeyedRateLimitRef`` mirrors ``KeyedReservationRef`` for token buckets:
 instead of a single fixed rate-limit name, it derives a per-key
 :class:`~taskq.ratelimit.token_bucket.TokenBucket` from the payload — e.g.
-an actor declares ``rate_limits=[KeyedRateLimitRef(base_name="api-per-tenant", key_fn=lambda p: p["tenant_id"], capacity=10, refill_per_second=1.0)]``
+an actor declares ``rate_limits=[KeyedRateLimitRef.typed(MyPayload, base_name="api-per-tenant", key_fn=lambda p: p.tenant_id, capacity=10, refill_per_second=1.0)]``
 to give each tenant its own independent token budget, with each tenant's
 bucket materializing on first use.
 """
@@ -95,10 +95,16 @@ class KeyedReservationRef(BaseModel):
     ``base_name`` namespaces the derived reservations (the concrete name
     registered for a given key is ``f"{base_name}:{key}"``) so distinct
     ``KeyedReservationRef`` declarations never collide. ``key_fn`` receives
-    the actor's validated payload (as a ``dict[str, object]``, the same
-    shape stored on the job row) and must return a non-empty string —
-    typically a tenant, session, or account identifier already present on
-    the payload.
+    the actor's validated payload (as a :class:`~pydantic.BaseModel`
+    instance — the same model stored on the job row after validation) and
+    must return a non-empty string — typically a tenant, session, or
+    account identifier already present on the payload.
+
+    ``payload_type`` is the :class:`~pydantic.BaseModel` subclass that the
+    payload will be validated against. Use :meth:`typed` for type-safe
+    construction that binds ``key_fn`` to the same ``payload_type``:
+    ``KeyedReservationRef.typed(MyPayload, base_name="geocode-session",
+    key_fn=lambda p: p.session_id, slots=3, lease=timedelta(minutes=5))``.
 
     ``slots`` and ``lease`` configure every reservation derived from this
     ref identically (all keys share the same per-key cap and lease
@@ -114,9 +120,41 @@ class KeyedReservationRef(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     base_name: str
-    key_fn: Callable[[dict[str, object]], str]
+    key_fn: Callable[[BaseModel], str]
+    payload_type: type[BaseModel]
     slots: int
     lease: timedelta
+
+    @classmethod
+    def typed[P: BaseModel](
+        cls,
+        payload_type: type[P],
+        *,
+        base_name: str,
+        key_fn: Callable[[P], str],
+        slots: int,
+        lease: timedelta,
+    ) -> "KeyedReservationRef":
+        """Type-safe constructor that binds ``key_fn`` to ``payload_type``.
+
+        The ``key_fn`` parameter is typed as ``Callable[[P], str]`` where
+        ``P`` is the provided ``payload_type`` — at static-analysis time
+        the caller's lambda or function is checked against the concrete
+        model's attributes (e.g. ``lambda p: p.session_id`` is verified
+        against ``payload_type.session_id``).
+
+        At runtime the registry passes the validated payload model to
+        ``key_fn``, so the callable always receives an instance of
+        ``payload_type`` (verified by ``isinstance`` in the registry
+        before the call).
+        """
+        return cls(
+            base_name=base_name,
+            key_fn=key_fn,  # type: ignore[arg-type]  # Why: Callable[[P], str] is not assignable to Callable[[BaseModel], str] due to contravariance, but at runtime the registry only passes the validated model P (verified by isinstance check against ref.payload_type).
+            payload_type=payload_type,
+            slots=slots,
+            lease=lease,
+        )
 
     @field_validator("base_name")
     @classmethod
@@ -147,11 +185,17 @@ class KeyedRateLimitRef(BaseModel):
     ``capacity`` / ``refill_per_second`` configure every bucket derived
     from this ref identically (all keys share the same per-key budget).
 
+    ``payload_type`` is the :class:`~pydantic.BaseModel` subclass that the
+    payload will be validated against. Use :meth:`typed` for type-safe
+    construction that binds ``key_fn`` to the same ``payload_type``:
+    ``KeyedRateLimitRef.typed(MyPayload, base_name="api-per-tenant",
+    key_fn=lambda p: p.tenant_id, capacity=10, refill_per_second=1.0)``.
+
     A consumer calling an external API with per-tenant rate limits would
-    declare ``rate_limits=[KeyedRateLimitRef(base_name="api-per-tenant",
-    key_fn=lambda p: p["tenant_id"], capacity=10, refill_per_second=1.0)]``
-    to give each tenant its own independent token budget, with each
-    tenant's bucket materializing on first use.
+    declare ``rate_limits=[KeyedRateLimitRef.typed(MyPayload,
+    base_name="api-per-tenant", key_fn=lambda p: p.tenant_id, capacity=10,
+    refill_per_second=1.0)]`` to give each tenant its own independent
+    token budget, with each tenant's bucket materializing on first use.
 
     **Concurrency caps vs. rate limits.** A concurrency limiter (how many
     jobs at once, e.g. :class:`KeyedReservationRef` /
@@ -201,10 +245,44 @@ class KeyedRateLimitRef(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     base_name: str
-    key_fn: Callable[[dict[str, object]], str]
+    key_fn: Callable[[BaseModel], str]
+    payload_type: type[BaseModel]
     capacity: float
     refill_per_second: float
     backend: RateLimitBackend = "redis"
+
+    @classmethod
+    def typed[P: BaseModel](
+        cls,
+        payload_type: type[P],
+        *,
+        base_name: str,
+        key_fn: Callable[[P], str],
+        capacity: float,
+        refill_per_second: float,
+        backend: RateLimitBackend = "redis",
+    ) -> "KeyedRateLimitRef":
+        """Type-safe constructor that binds ``key_fn`` to ``payload_type``.
+
+        The ``key_fn`` parameter is typed as ``Callable[[P], str]`` where
+        ``P`` is the provided ``payload_type`` — at static-analysis time
+        the caller's lambda or function is checked against the concrete
+        model's attributes (e.g. ``lambda p: p.tenant_id`` is verified
+        against ``payload_type.tenant_id``).
+
+        At runtime the registry passes the validated payload model to
+        ``key_fn``, so the callable always receives an instance of
+        ``payload_type`` (verified by ``isinstance`` in the registry
+        before the call).
+        """
+        return cls(
+            base_name=base_name,
+            key_fn=key_fn,  # type: ignore[arg-type]  # Why: Callable[[P], str] is not assignable to Callable[[BaseModel], str] due to contravariance, but at runtime the registry only passes the validated model P (verified by isinstance check against ref.payload_type).
+            payload_type=payload_type,
+            capacity=capacity,
+            refill_per_second=refill_per_second,
+            backend=backend,
+        )
 
     @field_validator("base_name")
     @classmethod

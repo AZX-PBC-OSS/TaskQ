@@ -407,9 +407,10 @@ class DeliverTenantWebhookPayload(BaseModel):
     name="deliver_tenant_webhook",
     queue="e2e",
     rate_limits=[
-        KeyedRateLimitRef(
+        KeyedRateLimitRef.typed(
+            DeliverTenantWebhookPayload,
             base_name="e2e_per_tenant",
-            key_fn=lambda p: p["tenant_id"],
+            key_fn=lambda p: p.tenant_id,
             capacity=3,
             refill_per_second=1.0,
             backend="redis",
