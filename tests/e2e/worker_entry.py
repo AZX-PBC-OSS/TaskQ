@@ -12,6 +12,7 @@ from typing import Any
 
 from e2e.actors import (
     capped_worker,
+    concurrent_tracked_worker,
     cron_heartbeat,
     deliver_tenant_webhook,
     deliver_webhook,
@@ -24,6 +25,7 @@ from e2e.actors import (
     quick_result,
     rebuild_search_index,
     send_welcome_email,
+    short_lived_job,
     slow_deliver_webhook,
     sync_user_profile,
 )
@@ -49,6 +51,8 @@ ACTORS: dict[str, ActorRef[Any, Any]] = {
     "long_running_job": long_running_job,
     "loop_blocker_job": loop_blocker_job,
     "cron_heartbeat": cron_heartbeat,
+    "short_lived_job": short_lived_job,
+    "concurrent_tracked_worker": concurrent_tracked_worker,
 }
 
 

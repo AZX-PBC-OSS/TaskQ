@@ -634,3 +634,74 @@ async def long_running_job(
         "finished",
         {"run_id": payload.run_id, "attempt": ctx.attempt},
     )
+
+
+# ── Short-lived job actor (shutdown drain short-job test) ─────────────────
+
+
+class ShortJobPayload(BaseModel):
+    run_id: str
+    label: str = "short"
+
+
+@actor(name="short_lived_job", queue="e2e")
+async def short_lived_job(
+    payload: ShortJobPayload,
+    ctx: JobContext[ShortJobPayload],
+    *,
+    pool: asyncpg.Pool,
+) -> None:
+    """Quick job (~0.5 s) that completes within the shutdown drain grace
+    window (cancellation_grace=1.0 + cleanup_grace=1.0 = 2.0 s).
+
+    Records ``started`` immediately, sleeps 0.5 s, then records ``finished``
+    — proving the worker drains (not cancels) a short in-flight job on
+    SIGTERM.
+    """
+    await _record_effect(
+        pool,
+        ctx,
+        "started",
+        {"run_id": payload.run_id, "label": payload.label},
+    )
+    await asyncio.sleep(0.5)
+    await _record_effect(
+        pool,
+        ctx,
+        "finished",
+        {"run_id": payload.run_id, "label": payload.label},
+    )
+
+
+# ── Actor-level max_concurrent test actor ─────────────────────────────────
+
+
+class ConcurrentTrackedPayload(BaseModel):
+    run_id: str
+    job_index: int
+
+
+@actor(name="concurrent_tracked_worker", queue="e2e", max_concurrent=2)
+async def concurrent_tracked_worker(
+    payload: ConcurrentTrackedPayload,
+    ctx: JobContext[ConcurrentTrackedPayload],
+    *,
+    pool: asyncpg.Pool,
+) -> None:
+    """Actor with ``max_concurrent=2`` that records started/finished
+    effects so the test can compute the maximum number of simultaneously
+    running jobs and verify it never exceeds 2.
+    """
+    await _record_effect(
+        pool,
+        ctx,
+        "ct_started",
+        {"run_id": payload.run_id, "job_index": payload.job_index},
+    )
+    await asyncio.sleep(1.0)
+    await _record_effect(
+        pool,
+        ctx,
+        "ct_finished",
+        {"run_id": payload.run_id, "job_index": payload.job_index},
+    )

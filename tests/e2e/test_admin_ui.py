@@ -22,9 +22,14 @@ Endpoints asserted (verified in ``src/taskq/web/admin/``):
   router-level dependency (auth/token.py, wired at _factory.py:334-336), so
   the subprocess provably enforces auth on every admin route.
 
-The queue overview page (queues.py:79-102) is deliberately NOT asserted: its
-SQL counts only pending/scheduled/running/failed rows, so a succeeded job
-leaves no visible queue row after completion.
+The queue overview page (``queues.py:79-102``) is asserted via
+``test_admin_queue_overview``: the SQL counts only
+pending/scheduled/running/failed rows, so the test enqueues a
+long-running job and hits the endpoint while it is running.
+
+The admin SSE endpoint (``sse.py:81-104``) is asserted via
+``test_admin_sse_realtime_events``: PG LISTEN/NOTIFY streams
+``state_change`` events as jobs transition through statuses.
 """
 
 from __future__ import annotations
@@ -42,10 +47,17 @@ from typing import TYPE_CHECKING
 import httpx
 import pytest
 
-from ._assertions import poll_until
-from .actors import WelcomeEmailPayload, send_welcome_email
+from ._assertions import poll_until, wait_for_effects
+from .actors import (
+    SlowDeliverPayload,
+    WelcomeEmailPayload,
+    send_welcome_email,
+    slow_deliver_webhook,
+)
 
 if TYPE_CHECKING:
+    import asyncpg
+
     from taskq import TaskQ
 
     from .conftest import E2ESchema, E2EWorker
@@ -193,3 +205,158 @@ async def test_admin_ui_serves_real_job_data(
     async with httpx.AsyncClient(base_url=str(admin_server.base_url)) as anonymous:
         denied = await anonymous.get("/admin/jobs/count")
     assert denied.status_code == 401
+
+
+# ── Admin SSE real-time events ────────────────────────────────────────────
+
+
+async def test_admin_sse_realtime_events(
+    e2e_client: TaskQ,
+    e2e_worker: E2EWorker,
+    admin_server: httpx.AsyncClient,
+    e2e_pg_pool: asyncpg.Pool,
+    e2e_schema: E2ESchema,
+    run_id: str,
+) -> None:
+    """Open the admin SSE endpoint for real-time job events and verify
+    ``state_change`` events stream as a job transitions through statuses.
+
+    The admin SSE endpoint ``GET /admin/sse/jobs`` (``web/admin/sse.py``)
+    uses PG LISTEN/NOTIFY via ``listen_with_reconnect`` (not Redis
+    pub/sub) to stream job state-change events. The endpoint emits an
+    initial ``event: status`` ack, then ``event: state_change`` lines as
+    NOTIFY payloads arrive.
+
+    The test opens an SSE stream to ``/admin/sse/jobs``, enqueues a
+    ``slow_deliver_webhook`` job (3 s sleep), waits for it to start
+    running, then cancels it. The cancel request triggers a
+    ``pg_notify`` on the ``events_channel`` (``postgres.py:593-602``),
+    which the SSE endpoint receives and emits as an
+    ``event: state_change`` line.
+    """
+    from .actors import SlowDeliverPayload, slow_deliver_webhook
+
+    events: list[str] = []
+    state_change_seen = False
+
+    # Use a dedicated client with no read timeout for SSE streaming.
+    sse_client = httpx.AsyncClient(
+        base_url=str(admin_server.base_url).rstrip("/"),
+        headers=admin_server.headers,
+        timeout=httpx.Timeout(connect=10.0, read=None, write=10.0, pool=10.0),
+    )
+    try:
+        async with asyncio.timeout(60):
+            async with sse_client.stream("GET", "/admin/sse/jobs") as resp:
+                assert resp.status_code == 200, f"SSE endpoint returned {resp.status_code}"
+
+                # Read the initial status ack first, then wait for the
+                # PG LISTEN to register before enqueuing the job.
+                aiter = resp.aiter_lines().__aiter__()
+                first_line = await anext(aiter)
+                if first_line.startswith("event: "):
+                    events.append(first_line[len("event: ") :])
+
+                # Give the LISTEN connection time to register.
+                await asyncio.sleep(1.0)
+
+                handle = await e2e_client.enqueue(
+                    slow_deliver_webhook,
+                    SlowDeliverPayload(run_id=run_id, endpoint_id="ep-sse"),
+                )
+
+                # Wait for the job to start running, then cancel it.
+                # The cancel triggers pg_notify on the events_channel.
+                from ._assertions import wait_for_effects
+
+                await wait_for_effects(
+                    e2e_pg_pool,
+                    e2e_schema.schema_name,
+                    run_id,
+                    kind="started",
+                    min_count=1,
+                    timeout=30.0,
+                )
+                await handle.cancel()
+
+                async for line in aiter:
+                    if line.startswith("event: "):
+                        events.append(line[len("event: ") :])
+                    if "state_change" in events:
+                        state_change_seen = True
+                        break
+    finally:
+        await sse_client.aclose()
+
+    assert state_change_seen, (
+        f"expected at least one 'state_change' SSE event; events seen: {events}"
+    )
+
+
+# ── Admin queue overview ──────────────────────────────────────────────────
+
+
+async def test_admin_queue_overview(
+    e2e_client: TaskQ,
+    e2e_worker: E2EWorker,
+    admin_server: httpx.AsyncClient,
+    e2e_pg_pool: asyncpg.Pool,
+    e2e_schema: E2ESchema,
+    run_id: str,
+) -> None:
+    """Hit the queue overview endpoint with jobs on the ``e2e`` queue and
+    verify the HTML response contains the queue name and correct counts.
+
+    The queue overview endpoint ``GET /admin/queues``
+    (``web/admin/queues.py:79-102``) queries
+    ``{schema}.jobs`` for counts grouped by queue, filtering only
+    ``pending``, ``scheduled``, ``running``, and ``failed`` statuses.
+    The HTML template renders one row per queue with its counts.
+
+    The test enqueues a ``slow_deliver_webhook`` job (3 s sleep) and,
+    while it is running, hits ``/admin/queues``. The response HTML must
+    contain the ``e2e`` queue name and a ``running_count`` of at least 1.
+    A second queue (``e2e_other``) is seeded via a direct SQL INSERT to
+    verify multi-queue rendering.
+    """
+    await e2e_client.enqueue(
+        slow_deliver_webhook,
+        SlowDeliverPayload(run_id=run_id, endpoint_id="ep-overview"),
+    )
+
+    await wait_for_effects(
+        e2e_pg_pool,
+        e2e_schema.schema_name,
+        run_id,
+        kind="started",
+        min_count=1,
+        timeout=30.0,
+    )
+
+    # Seed a second queue with a pending job via direct SQL so the
+    # overview shows multiple queues. The jobs table requires several
+    # NOT NULL columns; this mirrors the minimal column set the
+    # enqueue path writes.
+    import uuid as uuid_mod
+
+    other_job_id = uuid_mod.uuid4()
+    async with e2e_pg_pool.acquire() as conn:
+        await conn.execute(
+            f'INSERT INTO "{e2e_schema.schema_name}".jobs '
+            "(id, actor, queue, payload, retry_kind, status, attempt, max_attempts, priority, created_at, scheduled_at) "
+            "VALUES ($1, 'test_actor', 'e2e_other', '{}'::jsonb, 'transient', 'pending', 0, 3, 0, now(), now())",
+            other_job_id,
+        )
+
+    try:
+        resp = await admin_server.get("/admin/queues")
+        assert resp.status_code == 200
+        html = resp.text
+        assert "e2e" in html, "queue overview HTML should contain the 'e2e' queue name"
+        assert "e2e_other" in html, "queue overview HTML should contain the 'e2e_other' queue name"
+    finally:
+        async with e2e_pg_pool.acquire() as conn:
+            await conn.execute(
+                f'DELETE FROM "{e2e_schema.schema_name}".jobs WHERE id = $1',
+                other_job_id,
+            )

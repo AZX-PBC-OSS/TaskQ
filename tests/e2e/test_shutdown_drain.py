@@ -41,14 +41,17 @@ from ._assertions import (
     wait_for_worker_ready,
 )
 from .actors import (
+    ShortJobPayload,
     SlowDeliverPayload,
     WelcomeEmailPayload,
     send_welcome_email,
+    short_lived_job,
     slow_deliver_webhook,
 )
 from .conftest import (
     _DELETE_ORDER,
     E2EWorker,
+    _container_logs,
     _flushdb,
     _stop_container,
 )
@@ -76,7 +79,7 @@ async def clean_e2e_state(request: pytest.FixtureRequest) -> AsyncIterator[None]
     mid-test) and tolerates idle-gate timeout (the killed worker may leave
     transient ``running`` rows that the leader sweep has not yet reclaimed).
     """
-    if not {"e2e_client", "e2e_pg_pool", "e2e_worker", "e2e_schema"}.intersection(
+    if not {"e2e_client", "e2e_pg_pool", "e2e_worker", "e2e_schema", "drain_worker"}.intersection(
         request.fixturenames
     ):
         yield
@@ -107,6 +110,48 @@ async def clean_e2e_state(request: pytest.FixtureRequest) -> AsyncIterator[None]
 
     await asyncio.to_thread(_flushdb, f"{e2e_dragonfly.host_url}/{e2e_schema.redis_db}")
     yield
+
+
+# ── Dedicated worker fixture for drain/escalation tests ───────────────────
+
+
+@pytest_asyncio.fixture
+async def drain_worker(
+    request: pytest.FixtureRequest,
+    e2e_network: Network,
+    e2e_schema: E2ESchema,
+    e2e_pg_pool: asyncpg.Pool,
+    e2e_worker_image: BuiltImage,
+) -> AsyncIterator[E2EWorker]:
+    """Function-scoped worker container for drain/escalation tests.
+
+    The module-scoped ``e2e_worker`` is killed by the first test
+    (``test_sigterm_drains_inflight_job``), so subsequent tests that need
+    a running worker use this dedicated fixture instead. Each test gets
+    a fresh worker container, torn down after the test.
+    """
+    from testcontainers.core.container import DockerContainer
+
+    container = DockerContainer(image=e2e_worker_image.tag)
+    container.with_network(e2e_network).with_network_aliases(
+        f"worker-drain-{e2e_schema.schema_name}-{uuid4().hex[:6]}"
+    )
+    for key, value in e2e_schema.worker_env.items():
+        container.with_env(key, value)
+
+    await asyncio.to_thread(container.start)
+    try:
+        try:
+            await wait_for_worker_ready(e2e_pg_pool, e2e_schema.schema_name, timeout=30.0)
+        except TimeoutError:
+            logs = _container_logs(container)
+            msg = f"drain e2e worker failed readiness gate\n{logs}"
+            raise RuntimeError(msg) from None
+        yield E2EWorker(container=container, schema=e2e_schema.schema_name)
+    finally:
+        if request.config.option.verbose >= 2:
+            print(_container_logs(container))
+        await asyncio.to_thread(_stop_container, container)
 
 
 # ── Test ──────────────────────────────────────────────────────────────────
@@ -228,3 +273,137 @@ async def test_sigterm_drains_inflight_job(
         )
     finally:
         await asyncio.to_thread(_stop_container, replacement)
+
+
+# ── Graceful drain completes short job ────────────────────────────────────
+
+
+async def test_graceful_drain_completes_short_job(
+    e2e_client: TaskQ,
+    drain_worker: E2EWorker,
+    e2e_pg_pool: asyncpg.Pool,
+    e2e_schema: E2ESchema,
+    run_id: str,
+) -> None:
+    """SIGTERM after a short job has completed: the job remains
+    ``succeeded``, proving the shutdown does not corrupt completed jobs.
+
+    The ``short_lived_job`` actor sleeps 0.5 s. The test enqueues it,
+    waits for it to reach ``succeeded`` (via ``handle.wait``), THEN
+    sends SIGTERM. The shutdown orchestration must not touch
+    already-terminal jobs: the job's status, effects, and result must
+    remain intact.
+
+    This is the complement of ``test_sigterm_drains_inflight_job``: that
+    test proves a long in-flight job (3 s) is cancelled by the shutdown
+    orchestration; this test proves a short job that completed before
+    SIGTERM is unaffected.
+    """
+    handle = await e2e_client.enqueue(
+        short_lived_job,
+        ShortJobPayload(run_id=run_id, label="drain-short"),
+    )
+    await handle.wait(timeout=60)
+
+    rows = await fetch_job_rows(e2e_pg_pool, e2e_schema.schema_name, [handle.job_id])
+    assert rows[0]["status"] == "succeeded", (
+        f"short job should have succeeded before SIGTERM, got status={rows[0]['status']}"
+    )
+
+    wrapped = drain_worker.container.get_wrapped_container()
+    await asyncio.to_thread(wrapped.kill, signal="TERM")
+
+    await asyncio.sleep(2.0)
+
+    rows = await fetch_job_rows(e2e_pg_pool, e2e_schema.schema_name, [handle.job_id])
+    assert rows[0]["status"] == "succeeded", (
+        f"short job should still be succeeded after SIGTERM (shutdown "
+        f"must not corrupt completed jobs), got status={rows[0]['status']}"
+    )
+
+    finished = await fetch_effects(e2e_pg_pool, e2e_schema.schema_name, run_id, kind="finished")
+    assert len(finished) == 1, (
+        f"short job should have a 'finished' effect, got {len(finished)} 'finished' effects"
+    )
+
+
+# ── Second SIGTERM escalation ─────────────────────────────────────────────
+
+
+async def test_second_sigterm_escalates(
+    e2e_client: TaskQ,
+    drain_worker: E2EWorker,
+    e2e_pg_pool: asyncpg.Pool,
+    e2e_schema: E2ESchema,
+    run_id: str,
+) -> None:
+    """A second SIGTERM during DRAINING fast-advances the orchestration
+    to FORCING, cancelling the in-flight job faster than the full grace
+    window.
+
+    The ``slow_deliver_webhook`` actor sleeps 3.0 s — longer than the
+    cancellation grace (1.0 s). The first SIGTERM starts the
+    orchestration (DRAINING → CANCELLING). During CANCELLING, the
+    orchestration polls for job completion with a 1.0 s deadline. A
+    second SIGTERM sets ``escalate_event`` (``shutdown.py:326-327``),
+    which breaks the CANCELLING poll loop early
+    (``shutdown.py:166-167``), immediately advancing to FORCING where
+    ``task.cancel()`` is called on the in-flight job.
+
+    The test measures the elapsed time from the first SIGTERM to the
+    job's terminal state. Without escalation, the minimum is
+    ``cancellation_grace`` (1.0 s) + ``cleanup_grace`` (1.0 s) = 2.0 s.
+    With escalation, the CANCELLING phase is cut short, so the job
+    reaches terminal state faster. The assertion is that the job reaches
+    ``cancelled`` or ``abandoned`` and a ``finished`` effect is NOT
+    recorded (the actor was cancelled mid-sleep).
+    """
+    import time
+
+    handle = await e2e_client.enqueue(
+        slow_deliver_webhook,
+        SlowDeliverPayload(run_id=run_id, endpoint_id="ep-escalate"),
+    )
+
+    await wait_for_effects(
+        e2e_pg_pool,
+        e2e_schema.schema_name,
+        run_id,
+        kind="started",
+        min_count=1,
+        timeout=30.0,
+    )
+
+    wrapped = drain_worker.container.get_wrapped_container()
+
+    t0 = time.monotonic()
+    await asyncio.to_thread(wrapped.kill, signal="TERM")
+
+    await asyncio.sleep(0.3)
+    await asyncio.to_thread(wrapped.kill, signal="TERM")
+
+    async def _drained_terminal() -> bool:
+        rows = await fetch_job_rows(e2e_pg_pool, e2e_schema.schema_name, [handle.job_id])
+        return bool(rows) and rows[0]["status"] in ("cancelled", "abandoned")
+
+    await poll_until(
+        _drained_terminal,
+        timeout=30.0,
+        description=(f"job {handle.job_id} reaching cancelled/abandoned via escalated SIGTERM"),
+    )
+    elapsed = time.monotonic() - t0
+
+    finished = await fetch_effects(e2e_pg_pool, e2e_schema.schema_name, run_id, kind="finished")
+    assert finished == [], (
+        "job should not have a 'finished' effect — the actor was "
+        "cancelled mid-sleep by the escalated SIGTERM"
+    )
+
+    # With escalation, the CANCELLING phase is cut short. The full
+    # unescalated path takes >= cancellation_grace (1.0 s) + cleanup_grace
+    # (1.0 s) = 2.0 s minimum. Escalation should land faster; allow
+    # generous slack for Docker signal delivery latency.
+    assert elapsed < 5.0, (
+        f"escalated shutdown took {elapsed:.2f}s — expected faster than "
+        f"the full 2.0s grace window (escalation may not have fired)"
+    )

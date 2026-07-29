@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
@@ -190,3 +191,162 @@ async def test_progress_fanout_pubsub(
     assert received[-1].kind == "state_change"
     assert received[-1].terminal is True
     assert received[-1].status == "succeeded"
+
+
+# ── Progress SSE stream via admin server ──────────────────────────────────
+
+_SSE_REPO_ROOT = Path(__file__).resolve().parents[2]
+_SSE_ADMIN_ENTRY = _SSE_REPO_ROOT / "tests" / "e2e" / "admin_entry.py"
+
+
+def _sse_free_port() -> int:
+    """Ephemeral host port for the SSE admin server subprocess."""
+    import socket
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+async def test_progress_sse_stream(
+    e2e_client: TaskQ,
+    e2e_worker: E2EWorker,
+    e2e_pg_pool: asyncpg.Pool,
+    e2e_schema: E2ESchema,
+    e2e_dragonfly: E2EDragonfly,
+    run_id: str,
+) -> None:
+    """Subscribe to the progress SSE endpoint and verify progress events
+    arrive in real-time.
+
+    The admin server (``admin_entry.py``) mounts the progress router at
+    ``/jobs`` which exposes ``GET /jobs/api/job/{job_id}/progress/stream``
+    (``web/progress.py``). The SSE endpoint subscribes to the per-job
+    Redis pub/sub channel BEFORE reading the PG snapshot, so no events
+    are lost between the snapshot and the subscription.
+
+    The test spawns the admin server with Redis configured (via
+    ``TASKQ_E2E_REDIS_URL``), enqueues a ``generate_report`` job, and
+    opens an SSE connection to the job's progress stream. Progress
+    events (``event: progress``) and a terminal event (``event: terminal``)
+    must arrive before the stream closes with ``event: done``.
+
+    Subscribe-before-enqueue is used for the SSE endpoint (unlike the
+    pub/sub test above which subscribes to the global channel before
+    enqueue): the SSE endpoint subscribes to the per-job channel, which
+    requires the job_id. So the test enqueues first, then opens the SSE
+    stream. The SSE handler subscribes Redis BEFORE reading the PG
+    snapshot, so events published between the enqueue and the subscribe
+    are captured by the initial PG snapshot read.
+    """
+    import os
+    import secrets
+    import subprocess
+    import sys
+
+    import httpx
+
+    from ._assertions import poll_until
+
+    port = _sse_free_port()
+    token = secrets.token_hex(16)
+    python_path = os.environ.get("PYTHONPATH")
+    redis_url = f"{e2e_dragonfly.host_url}/{e2e_schema.redis_db}"
+    env = {
+        **os.environ,
+        "TASKQ_PG_DSN": e2e_schema.host_dsn,
+        "TASKQ_SCHEMA_NAME": e2e_schema.schema_name,
+        "TASKQ_E2E_ADMIN_TOKEN": token,
+        "TASKQ_E2E_ADMIN_PORT": str(port),
+        "TASKQ_E2E_REDIS_URL": redis_url,
+        "PYTHONPATH": (
+            str(_SSE_REPO_ROOT) if not python_path else f"{_SSE_REPO_ROOT}{os.pathsep}{python_path}"
+        ),
+    }
+    proc = await asyncio.to_thread(
+        lambda: subprocess.Popen(  # noqa: S603
+            [sys.executable, str(_SSE_ADMIN_ENTRY)],
+            cwd=str(_SSE_REPO_ROOT),
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+    )
+
+    def _shutdown(proc: subprocess.Popen[str]) -> str:
+        if proc.poll() is None:
+            proc.terminate()
+        try:
+            out, _ = proc.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            out, _ = proc.communicate()
+        return out.strip()
+
+    client = httpx.AsyncClient(
+        base_url=f"http://127.0.0.1:{port}",
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=httpx.Timeout(connect=10.0, read=90.0, write=10.0, pool=10.0),
+    )
+
+    async def _ready() -> bool:
+        if proc.poll() is not None:
+            logs = await asyncio.to_thread(_shutdown, proc)
+            msg = f"admin server exited during startup (rc={proc.returncode})\n{logs}"
+            raise RuntimeError(msg)
+        try:
+            resp = await client.get("/admin/jobs/count")
+        except httpx.HTTPError:
+            return False
+        return resp.status_code == 200
+
+    try:
+        try:
+            await poll_until(
+                _ready,
+                timeout=30.0,
+                description=f"admin server readiness at {client.base_url}",
+            )
+        except TimeoutError:
+            logs = await asyncio.to_thread(_shutdown, proc)
+            msg = f"admin server not ready within 30s\n{logs}"
+            raise RuntimeError(msg) from None
+
+        handle = await e2e_client.enqueue(generate_report, _report_payload(run_id))
+        await handle.wait(timeout=60)
+
+        sse_url = f"/admin/jobs/api/job/{handle.job_id}/progress/stream"
+        events: list[str] = []
+        terminal_seen = False
+
+        # The job has already completed, so the SSE handler's initial PG
+        # snapshot will show a terminal state. The handler emits a
+        # terminal event followed by done, then closes the stream.
+        sse_client = httpx.AsyncClient(
+            base_url=f"http://127.0.0.1:{port}",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0),
+        )
+        try:
+            async with asyncio.timeout(30):
+                async with sse_client.stream("GET", sse_url) as resp:
+                    assert resp.status_code == 200, f"SSE endpoint returned {resp.status_code}"
+                    assert resp.headers.get("content-type", "").startswith("text/event-stream"), (
+                        f"expected text/event-stream, got {resp.headers.get('content-type')}"
+                    )
+                    async for line in resp.aiter_lines():
+                        if line.startswith("event: "):
+                            events.append(line[len("event: ") :])
+                        if line == "event: done":
+                            terminal_seen = True
+                            break
+        finally:
+            await sse_client.aclose()
+
+        assert terminal_seen, f"SSE stream closed without 'done' event; events seen: {events}"
+        assert "terminal" in events, f"expected a 'terminal' SSE event; events seen: {events}"
+
+    finally:
+        await client.aclose()
+        await asyncio.to_thread(_shutdown, proc)
