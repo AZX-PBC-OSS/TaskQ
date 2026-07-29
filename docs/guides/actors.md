@@ -25,6 +25,7 @@ the actor's payload and result types end-to-end.
 15. [Progress reporting](#progress-reporting)
 16. [Testing actors without a database](#testing-actors-without-a-database)
 17. [Full worked example](#full-worked-example)
+18. [Actor deregistration](#actor-deregistration)
 
 ---
 
@@ -944,3 +945,77 @@ async def submit_order(client, order_id: str, customer_id: str, amount_cents: in
     print(f"confirmed: {result.confirmation_number}")
     return handle.job_id
 ```
+
+---
+
+## Actor deregistration
+
+Actors registered by worker startup create `actor_config` rows that persist
+until explicitly removed. For long-lived deployments this is intentional —
+the row is the source of truth for capacity and routing. For ephemeral,
+per-run deployments (e.g. `my-actor.<run-id>`), each run leaves a row behind.
+
+### `client.actors.deregister()`
+
+```python
+async with TaskQ(dsn=...) as tq:
+    result = await tq.actors.deregister("my-actor.run-123")
+    # force=False: refuses if non-terminal jobs or enabled schedules exist
+```
+
+**Safety checks (force=False):**
+- Refuses if any non-terminal jobs (pending/scheduled/running) reference the
+  actor.
+- Refuses if any enabled cron schedules reference the actor.
+
+**force=True:**
+- Still refuses if **running** jobs exist (they are actively executing).
+- Cancels pending/scheduled jobs (marks as `cancelled` with
+  `error_class='ActorDeregistered'`).
+- Disables enabled cron schedules (sets `enabled=false`).
+
+**Terminal job history** is never deleted. The `jobs.actor` column is plain
+text, not a foreign key — terminal rows remain queryable by actor name after
+deregistration.
+
+**Queue cleanup** (`purge_queue=True`): deletes the `queues` row if no other
+`actor_config` references the same queue. A shared queue is never purged.
+
+### Enqueue after deregistration
+
+After deregistration, any client can still `enqueue()` the dead actor name —
+the `INSERT` succeeds (there is no foreign key from `jobs.actor` to
+`actor_config.actor`), and the job sits in `pending` status forever. Because
+the dispatch query inner-joins `actor_config`, the job will **never be
+dispatched** and no background sweep will reap it.
+
+**Operational discipline:** stop enqueuing to an actor *before* deregistering
+it. Deregistration is best-effort against concurrent enqueue/dispatch;
+callers must quiesce the actor first.
+
+### Idempotent deregistration
+
+A second `deregister` call on an already-deregistered actor raises
+`ActorNotFoundError`. For cleanup-automation loops:
+
+```python
+from taskq.exceptions import ActorNotFoundError
+
+try:
+    await tq.actors.deregister(actor_name, force=True, purge_queue=True)
+except ActorNotFoundError:
+    pass  # already deregistered — idempotent
+```
+
+### CLI
+
+```bash
+taskq actor-config deregister my-actor.run-123
+taskq actor-config deregister my-actor.run-123 --force --purge-queue
+```
+
+### Admin UI
+
+The `/admin/actors` page lists all `actor_config` rows with active job counts
+and schedule counts. Each row has a deregister form with `force` and
+`purge_queue` checkboxes (requires `TASKQ_ADMIN_ACTIONS_ENABLED=true`).

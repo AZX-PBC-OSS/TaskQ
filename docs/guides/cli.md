@@ -303,6 +303,22 @@ Per actor and capacity field this prints the `@actor(...)` literal, the stored v
 
 `taskq actor-config set` requires the actor to have a stored row already (created by a worker startup that registered it). `queue` and `metadata` are structural and are only ever changed by redeploying with a new `@actor(...)` registration (plus `--force-update-actor-config` if a stored row already exists).
 
+### `taskq actor-config deregister`
+
+Deregister an actor: delete its `actor_config` row with safety checks.
+
+```bash
+taskq actor-config deregister <ACTOR> [--force] [--purge-queue]
+```
+
+- `<ACTOR>` — actor name (positional argument)
+- `--force` — cancel pending/scheduled jobs, disable enabled cron schedules,
+  and proceed despite non-terminal jobs. Running jobs still block.
+- `--purge-queue` — also delete the orphaned `queues` row if no other actor
+  references it.
+
+Exit code 0 on success, 1 on refusal (with error message) or not found.
+
 ### Exit codes
 
 | Code | Meaning |

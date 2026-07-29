@@ -342,6 +342,19 @@ Rate-limit state page. Reads all rows from `rate_limit_buckets` (bucket name, ki
 
 Reservation slot summary. For each `bucket_name` in `reservation_slots`, shows the count of held slots (where `job_id IS NOT NULL`), free slots, and total slots.
 
+### `GET /admin/actors`
+
+The `/admin/actors` page lists all stored `actor_config` rows with:
+
+- Actor name, queue, max concurrent, max pending
+- Active job count (pending + scheduled + running)
+- Enabled schedule count
+- Last updated timestamp
+
+Each row has a **Deregister** button with `force` and `purge queue` checkboxes.
+Deregistration requires `TASKQ_ADMIN_ACTIONS_ENABLED=true`. The form is
+CSRF-protected via the synchronizer-token pattern.
+
 ### `GET /admin/sse/{topic}`
 
 SSE (Server-Sent Events) endpoint. Accepts any `topic` string. On connect it emits an initial `event: status` frame with `{"status": "awaiting_progress_backend"}`, then sends `: keepalive` comments every 30 seconds to prevent connection timeout. See [Real-time vs polling mode](#real-time-vs-polling-mode) below.
