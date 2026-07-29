@@ -1,9 +1,9 @@
-"""Tests for taskq.worker.notify — listener loop, callback, health-check + reconnect.
+"""Tests for taskq.worker.notify - listener loop, callback, health-check + reconnect.
 
 Why mock asyncpg at the connection level: the rule "Don't mock
-asyncpg" applies to SQL behaviour tests. For listener lifecycle tests —
+asyncpg" applies to SQL behaviour tests. For listener lifecycle tests -
 ``add_listener`` / ``remove_listener`` / ``execute("SELECT 1")`` / ``close`` /
-``is_closed`` — the asyncpg interaction surface is small enough that a
+``is_closed`` - the asyncpg interaction surface is small enough that a
 hand-rolled ``MockConnection`` is acceptable and necessary; full integration
 with a real PG connection lives in integration tests.
 
@@ -37,7 +37,7 @@ from taskq.worker.notify import (
     reconnect_notify_conn,
 )
 
-# ── Helpers ────────────────────────────────────────────────────────────
+# ---- Helpers ----------------------------------------------------------------------------------------------------------------------
 
 _GRACE = timedelta(seconds=30)
 
@@ -61,6 +61,7 @@ def _make_mock_deps(
     schema_name: str = "taskq_test",
     health_check_interval: float = 0.001,
     reconnect_backoff_initial: float | None = None,
+    listener_setup_timeout: float | None = None,
 ) -> Mock:
     from taskq.settings import WorkerSettings
 
@@ -71,13 +72,15 @@ def _make_mock_deps(
     }
     if reconnect_backoff_initial is not None:
         settings_dict["notify_reconnect_backoff_initial"] = str(reconnect_backoff_initial)
+    if listener_setup_timeout is not None:
+        settings_dict["notify_listener_setup_timeout"] = str(listener_setup_timeout)
     settings = WorkerSettings.load_from_dict(settings_dict)
     settings.pg_dsn_direct = settings.pg_dsn  # pyright: ignore[reportAttributeAccessIssue] # Why: ensure direct DSN is set for reconnect tests; post_load already did this but making it explicit
     deps = Mock()
     deps.settings = settings
     deps.notify_conn = _mock_conn()
 
-    # Default reconnect factory — returns a fresh mock conn. Individual tests
+    # Default reconnect factory - returns a fresh mock conn. Individual tests
     # override this to assert on the factory being called.
     async def _default_factory() -> object:
         return _mock_conn()
@@ -85,7 +88,7 @@ def _make_mock_deps(
     deps.notify_conn_factory = _default_factory
     deps.leader_conn_factory = None
     # Real values for the fields the reconnect/health-check paths synchronize
-    # on — a plain Mock attribute cannot serve as an async context manager.
+    # on - a plain Mock attribute cannot serve as an async context manager.
     deps.notify_reconnect_lock = asyncio.Lock()
     deps.notify_reconnect_fn = None
     deps.owns_notify_conn = True
@@ -121,7 +124,7 @@ def _make_channels(
     ]
 
 
-# ── Module-state cleanup fixture ───────────────────────────────────────
+# ---- Module-state cleanup fixture ----------------------------------------------------------------------------
 
 
 @pytest.fixture(autouse=True)
@@ -136,7 +139,7 @@ def _restore_notify_module_globals() -> Iterator[None]:  # pyright: ignore[repor
         _connected_lookup.clear()
 
 
-# ── Listener startup ────────────────────────────────────────────
+# ---- Listener startup --------------------------------------------------------------------------------------
 
 
 class TestListenerStartup:
@@ -162,7 +165,7 @@ class TestListenerStartup:
         assert f"taskq_worker_taskq_test_{_WORKER_ID}" in channels_registered
 
 
-# ── Fan-out (wake channel) ────────────────────────────────────
+# ---- Fan-out (wake channel) ----------------------------------------------------------------------
 
 
 class TestWakeFanout:
@@ -193,7 +196,7 @@ class TestWakeFanout:
             await asyncio.wait_for(event.wait(), timeout=0.1)
 
 
-# ── sync callback enforcement ─────────────────────────────────
+# ---- sync callback enforcement ----------------------------------------------------------------
 
 
 class TestSyncCallbackEnforcement:
@@ -218,13 +221,13 @@ class TestSyncCallbackEnforcement:
         assert inspect.iscoroutinefunction(cb) is False
 
 
-# ── Coalescing ────────────────────────────────────────────────
+# ---- Coalescing ----------------------------------------------------------------------------------------------
 
 
 class TestCoalescing:
     async def test_callback_coalescing_is_idempotent(self) -> None:
         """one subscriber, callback fires ten times in a tight
-        loop, event is set; clear then callback once more — event set
+        loop, event is set; clear then callback once more - event set
         again (idempotence).
         """
         backend = _make_backend()
@@ -241,7 +244,7 @@ class TestCoalescing:
             await asyncio.wait_for(event.wait(), timeout=0.1)
 
 
-# ── Reconnect path ─────────────────────────────────────────────
+# ---- Reconnect path ----------------------------------------------------------------------------------------
 
 
 class TestReconnectPath:
@@ -255,7 +258,7 @@ class TestReconnectPath:
         ],
     )
     async def test_reconnect_on_health_check_failure(self, exc_class: type[BaseException]) -> None:
-        """_health_check_loop reconnect path — parametrized over
+        """_health_check_loop reconnect path - parametrized over
         four exception classes including AdminShutdownError.
         """
         deps = _make_mock_deps()
@@ -342,7 +345,7 @@ class TestReconnectPath:
                 assert subscriber_event.is_set(), "reconnect-fetch should have set subscriber event"
 
 
-# ── Shutdown path ──────────────────────────────────────────────
+# ---- Shutdown path ------------------------------------------------------------------------------------------
 
 
 class TestShutdownPath:
@@ -376,7 +379,7 @@ class TestShutdownPath:
         assert not unlisten_calls, f"execute should not contain UNLISTEN, got: {unlisten_calls}"
 
 
-# ── Channel name interpolation ─────────────────────────────────
+# ---- Channel name interpolation ----------------------------------------------------------------
 
 
 class TestChannelNameInterpolation:
@@ -415,7 +418,7 @@ class TestChannelNameInterpolation:
         assert wch == f"taskq_worker_myapp_{_WORKER_ID}"
 
 
-# ── Reconnect backoff ──────────────────────────────────────────
+# ---- Reconnect backoff ----------------------------------------------------------------------------------
 
 
 class TestReconnectBackoff:
@@ -478,7 +481,7 @@ class TestReconnectBackoff:
             )
 
 
-# ── Disconnected listener ──────────────────────────────────────
+# ---- Disconnected listener --------------------------------------------------------------------------
 
 
 class TestDisconnectedListener:
@@ -497,7 +500,7 @@ class TestDisconnectedListener:
             pytest.fail(f"unexpected exception: {exc}")
 
 
-# ── Callback does not acquire _wake_lock ───────────────────────
+# ---- Callback does not acquire _wake_lock --------------------------------------------
 
 
 class TestCallbackLockContract:
@@ -529,12 +532,12 @@ class TestCallbackLockContract:
             backend._wake_lock.acquire = original_acquire  # type: ignore[reportPrivateUsage]
 
 
-# ── No pool connection access ──────────────────────────────────
+# ---- No pool connection access ------------------------------------------------------------------
 
 
 class TestNoPoolConnectionAccess:
     def test_notify_module_has_no_pool_attribute_access(self) -> None:
-        """(a): Static guard — parse the module source and assert
+        """(a): Static guard - parse the module source and assert
         no ``dispatcher_pool``, ``worker_pool``, or ``heartbeat_pool``
         attribute access is present in any function body.
         """
@@ -558,12 +561,12 @@ class TestNoPoolConnectionAccess:
         visitor.visit(tree)
 
         assert not visitor.violations, (
-            f"pool attribute access found at lines: {visitor.violations} — "
+            f"pool attribute access found at lines: {visitor.violations} - "
             "notify module must not access pool connections"
         )
 
 
-# ── Gauge-callback registry cleanup ────────────────────────────
+# ---- Gauge-callback registry cleanup ------------------------------------------------------
 
 
 class TestGaugeCallbackRegistryCleanup:
@@ -626,7 +629,7 @@ class TestGaugeCallbackRegistryCleanup:
         )
 
 
-# ── Teardown race guard ───────────────────────────────────────────────
+# ---- Teardown race guard --------------------------------------------------------------------------------------------
 
 
 class TestShutdownTeardownRace:
@@ -665,7 +668,7 @@ class TestShutdownTeardownRace:
         )
 
 
-# ── reconnect_notify_conn integration ─────────────────────────────────────────────
+# ---- reconnect_notify_conn integration ----------------------------------------------------------------------------------------
 
 
 class TestReconnectInternal:
@@ -696,7 +699,7 @@ class TestReconnectInternal:
             assert new_conn.add_listener.call_count == len(channels)
 
 
-# ── _health_check_loop shutdown exit ──────────────────────────────────
+# ---- _health_check_loop shutdown exit ------------------------------------------------------------------
 
 
 class TestHealthCheckLoopShutdown:
@@ -716,7 +719,7 @@ class TestHealthCheckLoopShutdown:
         await asyncio.wait_for(task, timeout=2.0)
 
 
-# ── reconnect uses the deps factory ─────────────────────────────────────
+# ---- reconnect uses the deps factory ------------------------------------------------------------------------
 
 
 class TestReconnectUsesDirectDsn:
@@ -744,19 +747,19 @@ class TestReconnectUsesDirectDsn:
 
             await reconnect_notify_conn(deps, backend, channels)
 
-            # The factory on deps was called — reconnect goes through the
+            # The factory on deps was called - reconnect goes through the
             # credential source (DSN closure or user factory) stored at
             # startup, never a raw pg_dsn_pooled.
             assert len(factory_called) == 1
             assert deps.notify_conn is new_conn
 
 
-# ── Reconnect resilience: non-asyncpg factory errors ───────────────────
+# ---- Reconnect resilience: non-asyncpg factory errors ------------------------------------
 
 
 class _FakeClientAuthenticationError(RuntimeError):
     """Stands in for azure ClientAuthenticationError / hvac VaultError /
-    botocore ClientError — credential-provider errors that are NOT asyncpg
+    botocore ClientError - credential-provider errors that are NOT asyncpg
     exceptions and must still be retried by the reconnect loop."""
 
 
@@ -764,7 +767,7 @@ class TestReconnectWidenedCatch:
     async def test_reconnect_retries_non_asyncpg_factory_errors(self) -> None:
         """A credential-provider factory raising a non-asyncpg error (e.g.
         ClientAuthenticationError during an IdP outage) inside the reconnect
-        retry loop must be caught and retried — never escape
+        retry loop must be caught and retried - never escape
         _health_check_loop and crash the worker."""
         deps = _make_mock_deps(reconnect_backoff_initial=0.001)
         backend = _make_backend()
@@ -800,7 +803,7 @@ class TestReconnectWidenedCatch:
                     break
                 await asyncio.sleep(0.01)
             shutdown.set()
-            # Must not raise — the retry loop survives the IdP outage.
+            # Must not raise - the retry loop survives the IdP outage.
             await asyncio.wait_for(task, timeout=2.0)
 
         assert factory_attempts == 3, "two failing attempts then a successful reconnect"
@@ -811,13 +814,13 @@ class TestReconnectWidenedCatch:
         ), f"reconnect warning must log type(exc).__name__; got {warning_kwargs}"
 
 
-# ── Caller-owned notify_conn: disable instead of crash ─────────────────
+# ---- Caller-owned notify_conn: disable instead of crash --------------------------------
 
 
 class TestCallerOwnedConnDisable:
     async def test_caller_owned_conn_drop_disables_listener(self) -> None:
         """With a caller-owned notify_conn (no factory), a dropped connection
-        leaves TaskQ nothing to rebuild through — _health_check_loop must log
+        leaves TaskQ nothing to rebuild through - _health_check_loop must log
         the disable warning and RETURN (listener disabled, poll-based dispatch
         remains), not retry forever and not crash the worker."""
         deps = _make_mock_deps()
@@ -836,7 +839,7 @@ class TestCallerOwnedConnDisable:
             logger_mock = Mock()
             monkeypatch.setattr(notify_mod, "logger", logger_mock)
 
-            # Returns on its own — no shutdown needed.
+            # Returns on its own - no shutdown needed.
             await asyncio.wait_for(
                 _health_check_loop(deps, backend, shutdown, channels),
                 timeout=2.0,
@@ -848,7 +851,7 @@ class TestCallerOwnedConnDisable:
         )
 
 
-# ── Reconnect mutual exclusion ──────────────────────────────────────────
+# ---- Reconnect mutual exclusion ----------------------------------------------------------------------------------
 
 
 class TestReconnectMutualExclusion:
@@ -856,7 +859,7 @@ class TestReconnectMutualExclusion:
         """reconnect_notify_conn can be invoked concurrently by the
         health-check loop and by reload via deps.notify_reconnect_fn.
         Both building a new conn means the loser's LISTEN-registered conn
-        leaks — calls must serialize on deps.notify_reconnect_lock."""
+        leaks - calls must serialize on deps.notify_reconnect_lock."""
         deps = _make_mock_deps()
         backend = _make_backend()
         channels = _make_channels(backend)
@@ -896,13 +899,13 @@ class TestReconnectMutualExclusion:
         assert deps.notify_conn is conns[1], "last writer wins once serialized"
 
 
-# ── Ownership contract: never close caller-owned conns ─────────────────
+# ---- Ownership contract: never close caller-owned conns --------------------------------
 
 
 class TestOwnershipContract:
     async def test_health_check_does_not_close_caller_owned_conn(self) -> None:
         """connections.py documents "TaskQ never closes caller-owned
-        resources" — a caller-owned notify_conn that fails the health check
+        resources" - a caller-owned notify_conn that fails the health check
         must NOT be closed by _health_check_loop. remove_listener is fine
         (needed before a rebuild, harmless on the caller's conn)."""
         deps = _make_mock_deps()
@@ -976,13 +979,13 @@ class TestOwnershipContract:
         old_conn.close.assert_called_once()
 
 
-# ── Keepalive on factory-built reconnects ───────────────────────────────
+# ---- Keepalive on factory-built reconnects ------------------------------------------------------------
 
 
 class TestReconnectKeepalive:
     async def test_reconnect_applies_keepalive_to_factory_built_conn(self) -> None:
         """The DSN path gets TCP keepalive via open_dedicated_conn; a conn
-        rebuilt through deps.notify_conn_factory must get the same policy —
+        rebuilt through deps.notify_conn_factory must get the same policy -
         the worker owns this policy, not the user's factory."""
         deps = _make_mock_deps()
         backend = _make_backend()
@@ -1012,11 +1015,11 @@ class TestReconnectKeepalive:
         keepalive_mock.assert_called_once_with(new_conn, label="notify")
 
 
-# ── Bounded closes on reconnect/health-check error paths (#38) ──────────
+# ---- Bounded closes on reconnect/health-check error paths (#38) ------------------
 #
 # The reconnect LISTEN-setup-failure cleanup, the post-reconnect old-conn
 # drain, and the health-check error path all closed conns with a bare
-# ``await conn.close()`` — a dead PG can block that indefinitely, stalling
+# ``await conn.close()`` - a dead PG can block that indefinitely, stalling
 # the listener/reconnect loop. These tests pin the bounded-close discipline
 # (asyncio.wait_for + terminate on timeout) applied via
 # ``close_conn_bounded``; the shrink seam is the same module-global
@@ -1029,7 +1032,7 @@ class TestBoundedConnClose:
     ) -> None:
         """LISTEN setup fails on the freshly-built conn and its cleanup
         close() hangs (dead PG): the close is terminated after the bound
-        and the original setup error — not a hang — propagates."""
+        and the original setup error - not a hang - propagates."""
         import taskq.worker.notify as notify_mod
 
         monkeypatch.setattr(notify_mod, "CLOSE_TIMEOUT_SECS", 0.05)
@@ -1084,7 +1087,7 @@ class TestBoundedConnClose:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """close_old=True (SIGHUP reload path): the background close of the
-        replaced conn hangs — it is terminated after the bound while the
+        replaced conn hangs - it is terminated after the bound while the
         swap to the new conn still completes."""
         import taskq.worker.notify as notify_mod
 
@@ -1193,7 +1196,7 @@ class TestBoundedConnClose:
         assert deps.notify_conn is new_conn
 
 
-# ── notify_reconnect_fn registration ────────────────────────────────────
+# ---- notify_reconnect_fn registration ----------------------------------------------------------------------
 
 
 class TestReconnectFnRegistration:
@@ -1215,7 +1218,7 @@ class TestReconnectFnRegistration:
 
     async def test_reconnect_fn_not_registered_for_caller_owned_conn(self) -> None:
         """With a caller-owned notify_conn (no factory), the closure would
-        raise RuntimeError if ever invoked — it must not be registered.
+        raise RuntimeError if ever invoked - it must not be registered.
         reload_credentials already skips factory-less notify, so this is not
         a behavior change for reload."""
         deps = _make_mock_deps()
@@ -1233,7 +1236,7 @@ class TestReconnectFnRegistration:
         assert deps.notify_reconnect_fn is None
 
 
-# ── Cancel event routing ───────────────────────────────────────────────
+# ---- Cancel event routing --------------------------------------------------------------------------------------------
 
 
 class TestCancelEventRouting:
@@ -1400,3 +1403,160 @@ async def test_health_check_loop_does_not_register_a_liveness_tick() -> None:
     assert deps.liveness.ages() == {}, (
         f"notify health-check loop registered a staleness budget: {deps.liveness.ages()}"
     )
+
+
+# -- add_listener timeboxed --------------------------
+#
+# asyncpg's add_listener is the last unbounded I/O on the notify path. A
+# half-open PG connection that accepts TCP but stalls on the LISTEN handshake
+# would wedge the notify loop forever. These tests pin the wait_for bound
+# applied to every add_listener call site.
+
+
+class TestAddListenerTimeout:
+    async def test_reconnect_add_listener_stall_is_timeboxed_and_conn_closed(self) -> None:
+        """A stalling add_listener in reconnect_notify_conn is timeboxed;
+        the fresh conn is closed (via the existing except-BaseException
+        cleanup) and TimeoutError propagates."""
+        deps = _make_mock_deps(listener_setup_timeout=0.05)
+        backend = _make_backend()
+        channels = _make_channels(backend)
+
+        hang = asyncio.Event()
+        new_conn = _mock_conn()
+        new_conn.add_listener = Mock(side_effect=lambda *a, **kw: hang.wait())
+
+        async def factory() -> Mock:
+            return new_conn
+
+        deps.notify_conn_factory = factory
+
+        async with asyncio.timeout(5):
+            with pytest.raises(TimeoutError):
+                await reconnect_notify_conn(deps, backend, channels)
+
+        new_conn.close.assert_called_once()
+
+    async def test_reconnect_add_listener_succeeds_within_timeout(self) -> None:
+        """A successful add_listener within the timeout works normally -
+        no timeout raised, callbacks registered, deps.notify_conn swapped."""
+        deps = _make_mock_deps(listener_setup_timeout=5.0)
+        backend = _make_backend()
+        channels = _make_channels(backend)
+
+        new_conn = _mock_conn()
+        new_conn.execute = AsyncMock()
+
+        async def factory() -> Mock:
+            return new_conn
+
+        deps.notify_conn_factory = factory
+
+        import taskq.worker.notify as notify_mod
+
+        with pytest.MonkeyPatch().context() as monkeypatch:
+            monkeypatch.setattr(notify_mod, "logger", Mock())
+
+            await reconnect_notify_conn(deps, backend, channels)
+
+            assert deps.notify_conn is new_conn
+            assert new_conn.add_listener.call_count == len(channels)
+
+    async def test_listener_loop_initial_add_listener_stall_is_timeboxed(self) -> None:
+        """A stalling add_listener during notify_listener_loop's initial
+        setup is timeboxed; the TaskQ-owned conn is closed (bounded) and
+        TimeoutError propagates through the finally cleanup."""
+        deps = _make_mock_deps(listener_setup_timeout=0.05)
+        backend = _make_backend()
+        shutdown = asyncio.Event()
+
+        hang = asyncio.Event()
+        conn = deps.notify_conn
+        conn.add_listener = Mock(side_effect=lambda *a, **kw: hang.wait())
+
+        async with asyncio.timeout(5):
+            with pytest.raises(TimeoutError):
+                await notify_listener_loop(deps, backend, shutdown, _WORKER_ID)
+
+        conn.close.assert_called_once()
+
+    async def test_listener_loop_initial_add_listener_stall_does_not_close_caller_owned(
+        self,
+    ) -> None:
+        """A caller-owned notify_conn that stalls on add_listener is NOT
+        closed - the ownership contract holds even on the timeout path."""
+        deps = _make_mock_deps(listener_setup_timeout=0.05)
+        deps.owns_notify_conn = False
+        backend = _make_backend()
+        shutdown = asyncio.Event()
+
+        hang = asyncio.Event()
+        conn = deps.notify_conn
+        conn.add_listener = Mock(side_effect=lambda *a, **kw: hang.wait())
+
+        async with asyncio.timeout(5):
+            with pytest.raises(TimeoutError):
+                await notify_listener_loop(deps, backend, shutdown, _WORKER_ID)
+
+        conn.close.assert_not_called()
+
+    async def test_timeout_setting_respected_different_values(self) -> None:
+        """The timeout value from settings is respected - a 0.2s timeout
+        allows a 0.1s add_listener to succeed, while a 0.02s timeout
+        cancels it."""
+        deps = _make_mock_deps(listener_setup_timeout=0.2)
+        backend = _make_backend()
+        channels = _make_channels(backend)
+
+        new_conn = _mock_conn()
+        new_conn.execute = AsyncMock()
+
+        call_count = 0
+
+        async def slow_add_listener(*a: object, **kw: object) -> None:
+            nonlocal call_count
+            call_count += 1
+            await asyncio.sleep(0.1)
+
+        new_conn.add_listener = slow_add_listener
+
+        async def factory() -> Mock:
+            return new_conn
+
+        deps.notify_conn_factory = factory
+
+        import taskq.worker.notify as notify_mod
+
+        with pytest.MonkeyPatch().context() as monkeypatch:
+            monkeypatch.setattr(notify_mod, "logger", Mock())
+
+            await reconnect_notify_conn(deps, backend, channels)
+            assert call_count == len(channels)
+
+        deps2 = _make_mock_deps(listener_setup_timeout=0.02)
+        backend2 = _make_backend()
+        channels2 = _make_channels(backend2)
+
+        new_conn2 = _mock_conn()
+        new_conn2.execute = AsyncMock()
+
+        call_count2 = 0
+
+        async def slow_add_listener2(*a: object, **kw: object) -> None:
+            nonlocal call_count2
+            call_count2 += 1
+            await asyncio.sleep(0.1)
+
+        new_conn2.add_listener = slow_add_listener2
+
+        async def factory2() -> Mock:
+            return new_conn2
+
+        deps2.notify_conn_factory = factory2
+
+        with pytest.MonkeyPatch().context() as monkeypatch2:
+            monkeypatch2.setattr(notify_mod, "logger", Mock())
+
+            async with asyncio.timeout(5):
+                with pytest.raises(TimeoutError):
+                    await reconnect_notify_conn(deps2, backend2, channels2)
