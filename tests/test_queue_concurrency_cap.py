@@ -517,7 +517,7 @@ async def test_queue_cap_saturation_snoozes_with_operator_visible_awaiting() -> 
         new_uuid(),
         run_actor=never_called_actor,
         actor_config=default_actor_config(),
-        payload_type=BaseModel,
+        payload_type=EmptyPayload,
         clock=clk,
         rate_limit_registry=reg,
         rate_limits=[],

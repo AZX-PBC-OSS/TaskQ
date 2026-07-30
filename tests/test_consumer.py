@@ -12,7 +12,7 @@ from uuid import UUID
 
 import pytest
 from opentelemetry import trace
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field
 
 import taskq.obs as obs_mod
 from taskq._ids import new_uuid
@@ -20,7 +20,13 @@ from taskq.backend._protocol import EnqueueArgs, ErrorInfo, JobRow
 from taskq.backend.clock import Clock
 from taskq.client._enqueuer import SubJobEnqueuer
 from taskq.context import JobContext
-from taskq.exceptions import ReservationUnavailable, RetryAfter, Snooze, WorkerOwnershipMismatch
+from taskq.exceptions import (
+    PayloadValidationError,
+    ReservationUnavailable,
+    RetryAfter,
+    Snooze,
+    WorkerOwnershipMismatch,
+)
 from taskq.progress._buffer import _ProgressBuffer
 from taskq.ratelimit.refs import KeyedRateLimitRef
 from taskq.retry import RetryPolicy
@@ -579,7 +585,7 @@ async def test_payload_validation_failure_before_acquire_no_resources_acquired()
     async def never_called_actor(_job: object, _ctx: JobContext[BaseModel]) -> object:
         raise AssertionError("actor body should not run on validation failure")
 
-    with pytest.raises(ValidationError):
+    with pytest.raises(PayloadValidationError):
         await consume_one_job(
             as_backend(backend),
             job,
@@ -732,7 +738,7 @@ async def test_consumer_validates_payload_before_acquire_for_direct_callers() ->
     async def never_called_actor(_job: object, _ctx: JobContext[BaseModel]) -> object:
         raise AssertionError("actor body should not run on validation failure")
 
-    with pytest.raises(ValidationError):
+    with pytest.raises(PayloadValidationError):
         await consume_one_job(
             as_backend(backend),
             job,
@@ -748,6 +754,55 @@ async def test_consumer_validates_payload_before_acquire_for_direct_callers() ->
 
     assert len(rl_reg.acquire_calls) == 0
     assert len(rl_reg.release_calls) == 0
+
+
+async def test_consumer_validates_dict_and_passes_model_to_key_fn() -> None:
+    """When validated_payload is None, consume_one_job validates job.payload
+    (a raw dict with wire aliases) and passes the validated model to
+    acquire_for_actor — key_fn receives the model with aliases applied."""
+    from taskq.ratelimit import KeyedRateLimitRef, RateLimitRegistry
+    from taskq.ratelimit.token_bucket import TokenBucket
+
+    class ApiPayload(BaseModel):
+        tenant_id: str = Field(alias="tenantId")
+
+    key_fn_received: list[object] = []
+    ref = KeyedRateLimitRef.typed(
+        ApiPayload,
+        base_name="test-api",
+        key_fn=lambda p: (key_fn_received.append(p), p.tenant_id)[1],
+        capacity=1,
+        refill_per_second=0,
+        backend="memory",
+    )
+
+    reg = RateLimitRegistry()
+    reg.register(TokenBucket(name="test-api:acme", capacity=1, refill_per_second=0, backend="memory"))
+    clk: Clock = FakeClock(_NOW)
+    backend = _FakeBackend()
+
+    job = make_job_row(payload={"tenantId": "acme"})
+
+    async def _run_actor(_job: object, _ctx: JobContext[BaseModel]) -> object:
+        return None
+
+    await consume_one_job(
+        as_backend(backend),
+        job,
+        new_uuid(),
+        run_actor=_run_actor,
+        actor_config=StubActorConfig(retry=RetryPolicy(), non_retryable_exceptions=()),
+        payload_type=ApiPayload,
+        clock=clk,
+        rate_limit_registry=reg,
+        rate_limits=[ref],
+        reservations=[],
+        validated_payload=None,
+    )
+
+    assert len(key_fn_received) == 1
+    assert isinstance(key_fn_received[0], ApiPayload)
+    assert key_fn_received[0].tenant_id == "acme"
 
 
 # ── lifecycle events ────────────────────────────────────

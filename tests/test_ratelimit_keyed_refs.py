@@ -625,11 +625,12 @@ async def test_resolve_typed_res_ref_passes_validated_model_to_key_fn() -> None:
     """A dict payload is validated via ref.payload_type.model_validate before
     being passed to key_fn — key_fn receives a BaseModel with attribute access,
     not a raw dict."""
+    captured: list[BaseModel] = []
     reg = RateLimitRegistry()
     ref = KeyedReservationRef.typed(
         _TypedPayload,
         base_name="session-cap",
-        key_fn=lambda p: p.session_id,
+        key_fn=lambda p: (captured.append(p), p.session_id)[1],
         slots=3,
         lease=timedelta(minutes=5),
     )
@@ -639,6 +640,8 @@ async def test_resolve_typed_res_ref_passes_validated_model_to_key_fn() -> None:
     )
 
     assert name == "session-cap:s1"
+    assert isinstance(captured[0], _TypedPayload)
+    assert captured[0].session_id == "s1"
 
 
 async def test_resolve_typed_res_ref_applies_pydantic_defaults() -> None:

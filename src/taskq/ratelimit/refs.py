@@ -175,6 +175,15 @@ class KeyedReservationRef(BaseModel):
             raise ValueError(f"lease must be > 0, got {v!r}")
         return v
 
+    @field_validator("payload_type")
+    @classmethod
+    def _validate_payload_type(cls, v: type[BaseModel]) -> type[BaseModel]:
+        if v is BaseModel:
+            raise ValueError(
+                "payload_type must be a concrete BaseModel subclass, not BaseModel itself"
+            )
+        return v
+
 
 class KeyedRateLimitRef(BaseModel):
     """Reference to a per-key token bucket, derived from the payload.
@@ -301,4 +310,13 @@ class KeyedRateLimitRef(BaseModel):
     def _validate_refill_per_second(cls, v: float) -> float:
         if v < 0:
             raise ValueError(f"refill_per_second must be >= 0, got {v}")
+        return v
+
+    @field_validator("payload_type")
+    @classmethod
+    def _validate_payload_type(cls, v: type[BaseModel]) -> type[BaseModel]:
+        if v is BaseModel:
+            raise ValueError(
+                "payload_type must be a concrete BaseModel subclass, not BaseModel itself"
+            )
         return v

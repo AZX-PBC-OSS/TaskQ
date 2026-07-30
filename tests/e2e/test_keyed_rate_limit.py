@@ -267,3 +267,8 @@ async def test_typed_keyed_rate_limit_with_aliases(
         e2e_pg_pool, e2e_schema.schema_name, run_id, kind="typed_tenant_delivered"
     )
     assert len(effects) == 6
+
+    a_effects = [r for r in effects if json.loads(r["detail"])["tenant_id"] == tenant_a]
+    b_effects = [r for r in effects if json.loads(r["detail"])["tenant_id"] == tenant_b]
+    assert len(a_effects) == 3
+    assert len(b_effects) == 3

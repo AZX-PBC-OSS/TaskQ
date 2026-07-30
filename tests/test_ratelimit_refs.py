@@ -160,20 +160,40 @@ class TestKeyedRateLimitRefTyped:
         model = _AliasedPayload.model_validate({"tenantId": "acme"})
         assert ref.key_fn(model) == "acme"
 
-    def test_typed_extra_forbid_propagates_validation_error(self) -> None:
+    def test_typed_rejects_basemodel_itself_as_payload_type(self) -> None:
+        with pytest.raises(ValidationError, match="concrete BaseModel subclass"):
+            KeyedRateLimitRef.typed(
+                BaseModel,
+                base_name="api-per-tenant",
+                key_fn=lambda p: "x",
+                capacity=10.0,
+                refill_per_second=1.0,
+            )
+
+    async def test_typed_extra_forbid_rejects_dict_with_extra_keys(self) -> None:
+        """A ref whose payload_type has extra='forbid' rejects dicts
+        with unexpected keys — the registry's model_validate raises
+        ValidationError, not a silent acceptance."""
+        from taskq.ratelimit.registry import RateLimitRegistry
+
         class _StrictPayload(BaseModel):
             model_config = {"extra": "forbid"}
             tenant_id: str
 
-        KeyedRateLimitRef.typed(
+        ref = KeyedRateLimitRef.typed(
             _StrictPayload,
             base_name="api-per-tenant",
             key_fn=lambda p: p.tenant_id,
             capacity=10.0,
             refill_per_second=1.0,
         )
+        reg = RateLimitRegistry()
         with pytest.raises(ValidationError):
-            _StrictPayload.model_validate({"tenant_id": "acme", "unexpected": "field"})
+            await reg._resolve_rate_limit_name(  # pyright: ignore[reportPrivateUsage]
+                ref,
+                payload={"tenant_id": "acme", "unexpected": "field"},
+                settings=None,
+            )
 
 
 # ── KeyedReservationRef.typed() ──────────────────────────────────
@@ -250,19 +270,37 @@ class TestKeyedReservationRefTyped:
         model = _AliasedPayload.model_validate({"sessionId": "s1"})
         assert ref.key_fn(model) == "s1"
 
-    def test_typed_extra_forbid_propagates_validation_error(self) -> None:
+    def test_typed_rejects_basemodel_itself_as_payload_type(self) -> None:
+        with pytest.raises(ValidationError, match="concrete BaseModel subclass"):
+            KeyedReservationRef.typed(
+                BaseModel,
+                base_name="session-cap",
+                key_fn=lambda p: "x",
+                slots=3,
+                lease=timedelta(minutes=5),
+            )
+
+    async def test_typed_extra_forbid_rejects_dict_with_extra_keys(self) -> None:
+        """A ref whose payload_type has extra='forbid' rejects dicts
+        with unexpected keys through the registry."""
+        from taskq.ratelimit.registry import RateLimitRegistry
+
         class _StrictPayload(BaseModel):
             model_config = {"extra": "forbid"}
             session_id: str
 
-        KeyedReservationRef.typed(
+        ref = KeyedReservationRef.typed(
             _StrictPayload,
             base_name="session-cap",
             key_fn=lambda p: p.session_id,
             slots=3,
             lease=timedelta(minutes=5),
         )
+        reg = RateLimitRegistry()
         with pytest.raises(ValidationError):
-            _StrictPayload.model_validate(
-                {"session_id": "s1", "unexpected": "field"}
+            await reg._resolve_reservation_name(  # pyright: ignore[reportPrivateUsage]
+                ref,
+                payload={"session_id": "s1", "unexpected": "field"},
+                pg_pool=None,
+                settings=None,
             )

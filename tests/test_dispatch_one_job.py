@@ -578,7 +578,7 @@ async def test_payload_validation_failure_before_scope() -> None:
         assert len(fake_backend.mark_failed_or_retry_calls) == 1
         assert (
             fake_backend.mark_failed_or_retry_calls[0]["error_info"].error_class  # pyright: ignore[reportAttributeAccessIssue]  # Why: mark_failed_or_retry_calls stores untyped objects from mock; error_class exists at runtime.
-            == "ValidationError"
+            == "PayloadValidationError"
         )
 
 

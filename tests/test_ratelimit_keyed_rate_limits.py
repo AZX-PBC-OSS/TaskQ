@@ -1504,11 +1504,12 @@ async def test_resolve_typed_ref_passes_validated_model_to_key_fn() -> None:
     """A dict payload is validated via ref.payload_type.model_validate before
     being passed to key_fn — key_fn receives a BaseModel with attribute access,
     not a raw dict."""
+    captured: list[BaseModel] = []
     reg = RateLimitRegistry()
     ref = KeyedRateLimitRef.typed(
         _TypedPayload,
         base_name="api-per-tenant",
-        key_fn=lambda p: p.tenant_id,
+        key_fn=lambda p: (captured.append(p), p.tenant_id)[1],
         capacity=10.0,
         refill_per_second=1.0,
         backend="memory",
@@ -1519,6 +1520,8 @@ async def test_resolve_typed_ref_passes_validated_model_to_key_fn() -> None:
     )
 
     assert name == "api-per-tenant:t1"
+    assert isinstance(captured[0], _TypedPayload)
+    assert captured[0].tenant_id == "t1"
 
 
 async def test_resolve_typed_ref_applies_pydantic_defaults() -> None:
@@ -1717,3 +1720,122 @@ async def test_acquire_for_actor_typed_ref_with_dict_payload_validates() -> None
 
     assert len(acquired) == 1
     assert acquired[0].name == "api-per-tenant:t1"
+
+
+async def test_validation_error_mid_composition_rolls_back_reservation() -> None:
+    """ValidationError from a keyed ref's model_validate mid-composition
+    rolls back already-acquired reservation slots."""
+    from taskq.ratelimit.reservation import ConcurrencyReservation
+
+    clock = FakeClock(_START)
+    reg = RateLimitRegistry()
+    static_res = ConcurrencyReservation(
+        name="gpu-static", slots=1, lease=timedelta(minutes=5), clock=clock,
+    )
+    reg.register(static_res)
+
+    class _StrictPayload(BaseModel):
+        model_config = {"extra": "forbid"}
+        tenant_id: str
+
+    strict_ref = KeyedRateLimitRef.typed(
+        _StrictPayload,
+        base_name="strict-rl",
+        key_fn=lambda p: p.tenant_id,
+        capacity=10.0,
+        refill_per_second=1.0,
+        backend="memory",
+    )
+
+    with pytest.raises(ValidationError):
+        await reg.acquire_for_actor(
+            rate_limits=[strict_ref],
+            reservations=["gpu-static"],
+            job_id=new_uuid(),
+            worker_id=new_uuid(),
+            payload={"unexpected": "field"},
+            clock=clock,
+        )
+
+    slot = await static_res.acquire(new_uuid(), new_uuid(), pool=None)
+    assert slot == 0
+    await static_res.release(slot, new_uuid(), pool=None)
+
+
+async def test_resolve_typed_ref_wrong_type_in_dict_raises_validation_error() -> None:
+    """A dict with the right keys but wrong value types raises ValidationError."""
+    reg = RateLimitRegistry()
+    ref = KeyedRateLimitRef.typed(
+        _TypedPayload,
+        base_name="api-per-tenant",
+        key_fn=lambda p: p.tenant_id,
+        capacity=10.0,
+        refill_per_second=1.0,
+        backend="memory",
+    )
+
+    with pytest.raises(ValidationError):
+        await reg._resolve_rate_limit_name(  # pyright: ignore[reportPrivateUsage]
+            ref, payload={"tenant_id": 42}, settings=None
+        )
+
+
+async def test_resolve_typed_ref_nested_model_round_trips() -> None:
+    """A payload_type with a nested BaseModel field round-trips correctly
+    through model_validate — key_fn receives the model with nested
+    sub-model instances."""
+
+    class _TenantInfo(BaseModel):
+        id: str
+
+    class _NestedPayload(BaseModel):
+        tenant: _TenantInfo
+
+    captured: list[_NestedPayload] = []
+    reg = RateLimitRegistry()
+    ref = KeyedRateLimitRef.typed(
+        _NestedPayload,
+        base_name="api-per-tenant",
+        key_fn=lambda p: (captured.append(p), p.tenant.id)[1],
+        capacity=10.0,
+        refill_per_second=1.0,
+        backend="memory",
+    )
+
+    name = await reg._resolve_rate_limit_name(  # pyright: ignore[reportPrivateUsage]
+        ref, payload={"tenant": {"id": "acme"}}, settings=None
+    )
+
+    assert name == "api-per-tenant:acme"
+    assert isinstance(captured[0], _NestedPayload)
+    assert isinstance(captured[0].tenant, _TenantInfo)
+    assert captured[0].tenant.id == "acme"
+
+
+async def test_wrong_model_type_with_strict_target_raises_validation_error() -> None:
+    """When the ref's payload_type has extra='forbid' and the actor's model
+    has extra fields, the model_dump()→model_validate() round-trip raises
+    ValidationError — surfacing the misconfiguration."""
+
+    class _StrictTarget(BaseModel):
+        model_config = {"extra": "forbid"}
+        tenant_id: str
+
+    class _LooseSource(BaseModel):
+        tenant_id: str
+        extra_field: str = "x"
+
+    reg = RateLimitRegistry()
+    ref = KeyedRateLimitRef.typed(
+        _StrictTarget,
+        base_name="api-per-tenant",
+        key_fn=lambda p: p.tenant_id,
+        capacity=10.0,
+        refill_per_second=1.0,
+        backend="memory",
+    )
+
+    with pytest.raises(ValidationError):
+        await reg._resolve_rate_limit_name(  # pyright: ignore[reportPrivateUsage]
+            ref, payload=_LooseSource(tenant_id="t1", extra_field="x"), settings=None
+        )
