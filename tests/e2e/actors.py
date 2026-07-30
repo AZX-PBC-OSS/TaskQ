@@ -25,7 +25,7 @@ from typing import Literal
 from uuid import uuid4
 
 import asyncpg
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from taskq import EnqueueItem, JobContext, RetryPolicy, Snooze, actor
 from taskq.ratelimit import KeyedRateLimitRef, TokenBucket, registry
@@ -435,6 +435,55 @@ async def deliver_tenant_webhook(
         pool,
         ctx,
         "tenant_delivered",
+        {
+            "run_id": payload.run_id,
+            "tenant_id": payload.tenant_id,
+            "endpoint_id": payload.endpoint_id,
+        },
+    )
+
+
+# ── Typed keyed rate-limit actor with aliased payload ───────────────────
+# Uses KeyedRateLimitRef.typed with a payload model that has a wire alias
+# (tenantId). The stored row carries the alias key, so a raw-dict key_fn
+# would fail — this proves the validated model (not the raw dict) reaches
+# key_fn at acquire time.
+
+
+class TypedTenantPayload(BaseModel):
+    model_config = ConfigDict(validate_by_name=True, serialize_by_alias=True)
+
+    run_id: str
+    tenant_id: str = Field(alias="tenantId")
+    endpoint_id: str
+
+
+@actor(
+    name="deliver_typed_tenant_webhook",
+    queue="e2e",
+    rate_limits=[
+        KeyedRateLimitRef.typed(
+            TypedTenantPayload,
+            base_name="e2e_typed_per_tenant",
+            key_fn=lambda p: p.tenant_id,
+            capacity=3,
+            refill_per_second=1.0,
+            backend="redis",
+        )
+    ],
+)
+async def deliver_typed_tenant_webhook(
+    payload: TypedTenantPayload,
+    ctx: JobContext[TypedTenantPayload],
+    *,
+    pool: asyncpg.Pool,
+) -> None:
+    """Typed-keyed-rate-limit e2e actor with aliased payload."""
+    await asyncio.sleep(0.03)
+    await _record_effect(
+        pool,
+        ctx,
+        "typed_tenant_delivered",
         {
             "run_id": payload.run_id,
             "tenant_id": payload.tenant_id,

@@ -6,14 +6,13 @@ reservation acquire-release integration.
 """
 
 import asyncio
-import contextlib
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
 import pytest
 from opentelemetry import trace
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, Field, ValidationError
 
 import taskq.obs as obs_mod
 from taskq._ids import new_uuid
@@ -23,6 +22,7 @@ from taskq.client._enqueuer import SubJobEnqueuer
 from taskq.context import JobContext
 from taskq.exceptions import ReservationUnavailable, RetryAfter, Snooze, WorkerOwnershipMismatch
 from taskq.progress._buffer import _ProgressBuffer
+from taskq.ratelimit.refs import KeyedRateLimitRef
 from taskq.retry import RetryPolicy
 from taskq.settings import WorkerSettings
 from taskq.testing.actor import (
@@ -267,7 +267,7 @@ class _StubRateLimitRegistry:
         *,
         job_id: UUID,
         worker_id: UUID,
-        payload: dict[str, object] | None = None,
+        payload: dict[str, object] | BaseModel | None = None,
         redis_client: Any | None = None,
         pg_pool: Any | None = None,
         clock: Clock | None = None,
@@ -566,9 +566,10 @@ class _StrictPayload(BaseModel):
     required_field: str
 
 
-async def test_payload_validation_failure_releases_acquired_resources() -> None:
-    """If payload validation fails after acquire, acquired resources are
-    released in the outer finally block (resource leak regression)."""
+async def test_payload_validation_failure_before_acquire_no_resources_acquired() -> None:
+    """Validation happens before acquire — an invalid payload raises
+    ValidationError before any rate-limit token is consumed, so no
+    resources are acquired and no release is needed."""
     rl_reg = _StubRateLimitRegistry()
     backend = _FakeBackend()
     clk: Clock = FakeClock(_NOW)
@@ -578,7 +579,7 @@ async def test_payload_validation_failure_releases_acquired_resources() -> None:
     async def never_called_actor(_job: object, _ctx: JobContext[BaseModel]) -> object:
         raise AssertionError("actor body should not run on validation failure")
 
-    with contextlib.suppress(ValidationError):
+    with pytest.raises(ValidationError):
         await consume_one_job(
             as_backend(backend),
             job,
@@ -592,8 +593,161 @@ async def test_payload_validation_failure_releases_acquired_resources() -> None:
             reservations=[],
         )
 
-    assert len(rl_reg.acquire_calls) == 1
-    assert len(rl_reg.release_calls) == 1
+    assert len(rl_reg.acquire_calls) == 0
+    assert len(rl_reg.release_calls) == 0
+
+
+# ── Typed key_fn receives validated model, not raw dict ────────────────
+
+
+class _KeyFnRecordingRegistry:
+    """Registry stub that calls ``key_fn`` on ``KeyedRateLimitRef`` entries.
+
+    Records the validated model passed to ``key_fn`` so tests can assert the
+    consumer forwards the ``BaseModel`` (not the raw ``dict``) to the registry.
+    """
+
+    def __init__(self) -> None:
+        self.acquire_calls: list[dict[str, object]] = []
+        self.release_calls: list[dict[str, object]] = []
+        self.key_fn_received: list[BaseModel] = []
+
+    async def acquire_for_actor(
+        self,
+        rate_limits: Any,
+        reservations: Any,
+        *,
+        job_id: UUID,
+        worker_id: UUID,
+        payload: dict[str, object] | BaseModel | None = None,
+        redis_client: Any | None = None,
+        pg_pool: Any | None = None,
+        clock: Any | None = None,
+        settings: Any | None = None,
+    ) -> list[object]:
+        self.acquire_calls.append(
+            {
+                "rate_limits": rate_limits,
+                "reservations": reservations,
+                "job_id": job_id,
+                "worker_id": worker_id,
+                "payload": payload,
+            }
+        )
+        if payload is not None:
+            for ref in rate_limits:
+                if isinstance(ref, KeyedRateLimitRef) and isinstance(payload, BaseModel):
+                    self.key_fn_received.append(payload)
+                    ref.key_fn(payload)
+        return [_STUB_HANDLE]
+
+    async def release_for_actor(
+        self,
+        acquired: list[object],
+        *,
+        pg_pool: object | None = None,
+    ) -> None:
+        self.release_calls.append(
+            {
+                "acquired": acquired,
+                "pg_pool": pg_pool,
+            }
+        )
+
+
+class _ApiPayload(BaseModel):
+    """Payload with a wire alias — proves the validated model (not the raw
+    dict) reaches ``key_fn``."""
+
+    tenant_id: str = Field(alias="tenantId")
+
+
+async def test_consumer_passes_validated_model_to_key_fn() -> None:
+    """The consumer passes the validated ``BaseModel`` (not the raw ``dict``)
+    to ``acquire_for_actor`` so ``key_fn`` receives a model with aliases
+    already resolved."""
+    reg = _KeyFnRecordingRegistry()
+    backend = _FakeBackend()
+    clk: Clock = FakeClock(_NOW)
+    cfg = default_actor_config()
+    job = make_job_row(payload={"tenantId": "acme"})
+
+    ref = KeyedRateLimitRef.typed(
+        _ApiPayload,
+        base_name="api_per_tenant",
+        key_fn=lambda p: p.tenant_id,
+        capacity=3,
+        refill_per_second=1.0,
+    )
+
+    async def noop_actor(_job: object, _ctx: JobContext[BaseModel]) -> object:
+        return None
+
+    await consume_one_job(
+        as_backend(backend),
+        job,
+        _WORKER_ID,
+        run_actor=noop_actor,
+        actor_config=cfg,
+        payload_type=_ApiPayload,
+        clock=clk,
+        validated_payload=_ApiPayload.model_validate({"tenantId": "acme"}),
+        rate_limit_registry=reg,
+        rate_limits=[ref],
+        reservations=[],
+    )
+
+    assert len(reg.key_fn_received) == 1
+    received = reg.key_fn_received[0]
+    assert isinstance(received, _ApiPayload)
+    assert received.tenant_id == "acme"
+    assert len(reg.release_calls) == 1
+
+
+class _StrictTenantPayload(BaseModel):
+    """Payload with a required field and no default — triggers
+    ``ValidationError`` when the raw dict lacks the field."""
+
+    tenant_id: str
+
+
+async def test_consumer_validates_payload_before_acquire_for_direct_callers() -> None:
+    """When ``validated_payload`` is ``None``, the consumer validates the raw
+    dict BEFORE calling ``acquire_for_actor`` — a ``ValidationError`` surfaces
+    before any rate-limit token is consumed."""
+    rl_reg = _StubRateLimitRegistry()
+    backend = _FakeBackend()
+    clk: Clock = FakeClock(_NOW)
+    cfg = default_actor_config()
+    job = make_job_row(payload={"wrong_field": "x"})
+
+    ref = KeyedRateLimitRef.typed(
+        _StrictTenantPayload,
+        base_name="strict_per_tenant",
+        key_fn=lambda p: p.tenant_id,
+        capacity=3,
+        refill_per_second=1.0,
+    )
+
+    async def never_called_actor(_job: object, _ctx: JobContext[BaseModel]) -> object:
+        raise AssertionError("actor body should not run on validation failure")
+
+    with pytest.raises(ValidationError):
+        await consume_one_job(
+            as_backend(backend),
+            job,
+            _WORKER_ID,
+            run_actor=never_called_actor,
+            actor_config=cfg,
+            payload_type=_StrictTenantPayload,
+            clock=clk,
+            rate_limit_registry=rl_reg,
+            rate_limits=[ref],
+            reservations=[],
+        )
+
+    assert len(rl_reg.acquire_calls) == 0
+    assert len(rl_reg.release_calls) == 0
 
 
 # ── lifecycle events ────────────────────────────────────
