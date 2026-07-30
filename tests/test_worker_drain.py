@@ -429,8 +429,8 @@ async def test_drain_monitor_triggers_shutdown_when_idle() -> None:
     assert shutdown_event.is_set()
 
 
-async def test_drain_monitor_exit_code_2_on_failures() -> None:
-    """Exit code 2 when drain_failures > 0."""
+async def test_drain_monitor_exit_code_3_on_failures() -> None:
+    """Exit code 3 when drain_failures > 0."""
     deps = _make_mock_deps(active_jobs_count=0, drain_failures=3)
     backend = MagicMock()
     backend.count_active_jobs = AsyncMock(return_value=0)
@@ -455,11 +455,11 @@ async def test_drain_monitor_exit_code_2_on_failures() -> None:
         assert len(orchestrator_holder) == 1
         exit_code = await orchestrator_holder[0]
 
-    assert exit_code == 2
+    assert exit_code == 3
 
 
-async def test_drain_monitor_exit_code_3_on_timeout() -> None:
-    """Exit code 3 when max_runtime is exceeded."""
+async def test_drain_monitor_exit_code_4_on_timeout() -> None:
+    """Exit code 4 when max_runtime is exceeded."""
     deps = _make_mock_deps(active_jobs_count=1)
     backend = MagicMock()
     backend.count_active_jobs = AsyncMock(return_value=5)
@@ -484,7 +484,7 @@ async def test_drain_monitor_exit_code_3_on_timeout() -> None:
         assert len(orchestrator_holder) == 1
         exit_code = await orchestrator_holder[0]
 
-    assert exit_code == 3
+    assert exit_code == 4
     assert shutdown_event.is_set()
 
 
@@ -705,3 +705,338 @@ async def test_drain_monitor_settle_window_zero() -> None:
         )
     assert len(orchestrator_holder) == 1
     assert call_count >= 2  # at least two polls needed
+
+
+# ── Handler return-value contract tests ────────────────────────────
+#
+# These tests verify that handlers return the actual AttemptOutcome based
+# on what happened in the DB, not a hardcoded value based on exception type.
+# This is the core fix for the exit-code contract bug: a retryable failure
+# must return "scheduled" (not "failed"), and a terminal snooze/retry-after
+# failure must return "failed" (not "scheduled").
+
+
+async def test_handle_generic_exception_returns_scheduled_on_retry() -> None:
+    """_handle_generic_exception returns "scheduled" when the DB transitions
+    to retry (status="scheduled"), not "failed"."""
+    from dataclasses import replace
+    from datetime import timedelta
+    from uuid import UUID
+
+    import structlog
+
+    from taskq.retry import RetryPolicy
+    from taskq.testing.actor import StubActorConfig
+    from taskq.testing.jobs import make_job_row
+    from taskq.worker._handlers import _handle_generic_exception
+
+    class _RetryBackend:
+        """Backend whose mark_failed_or_retry returns status='scheduled'."""
+
+        async def mark_failed_or_retry(self, **kwargs: object) -> JobRow:
+            return replace(
+                make_job_row(),
+                status="scheduled" if kwargs.get("next_scheduled_at") is not None else "failed",
+            )
+
+    job = make_job_row(attempt=1, max_attempts=3)
+    cfg = StubActorConfig(retry=RetryPolicy(kind="transient", max_attempts=3, jitter=0.0))
+    clock = FakeClock(datetime(2025, 1, 1, tzinfo=UTC))
+    log = structlog.get_logger("test")
+
+    class _FakeSpan:
+        def add_event(self, *_args: object, **_kwargs: object) -> None: ...
+
+    result = await _handle_generic_exception(
+        _RetryBackend(),  # type: ignore[arg-type]
+        job,
+        UUID("00000000-0000-0000-0000-000000000001"),
+        RuntimeError("boom"),
+        cfg,
+        clock,
+        timedelta(hours=24),
+        _FakeSpan(),  # type: ignore[arg-type]
+        log,
+    )
+    assert result == "scheduled"
+
+
+async def test_handle_generic_exception_returns_failed_on_terminal() -> None:
+    """_handle_generic_exception returns "failed" when the DB transitions
+    to terminal failure (status="failed"), not "scheduled"."""
+    from dataclasses import replace
+    from datetime import timedelta
+    from uuid import UUID
+
+    import structlog
+
+    from taskq.retry import RetryPolicy
+    from taskq.testing.actor import StubActorConfig
+    from taskq.testing.jobs import make_job_row
+    from taskq.worker._handlers import _handle_generic_exception
+
+    class _FailBackend:
+        """Backend whose mark_failed_or_retry returns status='failed'."""
+
+        async def mark_failed_or_retry(self, **kwargs: object) -> JobRow:
+            return replace(make_job_row(), status="failed")
+
+    job = make_job_row(attempt=3, max_attempts=3)
+    cfg = StubActorConfig(retry=RetryPolicy(kind="transient", max_attempts=3, jitter=0.0))
+    clock = FakeClock(datetime(2025, 1, 1, tzinfo=UTC))
+    log = structlog.get_logger("test")
+
+    class _FakeSpan:
+        def add_event(self, *_args: object, **_kwargs: object) -> None: ...
+
+    result = await _handle_generic_exception(
+        _FailBackend(),  # type: ignore[arg-type]
+        job,
+        UUID("00000000-0000-0000-0000-000000000001"),
+        RuntimeError("boom"),
+        cfg,
+        clock,
+        timedelta(hours=24),
+        _FakeSpan(),  # type: ignore[arg-type]
+        log,
+    )
+    assert result == "failed"
+
+
+async def test_handle_snooze_returns_failed_on_deadline_exceeded() -> None:
+    """_handle_snooze returns "failed" when mark_snoozed returns "failed"
+    (DeadlineExceeded), not "scheduled"."""
+    from datetime import timedelta
+    from uuid import UUID
+
+    import structlog
+
+    from taskq.exceptions import Snooze
+    from taskq.retry import RetryPolicy
+    from taskq.testing.actor import StubActorConfig
+    from taskq.testing.jobs import make_job_row
+    from taskq.worker._handlers import _handle_snooze
+
+    class _SnoozeFailBackend:
+        """Backend whose mark_snoozed returns 'failed'."""
+
+        async def mark_snoozed(self, *args: object, **kwargs: object) -> str:
+            return "failed"
+
+    job = make_job_row(attempt=3, max_attempts=3, retry_kind="indefinite")
+    cfg = StubActorConfig(retry=RetryPolicy(kind="indefinite", jitter=0.0))
+    log = structlog.get_logger("test")
+
+    class _FakeSpan:
+        def add_event(self, *_args: object, **_kwargs: object) -> None: ...
+
+    result = await _handle_snooze(
+        _SnoozeFailBackend(),  # type: ignore[arg-type]
+        job,
+        UUID("00000000-0000-0000-0000-000000000001"),
+        Snooze(timedelta(seconds=1)),
+        _FakeSpan(),  # type: ignore[arg-type]
+        log,
+        cfg,
+    )
+    assert result == "failed"
+
+
+async def test_handle_snooze_returns_scheduled_on_normal_snooze() -> None:
+    """_handle_snooze returns "scheduled" when mark_snoozed returns "scheduled"."""
+    from datetime import timedelta
+    from uuid import UUID
+
+    import structlog
+
+    from taskq.exceptions import Snooze
+    from taskq.retry import RetryPolicy
+    from taskq.testing.actor import StubActorConfig
+    from taskq.testing.jobs import make_job_row
+    from taskq.worker._handlers import _handle_snooze
+
+    class _SnoozeOkBackend:
+        """Backend whose mark_snoozed returns 'scheduled'."""
+
+        async def mark_snoozed(self, *args: object, **kwargs: object) -> str:
+            return "scheduled"
+
+    job = make_job_row(attempt=1, max_attempts=3, retry_kind="indefinite")
+    cfg = StubActorConfig(retry=RetryPolicy(kind="indefinite", jitter=0.0))
+    log = structlog.get_logger("test")
+
+    class _FakeSpan:
+        def add_event(self, *_args: object, **_kwargs: object) -> None: ...
+
+    result = await _handle_snooze(
+        _SnoozeOkBackend(),  # type: ignore[arg-type]
+        job,
+        UUID("00000000-0000-0000-0000-000000000001"),
+        Snooze(timedelta(seconds=1)),
+        _FakeSpan(),  # type: ignore[arg-type]
+        log,
+        cfg,
+    )
+    assert result == "scheduled"
+
+
+async def test_handle_retry_after_returns_failed_on_deadline_exceeded() -> None:
+    """_handle_retry_after returns "failed" when mark_retry_after returns
+    "failed:DeadlineExceeded", not "scheduled"."""
+    from datetime import timedelta
+    from uuid import UUID
+
+    import structlog
+
+    from taskq.exceptions import RetryAfter
+    from taskq.retry import RetryPolicy
+    from taskq.testing.actor import StubActorConfig
+    from taskq.testing.jobs import make_job_row
+    from taskq.worker._handlers import _handle_retry_after
+
+    class _RetryAfterFailBackend:
+        """Backend whose mark_retry_after returns 'failed:DeadlineExceeded'."""
+
+        async def mark_retry_after(self, *args: object, **kwargs: object) -> str:
+            return "failed:DeadlineExceeded"
+
+    job = make_job_row(attempt=3, max_attempts=3)
+    cfg = StubActorConfig(retry=RetryPolicy(kind="transient", max_attempts=3, jitter=0.0))
+    log = structlog.get_logger("test")
+
+    class _FakeSpan:
+        def add_event(self, *_args: object, **_kwargs: object) -> None: ...
+
+    result = await _handle_retry_after(
+        _RetryAfterFailBackend(),  # type: ignore[arg-type]
+        job,
+        UUID("00000000-0000-0000-0000-000000000001"),
+        RetryAfter(timedelta(seconds=1)),
+        _FakeSpan(),  # type: ignore[arg-type]
+        log,
+        cfg,
+    )
+    assert result == "failed"
+
+
+async def test_handle_retry_after_returns_scheduled_on_normal_retry() -> None:
+    """_handle_retry_after returns "scheduled" when mark_retry_after returns "scheduled"."""
+    from datetime import timedelta
+    from uuid import UUID
+
+    import structlog
+
+    from taskq.exceptions import RetryAfter
+    from taskq.retry import RetryPolicy
+    from taskq.testing.actor import StubActorConfig
+    from taskq.testing.jobs import make_job_row
+    from taskq.worker._handlers import _handle_retry_after
+
+    class _RetryAfterOkBackend:
+        """Backend whose mark_retry_after returns 'scheduled'."""
+
+        async def mark_retry_after(self, *args: object, **kwargs: object) -> str:
+            return "scheduled"
+
+    job = make_job_row(attempt=1, max_attempts=3)
+    cfg = StubActorConfig(retry=RetryPolicy(kind="transient", max_attempts=3, jitter=0.0))
+    log = structlog.get_logger("test")
+
+    class _FakeSpan:
+        def add_event(self, *_args: object, **_kwargs: object) -> None: ...
+
+    result = await _handle_retry_after(
+        _RetryAfterOkBackend(),  # type: ignore[arg-type]
+        job,
+        UUID("00000000-0000-0000-0000-000000000001"),
+        RetryAfter(timedelta(seconds=1)),
+        _FakeSpan(),  # type: ignore[arg-type]
+        log,
+        cfg,
+    )
+    assert result == "scheduled"
+
+
+async def test_handle_timeout_returns_scheduled_on_retry() -> None:
+    """_handle_timeout returns "scheduled" when the DB transitions to retry,
+    not "failed" (the old hardcoded outcome)."""
+    from dataclasses import replace
+    from datetime import timedelta
+    from uuid import UUID
+
+    import structlog
+
+    from taskq.retry import RetryPolicy
+    from taskq.testing.actor import StubActorConfig
+    from taskq.testing.jobs import make_job_row
+    from taskq.worker._handlers import _handle_timeout
+
+    class _RetryBackend:
+        """Backend whose mark_failed_or_retry returns status='scheduled' for retry."""
+
+        async def mark_failed_or_retry(self, **kwargs: object) -> JobRow:
+            status = "scheduled" if kwargs.get("next_scheduled_at") is not None else "failed"
+            return replace(make_job_row(), status=status)
+
+    job = make_job_row(attempt=1, max_attempts=3)
+    cfg = StubActorConfig(retry=RetryPolicy(kind="transient", max_attempts=3, jitter=0.0))
+    clock = FakeClock(datetime(2025, 1, 1, tzinfo=UTC))
+    log = structlog.get_logger("test")
+
+    class _FakeSpan:
+        def add_event(self, *_args: object, **_kwargs: object) -> None: ...
+
+    result = await _handle_timeout(
+        _RetryBackend(),  # type: ignore[arg-type]
+        job,
+        UUID("00000000-0000-0000-0000-000000000001"),
+        TimeoutError("slow"),
+        cfg,
+        clock,
+        timedelta(hours=24),
+        _FakeSpan(),  # type: ignore[arg-type]
+        log,
+    )
+    assert result == "scheduled"
+
+
+async def test_handle_timeout_returns_failed_on_terminal() -> None:
+    """_handle_timeout returns "failed" when the DB transitions to terminal
+    failure (retries exhausted), not "scheduled"."""
+    from dataclasses import replace
+    from datetime import timedelta
+    from uuid import UUID
+
+    import structlog
+
+    from taskq.retry import RetryPolicy
+    from taskq.testing.actor import StubActorConfig
+    from taskq.testing.jobs import make_job_row
+    from taskq.worker._handlers import _handle_timeout
+
+    class _FailBackend:
+        """Backend whose mark_failed_or_retry returns status='failed'."""
+
+        async def mark_failed_or_retry(self, **kwargs: object) -> JobRow:
+            return replace(make_job_row(), status="failed")
+
+    job = make_job_row(attempt=3, max_attempts=3)
+    cfg = StubActorConfig(retry=RetryPolicy(kind="transient", max_attempts=3, jitter=0.0))
+    clock = FakeClock(datetime(2025, 1, 1, tzinfo=UTC))
+    log = structlog.get_logger("test")
+
+    class _FakeSpan:
+        def add_event(self, *_args: object, **_kwargs: object) -> None: ...
+
+    result = await _handle_timeout(
+        _FailBackend(),  # type: ignore[arg-type]
+        job,
+        UUID("00000000-0000-0000-0000-000000000001"),
+        TimeoutError("slow"),
+        cfg,
+        clock,
+        timedelta(hours=24),
+        _FakeSpan(),  # type: ignore[arg-type]
+        log,
+    )
+    assert result == "failed"

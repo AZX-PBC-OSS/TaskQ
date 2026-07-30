@@ -8,8 +8,8 @@ via orchestrate_shutdown — the same path SIGTERM takes.
 
 Exit codes:
   0 — all jobs succeeded (drain_failures == 0)
-  2 — some jobs failed (drain_failures > 0)
-  3 — max_runtime exceeded before drain completed
+  3 — some jobs failed (drain_failures > 0)
+  4 — max_runtime exceeded before drain completed
 """
 
 import asyncio
@@ -17,10 +17,12 @@ import time
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-import asyncpg
 import structlog
 
 from taskq.worker._leader_sweeps import _sleep_interruptible
+from taskq.worker._transient import (
+    TRANSIENT_PG_ERRORS,  # pyright: ignore[reportPrivateUsage]  # Why: canonical transient-PG-error tuple; one tuple, one home
+)
 from taskq.worker.shutdown import _orchestration_in_progress, orchestrate_shutdown
 
 if TYPE_CHECKING:
@@ -38,18 +40,8 @@ __all__ = [
 _log = structlog.get_logger("taskq.worker.drain")
 
 EXIT_DRAIN_CLEAN = 0
-EXIT_DRAIN_WITH_FAILURES = 2
-EXIT_DRAIN_TIMEOUT = 3
-
-# Transient/recoverable errors during count_active_jobs — the monitor
-# continues polling. Non-recoverable errors (TypeError, ValueError, etc.
-# from a buggy backend) propagate and tear down the TaskGroup.
-_COUNT_RECOVERABLE_EXCEPTIONS = (
-    TimeoutError,
-    asyncpg.PostgresConnectionError,
-    asyncpg.InterfaceError,
-    OSError,
-)
+EXIT_DRAIN_WITH_FAILURES = 3
+EXIT_DRAIN_TIMEOUT = 4
 
 
 async def drain_monitor_loop(
@@ -71,7 +63,7 @@ async def drain_monitor_loop(
     every idle_poll_interval. When both are zero, starts the settle timer.
     If still zero after idle_settle_window, triggers shutdown.
 
-    If max_runtime is set and exceeded, triggers shutdown with exit code 3.
+    If max_runtime is set and exceeded, triggers shutdown with exit code 4.
 
     Returns after creating the orchestrate_shutdown task. Spawns with
     may_return=True in the sibling spawner. Does NOT set shutdown_event
@@ -98,6 +90,8 @@ async def drain_monitor_loop(
     )
 
     while not shutdown_event.is_set():
+        deps.liveness.tick("drain_monitor", period=idle_poll_interval)
+
         # Check max_runtime
         if max_runtime is not None:
             elapsed = time.monotonic() - start_time
@@ -123,8 +117,11 @@ async def drain_monitor_loop(
         # Check idle condition — catch only recoverable transient errors
         # (F3). Non-recoverable errors propagate and tear down the TaskGroup.
         try:
-            queue_count = await backend.count_active_jobs(queues)
-        except _COUNT_RECOVERABLE_EXCEPTIONS:
+            queue_count = await asyncio.wait_for(
+                backend.count_active_jobs(queues),
+                timeout=max(idle_poll_interval * 5, 10.0),
+            )
+        except TRANSIENT_PG_ERRORS:
             _log.warning("drain-monitor-count-error", worker_id=str(worker_id))
             queue_count = -1  # unknown — don't trigger
 

@@ -303,18 +303,18 @@ def test_idle_settle_window_passed(monkeypatch: Any) -> None:
     assert captured["idle_settle_window"] == 5.0
 
 
-def test_max_runtime_passed(monkeypatch: Any) -> None:
-    """--max-runtime passes the value to worker_main."""
+def test_idle_max_runtime_passed(monkeypatch: Any) -> None:
+    """--idle-max-runtime passes the value to worker_main."""
     captured: dict[str, Any] = {}
 
     def fake_worker_main(
         settings: Any,
         *,
         actor_registry: Any = None,
-        max_runtime: float | None = None,
+        idle_max_runtime: float | None = None,
         **kwargs: Any,
     ) -> int:
-        captured["max_runtime"] = max_runtime
+        captured["idle_max_runtime"] = idle_max_runtime
         return 0
 
     monkeypatch.setattr("taskq.cli._worker_main", fake_worker_main)
@@ -325,12 +325,12 @@ def test_max_runtime_passed(monkeypatch: Any) -> None:
             "--actors",
             _NO_ACTORS_PATH,
             "--until-idle",
-            "--max-runtime",
+            "--idle-max-runtime",
             "300",
         ],
     )
     assert result.exit_code == 0, f"stderr: {result.stderr}"
-    assert captured["max_runtime"] == 300.0
+    assert captured["idle_max_runtime"] == 300.0
 
 
 def test_idle_poll_interval_passed(monkeypatch: Any) -> None:

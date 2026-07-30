@@ -12,6 +12,7 @@ resolution and warns about PgBouncer transaction-mode footguns.
 import asyncio
 import contextlib
 import importlib.util
+import math
 from collections.abc import Callable, Coroutine, Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
@@ -173,7 +174,7 @@ async def _main(
     until_idle: bool = False,
     idle_settle_window: float | None = None,
     idle_poll_interval: float | None = None,
-    max_runtime: float | None = None,
+    idle_max_runtime: float | None = None,
 ) -> int:
     """Worker bootstrap: open deps, wire TaskGroup of siblings, run to shutdown.
 
@@ -205,8 +206,19 @@ async def _main(
     asyncpg.UniqueViolationError: pass`` — the ``(actor, name)`` UNIQUE
     constraint makes this registration pass create-only and skip-on-conflict.
 
-    Returns the exit code from the orchestrator (read from the holder), or
-    0 when no signal arrived (clean shutdown via external shutdown_event.set()).
+    ``until_idle`` enables drain mode: a :func:`drain_monitor_loop`
+    sibling polls the backend for active jobs and triggers graceful
+    shutdown when the queues stay empty for ``idle_settle_window``
+    seconds.  ``idle_settle_window`` is the seconds to wait after
+    queues appear empty before declaring drained.  ``idle_poll_interval``
+    is how often to check queue depth.  ``idle_max_runtime`` is an
+    optional wall-clock cap; when exceeded the drain monitor triggers
+    shutdown with exit code 4.
+
+    Returns the exit code from the orchestrator (read from the holder).
+    With ``until_idle=True``, returns 0 (all jobs succeeded), 3 (some
+    jobs failed), or 4 (max-runtime exceeded). Without ``until_idle``,
+    returns 0 on clean shutdown.
     """
     from taskq.worker.run import (
         consumer_loop_stub,
@@ -269,13 +281,23 @@ async def _main(
                 if idle_poll_interval is not None
                 else settings.idle_poll_interval
             )
-            runtime = max_runtime if max_runtime is not None else settings.idle_max_runtime
+            runtime = (
+                idle_max_runtime if idle_max_runtime is not None else settings.idle_max_runtime
+            )
+
+            if not math.isfinite(settle) or settle < 0:
+                raise ValueError(f"idle_settle_window must be >= 0 and finite, got {settle}")
+            if not math.isfinite(poll) or poll < 0.1:
+                raise ValueError(f"idle_poll_interval must be >= 0.1 and finite, got {poll}")
+            if runtime is not None and (not math.isfinite(runtime) or runtime <= 0):
+                raise ValueError(f"idle_max_runtime must be > 0 and finite, got {runtime}")
+
             if _cron_registry:
                 _startup_log.warning(
                     "until-idle-with-cron",
                     kind="until_idle_with_cron",
                     message="until_idle mode is incompatible with cron-driven workloads; "
-                    "the queue will never drain. Use --max-runtime as a cap.",
+                    "the queue will never drain. Use --idle-max-runtime as a cap.",
                 )
 
         # Only register the worker pool in DI when the user hasn't provided
@@ -988,7 +1010,7 @@ def worker_main(
     until_idle: bool = False,
     idle_settle_window: float | None = None,
     idle_poll_interval: float | None = None,
-    max_runtime: float | None = None,
+    idle_max_runtime: float | None = None,
 ) -> int:
     """Worker process entry point.
 
@@ -1021,6 +1043,15 @@ def worker_main(
     modified by the registration pass.  If a ``@cron`` decorator's
     parameters change after the schedule was first registered, the
     operator must manually update or delete and recreate the schedule.
+
+    ``until_idle`` enables drain mode (see :func:`_main` for details).
+    ``idle_settle_window``, ``idle_poll_interval``, and
+    ``idle_max_runtime`` override the corresponding settings when
+    ``until_idle`` is True; they are ignored otherwise.
+
+    Returns the exit code from :func:`_main` — 0 on clean shutdown,
+    3 if any jobs failed in drain mode, 4 if ``idle_max_runtime`` was
+    exceeded.
     """
     from taskq.scheduler import get_registered_crons
 
@@ -1037,6 +1068,6 @@ def worker_main(
                 until_idle=until_idle,
                 idle_settle_window=idle_settle_window,
                 idle_poll_interval=idle_poll_interval,
-                max_runtime=max_runtime,
+                idle_max_runtime=idle_max_runtime,
             )
         )

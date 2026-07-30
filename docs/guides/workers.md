@@ -624,8 +624,8 @@ taskq worker --actors myapp.actors:registry --until-idle
 ```python
 exit_code = worker_main(settings, actor_registry=registry, until_idle=True)
 # 0 = all jobs succeeded
-# 2 = some jobs failed
-# 3 = max-runtime exceeded
+# 3 = some jobs failed
+# 4 = idle-max-runtime exceeded
 ```
 
 The worker polls its subscribed queues every `idle_poll_interval` (default 1s).
@@ -633,13 +633,13 @@ When no pending, scheduled, or running jobs remain for the settle window
 (`idle_settle_window`, default 2s), the worker triggers its normal graceful
 shutdown and exits.
 
-An optional `--max-runtime` cap (or `TASKQ_IDLE_MAX_RUNTIME`) forces exit
-with code 3 if the drain takes too long — useful for CI pipelines with
+An optional `--idle-max-runtime` cap (or `TASKQ_IDLE_MAX_RUNTIME`) forces exit
+with code 4 if the drain takes too long — useful for CI pipelines with
 time budgets.
 
 **Scheduled jobs:** Jobs with a future `scheduled_at` count as "active" —
 the worker waits for them to become due, dispatches them, and processes
-them before exiting. Use `--max-runtime` if you don't want to wait for
+them before exiting. Use `--idle-max-runtime` if you don't want to wait for
 far-future scheduled jobs.
 
 **Cron:** `--until-idle` is incompatible with cron-driven workloads, which
@@ -682,7 +682,7 @@ that returned `"failed"` from `dispatch_one_job`. It does NOT capture:
   worker's registry is released via `mark_snoozed(10s)` and cycles
   scheduled→pending→claimed→snoozed indefinitely. Since `scheduled`
   counts as active, the queue never reads as drained, and the worker
-  hangs until `--max-runtime` is hit. Use `--max-runtime` as the escape
+  hangs until `--idle-max-runtime` is hit. Use `--idle-max-runtime` as the escape
   hatch.
 
 For batch workflows requiring exact failure accounting, query the backend
@@ -746,4 +746,4 @@ All variables use the `TASKQ_` prefix. `WorkerSettings` extends `TaskQSettings`;
 | `TASKQ_ARCHIVE_EXPIRY_CRON_EXPR` | `str \| None` | `None` | Full 5-field cron for the archive expiry sweep; overrides `TASKQ_ARCHIVE_EXPIRY_SCHEDULE_UTC`. |
 | `TASKQ_IDLE_SETTLE_WINDOW` | `float` | `2.0` | Seconds the drain monitor waits after queues appear empty before declaring drained. Only used with `--until-idle`. |
 | `TASKQ_IDLE_POLL_INTERVAL` | `float` | `1.0` | How often the drain monitor checks queue depth. Only used with `--until-idle`. |
-| `TASKQ_IDLE_MAX_RUNTIME` | `float \| None` | `None` | Maximum wall-clock seconds for until-idle mode. When exceeded, exit code 3. None = no limit. Only used with `--until-idle`. |
+| `TASKQ_IDLE_MAX_RUNTIME` | `float \| None` | `None` | Maximum wall-clock seconds for until-idle mode. When exceeded, exit code 4. None = no limit. Only used with `--until-idle`. |

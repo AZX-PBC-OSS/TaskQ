@@ -185,24 +185,26 @@ def worker(
         False,
         "--until-idle",
         help="Run until all subscribed queues are drained, then exit. "
-        "Exit 0 if all jobs succeeded, 2 if any failed, 3 if max-runtime "
+        "Exit 0 if all jobs succeeded, 3 if any failed, 4 if idle-max-runtime "
         "was exceeded. Incompatible with cron-driven workloads.",
     ),
     idle_settle_window: float | None = typer.Option(
         None,
         "--idle-settle-window",
         help="Seconds to wait after queues appear empty before declaring "
-        "drained. Overrides TASKQ_IDLE_SETTLE_WINDOW. Default 2.0.",
+        "drained. Overrides TASKQ_IDLE_SETTLE_WINDOW. Default 2.0. "
+        "Only used with --until-idle.",
     ),
     idle_poll_interval: float | None = typer.Option(
         None,
         "--idle-poll-interval",
-        help="How often to check queue depth. Overrides TASKQ_IDLE_POLL_INTERVAL. Default 1.0.",
+        help="How often to check queue depth. Overrides TASKQ_IDLE_POLL_INTERVAL. "
+        "Default 1.0. Only used with --until-idle.",
     ),
-    max_runtime: float | None = typer.Option(
+    idle_max_runtime: float | None = typer.Option(
         None,
-        "--max-runtime",
-        help="Maximum wall-clock seconds before forcing exit (code 3). "
+        "--idle-max-runtime",
+        help="Maximum wall-clock seconds before forcing exit (code 4). "
         "Overrides TASKQ_IDLE_MAX_RUNTIME. Only used with --until-idle.",
     ),
 ) -> None:
@@ -234,7 +236,7 @@ def worker(
             until_idle=until_idle,
             idle_settle_window=idle_settle_window,
             idle_poll_interval=idle_poll_interval,
-            max_runtime=max_runtime,
+            idle_max_runtime=idle_max_runtime,
         )
     except ActorConfigDriftList as e:
         # Why: the remedy hint is folded into ActorConfigDriftList.__str__

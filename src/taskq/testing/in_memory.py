@@ -696,9 +696,7 @@ class InMemoryBackend:
             return 0
         queue_set = set(queues)
         return sum(
-            1 for r in self._jobs.values()
-            if r.queue in queue_set
-            and r.status in ACTIVE_STATUSES
+            1 for r in self._jobs.values() if r.queue in queue_set and r.status in ACTIVE_STATUSES
         )
 
     async def get_actor_max_pending(self) -> dict[str, int | None]:

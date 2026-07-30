@@ -172,7 +172,7 @@ ignore = [
 "tests/**" = ["S101", "S105", "S106"]
 # Same rationale — schema name validated against _IDENT_RE; all
 # user-supplied values use $N parameter binding.
-"tests/e2e/**" = ["S608", "ASYNC109"]
+"tests/e2e/**" = ["S608"]
 "tests/test_workgroup.py" = ["S108", "ASYNC110"]
 # Exception class names follow the project glossary verbatim
 # (Snooze, RetryAfter, ResultTooLarge, ScopeViolation, etc.).

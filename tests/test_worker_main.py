@@ -744,7 +744,7 @@ def test_worker_main_runs_under_asyncio_runner_and_returns_exit_code(
         until_idle: bool = False,
         idle_settle_window: float | None = None,
         idle_poll_interval: float | None = None,
-        max_runtime: float | None = None,
+        idle_max_runtime: float | None = None,
     ) -> int:
         captured_kwargs["actor_registry"] = actor_registry
         captured_kwargs["_registry"] = _registry
@@ -774,7 +774,7 @@ def test_worker_main_uses_get_registered_crons_when_cron_registry_omitted(
         until_idle: bool = False,
         idle_settle_window: float | None = None,
         idle_poll_interval: float | None = None,
-        max_runtime: float | None = None,
+        idle_max_runtime: float | None = None,
     ) -> int:
         return 0
 
@@ -804,7 +804,7 @@ def test_worker_main_forwards_connections_to_main(settings: WorkerSettings) -> N
         until_idle: bool = False,
         idle_settle_window: float | None = None,
         idle_poll_interval: float | None = None,
-        max_runtime: float | None = None,
+        idle_max_runtime: float | None = None,
     ) -> int:
         captured["connections"] = connections
         return 0
@@ -1001,15 +1001,15 @@ async def test_until_idle_spawns_drain_monitor(settings: WorkerSettings) -> None
                 settings,
                 until_idle=True,
                 idle_settle_window=0.1,
-                idle_poll_interval=0.05,
-                max_runtime=5.0,
+                idle_poll_interval=0.1,
+                idle_max_runtime=5.0,
             )
     assert result == 0
     assert len(h.captured_holder[0]) == 1  # type: ignore[arg-type]
 
 
-async def test_until_idle_exit_code_2_on_failures(settings: WorkerSettings) -> None:
-    """_main with until_idle=True and drain_failures > 0 exits 2."""
+async def test_until_idle_exit_code_3_on_failures(settings: WorkerSettings) -> None:
+    """_main with until_idle=True and drain_failures > 0 exits 3."""
     with _use_test_harness(settings, set_shutdown=False) as h:
         h.backend.count_active_jobs = AsyncMock(return_value=0)  # type: ignore[attr-defined]
         assert h.deps is not None
@@ -1019,14 +1019,14 @@ async def test_until_idle_exit_code_2_on_failures(settings: WorkerSettings) -> N
                 settings,
                 until_idle=True,
                 idle_settle_window=0.1,
-                idle_poll_interval=0.05,
-                max_runtime=5.0,
+                idle_poll_interval=0.1,
+                idle_max_runtime=5.0,
             )
-    assert result == 2
+    assert result == 3
 
 
-async def test_until_idle_exit_code_3_on_timeout(settings: WorkerSettings) -> None:
-    """_main with until_idle=True and max_runtime exceeded exits 3."""
+async def test_until_idle_exit_code_4_on_timeout(settings: WorkerSettings) -> None:
+    """_main with until_idle=True and idle_max_runtime exceeded exits 4."""
     with _use_test_harness(settings, set_shutdown=False) as h:
         h.backend.count_active_jobs = AsyncMock(return_value=10)  # type: ignore[attr-defined]
         async with _patch_orchestrate_for_drain():
@@ -1034,10 +1034,10 @@ async def test_until_idle_exit_code_3_on_timeout(settings: WorkerSettings) -> No
                 settings,
                 until_idle=True,
                 idle_settle_window=10.0,
-                idle_poll_interval=0.05,
-                max_runtime=0.3,
+                idle_poll_interval=0.1,
+                idle_max_runtime=0.3,
             )
-    assert result == 3
+    assert result == 4
     assert len(h.captured_holder[0]) == 1  # type: ignore[arg-type]
 
 

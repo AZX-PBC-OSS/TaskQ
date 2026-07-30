@@ -912,7 +912,7 @@ class WorkerSettings(TaskQSettings):
         gt=0,
         description=(
             "TASKQ_IDLE_MAX_RUNTIME (seconds). Maximum wall-clock time "
-            "for until-idle mode. When exceeded, exit code 3. None = no limit. "
+            "for until-idle mode. When exceeded, exit code 4. None = no limit. "
             "Only used when --until-idle is active."
         ),
     )

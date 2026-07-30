@@ -311,7 +311,7 @@ async def dispatch_one_job(
                     trace_id="",
                 )
                 try:
-                    await _handle_generic_exception(
+                    handler_result: AttemptOutcome = await _handle_generic_exception(
                         backend,
                         job,
                         worker_id,
@@ -322,6 +322,7 @@ async def dispatch_one_job(
                         consumer_span,
                         handler_log,
                     )
+                    outcome = handler_result
                 except _TERMINAL_WRITE_INFRA_EXCEPTIONS as infra_exc:
                     _log_terminal_write_failed(handler_log, job, exc, infra_exc)
     finally:

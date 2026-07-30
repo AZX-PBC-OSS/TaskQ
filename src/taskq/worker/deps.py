@@ -244,9 +244,13 @@ class WorkerDeps:
     that indicates a terminal failure. ``"cancelled"`` propagates as
     CancelledError (not caught by the consumer's ``except Exception``),
     so it never reaches the increment. ``"scheduled"`` (snooze/retry) is
-    excluded because a retried job is not a drain failure.
-    Read by the drain monitor to determine the exit code. Always 0
-    in non-idle mode."""
+    excluded because a retried job is not a drain failure. The increment
+    also fires on the exception path (when dispatch_one_job raises),
+    counting unhandled errors as failures.
+
+    Read by the drain monitor to determine the exit code. The counter is
+    incremented unconditionally in all modes, but is only read in
+    until-idle mode — in non-idle mode it is never consulted."""
 
     def request_reload(self) -> None:
         """Programmatic credential hot-reload trigger for embedders.

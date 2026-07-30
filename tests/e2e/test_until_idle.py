@@ -2,8 +2,8 @@
 
 Verifies that a worker started with TASKQ_UNTIL_IDLE=true:
 1. Processes all enqueued jobs and exits 0 when all succeed
-2. Exits 2 when some jobs fail permanently
-3. Exits 3 when max-runtime is exceeded
+2. Exits 3 when some jobs fail permanently
+3. Exits 4 when max-runtime is exceeded
 4. Waits for and processes scheduled jobs before exiting
 
 Each test enqueues jobs BEFORE starting the worker container, then
@@ -57,9 +57,7 @@ async def clean_e2e_state(request: pytest.FixtureRequest) -> AsyncIterator[None]
     would raise on the next test's setup because the container is no
     longer running.
     """
-    if not {"e2e_client", "e2e_pg_pool", "e2e_schema"}.intersection(
-        request.fixturenames
-    ):
+    if not {"e2e_client", "e2e_pg_pool", "e2e_schema"}.intersection(request.fixturenames):
         yield
         return
 
@@ -116,13 +114,15 @@ async def _start_idle_worker(
 
 
 async def _wait_for_container_exit(
-    container: DockerContainer, timeout: float = 60.0
+    container: DockerContainer,
+    timeout: float = 60.0,  # noqa: ASYNC109  # Why: polling deadline, not asyncio.timeout wrap
 ) -> int:
     """Poll container status until it exits, then return the exit code.
 
     Calls wrapped.reload() before reading status/attrs — Docker attrs
     are cached at fetch time and must be explicitly refreshed.
     """
+
     async def _container_exited() -> bool:
         wrapped = container.get_wrapped_container()
         wrapped.reload()
@@ -144,6 +144,7 @@ async def test_until_idle_drains_and_exits_zero(
     e2e_schema: E2ESchema,
     e2e_worker_image: BuiltImage,
     e2e_network: Network,
+    e2e_pg_pool: asyncpg.Pool,
     run_id: str,
 ) -> None:
     """Worker with --until-idle processes all jobs and exits 0."""
@@ -151,9 +152,7 @@ async def test_until_idle_drains_and_exits_zero(
     for i in range(3):
         handle = await e2e_client.enqueue(
             send_welcome_email,
-            WelcomeEmailPayload(
-                run_id=run_id, user_id=f"u-{i}", email=f"u{i}@example.com"
-            ),
+            WelcomeEmailPayload(run_id=run_id, user_id=f"u-{i}", email=f"u{i}@example.com"),
         )
         handles.append(handle)
 
@@ -173,26 +172,23 @@ async def test_until_idle_exits_nonzero_on_failures(
     e2e_schema: E2ESchema,
     e2e_worker_image: BuiltImage,
     e2e_network: Network,
+    e2e_pg_pool: asyncpg.Pool,
     run_id: str,
 ) -> None:
-    """Worker with --until-idle exits 2 when a job reaches 'failed'.
+    """Worker with --until-idle exits 3 when a job reaches 'failed'.
 
     Uses sync_user_profile with fail_kind='permanent': PermanentSyncError
     is in that actor's non_retryable_exceptions, so the first attempt
     moves the job straight to terminal 'failed' — dispatch_one_job
-    returns 'failed', drain_failures increments, exit code becomes 2.
+    returns 'failed', drain_failures increments, exit code becomes 3.
     """
     good = await e2e_client.enqueue(
         send_welcome_email,
-        WelcomeEmailPayload(
-            run_id=run_id, user_id="ok", email="ok@example.com"
-        ),
+        WelcomeEmailPayload(run_id=run_id, user_id="ok", email="ok@example.com"),
     )
     bad = await e2e_client.enqueue(
         sync_user_profile,
-        SyncUserProfilePayload(
-            run_id=run_id, user_id="bad", fail_times=1, fail_kind="permanent"
-        ),
+        SyncUserProfilePayload(run_id=run_id, user_id="bad", fail_times=1, fail_kind="permanent"),
     )
 
     container = await _start_idle_worker(e2e_network, e2e_schema, e2e_worker_image)
@@ -201,24 +197,25 @@ async def test_until_idle_exits_nonzero_on_failures(
         with pytest.raises(JobFailed):
             await bad.wait(timeout=60)
         exit_code = await _wait_for_container_exit(container, timeout=60.0)
-        assert exit_code == 2, f"expected exit 2, got {exit_code}"
+        assert exit_code == 3, f"expected exit 3, got {exit_code}"
     finally:
         await asyncio.to_thread(_stop_container, container)
 
 
-async def test_until_idle_timeout_exit_3(
+async def test_until_idle_timeout_exit_4(
     e2e_client: TaskQ,
     e2e_schema: E2ESchema,
     e2e_worker_image: BuiltImage,
     e2e_network: Network,
+    e2e_pg_pool: asyncpg.Pool,
     run_id: str,
 ) -> None:
-    """Worker with --until-idle --max-runtime exits 3 when timeout hits.
+    """Worker with --until-idle --idle-max-runtime exits 4 when timeout hits.
 
     Enqueues a long-running job (slow_deliver_webhook, sleeps 3s), starts
     a worker with TASKQ_IDLE_MAX_RUNTIME=2. The queue never reads as idle
     within the cap because the job is still active (pending or running —
-    the specific state doesn't matter, both prevent idle). Exit code 3.
+    the specific state doesn't matter, both prevent idle). Exit code 4.
     """
     await e2e_client.enqueue(
         slow_deliver_webhook,
@@ -233,7 +230,7 @@ async def test_until_idle_timeout_exit_3(
     )
     try:
         exit_code = await _wait_for_container_exit(container, timeout=60.0)
-        assert exit_code == 3, f"expected exit 3, got {exit_code}"
+        assert exit_code == 4, f"expected exit 4, got {exit_code}"
     finally:
         await asyncio.to_thread(_stop_container, container)
 
@@ -243,6 +240,7 @@ async def test_until_idle_scheduled_jobs_drain(
     e2e_schema: E2ESchema,
     e2e_worker_image: BuiltImage,
     e2e_network: Network,
+    e2e_pg_pool: asyncpg.Pool,
     run_id: str,
 ) -> None:
     """Worker with --until-idle waits for future-scheduled jobs.
@@ -257,9 +255,7 @@ async def test_until_idle_scheduled_jobs_drain(
     scheduled_at = datetime.now(UTC) + timedelta(seconds=3)
     handle = await e2e_client.enqueue(
         send_welcome_email,
-        WelcomeEmailPayload(
-            run_id=run_id, user_id="sched", email="sched@example.com"
-        ),
+        WelcomeEmailPayload(run_id=run_id, user_id="sched", email="sched@example.com"),
         scheduled_at=scheduled_at,
     )
 

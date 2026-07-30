@@ -1352,15 +1352,15 @@ async def test_consume_failed_returns_failed() -> None:
 
 
 async def test_consume_timeout_returns_failed() -> None:
-    """consume_one_job returns 'failed' on TimeoutError."""
+    """consume_one_job returns 'failed' on terminal TimeoutError (retries exhausted)."""
 
     async def actor(_job: object, _ctx: JobContext[BaseModel]) -> object:
         raise TimeoutError()
 
     backend = _FakeBackend()
     clk: Clock = FakeClock(_NOW)
-    cfg = default_actor_config()
-    job = make_job_row()
+    cfg = StubActorConfig(retry=RetryPolicy(kind="transient", max_attempts=1, jitter=0.0))
+    job = make_job_row(attempt=1, max_attempts=1)
     obs_mod.set_otel_enabled(False)
 
     result = await consume_one_job(
