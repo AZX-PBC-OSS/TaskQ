@@ -203,6 +203,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `stranded_jobs_query_failed`, and the `failed_details` payload of
   `sub_enqueue_flush_failed`). Log pipelines querying `fields.message`
   on these two events must switch to `error_message`.
+- **Breaking: `taskq.worker.actor_config` moved to `taskq.actor_config`.**
+  The `ActorConfig` dataclass (released in v0.2.0–v0.2.2 at
+  `taskq.worker.actor_config`) has moved to the top-level
+  `taskq.actor_config` module. It is shared by the client, CLI, and admin
+  UI, not worker-internal. The old import path raises `ImportError`. See
+  [docs/guides/upgrading.md](docs/guides/upgrading.md) for the full
+  migration mapping. The companion `actor_config_ops` module (listing,
+  inspecting, tuning, and deregistering actors) has likewise moved from
+  `taskq.worker.actor_config_ops` to `taskq.actor_config_ops`; it was
+  never released under the `worker.*` path.
 
 ### Security
 
