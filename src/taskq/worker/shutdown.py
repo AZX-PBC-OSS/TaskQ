@@ -23,7 +23,6 @@ from enum import IntEnum
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-import asyncpg
 import structlog
 
 from taskq._close import CLOSE_TIMEOUT_SECS, close_conn_bounded
@@ -35,6 +34,7 @@ from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining.
 )
 from taskq.obs import get_logger
+from taskq.worker._transient import TRANSIENT_PG_ERRORS
 from taskq.worker._watchdog import dump_task_stacks
 
 if TYPE_CHECKING:
@@ -100,7 +100,7 @@ async def drain_local_queue_to_pending(deps: "WorkerDeps", worker_id: UUID) -> i
                 rows_re_pended=rowcount,
             )
             return rowcount
-    except (TimeoutError, asyncpg.PostgresConnectionError, OSError) as exc:
+    except TRANSIENT_PG_ERRORS as exc:
         _log.warning(
             "drain-local-queue-failed",
             worker_id=worker_id,

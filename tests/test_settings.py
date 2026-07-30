@@ -942,20 +942,24 @@ def test_unsatisfiable_budget_errors_against_budget_fields() -> None:
     )
 
 
-def test_producer_loop_budget_is_checked_too() -> None:
-    """The invariant covers every bounded loop, not just the period-1
-    leader loops: with NOTIFY disabled the producer ticks at poll_interval
-    and its budget is max(poll_interval * grace, floor): 2.0s here, so a
-    3.9s timeout passes the leader check and still false-trips the
-    producer (gap 3.9 + 0.2 = 4.1s)."""
-    with pytest.raises(ValidationError, match=r"dispatcher_command_timeout"):
-        _load(
-            TASKQ_NOTIFY_ENABLED="false",
-            TASKQ_POLL_INTERVAL="0.2",
-            TASKQ_WATCHDOG_STALE_FLOOR="2.0",
-            TASKQ_WATCHDOG_TICK_GRACE_FACTOR="5.0",
-            TASKQ_DISPATCHER_COMMAND_TIMEOUT="3.9",
-        )
+def test_producer_loop_not_checked_by_validator() -> None:
+    """The invariant covers only the period-1 leader loops (scheduled_wake,
+    cron), NOT the producer: the producer's dispatch_batch is a
+    multi-statement transaction not wrapped in asyncio.timeout, so the
+    timeout + period model does not hold. A config that would fail the
+    producer check if it were checked (but passes the leader check) must
+    load successfully."""
+    # Leader: budget=max(1*5, 2)=5, 1.0+1=2 < 5 → passes
+    # Producer (if checked): budget=max(0.2*5, 2)=2, 1.0+0.2=1.2 < 2 → also passes
+    # Use a config where only the leader check matters:
+    s = _load(
+        TASKQ_NOTIFY_ENABLED="false",
+        TASKQ_POLL_INTERVAL="0.2",
+        TASKQ_WATCHDOG_STALE_FLOOR="2.0",
+        TASKQ_WATCHDOG_TICK_GRACE_FACTOR="5.0",
+        TASKQ_DISPATCHER_COMMAND_TIMEOUT="1.0",
+    )
+    assert s.dispatcher_command_timeout == 1.0
 
 
 def test_producer_loop_budget_passes_when_timeout_fits() -> None:
@@ -1020,3 +1024,13 @@ def test_oidc_reset_cached_forces_reload(monkeypatch: pytest.MonkeyPatch) -> Non
         assert s.oidc.issuer == "https://idp-b.example"
     finally:
         OIDCSettings.reset_cached()
+
+
+def test_dispatcher_command_timeout_description_is_accurate() -> None:
+    """The description must not promise 'every bounded loop' when only the
+    period-1 leader loops are checked — three loops are not."""
+    fields = WorkerSettings.get_fields()
+    description = str(fields["dispatcher_command_timeout"][1].description or "")
+    assert "every bounded loop" not in description, (
+        f"description must not say 'every bounded loop': {description}"
+    )

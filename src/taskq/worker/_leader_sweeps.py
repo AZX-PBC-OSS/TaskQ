@@ -141,7 +141,9 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
             if hasattr(ctx.backend, "sweep_leaked_reservation_slots"):
                 start = time.monotonic()
                 try:
-                    async with ctx.deps.dispatcher_pool.acquire() as conn:
+                    async with ctx.deps.dispatcher_pool.acquire(
+                        timeout=ctx.deps.settings.dispatcher_command_timeout
+                    ) as conn:
                         count_4 = cast(
                             "int",
                             await ctx.backend.sweep_leaked_reservation_slots(  # type: ignore[reportAttributeAccessIssue]  # Why: guarded by hasattr; only PostgresBackend implements these maintenance sweeps.
@@ -159,7 +161,9 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                     )
                 start = time.monotonic()
                 try:
-                    async with ctx.deps.dispatcher_pool.acquire() as conn:
+                    async with ctx.deps.dispatcher_pool.acquire(
+                        timeout=ctx.deps.settings.dispatcher_command_timeout
+                    ) as conn:
                         count_rt = cast(
                             "int",
                             await ctx.backend.sweep_expired_results(  # type: ignore[reportAttributeAccessIssue]  # Why: guarded by hasattr above.
@@ -182,7 +186,9 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                     )
                 start = time.monotonic()
                 try:
-                    async with ctx.deps.dispatcher_pool.acquire() as conn:
+                    async with ctx.deps.dispatcher_pool.acquire(
+                        timeout=ctx.deps.settings.dispatcher_command_timeout
+                    ) as conn:
                         count_sr = await cleanup_stale_workers(
                             conn,
                             worker_id=ctx.worker_id,
@@ -271,7 +277,9 @@ async def _prune_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
             continue
 
         try:
-            async with ctx.deps.dispatcher_pool.acquire() as conn:
+            async with ctx.deps.dispatcher_pool.acquire(
+                timeout=ctx.deps.settings.dispatcher_command_timeout
+            ) as conn:
                 lock_acquired: bool = await conn.fetchval(
                     "SELECT pg_try_advisory_lock(hashtextextended($1, 0))", PRUNE_LOCK_NAME
                 )
@@ -349,7 +357,9 @@ async def _archive_expiry_loop(ctx: SweepContext, shutdown: asyncio.Event) -> No
             continue
 
         try:
-            async with ctx.deps.dispatcher_pool.acquire() as conn:
+            async with ctx.deps.dispatcher_pool.acquire(
+                timeout=ctx.deps.settings.dispatcher_command_timeout
+            ) as conn:
                 lock_acquired: bool = await conn.fetchval(
                     "SELECT pg_try_advisory_lock(hashtextextended($1, 0))",
                     ARCHIVE_EXPIRY_LOCK_NAME,
@@ -405,7 +415,9 @@ async def _queue_depth_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
         ctx.deps.liveness.tick("leader.queue_depth", period=ctx.deps.settings.queue_depth_interval)
         if ctx.deps.is_leader.is_set():
             try:
-                async with ctx.deps.dispatcher_pool.acquire() as conn:
+                async with ctx.deps.dispatcher_pool.acquire(
+                    timeout=ctx.deps.settings.dispatcher_command_timeout
+                ) as conn:
                     rows = await conn.fetch(sql)
                 cache: dict[str, int] = {row["queue"]: row["count"] for row in rows}
                 update_queue_depth_cache(cache)
@@ -431,7 +443,9 @@ async def _reservation_slots_loop(ctx: SweepContext, shutdown: asyncio.Event) ->
         )
         if ctx.deps.is_leader.is_set():
             try:
-                async with ctx.deps.dispatcher_pool.acquire() as conn:
+                async with ctx.deps.dispatcher_pool.acquire(
+                    timeout=ctx.deps.settings.dispatcher_command_timeout
+                ) as conn:
                     rows = await conn.fetch(sql)
                 cache: dict[str, int] = {row["bucket_name"]: row["count"] for row in rows}
                 update_reservation_slots_cache(cache)
@@ -475,7 +489,9 @@ async def _stranded_jobs_loop(ctx: SweepContext, shutdown: asyncio.Event) -> Non
         if not ctx.deps.is_leader.is_set():
             continue
         try:
-            async with ctx.deps.worker_pool.acquire() as conn:
+            async with ctx.deps.worker_pool.acquire(
+                timeout=ctx.deps.settings.dispatcher_command_timeout
+            ) as conn:
                 rows = await conn.fetch(sql)
         except Exception as exc:
             log.warning(

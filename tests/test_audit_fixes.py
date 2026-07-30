@@ -39,7 +39,7 @@ class _FakePool:
     def __init__(self, conn: _FakeConn) -> None:
         self._conn = conn
 
-    def acquire(self) -> _FakePoolCtx:
+    def acquire(self, **kwargs: object) -> _FakePoolCtx:
         return _FakePoolCtx(self._conn)
 
 

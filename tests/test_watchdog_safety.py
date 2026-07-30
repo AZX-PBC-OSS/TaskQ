@@ -1967,3 +1967,512 @@ async def test_scheduled_wake_rides_out_every_transient_shape(
     finally:
         shutdown.set()
         await asyncio.wait_for(task, timeout=5.0)
+
+
+# ── Cron loop must classify all TRANSIENT_PG_ERRORS as retry, not fatal ─────
+
+
+_CRON_TRANSIENT_SHAPES: list[tuple[str, object]] = [
+    ("DeadlockDetectedError", lambda: asyncpg.DeadlockDetectedError("40P01")),
+    ("SerializationError", lambda: asyncpg.SerializationError("40001")),
+    ("AdminShutdownError", lambda: asyncpg.AdminShutdownError("57P01")),
+    ("CannotConnectNowError", lambda: asyncpg.CannotConnectNowError("57P03")),
+    ("TooManyConnectionsError", lambda: asyncpg.TooManyConnectionsError("53300")),
+    ("IdleSessionTimeoutError", lambda: asyncpg.IdleSessionTimeoutError("57P05")),
+    (
+        "IdleInTransactionSessionTimeoutError",
+        lambda: asyncpg.IdleInTransactionSessionTimeoutError("25P03"),
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("exc_name", "make_exc"),
+    _CRON_TRANSIENT_SHAPES,
+    ids=[name for name, _ in _CRON_TRANSIENT_SHAPES],
+)
+async def test_cron_loop_treats_transient_error_as_retry_not_fatal(
+    monkeypatch: pytest.MonkeyPatch,
+    exc_name: str,
+    make_exc: object,
+) -> None:
+    """Each transient PG error that the hand-rolled isinstance branches missed
+    must be retried by the cron loop, not counted by the backstop guard."""
+    from collections.abc import Callable
+    from types import SimpleNamespace
+    from typing import cast
+    from uuid import uuid4
+
+    from taskq.backend._protocol import Backend
+    from taskq.backend.clock import SystemClock
+    from taskq.worker.leader import MaintenanceLeader
+
+    tick_count = 0
+
+    async def _failing_tick_cron(*args: object, **kwargs: object) -> None:
+        nonlocal tick_count
+        tick_count += 1
+        raise cast(Callable[[], BaseException], make_exc)()
+
+    monkeypatch.setattr("taskq.worker.leader.tick_cron", _failing_tick_cron)
+    monkeypatch.setattr("taskq.worker._transient.DEFAULT_MAX_CONSECUTIVE_UNEXPECTED", 3)
+
+    class _FakeCronConn:
+        def transaction(self) -> object:
+            class _Tx:
+                async def __aenter__(self) -> None:
+                    return None
+
+                async def __aexit__(self, *a: object) -> bool:
+                    return False
+
+            return _Tx()
+
+        def is_closed(self) -> bool:
+            return False
+
+        async def close(self) -> None:
+            pass
+
+    liveness = LoopLiveness()
+    is_leader = asyncio.Event()
+    is_leader.set()
+    deps = cast(
+        WorkerDeps,
+        SimpleNamespace(
+            liveness=liveness,
+            is_leader=is_leader,
+            settings=SimpleNamespace(schema_name="taskq", dispatcher_command_timeout=2.5),
+        ),
+    )
+    leader = MaintenanceLeader(deps, uuid4(), cast(Backend, SimpleNamespace()), clock=SystemClock())
+    leader._cron_conn = _FakeCronConn()  # type: ignore[assignment]
+
+    shutdown = asyncio.Event()
+    task = asyncio.create_task(leader._cron_loop(shutdown))
+    try:
+        await asyncio.sleep(4.0)
+        assert not task.done(), (
+            f"cron loop must ride out {exc_name}, not die: "
+            f"{task.exception() if task.done() else 'still running'}"
+        )
+        assert tick_count >= 3, f"cron loop must keep retrying: {tick_count} ticks"
+    finally:
+        shutdown.set()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await asyncio.wait_for(task, timeout=5.0)
+
+
+# ── Election probe: cleanup before guard.unexpected, and continue ──────────
+
+
+async def test_election_probe_cleanup_runs_before_guard_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """guard.unexpected must raise AFTER cleanup so the fatal iteration still
+    drops the conn and clears is_leader."""
+    from types import SimpleNamespace
+    from typing import cast
+    from uuid import uuid4
+
+    from taskq.backend._protocol import Backend
+    from taskq.backend.clock import SystemClock
+    from taskq.worker.leader import MaintenanceLeader
+
+    monkeypatch.setattr("taskq.worker._transient.DEFAULT_MAX_CONSECUTIVE_UNEXPECTED", 3)
+
+    class _BadConn:
+        async def execute(self, *a: object, **k: object) -> str:
+            raise ValueError("unexpected bug in probe")
+
+        async def fetchval(self, *a: object, **k: object) -> object:
+            raise ValueError("unexpected bug")
+
+        def is_closed(self) -> bool:
+            return False
+
+        async def close(self) -> None:
+            pass
+
+        def terminate(self) -> None:
+            pass
+
+    liveness = LoopLiveness()
+    is_leader = asyncio.Event()
+    is_leader.set()
+    deps = cast(
+        WorkerDeps,
+        SimpleNamespace(
+            liveness=liveness,
+            is_leader=is_leader,
+            leader_conn=cast(asyncpg.Connection, _BadConn()),
+            owns_leader_conn=True,
+            leader_conn_factory=None,
+            settings=SimpleNamespace(
+                schema_name="taskq",
+                heartbeat_interval=0.01,
+                dispatcher_command_timeout=2.5,
+                pg_dsn_direct=None,
+            ),
+            dispatcher_pool=None,
+        ),
+    )
+    leader = MaintenanceLeader(deps, uuid4(), cast(Backend, SimpleNamespace()), clock=SystemClock())
+
+    cleanup_calls: list[str] = []
+
+    async def _tracking_drop(*a: object, **k: object) -> None:
+        cleanup_calls.append("drop")
+
+    async def _tracking_close(*a: object, **k: object) -> None:
+        cleanup_calls.append("close")
+
+    leader._drop_leader_conn = _tracking_drop  # type: ignore[assignment]
+    leader._close_leader_owned_conns = _tracking_close  # type: ignore[assignment]
+
+    shutdown = asyncio.Event()
+    task = asyncio.create_task(leader._election_loop(shutdown))
+    try:
+        with pytest.raises(ValueError, match="unexpected bug"):
+            await asyncio.wait_for(task, timeout=10.0)
+        assert len(cleanup_calls) >= 2, (
+            f"cleanup must run before guard.unexpected raises: {cleanup_calls}"
+        )
+    finally:
+        shutdown.set()
+        if not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+
+async def test_election_probe_unexpected_continues_not_falls_through(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The probe's unexpected branch must continue so it doesn't fall through
+    to re-election and guard.ok(), which would reset the streak."""
+    from types import SimpleNamespace
+    from typing import cast
+    from uuid import uuid4
+
+    from taskq.backend._protocol import Backend
+    from taskq.backend.clock import SystemClock
+    from taskq.worker.leader import MaintenanceLeader
+
+    monkeypatch.setattr("taskq.worker._transient.DEFAULT_MAX_CONSECUTIVE_UNEXPECTED", 3)
+
+    probe_calls = 0
+    lock_attempts = 0
+
+    class _ProbeFailsConn:
+        async def execute(self, sql: str, *a: object) -> str:
+            nonlocal probe_calls
+            if "SELECT 1" in sql:
+                probe_calls += 1
+                raise ValueError("probe bug")
+            return "UPDATE 1"
+
+        async def fetchval(self, sql: str, *a: object) -> object:
+            nonlocal lock_attempts
+            if "pg_try_advisory_lock" in sql:
+                lock_attempts += 1
+                return True
+            return None
+
+        def is_closed(self) -> bool:
+            return False
+
+        async def close(self) -> None:
+            pass
+
+        def terminate(self) -> None:
+            pass
+
+    liveness = LoopLiveness()
+    is_leader = asyncio.Event()
+    is_leader.set()
+    deps = cast(
+        WorkerDeps,
+        SimpleNamespace(
+            liveness=liveness,
+            is_leader=is_leader,
+            leader_conn=cast(asyncpg.Connection, _ProbeFailsConn()),
+            owns_leader_conn=True,
+            leader_conn_factory=None,
+            settings=SimpleNamespace(
+                schema_name="taskq",
+                heartbeat_interval=0.01,
+                dispatcher_command_timeout=2.5,
+                pg_dsn_direct=None,
+            ),
+            dispatcher_pool=None,
+        ),
+    )
+    leader = MaintenanceLeader(deps, uuid4(), cast(Backend, SimpleNamespace()), clock=SystemClock())
+
+    async def _noop(*a: object, **k: object) -> None:
+        pass
+
+    leader._close_leader_owned_conns = _noop  # type: ignore[assignment]
+    leader._drop_leader_conn = _noop  # type: ignore[assignment]
+
+    shutdown = asyncio.Event()
+    task = asyncio.create_task(leader._election_loop(shutdown))
+    try:
+        with contextlib.suppress(ValueError, BaseExceptionGroup):
+            await asyncio.wait_for(task, timeout=10.0)
+    finally:
+        shutdown.set()
+        if not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+    assert lock_attempts == 0, (
+        f"probe failure must continue before re-election; lock attempted "
+        f"{lock_attempts} time(s) — guard.ok() would reset the streak"
+    )
+    assert probe_calls >= 3, f"probe must be called at least 3 times: {probe_calls}"
+
+
+# ── Cron timeout branch must sleep before re-issuing ───────────────────────
+
+
+async def test_cron_timeout_branch_sleeps_before_next_tick(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """After a timeout, the cron loop must sleep, not re-issue back-to-back."""
+    from types import SimpleNamespace
+    from typing import cast
+    from uuid import uuid4
+
+    from taskq.backend._protocol import Backend
+    from taskq.backend.clock import SystemClock
+    from taskq.worker.leader import MaintenanceLeader
+
+    tick_times: list[float] = []
+
+    async def _timeout_tick_cron(*a: object, **k: object) -> None:
+        tick_times.append(time.monotonic())
+        raise TimeoutError("iteration deadline")
+
+    monkeypatch.setattr("taskq.worker.leader.tick_cron", _timeout_tick_cron)
+
+    class _FakeCronConn:
+        def transaction(self) -> object:
+            class _Tx:
+                async def __aenter__(self) -> None:
+                    return None
+
+                async def __aexit__(self, *a: object) -> bool:
+                    return False
+
+            return _Tx()
+
+        def is_closed(self) -> bool:
+            return False
+
+        async def close(self) -> None:
+            pass
+
+    liveness = LoopLiveness()
+    is_leader = asyncio.Event()
+    is_leader.set()
+    deps = cast(
+        WorkerDeps,
+        SimpleNamespace(
+            liveness=liveness,
+            is_leader=is_leader,
+            settings=SimpleNamespace(schema_name="taskq", dispatcher_command_timeout=0.1),
+        ),
+    )
+    leader = MaintenanceLeader(deps, uuid4(), cast(Backend, SimpleNamespace()), clock=SystemClock())
+    leader._cron_conn = _FakeCronConn()  # type: ignore[assignment]
+
+    shutdown = asyncio.Event()
+    task = asyncio.create_task(leader._cron_loop(shutdown))
+    try:
+        await asyncio.sleep(3.5)
+    finally:
+        shutdown.set()
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=5.0)
+
+    assert len(tick_times) >= 3, f"expected at least 3 ticks: {len(tick_times)}"
+    gaps = [tick_times[i + 1] - tick_times[i] for i in range(len(tick_times) - 1)]
+    assert min(gaps) >= 0.8, (
+        f"cron timeout branch must sleep before re-issuing; "
+        f"min gap {min(gaps):.3f}s (expected >= ~1s). "
+        f"Gaps: {[f'{g:.3f}' for g in gaps]}"
+    )
+
+
+# ── _active_leaders set must be thread-safe ────────────────────────────────
+
+
+def test_active_leaders_set_thread_safe() -> None:
+    """The OTel gauge callback iterates _active_leaders from a reader thread
+    while run() adds/discards on the event-loop thread."""
+    import taskq.worker.leader as leader_mod
+
+    assert hasattr(leader_mod, "_active_leaders_lock"), (
+        "_active_leaders must be guarded by a threading.Lock"
+    )
+
+    old_interval = sys.getswitchinterval()
+    sys.setswitchinterval(0.000001)
+    try:
+        errors: list[Exception] = []
+        stop = threading.Event()
+
+        def _reader() -> None:
+            while not stop.is_set():
+                try:
+                    with leader_mod._active_leaders_lock:
+                        snapshot = list(leader_mod._active_leaders)
+                    for _ in snapshot:
+                        pass
+                except RuntimeError as e:
+                    errors.append(e)
+                    return
+
+        reader = threading.Thread(target=_reader, daemon=True)
+        reader.start()
+
+        sentinel = object()
+        for _ in range(10_000):
+            leader_mod._active_leaders.add(sentinel)  # type: ignore[arg-type]
+            leader_mod._active_leaders.discard(sentinel)  # type: ignore[arg-type]
+            if errors:
+                break
+
+        stop.set()
+        reader.join(timeout=5.0)
+        leader_mod._active_leaders.discard(sentinel)  # type: ignore[arg-type]
+
+        assert not errors, f"_active_leaders must be thread-safe: {errors}"
+    finally:
+        sys.setswitchinterval(old_interval)
+
+
+# ── Notify DSN factory must pass command_timeout ───────────────────────────
+
+
+async def test_notify_dsn_factory_passes_command_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The notify connection must be bounded by dispatcher_command_timeout."""
+    from typing import cast
+
+    from taskq.connections import WorkerConnections
+    from taskq.settings import WorkerSettings
+    from taskq.worker import deps as deps_mod
+    from taskq.worker.deps import open_worker_deps
+
+    settings = WorkerSettings.load_from_dict(
+        {"TASKQ_PG_DSN": "postgresql://x:x@localhost/x", "TASKQ_DISPATCHER_COMMAND_TIMEOUT": "3.25"}
+    )
+
+    captured: list[dict[str, object]] = []
+
+    class _FakeConn:
+        def __init__(self) -> None:
+            self._closed = False
+
+        async def execute(self, *a: object, **k: object) -> str:
+            return "OK"
+
+        def is_closed(self) -> bool:
+            return self._closed
+
+        async def close(self) -> None:
+            self._closed = True
+
+        def terminate(self) -> None:
+            self._closed = True
+
+    async def _fake_open(
+        dsn: str,
+        *,
+        label: str,
+        apply_keepalive: bool = True,
+        command_timeout: float | None = None,
+    ) -> _FakeConn:
+        captured.append({"label": label, "command_timeout": command_timeout})
+        return _FakeConn()
+
+    monkeypatch.setattr(deps_mod, "open_dedicated_conn", _fake_open)
+
+    class _FakePool:
+        pass
+
+    connections = WorkerConnections(
+        dispatcher_pool=cast(asyncpg.Pool, _FakePool()),
+        heartbeat_pool=cast(asyncpg.Pool, _FakePool()),
+        worker_pool=cast(asyncpg.Pool, _FakePool()),
+    )
+
+    async with open_worker_deps(settings, connections=connections) as _:
+        notify_calls = [c for c in captured if c["label"] == "notify"]
+        assert notify_calls, "notify conn must be built via open_dedicated_conn"
+        assert all(c["command_timeout"] == 3.25 for c in notify_calls), (
+            f"notify DSN factory must pass dispatcher_command_timeout: {captured}"
+        )
+
+
+# ── open_dedicated_conn must pass timeout= to asyncpg.connect ──────────────
+
+
+async def test_open_dedicated_conn_passes_connection_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """open_dedicated_conn must pass timeout= to asyncpg.connect so connection
+    establishment is bounded, not just query execution."""
+    from taskq.worker import deps as deps_mod
+
+    captured: dict[str, object] = {}
+
+    class _Conn:
+        def set_ssl_context(self, *a: object) -> None:
+            pass
+
+    async def _fake_connect(dsn: str, **kwargs: object) -> _Conn:
+        captured.update(kwargs)
+        return _Conn()
+
+    monkeypatch.setattr(deps_mod.asyncpg, "connect", _fake_connect)
+    monkeypatch.setattr(deps_mod, "apply_keepalive_to_conn", lambda *a, **k: False)
+
+    await deps_mod.open_dedicated_conn(
+        "postgresql://x:x@localhost/x", label="cron", command_timeout=7.5
+    )
+
+    assert captured.get("timeout") == 7.5, (
+        f"open_dedicated_conn must pass timeout= to asyncpg.connect: {captured}"
+    )
+
+
+# ── _transient.py doc must correctly describe QueryCanceledError ───────────
+
+
+def test_transient_pg_errors_doc_describes_query_canceled_correctly() -> None:
+    """QueryCanceledError is server-side 57014, not a fired command_timeout.
+    command_timeout raises TimeoutError; QueryCanceledError is raised by
+    pg_cancel_backend or server-side statement_timeout."""
+    from pathlib import Path
+
+    import taskq.worker._transient as transient_mod
+
+    source = Path(transient_mod.__file__).read_text()
+    lines = source.splitlines()
+    for i, line in enumerate(lines):
+        if "QueryCanceledError" in line and "server-side" in line:
+            context = " ".join(lines[i : i + 3])
+            assert "fired" not in context.lower(), (
+                f"QueryCanceledError comment must not say 'fired' — "
+                f"command_timeout raises TimeoutError, not QueryCanceledError "
+                f"(verified against real PG 18). Context: {context}"
+            )
+            break
+    else:
+        pytest.fail("QueryCanceledError comment not found in _transient.py")

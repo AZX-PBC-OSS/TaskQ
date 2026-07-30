@@ -127,7 +127,7 @@ async def open_dedicated_conn(
     hang the caller indefinitely.
     """
     if command_timeout is not None:
-        conn = await asyncpg.connect(dsn, command_timeout=command_timeout)
+        conn = await asyncpg.connect(dsn, command_timeout=command_timeout, timeout=command_timeout)
     else:
         conn = await asyncpg.connect(dsn)
     applied = apply_keepalive_to_conn(conn, label=label) if apply_keepalive else False
@@ -428,6 +428,7 @@ async def open_worker_deps(
                     _direct_notify,
                     label="notify",
                     apply_keepalive=True,
+                    command_timeout=settings.dispatcher_command_timeout,
                 )
 
             resolved_notify_factory = _notify_dsn_factory
