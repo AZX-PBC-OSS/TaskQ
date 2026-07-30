@@ -32,6 +32,8 @@ class FakeConn:
         self._row_data = row_data
 
     async def fetchrow(self, sql: str, *args: object) -> FakeRecord | None:
+        if "batches" in sql:
+            return None
         if self._row_data is None:
             return None
         return FakeRecord(self._row_data)
@@ -124,7 +126,7 @@ async def test_wait_for_batch_empty_batch_returns_complete() -> None:
             "in_flight": 0,
         }
     )
-    status = await wait_for_batch(conn, uuid4(), snooze_via_exception=True)
+    status = await wait_for_batch(conn, uuid4(), snooze_via_exception=True, on_empty="ok")
     assert status.total == 0
     assert status.is_complete is True
 
@@ -214,7 +216,7 @@ async def test_wait_for_batch_with_pool_acquires_connection() -> None:
 
 async def test_wait_for_batch_fetchrow_none_returns_zero_status() -> None:
     conn = FakeConn(None)
-    status = await wait_for_batch(conn, uuid4(), snooze_via_exception=True)
+    status = await wait_for_batch(conn, uuid4(), snooze_via_exception=True, on_empty="ok")
     assert status.total == 0
     assert status.is_complete is True
 

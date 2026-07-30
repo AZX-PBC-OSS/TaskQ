@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field, computed_field
 
 from taskq._json import dumps_str
 from taskq.actor import ActorRef
-from taskq.backend._protocol import IdempotencyKey, IdentityKey
+from taskq.backend._protocol import AttemptOutcome, Backend, IdempotencyKey, IdentityKey, JobRow
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
 )
@@ -34,6 +34,7 @@ __all__ = [
     "BatchHandle",
     "BatchSummary",
     "EnqueueItem",
+    "apply_batch_terminal_outcome",
     "wait_for_batch",
 ]
 
@@ -190,6 +191,69 @@ _WAIT_FOR_BATCH_SQL = (
 _logger = structlog.get_logger("taskq.batch")
 
 
+async def apply_batch_terminal_outcome(
+    backend: Backend,
+    job: JobRow,
+    outcome: AttemptOutcome,
+    *,
+    loop_conn: "asyncpg.Connection | None" = None,
+) -> None:
+    """Apply batch policy after a job reaches a terminal write.
+
+    Called after every terminal write by the consumer and the in-memory
+    runner.  For non-batched jobs (no ``metadata.batch_id``) this returns
+    immediately — zero overhead.
+
+    - ``"succeeded"``: resets the consecutive-failure counter.  If no
+      jobs remain non-terminal, marks the batch complete.
+    - ``"failed"``: increments the consecutive-failure counter.  If the
+      threshold is reached, aborts the batch and logs ``batch-aborted``.
+      If not aborted and no jobs remain non-terminal, marks the batch
+      complete.
+    - ``"cancelled"`` / ``"crashed"``: counts non-terminal jobs.  If none
+      remain, marks the batch complete.
+    - ``"snoozed"`` / ``"reservation_denied"`` / ``"rate_limit_denied"`` /
+      ``"scheduled"``: returns immediately — the job is rescheduled, not
+      terminal.
+    """
+    raw_bid = job.metadata.get("batch_id")
+    if raw_bid is None:
+        return
+    batch_id = UUID(str(raw_bid))
+
+    if outcome in ("snoozed", "reservation_denied", "rate_limit_denied", "scheduled"):
+        return
+
+    if outcome == "succeeded":
+        remaining = await backend.reset_batch_failures(batch_id, connection=loop_conn)
+        if remaining == 0:
+            await backend.complete_batch(batch_id, connection=loop_conn)
+        return
+
+    if outcome == "failed":
+        count, threshold, remaining = await backend.increment_batch_failures(
+            batch_id, connection=loop_conn
+        )
+        if threshold is not None and count >= threshold:
+            await backend.abort_batch(batch_id, connection=loop_conn)
+            _logger.info(
+                "batch-aborted",
+                batch_id=str(batch_id),
+                consecutive_failures=count,
+                threshold=threshold,
+                job_id=str(job.id),
+            )
+        elif remaining == 0:
+            await backend.complete_batch(batch_id, connection=loop_conn)
+        return
+
+    # outcome is "cancelled" or "crashed" — the only remaining
+    # terminal outcomes in AttemptOutcome that are not handled above.
+    remaining = await backend.count_batch_non_terminal(batch_id)
+    if remaining == 0:
+        await backend.complete_batch(batch_id)
+
+
 async def wait_for_batch(
     db: "asyncpg.Connection | asyncpg.Pool",
     batch_id: UUID,
@@ -197,6 +261,9 @@ async def wait_for_batch(
     schema: str = "taskq",
     snooze_interval: timedelta = timedelta(seconds=10),
     snooze_via_exception: bool = True,
+    expect_at_least: int | None = None,
+    on_empty: Literal["error", "ok"] = "error",
+    exclude_job_id: UUID | None = None,
 ) -> BatchCompletionStatus:
     """Convenience helper for the fan-out-then-finalize pattern.
 
@@ -215,15 +282,23 @@ async def wait_for_batch(
       - Use this form from scripts and integration tests where no consumer
         is present to translate a Snooze into a rescheduled job.
 
-    Empty batch: if batch_id matches no rows, returns
-    BatchCompletionStatus(total=0, pending=0, is_complete=True) and logs
-    a WARNING (may indicate a wrong batch_id).
+    ``expect_at_least`` raises :class:`~taskq.exceptions.EmptyBatchError`
+    when fewer than the expected number of jobs are present and none are
+    in flight.  ``on_empty`` controls the behaviour when the batch has
+    zero jobs and no ``batches`` row exists: ``"error"`` (default) raises
+    :class:`~taskq.exceptions.EmptyBatchError`; ``"ok"`` returns the
+    empty status.  ``exclude_job_id`` omits a specific job from the
+    count — when not set, the batch row's ``finalizer_job_id`` is used
+    automatically.
+
+    If the batch row has ``status = 'aborted'`` and all jobs are
+    terminal, raises :class:`~taskq.exceptions.BatchAbortedError`.
 
     snooze_interval is clamped to a minimum of 1 second.
     ``schema`` must match the schema used when the PostgresBackend was
     constructed (default ``"taskq"``).
     """
-    from taskq.exceptions import Snooze
+    from taskq.exceptions import BatchAbortedError, EmptyBatchError, Snooze
 
     if not _IDENT_RE.match(schema):
         raise ValueError(f"invalid schema identifier: {schema!r}")
@@ -241,13 +316,48 @@ async def wait_for_batch(
             clamped=str(snooze_interval),
         )
 
-    sql = _WAIT_FOR_BATCH_SQL.format(schema=schema)
     containment = dumps_str({"batch_id": str(batch_id)})
 
-    async def _query(conn: "asyncpg.Connection") -> BatchCompletionStatus:
-        row = await conn.fetchrow(sql, containment)
+    _batch_row_sql = (
+        f"SELECT status, consecutive_failures, failure_threshold, finalizer_job_id "  # noqa: S608  # Why: schema validated against _IDENT_RE immediately above.
+        f'FROM "{schema}".batches WHERE id = $1'
+    )
+
+    async def _fetch_batch_row(
+        conn: "asyncpg.Connection",
+    ) -> tuple[str, int, int | None, UUID | None] | None:
+        try:
+            row = await conn.fetchrow(_batch_row_sql, batch_id)
+        except _asyncpg.exceptions.UndefinedTableError:
+            return None
         if row is None:
-            return BatchCompletionStatus(
+            return None
+        raw_finalizer = row["finalizer_job_id"]
+        return (
+            str(row["status"]),
+            int(row["consecutive_failures"]),
+            int(row["failure_threshold"]) if row["failure_threshold"] is not None else None,
+            UUID(str(raw_finalizer)) if raw_finalizer is not None else None,
+        )
+
+    async def _fetch_and_decide(
+        conn: "asyncpg.Connection",
+    ) -> BatchCompletionStatus:
+        batch_info = await _fetch_batch_row(conn)
+
+        exclusion_id = exclude_job_id
+        if exclusion_id is None and batch_info is not None:
+            exclusion_id = batch_info[3]
+
+        if exclusion_id is not None:
+            sql = _WAIT_FOR_BATCH_SQL.format(schema=schema) + " AND id <> $2"
+            row = await conn.fetchrow(sql, containment, exclusion_id)
+        else:
+            sql = _WAIT_FOR_BATCH_SQL.format(schema=schema)
+            row = await conn.fetchrow(sql, containment)
+
+        if row is None:
+            status = BatchCompletionStatus(
                 total=0,
                 pending=0,
                 succeeded=0,
@@ -256,38 +366,60 @@ async def wait_for_batch(
                 crashed=0,
                 abandoned=0,
             )
-        status = BatchCompletionStatus(
-            total=int(row["total"]),
-            pending=int(row["in_flight"]),
-            succeeded=int(row["succeeded"]),
-            failed=int(row["failed"]),
-            cancelled=int(row["cancelled"]),
-            crashed=int(row["crashed"]),
-            abandoned=int(row["abandoned"]),
-        )
-        if status.total == 0:
-            _logger.warning(
-                "wait-for-batch-empty",
-                batch_id=str(batch_id),
+        else:
+            status = BatchCompletionStatus(
+                total=int(row["total"]),
+                pending=int(row["in_flight"]),
+                succeeded=int(row["succeeded"]),
+                failed=int(row["failed"]),
+                cancelled=int(row["cancelled"]),
+                crashed=int(row["crashed"]),
+                abandoned=int(row["abandoned"]),
             )
+
+        # ── Decision table (first matching row wins) ──
+
+        if batch_info is not None and batch_info[0] == "aborted":
+            if status.pending == 0:
+                raise BatchAbortedError(
+                    batch_id,
+                    batch_info[1],
+                    batch_info[2] or 0,
+                )
+            raise Snooze(snooze_interval)
+
+        if expect_at_least is not None and status.pending == 0 and status.total < expect_at_least:
+            raise EmptyBatchError(batch_id, expected=expect_at_least, actual=status.total)
+
+        if status.total == 0:
+            if batch_info is not None:
+                return status
+            if on_empty == "ok":
+                return status
+            raise EmptyBatchError(batch_id, expected=1, actual=0)
+
+        if status.pending > 0:
+            if snooze_via_exception:
+                raise Snooze(snooze_interval)
+            # Blocking path: sleep-loop caller will re-query outside.
+            return status
+
         return status
 
     if isinstance(db, _asyncpg.Pool):
         async with db.acquire() as conn:  # type: ignore[reportArgumentType]  # Why: Pool.acquire() returns PoolConnectionProxy; pyright stubs model it as incompatible with Connection but it is runtime-compatible
-            status = await _query(conn)  # type: ignore[reportArgumentType]  # Why: PoolConnectionProxy is a runtime-compatible Connection proxy; pyright stubs model it as incompatible
+            status = await _fetch_and_decide(conn)  # type: ignore[reportArgumentType]  # Why: PoolConnectionProxy is a runtime-compatible Connection proxy; pyright stubs model it as incompatible
     else:
-        status = await _query(db)
+        status = await _fetch_and_decide(db)
 
-    if status.pending > 0:
-        if snooze_via_exception:
-            raise Snooze(snooze_interval)
+    if status.pending > 0 and not snooze_via_exception:
         while status.pending > 0:
             await asyncio.sleep(snooze_interval.total_seconds())
             if isinstance(db, _asyncpg.Pool):
                 async with db.acquire() as conn:  # type: ignore[reportArgumentType]  # Why: Pool.acquire() returns PoolConnectionProxy; pyright stubs model it as incompatible with Connection but it is runtime-compatible
-                    status = await _query(conn)  # type: ignore[reportArgumentType]  # Why: PoolConnectionProxy is a runtime-compatible Connection proxy; pyright stubs model it as incompatible
+                    status = await _fetch_and_decide(conn)  # type: ignore[reportArgumentType]  # Why: PoolConnectionProxy is a runtime-compatible Connection proxy; pyright stubs model it as incompatible
             else:
-                status = await _query(db)
+                status = await _fetch_and_decide(db)
 
     return status
 

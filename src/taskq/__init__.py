@@ -42,6 +42,7 @@ from taskq.batch import (
     BatchHandle,
     BatchSummary,
     EnqueueItem,
+    apply_batch_terminal_outcome,
     wait_for_batch,
 )
 from taskq.batch_policy import AbortBatchAfter, BatchFailurePolicy
@@ -175,6 +176,7 @@ __all__ = [
     "WorkerOwnershipMismatch",
     "__version__",
     "actor",
+    "apply_batch_terminal_outcome",
     "cron",
     "enrich_pg_dsn",
     "make_dedicated_conn_factory",

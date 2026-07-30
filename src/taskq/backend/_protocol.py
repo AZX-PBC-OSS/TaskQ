@@ -129,6 +129,7 @@ type AttemptOutcome = Literal[
     "snoozed",
     "cancelled",
     "crashed",
+    "scheduled",
     "reservation_denied",
     "rate_limit_denied",
 ]
