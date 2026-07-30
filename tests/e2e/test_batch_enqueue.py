@@ -23,7 +23,7 @@ import pytest
 from taskq import EnqueueItem
 
 from ._assertions import fetch_effects
-from .actors import WelcomeEmailPayload, send_welcome_email
+from .actors import WelcomeEmailPayload, WelcomeEmailResult, send_welcome_email
 
 if TYPE_CHECKING:
     import asyncpg
@@ -74,7 +74,7 @@ async def test_enqueue_batch_with_explicit_batch_id(
 
     results = await asyncio.gather(*(handle.wait(timeout=60) for handle in batch.job_handles))
     assert len(results) == _BATCH_SIZE
-    assert all(r.sent for r in results)
+    assert all(isinstance(r, WelcomeEmailResult) and r.sent for r in results)
 
     rows = await fetch_effects(e2e_pg_pool, e2e_schema.schema_name, run_id, kind="send")
     assert len(rows) == _BATCH_SIZE
