@@ -101,7 +101,7 @@ class TestFacadeEnqueueBatchForwarding:
             batch_id=uuid4(),
             job_handles=[],
             size=3,
-            finalizer_handle=MagicMock(),
+            finalizer_handle=None,
         )
         mock_jobs.enqueue_batch.return_value = expected_handle
 
