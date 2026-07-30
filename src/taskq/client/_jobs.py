@@ -761,15 +761,7 @@ class JobsClient:
         """
         from taskq.obs import record_cancel_requested
 
-        if not allow_empty_filter and (
-            filter.queue is None
-            and filter.status is None
-            and filter.actor is None
-            and filter.identity_key is None
-            and filter.batch_id is None
-            and (filter.tags is None or len(filter.tags) == 0)
-            and filter.active is None
-        ):
+        if not allow_empty_filter and not filter.has_predicates():
             raise EmptyFilterError()
 
         record_cancel_requested()

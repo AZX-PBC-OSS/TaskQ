@@ -299,3 +299,50 @@ class TestDeadlockRetry:
         await _cancel_where(pool, "taskq", sql, JobFilter(tags=("x",)), "test")
 
         assert conn.fetchrow.call_count == 1
+
+    async def test_deadlock_during_executemany_retries_correctly(self) -> None:
+        """Deadlock on executemany (after fetchrow succeeds) retries the
+        whole transaction — no phantom IDs from the aborted attempt."""
+        row = self._success_row()
+        pool, conn = self._mock_pool_and_conn(fetch_row=row)
+
+        call_count = [0]
+
+        async def _flaky_executemany(query, args, *a, **kw):
+            call_count[0] += 1
+            if call_count[0] <= 2:
+                raise asyncpg.DeadlockDetectedError()
+            return None
+
+        conn.executemany = _flaky_executemany
+
+        sql = MagicMock()
+        sql.insert_event = "INSERT INTO job_events VALUES ($1, $2, $3, $4)"
+
+        result, _notify = await _cancel_where(pool, "taskq", sql, JobFilter(tags=("x",)), "test")
+
+        assert result.cancelled_directly == 1
+        assert len(result.cancelled_ids) == 1
+
+    async def test_notify_target_filters_none_worker_id(self) -> None:
+        """A running job with NULL locked_by_worker is excluded from
+        notify_targets (no worker to NOTIFY)."""
+        jid = uuid4()
+        pool, _ = self._mock_pool_and_conn(
+            fetch_row={
+                "cancelled_directly": 0,
+                "cancel_requested": 1,
+                "cancelled_ids": [],
+                "cancelled_prev_statuses": [],
+                "cancel_requested_ids": [jid],
+                "cancel_requested_workers": [None],
+            }
+        )
+
+        sql = MagicMock()
+        sql.insert_event = "INSERT INTO job_events VALUES ($1, $2, $3, $4)"
+
+        result, notify = await _cancel_where(pool, "taskq", sql, JobFilter(tags=("x",)), "test")
+
+        assert result.cancel_requested == 1
+        assert len(notify) == 0

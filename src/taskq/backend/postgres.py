@@ -159,6 +159,14 @@ if BACKEND_PROTOCOL_VERSION != _EXPECTED_PROTOCOL_VERSION:
     )
 
 
+def _cancel_notify_payload(job_id: UUID, worker_id: UUID) -> str:
+    return dumps_str({"type": "cancel", "job_id": str(job_id), "worker_id": str(worker_id)})
+
+
+def _cancel_notify_channels(schema: str, worker_id: UUID) -> list[str]:
+    return [events_channel(schema), worker_channel(schema, str(worker_id))]
+
+
 class PostgresBackend:
     """Production backend backed by Postgres.
 
@@ -585,15 +593,8 @@ class PostgresBackend:
                 job_id=str(job_id),
             )
             if _locked_by_worker is not None:
-                payload = dumps_str(
-                    {
-                        "type": "cancel",
-                        "job_id": str(job_id),
-                        "worker_id": str(_locked_by_worker),
-                    }
-                )
-                fleet_ch = events_channel(self._schema_name)
-                worker_ch = worker_channel(self._schema_name, str(_locked_by_worker))
+                payload = _cancel_notify_payload(job_id, _locked_by_worker)
+                fleet_ch, worker_ch = _cancel_notify_channels(self._schema_name, _locked_by_worker)
                 async with self._worker_pool.acquire() as notify_conn:
                     await notify_conn.execute(
                         "SELECT pg_notify($1, $2), pg_notify($3, $4)",
@@ -633,28 +634,25 @@ class PostgresBackend:
             channels: list[str] = []
             payloads: list[str] = []
             for target in notify_targets:
-                payload = dumps_str(
-                    {
-                        "type": "cancel",
-                        "job_id": str(target.job_id),
-                        "worker_id": str(target.worker_id),
-                    }
-                )
-                channels.extend(
-                    [
-                        events_channel(self._schema_name),
-                        worker_channel(self._schema_name, str(target.worker_id)),
-                    ]
-                )
+                payload = _cancel_notify_payload(target.job_id, target.worker_id)
+                ch = _cancel_notify_channels(self._schema_name, target.worker_id)
+                channels.extend(ch)
                 payloads.extend([payload, payload])
-            async with self._worker_pool.acquire() as notify_conn:
-                await notify_conn.execute(
-                    "SELECT pg_notify(channel, payload) "
-                    "FROM unnest($1::text[], $2::text[]) AS t(channel, payload)",
-                    channels,
-                    payloads,
+            try:
+                async with self._worker_pool.acquire() as notify_conn:
+                    await notify_conn.execute(
+                        "SELECT pg_notify(channel, payload) "
+                        "FROM unnest($1::text[], $2::text[]) AS t(channel, payload)",
+                        channels,
+                        payloads,
+                    )
+                _cancel_notify_sent_counter.add(len(notify_targets), {"schema": self._schema_name})
+            except Exception:
+                logger.warning(
+                    "cancel_where_notify_failed",
+                    notify_count=len(notify_targets),
+                    exc_info=True,
                 )
-            _cancel_notify_sent_counter.add(len(notify_targets), {"schema": self._schema_name})
         return result
 
     # ── Admin operations ──────────────────────────────────────────────

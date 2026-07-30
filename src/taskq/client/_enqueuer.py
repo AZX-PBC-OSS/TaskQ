@@ -329,6 +329,9 @@ class SubJobEnqueuer:
                     idempotency_key=item.idempotency_key,
                     idempotency_scope=item.idempotency_scope,
                     identity_key=item.identity_key,
+                    tags=list(item.tags) if item.tags else None,
+                    inherit_tags=False,
+                    start_to_close=item.start_to_close,
                 )
                 handles.append(handle)
             except Exception as exc:

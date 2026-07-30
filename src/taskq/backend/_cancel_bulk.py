@@ -21,7 +21,7 @@ from taskq.backend._protocol import BulkCancelResult, JobFilter
 from taskq.backend._records import jsonb_param
 from taskq.backend._sql_templates import SqlTemplates
 
-__all__ = ["NotifyTarget", "_cancel_where"]
+__all__ = ["_cancel_where"]
 
 
 class NotifyTarget(NamedTuple):
@@ -66,7 +66,7 @@ async def _cancel_where(
         SET cancel_requested_at = now(), cancel_phase = 1
         WHERE j.id IN (
             SELECT id FROM matching
-            WHERE status = 'running' AND cancel_phase = 0
+            WHERE cancel_phase = 0
         )
         AND j.status = 'running' AND j.cancel_phase = 0
         RETURNING j.id, j.locked_by_worker

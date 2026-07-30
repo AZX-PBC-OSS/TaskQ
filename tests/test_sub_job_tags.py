@@ -71,6 +71,21 @@ class TestSubJobExplicitTags:
         assert row is not None
         assert row.tags == ("alpha", "beta")
 
+    async def test_explicit_tags_no_parent_tags_inherit_true(self) -> None:
+        """inherit_tags=True (default) with no parent tags and explicit
+        tags returns only the explicit tags — no merge with empty parent."""
+        backend = InMemoryBackend(clock=FakeClock(_NOW))
+        enqueuer = _make_enqueuer(backend)
+
+        handle = await enqueuer.enqueue(
+            _make_actor_ref(),
+            _Payload(),
+            tags=["alpha"],
+        )
+        row = await backend.get(handle.job_id)
+        assert row is not None
+        assert row.tags == ("alpha",)
+
     async def test_tags_validated(self) -> None:
         """Invalid tags raise ValueError."""
         backend = InMemoryBackend(clock=FakeClock(_NOW))

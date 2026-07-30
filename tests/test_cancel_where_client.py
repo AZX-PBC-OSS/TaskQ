@@ -82,6 +82,15 @@ async def test_client_cancel_where_empty_filter_raises() -> None:
         await client.cancel_where(JobFilter(), reason="oops")
 
 
+async def test_client_cancel_where_empty_tags_tuple_raises() -> None:
+    """JobFilter(tags=()) is an empty filter — must raise EmptyFilterError."""
+    backend = InMemoryBackend(clock=FakeClock(_NOW))
+    client = JobsClient(backend)
+
+    with pytest.raises(EmptyFilterError):
+        await client.cancel_where(JobFilter(tags=()), reason="oops")
+
+
 async def test_client_cancel_where_empty_filter_override() -> None:
     """allow_empty_filter=True bypasses the guardrail."""
     backend = InMemoryBackend(clock=FakeClock(_NOW))

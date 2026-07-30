@@ -569,7 +569,6 @@ async def consume_one_job(
             )
 
         finally:
-            _parent_tags_var.reset(_parent_tags_token)
             # Best-effort crash flush: ensures partial progress_state reaches PG
             # even when the actor raises unexpectedly ().
             if (
@@ -596,6 +595,7 @@ async def consume_one_job(
                 await active_jobs.deregister(job.id)
 
     finally:
+        _parent_tags_var.reset(_parent_tags_token)
         if acquired and rate_limit_registry is not None:
             try:
                 await asyncio.shield(

@@ -1107,7 +1107,7 @@ Tags are user-defined keyword labels stored in `jobs.tags text[]`. They have no 
 handle = await client.enqueue(
     send_email,
     EmailPayload(to="user@example.com"),
-    tags=["notification", "priority:high", "tenant:acme"],
+    tags=["notification", "priority-high", "tenant-acme"],
 )
 ```
 
@@ -1139,7 +1139,7 @@ Use `JobFilter.tags` with array-overlap semantics (matches jobs that have **any*
 page = await client.list(JobFilter(
     actor="send_email",
     status="failed",
-    tags=["priority:high", "tenant:acme"],
+    tags=["priority-high", "tenant-acme"],
     limit=50,
 ))
 ```

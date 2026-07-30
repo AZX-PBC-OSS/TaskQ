@@ -524,6 +524,23 @@ class JobFilter:
                 "terminal/non-terminal meta-filter"
             )
 
+    def has_predicates(self) -> bool:
+        """Return True if at least one filter predicate is set.
+
+        Used by ``JobsClient.cancel_where`` to reject empty filters that
+        would match the entire table. New predicate fields added to
+        ``JobFilter`` automatically participate in this check.
+        """
+        return (
+            self.queue is not None
+            or self.status is not None
+            or self.actor is not None
+            or self.identity_key is not None
+            or self.batch_id is not None
+            or (self.tags is not None and len(self.tags) > 0)
+            or self.active is not None
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class ScheduleCreateArgs:
@@ -720,8 +737,8 @@ class BackendDeps(Protocol):
 class Backend(Protocol):
     """Contract that both PostgresBackend and InMemoryBackend satisfy.
 
-    32 async methods plus two sync methods (``subscribe_wake`` and
-    ``subscribe_cancel_wake``) (34 methods total) covering enqueue,
+    34 async methods plus two sync methods (``subscribe_wake`` and
+    ``subscribe_cancel_wake``) (36 methods total) covering enqueue,
     dispatch, heartbeat, terminal writes, attempt history, cancel
     signals, scheduling / sweeps, read, NOTIFY hook, and schedule CRUD.
     Method order grouped for review-grep ergonomics.

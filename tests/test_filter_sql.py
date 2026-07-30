@@ -6,10 +6,12 @@ tags, active) into SQL fragments and parameters, and that cursor /
 order_by are ignored (they are handled by the caller).
 """
 
+import re
 from uuid import uuid4
 
 from taskq.backend._filter_sql import build_filter_conditions
-from taskq.backend._protocol import JobFilter
+from taskq.backend._protocol import IdentityKey, JobFilter
+from taskq.backend.statemachine import ACTIVE_STATUSES, TERMINAL_STATUSES
 
 
 class TestBuildFilterConditions:
@@ -40,6 +42,26 @@ class TestBuildFilterConditions:
         result = build_filter_conditions(JobFilter(active=True))
         assert len(result.conditions) == 1
         assert "status" in result.conditions[0]
+        assert set(result.params[0]) == set(ACTIVE_STATUSES)  # type: ignore[arg-type]
+
+    def test_active_false_filter(self) -> None:
+        result = build_filter_conditions(JobFilter(active=False))
+        assert len(result.conditions) == 1
+        assert "status" in result.conditions[0]
+        assert set(result.params[0]) == set(TERMINAL_STATUSES)  # type: ignore[arg-type]
+
+    def test_status_sequence_filter(self) -> None:
+        result = build_filter_conditions(JobFilter(status=["pending", "running"]))
+        assert len(result.conditions) == 1
+        assert "ANY" in result.conditions[0]
+        assert result.params == (["pending", "running"],)
+
+    def test_identity_key_filter(self) -> None:
+        key = IdentityKey("tenant-acme")
+        result = build_filter_conditions(JobFilter(identity_key=key))
+        assert len(result.conditions) == 1
+        assert "identity_key" in result.conditions[0]
+        assert result.params == (key,)
 
     def test_combined_filters(self) -> None:
         result = build_filter_conditions(
@@ -48,12 +70,18 @@ class TestBuildFilterConditions:
         assert len(result.conditions) == 3
 
     def test_cursor_and_order_by_ignored(self) -> None:
-        """cancel_where doesn't use cursor/order_by — the builder should
-        not include them in conditions."""
         result = build_filter_conditions(
             JobFilter(cursor="some-cursor", order_by=None),
         )
         assert result.conditions == ()
+
+    def test_parameter_numbering_is_sequential(self) -> None:
+        """$N placeholders must be sequentially numbered and align
+        positionally with the params tuple."""
+        result = build_filter_conditions(JobFilter(queue="q1", actor="a1", tags=("t1",)))
+        numbers = [int(re.search(r"\$(\d+)", c).group(1)) for c in result.conditions]
+        assert numbers == list(range(1, len(numbers) + 1)), numbers
+        assert result.params == ("q1", "a1", ["t1"])
 
 
 class TestSQLInjectionSafety:
@@ -66,8 +94,6 @@ class TestSQLInjectionSafety:
     """
 
     def test_queue_with_sql_metacharacters_is_parameterized(self) -> None:
-        """A queue name containing SQL injection payload must end up in
-        params, not in the condition string."""
         payload = "'; DROP TABLE jobs; --"
         result = build_filter_conditions(JobFilter(queue=payload))
         assert result.params == (payload,)
@@ -90,8 +116,6 @@ class TestSQLInjectionSafety:
             assert payload[0] not in cond
 
     def test_identity_key_with_sql_metacharacters_is_parameterized(self) -> None:
-        from taskq.backend._protocol import IdentityKey
-
         payload = IdentityKey("x'; DROP TABLE jobs; --")
         result = build_filter_conditions(JobFilter(identity_key=payload))
         assert result.params == (payload,)
