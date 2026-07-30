@@ -1,27 +1,17 @@
-"""Cancellation e2e — cooperative cancel mid-run + clean pre-dispatch cancel.
+"""Cancellation e2e — single-job cancel + bulk cancel_by_filter.
 
-Scenario:
-long report → ``wait_for_handle_status(handle, "running")`` →
-``handle.cancel()`` → terminal ``cancelled``; effects show only early stages.
-
-Real cancel semantics, verified against the library (not guessed):
-
+Single-job path:
 - ``JobsClient.cancel`` → ``PostgresBackend.write_cancel_request``
-  (backend/postgres.py) branches on the row's current status
-  (backend/_sql_templates.py):
+  branches on the row's current status:
+  - ``pending``/``scheduled`` → straight to ``status='cancelled'``
+  - ``running`` → ``cancel_phase=1`` (cooperative), actor sees
+    ``ctx.check_cancelled()`` at next stage boundary
 
-  - ``pending``/``scheduled`` → ``cancel_pending_scheduled`` UPDATEs the row
-    straight to ``status='cancelled'``. The cancel API does NOT reject
-    pre-dispatch cancels: ``CancelResult.cancellation_initiated`` is True,
-    ``new_status`` is ``'cancelled'``, and the worker never dispatches the
-    job — no actor code runs, so no effects exist.
-  - ``running`` → ``cancel_running`` sets ``cancel_phase=1``; the worker's
-    heartbeat-driven CancelController sets the in-process ``cancel_event``,
-    the actor's ``ctx.check_cancelled()`` raises ``asyncio.CancelledError``
-    at the next stage boundary, and the consumer writes ``mark_cancelled``.
-
-- ``handle.wait()`` on any non-success terminal status raises ``JobFailed``
-  carrying the row (``client/_handle.py._extract_result``).
+Bulk path (``cancel_where``):
+- pending/scheduled → terminal ``cancelled`` (set-based, single SQL)
+- running → ``cancel_phase=1`` (cooperative, batched NOTIFY)
+- empty filter rejected with ``EmptyFilterError``
+- batch_id filter cancels all jobs in a batch
 
 Every test requests ``e2e_worker`` explicitly: the worker container fixture is
 not autouse, so no worker (and no dispatch) exists unless a test pulls it in.
@@ -31,13 +21,21 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
+from uuid import uuid4
 
 import pytest
 
 from taskq import JobFailed
+from taskq.backend._protocol import JobFilter
+from taskq.batch import EnqueueItem
 
 from ._assertions import fetch_effects, wait_for_effects, wait_for_handle_status
-from .actors import GenerateReportPayload, generate_report
+from .actors import (
+    GenerateReportPayload,
+    ImportContactsChunkPayload,
+    generate_report,
+    import_contacts_chunk,
+)
 
 if TYPE_CHECKING:
     import asyncpg
@@ -139,3 +137,137 @@ async def test_cancel_before_dispatch_is_clean(
 
     # The job never dispatched, so no actor code ran: no effects of any kind.
     assert await fetch_effects(e2e_pg_pool, e2e_schema.schema_name, run_id) == []
+
+
+# ── Bulk cancel (cancel_where) ─────────────────────────────────────────
+
+
+async def test_cancel_where_pending_jobs_by_tag(
+    e2e_client: TaskQ,
+    e2e_worker: E2EWorker,
+    e2e_pg_pool: asyncpg.Pool,
+    e2e_schema: E2ESchema,
+    run_id: str,
+) -> None:
+    """cancel_where cancels all scheduled jobs matching a tag filter in one
+    set-based write. Untagged jobs are unaffected."""
+    tag = f"tenant-{run_id[:8]}"
+    future = datetime.now(UTC) + timedelta(seconds=120)
+
+    for i in range(5):
+        await e2e_client.enqueue(
+            generate_report,
+            GenerateReportPayload(run_id=run_id, report_id=f"r-{i}"),
+            scheduled_at=future,
+            tags=[tag],
+        )
+    for i in range(2):
+        await e2e_client.enqueue(
+            generate_report,
+            GenerateReportPayload(run_id=f"other-{run_id}", report_id=f"o-{i}"),
+            scheduled_at=future,
+        )
+
+    result = await e2e_client.cancel_where(
+        JobFilter(tags=(tag,)),
+        reason="tenant offboarded",
+    )
+
+    assert result.cancelled_directly == 5
+    assert result.cancel_requested == 0
+    assert result.total_affected == 5
+
+    tagged = await e2e_client.list(JobFilter(tags=(tag,), status="cancelled"))
+    assert len(tagged.jobs) == 5
+
+    untagged = await e2e_client.list(JobFilter(status="scheduled", queue="e2e"))
+    assert len(untagged.jobs) == 2
+
+
+async def test_cancel_where_running_cooperative(
+    e2e_client: TaskQ,
+    e2e_worker: E2EWorker,
+    e2e_pg_pool: asyncpg.Pool,
+    e2e_schema: E2ESchema,
+    run_id: str,
+) -> None:
+    """cancel_where on a running job sets cooperative cancel (cancel_phase=1).
+    The actor observes the cancel signal at the next stage boundary and
+    reaches terminal 'cancelled' via the normal cooperative path."""
+    tag = f"run-{run_id[:8]}"
+
+    handle = await e2e_client.enqueue(
+        generate_report,
+        GenerateReportPayload(
+            run_id=run_id,
+            report_id=f"r-{run_id[:8]}",
+            stages=4,
+            stage_latency_ms=2000,
+        ),
+        tags=[tag],
+    )
+    await wait_for_handle_status(handle, "running", timeout=30)
+    await wait_for_effects(
+        e2e_pg_pool,
+        e2e_schema.schema_name,
+        run_id,
+        kind="stage",
+        min_count=1,
+        timeout=30,
+    )
+
+    result = await e2e_client.cancel_where(
+        JobFilter(tags=(tag,), status="running"),
+        reason="abort run",
+    )
+
+    assert result.total_affected >= 1, "cancel_where should affect the running job"
+    assert result.cancelled_directly == 0
+
+    await wait_for_handle_status(handle, "cancelled", timeout=30)
+
+
+async def test_cancel_where_empty_filter_raises(
+    e2e_client: TaskQ,
+    e2e_worker: E2EWorker,
+) -> None:
+    """Empty filter is rejected even in e2e."""
+    from taskq.exceptions import EmptyFilterError
+
+    with pytest.raises(EmptyFilterError):
+        await e2e_client.cancel_where(JobFilter(), reason="oops")
+
+
+async def test_cancel_where_batch_id_filter(
+    e2e_client: TaskQ,
+    e2e_worker: E2EWorker,
+    e2e_pg_pool: asyncpg.Pool,
+    e2e_schema: E2ESchema,
+    run_id: str,
+) -> None:
+    """cancel_where with batch_id cancels all jobs in a batch."""
+    future = datetime.now(UTC) + timedelta(seconds=120)
+    bid = uuid4()
+
+    items = [
+        EnqueueItem(
+            actor_ref=import_contacts_chunk,
+            payload=ImportContactsChunkPayload(
+                run_id=run_id,
+                upload_id=str(bid),
+                chunk_id=i,
+                start_row=i * 100,
+                end_row=(i + 1) * 100,
+            ),
+            scheduled_at=future,
+        )
+        for i in range(5)
+    ]
+    await e2e_client.enqueue_batch(items, batch_id=bid)
+
+    result = await e2e_client.cancel_where(
+        JobFilter(batch_id=bid),
+        reason="batch abort",
+    )
+
+    assert result.cancelled_directly == 5

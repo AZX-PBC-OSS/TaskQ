@@ -357,14 +357,6 @@ class WorkerSettings(TaskQSettings):
     )
 
     # ── Pool sizes ─────────────────────────────────────────────────────
-    sub_job_inherit_tags: bool = Field(
-        default=True,
-        description=(
-            "When false, sub-jobs enqueued via ctx.jobs.enqueue() do not inherit "
-            "the parent job's tags (pre-1.0 behavior). Fleet-level kill switch "
-            "for the inherit_tags=True default; env var TASKQ_SUB_JOB_INHERIT_TAGS."
-        ),
-    )
     dispatcher_pool_size: int = Field(
         default=4,
         ge=1,
