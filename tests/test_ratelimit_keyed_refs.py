@@ -16,7 +16,7 @@ from datetime import UTC, datetime, timedelta
 from enum import Enum, StrEnum
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from taskq._ids import new_uuid
 from taskq.ratelimit.refs import KeyedReservationRef
@@ -314,18 +314,20 @@ async def test_resolve_keyed_ref_key_fn_exception_propagates() -> None:
         )  # pyright: ignore[reportPrivateUsage]
 
 
-async def test_resolve_keyed_ref_key_fn_missing_field_propagates_attribute_error() -> None:
-    """key_fn raising AttributeError (e.g. payload missing the expected field) propagates."""
+async def test_resolve_keyed_ref_wrong_model_type_raises_validation_error() -> None:
+    """A BaseModel payload of a different type is re-validated against the
+    ref's payload_type — a missing required field raises ValidationError,
+    not AttributeError from key_fn accessing a non-existent attribute."""
     reg = RateLimitRegistry()
     ref = _keyed_ref(base_name="session-cap")  # key_fn does p.session_id
 
     class _UnrelatedPayload(BaseModel):
         unrelated: str
 
-    with pytest.raises(AttributeError):
+    with pytest.raises(ValidationError):
         await reg._resolve_reservation_name(
             ref, payload=_UnrelatedPayload(unrelated="value"), pg_pool=None, settings=None
-        )  # pyright: ignore[reportPrivateUsage, reportArgumentType]  # Why: intentionally wrong payload type to exercise AttributeError propagation.
+        )  # pyright: ignore[reportPrivateUsage]  # Why: exercising private resolution helper directly, matching existing test conventions.
 
 
 async def test_resolve_keyed_ref_key_fn_returning_non_str_raises_value_error() -> None:
@@ -604,3 +606,236 @@ def test_singleton_keyed_tracking_dicts_empty_at_start() -> None:
         f"_keyed_rate_limit_last_used leaked from a prior test: "
         f"{dict(_rl._keyed_rate_limit_last_used)}"  # pyright: ignore[reportPrivateUsage]
     )
+
+
+# ── Typed payload validation in _resolve_reservation_name ──────
+
+
+class _TypedPayload(BaseModel):
+    session_id: str
+    region: str = "us-east-1"
+
+
+class _AliasedPayload(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    session_id: str = Field(alias="sessionId")
+
+
+async def test_resolve_typed_res_ref_passes_validated_model_to_key_fn() -> None:
+    """A dict payload is validated via ref.payload_type.model_validate before
+    being passed to key_fn — key_fn receives a BaseModel with attribute access,
+    not a raw dict."""
+    reg = RateLimitRegistry()
+    ref = KeyedReservationRef.typed(
+        _TypedPayload,
+        base_name="session-cap",
+        key_fn=lambda p: p.session_id,
+        slots=3,
+        lease=timedelta(minutes=5),
+    )
+
+    name = await reg._resolve_reservation_name(  # pyright: ignore[reportPrivateUsage]
+        ref, payload={"session_id": "s1"}, pg_pool=None, settings=None
+    )
+
+    assert name == "session-cap:s1"
+
+
+async def test_resolve_typed_res_ref_applies_pydantic_defaults() -> None:
+    """A dict payload missing a defaulted field gets the default applied
+    during validation — key_fn can read the default value."""
+    reg = RateLimitRegistry()
+    captured: list[_TypedPayload] = []
+
+    def _capturing_key_fn(payload: _TypedPayload) -> str:
+        captured.append(payload)
+        return f"{payload.session_id}:{payload.region}"
+
+    ref = KeyedReservationRef.typed(
+        _TypedPayload,
+        base_name="session-cap",
+        key_fn=_capturing_key_fn,
+        slots=3,
+        lease=timedelta(minutes=5),
+    )
+
+    name = await reg._resolve_reservation_name(  # pyright: ignore[reportPrivateUsage]
+        ref, payload={"session_id": "s1"}, pg_pool=None, settings=None
+    )
+
+    assert name == "session-cap:s1:us-east-1"
+    assert captured[0].region == "us-east-1"
+
+
+async def test_resolve_typed_res_ref_applies_aliases() -> None:
+    """A dict payload using wire aliases (e.g. 'sessionId') is validated
+    with alias resolution — key_fn accesses the field by its Python name
+    (p.session_id)."""
+    reg = RateLimitRegistry()
+    ref = KeyedReservationRef.typed(
+        _AliasedPayload,
+        base_name="session-cap",
+        key_fn=lambda p: p.session_id,
+        slots=3,
+        lease=timedelta(minutes=5),
+    )
+
+    name = await reg._resolve_reservation_name(  # pyright: ignore[reportPrivateUsage]
+        ref, payload={"sessionId": "s1"}, pg_pool=None, settings=None
+    )
+
+    assert name == "session-cap:s1"
+
+
+async def test_resolve_typed_res_ref_accepts_basemodel_payload_directly() -> None:
+    """A BaseModel payload of the same type as ref.payload_type is accepted
+    directly — zero-cost pass-through, no re-validation."""
+    reg = RateLimitRegistry()
+    ref = KeyedReservationRef.typed(
+        _TypedPayload,
+        base_name="session-cap",
+        key_fn=lambda p: p.session_id,
+        slots=3,
+        lease=timedelta(minutes=5),
+    )
+
+    name = await reg._resolve_reservation_name(  # pyright: ignore[reportPrivateUsage]
+        ref, payload=_TypedPayload(session_id="s1"), pg_pool=None, settings=None
+    )
+
+    assert name == "session-cap:s1"
+
+
+async def test_resolve_typed_res_ref_validation_error_propagates() -> None:
+    """An invalid dict (missing required field) raises ValidationError from
+    pydantic validation, not KeyError or AttributeError from key_fn."""
+    reg = RateLimitRegistry()
+    ref = KeyedReservationRef.typed(
+        _TypedPayload,
+        base_name="session-cap",
+        key_fn=lambda p: p.session_id,
+        slots=3,
+        lease=timedelta(minutes=5),
+    )
+
+    with pytest.raises(ValidationError):
+        await reg._resolve_reservation_name(  # pyright: ignore[reportPrivateUsage]
+            ref, payload={"region": "us-east-1"}, pg_pool=None, settings=None
+        )
+
+
+async def test_resolve_typed_res_ref_wrong_model_type_re_validates() -> None:
+    """A BaseModel payload of a DIFFERENT type is re-validated against
+    ref.payload_type via model_dump() → model_validate(). A compatible
+    payload (extra fields ignored) resolves successfully."""
+
+    class _CompatiblePayload(BaseModel):
+        session_id: str
+        extra_field: str = "ignored"
+
+    reg = RateLimitRegistry()
+    ref = KeyedReservationRef.typed(
+        _TypedPayload,
+        base_name="session-cap",
+        key_fn=lambda p: p.session_id,
+        slots=3,
+        lease=timedelta(minutes=5),
+    )
+
+    name = await reg._resolve_reservation_name(  # pyright: ignore[reportPrivateUsage]
+        ref, payload=_CompatiblePayload(session_id="s1", extra_field="x"), pg_pool=None, settings=None
+    )
+
+    assert name == "session-cap:s1"
+
+
+async def test_resolve_typed_res_ref_same_model_type_zero_cost_passthrough() -> None:
+    """A BaseModel payload of the SAME type as ref.payload_type is passed
+    directly to key_fn without re-validation — the exact same object (identity
+    check)."""
+    reg = RateLimitRegistry()
+    captured: list[_TypedPayload] = []
+
+    def _capturing_key_fn(payload: _TypedPayload) -> str:
+        captured.append(payload)
+        return payload.session_id
+
+    ref = KeyedReservationRef.typed(
+        _TypedPayload,
+        base_name="session-cap",
+        key_fn=_capturing_key_fn,
+        slots=3,
+        lease=timedelta(minutes=5),
+    )
+
+    payload = _TypedPayload(session_id="s1")
+    await reg._resolve_reservation_name(  # pyright: ignore[reportPrivateUsage]
+        ref, payload=payload, pg_pool=None, settings=None
+    )
+
+    assert len(captured) == 1
+    assert captured[0] is payload
+
+
+# ── acquire_for_actor with typed reservation refs and BaseModel/dict payloads ──
+
+
+async def test_acquire_for_actor_accepts_basemodel_payload_with_typed_reservation_ref() -> None:
+    """acquire_for_actor accepts a BaseModel payload with a typed reservation ref."""
+    clock = FakeClock(_START)
+    reg = RateLimitRegistry()
+    reg.register(
+        ConcurrencyReservation(
+            name="session-cap:s1", slots=1, lease=timedelta(seconds=30), clock=clock
+        )
+    )
+    ref = KeyedReservationRef.typed(
+        _TypedPayload,
+        base_name="session-cap",
+        key_fn=lambda p: p.session_id,
+        slots=1,
+        lease=timedelta(seconds=30),
+    )
+
+    acquired = await reg.acquire_for_actor(
+        rate_limits=[],
+        reservations=[ref],
+        job_id=new_uuid(),
+        worker_id=new_uuid(),
+        payload=_TypedPayload(session_id="s1"),
+        clock=clock,
+    )
+
+    assert len(acquired) == 1
+    assert acquired[0].name == "session-cap:s1"
+
+
+async def test_acquire_for_actor_typed_reservation_ref_with_dict_payload_validates() -> None:
+    """acquire_for_actor accepts a dict payload with a typed reservation ref —
+    the dict is validated via model_validate before key_fn is called."""
+    clock = FakeClock(_START)
+    reg = RateLimitRegistry()
+    reg.register(
+        ConcurrencyReservation(
+            name="session-cap:s1", slots=1, lease=timedelta(seconds=30), clock=clock
+        )
+    )
+    ref = KeyedReservationRef.typed(
+        _TypedPayload,
+        base_name="session-cap",
+        key_fn=lambda p: p.session_id,
+        slots=1,
+        lease=timedelta(seconds=30),
+    )
+
+    acquired = await reg.acquire_for_actor(
+        rate_limits=[],
+        reservations=[ref],
+        job_id=new_uuid(),
+        worker_id=new_uuid(),
+        payload={"session_id": "s1"},
+        clock=clock,
+    )
+
+    assert len(acquired) == 1
+    assert acquired[0].name == "session-cap:s1"

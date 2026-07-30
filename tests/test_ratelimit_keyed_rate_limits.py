@@ -20,7 +20,7 @@ from enum import Enum, StrEnum
 import pytest
 import redis.asyncio as redis_async
 import structlog.testing
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from taskq._ids import new_base62, new_uuid
 from taskq.backend.clock import SystemClock
@@ -565,16 +565,18 @@ async def test_resolve_keyed_ref_key_fn_exception_propagates() -> None:
         await reg._resolve_rate_limit_name(ref, payload=_DefaultPayload(tenant_id="t1"), settings=None)  # pyright: ignore[reportPrivateUsage]
 
 
-async def test_resolve_keyed_ref_key_fn_missing_field_propagates_attribute_error() -> None:
-    """key_fn raising AttributeError (e.g. payload missing the expected field) propagates."""
+async def test_resolve_keyed_ref_wrong_model_type_raises_validation_error() -> None:
+    """A BaseModel payload of a different type is re-validated against the
+    ref's payload_type — a missing required field raises ValidationError,
+    not AttributeError from key_fn accessing a non-existent attribute."""
     reg = RateLimitRegistry()
     ref = _rate_limit_ref(base_name="api-per-tenant")  # key_fn does p.tenant_id
 
     class _UnrelatedPayload(BaseModel):
         unrelated: str
 
-    with pytest.raises(AttributeError):
-        await reg._resolve_rate_limit_name(ref, payload=_UnrelatedPayload(unrelated="value"), settings=None)  # pyright: ignore[reportPrivateUsage, reportArgumentType]  # Why: intentionally wrong payload type to exercise AttributeError propagation.
+    with pytest.raises(ValidationError):
+        await reg._resolve_rate_limit_name(ref, payload=_UnrelatedPayload(unrelated="value"), settings=None)  # pyright: ignore[reportPrivateUsage]  # Why: exercising private resolution helper directly, matching existing test conventions.
 
 
 # ── max_keyed_rate_limits guard ───────────────────────────────
@@ -942,7 +944,7 @@ async def test_composition_log_events_are_json_serializable_with_keyed_refs() ->
             reservations=[res_ref],
             job_id=new_uuid(),
             worker_id=new_uuid(),
-            payload=_CompositionPayload(tenant_id="a", session_id="s1"),  # type: ignore[arg-type]  # Why: registry accepts dict[str, object] but passes payload through to key_fn; a BaseModel with both fields satisfies both key_fns at runtime.
+            payload=_CompositionPayload(tenant_id="a", session_id="s1"),
             clock=clock,
         )
     assert len(acquired) == 2
@@ -960,7 +962,7 @@ async def test_composition_log_events_are_json_serializable_with_keyed_refs() ->
             reservations=[res_ref],
             job_id=new_uuid(),
             worker_id=new_uuid(),
-            payload=_CompositionPayload(tenant_id="a", session_id="s2"),  # type: ignore[arg-type]  # Why: same as above — registry passes payload through to key_fn.
+            payload=_CompositionPayload(tenant_id="a", session_id="s2"),
             clock=clock,
         )
     denied_events = [e for e in logs if e.get("event") == "composition-denied"]
@@ -1483,3 +1485,235 @@ async def test_concurrent_keyed_bucket_acquisition_atomicity(redis_url: str) -> 
                 assert r.retry_after is None
     finally:
         await client.aclose()
+
+
+# ── Typed payload validation in _resolve_rate_limit_name ────────
+
+
+class _TypedPayload(BaseModel):
+    tenant_id: str
+    region: str = "us-east-1"
+
+
+class _AliasedPayload(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    tenant_id: str = Field(alias="tenantId")
+
+
+async def test_resolve_typed_ref_passes_validated_model_to_key_fn() -> None:
+    """A dict payload is validated via ref.payload_type.model_validate before
+    being passed to key_fn — key_fn receives a BaseModel with attribute access,
+    not a raw dict."""
+    reg = RateLimitRegistry()
+    ref = KeyedRateLimitRef.typed(
+        _TypedPayload,
+        base_name="api-per-tenant",
+        key_fn=lambda p: p.tenant_id,
+        capacity=10.0,
+        refill_per_second=1.0,
+        backend="memory",
+    )
+
+    name = await reg._resolve_rate_limit_name(  # pyright: ignore[reportPrivateUsage]
+        ref, payload={"tenant_id": "t1"}, settings=None
+    )
+
+    assert name == "api-per-tenant:t1"
+
+
+async def test_resolve_typed_ref_applies_pydantic_defaults() -> None:
+    """A dict payload missing a defaulted field gets the default applied
+    during validation — key_fn can read the default value."""
+    reg = RateLimitRegistry()
+    captured: list[_TypedPayload] = []
+
+    def _capturing_key_fn(payload: _TypedPayload) -> str:
+        captured.append(payload)
+        return f"{payload.tenant_id}:{payload.region}"
+
+    ref = KeyedRateLimitRef.typed(
+        _TypedPayload,
+        base_name="api-per-tenant",
+        key_fn=_capturing_key_fn,
+        capacity=10.0,
+        refill_per_second=1.0,
+        backend="memory",
+    )
+
+    name = await reg._resolve_rate_limit_name(  # pyright: ignore[reportPrivateUsage]
+        ref, payload={"tenant_id": "t1"}, settings=None
+    )
+
+    assert name == "api-per-tenant:t1:us-east-1"
+    assert captured[0].region == "us-east-1"
+
+
+async def test_resolve_typed_ref_applies_aliases() -> None:
+    """A dict payload using wire aliases (e.g. 'tenantId') is validated
+    with alias resolution — key_fn accesses the field by its Python name
+    (p.tenant_id)."""
+    reg = RateLimitRegistry()
+    ref = KeyedRateLimitRef.typed(
+        _AliasedPayload,
+        base_name="api-per-tenant",
+        key_fn=lambda p: p.tenant_id,
+        capacity=10.0,
+        refill_per_second=1.0,
+        backend="memory",
+    )
+
+    name = await reg._resolve_rate_limit_name(  # pyright: ignore[reportPrivateUsage]
+        ref, payload={"tenantId": "t1"}, settings=None
+    )
+
+    assert name == "api-per-tenant:t1"
+
+
+async def test_resolve_typed_ref_accepts_basemodel_payload_directly() -> None:
+    """A BaseModel payload of the same type as ref.payload_type is accepted
+    directly — zero-cost pass-through, no re-validation."""
+    reg = RateLimitRegistry()
+    ref = KeyedRateLimitRef.typed(
+        _TypedPayload,
+        base_name="api-per-tenant",
+        key_fn=lambda p: p.tenant_id,
+        capacity=10.0,
+        refill_per_second=1.0,
+        backend="memory",
+    )
+
+    name = await reg._resolve_rate_limit_name(  # pyright: ignore[reportPrivateUsage]
+        ref, payload=_TypedPayload(tenant_id="t1"), settings=None
+    )
+
+    assert name == "api-per-tenant:t1"
+
+
+async def test_resolve_typed_ref_validation_error_propagates() -> None:
+    """An invalid dict (missing required field) raises ValidationError from
+    pydantic validation, not KeyError or AttributeError from key_fn."""
+    reg = RateLimitRegistry()
+    ref = KeyedRateLimitRef.typed(
+        _TypedPayload,
+        base_name="api-per-tenant",
+        key_fn=lambda p: p.tenant_id,
+        capacity=10.0,
+        refill_per_second=1.0,
+        backend="memory",
+    )
+
+    with pytest.raises(ValidationError):
+        await reg._resolve_rate_limit_name(  # pyright: ignore[reportPrivateUsage]
+            ref, payload={"region": "us-east-1"}, settings=None
+        )
+
+
+async def test_resolve_typed_ref_wrong_model_type_re_validates() -> None:
+    """A BaseModel payload of a DIFFERENT type is re-validated against
+    ref.payload_type via model_dump() → model_validate(). A compatible
+    payload (extra fields ignored) resolves successfully."""
+
+    class _CompatiblePayload(BaseModel):
+        tenant_id: str
+        extra_field: str = "ignored"
+
+    reg = RateLimitRegistry()
+    ref = KeyedRateLimitRef.typed(
+        _TypedPayload,
+        base_name="api-per-tenant",
+        key_fn=lambda p: p.tenant_id,
+        capacity=10.0,
+        refill_per_second=1.0,
+        backend="memory",
+    )
+
+    name = await reg._resolve_rate_limit_name(  # pyright: ignore[reportPrivateUsage]
+        ref, payload=_CompatiblePayload(tenant_id="t1", extra_field="x"), settings=None
+    )
+
+    assert name == "api-per-tenant:t1"
+
+
+async def test_resolve_typed_ref_same_model_type_zero_cost_passthrough() -> None:
+    """A BaseModel payload of the SAME type as ref.payload_type is passed
+    directly to key_fn without re-validation — the exact same object (identity
+    check)."""
+    reg = RateLimitRegistry()
+    captured: list[_TypedPayload] = []
+
+    def _capturing_key_fn(payload: _TypedPayload) -> str:
+        captured.append(payload)
+        return payload.tenant_id
+
+    ref = KeyedRateLimitRef.typed(
+        _TypedPayload,
+        base_name="api-per-tenant",
+        key_fn=_capturing_key_fn,
+        capacity=10.0,
+        refill_per_second=1.0,
+        backend="memory",
+    )
+
+    payload = _TypedPayload(tenant_id="t1")
+    await reg._resolve_rate_limit_name(  # pyright: ignore[reportPrivateUsage]
+        ref, payload=payload, settings=None
+    )
+
+    assert len(captured) == 1
+    assert captured[0] is payload
+
+
+# ── acquire_for_actor with typed refs and BaseModel/dict payloads ──
+
+
+async def test_acquire_for_actor_accepts_basemodel_payload_with_typed_ref() -> None:
+    """acquire_for_actor accepts a BaseModel payload with a typed rate-limit ref."""
+    clock = FakeClock(_START)
+    reg = RateLimitRegistry()
+    ref = KeyedRateLimitRef.typed(
+        _TypedPayload,
+        base_name="api-per-tenant",
+        key_fn=lambda p: p.tenant_id,
+        capacity=5.0,
+        refill_per_second=1.0,
+        backend="memory",
+    )
+
+    acquired = await reg.acquire_for_actor(
+        rate_limits=[ref],
+        reservations=[],
+        job_id=new_uuid(),
+        worker_id=new_uuid(),
+        payload=_TypedPayload(tenant_id="t1"),
+        clock=clock,
+    )
+
+    assert len(acquired) == 1
+    assert acquired[0].name == "api-per-tenant:t1"
+
+
+async def test_acquire_for_actor_typed_ref_with_dict_payload_validates() -> None:
+    """acquire_for_actor accepts a dict payload with a typed rate-limit ref —
+    the dict is validated via model_validate before key_fn is called."""
+    clock = FakeClock(_START)
+    reg = RateLimitRegistry()
+    ref = KeyedRateLimitRef.typed(
+        _TypedPayload,
+        base_name="api-per-tenant",
+        key_fn=lambda p: p.tenant_id,
+        capacity=5.0,
+        refill_per_second=1.0,
+        backend="memory",
+    )
+
+    acquired = await reg.acquire_for_actor(
+        rate_limits=[ref],
+        reservations=[],
+        job_id=new_uuid(),
+        worker_id=new_uuid(),
+        payload={"tenant_id": "t1"},
+        clock=clock,
+    )
+
+    assert len(acquired) == 1
+    assert acquired[0].name == "api-per-tenant:t1"
