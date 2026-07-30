@@ -34,6 +34,7 @@ from taskq.obs import (
     record_lock_expires_in_seconds,
     update_heartbeat_consecutive_failures,
 )
+from taskq.worker._transient import TRANSIENT_PG_ERRORS
 from taskq.worker.cancel import CancelController
 from taskq.worker.deps import WorkerDeps
 
@@ -111,12 +112,7 @@ async def heartbeat_loop(
                 jobs_extended=parse_rowcount(jobs_tag),
                 is_leader=deps.is_leader.is_set(),
             )
-        except (
-            TimeoutError,
-            asyncpg.PostgresConnectionError,
-            asyncpg.QueryCanceledError,
-            OSError,
-        ) as e:
+        except TRANSIENT_PG_ERRORS as e:
             tick_duration_s = time.monotonic() - tick_start
             _tick_duration.record(tick_duration_s)
             if not _in_tx_failed:

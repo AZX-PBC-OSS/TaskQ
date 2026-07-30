@@ -82,6 +82,7 @@ Extends `TaskQSettings`. All fields below apply to the worker process only.
 | Env Var | Type | Default | Description | Constraints |
 |---|---|---|---|---|
 | `TASKQ_DISPATCHER_POOL_SIZE` | `int` | `4` | Max connections for the dispatcher pool. | Min: 1 |
+| `TASKQ_DISPATCHER_COMMAND_TIMEOUT` | `float` (seconds) | `5.0` | Per-query timeout for the dispatcher pool and the TaskQ-built leader connections (election, cron, monitor), and the single deadline wrapped around each period-1 leader-loop iteration (`scheduled_wake`, cron) — a stalled PG errors the iteration instead of hanging the loop past its staleness budget. When the watchdog is enabled, load fails unless `timeout + loop period < max(period × TASKQ_WATCHDOG_TICK_GRACE_FACTOR, TASKQ_WATCHDOG_STALE_FLOOR)` for both the period-1 leader loops and the producer loop, so a timeout-capped iteration can never false-trip the stale-loop detector. (Default was 10.0 before 1.x: equal to the floor, which produced exactly that false trip.) | Min: 1.0; cross-field, see above |
 | `TASKQ_DISPATCH_OVERSAMPLE` | `int` | `2` | Multiplier for per-actor candidate gathering in the dispatch SQL. Each LATERAL reads `residual × oversample` candidates. Higher values absorb more identity-key collisions and multi-producer contention. Default 2 (tolerates 50% dupe identities). Set 1 when no `identity_key` is used and single-producer. Range: 1–1000. | Min: 1; Max: 1000 |
 | `TASKQ_DISPATCH_SCOPE_BY_HOME_QUEUE` | `bool` | `false` | When `true`, restrict `per_actor_capacity` to actors whose home queue (`actor_config.queue`) the worker subscribes to. Lowers per-cycle probe count at the cost of not dispatching `enqueue(queue=...)` override jobs whose actor's home queue is not subscribed. Default `false` (override-safe). | — |
 | `TASKQ_HEARTBEAT_POOL_SIZE` | `int` | `4` | Max connections for the heartbeat pool. | Min: 1 |
@@ -116,13 +117,14 @@ code 2** so the supervisor restarts it.
 
 | Env Var | Type | Default | Description | Constraints |
 |---|---|---|---|---|
-| `TASKQ_WATCHDOG_ENABLED` | `bool` | `true` | Master switch for the shutdown-deadline, stale-tick, and loop-lag detectors. The sibling-contract check stays armed even when this is `false`. | — |
+| `TASKQ_WATCHDOG_ENABLED` | `bool` | `true` | Master switch for the force-exit detectors (shutdown deadline, stale loop ticks, sibling-contract enforcement, event-loop lag). Observability is NOT switched off with it: a sibling returning cleanly still emits the `sibling-returned-unexpectedly` error, and stale loops still flip `/ready` — a zombie worker must never report Ready. | — |
 | `TASKQ_WATCHDOG_CHECK_INTERVAL` | `float` (seconds) | `1.0` | Poll cadence for the stale-tick sweep and the loop-lag thread. | Min: > 0 |
 | `TASKQ_WATCHDOG_TICK_GRACE_FACTOR` | `float` | `5.0` | Multiplier on a loop's own iteration period before its tick counts as stale. | Min: > 0 |
 | `TASKQ_WATCHDOG_STALE_FLOOR` | `float` (seconds) | `10.0` | Lower bound on any staleness budget, so a short interval cannot produce a hair-trigger. | Min: > 0 |
 | `TASKQ_WATCHDOG_LOOP_LAG_BUDGET` | `float` (seconds) | `30.0` | How long the event loop may fail to schedule before the lag detector trips. | Min: > 0 |
 | `TASKQ_WATCHDOG_LOOP_LAG_STARTUP_GRACE` | `float` (seconds) | `30.0` | Grace before the lag detector arms, covering import-heavy startup and DI bootstrap. | Min: ≥ 0 |
-| `TASKQ_WATCHDOG_DUMP_INTERVAL` | `float` (seconds) | `5.0` | How often to log still-alive siblings while a shutdown is in progress. | Min: > 0 |
+| `TASKQ_WATCHDOG_DUMP_INTERVAL` | `float` (seconds) | `5.0` | Interval between straggler logs (names + await sites of still-alive siblings) once the dump gate opens. | Min: > 0 |
+| `TASKQ_WATCHDOG_DUMP_AFTER_FRACTION` | `float` | `0.5` | Fraction of the shutdown deadline that must be consumed before straggler dumps begin. A drain inside the front half of its budget is within expectations and stays quiet; one `shutdown-watchdog-armed` record is always logged when the countdown starts so the window is never blind. | Range: (0, 1) — at 1.0 the trip would always fire first |
 
 The shutdown deadline is **not** a separate knob: it reuses
 `TASKQ_TERMINATION_GRACE_PERIOD`, measured from the *first* shutdown
@@ -152,7 +154,26 @@ worker. They are covered by the other three detectors.
 
 Set `TASKQ_WATCHDOG_ENABLED=false` to disable detection entirely. Prefer
 raising the budgets first: with it off, a wedged worker stays wedged and
-silent, which is the failure mode this exists to remove.
+silent, which is the failure mode this exists to remove. Two things are
+deliberately NOT switched off with it: the sibling-contract **error log**
+(a clean return outside shutdown still records
+`sibling-returned-unexpectedly` — enforcement is off, the signal is not),
+and the stale-loop **readiness check** (`/ready` still flips NotReady on
+a dead loop, so the zombie stops receiving traffic).
+
+While a shutdown counts down, straggler dumps are gated: nothing is
+logged until `TASKQ_WATCHDOG_DUMP_AFTER_FRACTION` of the deadline is
+consumed (one `shutdown-watchdog-armed` record marks the start), then
+`TASKQ_WATCHDOG_DUMP_INTERVAL` cadence right up to the trip. A normal
+drain stays quiet; a hung one dies fully diagnosed.
+
+The stale-tick detector interacts with
+`TASKQ_DISPATCHER_COMMAND_TIMEOUT`: a loop's worst-case tick gap is
+`timeout + period`, so the timeout must fit inside
+`max(period × TASKQ_WATCHDOG_TICK_GRACE_FACTOR, TASKQ_WATCHDOG_STALE_FLOOR)`
+for every bounded loop (period-1 leader loops, and the producer at its
+poll cadence). This is enforced at load time when the watchdog is
+enabled — see [Validation Constraints](#validation-constraints).
 
 ### Retry
 
@@ -321,6 +342,18 @@ cancellation_grace_period + cleanup_grace_period < lock_lease
 Rationale: ensures the worker finishes its shutdown sequence before the job lock expires and the sweep can reclaim the job.
 
 Error pattern: `cancellation_grace_period + cleanup_grace_period must be < lock_lease`
+
+### Dispatcher command timeout vs staleness budget (watchdog on)
+
+For each PG-bounded loop — the period-1 leader loops (`leader.scheduled_wake`, `leader.cron`) and the producer (period = `notify_poll_interval` when NOTIFY is enabled, else `poll_interval`):
+
+```
+dispatcher_command_timeout + period < max(period × watchdog_tick_grace_factor, watchdog_stale_floor)
+```
+
+Rationale: those loops tick once per iteration and sleep one period afterwards, so their worst-case tick gap is `timeout + period`. A gap that can reach the loop's staleness budget makes detector 2 force-exit a healthy worker in the middle of the PG degradation it should ride out (measured with the old 10.0 default against the 10.0 floor: an 11s gap and a trip at age 10.008s). Skipped when `watchdog_enabled=false` — detector 2 is never spawned then. If the budget side is too small for any legal timeout (`budget <= period + 1.0`), the error is attributed to `watchdog_stale_floor` instead.
+
+Error pattern: `dispatcher_command_timeout ... must be < the loop's staleness budget`
 
 ### Log format
 

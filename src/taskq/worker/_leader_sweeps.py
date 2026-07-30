@@ -14,7 +14,6 @@ import time
 from datetime import UTC, date, datetime, timedelta
 from typing import cast
 
-import asyncpg
 import croniter as cr
 import structlog
 
@@ -52,6 +51,7 @@ from taskq.worker._leader_shared import (
     cleanup_stale_workers,
     prune_terminal_jobs,
 )
+from taskq.worker._transient import TRANSIENT_PG_ERRORS
 
 __all__ = [
     "_archive_expiry_loop",
@@ -99,12 +99,7 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                 if not warned_sweep_1:
                     _err("sweep_expired_locks_unimplemented", _EK2, ctx.worker_id, exc)
                     warned_sweep_1 = True
-            except (
-                TimeoutError,
-                asyncpg.PostgresConnectionError,
-                asyncpg.InterfaceError,
-                OSError,
-            ) as exc:
+            except TRANSIENT_PG_ERRORS as exc:
                 # Why: PG loss is transient here, exactly as for the
                 # already-guarded sweeps below. Unguarded, it escapes into
                 # MaintenanceLeader.run's TaskGroup and on into the worker's,
@@ -127,12 +122,7 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                 if not warned_sweep_2:
                     _err("sweep_deadline_exceeded_unimplemented", _EK3, ctx.worker_id, exc)
                     warned_sweep_2 = True
-            except (
-                TimeoutError,
-                asyncpg.PostgresConnectionError,
-                asyncpg.InterfaceError,
-                OSError,
-            ) as exc:
+            except TRANSIENT_PG_ERRORS as exc:
                 # Same transient-PG rationale as sweep 1 above.
                 log.warning(
                     "sweep-deadline-exceeded-failed",
@@ -160,12 +150,7 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                         )
                     _metric("leaked_slots", count_4, start)
                     _dbg("sweep_leaked_slots_tick", "sweep_leaked_slots_tick", count_4, start)
-                except (
-                    TimeoutError,
-                    asyncpg.PostgresConnectionError,
-                    asyncpg.InterfaceError,
-                    OSError,
-                ) as exc:
+                except TRANSIENT_PG_ERRORS as exc:
                     log.warning(
                         "sweep-leaked-slots-failed",
                         kind="sweep_leaked_slots_failed",
@@ -188,12 +173,7 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                         count_rt,
                         start,
                     )
-                except (
-                    TimeoutError,
-                    asyncpg.PostgresConnectionError,
-                    asyncpg.InterfaceError,
-                    OSError,
-                ) as exc:
+                except TRANSIENT_PG_ERRORS as exc:
                     log.warning(
                         "sweep-expired-results-failed",
                         kind="sweep_expired_results_failed",
@@ -219,12 +199,7 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                         count_sr,
                         start,
                     )
-                except (
-                    TimeoutError,
-                    asyncpg.PostgresConnectionError,
-                    asyncpg.InterfaceError,
-                    OSError,
-                ) as exc:
+                except TRANSIENT_PG_ERRORS as exc:
                     log.warning(
                         "cleanup-stale-workers-failed",
                         kind="cleanup_stale_workers_failed",
@@ -334,14 +309,12 @@ async def _prune_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                 except Exception as exc:
                     log.error("prune failed", kind="prune", error=repr(exc))
                 finally:
-                    with contextlib.suppress(
-                        asyncpg.PostgresConnectionError, asyncpg.InterfaceError, OSError
-                    ):
+                    with contextlib.suppress(*TRANSIENT_PG_ERRORS):
                         await conn.execute(
                             "SELECT pg_advisory_unlock(hashtextextended($1, 0))",
                             PRUNE_LOCK_NAME,
                         )
-        except (asyncpg.PostgresConnectionError, asyncpg.InterfaceError, OSError) as exc:
+        except TRANSIENT_PG_ERRORS as exc:
             log.warning(
                 "prune-lock-attempt-failed",
                 kind="prune_lock_failed",
@@ -408,14 +381,12 @@ async def _archive_expiry_loop(ctx: SweepContext, shutdown: asyncio.Event) -> No
                 except Exception as exc:
                     log.error("archive-expiry-failed", kind="archive_expiry", error=repr(exc))
                 finally:
-                    with contextlib.suppress(
-                        asyncpg.PostgresConnectionError, asyncpg.InterfaceError, OSError
-                    ):
+                    with contextlib.suppress(*TRANSIENT_PG_ERRORS):
                         await conn.execute(
                             "SELECT pg_advisory_unlock(hashtextextended($1, 0))",
                             ARCHIVE_EXPIRY_LOCK_NAME,
                         )
-        except (asyncpg.PostgresConnectionError, asyncpg.InterfaceError, OSError) as exc:
+        except TRANSIENT_PG_ERRORS as exc:
             log.warning(
                 "archive-expiry-lock-attempt-failed",
                 kind="archive_expiry_lock_failed",

@@ -54,6 +54,7 @@ from taskq.worker._leader_sweeps import (
     _stranded_jobs_loop,
     _sweep_loop,
 )
+from taskq.worker._transient import TRANSIENT_PG_ERRORS, UnexpectedLoopErrorGuard
 from taskq.worker.cron_loop import tick_cron
 from taskq.worker.deps import (
     WorkerDeps,
@@ -202,6 +203,7 @@ class MaintenanceLeader:
             str(dsn),
             label="leader_conn",
             apply_keepalive=True,
+            command_timeout=self._deps.settings.dispatcher_command_timeout,
         )
 
     async def _open_dedicated_conn(self, label: str) -> asyncpg.Connection:
@@ -255,6 +257,7 @@ class MaintenanceLeader:
             _active_leaders.discard(self)
 
     async def _election_loop(self, shutdown: asyncio.Event) -> None:
+        guard = UnexpectedLoopErrorGuard("leader.election")
         while not shutdown.is_set():
             self._deps.liveness.tick(
                 "leader.election", period=self._deps.settings.heartbeat_interval
@@ -273,13 +276,23 @@ class MaintenanceLeader:
                 else:
                     try:
                         await self._deps.leader_conn.execute("SELECT 1")
+                        guard.ok()
                         await asyncio.sleep(self._deps.settings.heartbeat_interval)
                         continue
-                    except (
-                        asyncpg.PostgresConnectionError,
-                        asyncpg.InterfaceError,
-                        OSError,
-                    ) as exc:
+                    except TRANSIENT_PG_ERRORS as exc:
+                        await self._drop_leader_conn(reason="probe_failed")
+                        await self._close_leader_owned_conns()
+                        log.warning(
+                            "leader-conn-died",
+                            kind="leader_conn_died",
+                            worker_id=str(self._worker_id),
+                            error=repr(exc),
+                        )
+                    except Exception as exc:
+                        # Backstop (see _transient.py): tolerated + logged a
+                        # few times, then deliberately fatal; cleanup mirrors
+                        # the transient path since conn state is unknown.
+                        guard.unexpected(exc)
                         await self._drop_leader_conn(reason="probe_failed")
                         await self._close_leader_owned_conns()
                         log.warning(
@@ -316,7 +329,23 @@ class MaintenanceLeader:
                     "SELECT pg_try_advisory_lock(hashtextextended($1, 0))",
                     MAINTENANCE_LEADER_LOCK_NAME,
                 )
-            except (asyncpg.PostgresConnectionError, asyncpg.InterfaceError, OSError) as exc:
+            except TRANSIENT_PG_ERRORS as exc:
+                await self._drop_leader_conn(reason="lock_attempt_failed")
+                await self._close_leader_owned_conns()
+                record_election_attempt(str(self._worker_id), won=False)
+                log.warning(
+                    "election-lock-attempt-failed",
+                    kind="election_lock_attempt_failed",
+                    worker_id=str(self._worker_id),
+                    error=repr(exc),
+                )
+                await asyncio.sleep(self._deps.settings.heartbeat_interval)
+                continue
+            except Exception as exc:
+                # Backstop (see _transient.py): tolerated + logged a few
+                # times, then deliberately fatal; cleanup mirrors the
+                # transient path since conn state is unknown.
+                guard.unexpected(exc)
                 await self._drop_leader_conn(reason="lock_attempt_failed")
                 await self._close_leader_owned_conns()
                 record_election_attempt(str(self._worker_id), won=False)
@@ -351,17 +380,29 @@ class MaintenanceLeader:
                     )
                     shutdown.set()
                     return
-                except (
-                    asyncpg.PostgresConnectionError,
-                    asyncpg.InterfaceError,
-                    OSError,
-                ) as exc:
+                except TRANSIENT_PG_ERRORS as exc:
                     # The advisory lock was won but the conn died before the
                     # UPSERT landed: transient, and mirrors the lock-attempt
                     # guard above. Unguarded it escapes into the worker's
                     # TaskGroup, cancelling every sibling WITHOUT setting
                     # shutdown_event. is_leader stays clear, so the leader-only
                     # loops keep gating until a later attempt succeeds.
+                    await self._drop_leader_conn(reason="leader_upsert_failed")
+                    await self._close_leader_owned_conns()
+                    record_election_attempt(str(self._worker_id), won=False)
+                    log.warning(
+                        "leader-upsert-failed",
+                        kind="leader_upsert_failed",
+                        worker_id=str(self._worker_id),
+                        error=repr(exc),
+                    )
+                    await asyncio.sleep(self._deps.settings.heartbeat_interval)
+                    continue
+                except Exception as exc:
+                    # Backstop (see _transient.py): tolerated + logged a few
+                    # times, then deliberately fatal; cleanup mirrors the
+                    # transient path since conn state is unknown.
+                    guard.unexpected(exc)
                     await self._drop_leader_conn(reason="leader_upsert_failed")
                     await self._close_leader_owned_conns()
                     record_election_attempt(str(self._worker_id), won=False)
@@ -412,9 +453,15 @@ class MaintenanceLeader:
                     worker_id=str(self._worker_id),
                     next_retry_secs=self._deps.settings.heartbeat_interval,
                 )
+            # Reaching here means a full election cycle completed — lock won,
+            # lost, or not attempted — without an unexpected error, so the
+            # backstop streak resets. (The failure paths above continue
+            # earlier, deliberately without resetting.)
+            guard.ok()
             await asyncio.sleep(self._deps.settings.heartbeat_interval)
 
     async def _watchdog_loop(self, shutdown: asyncio.Event) -> None:
+        guard = UnexpectedLoopErrorGuard("leader.watchdog")
         while not shutdown.is_set():
             # Parking on is_leader.wait() alone can never wake when PG is
             # unreachable: the election loop cannot re-elect, so nothing
@@ -442,7 +489,22 @@ class MaintenanceLeader:
                     break
                 try:
                     await conn.fetchval("SELECT 1")
-                except (asyncpg.PostgresConnectionError, asyncpg.InterfaceError, OSError) as exc:
+                    guard.ok()
+                except TRANSIENT_PG_ERRORS as exc:
+                    await self._drop_leader_conn(reason="watchdog_probe_failed")
+                    await self._close_leader_owned_conns()
+                    log.warning(
+                        "leadership-lost",
+                        kind="leadership_lost",
+                        worker_id=str(self._worker_id),
+                        error=repr(exc),
+                    )
+                    break
+                except Exception as exc:
+                    # Backstop (see _transient.py): tolerated + logged a few
+                    # times, then deliberately fatal; cleanup mirrors the
+                    # transient path since conn state is unknown.
+                    guard.unexpected(exc)
                     await self._drop_leader_conn(reason="watchdog_probe_failed")
                     await self._close_leader_owned_conns()
                     log.warning(
@@ -466,29 +528,36 @@ class MaintenanceLeader:
 
     async def _scheduled_wake_loop(self, shutdown: asyncio.Event) -> None:
         warned = False
+        guard = UnexpectedLoopErrorGuard("leader.scheduled_wake")
         while not shutdown.is_set():
             self._deps.liveness.tick("leader.scheduled_wake", period=1.0)
             if self._deps.is_leader.is_set():
                 now_utc = self._clock.now()
                 start = time.monotonic()
                 try:
-                    count = await self._backend.scheduled_to_pending(now=now_utc)
-                    _metric("scheduled_to_pending", count, start)
-                    _dbg("scheduled_wake_tick", "scheduled_wake_tick", count, start)
-                    if count > 0:
-                        channel = wake_channel(self._deps.settings.schema_name)
-                        async with self._deps.dispatcher_pool.acquire() as conn:
-                            await conn.execute("SELECT pg_notify($1, '')", channel)
+                    # Why one deadline for the WHOLE iteration: the count > 0
+                    # path awaits PG twice (scheduled_to_pending, then the
+                    # acquire + pg_notify), and per-statement timeouts alone
+                    # admit a tick gap of k * timeout + 1.0s — over the
+                    # staleness budget for k > 1, a false detector-2 trip of
+                    # a healthy leader. asyncio.timeout raises TimeoutError,
+                    # which the transient-PG branch below already handles.
+                    async with asyncio.timeout(self._deps.settings.dispatcher_command_timeout):
+                        count = await self._backend.scheduled_to_pending(now=now_utc)
+                        _metric("scheduled_to_pending", count, start)
+                        _dbg("scheduled_wake_tick", "scheduled_wake_tick", count, start)
+                        if count > 0:
+                            channel = wake_channel(self._deps.settings.schema_name)
+                            async with self._deps.dispatcher_pool.acquire(
+                                timeout=self._deps.settings.dispatcher_command_timeout
+                            ) as conn:
+                                await conn.execute("SELECT pg_notify($1, '')", channel)
+                    guard.ok()
                 except NotImplementedError as exc:
                     if not warned:
                         _err("scheduled_wake_backend_unimplemented", _EK1, self._worker_id, exc)
                         warned = True
-                except (
-                    TimeoutError,
-                    asyncpg.PostgresConnectionError,
-                    asyncpg.InterfaceError,
-                    OSError,
-                ) as exc:
+                except TRANSIENT_PG_ERRORS as exc:
                     # PG loss is transient: the next tick retries, and a
                     # missed wake NOTIFY is covered by the producer's poll
                     # interval. Unguarded it escapes into the worker's
@@ -499,6 +568,11 @@ class MaintenanceLeader:
                         worker_id=str(self._worker_id),
                         error=repr(exc),
                     )
+                except Exception as exc:
+                    # Backstop for anything outside the transient set (see
+                    # _transient.py): tolerated and logged a few times, then
+                    # deliberately fatal rather than an infinite silent retry.
+                    guard.unexpected(exc)
             await asyncio.sleep(1.0)
 
     async def _cron_loop(self, shutdown: asyncio.Event) -> None:
@@ -512,6 +586,7 @@ class MaintenanceLeader:
         ``except Exception`` and propagates to the ``TaskGroup`` for
         clean shutdown.
         """
+        guard = UnexpectedLoopErrorGuard("leader.cron")
         while not shutdown.is_set():
             self._deps.liveness.tick("leader.cron", period=1.0)
             if not self._deps.is_leader.is_set():
@@ -522,18 +597,53 @@ class MaintenanceLeader:
                 await asyncio.sleep(1)
                 continue
             try:
-                async with conn.transaction():
-                    await tick_cron(
-                        conn,
-                        self._deps.settings,
-                        self._backend,
-                        self._deps.settings.schema_name,
-                        self._worker_id,
-                    )
+                # Why one deadline for the WHOLE tick: a tick is BEGIN + N
+                # statements (one per due schedule, plus catch-up bursts) +
+                # COMMIT, each separately bounded by the conn's
+                # command_timeout — so per-statement timeouts alone let a
+                # degraded PG stretch one tick past the detector-2 budget
+                # and force-exit a healthy leader. asyncio.timeout raises
+                # the exact builtin TimeoutError, which the deadline-family
+                # branch below treats as retry-next-tick (the transaction
+                # rolls back bounded by the same command_timeout).
+                async with asyncio.timeout(self._deps.settings.dispatcher_command_timeout):
+                    async with conn.transaction():
+                        await tick_cron(
+                            conn,
+                            self._deps.settings,
+                            self._backend,
+                            self._deps.settings.schema_name,
+                            self._worker_id,
+                        )
+                guard.ok()
             except Exception as exc:
+                # Why the ordering and the exact-type check: builtin
+                # TimeoutError IS an OSError subclass, so an isinstance
+                # conn-state check would swallow the deadline shapes before
+                # they are seen. asyncio.timeout and asyncpg's local
+                # command_timeout expiry raise the exact builtin; network
+                # death arrives as ConnectionTimeoutError (a subclass) and
+                # correctly falls to the conn-state branch below.
+                if type(exc) is TimeoutError or isinstance(exc, asyncpg.QueryCanceledError):
+                    # Deadline family (iteration deadline or a fired
+                    # command_timeout): the conn is provably responsive —
+                    # it answered the cancel, or asyncpg has already
+                    # terminated it, which the next tick's transaction()
+                    # surfaces as a conn-state error below. Keep the conn and
+                    # retry: dropping it (and demoting) on every slow tick
+                    # would churn leadership during catch-up bursts.
+                    log.warning(
+                        "cron-tick-timeout",
+                        kind="cron_tick_timeout",
+                        worker_id=str(self._worker_id),
+                        error=repr(exc),
+                    )
+                    continue
                 if isinstance(
                     exc, (asyncpg.PostgresConnectionError, asyncpg.InterfaceError, OSError)
                 ):
+                    # Conn-state family: the conn is dead or unusable — drop
+                    # it and rebuild on a later tick.
                     await self._close_leader_owned_conns()
                     log.warning(
                         "cron-conn-lost",
@@ -542,6 +652,11 @@ class MaintenanceLeader:
                         error=repr(exc),
                     )
                     continue
+                # Backstop for anything outside the transient set (see
+                # _transient.py): tolerated and logged a few times — this
+                # loop's historical blanket catch — then deliberately fatal
+                # rather than retrying a real bug forever.
+                guard.unexpected(exc)
                 log.error("cron-tick-failed", kind="cron_fire", error=str(exc))
             await asyncio.sleep(1)
 

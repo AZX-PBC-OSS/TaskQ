@@ -364,16 +364,19 @@ class WorkerSettings(TaskQSettings):
         "dispatcher pool. Bypasses PgBouncer.",
     )
     dispatcher_command_timeout: float = Field(
-        default=10.0,
+        default=5.0,
         ge=1.0,
         description="TASKQ_DISPATCHER_COMMAND_TIMEOUT (seconds). Per-query "
-        "timeout for the dispatcher pool. Bounds leader sweeps and "
-        "scheduled_wake so a stalled PG cannot hang a loop indefinitely. "
-        "Keep this below the watchdog staleness budget (see "
-        "TASKQ_WATCHDOG_STALE_FLOOR): an iteration that runs to the full "
-        "timeout delays the loop's next tick, and a timeout at or above "
-        "the budget can trip the stale-loop detector — the intended "
-        "fail-safe when PG truly stalls, but surprising if misconfigured.",
+        "timeout for the dispatcher pool and the TaskQ-built leader "
+        "connections (election, cron, monitor), and the single deadline "
+        "wrapped around each period-1 leader-loop iteration (scheduled_wake, "
+        "cron): a stalled PG errors the iteration instead of hanging the "
+        "loop past its staleness budget. Checked at load time when the "
+        "watchdog is enabled: timeout + loop period must be < "
+        "max(period x watchdog_tick_grace_factor, watchdog_stale_floor) for "
+        "every bounded loop (leader period-1 loops and the producer), so a "
+        "timeout-capped iteration can never false-trip the stale-loop "
+        "detector on a healthy worker.",
     )
     dispatch_oversample: int = Field(
         default=2,
@@ -622,6 +625,18 @@ class WorkerSettings(TaskQSettings):
         description="TASKQ_WATCHDOG_DUMP_INTERVAL (seconds). Interval "
         "between straggler logs (names + await sites of still-alive "
         "siblings) while a shutdown is in progress.",
+    )
+    watchdog_dump_after_fraction: float = Field(
+        default=0.5,
+        gt=0.0,
+        lt=1.0,
+        description="TASKQ_WATCHDOG_DUMP_AFTER_FRACTION. Fraction of the "
+        "shutdown deadline that must be consumed before straggler dumps "
+        "begin (0.5 = only in the back half of the budget). A drain inside "
+        "its front half is within expectations and stays quiet; one "
+        "countdown-start record is always logged so the window is never "
+        "blind. Must be < 1: at 1.0 the deadline trip would always fire "
+        "first, silently disabling the dumps.",
     )
     watchdog_stale_floor: float = Field(
         default=10.0,
@@ -988,6 +1003,56 @@ class WorkerSettings(TaskQSettings):
                     ),
                 )
             )
+
+        # Bounded-loop staleness invariant: every loop whose PG work is
+        # capped by dispatcher_command_timeout ticks once per iteration and
+        # sleeps one period afterwards, so its worst-case tick gap is
+        # timeout + period. That gap must fit the loop's own budget
+        # max(period * watchdog_tick_grace_factor, watchdog_stale_floor) or
+        # detector 2 force-exits a healthy worker mid-degradation —
+        # measured: timeout 10.0 against budget 10.0 produced an 11s tick
+        # gap and a trip at age 10.008s. Only checked when the watchdog is
+        # armed: with watchdog_enabled=False detector 2 is never spawned,
+        # and a stale tick only costs a transient NotReady — not worth
+        # blocking boot over.
+        if self.watchdog_enabled:
+            producer_period = (
+                self.notify_poll_interval if self.notify_enabled else self.poll_interval
+            )
+            for loop_label, period in (
+                ("leader loops", 1.0),
+                ("producer loop", producer_period),
+            ):
+                budget = max(period * self.watchdog_tick_grace_factor, self.watchdog_stale_floor)
+                if budget <= period + 1.0:
+                    # 1.0 = dispatcher_command_timeout's own ge= minimum: no
+                    # legal timeout can satisfy the gap — the budget side is
+                    # what the operator must change.
+                    errors.append(
+                        ValidationError(
+                            field_name="watchdog_stale_floor",
+                            value=self.watchdog_stale_floor,
+                            error_msg=(
+                                f"the {loop_label} staleness budget max({period} x "
+                                f"watchdog_tick_grace_factor, watchdog_stale_floor) "
+                                f"({budget}) must exceed dispatcher_command_timeout's "
+                                f"1.0s minimum + the {period}s loop period"
+                            ),
+                        )
+                    )
+                elif self.dispatcher_command_timeout + period >= budget:
+                    errors.append(
+                        ValidationError(
+                            field_name="dispatcher_command_timeout",
+                            value=self.dispatcher_command_timeout,
+                            error_msg=(
+                                f"dispatcher_command_timeout ({self.dispatcher_command_timeout}) "
+                                f"+ {period}s {loop_label} period must be < the loop's "
+                                f"staleness budget max(period x watchdog_tick_grace_factor, "
+                                f"watchdog_stale_floor) ({budget})"
+                            ),
+                        )
+                    )
 
         return errors or None
 

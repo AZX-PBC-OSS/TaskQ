@@ -168,12 +168,23 @@ async def test_shutdown_watchdog_cancelled_on_clean_exit(exit_codes: list[int]) 
 async def test_shutdown_watchdog_logs_stragglers_by_name(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    """Straggler dumps fire once shutdown has consumed the back half of its
+    hard budget (elapsed >= deadline * 0.5) — an ordinary drain inside the
+    front half gets silence instead of per-interval stderr spam."""
+    _, clock = _clock(start=31.0)  # 31s into a 60s deadline: past the gate
+
     async def _parked() -> None:
         await asyncio.sleep(60.0)
 
     straggler = asyncio.create_task(_parked(), name="sibling.parked")
     shutdown = asyncio.Event()
-    watchdog = ShutdownWatchdog(shutdown, deadline=60.0, dump_interval=0.01)
+    watchdog = ShutdownWatchdog(
+        shutdown,
+        deadline=60.0,
+        dump_interval=0.01,
+        started_at=lambda: 0.0,
+        clock=clock,
+    )
     watchdog.start()
     shutdown.set()
     await asyncio.sleep(0.1)

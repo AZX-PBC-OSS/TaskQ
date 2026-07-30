@@ -451,12 +451,18 @@ async def open_worker_deps(
         else:
             assert direct_dsn is not None  # guarded by _needs_pg_dsn
             _direct_leader = direct_dsn
+            _leader_command_timeout = settings.dispatcher_command_timeout
 
             async def _leader_dsn_factory() -> asyncpg.Connection:
+                # command_timeout is applied HERE, not at the leader.py call
+                # sites: every leader connection (election conn, cron,
+                # monitor) goes through this factory on a stock deployment,
+                # so this is the only place the timeout cannot be bypassed.
                 return await open_dedicated_conn(
                     _direct_leader,
                     label="leader",
                     apply_keepalive=True,
+                    command_timeout=_leader_command_timeout,
                 )
 
             resolved_leader_factory = _leader_dsn_factory

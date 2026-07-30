@@ -3,7 +3,7 @@
 from datetime import timedelta
 
 import pytest
-from dotenvmodel import ConstraintViolationError, ValidationError
+from dotenvmodel import ConstraintViolationError, DotEnvModelError, ValidationError
 from hypothesis import given
 from hypothesis import strategies as st
 
@@ -860,6 +860,114 @@ def test_cron_catch_up_window_zero_accepted() -> None:
     """cron_catch_up_window=timedelta(0) is accepted."""
     s = _load(TASKQ_CRON_CATCH_UP_WINDOW="0")
     assert s.cron_catch_up_window == timedelta(0)
+
+
+# ── dispatcher_command_timeout vs stale-loop budget ─────────────────────
+#
+# The period-1 leader loops (cron, scheduled_wake) tick once per iteration,
+# await PG (bounded by dispatcher_command_timeout), then sleep 1.0s. Their
+# worst-case tick gap is therefore timeout + 1.0s, and their staleness
+# budget is max(1.0 * watchdog_tick_grace_factor, watchdog_stale_floor).
+# If the gap can exceed the budget, detector 2 force-exits a healthy leader
+# mid-degradation — exactly what the field description forbids ("keep this
+# below the watchdog staleness budget"). The default must clear the bar,
+# and the cross-field invariant must reject configs that do not.
+
+
+def test_dispatcher_command_timeout_default_clears_period_one_loop_budget() -> None:
+    """Default timeout + the 1.0s trailing sleep fits the tightest staleness
+    budget with headroom (timeout 10.0 / floor 10.0 gave an 11s gap against a
+    10s budget: detector 2 force-exited a healthy, still-leader worker)."""
+    s = _load()
+    budget = max(s.watchdog_tick_grace_factor, s.watchdog_stale_floor)
+    assert s.dispatcher_command_timeout + 1.0 < budget, (
+        f"default dispatcher_command_timeout ({s.dispatcher_command_timeout}) + "
+        f"1.0s loop period must be < the tightest staleness budget ({budget})"
+    )
+
+
+def test_dispatcher_command_timeout_at_budget_rejected() -> None:
+    """timeout == watchdog_stale_floor violates the invariant (the old
+    default): the timeout-capped iteration plus the trailing 1s sleep
+    overruns the budget."""
+    with pytest.raises(ValidationError, match=r"dispatcher_command_timeout"):
+        _load(TASKQ_DISPATCHER_COMMAND_TIMEOUT="10.0")
+
+
+def test_dispatcher_command_timeout_above_budget_rejected() -> None:
+    """A timeout beyond the budget is a guaranteed false-trip, not a risk —
+    and every bounded loop's constraint reports it (leader + producer here)."""
+    with pytest.raises(DotEnvModelError, match=r"dispatcher_command_timeout"):
+        _load(TASKQ_DISPATCHER_COMMAND_TIMEOUT="30.0")
+
+
+def test_dispatcher_command_timeout_allowed_when_floor_raised() -> None:
+    """Deliberate configs stay expressible: raise the floor alongside the
+    timeout and every loop's budget still covers timeout + period (the
+    producer at period 5.0s is the binding one here: 30 + 5 < 40)."""
+    s = _load(
+        TASKQ_DISPATCHER_COMMAND_TIMEOUT="30.0",
+        TASKQ_WATCHDOG_STALE_FLOOR="40.0",
+    )
+    assert s.dispatcher_command_timeout == 30.0
+    assert s.watchdog_stale_floor == 40.0
+
+
+def test_dispatcher_command_timeout_unchecked_when_watchdog_disabled() -> None:
+    """With watchdog_enabled=False detector 2 is never spawned, so the
+    timeout-vs-budget invariant cannot fire — a deployment that pinned the
+    old 10.0 default alongside the disabled watchdog must still boot."""
+    s = _load(
+        TASKQ_WATCHDOG_ENABLED="false",
+        TASKQ_DISPATCHER_COMMAND_TIMEOUT="10.0",
+    )
+    assert s.dispatcher_command_timeout == 10.0
+    assert s.watchdog_enabled is False
+
+
+def test_unsatisfiable_budget_errors_against_budget_fields() -> None:
+    """A budget <= period + 1.0s leaves no legal timeout (ge=1.0): the
+    error must be attributed to the budget fields the operator can actually
+    change, not the timeout field they cannot. (The slow producer poll
+    keeps the producer side satisfiable so only the leader-loop error
+    fires — two errors would aggregate instead of raising ValidationError.)"""
+    with pytest.raises(ValidationError) as exc_info:
+        _load(
+            TASKQ_WATCHDOG_STALE_FLOOR="1.5",
+            TASKQ_WATCHDOG_TICK_GRACE_FACTOR="2.0",
+            TASKQ_NOTIFY_POLL_INTERVAL="6.0",
+        )
+    assert "Field 'watchdog_stale_floor'" in str(exc_info.value), (
+        f"an unsatisfiable budget must be reported against the budget side: {exc_info.value}"
+    )
+
+
+def test_producer_loop_budget_is_checked_too() -> None:
+    """The invariant covers every bounded loop, not just the period-1
+    leader loops: with NOTIFY disabled the producer ticks at poll_interval
+    and its budget is max(poll_interval * grace, floor) — 2.0s here, so a
+    3.9s timeout passes the leader check and still false-trips the
+    producer (gap 3.9 + 0.2 = 4.1s)."""
+    with pytest.raises(ValidationError, match=r"dispatcher_command_timeout"):
+        _load(
+            TASKQ_NOTIFY_ENABLED="false",
+            TASKQ_POLL_INTERVAL="0.2",
+            TASKQ_WATCHDOG_STALE_FLOOR="2.0",
+            TASKQ_WATCHDOG_TICK_GRACE_FACTOR="5.0",
+            TASKQ_DISPATCHER_COMMAND_TIMEOUT="3.9",
+        )
+
+
+def test_producer_loop_budget_passes_when_timeout_fits() -> None:
+    """Same shape, timeout small enough for both loops' budgets."""
+    s = _load(
+        TASKQ_NOTIFY_ENABLED="false",
+        TASKQ_POLL_INTERVAL="0.2",
+        TASKQ_WATCHDOG_STALE_FLOOR="2.0",
+        TASKQ_WATCHDOG_TICK_GRACE_FACTOR="5.0",
+        TASKQ_DISPATCHER_COMMAND_TIMEOUT="1.0",
+    )
+    assert s.dispatcher_command_timeout == 1.0
 
 
 # ── OIDC/SAML sub-config singletons (dotenvmodel cached()) ──────────────

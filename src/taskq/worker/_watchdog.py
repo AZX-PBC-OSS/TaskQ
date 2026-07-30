@@ -15,7 +15,8 @@ else in the worker grows a health responsibility:
   exists to catch. Parks on ``shutdown_event``; once set, counts down
   ``termination_grace_period`` (finally making that setting enforceable
   rather than validation-only), logging still-alive siblings every
-  ``watchdog_dump_interval``.
+  ``watchdog_dump_interval`` once the shutdown is into the back half
+  of its budget.
 - :class:`LoopLagWatchdog` — detector 4, a daemon thread measuring
   event-loop scheduling lag. Thread-based (and ``faulthandler``-based
   for its dump) because a fully blocked loop cannot run an in-loop
@@ -64,6 +65,14 @@ __all__ = [
 
 EXIT_WATCHDOG = 2
 
+# Hard wall on the pre-exit metrics flush. force_flush has no usable
+# timeout against a hung OTLP collector (the gRPC exporter ignores
+# timeout_millis — opentelemetry#2663 — and self-bounds at 10s+), so the
+# flush runs on a daemon thread with this join deadline: a wedged exporter
+# costs at most this many seconds, never more, and the thread dies with
+# the process on os._exit.
+_METRICS_FLUSH_TIMEOUT_SECS = 2.0
+
 # Default lower bound on any staleness budget, overridden per worker by
 # TASKQ_WATCHDOG_STALE_FLOOR. Kept as the single source of the documented
 # default so the constant and the constructor cannot drift apart.
@@ -89,12 +98,22 @@ _watchdog_trips = _meter.create_counter(
 # pattern (see taskq.obs.update_queue_depth_cache): ages() writes the
 # cache, the synchronous OTel callback reads it.
 _tick_age_cache: dict[str, float] = {}
+# Guards _tick_age_cache against concurrent access: the OTel SDK reader
+# thread invokes the gauge callback while the worker loop thread mutates
+# the cache via ages()/forget(). Unsynchronized iteration raises
+# RuntimeError: dictionary changed size during iteration — the same
+# failure shape as the _ticks race, metrics-only. Lock order is always
+# LoopLiveness._lock → _tick_age_cache_lock; the callback takes
+# _tick_age_cache_lock alone. Never the reverse.
+_tick_age_cache_lock = threading.Lock()
 
 
 def _observe_tick_age(
     _options: CallbackOptions,
 ) -> Iterator[Observation]:
-    for loop_name, age in list(_tick_age_cache.items()):
+    with _tick_age_cache_lock:
+        snapshot = list(_tick_age_cache.items())
+    for loop_name, age in snapshot:
         yield Observation(age, {"loop": loop_name})
 
 
@@ -173,6 +192,33 @@ def dump_task_stacks(
     return records
 
 
+def _flush_metrics_before_exit() -> None:
+    """Best-effort OTel flush before ``os._exit``, with a hard wall.
+
+    ``os._exit`` skips the SDK's periodic exporter, so the trip counter
+    increment only survives if it is flushed first — but an unbounded
+    ``force_flush`` against a hung collector would stall the force-exit it
+    precedes (exactly when the process is already known to be wedged).
+    Run the flush on a daemon thread and join with the hard
+    ``_METRICS_FLUSH_TIMEOUT_SECS`` deadline; both trip paths (``trip()``
+    and detector 4's inline exit) share this. Providers without
+    ``force_flush`` (the NoOp default) skip cleanly.
+    """
+    with contextlib.suppress(Exception):
+        provider = otel_metrics.get_meter_provider()
+        flush = getattr(provider, "force_flush", None)
+        if flush is None:
+            return
+
+        def _flush() -> None:
+            with contextlib.suppress(Exception):
+                flush()
+
+        thread = threading.Thread(target=_flush, name="taskq-metrics-flush", daemon=True)
+        thread.start()
+        thread.join(_METRICS_FLUSH_TIMEOUT_SECS)
+
+
 def trip(detector: str, reason: str) -> None:
     """Critical log + metric + dump + force-exit. Never returns."""
     _watchdog_trips.add(1, {"detector": detector})
@@ -187,10 +233,7 @@ def trip(detector: str, reason: str) -> None:
     finally:
         sys.stderr.flush()
         sys.stdout.flush()
-        with contextlib.suppress(Exception):
-            _provider = otel_metrics.get_meter_provider()
-            if hasattr(_provider, "force_flush"):
-                _provider.force_flush()  # type: ignore[attr-defined]
+        _flush_metrics_before_exit()
         os._exit(EXIT_WATCHDOG)
 
 
@@ -233,7 +276,8 @@ class LoopLiveness:
         with self._lock:
             self._ticks.pop(name, None)
             self._periods.pop(name, None)
-            _tick_age_cache.pop(name, None)
+            with _tick_age_cache_lock:
+                _tick_age_cache.pop(name, None)
 
     def ages(self) -> dict[str, float]:
         """Loop name -> seconds since its last tick (observability).
@@ -247,8 +291,9 @@ class LoopLiveness:
         with self._lock:
             now = self._clock()
             ages = {name: now - ts for name, ts in self._ticks.items()}
-            _tick_age_cache.clear()
-            _tick_age_cache.update(ages)
+            with _tick_age_cache_lock:
+                _tick_age_cache.clear()
+                _tick_age_cache.update(ages)
             return ages
 
     def stale(self) -> list[str]:
@@ -290,8 +335,13 @@ class ShutdownWatchdog:
 
     Lives outside the worker TaskGroup: parked on ``shutdown_event``,
     then counts down ``termination_grace_period``. While counting, logs
-    still-alive siblings (names + await sites) every *dump_interval*.
-    On deadline: trip. Cancelled on clean exit.
+    still-alive siblings (names + await sites) every *dump_interval* —
+    but only once the shutdown has consumed at least
+    ``dump_after_fraction`` of its hard budget. A drain still in its
+    front half is within expectations and gets silence; one in its back
+    half is already abnormal enough to observe, and a genuinely hung
+    shutdown still accumulates dumps right up to the trip. On deadline:
+    trip. Cancelled on clean exit.
     """
 
     def __init__(
@@ -305,7 +355,14 @@ class ShutdownWatchdog:
         started_at: Callable[[], float | None] | None = None,
         clock: Callable[[], float] = time.monotonic,
         shutdown_started_event: asyncio.Event | None = None,
+        dump_after_fraction: float = 0.5,
     ) -> None:
+        if not 0.0 < dump_after_fraction < 1.0:
+            raise ValueError(
+                f"dump_after_fraction must be in (0, 1): at 1.0 the deadline trip "
+                f"always fires first, silently disabling straggler dumps — got "
+                f"{dump_after_fraction}"
+            )
         self._shutdown_event = shutdown_event
         self._deadline = deadline
         self._dump_interval = dump_interval
@@ -314,6 +371,7 @@ class ShutdownWatchdog:
         self._started_at = started_at
         self._clock = clock
         self._shutdown_started_event = shutdown_started_event
+        self._dump_gate_secs = deadline * dump_after_fraction
         self._task: asyncio.Task[None] | None = None
 
     def start(self) -> None:
@@ -360,6 +418,16 @@ class ShutdownWatchdog:
         anchored = self._started_at() if self._started_at is not None else None
         if anchored is not None:
             t0 = anchored
+        # One record per countdown, not per interval: the front half of the
+        # budget is deliberately free of straggler dumps (see the gate
+        # below), but it must never be blind — this is how ops can tell the
+        # deadline is counting and when the dumps will begin.
+        _log.info(
+            "shutdown-watchdog-armed",
+            kind="shutdown_watchdog_armed",
+            deadline_secs=self._deadline,
+            dump_after_secs=self._dump_gate_secs,
+        )
         while True:
             elapsed = self._clock() - t0
             if elapsed >= self._deadline:
@@ -369,6 +437,10 @@ class ShutdownWatchdog:
                     f"(deadline {self._deadline:.1f}s)",
                 )
             await asyncio.sleep(self._dump_interval)
+            # Re-read the clock AFTER the sleep so the gate reflects when
+            # the dump would actually fire, not when the iteration began.
+            if self._clock() - t0 < self._dump_gate_secs:
+                continue
             pending = [
                 t for t in asyncio.all_tasks() if not t.done() and t is not asyncio.current_task()
             ]
@@ -475,6 +547,11 @@ class LoopLagWatchdog:
                 )
                 faulthandler.dump_traceback(file=sys.stderr, all_threads=True)
                 sys.stderr.flush()
+                # Same flush-before-exit as trip(): without it the
+                # event-loop-lag increment of watchdog_trips_total never
+                # reaches the exporter — the trip you least want to be
+                # guessing about after the fact.
+                _flush_metrics_before_exit()
                 os._exit(EXIT_WATCHDOG)
                 # Unreachable in production. If os._exit is ever intercepted
                 # (a test, an embedded host), stop rather than re-trip and

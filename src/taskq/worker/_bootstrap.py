@@ -606,6 +606,7 @@ async def _main(
                 on_shutdown_started=_stamp_shutdown_started,
                 started_at=lambda: deps.shutdown_started_at,
                 shutdown_started_event=deps.producer_stop_event,
+                dump_after_fraction=settings.watchdog_dump_after_fraction,
             )
             # A plain ``async with`` plus one finally satisfies both
             # requirements — see that finally for the ordering rationale. A
@@ -803,18 +804,23 @@ def _make_sibling_spawner(
             or deps.producer_stop_event.is_set()
         )
         if not shutdown_in_progress:
+            msg = (
+                f"sibling {getattr(coro, '__qualname__', repr(coro))} returned "
+                "cleanly while no shutdown was in progress"
+            )
+            # Why the log is unconditional: watchdog_enabled=False gates the
+            # enforcement below, not the signal. Without this record a
+            # clean-returned sibling leaves the worker running half-staffed
+            # with no log, no metric, no signal — exactly the silence the
+            # detector exists to prevent, one switch earlier.
+            _startup_log.error(
+                "sibling-returned-unexpectedly",
+                kind="sibling_returned_unexpectedly",
+                sibling=msg,
+            )
             _settings = getattr(deps, "settings", None)
             if getattr(_settings, "watchdog_enabled", True):
                 shutdown_event.set()
-                msg = (
-                    f"sibling {getattr(coro, '__qualname__', repr(coro))} returned "
-                    "cleanly while no shutdown was in progress"
-                )
-                _startup_log.error(
-                    "sibling-returned-unexpectedly",
-                    kind="sibling_returned_unexpectedly",
-                    sibling=msg,
-                )
                 raise RuntimeError(msg)
 
     def _spawn(

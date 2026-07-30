@@ -138,13 +138,16 @@ async def compute_health(deps: WorkerDeps) -> HealthReport:
     # deps object with no liveness silently return a report that cannot
     # detect the zombie state — so a missing field is a wiring bug and
     # must surface as one.
+    #
+    # Deliberately NOT gated on watchdog_enabled: that switch controls the
+    # force-exit detectors, not observability. Gating readiness too would
+    # mean a worker with dead loops reports Ready whenever the switch is
+    # off — losing the zombie detection and keeping the traffic.
     tick_ages = deps.liveness.ages()
-    stale_loops: list[str] = []
-    if getattr(deps.settings, "watchdog_enabled", True):
-        stale_loops = deps.liveness.stale()
-        if stale_loops:
-            ready = False
-            reasons.append(f"stale_loops={','.join(stale_loops)}")
+    stale_loops = deps.liveness.stale()
+    if stale_loops:
+        ready = False
+        reasons.append(f"stale_loops={','.join(stale_loops)}")
 
     shutdown_elapsed: float | None = None
     if deps.shutdown_started_at is not None:
