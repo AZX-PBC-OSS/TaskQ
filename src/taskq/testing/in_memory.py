@@ -30,6 +30,7 @@ import structlog
 from pydantic import BaseModel
 
 from taskq._ids import new_uuid
+from taskq.actor_config import ActorConfig
 from taskq.backend._cursor import decode_cursor, encode_cursor
 from taskq.backend._notify import _SubscriberContext
 from taskq.backend._protocol import (
@@ -121,7 +122,6 @@ from taskq.testing._terminal import (
     _write_attempt,
     _write_cancel_escalation,
 )
-from taskq.worker.actor_config import ActorConfig
 
 if TYPE_CHECKING:
     from taskq.worker.leader import ArchiveExpiryResult, PruneResult

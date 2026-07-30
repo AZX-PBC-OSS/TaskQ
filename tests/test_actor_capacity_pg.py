@@ -17,11 +17,11 @@ import pytest
 from pydantic import BaseModel
 
 from taskq.actor import actor
+from taskq.actor_config import ActorConfig
+from taskq.actor_config_ops import set_actor_config_capacity
 from taskq.client import JobsClient
 from taskq.exceptions import MaxPendingExceededError
 from taskq.testing.fixtures import JobsApp
-from taskq.worker.actor_config import ActorConfig
-from taskq.worker.actor_config_ops import set_actor_config_capacity
 from taskq.worker.startup import sync_actor_config
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]

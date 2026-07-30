@@ -10,11 +10,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from taskq.exceptions import ActorNotFoundError
-from taskq.worker.actor_config_ops import (
+from taskq.actor_config_ops import (
     ActorConfigRow,
     DeregisterResult,
 )
+from taskq.exceptions import ActorNotFoundError
 
 pytestmark = [pytest.mark.asyncio]
 

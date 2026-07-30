@@ -14,11 +14,11 @@ from uuid import UUID
 import pytest
 
 from taskq._ids import new_job_id, new_uuid
+from taskq.actor_config import ActorConfig
 from taskq.backend._protocol import EnqueueArgs, ErrorInfo, JobId, RetryKind
 from taskq.exceptions import WorkerOwnershipMismatch
 from taskq.testing.clock import FakeClock
 from taskq.testing.in_memory import InMemoryBackend
-from taskq.worker.actor_config import ActorConfig
 
 # ── Helpers ────────────────────────────────────────────────────────────
 

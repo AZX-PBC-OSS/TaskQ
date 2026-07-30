@@ -19,7 +19,7 @@ problem, and the connection never sees a statement.
 
 import pytest
 
-from taskq.worker.actor_config_ops import UNSET, set_actor_config_capacity
+from taskq.actor_config_ops import UNSET, set_actor_config_capacity
 
 
 class _RecordingConn:

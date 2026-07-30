@@ -15,13 +15,13 @@ import asyncpg
 import pytest
 
 from taskq._ids import new_base62
+from taskq.actor_config import ActorConfig
+from taskq.actor_config_ops import DeregisterResult, deregister_actor, get_actor_config
 from taskq.exceptions import (
     ActorHasActiveJobsError,
     ActorHasEnabledSchedulesError,
     ActorNotFoundError,
 )
-from taskq.worker.actor_config import ActorConfig
-from taskq.worker.actor_config_ops import DeregisterResult, deregister_actor, get_actor_config
 from taskq.worker.startup import sync_actor_config
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]

@@ -1,7 +1,7 @@
 """Worker subsystem: pool management, deps, heartbeat, and connection budgeting.
 
 All imports are lazy via ``__getattr__`` so that importing any submodule
-(e.g. ``taskq.worker.actor_config``) does not pull in ``asyncpg`` or
+(e.g. ``taskq.worker.budget``) does not pull in ``asyncpg`` or
 concrete backends.  This keeps ``import taskq.testing`` lean.
 
 The names below are also imported under ``TYPE_CHECKING`` so static tools

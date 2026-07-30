@@ -23,6 +23,7 @@ from taskq._di import ProviderRegistry, Scope
 from taskq._di.scopes import LoopScope, ProcessScope, ThreadScope, make_resolver
 from taskq._dsn import dsn_host as _dsn_host
 from taskq.actor import ActorRef
+from taskq.actor_config import ActorConfig
 from taskq.backend._protocol import Backend, JobRow, ScheduleCreateArgs
 from taskq.backend.clock import Clock, SystemClock
 from taskq.backend.postgres import PostgresBackend
@@ -42,7 +43,6 @@ from taskq.ratelimit._provider import register_rate_limit_registry, register_red
 from taskq.ratelimit.registry import registry as rl_registry
 from taskq.settings import WorkerSettings
 from taskq.worker._watchdog import LoopLagWatchdog, ShutdownWatchdog, loop_watchdog_loop
-from taskq.worker.actor_config import ActorConfig
 from taskq.worker.cancel import make_cancel_controller
 from taskq.worker.deps import WorkerDeps, open_worker_deps
 from taskq.worker.health import HealthServer

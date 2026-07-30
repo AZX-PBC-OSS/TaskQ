@@ -4,7 +4,7 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
-from taskq.worker.actor_config import ActorConfig
+from taskq.actor_config import ActorConfig
 
 # ── Construction ───────────────────────────────────────────────────────────
 

@@ -12,8 +12,8 @@ import pytest
 
 from taskq._ids import new_base62
 from taskq._json import dumps_str
+from taskq.actor_config import ActorConfig
 from taskq.exceptions import ActorConfigDriftList
-from taskq.worker.actor_config import ActorConfig
 from taskq.worker.startup import sync_actor_config
 
 

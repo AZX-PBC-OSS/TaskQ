@@ -10,8 +10,8 @@ from typing import Any
 import pytest
 from typer.testing import CliRunner
 
+from taskq.actor_config_ops import DeregisterResult
 from taskq.cli import app
-from taskq.worker.actor_config_ops import DeregisterResult
 
 runner = CliRunner()
 

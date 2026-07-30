@@ -20,6 +20,7 @@ from uuid import UUID
 import structlog
 from pydantic import BaseModel
 
+from taskq.actor_config import ActorConfig
 from taskq.backend._protocol import (
     EventRow,
     JobId,
@@ -31,7 +32,6 @@ from taskq.batch import BatchCompletionStatus
 from taskq.context import JobContext
 from taskq.exceptions import Snooze
 from taskq.retry import OnRetryExhausted, OnSuccess, RetryClassifierHook, RetryPolicy
-from taskq.worker.actor_config import ActorConfig
 
 if TYPE_CHECKING:
     from taskq.testing.in_memory import InMemoryBackend

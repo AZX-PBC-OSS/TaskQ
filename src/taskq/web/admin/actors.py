@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from jinja2 import Environment
 
+from taskq.actor_config_ops import deregister_actor
 from taskq.exceptions import ActorDeregistrationError
 from taskq.settings import TaskQSettings
 from taskq.web.admin._factory import (
@@ -19,7 +20,6 @@ from taskq.web.admin._factory import (
     get_templates,
     validate_csrf,
 )
-from taskq.worker.actor_config_ops import deregister_actor
 
 _ACTORS_SQL = """
 SELECT ac.actor, ac.max_concurrent, ac.max_pending, ac.queue,

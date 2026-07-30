@@ -30,9 +30,7 @@ from taskq._close import (
     close_redis_bounded,
 )
 from taskq.actor import ActorRef
-from taskq.exceptions import ActorConfigDriftList, ActorDeregistrationError
-from taskq.settings import TaskQSettings, WorkerSettings
-from taskq.worker.actor_config_ops import (
+from taskq.actor_config_ops import (
     UNSET,
     ActorConfigRow,
     Unset,
@@ -41,6 +39,8 @@ from taskq.worker.actor_config_ops import (
     list_actor_configs,
     set_actor_config_capacity,
 )
+from taskq.exceptions import ActorConfigDriftList, ActorDeregistrationError
+from taskq.settings import TaskQSettings, WorkerSettings
 from taskq.worker.dev import dev_watch_loop
 from taskq.worker.run import worker_main as _worker_main
 

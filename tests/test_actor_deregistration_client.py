@@ -10,12 +10,12 @@ from uuid import uuid4
 import asyncpg
 import pytest
 
+from taskq.actor_config import ActorConfig
 from taskq.exceptions import (
     ActorHasActiveJobsError,
     ActorNotFoundError,
 )
 from taskq.testing.fixtures import ModulePgSchema
-from taskq.worker.actor_config import ActorConfig
 from taskq.worker.startup import sync_actor_config
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]

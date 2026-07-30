@@ -2,13 +2,13 @@
 
 Provides a typed surface for listing, inspecting, tuning, and deregistering
 stored ``actor_config`` rows. Each method acquires a connection from the
-injected pool, delegates to ``taskq.worker.actor_config_ops``, and returns
+injected pool, delegates to ``taskq.actor_config_ops``, and returns
 the result.
 """
 
 from typing import TYPE_CHECKING
 
-from taskq.worker.actor_config_ops import (
+from taskq.actor_config_ops import (
     UNSET,
     ActorConfigRow,
     DeregisterResult,
@@ -29,7 +29,7 @@ class ActorsClient:
     """Pool-wrapping facade for actor configuration operations.
 
     Acquires a connection from the injected pool for each call, delegates
-    to ``taskq.worker.actor_config_ops``, and returns the result. The
+    to ``taskq.actor_config_ops``, and returns the result. The
     caller must have opened the pool; this class does not manage its
     lifecycle.
 
@@ -83,7 +83,7 @@ class ActorsClient:
     ) -> DeregisterResult:
         """Deregister an actor with safety checks.
 
-        See :func:`taskq.worker.actor_config_ops.deregister_actor` for
+        See :func:`taskq.actor_config_ops.deregister_actor` for
         the full semantics.
         """
         async with self._pool.acquire() as conn:

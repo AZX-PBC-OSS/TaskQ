@@ -6,13 +6,13 @@ import asyncpg
 import structlog
 
 from taskq._json import dumps_str, loads
+from taskq.actor_config import ActorConfig
 from taskq.backend._protocol import ConnLike
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining it
 )
 from taskq.exceptions import ActorConfigDriftError, ActorConfigDriftList
 from taskq.obs import get_logger
-from taskq.worker.actor_config import ActorConfig
 
 logger: structlog.stdlib.BoundLogger = get_logger(__name__)
 

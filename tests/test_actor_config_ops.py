@@ -1,4 +1,4 @@
-"""Tests for `taskq.worker.actor_config_ops`: the operator read/tune surface
+"""Tests for `taskq.actor_config_ops`: the operator read/tune surface
 that backs `taskq actor-config get/set/list`.
 
 These are integration-tier (real Postgres) because the whole point of the
@@ -11,8 +11,8 @@ import asyncpg
 import pytest
 
 from taskq._ids import new_base62
-from taskq.worker.actor_config import ActorConfig
-from taskq.worker.actor_config_ops import (
+from taskq.actor_config import ActorConfig
+from taskq.actor_config_ops import (
     get_actor_config,
     list_actor_configs,
     set_actor_config_capacity,

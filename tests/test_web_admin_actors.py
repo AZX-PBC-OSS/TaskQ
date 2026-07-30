@@ -17,9 +17,9 @@ import pytest
 import pytest_asyncio
 from fastapi import FastAPI
 
+from taskq.actor_config import ActorConfig
 from taskq.testing.fixtures import ModulePgSchema
 from taskq.web.admin import create_router, setup_admin_state
-from taskq.worker.actor_config import ActorConfig
 from taskq.worker.startup import sync_actor_config
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
