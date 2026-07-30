@@ -142,7 +142,7 @@ async def compute_health(deps: WorkerDeps) -> HealthReport:
     # Deliberately NOT gated on watchdog_enabled: that switch controls the
     # force-exit detectors, not observability. Gating readiness too would
     # mean a worker with dead loops reports Ready whenever the switch is
-    # off — losing the zombie detection and keeping the traffic.
+    # off, which loses the zombie detection and keeps the traffic.
     tick_ages = deps.liveness.ages()
     stale_loops = deps.liveness.stale()
     if stale_loops:

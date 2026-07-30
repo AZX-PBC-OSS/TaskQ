@@ -453,8 +453,8 @@ class MaintenanceLeader:
                     worker_id=str(self._worker_id),
                     next_retry_secs=self._deps.settings.heartbeat_interval,
                 )
-            # Reaching here means a full election cycle completed — lock won,
-            # lost, or not attempted — without an unexpected error, so the
+            # Reaching here means a full election cycle completed (lock won,
+            # lost, or not attempted) without an unexpected error, so the
             # backstop streak resets. (The failure paths above continue
             # earlier, deliberately without resetting.)
             guard.ok()
@@ -538,8 +538,8 @@ class MaintenanceLeader:
                     # Why one deadline for the WHOLE iteration: the count > 0
                     # path awaits PG twice (scheduled_to_pending, then the
                     # acquire + pg_notify), and per-statement timeouts alone
-                    # admit a tick gap of k * timeout + 1.0s — over the
-                    # staleness budget for k > 1, a false detector-2 trip of
+                    # admit a tick gap of k * timeout + 1.0s, over the
+                    # staleness budget for k > 1: a false detector-2 trip of
                     # a healthy leader. asyncio.timeout raises TimeoutError,
                     # which the transient-PG branch below already handles.
                     async with asyncio.timeout(self._deps.settings.dispatcher_command_timeout):
@@ -600,7 +600,7 @@ class MaintenanceLeader:
                 # Why one deadline for the WHOLE tick: a tick is BEGIN + N
                 # statements (one per due schedule, plus catch-up bursts) +
                 # COMMIT, each separately bounded by the conn's
-                # command_timeout — so per-statement timeouts alone let a
+                # command_timeout, so per-statement timeouts alone let a
                 # degraded PG stretch one tick past the detector-2 budget
                 # and force-exit a healthy leader. asyncio.timeout raises
                 # the exact builtin TimeoutError, which the deadline-family
@@ -626,8 +626,8 @@ class MaintenanceLeader:
                 # correctly falls to the conn-state branch below.
                 if type(exc) is TimeoutError or isinstance(exc, asyncpg.QueryCanceledError):
                     # Deadline family (iteration deadline or a fired
-                    # command_timeout): the conn is provably responsive —
-                    # it answered the cancel, or asyncpg has already
+                    # command_timeout): the conn is provably responsive,
+                    # because it answered the cancel, or asyncpg has already
                     # terminated it, which the next tick's transaction()
                     # surfaces as a conn-state error below. Keep the conn and
                     # retry: dropping it (and demoting) on every slow tick
@@ -642,7 +642,7 @@ class MaintenanceLeader:
                 if isinstance(
                     exc, (asyncpg.PostgresConnectionError, asyncpg.InterfaceError, OSError)
                 ):
-                    # Conn-state family: the conn is dead or unusable — drop
+                    # Conn-state family: the conn is dead or unusable. Drop
                     # it and rebuild on a later tick.
                     await self._close_leader_owned_conns()
                     log.warning(
@@ -653,8 +653,8 @@ class MaintenanceLeader:
                     )
                     continue
                 # Backstop for anything outside the transient set (see
-                # _transient.py): tolerated and logged a few times — this
-                # loop's historical blanket catch — then deliberately fatal
+                # _transient.py): tolerated and logged a few times (this
+                # loop's historical blanket catch), then deliberately fatal
                 # rather than retrying a real bug forever.
                 guard.unexpected(exc)
                 log.error("cron-tick-failed", kind="cron_fire", error=str(exc))

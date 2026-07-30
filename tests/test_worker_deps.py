@@ -135,7 +135,7 @@ async def test_leader_conn_command_timeout(pg_dsn: str) -> None:
     """leader_conn carries dispatcher_command_timeout on the default path.
 
     deps.leader_conn_factory is the TaskQ-built _leader_dsn_factory on stock
-    deployments — the election conn, and the cron/monitor rebuilds that go
+    deployments: the election conn, and the cron/monitor rebuilds that go
     through the same factory, must be bounded or a stalled PG hangs those
     loops past the detector-2 budget."""
     settings = make_integration_settings(pg_dsn, DISPATCHER_COMMAND_TIMEOUT="2")

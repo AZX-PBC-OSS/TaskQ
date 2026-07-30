@@ -811,7 +811,7 @@ def _make_sibling_spawner(
             # Why the log is unconditional: watchdog_enabled=False gates the
             # enforcement below, not the signal. Without this record a
             # clean-returned sibling leaves the worker running half-staffed
-            # with no log, no metric, no signal — exactly the silence the
+            # with no log, no metric, no signal: exactly the silence the
             # detector exists to prevent, one switch earlier.
             _startup_log.error(
                 "sibling-returned-unexpectedly",

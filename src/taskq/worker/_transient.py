@@ -2,7 +2,7 @@
 
 Every long-lived worker loop that awaits Postgres treats the same set of
 errors as "PG is having a moment; log and retry next tick". That set used
-to be re-enumerated at every call site — and drifted: heartbeat learned
+to be re-enumerated at every call site, and it drifted: heartbeat learned
 ``QueryCanceledError`` (the server-side shape of a fired
 ``command_timeout``) while the leader loops kept only the OSError
 flavours, so a degraded PG could throw an uncaught error into the worker
@@ -10,13 +10,13 @@ TaskGroup and tear the whole worker down mid-blip. One tuple, one home:
 any shape a site learns, every site learns.
 
 The other half of the class: errors OUTSIDE the transient set. Before,
-they escaped into the loop's TaskGroup and crashed the worker — right for
-a contract violation, wrong for a one-off driver surprise, and silent in
-both directions (no distinct record before the crash; a blanket
-``except Exception`` like cron's would instead retry a real bug forever,
-ticking but doing no work — a functional zombie detector 2 cannot see,
-because its tick lands at the top of the loop). The guard below makes the
-choice explicit and observable.
+they escaped into the loop's TaskGroup and crashed the worker, which is
+right for a contract violation but wrong for a one-off driver surprise,
+and silent in both directions (no distinct record before the crash; a
+blanket ``except Exception`` like cron's would instead retry a real bug
+forever, ticking but doing no work, a functional zombie detector 2 cannot
+see because its tick lands at the top of the loop). The guard below makes
+the choice explicit and observable.
 """
 
 import asyncpg
@@ -27,29 +27,29 @@ from taskq.obs import get_logger, get_meter
 _log: structlog.stdlib.BoundLogger = get_logger(__name__)
 
 #: Errors that mean "PG is having a moment; retry next tick":
-#: - ``TimeoutError`` — client-side deadlines (``asyncio.timeout``,
+#: - ``TimeoutError``: client-side deadlines (``asyncio.timeout``,
 #:   ``command_timeout`` firing locally, pool-acquire timeout).
-#: - ``PostgresConnectionError`` — the connection is gone (covers
+#: - ``PostgresConnectionError``: the connection is gone (covers
 #:   ``ConnectionDoesNotExistError`` / ``ConnectionFailureError``).
-#: - ``InterfaceError`` / ``OSError`` — the connection is unusable or the
+#: - ``InterfaceError`` / ``OSError``: the connection is unusable or the
 #:   socket died.
-#: - ``QueryCanceledError`` — server-side 57014: asyncpg's OTHER shape for
+#: - ``QueryCanceledError``: server-side 57014, asyncpg's OTHER shape for
 #:   a fired ``command_timeout`` (the driver's cancel request landed).
-#: - ``AdminShutdownError`` — 57P01, PG restart/shutdown. An
+#: - ``AdminShutdownError``: 57P01, PG restart/shutdown. An
 #:   OperatorInterventionError, NOT a PostgresConnectionError: notify.py
 #:   learned this one the hard way.
-#: - ``CannotConnectNowError`` — 57P03, server in crash recovery / still
+#: - ``CannotConnectNowError``: 57P03, server in crash recovery or still
 #:   starting. Same OperatorInterventionError family.
-#: - ``TooManyConnectionsError`` — 53300, server saturated; a later tick
+#: - ``TooManyConnectionsError``: 53300, server saturated; a later tick
 #:   can succeed.
-#: - ``DeadlockDetectedError`` / ``SerializationError`` — 40P01/40001, the
+#: - ``DeadlockDetectedError`` / ``SerializationError``: 40P01/40001, the
 #:   canonical retry-the-transaction pair.
-#: - ``IdleSessionTimeoutError`` / ``IdleInTransactionSessionTimeoutError``
-#:   — operator-set session timeouts killing an idle (or idle-in-tx)
+#: - ``IdleSessionTimeoutError`` / ``IdleInTransactionSessionTimeoutError``:
+#:   operator-set session timeouts killing an idle (or idle-in-tx)
 #:   dedicated conn; the conn-loss path rebuilds on the next tick.
 #:
 #: Deliberately NOT here: auth failures (``InvalidPasswordError`` et al.)
-#: are not transient for static DSNs — they must not retry silently (the
+#: are not transient for static DSNs and must not retry silently (the
 #: credential-provider reopen path has its own deliberate broad catch);
 #: ``LockNotAvailableError`` needs a lock_timeout TaskQ never sets; data
 #: errors (constraint violations, undefined tables) are bugs, and the
@@ -87,7 +87,7 @@ class UnexpectedLoopErrorGuard:
     """Per-loop backstop for errors outside the transient set.
 
     Tolerates isolated surprises with a loud, distinct, alertable record
-    per occurrence — but re-raises after *max_consecutive* in a row, so a
+    per occurrence, but re-raises after *max_consecutive* in a row, so a
     permanent fault (a code bug, not a PG blip) still kills the worker
     deliberately instead of retrying forever into a zombie that ticks but
     does no work. Only a fully successful work iteration resets the
@@ -103,7 +103,7 @@ class UnexpectedLoopErrorGuard:
     ) -> None:
         if max_consecutive is None:
             # Resolved at construction (not as a def-time default) so the
-            # module constant is the single source — and tests can shrink it.
+            # module constant is the single source, and tests can shrink it.
             max_consecutive = DEFAULT_MAX_CONSECUTIVE_UNEXPECTED
         if max_consecutive < 1:
             raise ValueError(f"max_consecutive must be >= 1, got {max_consecutive}")

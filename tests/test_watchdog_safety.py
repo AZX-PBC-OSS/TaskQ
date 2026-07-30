@@ -215,8 +215,8 @@ def test_tick_age_gauge_callback_thread_safe_against_mutation(
 ) -> None:
     """The OTel observable-gauge callback runs on the SDK reader thread and
     reads the module-global _tick_age_cache while ages() and forget() mutate
-    it. Same failure shape as the _ticks race — RuntimeError from a dict
-    changing size mid-iteration — except it silently breaks the gauge
+    it. Same failure shape as the _ticks race: RuntimeError from a dict
+    changing size mid-iteration, except it silently breaks the gauge
     instead of taking detector 4 down. The slow items() forces the collision
     window deterministically instead of relying on scheduler luck."""
     import taskq.worker._watchdog as mod
@@ -327,8 +327,8 @@ async def test_trip_flush_is_bounded_against_a_hung_exporter(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """force_flush has no usable timeout against a hung OTLP collector (the
-    gRPC exporter ignores timeout_millis — opentelemetry#2663), so an
-    unbounded flush would stall the force-exit it precedes — exactly when
+    gRPC exporter ignores timeout_millis, opentelemetry#2663), so an
+    unbounded flush would stall the force-exit it precedes, exactly when
     the process is already known to be wedged. The flush must run on a
     thread with a hard join deadline so trip() still exits promptly."""
     from taskq.worker import _watchdog as mod
@@ -366,7 +366,7 @@ async def test_trip_flush_is_bounded_against_a_hung_exporter(
         thread.join(timeout=10.0)
 
         assert outcome == ["exited"], (
-            "trip() must force-exit even when the exporter never answers — "
+            "trip() must force-exit even when the exporter never answers; "
             "an unbounded force_flush turns the watchdog's exit into a second hang"
         )
         assert codes == [mod.EXIT_WATCHDOG]
@@ -382,7 +382,7 @@ async def test_trip_flush_is_bounded_against_a_hung_exporter(
 #
 # _watch() does not go through trip(): it logs, dumps faulthandler frames,
 # and calls os._exit inline. Without the same force_flush the
-# watchdog_trips_total{detector="event-loop-lag"} increment is dropped —
+# watchdog_trips_total{detector="event-loop-lag"} increment is dropped:
 # the trip you least want to be guessing about after the fact.
 
 
@@ -417,7 +417,7 @@ async def test_lag_watchdog_flushes_metrics_before_force_exit(
         poll_interval=0.01,
         clock=clock,
     )
-    t[0] = 100.0  # first poll sees 100s of lag — over the 30s budget
+    t[0] = 100.0  # first poll sees 100s of lag, over the 30s budget
 
     with pytest.raises(_ExitSentinelError):
         watchdog._watch()
@@ -540,7 +540,7 @@ async def test_health_socket_secured_when_tasks_enabled(tmp_path: Path) -> None:
         await server.stop()
 
 
-# ── watchdog_enabled must gate detector 3's enforcement — not its signal ──
+# ── watchdog_enabled must gate detector 3's enforcement, not its signal ──
 #
 # The setting description says it switches off all four detectors, but
 # detector 3 (sibling spawner clean-return contract) ran regardless of the
@@ -551,7 +551,7 @@ async def test_health_socket_secured_when_tasks_enabled(tmp_path: Path) -> None:
 #
 # Readiness is likewise NOT gated: watchdog_enabled switches off the
 # force-exit detectors, but a worker with dead loops must still report
-# NotReady — otherwise the zombie keeps taking traffic with the one
+# NotReady; otherwise the zombie keeps taking traffic with the one
 # remaining signal suppressed.
 
 
@@ -589,7 +589,7 @@ async def test_sibling_clean_return_tolerated_when_watchdog_disabled() -> None:
 
 async def test_sibling_clean_return_still_logs_when_watchdog_disabled() -> None:
     """Enforcement is gated, the signal is not: with watchdog_enabled=False a
-    sibling returning cleanly outside shutdown must still emit the error log —
+    sibling returning cleanly outside shutdown must still emit the error log;
     otherwise the worker runs half-staffed with no log, no metric, no signal."""
     import structlog.testing
 
@@ -609,7 +609,7 @@ async def test_sibling_clean_return_still_logs_when_watchdog_disabled() -> None:
         entry.get("event") == "sibling-returned-unexpectedly" and entry.get("log_level") == "error"
         for entry in captured
     ), (
-        "the sibling-returned-unexpectedly error log must be unconditional — "
+        "the sibling-returned-unexpectedly error log must be unconditional; "
         f"only shutdown_event.set() and the raise are gated: {captured}"
     )
 
@@ -731,7 +731,7 @@ async def test_compute_health_stale_loop_flips_readiness_when_watchdog_disabled(
     report = await compute_health(_health_deps(liveness, watchdog_enabled=False))
 
     assert report.ready is False, (
-        "a stale loop must flip readiness regardless of watchdog_enabled — "
+        "a stale loop must flip readiness regardless of watchdog_enabled; "
         f"gating the signal hides the zombie and keeps traffic flowing: {report.reasons}"
     )
     assert any("stale_loops=cron" in r for r in report.reasons)
@@ -829,7 +829,7 @@ async def test_shutdown_watchdog_cancel_leaves_no_pending_waiters() -> None:
 # and 8 structured records on every ordinary job-bearing shutdown (measured:
 # 8 dumps over a 40s drain against a 60s deadline). A drain still in the
 # front half of its hard budget is within expectations; one in its back
-# half is already abnormal. Gate the dumps there — the trip path still gets
+# half is already abnormal. Gate the dumps there; the trip path still gets
 # its dumps before dying.
 
 
@@ -870,7 +870,7 @@ async def test_shutdown_watchdog_straggler_dumps_wait_for_back_half(
 
 def test_dump_after_fraction_validation() -> None:
     """The gate fraction must lie in (0, 1): 0 would dump from the first
-    interval (the spam the gate exists to stop), 1.0 equals the deadline —
+    interval (the spam the gate exists to stop), 1.0 equals the deadline,
     the trip always fires first, silently disabling straggler dumps."""
     for bad in (0.0, -0.5, 1.0, 1.5):
         with pytest.raises(ValueError, match="dump_after_fraction"):
@@ -888,7 +888,7 @@ async def test_shutdown_watchdog_dumps_right_up_to_the_trip(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The gate must not eat the diagnostics that matter: once it opens,
-    dumps keep firing every interval until the deadline trip — a hung
+    dumps keep firing every interval until the deadline trip: a hung
     shutdown dies with a fresh picture of what was still alive."""
     from taskq.worker import _watchdog as mod
 
@@ -931,7 +931,7 @@ async def test_shutdown_watchdog_dumps_right_up_to_the_trip(
 
 
 async def test_shutdown_watchdog_logs_once_when_countdown_starts() -> None:
-    """One record when the countdown starts — the front half of the budget
+    """One record when the countdown starts: the front half of the budget
     is deliberately free of per-interval dumps, not blind: ops can see the
     watchdog is armed, the deadline, and when straggler dumps begin."""
     import structlog.testing
@@ -1123,7 +1123,7 @@ async def test_leader_dedicated_conn_uses_dispatcher_command_timeout(
 async def test_open_leader_conn_dsn_fallback_applies_command_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The election conn (leader_conn) DSN fallback must be bounded too —
+    """The election conn (leader_conn) DSN fallback must be bounded too;
     it never passed the timeout at all, so a stalled advisory-lock probe
     could hang the election loop's tick past the detector-2 budget."""
     from types import SimpleNamespace
@@ -1237,7 +1237,7 @@ async def test_open_worker_deps_leader_factory_applies_dispatcher_command_timeou
         worker_pool=cast(asyncpg.Pool, _FakePool()),
         notify_conn=cast(asyncpg.Connection, _FakeConn()),
         # leader role unset: the one role that falls back to the TaskQ-built
-        # DSN factory — the stock-deployment wiring under test.
+        # DSN factory; this is the stock-deployment wiring under test.
     )
 
     async with open_worker_deps(settings, connections=connections) as deps:
@@ -1252,7 +1252,7 @@ async def test_open_worker_deps_leader_factory_applies_dispatcher_command_timeou
         )
 
         # Rebuilds (election reopen, cron/monitor conns via the leader) go
-        # through the same factory — they must stay bounded too.
+        # through the same factory and must stay bounded too.
         captured.clear()
         await deps.leader_conn_factory()
         assert captured == [{"label": "leader", "command_timeout": 3.25}], (
@@ -1309,7 +1309,7 @@ async def test_shutdown_watchdog_wakes_when_shutdown_phase_changes(
 # ── The command timeout + trailing 1s sleep must fit the stale budget ───
 #
 # leader.scheduled_wake ticks once per iteration, awaits PG (bounded by
-# dispatcher_command_timeout), then sleeps 1.0s — worst-case tick gap =
+# dispatcher_command_timeout), then sleeps 1.0s. Worst-case tick gap =
 # timeout + 1.0s against a budget of max(period * grace_factor, floor).
 # Measured on the real loops with the real loop_watchdog_loop: timeout 10.0
 # vs budget 10.0 → gap 11.002s → detector 2 force-exited a healthy leader
@@ -1322,7 +1322,7 @@ async def test_shutdown_watchdog_wakes_when_shutdown_phase_changes(
 
 class _CommandTimeoutBackend:
     """Backend stand-in whose scheduled_to_pending stalls for stall_secs and
-    then raises TimeoutError — exactly what asyncpg does when the pool's
+    then raises TimeoutError, exactly what asyncpg does when the pool's
     command_timeout fires mid-query."""
 
     def __init__(self, stall_secs: float) -> None:
@@ -1387,7 +1387,7 @@ async def test_timeout_gap_over_budget_trips_stale_detector(
     exit_codes: list[int],
 ) -> None:
     """stall 2.5s + trailing sleep 1.0s = 3.5s gap vs budget max(1.0*3, 1)=3.0s
-    → detector 2 trips. The reviewer's measurement, scaled: timeout 10 vs
+    → detector 2 trips. Measured on the real loops: timeout 10 vs
     floor 10 → 11s gap → force-exit of a healthy, still-leader worker."""
     _liveness, shutdown, wake_task, wd_task = await _wake_loop_under_watchdog(
         stall_secs=2.5, grace_factor=3.0, stale_floor=1.0
@@ -1434,10 +1434,10 @@ async def test_timeout_gap_within_budget_does_not_trip(
 # asyncpg surfaces a fired command_timeout in two shapes: TimeoutError
 # (client-side deadline) AND asyncpg.QueryCanceledError (server-side 57014
 # after the driver's cancel request lands). QueryCanceledError is a
-# PostgresError — NOT a PostgresConnectionError and NOT an OSError — so the
+# PostgresError, NOT a PostgresConnectionError and NOT an OSError, so the
 # loops' conn-loss tuples miss it. Before the leader conns were bounded
 # this shape could not occur; now it can, and an uncaught one escapes into
-# the leader TaskGroup and tears the worker down mid-PG-degradation — the
+# the leader TaskGroup and tears the worker down mid-PG-degradation: the
 # exact failure bounding the conns was supposed to absorb. heartbeat.py
 # already catches both shapes for the same reason.
 
@@ -1489,7 +1489,7 @@ def _leader_deps(**settings_overrides: object) -> WorkerDeps:
 
 async def test_election_loop_survives_query_canceled_probe() -> None:
     """A QueryCanceledError from the bounded election conn must be treated
-    as transient PG loss (drop, warn, retry) — not escape into the leader
+    as transient PG loss (drop, warn, retry), not escape into the leader
     TaskGroup and tear the worker down."""
     from types import SimpleNamespace
     from typing import cast
@@ -1526,7 +1526,7 @@ async def test_scheduled_wake_survives_query_canceled(
 ) -> None:
     """Same shape one loop over: scheduled_to_pending raising
     QueryCanceledError must log and retry on schedule, not crash the loop
-    (and not trip detector 2 — the loop keeps ticking)."""
+    (and not trip detector 2; the loop keeps ticking)."""
     from types import SimpleNamespace
     from typing import cast
     from uuid import uuid4
@@ -1578,14 +1578,14 @@ async def test_scheduled_wake_survives_query_canceled(
 # leader.scheduled_wake awaits PG twice per iteration when work is due
 # (scheduled_to_pending, then pool.acquire + pg_notify) and leader.cron
 # runs a whole transaction. Per-statement timeouts alone admit a gap of
-# k * timeout + 1.0s — over the budget whenever k > 1. The iteration body
+# k * timeout + 1.0s, over the budget whenever k > 1. The iteration body
 # gets a single deadline (dispatcher_command_timeout), making the
 # timeout + 1.0s model the invariant checks actually true.
 
 
 class _StallAcquirePool:
     """Pool stand-in whose acquire() parks for stall_secs before yielding
-    a conn — a degraded/exhausted dispatcher pool."""
+    a conn, simulating a degraded/exhausted dispatcher pool."""
 
     def __init__(self, stall_secs: float) -> None:
         self._stall_secs = stall_secs
@@ -1609,7 +1609,7 @@ async def test_scheduled_wake_notify_path_gap_stays_within_budget(
 ) -> None:
     """The count > 0 path awaits twice: scheduled_to_pending (2.4s) then
     pool.acquire (2.4s). Without an iteration-level deadline the gap is
-    2.4 + 2.4 + 1.0 = 5.8s — over the 4.0s budget, a false trip. With the
+    2.4 + 2.4 + 1.0 = 5.8s, over the 4.0s budget: a false trip. With the
     body bounded at 2.5s the gap is 3.5s and the leader rides it out."""
     from types import SimpleNamespace
     from typing import cast
@@ -1648,7 +1648,7 @@ async def test_scheduled_wake_notify_path_gap_stays_within_budget(
     try:
         await asyncio.sleep(4.5)  # past the first full iteration either way
         assert exit_codes == [], (
-            "two slow statements in one iteration must not trip detector 2 — "
+            "two slow statements in one iteration must not trip detector 2; "
             f"the iteration needs a single deadline, not per-statement ones: {exit_codes}"
         )
         ages = liveness.ages()
@@ -1664,10 +1664,10 @@ async def test_cron_multi_statement_tick_gap_stays_within_budget(
     exit_codes: list[int],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A cron tick is BEGIN + N statements + COMMIT — each under the
+    """A cron tick is BEGIN + N statements + COMMIT, each under the
     per-statement timeout, summing past the staleness budget. The 5.5s
     stall stands in for a catch-up burst on a degraded PG: bounded at the
-    iteration level (2.5s) the gap is 3.5s, unbounded it is 6.5s — a
+    iteration level (2.5s) the gap is 3.5s, unbounded it is 6.5s: a
     false trip of a healthy leader."""
     from types import SimpleNamespace
     from typing import cast
@@ -1733,11 +1733,11 @@ async def test_cron_multi_statement_tick_gap_stays_within_budget(
 
 # ── The unexpected-error backstop ────────────────────────────────────────
 #
-# The transient set can never be complete — a driver upgrade, a new PG
+# The transient set can never be complete: a driver upgrade, a new PG
 # shape, an outright bug in the loop. Before, such errors either escaped
 # into the TaskGroup (a crash with no distinct record) or, in cron's
-# blanket catch, retried forever (a zombie that ticks but does no work —
-# detector 2 cannot see it because the tick lands at the loop top). The
+# blanket catch, retried forever as a zombie that ticks but does no work,
+# which detector 2 cannot see because the tick lands at the loop top. The
 # guard makes the choice explicit: a few tolerated, LOUD occurrences, then
 # deliberately fatal.
 
@@ -1784,7 +1784,7 @@ async def test_scheduled_wake_backstop_tolerates_then_goes_fatal(
 ) -> None:
     """Behavioral: a backend raising an unexpected error (a bug shape, not
     PG) is ridden out loudly for a few ticks, then the loop dies
-    deliberately — never an infinite silent retry, never a quiet crash."""
+    deliberately: never an infinite silent retry, never a quiet crash."""
     from types import SimpleNamespace
     from typing import cast
     from uuid import uuid4
@@ -1847,7 +1847,7 @@ async def test_scheduled_wake_backstop_tolerates_then_goes_fatal(
 # asyncpg raises degraded-PG conditions in more shapes than the OSError
 # family: server-side cancels, admin shutdown, crash recovery, connection
 # saturation, transaction-rollback states, session timeouts. Every one of
-# them is "PG is having a moment; retry next tick" — and every one of them
+# them is "PG is having a moment; retry next tick", and every one of them
 # used to be a coin-flip away from crashing a loop that enumerated only
 # the OSError flavours. The taxonomy pin locks the classification facts
 # the set relies on (so an asyncpg re-parenting breaks it loudly), and the
@@ -1857,13 +1857,13 @@ async def test_scheduled_wake_backstop_tolerates_then_goes_fatal(
 def test_transient_pg_error_taxonomy_facts() -> None:
     """The facts that justify the set's members: if an asyncpg upgrade
     re-parents any of these out of their family, the classification must
-    be revisited — this test is the alarm."""
+    be revisited; this test is the alarm."""
     import asyncpg
 
     from taskq.worker._transient import TRANSIENT_PG_ERRORS
 
     # None of the OperatorIntervention/InsufficientResources/TransactionRollback
-    # shapes are covered by the OSError-only tuples loops used to enumerate —
+    # shapes are covered by the OSError-only tuples loops used to enumerate;
     # that is exactly why they must be named explicitly.
     for cls in (
         asyncpg.QueryCanceledError,
@@ -1876,9 +1876,9 @@ def test_transient_pg_error_taxonomy_facts() -> None:
         asyncpg.IdleInTransactionSessionTimeoutError,
     ):
         assert not issubclass(cls, asyncpg.PostgresConnectionError), (
-            f"{cls.__name__} left the PostgresError-only family — re-check the set"
+            f"{cls.__name__} left the PostgresError-only family; re-check the set"
         )
-        assert not issubclass(cls, OSError), f"{cls.__name__} is now an OSError — re-check the set"
+        assert not issubclass(cls, OSError), f"{cls.__name__} is now an OSError; re-check the set"
         instance = cls("simulated")
         assert isinstance(instance, TRANSIENT_PG_ERRORS)
 
@@ -1886,7 +1886,7 @@ def test_transient_pg_error_taxonomy_facts() -> None:
     assert issubclass(asyncpg.ConnectionDoesNotExistError, TRANSIENT_PG_ERRORS)
     assert issubclass(asyncpg.ConnectionFailureError, TRANSIENT_PG_ERRORS)
 
-    # Auth failures stay OUT: they must not retry silently (static DSN) —
+    # Auth failures stay OUT: they must not retry silently (static DSN);
     # the credential-provider reopen path has its own deliberate catch.
     assert not issubclass(asyncpg.InvalidPasswordError, TRANSIENT_PG_ERRORS)
 
@@ -1920,7 +1920,7 @@ async def test_scheduled_wake_rides_out_every_transient_shape(
     make_exc: object,
 ) -> None:
     """Every classified-transient error shape gets a warning and a retry on
-    schedule — never a crash into the leader TaskGroup."""
+    schedule, never a crash into the leader TaskGroup."""
     from collections.abc import Callable as _Callable
     from types import SimpleNamespace
     from typing import cast

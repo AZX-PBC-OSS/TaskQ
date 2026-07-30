@@ -869,7 +869,7 @@ def test_cron_catch_up_window_zero_accepted() -> None:
 # worst-case tick gap is therefore timeout + 1.0s, and their staleness
 # budget is max(1.0 * watchdog_tick_grace_factor, watchdog_stale_floor).
 # If the gap can exceed the budget, detector 2 force-exits a healthy leader
-# mid-degradation — exactly what the field description forbids ("keep this
+# mid-degradation, exactly what the field description forbids ("keep this
 # below the watchdog staleness budget"). The default must clear the bar,
 # and the cross-field invariant must reject configs that do not.
 
@@ -895,7 +895,7 @@ def test_dispatcher_command_timeout_at_budget_rejected() -> None:
 
 
 def test_dispatcher_command_timeout_above_budget_rejected() -> None:
-    """A timeout beyond the budget is a guaranteed false-trip, not a risk —
+    """A timeout beyond the budget is a guaranteed false-trip, not a risk;
     and every bounded loop's constraint reports it (leader + producer here)."""
     with pytest.raises(DotEnvModelError, match=r"dispatcher_command_timeout"):
         _load(TASKQ_DISPATCHER_COMMAND_TIMEOUT="30.0")
@@ -915,7 +915,7 @@ def test_dispatcher_command_timeout_allowed_when_floor_raised() -> None:
 
 def test_dispatcher_command_timeout_unchecked_when_watchdog_disabled() -> None:
     """With watchdog_enabled=False detector 2 is never spawned, so the
-    timeout-vs-budget invariant cannot fire — a deployment that pinned the
+    timeout-vs-budget invariant cannot fire, so a deployment that pinned the
     old 10.0 default alongside the disabled watchdog must still boot."""
     s = _load(
         TASKQ_WATCHDOG_ENABLED="false",
@@ -930,7 +930,7 @@ def test_unsatisfiable_budget_errors_against_budget_fields() -> None:
     error must be attributed to the budget fields the operator can actually
     change, not the timeout field they cannot. (The slow producer poll
     keeps the producer side satisfiable so only the leader-loop error
-    fires — two errors would aggregate instead of raising ValidationError.)"""
+    fires, since two errors would aggregate instead of raising ValidationError.)"""
     with pytest.raises(ValidationError) as exc_info:
         _load(
             TASKQ_WATCHDOG_STALE_FLOOR="1.5",
@@ -945,7 +945,7 @@ def test_unsatisfiable_budget_errors_against_budget_fields() -> None:
 def test_producer_loop_budget_is_checked_too() -> None:
     """The invariant covers every bounded loop, not just the period-1
     leader loops: with NOTIFY disabled the producer ticks at poll_interval
-    and its budget is max(poll_interval * grace, floor) — 2.0s here, so a
+    and its budget is max(poll_interval * grace, floor): 2.0s here, so a
     3.9s timeout passes the leader check and still false-trips the
     producer (gap 3.9 + 0.2 = 4.1s)."""
     with pytest.raises(ValidationError, match=r"dispatcher_command_timeout"):

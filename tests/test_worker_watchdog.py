@@ -169,7 +169,7 @@ async def test_shutdown_watchdog_logs_stragglers_by_name(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """Straggler dumps fire once shutdown has consumed the back half of its
-    hard budget (elapsed >= deadline * 0.5) — an ordinary drain inside the
+    hard budget (elapsed >= deadline * 0.5). An ordinary drain inside the
     front half gets silence instead of per-interval stderr spam."""
     _, clock = _clock(start=31.0)  # 31s into a 60s deadline: past the gate
 

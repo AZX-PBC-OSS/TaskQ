@@ -67,7 +67,7 @@ EXIT_WATCHDOG = 2
 
 # Hard wall on the pre-exit metrics flush. force_flush has no usable
 # timeout against a hung OTLP collector (the gRPC exporter ignores
-# timeout_millis — opentelemetry#2663 — and self-bounds at 10s+), so the
+# timeout_millis, see opentelemetry#2663, and self-bounds at 10s+), so the
 # flush runs on a daemon thread with this join deadline: a wedged exporter
 # costs at most this many seconds, never more, and the thread dies with
 # the process on os._exit.
@@ -101,8 +101,8 @@ _tick_age_cache: dict[str, float] = {}
 # Guards _tick_age_cache against concurrent access: the OTel SDK reader
 # thread invokes the gauge callback while the worker loop thread mutates
 # the cache via ages()/forget(). Unsynchronized iteration raises
-# RuntimeError: dictionary changed size during iteration — the same
-# failure shape as the _ticks race, metrics-only. Lock order is always
+# RuntimeError: dictionary changed size during iteration, the same
+# failure shape as the _ticks race but metrics-only. Lock order is always
 # LoopLiveness._lock → _tick_age_cache_lock; the callback takes
 # _tick_age_cache_lock alone. Never the reverse.
 _tick_age_cache_lock = threading.Lock()
@@ -196,7 +196,7 @@ def _flush_metrics_before_exit() -> None:
     """Best-effort OTel flush before ``os._exit``, with a hard wall.
 
     ``os._exit`` skips the SDK's periodic exporter, so the trip counter
-    increment only survives if it is flushed first — but an unbounded
+    increment only survives if it is flushed first. But an unbounded
     ``force_flush`` against a hung collector would stall the force-exit it
     precedes (exactly when the process is already known to be wedged).
     Run the flush on a daemon thread and join with the hard
@@ -335,7 +335,7 @@ class ShutdownWatchdog:
 
     Lives outside the worker TaskGroup: parked on ``shutdown_event``,
     then counts down ``termination_grace_period``. While counting, logs
-    still-alive siblings (names + await sites) every *dump_interval* —
+    still-alive siblings (names + await sites) every *dump_interval*,
     but only once the shutdown has consumed at least
     ``dump_after_fraction`` of its hard budget. A drain still in its
     front half is within expectations and gets silence; one in its back
@@ -360,7 +360,7 @@ class ShutdownWatchdog:
         if not 0.0 < dump_after_fraction < 1.0:
             raise ValueError(
                 f"dump_after_fraction must be in (0, 1): at 1.0 the deadline trip "
-                f"always fires first, silently disabling straggler dumps — got "
+                f"always fires first, silently disabling straggler dumps; got "
                 f"{dump_after_fraction}"
             )
         self._shutdown_event = shutdown_event
@@ -420,7 +420,7 @@ class ShutdownWatchdog:
             t0 = anchored
         # One record per countdown, not per interval: the front half of the
         # budget is deliberately free of straggler dumps (see the gate
-        # below), but it must never be blind — this is how ops can tell the
+        # below), but it must never be blind. This is how ops can tell the
         # deadline is counting and when the dumps will begin.
         _log.info(
             "shutdown-watchdog-armed",
@@ -549,8 +549,8 @@ class LoopLagWatchdog:
                 sys.stderr.flush()
                 # Same flush-before-exit as trip(): without it the
                 # event-loop-lag increment of watchdog_trips_total never
-                # reaches the exporter — the trip you least want to be
-                # guessing about after the fact.
+                # reaches the exporter, and this is the trip you least want
+                # to be guessing about after the fact.
                 _flush_metrics_before_exit()
                 os._exit(EXIT_WATCHDOG)
                 # Unreachable in production. If os._exit is ever intercepted

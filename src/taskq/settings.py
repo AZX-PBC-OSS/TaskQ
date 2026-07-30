@@ -1009,12 +1009,12 @@ class WorkerSettings(TaskQSettings):
         # sleeps one period afterwards, so its worst-case tick gap is
         # timeout + period. That gap must fit the loop's own budget
         # max(period * watchdog_tick_grace_factor, watchdog_stale_floor) or
-        # detector 2 force-exits a healthy worker mid-degradation —
-        # measured: timeout 10.0 against budget 10.0 produced an 11s tick
-        # gap and a trip at age 10.008s. Only checked when the watchdog is
+        # detector 2 force-exits a healthy worker mid-degradation
+        # (measured: timeout 10.0 against budget 10.0 produced an 11s tick
+        # gap and a trip at age 10.008s). Only checked when the watchdog is
         # armed: with watchdog_enabled=False detector 2 is never spawned,
-        # and a stale tick only costs a transient NotReady — not worth
-        # blocking boot over.
+        # and a stale tick only costs a transient NotReady, which is not
+        # worth blocking boot over.
         if self.watchdog_enabled:
             producer_period = (
                 self.notify_poll_interval if self.notify_enabled else self.poll_interval
@@ -1026,8 +1026,8 @@ class WorkerSettings(TaskQSettings):
                 budget = max(period * self.watchdog_tick_grace_factor, self.watchdog_stale_floor)
                 if budget <= period + 1.0:
                     # 1.0 = dispatcher_command_timeout's own ge= minimum: no
-                    # legal timeout can satisfy the gap — the budget side is
-                    # what the operator must change.
+                    # legal timeout can satisfy the gap, so the budget side
+                    # is what the operator must change.
                     errors.append(
                         ValidationError(
                             field_name="watchdog_stale_floor",
