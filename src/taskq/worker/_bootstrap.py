@@ -170,6 +170,10 @@ async def _main(
     _registry: ProviderRegistry | None = None,
     _cron_registry: list[CronScheduleSpec] | None = None,
     connections: WorkerConnections | None = None,
+    until_idle: bool = False,
+    idle_settle_window: float | None = None,
+    idle_poll_interval: float | None = None,
+    max_runtime: float | None = None,
 ) -> int:
     """Worker bootstrap: open deps, wire TaskGroup of siblings, run to shutdown.
 
@@ -250,6 +254,27 @@ async def _main(
     _producer_log = structlog.get_logger("taskq.worker.run.producer")
 
     async with open_worker_deps(settings, connections=connections) as deps:
+        # ── until_idle override resolution ──────────────────────────────
+        if until_idle:
+            settle = (
+                idle_settle_window if idle_settle_window is not None else settings.idle_settle_window
+            )
+            poll = (
+                idle_poll_interval
+                if idle_poll_interval is not None
+                else settings.idle_poll_interval
+            )
+            runtime = (
+                max_runtime if max_runtime is not None else settings.idle_max_runtime
+            )
+            if _cron_registry:
+                _startup_log.warning(
+                    "until-idle-with-cron",
+                    kind="until_idle_with_cron",
+                    message="until_idle mode is incompatible with cron-driven workloads; "
+                    "the queue will never drain. Use --max-runtime as a cap.",
+                )
+
         # Only register the worker pool in DI when the user hasn't provided
         # their own asyncpg.Pool provider — and only then may the reload
         # coordinator refresh the DI cache after a hot-reload swap.
@@ -723,6 +748,26 @@ async def _main(
                             name="worker.loop_watchdog",
                         )
 
+                    if until_idle:
+                        from taskq.worker.drain import drain_monitor_loop
+
+                        _spawn(
+                            drain_monitor_loop(
+                                deps,
+                                settings,
+                                worker_id,
+                                shutdown_event,
+                                escalate_event,
+                                orchestrator_holder,
+                                backend,
+                                idle_settle_window=settle,  # type: ignore[possibly-undefined]  # Why: settle is only referenced when until_idle is True, which guarantees it was assigned above.
+                                idle_poll_interval=poll,  # type: ignore[possibly-undefined]
+                                max_runtime=runtime,  # type: ignore[possibly-undefined]
+                            ),
+                            may_return=True,
+                            name="worker.drain_monitor",
+                        )
+
                     await shutdown_event.wait()
             finally:
                 # The order here matters, and every statement must be
@@ -937,6 +982,10 @@ def worker_main(
     di_registry: ProviderRegistry | None = None,
     cron_registry: list[CronScheduleSpec] | None = None,
     connections: WorkerConnections | None = None,
+    until_idle: bool = False,
+    idle_settle_window: float | None = None,
+    idle_poll_interval: float | None = None,
+    max_runtime: float | None = None,
 ) -> int:
     """Worker process entry point.
 
@@ -982,5 +1031,9 @@ def worker_main(
                 _registry=di_registry,
                 _cron_registry=schedule_specs,
                 connections=connections,
+                until_idle=until_idle,
+                idle_settle_window=idle_settle_window,
+                idle_poll_interval=idle_poll_interval,
+                max_runtime=max_runtime,
             )
         )

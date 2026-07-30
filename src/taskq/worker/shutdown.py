@@ -312,6 +312,10 @@ def install_signal_handlers(
         nonlocal _sig_count
         _sig_count += 1
         if _sig_count == 1:
+            # H2 guard: skip if orchestration is already in progress
+            # (e.g., drain monitor triggered first)
+            if orchestrator_holder or deps.shutdown_phase is not ShutdownPhase.NONE:
+                return
             task = loop.create_task(
                 orchestrate_shutdown(
                     deps,
