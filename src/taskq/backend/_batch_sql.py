@@ -30,9 +30,8 @@ from taskq.backend._protocol import (
     ConnLike,
     EnqueueArgs,
     JobRow,
-    parse_batch_status,
 )
-from taskq.backend._records import _batch_row_from_record, jsonb_to_dict
+from taskq.backend._records import _batch_row_from_record
 from taskq.backend._sql_templates import SqlTemplates
 from taskq.backend.clock import Clock
 from taskq.backend.statemachine import TERMINAL_STATUSES

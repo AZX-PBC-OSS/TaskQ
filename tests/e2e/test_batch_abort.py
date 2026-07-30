@@ -116,9 +116,7 @@ async def test_batch_abort_after_threshold(
         f"got {len(attempt_effects)}"
     )
 
-    batch_status = await fetch_batch_status(
-        e2e_pg_pool, e2e_schema.schema_name, batch_id
-    )
+    batch_status = await fetch_batch_status(e2e_pg_pool, e2e_schema.schema_name, batch_id)
     assert batch_status == "aborted", f"batch row status={batch_status!r}, expected 'aborted'"
 
 
@@ -185,9 +183,7 @@ async def test_batch_abort_with_finalizer(
     )
 
     # Batch is aborted
-    batch_status = await fetch_batch_status(
-        e2e_pg_pool, e2e_schema.schema_name, batch_id
-    )
+    batch_status = await fetch_batch_status(e2e_pg_pool, e2e_schema.schema_name, batch_id)
     assert batch_status == "aborted", f"batch row status={batch_status!r}, expected 'aborted'"
 
     # Finalizer should NOT be cancelled by the abort — it's not stamped

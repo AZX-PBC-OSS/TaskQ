@@ -127,9 +127,7 @@ class TestInMemoryCreateBatch:
         backend = _make_backend()
         bid = new_uuid()
 
-        await _create_test_batch(
-            backend, batch_id=bid, expected_size=5, failure_threshold=3
-        )
+        await _create_test_batch(backend, batch_id=bid, expected_size=5, failure_threshold=3)
 
         result = await backend.get_batch(bid)
         assert result is not None
@@ -150,9 +148,7 @@ class TestInMemoryIncrementBatchFailures:
         backend = _make_backend()
         bid = new_uuid()
 
-        await _create_test_batch(
-            backend, batch_id=bid, expected_size=5, failure_threshold=3
-        )
+        await _create_test_batch(backend, batch_id=bid, expected_size=5, failure_threshold=3)
         _make_batch_job(backend, batch_id=bid, status="pending")
         _make_batch_job(backend, batch_id=bid, status="scheduled")
 
@@ -173,9 +169,7 @@ class TestInMemoryIncrementBatchFailures:
         backend = _make_backend()
         bid = new_uuid()
 
-        await _create_test_batch(
-            backend, batch_id=bid, expected_size=5, failure_threshold=3
-        )
+        await _create_test_batch(backend, batch_id=bid, expected_size=5, failure_threshold=3)
 
         c1, _, _ = await backend.increment_batch_failures(bid)
         c2, _, _ = await backend.increment_batch_failures(bid)
@@ -189,9 +183,7 @@ class TestInMemoryIncrementBatchFailures:
         backend = _make_backend()
         bid = new_uuid()
 
-        await _create_test_batch(
-            backend, batch_id=bid, expected_size=1, failure_threshold=3
-        )
+        await _create_test_batch(backend, batch_id=bid, expected_size=1, failure_threshold=3)
         _make_batch_job(backend, batch_id=bid, status="succeeded")
 
         count, threshold, remaining = await backend.increment_batch_failures(bid)
@@ -209,9 +201,7 @@ class TestInMemoryResetBatchFailures:
         backend = _make_backend()
         bid = new_uuid()
 
-        await _create_test_batch(
-            backend, batch_id=bid, expected_size=5, failure_threshold=3
-        )
+        await _create_test_batch(backend, batch_id=bid, expected_size=5, failure_threshold=3)
         _make_batch_job(backend, batch_id=bid, status="pending")
         _make_batch_job(backend, batch_id=bid, status="succeeded")
 
