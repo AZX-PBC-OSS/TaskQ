@@ -86,6 +86,12 @@ async def test_count_active_jobs_queue_subset() -> None:
     assert await backend.count_active_jobs(["default"]) == 1
 
 
+async def test_count_active_jobs_nonexistent_queue() -> None:
+    """Non-existent queue names return 0 (no error)."""
+    backend = InMemoryBackend(FakeClock(_CLOCK_START))
+    assert await backend.count_active_jobs(["nonexistent"]) == 0
+
+
 @pytest.mark.integration
 async def test_pg_count_active_jobs(clean_jobs_app: JobsApp) -> None:
     """PostgresBackend.count_active_jobs matches inserted rows."""

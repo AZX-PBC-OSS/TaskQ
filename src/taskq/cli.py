@@ -197,8 +197,7 @@ def worker(
     idle_poll_interval: float | None = typer.Option(
         None,
         "--idle-poll-interval",
-        help="How often to check queue depth. Overrides "
-        "TASKQ_IDLE_POLL_INTERVAL. Default 1.0.",
+        help="How often to check queue depth. Overrides TASKQ_IDLE_POLL_INTERVAL. Default 1.0.",
     ),
     max_runtime: float | None = typer.Option(
         None,

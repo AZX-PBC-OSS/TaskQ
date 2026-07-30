@@ -9,6 +9,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 from uuid import uuid4
 
+import pytest
 from pydantic import BaseModel
 
 from taskq._di.registry import ProviderRegistry
@@ -329,6 +330,24 @@ async def test_di_consumer_loop_increments_on_exception() -> None:
     assert deps.drain_failures == 1
 
 
+async def test_di_consumer_loop_no_increment_on_cancelled_as_value() -> None:
+    """If dispatch_one_job somehow returns 'cancelled' as a value (not
+    raising CancelledError), drain_failures is NOT incremented.
+
+    In the real code path, CancelledError propagates as BaseException
+    and never reaches the outcome check. But this test documents the
+    contract: 'cancelled' is NOT in the failure set.
+    """
+
+    async def _fake_dispatch(*args: object, **kwargs: object) -> AttemptOutcome:
+        return "cancelled"
+
+    deps = await _run_one_job_with_fake_dispatch(
+        _fake_dispatch, actor_name="test_drain_fail_cancelled"
+    )
+    assert deps.drain_failures == 0
+
+
 # ── Drain monitor loop ─────────────────────────────────────────────
 
 
@@ -621,3 +640,68 @@ async def test_drain_monitor_continues_after_count_error() -> None:
         exit_code = await orchestrator_holder[0]
 
     assert exit_code == 0
+
+
+async def test_drain_monitor_propagates_non_recoverable_error() -> None:
+    """Non-recoverable exceptions from count_active_jobs propagate
+    (tear down the TaskGroup), not silently swallowed."""
+    deps = _make_mock_deps(active_jobs_count=0)
+    backend = MagicMock()
+    backend.count_active_jobs = AsyncMock(side_effect=TypeError("bad backend"))
+
+    shutdown_event = asyncio.Event()
+    escalate_event = asyncio.Event()
+    orchestrator_holder: list[asyncio.Task[int]] = []
+
+    with pytest.raises(TypeError):
+        await drain_monitor_loop(
+            deps,
+            deps.settings,
+            uuid4(),
+            shutdown_event,
+            escalate_event,
+            orchestrator_holder,
+            backend,
+            idle_settle_window=0.1,
+            idle_poll_interval=0.05,
+            max_runtime=None,
+        )
+
+
+async def test_drain_monitor_settle_window_zero() -> None:
+    """idle_settle_window=0.0 triggers after one poll interval (not instant).
+
+    With settle=0, the first idle detection sets idle_since, then on the
+    NEXT poll (after idle_poll_interval), idle_elapsed >= 0.0 is True.
+    So two polls are needed, not one.
+    """
+    call_count = 0
+
+    async def mock_count(queues: list[str]) -> int:
+        nonlocal call_count
+        call_count += 1
+        return 0
+
+    deps = _make_mock_deps(active_jobs_count=0)
+    backend = MagicMock()
+    backend.count_active_jobs = mock_count
+
+    shutdown_event = asyncio.Event()
+    escalate_event = asyncio.Event()
+    orchestrator_holder: list[asyncio.Task[int]] = []
+
+    async with _mock_orchestrate():
+        await drain_monitor_loop(
+            deps,
+            deps.settings,
+            uuid4(),
+            shutdown_event,
+            escalate_event,
+            orchestrator_holder,
+            backend,
+            idle_settle_window=0.0,
+            idle_poll_interval=0.05,
+            max_runtime=None,
+        )
+    assert len(orchestrator_holder) == 1
+    assert call_count >= 2  # at least two polls needed

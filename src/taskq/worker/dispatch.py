@@ -43,9 +43,10 @@ from taskq.obs import (
 from taskq.ratelimit.refs import KeyedReservationRef
 from taskq.ratelimit.registry import RateLimitRegistry, queue_concurrency_reservation_name
 from taskq.retry import ActorConfigLike
-from taskq.worker._consumer import AttemptOutcome, consume_one_job
+from taskq.worker._consumer import consume_one_job
 from taskq.worker._handlers import (
     _TERMINAL_WRITE_INFRA_EXCEPTIONS,  # pyright: ignore[reportPrivateUsage]  # Why: dispatch_one_job's direct-call path for _handle_generic_exception needs the same infra guard as _run_terminal_path to prevent false terminal Redis publishes and exception mislabeling.
+    AttemptOutcome,
     _handle_generic_exception,  # pyright: ignore[reportPrivateUsage]  # Why: _handle_generic_exception implements the same exception→retry/fail routing as consume_one_job's inner handlers; dispatch_one_job needs it for DI-resolution failures that escape consume_one_job's own try/except.
     _log_terminal_write_failed,  # pyright: ignore[reportPrivateUsage]  # Why: same rationale as _TERMINAL_WRITE_INFRA_EXCEPTIONS above.
 )

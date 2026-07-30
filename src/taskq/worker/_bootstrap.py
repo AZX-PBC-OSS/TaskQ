@@ -255,18 +255,21 @@ async def _main(
 
     async with open_worker_deps(settings, connections=connections) as deps:
         # ── until_idle override resolution ──────────────────────────────
+        settle: float = settings.idle_settle_window
+        poll: float = settings.idle_poll_interval
+        runtime: float | None = settings.idle_max_runtime
         if until_idle:
             settle = (
-                idle_settle_window if idle_settle_window is not None else settings.idle_settle_window
+                idle_settle_window
+                if idle_settle_window is not None
+                else settings.idle_settle_window
             )
             poll = (
                 idle_poll_interval
                 if idle_poll_interval is not None
                 else settings.idle_poll_interval
             )
-            runtime = (
-                max_runtime if max_runtime is not None else settings.idle_max_runtime
-            )
+            runtime = max_runtime if max_runtime is not None else settings.idle_max_runtime
             if _cron_registry:
                 _startup_log.warning(
                     "until-idle-with-cron",
@@ -760,9 +763,9 @@ async def _main(
                                 escalate_event,
                                 orchestrator_holder,
                                 backend,
-                                idle_settle_window=settle,  # type: ignore[possibly-undefined]  # Why: settle is only referenced when until_idle is True, which guarantees it was assigned above.
-                                idle_poll_interval=poll,  # type: ignore[possibly-undefined]
-                                max_runtime=runtime,  # type: ignore[possibly-undefined]
+                                idle_settle_window=settle,
+                                idle_poll_interval=poll,
+                                max_runtime=runtime,
                             ),
                             may_return=True,
                             name="worker.drain_monitor",

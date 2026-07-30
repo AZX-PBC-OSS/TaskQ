@@ -62,9 +62,21 @@ def test_idle_settle_window_rejects_negative() -> None:
         _load(TASKQ_IDLE_SETTLE_WINDOW="-1.0")
 
 
+def test_idle_settle_window_zero_accepted() -> None:
+    """TASKQ_IDLE_SETTLE_WINDOW=0.0 is accepted (ge=0.0 allows zero)."""
+    s = _load(TASKQ_IDLE_SETTLE_WINDOW="0.0")
+    assert s.idle_settle_window == 0.0
+
+
 def test_idle_poll_interval_rejects_below_minimum() -> None:
     with pytest.raises(ConstraintViolationError):
         _load(TASKQ_IDLE_POLL_INTERVAL="0.05")
+
+
+def test_idle_poll_interval_minimum_accepted() -> None:
+    """TASKQ_IDLE_POLL_INTERVAL=0.1 (the minimum, ge=0.1) is accepted."""
+    s = _load(TASKQ_IDLE_POLL_INTERVAL="0.1")
+    assert s.idle_poll_interval == 0.1
 
 
 def test_idle_max_runtime_rejects_zero() -> None:

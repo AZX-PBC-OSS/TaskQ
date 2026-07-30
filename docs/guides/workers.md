@@ -653,7 +653,8 @@ is correct for finite-batch scenarios but may cause unexpected waiting
 in shared-queue deployments.
 
 **`idle_settle_window = 0`:** Setting the settle window to 0 disables the
-settle period, making drain detection instant. This is safe when the
+settle period, making drain detection near-instant (one poll interval).
+This is safe when the
 producer has finished enqueuing before the worker starts (typical for CI
 and batch workloads). For shared-queue or concurrent-producer scenarios,
 keep the default 2s settle window to handle the race where a producer

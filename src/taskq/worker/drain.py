@@ -13,7 +13,6 @@ Exit codes:
 """
 
 import asyncio
-import contextlib
 import time
 from typing import TYPE_CHECKING
 from uuid import UUID
@@ -21,7 +20,8 @@ from uuid import UUID
 import asyncpg
 import structlog
 
-from taskq.worker.shutdown import ShutdownPhase, orchestrate_shutdown
+from taskq.worker._leader_sweeps import _sleep_interruptible
+from taskq.worker.shutdown import _orchestration_in_progress, orchestrate_shutdown
 
 if TYPE_CHECKING:
     from taskq.backend._protocol import Backend
@@ -47,6 +47,7 @@ EXIT_DRAIN_TIMEOUT = 3
 _COUNT_RECOVERABLE_EXCEPTIONS = (
     TimeoutError,
     asyncpg.PostgresConnectionError,
+    asyncpg.InterfaceError,
     OSError,
 )
 
@@ -173,7 +174,7 @@ async def drain_monitor_loop(
             idle_since = None
 
         # Wait for poll interval or shutdown
-        await _sleep_or_shutdown(shutdown_event, idle_poll_interval)
+        await _sleep_interruptible(shutdown_event, idle_poll_interval)
 
     _log.info("drain-monitor-exit", reason="shutdown_event", worker_id=str(worker_id))
 
@@ -203,7 +204,7 @@ async def _trigger_drain_shutdown(
     loop iterations, not between synchronous Python statements, so no
     signal can interleave between create_task() and .append().
     """
-    if orchestrator_holder or deps.shutdown_phase is not ShutdownPhase.NONE:
+    if _orchestration_in_progress(orchestrator_holder, deps):
         _log.info(
             "drain-monitor-skip-trigger",
             reason="orchestration-already-active",
@@ -233,22 +234,3 @@ async def _trigger_drain_shutdown(
         exit_code=exit_code,
         worker_id=str(worker_id),
     )
-
-
-async def _sleep_or_shutdown(shutdown_event: asyncio.Event, duration: float) -> None:
-    """Sleep for duration, or return early if shutdown_event is set."""
-    if shutdown_event.is_set():
-        return
-    sleep_task = asyncio.create_task(asyncio.sleep(duration))
-    shutdown_task = asyncio.create_task(shutdown_event.wait())
-    try:
-        await asyncio.wait(
-            [sleep_task, shutdown_task],
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-    finally:
-        for task in (sleep_task, shutdown_task):
-            if not task.done():
-                task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await task

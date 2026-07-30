@@ -331,3 +331,33 @@ def test_max_runtime_passed(monkeypatch: Any) -> None:
     )
     assert result.exit_code == 0, f"stderr: {result.stderr}"
     assert captured["max_runtime"] == 300.0
+
+
+def test_idle_poll_interval_passed(monkeypatch: Any) -> None:
+    """--idle-poll-interval passes the value to worker_main."""
+    captured: dict[str, Any] = {}
+
+    def fake_worker_main(
+        settings: Any,
+        *,
+        actor_registry: Any = None,
+        idle_poll_interval: float | None = None,
+        **kwargs: Any,
+    ) -> int:
+        captured["idle_poll_interval"] = idle_poll_interval
+        return 0
+
+    monkeypatch.setattr("taskq.cli._worker_main", fake_worker_main)
+    result = runner.invoke(
+        app,
+        [
+            "worker",
+            "--actors",
+            _NO_ACTORS_PATH,
+            "--until-idle",
+            "--idle-poll-interval",
+            "0.5",
+        ],
+    )
+    assert result.exit_code == 0, f"stderr: {result.stderr}"
+    assert captured["idle_poll_interval"] == 0.5
