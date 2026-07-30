@@ -127,7 +127,7 @@ async def open_dedicated_conn(
     hang the caller indefinitely.
     """
     if command_timeout is not None:
-        conn = await asyncpg.connect(dsn, command_timeout=command_timeout)
+        conn = await asyncpg.connect(dsn, command_timeout=command_timeout, timeout=command_timeout)
     else:
         conn = await asyncpg.connect(dsn)
     applied = apply_keepalive_to_conn(conn, label=label) if apply_keepalive else False
