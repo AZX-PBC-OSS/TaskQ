@@ -14,6 +14,7 @@ import time
 from datetime import UTC, date, datetime, timedelta
 from typing import cast
 
+import asyncpg
 import croniter as cr
 import structlog
 
@@ -263,6 +264,7 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                     TimeoutError,
                     asyncpg.PostgresConnectionError,
                     asyncpg.InterfaceError,
+                    asyncpg.exceptions.UndefinedTableError,
                     OSError,
                 ) as exc:
                     log.warning("stale-batches-sweep-failed", kind="batch", error=repr(exc))
@@ -330,21 +332,26 @@ async def _prune_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                             cutoff=result.cutoffs[status].isoformat(),
                             duration_ms=result.duration_ms,
                         )
-                    max_cutoff = (
-                        max(result.cutoffs.values()) if result.cutoffs else datetime.now(UTC)
-                    )
-                    try:
-                        batch_count = await ctx.backend.prune_old_batches(max_cutoff)
-                        if batch_count:
-                            log.info("batches pruned", kind="batch", count=batch_count)
-                    except (
-                        NotImplementedError,
-                        TimeoutError,
-                        asyncpg.PostgresConnectionError,
-                        asyncpg.InterfaceError,
-                        OSError,
-                    ) as exc:
-                        log.warning("batch-prune-failed", kind="batch", error=repr(exc))
+                    # Skip batch prune when all retentions are disabled —
+                    # an empty cutoffs dict means no status had a retention
+                    # period, so the fallback (datetime.now(UTC)) would
+                    # delete every completed batch. Only prune when at
+                    # least one cutoff exists.
+                    if result.cutoffs:
+                        max_cutoff = max(result.cutoffs.values())
+                        try:
+                            batch_count = await ctx.backend.prune_old_batches(max_cutoff)
+                            if batch_count:
+                                log.info("batches pruned", kind="batch", count=batch_count)
+                        except (
+                            NotImplementedError,
+                            TimeoutError,
+                            asyncpg.PostgresConnectionError,
+                            asyncpg.InterfaceError,
+                            asyncpg.exceptions.UndefinedTableError,
+                            OSError,
+                        ) as exc:
+                            log.warning("batch-prune-failed", kind="batch", error=repr(exc))
                 except Exception as exc:
                     log.error("prune failed", kind="prune", error=repr(exc))
                 finally:

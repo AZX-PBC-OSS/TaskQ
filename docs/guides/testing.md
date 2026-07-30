@@ -202,6 +202,14 @@ scheduled jobs so a single call drains the entire queue. With a real clock
 (non-test) the loop returns instead of advancing — `run_until_drained` is
 intended for tests only.
 
+!!! note "Batch-policy simulation"
+    `run_until_drained` invokes `apply_batch_terminal_outcome` after each
+    job reaches a terminal write, so abort/completion semantics are tested
+    identically to production. A batch enqueued with
+    `failure_policy=AbortBatchAfter(...)` will have its consecutive-failure
+    counter incremented, threshold checked, and remaining jobs cancelled on
+    abort — all within the in-memory runner, no Postgres required.
+
 ---
 
 ## Pytest fixtures

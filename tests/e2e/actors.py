@@ -768,3 +768,58 @@ async def batch_finalizer(
             "failed": status.failed,
         },
     )
+
+
+class AbortFinalizerPayload(BaseModel):
+    run_id: str
+    batch_id: str
+
+
+@actor(
+    name="batch_abort_finalizer",
+    queue="e2e",
+    retry=RetryPolicy(max_attempts=50, base=timedelta(seconds=1)),
+    non_retryable_exceptions=(),  # BatchAbortedError is caught, not retried
+)
+async def batch_abort_finalizer(
+    payload: AbortFinalizerPayload,
+    ctx: JobContext[AbortFinalizerPayload],
+    *,
+    pool: asyncpg.Pool,
+) -> None:
+    """Finalizer for abort-policy batches.
+
+    Catches :class:`BatchAbortedError` from ``wait_for_batch`` so the
+    finalizer reaches a terminal *succeeded* state (not a retry-storm)
+    even when the batch is aborted.  Records either a ``finalized`` or
+    ``aborted`` effect.
+    """
+    from uuid import UUID
+
+    from taskq import wait_for_batch
+    from taskq.exceptions import BatchAbortedError
+
+    try:
+        status = await wait_for_batch(pool, UUID(payload.batch_id), schema=_effects_schema())
+        await _record_effect(
+            pool,
+            ctx,
+            "finalized",
+            {
+                "run_id": payload.run_id,
+                "batch_id": payload.batch_id,
+                "total": status.total,
+                "succeeded": status.succeeded,
+                "failed": status.failed,
+            },
+        )
+    except BatchAbortedError:
+        await _record_effect(
+            pool,
+            ctx,
+            "aborted",
+            {
+                "run_id": payload.run_id,
+                "batch_id": payload.batch_id,
+            },
+        )

@@ -126,7 +126,7 @@ async def _run_terminal_path(  # pyright: ignore[reportUnusedFunction]  # Why: c
     worker_pool: "asyncpg.Pool | None",
     settings: WorkerSettings | None,
     redis_client: "redis_async.Redis | None",
-    handler: Callable[..., Awaitable[None]],
+    handler: Callable[..., Awaitable[AttemptOutcome]],
     handler_args: tuple[object, ...],
     handler_kwargs: dict[str, object],
     status: str,
@@ -162,7 +162,7 @@ async def _run_terminal_path(  # pyright: ignore[reportUnusedFunction]  # Why: c
             progress_buffers.get(job.id) if progress_buffers is not None else None
         )
     try:
-        await handler(
+        handler_outcome = await handler(
             *handler_args,
             progress_seq=_pseq,
             progress_state=_pstate,
@@ -192,7 +192,7 @@ async def _run_terminal_path(  # pyright: ignore[reportUnusedFunction]  # Why: c
             _override_seq=_pseq,
             _override_pending_state=_pstate,
         )
-    return outcome
+    return handler_outcome
 
 
 async def consume_one_job(

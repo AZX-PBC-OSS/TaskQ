@@ -494,23 +494,63 @@ class SubEnqueueError(TaskQError):
 
 
 class BatchAbortedError(TaskQError):
-    """A batch was aborted because consecutive failures exceeded the threshold."""
+    """A batch was aborted because consecutive failures exceeded the threshold.
 
-    def __init__(self, batch_id: UUID, consecutive_failures: int, threshold: int) -> None:
+    Running jobs are NOT cancelled by the abort — only pending and
+    scheduled jobs are cancelled.  Running jobs continue to completion.
+    This matches the post-terminal-write hook design: the hook runs after
+    the terminal write, so a job that was dispatched before the abort
+    triggered will run to completion.
+    """
+
+    def __init__(self, batch_id: UUID, consecutive_failures: int, threshold: int | None) -> None:
         self.batch_id = batch_id
         self.consecutive_failures = consecutive_failures
         self.threshold = threshold
+        displayed_threshold = threshold if threshold is not None else 0
         super().__init__(
             f"batch {batch_id} aborted after {consecutive_failures} consecutive failures "
-            f"(threshold={threshold})"
+            f"(threshold={displayed_threshold})"
         )
 
 
 class EmptyBatchError(TaskQError):
-    """A batch has fewer jobs than the expected minimum."""
+    """A batch has fewer jobs than the expected minimum.
+
+    This can happen when jobs were pruned before ``wait_for_batch`` ran,
+    or when ``expected_size`` was set but jobs were never created.  Pass
+    ``on_empty="ok"`` to ``wait_for_batch`` to suppress the no-batch-row
+    variant of this error.
+    """
 
     def __init__(self, batch_id: UUID, expected: int, actual: int) -> None:
         self.batch_id = batch_id
         self.expected = expected
         self.actual = actual
-        super().__init__(f"batch {batch_id} has {actual} jobs, expected at least {expected}")
+        super().__init__(
+            f"batch {batch_id} has {actual} jobs, expected at least {expected}"
+            + (
+                ' — jobs may have been pruned; pass on_empty="ok" to suppress'
+                " the no-batch-row variant"
+                if actual == 0
+                else ""
+            )
+        )
+
+
+class BatchIdExistsError(TaskQError):
+    """A caller-supplied ``batch_id`` already exists in the ``batches`` table.
+
+    Raised when :meth:`~taskq.client.JobsClient.enqueue_batch` or
+    :meth:`~taskq.client.JobsClient.enqueue_batch_streaming` is called with
+    an explicit ``batch_id`` that collides with an existing batch row.
+    The original ``asyncpg.UniqueViolationError`` (PG) is chained via
+    ``__cause__`` when available.
+    """
+
+    def __init__(self, batch_id: UUID) -> None:
+        self.batch_id = batch_id
+        super().__init__(
+            f"batch_id {batch_id} already exists; use a different batch_id "
+            f"or omit it to auto-generate one"
+        )

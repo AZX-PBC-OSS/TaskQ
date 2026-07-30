@@ -10,6 +10,7 @@ re-warning fires on the loop-level counter, not per-job.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
@@ -90,6 +91,7 @@ class SubJobEnqueuer:
         unique_for: timedelta | None = None,
         unique_states: tuple[JobStatus, ...] | None = None,
         max_pending: int | None = None,
+        _batch_id: str | None = None,
     ) -> JobHandle[R]:
         """Enqueue a sub-job. ``max_pending`` is a per-call limit resolved
         against the operator-owned stored cap and the ``@actor(...)``
@@ -99,7 +101,13 @@ class SubJobEnqueuer:
         override, and no code path can raise an operator's fleet cap);
         with no stored value this parameter wins outright over the
         literal (historical behavior — actor code may loosen its own
-        declaration)."""
+        declaration).
+
+        ``_batch_id`` is a library-internal parameter used by
+        :meth:`enqueue_batch` to stamp ``batch_id`` into metadata after
+        :func:`build_enqueue_args` has stripped any caller-supplied
+        ``batch_id`` (H5 security boundary). Callers MUST NOT pass it.
+        """
         resolved_queue = actor_ref.queue
         identity_key_str = str(identity_key) if identity_key is not None else ""
 
@@ -130,6 +138,13 @@ class SubJobEnqueuer:
                 max_pending=effective_max_pending,
                 clock=self._clock,
             )
+            if _batch_id is not None:
+                # H5: stamp batch_id AFTER build_enqueue_args, which strips
+                # any caller-supplied batch_id as a security boundary.
+                args = replace(
+                    args,
+                    metadata={**args.metadata, "batch_id": _batch_id},
+                )
             span.set_attribute("messaging.message.id", str(args.id))
             row = await self._do_enqueue(args, connection)
         return JobHandle(
@@ -260,9 +275,8 @@ class SubJobEnqueuer:
 
         handles = []
         failed_items: list[tuple[int, Exception]] = []
+        batch_id_str = str(resolved_batch_id)
         for i, item in enumerate(items):
-            item_metadata: dict[str, object] = dict(item.metadata)
-            item_metadata["batch_id"] = str(resolved_batch_id)
             try:
                 handle = await self.enqueue(
                     item.actor_ref,
@@ -270,10 +284,11 @@ class SubJobEnqueuer:
                     scheduled_at=item.scheduled_at,
                     priority=item.priority,
                     fairness_key=item.fairness_key,
-                    metadata=item_metadata,
+                    metadata=dict(item.metadata),
                     idempotency_key=item.idempotency_key,
                     idempotency_scope=item.idempotency_scope,
                     identity_key=item.identity_key,
+                    _batch_id=batch_id_str,
                 )
                 handles.append(handle)
             except Exception as exc:

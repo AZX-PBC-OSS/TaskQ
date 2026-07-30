@@ -19,6 +19,8 @@ from itertools import islice
 from typing import TYPE_CHECKING, cast
 from uuid import UUID
 
+from asyncpg.exceptions import UniqueViolationError
+
 from taskq._json import dumps_str
 from taskq.backend._enqueue import _enqueue_batch
 from taskq.backend._protocol import (
@@ -28,10 +30,12 @@ from taskq.backend._protocol import (
     ConnLike,
     EnqueueArgs,
     JobRow,
+    parse_batch_status,
 )
 from taskq.backend._records import jsonb_to_dict
 from taskq.backend._sql_templates import SqlTemplates
 from taskq.backend.clock import Clock
+from taskq.backend.statemachine import TERMINAL_STATUSES
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
 )
@@ -59,6 +63,11 @@ __all__ = [
 # validated against _IDENT_RE by render_batch_sql), keeping the surface
 # free of f-string S608 noise.
 
+# Build the terminal-status NOT IN clause from the canonical
+# TERMINAL_STATUSES set so the SQL never drifts when a new status is
+# added to the state machine.
+_TERMINAL_NOT_IN = "NOT IN (" + ",".join(f"'{s}'" for s in TERMINAL_STATUSES) + ")"
+
 _CREATE_BATCH_SQL = """\
 INSERT INTO "{schema}".batches
 (id, queue, expected_size, failure_threshold, finalizer_job_id, originating_actor)
@@ -75,7 +84,7 @@ _INCREMENT_BATCH_FAILURES_SQL = """\
 WITH updated AS (
     UPDATE "{schema}".batches
     SET consecutive_failures = consecutive_failures + 1
-    WHERE id = $1
+    WHERE id = $1 AND status = 'active'
     RETURNING consecutive_failures, failure_threshold
 ),
 counts AS (
@@ -91,7 +100,7 @@ _RESET_BATCH_FAILURES_SQL = """\
 WITH updated AS (
     UPDATE "{schema}".batches
     SET consecutive_failures = 0
-    WHERE id = $1
+    WHERE id = $1 AND status = 'active'
     RETURNING 1
 ),
 counts AS (
@@ -127,7 +136,7 @@ WHERE id = $1 AND status = 'active'"""
 _COUNT_BATCH_NON_TERMINAL_SQL = """\
 SELECT count(*)::int FROM "{schema}".jobs
 WHERE metadata @> $1::jsonb
-  AND status NOT IN ('succeeded', 'failed', 'cancelled', 'crashed', 'abandoned')"""
+  AND status {terminal_not_in}"""
 
 _LIST_BATCHES_BASE_SQL = """\
 SELECT b.id, b.queue, b.status, b.expected_size, b.consecutive_failures,
@@ -143,7 +152,7 @@ SELECT b.id, b.queue, b.status, b.expected_size, b.consecutive_failures,
 FROM "{schema}".batches b
 LEFT JOIN LATERAL (
     SELECT count(*) AS total,
-           count(*) FILTER (WHERE status NOT IN ('succeeded','failed','cancelled','crashed','abandoned')) AS pending,
+           count(*) FILTER (WHERE status {terminal_not_in}) AS pending,
            count(*) FILTER (WHERE status = 'succeeded') AS succeeded,
            count(*) FILTER (WHERE status = 'failed') AS failed,
            count(*) FILTER (WHERE status = 'cancelled') AS cancelled,
@@ -192,13 +201,21 @@ def render_batch_sql(schema: str) -> BatchSql:
     return BatchSql(
         create_batch=_CREATE_BATCH_SQL.format(schema=schema),
         get_batch=_GET_BATCH_SQL.format(schema=schema),
-        increment_batch_failures=_INCREMENT_BATCH_FAILURES_SQL.format(schema=schema),
-        reset_batch_failures=_RESET_BATCH_FAILURES_SQL.format(schema=schema),
+        increment_batch_failures=_INCREMENT_BATCH_FAILURES_SQL.format(
+            schema=schema, terminal_not_in=_TERMINAL_NOT_IN
+        ),
+        reset_batch_failures=_RESET_BATCH_FAILURES_SQL.format(
+            schema=schema, terminal_not_in=_TERMINAL_NOT_IN
+        ),
         abort_batch_jobs=_ABORT_BATCH_JOBS_SQL.format(schema=schema),
         abort_batch_row=_ABORT_BATCH_ROW_SQL.format(schema=schema),
         complete_batch=_COMPLETE_BATCH_SQL.format(schema=schema),
-        count_batch_non_terminal=_COUNT_BATCH_NON_TERMINAL_SQL.format(schema=schema),
-        list_batches_base=_LIST_BATCHES_BASE_SQL.format(schema=schema),
+        count_batch_non_terminal=_COUNT_BATCH_NON_TERMINAL_SQL.format(
+            schema=schema, terminal_not_in=_TERMINAL_NOT_IN
+        ),
+        list_batches_base=_LIST_BATCHES_BASE_SQL.format(
+            schema=schema, terminal_not_in=_TERMINAL_NOT_IN
+        ),
         prune_old_batches=_PRUNE_OLD_BATCHES_SQL.format(schema=schema),
     )
 
@@ -211,7 +228,7 @@ def _batch_row_from_record(rec: "asyncpg.Record") -> BatchRow:
     return BatchRow(
         id=rec["id"],
         queue=rec["queue"],
-        status=rec["status"],
+        status=parse_batch_status(rec["status"]),
         expected_size=rec["expected_size"],
         consecutive_failures=rec["consecutive_failures"],
         failure_threshold=rec["failure_threshold"],
@@ -254,16 +271,32 @@ async def create_batch(
     finalizer_job_id: UUID | None,
     originating_actor: str | None,
 ) -> None:
-    """Insert a row into ``batches``."""
-    await conn.execute(
-        sql.create_batch,
-        batch_id,
-        queue,
-        expected_size,
-        failure_threshold,
-        finalizer_job_id,
-        originating_actor,
-    )
+    """Insert a row into ``batches``.
+
+    Raises :class:`ValueError` when *failure_threshold* is not ``None`` and
+    is less than 1 (matches the ``CHECK (failure_threshold >= 1)`` constraint
+    on the table).
+
+    Raises :class:`~taskq.exceptions.BatchIdExistsError` when *batch_id*
+    already exists (M2: typed domain error instead of raw
+    ``UniqueViolationError``).
+    """
+    if failure_threshold is not None and failure_threshold < 1:
+        raise ValueError(f"failure_threshold must be >= 1 when set, got {failure_threshold}")
+    try:
+        await conn.execute(
+            sql.create_batch,
+            batch_id,
+            queue,
+            expected_size,
+            failure_threshold,
+            finalizer_job_id,
+            originating_actor,
+        )
+    except UniqueViolationError as exc:
+        from taskq.exceptions import BatchIdExistsError
+
+        raise BatchIdExistsError(batch_id) from exc
 
 
 async def get_batch(
@@ -433,6 +466,7 @@ async def enqueue_batch_atomic(
     """
     batch_id_str = str(batch_id)
     all_rows: list[JobRow] = []
+    item_count = 0
 
     async with pool.acquire() as conn:
         tx = conn.transaction()
@@ -443,6 +477,7 @@ async def enqueue_batch_atomic(
                 chunk_raw = list(islice(it, chunk_size))
                 if not chunk_raw:
                     break
+                item_count += len(chunk_raw)
                 chunk = [
                     replace(
                         args,
@@ -460,17 +495,10 @@ async def enqueue_batch_atomic(
                 )
                 all_rows.extend(rows)
 
-            if batch_row is not None:
-                await conn.execute(
-                    batch_sql.create_batch,
-                    batch_row.id,
-                    batch_row.queue,
-                    batch_row.expected_size,
-                    batch_row.failure_threshold,
-                    batch_row.finalizer_job_id,
-                    batch_row.originating_actor,
-                )
-
+            # Insert finalizer BEFORE creating the batch row so the returned
+            # row's id can be used for finalizer_job_id (M4: idempotency
+            # collision may return a different id than finalizer_args.id).
+            finalizer_row: JobRow | None = None
             if finalizer_args is not None:
                 fin_rows = await _enqueue_batch(
                     pool,
@@ -481,6 +509,31 @@ async def enqueue_batch_atomic(
                     connection=cast("asyncpg.Connection | None", conn),
                 )
                 all_rows.extend(fin_rows)
+                finalizer_row = fin_rows[0]
+
+            if batch_row is not None:
+                # H6: when expected_size is 0 (streaming sentinel), use the
+                # actual item count consumed from the iterable.
+                expected_size = (
+                    batch_row.expected_size if batch_row.expected_size > 0 else item_count
+                )
+                finalizer_job_id = (
+                    finalizer_row.id if finalizer_row is not None else batch_row.finalizer_job_id
+                )
+                try:
+                    await conn.execute(
+                        batch_sql.create_batch,
+                        batch_row.id,
+                        batch_row.queue,
+                        expected_size,
+                        batch_row.failure_threshold,
+                        finalizer_job_id,
+                        batch_row.originating_actor,
+                    )
+                except UniqueViolationError as exc:
+                    from taskq.exceptions import BatchIdExistsError
+
+                    raise BatchIdExistsError(batch_row.id) from exc
 
             await tx.commit()
         except BaseException:

@@ -6,8 +6,14 @@ Provides:
 - :class:`BatchHandle` — returned by :meth:`~taskq.client.JobsClient.enqueue_batch`;
   holds all :class:`~taskq.client.JobHandle` instances and exposes a
   :meth:`BatchHandle.status` query.
+- :class:`BatchSummary` — one row from the batches table augmented with
+  live job counts; returned by :meth:`~taskq.client.JobsClient.list_batches`.
 - :func:`wait_for_batch` — convenience helper for the fan-out-then-finalize
   pattern.
+- :func:`apply_batch_terminal_outcome` — batch policy hook called after
+  every terminal write; drives abort/completion semantics.
+- :data:`MAX_BATCH_SIZE` — maximum number of items per ``enqueue_batch``
+  call and upper bound on ``chunk_size`` for ``enqueue_batch_streaming``.
 """
 
 import asyncio
@@ -25,11 +31,14 @@ from taskq.backend._protocol import (
     AttemptOutcome,
     Backend,
     BatchRow,
+    BatchStatus,
     IdempotencyKey,
     IdentityKey,
     JobRow,
+    parse_batch_status,
 )
 from taskq.backend._records import jsonb_to_dict
+from taskq.backend.statemachine import TERMINAL_STATUSES
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
 )
@@ -41,6 +50,7 @@ if TYPE_CHECKING:
     from taskq.client._handle import JobHandle
 
 __all__ = [
+    "MAX_BATCH_SIZE",
     "BatchCompletionStatus",
     "BatchHandle",
     "BatchSummary",
@@ -48,6 +58,15 @@ __all__ = [
     "apply_batch_terminal_outcome",
     "wait_for_batch",
 ]
+
+MAX_BATCH_SIZE: int = 1000
+"""Maximum number of items accepted by :meth:`enqueue_batch` and the
+chunk size upper bound for :meth:`enqueue_batch_streaming`.
+
+Exceeding this in :meth:`enqueue_batch` raises :class:`ValueError`;
+:meth:`enqueue_batch_streaming` rejects ``chunk_size`` outside
+``[1, MAX_BATCH_SIZE]``.
+"""
 
 
 class EnqueueItem(BaseModel):
@@ -106,9 +125,13 @@ class BatchHandle(BaseModel):
     """Handle to a group of jobs inserted by a single
     :meth:`~taskq.client.JobsClient.enqueue_batch` call.
 
-    ``job_handles`` contains one :class:`~taskq.client.JobHandle` per
-    item in the original list (including idempotency-key collisions that
-    returned existing rows).  ``size`` equals ``len(job_handles)``.
+    **Invariant:** ``job_handles`` contains one
+    :class:`~taskq.client.JobHandle` per item in the original list
+    (including idempotency-key collisions that returned existing rows).
+    When a finalizer was enqueued, the finalizer handle is appended as
+    the **last** entry of ``job_handles`` AND set separately as
+    ``finalizer_handle``.  ``size`` is the number of non-finalizer items
+    (i.e. ``len(job_handles) - (1 if finalizer_handle is not None else 0)``).
 
     :meth:`status` queries the database for the current completion
     counts of the batch.
@@ -175,7 +198,7 @@ class BatchSummary:
 
     batch_id: UUID
     queue: str
-    status: Literal["active", "complete", "aborted"]
+    status: BatchStatus
     expected_size: int
     consecutive_failures: int
     failure_threshold: int | None
@@ -194,15 +217,22 @@ def _decide_batch_status(
     snooze_interval: timedelta,
     expect_at_least: int | None,
     on_empty: Literal["error", "ok"],
+    snooze_via_exception: bool = True,
 ) -> BatchCompletionStatus:
     """Apply the wait_for_batch decision table.
 
     Raises :class:`~taskq.exceptions.Snooze` when the batch is aborted
-    but jobs are still in flight (so the caller retries until all are
-    terminal, at which point :class:`~taskq.exceptions.BatchAbortedError`
-    is raised).  Raises :class:`~taskq.exceptions.EmptyBatchError` when
-    the batch has fewer jobs than expected or no jobs at all and no
-    batches row exists (unless ``on_empty="ok"``).
+    but jobs are still in flight and ``snooze_via_exception`` is True
+    (so the caller retries until all are terminal, at which point
+    :class:`~taskq.exceptions.BatchAbortedError` is raised).  When
+    ``snooze_via_exception`` is False, returns the status instead so the
+    poll loop continues.
+
+    Raises :class:`~taskq.exceptions.EmptyBatchError` when the batch has
+    fewer jobs than expected or no jobs at all and no batches row exists
+    (unless ``on_empty="ok"``).  Also raises when a batch row exists with
+    ``expected_size > 0`` but zero jobs are found and none are pending
+    (jobs pruned or never created).
 
     When ``status.pending > 0`` and the batch is NOT aborted, returns
     the status unchanged — the caller decides whether to raise
@@ -215,9 +245,11 @@ def _decide_batch_status(
             raise BatchAbortedError(
                 batch_id,
                 batch_row.consecutive_failures,
-                batch_row.failure_threshold or 0,
+                batch_row.failure_threshold,
             )
-        raise Snooze(snooze_interval)
+        if snooze_via_exception:
+            raise Snooze(snooze_interval)
+        return status
 
     # Case 3: expected minimum not met
     if expect_at_least is not None and status.pending == 0 and status.total < expect_at_least:
@@ -226,6 +258,10 @@ def _decide_batch_status(
     # Case 4-6: no jobs found
     if status.total == 0:
         if batch_row is not None:
+            # M5: batch row exists with expected_size > 0 but zero jobs
+            # (pruned or never created) — surface as an error, not silent OK.
+            if batch_row.expected_size > 0 and status.pending == 0:
+                raise EmptyBatchError(batch_id, expected=batch_row.expected_size, actual=0)
             return status
         if on_empty == "ok":
             return status
@@ -235,6 +271,11 @@ def _decide_batch_status(
     return status
 
 
+# Build the terminal-status NOT IN clause from the canonical
+# TERMINAL_STATUSES set so the SQL never drifts when a new status is
+# added to the state machine.
+_TERMINAL_NOT_IN_SQL = ",".join(f"'{s}'" for s in TERMINAL_STATUSES)
+
 _WAIT_FOR_BATCH_SQL = (
     "SELECT"
     " count(*) AS total,"
@@ -243,7 +284,7 @@ _WAIT_FOR_BATCH_SQL = (
     " count(*) FILTER (WHERE status = 'cancelled') AS cancelled,"
     " count(*) FILTER (WHERE status = 'crashed') AS crashed,"
     " count(*) FILTER (WHERE status = 'abandoned') AS abandoned,"
-    " count(*) FILTER (WHERE status NOT IN ('succeeded','failed','cancelled','crashed','abandoned')) AS in_flight"
+    " count(*) FILTER (WHERE status NOT IN (" + _TERMINAL_NOT_IN_SQL + ")) AS in_flight"
     ' FROM "{schema}".jobs'
     " WHERE metadata @> $1::jsonb"
 )
@@ -275,6 +316,18 @@ async def apply_batch_terminal_outcome(
     - ``"snoozed"`` / ``"reservation_denied"`` / ``"rate_limit_denied"`` /
       ``"scheduled"``: returns immediately — the job is rescheduled, not
       terminal.
+
+    **Best-effort semantics (M7):** the increment/reset/abort/complete
+    writes are best-effort.  A crash between the terminal job write and
+    the counter increment loses that increment — the failure count is
+    under-counted by one.  The next terminal failure re-triggers the
+    check and increments again, so a consistently failing batch still
+    aborts (just one failure later than it would have).  The stale-batch
+    sweep is the safety net for batch **STATUS** (it transitions stuck
+    active/aborted rows to terminal) but it **cannot** recover lost
+    failure **counts** — a crash gap means the consecutive-failure streak
+    is permanently broken, potentially preventing an abort that should
+    have fired.
     """
     raw_bid = job.metadata.get("batch_id")
     if raw_bid is None:
@@ -399,7 +452,7 @@ async def wait_for_batch(
         return BatchRow(
             id=rec["id"],
             queue=rec["queue"],
-            status=rec["status"],
+            status=parse_batch_status(rec["status"]),
             expected_size=rec["expected_size"],
             consecutive_failures=rec["consecutive_failures"],
             failure_threshold=rec["failure_threshold"],
@@ -454,11 +507,13 @@ async def wait_for_batch(
             snooze_interval=snooze_interval,
             expect_at_least=expect_at_least,
             on_empty=on_empty,
+            snooze_via_exception=snooze_via_exception,
         )
 
         # Snooze for pending > 0 (batch not aborted) — the decision
-        # function already raises Snooze for the aborted-but-in-flight
-        # case.  Here we handle the normal pending case.
+        # function already handles the aborted-but-in-flight case
+        # (raises Snooze or returns status depending on snooze_via_exception).
+        # Here we handle the normal pending case.
         if status.pending > 0 and snooze_via_exception:
             raise Snooze(snooze_interval)
 

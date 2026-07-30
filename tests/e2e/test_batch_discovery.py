@@ -23,6 +23,7 @@ from uuid import uuid4
 import pytest
 
 from taskq import BatchFilter, EnqueueItem
+from taskq.batch_policy import AbortBatchAfter
 
 from ._assertions import fetch_effects, poll_until, wait_for_effects
 from .actors import (
@@ -67,7 +68,14 @@ async def test_list_batches_active_and_completed(
         for _ in range(2)
     ]
 
-    batch_b = await e2e_client.enqueue_batch(batch_b_items, batch_id=batch_b_id)
+    # failure_policy with a high threshold ensures a batches row is
+    # created (rows are only created when failure_policy or finalizer is
+    # set) without actually aborting the batch.
+    batch_b = await e2e_client.enqueue_batch(
+        batch_b_items,
+        batch_id=batch_b_id,
+        failure_policy=AbortBatchAfter(consecutive_failures=999),
+    )
 
     batch_a_items = [
         EnqueueItem(
@@ -84,7 +92,11 @@ async def test_list_batches_active_and_completed(
         for i in range(_BATCH_A_SIZE)
     ]
 
-    batch_a = await e2e_client.enqueue_batch(batch_a_items, batch_id=batch_a_id)
+    batch_a = await e2e_client.enqueue_batch(
+        batch_a_items,
+        batch_id=batch_a_id,
+        failure_policy=AbortBatchAfter(consecutive_failures=999),
+    )
 
     await wait_for_effects(
         e2e_pg_pool,
@@ -132,6 +144,15 @@ async def test_list_batches_active_and_completed(
     batch_a_summary = next(b for b in completed_batches if b.batch_id == batch_a_id)
     assert batch_a_summary.completion.succeeded == _BATCH_A_SIZE
     assert batch_a_summary.completion.is_complete
+
+    # Assert batch B's live completion counts — the long-running jobs
+    # should still be in-flight (not terminal), so pending > 0 and
+    # is_complete is False.
+    active_b_summary = next((b for b in active_batches if b.batch_id == batch_b_id), None)
+    assert active_b_summary is not None, "batch B should be in active list"
+    assert active_b_summary.completion.total == 2
+    assert active_b_summary.completion.pending >= 1
+    assert active_b_summary.completion.is_complete is False
 
     await asyncio.gather(
         *(h.wait(timeout=60) for h in batch_a.job_handles),

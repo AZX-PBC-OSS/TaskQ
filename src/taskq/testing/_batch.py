@@ -81,6 +81,10 @@ def _create_batch(
     originating_actor: str | None,
     connection: object,
 ) -> None:
+    if batch_id in backend._batches:
+        from taskq.exceptions import BatchIdExistsError
+
+        raise BatchIdExistsError(batch_id)
     row = BatchRow(
         id=batch_id,
         queue=queue,
@@ -109,6 +113,8 @@ def _increment_batch_failures(
     row = backend._batches.get(batch_id)
     if row is None:
         return (0, None, 0)
+    if row.status != "active":
+        return (0, None, 0)
 
     new_count = row.consecutive_failures + 1
     backend._batches[batch_id] = replace(row, consecutive_failures=new_count)
@@ -124,6 +130,8 @@ def _reset_batch_failures(
 ) -> int:
     row = backend._batches.get(batch_id)
     if row is None:
+        return 0
+    if row.status != "active":
         return 0
 
     backend._batches[batch_id] = replace(row, consecutive_failures=0)
@@ -224,22 +232,10 @@ async def _enqueue_batch_atomic(
     batch_id_str = str(batch_id)
     rows: list[JobRow] = []
     inserted_ids: list[JobId] = []
+    item_count = 0
     batch_created = False
 
     try:
-        if batch_row is not None:
-            _create_batch(
-                backend,
-                batch_id,
-                queue,
-                batch_row.expected_size,
-                batch_row.failure_threshold,
-                batch_row.finalizer_job_id,
-                batch_row.originating_actor,
-                None,
-            )
-            batch_created = True
-
         for args in items:
             args_with_batch = replace(
                 args,
@@ -248,11 +244,36 @@ async def _enqueue_batch_atomic(
             row = await backend.enqueue_with_conn(None, args_with_batch)
             rows.append(row)
             inserted_ids.append(row.id)
+            item_count += 1
 
+        # Insert finalizer BEFORE creating the batch row so the returned
+        # row's id can be used for finalizer_job_id (M4: idempotency
+        # collision may return a different id than finalizer_args.id).
+        finalizer_row: JobRow | None = None
         if finalizer_args is not None:
             row = await backend.enqueue_with_conn(None, finalizer_args)
             rows.append(row)
             inserted_ids.append(row.id)
+            finalizer_row = row
+
+        if batch_row is not None:
+            # H6: when expected_size is 0 (streaming sentinel), use the
+            # actual item count consumed from the iterable.
+            expected_size = batch_row.expected_size if batch_row.expected_size > 0 else item_count
+            finalizer_job_id = (
+                finalizer_row.id if finalizer_row is not None else batch_row.finalizer_job_id
+            )
+            _create_batch(
+                backend,
+                batch_id,
+                queue,
+                expected_size,
+                batch_row.failure_threshold,
+                finalizer_job_id,
+                batch_row.originating_actor,
+                None,
+            )
+            batch_created = True
     except BaseException:
         for jid in inserted_ids:
             backend._jobs.pop(jid, None)

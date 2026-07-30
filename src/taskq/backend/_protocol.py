@@ -52,6 +52,7 @@ __all__ = [
     "BatchCounts",
     "BatchFilter",
     "BatchRow",
+    "BatchStatus",
     "CancelFlag",
     "CancelPhase",
     "DstStrategy",
@@ -74,6 +75,7 @@ __all__ = [
     "ScheduleCreateArgs",
     "ScheduleRecord",
     "ScheduleUpdateArgs",
+    "parse_batch_status",
     "parse_cancel_phase",
     "parse_retry_kind",
 ]
@@ -148,6 +150,9 @@ type QueueMode = Literal["strict_fifo", "round_robin"]
 type RateLimitBackend = Literal["redis", "postgres", "memory"]
 
 type DstStrategy = Literal["skip", "firstof", "allof"]
+
+type BatchStatus = Literal["active", "complete", "aborted"]
+"""Lifecycle status of a batch row in the ``batches`` table."""
 
 
 class JobSortField(Enum):
@@ -250,6 +255,23 @@ def parse_cancel_phase(value: int) -> CancelPhase:
             f"cancel_phase {value} is an in-process sentinel; PG must never store it",
         )
     return phase
+
+
+_BATCH_STATUSES: Final[frozenset[str]] = frozenset({"active", "complete", "aborted"})
+
+
+def parse_batch_status(value: str) -> BatchStatus:
+    """Convert an untrusted ``str`` (from a PG row) into :data:`BatchStatus`.
+
+    Pyright cannot narrow ``str`` to a ``Literal`` union by membership
+    test alone; this helper performs the runtime check and returns a
+    statically-typed ``BatchStatus``. Raises :class:`ValueError` if the
+    value is not one of the three allowed statuses — that signals schema
+    drift between PG and Python.
+    """
+    if value not in _BATCH_STATUSES:
+        raise ValueError(f"unknown batch status from backend row: {value!r}")
+    return cast(BatchStatus, value)
 
 
 QueueName = Annotated[str, AfterValidator(_validate_queue_name)]
@@ -645,7 +667,7 @@ class BatchRow:
 
     id: UUID
     queue: str
-    status: Literal["active", "complete", "aborted"]
+    status: BatchStatus
     expected_size: int
     consecutive_failures: int
     failure_threshold: int | None

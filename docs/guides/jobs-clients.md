@@ -471,9 +471,9 @@ outcome:
 
 - **`succeeded`** resets the consecutive-failure counter to 0.
 - **`failed`** increments the counter. If it reaches the threshold, the batch
-  is **aborted**: all remaining non-terminal child jobs are cancelled
+  is **aborted**: all pending and scheduled jobs are cancelled
   (`pending` / `scheduled` → `cancelled`) and the batch row is set to
-  `aborted`.
+  `aborted`. Running jobs continue to completion.
 - **`cancelled`** / **`crashed`** do not touch the failure counter; they count
   remaining non-terminal jobs and complete the batch if none remain.
 
@@ -507,8 +507,9 @@ except BatchAbortedError as exc:
 
 ## Batch finalizer
 
-A **finalizer** is a job enqueued alongside the batch that runs after all child
-jobs reach a terminal state. Pass an `EnqueueItem` to the `finalizer` parameter:
+A **finalizer** is a job enqueued alongside the batch that is dispatched
+immediately; the in-actor `wait_for_batch` snooze pattern gates on
+child-job completion. Pass an `EnqueueItem` to the `finalizer` parameter:
 
 ```python
 from taskq import EnqueueItem, AbortBatchAfter
@@ -741,7 +742,7 @@ from taskq import BatchSummary
 | `consecutive_failures` | `int` | Current consecutive failure count. |
 | `failure_threshold` | `int \| None` | Threshold from `AbortBatchAfter`, or `None`. |
 | `finalizer_job_id` | `UUID \| None` | Finalizer job ID, if one was enqueued. |
-| `originating_actor` | `str \| None` | Actor that created the batch. |
+| `originating_actor` | `str \| None` | Reserved for future use — currently always `None`. Will be populated from the actor context in a future release. |
 | `created_at` | `datetime` | Batch creation time. |
 | `completed_at` | `datetime \| None` | When the batch reached a terminal status. |
 | `completion` | `BatchCompletionStatus` | Live job counts (see [`BatchCompletionStatus`](#batchhandlestatus)). |

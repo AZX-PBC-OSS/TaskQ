@@ -525,3 +525,135 @@ class TestPostgresAbortBatchNoRow:
         # No batches row should have been created.
         row = await backend.get_batch(bid)
         assert row is None
+
+
+# ── Concurrent increment test ─────────────────────────────────────
+
+
+class TestPostgresConcurrentIncrement:
+    async def test_concurrent_increments_final_count_matches_n(self, jobs_app: JobsApp) -> None:
+        """N concurrent increment_batch_failures calls produce consecutive_failures == N."""
+        import asyncio
+
+        backend = jobs_app.backend
+        bid = uuid4()
+
+        await backend.create_batch(bid, "default", 5, 100, None, None)
+
+        n = 20
+        results = await asyncio.gather(*(backend.increment_batch_failures(bid) for _ in range(n)))
+
+        # Every call should have returned a valid (count, threshold, remaining).
+        for count, threshold, _remaining in results:
+            assert 1 <= count <= n
+            assert threshold == 100
+
+        # The final stored consecutive_failures must equal N.
+        row = await backend.get_batch(bid)
+        assert row is not None
+        assert row.consecutive_failures == n
+
+
+# ── Rolling-deploy UndefinedTableError ────────────────────────────
+
+
+class TestPostgresRollingDeployUndefinedTable:
+    async def test_get_batch_raises_undefined_table_when_batches_missing(
+        self, jobs_app: JobsApp
+    ) -> None:
+        """get_batch raises UndefinedTableError when the batches table doesn't exist.
+
+        This is the expected behaviour for the protocol method during a
+        rolling-deploy window where the migration hasn't been applied yet.
+        The defensive wait_for_batch path catches this; the raw protocol
+        method does not.
+        """
+        deps = jobs_app.deps
+        backend = jobs_app.backend
+        schema = deps.settings.schema_name
+
+        async with deps.worker_pool.acquire() as conn:
+            await conn.execute(f'DROP TABLE "{schema}".batches CASCADE')
+
+        with pytest.raises(asyncpg.exceptions.UndefinedTableError):
+            await backend.get_batch(uuid4())
+
+
+# ── complete_stale_batches negative case ──────────────────────────
+
+
+class TestPostgresCompleteStaleBatchesNegative:
+    async def test_mixed_statuses_not_completed_by_sweep(self, jobs_app: JobsApp) -> None:
+        """A batch with some terminal and some running jobs is NOT completed by the sweep."""
+        from taskq.worker._leader_shared import complete_stale_batches
+
+        deps = jobs_app.deps
+        backend = jobs_app.backend
+        schema = deps.settings.schema_name
+        bid = uuid4()
+
+        await backend.create_batch(bid, "default", 5, 3, None, None)
+
+        async with deps.worker_pool.acquire() as conn:
+            await _insert_test_job(conn, schema, bid, status="succeeded")
+            await _insert_test_job(conn, schema, bid, status="failed")
+            await _insert_test_job(conn, schema, bid, status="running")
+
+            count = await complete_stale_batches(conn, schema=schema)
+
+        assert count == 0
+
+        row = await backend.get_batch(bid)
+        assert row is not None
+        assert row.status == "active"
+
+
+# ── Abort sets cancel columns ─────────────────────────────────────
+
+
+class TestPostgresAbortSetsCancelColumns:
+    async def test_abort_sets_cancel_columns_matching_normal_cancel_path(
+        self, jobs_app: JobsApp
+    ) -> None:
+        """Abort sets error_class, cancel_requested_at, cancel_phase on cancelled jobs.
+
+        Verifies the cancel columns match the normal cancel path:
+        error_class='BatchAbortedError', cancel_phase=2 (FORCED),
+        cancel_requested_at is set.
+        """
+        deps = jobs_app.deps
+        backend = jobs_app.backend
+        schema = deps.settings.schema_name
+        bid = uuid4()
+
+        await backend.create_batch(bid, "default", 5, 3, None, None)
+
+        async with deps.worker_pool.acquire() as conn:
+            j1 = await _insert_test_job(conn, schema, bid, status="pending")
+            j2 = await _insert_test_job(conn, schema, bid, status="scheduled")
+            await _insert_test_job(conn, schema, bid, status="running")
+            await _insert_test_job(conn, schema, bid, status="succeeded")
+
+        cancelled_count = await backend.abort_batch(bid)
+        assert cancelled_count == 2
+
+        async with deps.worker_pool.acquire() as conn:
+            rows = await conn.fetch(
+                f"SELECT id, status, error_class, error_message, "  # noqa: S608  # Why: test helper — schema is a validated constant from settings, not user input
+                f"cancel_requested_at, cancel_phase "
+                f'FROM "{schema}".jobs '
+                f"WHERE id = ANY($1::uuid[])",
+                [j1, j2],
+            )
+            assert len(rows) == 2
+            for r in rows:
+                assert r["status"] == "cancelled"
+                assert r["error_class"] == "BatchAbortedError"
+                assert r["error_message"] == "Batch aborted due to consecutive failures"
+                assert r["cancel_requested_at"] is not None
+                assert r["cancel_phase"] == 2  # CancelPhase.FORCED
+
+        row = await backend.get_batch(bid)
+        assert row is not None
+        assert row.status == "aborted"
+        assert row.completed_at is not None

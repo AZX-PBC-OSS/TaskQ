@@ -895,7 +895,7 @@ tag on each job.
 | `consecutive_failures` | `int` | Running failure count, reset on success. |
 | `failure_threshold` | `int` | Threshold from `AbortBatchAfter`; `NULL` if no policy. |
 | `finalizer_job_id` | `uuid` | Job ID of the finalizer, if one was enqueued. |
-| `originating_actor` | `text` | Actor that created the batch (for audit). |
+| `originating_actor` | `text` | Reserved for future use — currently always `NULL`. Will be populated from the actor context in a future release. |
 | `created_at` | `timestamptz` | Batch creation time. |
 | `completed_at` | `timestamptz` | When the batch reached `complete` or `aborted`. |
 | `metadata` | `jsonb` | Arbitrary batch-level metadata. |
@@ -924,9 +924,10 @@ overhead. For batched jobs:
 | `cancelled` / `crashed` | Counts non-terminal jobs; if none remain, marks batch `complete`. Does not touch the failure counter. |
 | `snoozed` / `reservation_denied` / `rate_limit_denied` / `scheduled` | Returns immediately — the job is rescheduled, not terminal. |
 
-Aborting cancels all non-terminal child jobs (`pending` / `scheduled` →
-`cancelled`) with a hardcoded `error_message = 'Batch aborted due to
-consecutive failures'` and sets the batch row to `aborted`.
+Aborting cancels all pending and scheduled child jobs (`pending` /
+`scheduled` → `cancelled`) with a hardcoded `error_message = 'Batch
+aborted due to consecutive failures'` and sets the batch row to
+`aborted`. Running jobs continue to completion.
 
 ### `complete_stale_batches` leader sweep
 

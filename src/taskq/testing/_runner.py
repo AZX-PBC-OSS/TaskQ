@@ -672,6 +672,7 @@ async def wait_for_batch(
         snooze_interval=snooze_interval,
         expect_at_least=expect_at_least,
         on_empty=on_empty,
+        snooze_via_exception=snooze_via_exception,
     )
 
     # In-memory always raises Snooze for pending > 0 — no blocking mode.

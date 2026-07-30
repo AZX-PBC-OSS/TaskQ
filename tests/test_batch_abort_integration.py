@@ -211,10 +211,11 @@ class TestBatchAbortProperty:
     """Property: after run_until_drained with a random batch of mixed
     succeed/fail outcomes and a random threshold:
 
-    - If no maximal consecutive-failure run reached the threshold →
-      batch row is 'complete' and no job is 'cancelled'.
-    - If the threshold was reached → batch row is 'aborted', and
-      failed + succeeded + cancelled == total.
+    - Compute the expected batch status (aborted vs complete) from the
+      inputs by simulating the consecutive-failure counter, then assert
+      the observed batch row matches.
+    - If aborted: failed + succeeded + cancelled == total.
+    - If complete: cancelled == 0, failed + succeeded == total.
     """
 
     @given(
@@ -272,14 +273,93 @@ class TestBatchAbortProperty:
         succeeded = status_counts.get("succeeded", 0)
         cancelled = status_counts.get("cancelled", 0)
 
+        # Compute expected batch status from inputs by simulating the
+        # consecutive-failure counter. The in-memory runner dispatches
+        # one job at a time (limit=1) in insertion order (same priority,
+        # same scheduled_at), so job processing order is deterministic.
+        expected_aborted = False
+        consecutive = 0
+        for i in range(n_jobs):
+            job_succeeds = i >= len(outcomes) or outcomes[i]
+            if job_succeeds:
+                consecutive = 0
+            else:
+                consecutive += 1
+                if consecutive >= threshold:
+                    expected_aborted = True
+                    break
+
         batch_row = await backend.get_batch(batch_id)
         assert batch_row is not None
 
-        if batch_row.status == "aborted":
+        if expected_aborted:
+            assert batch_row.status == "aborted", (
+                f"expected aborted but got {batch_row.status} "
+                f"(n_jobs={n_jobs}, threshold={threshold}, outcomes={outcomes}, "
+                f"status_counts={status_counts})"
+            )
             assert failed + succeeded + cancelled == total
-        elif batch_row.status == "complete":
+        else:
+            assert batch_row.status == "complete", (
+                f"expected complete but got {batch_row.status} "
+                f"(n_jobs={n_jobs}, threshold={threshold}, outcomes={outcomes}, "
+                f"status_counts={status_counts})"
+            )
             assert cancelled == 0
             assert failed + succeeded == total
+
+
+# ── test_abort_wins_over_complete ───────────────────────────────
+
+
+class TestAbortWinsOverComplete:
+    """When the last failure hits the threshold AND remaining==0, the
+    batch is aborted, not complete.
+
+    This is a race-condition test: the last job's failure increments
+    consecutive_failures to the threshold AND the non-terminal count
+    drops to 0 simultaneously. The abort path must win over the
+    complete path.
+    """
+
+    async def test_abort_wins_over_complete(self) -> None:
+        backend = _make_backend()
+        bid = uuid4()
+
+        await backend.create_batch(
+            bid,
+            queue="default",
+            expected_size=3,
+            failure_threshold=3,
+            finalizer_job_id=None,
+            originating_actor=None,
+        )
+        from dataclasses import replace
+
+        # Seed 2 already-failed jobs so consecutive_failures starts at 2
+        # (we increment it manually below), and the 3rd failure will
+        # hit the threshold. All 3 jobs are terminal, so remaining==0.
+        for _ in range(3):
+            row = make_job_row(status="failed")
+            row = replace(row, metadata={"batch_id": str(bid)})
+            backend._jobs[row.id] = row
+
+        # Pre-increment to 2 so the next failure hits threshold=3.
+        await backend.increment_batch_failures(bid)
+        await backend.increment_batch_failures(bid)
+        assert backend._batches[bid].consecutive_failures == 2
+
+        # The 3rd failure: count=3 >= threshold=3 AND remaining==0.
+        job = make_job_row(status="failed")
+        job = replace(job, metadata={"batch_id": str(bid)})
+
+        await apply_batch_terminal_outcome(backend, job, "failed")
+
+        batch_row = await backend.get_batch(bid)
+        assert batch_row is not None
+        # Abort must win over complete even though remaining==0.
+        assert batch_row.status == "aborted"
+        assert batch_row.completed_at is not None
 
 
 # ── Direct unit tests for apply_batch_terminal_outcome ───────────

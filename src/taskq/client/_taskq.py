@@ -54,6 +54,7 @@ from taskq._close import CLOSE_TIMEOUT_SECS, close_conn_bounded, close_pool_boun
 from taskq.actor import ActorRef
 from taskq.backend._protocol import (
     BatchFilter,
+    BatchRow,
     DstStrategy,
     EventRow,
     IdempotencyKey,
@@ -398,6 +399,14 @@ class TaskQ:
             finalizer=finalizer,
             chunk_size=chunk_size,
         )
+
+    async def get_batch(self, batch_id: UUID) -> BatchRow | None:
+        """Fetch a single batch row by ID.
+
+        Delegates to :meth:`JobsClient.get_batch`. Returns ``None`` when
+        the batch does not exist.
+        """
+        return await self._require_open().get_batch(batch_id)
 
     async def list_batches(
         self,

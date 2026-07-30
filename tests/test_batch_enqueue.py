@@ -185,7 +185,7 @@ class TestBatchHandleWithFinalizer:
         assert handle.finalizer_handle is not None
         assert handle.finalizer_handle.job_id is not None
 
-    async def test_finalizer_without_policy_does_not_create_batch_row(self) -> None:
+    async def test_finalizer_without_policy_creates_batch_row(self) -> None:
         backend = _make_backend()
         client = _make_client(backend)
         items = [_make_item(i) for i in range(3)]
@@ -195,4 +195,10 @@ class TestBatchHandleWithFinalizer:
             finalizer=_make_finalizer(UUID(int=0)),
         )
 
-        assert handle.batch_id not in backend._batches
+        # C3: finalizer-only batches create a batch row (failure_threshold=None)
+        # for list_batches discoverability and finalizer_job_id auto-exclusion.
+        batch_row = backend._batches.get(handle.batch_id)
+        assert batch_row is not None
+        assert batch_row.failure_threshold is None
+        assert batch_row.finalizer_job_id is not None
+        assert batch_row.expected_size == 3

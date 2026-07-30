@@ -25,8 +25,13 @@ import pytest
 from taskq import EnqueueItem
 from taskq.batch_policy import AbortBatchAfter
 
-from ._assertions import fetch_effects, fetch_job_rows, poll_until
-from .actors import BatchAbortPayload, batch_abort_worker
+from ._assertions import fetch_effects, fetch_job_rows, poll_until, wait_for_effects
+from .actors import (
+    AbortFinalizerPayload,
+    BatchAbortPayload,
+    batch_abort_finalizer,
+    batch_abort_worker,
+)
 
 if TYPE_CHECKING:
     import asyncpg
@@ -112,3 +117,112 @@ async def test_batch_abort_after_threshold(
         batch_id,
     )
     assert batch_status == "aborted", f"batch row status={batch_status!r}, expected 'aborted'"
+
+
+async def test_batch_abort_with_finalizer(
+    e2e_client: TaskQ,
+    e2e_worker_serial: E2EWorker,
+    e2e_pg_pool: asyncpg.Pool,
+    e2e_schema: E2ESchema,
+    run_id: str,
+) -> None:
+    """Abort policy + finalizer: batch aborts, finalizer is NOT cancelled
+    (it's not stamped with batch_id) and reaches a terminal *succeeded*
+    state by catching BatchAbortedError inside the actor."""
+    batch_id = uuid4()
+    _num_children = 5
+
+    children = [
+        EnqueueItem(
+            actor_ref=batch_abort_worker,
+            payload=BatchAbortPayload(run_id=run_id),
+            metadata={"run_id": run_id},
+        )
+        for _ in range(_num_children)
+    ]
+
+    finalizer = EnqueueItem(
+        actor_ref=batch_abort_finalizer,
+        payload=AbortFinalizerPayload(
+            run_id=run_id,
+            batch_id=str(batch_id),
+        ),
+        metadata={"run_id": run_id},
+    )
+
+    batch = await e2e_client.enqueue_batch(
+        children,
+        batch_id=batch_id,
+        failure_policy=AbortBatchAfter(consecutive_failures=_ABORT_THRESHOLD),
+        finalizer=finalizer,
+    )
+    assert batch.size == _num_children
+    assert batch.finalizer_handle is not None
+
+    child_ids = [
+        handle.job_id for handle in batch.job_handles if handle is not batch.finalizer_handle
+    ]
+    finalizer_id = batch.finalizer_handle.job_id
+
+    await asyncio.gather(
+        *(h.wait(timeout=60) for h in batch.job_handles),
+        return_exceptions=True,
+    )
+
+    async def _all_terminal() -> bool:
+        rows = await fetch_job_rows(e2e_pg_pool, e2e_schema.schema_name, child_ids)
+        return all(r["status"] in ("failed", "cancelled") for r in rows)
+
+    await poll_until(
+        _all_terminal,
+        timeout=60.0,
+        description=f"all {_num_children} child jobs to reach terminal status",
+    )
+
+    # Batch is aborted
+    batch_status = await e2e_pg_pool.fetchval(
+        f'SELECT status FROM "{e2e_schema.schema_name}".batches WHERE id = $1',
+        batch_id,
+    )
+    assert batch_status == "aborted", f"batch row status={batch_status!r}, expected 'aborted'"
+
+    # Finalizer should NOT be cancelled by the abort — it's not stamped
+    # with batch_id. It should reach a terminal *succeeded* state (it
+    # catches BatchAbortedError inside the actor).
+    async def _finalizer_terminal() -> bool:
+        row = await e2e_pg_pool.fetchrow(
+            f'SELECT status FROM "{e2e_schema.schema_name}".jobs WHERE id = $1',
+            finalizer_id,
+        )
+        return row is not None and row["status"] in (
+            "succeeded",
+            "failed",
+            "cancelled",
+            "crashed",
+            "abandoned",
+        )
+
+    await poll_until(
+        _finalizer_terminal,
+        timeout=60.0,
+        description=f"finalizer {finalizer_id} to reach terminal status",
+    )
+
+    finalizer_status = await e2e_pg_pool.fetchval(
+        f'SELECT status FROM "{e2e_schema.schema_name}".jobs WHERE id = $1',
+        finalizer_id,
+    )
+    assert finalizer_status == "succeeded", (
+        f"finalizer should succeed (catching BatchAbortedError), got status={finalizer_status!r}"
+    )
+
+    # The finalizer should have recorded an 'aborted' effect
+    aborted_effects = await wait_for_effects(
+        e2e_pg_pool,
+        e2e_schema.schema_name,
+        run_id,
+        kind="aborted",
+        min_count=1,
+        timeout=30.0,
+    )
+    assert len(aborted_effects) >= 1

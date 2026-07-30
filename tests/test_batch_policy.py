@@ -63,14 +63,32 @@ def test_isinstance_base_class() -> None:
     assert isinstance(policy, BatchFailurePolicy)
 
 
-# ── base class should_abort raises NotImplementedError ────────────
+# ── base class is abstract — cannot be instantiated ──────────────
 
 
-def test_base_class_should_abort_raises() -> None:
-    """BatchFailurePolicy.should_abort raises NotImplementedError."""
-    policy = BatchFailurePolicy()
-    with pytest.raises(NotImplementedError):
-        policy.should_abort(1)
+def test_base_class_cannot_be_instantiated() -> None:
+    """BatchFailurePolicy is abstract — direct instantiation raises TypeError."""
+    with pytest.raises(TypeError, match="abstract"):
+        BatchFailurePolicy()
+
+
+# ── failure_threshold is set polymorphically ─────────────────────
+
+
+def test_abort_batch_after_sets_failure_threshold() -> None:
+    """AbortBatchAfter exposes failure_threshold matching consecutive_failures."""
+    policy = AbortBatchAfter(consecutive_failures=3)
+    assert policy.failure_threshold == 3
+
+
+def test_base_class_failure_threshold_defaults_none() -> None:
+    """BatchFailurePolicy.failure_threshold defaults to None on the base class."""
+    # Cannot check via instantiation (abstract), so verify the field default.
+    import dataclasses
+
+    fields = {f.name: f for f in dataclasses.fields(BatchFailurePolicy)}
+    assert "failure_threshold" in fields
+    assert fields["failure_threshold"].default is None
 
 
 # ── slotted: no __dict__ ──────────────────────────────────────────

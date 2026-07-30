@@ -209,7 +209,7 @@ async def _handle_timeout(
     progress_state: dict[str, object] | None = None,
     *,
     error_reporter: ErrorReporter | None = None,
-) -> None:
+) -> AttemptOutcome:
     error_info = ErrorInfo(
         error_class=type(exc).__name__,
         error_message=str(exc) or "start_to_close",
@@ -265,6 +265,7 @@ async def _handle_timeout(
             to_state="scheduled",
             cause=type(exc).__name__,
         )
+        return "scheduled"
     else:
         span.add_event(
             "lifecycle.failed",
@@ -315,6 +316,7 @@ async def _handle_timeout(
                 exc,
                 log=log,
             )
+        return "failed"
 
 
 async def _handle_snooze(
@@ -329,7 +331,7 @@ async def _handle_snooze(
     progress_state: dict[str, object] | None = None,
     *,
     error_reporter: ErrorReporter | None = None,
-) -> None:
+) -> AttemptOutcome:
     raw_count = (job.metadata or {}).get("snooze_count", 0)
     current_snooze_count: int = int(raw_count) if isinstance(raw_count, (int, str)) else 0
     tri = await asyncio.shield(
@@ -358,6 +360,7 @@ async def _handle_snooze(
             cause="Snooze",
             delay_seconds=s.delay.total_seconds(),
         )
+        return "scheduled"
     elif tri == "failed":
         span.add_event(
             "lifecycle.failed",
@@ -393,6 +396,7 @@ async def _handle_snooze(
             TimeoutError("DeadlineExceeded"),
             log=log,
         )
+        return "failed"
     else:
         log.debug(
             "consume-snooze-noop",
@@ -400,6 +404,7 @@ async def _handle_snooze(
             to_state="noop",
             cause="Snooze",
         )
+        return "scheduled"
 
 
 async def _handle_retry_after(
@@ -414,7 +419,7 @@ async def _handle_retry_after(
     progress_state: dict[str, object] | None = None,
     *,
     error_reporter: ErrorReporter | None = None,
-) -> None:
+) -> AttemptOutcome:
     tri = await asyncio.shield(
         backend.mark_retry_after(
             job.id,
@@ -443,6 +448,7 @@ async def _handle_retry_after(
             delay_seconds=r.delay.total_seconds(),
             consume_budget=r.consume_budget,
         )
+        return "scheduled"
     elif tri in ("failed:DeadlineExceeded", "failed:MaxAttemptsExceeded"):
         cause = tri.split(":")[1]
         span.add_event(
@@ -480,6 +486,7 @@ async def _handle_retry_after(
             log=log,
         )
         await invoke_error_reporter(error_reporter, job, exc, log=log)
+        return "failed"
     else:
         log.debug(
             "consume-retry-after-noop",
@@ -487,6 +494,7 @@ async def _handle_retry_after(
             to_state="noop",
             cause="RetryAfter",
         )
+        return "scheduled"
 
 
 async def _handle_reservation_class_denied(
@@ -504,7 +512,7 @@ async def _handle_reservation_class_denied(
     progress_seq: int = 0,
     progress_state: dict[str, object] | None = None,
     error_reporter: ErrorReporter | None = None,
-) -> None:
+) -> AttemptOutcome:
     tri = await asyncio.shield(
         backend.mark_snoozed(
             job.id,
@@ -534,6 +542,7 @@ async def _handle_reservation_class_denied(
             bucket_name=e.bucket_name,
             delay_seconds=e.retry_after.total_seconds(),
         )
+        return "scheduled"
     elif tri == "failed":
         span.add_event(
             "lifecycle.failed",
@@ -570,6 +579,7 @@ async def _handle_reservation_class_denied(
             TimeoutError("DeadlineExceeded"),
             log=log,
         )
+        return "failed"
     else:
         log.debug(
             debug_event,
@@ -577,6 +587,7 @@ async def _handle_reservation_class_denied(
             to_state="noop",
             cause="ReservationUnavailable",
         )
+        return "scheduled"
 
 
 async def _handle_generic_exception(
@@ -593,7 +604,7 @@ async def _handle_generic_exception(
     progress_state: dict[str, object] | None = None,
     *,
     error_reporter: ErrorReporter | None = None,
-) -> None:
+) -> AttemptOutcome:
     error_info = ErrorInfo(
         error_class=type(e).__name__,
         error_message=str(e),
@@ -645,6 +656,7 @@ async def _handle_generic_exception(
             to_state="scheduled",
             cause=type(e).__name__,
         )
+        return "scheduled"
     else:
         span.add_event(
             "lifecycle.failed",
@@ -694,6 +706,7 @@ async def _handle_generic_exception(
                 log=log,
             )
             await invoke_error_reporter(error_reporter, updated_row, e, log=log)
+        return "failed"
 
 
 async def _dispatch_exception(

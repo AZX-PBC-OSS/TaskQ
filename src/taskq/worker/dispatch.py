@@ -289,6 +289,10 @@ async def dispatch_one_job(
                     )
                     outcome = result
 
+                    # Best-effort: a crash between the terminal write and
+                    # the counter increment loses that increment.  See
+                    # apply_batch_terminal_outcome docstring for full
+                    # safety-net semantics (M7).
                     try:
                         await apply_batch_terminal_outcome(
                             backend, job, outcome, loop_conn=loop_conn
@@ -318,7 +322,7 @@ async def dispatch_one_job(
                     trace_id="",
                 )
                 try:
-                    await _handle_generic_exception(
+                    outcome = await _handle_generic_exception(
                         backend,
                         job,
                         worker_id,

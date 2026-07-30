@@ -1351,8 +1351,8 @@ async def test_consume_failed_returns_failed() -> None:
     assert result == "failed"
 
 
-async def test_consume_timeout_returns_failed() -> None:
-    """consume_one_job returns 'failed' on TimeoutError."""
+async def test_consume_timeout_returns_scheduled_when_retryable() -> None:
+    """consume_one_job returns 'scheduled' on retryable TimeoutError."""
 
     async def actor(_job: object, _ctx: JobContext[BaseModel]) -> object:
         raise TimeoutError()
@@ -1372,7 +1372,7 @@ async def test_consume_timeout_returns_failed() -> None:
         payload_type=EmptyPayload,
         clock=clk,
     )
-    assert result == "failed"
+    assert result == "scheduled"
 
 
 async def test_consume_cancelled_raises_and_does_not_return() -> None:

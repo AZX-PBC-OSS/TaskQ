@@ -331,8 +331,10 @@ async def test_sync_actor_retry_policy_kicks_in() -> None:
         ),
         job=make_job_row(attempt=1, max_attempts=3),
     )
-    # Outcome is "failed" for exceptions; the retry is handled by mark_failed_or_retry internally
-    assert outcome == "failed"
+    # Outcome is "scheduled" — the retry is handled by mark_failed_or_retry
+    # which reschedules the job; the consumer now correctly returns "scheduled"
+    # for retried jobs so the batch hook skips non-terminal outcomes.
+    assert outcome == "scheduled"
     assert len(backend.mark_failed_or_retry_calls) == 1
     assert backend.mark_failed_or_retry_calls[0]["next_scheduled_at"] is not None
 
