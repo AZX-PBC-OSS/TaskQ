@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+* `JobsClient.cancel_where(filter, reason)` — bulk cancel all jobs matching a
+  `JobFilter` in a single set-based operation. Pending/scheduled jobs go straight
+  to terminal `cancelled`; running jobs get cooperative cancel (`cancel_phase=1`).
+  Returns `BulkCancelResult` with counts and affected IDs. Empty filters are
+  rejected with `EmptyFilterError` unless `allow_empty_filter=True` is passed.
+* `SubJobEnqueuer.enqueue()` now accepts `tags`, `inherit_tags`,
+  `schedule_to_close`, `start_to_close`, and `heartbeat_timeout` parameters.
+  Sub-jobs inherit the parent job's tags by default (`inherit_tags=True`); pass
+  `inherit_tags=False` to suppress inheritance for a specific sub-job.
+* `BulkCancelResult` and `EmptyFilterError` exported from `taskq` top-level.
+
+### Changed
+
+* **Sub-jobs now inherit parent tags by default.** Every `ctx.jobs.enqueue()`
+  call inside an actor body now propagates the parent job's tags to the sub-job,
+  making sub-jobs findable by `JobFilter(tags=...)` and cancellable by
+  `cancel_where`. Pass `inherit_tags=False` per-call to opt out. This is a
+  behavior change for any code that relied on sub-job tags being empty —
+  inherited tags make sub-jobs visible to tag-based filters and bulk cancels.
+
 ## [0.2.2](https://github.com/AZX-PBC-OSS/TaskQ/compare/v0.2.1...v0.2.2) (2026-07-22)
 
 

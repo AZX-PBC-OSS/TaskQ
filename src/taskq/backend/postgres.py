@@ -9,9 +9,11 @@ Decode helpers (:mod:`taskq.backend._records`), maintenance sweeps
 (:mod:`taskq.backend._schedules`), terminal writes
 (:mod:`taskq.backend._terminal`), enqueue
 (:mod:`taskq.backend._enqueue`), reads (:mod:`taskq.backend._reads`),
-and dispatch (:mod:`taskq.backend._dispatch`) live in companion
-submodules; this module holds the cohesive core: ``__init__``, heartbeat,
-cancel signals, NOTIFY, and schedule CRUD wiring.
+bulk cancel (:mod:`taskq.backend._cancel_bulk`), filter SQL builder
+(:mod:`taskq.backend._filter_sql`), and dispatch
+(:mod:`taskq.backend._dispatch`) live in companion submodules; this
+module holds the cohesive core: ``__init__``, heartbeat, cancel
+signals, NOTIFY, and schedule CRUD wiring.
 """
 
 import asyncio

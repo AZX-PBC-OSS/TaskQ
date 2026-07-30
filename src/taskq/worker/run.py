@@ -46,7 +46,7 @@ from taskq.actor import ActorRef
 from taskq.backend._protocol import Backend, JobRow
 from taskq.backend._records import jsonb_param
 from taskq.backend.clock import Clock
-from taskq.client._enqueuer import SubJobEnqueuer, _parent_tags_var, set_parent_tags
+from taskq.client._enqueuer import SubJobEnqueuer, parent_tags
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: canonical identifier regex; copying would drift the validation pattern.
 )
@@ -346,9 +346,7 @@ async def consumer_loop_stub(
         if current_task is None:
             raise RuntimeError("consumer_loop_stub must run inside a TaskGroup")
 
-        _parent_tags_token = set_parent_tags(tuple(job.tags))
-
-        try:
+        with parent_tags(tuple(job.tags)):
             ctx: JobContext[_StubPayload] = JobContext(
                 job_id=job.id,
                 actor=job.actor,
@@ -402,9 +400,6 @@ async def consumer_loop_stub(
 
             finally:
                 await deps.active_jobs.deregister(job.id)
-
-        finally:
-            _parent_tags_var.reset(_parent_tags_token)
 
 
 async def di_consumer_loop(

@@ -7,10 +7,9 @@ translated to conditions. The ``cursor``, ``limit``, and ``order_by``
 fields are NOT handled here — callers apply them separately.
 
 This module is SQL-only; the in-memory backend filters via its own
-implementation in ``testing/_reads.py``. Backend equivalence is enforced
-by the shared test suite (``test_backend_equivalence.py``), not shared
-code — the two filter-matching strategies (SQL WHERE vs Python
-predicates) do not share a trivial interface.
+implementation in ``testing/_reads.py``. Filter semantics between the
+two backends are verified by ``test_job_filter.py`` and the per-backend
+cancel_where test suites.
 """
 
 from dataclasses import dataclass
@@ -26,9 +25,10 @@ __all__ = ["FilterSQL", "build_filter_conditions"]
 class FilterSQL:
     """Built SQL fragments and parameters from a JobFilter.
 
-    ``conditions`` and ``params`` are stored as tuples so the frozen
-    contract is meaningful (mutable list fields in a frozen dataclass
-    only prevent reassignment, not in-place mutation).
+    ``conditions`` and ``params`` are stored as tuples so the container
+    itself is immutable (prevents reassignment of the field). Individual
+    param elements (e.g. ``list[str]`` for ``ANY()``) are inherently
+    mutable — callers consume them immediately without mutation.
     """
 
     conditions: tuple[str, ...] = ()

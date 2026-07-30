@@ -66,6 +66,6 @@ async def _cancel_where(
     return BulkCancelResult(
         cancelled_directly=len(cancelled_ids),
         cancel_requested=len(cancel_requested_ids),
-        cancelled_ids=cancelled_ids,
-        cancel_requested_ids=cancel_requested_ids,
+        cancelled_ids=tuple(cancelled_ids),
+        cancel_requested_ids=tuple(cancel_requested_ids),
     )

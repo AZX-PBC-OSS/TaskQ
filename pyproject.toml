@@ -202,6 +202,10 @@ ignore = [
 "src/taskq/backend/_terminal.py" = ["S608", "SIM117"]
 "src/taskq/backend/_enqueue.py" = ["S608", "SIM117"]
 "src/taskq/backend/_reads.py" = ["S608"]
+# S608: schema name validated against _IDENT_RE before interpolation; same
+# rationale as _reads.py. All user-supplied values use $N parameter binding.
+# SIM117: pool.acquire() and conn.transaction() cannot be flattened.
+# S311: random module used for jitter in deadlock retry backoff, not crypto.
 "src/taskq/backend/_cancel_bulk.py" = ["S608", "SIM117", "S311"]
 "src/taskq/backend/_dispatch.py" = ["S608", "SIM117"]
 "src/taskq/backend/_sql_templates.py" = ["S608"]

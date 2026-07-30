@@ -219,21 +219,14 @@ class TestDeadlockRetry:
 
     @staticmethod
     def _mock_pool_and_conn(
-        fetch_row: dict | None = None,
-        fetch_side_effects: list[Exception] | None = None,
+        fetch_rows: list[dict[str, object] | None] | None = None,
     ) -> tuple[MagicMock, MagicMock]:
         conn = MagicMock()
 
-        if fetch_side_effects is not None:
-            fetch_mock = AsyncMock(side_effect=fetch_side_effects)
-            if fetch_row is not None:
-                fetch_mock.side_effect = [
-                    *fetch_side_effects,
-                    fetch_row,
-                ]
-            conn.fetchrow = fetch_mock
+        if fetch_rows is not None:
+            conn.fetchrow = AsyncMock(side_effect=fetch_rows)
         else:
-            conn.fetchrow = AsyncMock(return_value=fetch_row)
+            conn.fetchrow = AsyncMock(return_value=None)
 
         conn.executemany = AsyncMock(return_value=None)
 
@@ -250,22 +243,40 @@ class TestDeadlockRetry:
         return pool, conn
 
     @staticmethod
-    def _success_row() -> dict:
+    def _ps_success_row() -> dict[str, object]:
         return {
             "cancelled_directly": 1,
-            "cancel_requested": 0,
             "cancelled_ids": [uuid4()],
             "cancelled_prev_statuses": ["pending"],
+        }
+
+    @staticmethod
+    def _running_empty_row() -> dict[str, object]:
+        return {
+            "cancel_requested": 0,
             "cancel_requested_ids": [],
             "cancel_requested_workers": [],
         }
 
+    @staticmethod
+    def _running_success_row() -> dict[str, object]:
+        wid = uuid4()
+        return {
+            "cancel_requested": 1,
+            "cancel_requested_ids": [uuid4()],
+            "cancel_requested_workers": [wid],
+        }
+
     async def test_deadlock_retry_succeeds_on_second_attempt(self) -> None:
         """_cancel_where retries on DeadlockDetectedError and succeeds."""
-        row = self._success_row()
+        ps_row = self._ps_success_row()
+        running_row = self._running_empty_row()
         pool, _ = self._mock_pool_and_conn(
-            fetch_row=row,
-            fetch_side_effects=[asyncpg.DeadlockDetectedError()],
+            fetch_rows=[
+                asyncpg.DeadlockDetectedError(),
+                ps_row,
+                running_row,
+            ]
         )
 
         sql = MagicMock()
@@ -280,7 +291,7 @@ class TestDeadlockRetry:
     async def test_deadlock_retry_exhausted_raises(self) -> None:
         """_cancel_where raises after 3 failed attempts."""
         pool, _ = self._mock_pool_and_conn(
-            fetch_side_effects=[asyncpg.DeadlockDetectedError()] * 3,
+            fetch_rows=[asyncpg.DeadlockDetectedError()] * 3,
         )
 
         sql = MagicMock()
@@ -290,29 +301,37 @@ class TestDeadlockRetry:
 
     async def test_no_deadlock_no_retry(self) -> None:
         """_cancel_where succeeds immediately without retry."""
-        row = self._success_row()
-        pool, conn = self._mock_pool_and_conn(fetch_row=row)
+        ps_row = self._ps_success_row()
+        running_row = self._running_empty_row()
+        pool, conn = self._mock_pool_and_conn(fetch_rows=[ps_row, running_row])
 
         sql = MagicMock()
         sql.insert_event = "INSERT INTO job_events VALUES ($1, $2, $3, $4)"
 
         await _cancel_where(pool, "taskq", sql, JobFilter(tags=("x",)), "test")
 
-        assert conn.fetchrow.call_count == 1
+        assert conn.fetchrow.call_count == 2
 
     async def test_deadlock_during_executemany_retries_correctly(self) -> None:
         """Deadlock on executemany (after fetchrow succeeds) retries the
         whole transaction — no phantom IDs from the aborted attempt."""
-        row = self._success_row()
-        pool, conn = self._mock_pool_and_conn(fetch_row=row)
+        ps_row = self._ps_success_row()
+        running_row = self._running_empty_row()
+        # Attempt 1: fetchrow → ps_row, executemany → deadlock
+        # Attempt 2: fetchrow → ps_row, executemany → ok, fetchrow → running_row
+        pool, conn = self._mock_pool_and_conn(fetch_rows=[ps_row, ps_row, running_row])
 
         call_count = [0]
 
-        async def _flaky_executemany(query, args, *a, **kw):
+        async def _flaky_executemany(
+            query: str,
+            args: list[tuple[object, ...]],
+            *a: object,
+            **kw: object,
+        ) -> None:
             call_count[0] += 1
-            if call_count[0] <= 2:
+            if call_count[0] == 1:
                 raise asyncpg.DeadlockDetectedError()
-            return None
 
         conn.executemany = _flaky_executemany
 
@@ -329,14 +348,14 @@ class TestDeadlockRetry:
         notify_targets (no worker to NOTIFY)."""
         jid = uuid4()
         pool, _ = self._mock_pool_and_conn(
-            fetch_row={
-                "cancelled_directly": 0,
-                "cancel_requested": 1,
-                "cancelled_ids": [],
-                "cancelled_prev_statuses": [],
-                "cancel_requested_ids": [jid],
-                "cancel_requested_workers": [None],
-            }
+            fetch_rows=[
+                None,
+                {
+                    "cancel_requested": 1,
+                    "cancel_requested_ids": [jid],
+                    "cancel_requested_workers": [None],
+                },
+            ]
         )
 
         sql = MagicMock()

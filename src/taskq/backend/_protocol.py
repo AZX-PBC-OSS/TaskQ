@@ -424,7 +424,13 @@ class CancelFlag:
 
 @dataclass(frozen=True, slots=True)
 class JobFilter:
-    """Filter parameters for :meth:`Backend.list_jobs`.
+    """Filter parameters for :meth:`Backend.list_jobs` and
+    :meth:`Backend.cancel_where`.
+
+    For ``cancel_where``, the ``limit``, ``cursor``, and ``order_by``
+    fields are ignored — a bulk cancel is not paginated. Use
+    :meth:`has_predicates` to check whether the filter has at least one
+    predicate before passing it to ``cancel_where``.
 
     Heads-up: ``active=True`` is **not** Celery's 'active' — Celery's
     means 'currently executing' (``running`` only), TaskQ's means 'not
@@ -529,7 +535,10 @@ class JobFilter:
 
         Used by ``JobsClient.cancel_where`` to reject empty filters that
         would match the entire table. New predicate fields added to
-        ``JobFilter`` automatically participate in this check.
+        ``JobFilter`` MUST be added here and in
+        ``build_filter_conditions`` — the two are kept in sync manually.
+        Non-predicate fields (``limit``, ``cursor``, ``order_by``) are
+        excluded by design.
         """
         return (
             self.queue is not None
@@ -651,10 +660,10 @@ class BulkCancelResult(BaseModel):
     cancel_requested: int
     """Count of running jobs with cancel_phase=1 set (cooperative cancel)."""
 
-    cancelled_ids: list[UUID]
+    cancelled_ids: tuple[UUID, ...]
     """IDs of jobs cancelled directly (pending/scheduled → cancelled)."""
 
-    cancel_requested_ids: list[UUID]
+    cancel_requested_ids: tuple[UUID, ...]
     """IDs of running jobs with cancel requested."""
 
     @property
@@ -1005,6 +1014,14 @@ class Backend(Protocol):
 
         The filter's ``limit``, ``cursor``, and ``order_by`` fields are
         ignored — this is a bulk write, not a paginated read.
+
+        **Guardrail:** the client layer (:meth:`JobsClient.cancel_where`)
+        rejects empty filters (no predicates) with
+        :class:`EmptyFilterError`. Backend implementations receive a
+        filter that has already been validated. A direct backend call
+        with ``JobFilter()`` renders ``WHERE TRUE`` and cancels the
+        entire table — callers using the backend directly are
+        responsible for validating the filter.
 
         Returns a :class:`BulkCancelResult` with counts and affected IDs.
         """

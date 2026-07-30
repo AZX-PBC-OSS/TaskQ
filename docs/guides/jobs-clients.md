@@ -879,11 +879,11 @@ set per-item tags explicitly.
 
 #### `schedule_to_close` / `start_to_close` / `heartbeat_timeout`
 
-These parameters are passed through to `build_enqueue_args` and override the
-actor's declared defaults for this specific sub-job. Note that
-`schedule_to_close` bounds total wall-clock time *including* time snoozed on
-`wait_for_batch` — finalizer-style sub-jobs that snooze for long periods should
-set it generously or not at all.
+`schedule_to_close` and `start_to_close` override the actor's declared defaults for
+this specific sub-job. `heartbeat_timeout` has no actor-level declaration — the
+per-call value is the only source. Note that `schedule_to_close` bounds total
+wall-clock time *including* time snoozed on `wait_for_batch` — finalizer-style
+sub-jobs that snooze for long periods should set it generously or not at all.
 
 The per-call `max_pending=` argument is resolved against the operator-owned stored cap and
 the `@actor(...)` literal, not in place of them: against a non-NULL stored

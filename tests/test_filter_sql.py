@@ -79,7 +79,11 @@ class TestBuildFilterConditions:
         """$N placeholders must be sequentially numbered and align
         positionally with the params tuple."""
         result = build_filter_conditions(JobFilter(queue="q1", actor="a1", tags=("t1",)))
-        numbers = [int(re.search(r"\$(\d+)", c).group(1)) for c in result.conditions]
+        numbers: list[int] = []
+        for c in result.conditions:
+            m = re.search(r"\$(\d+)", c)
+            assert m is not None, f"No $N placeholder in condition: {c!r}"
+            numbers.append(int(m.group(1)))
         assert numbers == list(range(1, len(numbers) + 1)), numbers
         assert result.params == ("q1", "a1", ["t1"])
 

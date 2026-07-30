@@ -41,6 +41,29 @@ class TestBulkCancelResult:
         )
         assert result.total_affected == 0
 
+    def test_ids_are_tuples(self) -> None:
+        """ID fields are tuples, not lists — frozen immutability."""
+        result = BulkCancelResult(
+            cancelled_directly=1,
+            cancel_requested=0,
+            cancelled_ids=[uuid4()],
+            cancel_requested_ids=[],
+        )
+        assert isinstance(result.cancelled_ids, tuple)
+        assert isinstance(result.cancel_requested_ids, tuple)
+
+    def test_list_input_coerced_to_tuple(self) -> None:
+        """Pydantic v2 coerces list inputs to tuples."""
+        ids = [uuid4() for _ in range(2)]
+        result = BulkCancelResult(
+            cancelled_directly=2,
+            cancel_requested=0,
+            cancelled_ids=ids,
+            cancel_requested_ids=[],
+        )
+        assert isinstance(result.cancelled_ids, tuple)
+        assert len(result.cancelled_ids) == 2
+
 
 class TestEmptyFilterError:
     def test_is_taskq_error(self) -> None:

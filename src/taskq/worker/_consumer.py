@@ -29,7 +29,7 @@ from taskq.backend._protocol import (
     JobRow,
 )
 from taskq.backend.clock import Clock
-from taskq.client._enqueuer import SubJobEnqueuer, _parent_tags_var, set_parent_tags
+from taskq.client._enqueuer import SubJobEnqueuer, _parent_tags_var
 from taskq.constants import MAX_RESULT_BYTES
 from taskq.context import JobContext
 from taskq.exceptions import (
@@ -353,7 +353,7 @@ async def consume_one_job(
         _buf = _ProgressBuffer(job_id=job.id, base_seq=job.progress_seq)
         _progress_buffers[job.id] = _buf
 
-    _parent_tags_token = set_parent_tags(tuple(job.tags))
+    _parent_tags_token = _parent_tags_var.set(tuple(job.tags))
 
     try:
         validated_payload = (

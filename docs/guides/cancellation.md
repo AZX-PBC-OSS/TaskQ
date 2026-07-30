@@ -33,7 +33,7 @@ result = await handle.cancel(reason="deadline exceeded")
 ### Via `JobsClient.cancel_where()`
 
 ```python
-from taskq.backend._protocol import JobFilter
+from taskq import JobFilter
 
 result = await client.cancel_where(
     JobFilter(tags=("tenant-acme",), active=True),

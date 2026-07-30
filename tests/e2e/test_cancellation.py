@@ -25,8 +25,7 @@ from uuid import uuid4
 
 import pytest
 
-from taskq import JobFailed
-from taskq.backend._protocol import JobFilter
+from taskq import JobFailed, JobFilter
 from taskq.batch import EnqueueItem
 
 from ._assertions import fetch_effects, wait_for_effects, wait_for_handle_status

@@ -5,12 +5,19 @@ Falls back to the worker pool if no LOOP-scope connection is registered.
 One instance per loop — survives across dispatches so the per-100-enqueue
 re-warning fires on the loop-level counter, not per-job.
 
+Parent-tag propagation: the consumer sets the parent job's tags via
+``set_parent_tags()`` before actor invocation and resets them after
+(via ``parent_tags()`` context manager or manual token reset). The
+``contextvars.ContextVar`` ensures concurrent consumers in the same
+event loop each see their own parent tags — asyncio Tasks copy the
+context at creation time.
 """
 
 from __future__ import annotations
 
+import contextlib
 import contextvars
-from collections.abc import Mapping, Sequence
+from collections.abc import Generator, Mapping, Sequence
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
@@ -40,7 +47,7 @@ if TYPE_CHECKING:
 
     from taskq.actor import ActorRef
 
-__all__ = ["SubJobEnqueuer", "_parent_tags_var", "set_parent_tags"]
+__all__ = ["SubJobEnqueuer", "parent_tags", "set_parent_tags"]
 
 _log: structlog.stdlib.BoundLogger = structlog.get_logger(__name__)
 
@@ -54,9 +61,30 @@ def set_parent_tags(tags: tuple[str, ...]) -> contextvars.Token[tuple[str, ...]]
     """Set the parent job's tags for sub-job tag inheritance.
 
     Called by the consumer before actor invocation. The returned token
-    can be used to reset the context after the actor completes.
+    must be used to reset the context after the actor completes — use
+    ``_parent_tags_var.reset(token)`` or the ``parent_tags()`` context
+    manager.
     """
     return _parent_tags_var.set(tags)
+
+
+@contextlib.contextmanager
+def parent_tags(tags: tuple[str, ...]) -> Generator[None, None, None]:
+    """Context manager that sets parent tags for the duration of the block.
+
+    Ensures the ContextVar is reset on all exit paths (success, exception,
+    cancellation). Use this at worker entry points instead of manual
+    set/reset::
+
+        with parent_tags(tuple(job.tags)):
+            # actor invocation, sub-job enqueues, etc.
+            ...
+    """
+    token = _parent_tags_var.set(tags)
+    try:
+        yield
+    finally:
+        _parent_tags_var.reset(token)
 
 
 class SubJobEnqueuer:
@@ -173,6 +201,9 @@ class SubJobEnqueuer:
         """Resolve tags with parent inheritance.
 
         Returns a list suitable for build_enqueue_args, or None for empty.
+        Deduplication is order-preserving (parent first); the downstream
+        ``_validate_and_dedup_tags`` in ``build_enqueue_args`` also
+        deduplicates, but we do it here so the merge result is clean.
         """
         parent_tags = _parent_tags_var.get() if inherit_tags else ()
 
@@ -187,13 +218,7 @@ class SubJobEnqueuer:
         if not tags:
             return list(parent_tags)
 
-        seen: set[str] = set(parent_tags)
-        merged = list(parent_tags)
-        for tag in tags:
-            if tag not in seen:
-                seen.add(tag)
-                merged.append(tag)
-        return merged
+        return list(dict.fromkeys((*parent_tags, *tags)))
 
     def _resolve_connection(
         self,

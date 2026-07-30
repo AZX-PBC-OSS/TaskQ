@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from taskq.backend._protocol import JobFilter
+from taskq import JobFilter
 
 from ._assertions import wait_for_effects
 from .actors import (
