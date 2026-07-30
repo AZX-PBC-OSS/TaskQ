@@ -11,8 +11,9 @@ Provides:
 """
 
 import asyncio
+from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import UUID
 
 import structlog
@@ -31,6 +32,7 @@ if TYPE_CHECKING:
 __all__ = [
     "BatchCompletionStatus",
     "BatchHandle",
+    "BatchSummary",
     "EnqueueItem",
     "wait_for_batch",
 ]
@@ -106,6 +108,10 @@ class BatchHandle(BaseModel):
     job_handles: list[Any]
     """List of :class:`~taskq.client.JobHandle` instances, one per enqueued item."""
     size: int
+    finalizer_handle: Any | None = None
+    """The :class:`~taskq.client.JobHandle` for the finalizer job, or ``None``
+    when no finalizer was enqueued.  When set, the finalizer handle is also
+    appended as the last entry of :attr:`job_handles` for backward compat."""
 
     async def status(
         self,
@@ -149,6 +155,23 @@ class BatchHandle(BaseModel):
             crashed=counts.get("crashed", 0),
             abandoned=counts.get("abandoned", 0),
         )
+
+
+@dataclass(frozen=True, slots=True)
+class BatchSummary:
+    """One row from the batches table, augmented with live job counts."""
+
+    batch_id: UUID
+    queue: str
+    status: Literal["active", "complete", "aborted"]
+    expected_size: int
+    consecutive_failures: int
+    failure_threshold: int | None
+    finalizer_job_id: UUID | None
+    originating_actor: str | None
+    created_at: datetime
+    completed_at: datetime | None
+    completion: BatchCompletionStatus
 
 
 _WAIT_FOR_BATCH_SQL = (

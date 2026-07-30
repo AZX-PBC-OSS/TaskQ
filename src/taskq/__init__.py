@@ -22,6 +22,7 @@ from taskq.auth import (
     make_redis_client_factory,
 )
 from taskq.backend._protocol import (
+    BatchFilter,
     CancelPhase,
     DstStrategy,
     EventRow,
@@ -36,7 +37,13 @@ from taskq.backend._protocol import (
     RetryKind,
     ScheduleRecord,
 )
-from taskq.batch import BatchCompletionStatus, BatchHandle, EnqueueItem, wait_for_batch
+from taskq.batch import (
+    BatchCompletionStatus,
+    BatchHandle,
+    BatchSummary,
+    EnqueueItem,
+    wait_for_batch,
+)
 from taskq.batch_policy import AbortBatchAfter, BatchFailurePolicy
 from taskq.client import CancelResult, JobEvent, JobHandle, JobsClient, TaskQ
 from taskq.client._enqueuer import SubJobEnqueuer
@@ -98,7 +105,9 @@ __all__ = [
     "BatchAbortedError",
     "BatchCompletionStatus",
     "BatchFailurePolicy",
+    "BatchFilter",
     "BatchHandle",
+    "BatchSummary",
     "CancelPhase",
     "CancelResult",
     "ConnFactory",
