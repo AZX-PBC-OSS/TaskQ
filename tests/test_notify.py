@@ -16,7 +16,7 @@ import asyncio
 import contextlib
 import inspect
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock
@@ -1358,3 +1358,45 @@ class TestCancelEventRouting:
             cb(_mock_conn(), 0, f"taskq_worker_taskq_test_{_WORKER_ID}", payload)
             await asyncio.wait_for(event_a.wait(), timeout=0.1)
             await asyncio.wait_for(event_b.wait(), timeout=0.1)
+
+
+# ── Watchdog exemption ─────────────────────────────────────────────────
+
+
+async def test_health_check_loop_does_not_register_a_liveness_tick() -> None:
+    """The notify health-check loop must stay exempt from detector 2.
+
+    Registering a tick here force-exits healthy workers three ways, all of
+    them real:
+
+    1. The loop returns early on legitimate paths — a dropped connection,
+       and the notify-listener-disabled fallback that deliberately keeps
+       the worker running on poll-based dispatch. A registration left
+       behind goes stale while the worker is fine.
+    2. The reconnect retry loop backs off to 30s between attempts without
+       ticking, so a small health-check interval puts the budget at the
+       floor and trips during exactly the PG outage the reconnect logic
+       exists to survive.
+    3. Its cadence tracks IO, not progress.
+
+    Detectors 1, 3 and 4 cover this loop instead.
+    """
+    from taskq.worker._watchdog import LoopLiveness
+
+    deps = _make_mock_deps()
+    deps.liveness = LoopLiveness()
+    backend = _make_backend()
+    shutdown = asyncio.Event()
+    channels: list[tuple[str, Callable[[asyncpg.Connection, int, str, str], None]]] = []
+
+    task = asyncio.create_task(_health_check_loop(deps, backend, shutdown, channels))
+    for _ in range(50):
+        await asyncio.sleep(0)
+    shutdown.set()
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+    assert deps.liveness.ages() == {}, (
+        f"notify health-check loop registered a staleness budget: {deps.liveness.ages()}"
+    )

@@ -40,6 +40,7 @@ from taskq.worker.notify import (
     _notify_reconnects_counter,
     notify_listener_loop,
 )
+from tests.conftest import free_host_port
 
 _GRACE = timedelta(seconds=30)
 _WORKER_ID = new_uuid()
@@ -89,12 +90,24 @@ async def _pg_terminate_backend(pg_dsn: str, pid: int) -> None:
 
 @pytest.fixture(scope="function")
 def pg_container_function_scoped() -> Iterator[PostgresContainer]:
-    with PostgresContainer(
+    """Function-scoped PG whose HOST port is pinned across stop/start.
+
+    ``test_tc2_pg_container_stop_start`` restarts this container and keeps
+    using host DSNs derived before the restart — including the
+    ``open_worker_deps`` dispatcher/heartbeat/worker pools, which no
+    re-derive can retarget. Docker reassigns a Docker-chosen ephemeral
+    host port on start, so without an explicit binding that test fails
+    with ConnectionRefused whenever the reassignment actually happens
+    (flaky under full-suite Docker load). See ``free_host_port``.
+    """
+    container = PostgresContainer(
         image="postgres:18-alpine",
         username="taskq",
         password="taskq",
         dbname="taskq",
-    ) as container:
+    )
+    container.with_bind_ports(5432, free_host_port())
+    with container:
         yield container
 
 

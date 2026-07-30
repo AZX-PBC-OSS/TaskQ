@@ -50,7 +50,10 @@ jobs:
         run: uv python install 3.12
 
       - name: Install dependencies
-        run: uv sync --all-extras --group dev
+        # The e2e group is required here: tests/e2e type-checks against
+        # containerspec (TYPE_CHECKING imports of BuiltImage), which the
+        # default dev group deliberately does not include.
+        run: uv sync --all-extras --group dev --group e2e
 
       - name: Type check with pyright
         run: uv run pyright src/taskq tests
@@ -127,6 +130,30 @@ jobs:
 
       - name: Run tests with coverage gate
         run: uv run --python 3.12 pytest -n 2 --cov=taskq --cov-report=term-missing --cov-fail-under=90
+
+  e2e:
+    # Containerized e2e tier: workers built from the packaged wheel run
+    # against testcontainers Postgres + Dragonfly. Serial by design (the
+    # suite's isolation contract assumes one test at a time). ubuntu-latest
+    # provides Docker.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v9.0.0
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --all-extras --group dev --group e2e
+
+      - name: Run e2e tests
+        run: uv run --group e2e pytest --e2e -m e2e tests/e2e --timeout=900 -q
 
   security:
     runs-on: ubuntu-latest

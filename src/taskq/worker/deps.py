@@ -32,6 +32,7 @@ from taskq.constants import wake_channel
 from taskq.obs import get_logger
 from taskq.progress._buffer import _ProgressBuffer
 from taskq.settings import WorkerSettings
+from taskq.worker._watchdog import LoopLiveness
 from taskq.worker.budget import compute_connection_budget
 from taskq.worker.cancel import ActiveJobRegistry
 from taskq.worker.shutdown import ShutdownPhase
@@ -116,13 +117,19 @@ async def open_dedicated_conn(
     *,
     label: str,
     apply_keepalive: bool = True,
+    command_timeout: float | None = None,
 ) -> asyncpg.Connection:
     """Open a dedicated (non-pooled) asyncpg connection.
 
     If ``apply_keepalive`` is True, sets TCP keepalive
     on the underlying socket after the connection is established.
+    If ``command_timeout`` is set, applies it so a stalled PG cannot
+    hang the caller indefinitely.
     """
-    conn = await asyncpg.connect(dsn)
+    if command_timeout is not None:
+        conn = await asyncpg.connect(dsn, command_timeout=command_timeout)
+    else:
+        conn = await asyncpg.connect(dsn)
     applied = apply_keepalive_to_conn(conn, label=label) if apply_keepalive else False
     logger.info(
         "dedicated-connection-opened",
@@ -167,6 +174,10 @@ class WorkerDeps:
     producer_stop_event: asyncio.Event = field(default_factory=asyncio.Event)
     active_jobs: ActiveJobRegistry = field(default_factory=ActiveJobRegistry)
     shutdown_phase: ShutdownPhase = ShutdownPhase.NONE
+    # Monotonic timestamp of shutdown initiation (orchestrate_shutdown
+    # start or the ShutdownWatchdog observing shutdown_event, whichever
+    # is first). Feeds the /ready shutdown_elapsed_seconds surface.
+    shutdown_started_at: float | None = None
     heartbeat_failures: int = 0
     progress_buffers: dict[UUID, _ProgressBuffer] = field(
         default_factory=dict[UUID, _ProgressBuffer]
@@ -187,6 +198,11 @@ class WorkerDeps:
     rebuild). Used by :mod:`taskq.worker.notify`'s reconnect loop and by
     :func:`reload_credentials` so a dropped or expiring connection is always
     rebuilt through the same credential source it was opened with."""
+    liveness: LoopLiveness = field(default_factory=LoopLiveness)
+    """Per-loop liveness stamps for the in-worker watchdog (detector 2):
+    interval-driven sibling loops tick once per iteration and the watchdog
+    trips when any tracked loop goes stale. Gated loops must ``forget``
+    their entry when their gate closes."""
     leader_conn_factory: ConnFactory | None = None
     """Resolved factory that (re)builds ``leader_conn``. Same contract as
     ``notify_conn_factory``; used by :mod:`taskq.worker.leader`'s election
@@ -324,6 +340,7 @@ async def open_worker_deps(
                     min_size=1,
                     max_size=settings.dispatcher_pool_size,
                     max_inactive_connection_lifetime=_lifetime,
+                    command_timeout=settings.dispatcher_command_timeout,
                 )
                 assert pool is not None
                 return pool
@@ -434,12 +451,18 @@ async def open_worker_deps(
         else:
             assert direct_dsn is not None  # guarded by _needs_pg_dsn
             _direct_leader = direct_dsn
+            _leader_command_timeout = settings.dispatcher_command_timeout
 
             async def _leader_dsn_factory() -> asyncpg.Connection:
+                # command_timeout is applied HERE, not at the leader.py call
+                # sites: every leader connection (election conn, cron,
+                # monitor) goes through this factory on a stock deployment,
+                # so this is the only place the timeout cannot be bypassed.
                 return await open_dedicated_conn(
                     _direct_leader,
                     label="leader",
                     apply_keepalive=True,
+                    command_timeout=_leader_command_timeout,
                 )
 
             resolved_leader_factory = _leader_dsn_factory

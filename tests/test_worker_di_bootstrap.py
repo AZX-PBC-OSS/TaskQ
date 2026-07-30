@@ -38,6 +38,7 @@ from taskq.client._enqueuer import SubJobEnqueuer
 from taskq.context import JobContext
 from taskq.exceptions import DependencyCycle, MissingProvider, ScopeViolation
 from taskq.settings import WorkerSettings
+from taskq.testing.actor import EmptyPayload
 from taskq.testing.clock import FakeClock
 from taskq.worker.deps import WorkerDeps
 from taskq.worker.run import _main
@@ -70,16 +71,19 @@ class _LoopToTransient:
     pass
 
 
-def _settings() -> WorkerSettings:
-    return WorkerSettings.load_from_dict(
-        {
-            "PG_DSN": "postgres://u:p@localhost:5432/db",
-            "LOCK_LEASE": 60,
-            "HEARTBEAT_INTERVAL": 10,
-            # _main starts a real HealthServer — never the shared default path.
-            "TASKQ_HEALTH_SOCKET_PATH": unique_health_sock_path("worker_di_bootstrap"),
-        },
-    )
+def _settings(redis_url: str | None = None, **overrides: object) -> WorkerSettings:
+    config: dict[str, object] = {
+        "PG_DSN": "postgres://u:p@localhost:5432/db",
+        "LOCK_LEASE": 60,
+        "HEARTBEAT_INTERVAL": 10,
+        # _main starts a real HealthServer — never the shared default path.
+        "TASKQ_HEALTH_SOCKET_PATH": unique_health_sock_path("worker_di_bootstrap"),
+    }
+    if redis_url is not None:
+        config["TASKQ_REDIS_URL"] = redis_url
+    for key, value in overrides.items():
+        config[key] = value
+    return WorkerSettings.load_from_dict(config)
 
 
 def _make_scopes_and_bootstrap(
@@ -183,7 +187,10 @@ def _integration_settings(pg_dsn: str, *, schema: str) -> WorkerSettings:
 
 
 async def _run_main_with_mocked_deps(
-    settings: WorkerSettings, *, _registry: ProviderRegistry | None = None
+    settings: WorkerSettings,
+    *,
+    _registry: ProviderRegistry | None = None,
+    actor_registry: dict[str, ActorRef[Any, Any]] | None = None,
 ) -> int:
     fake_backend = _backend_methods_stub()
     worker_id_val = new_uuid()
@@ -215,6 +222,7 @@ async def _run_main_with_mocked_deps(
         patch("taskq.worker._bootstrap.MaintenanceLeader") as mock_leader_cls,
         patch("taskq.worker.run.producer_loop", side_effect=_fake_all),
         patch("taskq.worker.run.consumer_loop_stub", side_effect=_fake_all),
+        patch("taskq.worker.run.di_consumer_loop", side_effect=_fake_all),
         patch("taskq.worker.run.deregister_worker", new_callable=AsyncMock),
     ):
         mock_leader_instance = MagicMock()
@@ -225,7 +233,7 @@ async def _run_main_with_mocked_deps(
         mock_open.return_value.__aenter__ = AsyncMock(return_value=deps)
         mock_open.return_value.__aexit__ = AsyncMock(return_value=None)
 
-        return await _main(settings, _registry=_registry)
+        return await _main(settings, actor_registry=actor_registry, _registry=_registry)
 
 
 # ── Bootstrap sequence happy path ───────────────────────────────
@@ -442,6 +450,265 @@ async def test_fresh_registry_auto_registers_system_clock() -> None:
     clock_entry = registry.get(Clock)
     assert isinstance(clock_entry.impl, SystemClock)
     assert clock_entry.scope == Scope.PROCESS
+
+
+# ── bootstrap registers the Redis rate-limit pool provider ────────
+
+
+async def test_bootstrap_registers_redis_pool_provider() -> None:
+    """_main registers a redis.asyncio.Redis provider at LOOP scope.
+
+    Regression: worker/dispatch.py resolves the rate-limit Redis client
+    from DI; bootstrap must register it alongside RateLimitRegistry or
+    Redis-backed rate limits fail at dispatch time. Registration is
+    conditional on redis_url being configured because LoopScope.bootstrap
+    eagerly resolves LOOP providers and get_redis_pool raises when
+    redis_url is None (the no-Redis boot path is covered by the Clock
+    bootstrap tests above, which run with redis_url unset).
+    """
+    import redis.asyncio as redis_async
+
+    from taskq.ratelimit._provider import get_redis_pool
+
+    registry = ProviderRegistry()
+    settings = _settings(redis_url="redis://localhost:6379/0")
+    registry.register_value(WorkerSettings, Scope.PROCESS, settings)
+
+    assert registry.has_provider(redis_async.Redis) is False
+
+    result = await _run_main_with_mocked_deps(settings, _registry=registry)
+    assert result == 0
+
+    assert registry.has_provider(redis_async.Redis) is True
+    redis_entry = registry.get(redis_async.Redis)
+    assert redis_entry.scope == Scope.LOOP
+    assert redis_entry.kind == "factory"
+    assert redis_entry.impl is get_redis_pool
+
+
+# ── fail fast when a Redis-backend rate limit lacks TASKQ_REDIS_URL ──
+
+
+async def test_bootstrap_fails_fast_on_redis_rate_limit_without_redis_url() -> None:
+    """_main raises at bootstrap when a backend="redis" rate limit is
+    registered but redis_url is None.
+
+    Regression: without the startup check, the misconfiguration surfaced
+    per-dispatch as a confusing RuntimeError from get_redis_pool — after
+    the job had already burned retries. Bootstrap must fail fast and name
+    the offending limiter(s). The scan is scoped to actors this worker
+    actually serves, so the actor declaring the limit must be registered.
+    """
+    from taskq.ratelimit.registry import registry as rl_registry
+    from taskq.ratelimit.token_bucket import TokenBucket
+
+    rl_registry.register(
+        TokenBucket(
+            name="redis_bucket_requires_url",
+            capacity=10.0,
+            refill_per_second=1.0,
+            backend="redis",
+        )
+    )
+
+    @actor(rate_limits=["redis_bucket_requires_url"])
+    async def served_actor(payload: EmptyPayload) -> None:
+        pass
+
+    with pytest.raises(RuntimeError, match="redis_bucket_requires_url"):
+        await _run_main_with_mocked_deps(
+            _settings(),
+            actor_registry={served_actor.name: served_actor},
+        )
+
+
+async def test_bootstrap_allows_redis_rate_limit_with_user_redis_provider() -> None:
+    """A user-supplied redis.asyncio.Redis DI provider satisfies the guard.
+
+    Regression: user provider precedence is the documented pre-guard path
+    (``register_redis_pool`` skips registration when a provider exists),
+    so checking only ``settings.redis_url`` crash-loops those deployments
+    at boot. A registered Redis provider must count as "redis available".
+    """
+    import fakeredis.aioredis
+    import redis.asyncio as redis_async
+
+    from taskq.ratelimit.registry import registry as rl_registry
+    from taskq.ratelimit.token_bucket import TokenBucket
+
+    rl_registry.register(
+        TokenBucket(
+            name="redis_bucket_user_provider",
+            capacity=10.0,
+            refill_per_second=1.0,
+            backend="redis",
+        )
+    )
+
+    @actor(rate_limits=["redis_bucket_user_provider"])
+    async def served_actor(payload: EmptyPayload) -> None:
+        pass
+
+    registry = ProviderRegistry()
+    # fakeredis: a real async redis client (in-memory), not a hand-rolled double.
+    registry.register_value(redis_async.Redis, Scope.LOOP, fakeredis.aioredis.FakeRedis())
+
+    result = await _run_main_with_mocked_deps(
+        _settings(),
+        _registry=registry,
+        actor_registry={served_actor.name: served_actor},
+    )
+    assert result == 0
+
+
+async def test_bootstrap_fails_fast_on_keyed_redis_rate_limit_without_redis() -> None:
+    """KeyedRateLimitRef(backend="redis") with no Redis configured fails fast.
+
+    Regression: keyed refs materialize in the registry only at first
+    acquire, so scanning ``rl_registry.rate_limits`` never sees them — a
+    worker serving an actor with a keyed redis ref failed per-dispatch,
+    which is the exact failure class the guard exists to close. The scan
+    must walk served actors' keyed refs too.
+    """
+    from taskq.ratelimit.refs import KeyedRateLimitRef
+
+    @actor(
+        rate_limits=[
+            KeyedRateLimitRef(
+                base_name="keyed-tenant-budget",
+                key_fn=lambda p: str(p.get("tenant", "t")),
+                capacity=5.0,
+                refill_per_second=1.0,
+            )
+        ]
+    )
+    async def keyed_actor(payload: EmptyPayload) -> None:
+        pass
+
+    with pytest.raises(RuntimeError, match="keyed-tenant-budget"):
+        await _run_main_with_mocked_deps(
+            _settings(),
+            actor_registry={keyed_actor.name: keyed_actor},
+        )
+
+
+async def test_bootstrap_ignores_redis_rate_limit_of_unserved_actor() -> None:
+    """A redis-backed limit no served actor references must not brick the worker.
+
+    Regression: the rate-limit registry is process-global — a shared actor
+    package can register a redis-backed limit for an actor THIS worker
+    does not serve. Scanning the whole registry at bootstrap crash-loops
+    an unrelated worker. The guard is scoped to served actors.
+    """
+    from taskq.ratelimit.registry import registry as rl_registry
+    from taskq.ratelimit.token_bucket import TokenBucket
+
+    rl_registry.register(
+        TokenBucket(
+            name="redis_bucket_unserved",
+            capacity=10.0,
+            refill_per_second=1.0,
+            backend="redis",
+        )
+    )
+
+    result = await _run_main_with_mocked_deps(_settings())
+    assert result == 0
+
+
+async def test_bootstrap_clear_error_when_redis_extra_missing() -> None:
+    """TASKQ_REDIS_URL set + served redis limits + [redis] extra missing
+    raises an actionable bootstrap error naming the extra and the limits.
+
+    Regression: this configuration previously surfaced as a bare
+    ``MissingProvider`` at DI validate, with no hint that the fix is
+    installing the extra.
+    """
+    from taskq.ratelimit.registry import registry as rl_registry
+    from taskq.ratelimit.token_bucket import TokenBucket
+
+    rl_registry.register(
+        TokenBucket(
+            name="redis_bucket_needs_extra",
+            capacity=10.0,
+            refill_per_second=1.0,
+            backend="redis",
+        )
+    )
+
+    @actor(rate_limits=["redis_bucket_needs_extra"])
+    async def served_actor(payload: EmptyPayload) -> None:
+        pass
+
+    with (
+        patch("taskq.worker._bootstrap._redis_extra_installed", lambda: False),
+        pytest.raises(RuntimeError, match=r"taskq\[redis\]"),
+    ):
+        await _run_main_with_mocked_deps(
+            _settings(redis_url="redis://localhost:6379/0"),
+            actor_registry={served_actor.name: served_actor},
+        )
+
+
+async def test_bootstrap_redis_url_without_extra_and_no_redis_limits_boots() -> None:
+    """TASKQ_REDIS_URL set with the extra missing but no served redis-backed
+    limits is harmless: the worker boots (register_redis_pool silently skips
+    and nothing requires the provider)."""
+    with patch("taskq.worker._bootstrap._redis_extra_installed", lambda: False):
+        result = await _run_main_with_mocked_deps(_settings(redis_url="redis://localhost:6379/0"))
+    assert result == 0
+
+
+async def test_bootstrap_rejects_actor_registry_key_name_mismatch() -> None:
+    """An actor_registry entry whose key differs from its ActorRef's name
+    fails fast at bootstrap, naming the mismatch.
+
+    Regression: a mismapped entry (e.g. ``{"quick_result": <ref named
+    "enrich_order">}``) previously surfaced deep in ``sync_actor_config``
+    as a raw ``ON CONFLICT DO UPDATE command cannot affect row a second
+    time`` CardinalityViolation — the batch UPSERT hits the same actor row
+    twice when two refs share a ``.name``. The key-equals-name check also
+    makes duplicate names impossible (same name means same key, so the
+    dict itself dedupes at construction).
+    """
+
+    @actor(name="enrich_order", queue="e2e")
+    async def mismapped(payload: EmptyPayload) -> None:
+        pass
+
+    with pytest.raises((RuntimeError, ValueError), match=r"quick_result.*enrich_order"):
+        await _run_main_with_mocked_deps(
+            _settings(),
+            actor_registry={"quick_result": mismapped},
+        )
+
+
+# ── caller-supplied registry auto-registers WorkerSettings ────────
+
+
+async def test_caller_registry_auto_registers_worker_settings() -> None:
+    """_main registers WorkerSettings at PROCESS scope even when the caller
+    supplied ``_registry`` without it.
+
+    Pins the worker_main docstring contract ("WorkerSettings and Clock are
+    registered automatically if not already present") — required by
+    providers with a WorkerSettings dep edge (e.g. the Redis rate-limit
+    pool factory) when di_registry carries only user providers, as in the
+    e2e worker container topology.
+    """
+    registry = ProviderRegistry()
+    settings = _settings()
+    registry.register_factory(_ProcessDep, Scope.PROCESS, lambda: _ProcessDep())
+
+    assert registry.has_provider(WorkerSettings) is False
+
+    result = await _run_main_with_mocked_deps(settings, _registry=registry)
+    assert result == 0
+
+    assert registry.has_provider(WorkerSettings) is True
+    settings_entry = registry.get(WorkerSettings)
+    assert settings_entry.scope == Scope.PROCESS
+    assert settings_entry.impl is settings
 
 
 # ── Integration tests ─────────────────────────────────────────────────
@@ -839,3 +1106,15 @@ async def test_di_consumer_loop_releases_job_for_unknown_actor() -> None:
     await loop_scope.shutdown()
     await thread_scope.shutdown()
     await process_scope.shutdown()
+
+
+# ── Watchdog wiring through the real _main bootstrap path ────────
+
+
+async def test_bootstrap_with_watchdog_disabled_does_not_spawn_or_fail() -> None:
+    """TASKQ_WATCHDOG_ENABLED=false must boot cleanly: the stale-tick loop
+    is simply not spawned. An early-return loop with no shutdown in
+    progress would trip detector 3 — the master kill-switch is the one
+    path that must never fail."""
+    result = await _run_main_with_mocked_deps(_settings(TASKQ_WATCHDOG_ENABLED="false"))
+    assert result == 0

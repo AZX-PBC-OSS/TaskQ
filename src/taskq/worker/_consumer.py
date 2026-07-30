@@ -500,16 +500,25 @@ async def consume_one_job(
                 _progress_buffers.pop(job.id, None) if _progress_buffers is not None else None
             )
             _cancel_seq, _cancel_state = _terminal_seq_and_state(_cancel_buf)
-            await asyncio.shield(
-                backend.mark_cancelled(
-                    job.id,
-                    worker_id,
-                    progress_seq=_cancel_seq,
-                    progress_state=_cancel_state
-                    if _cancel_buf is not None and _cancel_buf.dirty
-                    else None,
+            try:
+                await asyncio.shield(
+                    backend.mark_cancelled(
+                        job.id,
+                        worker_id,
+                        progress_seq=_cancel_seq,
+                        progress_state=_cancel_state
+                        if _cancel_buf is not None and _cancel_buf.dirty
+                        else None,
+                    )
                 )
-            )
+            except _TERMINAL_WRITE_INFRA_EXCEPTIONS as infra_exc:
+                # Why: the terminal write is best-effort on this path — the
+                # row stays 'running' and lock-lease expiry reclaims it
+                # (identical to the success-path infra failure). The
+                # CancelledError MUST still propagate below: routing the
+                # infra error into generic job-failure handling eats a
+                # TaskGroup cancellation and hangs __aexit__ forever.
+                _log_terminal_write_failed(_log, job, None, infra_exc)
             if _effective_redis is not None and _effective_settings is not None:
                 await _publish_state_change_event(
                     _effective_redis,

@@ -4,7 +4,7 @@ import asyncio
 import inspect
 import signal
 from collections.abc import Callable
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
@@ -109,7 +109,7 @@ def test_first_signal_schedules_orchestrator(monkeypatch: pytest.MonkeyPatch) ->
         holder,
     )  # type: ignore[arg-type] # Why: Mock not a real AbstractEventLoop but satisfies the interface at runtime.
 
-    assert len(handlers) == 3  # SIGTERM, SIGINT, SIGHUP
+    assert len(handlers) == 4  # SIGTERM, SIGINT, SIGHUP, SIGUSR2
 
     handler = handlers[0][1]
     handler()
@@ -396,3 +396,38 @@ async def test_orchestrate_shutdown_leaves_caller_owned_leader_conn_unclosed() -
     assert conn.closed is False
     assert deps.leader_conn is conn
     assert shut_event.is_set()
+
+
+# ── SIGUSR2 dumps task stacks (deterministic, no real signals) ─────
+
+
+def test_sigusr2_handler_dumps_task_stacks() -> None:
+    """The captured SIGUSR2 handler emits an on-demand task dump.
+
+    This is the on-demand half of the watchdog's diagnostics: answering
+    "what is this live-but-idle worker waiting on?" without rebuilding the
+    image with instrumentation. It must NOT terminate the worker — SIGUSR1
+    would (default action), which is why the dump is on SIGUSR2.
+    """
+    deps = _worker_deps()
+    backend = AsyncMock(spec=Backend)
+    loop, handlers = _mock_loop()
+    holder: list[asyncio.Task[int]] = []
+
+    install_signal_handlers(
+        loop,
+        deps,
+        new_uuid(),
+        asyncio.Event(),
+        asyncio.Event(),
+        backend,
+        holder,
+    )  # type: ignore[arg-type] # Why: Mock not a real AbstractEventLoop but satisfies the interface at runtime.
+
+    usr2_handlers = [cb for sig, cb in handlers if sig == signal.SIGUSR2]
+    assert len(usr2_handlers) == 1
+
+    with patch("taskq.worker.shutdown.dump_task_stacks") as mock_dump:
+        usr2_handlers[0]()
+
+    assert mock_dump.call_count == 1

@@ -12,6 +12,7 @@ import pytest
 from typer.testing import CliRunner
 
 from taskq.cli import _CONNECT_TIMEOUT_S, app
+from taskq.worker._watchdog import LoopLiveness
 from taskq.worker.health import HealthServer
 from taskq.worker.shutdown import ShutdownPhase
 
@@ -60,12 +61,16 @@ def _make_deps(**overrides: object) -> SimpleNamespace:
             max_heartbeat_failures=3,
             redis_url=None,
             health_socket_path="",
+            health_tasks_enabled=False,
         ),
         "is_leader": SimpleNamespace(is_set=lambda: False),
         "active_jobs": SimpleNamespace(count=lambda: 2),
         "heartbeat_failures": 0,
         # WorkerDeps.redis_client (default None) — health reads it for redis_configured.
         "redis_client": None,
+        # Watchdog observability fields read by compute_health.
+        "liveness": LoopLiveness(),
+        "shutdown_started_at": None,
     }
     defaults.update(overrides)
     return SimpleNamespace(**defaults)
@@ -77,6 +82,11 @@ def _make_settings(sock_path: str) -> SimpleNamespace:
         max_heartbeat_failures=3,
         redis_url=None,
         health_socket_path=sock_path,
+        # HealthServer.start reads this to decide whether to serve /tasks
+        # and tighten the socket to 0600. Required, not defaulted at the
+        # read site: it gates a privileged endpoint. Mirrors the real
+        # WorkerSettings default.
+        health_tasks_enabled=False,
     )
 
 
@@ -136,7 +146,8 @@ async def test_cli_ready_healthy_exit_code() -> None:
     """CLI exit codes via socket — ready, healthy.
 
     Start a real HealthServer with healthy deps. Invoke taskq health ready
-    via async subprocess; assert exit 0 and stdout contains the five wire fields. (.)
+    via async subprocess; assert exit 0 and stdout carries exactly the
+    documented wire fields.
     """
     sock_path = _next_sock_path()
     deps = _make_deps(settings=_make_settings(sock_path))
@@ -147,11 +158,20 @@ async def test_cli_ready_healthy_exit_code() -> None:
         returncode, stdout, stderr = await _invoke_health("ready", sock_path)
         assert returncode == 0, f"stderr: {stderr}"
         data = json.loads(stdout.strip())
+        # Exact key set: the /ready body is a wire contract, so a field
+        # added or removed must be a deliberate edit here. "live",
+        # "reasons", "loop_tick_ages" and "shutdown_elapsed_seconds" are
+        # the watchdog observability additions — a probe consumer needs
+        # them to distinguish a zombie-ready worker from a healthy one.
         assert set(data.keys()) == {
             "ready",
+            "live",
+            "reasons",
             "redis_configured",
             "active_jobs",
             "is_leader",
+            "loop_tick_ages",
+            "shutdown_elapsed_seconds",
             "shutdown_phase",
         }
         assert data["ready"] is True

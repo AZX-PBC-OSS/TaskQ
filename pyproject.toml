@@ -170,6 +170,9 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S101", "S105", "S106"]
+# Same rationale — schema name validated against _IDENT_RE; all
+# user-supplied values use $N parameter binding.
+"tests/e2e/**" = ["S608"]
 "tests/test_workgroup.py" = ["S108", "ASYNC110"]
 # Exception class names follow the project glossary verbatim
 # (Snooze, RetryAfter, ResultTooLarge, ScopeViolation, etc.).
@@ -460,6 +463,7 @@ markers = [
     "integration: marks tests requiring testcontainers",
     "redis: marks tests requiring the [redis] extra and a Redis container",
     "examples: marks tests for the example app (excluded from default CI run)",
+    "e2e: end-to-end tests with containerized workers (requires --e2e opt-in; CI job 'e2e')",
 ]
 
 [tool.coverage.run]
@@ -482,8 +486,9 @@ dev = [
     "anyio>=4.14.2",
     "asyncpg-stubs>=0.31.3",
     "authlib>=1.7.2",
+    "fakeredis>=2.37.0",
     "httpx>=0.28.1",
-    "httpx2>=2.7.0",
+    "httpx2>=2.9.1",
     "hypothesis>=6.157.1",
     "itsdangerous>=2.2.0",
     "jsonschema>=4.26.0",
@@ -503,4 +508,11 @@ dev = [
     "respx>=0.23.1",
     "ruff>=0.15.22",
     "testcontainers[postgres,redis]>=4.14.2",
+]
+# Containerized e2e tier (tests/e2e): container image builds for worker
+# containers. Kept out of the default dev group so plain `uv sync` and
+# non-e2e CI legs don't pull the docker SDK; collection of the tier is
+# gated separately via pytest --e2e (root conftest.py).
+e2e = [
+    "containerspec[build]>=0.1.7",
 ]

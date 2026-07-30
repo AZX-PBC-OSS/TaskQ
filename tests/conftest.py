@@ -31,7 +31,7 @@ import pytest_asyncio
 from testcontainers.postgres import PostgresContainer
 
 from taskq._ids import new_base62
-from taskq.settings import TaskQSettings
+from taskq.settings import OIDCSettings, SAMLSettings, TaskQSettings
 from taskq.testing.actor import (
     EmptyPayload,
     FakeBackend,
@@ -111,6 +111,26 @@ from taskq.worker.health import HealthServer
 _SHARED_DEFAULT_HEALTH_SOCK = "/tmp/taskq_health.sock"  # noqa: S108  # Why: must match the WorkerSettings.health_socket_path default in settings.py; pinned by tests/test_health_socket_isolation.py.
 
 
+def free_host_port() -> int:
+    """An unused localhost TCP port, for pinning a container's host binding.
+
+    Required by any test that stops and restarts a container and keeps
+    using its host-mapped DSN: Docker does NOT preserve a Docker-assigned
+    ephemeral host port across stop/start — it allocates a fresh one on
+    start (measured on Linux: 34252 → 34253), silently invalidating every
+    host DSN derived before the restart. An explicitly published port is
+    part of the container's declared config and is restored verbatim.
+
+    Bind-and-release: a port free now is almost certainly still free when
+    Docker publishes it moments later.
+    """
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
 def unique_health_sock_path(module: str) -> str:
     """Return a unique unix-socket path for one test's health server.
 
@@ -136,6 +156,9 @@ def _isolate_health_server_socket(  # pyright: ignore[reportUnusedFunction]  # W
     test) still yields two distinct sockets instead of the second start
     stealing the first server's live socket.
     """
+    # Why: e2e runs workers in containers — no in-process HealthServer exists to isolate.
+    if "e2e" in request.node.keywords:
+        return
     original_start = HealthServer.start
     module = getattr(request.module, "__name__", "unknown")
     module = module.removeprefix("tests.test_").removeprefix("tests.")
@@ -150,6 +173,23 @@ def _isolate_health_server_socket(  # pyright: ignore[reportUnusedFunction]  # W
         await original_start(self, deps)
 
     monkeypatch.setattr(HealthServer, "start", _start_isolated)
+
+
+@pytest.fixture(autouse=True)
+def _reset_oidc_saml_cached() -> Iterator[None]:  # pyright: ignore[reportUnusedFunction]  # Why: autouse fixture consumed implicitly by the test runner.
+    """Reset dotenvmodel cached() singletons for OIDC/SAML settings after each test.
+
+    ``settings.oidc`` and ``settings.saml`` use ``OIDCSettings.cached()`` /
+    ``SAMLSettings.cached()`` (dotenvmodel 0.6.3+), which returns a process-wide
+    singleton — the environment is read on first access and the same instance
+    returned thereafter. Without this reset, a test that sets
+    ``TASKQ_OIDC_*`` / ``TASKQ_SAML_*`` env vars and accesses the property
+    would leak the cached instance into subsequent tests, silently giving them
+    stale values. ``reset_cached()`` is a no-op when the cache is cold.
+    """
+    yield
+    OIDCSettings.reset_cached()
+    SAMLSettings.reset_cached()
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -232,6 +272,10 @@ def _clean_rate_limit_registry(request: pytest.FixtureRequest) -> Iterator[None]
       own schema at bootstrap (see ``worker/_bootstrap.py``), so leftover
       foreign-schema entries are inert.
     """
+    # Why: rate limiting runs inside the worker container; the in-process registry is irrelevant.
+    if "e2e" in request.node.keywords:
+        yield
+        return
     from taskq.ratelimit.registry import registry as _rl
 
     if "integration" in request.node.keywords:
@@ -447,25 +491,31 @@ async def pg_conn(settings: TaskQSettings) -> AsyncIterator[asyncpg.Connection]:
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
-    """Group ``integration`` tests by module for ``--dist=loadgroup``.
+    """Group ``integration`` and ``e2e`` tests by module for ``--dist=loadgroup``.
 
     ``--dist=loadgroup`` (set in ``pyproject.toml``) schedules every test
     that shares an ``xdist_group`` marker onto the same worker, and
     schedules everything else (ungrouped items) individually via the
-    default load-balancing strategy. Module-scoped PG fixtures
-    (``module_pg_schema``, ``module_pg_pool``, ``module_jobs_app``) are
-    only safe when every test in a module lands on the same worker —
-    otherwise two workers would each try to create/migrate/drop the same
-    hashed schema name concurrently. This hook assigns
-    ``xdist_group(name=<module basename>)`` to every ``integration`` test
-    that doesn't already carry an explicit ``xdist_group`` marker, so
-    chaos-style tests keep whatever group they already declared (e.g.
-    ``xdist_group(name="chaos")``) while everything else gets a safe,
-    per-file default.
+    default load-balancing strategy. Module-scoped fixtures are only safe
+    when every test in a module lands on the same worker: integration
+    modules share hashed PG schemas (``module_pg_schema``,
+    ``module_pg_pool``, ``module_jobs_app``) that two workers would
+    concurrently create/migrate/drop, and e2e modules share a PG schema,
+    a Dragonfly logical DB, and a worker container (``e2e_schema``,
+    ``e2e_pg_pool``, ``e2e_worker``) with the same failure mode if an
+    accidental ``-n`` run split a module across workers. This hook assigns
+    ``xdist_group(name=<module basename>)`` to every ``integration`` or
+    ``e2e`` test that doesn't already carry an explicit ``xdist_group``
+    marker, so chaos-style tests keep whatever group they already declared
+    (e.g. ``xdist_group(name="chaos")``) while everything else gets a safe,
+    per-file default. The e2e namespace prefix keeps an e2e module from
+    ever sharing a group with a same-stem integration module.
     """
     for item in items:
-        if "integration" not in item.keywords:
+        is_e2e = "e2e" in item.keywords
+        if "integration" not in item.keywords and not is_e2e:
             continue
         if item.get_closest_marker("xdist_group") is not None:
             continue
-        item.add_marker(pytest.mark.xdist_group(name=item.path.stem))
+        group = f"e2e-{item.path.stem}" if is_e2e else item.path.stem
+        item.add_marker(pytest.mark.xdist_group(name=group))

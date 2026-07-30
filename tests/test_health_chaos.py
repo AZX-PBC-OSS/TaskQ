@@ -19,6 +19,7 @@ import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
+from taskq.worker._watchdog import LoopLiveness
 from taskq.worker.deps import WorkerDeps
 from taskq.worker.health import (
     HealthReport,
@@ -86,12 +87,16 @@ def _make_deps(**overrides: object) -> WorkerDeps:  # pyright: ignore[reportRetu
             max_heartbeat_failures=3,
             redis_url=None,
             health_socket_path="",
+            health_tasks_enabled=False,
         ),
         "is_leader": SimpleNamespace(is_set=lambda: False),
         "active_jobs": SimpleNamespace(count=lambda: 2),
         "heartbeat_failures": 0,
         # WorkerDeps.redis_client (default None) — health reads it for redis_configured.
         "redis_client": None,
+        # Watchdog observability fields read by compute_health.
+        "liveness": LoopLiveness(),
+        "shutdown_started_at": None,
     }
     defaults.update(overrides)
     return SimpleNamespace(**defaults)  # type: ignore[return-value] # Why: same underlying constraint as above; pyright flags the return statement separately.
@@ -192,6 +197,7 @@ async def test_tc2_saturated_pool_returns_timeout() -> None:
             max_heartbeat_failures=3,
             redis_url=None,
             health_socket_path="",
+            health_tasks_enabled=False,
         ),
     )
 
@@ -219,7 +225,17 @@ _phase_strategy = st.sampled_from(
     ]
 )
 
-_ready_body_keys = ["ready", "redis_configured", "active_jobs", "is_leader", "shutdown_phase"]
+_ready_body_keys = [
+    "ready",
+    "live",
+    "reasons",
+    "redis_configured",
+    "active_jobs",
+    "is_leader",
+    "loop_tick_ages",
+    "shutdown_elapsed_seconds",
+    "shutdown_phase",
+]
 
 
 @given(
@@ -262,6 +278,8 @@ async def test_tp1_ready_body_schema_invariant(
         pg_ping_ok=pg_ping_ok,
         pg_ping_latency_ms=0.0,
         active_jobs=active_jobs,
+        loop_tick_ages={},
+        shutdown_elapsed_seconds=None,
     )
 
     deps = _make_deps(
@@ -273,6 +291,7 @@ async def test_tp1_ready_body_schema_invariant(
             max_heartbeat_failures=3,
             redis_url=redis_url,
             health_socket_path="",
+            health_tasks_enabled=False,
         ),
     )
 

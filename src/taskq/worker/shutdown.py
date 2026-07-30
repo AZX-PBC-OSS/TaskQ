@@ -35,6 +35,7 @@ from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining.
 )
 from taskq.obs import get_logger
+from taskq.worker._watchdog import dump_task_stacks
 
 if TYPE_CHECKING:
     from taskq.settings import WorkerSettings
@@ -129,6 +130,8 @@ async def orchestrate_shutdown(
 
     try:
         # ── Phase 1: DRAINING ──────────────────────────────────────────
+        if deps.shutdown_started_at is None:
+            deps.shutdown_started_at = t0
         deps.shutdown_phase = ShutdownPhase.DRAINING
         _log.info(
             "shutdown-phase",
@@ -343,3 +346,16 @@ def install_signal_handlers(
             loop.add_signal_handler(signal.SIGHUP, _on_reload_signal)
         except NotImplementedError:
             _log.warning("sighup-handler-unavailable", os_name=os.name)
+
+    # SIGUSR2 — on-demand asyncio task-stack dump (names, coros, await
+    # sites; no locals or payload values). Live debugging without an
+    # image rebuild. Not available on Windows.
+    if hasattr(signal, "SIGUSR2"):
+
+        def _on_dump_signal() -> None:
+            dump_task_stacks("sigusr2", detector="sigusr2")
+
+        try:
+            loop.add_signal_handler(signal.SIGUSR2, _on_dump_signal)
+        except NotImplementedError:
+            _log.warning("sigusr2-handler-unavailable", os_name=os.name)

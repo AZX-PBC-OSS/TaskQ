@@ -14,7 +14,6 @@ import time
 from datetime import UTC, date, datetime, timedelta
 from typing import cast
 
-import asyncpg
 import croniter as cr
 import structlog
 
@@ -52,6 +51,7 @@ from taskq.worker._leader_shared import (
     cleanup_stale_workers,
     prune_terminal_jobs,
 )
+from taskq.worker._transient import TRANSIENT_PG_ERRORS
 
 __all__ = [
     "_archive_expiry_loop",
@@ -67,9 +67,25 @@ __all__ = [
 log: structlog.stdlib.BoundLogger = get_logger(__name__)
 
 
+async def _sleep_interruptible(shutdown: asyncio.Event, seconds: float) -> None:
+    """Sleep that returns as soon as *shutdown* is set.
+
+    ``MaintenanceLeader.run``'s TaskGroup waits for its children on exit,
+    so a bare ``asyncio.sleep(interval)`` keeps the worker hanging for the
+    full in-flight sleep after SIGTERM — with an operator-configured
+    interval (e.g. ``TASKQ_STRANDED_JOBS_INTERVAL=3600``) that is an
+    hour-long shutdown hang. Same pattern as the cron waits in
+    ``_prune_loop`` / ``_archive_expiry_loop``; callers re-check
+    ``shutdown.is_set()`` at the top of their ``while`` loop.
+    """
+    with contextlib.suppress(TimeoutError):
+        await asyncio.wait_for(shutdown.wait(), timeout=seconds)
+
+
 async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
     warned_sweep_1 = warned_sweep_2 = False
     while not shutdown.is_set():
+        ctx.deps.liveness.tick("leader.sweep", period=ctx.deps.settings.sweep_interval)
         if ctx.deps.is_leader.is_set():
             now_utc = ctx.clock.now()
             start = time.monotonic()  # Sweep 1: reclaim_expired_locks
@@ -83,6 +99,19 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                 if not warned_sweep_1:
                     _err("sweep_expired_locks_unimplemented", _EK2, ctx.worker_id, exc)
                     warned_sweep_1 = True
+            except TRANSIENT_PG_ERRORS as exc:
+                # Why: PG loss is transient here, exactly as for the
+                # already-guarded sweeps below. Unguarded, it escapes into
+                # MaintenanceLeader.run's TaskGroup and on into the worker's,
+                # cancelling every sibling WITHOUT setting shutdown_event —
+                # the heartbeat dies before it can reach isolate_self, so no
+                # job is re-pended and the worker cannot exit cleanly.
+                log.warning(
+                    "sweep-expired-locks-failed",
+                    kind="sweep_expired_locks_failed",
+                    worker_id=str(ctx.worker_id),
+                    error=repr(exc),
+                )
             else:
                 _metric("expired_locks", count_1, start)
                 _dbg("sweep_expired_locks_tick", "sweep_expired_locks_tick", count_1, start)
@@ -93,6 +122,14 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                 if not warned_sweep_2:
                     _err("sweep_deadline_exceeded_unimplemented", _EK3, ctx.worker_id, exc)
                     warned_sweep_2 = True
+            except TRANSIENT_PG_ERRORS as exc:
+                # Same transient-PG rationale as sweep 1 above.
+                log.warning(
+                    "sweep-deadline-exceeded-failed",
+                    kind="sweep_deadline_exceeded_failed",
+                    worker_id=str(ctx.worker_id),
+                    error=repr(exc),
+                )
             else:
                 _metric("deadline_exceeded", count_2, start)
                 log.debug(
@@ -113,12 +150,7 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                         )
                     _metric("leaked_slots", count_4, start)
                     _dbg("sweep_leaked_slots_tick", "sweep_leaked_slots_tick", count_4, start)
-                except (
-                    TimeoutError,
-                    asyncpg.PostgresConnectionError,
-                    asyncpg.InterfaceError,
-                    OSError,
-                ) as exc:
+                except TRANSIENT_PG_ERRORS as exc:
                     log.warning(
                         "sweep-leaked-slots-failed",
                         kind="sweep_leaked_slots_failed",
@@ -141,12 +173,7 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                         count_rt,
                         start,
                     )
-                except (
-                    TimeoutError,
-                    asyncpg.PostgresConnectionError,
-                    asyncpg.InterfaceError,
-                    OSError,
-                ) as exc:
+                except TRANSIENT_PG_ERRORS as exc:
                     log.warning(
                         "sweep-expired-results-failed",
                         kind="sweep_expired_results_failed",
@@ -172,12 +199,7 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                         count_sr,
                         start,
                     )
-                except (
-                    TimeoutError,
-                    asyncpg.PostgresConnectionError,
-                    asyncpg.InterfaceError,
-                    OSError,
-                ) as exc:
+                except TRANSIENT_PG_ERRORS as exc:
                     log.warning(
                         "cleanup-stale-workers-failed",
                         kind="cleanup_stale_workers_failed",
@@ -220,7 +242,7 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                         worker_id=str(ctx.worker_id),
                         error=repr(exc),
                     )
-        await asyncio.sleep(30.0)
+        await _sleep_interruptible(shutdown, ctx.deps.settings.sweep_interval)
 
 
 async def _prune_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
@@ -287,14 +309,12 @@ async def _prune_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                 except Exception as exc:
                     log.error("prune failed", kind="prune", error=repr(exc))
                 finally:
-                    with contextlib.suppress(
-                        asyncpg.PostgresConnectionError, asyncpg.InterfaceError, OSError
-                    ):
+                    with contextlib.suppress(*TRANSIENT_PG_ERRORS):
                         await conn.execute(
                             "SELECT pg_advisory_unlock(hashtextextended($1, 0))",
                             PRUNE_LOCK_NAME,
                         )
-        except (asyncpg.PostgresConnectionError, asyncpg.InterfaceError, OSError) as exc:
+        except TRANSIENT_PG_ERRORS as exc:
             log.warning(
                 "prune-lock-attempt-failed",
                 kind="prune_lock_failed",
@@ -361,14 +381,12 @@ async def _archive_expiry_loop(ctx: SweepContext, shutdown: asyncio.Event) -> No
                 except Exception as exc:
                     log.error("archive-expiry-failed", kind="archive_expiry", error=repr(exc))
                 finally:
-                    with contextlib.suppress(
-                        asyncpg.PostgresConnectionError, asyncpg.InterfaceError, OSError
-                    ):
+                    with contextlib.suppress(*TRANSIENT_PG_ERRORS):
                         await conn.execute(
                             "SELECT pg_advisory_unlock(hashtextextended($1, 0))",
                             ARCHIVE_EXPIRY_LOCK_NAME,
                         )
-        except (asyncpg.PostgresConnectionError, asyncpg.InterfaceError, OSError) as exc:
+        except TRANSIENT_PG_ERRORS as exc:
             log.warning(
                 "archive-expiry-lock-attempt-failed",
                 kind="archive_expiry_lock_failed",
@@ -384,6 +402,7 @@ async def _queue_depth_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
         return
     sql = _QUERY_QUEUE_DEPTH_SQL_TEMPLATE.format(schema=schema)
     while not shutdown.is_set():
+        ctx.deps.liveness.tick("leader.queue_depth", period=ctx.deps.settings.queue_depth_interval)
         if ctx.deps.is_leader.is_set():
             try:
                 async with ctx.deps.dispatcher_pool.acquire() as conn:
@@ -397,7 +416,7 @@ async def _queue_depth_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                     worker_id=str(ctx.worker_id),
                     error=repr(exc),
                 )
-        await asyncio.sleep(15.0)
+        await _sleep_interruptible(shutdown, ctx.deps.settings.queue_depth_interval)
 
 
 async def _reservation_slots_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
@@ -407,6 +426,9 @@ async def _reservation_slots_loop(ctx: SweepContext, shutdown: asyncio.Event) ->
         return
     sql = _QUERY_RESERVATION_SLOTS_SQL_TEMPLATE.format(schema=schema)
     while not shutdown.is_set():
+        ctx.deps.liveness.tick(
+            "leader.reservation_slots", period=ctx.deps.settings.reservation_slots_interval
+        )
         if ctx.deps.is_leader.is_set():
             try:
                 async with ctx.deps.dispatcher_pool.acquire() as conn:
@@ -420,7 +442,7 @@ async def _reservation_slots_loop(ctx: SweepContext, shutdown: asyncio.Event) ->
                     worker_id=str(ctx.worker_id),
                     error=repr(exc),
                 )
-        await asyncio.sleep(15.0)
+        await _sleep_interruptible(shutdown, ctx.deps.settings.reservation_slots_interval)
 
 
 async def _stranded_jobs_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
@@ -446,7 +468,10 @@ async def _stranded_jobs_loop(ctx: SweepContext, shutdown: asyncio.Event) -> Non
     sql = _stranded_sql.format(schema=schema)
 
     while not shutdown.is_set():
-        await asyncio.sleep(60.0)
+        ctx.deps.liveness.tick(
+            "leader.stranded_jobs", period=ctx.deps.settings.stranded_jobs_interval
+        )
+        await _sleep_interruptible(shutdown, ctx.deps.settings.stranded_jobs_interval)
         if not ctx.deps.is_leader.is_set():
             continue
         try:

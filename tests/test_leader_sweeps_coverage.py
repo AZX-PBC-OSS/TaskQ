@@ -31,6 +31,8 @@ from taskq.backend.clock import Clock
 from taskq.settings import WorkerSettings
 from taskq.testing.clock import FakeClock
 from taskq.testing.in_memory import InMemoryBackend
+from taskq.worker import _leader_sweeps
+from taskq.worker._leader_shared import SweepContext
 from taskq.worker.deps import WorkerDeps
 from taskq.worker.leader import MaintenanceLeader
 
@@ -553,27 +555,16 @@ async def test_stranded_jobs_loop_invalid_schema_returns_early() -> None:
         await task
 
 
-async def test_stranded_jobs_loop_warns_for_pending_without_actor_config(
-    monkeypatch: Any,
-) -> None:
+async def test_stranded_jobs_loop_warns_for_pending_without_actor_config() -> None:
     """Pending jobs whose actor has no actor_config row produce a warning."""
     rows = [{"actor": "orphan_actor", "cnt": 7}]
     conn = FakeConn(fetch_rows=rows)
     pool = FakePool(conn=conn)
-    leader = _make_leader(
-        backend=_mem_backend(),
-        deps=_make_deps(worker_pool=pool, is_leader=True),
-    )
-
-    # Replace asyncio.sleep with a no-op so the 60 s initial wait is skipped.
-    original_sleep = asyncio.sleep
-
-    async def _fast_sleep(_seconds: float) -> None:
-        await original_sleep(0)
+    deps = _make_deps(worker_pool=pool, is_leader=True)
+    deps.settings.stranded_jobs_interval = 0.01
+    leader = _make_leader(backend=_mem_backend(), deps=deps)
 
     import taskq.worker._leader_sweeps as sweeps_mod
-
-    monkeypatch.setattr(sweeps_mod.asyncio, "sleep", _fast_sleep)
 
     warned_actors: list[str] = []
     original_warning = sweeps_mod.log.warning
@@ -597,24 +588,14 @@ async def test_stranded_jobs_loop_warns_for_pending_without_actor_config(
     assert "orphan_actor" in warned_actors
 
 
-async def test_stranded_jobs_loop_fetch_error_continues(monkeypatch: Any) -> None:
+async def test_stranded_jobs_loop_fetch_error_continues() -> None:
     """A fetch error in the stranded loop is swallowed (``continue``) and
     the loop survives."""
     conn = FakeConn(fetch_exc=asyncpg.PostgresConnectionError("lost"))
     pool = FakePool(conn=conn)
-    leader = _make_leader(
-        backend=_mem_backend(),
-        deps=_make_deps(worker_pool=pool, is_leader=True),
-    )
-
-    original_sleep = asyncio.sleep
-
-    async def _fast_sleep(_seconds: float) -> None:
-        await original_sleep(0)
-
-    import taskq.worker._leader_sweeps as sweeps_mod
-
-    monkeypatch.setattr(sweeps_mod.asyncio, "sleep", _fast_sleep)
+    deps = _make_deps(worker_pool=pool, is_leader=True)
+    deps.settings.stranded_jobs_interval = 0.01
+    leader = _make_leader(backend=_mem_backend(), deps=deps)
 
     shutdown = asyncio.Event()
     task = asyncio.create_task(leader._stranded_jobs_loop(shutdown))
@@ -651,3 +632,84 @@ async def test_stranded_jobs_loop_skips_when_not_leader(monkeypatch: Any) -> Non
 
     # No fetch because is_leader is False.
     assert not conn.fetch_calls, "non-leader must not fetch stranded jobs"
+
+
+# ── Interval sleeps are shutdown-interruptible ────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("loop_name", "interval_setting"),
+    [
+        ("_sweep_loop", "sweep_interval"),
+        ("_queue_depth_loop", "queue_depth_interval"),
+        ("_reservation_slots_loop", "reservation_slots_interval"),
+        ("_stranded_jobs_loop", "stranded_jobs_interval"),
+    ],
+)
+async def test_loop_interval_sleep_is_shutdown_interruptible(
+    loop_name: str, interval_setting: str
+) -> None:
+    """SIGTERM must not wait out an in-flight interval sleep.
+
+    ``MaintenanceLeader.run``'s TaskGroup waits for its children on exit,
+    so a bare ``asyncio.sleep(interval)`` keeps the worker hanging for the
+    full in-flight sleep after shutdown — with an operator-configured
+    interval (e.g. ``TASKQ_STRANDED_JOBS_INTERVAL=3600``) that is an
+    hour-long shutdown hang. Every loop's interval sleep must return as
+    soon as shutdown is set.
+    """
+    deps = _make_deps()  # is_leader=False: loops skip work and go straight to the sleep.
+    setattr(deps.settings, interval_setting, 3600.0)
+    ctx = SweepContext(
+        deps=deps,
+        backend=_mem_backend(),  # type: ignore[arg-type]  # Why: InMemoryBackend satisfies the Backend protocol at runtime.
+        clock=FakeClock(datetime(2025, 1, 1, tzinfo=UTC)),
+        worker_id=new_uuid(),
+    )
+    shutdown = asyncio.Event()
+    loop_fn = getattr(_leader_sweeps, loop_name)
+
+    task = asyncio.create_task(loop_fn(ctx, shutdown))
+    await asyncio.sleep(0.05)  # Let the loop reach its interval sleep.
+    shutdown.set()
+    # Must return promptly — pre-fix this sleeps the full 3600s.
+    await asyncio.wait_for(task, timeout=2.0)
+
+
+# ── Transient PG errors must not escape the sweep loops ────────────────────
+
+
+class _DeadPgSweepsBackend:
+    """Backend whose reclaim/deadline sweeps raise transient PG errors
+    (the dead-PG class: DNS/connect failure, not NotImplementedError)."""
+
+    async def reclaim_expired_locks(self, now: datetime, cg: timedelta, ug: timedelta) -> int:
+        raise OSError(111, "Connect call failed")
+
+    async def deadline_sweep(self, now: datetime) -> int:
+        raise OSError(111, "Connect call failed")
+
+
+async def test_sweep_loop_survives_transient_pg_errors() -> None:
+    """Transient PG failures from ``reclaim_expired_locks`` / ``deadline_sweep``
+    must not escape into ``MaintenanceLeader.run``'s TaskGroup.
+
+    Regression: those two calls caught only ``NotImplementedError`` while
+    every sibling block in the same loop guards
+    ``(TimeoutError, PostgresConnectionError, InterfaceError, OSError)`` —
+    a transient PG failure raised into the TaskGroup, which cancelled every
+    worker sibling and hung the worker's shutdown.
+    """
+    deps = _make_deps(is_leader=True)
+    deps.settings.sweep_interval = 0.01
+    ctx = SweepContext(
+        deps=deps,
+        backend=_DeadPgSweepsBackend(),  # type: ignore[arg-type]  # Why: stub satisfying only the called methods.
+        clock=FakeClock(datetime(2025, 1, 1, tzinfo=UTC)),
+        worker_id=new_uuid(),
+    )
+    shutdown = asyncio.Event()
+    task = asyncio.create_task(_leader_sweeps._sweep_loop(ctx, shutdown))
+    await asyncio.sleep(0.1)  # several ticks against the dead backend
+    assert not task.done(), "sweep loop died on a transient PG error"
+    await _stop_loop(task, shutdown, delay=0.0)

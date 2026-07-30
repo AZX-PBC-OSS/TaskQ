@@ -64,11 +64,17 @@ async def test_lifo_teardown_on_leader_conn_failure(
     original_open = deps_mod.open_dedicated_conn
 
     async def _patched_open(
-        dsn: str, *, label: str, apply_keepalive: bool = True
+        dsn: str,
+        *,
+        label: str,
+        apply_keepalive: bool = True,
+        command_timeout: float | None = None,
     ) -> asyncpg.Connection:
         if label == "leader":
             raise asyncpg.PostgresConnectionError("simulated leader_conn failure")
-        return await original_open(dsn, label=label, apply_keepalive=apply_keepalive)
+        return await original_open(
+            dsn, label=label, apply_keepalive=apply_keepalive, command_timeout=command_timeout
+        )
 
     monkeypatch.setattr(deps_mod, "open_dedicated_conn", _patched_open)
 
@@ -123,6 +129,21 @@ async def test_heartbeat_pool_command_timeout(pg_dsn: str) -> None:
             # asyncpg raises TimeoutError when command_timeout fires mid-query
             with pytest.raises((asyncpg.QueryCanceledError, TimeoutError)):
                 await conn.execute("SELECT pg_sleep(5)")
+
+
+async def test_leader_conn_command_timeout(pg_dsn: str) -> None:
+    """leader_conn carries dispatcher_command_timeout on the default path.
+
+    deps.leader_conn_factory is the TaskQ-built _leader_dsn_factory on stock
+    deployments: the election conn, and the cron/monitor rebuilds that go
+    through the same factory, must be bounded or a stalled PG hangs those
+    loops past the detector-2 budget."""
+    settings = make_integration_settings(pg_dsn, DISPATCHER_COMMAND_TIMEOUT="2")
+
+    async with open_worker_deps(settings) as deps:
+        assert deps.leader_conn is not None
+        with pytest.raises((asyncpg.QueryCanceledError, TimeoutError)):
+            await deps.leader_conn.execute("SELECT pg_sleep(5)")
 
 
 # ── notify_conn LISTEN survives context ───────────────────────────
@@ -235,7 +256,11 @@ async def test_partial_open_lifo_teardown_with_pg_failure(
     from taskq.worker import deps as deps_mod
 
     async def _fail_on_notify(
-        dsn: str, *, label: str, apply_keepalive: bool = True
+        dsn: str,
+        *,
+        label: str,
+        apply_keepalive: bool = True,
+        command_timeout: float | None = None,
     ) -> asyncpg.Connection:
         if label == "notify":
             # Three pools already opened by the time we get here.

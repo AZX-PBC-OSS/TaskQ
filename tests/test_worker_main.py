@@ -154,6 +154,12 @@ class Harness:
 
         # ── Override points (set after creation, before _main) ─────────
         self.heartbeat_exc: BaseException | None = None
+        # Captured from install_signal_handlers so the sibling fakes can
+        # park on it (see _park_until_shutdown).
+        self.shutdown_event: asyncio.Event | None = None
+        # The WorkerDeps instance _main runs against, so tests can assert
+        # on state _main configures (e.g. watchdog liveness budgets).
+        self.deps: WorkerDeps | None = None
         self.dereg_side_effect: Callable[..., object] | None = None
         self.consumer_side_effect: Callable[..., object] | None = None
         self.install_fn: Callable[..., object] | None = None
@@ -217,8 +223,21 @@ def _use_test_harness(
         h.install_count += 1
         h.captured_backends.append(backend)
         h.captured_holder.append(holder)
+        h.shutdown_event = sh_ev
         if h.set_shutdown:
             _fake_install_with_holder(loop, sh_ev, holder, exit_value=h.exit_value)
+
+    async def _park_until_shutdown() -> None:
+        """Model a long-lived sibling: keep running until shutdown fires.
+
+        The real siblings never return while the worker is healthy, and the
+        sibling contract (watchdog detector 3) treats a clean return while
+        no shutdown is in progress as a bug. A fake that returned
+        immediately would trip that contract and tear down the TaskGroup,
+        so the fakes must park exactly as production loops do.
+        """
+        if h.shutdown_event is not None:
+            await h.shutdown_event.wait()
 
     async def _fake_heartbeat(
         deps: WorkerDeps, wid: UUID, shutdown: asyncio.Event, **kwargs: object
@@ -226,22 +245,27 @@ def _use_test_harness(
         h.heartbeat_count += 1
         if h.heartbeat_exc is not None:
             raise h.heartbeat_exc
+        await _park_until_shutdown()
 
     async def _fake_notify(
         deps: WorkerDeps, backend: Backend, shutdown: asyncio.Event, worker_id: UUID
     ) -> None:
         h.notify_count += 1
+        await _park_until_shutdown()
 
     async def _fake_leader_run(shutdown: asyncio.Event) -> None:
         h.leader_count += 1
+        await _park_until_shutdown()
 
     async def _fake_producer(*args: object, **kwargs: object) -> None:
         h.producer_count += 1
+        await _park_until_shutdown()
 
     async def _fake_consumer(*args: object, **kwargs: object) -> None:
         h.consumer_count += 1
         if h.consumer_side_effect is not None:
             await h.consumer_side_effect(*args, **kwargs)  # pyright: ignore[reportGeneralTypeIssues] # Why: consumer_side_effect is Callable[..., object] (sync or async); runtime callable is async.
+        await _park_until_shutdown()
 
     async def _fake_dereg(pool: object, s: WorkerSettings, wid: UUID) -> None:
         h.dereg_count += 1
@@ -249,6 +273,7 @@ def _use_test_harness(
             await h.dereg_side_effect(pool, s, wid)  # pyright: ignore[reportGeneralTypeIssues] # Why: dereg_side_effect is Callable[..., object] (sync or async); runtime callable is async.
 
     deps = _stub_deps(settings)
+    h.deps = deps
 
     with ExitStack() as stack:
         stack.enter_context(
@@ -776,3 +801,145 @@ def test_worker_main_forwards_connections_to_main(settings: WorkerSettings) -> N
 
     assert result == 0
     assert captured["connections"] is sentinel
+
+
+# ── Watchdog settings wiring ────────────────────────────────────────
+
+
+async def test_main_applies_every_documented_watchdog_knob() -> None:
+    """Every watchdog knob must reach the object that honours it.
+
+    The guide documents seven tunables. A knob that is documented but not
+    plumbed is worse than a missing one: an operator raising a budget on a
+    starved host would believe they had widened a terminal detector when
+    they had not. Deliberately non-default values, so a hardcoded constant
+    cannot pass by coincidence.
+    """
+    settings = WorkerSettings.load_from_dict(
+        {
+            "TASKQ_PG_DSN": "postgresql://x:x@localhost/x",
+            "TASKQ_HEALTH_SOCKET_PATH": unique_health_sock_path("watchdog_knobs"),
+            "TASKQ_MAX_CONCURRENCY": "1",
+            "TASKQ_TERMINATION_GRACE_PERIOD": "77.0",
+            "TASKQ_CANCELLATION_GRACE_PERIOD": "1.0",
+            "TASKQ_CLEANUP_GRACE_PERIOD": "1.0",
+            "TASKQ_WATCHDOG_TICK_GRACE_FACTOR": "9.0",
+            "TASKQ_WATCHDOG_STALE_FLOOR": "42.0",
+            "TASKQ_WATCHDOG_CHECK_INTERVAL": "3.5",
+            "TASKQ_WATCHDOG_LOOP_LAG_BUDGET": "111.0",
+            "TASKQ_WATCHDOG_LOOP_LAG_STARTUP_GRACE": "222.0",
+            "TASKQ_WATCHDOG_DUMP_INTERVAL": "6.5",
+        }
+    )
+    lag_kwargs: dict[str, object] = {}
+    shutdown_kwargs: dict[str, object] = {}
+    watchdog_loop_kwargs: dict[str, object] = {}
+
+    class _SpyLag:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            lag_kwargs.update(kwargs)
+
+        def start(self) -> None:
+            pass
+
+        def stop(self) -> None:
+            pass
+
+    class _SpyShutdown:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            shutdown_kwargs.update(kwargs)
+
+        def start(self) -> None:
+            pass
+
+        async def cancel(self) -> None:
+            pass
+
+    async def _spy_watchdog_loop(*args: object, **kwargs: object) -> None:
+        watchdog_loop_kwargs.update(kwargs)
+
+    with _use_test_harness(settings) as h, ExitStack() as stack:
+        stack.enter_context(patch("taskq.worker._bootstrap.LoopLagWatchdog", _SpyLag))
+        stack.enter_context(patch("taskq.worker._bootstrap.ShutdownWatchdog", _SpyShutdown))
+        stack.enter_context(patch("taskq.worker._bootstrap.loop_watchdog_loop", _spy_watchdog_loop))
+        result = await _main(settings)
+
+    assert result == 0
+    assert h.deps is not None
+    # Staleness budget inputs land on the shared LoopLiveness.
+    assert h.deps.liveness.grace_factor == 9.0
+    assert h.deps.liveness.stale_floor == 42.0
+    # Detector 4 (thread).
+    assert lag_kwargs["budget"] == 111.0
+    assert lag_kwargs["startup_grace"] == 222.0
+    assert lag_kwargs["poll_interval"] == 3.5
+    # Detector 1 reuses termination_grace_period as its deadline.
+    assert shutdown_kwargs["deadline"] == 77.0
+    assert shutdown_kwargs["dump_interval"] == 6.5
+    # Detector 2 sweep cadence.
+    assert watchdog_loop_kwargs["check_interval"] == 3.5
+
+
+# ── Watchdog disarm ordering ────────────────────────────────────────
+
+
+async def test_watchdogs_disarmed_only_after_taskgroup_drains(
+    settings: WorkerSettings,
+) -> None:
+    """The watchdogs must outlive the TaskGroup's exit.
+
+    Detector 1 exists to bound exactly that exit: a sibling that swallows
+    its cancellation wedges ``TaskGroup.__aexit__``, which is where the
+    original 120 s silent hang happened. Disarming the watchdogs before
+    the group drains makes the detector dead code on the only path that
+    matters, so the drain window must fall strictly between arming and
+    disarming.
+    """
+    order: list[str] = []
+
+    class _SpyShutdownWatchdog:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        def start(self) -> None:
+            order.append("armed")
+
+        async def cancel(self) -> None:
+            order.append("disarmed")
+
+    class _SpyLagWatchdog:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        def start(self) -> None:
+            pass
+
+        def stop(self) -> None:
+            order.append("lag-disarmed")
+
+    with _use_test_harness(settings, set_shutdown=False) as h:
+
+        async def _slow_winddown(*args: object, **kwargs: object) -> None:
+            # Signal shutdown, then take time to actually wind down — the
+            # window in which __aexit__ is waiting and detector 1 must
+            # still be armed.
+            assert h.shutdown_event is not None
+            h.shutdown_event.set()
+            await asyncio.sleep(0.05)
+            order.append("sibling-drained")
+
+        h.consumer_side_effect = _slow_winddown  # type: ignore[assignment]
+        with ExitStack() as stack:
+            stack.enter_context(
+                patch("taskq.worker._bootstrap.ShutdownWatchdog", _SpyShutdownWatchdog)
+            )
+            stack.enter_context(patch("taskq.worker._bootstrap.LoopLagWatchdog", _SpyLagWatchdog))
+            result = await _main(settings)
+
+    assert result == 0
+    assert order.index("sibling-drained") < order.index("disarmed"), (
+        f"watchdog disarmed before the group drained: {order}"
+    )
+    assert order.index("sibling-drained") < order.index("lag-disarmed"), (
+        f"lag watchdog disarmed before the group drained: {order}"
+    )

@@ -13,6 +13,7 @@ import structlog
 
 from taskq import _json
 from taskq.obs import get_logger
+from taskq.worker._watchdog import dump_task_stacks
 from taskq.worker.deps import WorkerDeps
 from taskq.worker.shutdown import ShutdownPhase
 
@@ -52,6 +53,11 @@ class HealthReport:
     pg_ping_ok: bool
     pg_ping_latency_ms: float
     active_jobs: int
+    # Watchdog observability: per-loop seconds since last liveness tick,
+    # and seconds since shutdown began (None when not shutting down). A
+    # zombie-ready worker is visible here instead of reporting healthy.
+    loop_tick_ages: dict[str, float]
+    shutdown_elapsed_seconds: float | None
 
 
 async def _check_live() -> tuple[bool, str]:
@@ -121,8 +127,34 @@ async def compute_health(deps: WorkerDeps) -> HealthReport:
     if phase != ShutdownPhase.NONE:
         reasons.append(f"shutdown_phase={phase.name}")
 
+    live, live_msg = await _check_live()
+    if not live:
+        ready = False
+        reasons.append(f"event_loop_unresponsive: {live_msg}")
+
+    # Required, not optional: every WorkerDeps carries a LoopLiveness, and
+    # the stale-loop check below is the only thing that stops a zombie
+    # worker reporting itself ready. Reading it defensively would let a
+    # deps object with no liveness silently return a report that cannot
+    # detect the zombie state — so a missing field is a wiring bug and
+    # must surface as one.
+    #
+    # Deliberately NOT gated on watchdog_enabled: that switch controls the
+    # force-exit detectors, not observability. Gating readiness too would
+    # mean a worker with dead loops reports Ready whenever the switch is
+    # off, which loses the zombie detection and keeps the traffic.
+    tick_ages = deps.liveness.ages()
+    stale_loops = deps.liveness.stale()
+    if stale_loops:
+        ready = False
+        reasons.append(f"stale_loops={','.join(stale_loops)}")
+
+    shutdown_elapsed: float | None = None
+    if deps.shutdown_started_at is not None:
+        shutdown_elapsed = max(0.0, time.monotonic() - deps.shutdown_started_at)
+
     report = HealthReport(
-        live=True,
+        live=live,
         ready=ready,
         reasons=reasons,
         shutdown_phase=phase,
@@ -137,6 +169,8 @@ async def compute_health(deps: WorkerDeps) -> HealthReport:
         pg_ping_ok=pg_ping_ok_,
         pg_ping_latency_ms=pg_ping_latency_ms,
         active_jobs=deps.active_jobs.count(),
+        loop_tick_ages=tick_ages,
+        shutdown_elapsed_seconds=shutdown_elapsed,
     )
 
     logger.debug(
@@ -196,7 +230,14 @@ class HealthServer:
 
         _unlink_stale_socket(self._socket_path)
 
-        self._server = await asyncio.start_unix_server(self._handle, path=self._socket_path)
+        if deps.settings.health_tasks_enabled:
+            old_umask = os.umask(0o077)
+            try:
+                self._server = await asyncio.start_unix_server(self._handle, path=self._socket_path)
+            finally:
+                os.umask(old_umask)
+        else:
+            self._server = await asyncio.start_unix_server(self._handle, path=self._socket_path)
         # Capture the inode we just bound so `stop()` can later verify it
         # still owns this path before unlinking — a slow-shutting-down
         # worker must never delete a *replacement* worker's fresh socket
@@ -247,6 +288,8 @@ class HealthServer:
                 status_code = await self._handle_live(writer)
             elif path == "/ready":
                 status_code = await self._handle_ready(writer)
+            elif path == "/tasks":
+                status_code = await self._handle_tasks(writer)
             elif path == "/metrics":
                 status_code = await self._handle_metrics(writer)
             else:
@@ -297,6 +340,20 @@ class HealthServer:
         await _write_response(writer, status_code, reason, body=body)
         return status_code
 
+    async def _handle_tasks(self, writer: asyncio.StreamWriter) -> int:
+        deps = self._deps
+        assert deps is not None
+        if not deps.settings.health_tasks_enabled:
+            # Disabled by default (TASKQ_HEALTH_TASKS_ENABLED): the dump
+            # endpoint is privileged, so a disabled state is
+            # indistinguishable from a missing route.
+            await _write_response(writer, 404, b"Not Found")
+            return 404
+        records = dump_task_stacks("http-tasks", detector="http")
+        body = _json.dumps({"tasks": [rec.as_dict() for rec in records]})
+        await _write_response(writer, 200, b"OK", body=body, content_type=b"application/json")
+        return 200
+
     async def _handle_metrics(self, writer: asyncio.StreamWriter) -> int:
         deps = self._deps
         assert deps is not None
@@ -329,9 +386,13 @@ class HealthServer:
 def build_ready_body(report: HealthReport, deps: WorkerDeps) -> bytes:
     body = {
         "ready": report.ready,
+        "live": report.live,
+        "reasons": report.reasons,
         "redis_configured": report.redis_configured,
         "active_jobs": report.active_jobs,
         "is_leader": report.is_leader,
+        "loop_tick_ages": report.loop_tick_ages,
+        "shutdown_elapsed_seconds": report.shutdown_elapsed_seconds,
         "shutdown_phase": (
             deps.shutdown_phase.value if deps.shutdown_phase != ShutdownPhase.NONE else None
         ),

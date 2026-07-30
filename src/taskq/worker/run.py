@@ -56,6 +56,7 @@ from taskq.obs import bind_job_context, get_logger
 from taskq.retry import OnRetryExhausted, OnSuccess, RetryClassifierHook, RetryPolicy
 from taskq.settings import WorkerSettings
 from taskq.worker._bootstrap import worker_main
+from taskq.worker._transient import TRANSIENT_PG_ERRORS
 from taskq.worker.cancel import make_cancel_controller
 from taskq.worker.deps import WorkerDeps
 from taskq.worker.dispatch import dispatch_one_job
@@ -205,6 +206,7 @@ async def producer_loop(
                 )
 
         while not (shutdown_event.is_set() or producer_stop_event.is_set()):
+            deps.liveness.tick("producer", period=poll_interval)
             available = local_queue.maxsize - local_queue.qsize()
             if available <= 0:
                 await asyncio.sleep(0.1)
@@ -260,6 +262,7 @@ async def producer_loop(
 
     reason = "producer_stop_event" if producer_stop_event.is_set() else "shutdown_event"
     _producer_log.info("producer-loop-exit", reason=reason)
+    deps.liveness.forget("producer")
 
 
 async def producer_loop_stub(
@@ -544,7 +547,7 @@ async def register_worker(pool: asyncpg.Pool, settings: WorkerSettings) -> UUID:
             await conn.execute(
                 sql, worker_id, hostname, pid, queues, maybe_label, maybe_instance, metadata_json
             )
-    except (TimeoutError, asyncpg.PostgresConnectionError, OSError) as e:
+    except TRANSIENT_PG_ERRORS as e:
         _reg_log.error("register-worker-failed", error=str(e))
         raise
 
@@ -568,7 +571,7 @@ async def deregister_worker(pool: asyncpg.Pool, settings: WorkerSettings, worker
     try:
         async with pool.acquire(timeout=2.0) as conn:
             await conn.execute(sql, worker_id)
-    except (TimeoutError, asyncpg.PostgresConnectionError, OSError) as e:
+    except TRANSIENT_PG_ERRORS as e:
         _reg_log.warning(
             "deregister_worker_failed",
             worker_id=worker_id,

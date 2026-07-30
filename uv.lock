@@ -526,6 +526,20 @@ wheels = [
 ]
 
 [[package]]
+name = "containerspec"
+version = "0.1.7"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/6b/f3/7681b2274048bd896b44320b7984a37f93417c02519e3ab91417356be3f8/containerspec-0.1.7.tar.gz", hash = "sha256:9b6f0f189a9501fa4031f7f074058592746929441299bf8c9519c9c0d11375b4", size = 144512, upload-time = "2026-07-22T22:59:31.325Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/71/9b/c0ec4723759d6293a5e5bbec9b71265a6214cd6e44ebfe183237854ab4e5/containerspec-0.1.7-py3-none-any.whl", hash = "sha256:76d21f64b7c62424331331e6c116c596d64bd5a3fc7ceb45a325d5764b16ecfc", size = 34877, upload-time = "2026-07-22T22:59:30.22Z" },
+]
+
+[package.optional-dependencies]
+build = [
+    { name = "docker" },
+]
+
+[[package]]
 name = "coverage"
 version = "7.15.2"
 source = { registry = "https://pypi.org/simple" }
@@ -715,6 +729,19 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/bf/89/780e11f9588d9e7128a3f87788354c7946a9cbb1401ad38a48c4db9a4f07/execnet-2.1.2.tar.gz", hash = "sha256:63d83bfdd9a23e35b9c6a3261412324f964c2ec8dcd8d3c6916ee9373e0befcd", size = 166622, upload-time = "2025-11-12T09:56:37.75Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/ab/84/02fc1827e8cdded4aa65baef11296a9bbe595c474f0d6d758af082d849fd/execnet-2.1.2-py3-none-any.whl", hash = "sha256:67fba928dd5a544b783f6056f449e5e3931a5c378b128bc18501f7ea79e296ec", size = 40708, upload-time = "2025-11-12T09:56:36.333Z" },
+]
+
+[[package]]
+name = "fakeredis"
+version = "2.37.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "redis" },
+    { name = "sortedcontainers" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/cb/34/73256495885f68b125b6a95f6a8448e103adf34825746ab8905db52183a0/fakeredis-2.37.0.tar.gz", hash = "sha256:7461f124dcba04a80691d72270b3d1d5cd100ef14dc068c76db825940f3ed799", size = 236339, upload-time = "2026-07-22T20:04:53.753Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/76/e2/964e6ef372770dd7c32f9738b50ff4924f1d3cccd665b568680e4bcb0167/fakeredis-2.37.0-py3-none-any.whl", hash = "sha256:657a2a695a1123be0c13f98db409371497bd94c29d260dd76a9fc7ce1a633745", size = 151526, upload-time = "2026-07-22T20:04:51.979Z" },
 ]
 
 [[package]]
@@ -2739,6 +2766,7 @@ dev = [
     { name = "anyio" },
     { name = "asyncpg-stubs" },
     { name = "authlib" },
+    { name = "fakeredis" },
     { name = "httpx" },
     { name = "httpx2" },
     { name = "hypothesis" },
@@ -2760,6 +2788,9 @@ dev = [
     { name = "respx" },
     { name = "ruff" },
     { name = "testcontainers", extra = ["redis"] },
+]
+e2e = [
+    { name = "containerspec", extra = ["build"] },
 ]
 
 [package.metadata]
@@ -2804,8 +2835,9 @@ dev = [
     { name = "anyio", specifier = ">=4.14.2" },
     { name = "asyncpg-stubs", specifier = ">=0.31.3" },
     { name = "authlib", specifier = ">=1.7.2" },
+    { name = "fakeredis", specifier = ">=2.37.0" },
     { name = "httpx", specifier = ">=0.28.1" },
-    { name = "httpx2", specifier = ">=2.7.0" },
+    { name = "httpx2", specifier = ">=2.9.1" },
     { name = "hypothesis", specifier = ">=6.157.1" },
     { name = "itsdangerous", specifier = ">=2.2.0" },
     { name = "jsonschema", specifier = ">=4.26.0" },
@@ -2826,6 +2858,7 @@ dev = [
     { name = "ruff", specifier = ">=0.15.22" },
     { name = "testcontainers", extras = ["postgres", "redis"], specifier = ">=4.14.2" },
 ]
+e2e = [{ name = "containerspec", extras = ["build"], specifier = ">=0.1.7" }]
 
 [[package]]
 name = "testcontainers"

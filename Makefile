@@ -1,10 +1,11 @@
-.PHONY: help install test test-fast test-cov lint format type-check clean build css
+.PHONY: help install test test-fast test-e2e test-cov lint format type-check clean build css
 
 help:
 	@echo "Available commands:"
 	@echo "  make install      - Install package, all extras, and dev dependencies"
 	@echo "  make test         - Run all tests (parallel)"
 	@echo "  make test-fast    - Run non-integration tests (parallel)"
+	@echo "  make test-e2e      - Run e2e tests (containerized workers; serial)"
 	@echo "  make lint         - Run ruff linter"
 	@echo "  make format       - Format code with ruff"
 	@echo "  make type-check   - Run pyright type checker"
@@ -24,6 +25,9 @@ test-cov:
 test-fast:
 	uv run pytest -n 4 -m "not integration"
 
+test-e2e:
+	uv run --group e2e pytest --e2e -m e2e tests/e2e
+
 lint:
 	uv run ruff check .
 	uv run ruff format --check .
@@ -33,7 +37,7 @@ format:
 	uv run ruff check --fix .
 
 type-check:
-	uv run pyright src/taskq tests
+	uv run --group e2e pyright src/taskq tests
 
 clean:
 	rm -rf build/

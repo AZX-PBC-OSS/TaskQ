@@ -13,6 +13,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from taskq.web.health import create_health_router
+from taskq.worker._watchdog import LoopLiveness
 from taskq.worker.health import build_ready_body, compute_health
 from taskq.worker.shutdown import ShutdownPhase
 
@@ -63,12 +64,16 @@ def _make_deps(**overrides: object) -> SimpleNamespace:
                 max_heartbeat_failures=3,
                 redis_url=None,
                 health_socket_path="/tmp/taskq_health.sock",  # noqa: S108 # Why: test-only stub; no real file operations touch this path.
+                health_tasks_enabled=False,
             ),
             "is_leader": SimpleNamespace(is_set=lambda: False),
             "active_jobs": SimpleNamespace(count=lambda: 2),
             "heartbeat_failures": 0,
             # WorkerDeps.redis_client (default None) — health reads it for redis_configured.
             "redis_client": None,
+            # Watchdog observability fields read by compute_health.
+            "liveness": LoopLiveness(),
+            "shutdown_started_at": None,
             **overrides,
         }
     )
@@ -105,7 +110,7 @@ async def test_ready_returns_200_with_fr4_fields() -> None:
 
     assert response.status_code == 200
     body = response.json()  # pyright: ignore[reportUnknownVariableType] # Why: response.json() return type is Any; pyright reports unknown.
-    assert len(body) == 5
+    assert len(body) == 9
     assert "ready" in body
     assert "redis_configured" in body
     assert "active_jobs" in body
@@ -161,7 +166,7 @@ async def test_ready_503_when_pg_ping_fails() -> None:
     assert "active_jobs" in body
     assert "is_leader" in body
     assert "shutdown_phase" in body
-    assert len(body) == 5
+    assert len(body) == 9
 
 
 # ── Import discipline ─────────────────────────────────────────────────

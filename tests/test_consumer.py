@@ -2005,3 +2005,50 @@ async def test_timeout_terminal_ownership_mismatch_logs_no_error(
     kwargs = warning_calls[0].kwargs
     assert kwargs["error_class"] == "TimeoutError"
     assert kwargs["error_message"] == "db slow"
+
+
+# ── Cancelled consumer must re-raise when the terminal write fails ─────────
+
+
+async def test_cancelled_consumer_reraises_when_terminal_write_fails() -> None:
+    """A cancelled consumer whose shielded ``mark_cancelled`` fails must
+    still propagate ``CancelledError``.
+
+    Regression: the infra error (e.g. dead PG) escaped the shield and was
+    routed into generic job-failure handling, which returned ``"failed"``
+    normally — the task's cancellation was silently eaten, so a cancelling
+    TaskGroup (``__aexit__``) waited on the consumer forever. This is the
+    hang the PG-restart chaos path exposes.
+    """
+    from taskq.worker.cancel import ActiveJobRegistry
+
+    backend = _FakeBackend()
+
+    async def _failing_mark_cancelled(*args: object, **kwargs: object) -> bool:
+        raise OSError(111, "Connect call failed")
+
+    backend.mark_cancelled = _failing_mark_cancelled  # type: ignore[method-assign]  # Why: force the shielded terminal write onto the infra-failure path.
+
+    async def blocking_actor(_job: JobRow, ctx: JobContext[BaseModel]) -> object:
+        await ctx.cancel_event.wait()
+
+    job = make_job_row(attempt=1)
+    active = ActiveJobRegistry()
+    cfg = StubActorConfig(retry=RetryPolicy(kind="non_retryable", max_attempts=1))
+    clk: Clock = FakeClock(_NOW)
+    task = asyncio.create_task(
+        consume_one_job(
+            as_backend(backend),
+            job,
+            _WORKER_ID,
+            run_actor=blocking_actor,
+            actor_config=cfg,
+            payload_type=EmptyPayload,
+            clock=clk,
+            active_jobs=active,
+        )
+    )
+    await asyncio.sleep(0.1)  # register + reach the actor
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task

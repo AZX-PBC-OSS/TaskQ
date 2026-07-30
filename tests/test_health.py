@@ -5,6 +5,7 @@ import contextlib
 import glob
 import json
 import os
+import stat
 import sys
 from collections.abc import Iterator
 from types import SimpleNamespace
@@ -12,6 +13,7 @@ from types import SimpleNamespace
 import asyncpg
 import pytest
 
+from taskq.worker._watchdog import LoopLiveness
 from taskq.worker.deps import WorkerDeps
 from taskq.worker.health import HealthReport, HealthServer, _check_live, compute_health
 from taskq.worker.shutdown import ShutdownPhase
@@ -67,6 +69,8 @@ def _make_deps(**overrides: object) -> WorkerDeps:  # pyright: ignore[reportRetu
         "active_jobs": SimpleNamespace(count=lambda: 2),
         "heartbeat_failures": 0,
         "redis_client": None,
+        "liveness": LoopLiveness(),
+        "shutdown_started_at": None,
     }
     defaults.update(overrides)
     return SimpleNamespace(**defaults)  # type: ignore[return-value] # Why: same underlying constraint as above; pyright flags the return statement separately.
@@ -283,13 +287,15 @@ async def _http_get(sock_path: str, path: str) -> tuple[int, dict[str, str], str
 
 
 def _make_settings(sock_path: str, **overrides: object) -> SimpleNamespace:
-    return SimpleNamespace(
-        health_pg_ping_timeout=0.2,
-        max_heartbeat_failures=3,
-        redis_url=None,
-        health_socket_path=sock_path,
-        **overrides,
-    )
+    defaults: dict[str, object] = {
+        "health_pg_ping_timeout": 0.2,
+        "max_heartbeat_failures": 3,
+        "redis_url": None,
+        "health_socket_path": sock_path,
+        "health_tasks_enabled": False,
+    }
+    defaults.update(overrides)
+    return SimpleNamespace(**defaults)
 
 
 _SOCK_ID_PREFIX = f"/tmp/tqht-{os.getpid()}-"  # noqa: S108 # Why: test socket paths must be short (<104 chars for macOS AF_UNIX limit); /tmp is the standard location.
@@ -521,6 +527,8 @@ async def test_liveness_does_not_touch_pg(monkeypatch: pytest.MonkeyPatch) -> No
             pg_ping_ok=True,
             pg_ping_latency_ms=0.0,
             active_jobs=0,
+            loop_tick_ages={},
+            shutdown_elapsed_seconds=None,
         )
 
     monkeypatch.setattr("taskq.worker.health.compute_health", _fake_compute_health)
@@ -617,5 +625,44 @@ async def test_404_post_method() -> None:
             writer.close()
             with contextlib.suppress(OSError):
                 await writer.wait_closed()
+    finally:
+        await server.stop()
+
+
+# ── /tasks privileged dump endpoint ────────────────────────────────────────
+
+
+async def test_tasks_endpoint_disabled_by_default_returns_404() -> None:
+    """TASKQ_HEALTH_TASKS_ENABLED unset: the privileged dump route is
+    indistinguishable from a missing route."""
+    sock_path = _next_sock_path()
+    deps = _make_deps(settings=_make_settings(sock_path))
+    server = HealthServer()
+    await server.start(deps)
+    try:
+        status_code, _headers, _body = await _http_get(sock_path, "/tasks")
+        assert status_code == 404
+    finally:
+        await server.stop()
+
+
+async def test_tasks_endpoint_enabled_returns_dump_records() -> None:
+    """Enabled: 200 with minimized records (name, coro, await sites) — and
+    the socket is owner-only from bind time (no group/other bits)."""
+    sock_path = _next_sock_path()
+    deps = _make_deps(
+        settings=_make_settings(sock_path, health_tasks_enabled=True),
+    )
+    server = HealthServer()
+    await server.start(deps)
+    try:
+        mode = stat.S_IMODE(os.stat(sock_path).st_mode)
+        assert mode & 0o077 == 0, f"socket must be owner-only, got {oct(mode)}"
+
+        status_code, _headers, body = await _http_get(sock_path, "/tasks")
+        assert status_code == 200
+        data = json.loads(body)
+        assert isinstance(data["tasks"], list)
+        assert any("task" in rec and "coro" in rec and "sites" in rec for rec in data["tasks"])
     finally:
         await server.stop()
