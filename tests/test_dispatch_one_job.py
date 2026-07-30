@@ -1253,3 +1253,26 @@ async def test_dispatch_one_job_nth_plus_one_denied_while_cap_slot_held() -> Non
         assert len(fake_backend.mark_succeeded_calls) == 2
         # And job 3's slot was released after its actor completed.
         assert cap_res.table.peek_slots(queue_cap_name) == (1, 0)
+
+
+# ── PayloadValidationError structured attributes ────────────────────
+
+
+async def test_payload_validation_error_carries_structured_attributes() -> None:
+    """``validate_actor_payload`` wraps ``ValidationError`` as
+    ``PayloadValidationError`` with ``actor`` and ``validation_errors``
+    populated — pinning the structured attributes the dispatch path
+    relies on for non-retryable classification."""
+    from taskq._validation import validate_actor_payload
+    from taskq.exceptions import PayloadValidationError
+
+    with pytest.raises(PayloadValidationError) as exc_info:
+        validate_actor_payload(
+            _Payload,
+            {"not_a_valid_field": "oops"},
+            actor="test_actor",
+        )
+
+    assert exc_info.value.actor == "test_actor"
+    assert len(exc_info.value.validation_errors) > 0
+    assert exc_info.value.validation_errors[0]["loc"] == ("not_a_valid_field",)

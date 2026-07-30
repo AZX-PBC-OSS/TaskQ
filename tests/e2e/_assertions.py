@@ -31,7 +31,7 @@ __all__ = [
 _EFFECTS_COLUMNS = "seq, at, actor, job_id, attempt, kind, detail"
 _JOBS_COLUMNS = (
     "id, actor, queue, status, attempt, max_attempts, created_at, scheduled_at, "
-    "started_at, finished_at, metadata"
+    "started_at, finished_at, metadata, payload"
 )
 
 

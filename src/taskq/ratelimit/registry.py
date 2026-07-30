@@ -413,7 +413,7 @@ class RateLimitRegistry:
         self,
         key: object,
         ref_repr: str,
-        payload: dict[str, object] | BaseModel | None,
+        payload: dict[str, object] | None,
         *,
         empty_key_msg: str = "an empty or non-string key",
     ) -> str:
@@ -453,6 +453,22 @@ class RateLimitRegistry:
         # slice returns a base ``str`` with identical content.
         return key[:]
 
+    def _derive_keyed_key(
+        self,
+        ref: KeyedRateLimitRef | KeyedReservationRef,
+        payload: dict[str, object] | BaseModel,
+        *,
+        empty_key_msg: str = "an empty or non-string key",
+    ) -> str:
+        """Resolve key_fn arg, call key_fn, and validate the returned key."""
+        key_fn_arg = self._resolve_key_fn_arg(ref, payload)
+        return self._validate_keyed_key(
+            ref.key_fn(key_fn_arg),
+            f"{type(ref).__name__}(base_name={ref.base_name!r})",
+            payload if isinstance(payload, dict) else payload.model_dump(by_alias=True),
+            empty_key_msg=empty_key_msg,
+        )
+
     def _resolve_key_fn_arg(
         self,
         ref: KeyedRateLimitRef | KeyedReservationRef,
@@ -471,7 +487,7 @@ class RateLimitRegistry:
         — it is a payload error, not a limiter fault.
         """
         if isinstance(payload, ref.payload_type):
-            return payload  # type: ignore[return-value]  # Why: isinstance against a variable class narrows at runtime but pyright cannot track it; the payload IS ref.payload_type.
+            return payload
         try:
             if isinstance(payload, BaseModel):
                 return ref.payload_type.model_validate(payload.model_dump(by_alias=True))
@@ -496,8 +512,8 @@ class RateLimitRegistry:
 
         A plain ``str`` is returned as-is (must already be registered via
         :meth:`register`). A :class:`KeyedReservationRef` derives
-        ``f"{ref.base_name}:{key}"`` by calling ``ref.key_fn(payload)`` and
-        lazily registers a matching :class:`ConcurrencyReservation` on
+        ``f"{ref.base_name}:{key}"`` by calling ``ref.key_fn(validated_model)``
+        and lazily registers a matching :class:`ConcurrencyReservation` on
         first use — subsequent calls for the same key reuse it. Two reuse
         cases are distinguished:
 
@@ -563,17 +579,7 @@ class RateLimitRegistry:
                 f"reservation {ref.base_name!r} is a KeyedReservationRef but no "
                 "payload was provided to derive its key from"
             )
-        key_fn_arg = self._resolve_key_fn_arg(ref, payload)
-        # payload is not None here (checked above); after the dict branch it
-        # must be BaseModel. model_dump() returns dict[str, Any] which is
-        # assignable to dict[str, object] in pyright due to Any compatibility.
-        error_payload = payload if isinstance(payload, dict) else payload.model_dump()
-        key = self._validate_keyed_key(
-            ref.key_fn(key_fn_arg),
-            f"KeyedReservationRef(base_name={ref.base_name!r})",
-            error_payload,
-            empty_key_msg="an empty key or non-string value",
-        )
+        key = self._derive_keyed_key(ref, payload, empty_key_msg="an empty key or non-string value")
         concrete_name = f"{ref.base_name}:{key}"
         # The cap bounds keyed-materialized GROWTH. It must not fire when
         # the concrete name already exists — neither for a tracked keyed
@@ -665,8 +671,8 @@ class RateLimitRegistry:
         Mirrors :meth:`_resolve_reservation_name` for rate limits. A plain
         ``str`` is returned as-is (must already be registered via
         :meth:`register`). A :class:`KeyedRateLimitRef` derives
-        ``f"{ref.base_name}:{key}"`` by calling ``ref.key_fn(payload)`` and
-        lazily registers a matching :class:`TokenBucket` on first use —
+        ``f"{ref.base_name}:{key}"`` by calling ``ref.key_fn(validated_model)``
+        and lazily registers a matching :class:`TokenBucket` on first use —
         subsequent calls for the same key reuse it. As in
         :meth:`_resolve_reservation_name`, two reuse cases are
         distinguished: a keyed-materialized (tracked) entry has its
@@ -723,16 +729,7 @@ class RateLimitRegistry:
                 f"rate limit {ref.base_name!r} is a KeyedRateLimitRef but no "
                 "payload was provided to derive its key from"
             )
-        key_fn_arg = self._resolve_key_fn_arg(ref, payload)
-        # payload is not None here (checked above); after the dict branch it
-        # must be BaseModel. model_dump() returns dict[str, Any] which is
-        # assignable to dict[str, object] in pyright due to Any compatibility.
-        error_payload = payload if isinstance(payload, dict) else payload.model_dump()
-        key = self._validate_keyed_key(
-            ref.key_fn(key_fn_arg),
-            f"KeyedRateLimitRef(base_name={ref.base_name!r})",
-            error_payload,
-        )
+        key = self._derive_keyed_key(ref, payload)
         concrete_name = f"{ref.base_name}:{key}"
         # The cap bounds keyed-materialized GROWTH. It must not fire when
         # the concrete name already exists — neither for a tracked keyed

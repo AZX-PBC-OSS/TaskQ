@@ -19,7 +19,12 @@ from typing import TYPE_CHECKING
 import pytest
 
 from ._assertions import fetch_effects, fetch_job_rows
-from .actors import DeliverTenantWebhookPayload, deliver_tenant_webhook
+from .actors import (
+    DeliverTenantWebhookPayload,
+    TypedTenantPayload,
+    deliver_tenant_webhook,
+    deliver_typed_tenant_webhook,
+)
 
 if TYPE_CHECKING:
     import asyncpg
@@ -209,8 +214,6 @@ async def test_typed_keyed_rate_limit_with_aliases(
     ``KeyError`` / ``AttributeError`` — this test proves the validated
     ``BaseModel`` reaches ``key_fn`` at acquire time.
     """
-    from .actors import TypedTenantPayload, deliver_typed_tenant_webhook
-
     tenant_a = "gamma"
     tenant_b = "delta"
 
@@ -245,6 +248,13 @@ async def test_typed_keyed_rate_limit_with_aliases(
     b_rows = await fetch_job_rows(
         e2e_pg_pool, e2e_schema.schema_name, [h.job_id for h in handles_b]
     )
+
+    # Verify the stored row carries the wire alias — proving the model
+    # with serialize_by_alias=True stored "tenantId", not "tenant_id"
+    for row in a_rows:
+        row_payload = json.loads(row["payload"])
+        assert "tenantId" in row_payload
+        assert row_payload["tenantId"] == tenant_a
 
     _typed_bucket_base = "e2e_typed_per_tenant"
     a_denied = sum(

@@ -76,6 +76,19 @@ def _validate_keyed_base_name(v: str) -> str:
     return v
 
 
+def _validate_concrete_payload_type(v: type[BaseModel]) -> type[BaseModel]:
+    """Shared ``payload_type`` validation for both keyed ref types.
+
+    Rejects ``BaseModel`` itself — only concrete subclasses carry the
+    fields ``key_fn`` needs to derive a key. Passing ``BaseModel`` would
+    pass the type checker but always fail at runtime (``key_fn`` has no
+    fields to read).
+    """
+    if v is BaseModel:
+        raise ValueError("payload_type must be a concrete BaseModel subclass, not BaseModel itself")
+    return v
+
+
 class RateLimitRef(BaseModel):
     """Typed reference to a rate-limit primitive by name."""
 
@@ -96,7 +109,7 @@ class KeyedReservationRef(BaseModel):
     registered for a given key is ``f"{base_name}:{key}"``) so distinct
     ``KeyedReservationRef`` declarations never collide. ``key_fn`` receives
     the actor's validated payload (as a :class:`~pydantic.BaseModel`
-    instance — the same model stored on the job row after validation) and
+    instance — validated from the job row's raw JSON payload) and
     must return a non-empty string — typically a tenant, session, or
     account identifier already present on the payload.
 
@@ -115,6 +128,15 @@ class KeyedReservationRef(BaseModel):
     acquisition and are not automatically removed — see
     :meth:`~taskq.ratelimit.registry.RateLimitRegistry.evict_idle_keyed_reservations`
     for bounding registry growth under high key cardinality.
+
+    .. note::
+        The declared type ``Callable[[BaseModel], str]`` is deliberately
+        unsound at the field level — :meth:`typed` stores a
+        ``Callable[[P], str]`` (contravariance prevents direct assignment).
+        Runtime safety is enforced by the registry's ``isinstance`` check
+        against ``payload_type`` before calling ``key_fn``. Direct
+        invocation of ``ref.key_fn(model)`` is unchecked — prefer
+        :meth:`typed` for compile-time safety.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -145,8 +167,9 @@ class KeyedReservationRef(BaseModel):
 
         At runtime the registry passes the validated payload model to
         ``key_fn``, so the callable always receives an instance of
-        ``payload_type`` (verified by ``isinstance`` in the registry
-        before the call).
+        ``payload_type`` (verified by ``isinstance`` in the registry —
+        same-type payloads pass through directly; different-type or dict
+        payloads are re-validated via ``model_validate``).
         """
         return cls(
             base_name=base_name,
@@ -178,11 +201,7 @@ class KeyedReservationRef(BaseModel):
     @field_validator("payload_type")
     @classmethod
     def _validate_payload_type(cls, v: type[BaseModel]) -> type[BaseModel]:
-        if v is BaseModel:
-            raise ValueError(
-                "payload_type must be a concrete BaseModel subclass, not BaseModel itself"
-            )
-        return v
+        return _validate_concrete_payload_type(v)
 
 
 class KeyedRateLimitRef(BaseModel):
@@ -249,6 +268,15 @@ class KeyedRateLimitRef(BaseModel):
     automatically removed — see
     :meth:`~taskq.ratelimit.registry.RateLimitRegistry.evict_idle_keyed_rate_limits`
     for bounding registry growth under high key cardinality.
+
+    .. note::
+        The declared type ``Callable[[BaseModel], str]`` is deliberately
+        unsound at the field level — :meth:`typed` stores a
+        ``Callable[[P], str]`` (contravariance prevents direct assignment).
+        Runtime safety is enforced by the registry's ``isinstance`` check
+        against ``payload_type`` before calling ``key_fn``. Direct
+        invocation of ``ref.key_fn(model)`` is unchecked — prefer
+        :meth:`typed` for compile-time safety.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -281,8 +309,9 @@ class KeyedRateLimitRef(BaseModel):
 
         At runtime the registry passes the validated payload model to
         ``key_fn``, so the callable always receives an instance of
-        ``payload_type`` (verified by ``isinstance`` in the registry
-        before the call).
+        ``payload_type`` (verified by ``isinstance`` in the registry —
+        same-type payloads pass through directly; different-type or dict
+        payloads are re-validated via ``model_validate``).
         """
         return cls(
             base_name=base_name,
@@ -315,8 +344,4 @@ class KeyedRateLimitRef(BaseModel):
     @field_validator("payload_type")
     @classmethod
     def _validate_payload_type(cls, v: type[BaseModel]) -> type[BaseModel]:
-        if v is BaseModel:
-            raise ValueError(
-                "payload_type must be a concrete BaseModel subclass, not BaseModel itself"
-            )
-        return v
+        return _validate_concrete_payload_type(v)

@@ -574,7 +574,7 @@ class _StrictPayload(BaseModel):
 
 async def test_payload_validation_failure_before_acquire_no_resources_acquired() -> None:
     """Validation happens before acquire — an invalid payload raises
-    ValidationError before any rate-limit token is consumed, so no
+    PayloadValidationError before any rate-limit token is consumed, so no
     resources are acquired and no release is needed."""
     rl_reg = _StubRateLimitRegistry()
     backend = _FakeBackend()
@@ -585,7 +585,7 @@ async def test_payload_validation_failure_before_acquire_no_resources_acquired()
     async def never_called_actor(_job: object, _ctx: JobContext[BaseModel]) -> object:
         raise AssertionError("actor body should not run on validation failure")
 
-    with pytest.raises(PayloadValidationError):
+    with pytest.raises(PayloadValidationError) as exc_info:
         await consume_one_job(
             as_backend(backend),
             job,
@@ -598,6 +598,9 @@ async def test_payload_validation_failure_before_acquire_no_resources_acquired()
             rate_limits=["tb"],
             reservations=[],
         )
+
+    assert exc_info.value.actor == job.actor
+    assert exc_info.value.validation_errors[0]["loc"] == ("required_field",)
 
     assert len(rl_reg.acquire_calls) == 0
     assert len(rl_reg.release_calls) == 0
@@ -712,15 +715,15 @@ async def test_consumer_passes_validated_model_to_key_fn() -> None:
 
 class _StrictTenantPayload(BaseModel):
     """Payload with a required field and no default — triggers
-    ``ValidationError`` when the raw dict lacks the field."""
+    ``PayloadValidationError`` when the raw dict lacks the field."""
 
     tenant_id: str
 
 
 async def test_consumer_validates_payload_before_acquire_for_direct_callers() -> None:
     """When ``validated_payload`` is ``None``, the consumer validates the raw
-    dict BEFORE calling ``acquire_for_actor`` — a ``ValidationError`` surfaces
-    before any rate-limit token is consumed."""
+    dict BEFORE calling ``acquire_for_actor`` — a ``PayloadValidationError``
+    surfaces before any rate-limit token is consumed."""
     rl_reg = _StubRateLimitRegistry()
     backend = _FakeBackend()
     clk: Clock = FakeClock(_NOW)
@@ -738,7 +741,7 @@ async def test_consumer_validates_payload_before_acquire_for_direct_callers() ->
     async def never_called_actor(_job: object, _ctx: JobContext[BaseModel]) -> object:
         raise AssertionError("actor body should not run on validation failure")
 
-    with pytest.raises(PayloadValidationError):
+    with pytest.raises(PayloadValidationError) as exc_info:
         await consume_one_job(
             as_backend(backend),
             job,
@@ -751,6 +754,9 @@ async def test_consumer_validates_payload_before_acquire_for_direct_callers() ->
             rate_limits=[ref],
             reservations=[],
         )
+
+    assert exc_info.value.actor == job.actor
+    assert exc_info.value.validation_errors[0]["loc"] == ("tenant_id",)
 
     assert len(rl_reg.acquire_calls) == 0
     assert len(rl_reg.release_calls) == 0
@@ -805,6 +811,40 @@ async def test_consumer_validates_dict_and_passes_model_to_key_fn() -> None:
     assert len(key_fn_received) == 1
     assert isinstance(key_fn_received[0], ApiPayload)
     assert key_fn_received[0].tenant_id == "acme"
+
+
+async def test_validated_payload_short_circuits_job_payload_validation() -> None:
+    """When ``validated_payload`` is provided, the consumer does NOT
+    re-validate ``job.payload`` — a valid model alongside a dict that
+    would fail validation succeeds, proving the short-circuit works."""
+    rl_reg = _StubRateLimitRegistry()
+    backend = _FakeBackend()
+    clk: Clock = FakeClock(_NOW)
+    cfg = default_actor_config()
+
+    # job.payload is a dict that would FAIL validation against _StrictPayload
+    # (missing required_field), but validated_payload is a valid model.
+    job = make_job_row(payload={"wrong_field": "x"})
+
+    async def noop_actor(_job: object, _ctx: JobContext[BaseModel]) -> object:
+        return None
+
+    result = await consume_one_job(
+        as_backend(backend),
+        job,
+        _WORKER_ID,
+        run_actor=noop_actor,
+        actor_config=cfg,
+        payload_type=_StrictPayload,
+        clock=clk,
+        validated_payload=_StrictPayload(required_field="ok"),
+        rate_limit_registry=rl_reg,
+        rate_limits=["tb"],
+        reservations=[],
+    )
+
+    assert result == "succeeded"
+    assert len(backend.mark_succeeded_calls) == 1
 
 
 # ── lifecycle events ────────────────────────────────────

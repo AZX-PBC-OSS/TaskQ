@@ -234,10 +234,10 @@ async def consume_one_job(
     the raw ``dict[str, object]`` row payload against this model BEFORE
     rate-limit acquisition so the :class:`JobContext` handed to the actor
     carries a typed, validated :class:`pydantic.BaseModel` instance and a
-    :class:`ValidationError` from an invalid payload surfaces BEFORE a
-    rate-limit token is consumed. The bound is ``BaseModel`` here (the
-    registry is heterogeneous); per-actor ``P`` flows from the call site
-    that selected ``payload_type``.
+    :class:`~taskq.exceptions.PayloadValidationError` from an invalid payload
+    surfaces BEFORE a rate-limit token is consumed. The bound is ``BaseModel``
+    here (the registry is heterogeneous); per-actor ``P`` flows from the call
+    site that selected ``payload_type``.
 
     ``enqueuer`` is the per-loop SubJobEnqueuer constructed in ``_main``
     after ``loop_scope.bootstrap()``. When provided, the live
@@ -304,7 +304,7 @@ async def consume_one_job(
     # Ensure the validated model is available before rate-limit acquisition.
     # On the dispatch path, validated_payload is already set (dispatch_one_job
     # validates before calling consume_one_job). For direct callers, validate
-    # here. A ValidationError from an invalid payload surfaces BEFORE a
+    # here. A PayloadValidationError from an invalid payload surfaces BEFORE a
     # rate-limit token is consumed — the correct behavior.
     if validated_payload is None:
         validated_payload = validate_actor_payload(

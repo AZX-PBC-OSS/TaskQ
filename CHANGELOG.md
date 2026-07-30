@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed (breaking)
+
+* **`KeyedRateLimitRef` and `KeyedReservationRef`: `payload_type` is now required and `key_fn` receives the validated Pydantic model, not the raw dict.** Every existing keyed-ref declaration must be updated:
+
+  ```python
+  # BEFORE (broken):
+  KeyedRateLimitRef(base_name="api-per-tenant", key_fn=lambda p: p["tenant_id"], capacity=10, refill_per_second=1.0)
+
+  # AFTER:
+  KeyedRateLimitRef.typed(MyPayload, base_name="api-per-tenant", key_fn=lambda p: p.tenant_id, capacity=10, refill_per_second=1.0)
+  ```
+
+  Use `.typed()` for compile-time type checking of `key_fn` against the payload model.
+
+* **Dispatch-path malformed payloads now fail immediately as `PayloadValidationError` (non-retryable)** instead of being retried as a generic `ValidationError`. In-flight legacy rows with invalid payloads will fail on first dispatch instead of exhausting the retry budget.
+
+* **Per-key budget reset hazard during deploys:** if defaults or validators change a key-deriving field's value vs the raw row, new concrete names materialize fresh full-capacity buckets alongside old ones (temporary over-admission window). Drain affected queues before deploying payload model changes that affect key derivation.
+
 ## [0.2.2](https://github.com/AZX-PBC-OSS/TaskQ/compare/v0.2.1...v0.2.2) (2026-07-22)
 
 

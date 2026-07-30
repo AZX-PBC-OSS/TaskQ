@@ -508,8 +508,14 @@ variants.
 A mixed list of static names and keyed refs is allowed:
 
 ```python
+from datetime import timedelta
+from pydantic import BaseModel
 from taskq.actor import actor
 from taskq.ratelimit import KeyedRateLimitRef, KeyedReservationRef
+
+class MyPayload(BaseModel):
+    tenant_id: str
+    session_id: str
 
 @actor(
     rate_limits=["global-bucket", KeyedRateLimitRef.typed(
@@ -639,6 +645,7 @@ The model has defaults, aliases, and validation applied. Use the `.typed()` clas
 compile-time type checking of `key_fn` against the payload model:
 
 ```python
+from datetime import timedelta
 from pydantic import BaseModel, Field
 from taskq.ratelimit import KeyedReservationRef
 
@@ -695,6 +702,35 @@ dispatch. Registration is idempotent for identical config, which every acquisiti
     lock-expiry sweep. A key that is acquired again after eviction is simply re-registered on
     next use, so calling `evict_idle_keyed_reservations()` is always safe, including while other
     keys are mid-acquisition.
+
+---
+
+## Migrating from dict `key_fn` (pre-1.0)
+
+If you have existing keyed-ref declarations from before 1.0, update them as follows:
+
+1. **Add `payload_type`** — pass the actor's payload model class as the first argument to `.typed()`:
+
+   ```python
+   from datetime import timedelta
+   from pydantic import BaseModel
+   from taskq.ratelimit import KeyedRateLimitRef
+
+   class MyPayload(BaseModel):
+       tenant_id: str
+
+   # BEFORE (broken):
+   KeyedRateLimitRef(base_name="api-per-tenant", key_fn=lambda p: p["tenant_id"], capacity=10, refill_per_second=1.0)
+
+   # AFTER:
+   KeyedRateLimitRef.typed(MyPayload, base_name="api-per-tenant", key_fn=lambda p: p.tenant_id, capacity=10, refill_per_second=1.0)
+   ```
+
+2. **Change dict access to model-attribute access** — `p["tenant_id"]` → `p.tenant_id`. Pydantic defaults, aliases, and validators are now applied before `key_fn` runs.
+
+3. **Aliases are transparent** — `Field(alias="tenantId")` maps the wire name to the model attribute. `key_fn` uses `p.tenant_id`, not `p["tenantId"]`.
+
+4. **Budget reset hazard:** if you change a model default or alias that affects a key-deriving field, existing concrete bucket names in Redis/PG will differ from new ones. Drain affected queues before deploying such changes.
 
 ---
 

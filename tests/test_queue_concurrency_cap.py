@@ -229,7 +229,7 @@ async def test_queue_cap_composes_with_keyed_refs_and_rolls_back_across_kinds() 
         capacity=1,
         refill_per_second=0,
     )
-    payload = _CompositionPayload(session_id="s1", tenant_id="t1")  # type: ignore[arg-type]  # Why: registry accepts dict[str, object] but passes payload through to key_fn; a BaseModel with both fields satisfies both key_fns at runtime.
+    payload = _CompositionPayload(session_id="s1", tenant_id="t1")
 
     # ── (a) Full acquire: queue cap first (as dispatch prepends it). ──
     acquired = await reg.acquire_for_actor(
