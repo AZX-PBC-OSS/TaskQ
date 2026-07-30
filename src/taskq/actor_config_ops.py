@@ -44,9 +44,9 @@ from taskq.exceptions import (
 )
 
 __all__ = [
+    "UNSET",
     "ActorConfigRow",
     "DeregisterResult",
-    "UNSET",
     "Unset",
     "deregister_actor",
     "get_actor_config",
