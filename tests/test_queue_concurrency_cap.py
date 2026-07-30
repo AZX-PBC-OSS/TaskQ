@@ -487,7 +487,7 @@ async def test_queue_cap_saturation_snoozes_with_operator_visible_awaiting() -> 
 
     from taskq.backend.clock import Clock
     from taskq.context import JobContext
-    from taskq.testing.actor import FakeBackend, as_backend, default_actor_config
+    from taskq.testing.actor import EmptyPayload, FakeBackend, as_backend, default_actor_config
     from taskq.testing.jobs import make_job_row
     from taskq.worker._consumer import consume_one_job
     from taskq.worker.dispatch import _effective_reservations
@@ -522,6 +522,7 @@ async def test_queue_cap_saturation_snoozes_with_operator_visible_awaiting() -> 
         rate_limit_registry=reg,
         rate_limits=[],
         reservations=list(reservations),
+        validated_payload=EmptyPayload(),
     )
 
     assert outcome == "scheduled"
