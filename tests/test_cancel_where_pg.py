@@ -2,10 +2,13 @@
 
 import asyncio
 from datetime import UTC, datetime
+from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
+import asyncpg
 import pytest
 
+from taskq.backend._cancel_bulk import _cancel_where
 from taskq.backend._protocol import Backend, JobFilter
 from taskq.testing.fixtures import JobsApp
 from taskq.testing.jobs import make_enqueue_args
@@ -205,3 +208,94 @@ class TestCancelWherePostgres:
             await listen_conn.close()
 
         assert len(received) == 2
+
+
+class TestDeadlockRetry:
+    """Unit tests for the deadlock retry loop in _cancel_where.
+
+    These don't need a real Postgres — they mock the pool to simulate
+    deadlock-then-success and deadlock-then-exhaustion scenarios.
+    """
+
+    @staticmethod
+    def _mock_pool_and_conn(
+        fetch_row: dict | None = None,
+        fetch_side_effects: list[Exception] | None = None,
+    ) -> tuple[MagicMock, MagicMock]:
+        conn = MagicMock()
+
+        if fetch_side_effects is not None:
+            fetch_mock = AsyncMock(side_effect=fetch_side_effects)
+            if fetch_row is not None:
+                fetch_mock.side_effect = [
+                    *fetch_side_effects,
+                    fetch_row,
+                ]
+            conn.fetchrow = fetch_mock
+        else:
+            conn.fetchrow = AsyncMock(return_value=fetch_row)
+
+        conn.executemany = AsyncMock(return_value=None)
+
+        tx = AsyncMock()
+        tx.__aenter__ = AsyncMock(return_value=tx)
+        tx.__aexit__ = AsyncMock(return_value=False)
+        conn.transaction = MagicMock(return_value=tx)
+
+        conn.__aenter__ = AsyncMock(return_value=conn)
+        conn.__aexit__ = AsyncMock(return_value=False)
+
+        pool = MagicMock()
+        pool.acquire = MagicMock(return_value=conn)
+        return pool, conn
+
+    @staticmethod
+    def _success_row() -> dict:
+        return {
+            "cancelled_directly": 1,
+            "cancel_requested": 0,
+            "cancelled_ids": [uuid4()],
+            "cancelled_prev_statuses": ["pending"],
+            "cancel_requested_ids": [],
+            "cancel_requested_workers": [],
+        }
+
+    async def test_deadlock_retry_succeeds_on_second_attempt(self) -> None:
+        """_cancel_where retries on DeadlockDetectedError and succeeds."""
+        row = self._success_row()
+        pool, _ = self._mock_pool_and_conn(
+            fetch_row=row,
+            fetch_side_effects=[asyncpg.DeadlockDetectedError()],
+        )
+
+        sql = MagicMock()
+        sql.insert_event = "INSERT INTO job_events VALUES ($1, $2, $3, $4)"
+
+        result, _notify = await _cancel_where(pool, "taskq", sql, JobFilter(tags=("x",)), "test")
+
+        assert result.cancelled_directly == 1
+        assert result.cancel_requested == 0
+        assert len(result.cancelled_ids) == 1
+
+    async def test_deadlock_retry_exhausted_raises(self) -> None:
+        """_cancel_where raises after 3 failed attempts."""
+        pool, _ = self._mock_pool_and_conn(
+            fetch_side_effects=[asyncpg.DeadlockDetectedError()] * 3,
+        )
+
+        sql = MagicMock()
+
+        with pytest.raises(asyncpg.DeadlockDetectedError):
+            await _cancel_where(pool, "taskq", sql, JobFilter(tags=("x",)), "test")
+
+    async def test_no_deadlock_no_retry(self) -> None:
+        """_cancel_where succeeds immediately without retry."""
+        row = self._success_row()
+        pool, conn = self._mock_pool_and_conn(fetch_row=row)
+
+        sql = MagicMock()
+        sql.insert_event = "INSERT INTO job_events VALUES ($1, $2, $3, $4)"
+
+        await _cancel_where(pool, "taskq", sql, JobFilter(tags=("x",)), "test")
+
+        assert conn.fetchrow.call_count == 1

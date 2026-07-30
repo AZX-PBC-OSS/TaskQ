@@ -11,7 +11,7 @@ commit because the ``taskq.cancel.notify_sent`` counter lives in
 
 import asyncio
 import random
-from typing import TYPE_CHECKING, NamedTuple
+from typing import NamedTuple
 from uuid import UUID
 
 import asyncpg
@@ -20,9 +20,6 @@ from taskq.backend._filter_sql import build_filter_conditions
 from taskq.backend._protocol import BulkCancelResult, JobFilter
 from taskq.backend._records import jsonb_param
 from taskq.backend._sql_templates import SqlTemplates
-
-if TYPE_CHECKING:
-    import asyncpg
 
 __all__ = ["NotifyTarget", "_cancel_where"]
 
@@ -35,7 +32,7 @@ class NotifyTarget(NamedTuple):
 
 
 async def _cancel_where(
-    pool: "asyncpg.Pool",
+    pool: asyncpg.Pool,
     schema: str,
     sql: SqlTemplates,
     filter: JobFilter,
@@ -95,7 +92,8 @@ async def _cancel_where(
                 async with conn.transaction():
                     row = await conn.fetchrow(cancel_sql, *params)
 
-                    assert row is not None
+                    if row is None:
+                        raise RuntimeError("cancel_where: aggregate query returned no rows")
                     cancelled_ids = list(row["cancelled_ids"] or [])
                     cancel_requested_ids = list(row["cancel_requested_ids"] or [])
                     prev_statuses: dict[UUID, str] = dict(
