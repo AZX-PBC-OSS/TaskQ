@@ -779,7 +779,11 @@ guide section for details.
 
 ### Dispatch integration
 
-Before executing the actor body, `consume_one_job` checks the rate-limit decision:
+Before executing the actor body, `consume_one_job` checks the rate-limit decision.
+The already-validated payload model (constructed in `dispatch_one_job` and passed as
+`validated_payload`) is passed to `acquire_for_actor`. `KeyedRateLimitRef` and
+`KeyedReservationRef` declare a required `payload_type`; the registry validates the payload
+against it and `key_fn` always receives the validated Pydantic model:
 - If `RateLimitDecision.allowed`: proceed.
 - If denied with `retry_after`: call `mark_retry_after(delay=retry_after)` and
   release the job back to `scheduled` status without consuming the retry budget
