@@ -190,3 +190,20 @@ async def test_client_actors_get_returns_row(
 
         missing = await tq.actors.get("nonexistent")
         assert missing is None
+
+
+async def test_client_actors_set_capacity(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_schema: ModulePgSchema,
+) -> None:
+    """Full client path: tq.actors.set_capacity() updates max_concurrent."""
+    from taskq import TaskQ
+
+    schema = module_pg_schema.schema_name
+    await _seed_actor(clean_pg_conn, schema, "client_setcap_actor")
+
+    async with TaskQ(dsn=module_pg_schema.pg_dsn, schema=schema) as tq:
+        row = await tq.actors.set_capacity("client_setcap_actor", max_concurrent=10)
+
+    assert row is not None
+    assert row.max_concurrent == 10

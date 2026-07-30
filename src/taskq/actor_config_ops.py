@@ -326,6 +326,15 @@ async def deregister_actor(
        uses READ COMMITTED isolation. Callers must quiesce the actor first
        — stop enqueuing, disable cron schedules, and wait for running jobs
        to reach a terminal state — before calling deregister.
+
+       **Concurrent worker startup (sync_actor_config)** can re-create the
+       ``actor_config`` row after this function returns, with capacity fields
+       reset to ``@actor(...)`` defaults. Stop all workers for this actor
+       before calling deregister.
+
+       A job dispatched between the running check and the cancel UPDATE
+       (force=True) will be stranded until the leader sweep reclaims its
+       expired lock.
     """
     if not _IDENT_RE.match(schema):
         raise ValueError(f"invalid schema identifier: {schema!r}")

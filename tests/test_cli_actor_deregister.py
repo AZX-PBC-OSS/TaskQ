@@ -126,6 +126,8 @@ def test_deregister_output_shows_result(monkeypatch: pytest.MonkeyPatch) -> None
     )
     assert output.exit_code == 0
     assert "deregistered" in output.output.lower()
+    assert "actor_config_deleted=true" in output.output.lower()
+    assert "queue='my-queue'" in output.output.lower()
     assert "schedules_disabled=2" in output.output
     assert "jobs_cancelled=5" in output.output
     assert "terminal_jobs_remaining=10" in output.output

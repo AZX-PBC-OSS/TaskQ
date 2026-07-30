@@ -147,8 +147,16 @@ def get_backend(request: Request) -> Backend | None:
 
 
 def get_schema(request: Request) -> str:
-    """Dependency: yields the schema name from ``app.state``."""
+    """Dependency: yields the schema name from ``app.state``.
+
+    Re-validates against :data:`_IDENT_RE` as defence-in-depth — the schema
+    was validated at ``create_router`` construction time, but this ensures a
+    runtime mutation of ``app.state.schema`` (e.g. by a misconfigured test
+    fixture) cannot reach SQL interpolation.
+    """
     s: str = request.app.state.schema
+    if not _IDENT_RE.match(s):
+        raise HTTPException(status_code=500, detail="invalid schema configuration")
     return s
 
 

@@ -1,5 +1,15 @@
 {% extends "_base.html" %}
 {% block title %}Actors — TaskQ Admin{% endblock %}
+{% block head %}
+<script>
+document.addEventListener('submit', function(e) {
+  var form = e.target;
+  if (!form.classList.contains('deregister-form')) return;
+  var actor = form.dataset.actor || 'this actor';
+  if (!confirm('Deregister ' + actor + '?')) e.preventDefault();
+});
+</script>
+{% endblock %}
 {% block content %}
 <div class="space-y-4">
   <h2 class="text-xl font-semibold text-slate-800 dark:text-slate-200">Actors</h2>
@@ -44,7 +54,8 @@
           <td class="px-4 py-2 text-sm">{{ a.updated_at | time_ago }}</td>
           <td class="px-4 py-2 text-sm">
             <form method="POST" action="{{ base_path }}/actors/{{ a.actor | urlencode }}/deregister"
-                  onsubmit="return confirm('Deregister {{ a.actor }}?');">
+                  data-actor="{{ a.actor }}"
+                  class="deregister-form">
               <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
               <label class="text-xs"><input type="checkbox" name="force" value="true"> force</label>
               <label class="text-xs"><input type="checkbox" name="purge_queue" value="true"> purge queue</label>

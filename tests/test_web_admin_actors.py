@@ -278,3 +278,62 @@ async def test_actors_page_shows_notice_after_deregister(
     assert "deregistered" in resp.text
     # The notice should be in a styled banner div, not just in the page somewhere
     assert "bg-green" in resp.text
+
+
+async def test_deregister_route_returns_409_for_enabled_schedules(
+    clean_pg_conn: asyncpg.Connection,
+    admin_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """POST deregister with an enabled schedule returns 409 Conflict."""
+    from uuid import uuid4
+
+    schema = module_pg_schema.schema_name
+    await _seed_actor_config(clean_pg_conn, schema, "sched-409-actor", queue="default")
+    await clean_pg_conn.execute(
+        f'INSERT INTO "{schema}".cron_schedules (id, actor, cron_expr, enabled, next_fire_at) '
+        f"VALUES ($1, 'sched-409-actor', '*/5 * * * *', true, now())",
+        uuid4(),
+    )
+    app = _make_admin_app(admin_pool, schema, monkeypatch, admin_actions_enabled=True)
+
+    resp = await _get_csrf_then_post(
+        app, "/admin/actors", "/admin/actors/sched-409-actor/deregister"
+    )
+
+    assert resp.status_code == 409
+    assert "enabled cron schedule" in resp.text
+    count = await clean_pg_conn.fetchval(
+        f'SELECT count(*) FROM "{schema}".actor_config WHERE actor = $1',
+        "sched-409-actor",
+    )
+    assert count == 1
+
+
+async def test_deregister_route_with_purge_queue_deletes_queue(
+    clean_pg_conn: asyncpg.Connection,
+    admin_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """POST deregister with purge_queue=true deletes the orphaned queue."""
+    schema = module_pg_schema.schema_name
+    await clean_pg_conn.execute(
+        f'INSERT INTO "{schema}".queues (name) VALUES ($1)',
+        "admin-purge-queue",
+    )
+    await _seed_actor_config(clean_pg_conn, schema, "admin-purge-actor", queue="admin-purge-queue")
+    app = _make_admin_app(admin_pool, schema, monkeypatch, admin_actions_enabled=True)
+
+    resp = await _get_csrf_then_post(
+        app, "/admin/actors", "/admin/actors/admin-purge-actor/deregister",
+        data={"purge_queue": "true"},
+    )
+
+    assert resp.status_code == 303
+    queue_count = await clean_pg_conn.fetchval(
+        f'SELECT count(*) FROM "{schema}".queues WHERE name = $1',
+        "admin-purge-queue",
+    )
+    assert queue_count == 0

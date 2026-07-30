@@ -573,10 +573,17 @@ async def _actor_config_deregister(
     typer.echo(
         f"Deregistered actor {result.actor!r}:"
         f" actor_config_deleted={result.actor_config_deleted}"
+        f" queue={result.queue!r}"
         f" schedules_disabled={result.schedules_disabled}"
         f" jobs_cancelled={result.jobs_cancelled}"
         f" terminal_jobs_remaining={result.terminal_jobs_remaining}"
         f" queue_purged={result.queue_purged}"
+    )
+    typer.echo(
+        f"WARNING: Actor {result.actor!r} is now unregistered. Any future enqueue()"
+        f" to this actor name will create a stranded pending job that will never"
+        f" be dispatched. Stop enqueuing before deregistering.",
+        err=True,
     )
 
 
