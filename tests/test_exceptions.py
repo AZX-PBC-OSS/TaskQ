@@ -495,6 +495,25 @@ class TestActorDeregistrationErrors:
         assert "3 non-terminal" in str(err)
         assert "force=True" in str(err)
 
+    def test_actor_has_active_jobs_error_force_true_message(self) -> None:
+        from taskq.exceptions import ActorHasActiveJobsError
+
+        err = ActorHasActiveJobsError(
+            actor="my-actor.run-123",
+            active_count=2,
+            status_counts={"running": 2},
+            force=True,
+        )
+        assert err.actor == "my-actor.run-123"
+        assert err.active_count == 2
+        assert err.status_counts == {"running": 2}
+        msg = str(err)
+        assert "2 running job(s)" in msg
+        assert "cannot be cancelled by force=True" in msg
+        assert "wait for them to finish" in msg
+        # Must NOT contain the force=False remediation advice
+        assert "pass" not in msg.lower().split("force=true")[0]
+
     def test_actor_has_enabled_schedules_error_carries_ids(self) -> None:
         from taskq.exceptions import ActorHasEnabledSchedulesError
 

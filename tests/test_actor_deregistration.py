@@ -297,7 +297,7 @@ async def test_deregister_force_cancels_pending_and_disables_schedules(
 
     # Verify audit trail fields on cancelled jobs (M12).
     job_row = await clean_pg_conn.fetchrow(
-        f'SELECT error_class, error_message, finished_at '  # noqa: S608  # Why: schema validated by _IDENT_RE; pending_id is a test-generated UUID.
+        f"SELECT error_class, error_message, finished_at "  # noqa: S608  # Why: schema validated by _IDENT_RE; pending_id is a test-generated UUID.
         f'FROM "{schema}".jobs WHERE id = $1',
         pending_id,
     )
@@ -306,6 +306,41 @@ async def test_deregister_force_cancels_pending_and_disables_schedules(
     assert job_row["error_message"] is not None
     assert "actor deregistration" in job_row["error_message"]
     assert job_row["finished_at"] is not None
+
+
+async def test_deregister_force_writes_job_events_on_cancel(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_schema: ModulePgSchema,
+) -> None:
+    """H3: force=True cancel must insert job_events state_change rows —
+    every other cancel path does, and audit consumers rely on them."""
+    schema = module_pg_schema.schema_name
+    await sync_actor_config(
+        clean_pg_conn,
+        [ActorConfig(actor="evt_actor", max_concurrent=5, queue="default")],
+        schema=schema,
+    )
+    pending_id = await _insert_job(clean_pg_conn, schema, actor="evt_actor", status="pending")
+    scheduled_id = await _insert_job(clean_pg_conn, schema, actor="evt_actor", status="scheduled")
+
+    await deregister_actor(clean_pg_conn, "evt_actor", force=True, schema=schema)
+
+    for jid in (pending_id, scheduled_id):
+        events = await clean_pg_conn.fetch(
+            f"SELECT kind, detail::text AS detail "  # noqa: S608  # Why: schema validated by _IDENT_RE; jid is a test UUID.
+            f'  FROM "{schema}".job_events '
+            f" WHERE job_id = $1 "
+            f" ORDER BY occurred_at",
+            jid,
+        )
+        assert len(events) >= 1, f"no job_events for cancelled job {jid}"
+        state_changes = [e for e in events if e["kind"] == "state_change"]
+        assert len(state_changes) == 1
+        import json
+
+        detail = json.loads(state_changes[0]["detail"])
+        assert detail["to_state"] == "cancelled"
+        assert detail["reason"] == "actor_deregistered"
 
 
 async def test_deregister_force_refuses_with_running_jobs(
@@ -402,9 +437,7 @@ async def test_deregister_purge_queue_deletes_orphaned_queue(
         schema=schema,
     )
 
-    result = await deregister_actor(
-        clean_pg_conn, "solo_actor", purge_queue=True, schema=schema
-    )
+    result = await deregister_actor(clean_pg_conn, "solo_actor", purge_queue=True, schema=schema)
 
     assert result.queue == "solo_queue"
     assert result.queue_purged is True
@@ -426,9 +459,7 @@ async def test_deregister_purge_queue_keeps_shared_queue(
         schema=schema,
     )
 
-    result = await deregister_actor(
-        clean_pg_conn, "shared_a", purge_queue=True, schema=schema
-    )
+    result = await deregister_actor(clean_pg_conn, "shared_a", purge_queue=True, schema=schema)
 
     assert result.queue == "shared_queue"
     assert result.queue_purged is False
@@ -531,9 +562,7 @@ async def test_deregister_purge_queue_noop_when_queue_row_absent(
     )
     # Deliberately do NOT create a queues row for "never_created".
 
-    result = await deregister_actor(
-        clean_pg_conn, "noqueue_actor", purge_queue=True, schema=schema
-    )
+    result = await deregister_actor(clean_pg_conn, "noqueue_actor", purge_queue=True, schema=schema)
 
     assert result.actor_config_deleted is True
     assert result.queue_purged is False
@@ -561,7 +590,9 @@ async def test_concurrent_force_deregister_one_succeeds_one_raises(
         [ActorConfig(actor="concurrent_force_actor", max_concurrent=5, queue="default")],
         schema=schema,
     )
-    job_id = await _insert_job(clean_pg_conn, schema, actor="concurrent_force_actor", status="pending")
+    job_id = await _insert_job(
+        clean_pg_conn, schema, actor="concurrent_force_actor", status="pending"
+    )
     sched_id = await _insert_schedule(
         clean_pg_conn, schema, actor="concurrent_force_actor", enabled=True
     )
@@ -595,7 +626,9 @@ async def test_concurrent_force_deregister_one_succeeds_one_raises(
         assert successes[0].schedules_disabled == 1
 
         # Verify final DB state — job cancelled, schedule disabled, actor_config gone.
-        assert await get_actor_config(clean_pg_conn, "concurrent_force_actor", schema=schema) is None
+        assert (
+            await get_actor_config(clean_pg_conn, "concurrent_force_actor", schema=schema) is None
+        )
         assert await _job_status(clean_pg_conn, schema, job_id) == "cancelled"
         assert await _schedule_state(clean_pg_conn, schema, sched_id) == "disabled"
     finally:

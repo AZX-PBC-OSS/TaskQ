@@ -356,6 +356,10 @@ class ActorHasActiveJobsError(ActorDeregistrationError):
 
     Carries the count and per-status breakdown of the blocking jobs so the
     caller can decide whether to cancel them first or use ``force=True``.
+
+    When *force* is ``True``, the message reflects that running jobs
+    cannot be cancelled by ``force=True`` — the caller must wait for
+    them to finish or cancel them individually first.
     """
 
     def __init__(
@@ -363,14 +367,24 @@ class ActorHasActiveJobsError(ActorDeregistrationError):
         actor: str,
         active_count: int,
         status_counts: dict[str, int],
+        *,
+        force: bool = False,
     ) -> None:
         self.active_count = active_count
         self.status_counts = status_counts
-        detail = (
-            f"{active_count} non-terminal job(s) still reference this actor"
-            f" (breakdown: {status_counts}). Cancel them first or pass"
-            f" force=True to cancel pending/scheduled jobs automatically."
-        )
+        if force:
+            detail = (
+                f"{active_count} running job(s) still reference this actor"
+                f" (breakdown: {status_counts}). Running jobs cannot be"
+                f" cancelled by force=True \u2014 wait for them to finish or"
+                f" cancel them individually first."
+            )
+        else:
+            detail = (
+                f"{active_count} non-terminal job(s) still reference this actor"
+                f" (breakdown: {status_counts}). Cancel them first or pass"
+                f" force=True to cancel pending/scheduled jobs automatically."
+            )
         super().__init__(actor, detail)
 
 
