@@ -2,7 +2,8 @@
 
 Internal architecture reference for TaskQ. Covers component topology,
 the backend protocol, state machine, dispatch mechanics, DI engine, cancellation
-protocol, leader election, NOTIFY wiring, rate limiting, schema design, and
+protocol, leader election, NOTIFY wiring, shutdown orchestration, watchdog hang
+detection, transient error handling, rate limiting, schema design, and
 observability.
 
 This document is useful both for contributors working on TaskQ internals and
@@ -17,20 +18,20 @@ Related docs: [api-reference/testing.md](api-reference/testing.md), [index.md](i
 ## High-Level Component Diagram
 
 ```
-                  ┌─────────────┐
-                  │ JobsClient  │
-                  └──────┬──────┘
-                         │ enqueue()
-                         ▼
+                   ┌─────────────┐
+                   │ JobsClient  │
+                   └──────┬──────┘
+                          │ enqueue()
+                          ▼
 ┌──────────────────────────────────────────┐
 │              Backend (Protocol)          │
 │   PostgresBackend / InMemoryBackend      │
 └──────────────┬───────────────────────────┘
                │ asyncpg
                ▼
-         ┌──────────┐
-         │ Postgres │
-         └──────────┘
+          ┌──────────┐
+          │ Postgres │
+          └──────────┘
                ▲
                │ LISTEN / NOTIFY
                │
@@ -39,7 +40,7 @@ Related docs: [api-reference/testing.md](api-reference/testing.md), [index.md](i
 │                                                          │
 │  ┌───────────────┐   ┌───────────────┐                  │
 │  │  HeartbeatLoop │   │ NotifyListener │                  │
-│  │  (cancel-poll, │   │ (wake channel) │                  │
+│  │  (cancel-poll, │   │ (wake/events) │                  │
 │  │   lock renewal)│   └───────┬────────┘                 │
 │  └───────────────┘           │ asyncio.Event             │
 │                               ▼                          │
@@ -48,18 +49,33 @@ Related docs: [api-reference/testing.md](api-reference/testing.md), [index.md](i
 │  │ (advisory lock,│   │  dispatch_batch() →           │   │
 │  │  sweeps, cron) │   │  ConsumerLoop × N             │   │
 │  └───────────────┘   └───────────────────────────────┘   │
+│                                                          │
+│  ┌────────────────────────────────────────────────────┐  │
+│  │ Watchdog (det. 2: stale-tick, det. 3: sibling)     │  │
+│  └────────────────────────────────────────────────────┘  │
 └──────────────────────────────────────────────────────────┘
                ▲
                │ FastAPI routes
                │
-         ┌──────────┐
-         │ Admin UI │
-         └──────────┘
+          ┌──────────┐
+          │ Admin UI │
+          └──────────┘
+
+  Outside TaskGroup (not cancelled by sibling crashes):
+    ShutdownWatchdog (det. 1)    LoopLagWatchdog (det. 4, daemon thread)
+    SIGUSR2 → dump_task_stacks()
 ```
 
 The `Backend` protocol is the single abstraction layer. `PostgresBackend` wires to
 Postgres via asyncpg; `InMemoryBackend` holds all state in Python dicts and is used
 exclusively in tests.
+
+The watchdog subsystem runs both inside and outside the worker's `TaskGroup`.
+The stale-tick sweep (detector 2) and sibling-contract check (detector 3) are
+TaskGroup children. `ShutdownWatchdog` (detector 1) and `LoopLagWatchdog`
+(detector 4, daemon thread) live outside the TaskGroup so a sibling crash
+cannot cancel the very watchdog that catches it. See
+[Watchdog Subsystem](#watchdog-subsystem) below.
 
 ---
 
@@ -704,15 +720,21 @@ Failover SLA: leader gap ≤ `heartbeat_interval + 1s` on worker kill.
 
 Source: `src/taskq/worker/notify.py`, `src/taskq/constants.py`.
 
-### Channel name
+### Channels
 
-```python
-WAKE_CHANNEL_FMT = "taskq_wake_{schema}"
-```
+Three Postgres LISTEN channels are subscribed per worker:
 
-`wake_channel(schema)` validates the schema identifier against `_IDENT_RE` before
-interpolation. Each schema gets its own channel, enabling multi-tenant deployments
-on a single PG instance.
+| Channel | Format | Payload |
+|---|---|---|
+| `taskq_wake_{schema}` | `wake_channel(schema)` | Empty (payload ignored — notification alone triggers dispatch) |
+| `taskq_events_{schema}` | `events_channel(schema)` | JSON: `{"type": "cancel", "worker_id": "...", "job_id": "..."}` |
+| `taskq_worker_{schema}_{worker_id}` | `worker_channel(schema, worker_id)` | Same JSON format; no worker_id filtering needed |
+
+Channel name helpers validate the schema identifier against `_IDENT_RE` before
+interpolation. Each schema gets its own set of channels, enabling multi-tenant
+deployments on a single PG instance. The per-worker channel
+(`taskq_worker_{schema}_{worker_id}`) enables targeted event delivery without
+fleet-wide fanout.
 
 ### Enqueue path
 
@@ -728,9 +750,15 @@ notification alone is sufficient to trigger a dispatch poll.
 ### Consumer path
 
 `notify_listener_loop` holds a dedicated `deps.notify_conn` (non-pooled, direct
-DSN, TCP keepalives enabled). It calls `await conn.add_listener(channel, callback)`
-where `callback` iterates `backend._wake_subscribers` and calls `event.set()` on
-each.
+DSN, TCP keepalives enabled) and subscribes to all three channels:
+
+- **Wake channel**: the callback iterates `backend._wake_subscribers` and calls
+  `event.set()` on each. The payload is ignored.
+- **Events channel**: `_make_events_callback` parses the JSON payload, checks the
+  `"type"` discriminator (currently only `"cancel"`), and filters by `worker_id`.
+  Matching cancel events set `backend._cancel_subscribers` events.
+- **Worker channel**: `_make_worker_events_callback` does the same but without
+  worker_id filtering (the channel is already targeted to this worker).
 
 Consumer loops register via `backend.subscribe_wake()` (an async context manager)
 which adds a fresh `asyncio.Event` to `_wake_subscribers` on enter and removes it
@@ -740,7 +768,290 @@ A `_health_check_loop` runs concurrently with the listener, executing `SELECT 1`
 on the notify connection at `notify_health_check_interval`. On failure it
 reconnects with bounded exponential backoff (initial delay × 2, max 30s). After
 reconnect, the callback is re-registered and fires once to drain any jobs that
-arrived while disconnected.
+arrived while disconnected. The reconnect uses `deps.notify_conn_factory` when
+set (credential-provider-backed) so a factory deployment reconnects through the
+same source rather than falling back to a stale DSN.
+
+The health-check loop is deliberately exempt from watchdog detector 2 (stale-tick)
+— see [Watchdog Subsystem](#watchdog-subsystem) for details.
+
+---
+
+## Shutdown Orchestration
+
+Source: `src/taskq/worker/shutdown.py`.
+
+### Shutdown phases
+
+The worker uses a four-phase shutdown model. Each phase is recorded in
+`deps.shutdown_phase` (a `ShutdownPhase` enum) **before** any per-phase work
+begins, so health endpoints and consumers can observe the current phase:
+
+| Phase | Value | Meaning |
+|---|---|---|
+| `NONE` | 0 | Running normally |
+| `DRAINING` | 1 | Stop accepting new dispatch; re-pend locked-but-unstarted jobs |
+| `CANCELLING` | 2 | Cooperative cancel of remaining in-flight jobs (set `cancel_event`) |
+| `FORCING` | 3 | Force-cancel grace: `task.cancel()` + `write_cancel_escalation(phase=2)` |
+| `ABANDONING` | 4 | Pod must be replaced; `mark_abandoned` for any remaining jobs |
+
+Phase ordering invariant: `NONE → DRAINING → CANCELLING → FORCING → ABANDONING`.
+
+### Signal handling
+
+`install_signal_handlers` registers three signal handlers:
+
+- **SIGTERM / SIGINT**: three-signal escalation counter.
+  1. First signal: schedules `orchestrate_shutdown` via `loop.create_task`.
+  2. Second signal: sets `escalate_event` to fast-advance CANCELLING → FORCING.
+  3. Third signal: `sys.exit(1)` (Kubernetes SIGKILL is the hard backstop).
+- **SIGHUP**: sets `deps.reload_event` to trigger a credential hot-reload
+  (see `reload_credentials` in `deps.py`). Multiple SIGHUPs during a reload
+  coalesce into one follow-up reload.
+- **SIGUSR2**: calls `dump_task_stacks("sigusr2")` for an on-demand asyncio
+  task-stack dump — live debugging without an image rebuild. Emits one
+  structured log record per live task (name, coro qualifier, await-site
+  frames) plus a raw stderr fallback. No locals or payload values are
+  included.
+
+SIGQUIT is not registered; it produces a core dump on Linux. Use `tini` or
+`ulimit -c 0` for containerised deployments.
+
+### Drain phase
+
+`drain_local_queue_to_pending` issues a single bounded-timeout `UPDATE` that
+clears the lock on rows where `locked_by_worker = $worker_id AND status =
+'running' AND started_at IS NULL` — jobs the worker locked in its local queue
+but never started executing. On pool exhaustion or connection error, it logs a
+warning and returns 0 so the recovery sweep acts as the backstop.
+
+### Orchestration
+
+`orchestrate_shutdown` runs the four phases in order, then closes the
+`leader_conn` (if TaskQ-owned) and sets `shutdown_event`. The close uses
+`close_conn_bounded` so a dead PG cannot wedge shutdown on an unbounded close.
+The `shutdown_event.set()` is ordered before the close park to stop the
+election loop and release `_main`'s `await shutdown_event.wait()` inside the
+`open_worker_deps` context, allowing the deps exit-stack guard to unwind
+concurrently.
+
+The `ShutdownWatchdog` (detector 1) runs concurrently outside the TaskGroup
+and enforces `termination_grace_period` as a hard wall — see
+[Watchdog Subsystem](#watchdog-subsystem).
+
+---
+
+## Watchdog Subsystem
+
+Source: `src/taskq/worker/_watchdog.py`, `src/taskq/worker/_transient.py`.
+
+The watchdog is an in-worker hang/deadlock detection system with four
+independent detectors and a terminal force-exit on trip. A wedged process
+cannot be trusted to unwind gracefully, so a trip dumps diagnostics and calls
+`os._exit(EXIT_WATCHDOG)` (exit code 2) with no further awaits — the
+supervisor restarts the worker, and in-flight jobs are reclaimed by the
+leader sweep on lock-lease expiry (the existing, tested recovery path).
+
+### Detectors
+
+| # | Detector | Mechanism | Location | Trip condition |
+|---|---|---|---|---|
+| 1 | Shutdown deadline | `ShutdownWatchdog` | Outside TaskGroup | Shutdown still incomplete after `termination_grace_period` |
+| 2 | Stale loop ticks | `loop_watchdog_loop` + `LoopLiveness` | Inside TaskGroup | Interval-driven sibling loop hasn't ticked within `period × grace_factor` (floor `watchdog_stale_floor`) |
+| 3 | Sibling contract | `_make_sibling_spawner` | In sibling spawner | A sibling returns cleanly while `shutdown_event` is clear (contract violation) |
+| 4 | Event-loop lag | `LoopLagWatchdog` | Daemon thread | Event loop hasn't scheduled a beat within `watchdog_loop_lag_budget` |
+
+**Why detectors 1 and 4 live outside the TaskGroup:** as TaskGroup children,
+they would be cancelled by the very sibling crash they exist to catch.
+`ShutdownWatchdog` parks on `shutdown_event` and is only active during
+shutdown. `LoopLagWatchdog` runs on a daemon thread because a fully blocked
+event loop cannot run an in-loop detector, and `asyncio.all_tasks` is not
+thread-safe.
+
+### Trip semantics
+
+`trip(detector, reason)` is the terminal path for detectors 1, 2, and 3:
+
+1. Increments `taskq.worker.watchdog_trips_total` (labelled by detector).
+2. Emits a critical structured log record.
+3. Calls `dump_task_stacks` (one record per live task).
+4. Flushes stdout/stderr.
+5. Best-effort OTel metrics flush on a daemon thread with a 2-second join
+   deadline — a hung OTLP collector costs at most 2 seconds, never more.
+6. `os._exit(EXIT_WATCHDOG)` — no further awaits.
+
+Detector 4 (`LoopLagWatchdog`) follows the same pattern but inlines the dump
+(`faulthandler.dump_traceback` for thread frames) because it runs off-loop
+and cannot use `asyncio.all_tasks`.
+
+### Task-stack dump
+
+`dump_task_stacks(reason, *, detector, tasks)` is the single implementation
+behind four callers:
+
+- The trip dump (detectors 1, 2, 3).
+- The SIGUSR2 handler (on-demand, via `shutdown.py`'s signal handler).
+- The `/tasks` health endpoint (when `health_tasks_enabled=True`).
+- The straggler logger (still-alive siblings during shutdown).
+
+Each call emits one structured log record per live asyncio task (task name,
+coro qualifier, await-site frames as `file:line`), plus a raw stderr fallback
+so the dump survives a broken logging pipeline. No locals or payload values
+are included — the dump reveals code structure and file paths only.
+
+### LoopLiveness
+
+`LoopLiveness` is the per-loop monotonic tick registry used by detector 2.
+Interval-driven loops call `tick(name, period=...)` once per iteration. The
+staleness budget is `period × grace_factor` with a `watchdog_stale_floor`
+minimum (default 10s) so tiny test intervals cannot false-trip under load.
+Loops that never tick (event-driven: notify listener, consumers, reload
+coordinator) are not tracked — they are covered by detectors 1, 3, and 4
+instead.
+
+Gated loops (e.g. the leadership watchdog) call `forget(name)` when their
+gate closes, so a legitimately stopped loop doesn't false-trip. The loop
+re-registers on its next tick when the gate reopens.
+
+Thread-safety: `ages()` is called from the `LoopLagWatchdog` daemon thread
+while the event-loop thread mutates `_ticks` via `tick()` and `forget()`. A
+`threading.Lock` guards all access; a separate lock guards the OTel gauge
+cache. Lock order is always `LoopLiveness._lock → _tick_age_cache_lock`.
+
+### ShutdownWatchdog (detector 1)
+
+Lives outside the worker TaskGroup. Parks on `shutdown_event`; once set,
+counts down `termination_grace_period` (finally making that setting
+enforceable rather than validation-only). While counting:
+
+- Logs one `shutdown-watchdog-armed` record at the start (deadline, dump
+  threshold).
+- Logs straggler dumps (names + await sites of still-alive siblings) every
+  `watchdog_dump_interval`, but only once the shutdown has consumed at least
+  `watchdog_dump_after_fraction` of its hard budget (default 0.5 — only in
+  the back half). A drain in its front half is within expectations and stays
+  quiet.
+- On deadline: `trip("shutdown-deadline", ...)`.
+- On clean exit: cancelled by `_main`, records `shutdown_duration_seconds`.
+
+The deadline is anchored on the **first shutdown signal** (not
+`shutdown_event.set()`) because orchestration spends the cancel/cleanup
+graces before `shutdown_event` is set — anchoring on the event alone would
+double-count them against `termination_grace_period`.
+
+### LoopLagWatchdog (detector 4)
+
+A daemon thread that measures event-loop scheduling lag. Arms after
+`watchdog_loop_lag_startup_grace` seconds or the first liveness tick,
+whichever comes first — import-heavy startup and DI bootstrap must never
+trip it. On each poll interval (`watchdog_check_interval`, default 1s):
+
+1. Checks if armed (startup grace elapsed or any liveness tick landed).
+2. Computes lag = `now - last_beat`.
+3. If lag > `watchdog_loop_lag_budget` (default 30s): trips inline (critical
+   log + `faulthandler.dump_traceback` + metrics flush + `os._exit`).
+4. Otherwise: `loop.call_soon_threadsafe(self._beat)` schedules the next
+   beat on the event loop. If the loop is closed (`RuntimeError`), the
+   thread exits cleanly.
+
+The thread catches `BaseException` and logs loudly rather than dying
+silently — a dead watchdog thread takes detector 4 with it, leaving the
+worker unprotected with no indication.
+
+### Stale-tick sweep (detector 2)
+
+`loop_watchdog_loop` runs inside the worker TaskGroup. Every
+`watchdog_check_interval` (default 1s), it calls `liveness.ages()` (which
+also updates the OTel tick-age gauge) and `liveness.stale()`. If any loop is
+stale, it trips. Deliberately parked loops (notify listener, consumers,
+reload coordinator) have no cadence and are not tracked — they are covered
+by detectors 1, 3, and 4.
+
+### Sibling-contract check (detector 3)
+
+Lives in the sibling spawner (`_make_sibling_spawner`), not in
+`_watchdog.py`. A sibling returning cleanly while `shutdown_event` is clear
+is a contract violation — siblings are long-lived loops that should only
+exit on shutdown. The violation is re-raised, which propagates into the
+TaskGroup and tears the worker down (the watchdog's other detectors then
+ensure the process exits).
+
+### Transient error handling
+
+Source: `src/taskq/worker/_transient.py`.
+
+Every long-lived worker loop that awaits Postgres treats the same set of
+errors as "PG is having a moment; log and retry next tick".
+`TRANSIENT_PG_ERRORS` is the single tuple that defines this set — one home
+for every transient shape, so any error a site learns, every site learns:
+
+- `TimeoutError` (client-side deadlines)
+- `PostgresConnectionError` (connection gone)
+- `InterfaceError` / `OSError` (unusable connection / dead socket)
+- `QueryCanceledError` (server-side command_timeout)
+- `AdminShutdownError` (57P01, PG restart/shutdown)
+- `CannotConnectNowError` (57P03, PG in crash recovery)
+- `TooManyConnectionsError` (53300, server saturated)
+- `DeadlockDetectedError` / `SerializationError` (40P01/40001, retry pair)
+- `IdleSessionTimeoutError` / `IdleInTransactionSessionTimeoutError`
+
+Deliberately excluded: auth failures (`InvalidPasswordError` et al.) are not
+transient for static DSNs and must not retry silently.
+
+`UnexpectedLoopErrorGuard` is the per-loop backstop for errors **outside**
+the transient set. It tolerates isolated surprises with a loud, distinct,
+alertable record per occurrence, but re-raises after `max_consecutive`
+(default 5) consecutive unexpected errors — so a permanent fault (a code
+bug, not a PG blip) still kills the worker deliberately instead of retrying
+forever into a zombie that ticks but does no work. Only a fully successful
+work iteration resets the streak; an idle or transiently-failing iteration
+must not buy the fault more time.
+
+### Watchdog settings
+
+| Setting | Default | Description |
+|---|---|---|
+| `watchdog_enabled` | `True` | Master switch for all four detectors |
+| `watchdog_loop_lag_budget` | 30s | How long the event loop may go without scheduling before detector 4 trips |
+| `watchdog_loop_lag_startup_grace` | 30s | Grace before detector 4 arms (import/DI startup) |
+| `watchdog_tick_grace_factor` | 5.0 | Multiplier on loop period before its tick is stale (detector 2) |
+| `watchdog_stale_floor` | 10s | Minimum staleness budget for any loop |
+| `watchdog_dump_interval` | 5s | Interval between straggler logs during shutdown (detector 1) |
+| `watchdog_dump_after_fraction` | 0.5 | Fraction of shutdown deadline before straggler dumps begin |
+| `watchdog_check_interval` | 1s | Poll cadence for stale-tick sweep and loop-lag thread |
+
+A load-time invariant checks that `dispatcher_command_timeout + loop_period`
+fits within the staleness budget `max(period × grace_factor, stale_floor)`
+for every bounded loop — so a timeout-capped iteration can never false-trip
+the stale-loop detector on a healthy worker.
+
+### Relationship to worker lifecycle
+
+The watchdog monitors all worker sibling loops but is deliberately not a
+component those loops depend on:
+
+- **Leader loops** (election, sweeps, cron, scheduled-wake): tick
+  `LoopLiveness` once per iteration. The `dispatcher_command_timeout`
+  invariant ensures a stalled-PG iteration errors the loop instead of
+  hanging past the staleness budget. Transient PG errors are swallowed by
+  `TRANSIENT_PG_ERRORS`; unexpected errors go through
+  `UnexpectedLoopErrorGuard`.
+- **Heartbeat loop**: ticks `LoopLiveness`. Cancel-poll and lock-renewal
+  are bounded by `dispatcher_command_timeout`.
+- **Notify listener**: deliberately exempt from detector 2 (stale-tick).
+  Its cadence tracks IO, not progress; it returns early on legitimate paths
+  (conn dropped, poll-fallback), and its reconnect backoff (up to 30s)
+  would put the budget at the floor and trip during exactly the PG outage
+  the reconnect logic exists to survive. Detectors 1, 3, and 4 cover it.
+- **Producer loop**: ticks `LoopLiveness` with its poll interval as the
+  period. The staleness invariant is checked at load time.
+- **Consumers**: event-driven (not interval-driven), so not tracked by
+  detector 2. Covered by detector 4 (loop lag) and the sibling-contract
+  check (detector 3).
+- **ShutdownWatchdog** interacts with `shutdown.py`'s
+  `orchestrate_shutdown`: the orchestrator runs the four phases, and the
+  watchdog ensures the total wall-clock doesn't exceed
+  `termination_grace_period`.
 
 ---
 
@@ -905,9 +1216,14 @@ to be causally related.
 | `taskq.notify.received` | Counter | NOTIFY callbacks from asyncpg |
 | `taskq.notify.reconnects` | Counter | NOTIFY connection reconnects |
 | `taskq.notify.connected` | Observable Gauge | 1 if NOTIFY listener healthy |
+| `taskq.notify.cancel_received` | Counter | Cancel NOTIFY callbacks delivered to this worker |
 | `taskq.maintenance_leader.is_leader` | Observable Gauge | 1 on elected pod |
+| `taskq.worker.watchdog_trips_total` | Counter | Watchdog trips leading to force-exit, by detector |
+| `taskq.worker.loop_tick_age_seconds` | Observable Gauge | Seconds since each interval-driven loop last ticked |
+| `taskq.worker.shutdown_duration_seconds` | Histogram | Wall-clock seconds from first shutdown signal to clean exit |
+| `taskq.worker.leader_loop_unexpected_errors_total` | Counter | Unexpected (non-transient) errors tolerated by leader loop backstop |
 
-The table above is illustrative, not exhaustive — the codebase defines 25+ instruments. For the complete list, see `src/taskq/obs/_otel.py` and the worker observability modules in `src/taskq/worker/` (`notify.py`, `cancel.py`, `leader.py`, `_leader_shared.py`, `heartbeat.py`).
+The table above is illustrative, not exhaustive — the codebase defines 25+ instruments. For the complete list, see `src/taskq/obs/_otel.py` and the worker observability modules in `src/taskq/worker/` (`notify.py`, `cancel.py`, `leader.py`, `_leader_shared.py`, `heartbeat.py`, `_watchdog.py`, `_transient.py`, `shutdown.py`).
 
 ### structlog context propagation
 
