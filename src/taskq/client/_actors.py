@@ -8,8 +8,6 @@ the result.
 
 from typing import TYPE_CHECKING
 
-import structlog
-
 from taskq.worker.actor_config_ops import (
     UNSET,
     ActorConfigRow,
@@ -25,8 +23,6 @@ if TYPE_CHECKING:
     import asyncpg
 
 __all__ = ["ActorsClient"]
-
-logger = structlog.get_logger("taskq.client._actors")
 
 
 class ActorsClient:

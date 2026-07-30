@@ -170,3 +170,36 @@ async def test_deregister_route_succeeds_for_clean_actor(
         "clean-deregister-actor",
     )
     assert count == 0
+
+
+async def test_deregister_route_returns_409_when_actor_has_active_jobs(
+    clean_pg_conn: asyncpg.Connection,
+    admin_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """POST deregister with an active job returns 409 Conflict."""
+    from uuid import uuid4
+
+    schema = module_pg_schema.schema_name
+    await _seed_actor_config(clean_pg_conn, schema, "blocked-actor", queue="default")
+    # Insert a pending job so force=False deregistration refuses.
+    await clean_pg_conn.execute(
+        f'INSERT INTO "{schema}".jobs (id, actor, queue, payload, status, max_attempts, retry_kind) '
+        f"VALUES ($1, 'blocked-actor', 'default', '{{}}'::jsonb, 'pending'::\"{schema}\".job_status, 3, 'transient')",
+        uuid4(),
+    )
+    app = _make_admin_app(admin_pool, schema, monkeypatch, admin_actions_enabled=True)
+
+    resp = await _get_csrf_then_post(
+        app, "/admin/actors", "/admin/actors/blocked-actor/deregister"
+    )
+
+    assert resp.status_code == 409
+    assert "non-terminal" in resp.text
+    # Row must still exist — deregistration was refused.
+    count = await clean_pg_conn.fetchval(
+        f'SELECT count(*) FROM "{schema}".actor_config WHERE actor = $1',
+        "blocked-actor",
+    )
+    assert count == 1

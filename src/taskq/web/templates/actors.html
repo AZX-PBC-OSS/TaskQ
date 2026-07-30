@@ -3,6 +3,11 @@
 {% block content %}
 <div class="space-y-4">
   <h2 class="text-xl font-semibold text-slate-800 dark:text-slate-200">Actors</h2>
+  {% if notice %}
+  <div class="bg-green-50 dark:bg-green-900/30 border border-green-200 dark:border-green-800 rounded-lg p-3 text-sm text-green-700 dark:text-green-300">
+    {{ notice }}
+  </div>
+  {% endif %}
   {% if actors %}
   <div class="overflow-x-auto">
     <table class="min-w-full divide-y divide-slate-200 dark:divide-slate-700">

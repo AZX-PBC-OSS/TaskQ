@@ -3,7 +3,6 @@
 from urllib.parse import quote_plus
 
 import asyncpg
-import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from jinja2 import Environment
@@ -21,8 +20,6 @@ from taskq.web.admin._factory import (
     validate_csrf,
 )
 from taskq.worker.actor_config_ops import deregister_actor
-
-logger = structlog.get_logger("taskq.web.admin.actors")
 
 _ACTORS_SQL = """
 SELECT ac.actor, ac.max_concurrent, ac.max_pending, ac.queue,
@@ -47,6 +44,7 @@ def register(router: APIRouter) -> None:
         tmpl: Environment = Depends(get_templates),
         realtime_ctx: tuple[str, str] = Depends(get_realtime_ctx),
         csrf_token: str = Depends(get_csrf_token),
+        notice: str | None = None,
     ) -> HTMLResponse:
         actors_sql = _ACTORS_SQL.format(schema=schema)
         rows: list[asyncpg.Record] = []
@@ -60,6 +58,7 @@ def register(router: APIRouter) -> None:
             mode_label=mode_label,
             csrf_token=csrf_token,
             active_page="actors",
+            notice=notice,
         )
         return HTMLResponse(content=html)
 
