@@ -101,6 +101,17 @@ Extends `TaskQSettings`. All fields below apply to the worker process only.
 | `TASKQ_LOCK_LEASE` | `float` (seconds) | `60.0` | Time before an unrenewed job lock is reclaimed by the sweep. Must be >= 4 × `TASKQ_HEARTBEAT_INTERVAL`. | Min: 1.0; see [Validation Constraints](#validation-constraints) |
 | `TASKQ_MAX_HEARTBEAT_FAILURES` | `int` | `3` | Consecutive heartbeat failures before the worker self-terminates. | Min: 1 |
 
+### Leader Sweep Intervals
+
+The leader runs periodic sweep cycles that reclaim expired locks, expire results, clean up stale workers, evict idle keyed refs, and collect metrics. These settings control the cadence of each sub-task within a sweep cycle.
+
+| Env Var | Type | Default | Description | Constraints |
+|---|---|---|---|---|
+| `TASKQ_SWEEP_INTERVAL` | `float` (seconds) | `30.0` | Period between leader sweep loop iterations — reclaim expired locks, sweep expired results, clean up stale workers, and evict idle keyed refs. Lower values reduce recovery latency for crashed workers at the cost of more frequent PG queries. | Min: 1.0 |
+| `TASKQ_QUEUE_DEPTH_INTERVAL` | `float` (seconds) | `15.0` | Period between queue-depth metrics sampling iterations. | Min: 1.0 |
+| `TASKQ_RESERVATION_SLOTS_INTERVAL` | `float` (seconds) | `15.0` | Period between reservation-slot metrics sampling iterations. | Min: 1.0 |
+| `TASKQ_STRANDED_JOBS_INTERVAL` | `float` (seconds) | `60.0` | Period between stranded-jobs (pending jobs whose actor has no `actor_config`) warning checks. | Min: 1.0 |
+
 ### Graceful Shutdown
 
 | Env Var | Type | Default | Description | Constraints |
