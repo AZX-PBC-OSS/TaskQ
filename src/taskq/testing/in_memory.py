@@ -900,6 +900,8 @@ class InMemoryBackend:
     async def count_batch_non_terminal(
         self,
         batch_id: UUID,
+        *,
+        connection: object = None,
     ) -> int:
         return _count_batch_non_terminal(self, batch_id)
 

@@ -22,6 +22,7 @@ from taskq.client import JobHandle
 from taskq.exceptions import JobFailed, ResultUnavailable
 
 __all__ = [
+    "fetch_batch_status",
     "fetch_effects",
     "fetch_job_rows",
     "poll_until",
@@ -182,6 +183,18 @@ async def fetch_job_rows(
         ORDER BY created_at
         """,
         job_ids,
+    )
+
+
+async def fetch_batch_status(
+    pool: asyncpg.Pool,
+    schema: str,
+    batch_id: UUID,
+) -> str | None:
+    """One-shot read of the ``status`` column from ``{schema}.batches`` for *batch_id*."""
+    return await pool.fetchval(
+        f'SELECT status FROM "{schema}".batches WHERE id = $1',
+        batch_id,
     )
 
 

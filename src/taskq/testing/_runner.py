@@ -27,7 +27,7 @@ from taskq.backend._protocol import (
     QueueMode,
 )
 from taskq.backend.statemachine import TERMINAL_STATUSES
-from taskq.batch import BatchCompletionStatus, _decide_batch_status, apply_batch_terminal_outcome
+from taskq.batch import BatchCompletionStatus, apply_batch_terminal_outcome, decide_batch_status
 from taskq.context import JobContext
 from taskq.exceptions import Snooze
 from taskq.retry import OnRetryExhausted, OnSuccess, RetryClassifierHook, RetryPolicy
@@ -665,7 +665,7 @@ async def wait_for_batch(
         abandoned=abandoned,
     )
 
-    status = _decide_batch_status(
+    status = decide_batch_status(
         batch_id=batch_id,
         batch_row=batch_row,
         status=status,

@@ -911,7 +911,14 @@ class PostgresBackend:
         async with self._worker_pool.acquire() as conn:
             return await _list_batches(conn, self._batch_sql, filter)
 
-    async def count_batch_non_terminal(self, batch_id: UUID) -> int:
+    async def count_batch_non_terminal(
+        self,
+        batch_id: UUID,
+        *,
+        connection: ConnLike | None = None,
+    ) -> int:
+        if connection is not None:
+            return await _count_batch_non_terminal(connection, self._batch_sql, batch_id)
         async with self._worker_pool.acquire() as conn:
             return await _count_batch_non_terminal(conn, self._batch_sql, batch_id)
 

@@ -19,6 +19,7 @@ import structlog
 from taskq.backend._protocol import Backend, ConnLike
 from taskq.backend._sql_templates import COPY_FROM_COLUMNS
 from taskq.backend.clock import Clock
+from taskq.backend.statemachine import TERMINAL_STATUSES
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
 )
@@ -50,9 +51,7 @@ _meter = get_meter()
 PRUNE_LOCK_NAME: str = "taskq:prune"
 ARCHIVE_EXPIRY_LOCK_NAME: str = "taskq:archive_expiry"
 
-_TERMINAL_STATUSES: frozenset[str] = frozenset(
-    {"succeeded", "failed", "cancelled", "crashed", "abandoned"}
-)
+_TERMINAL_NOT_IN = "NOT IN (" + ",".join(f"'{s}'" for s in TERMINAL_STATUSES) + ")"
 
 _EK1 = "scheduled_wake_backend_unimplemented"
 _EK2 = "sweep_expired_locks_backend_unimplemented"
@@ -315,7 +314,7 @@ async def prune_terminal_jobs(
     cutoffs: dict[str, datetime] = {}
     archive_interval = archive_retention
 
-    for status in _TERMINAL_STATUSES:
+    for status in TERMINAL_STATUSES:
         retention = retention_per_status.get(status, timedelta(days=30))
         cutoff = datetime.now(UTC) - retention
         cutoffs[status] = cutoff
@@ -344,7 +343,7 @@ async def prune_terminal_jobs(
         for actor_name, actor_retention in actor_overrides.items():
             actor_cutoff = datetime.now(UTC) - actor_retention
             sql = _ARCHIVE_CTE_ACTOR_SQL.format(schema=schema)
-            for status in _TERMINAL_STATUSES:
+            for status in TERMINAL_STATUSES:
                 if actor_retention >= retention_per_status.get(status, timedelta(days=30)):
                     continue
                 while True:
@@ -429,7 +428,7 @@ WHERE status = 'active'
   AND NOT EXISTS (
     SELECT 1 FROM "{schema}".jobs j
     WHERE j.metadata @> jsonb_build_object('batch_id', batches.id::text)
-      AND j.status NOT IN ('succeeded', 'failed', 'cancelled', 'crashed', 'abandoned')
+      AND j.status {terminal_not_in}
   )
 RETURNING id"""
 
@@ -447,5 +446,7 @@ async def complete_stale_batches(
     """
     if not _IDENT_RE.match(schema):
         raise ValueError(f"invalid schema identifier: {schema!r}")
-    rows = await conn.fetch(_COMPLETE_STALE_BATCHES_SQL.format(schema=schema))
+    rows = await conn.fetch(
+        _COMPLETE_STALE_BATCHES_SQL.format(schema=schema, terminal_not_in=_TERMINAL_NOT_IN)
+    )
     return len(rows)

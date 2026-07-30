@@ -7,7 +7,9 @@ count_batch_non_terminal, list_batches, and prune_old_batches.
 
 from __future__ import annotations
 
+import asyncio
 import json
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
@@ -15,7 +17,7 @@ from uuid import UUID, uuid4
 import asyncpg
 import pytest
 
-from taskq.backend._protocol import BatchFilter
+from taskq.backend._protocol import BatchFilter, EnqueueArgs
 from taskq.testing.fixtures import JobsApp
 from taskq.testing.jobs import make_enqueue_args
 
@@ -465,7 +467,7 @@ class TestPostgresEnqueueBatchAtomicRollback:
         schema = deps.settings.schema_name
         bid = uuid4()
 
-        def gen():
+        def gen() -> Iterator[EnqueueArgs]:
             yield make_enqueue_args(actor="a1", queue="default")
             yield make_enqueue_args(actor="a2", queue="default")
             raise ValueError("generator exploded")
@@ -533,15 +535,15 @@ class TestPostgresAbortBatchNoRow:
 class TestPostgresConcurrentIncrement:
     async def test_concurrent_increments_final_count_matches_n(self, jobs_app: JobsApp) -> None:
         """N concurrent increment_batch_failures calls produce consecutive_failures == N."""
-        import asyncio
-
         backend = jobs_app.backend
         bid = uuid4()
 
         await backend.create_batch(bid, "default", 5, 100, None, None)
 
         n = 20
-        results = await asyncio.gather(*(backend.increment_batch_failures(bid) for _ in range(n)))
+        async with asyncio.TaskGroup() as tg:
+            tasks = [tg.create_task(backend.increment_batch_failures(bid)) for _ in range(n)]
+        results = [t.result() for t in tasks]
 
         # Every call should have returned a valid (count, threshold, remaining).
         for count, threshold, _remaining in results:

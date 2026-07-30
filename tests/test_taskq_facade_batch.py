@@ -4,8 +4,8 @@ Uses a mock backend to verify the facade threads failure_policy and
 finalizer through to JobsClient, without requiring a live Postgres.
 """
 
+from collections.abc import Iterator
 from datetime import UTC, datetime
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
 
@@ -118,7 +118,7 @@ class TestFacadeEnqueueBatchStreaming:
     async def test_facade_enqueue_batch_streaming(self) -> None:
         tq, mock_jobs = _make_mock_taskq()
 
-        def gen() -> Any:
+        def gen() -> Iterator[EnqueueItem]:
             yield _make_item(0)
             yield _make_item(1)
 
