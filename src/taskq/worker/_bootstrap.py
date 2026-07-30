@@ -39,6 +39,7 @@ from taskq.exceptions import MissingProvider
 from taskq.obs import get_meter, set_otel_enabled, setup_logging
 from taskq.progress._flush import progress_flush_loop
 from taskq.ratelimit._provider import register_rate_limit_registry, register_redis_pool
+from taskq.ratelimit.refs import KeyedRateLimitRef
 from taskq.ratelimit.registry import RateLimitRegistry
 from taskq.ratelimit.registry import registry as rl_registry
 from taskq.ratelimit.reservation import ConcurrencyReservation
@@ -91,6 +92,7 @@ def _redis_configured(settings: WorkerSettings, registry: ProviderRegistry) -> b
 
 def _served_redis_rate_limits(
     actor_registry: Mapping[str, ActorRef[Any, Any]] | None,
+    rl_registry: RateLimitRegistry,
 ) -> list[str]:
     """Names of redis-backed rate limits declared by this worker's actors.
 
@@ -100,6 +102,13 @@ def _served_redis_rate_limits(
     (resolved against the registry) and :class:`KeyedRateLimitRef`
     declarations, whose concrete buckets materialize only at first acquire
     and are therefore invisible to a registry scan.
+
+    ``rl_registry`` is the **resolved** registry for this worker (from
+    :func:`_resolve_rl_registry`), NOT the module-level singleton — a
+    user-supplied custom registry via DI must be scanned, otherwise
+    Redis-backed limits on the custom registry are invisible at startup
+    (false negative → per-dispatch crash) and singleton-only limits cause
+    spurious startup errors (false positive).
     """
     if not actor_registry:
         return []
@@ -110,8 +119,12 @@ def _served_redis_rate_limits(
                 prim = rl_registry.rate_limits.get(limit)
                 if prim is not None and prim.backend == "redis":
                     offending.add(limit)
-            elif limit.backend == "redis":
-                offending.add(limit.base_name)
+            elif isinstance(limit, KeyedRateLimitRef):
+                if limit.backend == "redis":
+                    offending.add(limit.base_name)
+            else:
+                if limit.backend == "redis":
+                    offending.add(limit.name)
     return sorted(offending)
 
 
@@ -364,7 +377,7 @@ async def _main(
             # fails per-dispatch (get_redis_pool raises after the job has
             # burned retries) — fail fast at bootstrap, naming the
             # offending limiter(s).
-            redis_backed = _served_redis_rate_limits(actor_registry)
+            redis_backed = _served_redis_rate_limits(actor_registry, resolved_rl_registry)
             if redis_backed:
                 msg = (
                     "Redis-backed rate limit(s) declared by served actors but no Redis "
@@ -379,7 +392,7 @@ async def _main(
                 # fix is installing the package. Only raise when Redis is
                 # actually required: a URL set without redis-backed limits
                 # is harmless (register_redis_pool silently skips).
-                redis_backed = _served_redis_rate_limits(actor_registry)
+                redis_backed = _served_redis_rate_limits(actor_registry, resolved_rl_registry)
                 if redis_backed:
                     msg = (
                         "TASKQ_REDIS_URL is set but the [redis] extra is not "
