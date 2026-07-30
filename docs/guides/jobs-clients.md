@@ -52,13 +52,14 @@ Terminal statuses (`succeeded`, `failed`, `cancelled`, `crashed`, `abandoned`) h
 6. [`JobHandle[R]`](#jobhandler)
 7. [`get()`](#get)
 8. [`cancel()`](#cancel)
-9. [`list()`](#list)
-10. [`SubJobEnqueuer`](#subjobenqueuer)
-11. [Error handling](#error-handling)
-12. [Full enqueue-and-wait example](#full-enqueue-and-wait-example)
-13. [Idempotency example](#idempotency-example)
-14. [Batch enqueue example](#batch-enqueue-example)
-15. [Tags](#tags)
+9. [`cancel_where()`](#cancel_where)
+10. [`list()`](#list)
+11. [`SubJobEnqueuer`](#subjobenqueuer)
+12. [Error handling](#error-handling)
+13. [Full enqueue-and-wait example](#full-enqueue-and-wait-example)
+14. [Idempotency example](#idempotency-example)
+15. [Batch enqueue example](#batch-enqueue-example)
+16. [Tags](#tags)
 
 ---
 
@@ -636,6 +637,63 @@ else:
 
 ---
 
+## `cancel_where()`
+
+```python
+async def cancel_where(
+    self,
+    filter: JobFilter,
+    reason: str | None = None,
+    *,
+    allow_empty_filter: bool = False,
+) -> BulkCancelResult: ...
+```
+
+Cancel all jobs matching `filter` in a single set-based operation. Pending/scheduled
+jobs go straight to terminal `cancelled`; running jobs get `cancel_phase=1` (cooperative
+cancel) — the worker's heartbeat observes the phase change and sets the in-process
+`cancel_event` at the next tick.
+
+**Guardrail:** a filter with no predicates (no `queue`, `status`, `actor`,
+`identity_key`, `batch_id`, `tags`, or `active`) is rejected with `EmptyFilterError`
+unless `allow_empty_filter=True` is passed. This prevents accidental full-table cancels.
+
+**Filter fields used:** `queue`, `status`, `actor`, `identity_key`, `batch_id`, `tags`,
+`active`. The `limit`, `cursor`, and `order_by` fields are ignored — a bulk cancel is
+not paginated.
+
+**Snapshot boundary:** jobs matching the filter that are enqueued *after* the
+statement's snapshot escape this call. Stop producers first, or issue a follow-up call;
+the returned counts make non-convergence detectable.
+
+```python
+result = await client.cancel_where(
+    JobFilter(tags=("tenant-acme",), active=True),
+    reason="tenant offboarded",
+)
+print(f"cancelled {result.cancelled_directly} pending, "
+      f"requested cancel for {result.cancel_requested} running")
+```
+
+### `BulkCancelResult`
+
+Frozen Pydantic model returned by `cancel_where()`.
+
+| Field | Type | Description |
+|---|---|---|
+| `cancelled_directly` | `int` | Pending/scheduled jobs moved straight to terminal `cancelled`. |
+| `cancel_requested` | `int` | Running jobs with `cancel_phase=1` set (cooperative cancel). |
+| `cancelled_ids` | `list[UUID]` | IDs of jobs cancelled directly. |
+| `cancel_requested_ids` | `list[UUID]` | IDs of running jobs with cancel requested. |
+| `total_affected` | `int` (property) | `cancelled_directly + cancel_requested`. |
+
+For tenant-scale cancels (10^5+ matching rows), partition via filter (e.g.
+`JobFilter(queue=..., tags=...)` to split by queue). A single transaction covering 10^6
+rows would hold locks too long. The counts let the caller verify completeness and issue
+follow-up calls for remaining partitions.
+
+---
+
 ## `list()`
 
 ```python
@@ -781,16 +839,51 @@ async def enqueue(
     unique_for: timedelta | None = None,
     unique_states: tuple[JobStatus, ...] | None = None,
     max_pending: int | None = None,
+    tags: list[str] | None = None,
+    inherit_tags: bool = True,
+    schedule_to_close: datetime | None = None,
+    start_to_close: timedelta | None = None,
+    heartbeat_timeout: timedelta | None = None,
 ) -> JobHandle[R]: ...
 ```
 
 Enqueues a single sub-job. Accepts the same options as `JobsClient.enqueue()` except:
 
 - No `queue` override (sub-jobs use the actor's declared queue).
-- No `schedule_to_close`, `start_to_close`, or `heartbeat_timeout` (set on the actor declaration).
 - No explicit `trace_id` / `span_id` (extracted from the active OTel span).
 - `connection` may be passed to use a specific `asyncpg.Connection` rather than the LOOP-scope
   connection.
+
+#### Tag inheritance
+
+Sub-jobs inherit the parent job's tags by default (`inherit_tags=True`). When no
+explicit `tags` are passed, the sub-job carries the parent's tags. When explicit
+`tags` are passed, they merge with the parent's tags (parent first, deduplicated).
+
+| `inherit_tags` | `tags` | Resulting job tags |
+|---|---|---|
+| `True` (default) | `None` | Parent job's tags (or `()` if parent has none) |
+| `True` (default) | `["new-tag"]` | Parent tags + explicit tags, merged (union, parent-first, deduped) |
+| `False` | `None` | `()` (no inheritance) |
+| `False` | `["new-tag"]` | `("new-tag",)` (explicit only) |
+
+Pass `inherit_tags=False` to suppress inheritance for a specific sub-job.
+
+**Blast radius:** inherited tags make sub-jobs visible to `cancel_where` filters
+matching those tags. A shared/utility sub-job enqueued by a tenant-tagged parent
+will be swept up in that tenant's `cancel_where`.
+
+`enqueue_batch()` does **not** inherit parent tags — batch items carry their own
+`EnqueueItem.tags`. This asymmetry is deliberate: batch fan-out callers typically
+set per-item tags explicitly.
+
+#### `schedule_to_close` / `start_to_close` / `heartbeat_timeout`
+
+These parameters are passed through to `build_enqueue_args` and override the
+actor's declared defaults for this specific sub-job. Note that
+`schedule_to_close` bounds total wall-clock time *including* time snoozed on
+`wait_for_batch` — finalizer-style sub-jobs that snooze for long periods should
+set it generously or not at all.
 
 The per-call `max_pending=` argument is resolved against the operator-owned stored cap and
 the `@actor(...)` literal, not in place of them: against a non-NULL stored

@@ -30,6 +30,22 @@ result = await handle.cancel(reason="deadline exceeded")
 
 `JobHandle.cancel()` delegates directly to `JobsClient.cancel(handle.job_id, reason)`. The handle must have been constructed with a `JobsClient` (i.e. via `client.enqueue()` or `client.get()`); handles obtained from inside an actor body via `ctx.jobs.enqueue()` do not have a client and will raise `RuntimeError`.
 
+### Via `JobsClient.cancel_where()`
+
+```python
+from taskq.backend._protocol import JobFilter
+
+result = await client.cancel_where(
+    JobFilter(tags=("tenant-acme",), active=True),
+    reason="tenant offboarded",
+)
+```
+
+`cancel_where()` cancels all jobs matching a `JobFilter` in a single set-based SQL
+operation. Pending/scheduled jobs go straight to terminal `cancelled`; running jobs get
+`cancel_phase=1` (cooperative cancel). Returns a `BulkCancelResult` with counts and
+affected IDs. See [jobs-clients.md](jobs-clients.md#cancel_where) for the full API.
+
 ### Effect by prior status
 
 | Prior status | Effect |
