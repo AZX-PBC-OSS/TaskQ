@@ -83,6 +83,7 @@ _DELETE_ORDER: tuple[str, ...] = (
     "cron_schedules",
     "jobs_archive",
     "jobs",
+    "batches",
     "e2e_effects",
 )
 
@@ -527,7 +528,48 @@ async def e2e_worker(
         await asyncio.to_thread(_stop_container, container)
 
 
-# ── Module: TaskQ client ──────────────────────────────────────────────────
+@pytest_asyncio.fixture(scope="module")
+async def e2e_worker_serial(
+    request: pytest.FixtureRequest,
+    e2e_network: Network,
+    e2e_schema: E2ESchema,
+    e2e_pg_pool: asyncpg.Pool,
+    e2e_worker_image: BuiltImage,
+) -> AsyncIterator[E2EWorker]:
+    """Module-scoped worker container with ``TASKQ_MAX_CONCURRENCY=1`` for
+    serialized dispatch — needed for deterministic abort testing where the
+    exact dispatch ordering must be controlled.
+
+    Identical to :func:`e2e_worker` except the worker env is overridden with
+    a single concurrency slot so jobs dispatch one at a time.
+    """
+    from testcontainers.core.container import DockerContainer
+
+    serial_env = {**e2e_schema.worker_env, "TASKQ_MAX_CONCURRENCY": "1"}
+
+    container = DockerContainer(image=e2e_worker_image.tag)
+    container.with_network(e2e_network).with_network_aliases(
+        f"worker-serial-{e2e_schema.schema_name}"
+    )
+    for key, value in serial_env.items():
+        container.with_env(key, value)
+
+    await asyncio.to_thread(container.start)
+    try:
+        try:
+            await wait_for_worker_ready(e2e_pg_pool, e2e_schema.schema_name, timeout=30.0)
+        except TimeoutError:
+            logs = _container_logs(container)
+            msg = (
+                "e2e serial worker failed readiness gate: no fresh heartbeat in "
+                f"{e2e_schema.schema_name}.workers within 30s\n{logs}"
+            )
+            raise RuntimeError(msg) from None
+        yield E2EWorker(container=container, schema=e2e_schema.schema_name)
+    finally:
+        if request.config.option.verbose >= 2:
+            print(_container_logs(container))
+        await asyncio.to_thread(_stop_container, container)
 
 
 @pytest_asyncio.fixture(scope="module")
@@ -566,9 +608,13 @@ async def clean_e2e_state(request: pytest.FixtureRequest) -> AsyncIterator[None]
     # smoke test) must not boot the container stack through this autouse
     # fixture — skip the reset when its fixture closure is infra-free. Infra
     # fixtures are fetched lazily so the guard runs before any container work.
-    if not {"e2e_client", "e2e_pg_pool", "e2e_worker", "e2e_schema"}.intersection(
-        request.fixturenames
-    ):
+    if not {
+        "e2e_client",
+        "e2e_pg_pool",
+        "e2e_worker",
+        "e2e_worker_serial",
+        "e2e_schema",
+    }.intersection(request.fixturenames):
         yield
         return
 
@@ -599,6 +645,9 @@ async def clean_e2e_state(request: pytest.FixtureRequest) -> AsyncIterator[None]
     # dedicated containers (cron, crash-recovery) skip this check.
     if "e2e_worker" in request.fixturenames:
         worker: E2EWorker = request.getfixturevalue("e2e_worker")
+        await asyncio.to_thread(_raise_if_worker_crashed, worker)
+    elif "e2e_worker_serial" in request.fixturenames:
+        worker: E2EWorker = request.getfixturevalue("e2e_worker_serial")
         await asyncio.to_thread(_raise_if_worker_crashed, worker)
 
     async with e2e_pg_pool.acquire() as conn:

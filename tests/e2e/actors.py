@@ -705,3 +705,66 @@ async def concurrent_tracked_worker(
         "ct_finished",
         {"run_id": payload.run_id, "job_index": payload.job_index},
     )
+
+
+# ── Batch abort test actor ───────────────────────────────────────────────
+
+
+class BatchAbortPayload(BaseModel):
+    run_id: str
+    should_fail: bool = True
+
+
+@actor(
+    name="batch_abort_worker",
+    queue="e2e",
+    retry=RetryPolicy(max_attempts=1, base=timedelta(milliseconds=100)),
+)
+async def batch_abort_worker(
+    payload: BatchAbortPayload,
+    ctx: JobContext[BatchAbortPayload],
+    *,
+    pool: asyncpg.Pool,
+) -> None:
+    """Always fails — used to test batch abort policy."""
+    await _record_effect(pool, ctx, "attempt", {"run_id": payload.run_id})
+    raise RuntimeError("intentional failure for batch abort test")
+
+
+# ── Batch finalizer actor ────────────────────────────────────────────────
+
+
+class FinalizerPayload(BaseModel):
+    run_id: str
+    batch_id: str
+
+
+@actor(
+    name="batch_finalizer",
+    queue="e2e",
+    retry=RetryPolicy(max_attempts=50, base=timedelta(seconds=1)),
+)
+async def batch_finalizer(
+    payload: FinalizerPayload,
+    ctx: JobContext[FinalizerPayload],
+    *,
+    pool: asyncpg.Pool,
+) -> None:
+    """Waits for batch children via wait_for_batch, then records a 'finalized' effect."""
+    from uuid import UUID
+
+    from taskq import wait_for_batch
+
+    status = await wait_for_batch(pool, UUID(payload.batch_id), schema=_effects_schema())
+    await _record_effect(
+        pool,
+        ctx,
+        "finalized",
+        {
+            "run_id": payload.run_id,
+            "batch_id": payload.batch_id,
+            "total": status.total,
+            "succeeded": status.succeeded,
+            "failed": status.failed,
+        },
+    )
