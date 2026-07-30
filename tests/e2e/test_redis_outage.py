@@ -43,6 +43,7 @@ from tests.conftest import free_host_port
 from ._assertions import (
     fetch_effects,
     poll_until,
+    wait_all,
     wait_for_effects,
     wait_for_worker_ready,
 )
@@ -387,10 +388,10 @@ async def test_redis_outage_degrades_gracefully(
 
     # Wait for the original burst to complete (some may have been snoozed
     # during the outage if they hadn't acquired tokens yet).
-    await asyncio.gather(*(h.wait(timeout=_RECOVERY_TIMEOUT) for h in burst_handles))
+    await wait_all(burst_handles, timeout=_RECOVERY_TIMEOUT)
 
     # The outage jobs should complete after Dragonfly is back.
-    await asyncio.gather(*(h.wait(timeout=_RECOVERY_TIMEOUT) for h in outage_handles))
+    await wait_all(outage_handles, timeout=_RECOVERY_TIMEOUT)
 
     # Verify all delivered effects landed.
     burst_effects = await fetch_effects(chaos_pool, schema, run_id, kind="delivered")

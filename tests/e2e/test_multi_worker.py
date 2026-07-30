@@ -40,7 +40,7 @@ from typing import TYPE_CHECKING
 import pytest
 import pytest_asyncio
 
-from ._assertions import fetch_effects, poll_until
+from ._assertions import fetch_effects, poll_until, wait_all
 from .actors import WelcomeEmailPayload, send_welcome_email
 from .conftest import E2EWorker, _container_logs, _stop_container
 
@@ -160,7 +160,7 @@ async def test_two_workers_share_queue_no_double_execution(
         for i in range(_JOB_COUNT)
     ]
 
-    await asyncio.gather(*(handle.wait(timeout=90) for handle in handles))
+    await wait_all(handles, timeout=90)
 
     rows = await fetch_effects(e2e_pg_pool, e2e_schema.schema_name, run_id, kind="send")
     assert len(rows) == _JOB_COUNT

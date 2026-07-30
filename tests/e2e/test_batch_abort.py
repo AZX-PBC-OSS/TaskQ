@@ -16,7 +16,6 @@ Uses ``e2e_worker_serial`` for serialized dispatch.
 
 from __future__ import annotations
 
-import asyncio
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
@@ -25,7 +24,13 @@ import pytest
 from taskq import EnqueueItem
 from taskq.batch_policy import AbortBatchAfter
 
-from ._assertions import fetch_effects, fetch_job_rows, poll_until, wait_for_effects
+from ._assertions import (
+    fetch_effects,
+    fetch_job_rows,
+    poll_until,
+    wait_all_ignoring_failures,
+    wait_for_effects,
+)
 from .actors import (
     AbortFinalizerPayload,
     BatchAbortPayload,
@@ -74,10 +79,7 @@ async def test_batch_abort_after_threshold(
 
     job_ids = [handle.job_id for handle in batch.job_handles]
 
-    await asyncio.gather(
-        *(h.wait(timeout=60) for h in batch.job_handles),
-        return_exceptions=True,
-    )
+    await wait_all_ignoring_failures(batch.job_handles, timeout=60)
 
     async def _all_terminal() -> bool:
         rows = await fetch_job_rows(e2e_pg_pool, e2e_schema.schema_name, job_ids)
@@ -164,10 +166,12 @@ async def test_batch_abort_with_finalizer(
     ]
     finalizer_id = batch.finalizer_handle.job_id
 
-    await asyncio.gather(
-        *(h.wait(timeout=60) for h in batch.job_handles),
-        return_exceptions=True,
-    )
+    # Wait for child jobs only — the finalizer snoozes (via wait_for_batch)
+    # until all children reach terminal status, so including it in the gather
+    # would always time out and waste the full 60 s budget.  The finalizer's
+    # terminal status is verified separately via the poll below.
+    child_handles = [h for h in batch.job_handles if h is not batch.finalizer_handle]
+    await wait_all_ignoring_failures(child_handles, timeout=60)
 
     async def _all_terminal() -> bool:
         rows = await fetch_job_rows(e2e_pg_pool, e2e_schema.schema_name, child_ids)
@@ -175,7 +179,7 @@ async def test_batch_abort_with_finalizer(
 
     await poll_until(
         _all_terminal,
-        timeout=60.0,
+        timeout=30.0,
         description=f"all {_num_children} child jobs to reach terminal status",
     )
 
@@ -202,9 +206,11 @@ async def test_batch_abort_with_finalizer(
             "abandoned",
         )
 
+    # With a 2 s snooze interval and children already terminal, the
+    # finalizer should reach its terminal state within a few snooze cycles.
     await poll_until(
         _finalizer_terminal,
-        timeout=60.0,
+        timeout=30.0,
         description=f"finalizer {finalizer_id} to reach terminal status",
     )
 

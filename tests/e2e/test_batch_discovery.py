@@ -16,7 +16,6 @@ Uses the standard ``e2e_worker`` fixture.
 
 from __future__ import annotations
 
-import asyncio
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
@@ -25,7 +24,7 @@ import pytest
 from taskq import BatchFilter, EnqueueItem
 from taskq.batch_policy import AbortBatchAfter
 
-from ._assertions import fetch_effects, poll_until, wait_for_effects
+from ._assertions import fetch_effects, poll_until, wait_all_ignoring_failures, wait_for_effects
 from .actors import (
     ImportContactsChunkPayload,
     LongRunningPayload,
@@ -154,15 +153,9 @@ async def test_list_batches_active_and_completed(
     assert active_b_summary.completion.pending >= 1
     assert active_b_summary.completion.is_complete is False
 
-    await asyncio.gather(
-        *(h.wait(timeout=60) for h in batch_a.job_handles),
-        return_exceptions=True,
-    )
+    await wait_all_ignoring_failures(batch_a.job_handles, timeout=60)
 
-    await asyncio.gather(
-        *(h.wait(timeout=60) for h in batch_b.job_handles),
-        return_exceptions=True,
-    )
+    await wait_all_ignoring_failures(batch_b.job_handles, timeout=60)
 
     a_effects = await fetch_effects(
         e2e_pg_pool, e2e_schema.schema_name, run_id_a, kind="chunk_done"

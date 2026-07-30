@@ -755,7 +755,12 @@ async def batch_finalizer(
 
     from taskq import wait_for_batch
 
-    status = await wait_for_batch(pool, UUID(payload.batch_id), schema=_effects_schema())
+    status = await wait_for_batch(
+        pool,
+        UUID(payload.batch_id),
+        schema=_effects_schema(),
+        snooze_interval=timedelta(seconds=2),
+    )
     await _record_effect(
         pool,
         ctx,
@@ -800,7 +805,12 @@ async def batch_abort_finalizer(
     from taskq.exceptions import BatchAbortedError
 
     try:
-        status = await wait_for_batch(pool, UUID(payload.batch_id), schema=_effects_schema())
+        status = await wait_for_batch(
+            pool,
+            UUID(payload.batch_id),
+            schema=_effects_schema(),
+            snooze_interval=timedelta(seconds=2),
+        )
         await _record_effect(
             pool,
             ctx,

@@ -70,7 +70,7 @@ from typing import TYPE_CHECKING, NamedTuple
 import pytest
 import pytest_asyncio
 
-from ._assertions import fetch_effects, poll_until
+from ._assertions import fetch_effects, poll_until, wait_all
 from .actors import WelcomeEmailPayload, send_welcome_email
 
 if TYPE_CHECKING:
@@ -311,7 +311,7 @@ async def test_workgroup_supervisor_spawns_and_restarts_workers(
         )
         for i in range(4)
     ]
-    await asyncio.gather(*(handle.wait(timeout=90) for handle in handles))
+    await wait_all(handles, timeout=90)
 
     rows = await fetch_effects(e2e_pg_pool, e2e_schema.schema_name, run_id, kind="send")
     assert len(rows) == 4

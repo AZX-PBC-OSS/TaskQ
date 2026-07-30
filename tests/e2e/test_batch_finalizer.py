@@ -15,7 +15,6 @@ Uses the standard ``e2e_worker`` fixture.
 
 from __future__ import annotations
 
-import asyncio
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
@@ -23,7 +22,7 @@ import pytest
 
 from taskq import EnqueueItem
 
-from ._assertions import fetch_effects, wait_for_effects
+from ._assertions import fetch_effects, wait_all_ignoring_failures, wait_for_effects
 from .actors import (
     FinalizerPayload,
     ImportContactsChunkPayload,
@@ -85,18 +84,22 @@ async def test_finalizer_snoozes_then_runs(
     assert batch.size == _NUM_CHILDREN
     assert batch.finalizer_handle is not None
 
-    await asyncio.gather(
-        *(h.wait(timeout=60) for h in batch.job_handles),
-        return_exceptions=True,
-    )
+    # Wait for child jobs only — the finalizer snoozes (via wait_for_batch)
+    # until all children reach terminal status, so including it in the gather
+    # would always time out and waste the full 60 s budget.  The finalizer's
+    # completion is verified separately via the effects poll below.
+    child_handles = [h for h in batch.job_handles if h is not batch.finalizer_handle]
+    await wait_all_ignoring_failures(child_handles, timeout=60)
 
+    # Children are done; the finalizer should complete within 1-2 snooze
+    # cycles (2 s each) after the last child finishes.
     finalized_effects = await wait_for_effects(
         e2e_pg_pool,
         e2e_schema.schema_name,
         run_id,
         kind="finalized",
         min_count=1,
-        timeout=90.0,
+        timeout=30.0,
     )
 
     assert len(finalized_effects) == 1
