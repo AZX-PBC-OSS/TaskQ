@@ -22,7 +22,9 @@ from taskq.auth import (
     make_redis_client_factory,
 )
 from taskq.backend._protocol import (
+    BatchCounts,
     BatchFilter,
+    BatchRow,
     CancelPhase,
     DstStrategy,
     EventRow,
@@ -105,9 +107,11 @@ __all__ = [
     "BackpressureError",
     "BatchAbortedError",
     "BatchCompletionStatus",
+    "BatchCounts",
     "BatchFailurePolicy",
     "BatchFilter",
     "BatchHandle",
+    "BatchRow",
     "BatchSummary",
     "CancelPhase",
     "CancelResult",

@@ -180,7 +180,6 @@ class CancelPhase(IntEnum):
     carries the OTel attribute semantics (``cancel_phase`` attribute on
     transition counters) and prevents bare-int values like ``99`` from
     slipping past the type checker.
-    and
 
     Values ``NONE``, ``COOPERATIVE``, and ``FORCED`` are persistable —
     they map directly to the PG ``cancel_phase`` column whose check
@@ -443,7 +442,7 @@ class JobFilter:
     canonical string form at the SQL boundary; the in-memory backend
     compares the UUID directly. Keeping the typed shape here means
     ``JobsClient.list(batch_id=UUID(...))`` flows without an implicit
-    ``str(uuid)`` coercion. See  / audit M102-3.
+    ``str(uuid)`` coercion.
 
     ``status`` accepts either a single :data:`JobStatus` (backwards
     compatible — e.g. ``JobFilter(status="pending")``) or a sequence of
@@ -763,8 +762,7 @@ class Backend(Protocol):
     every method (``dispatch_batch``, ``mark_succeeded``, etc.) with no
     safety benefit at the storage layer. The worker consumer
     reconstructs the typed ``JobContext[P]`` at dispatch time using
-    ``ActorRef.payload_type.model_validate(row.payload)``. See
-     /
+    ``ActorRef.payload_type.model_validate(row.payload)``.
     """
 
     BACKEND_PROTOCOL_VERSION: ClassVar[int]

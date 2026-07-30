@@ -243,6 +243,12 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                         worker_id=str(ctx.worker_id),
                         error=repr(exc),
                     )
+            # hasattr guard: complete_stale_batches needs a real PG connection
+            # (dispatcher_pool). InMemoryBackend does not implement
+            # sweep_leaked_reservation_slots, so this gate prevents the
+            # stale-batches sweep from running on the in-memory backend in
+            # tests — matching the same pattern used for sweep_leaked_slots
+            # and sweep_expired_results above.
             if hasattr(ctx.backend, "sweep_leaked_reservation_slots"):
                 start = time.monotonic()
                 try:
@@ -250,6 +256,7 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                         stale_count = await complete_stale_batches(
                             conn, schema=ctx.deps.settings.schema_name
                         )
+                    _metric("stale_batches", stale_count, start)
                     if stale_count:
                         log.info("stale-batches-completed", kind="batch", count=stale_count)
                 except (

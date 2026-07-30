@@ -118,6 +118,35 @@ class TestStreamingWithPolicy:
         assert fin_row is not None
         assert "batch_id" not in fin_row.metadata
 
+    async def test_streaming_with_policy_and_finalizer(self) -> None:
+        backend = _make_backend()
+        client = _make_client(backend)
+
+        finalizer = EnqueueItem(
+            actor_ref=_test_actor,
+            payload=_Payload(value=-1),
+        )
+
+        handle = await client.enqueue_batch_streaming(
+            _items_gen(20),
+            chunk_size=10,
+            failure_policy=AbortBatchAfter(5),
+            finalizer=finalizer,
+        )
+
+        # Batch row must have both finalizer_job_id and failure_threshold set.
+        batch_row = backend._batches.get(handle.batch_id)
+        assert batch_row is not None
+        assert batch_row.failure_threshold == 5
+        assert batch_row.finalizer_job_id is not None
+        assert batch_row.expected_size == 20
+
+        # Finalizer job must NOT have batch_id metadata.
+        assert handle.finalizer_handle is not None
+        fin_row = await backend.get(handle.finalizer_handle.job_id)
+        assert fin_row is not None
+        assert "batch_id" not in fin_row.metadata
+
 
 class TestStreamingValidation:
     async def test_empty_iterable_raises(self) -> None:

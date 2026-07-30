@@ -15,7 +15,9 @@ from taskq.backend._protocol import (
     BatchCounts,
     BatchFilter,
     BatchRow,
+    CancelPhase,
     EnqueueArgs,
+    JobId,
     JobRow,
 )
 from taskq.backend.statemachine import TERMINAL_STATUSES
@@ -144,11 +146,14 @@ def _abort_batch(
                 status="cancelled",
                 finished_at=now,
                 error_class="BatchAbortedError",
+                error_message="Batch aborted due to consecutive failures",
+                cancel_requested_at=now,
+                cancel_phase=CancelPhase.FORCED,
             )
             cancelled += 1
 
     batch_row = backend._batches.get(batch_id)
-    if batch_row is not None:
+    if batch_row is not None and batch_row.status == "active":
         backend._batches[batch_id] = replace(
             batch_row,
             status="aborted",
@@ -216,31 +221,44 @@ async def _enqueue_batch_atomic(
     finalizer_args: EnqueueArgs | None,
     chunk_size: int = 1000,
 ) -> list[JobRow]:
-    if batch_row is not None:
-        _create_batch(
-            backend,
-            batch_id,
-            queue,
-            batch_row.expected_size,
-            batch_row.failure_threshold,
-            batch_row.finalizer_job_id,
-            batch_row.originating_actor,
-            None,
-        )
-
     batch_id_str = str(batch_id)
     rows: list[JobRow] = []
+    inserted_ids: list[JobId] = []
+    batch_created = False
 
-    for args in items:
-        args_with_batch = replace(
-            args,
-            metadata={**args.metadata, "batch_id": batch_id_str},
-        )
-        row = await backend.enqueue_with_conn(None, args_with_batch)
-        rows.append(row)
+    try:
+        if batch_row is not None:
+            _create_batch(
+                backend,
+                batch_id,
+                queue,
+                batch_row.expected_size,
+                batch_row.failure_threshold,
+                batch_row.finalizer_job_id,
+                batch_row.originating_actor,
+                None,
+            )
+            batch_created = True
 
-    if finalizer_args is not None:
-        rows.append(await backend.enqueue_with_conn(None, finalizer_args))
+        for args in items:
+            args_with_batch = replace(
+                args,
+                metadata={**args.metadata, "batch_id": batch_id_str},
+            )
+            row = await backend.enqueue_with_conn(None, args_with_batch)
+            rows.append(row)
+            inserted_ids.append(row.id)
+
+        if finalizer_args is not None:
+            row = await backend.enqueue_with_conn(None, finalizer_args)
+            rows.append(row)
+            inserted_ids.append(row.id)
+    except BaseException:
+        for jid in inserted_ids:
+            backend._jobs.pop(jid, None)
+        if batch_created:
+            backend._batches.pop(batch_id, None)
+        raise
 
     return rows
 

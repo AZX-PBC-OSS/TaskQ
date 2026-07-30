@@ -27,9 +27,9 @@ from taskq.backend._protocol import (
     QueueMode,
 )
 from taskq.backend.statemachine import TERMINAL_STATUSES
-from taskq.batch import BatchCompletionStatus, apply_batch_terminal_outcome
+from taskq.batch import BatchCompletionStatus, _decide_batch_status, apply_batch_terminal_outcome
 from taskq.context import JobContext
-from taskq.exceptions import BatchAbortedError, EmptyBatchError, Snooze
+from taskq.exceptions import Snooze
 from taskq.retry import OnRetryExhausted, OnSuccess, RetryClassifierHook, RetryPolicy
 from taskq.worker.actor_config import ActorConfig
 
@@ -665,28 +665,17 @@ async def wait_for_batch(
         abandoned=abandoned,
     )
 
-    # ── Decision table (first matching row wins) ──
+    status = _decide_batch_status(
+        batch_id=batch_id,
+        batch_row=batch_row,
+        status=status,
+        snooze_interval=snooze_interval,
+        expect_at_least=expect_at_least,
+        on_empty=on_empty,
+    )
 
-    if batch_row is not None and batch_row.status == "aborted":
-        if pending == 0:
-            raise BatchAbortedError(
-                batch_id,
-                batch_row.consecutive_failures,
-                batch_row.failure_threshold or 0,
-            )
-        raise Snooze(snooze_interval)
-
-    if expect_at_least is not None and pending == 0 and status.total < expect_at_least:
-        raise EmptyBatchError(batch_id, expected=expect_at_least, actual=status.total)
-
-    if status.total == 0:
-        if batch_row is not None:
-            return status
-        if on_empty == "ok":
-            return status
-        raise EmptyBatchError(batch_id, expected=1, actual=0)
-
-    if pending > 0:
+    # In-memory always raises Snooze for pending > 0 — no blocking mode.
+    if status.pending > 0:
         raise Snooze(snooze_interval)
 
     return status

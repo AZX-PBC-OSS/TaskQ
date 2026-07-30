@@ -17,6 +17,7 @@ import pytest
 
 from taskq.backend._protocol import BatchFilter
 from taskq.testing.fixtures import JobsApp
+from taskq.testing.jobs import make_enqueue_args
 
 if TYPE_CHECKING:
     from asyncpg.pool import PoolConnectionProxy
@@ -450,3 +451,77 @@ class TestPostgresPruneOldBatches:
 
         row = await backend.get_batch(bid)
         assert row is not None
+
+
+# ── enqueue_batch_atomic rollback ────────────────────────────────
+
+
+class TestPostgresEnqueueBatchAtomicRollback:
+    async def test_enqueue_batch_atomic_rolls_back_on_generator_failure(
+        self, jobs_app: JobsApp
+    ) -> None:
+        deps = jobs_app.deps
+        backend = jobs_app.backend
+        schema = deps.settings.schema_name
+        bid = uuid4()
+
+        def gen():
+            yield make_enqueue_args(actor="a1", queue="default")
+            yield make_enqueue_args(actor="a2", queue="default")
+            raise ValueError("generator exploded")
+
+        with pytest.raises(ValueError, match="generator exploded"):
+            await backend.enqueue_batch_atomic(
+                gen(),
+                batch_id=bid,
+                queue="default",
+                batch_row=None,
+                finalizer_args=None,
+            )
+
+        # No jobs with this batch_id should exist (transaction rolled back).
+        async with deps.worker_pool.acquire() as conn:
+            count = await conn.fetchval(
+                f'SELECT count(*) FROM "{schema}".jobs '  # noqa: S608  # Why: test helper — schema is a validated constant from settings, not user input
+                "WHERE metadata @> $1::jsonb",
+                json.dumps({"batch_id": str(bid)}),
+            )
+        assert count == 0
+
+        # No batch row should exist.
+        row = await backend.get_batch(bid)
+        assert row is None
+
+
+# ── abort_batch no-row contract ──────────────────────────────────
+
+
+class TestPostgresAbortBatchNoRow:
+    async def test_abort_cancels_jobs_without_batch_row(self, jobs_app: JobsApp) -> None:
+        deps = jobs_app.deps
+        backend = jobs_app.backend
+        schema = deps.settings.schema_name
+        bid = uuid4()
+
+        # Insert jobs with batch_id metadata but do NOT create a batches row.
+        async with deps.worker_pool.acquire() as conn:
+            j1 = await _insert_test_job(conn, schema, bid, status="pending")
+            j2 = await _insert_test_job(conn, schema, bid, status="scheduled")
+            await _insert_test_job(conn, schema, bid, status="succeeded")
+
+        cancelled = await backend.abort_batch(bid)
+        assert cancelled == 2
+
+        # Verify jobs were cancelled.
+        async with deps.worker_pool.acquire() as conn:
+            rows = await conn.fetch(
+                f'SELECT id, status FROM "{schema}".jobs '  # noqa: S608  # Why: test helper — schema is a validated constant from settings, not user input
+                "WHERE id = ANY($1::uuid[])",
+                [j1, j2],
+            )
+            for r in rows:
+                assert r["status"] == "cancelled"
+
+        # No batches row should have been created.
+        row = await backend.get_batch(bid)
+        assert row is None

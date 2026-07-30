@@ -49,16 +49,22 @@ Terminal statuses (`succeeded`, `failed`, `cancelled`, `crashed`, `abandoned`) h
 3. [`enqueue()`](#enqueue)
 4. [`enqueue_batch()`](#enqueue_batch)
 5. [`enqueue_batch_fast()`](#enqueue_batch_fast)
-6. [`JobHandle[R]`](#jobhandler)
-7. [`get()`](#get)
-8. [`cancel()`](#cancel)
-9. [`list()`](#list)
-10. [`SubJobEnqueuer`](#subjobenqueuer)
-11. [Error handling](#error-handling)
-12. [Full enqueue-and-wait example](#full-enqueue-and-wait-example)
-13. [Idempotency example](#idempotency-example)
-14. [Batch enqueue example](#batch-enqueue-example)
-15. [Tags](#tags)
+6. [Batch failure policies](#batch-failure-policies)
+7. [Batch finalizer](#batch-finalizer)
+8. [`enqueue_batch_streaming()`](#enqueue_batch_streaming)
+9. [`wait_for_batch()`](#wait_for_batch)
+10. [`list_batches()`](#list_batches)
+11. [`BatchSummary`](#batchsummary)
+12. [`JobHandle[R]`](#jobhandler)
+13. [`get()`](#get)
+14. [`cancel()`](#cancel)
+15. [`list()`](#list)
+16. [`SubJobEnqueuer`](#subjobenqueuer)
+17. [Error handling](#error-handling)
+18. [Full enqueue-and-wait example](#full-enqueue-and-wait-example)
+19. [Idempotency example](#idempotency-example)
+20. [Batch enqueue example](#batch-enqueue-example)
+21. [Tags](#tags)
 
 ---
 
@@ -441,6 +447,304 @@ Enqueues jobs via the PG `COPY FROM` protocol for maximum throughput. Returns th
 - ALL payloads are validated before any INSERT. A single `PayloadValidationError` aborts the batch.
 
 Use for bulk import / backfill with 1K–50K rows where throughput matters more than idempotency guarantees.
+
+---
+
+## Batch failure policies
+
+A `BatchFailurePolicy` decides whether a batch should be aborted after observing
+a run of consecutive job failures. Pass it to `enqueue_batch()` or
+`enqueue_batch_streaming()` via the `failure_policy` parameter.
+
+```python
+from taskq import AbortBatchAfter
+
+batch = await client.enqueue_batch(
+    items,
+    failure_policy=AbortBatchAfter(consecutive_failures=5),
+)
+```
+
+When `failure_policy` is set, a `batches` row is created. After each child job
+reaches a terminal state, the `apply_batch_terminal_outcome` hook inspects the
+outcome:
+
+- **`succeeded`** resets the consecutive-failure counter to 0.
+- **`failed`** increments the counter. If it reaches the threshold, the batch
+  is **aborted**: all remaining non-terminal child jobs are cancelled
+  (`pending` / `scheduled` → `cancelled`) and the batch row is set to
+  `aborted`.
+- **`cancelled`** / **`crashed`** do not touch the failure counter; they count
+  remaining non-terminal jobs and complete the batch if none remain.
+
+### `AbortBatchAfter`
+
+```python
+from taskq import AbortBatchAfter
+
+AbortBatchAfter(consecutive_failures=5)  # abort after 5 consecutive failures
+```
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `consecutive_failures` | `int` | required | Abort once consecutive failures reach this count. Must be `>= 1`. |
+
+### `BatchAbortedError`
+
+Raised by `wait_for_batch()` when the batch row has `status = 'aborted'` and
+all child jobs are terminal.
+
+```python
+from taskq import BatchAbortedError
+
+try:
+    status = await wait_for_batch(db, batch_id)
+except BatchAbortedError as exc:
+    print(f"batch {exc.batch_id} aborted after {exc.consecutive_failures} failures (threshold={exc.threshold})")
+```
+
+---
+
+## Batch finalizer
+
+A **finalizer** is a job enqueued alongside the batch that runs after all child
+jobs reach a terminal state. Pass an `EnqueueItem` to the `finalizer` parameter:
+
+```python
+from taskq import EnqueueItem, AbortBatchAfter
+
+finalizer = EnqueueItem(
+    actor_ref=summarize_results,
+    payload=SummarizePayload(batch_id=batch_id),
+)
+
+batch = await client.enqueue_batch(
+    items,
+    failure_policy=AbortBatchAfter(consecutive_failures=5),
+    finalizer=finalizer,
+)
+```
+
+### Transactional enqueue
+
+When `failure_policy` or `finalizer` is set and no caller-owned `connection` is
+provided, the entire operation (batch row + all child jobs + finalizer) is
+inserted in a single transaction via `Backend.enqueue_batch_atomic`. If any
+insert fails, no rows are committed.
+
+When a `connection` is provided, the caller controls the transaction boundary;
+the batch row and finalizer are created as the last statements on that
+connection.
+
+### Finalizer is NOT stamped with `batch_id`
+
+The finalizer job's `metadata` does **not** include `batch_id`. This is
+deliberate: if the finalizer were stamped, `wait_for_batch` would count it as
+a child, and the finalizer would wait for itself — a deadlock. The batch row's
+`finalizer_job_id` column records the link instead, and `wait_for_batch`
+automatically excludes that job from counts.
+
+### `wait_for_batch` snooze pattern
+
+Inside the finalizer actor, call `wait_for_batch()` to block until all child
+jobs are terminal. The snooze pattern uses `Snooze` exceptions so the actor's
+own retry/snooze loop drives the wait without consuming retry budget:
+
+```python
+from taskq import wait_for_batch
+from taskq.context import JobContext
+import asyncpg
+
+@actor(queue="finalizers")
+async def summarize_results(ctx: JobContext, payload: SummarizePayload) -> None:
+    db = ctx.deps.worker_pool  # or acquire from pool
+    status = await wait_for_batch(
+        db,
+        payload.batch_id,
+        snooze_interval=timedelta(seconds=15),
+    )
+    # All child jobs are terminal — proceed with finalization
+    print(f"batch done: {status.succeeded} succeeded, {status.failed} failed")
+```
+
+`wait_for_batch()` raises `Snooze(snooze_interval)` while children are in
+flight; the consumer transitions the finalizer to `scheduled` and retries it
+after `snooze_interval` without consuming retry budget. Once all children are
+terminal, it returns `BatchCompletionStatus`.
+
+---
+
+## `enqueue_batch_streaming()`
+
+```python
+async def enqueue_batch_streaming(
+    self,
+    items: Iterable[EnqueueItem],
+    *,
+    batch_id: UUID | None = None,
+    connection: "asyncpg.Connection | None" = None,
+    failure_policy: BatchFailurePolicy | None = None,
+    finalizer: EnqueueItem | None = None,
+    chunk_size: int = 1000,
+) -> BatchHandle: ...
+```
+
+Enqueues jobs from a lazy `Iterable[EnqueueItem]` (including generators) in
+chunks of `chunk_size` (1–1000). All items share the same `batch_id`. Useful
+for unbounded iterables where materialising the full list in memory is
+undesirable.
+
+```python
+from taskq import EnqueueItem
+
+async def enqueue_from_generator(client: JobsClient, doc_ids: Iterable[str]) -> None:
+    def gen() -> Iterable[EnqueueItem]:
+        for doc_id in doc_ids:
+            yield EnqueueItem(actor_ref=process_doc, payload=DocPayload(id=doc_id))
+
+    batch = await client.enqueue_batch_streaming(gen(), chunk_size=500)
+    print(f"enqueued {batch.size} jobs, batch_id={batch.batch_id}")
+```
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `items` | `Iterable[EnqueueItem]` | required | Lazy iterable of items. Must not be empty. |
+| `batch_id` | `UUID \| None` | auto-generated UUIDv7 | Shared identifier for all jobs. |
+| `connection` | `asyncpg.Connection \| None` | `None` | Caller-owned connection for transactional enqueue. |
+| `failure_policy` | `BatchFailurePolicy \| None` | `None` | Failure policy for the batch. |
+| `finalizer` | `EnqueueItem \| None` | `None` | Finalizer job to enqueue alongside the batch. |
+| `chunk_size` | `int` | `1000` | Items per INSERT (1–1000). |
+
+When `failure_policy` or `finalizer` is set and `connection` is `None`, the
+entire operation is delegated to `Backend.enqueue_batch_atomic` for
+single-transaction atomicity. Otherwise, chunks are inserted via
+`Backend.enqueue_batch` on the caller-owned connection, with the batch row and
+finalizer created as the last statements.
+
+---
+
+## `wait_for_batch()`
+
+```python
+from taskq import wait_for_batch
+
+async def wait_for_batch(
+    db: "asyncpg.Connection | asyncpg.Pool",
+    batch_id: UUID,
+    *,
+    schema: str = "taskq",
+    snooze_interval: timedelta = timedelta(seconds=10),
+    snooze_via_exception: bool = True,
+    expect_at_least: int | None = None,
+    on_empty: Literal["error", "ok"] = "error",
+    exclude_job_id: UUID | None = None,
+) -> BatchCompletionStatus: ...
+```
+
+In-actor helper for the fan-out-then-finalize pattern. Queries batch children
+by `batch_id` using the GIN-indexed `WHERE metadata @> $1::jsonb` predicate.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `db` | `Connection \| Pool` | required | asyncpg connection or pool. |
+| `batch_id` | `UUID` | required | Batch to wait on. |
+| `schema` | `str` | `"taskq"` | PG schema name. |
+| `snooze_interval` | `timedelta` | `10s` | Snooze/sleep interval (clamped to minimum 1s). |
+| `snooze_via_exception` | `bool` | `True` | `True` raises `Snooze` (in-actor); `False` blocks via `asyncio.sleep` (scripts/tests). |
+| `expect_at_least` | `int \| None` | `None` | Raise `EmptyBatchError` if fewer than this many jobs exist and none are in flight. |
+| `on_empty` | `"error" \| "ok"` | `"error"` | Behaviour when zero jobs and no `batches` row: `"error"` raises `EmptyBatchError`; `"ok"` returns empty status. |
+| `exclude_job_id` | `UUID \| None` | `None` | Omit a specific job from counts. Defaults to the batch row's `finalizer_job_id`. |
+
+### `expect_at_least` and `on_empty`
+
+`expect_at_least` validates that the batch has at least the expected number of
+jobs. If fewer jobs are present and none are in flight, `EmptyBatchError` is
+raised:
+
+```python
+status = await wait_for_batch(
+    db,
+    batch_id,
+    expect_at_least=100,  # raise if fewer than 100 jobs
+)
+```
+
+`on_empty` controls the behaviour when the batch has zero jobs and no
+`batches` row exists (e.g. the batch was never created, or all jobs were
+pruned):
+
+```python
+status = await wait_for_batch(
+    db,
+    batch_id,
+    on_empty="ok",  # return empty status instead of raising
+)
+```
+
+See the [architecture reference](../architecture.md#wait_for_batch-decision-table)
+for the full decision table.
+
+---
+
+## `list_batches()`
+
+```python
+from taskq import BatchFilter
+
+async def list_batches(
+    self,
+    filter: BatchFilter,
+) -> list[BatchSummary]: ...
+```
+
+Lists batches matching `filter`, returning `BatchSummary` objects with live job
+counts.
+
+### `BatchFilter`
+
+```python
+from taskq import BatchFilter
+
+BatchFilter(
+    queue="notifications",  # str | None
+    active=True,            # bool | None — True: active, False: terminal
+    batch_id=UUID(...),     # UUID | None
+    limit=50,               # int (>= 0, default 100)
+)
+```
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `queue` | `str \| None` | `None` | Filter by queue name. |
+| `active` | `bool \| None` | `None` | `True` selects `active` batches; `False` selects `complete`/`aborted`. |
+| `batch_id` | `UUID \| None` | `None` | Filter by batch ID. |
+| `limit` | `int` | `100` | Maximum results (must be `>= 0`). |
+
+`BatchFilter` is distinct from `JobFilter` — it carries only batch-relevant
+fields. Using `JobFilter` for batch queries would silently ignore job-oriented
+fields like `status`, `actor`, and `tags`.
+
+---
+
+## `BatchSummary`
+
+```python
+from taskq import BatchSummary
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `batch_id` | `UUID` | Batch ID. |
+| `queue` | `str` | Queue the batch was enqueued on. |
+| `status` | `"active" \| "complete" \| "aborted"` | Batch lifecycle status. |
+| `expected_size` | `int` | Number of child jobs enqueued. |
+| `consecutive_failures` | `int` | Current consecutive failure count. |
+| `failure_threshold` | `int \| None` | Threshold from `AbortBatchAfter`, or `None`. |
+| `finalizer_job_id` | `UUID \| None` | Finalizer job ID, if one was enqueued. |
+| `originating_actor` | `str \| None` | Actor that created the batch. |
+| `created_at` | `datetime` | Batch creation time. |
+| `completed_at` | `datetime \| None` | When the batch reached a terminal status. |
+| `completion` | `BatchCompletionStatus` | Live job counts (see [`BatchCompletionStatus`](#batchhandlestatus)). |
 
 ---
 

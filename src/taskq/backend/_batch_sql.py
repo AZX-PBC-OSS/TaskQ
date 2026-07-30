@@ -326,10 +326,17 @@ async def abort_batch(
     """Cancel all pending/scheduled member jobs and mark the batch as aborted.
 
     Returns the number of jobs cancelled.
+
+    The two statements (cancel jobs + update batch row) are wrapped in a
+    transaction so they commit atomically even when *conn* is a caller-
+    supplied loop connection that is not already inside an explicit
+    transaction.  asyncpg nested transactions use savepoints, so this is
+    safe when the caller already has an outer transaction.
     """
-    rows = await conn.fetch(sql.abort_batch_jobs, _batch_filter_json(batch_id))
-    await conn.execute(sql.abort_batch_row, batch_id)
-    return len(rows)
+    async with conn.transaction():
+        rows = await conn.fetch(sql.abort_batch_jobs, _batch_filter_json(batch_id))
+        await conn.execute(sql.abort_batch_row, batch_id)
+        return len(rows)
 
 
 async def complete_batch(

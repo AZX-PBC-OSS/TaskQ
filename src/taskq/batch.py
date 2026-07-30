@@ -13,7 +13,7 @@ Provides:
 import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, assert_never
 from uuid import UUID
 
 import structlog
@@ -21,13 +21,24 @@ from pydantic import BaseModel, Field, computed_field
 
 from taskq._json import dumps_str
 from taskq.actor import ActorRef
-from taskq.backend._protocol import AttemptOutcome, Backend, IdempotencyKey, IdentityKey, JobRow
+from taskq.backend._protocol import (
+    AttemptOutcome,
+    Backend,
+    BatchRow,
+    IdempotencyKey,
+    IdentityKey,
+    JobRow,
+)
+from taskq.backend._records import jsonb_to_dict
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
 )
+from taskq.exceptions import BatchAbortedError, EmptyBatchError, Snooze
 
 if TYPE_CHECKING:
     import asyncpg
+
+    from taskq.client._handle import JobHandle
 
 __all__ = [
     "BatchCompletionStatus",
@@ -106,10 +117,10 @@ class BatchHandle(BaseModel):
     model_config = {"arbitrary_types_allowed": True}
 
     batch_id: UUID
-    job_handles: list[Any]
+    job_handles: list["JobHandle[BaseModel | None]"]
     """List of :class:`~taskq.client.JobHandle` instances, one per enqueued item."""
     size: int
-    finalizer_handle: Any | None = None
+    finalizer_handle: "JobHandle[BaseModel | None] | None" = None
     """The :class:`~taskq.client.JobHandle` for the finalizer job, or ``None``
     when no finalizer was enqueued.  When set, the finalizer handle is also
     appended as the last entry of :attr:`job_handles` for backward compat."""
@@ -173,6 +184,55 @@ class BatchSummary:
     created_at: datetime
     completed_at: datetime | None
     completion: BatchCompletionStatus
+
+
+def _decide_batch_status(
+    *,
+    batch_id: UUID,
+    batch_row: BatchRow | None,
+    status: BatchCompletionStatus,
+    snooze_interval: timedelta,
+    expect_at_least: int | None,
+    on_empty: Literal["error", "ok"],
+) -> BatchCompletionStatus:
+    """Apply the wait_for_batch decision table.
+
+    Raises :class:`~taskq.exceptions.Snooze` when the batch is aborted
+    but jobs are still in flight (so the caller retries until all are
+    terminal, at which point :class:`~taskq.exceptions.BatchAbortedError`
+    is raised).  Raises :class:`~taskq.exceptions.EmptyBatchError` when
+    the batch has fewer jobs than expected or no jobs at all and no
+    batches row exists (unless ``on_empty="ok"``).
+
+    When ``status.pending > 0`` and the batch is NOT aborted, returns
+    the status unchanged — the caller decides whether to raise
+    :class:`~taskq.exceptions.Snooze` (exception mode) or block
+    (polling mode).
+    """
+    # Case 1-2: batch is aborted
+    if batch_row is not None and batch_row.status == "aborted":
+        if status.pending == 0:
+            raise BatchAbortedError(
+                batch_id,
+                batch_row.consecutive_failures,
+                batch_row.failure_threshold or 0,
+            )
+        raise Snooze(snooze_interval)
+
+    # Case 3: expected minimum not met
+    if expect_at_least is not None and status.pending == 0 and status.total < expect_at_least:
+        raise EmptyBatchError(batch_id, expected=expect_at_least, actual=status.total)
+
+    # Case 4-6: no jobs found
+    if status.total == 0:
+        if batch_row is not None:
+            return status
+        if on_empty == "ok":
+            return status
+        raise EmptyBatchError(batch_id, expected=1, actual=0)
+
+    # Case 7-8: jobs exist — if pending > 0, caller decides Snooze vs block
+    return status
 
 
 _WAIT_FOR_BATCH_SQL = (
@@ -249,9 +309,13 @@ async def apply_batch_terminal_outcome(
 
     # outcome is "cancelled" or "crashed" — the only remaining
     # terminal outcomes in AttemptOutcome that are not handled above.
-    remaining = await backend.count_batch_non_terminal(batch_id)
-    if remaining == 0:
-        await backend.complete_batch(batch_id)
+    if outcome == "cancelled" or outcome == "crashed":
+        remaining = await backend.count_batch_non_terminal(batch_id)
+        if remaining == 0:
+            await backend.complete_batch(batch_id, connection=loop_conn)
+        return
+
+    assert_never(outcome)
 
 
 async def wait_for_batch(
@@ -298,8 +362,6 @@ async def wait_for_batch(
     ``schema`` must match the schema used when the PostgresBackend was
     constructed (default ``"taskq"``).
     """
-    from taskq.exceptions import BatchAbortedError, EmptyBatchError, Snooze
-
     if not _IDENT_RE.match(schema):
         raise ValueError(f"invalid schema identifier: {schema!r}")
 
@@ -319,35 +381,43 @@ async def wait_for_batch(
     containment = dumps_str({"batch_id": str(batch_id)})
 
     _batch_row_sql = (
-        f"SELECT status, consecutive_failures, failure_threshold, finalizer_job_id "  # noqa: S608  # Why: schema validated against _IDENT_RE immediately above.
+        f"SELECT id, queue, status, expected_size, consecutive_failures, "  # noqa: S608  # Why: schema validated against _IDENT_RE immediately above.
+        f"failure_threshold, finalizer_job_id, originating_actor, "
+        f"created_at, completed_at, metadata "
         f'FROM "{schema}".batches WHERE id = $1'
     )
 
     async def _fetch_batch_row(
         conn: "asyncpg.Connection",
-    ) -> tuple[str, int, int | None, UUID | None] | None:
+    ) -> BatchRow | None:
         try:
-            row = await conn.fetchrow(_batch_row_sql, batch_id)
+            rec = await conn.fetchrow(_batch_row_sql, batch_id)
         except _asyncpg.exceptions.UndefinedTableError:
             return None
-        if row is None:
+        if rec is None:
             return None
-        raw_finalizer = row["finalizer_job_id"]
-        return (
-            str(row["status"]),
-            int(row["consecutive_failures"]),
-            int(row["failure_threshold"]) if row["failure_threshold"] is not None else None,
-            UUID(str(raw_finalizer)) if raw_finalizer is not None else None,
+        return BatchRow(
+            id=rec["id"],
+            queue=rec["queue"],
+            status=rec["status"],
+            expected_size=rec["expected_size"],
+            consecutive_failures=rec["consecutive_failures"],
+            failure_threshold=rec["failure_threshold"],
+            finalizer_job_id=rec["finalizer_job_id"],
+            originating_actor=rec["originating_actor"],
+            created_at=rec["created_at"],
+            completed_at=rec["completed_at"],
+            metadata=jsonb_to_dict(rec["metadata"]) or {},
         )
 
     async def _fetch_and_decide(
         conn: "asyncpg.Connection",
     ) -> BatchCompletionStatus:
-        batch_info = await _fetch_batch_row(conn)
+        batch_row = await _fetch_batch_row(conn)
 
         exclusion_id = exclude_job_id
-        if exclusion_id is None and batch_info is not None:
-            exclusion_id = batch_info[3]
+        if exclusion_id is None and batch_row is not None:
+            exclusion_id = batch_row.finalizer_job_id
 
         if exclusion_id is not None:
             sql = _WAIT_FOR_BATCH_SQL.format(schema=schema) + " AND id <> $2"
@@ -377,32 +447,20 @@ async def wait_for_batch(
                 abandoned=int(row["abandoned"]),
             )
 
-        # ── Decision table (first matching row wins) ──
+        status = _decide_batch_status(
+            batch_id=batch_id,
+            batch_row=batch_row,
+            status=status,
+            snooze_interval=snooze_interval,
+            expect_at_least=expect_at_least,
+            on_empty=on_empty,
+        )
 
-        if batch_info is not None and batch_info[0] == "aborted":
-            if status.pending == 0:
-                raise BatchAbortedError(
-                    batch_id,
-                    batch_info[1],
-                    batch_info[2] or 0,
-                )
+        # Snooze for pending > 0 (batch not aborted) — the decision
+        # function already raises Snooze for the aborted-but-in-flight
+        # case.  Here we handle the normal pending case.
+        if status.pending > 0 and snooze_via_exception:
             raise Snooze(snooze_interval)
-
-        if expect_at_least is not None and status.pending == 0 and status.total < expect_at_least:
-            raise EmptyBatchError(batch_id, expected=expect_at_least, actual=status.total)
-
-        if status.total == 0:
-            if batch_info is not None:
-                return status
-            if on_empty == "ok":
-                return status
-            raise EmptyBatchError(batch_id, expected=1, actual=0)
-
-        if status.pending > 0:
-            if snooze_via_exception:
-                raise Snooze(snooze_interval)
-            # Blocking path: sleep-loop caller will re-query outside.
-            return status
 
         return status
 
@@ -428,3 +486,15 @@ async def wait_for_batch(
 # EnqueueItem is first parsed.  model_rebuild() ensures Pydantic can
 # resolve the forward reference and validate instances at runtime.
 EnqueueItem.model_rebuild()
+
+# BatchHandle references JobHandle in its field types. JobHandle lives in
+# taskq.client._handle, which (via taskq.client.__init__) imports back from
+# taskq.batch — a circular dependency.  Deferring the import to the end of
+# the module ensures all batch.py classes are already defined when the
+# client subpackage tries to import them.  model_rebuild() then resolves
+# the forward references in BatchHandle's field annotations.
+from taskq.client._handle import (  # noqa: E402  # Why: deferred to end of module to break circular dependency with taskq.client; needed for Pydantic forward-reference resolution via model_rebuild()
+    JobHandle,
+)
+
+BatchHandle.model_rebuild()

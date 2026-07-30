@@ -11,6 +11,8 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
+import pytest
+
 from taskq._ids import new_uuid
 from taskq.backend._protocol import (
     BatchFilter,
@@ -584,6 +586,86 @@ class TestInMemoryListBatches:
         assert results[0][0].id == bid2
         assert results[0][0].status == "complete"
 
+    async def test_list_batches_queue_and_active_combined(self) -> None:
+        backend = _make_backend()
+
+        # ingest/active
+        bid_ia = new_uuid()
+        # ingest/complete
+        bid_ic = new_uuid()
+        # export/active
+        bid_ea = new_uuid()
+
+        await backend.create_batch(
+            bid_ia,
+            queue="ingest",
+            expected_size=3,
+            failure_threshold=None,
+            finalizer_job_id=None,
+            originating_actor=None,
+        )
+        await backend.create_batch(
+            bid_ic,
+            queue="ingest",
+            expected_size=3,
+            failure_threshold=None,
+            finalizer_job_id=None,
+            originating_actor=None,
+        )
+        await backend.create_batch(
+            bid_ea,
+            queue="export",
+            expected_size=3,
+            failure_threshold=None,
+            finalizer_job_id=None,
+            originating_actor=None,
+        )
+        await backend.complete_batch(bid_ic)
+
+        results = await backend.list_batches(BatchFilter(queue="ingest", active=True))
+
+        assert len(results) == 1
+        assert results[0][0].id == bid_ia
+        assert results[0][0].queue == "ingest"
+        assert results[0][0].status == "active"
+
+    async def test_list_batches_batch_id_and_queue_combined(self) -> None:
+        backend = _make_backend()
+
+        bid1 = new_uuid()
+        bid2 = new_uuid()
+
+        await backend.create_batch(
+            bid1,
+            queue="ingest",
+            expected_size=3,
+            failure_threshold=None,
+            finalizer_job_id=None,
+            originating_actor=None,
+        )
+        await backend.create_batch(
+            bid2,
+            queue="ingest",
+            expected_size=3,
+            failure_threshold=None,
+            finalizer_job_id=None,
+            originating_actor=None,
+        )
+        await backend.create_batch(
+            new_uuid(),
+            queue="export",
+            expected_size=3,
+            failure_threshold=None,
+            finalizer_job_id=None,
+            originating_actor=None,
+        )
+
+        results = await backend.list_batches(BatchFilter(queue="ingest", batch_id=bid2))
+
+        assert len(results) == 1
+        assert results[0][0].id == bid2
+        assert results[0][0].queue == "ingest"
+
 
 # ── TestInMemoryEnqueueBatchAtomic ──────────────────────────────────────
 
@@ -673,6 +755,32 @@ class TestInMemoryEnqueueBatchAtomic:
         )
 
         assert len(rows) == 3
+
+    async def test_enqueue_batch_atomic_rolls_back_on_generator_failure(self) -> None:
+        backend = _make_backend()
+        bid = new_uuid()
+        batch_row = _make_batch_row(id=bid, queue="default", expected_size=5)
+
+        def gen() -> Iterable[EnqueueArgs]:
+            yield make_enqueue_args(actor="a1", queue="default")
+            yield make_enqueue_args(actor="a2", queue="default")
+            yield make_enqueue_args(actor="a3", queue="default")
+            raise ValueError("generator exploded")
+
+        with pytest.raises(ValueError, match="generator exploded"):
+            await backend.enqueue_batch_atomic(
+                gen(),
+                batch_id=bid,
+                queue="default",
+                batch_row=batch_row,
+                finalizer_args=None,
+            )
+
+        # No jobs should remain after rollback.
+        batch_jobs = [r for r in backend._jobs.values() if r.metadata.get("batch_id") == str(bid)]
+        assert len(batch_jobs) == 0
+        # No batch row should remain after rollback.
+        assert bid not in backend._batches
 
 
 # ── TestInMemoryPruneOldBatches ─────────────────────────────────────────
