@@ -705,3 +705,73 @@ async def concurrent_tracked_worker(
         "ct_finished",
         {"run_id": payload.run_id, "job_index": payload.job_index},
     )
+
+
+# ── Tagged pipeline actors (sub-job tag inheritance / merge) ──────────────
+
+
+class PipelineStagePayload(BaseModel):
+    run_id: str
+    stage: int
+    total_stages: int = 3
+
+
+@actor(name="pipeline_stage", queue="e2e")
+async def pipeline_stage(
+    payload: PipelineStagePayload,
+    ctx: JobContext[PipelineStagePayload],
+    *,
+    pool: asyncpg.Pool,
+) -> None:
+    """Linear pipeline: each stage enqueues the next via ctx.jobs.enqueue()."""
+    await _record_effect(
+        pool,
+        ctx,
+        "stage",
+        {"run_id": payload.run_id, "stage": payload.stage},
+    )
+    await asyncio.sleep(0.05)
+
+    if payload.stage < payload.total_stages:
+        await ctx.jobs.enqueue(
+            pipeline_stage,
+            PipelineStagePayload(
+                run_id=payload.run_id,
+                stage=payload.stage + 1,
+                total_stages=payload.total_stages,
+            ),
+        )
+
+
+class TaggedPipelineStagePayload(BaseModel):
+    run_id: str
+    stage: int
+    total_stages: int = 3
+
+
+@actor(name="tagged_pipeline_stage", queue="e2e")
+async def tagged_pipeline_stage(
+    payload: TaggedPipelineStagePayload,
+    ctx: JobContext[TaggedPipelineStagePayload],
+    *,
+    pool: asyncpg.Pool,
+) -> None:
+    """Pipeline that passes explicit tags to sub-job enqueue."""
+    await _record_effect(
+        pool,
+        ctx,
+        "stage",
+        {"run_id": payload.run_id, "stage": payload.stage},
+    )
+    await asyncio.sleep(0.05)
+
+    if payload.stage < payload.total_stages:
+        await ctx.jobs.enqueue(
+            tagged_pipeline_stage,
+            TaggedPipelineStagePayload(
+                run_id=payload.run_id,
+                stage=payload.stage + 1,
+                total_stages=payload.total_stages,
+            ),
+            tags=[f"stage-{payload.stage + 1}"],
+        )
