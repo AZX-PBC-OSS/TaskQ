@@ -142,3 +142,11 @@ def test_deregister_double_deregister_exit_one(monkeypatch: pytest.MonkeyPatch) 
     result = runner.invoke(app, ["actor-config", "deregister", "already-gone"])
     assert result.exit_code == 1
     assert "no stored actor_config row" in result.stderr
+
+
+def test_deregister_forwards_configured_schema(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TASKQ_SCHEMA_NAME", "my_test_schema")
+    captured = _patch_deregister(monkeypatch)
+    result = runner.invoke(app, ["actor-config", "deregister", "my-actor"])
+    assert result.exit_code == 0, f"stderr: {result.stderr}"
+    assert captured["kwargs"]["schema"] == "my_test_schema"

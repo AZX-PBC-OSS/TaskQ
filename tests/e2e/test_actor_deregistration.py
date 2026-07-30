@@ -156,6 +156,9 @@ async def test_deregister_force_with_purge_queue_after_completion(
     assert result.actor_config_deleted is True
     assert result.jobs_cancelled == 0
     assert result.terminal_jobs_remaining >= 1
+    # All e2e actors share queue="e2e" — purge_queue=True is a safe no-op
+    # because the orphan guard correctly refuses to delete a shared queue.
+    assert result.queue_purged is False
 
     ac_count = await e2e_pg_pool.fetchval(
         f'SELECT count(*) FROM "{schema}".actor_config WHERE actor = $1',

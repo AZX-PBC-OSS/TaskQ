@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from jinja2 import Environment
 
-from taskq.actor_config_ops import deregister_actor
+from taskq.actor_config_ops import deregister_actor, list_actor_summaries
 from taskq.exceptions import ActorDeregistrationError, ActorNotFoundError
 from taskq.settings import TaskQSettings
 from taskq.web.admin._factory import (
@@ -20,18 +20,6 @@ from taskq.web.admin._factory import (
     get_templates,
     validate_csrf,
 )
-
-_ACTORS_SQL = """
-SELECT ac.actor, ac.max_concurrent, ac.max_pending, ac.queue,
-       ac.result_ttl, ac.metadata::text AS metadata, ac.updated_at::text AS updated_at,
-       (SELECT count(*) FROM "{schema}".jobs j
-        WHERE j.actor = ac.actor
-        AND j.status IN ('pending', 'scheduled', 'running')) AS active_job_count,
-       (SELECT count(*) FROM "{schema}".cron_schedules cs
-        WHERE cs.actor = ac.actor AND cs.enabled = true) AS enabled_schedule_count
-  FROM "{schema}".actor_config ac
- ORDER BY ac.actor
-""".strip()
 
 
 def register(router: APIRouter) -> None:
@@ -46,11 +34,9 @@ def register(router: APIRouter) -> None:
         csrf_token: str = Depends(get_csrf_token),
         notice: str | None = None,
     ) -> HTMLResponse:
-        actors_sql = _ACTORS_SQL.format(schema=schema)
-        rows: list[asyncpg.Record] = []
+        actors: list[dict[str, object]] = []
         async with pool.acquire() as conn:
-            rows = await conn.fetch(actors_sql)
-        actors = [dict(r) for r in rows]
+            actors = await list_actor_summaries(conn, schema=schema)
         realtime_mode, mode_label = realtime_ctx
         html = tmpl.get_template("actors.html").render(
             actors=actors,

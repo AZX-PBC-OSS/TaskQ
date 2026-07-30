@@ -9,14 +9,23 @@ from taskq.testing.fixtures import ModulePgSchema
 
 def test_actors_client_importable_from_taskq() -> None:
     from taskq import ActorsClient
+    from taskq.client._actors import ActorsClient as ClientActorsClient
 
-    assert ActorsClient is not None
+    assert ActorsClient is ClientActorsClient
 
 
 def test_deregister_result_importable_from_taskq() -> None:
     from taskq import DeregisterResult
+    from taskq.actor_config_ops import DeregisterResult as OpsDeregisterResult
 
-    assert DeregisterResult is not None
+    assert DeregisterResult is OpsDeregisterResult
+
+
+def test_actor_config_row_importable_from_taskq() -> None:
+    from taskq import ActorConfigRow
+    from taskq.actor_config_ops import ActorConfigRow as OpsActorConfigRow
+
+    assert ActorConfigRow is OpsActorConfigRow
 
 
 def test_deregistration_exceptions_importable_from_taskq() -> None:

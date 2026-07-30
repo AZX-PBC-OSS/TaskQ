@@ -993,6 +993,11 @@ dispatched** and no background sweep will reap it.
 it. Deregistration is best-effort against concurrent enqueue/dispatch;
 callers must quiesce the actor first.
 
+**Stop workers first:** A concurrent worker startup (`sync_actor_config`)
+can re-create the `actor_config` row after deregistration, with capacity
+fields reset to `@actor(...)` defaults. Stop all workers for the actor
+before calling `deregister`.
+
 ### Idempotent deregistration
 
 A second `deregister` call on an already-deregistered actor raises

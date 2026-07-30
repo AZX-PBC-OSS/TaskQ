@@ -11,7 +11,7 @@ Canonical imports:
 import importlib.metadata
 
 from taskq.actor import ActorFn, ActorFnWithCtx, ActorHandler, ActorRef, actor
-from taskq.actor_config_ops import DeregisterResult
+from taskq.actor_config_ops import ActorConfigRow, DeregisterResult
 from taskq.auth import (
     PgCredential,
     PgCredentialProvider,
@@ -92,6 +92,7 @@ from taskq.scheduler import register_cron
 __all__ = [
     "ActorConfigDriftError",
     "ActorConfigDriftList",
+    "ActorConfigRow",
     "ActorDeregistrationError",
     "ActorFn",
     "ActorFnWithCtx",

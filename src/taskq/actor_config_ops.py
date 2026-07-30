@@ -26,14 +26,17 @@ read as *fall back to the ``@actor(...)`` literal* — clearing reverts an
 override to the code default.
 """
 
+from __future__ import annotations
+
 import math
 from dataclasses import dataclass
-from typing import Final
-
-import asyncpg
+from typing import TYPE_CHECKING, Final
 
 from taskq._json import loads
 from taskq.backend._protocol import ConnLike
+from taskq.backend._records import jsonb_param
+from taskq.backend._sql import INSERT_EVENT_SQL
+from taskq.backend.statemachine import ACTIVE_STATUSES, TERMINAL_STATUSES
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining it
 )
@@ -43,6 +46,9 @@ from taskq.exceptions import (
     ActorNotFoundError,
 )
 
+if TYPE_CHECKING:
+    import asyncpg
+
 __all__ = [
     "UNSET",
     "ActorConfigRow",
@@ -51,6 +57,7 @@ __all__ = [
     "deregister_actor",
     "get_actor_config",
     "list_actor_configs",
+    "list_actor_summaries",
     "set_actor_config_capacity",
 ]
 
@@ -139,6 +146,30 @@ async def list_actor_configs(conn: ConnLike, *, schema: str = "taskq") -> list[A
         raise ValueError(f"invalid schema identifier: {schema!r}")
     rows = await conn.fetch(_LIST_ACTOR_CONFIG_SQL.format(schema=schema))
     return [_row_to_dataclass(row) for row in rows]
+
+
+_ACTOR_SUMMARIES_SQL = """
+SELECT ac.actor, ac.max_concurrent, ac.max_pending, ac.queue,
+       ac.updated_at::text AS updated_at,
+       (SELECT count(*) FROM "{schema}".jobs j
+        WHERE j.actor = ac.actor
+        AND j.status = ANY($1::"{schema}".job_status[])) AS active_job_count,
+       (SELECT count(*) FROM "{schema}".cron_schedules cs
+        WHERE cs.actor = ac.actor AND cs.enabled = true) AS enabled_schedule_count
+  FROM "{schema}".actor_config ac
+ ORDER BY ac.actor
+""".strip()
+
+
+async def list_actor_summaries(conn: ConnLike, *, schema: str = "taskq") -> list[dict[str, object]]:
+    """Return actor_config rows with active job and schedule counts for display."""
+    if not _IDENT_RE.match(schema):
+        raise ValueError(f"invalid schema identifier: {schema!r}")
+    rows = await conn.fetch(
+        _ACTOR_SUMMARIES_SQL.format(schema=schema),
+        list(ACTIVE_STATUSES),
+    )
+    return [dict(r) for r in rows]
 
 
 async def get_actor_config(
@@ -239,8 +270,11 @@ async def set_actor_config_capacity(
 
 # ── deregister_actor ────────────────────────────────────────────────────
 
-_NON_TERMINAL_STATUSES: tuple[str, ...] = ("pending", "scheduled", "running")
 _RUNNING_STATUS: str = "running"
+
+_DEREGISTER_CHECK_ACTOR_EXISTS_SQL = """
+SELECT 1 FROM "{schema}".actor_config WHERE actor = $1
+""".strip()
 
 _DEREGISTER_CHECK_ACTIVE_JOBS_SQL = """
 SELECT status, count(*) AS cnt
@@ -262,6 +296,7 @@ UPDATE "{schema}".jobs
        error_message = 'Job cancelled by actor deregistration (force=True)'
  WHERE actor = $1
    AND status IN ('pending', 'scheduled')
+RETURNING id
 """.strip()
 
 _DEREGISTER_DISABLE_SCHEDULES_SQL = """
@@ -286,7 +321,7 @@ RETURNING name
 
 _DEREGISTER_COUNT_TERMINAL_SQL = """
 SELECT count(*) FROM "{schema}".jobs
- WHERE actor = $1 AND status NOT IN ('pending', 'scheduled', 'running')
+ WHERE actor = $1 AND status = ANY($2::"{schema}".job_status[])
 """.strip()
 
 
@@ -340,11 +375,22 @@ async def deregister_actor(
         raise ValueError(f"invalid schema identifier: {schema!r}")
 
     async with conn.transaction():
+        # Check actor_config row exists first — ActorNotFoundError takes
+        # precedence over all other checks so callers don't get misleading
+        # errors for actors that are already deregistered but have stranded
+        # jobs.
+        exists = await conn.fetchval(
+            _DEREGISTER_CHECK_ACTOR_EXISTS_SQL.format(schema=schema),
+            actor,
+        )
+        if not exists:
+            raise ActorNotFoundError(actor)
+
         if not force:
             active_rows = await conn.fetch(
                 _DEREGISTER_CHECK_ACTIVE_JOBS_SQL.format(schema=schema),
                 actor,
-                list(_NON_TERMINAL_STATUSES),
+                list(ACTIVE_STATUSES),
             )
             if active_rows:
                 status_counts = {row["status"]: row["cnt"] for row in active_rows}
@@ -370,13 +416,26 @@ async def deregister_actor(
             if running_rows:
                 status_counts = {row["status"]: row["cnt"] for row in running_rows}
                 active_count = sum(status_counts.values())
-                raise ActorHasActiveJobsError(actor, active_count, status_counts)
+                raise ActorHasActiveJobsError(actor, active_count, status_counts, force=True)
 
-            cancel_result = await conn.execute(
+            cancelled_rows = await conn.fetch(
                 _DEREGISTER_CANCEL_PENDING_SQL.format(schema=schema),
                 actor,
             )
-            jobs_cancelled = int(cancel_result.split()[-1]) if cancel_result else 0
+            jobs_cancelled = len(cancelled_rows)
+            if cancelled_rows:
+                detail = jsonb_param(
+                    {
+                        "from_state": "pending_or_scheduled",
+                        "to_state": "cancelled",
+                        "reason": "actor_deregistered",
+                    }
+                )
+                event_sql = INSERT_EVENT_SQL.format(schema=schema)
+                await conn.executemany(
+                    event_sql,
+                    [(row["id"], "state_change", detail) for row in cancelled_rows],
+                )
 
             disable_result = await conn.execute(
                 _DEREGISTER_DISABLE_SCHEDULES_SQL.format(schema=schema),
@@ -389,6 +448,9 @@ async def deregister_actor(
             actor,
         )
         if not deleted_rows:
+            # Handles the concurrent-delete race: under READ COMMITTED, a
+            # concurrent transaction could delete the row between our
+            # preflight check and this DELETE.
             raise ActorNotFoundError(actor)
 
         queue_name = deleted_rows[0]["queue"]
@@ -396,6 +458,7 @@ async def deregister_actor(
         terminal_count = await conn.fetchval(
             _DEREGISTER_COUNT_TERMINAL_SQL.format(schema=schema),
             actor,
+            list(TERMINAL_STATUSES),
         )
 
         queue_purged = False

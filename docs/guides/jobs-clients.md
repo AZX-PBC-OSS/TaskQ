@@ -4,6 +4,9 @@
 `Backend` and adds typed payload serialisation, `JobHandle[R]` construction, and
 `CancelResult` building.
 
+**Actor management:** `tq.actors` provides `list()`, `get()`, `set_capacity()`,
+and `deregister()` — see [Actor deregistration](actors.md#actor-deregistration).
+
 ---
 
 ## Job lifecycle
