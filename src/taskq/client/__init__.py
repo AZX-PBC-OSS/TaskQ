@@ -1,8 +1,9 @@
 """TaskQ client — the public surface for enqueuing, querying, and
-cancelling jobs.
+cancelling jobs, plus actor management (listing, capacity tuning,
+deregistration).
 
-Re-exports :class:`JobsClient`, :class:`JobHandle`, :class:`TaskQ`, and
-:class:`JobEvent`.
+Re-exports :class:`JobsClient`, :class:`ActorsClient`, :class:`JobHandle`,
+:class:`TaskQ`, and :class:`JobEvent`.
 Import from ``taskq.client`` (or from ``taskq`` which re-exports these
 names).
 

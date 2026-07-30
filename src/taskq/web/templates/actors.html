@@ -38,7 +38,7 @@ document.addEventListener('submit', function(e) {
         <tr class="hover:bg-slate-50 dark:hover:bg-slate-800">
           <td class="px-4 py-2 text-sm font-mono">{{ a.actor }}</td>
           <td class="px-4 py-2 text-sm">{{ a.queue }}</td>
-          <td class="px-4 py-2 text-sm">{{ a.max_concurrent or '∞' }}</td>
+          <td class="px-4 py-2 text-sm">{{ a.max_concurrent if a.max_concurrent is not none else '∞' }}</td>
           <td class="px-4 py-2 text-sm">{{ a.max_pending or '—' }}</td>
           <td class="px-4 py-2 text-sm">
             <span class="inline-flex items-center px-2 py-0.5 rounded text-xs

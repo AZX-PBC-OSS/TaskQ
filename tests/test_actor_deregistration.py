@@ -9,12 +9,12 @@ Postgres executes it correctly with enum casts, transactional rollback,
 and the ``NOT EXISTS`` subquery for queue purging.
 """
 
+import asyncio
 from uuid import uuid4
 
 import asyncpg
 import pytest
 
-from taskq._ids import new_base62
 from taskq.actor_config import ActorConfig
 from taskq.actor_config_ops import DeregisterResult, deregister_actor, get_actor_config
 from taskq.exceptions import (
@@ -22,21 +22,13 @@ from taskq.exceptions import (
     ActorHasEnabledSchedulesError,
     ActorNotFoundError,
 )
-from taskq.settings import TaskQSettings
+from taskq.testing.fixtures import ModulePgSchema
 from taskq.worker.startup import sync_actor_config
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────
-
-
-async def _ensure_schema(conn: asyncpg.Connection, schema: str) -> None:
-    """Drop and re-create the full TaskQ schema via ``apply_pending``."""
-    from taskq.migrate import apply_pending
-
-    await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
-    await apply_pending(conn, schema=schema)
 
 
 async def _insert_job(
@@ -121,43 +113,42 @@ async def _job_status(conn: asyncpg.Connection, schema: str, job_id: str) -> str
     )
 
 
-async def _schedule_enabled(conn: asyncpg.Connection, schema: str, schedule_id: str) -> bool:
-    """Return the ``enabled`` value of a cron schedule row."""
-    return bool(
-        await conn.fetchval(
-            f'SELECT enabled FROM "{schema}".cron_schedules WHERE id = $1',  # noqa: S608
-            schedule_id,
-        )
+async def _schedule_state(conn: asyncpg.Connection, schema: str, schedule_id: str) -> str | None:
+    """Return 'enabled', 'disabled', or None (deleted)."""
+    row = await conn.fetchrow(
+        f'SELECT enabled FROM "{schema}".cron_schedules WHERE id = $1',  # noqa: S608
+        schedule_id,
     )
-
-
-def _make_schema() -> str:
-    return f"tqd_{new_base62()}".lower()
+    if row is None:
+        return None
+    return "enabled" if row["enabled"] else "disabled"
 
 
 # ── force=False path ────────────────────────────────────────────────────
 
 
-async def test_deregister_raises_not_found_for_unknown_actor(pg_conn: asyncpg.Connection) -> None:
-    schema = _make_schema()
-    await _ensure_schema(pg_conn, schema)
+async def test_deregister_raises_not_found_for_unknown_actor(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_schema: ModulePgSchema,
+) -> None:
+    schema = module_pg_schema.schema_name
 
     with pytest.raises(ActorNotFoundError, match="no stored actor_config row"):
-        await deregister_actor(pg_conn, "ghost", schema=schema)
+        await deregister_actor(clean_pg_conn, "ghost", schema=schema)
 
 
 async def test_deregister_succeeds_when_no_jobs_or_schedules(
-    pg_conn: asyncpg.Connection,
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_schema: ModulePgSchema,
 ) -> None:
-    schema = _make_schema()
-    await _ensure_schema(pg_conn, schema)
+    schema = module_pg_schema.schema_name
     await sync_actor_config(
-        pg_conn,
+        clean_pg_conn,
         [ActorConfig(actor="clean_actor", max_concurrent=5, queue="default")],
         schema=schema,
     )
 
-    result = await deregister_actor(pg_conn, "clean_actor", schema=schema)
+    result = await deregister_actor(clean_pg_conn, "clean_actor", schema=schema)
 
     assert isinstance(result, DeregisterResult)
     assert result.actor == "clean_actor"
@@ -168,117 +159,127 @@ async def test_deregister_succeeds_when_no_jobs_or_schedules(
     assert result.terminal_jobs_remaining == 0
     assert result.queue_purged is False
 
-    assert await get_actor_config(pg_conn, "clean_actor", schema=schema) is None
+    assert await get_actor_config(clean_pg_conn, "clean_actor", schema=schema) is None
 
 
-async def test_deregister_refuses_with_pending_jobs(pg_conn: asyncpg.Connection) -> None:
-    schema = _make_schema()
-    await _ensure_schema(pg_conn, schema)
+async def test_deregister_refuses_with_pending_jobs(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_schema: ModulePgSchema,
+) -> None:
+    schema = module_pg_schema.schema_name
     await sync_actor_config(
-        pg_conn,
+        clean_pg_conn,
         [ActorConfig(actor="busy_actor", max_concurrent=5, queue="default")],
         schema=schema,
     )
-    await _insert_job(pg_conn, schema, actor="busy_actor", status="pending")
+    await _insert_job(clean_pg_conn, schema, actor="busy_actor", status="pending")
 
     with pytest.raises(ActorHasActiveJobsError) as exc_info:
-        await deregister_actor(pg_conn, "busy_actor", schema=schema)
+        await deregister_actor(clean_pg_conn, "busy_actor", schema=schema)
 
     assert exc_info.value.active_count == 1
     assert exc_info.value.status_counts == {"pending": 1}
 
     # Row must still exist — the transaction rolled back.
-    assert await get_actor_config(pg_conn, "busy_actor", schema=schema) is not None
+    assert await get_actor_config(clean_pg_conn, "busy_actor", schema=schema) is not None
 
 
-async def test_deregister_refuses_with_running_jobs(pg_conn: asyncpg.Connection) -> None:
-    schema = _make_schema()
-    await _ensure_schema(pg_conn, schema)
+async def test_deregister_refuses_with_running_jobs(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_schema: ModulePgSchema,
+) -> None:
+    schema = module_pg_schema.schema_name
     await sync_actor_config(
-        pg_conn,
+        clean_pg_conn,
         [ActorConfig(actor="run_actor", max_concurrent=5, queue="default")],
         schema=schema,
     )
-    await _insert_job(pg_conn, schema, actor="run_actor", status="running")
+    await _insert_job(clean_pg_conn, schema, actor="run_actor", status="running")
 
     with pytest.raises(ActorHasActiveJobsError) as exc_info:
-        await deregister_actor(pg_conn, "run_actor", schema=schema)
+        await deregister_actor(clean_pg_conn, "run_actor", schema=schema)
 
     assert exc_info.value.active_count == 1
     assert exc_info.value.status_counts == {"running": 1}
-    assert await get_actor_config(pg_conn, "run_actor", schema=schema) is not None
+    assert await get_actor_config(clean_pg_conn, "run_actor", schema=schema) is not None
 
 
-async def test_deregister_refuses_with_enabled_schedules(pg_conn: asyncpg.Connection) -> None:
-    schema = _make_schema()
-    await _ensure_schema(pg_conn, schema)
+async def test_deregister_refuses_with_enabled_schedules(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_schema: ModulePgSchema,
+) -> None:
+    schema = module_pg_schema.schema_name
     await sync_actor_config(
-        pg_conn,
+        clean_pg_conn,
         [ActorConfig(actor="sched_actor", max_concurrent=5, queue="default")],
         schema=schema,
     )
-    schedule_id = await _insert_schedule(pg_conn, schema, actor="sched_actor", enabled=True)
+    schedule_id = await _insert_schedule(clean_pg_conn, schema, actor="sched_actor", enabled=True)
 
     with pytest.raises(ActorHasEnabledSchedulesError) as exc_info:
-        await deregister_actor(pg_conn, "sched_actor", schema=schema)
+        await deregister_actor(clean_pg_conn, "sched_actor", schema=schema)
 
     assert exc_info.value.schedule_ids == [schedule_id]
-    assert await get_actor_config(pg_conn, "sched_actor", schema=schema) is not None
+    assert await get_actor_config(clean_pg_conn, "sched_actor", schema=schema) is not None
 
 
-async def test_deregister_succeeds_with_disabled_schedules(pg_conn: asyncpg.Connection) -> None:
-    schema = _make_schema()
-    await _ensure_schema(pg_conn, schema)
+async def test_deregister_succeeds_with_disabled_schedules(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_schema: ModulePgSchema,
+) -> None:
+    schema = module_pg_schema.schema_name
     await sync_actor_config(
-        pg_conn,
+        clean_pg_conn,
         [ActorConfig(actor="dis_actor", max_concurrent=5, queue="default")],
         schema=schema,
     )
-    await _insert_schedule(pg_conn, schema, actor="dis_actor", enabled=False)
+    await _insert_schedule(clean_pg_conn, schema, actor="dis_actor", enabled=False)
 
-    result = await deregister_actor(pg_conn, "dis_actor", schema=schema)
+    result = await deregister_actor(clean_pg_conn, "dis_actor", schema=schema)
 
     assert result.actor_config_deleted is True
     assert result.schedules_disabled == 0
-    assert await get_actor_config(pg_conn, "dis_actor", schema=schema) is None
+    assert await get_actor_config(clean_pg_conn, "dis_actor", schema=schema) is None
 
 
-async def test_deregister_succeeds_with_terminal_jobs(pg_conn: asyncpg.Connection) -> None:
-    schema = _make_schema()
-    await _ensure_schema(pg_conn, schema)
+async def test_deregister_succeeds_with_terminal_jobs(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_schema: ModulePgSchema,
+) -> None:
+    schema = module_pg_schema.schema_name
     await sync_actor_config(
-        pg_conn,
+        clean_pg_conn,
         [ActorConfig(actor="term_actor", max_concurrent=5, queue="default")],
         schema=schema,
     )
-    await _insert_job(pg_conn, schema, actor="term_actor", status="succeeded")
-    await _insert_job(pg_conn, schema, actor="term_actor", status="failed")
+    await _insert_job(clean_pg_conn, schema, actor="term_actor", status="succeeded")
+    await _insert_job(clean_pg_conn, schema, actor="term_actor", status="failed")
 
-    result = await deregister_actor(pg_conn, "term_actor", schema=schema)
+    result = await deregister_actor(clean_pg_conn, "term_actor", schema=schema)
 
     assert result.actor_config_deleted is True
     assert result.terminal_jobs_remaining == 2
-    assert await get_actor_config(pg_conn, "term_actor", schema=schema) is None
+    assert await get_actor_config(clean_pg_conn, "term_actor", schema=schema) is None
 
 
 # ── force=True path ─────────────────────────────────────────────────────
 
 
 async def test_deregister_force_cancels_pending_and_disables_schedules(
-    pg_conn: asyncpg.Connection,
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_schema: ModulePgSchema,
 ) -> None:
-    schema = _make_schema()
-    await _ensure_schema(pg_conn, schema)
+    schema = module_pg_schema.schema_name
     await sync_actor_config(
-        pg_conn,
+        clean_pg_conn,
         [ActorConfig(actor="force_actor", max_concurrent=5, queue="default")],
         schema=schema,
     )
-    pending_id = await _insert_job(pg_conn, schema, actor="force_actor", status="pending")
-    scheduled_id = await _insert_job(pg_conn, schema, actor="force_actor", status="scheduled")
-    schedule_id = await _insert_schedule(pg_conn, schema, actor="force_actor", enabled=True)
+    pending_id = await _insert_job(clean_pg_conn, schema, actor="force_actor", status="pending")
+    scheduled_id = await _insert_job(clean_pg_conn, schema, actor="force_actor", status="scheduled")
+    schedule_id = await _insert_schedule(clean_pg_conn, schema, actor="force_actor", enabled=True)
 
-    result = await deregister_actor(pg_conn, "force_actor", force=True, schema=schema)
+    result = await deregister_actor(clean_pg_conn, "force_actor", force=True, schema=schema)
 
     assert result.actor_config_deleted is True
     assert result.jobs_cancelled == 2
@@ -289,213 +290,232 @@ async def test_deregister_force_cancels_pending_and_disables_schedules(
     assert result.terminal_jobs_remaining == 2
 
     # Verify DB state directly.
-    assert await _job_status(pg_conn, schema, pending_id) == "cancelled"
-    assert await _job_status(pg_conn, schema, scheduled_id) == "cancelled"
-    assert await _schedule_enabled(pg_conn, schema, schedule_id) is False
-    assert await get_actor_config(pg_conn, "force_actor", schema=schema) is None
+    assert await _job_status(clean_pg_conn, schema, pending_id) == "cancelled"
+    assert await _job_status(clean_pg_conn, schema, scheduled_id) == "cancelled"
+    assert await _schedule_state(clean_pg_conn, schema, schedule_id) == "disabled"
+    assert await get_actor_config(clean_pg_conn, "force_actor", schema=schema) is None
+
+    # Verify audit trail fields on cancelled jobs (M12).
+    job_row = await clean_pg_conn.fetchrow(
+        f'SELECT error_class, error_message, finished_at '  # noqa: S608  # Why: schema validated by _IDENT_RE; pending_id is a test-generated UUID.
+        f'FROM "{schema}".jobs WHERE id = $1',
+        pending_id,
+    )
+    assert job_row is not None
+    assert job_row["error_class"] == "ActorDeregistered"
+    assert job_row["error_message"] is not None
+    assert "actor deregistration" in job_row["error_message"]
+    assert job_row["finished_at"] is not None
 
 
-async def test_deregister_force_refuses_with_running_jobs(pg_conn: asyncpg.Connection) -> None:
-    schema = _make_schema()
-    await _ensure_schema(pg_conn, schema)
+async def test_deregister_force_refuses_with_running_jobs(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_schema: ModulePgSchema,
+) -> None:
+    schema = module_pg_schema.schema_name
     await sync_actor_config(
-        pg_conn,
+        clean_pg_conn,
         [ActorConfig(actor="frun_actor", max_concurrent=5, queue="default")],
         schema=schema,
     )
-    await _insert_job(pg_conn, schema, actor="frun_actor", status="running")
+    await _insert_job(clean_pg_conn, schema, actor="frun_actor", status="running")
 
     with pytest.raises(ActorHasActiveJobsError) as exc_info:
-        await deregister_actor(pg_conn, "frun_actor", force=True, schema=schema)
+        await deregister_actor(clean_pg_conn, "frun_actor", force=True, schema=schema)
 
     assert exc_info.value.active_count == 1
     assert exc_info.value.status_counts == {"running": 1}
-    assert await get_actor_config(pg_conn, "frun_actor", schema=schema) is not None
+    assert await get_actor_config(clean_pg_conn, "frun_actor", schema=schema) is not None
 
 
 async def test_deregister_force_with_running_and_pending_only_reports_running(
-    pg_conn: asyncpg.Connection,
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_schema: ModulePgSchema,
 ) -> None:
     """force=True checks only running jobs — pending jobs are not in the error
     because they would be cancelled, not blocking."""
-    schema = _make_schema()
-    await _ensure_schema(pg_conn, schema)
+    schema = module_pg_schema.schema_name
     await sync_actor_config(
-        pg_conn,
+        clean_pg_conn,
         [ActorConfig(actor="mix_actor", max_concurrent=5, queue="default")],
         schema=schema,
     )
-    await _insert_job(pg_conn, schema, actor="mix_actor", status="running")
-    await _insert_job(pg_conn, schema, actor="mix_actor", status="pending")
+    await _insert_job(clean_pg_conn, schema, actor="mix_actor", status="running")
+    await _insert_job(clean_pg_conn, schema, actor="mix_actor", status="pending")
 
     with pytest.raises(ActorHasActiveJobsError) as exc_info:
-        await deregister_actor(pg_conn, "mix_actor", force=True, schema=schema)
+        await deregister_actor(clean_pg_conn, "mix_actor", force=True, schema=schema)
 
     assert exc_info.value.active_count == 1
     assert exc_info.value.status_counts == {"running": 1}
     assert "pending" not in exc_info.value.status_counts
     # Row still exists — transaction rolled back.
-    assert await get_actor_config(pg_conn, "mix_actor", schema=schema) is not None
+    assert await get_actor_config(clean_pg_conn, "mix_actor", schema=schema) is not None
     # The pending job must still be pending — the transaction rolled back
     # on the raise, so the cancel UPDATE never committed.
-    pending_count = await pg_conn.fetchval(
+    pending_count = await clean_pg_conn.fetchval(
         f"SELECT count(*) FROM \"{schema}\".jobs WHERE actor = $1 AND status = 'pending'",  # noqa: S608  # Why: schema validated by _IDENT_RE in apply_pending; actor/status are test constants.
         "mix_actor",
     )
     assert pending_count == 1
 
 
-async def test_deregister_force_keeps_terminal_history(pg_conn: asyncpg.Connection) -> None:
+async def test_deregister_force_keeps_terminal_history(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_schema: ModulePgSchema,
+) -> None:
     """Terminal job rows are never modified — only pending/scheduled are cancelled."""
-    schema = _make_schema()
-    await _ensure_schema(pg_conn, schema)
+    schema = module_pg_schema.schema_name
     await sync_actor_config(
-        pg_conn,
+        clean_pg_conn,
         [ActorConfig(actor="hist_actor", max_concurrent=5, queue="default")],
         schema=schema,
     )
-    pending_id = await _insert_job(pg_conn, schema, actor="hist_actor", status="pending")
-    succeeded_id = await _insert_job(pg_conn, schema, actor="hist_actor", status="succeeded")
-    failed_id = await _insert_job(pg_conn, schema, actor="hist_actor", status="failed")
+    pending_id = await _insert_job(clean_pg_conn, schema, actor="hist_actor", status="pending")
+    succeeded_id = await _insert_job(clean_pg_conn, schema, actor="hist_actor", status="succeeded")
+    failed_id = await _insert_job(clean_pg_conn, schema, actor="hist_actor", status="failed")
 
-    result = await deregister_actor(pg_conn, "hist_actor", force=True, schema=schema)
+    result = await deregister_actor(clean_pg_conn, "hist_actor", force=True, schema=schema)
 
     assert result.jobs_cancelled == 1
     # terminal_jobs_remaining counts all terminal rows including the
     # newly-cancelled pending job: 1 cancelled + 1 succeeded + 1 failed.
     assert result.terminal_jobs_remaining == 3
 
-    assert await _job_status(pg_conn, schema, pending_id) == "cancelled"
-    assert await _job_status(pg_conn, schema, succeeded_id) == "succeeded"
-    assert await _job_status(pg_conn, schema, failed_id) == "failed"
+    assert await _job_status(clean_pg_conn, schema, pending_id) == "cancelled"
+    assert await _job_status(clean_pg_conn, schema, succeeded_id) == "succeeded"
+    assert await _job_status(clean_pg_conn, schema, failed_id) == "failed"
 
 
 # ── purge_queue path ─────────────────────────────────────────────────────
 
 
 async def test_deregister_purge_queue_deletes_orphaned_queue(
-    pg_conn: asyncpg.Connection,
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_schema: ModulePgSchema,
 ) -> None:
-    schema = _make_schema()
-    await _ensure_schema(pg_conn, schema)
-    await _insert_queue(pg_conn, schema, "solo_queue")
+    schema = module_pg_schema.schema_name
+    await _insert_queue(clean_pg_conn, schema, "solo_queue")
     await sync_actor_config(
-        pg_conn,
+        clean_pg_conn,
         [ActorConfig(actor="solo_actor", max_concurrent=5, queue="solo_queue")],
         schema=schema,
     )
 
     result = await deregister_actor(
-        pg_conn, "solo_actor", purge_queue=True, schema=schema
+        clean_pg_conn, "solo_actor", purge_queue=True, schema=schema
     )
 
     assert result.queue == "solo_queue"
     assert result.queue_purged is True
-    assert await _queue_exists(pg_conn, schema, "solo_queue") is False
+    assert await _queue_exists(clean_pg_conn, schema, "solo_queue") is False
 
 
 async def test_deregister_purge_queue_keeps_shared_queue(
-    pg_conn: asyncpg.Connection,
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_schema: ModulePgSchema,
 ) -> None:
-    schema = _make_schema()
-    await _ensure_schema(pg_conn, schema)
-    await _insert_queue(pg_conn, schema, "shared_queue")
+    schema = module_pg_schema.schema_name
+    await _insert_queue(clean_pg_conn, schema, "shared_queue")
     await sync_actor_config(
-        pg_conn,
+        clean_pg_conn,
         [
-            ActorConfig(actor="actor_a", max_concurrent=5, queue="shared_queue"),
-            ActorConfig(actor="actor_b", max_concurrent=5, queue="shared_queue"),
+            ActorConfig(actor="shared_a", max_concurrent=5, queue="shared_queue"),
+            ActorConfig(actor="shared_b", max_concurrent=5, queue="shared_queue"),
         ],
         schema=schema,
     )
 
     result = await deregister_actor(
-        pg_conn, "actor_a", purge_queue=True, schema=schema
+        clean_pg_conn, "shared_a", purge_queue=True, schema=schema
     )
 
     assert result.queue == "shared_queue"
     assert result.queue_purged is False
-    # The queue survives because actor_b still references it.
-    assert await _queue_exists(pg_conn, schema, "shared_queue") is True
-    # actor_b's row must still exist.
-    assert await get_actor_config(pg_conn, "actor_b", schema=schema) is not None
+    # The queue survives because shared_b still references it.
+    assert await _queue_exists(clean_pg_conn, schema, "shared_queue") is True
+    # shared_b's row must still exist.
+    assert await get_actor_config(clean_pg_conn, "shared_b", schema=schema) is not None
 
 
 async def test_deregister_without_purge_queue_keeps_queue(
-    pg_conn: asyncpg.Connection,
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_schema: ModulePgSchema,
 ) -> None:
-    schema = _make_schema()
-    await _ensure_schema(pg_conn, schema)
-    await _insert_queue(pg_conn, schema, "kept_queue")
+    schema = module_pg_schema.schema_name
+    await _insert_queue(clean_pg_conn, schema, "kept_queue")
     await sync_actor_config(
-        pg_conn,
+        clean_pg_conn,
         [ActorConfig(actor="keep_actor", max_concurrent=5, queue="kept_queue")],
         schema=schema,
     )
 
-    result = await deregister_actor(pg_conn, "keep_actor", schema=schema)
+    result = await deregister_actor(clean_pg_conn, "keep_actor", schema=schema)
 
     assert result.queue_purged is False
-    assert await _queue_exists(pg_conn, schema, "kept_queue") is True
+    assert await _queue_exists(clean_pg_conn, schema, "kept_queue") is True
 
 
 # ── idempotency ─────────────────────────────────────────────────────────
 
 
-async def test_double_deregister_raises_not_found(pg_conn: asyncpg.Connection) -> None:
+async def test_double_deregister_raises_not_found(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_schema: ModulePgSchema,
+) -> None:
     """A second deregister call on an already-deregistered actor raises ActorNotFoundError.
 
     This is the primary consumer pattern (cleanup loops using try/except ActorNotFoundError).
     The idempotency guarantee must be tested — an implementation bug that silently returns
     actor_config_deleted=False instead of raising would not be caught otherwise.
     """
-    schema = _make_schema()
-    await _ensure_schema(pg_conn, schema)
+    schema = module_pg_schema.schema_name
     await sync_actor_config(
-        pg_conn,
+        clean_pg_conn,
         [ActorConfig(actor="idem_actor", max_concurrent=5, queue="default")],
         schema=schema,
     )
 
-    result = await deregister_actor(pg_conn, "idem_actor", schema=schema)
+    result = await deregister_actor(clean_pg_conn, "idem_actor", schema=schema)
     assert result.actor_config_deleted is True
 
     with pytest.raises(ActorNotFoundError, match="no stored actor_config row"):
-        await deregister_actor(pg_conn, "idem_actor", schema=schema)
+        await deregister_actor(clean_pg_conn, "idem_actor", schema=schema)
 
 
 # ── combined force + purge_queue ────────────────────────────────────────
 
 
 async def test_deregister_force_with_purge_queue(
-    pg_conn: asyncpg.Connection,
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_schema: ModulePgSchema,
 ) -> None:
     """force=True + purge_queue=True simultaneously — the exact pattern downstream
     consumers (aacrtool) use for ephemeral actor cleanup."""
-    schema = _make_schema()
-    await _ensure_schema(pg_conn, schema)
-    await _insert_queue(pg_conn, schema, "ephemeral_queue")
+    schema = module_pg_schema.schema_name
+    await _insert_queue(clean_pg_conn, schema, "ephemeral_queue")
     await sync_actor_config(
-        pg_conn,
+        clean_pg_conn,
         [ActorConfig(actor="ephemeral_actor", max_concurrent=5, queue="ephemeral_queue")],
         schema=schema,
     )
-    await _insert_job(pg_conn, schema, actor="ephemeral_actor", status="pending")
-    await _insert_job(pg_conn, schema, actor="ephemeral_actor", status="scheduled")
+    await _insert_job(clean_pg_conn, schema, actor="ephemeral_actor", status="pending")
+    await _insert_job(clean_pg_conn, schema, actor="ephemeral_actor", status="scheduled")
 
     result = await deregister_actor(
-        pg_conn, "ephemeral_actor", force=True, purge_queue=True, schema=schema
+        clean_pg_conn, "ephemeral_actor", force=True, purge_queue=True, schema=schema
     )
 
     assert result.actor_config_deleted is True
     assert result.jobs_cancelled == 2
     assert result.queue_purged is True
-    assert await get_actor_config(pg_conn, "ephemeral_actor", schema=schema) is None
-    assert await _queue_exists(pg_conn, schema, "ephemeral_queue") is False
+    assert await get_actor_config(clean_pg_conn, "ephemeral_actor", schema=schema) is None
+    assert await _queue_exists(clean_pg_conn, schema, "ephemeral_queue") is False
 
 
 async def test_deregister_purge_queue_noop_when_queue_row_absent(
-    pg_conn: asyncpg.Connection,
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_schema: ModulePgSchema,
 ) -> None:
     """purge_queue=True is a safe no-op when the queues row was never created.
 
@@ -503,17 +523,16 @@ async def test_deregister_purge_queue_noop_when_queue_row_absent(
     deployments may never create a row. The DELETE returns 0 rows and
     queue_purged is False, which is correct.
     """
-    schema = _make_schema()
-    await _ensure_schema(pg_conn, schema)
+    schema = module_pg_schema.schema_name
     await sync_actor_config(
-        pg_conn,
+        clean_pg_conn,
         [ActorConfig(actor="noqueue_actor", max_concurrent=5, queue="never_created")],
         schema=schema,
     )
     # Deliberately do NOT create a queues row for "never_created".
 
     result = await deregister_actor(
-        pg_conn, "noqueue_actor", purge_queue=True, schema=schema
+        clean_pg_conn, "noqueue_actor", purge_queue=True, schema=schema
     )
 
     assert result.actor_config_deleted is True
@@ -523,48 +542,61 @@ async def test_deregister_purge_queue_noop_when_queue_row_absent(
 # ── concurrent deregistration ────────────────────────────────────────────
 
 
-async def test_concurrent_deregister_one_succeeds_one_raises(
-    pg_conn: asyncpg.Connection,
-    settings: TaskQSettings,
+async def test_concurrent_force_deregister_one_succeeds_one_raises(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_schema: ModulePgSchema,
 ) -> None:
-    """Two concurrent deregister calls for the same actor: one succeeds, the other raises."""
-    import asyncio
+    """Two concurrent force=True deregister calls: one wins, one raises.
 
-    schema = _make_schema()
-    await _ensure_schema(pg_conn, schema)
+    Both connections target the same actor that has a pending job and an
+    enabled schedule. Under READ COMMITTED, row-level locking serializes
+    the UPDATEs: the first transaction locks the job rows, the second
+    blocks, then sees 0 rows after the first commits. The DELETE returns
+    a row for only one transaction; the other gets 0 rows and raises
+    ActorNotFoundError.
+    """
+    schema = module_pg_schema.schema_name
     await sync_actor_config(
-        pg_conn,
-        [ActorConfig(actor="concurrent_actor", max_concurrent=5, queue="default")],
+        clean_pg_conn,
+        [ActorConfig(actor="concurrent_force_actor", max_concurrent=5, queue="default")],
         schema=schema,
     )
+    job_id = await _insert_job(clean_pg_conn, schema, actor="concurrent_force_actor", status="pending")
+    sched_id = await _insert_schedule(
+        clean_pg_conn, schema, actor="concurrent_force_actor", enabled=True
+    )
 
-    # Use two separate connections to simulate concurrent callers.
-    # The pg_conn fixture provides one connection; we create a second
-    # from the same DSN so both see the same schema and data.
-    conn2 = await asyncpg.connect(str(settings.pg_dsn))
+    conn2 = await asyncpg.connect(module_pg_schema.pg_dsn)
     try:
-        # Both call deregister_actor simultaneously for the same actor.
-        # Under READ COMMITTED, both pass the safety checks, but only one
-        # DELETE returns a row — the other gets 0 rows and raises ActorNotFoundError.
         results: list[BaseException | DeregisterResult] = []
 
         async def _deregister(conn: asyncpg.Connection) -> None:
             try:
-                result = await deregister_actor(conn, "concurrent_actor", schema=schema)
+                result = await deregister_actor(
+                    conn, "concurrent_force_actor", force=True, schema=schema
+                )
                 results.append(result)
             except ActorNotFoundError as exc:
                 results.append(exc)
 
         await asyncio.gather(
-            _deregister(pg_conn),
+            _deregister(clean_pg_conn),
             _deregister(conn2),
         )
 
-        # Exactly one should succeed, one should raise ActorNotFoundError
         successes = [r for r in results if isinstance(r, DeregisterResult)]
         not_found = [r for r in results if isinstance(r, ActorNotFoundError)]
         assert len(successes) == 1
         assert len(not_found) == 1
-        assert successes[0].actor_config_deleted is True
+
+        # The winner should have cancelled exactly 1 job and disabled 1 schedule
+        # — not double-cancelled by both transactions.
+        assert successes[0].jobs_cancelled == 1
+        assert successes[0].schedules_disabled == 1
+
+        # Verify final DB state — job cancelled, schedule disabled, actor_config gone.
+        assert await get_actor_config(clean_pg_conn, "concurrent_force_actor", schema=schema) is None
+        assert await _job_status(clean_pg_conn, schema, job_id) == "cancelled"
+        assert await _schedule_state(clean_pg_conn, schema, sched_id) == "disabled"
     finally:
         await conn2.close()

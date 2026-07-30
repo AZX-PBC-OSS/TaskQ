@@ -24,6 +24,12 @@ cannot see the code literal once the row exists. ``--clear-max-pending``
 and ``--clear-result-ttl`` write NULL, which their enforcement paths
 read as *fall back to the ``@actor(...)`` literal* — clearing reverts an
 override to the code default.
+
+This module also provides :func:`deregister_actor` — the transactional
+removal of an ``actor_config`` row with safety checks for active jobs
+and enabled schedules, optional forced cancellation of pending/scheduled
+jobs, optional disabling of cron schedules, and optional purging of
+orphaned queues. See :class:`DeregisterResult` for the return contract.
 """
 
 from __future__ import annotations
@@ -87,7 +93,13 @@ class ActorConfigRow:
 
 @dataclass(frozen=True, slots=True)
 class DeregisterResult:
-    """Outcome of a ``deregister_actor`` call."""
+    """Outcome of a ``deregister_actor`` call.
+
+    ``actor_config_deleted`` is always ``True`` — if the row is not found,
+    ``deregister_actor`` raises :class:`ActorNotFoundError` instead of
+    returning a result with ``False``. The field is retained for API
+    contract clarity and consumer assertions.
+    """
 
     actor: str
     queue: str
