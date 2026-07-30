@@ -103,6 +103,10 @@ async def test_sub_job_explicit_tags_merge_with_parent(
     )
 
     stage2 = await e2e_client.list(JobFilter(tags=("stage-2",)))
-    assert len(stage2.jobs) == 1, f"Expected 1 job with stage-2 tag, found {len(stage2.jobs)}"
-    assert parent_tag in stage2.jobs[0].tags
-    assert "stage-2" in stage2.jobs[0].tags
+    assert len(stage2.jobs) == 2, (
+        f"Expected 2 jobs with stage-2 tag (stage 2 + stage 3 inherited it), found {len(stage2.jobs)}"
+    )
+    stage2_only = [j for j in stage2.jobs if "stage-3" not in j.tags]
+    assert len(stage2_only) == 1, "Expected exactly one job with stage-2 but not stage-3"
+    assert parent_tag in stage2_only[0].tags
+    assert "stage-2" in stage2_only[0].tags
