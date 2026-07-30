@@ -49,6 +49,7 @@ from taskq.worker._leader_shared import (
     _sweep_rows_counter,
     archive_expiry_sweep,
     cleanup_stale_workers,
+    complete_stale_batches,
     prune_terminal_jobs,
 )
 from taskq.worker._transient import TRANSIENT_PG_ERRORS
@@ -242,6 +243,22 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                         worker_id=str(ctx.worker_id),
                         error=repr(exc),
                     )
+            if hasattr(ctx.backend, "sweep_leaked_reservation_slots"):
+                start = time.monotonic()
+                try:
+                    async with ctx.deps.dispatcher_pool.acquire() as conn:
+                        stale_count = await complete_stale_batches(
+                            conn, schema=ctx.deps.settings.schema_name
+                        )
+                    if stale_count:
+                        log.info("stale-batches-completed", kind="batch", count=stale_count)
+                except (
+                    TimeoutError,
+                    asyncpg.PostgresConnectionError,
+                    asyncpg.InterfaceError,
+                    OSError,
+                ) as exc:
+                    log.warning("stale-batches-sweep-failed", kind="batch", error=repr(exc))
         await _sleep_interruptible(shutdown, ctx.deps.settings.sweep_interval)
 
 
@@ -306,6 +323,21 @@ async def _prune_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                             cutoff=result.cutoffs[status].isoformat(),
                             duration_ms=result.duration_ms,
                         )
+                    max_cutoff = (
+                        max(result.cutoffs.values()) if result.cutoffs else datetime.now(UTC)
+                    )
+                    try:
+                        batch_count = await ctx.backend.prune_old_batches(max_cutoff)
+                        if batch_count:
+                            log.info("batches pruned", kind="batch", count=batch_count)
+                    except (
+                        NotImplementedError,
+                        TimeoutError,
+                        asyncpg.PostgresConnectionError,
+                        asyncpg.InterfaceError,
+                        OSError,
+                    ) as exc:
+                        log.warning("batch-prune-failed", kind="batch", error=repr(exc))
                 except Exception as exc:
                     log.error("prune failed", kind="prune", error=repr(exc))
                 finally:

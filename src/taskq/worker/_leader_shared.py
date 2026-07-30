@@ -40,6 +40,7 @@ __all__ = [
     "SweepContext",
     "archive_expiry_sweep",
     "cleanup_stale_workers",
+    "complete_stale_batches",
     "prune_terminal_jobs",
 ]
 
@@ -419,3 +420,32 @@ async def archive_expiry_sweep(
         expire_before=expire_before,
         duration_ms=duration_ms,
     )
+
+
+_COMPLETE_STALE_BATCHES_SQL = """\
+UPDATE "{schema}".batches
+SET status = 'complete', completed_at = clock_timestamp()
+WHERE status = 'active'
+  AND NOT EXISTS (
+    SELECT 1 FROM "{schema}".jobs j
+    WHERE j.metadata @> jsonb_build_object('batch_id', batches.id::text)
+      AND j.status NOT IN ('succeeded', 'failed', 'cancelled', 'crashed', 'abandoned')
+  )
+RETURNING id"""
+
+
+async def complete_stale_batches(
+    conn: ConnLike,
+    *,
+    schema: str = "taskq",
+) -> int:
+    """Safety net: mark active batches with zero non-terminal jobs as complete.
+
+    Covers batches whose completion hook was lost (consumer crash) and
+    intentionally-empty batches (expected_size=0, no jobs at all).
+    Returns the number of batches completed.
+    """
+    if not _IDENT_RE.match(schema):
+        raise ValueError(f"invalid schema identifier: {schema!r}")
+    rows = await conn.fetch(_COMPLETE_STALE_BATCHES_SQL.format(schema=schema))
+    return len(rows)

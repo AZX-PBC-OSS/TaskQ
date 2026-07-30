@@ -6,7 +6,7 @@ scheduling, and retention-config helpers against InMemoryBackend.
 
 import asyncio
 import contextlib
-from collections.abc import AsyncGenerator, Callable
+from collections.abc import AsyncGenerator, Callable, Sequence
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -116,6 +116,9 @@ class FakeConn:
 
     async def fetchrow(self, sql: str, *args: object) -> object | None:
         return None
+
+    async def fetch(self, sql: str, *args: object) -> Sequence[object]:
+        return []
 
     async def close(self) -> None:
         self.close_calls += 1
