@@ -23,6 +23,8 @@ _NEW_EXPORTS = [
     "FakeClock",
     "JobPage",
     "JobRow",
+    "OIDCSettings",
+    "SAMLSettings",
     "SystemClock",
     "TaskQSettings",
     "WorkerSettings",
@@ -104,6 +106,20 @@ def test_worker_settings_is_subclass_of_taskq_settings() -> None:
     """``WorkerSettings`` extends ``TaskQSettings``."""
     assert inspect.isclass(taskq.WorkerSettings)
     assert issubclass(taskq.WorkerSettings, taskq.TaskQSettings)
+
+
+def test_oidc_settings_is_class() -> None:
+    """``OIDCSettings`` is a class with a ``load`` classmethod."""
+    assert inspect.isclass(taskq.OIDCSettings)
+    assert hasattr(taskq.OIDCSettings, "load")
+    assert callable(taskq.OIDCSettings.load)
+
+
+def test_saml_settings_is_class() -> None:
+    """``SAMLSettings`` is a class with a ``load`` classmethod."""
+    assert inspect.isclass(taskq.SAMLSettings)
+    assert hasattr(taskq.SAMLSettings, "load")
+    assert callable(taskq.SAMLSettings.load)
 
 
 # -- All __all__ entries are importable --

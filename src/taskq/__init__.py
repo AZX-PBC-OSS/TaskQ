@@ -86,7 +86,7 @@ from taskq.retry import (
     RetryPolicy,
 )
 from taskq.scheduler import register_cron
-from taskq.settings import TaskQSettings, WorkerSettings
+from taskq.settings import OIDCSettings, SAMLSettings, TaskQSettings, WorkerSettings
 from taskq.testing.clock import FakeClock
 
 __all__ = [
@@ -130,6 +130,7 @@ __all__ = [
     "MaxPendingExceededError",
     "MissingProvider",
     "NullErrorReporter",
+    "OIDCSettings",
     "OnSuccess",
     "PartialBatchError",
     "PayloadValidationError",
@@ -155,6 +156,7 @@ __all__ = [
     "RetryKind",
     "RetryOverride",
     "RetryPolicy",
+    "SAMLSettings",
     "ScheduleHandle",
     "ScheduleRecord",
     "SchemaNotMigratedError",
