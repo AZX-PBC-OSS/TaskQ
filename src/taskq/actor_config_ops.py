@@ -380,8 +380,18 @@ async def deregister_actor(
        before calling deregister.
 
        A job dispatched between the running check and the cancel UPDATE
-       (force=True) will be stranded until the leader sweep reclaims its
-       expired lock.
+       (force=True) will be left running with no ``actor_config`` row.
+       When its lock expires, the leader sweep transitions it to a
+       terminal state (crashed/cancelled) — it is NOT re-dispatched.
+
+       A cron schedule that fires between the disable UPDATE and the
+       ``actor_config`` DELETE will enqueue a job that can never be
+       dispatched (same stranding as enqueue-during-deregister).
+
+       Concurrent deregistration of the last two actors sharing a queue
+       may leave the queue row orphaned (both transactions see the
+       other's ``actor_config`` row as still present under READ
+       COMMITTED). The queue can be manually deleted if needed.
     """
     if not _IDENT_RE.match(schema):
         raise ValueError(f"invalid schema identifier: {schema!r}")
@@ -405,7 +415,9 @@ async def deregister_actor(
                 list(ACTIVE_STATUSES),
             )
             if active_rows:
-                status_counts = {row["status"]: row["cnt"] for row in active_rows}
+                status_counts: dict[str, int] = {
+                    str(row["status"]): int(row["cnt"]) for row in active_rows
+                }
                 active_count = sum(status_counts.values())
                 raise ActorHasActiveJobsError(actor, active_count, status_counts)
 
@@ -426,7 +438,9 @@ async def deregister_actor(
                 [_RUNNING_STATUS],
             )
             if running_rows:
-                status_counts = {row["status"]: row["cnt"] for row in running_rows}
+                status_counts: dict[str, int] = {
+                    str(row["status"]): int(row["cnt"]) for row in running_rows
+                }
                 active_count = sum(status_counts.values())
                 raise ActorHasActiveJobsError(actor, active_count, status_counts, force=True)
 

@@ -33,6 +33,14 @@ class ActorsClient:
     caller must have opened the pool; this class does not manage its
     lifecycle.
 
+    .. note::
+       This client is Postgres-only — it delegates to
+       :mod:`taskq.actor_config_ops`, which executes raw SQL against
+       the ``actor_config`` table. The :class:`~taskq.backend._protocol.Backend`
+       protocol does not include actor config operations, so
+       :class:`~taskq.testing.InMemoryBackend` does not support
+       ``ActorsClient``.
+
     Parameters
     ----------
     pool:

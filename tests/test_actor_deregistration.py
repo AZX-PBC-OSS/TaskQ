@@ -633,3 +633,49 @@ async def test_concurrent_force_deregister_one_succeeds_one_raises(
         assert await _schedule_state(clean_pg_conn, schema, sched_id) == "disabled"
     finally:
         await conn2.close()
+
+
+# ── refusal gap coverage (L16) ───────────────────────────────────────────
+
+
+async def test_deregister_refuses_with_scheduled_jobs(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_schema: ModulePgSchema,
+) -> None:
+    """force=False refuses with scheduled (not just pending) jobs."""
+    schema = module_pg_schema.schema_name
+    await sync_actor_config(
+        clean_pg_conn,
+        [ActorConfig(actor="sched_job_actor", max_concurrent=5, queue="default")],
+        schema=schema,
+    )
+    await _insert_job(clean_pg_conn, schema, actor="sched_job_actor", status="scheduled")
+    with pytest.raises(ActorHasActiveJobsError) as exc_info:
+        await deregister_actor(clean_pg_conn, "sched_job_actor", schema=schema)
+    assert exc_info.value.status_counts == {"scheduled": 1}
+
+
+async def test_deregister_active_jobs_takes_precedence_over_schedules(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_schema: ModulePgSchema,
+) -> None:
+    """When both active jobs AND enabled schedules exist, the jobs error is raised first."""
+    schema = module_pg_schema.schema_name
+    await sync_actor_config(
+        clean_pg_conn,
+        [ActorConfig(actor="precedence_actor", max_concurrent=5, queue="default")],
+        schema=schema,
+    )
+    await _insert_job(clean_pg_conn, schema, actor="precedence_actor", status="pending")
+    await _insert_schedule(clean_pg_conn, schema, actor="precedence_actor", enabled=True)
+    with pytest.raises(ActorHasActiveJobsError):
+        await deregister_actor(clean_pg_conn, "precedence_actor", schema=schema)
+
+
+async def test_deregister_invalid_schema_raises_value_error(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_schema: ModulePgSchema,
+) -> None:
+    """Invalid schema identifier raises ValueError before any DB access."""
+    with pytest.raises(ValueError, match="invalid schema identifier"):
+        await deregister_actor(clean_pg_conn, "any_actor", schema="bad; DROP TABLE")

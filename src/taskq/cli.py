@@ -39,7 +39,7 @@ from taskq.actor_config_ops import (
     list_actor_configs,
     set_actor_config_capacity,
 )
-from taskq.exceptions import ActorConfigDriftList, ActorDeregistrationError
+from taskq.exceptions import ActorConfigDriftList, ActorDeregistrationError, ActorNotFoundError
 from taskq.settings import TaskQSettings, WorkerSettings
 from taskq.worker.dev import dev_watch_loop
 from taskq.worker.run import worker_main as _worker_main
@@ -544,6 +544,9 @@ def actor_config_deregister(
     reference the actor. Use --force to cancel pending/scheduled jobs and
     disable schedules. Running jobs always block (force or not). Use
     --purge-queue to also delete the queues row if no other actor uses it.
+
+    Exit codes: 0 success, 2 refusal (active jobs/schedules or invalid
+    schema), 3 not found.
     """
     settings = TaskQSettings.load()
     asyncio.run(_actor_config_deregister(settings, actor, force, purge_queue))
@@ -564,9 +567,12 @@ async def _actor_config_deregister(
             purge_queue=purge_queue,
             schema=settings.schema_name,
         )
+    except ActorNotFoundError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=3) from None
     except (ActorDeregistrationError, ValueError) as exc:
         typer.echo(str(exc), err=True)
-        raise typer.Exit(code=1) from None
+        raise typer.Exit(code=2) from None
     finally:
         await conn.close()
 

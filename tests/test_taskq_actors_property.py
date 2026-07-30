@@ -66,3 +66,4 @@ async def test_taskq_actors_property_returns_actors_client(
     ) as tq:
         client = tq.actors
         assert isinstance(client, ActorsClient)
+        assert client._schema == module_pg_schema.schema_name

@@ -409,7 +409,11 @@ class ActorHasEnabledSchedulesError(ActorDeregistrationError):
 
 
 class ActorNotFoundError(ActorDeregistrationError):
-    """The actor_config row does not exist — nothing to deregister."""
+    """The actor_config row does not exist — nothing to deregister.
+
+    Currently raised only by :func:`deregister_actor`. Other ops
+    (``get``, ``set_capacity``) return ``None`` for missing rows.
+    """
 
     def __init__(self, actor: str) -> None:
         super().__init__(actor, "no stored actor_config row for this actor")

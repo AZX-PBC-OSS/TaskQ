@@ -61,7 +61,7 @@ async def test_deregister_after_jobs_complete(
     result = await e2e_client.actors.deregister(actor_name)
 
     assert result.actor_config_deleted is True
-    assert result.terminal_jobs_remaining >= 1
+    assert result.terminal_jobs_remaining == 1
 
     ac_count = await e2e_pg_pool.fetchval(
         f'SELECT count(*) FROM "{schema}".actor_config WHERE actor = $1',
@@ -73,7 +73,7 @@ async def test_deregister_after_jobs_complete(
         f"SELECT count(*) FROM \"{schema}\".jobs WHERE actor = $1 AND status = 'succeeded'",
         actor_name,
     )
-    assert job_count >= 1
+    assert job_count == 1
 
 
 async def test_deregister_refuses_with_active_jobs(
@@ -104,7 +104,7 @@ async def test_deregister_refuses_with_active_jobs(
         await e2e_client.actors.deregister(actor_name)
 
     assert exc_info.value.actor == actor_name
-    assert exc_info.value.active_count >= 1
+    assert exc_info.value.active_count == 1
     assert "running" in exc_info.value.status_counts
 
     ac_count = await e2e_pg_pool.fetchval(
@@ -155,7 +155,7 @@ async def test_deregister_force_with_purge_queue_after_completion(
 
     assert result.actor_config_deleted is True
     assert result.jobs_cancelled == 0
-    assert result.terminal_jobs_remaining >= 1
+    assert result.terminal_jobs_remaining == 1
     # All e2e actors share queue="e2e" — purge_queue=True is a safe no-op
     # because the orphan guard correctly refuses to delete a shared queue.
     assert result.queue_purged is False

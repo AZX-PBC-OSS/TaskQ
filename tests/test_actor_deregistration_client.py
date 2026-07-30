@@ -21,7 +21,9 @@ from taskq.worker.startup import sync_actor_config
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 
 
-async def _seed_actor(conn: asyncpg.Connection, schema: str, actor: str, queue: str = "default") -> None:
+async def _seed_actor(
+    conn: asyncpg.Connection, schema: str, actor: str, queue: str = "default"
+) -> None:
     await sync_actor_config(
         conn,
         [ActorConfig(actor=actor, max_concurrent=5, queue=queue)],

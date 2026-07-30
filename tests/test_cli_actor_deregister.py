@@ -74,16 +74,17 @@ def test_deregister_purge_queue_flag(monkeypatch: pytest.MonkeyPatch) -> None:
     assert captured["kwargs"]["purge_queue"] is True
 
 
-def test_deregister_not_found_exit_one(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_deregister_not_found_exit_three(monkeypatch: pytest.MonkeyPatch) -> None:
     from taskq.exceptions import ActorNotFoundError
 
     _patch_deregister(monkeypatch, raises=ActorNotFoundError("ghost"))
     result = runner.invoke(app, ["actor-config", "deregister", "ghost"])
-    assert result.exit_code == 1
+    assert result.exit_code == 3
     assert "no stored actor_config row" in result.stderr
+    assert "Cannot deregister actor" in result.stderr
 
 
-def test_deregister_active_jobs_error_exit_one(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_deregister_active_jobs_error_exit_two(monkeypatch: pytest.MonkeyPatch) -> None:
     from taskq.exceptions import ActorHasActiveJobsError
 
     _patch_deregister(
@@ -93,12 +94,13 @@ def test_deregister_active_jobs_error_exit_one(monkeypatch: pytest.MonkeyPatch) 
         ),
     )
     result = runner.invoke(app, ["actor-config", "deregister", "busy"])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "non-terminal" in result.stderr
     assert "force=True" in result.stderr
+    assert "Cannot deregister actor" in result.stderr
 
 
-def test_deregister_schedules_error_exit_one(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_deregister_schedules_error_exit_two(monkeypatch: pytest.MonkeyPatch) -> None:
     from taskq.exceptions import ActorHasEnabledSchedulesError
 
     _patch_deregister(
@@ -106,7 +108,7 @@ def test_deregister_schedules_error_exit_one(monkeypatch: pytest.MonkeyPatch) ->
         raises=ActorHasEnabledSchedulesError("sched-actor", ["s1", "s2"]),
     )
     result = runner.invoke(app, ["actor-config", "deregister", "sched-actor"])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "enabled cron schedule" in result.stderr
 
 
@@ -132,15 +134,17 @@ def test_deregister_output_shows_result(monkeypatch: pytest.MonkeyPatch) -> None
     assert "jobs_cancelled=5" in output.output
     assert "terminal_jobs_remaining=10" in output.output
     assert "queue_purged=true" in output.output.lower()
+    assert "WARNING" in output.output
+    assert "stranded pending job" in output.output
 
 
-def test_deregister_double_deregister_exit_one(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Second deregister on an already-deregistered actor exits 1 with ActorNotFoundError."""
+def test_deregister_double_deregister_exit_three(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Second deregister on an already-deregistered actor exits 3 with ActorNotFoundError."""
     from taskq.exceptions import ActorNotFoundError
 
     _patch_deregister(monkeypatch, raises=ActorNotFoundError("already-gone"))
     result = runner.invoke(app, ["actor-config", "deregister", "already-gone"])
-    assert result.exit_code == 1
+    assert result.exit_code == 3
     assert "no stored actor_config row" in result.stderr
 
 

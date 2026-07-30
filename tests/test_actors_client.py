@@ -168,3 +168,44 @@ async def test_actors_client_deregister_propagates_errors(monkeypatch: pytest.Mo
     )
     with pytest.raises(ActorNotFoundError):
         await client.deregister("bad-actor")
+
+
+async def test_actors_client_set_capacity_forwards_none_vs_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """None means 'clear'; UNSET (default) means 'leave unchanged'.
+
+    The client must forward both faithfully to set_actor_config_capacity
+    so operators can distinguish clearing a field from not touching it.
+    """
+    from taskq.client._actors import UNSET, ActorsClient
+
+    conn = _FakeConn()
+    pool = _FakePool(conn)
+    client = ActorsClient(pool, schema="test_schema")
+
+    expected = ActorConfigRow(
+        actor="a",
+        max_concurrent=None,
+        max_pending=5,
+        queue="q",
+        result_ttl=None,
+        metadata={},
+        updated_at="2026-01-01",
+    )
+
+    import taskq.client._actors as actors_mod
+
+    mock_fn = AsyncMock(return_value=expected)
+    monkeypatch.setattr(actors_mod, "set_actor_config_capacity", mock_fn)
+
+    await client.set_capacity("a", max_concurrent=None, max_pending=5)
+
+    mock_fn.assert_called_once_with(
+        conn,
+        "a",
+        max_concurrent=None,
+        max_pending=5,
+        result_ttl=UNSET,
+        schema="test_schema",
+    )
