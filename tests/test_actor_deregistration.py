@@ -22,6 +22,7 @@ from taskq.exceptions import (
     ActorHasEnabledSchedulesError,
     ActorNotFoundError,
 )
+from taskq.settings import TaskQSettings
 from taskq.worker.startup import sync_actor_config
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
@@ -517,3 +518,53 @@ async def test_deregister_purge_queue_noop_when_queue_row_absent(
 
     assert result.actor_config_deleted is True
     assert result.queue_purged is False
+
+
+# ── concurrent deregistration ────────────────────────────────────────────
+
+
+async def test_concurrent_deregister_one_succeeds_one_raises(
+    pg_conn: asyncpg.Connection,
+    settings: TaskQSettings,
+) -> None:
+    """Two concurrent deregister calls for the same actor: one succeeds, the other raises."""
+    import asyncio
+
+    schema = _make_schema()
+    await _ensure_schema(pg_conn, schema)
+    await sync_actor_config(
+        pg_conn,
+        [ActorConfig(actor="concurrent_actor", max_concurrent=5, queue="default")],
+        schema=schema,
+    )
+
+    # Use two separate connections to simulate concurrent callers.
+    # The pg_conn fixture provides one connection; we create a second
+    # from the same DSN so both see the same schema and data.
+    conn2 = await asyncpg.connect(str(settings.pg_dsn))
+    try:
+        # Both call deregister_actor simultaneously for the same actor.
+        # Under READ COMMITTED, both pass the safety checks, but only one
+        # DELETE returns a row — the other gets 0 rows and raises ActorNotFoundError.
+        results: list[BaseException | DeregisterResult] = []
+
+        async def _deregister(conn: asyncpg.Connection) -> None:
+            try:
+                result = await deregister_actor(conn, "concurrent_actor", schema=schema)
+                results.append(result)
+            except ActorNotFoundError as exc:
+                results.append(exc)
+
+        await asyncio.gather(
+            _deregister(pg_conn),
+            _deregister(conn2),
+        )
+
+        # Exactly one should succeed, one should raise ActorNotFoundError
+        successes = [r for r in results if isinstance(r, DeregisterResult)]
+        not_found = [r for r in results if isinstance(r, ActorNotFoundError)]
+        assert len(successes) == 1
+        assert len(not_found) == 1
+        assert successes[0].actor_config_deleted is True
+    finally:
+        await conn2.close()

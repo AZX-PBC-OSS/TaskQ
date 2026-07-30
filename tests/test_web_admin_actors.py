@@ -203,3 +203,78 @@ async def test_deregister_route_returns_409_when_actor_has_active_jobs(
         "blocked-actor",
     )
     assert count == 1
+
+
+async def test_deregister_route_with_force_cancels_pending_job(
+    clean_pg_conn: asyncpg.Connection,
+    admin_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """POST deregister with force=true cancels pending jobs through the admin route."""
+    from uuid import uuid4
+
+    schema = module_pg_schema.schema_name
+    await _seed_actor_config(clean_pg_conn, schema, "force-admin-actor", queue="default")
+    job_id = uuid4()
+    await clean_pg_conn.execute(
+        f'INSERT INTO "{schema}".jobs (id, actor, queue, payload, status, max_attempts, retry_kind) '
+        f"VALUES ($1, 'force-admin-actor', 'default', '{{}}'::jsonb, 'pending'::\"{schema}\".job_status, 3, 'transient')",
+        job_id,
+    )
+    app = _make_admin_app(admin_pool, schema, monkeypatch, admin_actions_enabled=True)
+
+    resp = await _get_csrf_then_post(
+        app, "/admin/actors", "/admin/actors/force-admin-actor/deregister",
+        data={"force": "true"},
+    )
+
+    assert resp.status_code == 303
+    # Job should be cancelled
+    status = await clean_pg_conn.fetchval(
+        f'SELECT status::text FROM "{schema}".jobs WHERE id = $1', job_id
+    )
+    assert status == "cancelled"
+    # Actor config should be gone
+    count = await clean_pg_conn.fetchval(
+        f'SELECT count(*) FROM "{schema}".actor_config WHERE actor = $1', "force-admin-actor"
+    )
+    assert count == 0
+
+
+async def test_deregister_route_returns_404_for_unknown_actor(
+    admin_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """POST deregister for a non-existent actor returns 404, not 409."""
+    schema = module_pg_schema.schema_name
+    app = _make_admin_app(admin_pool, schema, monkeypatch, admin_actions_enabled=True)
+
+    resp = await _get_csrf_then_post(
+        app, "/admin/actors", "/admin/actors/nonexistent-actor/deregister"
+    )
+
+    assert resp.status_code == 404
+    assert "no stored actor_config row" in resp.text
+
+
+async def test_actors_page_shows_notice_after_deregister(
+    clean_pg_conn: asyncpg.Connection,
+    admin_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """GET /actors?notice=... renders the notice banner."""
+    schema = module_pg_schema.schema_name
+    app = _make_admin_app(admin_pool, schema, monkeypatch, admin_actions_enabled=True)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/admin/actors?notice=deregistered+test-actor")
+
+    assert resp.status_code == 200
+    assert "deregistered" in resp.text
+    # The notice should be in a styled banner div, not just in the page somewhere
+    assert "bg-green" in resp.text

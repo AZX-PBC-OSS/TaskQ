@@ -8,7 +8,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from jinja2 import Environment
 
 from taskq.actor_config_ops import deregister_actor
-from taskq.exceptions import ActorDeregistrationError
+from taskq.exceptions import ActorDeregistrationError, ActorNotFoundError
 from taskq.settings import TaskQSettings
 from taskq.web.admin._factory import (
     get_base_path,
@@ -84,6 +84,8 @@ def register(router: APIRouter) -> None:
                 await deregister_actor(
                     conn, actor, force=force, purge_queue=purge_queue, schema=schema
                 )
+            except ActorNotFoundError as exc:
+                raise HTTPException(status_code=404, detail=str(exc)) from None
             except ActorDeregistrationError as exc:
                 raise HTTPException(status_code=409, detail=str(exc)) from None
 

@@ -44,9 +44,9 @@ from taskq.exceptions import (
 )
 
 __all__ = [
-    "UNSET",
     "ActorConfigRow",
     "DeregisterResult",
+    "UNSET",
     "Unset",
     "deregister_actor",
     "get_actor_config",
@@ -281,6 +281,7 @@ DELETE FROM "{schema}".queues
    AND NOT EXISTS (
        SELECT 1 FROM "{schema}".actor_config WHERE queue = $1
    )
+RETURNING name
 """.strip()
 
 _DEREGISTER_COUNT_TERMINAL_SQL = """
@@ -390,11 +391,11 @@ async def deregister_actor(
 
         queue_purged = False
         if purge_queue:
-            purge_result = await conn.execute(
+            purged_name = await conn.fetchval(
                 _DEREGISTER_PURGE_QUEUE_SQL.format(schema=schema),
                 queue_name,
             )
-            queue_purged = purge_result == "DELETE 1"
+            queue_purged = purged_name is not None
 
     return DeregisterResult(
         actor=actor,

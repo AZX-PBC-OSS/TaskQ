@@ -297,8 +297,12 @@ async def deregister_actor(
       1. Refuse if any *running* jobs reference the actor — raises
          :class:`ActorHasActiveJobsError` (running jobs are actively
          executing; their terminal-write path reads ``actor_config`` for
-         ``result_ttl``, and deleting the row mid-execution would set
-         ``result_expires_at`` to NULL — safe but surprising).
+         ``result_ttl``, and deleting the row mid-execution loses the
+         stored override — the ``COALESCE`` in the terminal-write SQL
+         falls back to the ``@actor(...)`` literal TTL, which is a silent
+         semantic change. More importantly, the dispatch query inner-joins
+         ``actor_config``, so a running job that retries would be
+         stranded).
       2. Cancel pending/scheduled jobs for this actor (mark as ``cancelled``
          with ``error_class='ActorDeregistered'``). They would be stranded
          anyway: the dispatch query inner-joins ``actor_config``, so without
@@ -3013,7 +3017,7 @@ deferring the cleanup and use the official `deregister` path.
 
 **Decision:** `force=True` cancels pending/scheduled jobs and disables schedules, but still refuses if running jobs exist.
 
-**Rationale:** Running jobs are actively executing — their terminal-write path reads `actor_config.result_ttl` to compute `result_expires_at`. Deleting the row mid-execution sets `result_expires_at` to NULL (the subquery returns NULL), which is safe but surprising. More importantly, the dispatch query inner-joins `actor_config`, so a running job that retries would be stranded. Refusing is the safe default; the operator can wait for running jobs to complete or cancel them first.
+**Rationale:** Running jobs are actively executing — their terminal-write path reads `actor_config.result_ttl` to compute `result_expires_at`. Deleting the row mid-execution loses the stored `result_ttl` override; the `COALESCE` in the terminal-write SQL falls back to the `@actor(...)` literal TTL (or preserves the existing `result_expires_at`), which is a silent semantic change. More importantly, the dispatch query inner-joins `actor_config`, so a running job that retries would be stranded. Refusing is the safe default; the operator can wait for running jobs to complete or cancel them first.
 
 ### 3. Schedules are disabled, not deleted
 
