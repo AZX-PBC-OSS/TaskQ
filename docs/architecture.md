@@ -48,6 +48,12 @@ Related docs: [api-reference/testing.md](api-reference/testing.md), [index.md](i
 │  │ (advisory lock,│   │  dispatch_batch() →           │   │
 │  │  sweeps, cron) │   │  ConsumerLoop × N             │   │
 │  └───────────────┘   └───────────────────────────────┘   │
+│  ┌───────────────┐                                       │
+│  │  DrainMonitor  │  (until-idle only)                  │
+│  │  count_active  │                                       │
+│  │  _jobs() →     │                                       │
+│  │  shutdown      │                                       │
+│  └───────────────┘                                       │
 └──────────────────────────────────────────────────────────┘
                ▲
                │ FastAPI routes
@@ -115,6 +121,9 @@ class Backend(Protocol):
     # Read
     async def get(self, job_id) -> JobRow | None: ...
     async def list_jobs(self, filters: JobFilter) -> list[JobRow]: ...
+
+    # Count
+    async def count_active_jobs(self, queues: list[str]) -> int: ...
 
     # NOTIFY hook
     def subscribe_wake(self) -> AsyncContextManager[asyncio.Event]: ...

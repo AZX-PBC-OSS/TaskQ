@@ -197,6 +197,10 @@ taskq worker --actors MODULE:ATTR [OPTIONS]
 | `--workgroup-instance` | `str` | `None` | `TASKQ_WORKGROUP_INSTANCE` | UUIDv7 identifying the workgroup orchestrator that launched this worker |
 | `--health-socket-path` | `str` | `None` | `TASKQ_HEALTH_SOCKET_PATH` | Unix socket path for the health server (use unique paths when running multiple workers) |
 | `--force-update-actor-config` | `bool` | `False` | `TASKQ_FORCE_UPDATE_ACTOR_CONFIG` | Overwrite drifted actor-config rows at startup |
+| `--until-idle` | `bool` | `False` | — | Run until all subscribed queues are drained, then exit. Exit 0 if all jobs succeeded, 2 if any failed, 3 if max-runtime was exceeded. Incompatible with cron-driven workloads. |
+| `--idle-settle-window` | `float` | `None` | `TASKQ_IDLE_SETTLE_WINDOW` | Seconds to wait after queues appear empty before declaring drained. Default 2.0. |
+| `--idle-poll-interval` | `float` | `None` | `TASKQ_IDLE_POLL_INTERVAL` | How often to check queue depth. Default 1.0. |
+| `--max-runtime` | `float` | `None` | `TASKQ_IDLE_MAX_RUNTIME` | Maximum wall-clock seconds before forcing exit (code 3). Only used with `--until-idle`. |
 
 All other worker settings are read from environment variables. See [workers.md](workers.md#workersettings-reference) for the full list.
 
@@ -572,7 +576,9 @@ taskq workgroup start workgroup.toml
 |---|---|
 | `0` | Success |
 | `1` | Any failure: bad arguments, import errors, config drift, PG connection failures, health probe negative result |
+| `2` | `taskq worker --until-idle`: some jobs failed during the drain |
+| `3` | `taskq worker --until-idle`: max-runtime exceeded before drain completed |
 
-The `taskq worker` command exits with the code returned by `worker_main()`. On clean SIGTERM, `worker_main()` returns `0`. A third SIGTERM calls `sys.exit(1)`.
+The `taskq worker` command exits with the code returned by `worker_main()`. On clean SIGTERM, `worker_main()` returns `0`. With `--until-idle`, `worker_main()` returns `0` (all jobs succeeded), `2` (some jobs failed), or `3` (max-runtime exceeded). A third SIGTERM calls `sys.exit(1)`.
 
 The `taskq workgroup start` command exits 0 on clean shutdown. It exits 1 if the config file is missing, invalid, or if the optional health-check PG pool fails to initialise.
