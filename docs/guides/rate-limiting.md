@@ -657,7 +657,7 @@ KeyedReservationRef.typed(
 The `payload_type` field (required) declares the model class the registry validates the
 payload against before calling `key_fn`. Pydantic defaults populate fields absent from the
 serialized payload, aliases map wire names to model attributes, and validation errors surface
-as `ValidationError` (a payload error) rather than `KeyError` (a limiter fault).
+as `PayloadValidationError` (a non-retryable payload error) rather than `KeyError` (a limiter fault).
 `base_name` namespaces the derived
 reservations — the concrete name registered for a given key is `f"{base_name}:{key}"` — so
 distinct `KeyedReservationRef` declarations never collide. `slots` and `lease` apply identically
@@ -774,7 +774,7 @@ KeyedRateLimitRef.typed(
 The `payload_type` field (required) declares the model class the registry validates the
 payload against before calling `key_fn`. Pydantic defaults populate fields absent from the
 serialized payload, aliases map wire names to model attributes, and validation errors surface
-as `ValidationError` (a payload error) rather than `KeyError` (a limiter fault).
+as `PayloadValidationError` (a non-retryable payload error) rather than `KeyError` (a limiter fault).
 `base_name` namespaces the derived buckets —
 the concrete name registered for a given key is `f"{base_name}:{key}"` — so distinct
 `KeyedRateLimitRef` declarations never collide. `capacity` and `refill_per_second` apply
