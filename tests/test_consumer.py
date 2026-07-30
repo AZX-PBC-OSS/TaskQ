@@ -777,7 +777,9 @@ async def test_consumer_validates_dict_and_passes_model_to_key_fn() -> None:
     )
 
     reg = RateLimitRegistry()
-    reg.register(TokenBucket(name="test-api:acme", capacity=1, refill_per_second=0, backend="memory"))
+    reg.register(
+        TokenBucket(name="test-api:acme", capacity=1, refill_per_second=0, backend="memory")
+    )
     clk: Clock = FakeClock(_NOW)
     backend = _FakeBackend()
 

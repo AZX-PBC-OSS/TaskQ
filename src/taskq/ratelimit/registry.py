@@ -55,7 +55,7 @@ from time import monotonic
 from typing import TYPE_CHECKING, TypeVar
 
 import structlog
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
@@ -64,7 +64,7 @@ from taskq.constants import (
     DEFAULT_RESERVATION_BACKOFF,
     QUEUE_CONCURRENCY_PREFIX,
 )
-from taskq.exceptions import ReservationUnavailable
+from taskq.exceptions import PayloadValidationError, ReservationUnavailable
 from taskq.obs import record_ratelimit_refund_failure
 from taskq.ratelimit.composition import (
     AcquiredResource,
@@ -462,17 +462,27 @@ class RateLimitRegistry:
 
         Three cases:
         - Same type (isinstance check): zero-cost pass-through
-        - Different BaseModel type: re-validate via ref.payload_type.model_validate(payload.model_dump())
-        - Raw dict: validate via ref.payload_type.model_validate(dict)
+        - Different BaseModel type: re-validate via
+          ``ref.payload_type.model_validate(payload.model_dump(by_alias=True))``
+        - Raw dict: validate via ``ref.payload_type.model_validate(dict)``
 
-        A ValidationError from conversion propagates to the caller — it is a
-        payload error, not a limiter fault.
+        A ValidationError from conversion is re-raised as
+        :class:`~taskq.exceptions.PayloadValidationError` (non-retryable)
+        — it is a payload error, not a limiter fault.
         """
         if isinstance(payload, ref.payload_type):
             return payload  # type: ignore[return-value]  # Why: isinstance against a variable class narrows at runtime but pyright cannot track it; the payload IS ref.payload_type.
-        if isinstance(payload, BaseModel):
-            return ref.payload_type.model_validate(payload.model_dump())
-        return ref.payload_type.model_validate(payload)
+        try:
+            if isinstance(payload, BaseModel):
+                return ref.payload_type.model_validate(payload.model_dump(by_alias=True))
+            return ref.payload_type.model_validate(payload)
+        except ValidationError as exc:
+            errs: list[dict[str, object]] = exc.errors(include_url=False, include_input=False)  # type: ignore[assignment]  # Why: pydantic v2 ErrorDetails is a TypedDict (subtype of dict[str, Any]); assignment to list[dict[str,object]] is safe at runtime but pyright cannot prove covariance
+            raise PayloadValidationError(
+                f"Payload validation failed for {type(ref).__name__}(base_name={ref.base_name!r}): "
+                f"payload_type={ref.payload_type.__name__}, received={type(payload).__name__}. {exc.title}",
+                validation_errors=errs,
+            ) from exc
 
     async def _resolve_reservation_name(
         self,

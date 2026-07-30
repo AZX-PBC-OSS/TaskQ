@@ -11,6 +11,7 @@ from datetime import timedelta
 import pytest
 from pydantic import BaseModel, Field, ValidationError
 
+from taskq.exceptions import PayloadValidationError
 from taskq.ratelimit import RateLimitRef, ReservationRef
 from taskq.ratelimit.refs import (
     KeyedRateLimitRef,
@@ -97,7 +98,7 @@ class TestKeyedRateLimitRefTyped:
         with pytest.raises(ValidationError):
             KeyedRateLimitRef(  # type: ignore[call-arg]
                 base_name="api-per-tenant",
-                key_fn=lambda p: p.tenant_id,
+                key_fn=lambda p: "x",
                 capacity=10.0,
                 refill_per_second=1.0,
             )
@@ -188,7 +189,7 @@ class TestKeyedRateLimitRefTyped:
             refill_per_second=1.0,
         )
         reg = RateLimitRegistry()
-        with pytest.raises(ValidationError):
+        with pytest.raises(PayloadValidationError):
             await reg._resolve_rate_limit_name(  # pyright: ignore[reportPrivateUsage]
                 ref,
                 payload={"tenant_id": "acme", "unexpected": "field"},
@@ -218,7 +219,7 @@ class TestKeyedReservationRefTyped:
         with pytest.raises(ValidationError):
             KeyedReservationRef(  # type: ignore[call-arg]
                 base_name="session-cap",
-                key_fn=lambda p: p.session_id,
+                key_fn=lambda p: "x",
                 slots=3,
                 lease=timedelta(minutes=5),
             )
@@ -297,7 +298,7 @@ class TestKeyedReservationRefTyped:
             lease=timedelta(minutes=5),
         )
         reg = RateLimitRegistry()
-        with pytest.raises(ValidationError):
+        with pytest.raises(PayloadValidationError):
             await reg._resolve_reservation_name(  # pyright: ignore[reportPrivateUsage]
                 ref,
                 payload={"session_id": "s1", "unexpected": "field"},

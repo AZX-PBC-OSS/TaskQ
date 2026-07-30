@@ -23,16 +23,16 @@ import asyncpg
 import structlog
 from opentelemetry import trace
 from opentelemetry.trace import SpanKind, StatusCode
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
 
 from taskq._di.registry import ProviderRegistry
 from taskq._di.scopes import LoopScope, ProcessScope, ThreadScope, build_actor_scope
+from taskq._validation import validate_actor_payload
 from taskq.actor import ActorRef
 from taskq.backend._protocol import Backend, JobRow
 from taskq.backend.clock import Clock
 from taskq.client._enqueuer import SubJobEnqueuer
 from taskq.context import JobContext
-from taskq.exceptions import PayloadValidationError
 from taskq.obs import (
     ConsumedOutcome,
     bind_job_context,
@@ -178,15 +178,11 @@ async def dispatch_one_job(
             links=links,
         ) as consumer_span:
             try:
-                try:
-                    validated_payload = actor_ref.payload_type.model_validate(job.payload)
-                except ValidationError as exc:
-                    errs: list[dict[str, object]] = exc.errors()  # type: ignore[assignment]  # Why: pydantic v2 ErrorDetails is a TypedDict (subtype of dict[str, Any]); assignment to list[dict[str,object]] is safe at runtime but pyright cannot prove covariance
-                    raise PayloadValidationError(
-                        f"Payload validation failed for actor {job.actor!r}: {exc}",
-                        actor=job.actor,
-                        validation_errors=errs,
-                    ) from exc
+                validated_payload = validate_actor_payload(
+                    actor_ref.payload_type,
+                    job.payload,
+                    actor=job.actor,
+                )
 
                 span_ctx = consumer_span.get_span_context()
                 dispatch_trace_id: str = ""

@@ -24,6 +24,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
+from pydantic import BaseModel
 
 from taskq._ids import new_job_id
 from taskq.backend import Backend, EnqueueArgs
@@ -64,12 +65,13 @@ def _enqueue_args(
     priority: int = 0,
     schedule_to_close: datetime | None = None,
     identity_key: IdentityKey | None = None,
+    payload: dict[str, object] | None = None,
 ) -> EnqueueArgs:
     """Build minimal EnqueueArgs for testing."""
     return make_enqueue_args(
         actor=actor,
         queue=queue,
-        payload={"key": "value"},
+        payload=payload or {"key": "value"},
         scheduled_at=scheduled_at or _START,
         max_attempts=max_attempts,
         retry_kind=retry_kind,
@@ -483,6 +485,79 @@ class TestUnregisteredActor:
 
         with pytest.raises(RuntimeError, match="no stub registered for actor: missing_actor"):
             await backend.run_until_drained()
+
+
+# ── PayloadValidationError routing through run_until_drained ────────────
+
+
+class _StrictPayload(BaseModel):
+    """Payload model with a required field — rejects missing/empty payloads."""
+
+    required_field: str
+
+
+class TestPayloadValidationFailureRouting:
+    """Regression: PayloadValidationError from consume_one_job's pre-try
+    validation block must be caught by the test runner and routed to a
+    terminal 'failed' write, not left stuck in 'running'.
+    """
+
+    async def test_invalid_payload_reaches_failed(self) -> None:
+        clock = FakeClock(_START)
+        backend = _make_backend(clock)
+
+        def stub(payload: object, ctx: object) -> object:
+            raise AssertionError("actor body should not run on validation failure")
+
+        backend.register_stub("strict_actor", stub, payload_type=_StrictPayload)
+
+        args = _enqueue_args(actor="strict_actor", payload={"wrong_field": "nope"})
+        await backend.enqueue(args)
+        await backend.run_until_drained()
+
+        row = await backend.get(args.id)
+        assert row is not None
+        assert row.status == "failed"
+        assert row.error_class == "PayloadValidationError"
+        assert row.locked_by_worker is None
+
+    async def test_invalid_payload_drain_completes_no_stuck_jobs(self) -> None:
+        clock = FakeClock(_START)
+        backend = _make_backend(clock)
+
+        def stub(payload: object, ctx: object) -> object:
+            raise AssertionError("actor body should not run on validation failure")
+
+        backend.register_stub("strict_actor", stub, payload_type=_StrictPayload)
+
+        args = _enqueue_args(actor="strict_actor", payload={})
+        await backend.enqueue(args)
+        await backend.run_until_drained()
+
+        non_terminal = [
+            r
+            for r in backend._jobs.values()
+            if r.status not in ("succeeded", "failed", "cancelled", "crashed", "abandoned")
+        ]
+        assert len(non_terminal) == 0
+
+    async def test_invalid_payload_writes_attempt_row(self) -> None:
+        clock = FakeClock(_START)
+        backend = _make_backend(clock)
+
+        def stub(payload: object, ctx: object) -> object:
+            raise AssertionError("actor body should not run on validation failure")
+
+        backend.register_stub("strict_actor", stub, payload_type=_StrictPayload)
+
+        args = _enqueue_args(actor="strict_actor", payload={"missing": "required_field"})
+        await backend.enqueue(args)
+        await backend.run_until_drained()
+
+        attempts = await backend.get_attempts(args.id)
+        assert len(attempts) == 1
+        assert attempts[0].outcome == "failed"
+        assert attempts[0].error_class == "PayloadValidationError"
 
 
 # ── ReservationUnavailable handling via consume_one_job ─────────────────

@@ -19,9 +19,10 @@ import asyncpg
 import structlog
 from opentelemetry import trace
 from opentelemetry.trace import SpanKind
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
 
 from taskq._json import dumps as _json_dumps
+from taskq._validation import validate_actor_payload
 from taskq.backend._protocol import (
     Backend,
     CancelPhase,
@@ -33,7 +34,6 @@ from taskq.client._enqueuer import SubJobEnqueuer
 from taskq.constants import MAX_RESULT_BYTES
 from taskq.context import JobContext
 from taskq.exceptions import (
-    PayloadValidationError,
     ReservationUnavailable,
     ResultTooLarge,
     RetryAfter,
@@ -307,15 +307,11 @@ async def consume_one_job(
     # here. A ValidationError from an invalid payload surfaces BEFORE a
     # rate-limit token is consumed — the correct behavior.
     if validated_payload is None:
-        try:
-            validated_payload = payload_type.model_validate(job.payload)
-        except ValidationError as exc:
-            errs: list[dict[str, object]] = exc.errors()  # type: ignore[assignment]  # Why: pydantic v2 ErrorDetails is a TypedDict (subtype of dict[str, Any]); assignment to list[dict[str,object]] is safe at runtime but pyright cannot prove covariance
-            raise PayloadValidationError(
-                f"Payload validation failed for actor {job.actor!r}: {exc}",
-                actor=job.actor,
-                validation_errors=errs,
-            ) from exc
+        validated_payload = validate_actor_payload(
+            payload_type,
+            job.payload,
+            actor=job.actor,
+        )
 
     acquired: list[AcquiredResource] = []
 

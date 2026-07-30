@@ -20,11 +20,11 @@ from enum import Enum, StrEnum
 import pytest
 import redis.asyncio as redis_async
 import structlog.testing
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field
 
 from taskq._ids import new_base62, new_uuid
 from taskq.backend.clock import SystemClock
-from taskq.exceptions import ReservationUnavailable
+from taskq.exceptions import PayloadValidationError, ReservationUnavailable
 from taskq.ratelimit.refs import KeyedRateLimitRef, KeyedReservationRef
 from taskq.ratelimit.registry import RateLimitRegistry
 from taskq.ratelimit.token_bucket import TokenBucket
@@ -268,7 +268,9 @@ async def test_resolve_keyed_ref_produces_base_name_colon_key() -> None:
     reg = RateLimitRegistry()
     ref = _rate_limit_ref(base_name="api-per-tenant", capacity=10, refill_per_second=1.0)
 
-    name = await reg._resolve_rate_limit_name(ref, payload=_DefaultPayload(tenant_id="abc123"), settings=None)  # pyright: ignore[reportPrivateUsage]
+    name = await reg._resolve_rate_limit_name(
+        ref, payload=_DefaultPayload(tenant_id="abc123"), settings=None
+    )  # pyright: ignore[reportPrivateUsage]
 
     assert name == "api-per-tenant:abc123"
     registered = reg.get_rate_limit("api-per-tenant:abc123")
@@ -283,11 +285,15 @@ async def test_resolve_keyed_ref_reuses_same_instance_for_same_key() -> None:
     reg = RateLimitRegistry()
     ref = _rate_limit_ref(base_name="api-per-tenant")
 
-    name1 = await reg._resolve_rate_limit_name(ref, payload=_DefaultPayload(tenant_id="t1"), settings=None)  # pyright: ignore[reportPrivateUsage]
+    name1 = await reg._resolve_rate_limit_name(
+        ref, payload=_DefaultPayload(tenant_id="t1"), settings=None
+    )  # pyright: ignore[reportPrivateUsage]
     first_instance = reg.get_rate_limit(name1)
     assert len(reg.rate_limits) == 1
 
-    name2 = await reg._resolve_rate_limit_name(ref, payload=_DefaultPayload(tenant_id="t1"), settings=None)  # pyright: ignore[reportPrivateUsage]
+    name2 = await reg._resolve_rate_limit_name(
+        ref, payload=_DefaultPayload(tenant_id="t1"), settings=None
+    )  # pyright: ignore[reportPrivateUsage]
     second_instance = reg.get_rate_limit(name2)
 
     assert name1 == name2 == "api-per-tenant:t1"
@@ -300,8 +306,12 @@ async def test_resolve_keyed_ref_different_keys_register_independently() -> None
     reg = RateLimitRegistry()
     ref = _rate_limit_ref(base_name="api-per-tenant", capacity=5)
 
-    name_a = await reg._resolve_rate_limit_name(ref, payload=_DefaultPayload(tenant_id="a"), settings=None)  # pyright: ignore[reportPrivateUsage]
-    name_b = await reg._resolve_rate_limit_name(ref, payload=_DefaultPayload(tenant_id="b"), settings=None)  # pyright: ignore[reportPrivateUsage]
+    name_a = await reg._resolve_rate_limit_name(
+        ref, payload=_DefaultPayload(tenant_id="a"), settings=None
+    )  # pyright: ignore[reportPrivateUsage]
+    name_b = await reg._resolve_rate_limit_name(
+        ref, payload=_DefaultPayload(tenant_id="b"), settings=None
+    )  # pyright: ignore[reportPrivateUsage]
 
     assert name_a == "api-per-tenant:a"
     assert name_b == "api-per-tenant:b"
@@ -413,7 +423,9 @@ async def test_resolve_keyed_ref_empty_key_raises_value_error() -> None:
     ref = _rate_limit_ref(base_name="api-per-tenant", key_fn=lambda p: "")
 
     with pytest.raises(ValueError, match="empty or non-string key"):
-        await reg._resolve_rate_limit_name(ref, payload=_DefaultPayload(tenant_id="t1"), settings=None)  # pyright: ignore[reportPrivateUsage]
+        await reg._resolve_rate_limit_name(
+            ref, payload=_DefaultPayload(tenant_id="t1"), settings=None
+        )  # pyright: ignore[reportPrivateUsage]
 
 
 async def test_resolve_keyed_ref_key_fn_returning_none_raises_value_error() -> None:
@@ -426,7 +438,9 @@ async def test_resolve_keyed_ref_key_fn_returning_none_raises_value_error() -> N
     )
 
     with pytest.raises(ValueError, match="empty or non-string key"):
-        await reg._resolve_rate_limit_name(ref, payload=_DefaultPayload(tenant_id="t1"), settings=None)  # pyright: ignore[reportPrivateUsage]
+        await reg._resolve_rate_limit_name(
+            ref, payload=_DefaultPayload(tenant_id="t1"), settings=None
+        )  # pyright: ignore[reportPrivateUsage]
 
 
 async def test_resolve_keyed_ref_key_fn_returning_non_str_raises_value_error() -> None:
@@ -438,7 +452,9 @@ async def test_resolve_keyed_ref_key_fn_returning_non_str_raises_value_error() -
     )
 
     with pytest.raises(ValueError, match="empty or non-string key"):
-        await reg._resolve_rate_limit_name(ref, payload=_DefaultPayload(tenant_id="t1"), settings=None)  # pyright: ignore[reportPrivateUsage]
+        await reg._resolve_rate_limit_name(
+            ref, payload=_DefaultPayload(tenant_id="t1"), settings=None
+        )  # pyright: ignore[reportPrivateUsage]
 
 
 async def test_resolve_keyed_ref_pg_publish_failure_is_best_effort() -> None:
@@ -489,7 +505,9 @@ async def test_resolve_keyed_ref_oversized_key_raises_value_error() -> None:
     ref = _rate_limit_ref(base_name="api-per-tenant", key_fn=lambda _p: long_key)
 
     with pytest.raises(ValueError, match="exceeds the maximum"):
-        await reg._resolve_rate_limit_name(ref, payload=_DefaultPayload(tenant_id="x"), settings=None)  # pyright: ignore[reportPrivateUsage]
+        await reg._resolve_rate_limit_name(
+            ref, payload=_DefaultPayload(tenant_id="x"), settings=None
+        )  # pyright: ignore[reportPrivateUsage]
 
 
 async def test_resolve_keyed_ref_key_with_disallowed_chars_raises_value_error() -> None:
@@ -498,7 +516,9 @@ async def test_resolve_keyed_ref_key_with_disallowed_chars_raises_value_error() 
     ref = _rate_limit_ref(base_name="api-per-tenant", key_fn=lambda _p: "key with spaces")
 
     with pytest.raises(ValueError, match="outside the allowed set"):
-        await reg._resolve_rate_limit_name(ref, payload=_DefaultPayload(tenant_id="x"), settings=None)  # pyright: ignore[reportPrivateUsage]
+        await reg._resolve_rate_limit_name(
+            ref, payload=_DefaultPayload(tenant_id="x"), settings=None
+        )  # pyright: ignore[reportPrivateUsage]
 
 
 async def test_resolve_keyed_ref_str_subclass_key_uses_value_content() -> None:
@@ -513,7 +533,9 @@ async def test_resolve_keyed_ref_str_subclass_key_uses_value_content() -> None:
     reg = RateLimitRegistry()
     ref = _rate_limit_ref(base_name="api-per-tenant", key_fn=lambda p: TenantKey("t1"))
 
-    name = await reg._resolve_rate_limit_name(ref, payload=_DefaultPayload(tenant_id="t1"), settings=None)  # pyright: ignore[reportPrivateUsage]
+    name = await reg._resolve_rate_limit_name(
+        ref, payload=_DefaultPayload(tenant_id="t1"), settings=None
+    )  # pyright: ignore[reportPrivateUsage]
 
     assert name == "api-per-tenant:t1"
     assert type(name) is str
@@ -562,7 +584,9 @@ async def test_resolve_keyed_ref_key_fn_exception_propagates() -> None:
     ref = _rate_limit_ref(base_name="api-per-tenant", key_fn=_boom)
 
     with pytest.raises(RuntimeError, match="key derivation exploded"):
-        await reg._resolve_rate_limit_name(ref, payload=_DefaultPayload(tenant_id="t1"), settings=None)  # pyright: ignore[reportPrivateUsage]
+        await reg._resolve_rate_limit_name(
+            ref, payload=_DefaultPayload(tenant_id="t1"), settings=None
+        )  # pyright: ignore[reportPrivateUsage]
 
 
 async def test_resolve_keyed_ref_wrong_model_type_raises_validation_error() -> None:
@@ -575,8 +599,10 @@ async def test_resolve_keyed_ref_wrong_model_type_raises_validation_error() -> N
     class _UnrelatedPayload(BaseModel):
         unrelated: str
 
-    with pytest.raises(ValidationError):
-        await reg._resolve_rate_limit_name(ref, payload=_UnrelatedPayload(unrelated="value"), settings=None)  # pyright: ignore[reportPrivateUsage]  # Why: exercising private resolution helper directly, matching existing test conventions.
+    with pytest.raises(PayloadValidationError):
+        await reg._resolve_rate_limit_name(
+            ref, payload=_UnrelatedPayload(unrelated="value"), settings=None
+        )  # pyright: ignore[reportPrivateUsage]  # Why: exercising private resolution helper directly, matching existing test conventions.
 
 
 # ── max_keyed_rate_limits guard ───────────────────────────────
@@ -665,9 +691,15 @@ async def test_opportunistic_eviction_reclaims_idle_capacity_on_cap_hit(
     # 1. Fill the cap at t=1000.
     fake_time = 1000.0
     monkeypatch.setattr(registry_mod, "monotonic", lambda: fake_time)
-    await reg._resolve_rate_limit_name(ref, payload=_DefaultPayload(tenant_id="k1"), settings=settings)  # pyright: ignore[reportPrivateUsage]
-    await reg._resolve_rate_limit_name(ref, payload=_DefaultPayload(tenant_id="k2"), settings=settings)  # pyright: ignore[reportPrivateUsage]
-    await reg._resolve_rate_limit_name(ref, payload=_DefaultPayload(tenant_id="k3"), settings=settings)  # pyright: ignore[reportPrivateUsage]
+    await reg._resolve_rate_limit_name(
+        ref, payload=_DefaultPayload(tenant_id="k1"), settings=settings
+    )  # pyright: ignore[reportPrivateUsage]
+    await reg._resolve_rate_limit_name(
+        ref, payload=_DefaultPayload(tenant_id="k2"), settings=settings
+    )  # pyright: ignore[reportPrivateUsage]
+    await reg._resolve_rate_limit_name(
+        ref, payload=_DefaultPayload(tenant_id="k3"), settings=settings
+    )  # pyright: ignore[reportPrivateUsage]
     assert len(reg._keyed_rate_limit_last_used) == 3  # pyright: ignore[reportPrivateUsage]
 
     # 2. Advance past the 1-hour idle threshold (3600 s).
@@ -675,7 +707,9 @@ async def test_opportunistic_eviction_reclaims_idle_capacity_on_cap_hit(
     monkeypatch.setattr(registry_mod, "monotonic", lambda: fake_time)
 
     # 3. Re-stamp k3 as fresh (last_used=5000) — k1 and k2 remain stale.
-    await reg._resolve_rate_limit_name(ref, payload=_DefaultPayload(tenant_id="k3"), settings=settings)  # pyright: ignore[reportPrivateUsage]
+    await reg._resolve_rate_limit_name(
+        ref, payload=_DefaultPayload(tenant_id="k3"), settings=settings
+    )  # pyright: ignore[reportPrivateUsage]
 
     # 4. Materialise a NEW key — would exceed the cap, but opportunistic
     #    eviction reclaims the 2 stale entries first.
@@ -710,8 +744,12 @@ async def test_cap_hit_with_nothing_idle_still_raises_reservation_unavailable(
     # Materialise 2 keys — all at the same recent time, nothing idle.
     fake_time = 1000.0
     monkeypatch.setattr(registry_mod, "monotonic", lambda: fake_time)
-    await reg._resolve_rate_limit_name(ref, payload=_DefaultPayload(tenant_id="k1"), settings=settings)  # pyright: ignore[reportPrivateUsage]
-    await reg._resolve_rate_limit_name(ref, payload=_DefaultPayload(tenant_id="k2"), settings=settings)  # pyright: ignore[reportPrivateUsage]
+    await reg._resolve_rate_limit_name(
+        ref, payload=_DefaultPayload(tenant_id="k1"), settings=settings
+    )  # pyright: ignore[reportPrivateUsage]
+    await reg._resolve_rate_limit_name(
+        ref, payload=_DefaultPayload(tenant_id="k2"), settings=settings
+    )  # pyright: ignore[reportPrivateUsage]
     assert len(reg._keyed_rate_limit_last_used) == 2  # pyright: ignore[reportPrivateUsage]
 
     # A third key at the same time — nothing is idle, so opportunistic
@@ -760,8 +798,12 @@ async def test_opportunistic_eviction_scan_is_amortized_under_sustained_denials(
 
     fake_time = 1000.0
     monkeypatch.setattr(registry_mod, "monotonic", lambda: fake_time)
-    await reg._resolve_rate_limit_name(ref, payload=_DefaultPayload(tenant_id="k1"), settings=settings)  # pyright: ignore[reportPrivateUsage]
-    await reg._resolve_rate_limit_name(ref, payload=_DefaultPayload(tenant_id="k2"), settings=settings)  # pyright: ignore[reportPrivateUsage]
+    await reg._resolve_rate_limit_name(
+        ref, payload=_DefaultPayload(tenant_id="k1"), settings=settings
+    )  # pyright: ignore[reportPrivateUsage]
+    await reg._resolve_rate_limit_name(
+        ref, payload=_DefaultPayload(tenant_id="k2"), settings=settings
+    )  # pyright: ignore[reportPrivateUsage]
     assert len(reg._keyed_rate_limit_last_used) == 2  # pyright: ignore[reportPrivateUsage]
     assert scan_calls == []
 
@@ -1069,8 +1111,12 @@ async def test_keyed_rate_limit_cap_does_not_deny_static_colliding_reuse() -> No
     ref = _rate_limit_ref(base_name="api-per-tenant")
 
     # Fill the keyed cap with two fresh materialized keys.
-    await reg._resolve_rate_limit_name(ref, payload=_DefaultPayload(tenant_id="k1"), settings=settings)  # pyright: ignore[reportPrivateUsage]
-    await reg._resolve_rate_limit_name(ref, payload=_DefaultPayload(tenant_id="k2"), settings=settings)  # pyright: ignore[reportPrivateUsage]
+    await reg._resolve_rate_limit_name(
+        ref, payload=_DefaultPayload(tenant_id="k1"), settings=settings
+    )  # pyright: ignore[reportPrivateUsage]
+    await reg._resolve_rate_limit_name(
+        ref, payload=_DefaultPayload(tenant_id="k2"), settings=settings
+    )  # pyright: ignore[reportPrivateUsage]
     assert len(reg._keyed_rate_limit_last_used) == 2  # pyright: ignore[reportPrivateUsage]
 
     # A statically pre-registered bucket whose name collides with the ref's
@@ -1151,7 +1197,9 @@ async def test_statically_preregistered_entry_is_never_keyed_evicted(
     ref = _rate_limit_ref(base_name="api-per-tenant")
 
     monkeypatch.setattr(registry_mod, "monotonic", lambda: 1000.0)
-    name = await reg._resolve_rate_limit_name(ref, payload=_DefaultPayload(tenant_id="t1"), settings=None)  # pyright: ignore[reportPrivateUsage]
+    name = await reg._resolve_rate_limit_name(
+        ref, payload=_DefaultPayload(tenant_id="t1"), settings=None
+    )  # pyright: ignore[reportPrivateUsage]
     assert name == "api-per-tenant:t1"
     assert len(reg._keyed_rate_limit_last_used) == 0  # pyright: ignore[reportPrivateUsage]
 
@@ -1178,10 +1226,14 @@ async def test_evict_idle_keyed_rate_limits_removes_only_stale_entries(
 
     fake_time = 1000.0
     monkeypatch.setattr(registry_mod, "monotonic", lambda: fake_time)
-    await reg._resolve_rate_limit_name(ref, payload=_DefaultPayload(tenant_id="stale"), settings=None)  # pyright: ignore[reportPrivateUsage]
+    await reg._resolve_rate_limit_name(
+        ref, payload=_DefaultPayload(tenant_id="stale"), settings=None
+    )  # pyright: ignore[reportPrivateUsage]
 
     fake_time = 1100.0  # 100s later — "stale" key untouched since
-    await reg._resolve_rate_limit_name(ref, payload=_DefaultPayload(tenant_id="fresh"), settings=None)  # pyright: ignore[reportPrivateUsage]
+    await reg._resolve_rate_limit_name(
+        ref, payload=_DefaultPayload(tenant_id="fresh"), settings=None
+    )  # pyright: ignore[reportPrivateUsage]
 
     evicted = reg.evict_idle_keyed_rate_limits(idle_for=timedelta(seconds=50))
 
@@ -1224,7 +1276,9 @@ async def test_evict_idle_keyed_rate_limits_returns_zero_when_nothing_stale(
     ref = _rate_limit_ref(base_name="api-per-tenant")
 
     monkeypatch.setattr(registry_mod, "monotonic", lambda: 42.0)
-    await reg._resolve_rate_limit_name(ref, payload=_DefaultPayload(tenant_id="recent"), settings=None)  # pyright: ignore[reportPrivateUsage]
+    await reg._resolve_rate_limit_name(
+        ref, payload=_DefaultPayload(tenant_id="recent"), settings=None
+    )  # pyright: ignore[reportPrivateUsage]
 
     evicted = reg.evict_idle_keyed_rate_limits(idle_for=timedelta(hours=1))
 
@@ -1328,7 +1382,9 @@ async def test_full_memory_fixed_quota_bucket_is_still_idle_evicted(
 
     monkeypatch.setattr(registry_mod, "monotonic", lambda: 1000.0)
     # Materialize (register + stamp tracking) WITHOUT acquiring — quota full.
-    await reg._resolve_rate_limit_name(ref, payload=_DefaultPayload(tenant_id="acme"), settings=None)  # pyright: ignore[reportPrivateUsage]
+    await reg._resolve_rate_limit_name(
+        ref, payload=_DefaultPayload(tenant_id="acme"), settings=None
+    )  # pyright: ignore[reportPrivateUsage]
 
     monkeypatch.setattr(registry_mod, "monotonic", lambda: 99999.0)
     evicted = reg.evict_idle_keyed_rate_limits(idle_for=timedelta(hours=1))
@@ -1401,7 +1457,9 @@ async def test_redis_backend_fixed_quota_bucket_is_still_idle_evicted(
     )
 
     monkeypatch.setattr(registry_mod, "monotonic", lambda: 1000.0)
-    await reg._resolve_rate_limit_name(ref, payload=_DefaultPayload(tenant_id="acme"), settings=None)  # pyright: ignore[reportPrivateUsage]
+    await reg._resolve_rate_limit_name(
+        ref, payload=_DefaultPayload(tenant_id="acme"), settings=None
+    )  # pyright: ignore[reportPrivateUsage]
 
     monkeypatch.setattr(registry_mod, "monotonic", lambda: 99999.0)
     evicted = reg.evict_idle_keyed_rate_limits(idle_for=timedelta(hours=1))
@@ -1420,7 +1478,9 @@ async def test_evict_idle_keyed_rate_limits_re_registration_after_eviction_is_id
     reg._rate_limits.pop("api-per-tenant:s1")  # pyright: ignore[reportPrivateUsage] # Why: simulating what evict_idle_keyed_rate_limits does, without needing monotonic control here.
     reg._keyed_rate_limit_last_used.pop("api-per-tenant:s1")  # pyright: ignore[reportPrivateUsage]
 
-    name = await reg._resolve_rate_limit_name(ref, payload=_DefaultPayload(tenant_id="s1"), settings=None)  # pyright: ignore[reportPrivateUsage]
+    name = await reg._resolve_rate_limit_name(
+        ref, payload=_DefaultPayload(tenant_id="s1"), settings=None
+    )  # pyright: ignore[reportPrivateUsage]
 
     assert name == "api-per-tenant:s1"
     assert len(reg.rate_limits) == 1
@@ -1605,7 +1665,7 @@ async def test_resolve_typed_ref_validation_error_propagates() -> None:
         backend="memory",
     )
 
-    with pytest.raises(ValidationError):
+    with pytest.raises(PayloadValidationError):
         await reg._resolve_rate_limit_name(  # pyright: ignore[reportPrivateUsage]
             ref, payload={"region": "us-east-1"}, settings=None
         )
@@ -1730,7 +1790,10 @@ async def test_validation_error_mid_composition_rolls_back_reservation() -> None
     clock = FakeClock(_START)
     reg = RateLimitRegistry()
     static_res = ConcurrencyReservation(
-        name="gpu-static", slots=1, lease=timedelta(minutes=5), clock=clock,
+        name="gpu-static",
+        slots=1,
+        lease=timedelta(minutes=5),
+        clock=clock,
     )
     reg.register(static_res)
 
@@ -1747,7 +1810,7 @@ async def test_validation_error_mid_composition_rolls_back_reservation() -> None
         backend="memory",
     )
 
-    with pytest.raises(ValidationError):
+    with pytest.raises(PayloadValidationError):
         await reg.acquire_for_actor(
             rate_limits=[strict_ref],
             reservations=["gpu-static"],
@@ -1774,7 +1837,7 @@ async def test_resolve_typed_ref_wrong_type_in_dict_raises_validation_error() ->
         backend="memory",
     )
 
-    with pytest.raises(ValidationError):
+    with pytest.raises(PayloadValidationError):
         await reg._resolve_rate_limit_name(  # pyright: ignore[reportPrivateUsage]
             ref, payload={"tenant_id": 42}, settings=None
         )
@@ -1835,7 +1898,7 @@ async def test_wrong_model_type_with_strict_target_raises_validation_error() -> 
         backend="memory",
     )
 
-    with pytest.raises(ValidationError):
+    with pytest.raises(PayloadValidationError):
         await reg._resolve_rate_limit_name(  # pyright: ignore[reportPrivateUsage]
             ref, payload=_LooseSource(tenant_id="t1", extra_field="x"), settings=None
         )

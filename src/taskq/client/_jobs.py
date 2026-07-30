@@ -22,9 +22,10 @@ from uuid import UUID
 
 import structlog
 from croniter import croniter
-from pydantic import BaseModel, TypeAdapter, ValidationError
+from pydantic import BaseModel, TypeAdapter
 
 from taskq._close import CLOSE_TIMEOUT_SECS, close_redis_bounded
+from taskq._validation import validate_actor_payload
 from taskq.actor import ActorRef
 from taskq.backend._cursor import encode_cursor
 from taskq.backend._protocol import (
@@ -45,7 +46,7 @@ from taskq.batch import BatchHandle, EnqueueItem
 from taskq.client._args import build_batch_args, build_enqueue_args, enqueue_span
 from taskq.client._capacity import DEFAULT_CAPACITY_CACHE_TTL, ActorCapacityCache
 from taskq.client._handle import JobHandle
-from taskq.exceptions import PayloadValidationError, SchemaNotMigratedError
+from taskq.exceptions import SchemaNotMigratedError
 from taskq.types import CancelResult
 
 if TYPE_CHECKING:
@@ -433,17 +434,7 @@ class JobsClient:
         # Phase 1: Validate ALL payloads (and idempotency keys) before any I/O
         for i, item in enumerate(items):
             ref = item.actor_ref
-            try:
-                ref.payload_type.model_validate(item.payload)
-            except ValidationError as exc:
-                # exc.errors() returns list[ErrorDetails] (TypedDict); cast to
-                # the erased dict[str, object] expected by PayloadValidationError.
-                errs: list[dict[str, object]] = exc.errors()  # type: ignore[assignment]  # Why: pydantic v2 ErrorDetails is a TypedDict (subtype of dict[str, Any]); assignment to list[dict[str,object]] is safe at runtime but pyright cannot prove covariance
-                raise PayloadValidationError(
-                    f"Payload validation failed for item {i} (actor={ref.name!r}): {exc}",
-                    actor=ref.name,
-                    validation_errors=errs,
-                ) from exc
+            validate_actor_payload(ref.payload_type, item.payload, actor=ref.name)
             if item.idempotency_key is not None:
                 if item.idempotency_key == "":
                     raise ValueError(f"idempotency_key for item {i} must not be empty")
@@ -583,17 +574,9 @@ class JobsClient:
         resolved_batch_id = UUID(bytes=new_job_id().bytes) if batch_id is None else batch_id
 
         # Phase 1: Validate ALL payloads before any I/O
-        for i, item in enumerate(items):
+        for item in items:
             ref = item.actor_ref
-            try:
-                ref.payload_type.model_validate(item.payload)
-            except ValidationError as exc:
-                errs: list[dict[str, object]] = exc.errors()  # type: ignore[assignment]  # Why: pydantic v2 ErrorDetails is a TypedDict (subtype of dict[str, Any]); assignment to list[dict[str,object]] is safe at runtime but pyright cannot prove covariance
-                raise PayloadValidationError(
-                    f"Payload validation failed for item {i} (actor={ref.name!r}): {exc}",
-                    actor=ref.name,
-                    validation_errors=errs,
-                ) from exc
+            validate_actor_payload(ref.payload_type, item.payload, actor=ref.name)
 
         # Phase 2: Build per-item EnqueueArgs
         args_list = build_batch_args(items, resolved_batch_id, self._clock)

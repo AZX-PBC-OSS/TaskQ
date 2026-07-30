@@ -16,9 +16,10 @@ from datetime import UTC, datetime, timedelta
 from enum import Enum, StrEnum
 
 import pytest
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field
 
 from taskq._ids import new_uuid
+from taskq.exceptions import PayloadValidationError
 from taskq.ratelimit.refs import KeyedReservationRef
 from taskq.ratelimit.registry import RateLimitRegistry
 from taskq.ratelimit.reservation import ConcurrencyReservation
@@ -324,7 +325,7 @@ async def test_resolve_keyed_ref_wrong_model_type_raises_validation_error() -> N
     class _UnrelatedPayload(BaseModel):
         unrelated: str
 
-    with pytest.raises(ValidationError):
+    with pytest.raises(PayloadValidationError):
         await reg._resolve_reservation_name(
             ref, payload=_UnrelatedPayload(unrelated="value"), pg_pool=None, settings=None
         )  # pyright: ignore[reportPrivateUsage]  # Why: exercising private resolution helper directly, matching existing test conventions.
@@ -721,7 +722,7 @@ async def test_resolve_typed_res_ref_validation_error_propagates() -> None:
         lease=timedelta(minutes=5),
     )
 
-    with pytest.raises(ValidationError):
+    with pytest.raises(PayloadValidationError):
         await reg._resolve_reservation_name(  # pyright: ignore[reportPrivateUsage]
             ref, payload={"region": "us-east-1"}, pg_pool=None, settings=None
         )
@@ -746,7 +747,10 @@ async def test_resolve_typed_res_ref_wrong_model_type_re_validates() -> None:
     )
 
     name = await reg._resolve_reservation_name(  # pyright: ignore[reportPrivateUsage]
-        ref, payload=_CompatiblePayload(session_id="s1", extra_field="x"), pg_pool=None, settings=None
+        ref,
+        payload=_CompatiblePayload(session_id="s1", extra_field="x"),
+        pg_pool=None,
+        settings=None,
     )
 
     assert name == "session-cap:s1"
