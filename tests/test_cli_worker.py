@@ -29,7 +29,7 @@ def test_actors_resolution_passes_registry_to_worker_main(monkeypatch: Any) -> N
     captured_settings: Any = None
     captured_registry: Any = None
 
-    def fake_worker_main(settings: Any, *, actor_registry: Any = None) -> int:
+    def fake_worker_main(settings: Any, *, actor_registry: Any = None, **kwargs: Any) -> int:
         nonlocal captured_settings, captured_registry
         captured_settings = settings
         captured_registry = actor_registry
@@ -59,7 +59,7 @@ def test_force_update_flag_true(monkeypatch: Any) -> None:
     """--force-update-actor-config passes True in settings."""
     captured_settings: Any = None
 
-    def fake_worker_main(settings: Any, *, actor_registry: Any = None) -> int:
+    def fake_worker_main(settings: Any, *, actor_registry: Any = None, **kwargs: Any) -> int:
         nonlocal captured_settings
         captured_settings = settings
         return 0
@@ -77,7 +77,7 @@ def test_force_update_flag_default_false(monkeypatch: Any) -> None:
     """without --force-update-actor-config, settings is False."""
     captured_settings: Any = None
 
-    def fake_worker_main(settings: Any, *, actor_registry: Any = None) -> int:
+    def fake_worker_main(settings: Any, *, actor_registry: Any = None, **kwargs: Any) -> int:
         nonlocal captured_settings
         captured_settings = settings
         return 0
@@ -93,7 +93,7 @@ def test_env_var_force_update_config(monkeypatch: Any) -> None:
     """TASKQ_FORCE_UPDATE_ACTOR_CONFIG=true reflected in settings via dotenvmodel."""
     captured_settings: Any = None
 
-    def fake_worker_main(settings: Any, *, actor_registry: Any = None) -> int:
+    def fake_worker_main(settings: Any, *, actor_registry: Any = None, **kwargs: Any) -> int:
         nonlocal captured_settings
         captured_settings = settings
         return 0
@@ -116,7 +116,7 @@ def test_drift_error_produces_exit_one_and_hint(monkeypatch: Any) -> None:
     )
     drift_list = ActorConfigDriftList((drift_error,))
 
-    def fake_worker_main(settings: Any, *, actor_registry: Any = None) -> int:
+    def fake_worker_main(settings: Any, *, actor_registry: Any = None, **kwargs: Any) -> int:
         raise drift_list
 
     monkeypatch.setattr("taskq.cli._worker_main", fake_worker_main)
@@ -228,3 +228,136 @@ def test_main_invokes_app(monkeypatch: Any) -> None:
     monkeypatch.setattr(cli_mod, "app", lambda *a: calls.append(a))
     cli_mod.main()
     assert calls == [()]
+
+
+# ── until-idle CLI flags ─────────────────────────────────────────────────
+
+
+def test_until_idle_flag_passed_to_worker_main(monkeypatch: Any) -> None:
+    """--until-idle passes until_idle=True to worker_main."""
+    captured: dict[str, Any] = {}
+
+    def fake_worker_main(
+        settings: Any,
+        *,
+        actor_registry: Any = None,
+        until_idle: bool = False,
+        **kwargs: Any,
+    ) -> int:
+        captured["until_idle"] = until_idle
+        return 0
+
+    monkeypatch.setattr("taskq.cli._worker_main", fake_worker_main)
+    result = runner.invoke(app, ["worker", "--actors", _NO_ACTORS_PATH, "--until-idle"])
+    assert result.exit_code == 0, f"stderr: {result.stderr}"
+    assert captured["until_idle"] is True
+
+
+def test_until_idle_default_false(monkeypatch: Any) -> None:
+    """Without --until-idle, until_idle=False."""
+    captured: dict[str, Any] = {}
+
+    def fake_worker_main(
+        settings: Any,
+        *,
+        actor_registry: Any = None,
+        until_idle: bool = False,
+        **kwargs: Any,
+    ) -> int:
+        captured["until_idle"] = until_idle
+        return 0
+
+    monkeypatch.setattr("taskq.cli._worker_main", fake_worker_main)
+    result = runner.invoke(app, ["worker", "--actors", _NO_ACTORS_PATH])
+    assert result.exit_code == 0, f"stderr: {result.stderr}"
+    assert captured["until_idle"] is False
+
+
+def test_idle_settle_window_passed(monkeypatch: Any) -> None:
+    """--idle-settle-window passes the value to worker_main."""
+    captured: dict[str, Any] = {}
+
+    def fake_worker_main(
+        settings: Any,
+        *,
+        actor_registry: Any = None,
+        idle_settle_window: float | None = None,
+        **kwargs: Any,
+    ) -> int:
+        captured["idle_settle_window"] = idle_settle_window
+        return 0
+
+    monkeypatch.setattr("taskq.cli._worker_main", fake_worker_main)
+    result = runner.invoke(
+        app,
+        [
+            "worker",
+            "--actors",
+            _NO_ACTORS_PATH,
+            "--until-idle",
+            "--idle-settle-window",
+            "5.0",
+        ],
+    )
+    assert result.exit_code == 0, f"stderr: {result.stderr}"
+    assert captured["idle_settle_window"] == 5.0
+
+
+def test_idle_max_runtime_passed(monkeypatch: Any) -> None:
+    """--idle-max-runtime passes the value to worker_main."""
+    captured: dict[str, Any] = {}
+
+    def fake_worker_main(
+        settings: Any,
+        *,
+        actor_registry: Any = None,
+        idle_max_runtime: float | None = None,
+        **kwargs: Any,
+    ) -> int:
+        captured["idle_max_runtime"] = idle_max_runtime
+        return 0
+
+    monkeypatch.setattr("taskq.cli._worker_main", fake_worker_main)
+    result = runner.invoke(
+        app,
+        [
+            "worker",
+            "--actors",
+            _NO_ACTORS_PATH,
+            "--until-idle",
+            "--idle-max-runtime",
+            "300",
+        ],
+    )
+    assert result.exit_code == 0, f"stderr: {result.stderr}"
+    assert captured["idle_max_runtime"] == 300.0
+
+
+def test_idle_poll_interval_passed(monkeypatch: Any) -> None:
+    """--idle-poll-interval passes the value to worker_main."""
+    captured: dict[str, Any] = {}
+
+    def fake_worker_main(
+        settings: Any,
+        *,
+        actor_registry: Any = None,
+        idle_poll_interval: float | None = None,
+        **kwargs: Any,
+    ) -> int:
+        captured["idle_poll_interval"] = idle_poll_interval
+        return 0
+
+    monkeypatch.setattr("taskq.cli._worker_main", fake_worker_main)
+    result = runner.invoke(
+        app,
+        [
+            "worker",
+            "--actors",
+            _NO_ACTORS_PATH,
+            "--until-idle",
+            "--idle-poll-interval",
+            "0.5",
+        ],
+    )
+    assert result.exit_code == 0, f"stderr: {result.stderr}"
+    assert captured["idle_poll_interval"] == 0.5

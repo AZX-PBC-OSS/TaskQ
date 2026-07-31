@@ -962,6 +962,34 @@ class WorkerSettings(TaskQSettings):
         "before a schedule is auto-disabled.",
     )
 
+    # ── Until-idle drain mode ────────────────────────────────────────────
+    idle_settle_window: float = Field(
+        default=2.0,
+        ge=0.0,
+        description=(
+            "TASKQ_IDLE_SETTLE_WINDOW (seconds). Time the drain monitor "
+            "waits after queues appear empty before declaring drained. "
+            "Only used when --until-idle is active."
+        ),
+    )
+    idle_poll_interval: float = Field(
+        default=1.0,
+        ge=0.1,
+        description=(
+            "TASKQ_IDLE_POLL_INTERVAL (seconds). How often the drain "
+            "monitor checks queue depth. Only used when --until-idle is active."
+        ),
+    )
+    idle_max_runtime: float | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "TASKQ_IDLE_MAX_RUNTIME (seconds). Maximum wall-clock time "
+            "for until-idle mode. When exceeded, exit code 4. None = no limit. "
+            "Only used when --until-idle is active."
+        ),
+    )
+
     @property
     def resolved_pg_dsn_direct(self) -> PostgresDsn:
         """Direct DSN guaranteed non-``None`` after :meth:`post_load`.

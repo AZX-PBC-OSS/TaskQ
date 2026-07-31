@@ -331,8 +331,9 @@ async def test_sync_actor_retry_policy_kicks_in() -> None:
         ),
         job=make_job_row(attempt=1, max_attempts=3),
     )
-    # Outcome is "failed" for exceptions; the retry is handled by mark_failed_or_retry internally
-    assert outcome == "failed"
+    # The handler decided to retry (attempt 1 < max_attempts 3), so the
+    # outcome is "scheduled" — the job was rescheduled, not terminally failed.
+    assert outcome == "scheduled"
     assert len(backend.mark_failed_or_retry_calls) == 1
     assert backend.mark_failed_or_retry_calls[0]["next_scheduled_at"] is not None
 

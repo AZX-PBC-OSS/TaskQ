@@ -12,7 +12,7 @@ reservation denied, generic) live in :mod:`taskq.worker._handlers`.
 import asyncio
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import timedelta
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 import asyncpg
@@ -66,6 +66,7 @@ from taskq.retry import (
 from taskq.settings import WorkerSettings
 from taskq.worker._handlers import (
     _TERMINAL_WRITE_INFRA_EXCEPTIONS,
+    AttemptOutcome,
     _dispatch_exception,
     _handle_reservation_class_denied,
     _log_terminal_write_failed,
@@ -76,13 +77,6 @@ from taskq.worker.deps import WorkerDeps
 
 if TYPE_CHECKING:
     import redis.asyncio as redis_async
-
-type AttemptOutcome = Literal[
-    "succeeded",
-    "failed",
-    "cancelled",
-    "scheduled",
-]
 
 _log: structlog.stdlib.BoundLogger = get_logger(__name__)
 
@@ -129,7 +123,7 @@ async def _run_terminal_path(  # pyright: ignore[reportUnusedFunction]  # Why: c
     worker_pool: "asyncpg.Pool | None",
     settings: WorkerSettings | None,
     redis_client: "redis_async.Redis | None",
-    handler: Callable[..., Awaitable[None]],
+    handler: Callable[..., Awaitable[AttemptOutcome]],
     handler_args: tuple[object, ...],
     handler_kwargs: dict[str, object],
     status: str,
@@ -165,7 +159,7 @@ async def _run_terminal_path(  # pyright: ignore[reportUnusedFunction]  # Why: c
             progress_buffers.get(job.id) if progress_buffers is not None else None
         )
     try:
-        await handler(
+        handler_result: AttemptOutcome = await handler(
             *handler_args,
             progress_seq=_pseq,
             progress_state=_pstate,
@@ -195,7 +189,7 @@ async def _run_terminal_path(  # pyright: ignore[reportUnusedFunction]  # Why: c
             _override_seq=_pseq,
             _override_pending_state=_pstate,
         )
-    return outcome
+    return handler_result
 
 
 async def consume_one_job(

@@ -53,6 +53,12 @@ Related docs: [api-reference/testing.md](api-reference/testing.md), [index.md](i
 │  ┌────────────────────────────────────────────────────┐  │
 │  │ Watchdog (det. 2: stale-tick, det. 3: sibling)     │  │
 │  └────────────────────────────────────────────────────┘  │
+│  ┌───────────────┐                                       │
+│  │  DrainMonitor  │  (until-idle only)                  │
+│  │  count_active  │                                       │
+│  │  _jobs() →     │                                       │
+│  │  shutdown      │                                       │
+│  └───────────────┘                                       │
 └──────────────────────────────────────────────────────────┘
                ▲
                │ FastAPI routes
@@ -178,6 +184,9 @@ class Backend(Protocol):
     async def list_jobs(self, filters: JobFilter) -> list[JobRow]: ...
     async def count_pending_jobs(self, actors: list[str]) -> dict[str, int]: ...
     async def get_actor_max_pending(self) -> dict[str, int | None]: ...
+
+    # Count
+    async def count_active_jobs(self, queues: list[str]) -> int: ...
 
     # NOTIFY hook
     def subscribe_wake(self) -> AsyncContextManager[asyncio.Event]: ...

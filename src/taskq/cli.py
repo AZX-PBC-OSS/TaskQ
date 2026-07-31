@@ -181,6 +181,32 @@ def worker(
         help="Unix socket path for the health server. Overrides TASKQ_HEALTH_SOCKET_PATH. "
         "Use unique paths when running multiple workers on the same host.",
     ),
+    until_idle: bool = typer.Option(
+        False,
+        "--until-idle",
+        help="Run until all subscribed queues are drained, then exit. "
+        "Exit 0 if all jobs succeeded, 3 if any failed, 4 if idle-max-runtime "
+        "was exceeded. Incompatible with cron-driven workloads.",
+    ),
+    idle_settle_window: float | None = typer.Option(
+        None,
+        "--idle-settle-window",
+        help="Seconds to wait after queues appear empty before declaring "
+        "drained. Overrides TASKQ_IDLE_SETTLE_WINDOW. Default 2.0. "
+        "Only used with --until-idle.",
+    ),
+    idle_poll_interval: float | None = typer.Option(
+        None,
+        "--idle-poll-interval",
+        help="How often to check queue depth. Overrides TASKQ_IDLE_POLL_INTERVAL. "
+        "Default 1.0. Only used with --until-idle.",
+    ),
+    idle_max_runtime: float | None = typer.Option(
+        None,
+        "--idle-max-runtime",
+        help="Maximum wall-clock seconds before forcing exit (code 4). "
+        "Overrides TASKQ_IDLE_MAX_RUNTIME. Only used with --until-idle.",
+    ),
 ) -> None:
     """Start a TaskQ worker consuming from the given actor registry."""
     registry = _load_actor_registry(actors)
@@ -204,7 +230,14 @@ def worker(
         settings.health_socket_path = health_socket_path
 
     try:
-        code = _worker_main(settings, actor_registry=registry)
+        code = _worker_main(
+            settings,
+            actor_registry=registry,
+            until_idle=until_idle,
+            idle_settle_window=idle_settle_window,
+            idle_poll_interval=idle_poll_interval,
+            idle_max_runtime=idle_max_runtime,
+        )
     except ActorConfigDriftList as e:
         # Why: the remedy hint is folded into ActorConfigDriftList.__str__
         # itself (see exceptions.py) — don't print it a second time here.

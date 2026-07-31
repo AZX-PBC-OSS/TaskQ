@@ -611,6 +611,85 @@ If a LOOP-scope `asyncpg.Connection` provider is registered but the two DSNs dif
 
 ---
 
+## Until-idle mode
+
+For CLI tools and batch processing scripts that enqueue a finite set of jobs
+and need to exit with a status code, pass `--until-idle` (or `until_idle=True`
+to `worker_main()`):
+
+```shell
+taskq worker --actors myapp.actors:registry --until-idle
+```
+
+```python
+exit_code = worker_main(settings, actor_registry=registry, until_idle=True)
+# 0 = all jobs succeeded
+# 3 = some jobs failed
+# 4 = idle-max-runtime exceeded
+```
+
+The worker polls its subscribed queues every `idle_poll_interval` (default 1s).
+When no pending, scheduled, or running jobs remain for the settle window
+(`idle_settle_window`, default 2s), the worker triggers its normal graceful
+shutdown and exits.
+
+An optional `--idle-max-runtime` cap (or `TASKQ_IDLE_MAX_RUNTIME`) forces exit
+with code 4 if the drain takes too long — useful for CI pipelines with
+time budgets.
+
+**Scheduled jobs:** Jobs with a future `scheduled_at` count as "active" —
+the worker waits for them to become due, dispatches them, and processes
+them before exiting. Use `--idle-max-runtime` if you don't want to wait for
+far-future scheduled jobs.
+
+**Cron:** `--until-idle` is incompatible with cron-driven workloads, which
+enqueue jobs indefinitely. Do not combine `--until-idle` with `@cron`
+decorators. A startup WARNING is emitted when both `until_idle` and cron
+schedules are active.
+
+**Multi-worker:** If multiple workers consume the same queue, `--until-idle`
+waits for the queue to drain across ALL workers, not just this one. This
+is correct for finite-batch scenarios but may cause unexpected waiting
+in shared-queue deployments.
+
+**`idle_settle_window = 0`:** Setting the settle window to 0 disables the
+settle period, making drain detection near-instant (one poll interval).
+This is safe when the
+producer has finished enqueuing before the worker starts (typical for CI
+and batch workloads). For shared-queue or concurrent-producer scenarios,
+keep the default 2s settle window to handle the race where a producer
+enqueues between the drain monitor's check and the shutdown trigger.
+
+**Known limitations of `drain_failures` (worker-local counter):**
+
+The `drain_failures` counter tracks only jobs dispatched *by this worker*
+that returned `"failed"` from `dispatch_one_job`. It does NOT capture:
+
+- **Deadline-exceeded sweep failures:** Jobs that reach `failed` via the
+  maintenance leader's deadline sweep (pending/scheduled → failed without
+  any consumer dispatch) are never seen by `di_consumer_loop` and do not
+  increment `drain_failures`. Exit 0 is possible with deadline-exceeded
+  failures in the batch.
+- **Other-worker failures:** If multiple workers share the queue and
+  another worker's consumer fails a job, this worker's `drain_failures`
+  stays 0. Exit 0 is possible with failures on other workers.
+- **Jobs cancelled during shutdown:** Jobs cancelled by the shutdown phase
+  (CANCELLING → FORCING) propagate `CancelledError` out of
+  `dispatch_one_job` without incrementing `drain_failures` — they are
+  timeout-interrupted, not user-failed. This is correct: a cancelled job
+  during drain is NOT a "failure".
+- **Actor-not-found jobs:** A misconfigured job whose actor is not in this
+  worker's registry is released via `mark_snoozed(10s)` and cycles
+  scheduled→pending→claimed→snoozed indefinitely. Since `scheduled`
+  counts as active, the queue never reads as drained, and the worker
+  hangs until `--idle-max-runtime` is hit. Use `--idle-max-runtime` as the escape
+  hatch.
+
+For batch workflows requiring exact failure accounting, query the backend
+for terminal job statuses after the drain completes.
+
+---
+
 ## WorkerSettings reference
 
 All variables use the `TASKQ_` prefix. `WorkerSettings` extends `TaskQSettings`; variables from `TaskQSettings` are marked with a dagger (†).
@@ -665,3 +744,6 @@ All variables use the `TASKQ_` prefix. `WorkerSettings` extends `TaskQSettings`;
 | `TASKQ_ARCHIVE_RETENTION_PERIOD` | `timedelta` | `365d` | How long a row stays in `jobs_archive` before hard-deletion by Sweep 6. |
 | `TASKQ_ARCHIVE_EXPIRY_SCHEDULE_UTC` | `str` | `04:00` | Daily fire time for the archive expiry sweep (Sweep 6) in `HH:MM` UTC. |
 | `TASKQ_ARCHIVE_EXPIRY_CRON_EXPR` | `str \| None` | `None` | Full 5-field cron for the archive expiry sweep; overrides `TASKQ_ARCHIVE_EXPIRY_SCHEDULE_UTC`. |
+| `TASKQ_IDLE_SETTLE_WINDOW` | `float` | `2.0` | Seconds the drain monitor waits after queues appear empty before declaring drained. Only used with `--until-idle`. |
+| `TASKQ_IDLE_POLL_INTERVAL` | `float` | `1.0` | How often the drain monitor checks queue depth. Only used with `--until-idle`. |
+| `TASKQ_IDLE_MAX_RUNTIME` | `float \| None` | `None` | Maximum wall-clock seconds for until-idle mode. When exceeded, exit code 4. None = no limit. Only used with `--until-idle`. |

@@ -11,6 +11,7 @@ Test seam — _local_queue_seed injects jobs into consumer stubs.
 """
 
 import asyncio
+import contextlib
 from collections.abc import Callable, Generator
 from contextlib import ExitStack, contextmanager
 from typing import cast
@@ -741,6 +742,10 @@ def test_worker_main_runs_under_asyncio_runner_and_returns_exit_code(
         _cron_registry: object = None,
         connections: object = None,
         rate_limit_registry: object = None,
+        until_idle: bool = False,
+        idle_settle_window: float | None = None,
+        idle_poll_interval: float | None = None,
+        idle_max_runtime: float | None = None,
     ) -> int:
         captured_kwargs["actor_registry"] = actor_registry
         captured_kwargs["_registry"] = _registry
@@ -769,6 +774,10 @@ def test_worker_main_uses_get_registered_crons_when_cron_registry_omitted(
         _cron_registry: object = None,
         connections: object = None,
         rate_limit_registry: object = None,
+        until_idle: bool = False,
+        idle_settle_window: float | None = None,
+        idle_poll_interval: float | None = None,
+        idle_max_runtime: float | None = None,
     ) -> int:
         return 0
 
@@ -796,6 +805,10 @@ def test_worker_main_forwards_connections_to_main(settings: WorkerSettings) -> N
         _cron_registry: object = None,
         connections: object = None,
         rate_limit_registry: object = None,
+        until_idle: bool = False,
+        idle_settle_window: float | None = None,
+        idle_poll_interval: float | None = None,
+        idle_max_runtime: float | None = None,
     ) -> int:
         captured["connections"] = connections
         return 0
@@ -947,3 +960,93 @@ async def test_watchdogs_disarmed_only_after_taskgroup_drains(
     assert order.index("sibling-drained") < order.index("lag-disarmed"), (
         f"lag watchdog disarmed before the group drained: {order}"
     )
+
+
+# ── until_idle drain monitor wiring ────────────────────────────────────
+
+
+@contextlib.asynccontextmanager
+async def _patch_orchestrate_for_drain(work_seconds: float = 0.0):
+    """Patch orchestrate_shutdown in BOTH namespaces.
+
+    drain.py and shutdown.py each import orchestrate_shutdown at module
+    level, so both references must be patched for the drain monitor's
+    create_task to invoke the mock.
+    """
+
+    async def _mock_orchestrate(
+        deps: object,
+        settings: object,
+        worker_id: object,
+        shutdown_event: asyncio.Event,
+        escalate_event: object,
+        *,
+        backend: object,
+    ) -> int:
+        try:
+            await asyncio.sleep(work_seconds)
+        finally:
+            shutdown_event.set()
+        return 0
+
+    with (
+        patch("taskq.worker.drain.orchestrate_shutdown", side_effect=_mock_orchestrate),
+        patch("taskq.worker.shutdown.orchestrate_shutdown", side_effect=_mock_orchestrate),
+    ):
+        yield
+
+
+async def test_until_idle_spawns_drain_monitor(settings: WorkerSettings) -> None:
+    """_main with until_idle=True spawns the drain monitor as a sibling."""
+    with _use_test_harness(settings, set_shutdown=False) as h:
+        h.backend.count_active_jobs = AsyncMock(return_value=0)  # type: ignore[attr-defined]
+        async with _patch_orchestrate_for_drain():
+            result = await _main(
+                settings,
+                until_idle=True,
+                idle_settle_window=0.1,
+                idle_poll_interval=0.1,
+                idle_max_runtime=5.0,
+            )
+    assert result == 0
+    assert len(h.captured_holder[0]) == 1  # type: ignore[arg-type]
+
+
+async def test_until_idle_exit_code_3_on_failures(settings: WorkerSettings) -> None:
+    """_main with until_idle=True and drain_failures > 0 exits 3."""
+    with _use_test_harness(settings, set_shutdown=False) as h:
+        h.backend.count_active_jobs = AsyncMock(return_value=0)  # type: ignore[attr-defined]
+        assert h.deps is not None
+        h.deps.drain_failures = 1
+        async with _patch_orchestrate_for_drain():
+            result = await _main(
+                settings,
+                until_idle=True,
+                idle_settle_window=0.1,
+                idle_poll_interval=0.1,
+                idle_max_runtime=5.0,
+            )
+    assert result == 3
+
+
+async def test_until_idle_exit_code_4_on_timeout(settings: WorkerSettings) -> None:
+    """_main with until_idle=True and idle_max_runtime exceeded exits 4."""
+    with _use_test_harness(settings, set_shutdown=False) as h:
+        h.backend.count_active_jobs = AsyncMock(return_value=10)  # type: ignore[attr-defined]
+        async with _patch_orchestrate_for_drain():
+            result = await _main(
+                settings,
+                until_idle=True,
+                idle_settle_window=10.0,
+                idle_poll_interval=0.1,
+                idle_max_runtime=0.3,
+            )
+    assert result == 4
+    assert len(h.captured_holder[0]) == 1  # type: ignore[arg-type]
+
+
+async def test_without_until_idle_no_drain_monitor(settings: WorkerSettings) -> None:
+    """_main without until_idle does NOT spawn the drain monitor."""
+    with _use_test_harness(settings, set_shutdown=True):
+        result = await _main(settings)
+    assert result == 0

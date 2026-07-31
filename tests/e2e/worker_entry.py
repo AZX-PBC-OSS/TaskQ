@@ -76,11 +76,13 @@ def _e2e_cron_registry() -> list[CronScheduleSpec] | None:
 
 if __name__ == "__main__":
     settings = WorkerSettings.load()
+    until_idle = os.environ.get("TASKQ_UNTIL_IDLE") == "true"
     sys.exit(
         worker_main(
             settings,
             actor_registry=ACTORS,
             di_registry=build_registry(),
             cron_registry=_e2e_cron_registry(),
+            until_idle=until_idle,
         )
     )

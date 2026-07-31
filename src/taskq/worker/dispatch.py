@@ -47,6 +47,7 @@ from taskq.retry import ActorConfigLike
 from taskq.worker._consumer import consume_one_job
 from taskq.worker._handlers import (
     _TERMINAL_WRITE_INFRA_EXCEPTIONS,  # pyright: ignore[reportPrivateUsage]  # Why: dispatch_one_job's direct-call path for _handle_generic_exception needs the same infra guard as _run_terminal_path to prevent false terminal Redis publishes and exception mislabeling.
+    AttemptOutcome,
     _handle_generic_exception,  # pyright: ignore[reportPrivateUsage]  # Why: _handle_generic_exception implements the same exception→retry/fail routing as consume_one_job's inner handlers; dispatch_one_job needs it for DI-resolution failures that escape consume_one_job's own try/except.
     _log_terminal_write_failed,  # pyright: ignore[reportPrivateUsage]  # Why: same rationale as _TERMINAL_WRITE_INFRA_EXCEPTIONS above.
 )
@@ -118,7 +119,7 @@ async def dispatch_one_job(
     max_retry_backoff: timedelta = timedelta(hours=24),
     logger_arg: structlog.stdlib.BoundLogger | None = None,
     enqueuer: SubJobEnqueuer,
-) -> None:
+) -> AttemptOutcome:
     """Dispatch one job through the DI-resolved actor scope.
 
     1. Create the CONSUMER span with link to the PRODUCER span.
@@ -168,7 +169,7 @@ async def dispatch_one_job(
     dispatch_log = logger_arg if logger_arg is not None else logger
 
     t0 = time.monotonic()
-    outcome: str = "failed"
+    outcome: AttemptOutcome = "failed"
 
     try:
         with safe_start_span(
@@ -311,7 +312,7 @@ async def dispatch_one_job(
                     trace_id="",
                 )
                 try:
-                    await _handle_generic_exception(
+                    handler_result: AttemptOutcome = await _handle_generic_exception(
                         backend,
                         job,
                         worker_id,
@@ -322,9 +323,12 @@ async def dispatch_one_job(
                         consumer_span,
                         handler_log,
                     )
+                    outcome = handler_result
                 except _TERMINAL_WRITE_INFRA_EXCEPTIONS as infra_exc:
                     _log_terminal_write_failed(handler_log, job, exc, infra_exc)
     finally:
         elapsed = time.monotonic() - t0
         record_consumed_message(job.actor, job.queue, outcome=_to_consumed_outcome(outcome))
         record_process_duration(job.actor, job.queue, elapsed)
+
+    return outcome

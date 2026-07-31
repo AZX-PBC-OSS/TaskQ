@@ -32,6 +32,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "_check_reclaim_visibility_risk",
+    "_count_active_jobs",
     "_count_pending_jobs",
     "_get",
     "_get_actor_max_pending",
@@ -151,6 +152,17 @@ async def _count_pending_jobs(
     async with pool.acquire() as conn:
         records = await conn.fetch(sql.count_pending_jobs, actors)
     return {str(rec["actor"]): int(rec["cnt"]) for rec in records}
+
+
+async def _count_active_jobs(
+    pool: "asyncpg.Pool",
+    sql: SqlTemplates,
+    queues: list[str],
+) -> int:
+    if not queues:
+        return 0
+    async with pool.acquire() as conn:
+        return int(await conn.fetchval(sql.count_active_jobs, queues))
 
 
 async def _get_actor_max_pending(

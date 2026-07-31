@@ -124,6 +124,7 @@ class SqlTemplates:
     poll_reclaim_events: str
     check_reclaim_visibility_risk: str
     count_pending_jobs: str
+    count_active_jobs: str
     list_actor_max_pending: str
 
     # ── Admin operations ───────────────────────────────────────────
@@ -593,6 +594,11 @@ WHERE l.relation = '"{s}".job_events'::regclass
             f"WHERE actor = ANY($1::text[]) "
             f"AND status IN ('pending', 'scheduled') "
             f"GROUP BY actor"
+        ),
+        count_active_jobs=(
+            f'SELECT count(*)::int FROM "{s}".jobs '
+            f"WHERE queue = ANY($1::text[]) "
+            f"AND status IN ('pending', 'scheduled', 'running')"
         ),
         # One row per actor — the client-side capacity cache reads the
         # whole table at most once per TTL window per process.

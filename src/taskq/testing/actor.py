@@ -298,6 +298,9 @@ class FakeBackend:
     async def count_pending_jobs(self, actors: list[str]) -> dict[str, int]:
         return {}
 
+    async def count_active_jobs(self, queues: list[str]) -> int:
+        return 0
+
     async def get_actor_max_pending(self) -> dict[str, int | None]:
         return {}
 
