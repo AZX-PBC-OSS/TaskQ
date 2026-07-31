@@ -238,6 +238,9 @@ ignore = [
 "tests/test_idempotency_scope_migrations.py" = ["S608"]
 # Same rationale — schema name validated against _IDENT_RE; all
 # user-supplied values use $N parameter binding.
+"tests/test_migrations_populated.py" = ["S608"]
+# Same rationale — schema name validated against _IDENT_RE; all
+# user-supplied values use $N parameter binding.
 # SIM117: conn.transaction() depends on conn from pool.acquire();
 # async-with nesting cannot be flattened.
 "tests/test_singleton.py" = ["S608", "SIM117"]

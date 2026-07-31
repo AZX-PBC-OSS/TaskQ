@@ -42,13 +42,16 @@ class _FakeConn:
         self.close_wait.set()
 
 
-def _make_migration(version: str, phase: str, filename: str) -> Migration:
+def _make_migration(
+    version: str, phase: str, filename: str, *, use_transaction: bool = True
+) -> Migration:
     return Migration(
         version=version,
         phase=phase,  # type: ignore[arg-type] # Why: test fixture; Phase is Literal["pre", "post"].
         description=f"{filename} description",
         filename=filename,
         sql_template="SELECT 1;",
+        use_transaction=use_transaction,
     )
 
 
@@ -164,6 +167,35 @@ def test_migrate_status_hung_close_does_not_mask_body_error_exit_code(
     assert fake_conn.terminated is True
 
 
+def test_migrate_status_marks_no_transaction_migrations(monkeypatch: Any) -> None:
+    """migrate status annotates migrations that run outside a transaction so
+    operators can tell online-safe migrations from blocking ones."""
+    _patch_connect(monkeypatch)
+    transactional = _make_migration("01.00.00_01", "pre", "01.00.00_01_pre_normal.sql")
+    no_transaction = Migration(
+        version="01.00.02_01",
+        phase="post",
+        description="concurrent index",
+        filename="01.00.02_01_post_concurrent_idx.sql",
+        sql_template="SELECT 1;",
+        use_transaction=False,
+    )
+
+    monkeypatch.setattr(cli_mod.migrate_mod, "list_applied", AsyncMock(return_value=set()))
+    monkeypatch.setattr(
+        cli_mod.migrate_mod,
+        "discover",
+        lambda: [transactional, no_transaction],
+    )
+
+    result = runner.invoke(app, ["migrate", "status"])
+    assert result.exit_code == 0, f"stderr: {result.stderr}"
+    plain = plain_cli_output(result.output)
+    assert "01.00.02_01_post_concurrent_idx.sql (no transaction)" in plain
+    assert "01.00.00_01_pre_normal.sql (no transaction)" not in plain
+    assert "01.00.00_01_pre_normal.sql" in plain
+
+
 # ── migrate up ─────────────────────────────────────────────────────────────
 
 
@@ -237,6 +269,229 @@ def test_migrate_up_closes_connection(monkeypatch: Any) -> None:
     assert fake_conn.closed is True
     assert fake_conn.close_calls == 1
     assert fake_conn.terminated is False
+
+
+# ── migrate up failure diagnosis ────────────────────────────────────────────
+
+
+def test_migrate_up_transactional_failure_reports_rollback_and_rerun(
+    monkeypatch: Any,
+) -> None:
+    """A failed transactional migration rolls the whole file back: the CLI
+    names the migration, says nothing was applied, and prescribes
+    fix-and-re-run — never a traceback. The error line is truncated to its
+    first line (asyncpg messages can be multiline)."""
+    _patch_connect(monkeypatch)
+    failing = _make_migration("01.00.00_01", "pre", "01.00.00_01_pre_failing.sql")
+    monkeypatch.setattr(
+        cli_mod.migrate_mod,
+        "apply_pending",
+        AsyncMock(side_effect=RuntimeError("deadlock detected\nProcess 123 waits for ShareLock")),
+    )
+    monkeypatch.setattr(cli_mod.migrate_mod, "discover", lambda: [failing])
+    monkeypatch.setattr(cli_mod.migrate_mod, "list_applied", AsyncMock(return_value=set()))
+
+    result = runner.invoke(app, ["migrate", "up"])
+    assert result.exit_code == 1
+    plain = plain_cli_output(result.output)
+    assert "migration 01.00.00_01_pre_failing.sql failed: deadlock detected" in plain
+    assert "Process 123 waits" not in plain, "only the exception's first line may be printed"
+    assert "transaction" in plain
+    assert "rolled back" in plain
+    assert "nothing" in plain and "applied" in plain
+    assert "taskq migrate up" in plain
+    assert "Traceback" not in plain
+
+
+def test_migrate_up_no_transaction_failure_lists_invalid_indexes(monkeypatch: Any) -> None:
+    """A failed no-transaction migration keeps its partial effects: the CLI
+    says the migration was NOT recorded, names any INVALID indexes an
+    interrupted concurrent build left behind, and prescribes re-running the
+    idempotent migration."""
+    _patch_connect(monkeypatch)
+    failing = _make_migration(
+        "01.00.02_01", "post", "01.00.02_01_post_concurrent_idx.sql", use_transaction=False
+    )
+    monkeypatch.setattr(
+        cli_mod.migrate_mod,
+        "apply_pending",
+        AsyncMock(side_effect=RuntimeError("canceling statement due to statement timeout")),
+    )
+    monkeypatch.setattr(cli_mod.migrate_mod, "discover", lambda: [failing])
+    monkeypatch.setattr(cli_mod.migrate_mod, "list_applied", AsyncMock(return_value=set()))
+    monkeypatch.setattr(
+        cli_mod.migrate_mod,
+        "list_invalid_indexes",
+        AsyncMock(return_value=["jobs_queue_idx"]),
+    )
+
+    result = runner.invoke(app, ["migrate", "up"])
+    assert result.exit_code == 1
+    plain = plain_cli_output(result.output)
+    assert "migration 01.00.02_01_post_concurrent_idx.sql failed:" in plain
+    assert "WITHOUT a transaction" in plain
+    assert "NOT recorded" in plain
+    assert 'INVALID index(es) in schema "taskq": jobs_queue_idx' in plain
+    assert "idempotent" in plain
+    assert "taskq migrate up" in plain
+    assert "Traceback" not in plain
+
+
+def test_migrate_up_no_transaction_failure_without_invalid_indexes(monkeypatch: Any) -> None:
+    """With no INVALID-index debris, the INVALID line is omitted while the
+    re-run guidance is still printed."""
+    _patch_connect(monkeypatch)
+    failing = _make_migration(
+        "01.00.02_01", "post", "01.00.02_01_post_concurrent_idx.sql", use_transaction=False
+    )
+    monkeypatch.setattr(
+        cli_mod.migrate_mod,
+        "apply_pending",
+        AsyncMock(side_effect=RuntimeError("connection was closed mid-build")),
+    )
+    monkeypatch.setattr(cli_mod.migrate_mod, "discover", lambda: [failing])
+    monkeypatch.setattr(cli_mod.migrate_mod, "list_applied", AsyncMock(return_value=set()))
+    monkeypatch.setattr(cli_mod.migrate_mod, "list_invalid_indexes", AsyncMock(return_value=[]))
+
+    result = runner.invoke(app, ["migrate", "up"])
+    assert result.exit_code == 1
+    plain = plain_cli_output(result.output)
+    assert "migration 01.00.02_01_post_concurrent_idx.sql failed:" in plain
+    assert "INVALID" not in plain
+    assert "taskq migrate up" in plain
+    assert "Traceback" not in plain
+
+
+def test_migrate_up_failure_diagnosis_never_masks_original_error(monkeypatch: Any) -> None:
+    """A diagnostic query failing (e.g. the connection died with the
+    migration) must not replace the original error: the base message and
+    re-run action are still printed, with no secondary exception and no
+    traceback."""
+    _patch_connect(monkeypatch)
+    failing = _make_migration("01.00.00_01", "pre", "01.00.00_01_pre_failing.sql")
+    monkeypatch.setattr(
+        cli_mod.migrate_mod,
+        "apply_pending",
+        AsyncMock(side_effect=RuntimeError("boom")),
+    )
+    monkeypatch.setattr(cli_mod.migrate_mod, "discover", lambda: [failing])
+    monkeypatch.setattr(
+        cli_mod.migrate_mod,
+        "list_applied",
+        AsyncMock(side_effect=RuntimeError("conn dead")),
+    )
+
+    result = runner.invoke(app, ["migrate", "up"])
+    assert result.exit_code == 1
+    plain = plain_cli_output(result.output)
+    assert "boom" in plain
+    assert "conn dead" not in plain
+    assert "taskq migrate up" in plain
+    assert "Traceback" not in plain
+
+
+def test_migrate_up_failure_report_survives_diagnosis_itself_raising(
+    monkeypatch: Any,
+) -> None:
+    """Belt-and-braces: if diagnose_apply_failure itself blows up (a bug, or
+    a conn failure mode its suppressions don't cover), the CLI must still
+    print the ORIGINAL error and the re-run action — a diagnostic must never
+    mask the failure it diagnoses."""
+    _patch_connect(monkeypatch)
+    monkeypatch.setattr(
+        cli_mod.migrate_mod,
+        "apply_pending",
+        AsyncMock(side_effect=RuntimeError("boom")),
+    )
+    monkeypatch.setattr(
+        cli_mod.migrate_mod,
+        "diagnose_apply_failure",
+        AsyncMock(side_effect=RuntimeError("diagnosis exploded")),
+    )
+
+    result = runner.invoke(app, ["migrate", "up"])
+    assert result.exit_code == 1
+    plain = plain_cli_output(result.output)
+    assert "migration failed: boom" in plain
+    assert "diagnosis exploded" not in plain
+    assert "taskq migrate up" in plain
+    assert "Traceback" not in plain
+
+
+def test_migrate_up_failure_report_exact_stderr_lines(monkeypatch: Any) -> None:
+    """Byte-exact pin of one full CLI failure report (content and order) —
+    complements the substring pins above; the renderer-level line lists are
+    pinned in tests/test_migrations_unit.py."""
+    _patch_connect(monkeypatch)
+    failing = _make_migration("01.00.00_01", "pre", "01.00.00_01_pre_failing.sql")
+    monkeypatch.setattr(
+        cli_mod.migrate_mod,
+        "apply_pending",
+        AsyncMock(side_effect=RuntimeError("deadlock detected")),
+    )
+    monkeypatch.setattr(cli_mod.migrate_mod, "discover", lambda: [failing])
+    monkeypatch.setattr(cli_mod.migrate_mod, "list_applied", AsyncMock(return_value=set()))
+
+    result = runner.invoke(app, ["migrate", "up"])
+    assert result.exit_code == 1
+    assert result.stderr.splitlines() == [
+        "migration 01.00.00_01_pre_failing.sql failed: deadlock detected",
+        "It ran in a transaction and rolled back: nothing from the migration was applied.",
+        "Action: fix the error and re-run `taskq migrate up`.",
+    ]
+
+
+def test_migrate_up_connect_failure_reports_generic_and_skips_close(
+    monkeypatch: Any,
+) -> None:
+    """asyncpg.connect itself can fail (PG down, bad DSN) BEFORE the apply:
+    the CLI must still print the short report — original error plus re-run
+    action, never a traceback — and must not attempt a close on a
+    connection that was never acquired."""
+    monkeypatch.setattr(
+        cli_mod.asyncpg,
+        "connect",
+        AsyncMock(side_effect=OSError("connection refused")),
+    )
+    close_spy = AsyncMock()
+    monkeypatch.setattr(cli_mod, "close_conn_bounded", close_spy)
+
+    result = runner.invoke(app, ["migrate", "up"])
+    assert result.exit_code == 1
+    plain = plain_cli_output(result.output)
+    assert "migration failed: connection refused" in plain
+    assert "taskq migrate up" in plain
+    assert "Traceback" not in plain
+    close_spy.assert_not_called()
+
+
+def test_migrate_up_phase_failure_report_names_tagged_migration(
+    monkeypatch: Any,
+) -> None:
+    """Under ``migrate up --phase pre`` an earlier-version :post migration can
+    still be pending and sorts FIRST in discover() order, so the naive
+    first-unrecorded heuristic would name the wrong file. apply_pending tags
+    the exception with the migration that actually failed; the report must
+    name the tagged (later) file."""
+    _patch_connect(monkeypatch)
+    earlier_pending_post = _make_migration("01.00.00_01", "post", "01.00.00_01_post_pending.sql")
+    failing_pre = _make_migration("01.00.02_01", "pre", "01.00.02_01_pre_failing.sql")
+    exc = RuntimeError("deadlock detected")
+    exc.__dict__["taskq_failed_migration"] = failing_pre
+    monkeypatch.setattr(cli_mod.migrate_mod, "apply_pending", AsyncMock(side_effect=exc))
+    monkeypatch.setattr(
+        cli_mod.migrate_mod,
+        "discover",
+        lambda: [earlier_pending_post, failing_pre],
+    )
+    monkeypatch.setattr(cli_mod.migrate_mod, "list_applied", AsyncMock(return_value=set()))
+
+    result = runner.invoke(app, ["migrate", "up", "--phase", "pre"])
+    assert result.exit_code == 1
+    plain = plain_cli_output(result.output)
+    assert "migration 01.00.02_01_pre_failing.sql failed: deadlock detected" in plain
+    assert "01.00.00_01_post_pending.sql" not in plain
+    assert "Traceback" not in plain
 
 
 async def test_migrate_up_terminates_hung_conn_close(monkeypatch: Any) -> None:

@@ -303,7 +303,8 @@ async def _status(settings: TaskQSettings) -> None:
     typer.echo(f"applied: {len(applied)}")
     for migration in migrate_mod.discover():
         marker = "✔" if migration.key in applied else " "
-        typer.echo(f"  [{marker}] {migration.filename}")
+        suffix = "" if migration.use_transaction else " (no transaction)"
+        typer.echo(f"  [{marker}] {migration.filename}{suffix}")
 
 
 async def _up(
@@ -313,8 +314,12 @@ async def _up(
     target: str | None,
     max_steps: int | None,
 ) -> None:
-    conn = await asyncpg.connect(str(settings.pg_dsn))
+    # conn mirrors apply_pending_locked's conn-or-None pattern: connect
+    # failures land in the same guarded region as apply failures, so both
+    # get the report — and the close is skipped when no conn was acquired.
+    conn: asyncpg.Connection | None = None
     try:
+        conn = await asyncpg.connect(str(settings.pg_dsn))
         applied = await migrate_mod.apply_pending(
             conn,
             schema=settings.schema_name,
@@ -322,10 +327,18 @@ async def _up(
             target=target,
             max_steps=max_steps,
         )
+    except Exception as exc:
+        # Why diagnose here: both apply paths leave the connection reusable
+        # (a transactional failure rolls back; the no-transaction path never
+        # opened one), so the CLI reports what failed and the schema state
+        # on the same conn instead of escaping a raw traceback.
+        await _report_up_failure(conn, settings.schema_name, exc)
+        raise typer.Exit(code=1) from None
     finally:
-        # Why bounded: same dead-PG wedge risk as _status above (#38
-        # follow-up); terminate-on-timeout, never raises.
-        await close_conn_bounded(conn, "migrate-up", CLOSE_TIMEOUT_SECS)
+        if conn is not None:
+            # Why bounded: same dead-PG wedge risk as _status above (#38
+            # follow-up); terminate-on-timeout, never raises.
+            await close_conn_bounded(conn, "migrate-up", CLOSE_TIMEOUT_SECS)
     if not applied:
         typer.echo("no pending migrations")
         return
@@ -648,6 +661,36 @@ async def _actor_config_diff(
         return
     for name in names:
         _print_actor_diff(name, registry.get(name), stored_by_actor.get(name))
+
+
+async def _report_up_failure(conn: asyncpg.Connection | None, schema: str, exc: Exception) -> None:
+    """Print a self-diagnosing ``migrate up`` failure report to stderr.
+
+    TaskQ users must never inspect catalog state by hand, so this reports —
+    gathered on the still-open connection — what failed, what state the
+    schema is in (INVALID indexes included), and the single action to take.
+    The diagnosis lives in :mod:`taskq.migrate` (shared with the
+    worker/startup path).
+
+    The report must NEVER mask the original error: when the conn was never
+    acquired (connect itself failed) or the diagnosis itself raises, the
+    fallback is the generic two-line report — the original error's headline
+    and the fix-and-re-run action.
+    """
+    diagnosis: migrate_mod.ApplyFailureDiagnosis | None = None
+    if conn is not None:
+        with contextlib.suppress(Exception):
+            diagnosis = await migrate_mod.diagnose_apply_failure(conn, schema, exc)
+    if diagnosis is None:
+        diagnosis = migrate_mod.ApplyFailureDiagnosis(
+            headline=migrate_mod._exception_headline(exc),  # pyright: ignore[reportPrivateUsage]  # Why: the headline rule (first line, else type name) must match diagnose_apply_failure exactly; sharing the helper keeps the two from drifting.
+            failed_filename=None,
+            use_transaction=None,
+            invalid_indexes=(),
+            schema=schema,
+        )
+    for line in migrate_mod.render_apply_failure_lines(diagnosis):
+        typer.echo(line, err=True)
 
 
 async def _health_request(settings: WorkerSettings, path: str) -> int:
