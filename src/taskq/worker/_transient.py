@@ -3,8 +3,7 @@
 Every long-lived worker loop that awaits Postgres treats the same set of
 errors as "PG is having a moment; log and retry next tick". That set used
 to be re-enumerated at every call site, and it drifted: heartbeat learned
-``QueryCanceledError`` (the server-side shape of a fired
-``command_timeout``) while the leader loops kept only the OSError
+``QueryCanceledError`` (server-side 57014 cancellation) while the leader loops kept only the OSError
 flavours, so a degraded PG could throw an uncaught error into the worker
 TaskGroup and tear the whole worker down mid-blip. One tuple, one home:
 any shape a site learns, every site learns.
@@ -33,8 +32,10 @@ _log: structlog.stdlib.BoundLogger = get_logger(__name__)
 #:   ``ConnectionDoesNotExistError`` / ``ConnectionFailureError``).
 #: - ``InterfaceError`` / ``OSError``: the connection is unusable or the
 #:   socket died.
-#: - ``QueryCanceledError``: server-side 57014, asyncpg's OTHER shape for
-#:   a fired ``command_timeout`` (the driver's cancel request landed).
+#: - ``QueryCanceledError``: server-side 57014 — a DBA ran
+#:   pg_cancel_backend, or a server-side ``statement_timeout`` fired. Not
+#:   a client-side ``command_timeout`` (that raises ``TimeoutError``); kept
+#:   in the tuple because a server-side cancel is equally transient.
 #: - ``AdminShutdownError``: 57P01, PG restart/shutdown. An
 #:   OperatorInterventionError, NOT a PostgresConnectionError: notify.py
 #:   learned this one the hard way.

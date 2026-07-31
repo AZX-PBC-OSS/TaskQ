@@ -307,7 +307,11 @@ class MaintenanceLeader:
                         # Backstop (see _transient.py): tolerated + logged a
                         # few times, then deliberately fatal; cleanup mirrors
                         # the transient path since conn state is unknown.
-                        guard.unexpected(exc)
+                        # Cleanup runs BEFORE guard.unexpected so the fatal
+                        # iteration still drops the conn and clears
+                        # is_leader — otherwise the dead leader gauge and
+                        # leader_conn reference stay stale until run()'s
+                        # finally.
                         await self._drop_leader_conn(reason="probe_failed")
                         await self._close_leader_owned_conns()
                         log.warning(
@@ -316,6 +320,8 @@ class MaintenanceLeader:
                             worker_id=str(self._worker_id),
                             error=repr(exc),
                         )
+                        guard.unexpected(exc)
+                        continue
             if self._deps.leader_conn is None or self._deps.leader_conn.is_closed():
                 try:
                     self._deps.leader_conn = await self._open_leader_conn()
@@ -360,7 +366,6 @@ class MaintenanceLeader:
                 # Backstop (see _transient.py): tolerated + logged a few
                 # times, then deliberately fatal; cleanup mirrors the
                 # transient path since conn state is unknown.
-                guard.unexpected(exc)
                 await self._drop_leader_conn(reason="lock_attempt_failed")
                 await self._close_leader_owned_conns()
                 record_election_attempt(str(self._worker_id), won=False)
@@ -370,6 +375,7 @@ class MaintenanceLeader:
                     worker_id=str(self._worker_id),
                     error=repr(exc),
                 )
+                guard.unexpected(exc)
                 await asyncio.sleep(self._deps.settings.heartbeat_interval)
                 continue
             if got_lock:
@@ -417,7 +423,6 @@ class MaintenanceLeader:
                     # Backstop (see _transient.py): tolerated + logged a few
                     # times, then deliberately fatal; cleanup mirrors the
                     # transient path since conn state is unknown.
-                    guard.unexpected(exc)
                     await self._drop_leader_conn(reason="leader_upsert_failed")
                     await self._close_leader_owned_conns()
                     record_election_attempt(str(self._worker_id), won=False)
@@ -427,6 +432,7 @@ class MaintenanceLeader:
                         worker_id=str(self._worker_id),
                         error=repr(exc),
                     )
+                    guard.unexpected(exc)
                     await asyncio.sleep(self._deps.settings.heartbeat_interval)
                     continue
                 try:
@@ -519,7 +525,6 @@ class MaintenanceLeader:
                     # Backstop (see _transient.py): tolerated + logged a few
                     # times, then deliberately fatal; cleanup mirrors the
                     # transient path since conn state is unknown.
-                    guard.unexpected(exc)
                     await self._drop_leader_conn(reason="watchdog_probe_failed")
                     await self._close_leader_owned_conns()
                     log.warning(
@@ -528,6 +533,7 @@ class MaintenanceLeader:
                         worker_id=str(self._worker_id),
                         error=repr(exc),
                     )
+                    guard.unexpected(exc)
                     break
                 await asyncio.sleep(_WATCHDOG_INTERVAL_SECS)
             # Leaving the inner loop means the gate closed: demotion (the
@@ -631,30 +637,29 @@ class MaintenanceLeader:
                             self._worker_id,
                         )
                 guard.ok()
-            except Exception as exc:
-                # Why the ordering and the exact-type check: builtin
-                # TimeoutError IS an OSError subclass, so an isinstance
-                # conn-state check would swallow the deadline shapes before
-                # they are seen. asyncio.timeout and asyncpg's local
-                # command_timeout expiry raise the exact builtin; network
-                # death arrives as ConnectionTimeoutError (a subclass) and
-                # correctly falls to the conn-state branch below.
+            except TRANSIENT_PG_ERRORS as exc:
+                # Why TRANSIENT_PG_ERRORS first: the cron loop used to
+                # hand-roll its error classification with isinstance checks
+                # that missed 7 of 12 transient shapes (DeadlockDetectedError,
+                # SerializationError, AdminShutdownError, etc.). Deadlock and
+                # serialization inside a transaction are routine, not
+                # surprises — 5 consecutive killed the worker via the
+                # backstop guard before this fix.
                 if type(exc) is TimeoutError or isinstance(exc, asyncpg.QueryCanceledError):
-                    # Deadline family (iteration deadline or a fired
-                    # command_timeout): the conn is provably responsive,
-                    # because it answered the cancel, or asyncpg has already
-                    # terminated it, which the next tick's transaction()
-                    # surfaces as a conn-state error below. Keep the conn and
-                    # retry: dropping it (and demoting) on every slow tick
-                    # would churn leadership during catch-up bursts.
+                    # Deadline family (iteration deadline or server-side
+                    # cancel): the conn is provably responsive, because it
+                    # answered the cancel, or asyncpg has already terminated
+                    # it, which the next tick's transaction() surfaces as a
+                    # conn-state error below. Keep the conn and retry:
+                    # dropping it (and demoting) on every slow tick would
+                    # churn leadership during catch-up bursts.
                     log.warning(
                         "cron-tick-timeout",
                         kind="cron_tick_timeout",
                         worker_id=str(self._worker_id),
                         error=repr(exc),
                     )
-                    continue
-                if isinstance(
+                elif isinstance(
                     exc, (asyncpg.PostgresConnectionError, asyncpg.InterfaceError, OSError)
                 ):
                     # Conn-state family: the conn is dead or unusable. Drop
@@ -666,7 +671,21 @@ class MaintenanceLeader:
                         worker_id=str(self._worker_id),
                         error=repr(exc),
                     )
-                    continue
+                else:
+                    # Other transient (deadlock, serialization, admin
+                    # shutdown, cannot-connect-now, too-many-connections,
+                    # idle-session timeouts): retry next tick. The conn may
+                    # or may not be dead — the next tick's transaction()
+                    # will surface a conn-state error if it is, and the
+                    # transaction rolls back for deadlock/serialization
+                    # leaving the conn usable.
+                    log.warning(
+                        "cron-tick-transient",
+                        kind="cron_tick_transient",
+                        worker_id=str(self._worker_id),
+                        error=repr(exc),
+                    )
+            except Exception as exc:
                 # Backstop for anything outside the transient set (see
                 # _transient.py): tolerated and logged a few times (this
                 # loop's historical blanket catch), then deliberately fatal

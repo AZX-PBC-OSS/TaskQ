@@ -427,11 +427,13 @@ class WorkerSettings(TaskQSettings):
         "wrapped around each period-1 leader-loop iteration (scheduled_wake, "
         "cron): a stalled PG errors the iteration instead of hanging the "
         "loop past its staleness budget. Checked at load time when the "
-        "watchdog is enabled: timeout + loop period must be < "
-        "max(period x watchdog_tick_grace_factor, watchdog_stale_floor) for "
-        "every bounded loop (leader period-1 loops and the producer), so a "
+        "watchdog is enabled: timeout + the 1.0s leader-loop period must be "
+        "< max(period x watchdog_tick_grace_factor, watchdog_stale_floor) "
+        "for the period-1 leader loops (scheduled_wake, cron), so a "
         "timeout-capped iteration can never false-trip the stale-loop "
-        "detector on a healthy worker.",
+        "detector on a healthy worker. The producer loop is not checked "
+        "(its multi-statement dispatch_batch is not wrapped in a single "
+        "asyncio.timeout).",
     )
     dispatch_oversample: int = Field(
         default=2,
@@ -1105,25 +1107,26 @@ class WorkerSettings(TaskQSettings):
                 )
             )
 
-        # Bounded-loop staleness invariant: every loop whose PG work is
-        # capped by dispatcher_command_timeout ticks once per iteration and
-        # sleeps one period afterwards, so its worst-case tick gap is
-        # timeout + period. That gap must fit the loop's own budget
-        # max(period * watchdog_tick_grace_factor, watchdog_stale_floor) or
-        # detector 2 force-exits a healthy worker mid-degradation
-        # (measured: timeout 10.0 against budget 10.0 produced an 11s tick
-        # gap and a trip at age 10.008s). Only checked when the watchdog is
-        # armed: with watchdog_enabled=False detector 2 is never spawned,
-        # and a stale tick only costs a transient NotReady, which is not
-        # worth blocking boot over.
+        # Bounded-loop staleness invariant: the period-1 leader loops
+        # (scheduled_wake, cron) are wrapped in asyncio.timeout, so their
+        # worst-case tick gap is timeout + period. That gap must fit the
+        # loop's own budget max(period * watchdog_tick_grace_factor,
+        # watchdog_stale_floor) or detector 2 force-exits a healthy worker
+        # mid-degradation (measured: timeout 10.0 against budget 10.0
+        # produced an 11s tick gap and a trip at age 10.008s). Only checked
+        # when the watchdog is armed: with watchdog_enabled=False detector 2
+        # is never spawned, and a stale tick only costs a transient NotReady,
+        # which is not worth blocking boot over.
+        #
+        # The producer loop is deliberately NOT checked here: it is not
+        # wrapped in asyncio.timeout (dispatch_batch is a multi-statement
+        # transaction — BEGIN + resolve_queue_modes + dispatch CTE + INSERTs
+        # + COMMIT, each bounded separately by the pool's command_timeout),
+        # so the timeout + period model does not hold. The actual worst-case
+        # gap is k * timeout + period for k statements, which the invariant
+        # cannot express without knowing k at settings-load time.
         if self.watchdog_enabled:
-            producer_period = (
-                self.notify_poll_interval if self.notify_enabled else self.poll_interval
-            )
-            for loop_label, period in (
-                ("leader loops", 1.0),
-                ("producer loop", producer_period),
-            ):
+            for loop_label, period in (("leader loops", 1.0),):
                 budget = max(period * self.watchdog_tick_grace_factor, self.watchdog_stale_floor)
                 if budget <= period + 1.0:
                     # 1.0 = dispatcher_command_timeout's own ge= minimum: no
