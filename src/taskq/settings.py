@@ -16,6 +16,7 @@ and pass that subclass instead.
 # annotations`` to this module turns those types into forward-ref strings
 # and breaks the typed-DSN/SecretStr coercion. Keep annotations evaluated.
 
+import math
 from datetime import timedelta
 from pathlib import Path
 from typing import Self
@@ -182,7 +183,7 @@ class TaskQSettings(DotEnvConfig):
         description="TASKQ_ADMIN_UI_ALLOW_RATE_LIMIT_RESET. When True, the admin UI "
         "shows a reset button on the rate-limits page and serves the "
         "POST /rate-limits/{bucket_name}/reset endpoint. Default False "
-        "for safety — prevents accidental resets in production.",
+        "for safety - prevents accidental resets in production.",
     )
     admin_ui_require_auth: bool = Field(
         default=True,
@@ -190,18 +191,18 @@ class TaskQSettings(DotEnvConfig):
         "create_router raises RuntimeError if auth_dependency is None in a "
         "non-dev environment, failing closed. Set to False to suppress the "
         "error and allow an unauthenticated admin UI in non-dev (not "
-        "recommended — only for air-gapped or localhost-only deployments).",
+        "recommended - only for air-gapped or localhost-only deployments).",
     )
     admin_actions_enabled: bool = Field(
         default=False,
         description="TASKQ_ADMIN_ACTIONS_ENABLED. When True, the admin UI permits "
         "destructive actions (run schedule now, retry job, cancel job). "
-        "Default False — prevents on-demand triggering of registered business "
+        "Default False - prevents on-demand triggering of registered business "
         "logic via the admin UI without explicit opt-in. Separate from "
         "auth_dependency, which controls read access to all admin routes.",
     )
 
-    # ── SSO / SAML ───────────────────────────────────────────────────────
+    # -- SSO / SAML -------------------------------------------------------
     sso_backend: str = Field(
         default="none",
         description="TASKQ_SSO_BACKEND. Selects the SSO backend for the admin UI: "
@@ -213,7 +214,7 @@ class TaskQSettings(DotEnvConfig):
         description="TASKQ_HEALTH_TOKEN. Bearer token for machine-to-machine "
         "access to health/metrics endpoints. When set, health and metrics "
         "routes require a matching 'Authorization: Bearer <token>' header. "
-        "Leave empty for unauthenticated cluster-internal access — but see "
+        "Leave empty for unauthenticated cluster-internal access - but see "
         "health_require_token, which fails closed on an empty token outside dev.",
     )
     health_require_token: bool = Field(
@@ -223,7 +224,7 @@ class TaskQSettings(DotEnvConfig):
         "non-dev environment, failing closed. Set to False to suppress the "
         "error and allow unauthenticated health/metrics endpoints in non-dev "
         "(e.g. when relying on network policy / cluster-internal-only access "
-        "instead of a bearer token — note that many k8s liveness/readiness "
+        "instead of a bearer token - note that many k8s liveness/readiness "
         "probes don't send auth headers by default, so enabling the token "
         "may require updating the probe config too).",
     )
@@ -255,12 +256,12 @@ class TaskQSettings(DotEnvConfig):
         """Load settings via dotenvmodel's cascading ``.env`` discovery.
 
         dotenvmodel logs a WARNING ("No .env files found in <cwd>") on
-        every call when no ``.env`` file is present — noisy on every CLI
+        every call when no ``.env`` file is present - noisy on every CLI
         invocation in projects that configure purely via real environment
         variables. dotenvmodel's ``load()`` exposes no quiet/verbosity
         parameter (checked via ``inspect.signature``), so this temporarily
         raises the ``dotenvmodel`` stdlib logger to ERROR for the duration
-        of the call and restores the previous level afterward — the same
+        of the call and restores the previous level afterward - the same
         level-based mechanism dotenvmodel's own ``logging_config`` helpers
         use, just without installing an extra handler.
 
@@ -285,8 +286,8 @@ class TaskQSettings(DotEnvConfig):
         read on first access and the same instance returned thereafter.
 
         Reload (e.g. on SIGHUP): call ``OIDCSettings.cached().reload()`` to
-        re-read the environment and mutate the shared instance in place —
-        every holder observes the new values — or
+        re-read the environment and mutate the shared instance in place -
+        every holder observes the new values - or
         ``OIDCSettings.reset_cached()`` to force the next access to
         re-load. Tests that change ``TASKQ_OIDC_*`` mid-process must do
         the same (or use ``cached_override()``).
@@ -320,12 +321,18 @@ def _positive_timedelta(value: timedelta, ctx: ValidatorContext) -> timedelta:
     return value
 
 
+def _positive_finite_float(value: float, ctx: ValidatorContext) -> float:
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError(f"{ctx.field_name} must be > 0 and finite, got {value}")
+    return value
+
+
 _VALID_LOG_FORMATS = frozenset({"json", "console"})
 
 
 def _log_format_validator(value: str, ctx: ValidatorContext) -> str:
     # A validator hook (not choices=) so the check also runs under
-    # load_from_dict(..., validate=False) — choices= is a built-in constraint
+    # load_from_dict(..., validate=False) - choices= is a built-in constraint
     # that validate=False skips, which would let an invalid LOG_FORMAT load
     # silently. See dotenvmodel docs: validator hooks run regardless of validate.
     if value not in _VALID_LOG_FORMATS:
@@ -342,21 +349,21 @@ class WorkerSettings(TaskQSettings):
     the validated ``lock_lease >= 4 * heartbeat_interval`` invariant.
     """
 
-    # ── DSNs ───────────────────────────────────────────────────────────
+    # -- DSNs -----------------------------------------------------------
     pg_dsn_direct: PostgresDsn | None = Field(
         default=None,
         description="TASKQ_PG_DSN_DIRECT; falls back to pg_dsn when absent. "
-        "Bypasses PgBouncer — used by dispatcher_pool, heartbeat_pool, "
+        "Bypasses PgBouncer - used by dispatcher_pool, heartbeat_pool, "
         "notify_conn, and leader_conn.",
     )
     pg_dsn_pooled: PostgresDsn | None = Field(
         default=None,
         description="TASKQ_PG_DSN_POOLED; falls back to pg_dsn when absent. "
-        "May route through PgBouncer transaction mode — used by "
+        "May route through PgBouncer transaction mode - used by "
         "worker_pool only.",
     )
 
-    # ── Pool sizes ─────────────────────────────────────────────────────
+    # -- Pool sizes -----------------------------------------------------
     dispatcher_pool_size: int = Field(
         default=4,
         ge=1,
@@ -404,7 +411,7 @@ class WorkerSettings(TaskQSettings):
     )
     # worker_pool max_size is derived: int(max_concurrency * 1.5)
 
-    # ── Timing ──────────────────────────────────────────────────────────
+    # -- Timing ----------------------------------------------------------
     max_concurrency: int = Field(
         default=8,
         ge=1,
@@ -489,15 +496,15 @@ class WorkerSettings(TaskQSettings):
         "margin of its INSERT; raise it if sweeps run under heavy lock contention or "
         "against very large batches, lower it if latency matters more and writes are "
         "known to be fast. A writer that exceeds the margin can cause a silently "
-        "missed event — this is a real, not merely theoretical, risk under misconfiguration.",
+        "missed event - this is a real, not merely theoretical, risk under misconfiguration.",
     )
 
-    # ── Retry backoff ceiling ───────────────────────────────────────────
+    # -- Retry backoff ceiling -------------------------------------------
     max_retry_backoff: timedelta = Field(
         default=timedelta(hours=24),
         description=(
             "TASKQ_MAX_RETRY_BACKOFF (interval). Global ceiling on retry backoff "
-            "per attempt — caps the per-actor RetryPolicy.cap so a misconfigured "
+            "per attempt - caps the per-actor RetryPolicy.cap so a misconfigured "
             "actor (e.g. cap=timedelta(days=365)) cannot strand jobs for an "
             "unreasonably long time. Default 24 h: conservative, matches one "
             "standard on-call rotation, and mirrors Dramatiq's DEFAULT_MAX_BACKOFF "
@@ -513,7 +520,7 @@ class WorkerSettings(TaskQSettings):
             "per-attempt execution timeout, applied only when a job has no "
             "start_to_close of its own (neither passed at enqueue time nor "
             "declared as an @actor(start_to_close=...) default). None (the "
-            "default) means unbounded — matches existing behaviour, opt-in "
+            "default) means unbounded - matches existing behaviour, opt-in "
             "only. Set this to give every actor on this worker a safety-net "
             "wall-clock budget per attempt, preventing a hung or "
             "infinite-looping actor from occupying a coroutine slot forever, "
@@ -521,12 +528,12 @@ class WorkerSettings(TaskQSettings):
             "actor. Precedence (highest wins): per-enqueue start_to_close > "
             "@actor(start_to_close=...) > this setting. This does not affect "
             "schedule_to_close, which is a separate, unrelated deadline for "
-            "the job's *overall* retry budget across all attempts — "
+            "the job's *overall* retry budget across all attempts - "
             "start_to_close bounds a single attempt's wall-clock time."
         ),
     )
 
-    # ── Rate limit ────────────────────────────────────────────────
+    # -- Rate limit ------------------------------------------------
     rate_limit_pg_fallback_enabled: bool = Field(
         default=True,
         description="TASKQ_RATE_LIMIT_PG_FALLBACK_ENABLED. When False, Redis "
@@ -550,7 +557,7 @@ class WorkerSettings(TaskQSettings):
         "reservations only. Tune to your workload's expected key cardinality.",
     )
 
-    # ── Prometheus standalone metrics server ──────────────────
+    # -- Prometheus standalone metrics server ------------------
     metrics_port: int = Field(
         default=9090,
         ge=1,
@@ -560,7 +567,7 @@ class WorkerSettings(TaskQSettings):
         "The in-process FastAPI mount ignores this field.",
     )
 
-    # ── Health server ──────────────────────────────────────────
+    # -- Health server ------------------------------------------
     health_enabled: bool = Field(
         default=True,
         description="TASKQ_HEALTH_ENABLED. Enable the Unix-socket health server.",
@@ -653,7 +660,7 @@ class WorkerSettings(TaskQSettings):
         "for the stale-tick sweep and the loop-lag watchdog thread.",
     )
 
-    # ── Polling and NOTIFY listener ────────────────────────
+    # -- Polling and NOTIFY listener ------------------------
     poll_interval: float = Field(
         default=1.0,
         description="TASKQ_POLL_INTERVAL (seconds). Producer loop fallback "
@@ -672,6 +679,16 @@ class WorkerSettings(TaskQSettings):
         "retry. Cap is 30 s (factor 2 per attempt). "
         "Backoff sequence: 1, 2, 4, 8, 16, 30.",
     )
+    notify_listener_setup_timeout: float = Field(
+        default=10.0,
+        validator=_positive_finite_float,
+        description="TASKQ_NOTIFY_LISTENER_SETUP_TIMEOUT (seconds). Bounds "
+        "each ``add_listener`` call during NOTIFY listener setup and "
+        "reconnect - a half-open PG connection that accepts TCP but stalls "
+        "on the LISTEN handshake would otherwise wedge the notify loop "
+        "forever. On timeout the connection is closed (bounded) and the "
+        "reconnect retry loop is entered (or the initial setup raises).",
+    )
     notify_enabled: bool = Field(
         default=True,
         description="TASKQ_NOTIFY_ENABLED. When True, the worker uses "
@@ -682,17 +699,17 @@ class WorkerSettings(TaskQSettings):
         default=5.0,
         ge=0.5,
         description="TASKQ_NOTIFY_POLL_INTERVAL (seconds). Fallback poll "
-        "cadence when NOTIFY is enabled (rarely reached — NOTIFY handles "
+        "cadence when NOTIFY is enabled (rarely reached - NOTIFY handles "
         "the common case). Use poll_interval when NOTIFY is disabled.",
     )
 
-    # ── Credential hot-reload ────────────────────────────────────────────
+    # -- Credential hot-reload --------------------------------------------
     reload_interval: float | None = Field(
         default=None,
         gt=0,
         description="TASKQ_RELOAD_INTERVAL (seconds). When set, the worker "
         "periodically triggers a credential hot-reload (the same path as "
-        "SIGHUP) with no external signal required — the rotation path for "
+        "SIGHUP) with no external signal required - the rotation path for "
         "platforms without SIGHUP (e.g. Windows) and for hands-off "
         "scheduled rotation (e.g. ~720s for AWS IAM's 15-minute tokens). "
         "None disables the timer; SIGHUP and deps.request_reload() still "
@@ -703,12 +720,12 @@ class WorkerSettings(TaskQSettings):
         default=30.0,
         gt=0,
         description="TASKQ_RELOAD_FACTORY_TIMEOUT (seconds). Bounds each "
-        "individual factory call during a credential hot-reload — a hung "
+        "individual factory call during a credential hot-reload - a hung "
         "token endpoint is marked failed for that resource instead of "
         "wedging the reload coordinator (and all future SIGHUPs).",
     )
 
-    # ── Queue selection ──────────────────────────────────────────────────
+    # -- Queue selection --------------------------------------------------
     queues: list[str] = Field(
         default_factory=lambda: ["default"],
         description="TASKQ_QUEUES. Comma-separated list of queue names "
@@ -728,19 +745,19 @@ class WorkerSettings(TaskQSettings):
         "orchestrator that launched this worker. Used for cross-process correlation.",
     )
 
-    # ── Pool lifecycle ──────────────────────────────────────────────────
+    # -- Pool lifecycle --------------------------------------------------
     pool_max_inactive_lifetime: float = Field(
         default=300.0,
         ge=0.0,
         description="TASKQ_POOL_MAX_INACTIVE_LIFETIME (seconds). asyncpg "
-        "max_inactive_connection_lifetime — closes connections idle "
+        "max_inactive_connection_lifetime - closes connections idle "
         "longer than this threshold. Set to 3600.0 to match a typical "
         "SQLAlchemy pool_recycle=3600 setting when running alongside "
         "an SQLAlchemy-based service. Applied to dispatcher_pool, "
         "heartbeat_pool, and worker_pool.",
     )
 
-    # ── Observability ────────────────────────────────────────────
+    # -- Observability --------------------------------------------
     otel_enabled: bool = Field(
         default=True,
         description="TASKQ_OTEL_ENABLED. When False, the library suppresses all span "
@@ -762,7 +779,7 @@ class WorkerSettings(TaskQSettings):
         description="TASKQ_LOG_LEVEL. Root logger level.",
     )
 
-    # ── Pruning schedule ────────────────────────────────────────────
+    # -- Pruning schedule --------------------------------------------
     prune_schedule_utc: str = Field(
         default="03:00",
         description="TASKQ_PRUNE_SCHEDULE_UTC. HH:MM (UTC) for the daily prune "
@@ -779,7 +796,7 @@ class WorkerSettings(TaskQSettings):
         description="TASKQ_PRUNE_BATCH_SIZE. Rows to delete per batch.",
     )
 
-    # ── Per-status prune retention ────────────────────────────────
+    # -- Per-status prune retention --------------------------------
     prune_retention_period: timedelta = Field(
         default=timedelta(days=30),
         validator=_non_negative_timedelta,
@@ -809,7 +826,7 @@ class WorkerSettings(TaskQSettings):
         "jobs (no separate prune_retention_crashed field).",
     )
 
-    # ── Archive retention & expiry schedule ──────────────────────
+    # -- Archive retention & expiry schedule ----------------------
     archive_retention_period: timedelta = Field(
         default=timedelta(days=365),
         validator=_non_negative_timedelta,
@@ -830,7 +847,7 @@ class WorkerSettings(TaskQSettings):
         "archive_expiry_schedule_utc.",
     )
 
-    # ── Actor config drift handling ───────────────────────────────────────
+    # -- Actor config drift handling ---------------------------------------
     force_update_actor_config: bool = Field(
         default=False,
         description=(
@@ -847,13 +864,13 @@ class WorkerSettings(TaskQSettings):
         ),
     )
 
-    # ── Progress fanout ────────────────────────────────────────────
+    # -- Progress fanout --------------------------------------------
     progress_coalesce_interval: float = Field(
         default=0.5,
         ge=0.1,
         description="TASKQ_PROGRESS_COALESCE_INTERVAL (seconds). How long the "
         "periodic flush loop waits between writing coalesced progress state "
-        "to Postgres. Redis publishes are not throttled by this setting — "
+        "to Postgres. Redis publishes are not throttled by this setting - "
         "each ctx.progress() call publishes immediately (fire-and-forget). "
         "Lower values increase PG write frequency; minimum 0.1 s.",
     )
@@ -875,7 +892,7 @@ class WorkerSettings(TaskQSettings):
         "Does not affect Postgres flushing.",
     )
 
-    # ── Cron scheduler ────────────────────────────────────────────
+    # -- Cron scheduler --------------------------------------------
     cron_catch_up_window: timedelta = Field(
         default=timedelta(hours=1),
         validator=_non_negative_timedelta,
@@ -897,7 +914,7 @@ class WorkerSettings(TaskQSettings):
         environment-shape that distinguishes "user did not set
         ``TASKQ_PG_DSN_DIRECT``" (``None``, fallback to ``pg_dsn``) from
         "user set it explicitly". Once :meth:`post_load` has applied the
-        fallback, the field is always non-``None`` — but pyright cannot
+        fallback, the field is always non-``None`` - but pyright cannot
         prove that across method boundaries. This property re-asserts the
         invariant at every call site, eliminating the need for ``assert``
         or ``cast`` at call sites that read the DSN.
@@ -931,7 +948,7 @@ class WorkerSettings(TaskQSettings):
 
         Runs automatically on every load path (``load()``,
         ``load_from_dict()``, ``reload()``, and nested config loading),
-        including under ``validate=False`` — consistent with the per-field
+        including under ``validate=False`` - consistent with the per-field
         ``validator`` hooks (transformation is part of loading, not
         validation). No ``WorkerSettings.load`` / ``load_from_dict``
         override is needed; the base ``DotEnvConfig._load_fields`` invokes
@@ -941,7 +958,7 @@ class WorkerSettings(TaskQSettings):
         dotenvmodel's uniform error hierarchy: a single returned error is
         raised unchanged (its exact type preserved), several aggregate
         into ``MultipleValidationErrors``. Catch ``DotEnvModelError`` (the
-        common base) to cover both single and aggregate cases —
+        common base) to cover both single and aggregate cases -
         ``MultipleValidationErrors`` is a ``DotEnvModelError`` but not a
         ``ValidationError``, so ``except ValidationError`` alone misses the
         multi-invariant case. ``ValidationError`` suffices only when at
