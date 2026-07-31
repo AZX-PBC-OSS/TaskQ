@@ -10,6 +10,8 @@ pin the helper's prepend/membership/no-copy semantics directly.
 
 from datetime import timedelta
 
+from pydantic import BaseModel
+
 from taskq.ratelimit.refs import KeyedReservationRef
 from taskq.ratelimit.registry import RateLimitRegistry, queue_concurrency_reservation_name
 from taskq.ratelimit.reservation import ConcurrencyReservation
@@ -18,10 +20,15 @@ from taskq.worker.dispatch import (
 )
 
 
+class _TenantPayload(BaseModel):
+    tenant: str
+
+
 def _keyed_ref() -> KeyedReservationRef:
-    return KeyedReservationRef(
+    return KeyedReservationRef.typed(
+        _TenantPayload,
         base_name="tenants",
-        key_fn=lambda payload: str(payload["tenant"]),
+        key_fn=lambda payload: payload.tenant,
         slots=1,
         lease=timedelta(seconds=30),
     )

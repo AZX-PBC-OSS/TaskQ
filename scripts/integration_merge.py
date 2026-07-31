@@ -25,8 +25,7 @@ import json
 import re
 import subprocess
 import sys
-from dataclasses import asdict, dataclass, field
-from datetime import UTC, datetime
+from dataclasses import dataclass, field
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
@@ -44,7 +43,7 @@ def run(
     cwd: Path = GIT_DIR,
 ) -> subprocess.CompletedProcess[str]:
     """Run a command, returning the completed process."""
-    return subprocess.run(
+    return subprocess.run(  # noqa: S603
         cmd,
         check=check,
         capture_output=capture,
@@ -84,7 +83,10 @@ class PR:
     def is_release(self) -> bool:
         if "autorelease" in self.labels:
             return True
-        return bool(re.match(r"chore\(.*\)\s*:", self.title, re.IGNORECASE) and "release" in self.title.lower())
+        return bool(
+            re.match(r"chore\(.*\)\s*:", self.title, re.IGNORECASE)
+            and "release" in self.title.lower()
+        )
 
 
 @dataclass
@@ -102,10 +104,14 @@ class MergeResult:
 def fetch_prs() -> list[PR]:
     """Fetch all open PRs from GitHub, sorted by creation date (oldest first)."""
     raw = gh(
-        "pr", "list",
-        "--state", "open",
-        "--limit", "100",
-        "--json", "number,title,headRefName,baseRefName,createdAt,author,labels",
+        "pr",
+        "list",
+        "--state",
+        "open",
+        "--limit",
+        "100",
+        "--json",
+        "number,title,headRefName,baseRefName,createdAt,author,labels",
     )
     items = json.loads(raw)
     prs = [
@@ -116,7 +122,7 @@ def fetch_prs() -> list[PR]:
             base=item["baseRefName"],
             created_at=item["createdAt"],
             author=item.get("author", {}).get("login", "unknown"),
-            labels=[l["name"] for l in item.get("labels", [])],
+            labels=[label["name"] for label in item.get("labels", [])],
         )
         for item in items
     ]
@@ -150,9 +156,12 @@ def try_merge(pr: PR, verify: bool = False) -> MergeResult:
 
     # Try the merge
     merge_cmd = [
-        "merge", "--no-ff", "--no-edit",
+        "merge",
+        "--no-ff",
+        "--no-edit",
         pr.head,
-        "-m", f"merge: PR #{pr.number} — {pr.title}",
+        "-m",
+        f"merge: PR #{pr.number} — {pr.title}",
     ]
     try:
         git(*merge_cmd)
@@ -181,7 +190,9 @@ def print_summary(results: list[MergeResult]) -> None:
     print(f"{'#':>4}  {'Status':<10}  {'PR':<6}  {'Title':<50}  Detail")
     print("-" * 80)
     for r in results:
-        print(f"  {r.pr.number:>4}  {r.status:<10}  #{r.pr.number:<4}  {r.pr.title[:50]:<50}  {r.detail}")
+        print(
+            f"  {r.pr.number:>4}  {r.status:<10}  #{r.pr.number:<4}  {r.pr.title[:50]:<50}  {r.detail}"
+        )
     print("=" * 80)
 
     merged = [r for r in results if r.status == "merged"]
@@ -211,7 +222,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Build integration branch from open PRs")
     parser.add_argument("--dry-run", action="store_true", help="List PRs without merging")
     parser.add_argument("--base", default="main", help="Base branch (default: main)")
-    parser.add_argument("--name", default="integration", help="Integration branch name (default: integration)")
+    parser.add_argument(
+        "--name", default="integration", help="Integration branch name (default: integration)"
+    )
     parser.add_argument("--verify", action="store_true", help="Run tests after each merge")
     parser.add_argument("--only", type=int, nargs="+", help="Only merge specific PR numbers")
     parser.add_argument("--skip", type=int, nargs="+", help="Skip specific PR numbers")
@@ -255,7 +268,7 @@ def main() -> int:
         result = try_merge(pr, verify=args.verify)
         results.append(result)
         if result.status == "merged":
-            print(f"  -> merged OK")
+            print("  -> merged OK")
         else:
             print(f"  -> {result.status.upper()}: {result.detail}")
 

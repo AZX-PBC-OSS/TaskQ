@@ -24,7 +24,7 @@ from uuid import UUID
 
 import structlog
 from croniter import croniter
-from pydantic import BaseModel, TypeAdapter
+from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from taskq._close import CLOSE_TIMEOUT_SECS, close_redis_bounded
 from taskq._validation import validate_actor_payload

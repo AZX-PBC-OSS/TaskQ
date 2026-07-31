@@ -12,6 +12,7 @@ bucket in Dragonfly, materialized lazily on first acquisition.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import TYPE_CHECKING
 
