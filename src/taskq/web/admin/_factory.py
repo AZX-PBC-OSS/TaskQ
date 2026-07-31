@@ -27,6 +27,8 @@ from taskq.backend._protocol import Backend
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: canonical identifier regex; reusing the shared validation pattern rather than redefining it.
 )
+from taskq.ratelimit.registry import RateLimitRegistry
+from taskq.ratelimit.registry import registry as _rl_singleton
 from taskq.settings import TaskQSettings
 from taskq.web.admin import _static
 
@@ -144,6 +146,18 @@ def get_pg_pool(request: Request) -> asyncpg.Pool:
 def get_backend(request: Request) -> Backend | None:
     """Dependency: yields the Backend from ``app.state`` if configured."""
     return getattr(request.app.state, "backend", None)
+
+
+def get_rl_registry(request: Request) -> RateLimitRegistry:
+    """Dependency: yields the RateLimitRegistry from ``app.state``.
+
+    ``setup_admin_state`` always sets the key (bundle instance or
+    singleton). The ``getattr`` fallback keeps hand-assembled
+    ``app.state`` setups (which never set the key) working exactly as
+    today: the module singleton. Internal — deliberately not exported.
+    """
+    rl: RateLimitRegistry | None = getattr(request.app.state, "rate_limit_registry", None)
+    return rl if rl is not None else _rl_singleton
 
 
 def get_schema(request: Request) -> str:
@@ -268,6 +282,10 @@ class AdminBundle:
 
     Pass this to ``setup_admin_state(app, bundle)`` in your lifespan before
     the first request, then mount ``bundle.router`` via ``app.include_router``.
+
+    ``rate_limit_registry`` scopes the registry the rate-limit/reservation
+    pages read; ``None`` resolves to the module singleton (the default —
+    same-process behavior is unchanged).
     """
 
     router: APIRouter
@@ -278,6 +296,7 @@ class AdminBundle:
     settings: TaskQSettings
     base_path: str
     backend: Backend | None = None
+    rate_limit_registry: RateLimitRegistry | None = None
 
 
 def setup_admin_state(app: _AppLike, bundle: AdminBundle) -> None:
@@ -293,6 +312,9 @@ def setup_admin_state(app: _AppLike, bundle: AdminBundle) -> None:
     app.state.settings = bundle.settings
     app.state.base_path = bundle.base_path
     app.state.backend = bundle.backend
+    app.state.rate_limit_registry = (
+        bundle.rate_limit_registry if bundle.rate_limit_registry is not None else _rl_singleton
+    )
 
 
 def create_router(
@@ -304,6 +326,7 @@ def create_router(
     auth_dependency: Callable[..., Any] | None = None,
     base_path: str = "",
     backend: Backend | None = None,
+    rate_limit_registry: RateLimitRegistry | None = None,
 ) -> AdminBundle:
     """Create the admin UI FastAPI router.
 
@@ -316,6 +339,11 @@ def create_router(
     ``base_path`` must match the prefix passed to ``include_router`` (e.g.
     ``"/admin"``).  It is injected as a Jinja2 global so templates can build
     prefix-safe URLs with ``{{ base_path }}/queues`` etc.
+
+    ``rate_limit_registry`` is an optional owned :class:`RateLimitRegistry`
+    the admin pages read configured primitives from (e.g. the API-process
+    instance in a multi-process deployment).  Default ``None`` resolves to
+    the module singleton — same-process behavior is unchanged.
     """
     if not _IDENT_RE.match(schema):
         raise ValueError(f"invalid schema identifier: {schema!r}")
@@ -380,6 +408,7 @@ def create_router(
         settings=settings,
         base_path=base_path,
         backend=backend,
+        rate_limit_registry=rate_limit_registry,
     )
 
 

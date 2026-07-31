@@ -39,7 +39,13 @@ class _ImmediateEvent(asyncio.Event):
 
 class _FakeMaintenanceLeader:
     def __init__(
-        self, deps: object, worker_id: object, backend: object, *, clock: object = None
+        self,
+        deps: object,
+        worker_id: object,
+        backend: object,
+        *,
+        clock: object = None,
+        rate_limit_registry: object = None,
     ) -> None:
         pass
 

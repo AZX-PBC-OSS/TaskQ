@@ -29,6 +29,7 @@ from taskq.constants import (
     wake_channel,
 )
 from taskq.obs import get_logger, get_meter, record_election_attempt
+from taskq.ratelimit.registry import RateLimitRegistry
 from taskq.worker._leader_shared import (
     _EK1,
     ARCHIVE_EXPIRY_LOCK_NAME,
@@ -102,13 +103,25 @@ class MaintenanceLeader:
     """Elected leader that runs watchdog, sweeps, cron, and prune loops."""
 
     def __init__(
-        self, deps: WorkerDeps, worker_id: UUID, backend: Backend, *, clock: Clock
+        self,
+        deps: WorkerDeps,
+        worker_id: UUID,
+        backend: Backend,
+        *,
+        clock: Clock,
+        rate_limit_registry: RateLimitRegistry | None = None,
     ) -> None:
         self._deps = deps
         self._worker_id = worker_id
         self._backend = backend
         self._clock = clock
-        self._sweep_ctx = SweepContext(deps=deps, backend=backend, clock=clock, worker_id=worker_id)
+        self._sweep_ctx = SweepContext(
+            deps=deps,
+            backend=backend,
+            clock=clock,
+            worker_id=worker_id,
+            rate_limit_registry=rate_limit_registry,
+        )
         self._leader_monitor_conn: asyncpg.Connection | None = None
         self._cron_conn: asyncpg.Connection | None = None
 

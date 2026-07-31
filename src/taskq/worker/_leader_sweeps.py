@@ -206,42 +206,49 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                         worker_id=str(ctx.worker_id),
                         error=repr(exc),
                     )
-            if rl_registry.has_keyed_reservations:
-                try:
-                    evicted = rl_registry.evict_idle_keyed_reservations(
-                        idle_for=_KEYED_IDLE_THRESHOLD
+        # Keyed-primitive eviction is process-local bookkeeping, NOT
+        # leader-gated: every worker sweeps its OWN registry each tick (a
+        # non-leader's registry would otherwise receive no periodic
+        # eviction). Always safe to call; with the singleton default this
+        # is a no-op behavior change — N workers idempotently evict the
+        # same shared registry (in a multi-process fleet each process has
+        # its OWN singleton copy, so non-leader processes previously got
+        # NO periodic eviction and now sweep their own copy).
+        # ctx.rate_limit_registry is None for direct SweepContext
+        # constructions → fall back to the module singleton when None.
+        rl = ctx.rate_limit_registry if ctx.rate_limit_registry is not None else rl_registry
+        if rl.has_keyed_reservations:
+            try:
+                evicted = rl.evict_idle_keyed_reservations(idle_for=_KEYED_IDLE_THRESHOLD)
+                if evicted:
+                    log.debug(
+                        "sweep-evicted-idle-keyed-reservations",
+                        kind="evict_idle_keyed_reservations",
+                        count=evicted,
                     )
-                    if evicted:
-                        log.debug(
-                            "sweep-evicted-idle-keyed-reservations",
-                            kind="evict_idle_keyed_reservations",
-                            count=evicted,
-                        )
-                except Exception as exc:
-                    log.warning(
-                        "sweep-evict-idle-keyed-reservations-failed",
-                        kind="evict_idle_keyed_reservations_failed",
-                        worker_id=str(ctx.worker_id),
-                        error=repr(exc),
+            except Exception as exc:
+                log.warning(
+                    "sweep-evict-idle-keyed-reservations-failed",
+                    kind="evict_idle_keyed_reservations_failed",
+                    worker_id=str(ctx.worker_id),
+                    error=repr(exc),
+                )
+        if rl.has_keyed_rate_limits:
+            try:
+                evicted = rl.evict_idle_keyed_rate_limits(idle_for=_KEYED_IDLE_THRESHOLD)
+                if evicted:
+                    log.debug(
+                        "sweep-evicted-idle-keyed-rate-limits",
+                        kind="evict_idle_keyed_rate_limits",
+                        count=evicted,
                     )
-            if rl_registry.has_keyed_rate_limits:
-                try:
-                    evicted = rl_registry.evict_idle_keyed_rate_limits(
-                        idle_for=_KEYED_IDLE_THRESHOLD
-                    )
-                    if evicted:
-                        log.debug(
-                            "sweep-evicted-idle-keyed-rate-limits",
-                            kind="evict_idle_keyed_rate_limits",
-                            count=evicted,
-                        )
-                except Exception as exc:
-                    log.warning(
-                        "sweep-evict-idle-keyed-rate-limits-failed",
-                        kind="evict_idle_keyed_rate_limits_failed",
-                        worker_id=str(ctx.worker_id),
-                        error=repr(exc),
-                    )
+            except Exception as exc:
+                log.warning(
+                    "sweep-evict-idle-keyed-rate-limits-failed",
+                    kind="evict_idle_keyed_rate_limits_failed",
+                    worker_id=str(ctx.worker_id),
+                    error=repr(exc),
+                )
         await _sleep_interruptible(shutdown, ctx.deps.settings.sweep_interval)
 
 

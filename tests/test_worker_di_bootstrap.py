@@ -659,6 +659,83 @@ async def test_bootstrap_redis_url_without_extra_and_no_redis_limits_boots() -> 
     assert result == 0
 
 
+# ── _served_redis_rate_limits uses the injected registry, not the singleton ──
+
+
+async def test_served_redis_rate_limits_uses_injected_registry() -> None:
+    """_served_redis_rate_limits scans the injected registry, not the module singleton.
+
+    Regression (PR #39 / #42): ``_served_redis_rate_limits`` read the
+    module-level ``rl_registry`` singleton instead of the resolved
+    registry from ``_resolve_rl_registry``. With a custom
+    ``RateLimitRegistry``:
+
+    - **False negative:** custom registry has Redis-backed limits,
+      singleton doesn't → startup check finds nothing → worker crashes
+      per-dispatch with MissingProvider.
+    - **False positive:** singleton has Redis-backed limits from another
+      registration, custom registry doesn't → spurious RuntimeError at
+      startup.
+
+    This test exercises both directions directly against the function.
+    """
+    from taskq.ratelimit.registry import (
+        RateLimitRegistry,
+    )
+    from taskq.ratelimit.registry import (
+        registry as singleton_registry,
+    )
+    from taskq.ratelimit.token_bucket import TokenBucket
+    from taskq.worker._bootstrap import _served_redis_rate_limits
+
+    # ── False negative: custom registry has a Redis-backed limit ──
+    custom = RateLimitRegistry()
+    custom.register(
+        TokenBucket(
+            name="di_custom_redis_bucket_26",
+            capacity=10.0,
+            refill_per_second=1.0,
+            backend="redis",
+        )
+    )
+
+    @actor(rate_limits=["di_custom_redis_bucket_26"])
+    async def served_by_custom(payload: EmptyPayload) -> None:
+        pass
+
+    # The custom registry has the limit → detected
+    result = _served_redis_rate_limits({served_by_custom.name: served_by_custom}, custom)
+    assert result == ["di_custom_redis_bucket_26"]
+
+    # The singleton does NOT have this limit → not detected when scanning
+    # the singleton (this was the bug: the old code always used the singleton)
+    assert "di_custom_redis_bucket_26" not in singleton_registry.rate_limits
+    result_singleton = _served_redis_rate_limits(
+        {served_by_custom.name: served_by_custom}, singleton_registry
+    )
+    assert result_singleton == []
+
+    # ── False positive: singleton has a Redis-backed limit the custom doesn't ──
+    singleton_registry.register(
+        TokenBucket(
+            name="singleton_only_redis_bucket_26",
+            capacity=10.0,
+            refill_per_second=1.0,
+            backend="redis",
+        )
+    )
+
+    @actor(rate_limits=["singleton_only_redis_bucket_26"])
+    async def served_by_singleton(payload: EmptyPayload) -> None:
+        pass
+
+    # Scanning the custom registry must NOT see the singleton's limit
+    result_custom = _served_redis_rate_limits(
+        {served_by_singleton.name: served_by_singleton}, custom
+    )
+    assert result_custom == []
+
+
 async def test_bootstrap_rejects_actor_registry_key_name_mismatch() -> None:
     """An actor_registry entry whose key differs from its ActorRef's name
     fails fast at bootstrap, naming the mismatch.

@@ -1253,3 +1253,81 @@ async def test_dispatch_one_job_nth_plus_one_denied_while_cap_slot_held() -> Non
         assert len(fake_backend.mark_succeeded_calls) == 2
         # And job 3's slot was released after its actor completed.
         assert cap_res.table.peek_slots(queue_cap_name) == (1, 0)
+
+
+# ── Actor-declared primitive instance end-to-end ──────────────────────
+
+
+async def test_dispatch_one_job_actor_declared_tokenbucket_instance_consumed() -> None:
+    """End-to-end: an actor declaring a TokenBucket INSTANCE (the primary
+    registration path) dispatches through the DI-provided registry — the
+    actor body runs AND the bucket's token is permanently consumed.
+
+    The instance is pre-registered on a fresh RateLimitRegistry (exactly
+    what the worker bootstrap's collection pass does); dispatch resolves
+    the registry from the LOOP-scope DI cache and acquires via the
+    instance's ``.name``. After the actor succeeds, release_for_actor
+    makes the consumption permanent (refund_on_release=False), so a peek
+    on the OWNED registry shows one token spent.
+    """
+    from taskq.ratelimit._provider import register_rate_limit_registry
+    from taskq.ratelimit.registry import RateLimitRegistry
+    from taskq.ratelimit.token_bucket import TokenBucket
+
+    bucket = TokenBucket(name="decl_bucket", capacity=5, refill_per_second=1.0, backend="memory")
+    rl_registry = RateLimitRegistry()
+    rl_registry.register(bucket)  # what the bootstrap collection pass does
+
+    di_registry = ProviderRegistry()
+    register_rate_limit_registry(di_registry, rl_registry)
+
+    actor_ran = 0
+
+    async def my_actor(payload: _Payload, ctx: JobContext[_Payload]) -> None:
+        nonlocal actor_ran
+        actor_ran += 1
+
+    actor_ref = ActorRef(
+        name="test_actor",
+        queue="default",
+        fn=my_actor,
+        wants_ctx=True,
+        dependencies={},
+        payload_type=_Payload,
+        result_adapter=None,  # type: ignore[arg-type]  # Why: test-only; result_adapter not used in dispatch_one_job
+        retry=RetryPolicy(),
+        result_ttl=None,
+        rate_limits=[bucket],
+    )
+    clock = FakeClock(_NOW)
+
+    async with _ScopeStack(di_registry) as scopes:
+        fake_backend = FakeBackend()
+        fake_deps = _FakeWorkerDeps()
+
+        await dispatch_one_job(
+            backend=as_backend(fake_backend),
+            deps=_as_deps(fake_deps),
+            job=make_job_row(payload={"value": 42}),
+            worker_id=_WORKER_ID,
+            registry=scopes.registry,
+            process_scope=scopes.process_scope,
+            thread_scope=scopes.thread_scope,
+            loop_scope=scopes.loop_scope,
+            actor_ref=actor_ref,  # type: ignore[arg-type]  # Why: same ActorRef generic-widening pattern as the tests above.
+            actor_config=StubActorConfig(retry=RetryPolicy()),
+            clock=clock,
+            active_jobs=fake_deps.active_jobs,
+            enqueuer=SubJobEnqueuer(
+                backend=as_backend(fake_backend), loop_scope_resolved=None, worker_pool=None
+            ),
+        )
+
+        assert actor_ran == 1
+        assert len(fake_backend.mark_succeeded_calls) == 1
+
+        # One token spent — permanently (release_for_actor sets
+        # refund_on_release=False after the actor ran). Frozen clock → no
+        # refill elapsed, so exactly capacity - 1 remains.
+        state = await rl_registry.peek("decl_bucket", clock=clock)
+        assert state.tokens_remaining == 4.0

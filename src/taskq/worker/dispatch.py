@@ -42,6 +42,7 @@ from taskq.obs import (
 )
 from taskq.ratelimit.refs import KeyedReservationRef
 from taskq.ratelimit.registry import RateLimitRegistry, queue_concurrency_reservation_name
+from taskq.ratelimit.reservation import ConcurrencyReservation
 from taskq.retry import ActorConfigLike
 from taskq.worker._consumer import consume_one_job
 from taskq.worker._handlers import (
@@ -72,10 +73,10 @@ def _to_consumed_outcome(attempt_outcome: str) -> ConsumedOutcome:
 
 
 def _effective_reservations(
-    reservations: Sequence[str | KeyedReservationRef],
+    reservations: Sequence[str | KeyedReservationRef | ConcurrencyReservation],
     queue: str,
     rl_registry: RateLimitRegistry | None,
-) -> Sequence[str | KeyedReservationRef]:
+) -> Sequence[str | KeyedReservationRef | ConcurrencyReservation]:
     """Prepend the fleet-wide queue-cap reservation name, if one is registered.
 
     If the job's queue has a fleet-wide cap registered (set via the

@@ -263,9 +263,11 @@ def _clean_rate_limit_registry(request: pytest.FixtureRequest) -> Iterator[None]
     (``_keyed_*_last_eviction_scan``) are likewise reset so a prior
     test's cap-hit can't suppress a later test's expected scan.
 
-    * Unit tests: cleared outright — ``sync_rate_limit_buckets`` /
-      ``sync_slots`` (called from ``_main``) would otherwise attempt pool
-      I/O on stub-pool objects.
+    * Unit tests: cleared outright via the public
+      :meth:`RateLimitRegistry.clear` (which resets all six state fields,
+      including the opportunistic-eviction scan timestamps) —
+      ``sync_rate_limit_buckets`` / ``sync_slots`` (called from ``_main``)
+      would otherwise attempt pool I/O on stub-pool objects.
     * Integration tests: snapshot-and-restore — entries a test adds (or
       removes) are reverted afterwards so nothing leaks FORWARD into
       later tests. The worker additionally filters the registry by its
@@ -297,12 +299,7 @@ def _clean_rate_limit_registry(request: pytest.FixtureRequest) -> Iterator[None]
         _rl._keyed_reservation_last_eviction_scan = snapshot_scan_res  # pyright: ignore[reportPrivateUsage]
         _rl._keyed_rate_limit_last_eviction_scan = snapshot_scan_rl  # pyright: ignore[reportPrivateUsage]
     else:
-        _rl._rate_limits.clear()  # pyright: ignore[reportPrivateUsage]
-        _rl._reservations.clear()  # pyright: ignore[reportPrivateUsage]
-        _rl._keyed_reservation_last_used.clear()  # pyright: ignore[reportPrivateUsage]
-        _rl._keyed_rate_limit_last_used.clear()  # pyright: ignore[reportPrivateUsage]
-        _rl._keyed_reservation_last_eviction_scan = float("-inf")  # pyright: ignore[reportPrivateUsage]
-        _rl._keyed_rate_limit_last_eviction_scan = float("-inf")  # pyright: ignore[reportPrivateUsage]
+        _rl.clear()
         yield
 
 

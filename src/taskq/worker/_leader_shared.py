@@ -29,6 +29,7 @@ from taskq.obs import (
     record_expired_archive_jobs,
     record_pruned_jobs,
 )
+from taskq.ratelimit.registry import RateLimitRegistry
 from taskq.settings import WorkerSettings
 from taskq.worker.deps import WorkerDeps
 
@@ -96,6 +97,11 @@ class SweepContext:
     backend: Backend
     clock: Clock
     worker_id: UUID
+    # The worker's resolved rate-limit registry, consumed by the de-gated
+    # keyed-eviction block in ``_sweep_loop`` (every worker sweeps its own
+    # registry each tick, leader or not); None for ad-hoc SweepContext
+    # constructions outside worker bootstrap → module-singleton fallback.
+    rate_limit_registry: RateLimitRegistry | None = None
 
 
 _HHMM_RE = re.compile(r"^(\d{1,2}):(\d{2})$")

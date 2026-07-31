@@ -53,6 +53,9 @@ from pydantic import BaseModel, TypeAdapter
 
 from taskq.backend._protocol import JobStatus
 from taskq.ratelimit.refs import KeyedRateLimitRef, KeyedReservationRef
+from taskq.ratelimit.reservation import ConcurrencyReservation
+from taskq.ratelimit.sliding_window import SlidingWindow
+from taskq.ratelimit.token_bucket import TokenBucket
 from taskq.retry import OnRetryExhausted, OnSuccess, RetryClassifierHook, RetryPolicy
 
 if TYPE_CHECKING:
@@ -213,8 +216,8 @@ class ActorRef[P: BaseModel, R: BaseModel | None]:
         unique_for: timedelta | None = None,
         unique_states: tuple[JobStatus, ...] = ("pending", "scheduled", "running"),
         start_to_close: timedelta | None = None,
-        rate_limits: list[str | KeyedRateLimitRef] | None = None,
-        reservations: list[str | KeyedReservationRef] | None = None,
+        rate_limits: list[str | KeyedRateLimitRef | TokenBucket | SlidingWindow] | None = None,
+        reservations: list[str | KeyedReservationRef | ConcurrencyReservation] | None = None,
         non_retryable_exceptions: tuple[type[BaseException], ...] = (),
         retry_classifier: RetryClassifierHook | None = None,
         on_retry_exhausted: OnRetryExhausted | None = None,
@@ -343,8 +346,8 @@ def actor[P: BaseModel, R: BaseModel | None](  # pyright: ignore[reportInvalidTy
     unique_for: timedelta | None = None,
     unique_states: tuple[JobStatus, ...] = ("pending", "scheduled", "running"),
     start_to_close: timedelta | None = None,
-    rate_limits: list[str | KeyedRateLimitRef] | None = None,
-    reservations: list[str | KeyedReservationRef] | None = None,
+    rate_limits: list[str | KeyedRateLimitRef | TokenBucket | SlidingWindow] | None = None,
+    reservations: list[str | KeyedReservationRef | ConcurrencyReservation] | None = None,
     non_retryable_exceptions: tuple[type[BaseException], ...] = (),
     retry_classifier: RetryClassifierHook | None = None,
     on_retry_exhausted: OnRetryExhausted | None = None,
@@ -368,8 +371,8 @@ def actor[P: BaseModel, R: BaseModel | None](  # pyright: ignore[reportInvalidTy
     unique_for: timedelta | None = None,
     unique_states: tuple[JobStatus, ...] = ("pending", "scheduled", "running"),
     start_to_close: timedelta | None = None,
-    rate_limits: list[str | KeyedRateLimitRef] | None = None,
-    reservations: list[str | KeyedReservationRef] | None = None,
+    rate_limits: list[str | KeyedRateLimitRef | TokenBucket | SlidingWindow] | None = None,
+    reservations: list[str | KeyedReservationRef | ConcurrencyReservation] | None = None,
     non_retryable_exceptions: tuple[type[BaseException], ...] = (),
     retry_classifier: RetryClassifierHook | None = None,
     on_retry_exhausted: OnRetryExhausted | None = None,
@@ -541,8 +544,8 @@ def _build_ref[P: BaseModel, R: BaseModel | None](  # pyright: ignore[reportInva
     unique_for: timedelta | None = None,
     unique_states: tuple[JobStatus, ...] = ("pending", "scheduled", "running"),
     start_to_close: timedelta | None = None,
-    rate_limits: list[str | KeyedRateLimitRef] | None = None,
-    reservations: list[str | KeyedReservationRef] | None = None,
+    rate_limits: list[str | KeyedRateLimitRef | TokenBucket | SlidingWindow] | None = None,
+    reservations: list[str | KeyedReservationRef | ConcurrencyReservation] | None = None,
     non_retryable_exceptions: tuple[type[BaseException], ...] = (),
     retry_classifier: RetryClassifierHook | None = None,
     on_retry_exhausted: OnRetryExhausted | None = None,
