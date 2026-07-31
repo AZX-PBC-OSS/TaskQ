@@ -1,4 +1,4 @@
-"""TaskQ — async-native, Postgres-backed background job library.
+"""TaskQ: async-native, Postgres-backed background job library.
 
 Canonical imports:
 
@@ -22,6 +22,7 @@ from taskq.auth import (
     make_redis_client_factory,
 )
 from taskq.backend._protocol import (
+    Backend,
     CancelPhase,
     DstStrategy,
     EventRow,
@@ -29,6 +30,8 @@ from taskq.backend._protocol import (
     IdentityKey,
     JobFilter,
     JobId,
+    JobPage,
+    JobRow,
     JobSortField,
     QueueMode,
     QueueName,
@@ -36,6 +39,7 @@ from taskq.backend._protocol import (
     RetryKind,
     ScheduleRecord,
 )
+from taskq.backend.clock import Clock, SystemClock
 from taskq.batch import BatchCompletionStatus, BatchHandle, EnqueueItem, wait_for_batch
 from taskq.client import CancelResult, JobEvent, JobHandle, JobsClient, TaskQ
 from taskq.client._enqueuer import SubJobEnqueuer
@@ -82,6 +86,8 @@ from taskq.retry import (
     RetryPolicy,
 )
 from taskq.scheduler import register_cron
+from taskq.settings import OIDCSettings, SAMLSettings, TaskQSettings, WorkerSettings
+from taskq.testing.clock import FakeClock
 
 __all__ = [
     "ActorConfigDriftError",
@@ -90,11 +96,13 @@ __all__ = [
     "ActorFnWithCtx",
     "ActorHandler",
     "ActorRef",
+    "Backend",
     "BackpressureError",
     "BatchCompletionStatus",
     "BatchHandle",
     "CancelPhase",
     "CancelResult",
+    "Clock",
     "ConnFactory",
     "CronScheduleSpec",
     "DIError",
@@ -104,6 +112,7 @@ __all__ = [
     "ErrorReporter",
     "EventRow",
     "Fail",
+    "FakeClock",
     "IdempotencyKey",
     "IdentityKey",
     "IllegalStateTransition",
@@ -113,12 +122,15 @@ __all__ = [
     "JobFilter",
     "JobHandle",
     "JobId",
+    "JobPage",
     "JobRetryState",
+    "JobRow",
     "JobSortField",
     "JobsClient",
     "MaxPendingExceededError",
     "MissingProvider",
     "NullErrorReporter",
+    "OIDCSettings",
     "OnSuccess",
     "PartialBatchError",
     "PayloadValidationError",
@@ -144,6 +156,7 @@ __all__ = [
     "RetryKind",
     "RetryOverride",
     "RetryPolicy",
+    "SAMLSettings",
     "ScheduleHandle",
     "ScheduleRecord",
     "SchemaNotMigratedError",
@@ -153,10 +166,13 @@ __all__ = [
     "Snooze",
     "SubEnqueueError",
     "SubJobEnqueuer",
+    "SystemClock",
     "TaskQ",
     "TaskQError",
+    "TaskQSettings",
     "WorkerConnections",
     "WorkerOwnershipMismatch",
+    "WorkerSettings",
     "__version__",
     "actor",
     "cron",
