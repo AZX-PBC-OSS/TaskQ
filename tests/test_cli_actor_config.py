@@ -15,8 +15,8 @@ from pydantic import BaseModel
 from typer.testing import CliRunner
 
 from taskq.actor import ActorRef, actor
+from taskq.actor_config_ops import ActorConfigRow
 from taskq.cli import app
-from taskq.worker.actor_config_ops import ActorConfigRow
 
 runner = CliRunner()
 

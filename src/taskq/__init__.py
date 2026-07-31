@@ -11,6 +11,7 @@ Canonical imports:
 import importlib.metadata
 
 from taskq.actor import ActorFn, ActorFnWithCtx, ActorHandler, ActorRef, actor
+from taskq.actor_config_ops import ActorConfigRow, DeregisterResult
 from taskq.auth import (
     PgCredential,
     PgCredentialProvider,
@@ -53,6 +54,7 @@ from taskq.batch import (
 )
 from taskq.batch_policy import AbortBatchAfter, BatchFailurePolicy
 from taskq.client import CancelResult, JobEvent, JobHandle, JobsClient, TaskQ
+from taskq.client._actors import ActorsClient
 from taskq.client._enqueuer import SubJobEnqueuer
 from taskq.connections import ConnFactory, PoolFactory, RedisFactory, WorkerConnections
 from taskq.context import JobContext
@@ -60,6 +62,10 @@ from taskq.cron import CronScheduleSpec, ScheduleHandle, cron
 from taskq.exceptions import (
     ActorConfigDriftError,
     ActorConfigDriftList,
+    ActorDeregistrationError,
+    ActorHasActiveJobsError,
+    ActorHasEnabledSchedulesError,
+    ActorNotFoundError,
     BackpressureError,
     BatchAbortedError,
     DependencyCycle,
@@ -106,10 +112,16 @@ __all__ = [
     "AbortBatchAfter",
     "ActorConfigDriftError",
     "ActorConfigDriftList",
+    "ActorConfigRow",
+    "ActorDeregistrationError",
     "ActorFn",
     "ActorFnWithCtx",
     "ActorHandler",
+    "ActorHasActiveJobsError",
+    "ActorHasEnabledSchedulesError",
+    "ActorNotFoundError",
     "ActorRef",
+    "ActorsClient",
     "Backend",
     "BackpressureError",
     "BatchAbortedError",
@@ -127,6 +139,7 @@ __all__ = [
     "CronScheduleSpec",
     "DIError",
     "DependencyCycle",
+    "DeregisterResult",
     "DstStrategy",
     "EmptyBatchError",
     "EnqueueItem",

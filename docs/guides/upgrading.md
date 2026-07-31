@@ -136,3 +136,67 @@ Restoring from backup is for this scenario: the migration itself succeeded,
 but not-yet-upgraded workers cannot run against the new schema. Stop the
 workers pointed at the affected schema, restore the pre-migration backup,
 and pin `taskq-py` back until every worker is upgraded.
+
+- Stop workers pointed at the affected schema to avoid further writes.
+- Restore the database from the pre-migration backup.
+- Pin `taskq-py` back to the previous version until the issue is resolved,
+  since the previous version's code may not be compatible with the new
+  schema.
+
+---
+
+## Breaking import path changes
+
+### `taskq.worker.actor_config` → `taskq.actor_config`
+
+> **Released in v0.2.0–v0.2.2, moved in unreleased.** This is a breaking
+> change for anyone importing `ActorConfig` from the old path.
+
+The `ActorConfig` dataclass has moved from `taskq.worker.actor_config` to
+the top-level `taskq.actor_config` module. It is a shared carrier used by
+the client, CLI, and admin UI — not worker-internal.
+
+**Old (v0.2.0–v0.2.2):**
+
+```python
+from taskq.worker.actor_config import ActorConfig
+```
+
+**New:**
+
+```python
+from taskq.actor_config import ActorConfig
+```
+
+The old import path raises `ImportError` — update your imports.
+
+### `taskq.worker.actor_config_ops` → `taskq.actor_config_ops`
+
+The `actor_config_ops` module — listing, inspecting, tuning, and
+deregistering actors on a live deployment — has moved from
+`taskq.worker.actor_config_ops` to the top-level
+`taskq.actor_config_ops`. This module was introduced on the unreleased
+branch; if you were importing it from the `worker.*` path during
+development, update to the top-level path.
+
+**Old (unreleased branch only):**
+
+```python
+from taskq.worker.actor_config_ops import (
+    list_actor_configs,
+    get_actor_config,
+    set_actor_config_capacity,
+    deregister_actor,
+)
+```
+
+**New:**
+
+```python
+from taskq.actor_config_ops import (
+    list_actor_configs,
+    get_actor_config,
+    set_actor_config_capacity,
+    deregister_actor,
+)
+```

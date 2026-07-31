@@ -17,11 +17,11 @@ from uuid import UUID
 import pytest
 
 from taskq._ids import new_base62, new_uuid
+from taskq.actor_config import ActorConfig
 from taskq.backend.postgres import PostgresBackend
 from taskq.testing.fixtures import JobsApp, _open_pg_backend
 from taskq.testing.jobs import make_enqueue_args
 from taskq.testing.pg import create_worker
-from taskq.worker.actor_config import ActorConfig
 from taskq.worker.run import register_worker
 from taskq.worker.startup import sync_actor_config
 

@@ -30,16 +30,17 @@ from taskq._close import (
     close_redis_bounded,
 )
 from taskq.actor import ActorRef
-from taskq.exceptions import ActorConfigDriftList
-from taskq.settings import TaskQSettings, WorkerSettings
-from taskq.worker.actor_config_ops import (
+from taskq.actor_config_ops import (
     UNSET,
     ActorConfigRow,
     Unset,
+    deregister_actor,
     get_actor_config,
     list_actor_configs,
     set_actor_config_capacity,
 )
+from taskq.exceptions import ActorConfigDriftList, ActorDeregistrationError, ActorNotFoundError
+from taskq.settings import TaskQSettings, WorkerSettings
 from taskq.worker.dev import dev_watch_loop
 from taskq.worker.run import worker_main as _worker_main
 
@@ -561,6 +562,81 @@ async def _actor_config_set(
         )
         raise typer.Exit(code=1)
     _print_actor_config_row(row)
+
+
+@actor_config_app.command("deregister")
+def actor_config_deregister(
+    actor: Annotated[str, typer.Argument(help="Actor name to deregister.")],
+    force: Annotated[
+        bool,
+        typer.Option(
+            "--force",
+            help="Cancel pending/scheduled jobs and disable enabled cron schedules"
+            " instead of refusing. Running jobs still block deregistration.",
+        ),
+    ] = False,
+    purge_queue: Annotated[
+        bool,
+        typer.Option(
+            "--purge-queue",
+            help="Also delete the orphaned queues row if no other actor_config"
+            " references the same queue.",
+        ),
+    ] = False,
+) -> None:
+    """Deregister an actor: delete its actor_config row with safety checks.
+
+    By default refuses if non-terminal jobs or enabled cron schedules
+    reference the actor. Use --force to cancel pending/scheduled jobs and
+    disable schedules. Running jobs always block (force or not). Use
+    --purge-queue to also delete the queues row if no other actor uses it.
+
+    Exit codes: 0 success, 2 refusal (active jobs/schedules or invalid
+    schema), 3 not found.
+    """
+    settings = TaskQSettings.load()
+    asyncio.run(_actor_config_deregister(settings, actor, force, purge_queue))
+
+
+async def _actor_config_deregister(
+    settings: TaskQSettings,
+    actor: str,
+    force: bool,
+    purge_queue: bool,
+) -> None:
+    conn = await asyncpg.connect(str(settings.pg_dsn))
+    try:
+        result = await deregister_actor(
+            conn,
+            actor,
+            force=force,
+            purge_queue=purge_queue,
+            schema=settings.schema_name,
+        )
+    except ActorNotFoundError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=3) from None
+    except (ActorDeregistrationError, ValueError) as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2) from None
+    finally:
+        await conn.close()
+
+    typer.echo(
+        f"Deregistered actor {result.actor!r}:"
+        f" actor_config_deleted={result.actor_config_deleted}"
+        f" queue={result.queue!r}"
+        f" schedules_disabled={result.schedules_disabled}"
+        f" jobs_cancelled={result.jobs_cancelled}"
+        f" terminal_jobs_remaining={result.terminal_jobs_remaining}"
+        f" queue_purged={result.queue_purged}"
+    )
+    typer.echo(
+        f"WARNING: Actor {result.actor!r} is now unregistered. Any future enqueue()"
+        f" to this actor name will create a stranded pending job that will never"
+        f" be dispatched. Stop enqueuing before deregistering.",
+        err=True,
+    )
 
 
 _CAPACITY_DIFF_FIELDS = ("max_concurrent", "max_pending", "result_ttl")

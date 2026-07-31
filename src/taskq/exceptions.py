@@ -343,6 +343,82 @@ class ActorConfigDriftList(TaskQError):
         super().__init__("\n".join(lines))
 
 
+class ActorDeregistrationError(TaskQError):
+    """Base for actor deregistration refusals."""
+
+    def __init__(self, actor: str, detail: str) -> None:
+        self.actor = actor
+        super().__init__(f"Cannot deregister actor {actor!r}: {detail}")
+
+
+class ActorHasActiveJobsError(ActorDeregistrationError):
+    """Non-terminal jobs reference the actor.
+
+    Carries the count and per-status breakdown of the blocking jobs so the
+    caller can decide whether to cancel them first or use ``force=True``.
+
+    When *force* is ``True``, the message reflects that running jobs
+    cannot be cancelled by ``force=True`` — the caller must wait for
+    them to finish or cancel them individually first.
+    """
+
+    def __init__(
+        self,
+        actor: str,
+        active_count: int,
+        status_counts: dict[str, int],
+        *,
+        force: bool = False,
+    ) -> None:
+        self.active_count = active_count
+        self.status_counts = status_counts
+        if force:
+            detail = (
+                f"{active_count} running job(s) still reference this actor"
+                f" (breakdown: {status_counts}). Running jobs cannot be"
+                f" cancelled by force=True \u2014 wait for them to finish or"
+                f" cancel them individually first."
+            )
+        else:
+            detail = (
+                f"{active_count} non-terminal job(s) still reference this actor"
+                f" (breakdown: {status_counts}). Cancel them first or pass"
+                f" force=True to cancel pending/scheduled jobs automatically."
+            )
+        super().__init__(actor, detail)
+
+
+class ActorHasEnabledSchedulesError(ActorDeregistrationError):
+    """Enabled cron schedules reference the actor.
+
+    Carries the schedule IDs so the caller can disable or delete them first.
+    """
+
+    def __init__(
+        self,
+        actor: str,
+        schedule_ids: list[str],
+    ) -> None:
+        self.schedule_ids = schedule_ids
+        detail = (
+            f"{len(schedule_ids)} enabled cron schedule(s) reference this actor"
+            f" (ids: {schedule_ids}). Disable or delete them first or pass"
+            f" force=True to disable them automatically."
+        )
+        super().__init__(actor, detail)
+
+
+class ActorNotFoundError(ActorDeregistrationError):
+    """The actor_config row does not exist — nothing to deregister.
+
+    Currently raised only by :func:`deregister_actor`. Other ops
+    (``get``, ``set_capacity``) return ``None`` for missing rows.
+    """
+
+    def __init__(self, actor: str) -> None:
+        super().__init__(actor, "no stored actor_config row for this actor")
+
+
 class PartialBatchError(TaskQError):
     """Raised when an autonomous enqueue_batch partially fails.
 

@@ -990,7 +990,7 @@ class TestMarkSucceededResultExpiryFallback:
         result_expires_at is pinned in the past — the state the enqueue
         path leaves behind (enqueue_now + literal) after the job sat in
         the queue longer than its TTL."""
-        from taskq.worker.actor_config_ops import set_actor_config_capacity
+        from taskq.actor_config_ops import set_actor_config_capacity
 
         deps = jobs_app.deps
         schema = deps.settings.schema_name
@@ -1067,7 +1067,7 @@ class TestMarkSucceededResultExpiryFallback:
     ) -> None:
         """Operator override (stored 300s) beats the worker's fallback
         literal (5s) for jobs completing after the override."""
-        from taskq.worker.actor_config_ops import set_actor_config_capacity
+        from taskq.actor_config_ops import set_actor_config_capacity
 
         deps = clean_jobs_app.deps
         backend = clean_jobs_app.backend
