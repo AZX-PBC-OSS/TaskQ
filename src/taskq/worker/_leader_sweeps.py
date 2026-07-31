@@ -14,6 +14,7 @@ import time
 from datetime import UTC, date, datetime, timedelta
 from typing import cast
 
+import asyncpg
 import croniter as cr
 import structlog
 
@@ -49,6 +50,7 @@ from taskq.worker._leader_shared import (
     _sweep_rows_counter,
     archive_expiry_sweep,
     cleanup_stale_workers,
+    complete_stale_batches,
     prune_terminal_jobs,
 )
 from taskq.worker._transient import TRANSIENT_PG_ERRORS
@@ -249,6 +251,30 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                     worker_id=str(ctx.worker_id),
                     error=repr(exc),
                 )
+            # hasattr guard: complete_stale_batches needs a real PG connection
+            # (dispatcher_pool). InMemoryBackend does not implement
+            # sweep_leaked_reservation_slots, so this gate prevents the
+            # stale-batches sweep from running on the in-memory backend in
+            # tests — matching the same pattern used for sweep_leaked_slots
+            # and sweep_expired_results above.
+            if hasattr(ctx.backend, "sweep_leaked_reservation_slots"):
+                start = time.monotonic()
+                try:
+                    async with ctx.deps.dispatcher_pool.acquire() as conn:
+                        stale_count = await complete_stale_batches(
+                            conn, schema=ctx.deps.settings.schema_name
+                        )
+                    _metric("stale_batches", stale_count, start)
+                    if stale_count:
+                        log.info("stale-batches-completed", kind="batch", count=stale_count)
+                except (
+                    TimeoutError,
+                    asyncpg.PostgresConnectionError,
+                    asyncpg.InterfaceError,
+                    asyncpg.exceptions.UndefinedTableError,
+                    OSError,
+                ) as exc:
+                    log.warning("stale-batches-sweep-failed", kind="batch", error=repr(exc))
         await _sleep_interruptible(shutdown, ctx.deps.settings.sweep_interval)
 
 
@@ -313,6 +339,26 @@ async def _prune_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                             cutoff=result.cutoffs[status].isoformat(),
                             duration_ms=result.duration_ms,
                         )
+                    # Skip batch prune when all retentions are disabled —
+                    # an empty cutoffs dict means no status had a retention
+                    # period, so the fallback (datetime.now(UTC)) would
+                    # delete every completed batch. Only prune when at
+                    # least one cutoff exists.
+                    if result.cutoffs:
+                        max_cutoff = max(result.cutoffs.values())
+                        try:
+                            batch_count = await ctx.backend.prune_old_batches(max_cutoff)
+                            if batch_count:
+                                log.info("batches pruned", kind="batch", count=batch_count)
+                        except (
+                            NotImplementedError,
+                            TimeoutError,
+                            asyncpg.PostgresConnectionError,
+                            asyncpg.InterfaceError,
+                            asyncpg.exceptions.UndefinedTableError,
+                            OSError,
+                        ) as exc:
+                            log.warning("batch-prune-failed", kind="batch", error=repr(exc))
                 except Exception as exc:
                     log.error("prune-failed", kind="prune", error=repr(exc))
                 finally:

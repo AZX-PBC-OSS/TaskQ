@@ -12,7 +12,7 @@ creating a circular dependency through the re-export boundary in
 
 import asyncio
 import re
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from contextlib import AbstractAsyncContextManager as AsyncContextManager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -49,6 +49,10 @@ __all__ = [
     "AttemptRow",
     "Backend",
     "BackendDeps",
+    "BatchCounts",
+    "BatchFilter",
+    "BatchRow",
+    "BatchStatus",
     "CancelFlag",
     "CancelPhase",
     "DstStrategy",
@@ -71,6 +75,7 @@ __all__ = [
     "ScheduleCreateArgs",
     "ScheduleRecord",
     "ScheduleUpdateArgs",
+    "parse_batch_status",
     "parse_cancel_phase",
     "parse_retry_kind",
 ]
@@ -126,6 +131,7 @@ type AttemptOutcome = Literal[
     "snoozed",
     "cancelled",
     "crashed",
+    "scheduled",
     "reservation_denied",
     "rate_limit_denied",
 ]
@@ -144,6 +150,9 @@ type QueueMode = Literal["strict_fifo", "round_robin"]
 type RateLimitBackend = Literal["redis", "postgres", "memory"]
 
 type DstStrategy = Literal["skip", "firstof", "allof"]
+
+type BatchStatus = Literal["active", "complete", "aborted"]
+"""Lifecycle status of a batch row in the ``batches`` table."""
 
 
 class JobSortField(Enum):
@@ -176,7 +185,6 @@ class CancelPhase(IntEnum):
     carries the OTel attribute semantics (``cancel_phase`` attribute on
     transition counters) and prevents bare-int values like ``99`` from
     slipping past the type checker.
-    and
 
     Values ``NONE``, ``COOPERATIVE``, and ``FORCED`` are persistable —
     they map directly to the PG ``cancel_phase`` column whose check
@@ -247,6 +255,23 @@ def parse_cancel_phase(value: int) -> CancelPhase:
             f"cancel_phase {value} is an in-process sentinel; PG must never store it",
         )
     return phase
+
+
+_BATCH_STATUSES: Final[frozenset[str]] = frozenset({"active", "complete", "aborted"})
+
+
+def parse_batch_status(value: str) -> BatchStatus:
+    """Convert an untrusted ``str`` (from a PG row) into :data:`BatchStatus`.
+
+    Pyright cannot narrow ``str`` to a ``Literal`` union by membership
+    test alone; this helper performs the runtime check and returns a
+    statically-typed ``BatchStatus``. Raises :class:`ValueError` if the
+    value is not one of the three allowed statuses — that signals schema
+    drift between PG and Python.
+    """
+    if value not in _BATCH_STATUSES:
+        raise ValueError(f"unknown batch status from backend row: {value!r}")
+    return cast(BatchStatus, value)
 
 
 QueueName = Annotated[str, AfterValidator(_validate_queue_name)]
@@ -439,7 +464,7 @@ class JobFilter:
     canonical string form at the SQL boundary; the in-memory backend
     compares the UUID directly. Keeping the typed shape here means
     ``JobsClient.list(batch_id=UUID(...))`` flows without an implicit
-    ``str(uuid)`` coercion. See  / audit M102-3.
+    ``str(uuid)`` coercion.
 
     ``status`` accepts either a single :data:`JobStatus` (backwards
     compatible — e.g. ``JobFilter(status="pending")``) or a sequence of
@@ -636,6 +661,61 @@ class JobPage:
     next_cursor: str | None
 
 
+@dataclass(frozen=True, slots=True)
+class BatchRow:
+    """Read-model of a ``taskq.batches`` row."""
+
+    id: UUID
+    queue: str
+    status: BatchStatus
+    expected_size: int
+    consecutive_failures: int
+    failure_threshold: int | None
+    finalizer_job_id: UUID | None
+    originating_actor: str | None
+    created_at: datetime
+    completed_at: datetime | None
+    metadata: dict[str, object]
+
+
+@dataclass(frozen=True, slots=True)
+class BatchCounts:
+    """Live job-count aggregate for one batch.
+
+    Mirrors BatchCompletionStatus fields; defined at the protocol layer
+    so backends do not import the client-side batch module.
+    """
+
+    total: int
+    pending: int
+    succeeded: int
+    failed: int
+    cancelled: int
+    crashed: int
+    abandoned: int
+
+
+@dataclass(frozen=True, slots=True)
+class BatchFilter:
+    """Filter parameters for Backend.list_batches.
+
+    Unlike JobFilter, this only carries fields relevant to batch queries:
+    queue, active (status terminality), batch_id, and limit. Job-oriented
+    fields (status, actor, tags, cursor, order_by, identity_key) are
+    intentionally absent — using JobFilter for batch queries would
+    silently ignore those fields, which is a type trap.
+    """
+
+    queue: str | None = None
+    active: bool | None = None
+    batch_id: UUID | None = None
+    limit: int = 100
+
+    def __post_init__(self) -> None:
+        if self.limit < 0:
+            raise ValueError(f"limit must be >= 0, got {self.limit}")
+
+
 # ── Backend deps protocol ───────────────────────────────────────────────
 # Worker-layer dependencies consumed by PostgresBackend at construction time.
 # Typed as a Protocol (not object) so pyright can verify attribute access
@@ -690,11 +770,12 @@ class BackendDeps(Protocol):
 class Backend(Protocol):
     """Contract that both PostgresBackend and InMemoryBackend satisfy.
 
-    31 async methods plus two sync methods (``subscribe_wake`` and
-    ``subscribe_cancel_wake``) (33 methods total) covering enqueue,
+    43 async methods plus two sync methods (``subscribe_wake`` and
+    ``subscribe_cancel_wake``) (45 methods total) covering enqueue,
     dispatch, heartbeat, terminal writes, attempt history, cancel
-    signals, scheduling / sweeps, read, NOTIFY hook, and schedule CRUD.
-    Method order grouped for review-grep ergonomics.
+    signals, scheduling / sweeps, read, NOTIFY hook, schedule CRUD,
+    and batch operations. Method order grouped for review-grep
+    ergonomics.
 
     Why monomorphic (no ``Generic[P, R]``): the backend is the DB
     adapter boundary. Payloads are stored as ``dict[str, object]`` (the
@@ -703,8 +784,7 @@ class Backend(Protocol):
     every method (``dispatch_batch``, ``mark_succeeded``, etc.) with no
     safety benefit at the storage layer. The worker consumer
     reconstructs the typed ``JobContext[P]`` at dispatch time using
-    ``ActorRef.payload_type.model_validate(row.payload)``. See
-     /
+    ``ActorRef.payload_type.model_validate(row.payload)``.
     """
 
     BACKEND_PROTOCOL_VERSION: ClassVar[int]
@@ -1056,3 +1136,75 @@ class Backend(Protocol):
     ) -> ScheduleRecord: ...
 
     async def delete_schedule(self, schedule_id: UUID) -> None: ...
+
+    # ── Batch operations ────────────────────────────────────────────
+    async def enqueue_batch_atomic(
+        self,
+        items: Iterable[EnqueueArgs],
+        *,
+        batch_id: UUID,
+        queue: str,
+        batch_row: BatchRow | None,
+        finalizer_args: EnqueueArgs | None,
+        chunk_size: int = 1000,
+    ) -> list[JobRow]: ...
+
+    async def create_batch(
+        self,
+        batch_id: UUID,
+        queue: str,
+        expected_size: int,
+        failure_threshold: int | None,
+        finalizer_job_id: UUID | None,
+        originating_actor: str | None,
+        *,
+        connection: "asyncpg.Connection | None" = None,
+    ) -> None: ...
+
+    async def increment_batch_failures(
+        self,
+        batch_id: UUID,
+        *,
+        connection: "asyncpg.Connection | None" = None,
+    ) -> tuple[int, int | None, int]: ...
+
+    async def reset_batch_failures(
+        self,
+        batch_id: UUID,
+        *,
+        connection: "asyncpg.Connection | None" = None,
+    ) -> int: ...
+
+    async def abort_batch(
+        self,
+        batch_id: UUID,
+        *,
+        connection: "asyncpg.Connection | None" = None,
+    ) -> int: ...
+
+    async def complete_batch(
+        self,
+        batch_id: UUID,
+        *,
+        connection: "asyncpg.Connection | None" = None,
+    ) -> None: ...
+
+    async def get_batch(
+        self,
+        batch_id: UUID,
+    ) -> BatchRow | None: ...
+
+    async def list_batches(
+        self,
+        filter: BatchFilter,
+    ) -> list[tuple[BatchRow, BatchCounts]]: ...
+
+    async def count_batch_non_terminal(
+        self,
+        batch_id: UUID,
+    ) -> int: ...
+
+    async def prune_old_batches(
+        self,
+        cutoff: datetime,
+    ) -> int: ...

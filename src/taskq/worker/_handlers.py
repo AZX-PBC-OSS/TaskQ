@@ -546,6 +546,7 @@ async def _handle_reservation_class_denied(
             bucket_name=e.bucket_name,
             delay_seconds=e.retry_after.total_seconds(),
         )
+        return "scheduled"
     elif tri == "failed":
         span.add_event(
             "lifecycle.failed",
@@ -582,6 +583,7 @@ async def _handle_reservation_class_denied(
             TimeoutError("DeadlineExceeded"),
             log=log,
         )
+        return "failed"
     else:
         log.debug(
             debug_event,

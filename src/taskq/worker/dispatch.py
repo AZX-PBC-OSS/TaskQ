@@ -30,6 +30,7 @@ from taskq._di.scopes import LoopScope, ProcessScope, ThreadScope, build_actor_s
 from taskq.actor import ActorRef
 from taskq.backend._protocol import Backend, JobRow
 from taskq.backend.clock import Clock
+from taskq.batch import apply_batch_terminal_outcome
 from taskq.client._enqueuer import SubJobEnqueuer
 from taskq.context import JobContext
 from taskq.obs import (
@@ -289,6 +290,17 @@ async def dispatch_one_job(
                         fallback_result_ttl=actor_ref.result_ttl,
                     )
                     outcome = result
+
+                    # Best-effort: a crash between the terminal write and
+                    # the counter increment loses that increment.  See
+                    # apply_batch_terminal_outcome docstring for full
+                    # safety-net semantics (M7).
+                    try:
+                        await apply_batch_terminal_outcome(
+                            backend, job, outcome, loop_conn=loop_conn
+                        )
+                    except Exception:
+                        logger.exception("batch-policy-hook-failed", job_id=str(job.id))
 
                 if outcome == "succeeded":
                     consumer_span.set_status(StatusCode.OK)

@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING
 import pytest
 import pytest_asyncio
 
-from ._assertions import fetch_effects
+from ._assertions import fetch_effects, wait_all
 from .actors import CappedWorkerPayload, capped_worker
 
 if TYPE_CHECKING:
@@ -175,7 +175,7 @@ async def test_queue_concurrency_cap_limits_parallelism(
         for i in range(_NUM_JOBS)
     ]
 
-    await asyncio.gather(*(handle.wait(timeout=120) for handle in handles))
+    await wait_all(handles, timeout=120)
 
     # Fetch started and finished effects, paired by job_id.
     started = await fetch_effects(

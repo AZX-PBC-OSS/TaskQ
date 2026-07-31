@@ -23,6 +23,9 @@ from taskq.auth import (
 )
 from taskq.backend._protocol import (
     Backend,
+    BatchCounts,
+    BatchFilter,
+    BatchRow,
     CancelPhase,
     DstStrategy,
     EventRow,
@@ -40,7 +43,15 @@ from taskq.backend._protocol import (
     ScheduleRecord,
 )
 from taskq.backend.clock import Clock, SystemClock
-from taskq.batch import BatchCompletionStatus, BatchHandle, EnqueueItem, wait_for_batch
+from taskq.batch import (
+    BatchCompletionStatus,
+    BatchHandle,
+    BatchSummary,
+    EnqueueItem,
+    apply_batch_terminal_outcome,
+    wait_for_batch,
+)
+from taskq.batch_policy import AbortBatchAfter, BatchFailurePolicy
 from taskq.client import CancelResult, JobEvent, JobHandle, JobsClient, TaskQ
 from taskq.client._enqueuer import SubJobEnqueuer
 from taskq.connections import ConnFactory, PoolFactory, RedisFactory, WorkerConnections
@@ -50,8 +61,10 @@ from taskq.exceptions import (
     ActorConfigDriftError,
     ActorConfigDriftList,
     BackpressureError,
+    BatchAbortedError,
     DependencyCycle,
     DIError,
+    EmptyBatchError,
     IllegalStateTransition,
     JobFailed,
     MaxPendingExceededError,
@@ -90,6 +103,7 @@ from taskq.settings import OIDCSettings, SAMLSettings, TaskQSettings, WorkerSett
 from taskq.testing.clock import FakeClock
 
 __all__ = [
+    "AbortBatchAfter",
     "ActorConfigDriftError",
     "ActorConfigDriftList",
     "ActorFn",
@@ -98,8 +112,14 @@ __all__ = [
     "ActorRef",
     "Backend",
     "BackpressureError",
+    "BatchAbortedError",
     "BatchCompletionStatus",
+    "BatchCounts",
+    "BatchFailurePolicy",
+    "BatchFilter",
     "BatchHandle",
+    "BatchRow",
+    "BatchSummary",
     "CancelPhase",
     "CancelResult",
     "Clock",
@@ -108,6 +128,7 @@ __all__ = [
     "DIError",
     "DependencyCycle",
     "DstStrategy",
+    "EmptyBatchError",
     "EnqueueItem",
     "ErrorReporter",
     "EventRow",
@@ -175,6 +196,7 @@ __all__ = [
     "WorkerSettings",
     "__version__",
     "actor",
+    "apply_batch_terminal_outcome",
     "cron",
     "enrich_pg_dsn",
     "make_dedicated_conn_factory",

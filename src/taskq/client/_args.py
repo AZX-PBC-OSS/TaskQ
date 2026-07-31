@@ -10,6 +10,7 @@ determinism.
 import contextlib
 import re
 from collections.abc import Generator, Mapping, Sequence
+from dataclasses import replace
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
@@ -117,6 +118,11 @@ def build_enqueue_args[P: BaseModel, R: BaseModel | None](
 
     payload_dict = ref.payload_type.model_validate(payload).model_dump(mode="json")
     metadata_dict: dict[str, object] = dict(metadata) if metadata is not None else {}
+    # Security boundary: "batch_id" is a reserved key injected by the library
+    # during batch enqueue. Strip any caller-supplied value to prevent a
+    # single-job enqueue from self-asserting membership in a victim batch,
+    # which would drive increment/abort hooks on that batch.
+    metadata_dict.pop("batch_id", None)
     if ref.singleton:
         metadata_dict["singleton"] = True
 
@@ -197,8 +203,8 @@ def build_batch_args(
     as before.
     """
     args_list: list[EnqueueArgs] = []
+    batch_id_str = str(batch_id)
     for item in items:
-        merged_metadata: dict[str, object] = dict(item.metadata) | {"batch_id": str(batch_id)}
         item_max_pending = (
             max_pending_by_actor.get(item.actor_ref.name)
             if max_pending_by_actor is not None
@@ -213,12 +219,15 @@ def build_batch_args(
             identity_key=item.identity_key,
             idempotency_key=item.idempotency_key,
             idempotency_scope=item.idempotency_scope,
-            metadata=merged_metadata,
+            metadata=item.metadata,
             start_to_close=item.start_to_close,
             max_pending=item_max_pending,
             tags=item.tags,
             clock=clock,
         )
+        # Stamp batch_id AFTER build_enqueue_args, which strips any
+        # caller-supplied batch_id as a security boundary (H5).
+        args = replace(args, metadata={**args.metadata, "batch_id": batch_id_str})
         args_list.append(args)
     return args_list
 

@@ -15,6 +15,7 @@ cancel signals, NOTIFY, and schedule CRUD wiring.
 """
 
 import asyncio
+from collections.abc import Iterable
 from contextlib import AbstractAsyncContextManager as AsyncContextManager
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, ClassVar, Literal
@@ -23,6 +24,40 @@ from uuid import UUID
 import structlog
 
 from taskq._json import dumps_str
+from taskq.backend._batch_sql import (
+    BatchSql,
+    render_batch_sql,
+)
+from taskq.backend._batch_sql import (
+    abort_batch as _abort_batch,
+)
+from taskq.backend._batch_sql import (
+    complete_batch as _complete_batch,
+)
+from taskq.backend._batch_sql import (
+    count_batch_non_terminal as _count_batch_non_terminal,
+)
+from taskq.backend._batch_sql import (
+    create_batch as _create_batch,
+)
+from taskq.backend._batch_sql import (
+    enqueue_batch_atomic as _enqueue_batch_atomic,
+)
+from taskq.backend._batch_sql import (
+    get_batch as _get_batch,
+)
+from taskq.backend._batch_sql import (
+    increment_batch_failures as _increment_batch_failures,
+)
+from taskq.backend._batch_sql import (
+    list_batches as _list_batches,
+)
+from taskq.backend._batch_sql import (
+    prune_old_batches as _prune_old_batches,
+)
+from taskq.backend._batch_sql import (
+    reset_batch_failures as _reset_batch_failures,
+)
 from taskq.backend._dispatch import (
     _dispatch_batch as _dispatch,
 )
@@ -41,6 +76,9 @@ from taskq.backend._protocol import (
     AttemptOutcome,
     AttemptRow,
     BackendDeps,
+    BatchCounts,
+    BatchFilter,
+    BatchRow,
     CancelFlag,
     ConnLike,
     EnqueueArgs,
@@ -220,6 +258,7 @@ class PostgresBackend:
 
         self._sql: SqlTemplates = render(self._schema_name)
         self._schedule_sql = ScheduleSql.build(self._schema_name)
+        self._batch_sql: BatchSql = render_batch_sql(self._schema_name)
 
     # ── Pool accessors (dynamic via self._deps for hot-reload) ────────
 
@@ -757,3 +796,129 @@ class PostgresBackend:
 
     async def delete_schedule(self, schedule_id: UUID) -> None:
         await _delete_schedule(self._worker_pool, self._schedule_sql, schedule_id)
+
+    # ── Batch operations ──────────────────────────────────────────────
+
+    async def enqueue_batch_atomic(
+        self,
+        items: Iterable[EnqueueArgs],
+        *,
+        batch_id: UUID,
+        queue: str,
+        batch_row: BatchRow | None,
+        finalizer_args: EnqueueArgs | None,
+        chunk_size: int = 1000,
+    ) -> list[JobRow]:
+        return await _enqueue_batch_atomic(
+            self._worker_pool,
+            self._schema_name,
+            self._sql,
+            self._batch_sql,
+            self._clock,
+            items,
+            batch_id=batch_id,
+            queue=queue,
+            batch_row=batch_row,
+            finalizer_args=finalizer_args,
+            chunk_size=chunk_size,
+        )
+
+    async def create_batch(
+        self,
+        batch_id: UUID,
+        queue: str,
+        expected_size: int,
+        failure_threshold: int | None,
+        finalizer_job_id: UUID | None,
+        originating_actor: str | None,
+        *,
+        connection: ConnLike | None = None,
+    ) -> None:
+        if connection is not None:
+            await _create_batch(
+                connection,
+                self._batch_sql,
+                batch_id,
+                queue,
+                expected_size,
+                failure_threshold,
+                finalizer_job_id,
+                originating_actor,
+            )
+        else:
+            async with self._worker_pool.acquire() as conn:
+                await _create_batch(
+                    conn,
+                    self._batch_sql,
+                    batch_id,
+                    queue,
+                    expected_size,
+                    failure_threshold,
+                    finalizer_job_id,
+                    originating_actor,
+                )
+
+    async def increment_batch_failures(
+        self,
+        batch_id: UUID,
+        *,
+        connection: ConnLike | None = None,
+    ) -> tuple[int, int | None, int]:
+        if connection is not None:
+            return await _increment_batch_failures(connection, self._batch_sql, batch_id)
+        async with self._worker_pool.acquire() as conn:
+            return await _increment_batch_failures(conn, self._batch_sql, batch_id)
+
+    async def reset_batch_failures(
+        self,
+        batch_id: UUID,
+        *,
+        connection: ConnLike | None = None,
+    ) -> int:
+        if connection is not None:
+            return await _reset_batch_failures(connection, self._batch_sql, batch_id)
+        async with self._worker_pool.acquire() as conn:
+            return await _reset_batch_failures(conn, self._batch_sql, batch_id)
+
+    async def abort_batch(
+        self,
+        batch_id: UUID,
+        *,
+        connection: ConnLike | None = None,
+    ) -> int:
+        if connection is not None:
+            return await _abort_batch(connection, self._batch_sql, batch_id)
+        async with self._worker_pool.acquire() as conn:
+            async with conn.transaction():
+                return await _abort_batch(conn, self._batch_sql, batch_id)
+
+    async def complete_batch(
+        self,
+        batch_id: UUID,
+        *,
+        connection: ConnLike | None = None,
+    ) -> None:
+        if connection is not None:
+            await _complete_batch(connection, self._batch_sql, batch_id)
+        else:
+            async with self._worker_pool.acquire() as conn:
+                await _complete_batch(conn, self._batch_sql, batch_id)
+
+    async def get_batch(self, batch_id: UUID) -> BatchRow | None:
+        async with self._worker_pool.acquire() as conn:
+            return await _get_batch(conn, self._batch_sql, batch_id)
+
+    async def list_batches(
+        self,
+        filter: BatchFilter,
+    ) -> list[tuple[BatchRow, BatchCounts]]:
+        async with self._worker_pool.acquire() as conn:
+            return await _list_batches(conn, self._batch_sql, filter)
+
+    async def count_batch_non_terminal(self, batch_id: UUID) -> int:
+        async with self._worker_pool.acquire() as conn:
+            return await _count_batch_non_terminal(conn, self._batch_sql, batch_id)
+
+    async def prune_old_batches(self, cutoff: datetime) -> int:
+        async with self._worker_pool.acquire() as conn:
+            return await _prune_old_batches(conn, self._batch_sql, cutoff)

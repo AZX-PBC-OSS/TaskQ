@@ -52,6 +52,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Batch failure policies (`AbortBatchAfter`)** — #55. An opt-in
+  `failure_policy` parameter on `enqueue_batch()` /
+  `enqueue_batch_streaming()` creates a `batches` row and drives
+  abort-on-consecutive-failure semantics via the
+  `apply_batch_terminal_outcome` hook. When the threshold is reached the
+  batch is aborted: pending/scheduled child jobs are cancelled and the
+  batch row is set to `aborted`.
+- **Batch finalizer (transactional enqueue with batch)** — #58. A
+  `finalizer` parameter on `enqueue_batch()` /
+  `enqueue_batch_streaming()` enqueues a finalizer job alongside the
+  batch in the same transaction. The finalizer is NOT stamped with
+  `batch_id` (deadlock prevention); `wait_for_batch` automatically
+  excludes it from counts via the batch row's `finalizer_job_id`.
+- **Batch discovery (`list_batches`, `BatchSummary`)** — #59.
+  `JobsClient.list_batches(BatchFilter)` returns `BatchSummary` objects
+  with live job-count aggregates. `BatchFilter` carries only
+  batch-relevant fields (`queue`, `active`, `batch_id`, `limit`).
+- **`enqueue_batch_streaming` for unbounded iterables** — accepts an
+  `Iterable[EnqueueItem]` (including generators) and inserts in chunks
+  of `chunk_size` (1–1000). All items share the same `batch_id`.
+- **`wait_for_batch` with `expect_at_least`, `on_empty`,
+  `exclude_job_id`** — `expect_at_least` raises `EmptyBatchError` when
+  fewer than the expected number of jobs are present; `on_empty`
+  controls behaviour when zero jobs and no `batches` row exist
+  (`"error"` raises, `"ok"` returns empty status); `exclude_job_id`
+  omits a specific job from counts (defaults to the batch row's
+  `finalizer_job_id`).
+- **Backend protocol batch methods (10 new methods)** —
+  `enqueue_batch_atomic`, `create_batch`, `increment_batch_failures`,
+  `reset_batch_failures`, `abort_batch`, `complete_batch`, `get_batch`,
+  `list_batches`, `count_batch_non_terminal`, `prune_old_batches`.
+- **Batches table migration (01.00.05_01)** — adds the `batches` table
+  with columns for status tracking, failure counters, finalizer linkage,
+  and batch-level metadata.
 - **Connection hook points for managed-identity / BYO connections** —
   `WorkerConnections` dataclass with per-role pre-constructed resources
   (caller-owned) or zero-arg async factories (TaskQ-owned) for the worker's
@@ -194,6 +228,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking: cross-field invariant exceptions changed type.** `WorkerSettings.load()`/`load_from_dict()` cross-field invariants (`lock_lease >= 4 * heartbeat_interval`, grace-budget checks) previously raised `ValueError`; they now raise `ValidationError` (single failure) or `MultipleValidationErrors` (several at once). `ConstraintViolationError` (field validators) was already not a `ValueError`. **Callers that catch `ValueError` around `WorkerSettings.load*()` will no longer catch these** — catch `DotEnvModelError` (the common base) to cover both single and aggregate cases, or `ValidationError` when at most one invariant can fire. Field-level validation (`prune_retention_*`, `default_start_to_close`, `log_format`, etc.) already raised `ConstraintViolationError` and is unaffected.
 - **`reload()` now enforces cross-field invariants and applies DSN fallback.** Previously `reload()` did not run `_post_load` (it was only called from the `load()`/`load_from_dict()` overrides), so a reload that produced invariant-violating values would silently succeed. This is now fixed by the native `post_load` hook.
 - **`log_format` validation moved from `choices=` to a `validator` hook.** `choices=` is a built-in constraint that `load_from_dict(..., validate=False)` skips, so an invalid `TASKQ_LOG_FORMAT` could previously load silently under `validate=False`. The validator hook runs regardless of `validate=`, closing the hole. Error message changed from `log_format must be 'json' or 'console'` to `log_format must be one of ['console', 'json'], got <value>`.
+- **Breaking: `wait_for_batch` default `on_empty="error"` raises
+  `EmptyBatchError` instead of silent return.** Previously, calling
+  `wait_for_batch` on a batch_id with zero jobs and no `batches` row
+  returned an empty `BatchCompletionStatus` silently. The default is now
+  `on_empty="error"`, which raises `EmptyBatchError`. Pass
+  `on_empty="ok"` to preserve the old silent-return behaviour.
 - **Breaking: structured-log field rename in sub-enqueue failure events.**
   `sub_enqueue_re_enqueue_error` and `sub_enqueue_flush_error` now carry
   `error_class` + `error_message` instead of the single `message` field,

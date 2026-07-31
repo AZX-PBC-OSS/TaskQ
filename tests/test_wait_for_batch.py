@@ -21,8 +21,9 @@ from pydantic import BaseModel
 from taskq import actor
 from taskq._ids import new_base62
 from taskq._json import dumps_str
+from taskq.backend._protocol import BatchRow
 from taskq.batch import BatchCompletionStatus, EnqueueItem, wait_for_batch
-from taskq.exceptions import Snooze
+from taskq.exceptions import BatchAbortedError, EmptyBatchError, Snooze
 from taskq.testing.clock import FakeClock
 from taskq.testing.in_memory import InMemoryBackend
 from taskq.testing.in_memory import wait_for_batch as in_memory_wait_for_batch
@@ -189,13 +190,13 @@ class TestAllTerminalWithFailures:
 
 
 class TestEmptyBatchId:
-    """Empty batch_id — returns total=0 with is_complete=True."""
+    """Empty batch_id — returns total=0 with is_complete=True (on_empty='ok')."""
 
     async def test_empty_batch_returns_zero(self) -> None:
         backend = _make_backend()
         batch_id = uuid4()
 
-        status = await in_memory_wait_for_batch(backend, batch_id)
+        status = await in_memory_wait_for_batch(backend, batch_id, on_empty="ok")
 
         assert status == BatchCompletionStatus(
             total=0, pending=0, succeeded=0, failed=0, cancelled=0, crashed=0, abandoned=0
@@ -321,6 +322,162 @@ class TestBatchCompletionInvariant:
         else:
             with pytest.raises(Snooze):
                 await in_memory_wait_for_batch(backend, batch_id)
+
+
+# ── expect_at_least / on_empty / exclude_job_id / aborted-batch ─────────
+
+
+def _seed_batch_row(
+    backend: InMemoryBackend,
+    batch_id: UUID,
+    *,
+    status: str = "active",
+    consecutive_failures: int = 0,
+    failure_threshold: int | None = None,
+    finalizer_job_id: UUID | None = None,
+    expected_size: int = 0,
+) -> None:
+    """Insert a BatchRow into backend._batches for testing wait_for_batch."""
+    backend._batches[batch_id] = BatchRow(  # type: ignore[reportPrivateUsage]  # Why: test-only direct store access
+        id=batch_id,
+        queue="default",
+        status=status,  # type: ignore[arg-type]  # Why: test helper accepts str for ergonomics
+        expected_size=expected_size,
+        consecutive_failures=consecutive_failures,
+        failure_threshold=failure_threshold,
+        finalizer_job_id=finalizer_job_id,
+        originating_actor=None,
+        created_at=_CLOCK_START,
+        completed_at=None,
+        metadata={},
+    )
+
+
+class TestExpectAtLeast:
+    """Tests for expect_at_least, on_empty, exclude_job_id, and aborted-batch detection."""
+
+    async def test_expect_at_least_satisfied(self) -> None:
+        backend = _make_backend()
+        batch_id = uuid4()
+        _seed_batch(backend, 5, batch_id, status="succeeded")
+
+        status = await in_memory_wait_for_batch(backend, batch_id, expect_at_least=5)
+
+        assert status.total == 5
+        assert status.is_complete is True
+
+    async def test_expect_at_least_not_satisfied(self) -> None:
+        backend = _make_backend()
+        batch_id = uuid4()
+        _seed_batch(backend, 3, batch_id, status="succeeded")
+
+        with pytest.raises(EmptyBatchError) as exc_info:
+            await in_memory_wait_for_batch(backend, batch_id, expect_at_least=5)
+
+        assert exc_info.value.expected == 5
+        assert exc_info.value.actual == 3
+
+    async def test_empty_batch_with_row_expected_size_zero_ok(self) -> None:
+        backend = _make_backend()
+        batch_id = uuid4()
+        _seed_batch_row(backend, batch_id, expected_size=0)
+
+        status = await in_memory_wait_for_batch(backend, batch_id)
+
+        assert status.total == 0
+        assert status.is_complete is True
+
+    async def test_empty_batch_without_row_raises_by_default(self) -> None:
+        backend = _make_backend()
+        batch_id = uuid4()
+
+        with pytest.raises(EmptyBatchError) as exc_info:
+            await in_memory_wait_for_batch(backend, batch_id)
+
+        assert exc_info.value.expected == 1
+        assert exc_info.value.actual == 0
+
+    async def test_empty_batch_without_row_ok_with_on_empty_ok(self) -> None:
+        backend = _make_backend()
+        batch_id = uuid4()
+
+        status = await in_memory_wait_for_batch(backend, batch_id, on_empty="ok")
+
+        assert status.total == 0
+        assert status.is_complete is True
+
+    async def test_aborted_batch_raises_batch_aborted_error(self) -> None:
+        backend = _make_backend()
+        batch_id = uuid4()
+        _seed_batch(backend, 3, batch_id, status="failed")
+        _seed_batch_row(
+            backend,
+            batch_id,
+            status="aborted",
+            consecutive_failures=3,
+            failure_threshold=3,
+        )
+
+        with pytest.raises(BatchAbortedError) as exc_info:
+            await in_memory_wait_for_batch(backend, batch_id)
+
+        assert exc_info.value.batch_id == batch_id
+        assert exc_info.value.consecutive_failures == 3
+        assert exc_info.value.threshold == 3
+
+    async def test_aborted_batch_with_pending_raises_snooze(self) -> None:
+        backend = _make_backend()
+        batch_id = uuid4()
+        _seed_batch(backend, 2, batch_id, status="failed")
+        _seed_batch(backend, 1, batch_id, status="pending")
+        _seed_batch_row(
+            backend,
+            batch_id,
+            status="aborted",
+            consecutive_failures=3,
+            failure_threshold=3,
+        )
+
+        with pytest.raises(Snooze):
+            await in_memory_wait_for_batch(backend, batch_id)
+
+    async def test_exclude_job_id_omits_caller_from_count(self) -> None:
+        backend = _make_backend()
+        batch_id = uuid4()
+        _seed_batch(backend, 3, batch_id, status="succeeded")
+        running_ids = _seed_batch(backend, 1, batch_id, status="running")
+        exclude_id = running_ids[0]
+
+        status = await in_memory_wait_for_batch(backend, batch_id, exclude_job_id=exclude_id)
+
+        assert status.total == 3
+        assert status.is_complete is True
+        assert status.pending == 0
+
+    async def test_finalizer_job_id_excluded_automatically(self) -> None:
+        backend = _make_backend()
+        batch_id = uuid4()
+        _seed_batch(backend, 3, batch_id, status="succeeded")
+        finalizer_ids = _seed_batch(backend, 1, batch_id, status="running")
+        finalizer_id = finalizer_ids[0]
+
+        _seed_batch_row(backend, batch_id, finalizer_job_id=finalizer_id)
+
+        status = await in_memory_wait_for_batch(backend, batch_id)
+
+        assert status.total == 3
+        assert status.is_complete is True
+        assert status.pending == 0
+
+    async def test_expect_at_least_zero_with_empty_batch_and_row(self) -> None:
+        backend = _make_backend()
+        batch_id = uuid4()
+        _seed_batch_row(backend, batch_id, expected_size=0)
+
+        status = await in_memory_wait_for_batch(backend, batch_id, expect_at_least=0)
+
+        assert status.total == 0
+        assert status.is_complete is True
 
 
 # ── Full round-trip via actor snooze ─────────────────────────────
@@ -655,7 +812,7 @@ class TestRaceGuardEnqueueBeforeWait:
                     dumps_str({"batch_id": str(batch_id)}),
                 )
 
-                status = await wait_for_batch(conn_b, batch_id, schema=schema)
+                status = await wait_for_batch(conn_b, batch_id, schema=schema, on_empty="ok")
                 assert status.total == 0
 
             await conn_a.execute(
@@ -683,7 +840,7 @@ class TestInvalidBatchIdAgainstPG:
         batch_id = uuid4()
         conn = await asyncpg.connect(pg_dsn)
         try:
-            status = await wait_for_batch(conn, batch_id, schema=schema)
+            status = await wait_for_batch(conn, batch_id, schema=schema, on_empty="ok")
         finally:
             await conn.close()
 

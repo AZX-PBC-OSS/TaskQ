@@ -23,12 +23,11 @@ reaches it, proving the cap is actually enforced, not just absent).
 
 from __future__ import annotations
 
-import asyncio
 from typing import TYPE_CHECKING
 
 import pytest
 
-from ._assertions import fetch_effects
+from ._assertions import fetch_effects, wait_all
 from .actors import ConcurrentTrackedPayload, concurrent_tracked_worker
 
 if TYPE_CHECKING:
@@ -69,7 +68,7 @@ async def test_actor_max_concurrent_limits_parallelism(
         for i in range(_NUM_JOBS)
     ]
 
-    await asyncio.gather(*(handle.wait(timeout=120) for handle in handles))
+    await wait_all(handles, timeout=120)
 
     started = await fetch_effects(e2e_pg_pool, e2e_schema.schema_name, run_id, kind="ct_started")
     finished = await fetch_effects(e2e_pg_pool, e2e_schema.schema_name, run_id, kind="ct_finished")

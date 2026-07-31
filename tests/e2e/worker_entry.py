@@ -11,6 +11,8 @@ import sys
 from typing import Any
 
 from e2e.actors import (
+    batch_abort_worker,
+    batch_finalizer,
     capped_worker,
     concurrent_tracked_worker,
     cron_heartbeat,
@@ -53,6 +55,8 @@ ACTORS: dict[str, ActorRef[Any, Any]] = {
     "cron_heartbeat": cron_heartbeat,
     "short_lived_job": short_lived_job,
     "concurrent_tracked_worker": concurrent_tracked_worker,
+    "batch_abort_worker": batch_abort_worker,
+    "batch_finalizer": batch_finalizer,
 }
 
 

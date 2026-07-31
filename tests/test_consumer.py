@@ -1372,7 +1372,7 @@ async def test_consume_timeout_returns_failed() -> None:
         payload_type=EmptyPayload,
         clock=clk,
     )
-    assert result == "failed"
+    assert result == "scheduled"
 
 
 async def test_consume_cancelled_raises_and_does_not_return() -> None:

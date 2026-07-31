@@ -11,6 +11,7 @@ process is a pure client, so these helpers poll externally observable state
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from collections.abc import Awaitable, Callable, Sequence
 from uuid import UUID
 
@@ -18,11 +19,14 @@ import asyncpg
 from pydantic import BaseModel
 
 from taskq.client import JobHandle
+from taskq.exceptions import JobFailed, ResultUnavailable
 
 __all__ = [
     "fetch_effects",
     "fetch_job_rows",
     "poll_until",
+    "wait_all",
+    "wait_all_ignoring_failures",
     "wait_for_effects",
     "wait_for_handle_status",
     "wait_for_worker_ready",
@@ -82,6 +86,49 @@ async def wait_for_handle_status[R: BaseModel | None](
         timeout=timeout,
         description=f"job {handle.job_id} to reach status {status!r}",
     )
+
+
+async def wait_all[R: BaseModel | None](
+    handles: Sequence[JobHandle[R]],
+    *,
+    timeout: float,  # noqa: ASYNC109  # Why: forwarded to handle.wait as a per-handle polling deadline, not an asyncio.timeout-style wrapper.
+) -> list[R]:
+    """Wait for every handle in parallel via :class:`asyncio.TaskGroup`.
+
+    Returns each handle's ``wait`` result in input order.  Any exception
+    (``TimeoutError``, :class:`JobFailed`, :class:`ResultUnavailable`)
+    propagates inside the ``ExceptionGroup`` raised by the ``TaskGroup`` on
+    exit — use this when every handle is expected to reach ``succeeded``.
+    """
+    async with asyncio.TaskGroup() as tg:
+        tasks = [tg.create_task(handle.wait(timeout=timeout)) for handle in handles]
+    return [task.result() for task in tasks]
+
+
+async def wait_all_ignoring_failures[R: BaseModel | None](
+    handles: Sequence[JobHandle[R]],
+    *,
+    timeout: float,  # noqa: ASYNC109  # Why: forwarded to handle.wait as a per-handle deadline; individual failures/timeouts are swallowed, not wrapped in asyncio.timeout().
+) -> None:
+    """Wait for every handle in parallel, swallowing per-handle failures.
+
+    Each ``handle.wait`` is awaited inside a :class:`asyncio.TaskGroup`;
+    ``TimeoutError``, :class:`JobFailed` and :class:`ResultUnavailable` raised
+    by an individual handle are swallowed so one non-succeeding handle cannot
+    abort the wait.  Use this when some handles are not expected to reach
+    ``succeeded`` within *timeout* — e.g. a finalizer that snoozes via
+    ``wait_for_batch`` until its children finish, or jobs cancelled/failed by
+    a batch-abort policy.  Terminal state is verified afterward via DB polling
+    (``fetch_job_rows`` / ``wait_for_effects``) rather than ``wait``'s return.
+    """
+
+    async def _wait_or_swallow(handle: JobHandle[R]) -> None:
+        with contextlib.suppress(TimeoutError, JobFailed, ResultUnavailable):
+            await handle.wait(timeout=timeout)
+
+    async with asyncio.TaskGroup() as tg:
+        for handle in handles:
+            tg.create_task(_wait_or_swallow(handle))
 
 
 async def fetch_effects(

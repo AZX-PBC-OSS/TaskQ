@@ -14,7 +14,7 @@ import asyncio
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 from uuid import UUID
 
 import structlog
@@ -27,7 +27,7 @@ from taskq.backend._protocol import (
     QueueMode,
 )
 from taskq.backend.statemachine import TERMINAL_STATUSES
-from taskq.batch import BatchCompletionStatus
+from taskq.batch import BatchCompletionStatus, _decide_batch_status, apply_batch_terminal_outcome
 from taskq.context import JobContext
 from taskq.exceptions import Snooze
 from taskq.retry import OnRetryExhausted, OnSuccess, RetryClassifierHook, RetryPolicy
@@ -581,7 +581,7 @@ async def run_until_drained(backend: "InMemoryBackend") -> None:
         if actor_cfg is None:
             actor_cfg = _InMemoryActorConfig(retry=RetryPolicy(jitter=0.0))
 
-        await consume_one_job(
+        outcome = await consume_one_job(
             backend,
             job,
             backend._worker_id,  # pyright: ignore[reportPrivateUsage]  # Why: test runner helper intentionally accesses private InMemoryBackend state; this module is co-located with the backend and owns this access pattern.
@@ -591,6 +591,11 @@ async def run_until_drained(backend: "InMemoryBackend") -> None:
             clock=backend._clock,  # pyright: ignore[reportPrivateUsage]  # Why: test runner helper intentionally accesses private InMemoryBackend state; this module is co-located with the backend and owns this access pattern.
             fallback_result_ttl=actor_cfg.result_ttl,
         )
+
+        try:
+            await apply_batch_terminal_outcome(backend, job, outcome)
+        except Exception:
+            logger.exception("batch-policy-hook-failed", job_id=str(job.id))
 
 
 # ── In-memory wait_for_batch simulation ─────────────────────────────────
@@ -606,6 +611,9 @@ async def wait_for_batch(
     *,
     snooze_interval: timedelta = timedelta(seconds=10),
     snooze_via_exception: bool = True,  # Why: parameter kept for API consistency with taskq.batch.wait_for_batch; in-memory always raises Snooze
+    expect_at_least: int | None = None,
+    on_empty: Literal["error", "ok"] = "error",
+    exclude_job_id: UUID | None = None,
 ) -> BatchCompletionStatus:
     """In-memory simulation of :func:`taskq.batch.wait_for_batch`.
 
@@ -627,10 +635,17 @@ async def wait_for_batch(
         )
 
     batch_id_str = str(batch_id)
+    batch_row = backend._batches.get(batch_id)  # pyright: ignore[reportPrivateUsage]  # Why: co-located helper accessing private batch store
+
+    exclusion_id = exclude_job_id
+    if exclusion_id is None and batch_row is not None:
+        exclusion_id = batch_row.finalizer_job_id
+
     matched = [
         r
         for r in backend._jobs.values()  # pyright: ignore[reportPrivateUsage]  # Why: wait_for_batch is a co-located module-level helper that requires access to the private job store; same pattern as list_jobs
         if r.metadata.get("batch_id") == batch_id_str
+        and (exclusion_id is None or r.id != exclusion_id)
     ]
 
     succeeded = sum(1 for r in matched if r.status == "succeeded")
@@ -650,13 +665,18 @@ async def wait_for_batch(
         abandoned=abandoned,
     )
 
-    if status.total == 0:
-        _wfb_logger.warning(
-            "wait-for-batch-empty",
-            batch_id=batch_id_str,
-        )
+    status = _decide_batch_status(
+        batch_id=batch_id,
+        batch_row=batch_row,
+        status=status,
+        snooze_interval=snooze_interval,
+        expect_at_least=expect_at_least,
+        on_empty=on_empty,
+        snooze_via_exception=snooze_via_exception,
+    )
 
-    if pending > 0:
+    # In-memory always raises Snooze for pending > 0 — no blocking mode.
+    if status.pending > 0:
         raise Snooze(snooze_interval)
 
     return status

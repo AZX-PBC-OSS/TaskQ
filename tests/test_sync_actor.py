@@ -333,6 +333,7 @@ async def test_sync_actor_retry_policy_kicks_in() -> None:
     )
     # The handler decided to retry (attempt 1 < max_attempts 3), so the
     # outcome is "scheduled" — the job was rescheduled, not terminally failed.
+    # The batch hook skips non-terminal outcomes.
     assert outcome == "scheduled"
     assert len(backend.mark_failed_or_retry_calls) == 1
     assert backend.mark_failed_or_retry_calls[0]["next_scheduled_at"] is not None

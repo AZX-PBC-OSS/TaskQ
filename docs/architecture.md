@@ -3,8 +3,8 @@
 Internal architecture reference for TaskQ. Covers component topology,
 the backend protocol, state machine, dispatch mechanics, DI engine, cancellation
 protocol, leader election, NOTIFY wiring, shutdown orchestration, watchdog hang
-detection, transient error handling, rate limiting, schema design, and
-observability.
+detection, transient error handling, rate limiting, batch subsystem, schema
+design, and observability.
 
 This document is useful both for contributors working on TaskQ internals and
 for users who want to understand the system's correctness guarantees before
@@ -767,12 +767,15 @@ the advisory lock is the authoritative source of truth for election.
 5. **Sweep (Sweeps 1, 2, 4)** — **leader-only** (gated on `ctx.deps.is_leader`),
    runs every 30 s: `reclaim_expired_locks` (Sweep 1, uses `FOR UPDATE SKIP LOCKED`),
    `deadline_sweep` (Sweep 2), and, when the backend supports them,
-   `sweep_leaked_reservation_slots` (Sweep 4), `sweep_expired_results`, and
-   `cleanup_stale_workers`.
+   `sweep_leaked_reservation_slots` (Sweep 4), `sweep_expired_results`,
+   `cleanup_stale_workers`, and `complete_stale_batches` (see
+   [Batch Subsystem](#batch-subsystem)).
 6. **Prune (Sweep 5)** — runs daily (default 03:00 UTC). Moves terminal jobs
    (`succeeded`, `failed`, `cancelled`, `crashed`, `abandoned`) from `jobs` to
    `jobs_archive` once their per-status retention period has elapsed. Batched at
-   10 000 rows per CTE; atomic move+delete within each batch. Controlled by
+   10 000 rows per CTE; atomic move+delete within each batch. After job pruning
+   completes, `prune_old_batches` deletes completed batch rows past the same
+   cutoff (see [Batch Subsystem](#batch-subsystem)). Controlled by
    `TASKQ_PRUNE_*` settings.
 7. **Archive expiry (Sweep 6)** — runs daily (default 04:00 UTC, 1 hour after
    prune). Hard-deletes rows from `jobs_archive` once their `expire_at` has
@@ -1263,6 +1266,127 @@ sourced from a different code path or a test fixture) is still rejected before
 it reaches the database. All user-supplied values continue to use `$N`
 parameter binding; only the schema identifier is interpolated, and it is
 validated at both the construction boundary and each use site.
+
+---
+
+## Batch Subsystem
+
+Source: `src/taskq/batch.py`, `src/taskq/batch_policy.py`,
+`src/taskq/backend/_batch_sql.py`, `src/taskq/worker/_leader_shared.py`.
+
+The batch subsystem adds opt-in tracking, failure policies, and finalizer
+enqueuing for groups of jobs. A row in the `batches` table is created only
+when the caller supplies a `failure_policy` or `finalizer` to
+`enqueue_batch()` / `enqueue_batch_streaming()` — plain batch enqueues without
+these arguments insert no `batches` row and carry only the `metadata.batch_id`
+tag on each job.
+
+### `batches` table
+
+| Column | Type | Description |
+|---|---|---|
+| `id` | `uuid` | Primary key; matches `metadata.batch_id` on child jobs. |
+| `queue` | `text` | Queue the batch was enqueued on. |
+| `status` | `text` | `active`, `complete`, or `aborted`. |
+| `expected_size` | `int` | Number of child jobs enqueued. |
+| `consecutive_failures` | `int` | Running failure count, reset on success. |
+| `failure_threshold` | `int` | Threshold from `AbortBatchAfter`; `NULL` if no policy. |
+| `finalizer_job_id` | `uuid` | Job ID of the finalizer, if one was enqueued. |
+| `originating_actor` | `text` | Reserved for future use — currently always `NULL`. Will be populated from the actor context in a future release. |
+| `created_at` | `timestamptz` | Batch creation time. |
+| `completed_at` | `timestamptz` | When the batch reached `complete` or `aborted`. |
+| `metadata` | `jsonb` | Arbitrary batch-level metadata. |
+
+### Batch lifecycle
+
+```
+active → complete   (all child jobs terminal, failure threshold not reached)
+active → aborted    (consecutive_failures >= failure_threshold)
+```
+
+A batch starts as `active` when `create_batch` inserts the row. The
+`apply_batch_terminal_outcome` hook drives completion and abort; the
+`complete_stale_batches` leader sweep is the safety net.
+
+### `apply_batch_terminal_outcome` hook
+
+Called after every terminal write (consumer and in-memory runner). For
+non-batched jobs (no `metadata.batch_id`) it returns immediately — zero
+overhead. For batched jobs:
+
+| Outcome | Action |
+|---|---|
+| `succeeded` | Resets `consecutive_failures` to 0. If no non-terminal jobs remain, marks batch `complete`. |
+| `failed` | Increments `consecutive_failures`. If `>= failure_threshold`, aborts the batch. Otherwise, if no non-terminal jobs remain, marks batch `complete`. |
+| `cancelled` / `crashed` | Counts non-terminal jobs; if none remain, marks batch `complete`. Does not touch the failure counter. |
+| `snoozed` / `reservation_denied` / `rate_limit_denied` / `scheduled` | Returns immediately — the job is rescheduled, not terminal. |
+
+Aborting cancels all pending and scheduled child jobs (`pending` /
+`scheduled` → `cancelled`) with a hardcoded `error_message = 'Batch
+aborted due to consecutive failures'` and sets the batch row to
+`aborted`. Running jobs continue to completion.
+
+### `complete_stale_batches` leader sweep
+
+Runs every 30 s on the leader (inside the Sweep loop, alongside Sweep 4).
+Marks any `active` batch with zero non-terminal child jobs as `complete`.
+This is the safety net for batches whose `apply_batch_terminal_outcome` hook
+was lost (e.g. consumer crash before the hook ran) and for
+intentionally-empty batches (`expected_size=0`).
+
+### `prune_old_batches`
+
+Called by the prune loop (Sweep 5) **after** job pruning completes. Deletes
+`batches` rows whose `completed_at` is older than the job prune cutoff and
+that have no remaining child jobs in the `jobs` table. This ordering ensures
+batch rows are not removed while their child jobs are still visible.
+
+### `wait_for_batch` decision table
+
+`wait_for_batch` queries both the `batches` row and live job counts, then
+decides according to this table (first matching row wins):
+
+| Condition | Action |
+|---|---|
+| Batch row `status = 'aborted'`, `pending = 0` | Raise `BatchAbortedError` |
+| Batch row `status = 'aborted'`, `pending > 0` | Raise `Snooze(interval)` |
+| `expect_at_least` set, `pending = 0`, `total < expect_at_least` | Raise `EmptyBatchError` |
+| `total = 0` and batch row exists | Return empty `BatchCompletionStatus` |
+| `total = 0`, no batch row, `on_empty = "ok"` | Return empty `BatchCompletionStatus` |
+| `total = 0`, no batch row, `on_empty = "error"` | Raise `EmptyBatchError` |
+| `pending > 0` (snooze mode) | Raise `Snooze(interval)` |
+| `pending > 0` (blocking mode) | Sleep and re-query |
+| Otherwise | Return `BatchCompletionStatus` |
+
+The finalizer job is automatically excluded from counts via the batch row's
+`finalizer_job_id`; pass `exclude_job_id` to override.
+
+### `BatchFilter`
+
+Batch queries use `BatchFilter`, not `JobFilter`. `BatchFilter` carries only
+fields relevant to batch queries: `queue`, `active` (status terminality),
+`batch_id`, and `limit`. Job-oriented fields (`status`, `actor`, `tags`,
+`cursor`, `order_by`, `identity_key`) are intentionally absent — using
+`JobFilter` for batch queries would silently ignore those fields.
+
+### `enqueue_batch_streaming`
+
+Accepts an `Iterable[EnqueueItem]` (including generators) and inserts in
+chunks of `chunk_size` (1–1000). All items share the same `batch_id`. When
+`failure_policy` or `finalizer` is set and no caller-owned `connection` is
+provided, the entire operation is delegated to
+`Backend.enqueue_batch_atomic` for single-transaction atomicity. Otherwise,
+chunks are inserted via `Backend.enqueue_batch` on the caller-owned
+connection, with the batch row and finalizer created as the last statements.
+
+### Security
+
+Schema identifiers are validated against `_IDENT_RE` before interpolation
+into SQL, following the same defence-in-depth pattern as the rest of the
+codebase (see [Identifier validation](#identifier-validation)). All
+user-supplied values use `$N` parameter binding. The abort
+`error_message` is a hardcoded SQL literal (`'Batch aborted due to
+consecutive failures'`), not user input, so it carries no injection risk.
 
 ---
 

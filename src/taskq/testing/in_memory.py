@@ -36,6 +36,9 @@ from taskq.backend._protocol import (
     BACKEND_PROTOCOL_VERSION,
     AttemptOutcome,
     AttemptRow,
+    BatchCounts,
+    BatchFilter,
+    BatchRow,
     CancelFlag,
     CancelPhase,
     EnqueueArgs,
@@ -52,6 +55,18 @@ from taskq.backend._protocol import (
 from taskq.backend.clock import Clock
 from taskq.backend.statemachine import ACTIVE_STATUSES
 from taskq.retry import OnRetryExhausted, OnSuccess, RetryClassifierHook, RetryPolicy
+from taskq.testing._batch import (
+    _abort_batch,
+    _complete_batch,
+    _count_batch_non_terminal,
+    _create_batch,
+    _enqueue_batch_atomic,
+    _get_batch,
+    _increment_batch_failures,
+    _list_batches,
+    _prune_old_batches,
+    _reset_batch_failures,
+)
 from taskq.testing._dispatch import _dispatch_batch, _set_queue_mode
 from taskq.testing._enqueue import (
     _enqueue,
@@ -201,6 +216,7 @@ class InMemoryBackend:
         self._archive_attempts: dict[JobId, list[AttemptRow]] = {}
         self._schedules: dict[UUID, ScheduleRecord] = {}
         self._queues: dict[str, QueueMode] = {}
+        self._batches: dict[UUID, BatchRow] = {}
 
     # ── Test helpers ────────────────────────────────────────────────────
 
@@ -801,3 +817,103 @@ class InMemoryBackend:
 
     async def delete_schedule(self, schedule_id: UUID) -> None:
         self._schedules.pop(schedule_id, None)
+
+    # ── Batch operations ──────────────────────────────────────────────
+
+    async def enqueue_batch_atomic(
+        self,
+        items: Iterable[EnqueueArgs],
+        *,
+        batch_id: UUID,
+        queue: str,
+        batch_row: BatchRow | None,
+        finalizer_args: EnqueueArgs | None,
+        chunk_size: int = 1000,
+    ) -> list[JobRow]:
+        return await _enqueue_batch_atomic(
+            self,
+            items,
+            batch_id=batch_id,
+            queue=queue,
+            batch_row=batch_row,
+            finalizer_args=finalizer_args,
+            chunk_size=chunk_size,
+        )
+
+    async def create_batch(
+        self,
+        batch_id: UUID,
+        queue: str,
+        expected_size: int,
+        failure_threshold: int | None,
+        finalizer_job_id: UUID | None,
+        originating_actor: str | None,
+        *,
+        connection: object = None,
+    ) -> None:
+        _create_batch(
+            self,
+            batch_id,
+            queue,
+            expected_size,
+            failure_threshold,
+            finalizer_job_id,
+            originating_actor,
+            connection,
+        )
+
+    async def increment_batch_failures(
+        self,
+        batch_id: UUID,
+        *,
+        connection: object = None,
+    ) -> tuple[int, int | None, int]:
+        return _increment_batch_failures(self, batch_id, connection)
+
+    async def reset_batch_failures(
+        self,
+        batch_id: UUID,
+        *,
+        connection: object = None,
+    ) -> int:
+        return _reset_batch_failures(self, batch_id, connection)
+
+    async def abort_batch(
+        self,
+        batch_id: UUID,
+        *,
+        connection: object = None,
+    ) -> int:
+        return _abort_batch(self, batch_id, connection)
+
+    async def complete_batch(
+        self,
+        batch_id: UUID,
+        *,
+        connection: object = None,
+    ) -> None:
+        _complete_batch(self, batch_id, connection)
+
+    async def get_batch(
+        self,
+        batch_id: UUID,
+    ) -> BatchRow | None:
+        return _get_batch(self, batch_id)
+
+    async def list_batches(
+        self,
+        filter: BatchFilter,
+    ) -> list[tuple[BatchRow, BatchCounts]]:
+        return _list_batches(self, filter)
+
+    async def count_batch_non_terminal(
+        self,
+        batch_id: UUID,
+    ) -> int:
+        return _count_batch_non_terminal(self, batch_id)
+
+    async def prune_old_batches(
+        self,
+        cutoff: datetime,
+    ) -> int:
+        return _prune_old_batches(self, cutoff)

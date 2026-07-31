@@ -35,7 +35,7 @@ Passing an existing pool (e.g. shared with the rest of the application)::
 
 import asyncio
 import contextlib
-from collections.abc import AsyncGenerator, AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator, Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
@@ -53,6 +53,8 @@ if TYPE_CHECKING:
 from taskq._close import CLOSE_TIMEOUT_SECS, close_conn_bounded, close_pool_bounded
 from taskq.actor import ActorRef
 from taskq.backend._protocol import (
+    BatchFilter,
+    BatchRow,
     DstStrategy,
     EventRow,
     IdempotencyKey,
@@ -66,7 +68,8 @@ from taskq.backend._protocol import (
     ScheduleRecord,
 )
 from taskq.backend.statemachine import TERMINAL_STATUSES
-from taskq.batch import BatchHandle, EnqueueItem
+from taskq.batch import BatchHandle, BatchSummary, EnqueueItem
+from taskq.batch_policy import BatchFailurePolicy
 from taskq.client._handle import JobHandle
 from taskq.client._jobs import JobsClient
 from taskq.constants import RECLAIM_EVENT_VISIBILITY_DELAY, progress_channel, wake_channel
@@ -357,6 +360,8 @@ class TaskQ:
         *,
         batch_id: UUID | None = None,
         connection: "asyncpg.Connection | None" = None,
+        failure_policy: BatchFailurePolicy | None = None,
+        finalizer: EnqueueItem | None = None,
     ) -> BatchHandle:
         """Enqueue multiple jobs in a single batched INSERT.
 
@@ -367,7 +372,51 @@ class TaskQ:
             items,
             batch_id=batch_id,
             connection=connection,
+            failure_policy=failure_policy,
+            finalizer=finalizer,
         )
+
+    async def enqueue_batch_streaming(
+        self,
+        items: Iterable[EnqueueItem],
+        *,
+        batch_id: UUID | None = None,
+        connection: "asyncpg.Connection | None" = None,
+        failure_policy: BatchFailurePolicy | None = None,
+        finalizer: EnqueueItem | None = None,
+        chunk_size: int = 1000,
+    ) -> BatchHandle:
+        """Enqueue jobs from a lazy iterable in chunks.
+
+        Delegates to :meth:`JobsClient.enqueue_batch_streaming`; see its
+        docstring for chunk_size validation and streaming semantics.
+        """
+        return await self._require_open().enqueue_batch_streaming(
+            items,
+            batch_id=batch_id,
+            connection=connection,
+            failure_policy=failure_policy,
+            finalizer=finalizer,
+            chunk_size=chunk_size,
+        )
+
+    async def get_batch(self, batch_id: UUID) -> BatchRow | None:
+        """Fetch a single batch row by ID.
+
+        Delegates to :meth:`JobsClient.get_batch`. Returns ``None`` when
+        the batch does not exist.
+        """
+        return await self._require_open().get_batch(batch_id)
+
+    async def list_batches(
+        self,
+        filter: BatchFilter,
+    ) -> list[BatchSummary]:
+        """List batches matching *filter*, returning :class:`BatchSummary` objects.
+
+        Delegates to :meth:`JobsClient.list_batches`.
+        """
+        return await self._require_open().list_batches(filter)
 
     async def enqueue_batch_fast(
         self,

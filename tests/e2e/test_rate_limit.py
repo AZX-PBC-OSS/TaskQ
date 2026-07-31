@@ -38,13 +38,12 @@ in.
 
 from __future__ import annotations
 
-import asyncio
 import json
 from typing import TYPE_CHECKING
 
 import pytest
 
-from ._assertions import fetch_effects, fetch_job_rows
+from ._assertions import fetch_effects, fetch_job_rows, wait_all
 from .actors import DeliverWebhookPayload, deliver_webhook
 
 if TYPE_CHECKING:
@@ -86,7 +85,7 @@ async def test_token_bucket_throttles_burst(
         for i in range(_BURST_SIZE)
     ]
 
-    await asyncio.gather(*(handle.wait(timeout=90) for handle in handles))
+    await wait_all(handles, timeout=90)
 
     rows = await fetch_effects(e2e_pg_pool, e2e_schema.schema_name, run_id, kind="delivered")
     assert len(rows) == _BURST_SIZE
@@ -162,7 +161,7 @@ async def test_rate_limit_state_survives_in_dragonfly(
     # 0-token bucket (refilling at 5/s) rather than competing with drain
     # jobs for the initial capacity-5 tokens in a scheduling-dependent
     # first batch.
-    await asyncio.gather(*(handle.wait(timeout=90) for handle in drain_handles))
+    await wait_all(drain_handles, timeout=90)
 
     measured_handles = [
         await e2e_client.enqueue(
@@ -172,7 +171,7 @@ async def test_rate_limit_state_survives_in_dragonfly(
         for i in range(_FOLLOWUP_SIZE)
     ]
 
-    await asyncio.gather(*(handle.wait(timeout=90) for handle in measured_handles))
+    await wait_all(measured_handles, timeout=90)
 
     # Exactly-once delivery of the drain batch (orthogonal to the denial
     # guard below).

@@ -14,7 +14,6 @@ not autouse, so no worker (and no dispatch) exists unless a test pulls it in.
 
 from __future__ import annotations
 
-import asyncio
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
@@ -22,8 +21,8 @@ import pytest
 
 from taskq import EnqueueItem
 
-from ._assertions import fetch_effects
-from .actors import WelcomeEmailPayload, send_welcome_email
+from ._assertions import fetch_effects, wait_all
+from .actors import WelcomeEmailPayload, WelcomeEmailResult, send_welcome_email
 
 if TYPE_CHECKING:
     import asyncpg
@@ -48,7 +47,7 @@ async def test_enqueue_batch_with_explicit_batch_id(
     and carry the same ``metadata.batch_id``.
 
     10 ``EnqueueItem`` instances are enqueued in a single batched INSERT with
-    a caller-supplied ``batch_id``.  ``asyncio.gather`` over every
+    a caller-supplied ``batch_id``.  ``wait_all`` over every
     ``handle.wait()`` proves all 10 reached ``succeeded``; 10 ``send`` effects
     whose ``job_id`` set matches the enqueued handles proves exactly-once
     execution; and a direct SQL read of ``metadata->>'batch_id'`` for every
@@ -72,9 +71,9 @@ async def test_enqueue_batch_with_explicit_batch_id(
     assert batch.size == _BATCH_SIZE
     assert len(batch.job_handles) == _BATCH_SIZE
 
-    results = await asyncio.gather(*(handle.wait(timeout=60) for handle in batch.job_handles))
+    results = await wait_all(batch.job_handles, timeout=60)
     assert len(results) == _BATCH_SIZE
-    assert all(r.sent for r in results)
+    assert all(isinstance(r, WelcomeEmailResult) and r.sent for r in results)
 
     rows = await fetch_effects(e2e_pg_pool, e2e_schema.schema_name, run_id, kind="send")
     assert len(rows) == _BATCH_SIZE

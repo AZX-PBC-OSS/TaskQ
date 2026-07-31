@@ -14,10 +14,12 @@ either an :class:`~taskq.testing.in_memory.InMemoryBackend` (tests) or a
 :class:`taskq.backend.postgres.PostgresBackend` (production).
 """
 
-from collections.abc import Generator
+from collections.abc import Generator, Iterable
 from contextlib import AsyncExitStack, contextmanager
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING
+from itertools import islice
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 import structlog
@@ -29,7 +31,10 @@ from taskq.actor import ActorRef
 from taskq.backend._cursor import encode_cursor
 from taskq.backend._protocol import (
     Backend,
+    BatchFilter,
+    BatchRow,
     DstStrategy,
+    EnqueueArgs,
     IdempotencyKey,
     IdentityKey,
     JobFilter,
@@ -41,7 +46,8 @@ from taskq.backend._protocol import (
     ScheduleUpdateArgs,
 )
 from taskq.backend.clock import Clock, SystemClock
-from taskq.batch import BatchHandle, EnqueueItem
+from taskq.batch import MAX_BATCH_SIZE, BatchHandle, BatchSummary, EnqueueItem
+from taskq.batch_policy import BatchFailurePolicy
 from taskq.client._args import build_batch_args, build_enqueue_args, enqueue_span
 from taskq.client._capacity import DEFAULT_CAPACITY_CACHE_TTL, ActorCapacityCache
 from taskq.client._handle import JobHandle
@@ -388,6 +394,8 @@ class JobsClient:
         *,
         batch_id: UUID | None = None,
         connection: "asyncpg.Connection | None" = None,
+        failure_policy: BatchFailurePolicy | None = None,
+        finalizer: EnqueueItem | None = None,
     ) -> BatchHandle:
         """Enqueue multiple jobs in a single batched INSERT and return a
         :class:`~taskq.batch.BatchHandle`.
@@ -397,10 +405,44 @@ class JobsClient:
         ``batch_id`` is not supplied it is auto-generated as a UUIDv7 via
         :func:`~taskq._ids.new_job_id`.
 
+        **failure_policy:**
+
+        When ``failure_policy`` is set (e.g.
+        :class:`~taskq.batch_policy.AbortBatchAfter`), a ``batches`` row
+        is created with the policy's failure threshold. After each child
+        job reaches a terminal state, the
+        :func:`~taskq.batch.apply_batch_terminal_outcome` hook inspects
+        the outcome: ``succeeded`` resets the consecutive-failure
+        counter; ``failed`` increments it and aborts the batch if the
+        threshold is reached. Aborting cancels all pending and scheduled
+        child jobs and sets the batch row to ``aborted``.
+
+        **finalizer:**
+
+        When ``finalizer`` is set, a finalizer job is enqueued alongside
+        the batch. The finalizer is NOT stamped with ``batch_id``
+        metadata (deadlock prevention — if it were, ``wait_for_batch``
+        would count it as a child and the finalizer would wait for
+        itself). The batch row's ``finalizer_job_id`` column records the
+        link, and ``wait_for_batch`` automatically excludes that job
+        from counts. The finalizer is dispatched immediately; the
+        in-actor ``wait_for_batch`` snooze pattern gates on child-job
+        completion.
+
+        **Transactional enqueue:**
+
+        When ``failure_policy`` or ``finalizer`` is set and
+        ``connection`` is ``None``, the entire operation (batch row +
+        all child jobs + finalizer) is inserted in a single transaction
+        via :meth:`Backend.enqueue_batch_atomic`. If any insert fails,
+        no rows are committed. When a ``connection`` is provided, the
+        caller controls the transaction boundary; the batch row and
+        finalizer are created as the last statements on that connection.
+
         **Validation rules:**
 
         - ``len(items) == 0`` raises :class:`ValueError`.
-        - ``len(items) > 1000`` raises :class:`ValueError`.
+        - ``len(items) > MAX_BATCH_SIZE`` raises :class:`ValueError`.
         - ALL payloads are validated before any INSERT.  A single failure
           raises :class:`~taskq.exceptions.PayloadValidationError` and
           leaves no rows inserted.
@@ -424,8 +466,10 @@ class JobsClient:
 
         if len(items) == 0:
             raise ValueError("items must not be empty")
-        if len(items) > 1000:
-            raise ValueError(f"items must contain at most 1000 entries, got {len(items)}")
+        if len(items) > MAX_BATCH_SIZE:
+            raise ValueError(
+                f"items must contain at most {MAX_BATCH_SIZE} entries, got {len(items)}"
+            )
 
         # Auto-generate batch_id if not provided (UUIDv7)
         resolved_batch_id = UUID(bytes=new_job_id().bytes) if batch_id is None else batch_id
@@ -478,7 +522,10 @@ class JobsClient:
             for actor_name, limit in actors_with_limit.items():
                 batch_count = sum(1 for it in items if it.actor_ref.name == actor_name)
                 existing_pending_count = existing_counts.get(actor_name, 0)
-                if existing_pending_count + batch_count >= limit:
+                # M1: use > (not >=) so a batch that fills the queue exactly
+                # to the limit is admitted, matching single-enqueue semantics
+                # where current_count >= max_pending rejects (i.e. +1 > limit).
+                if existing_pending_count + batch_count > limit:
                     from taskq.exceptions import MaxPendingExceededError
 
                     raise MaxPendingExceededError(
@@ -494,8 +541,84 @@ class JobsClient:
             items, resolved_batch_id, self._clock, max_pending_by_actor=effective_mp
         )
 
-        # Phase 4: Batch INSERT via backend
-        rows = await self._backend.enqueue_batch(args_list, connection=connection)  # type: ignore[call-arg]  # Why: asyncpg.Connection is compatible with the protocol's connection parameter at runtime
+        queue = items[0].actor_ref.queue
+        has_batch_extras = failure_policy is not None or finalizer is not None
+
+        # Build finalizer EnqueueArgs (without batch_id stamping — deadlock prevention).
+        finalizer_args: EnqueueArgs | None = None
+        if finalizer is not None:
+            finalizer_args = build_enqueue_args(
+                finalizer.actor_ref,
+                finalizer.payload,
+                scheduled_at=finalizer.scheduled_at,
+                priority=finalizer.priority,
+                fairness_key=finalizer.fairness_key,
+                identity_key=finalizer.identity_key,
+                idempotency_key=finalizer.idempotency_key,
+                idempotency_scope=finalizer.idempotency_scope,
+                metadata=dict(finalizer.metadata),
+                start_to_close=finalizer.start_to_close,
+                tags=finalizer.tags,
+                clock=self._clock,
+            )
+
+        # Build BatchRow when failure_policy OR finalizer is set (C3:
+        # finalizer-only batches also need a row for list_batches
+        # discoverability and finalizer_job_id auto-exclusion in
+        # wait_for_batch). When only finalizer is set, failure_threshold=None.
+        batch_row: BatchRow | None = None
+        if failure_policy is not None or finalizer is not None:
+            threshold = failure_policy.failure_threshold if failure_policy is not None else None
+            batch_row = BatchRow(
+                id=resolved_batch_id,
+                queue=queue,
+                status="active",
+                expected_size=len(items),
+                consecutive_failures=0,
+                failure_threshold=threshold,
+                finalizer_job_id=finalizer_args.id if finalizer_args is not None else None,
+                originating_actor=None,
+                created_at=self._clock.now(),
+                completed_at=None,
+                metadata={},
+            )
+
+        if has_batch_extras and connection is None:
+            # Autonomous atomic path: delegate to backend.enqueue_batch_atomic.
+            all_rows = await self._backend.enqueue_batch_atomic(
+                args_list,
+                batch_id=resolved_batch_id,
+                queue=queue,
+                batch_row=batch_row,
+                finalizer_args=finalizer_args,
+            )
+            rows = all_rows[: len(items)]
+            finalizer_row = all_rows[len(items) :][0] if finalizer is not None else None
+        else:
+            # Caller-owned transaction or no extras: use regular enqueue_batch.
+            # M3: create the batch row BEFORE job inserts so the row exists
+            # when the first terminal write triggers the batch hook (on an
+            # autocommit conn, jobs can dispatch and fail before the row
+            # exists otherwise). Insert the finalizer first so its returned
+            # row id is known for finalizer_job_id (M4: idempotency collision
+            # may return a different id than finalizer_args.id).
+            finalizer_row = None
+            if finalizer is not None:
+                assert finalizer_args is not None
+                finalizer_row = await self._backend.enqueue_with_conn(connection, finalizer_args)  # type: ignore[arg-type]  # Why: guarded by has_batch_extras; when connection is provided it is runtime-compatible
+            if batch_row is not None:
+                if finalizer_row is not None:
+                    batch_row = replace(batch_row, finalizer_job_id=finalizer_row.id)
+                await self._backend.create_batch(
+                    batch_row.id,
+                    batch_row.queue,
+                    batch_row.expected_size,
+                    batch_row.failure_threshold,
+                    batch_row.finalizer_job_id,
+                    batch_row.originating_actor,
+                    connection=connection,  # type: ignore[arg-type]  # Why: connection may be None but create_batch handles that
+                )
+            rows = await self._backend.enqueue_batch(args_list, connection=connection)  # type: ignore[call-arg]  # Why: asyncpg.Connection is compatible with the protocol's connection parameter at runtime
 
         # Phase 5: Wrap rows in JobHandles
         handles: list[JobHandle[BaseModel | None]] = []
@@ -511,6 +634,21 @@ class JobsClient:
             )
             handles.append(handle)
 
+        # Build finalizer handle (if any) and append to job_handles for backward compat.
+        finalizer_handle: JobHandle[BaseModel | None] | None = None
+        if finalizer is not None and finalizer_row is not None:
+            finalizer_handle = JobHandle(
+                client=self,
+                row=finalizer_row,
+                result_adapter=finalizer.actor_ref.result_adapter,
+                was_existing=(finalizer_row.id != finalizer_args.id)
+                if finalizer_args is not None
+                else False,
+                _redis_client=self._redis_client,
+                _settings=self._settings,
+            )
+            handles.append(finalizer_handle)
+
         logger.debug(
             "batch_enqueued",
             kind="batch_enqueued",
@@ -522,7 +660,321 @@ class JobsClient:
             batch_id=resolved_batch_id,
             job_handles=handles,
             size=len(items),
+            finalizer_handle=finalizer_handle,
         )
+
+    async def enqueue_batch_streaming(
+        self,
+        items: Iterable[EnqueueItem],
+        *,
+        batch_id: UUID | None = None,
+        connection: "asyncpg.Connection | None" = None,
+        failure_policy: BatchFailurePolicy | None = None,
+        finalizer: EnqueueItem | None = None,
+        chunk_size: int = 1000,
+    ) -> BatchHandle:
+        """Enqueue jobs from a lazy iterable in chunks, returning a single
+        :class:`~taskq.batch.BatchHandle`.
+
+        Unlike :meth:`enqueue_batch`, this method accepts an
+        :class:`~collections.abc.Iterable` (including generators) and
+        inserts in chunks of ``chunk_size`` (1-MAX_BATCH_SIZE).  All items share
+        the same ``batch_id``.  Payloads are validated on the fly as
+        each chunk is built.
+
+        When ``failure_policy`` or ``finalizer`` is set and
+        ``connection`` is ``None``, the entire operation is delegated to
+        :meth:`Backend.enqueue_batch_atomic` for single-transaction
+        atomicity.  Otherwise, chunks are inserted via
+        :meth:`Backend.enqueue_batch` on the caller-owned connection,
+        and the batch row + finalizer are created as the last
+        statements.
+        """
+        if chunk_size < 1 or chunk_size > MAX_BATCH_SIZE:
+            raise ValueError(f"chunk_size must be in [1, {MAX_BATCH_SIZE}], got {chunk_size}")
+
+        from taskq._ids import new_job_id
+
+        resolved_batch_id = UUID(bytes=new_job_id().bytes) if batch_id is None else batch_id
+
+        # Peek the iterable — empty raises ValueError.
+        it = iter(items)
+        try:
+            first_item = next(it)
+        except StopIteration:
+            raise ValueError("items must not be empty") from None
+
+        # Re-chain the first item back into the stream.
+        def _chain() -> Iterable[EnqueueItem]:
+            yield first_item
+            yield from it
+
+        has_batch_extras = failure_policy is not None or finalizer is not None
+
+        # Build finalizer args (without batch_id stamping).
+        finalizer_args: EnqueueArgs | None = None
+        if finalizer is not None:
+            finalizer_args = build_enqueue_args(
+                finalizer.actor_ref,
+                finalizer.payload,
+                scheduled_at=finalizer.scheduled_at,
+                priority=finalizer.priority,
+                fairness_key=finalizer.fairness_key,
+                identity_key=finalizer.identity_key,
+                idempotency_key=finalizer.idempotency_key,
+                idempotency_scope=finalizer.idempotency_scope,
+                metadata=dict(finalizer.metadata),
+                start_to_close=finalizer.start_to_close,
+                tags=finalizer.tags,
+                clock=self._clock,
+            )
+
+        # Build a lazy generator of EnqueueArgs, validating payloads on the fly.
+        # H4: collect per-item (actor_ref, args_id) as a side effect so handles
+        # can be paired by index after the backend returns rows. This avoids
+        # using a single actor's result_adapter for all handles (mixed-actor
+        # batches would get wrong deserialization).
+        item_meta: list[tuple[ActorRef[Any, Any], JobId]] = []
+
+        def _lazy_args(stream: Iterable[EnqueueItem]) -> Iterable[EnqueueArgs]:
+            for idx, item in enumerate(stream):
+                ref = item.actor_ref
+                try:
+                    ref.payload_type.model_validate(item.payload)
+                except ValidationError as exc:
+                    errs: list[dict[str, object]] = exc.errors()  # type: ignore[assignment]  # Why: pydantic v2 ErrorDetails is a TypedDict (subtype of dict[str, Any]); assignment to list[dict[str,object]] is safe at runtime but pyright cannot prove covariance
+                    raise PayloadValidationError(
+                        f"Payload validation failed for item {idx} (actor={ref.name!r}): {exc}",
+                        actor=ref.name,
+                        validation_errors=errs,
+                    ) from exc
+                args = build_enqueue_args(
+                    ref,
+                    item.payload,
+                    scheduled_at=item.scheduled_at,
+                    priority=item.priority,
+                    fairness_key=item.fairness_key,
+                    identity_key=item.identity_key,
+                    idempotency_key=item.idempotency_key,
+                    idempotency_scope=item.idempotency_scope,
+                    metadata=dict(item.metadata),
+                    start_to_close=item.start_to_close,
+                    tags=item.tags,
+                    clock=self._clock,
+                )
+                # Stamp batch_id AFTER build_enqueue_args, which strips any
+                # caller-supplied batch_id as a security boundary (H5).
+                args = replace(
+                    args,
+                    metadata={**args.metadata, "batch_id": str(resolved_batch_id)},
+                )
+                item_meta.append((ref, args.id))
+                yield args
+
+        # Determine queue from the first item.
+        queue = first_item.actor_ref.queue
+
+        # Build BatchRow when failure_policy OR finalizer is set (C3:
+        # finalizer-only batches also need a row for list_batches
+        # discoverability and finalizer_job_id auto-exclusion in
+        # wait_for_batch). When only finalizer is set, failure_threshold=None.
+        # expected_size=0 is a sentinel — the backend computes the real count
+        # from the iterable (H6: no materialization).
+        batch_row: BatchRow | None = None
+        if failure_policy is not None or finalizer is not None:
+            threshold = failure_policy.failure_threshold if failure_policy is not None else None
+            batch_row = BatchRow(
+                id=resolved_batch_id,
+                queue=queue,
+                status="active",
+                expected_size=0,
+                consecutive_failures=0,
+                failure_threshold=threshold,
+                finalizer_job_id=finalizer_args.id if finalizer_args is not None else None,
+                originating_actor=None,
+                created_at=self._clock.now(),
+                completed_at=None,
+                metadata={},
+            )
+
+        all_handles: list[JobHandle[BaseModel | None]] = []
+        total_count = 0
+
+        if has_batch_extras and connection is None:
+            # Autonomous atomic path. H6: do NOT materialize the iterable —
+            # pass the lazy generator directly to the backend, which consumes
+            # it in chunks inside its transaction. expected_size=0 is a
+            # sentinel; the backend computes the real count from the items
+            # consumed. H4: item_meta is populated as a side effect of the
+            # generator being consumed, providing per-item actor_refs and
+            # args_ids for handle pairing.
+            all_rows = await self._backend.enqueue_batch_atomic(
+                _lazy_args(_chain()),
+                batch_id=resolved_batch_id,
+                queue=queue,
+                batch_row=batch_row,
+                finalizer_args=finalizer_args,
+                chunk_size=chunk_size,
+            )
+            non_finalizer_count = len(all_rows) - (1 if finalizer is not None else 0)
+            for i in range(non_finalizer_count):
+                row = all_rows[i]
+                ref, args_id = item_meta[i]
+                all_handles.append(
+                    JobHandle(
+                        client=self,
+                        row=row,
+                        result_adapter=ref.result_adapter,
+                        was_existing=(row.id != args_id),
+                        _redis_client=self._redis_client,
+                        _settings=self._settings,
+                    )
+                )
+            total_count = non_finalizer_count
+            finalizer_row = all_rows[-1] if finalizer is not None else None
+        else:
+            # Chunked path (caller-owned connection or no extras).
+            # M3: create the batch row BEFORE job inserts so the row exists
+            # when the first terminal write triggers the batch hook. Insert
+            # the finalizer first so its returned row id is known for
+            # finalizer_job_id (M4). expected_size is set to 0 initially and
+            # updated to the real count after all chunks are consumed — but
+            # since create_batch is INSERT (not upsert), we use the total
+            # count known after chunking completes.
+            stream = _chain()
+            finalizer_row = None
+            if finalizer is not None:
+                assert finalizer_args is not None
+                finalizer_row = await self._backend.enqueue_with_conn(connection, finalizer_args)  # type: ignore[arg-type]  # Why: guarded by has_batch_extras; when connection is provided it is runtime-compatible
+
+            # Consume chunks, validating payloads with global index (M6).
+            global_idx = 0
+            while True:
+                chunk_items = list(islice(stream, chunk_size))
+                if not chunk_items:
+                    break
+                for ci in chunk_items:
+                    ref = ci.actor_ref
+                    try:
+                        ref.payload_type.model_validate(ci.payload)
+                    except ValidationError as exc:
+                        errs_v: list[dict[str, object]] = exc.errors()  # type: ignore[assignment]  # Why: pydantic v2 ErrorDetails is a TypedDict; safe at runtime
+                        raise PayloadValidationError(
+                            f"Payload validation failed for item {global_idx} "
+                            f"(actor={ref.name!r}): {exc}",
+                            actor=ref.name,
+                            validation_errors=errs_v,
+                        ) from exc
+                    global_idx += 1
+                chunk_args = build_batch_args(chunk_items, resolved_batch_id, self._clock)
+                chunk_rows = await self._backend.enqueue_batch(chunk_args, connection=connection)  # type: ignore[call-arg]  # Why: asyncpg.Connection is compatible with the protocol's connection parameter at runtime
+                for i, row in enumerate(chunk_rows):
+                    all_handles.append(
+                        JobHandle(
+                            client=self,
+                            row=row,
+                            result_adapter=chunk_items[i].actor_ref.result_adapter,
+                            was_existing=(row.id != chunk_args[i].id),
+                            _redis_client=self._redis_client,
+                            _settings=self._settings,
+                        )
+                    )
+                total_count += len(chunk_items)
+
+            if batch_row is not None:
+                if finalizer_row is not None:
+                    batch_row = replace(
+                        batch_row, finalizer_job_id=finalizer_row.id, expected_size=total_count
+                    )
+                else:
+                    batch_row = replace(batch_row, expected_size=total_count)
+                await self._backend.create_batch(
+                    batch_row.id,
+                    batch_row.queue,
+                    batch_row.expected_size,
+                    batch_row.failure_threshold,
+                    batch_row.finalizer_job_id,
+                    batch_row.originating_actor,
+                    connection=connection,  # type: ignore[arg-type]  # Why: connection may be None but create_batch handles that
+                )
+
+        # Build finalizer handle.
+        finalizer_handle: JobHandle[BaseModel | None] | None = None
+        if finalizer is not None and finalizer_row is not None:
+            finalizer_handle = JobHandle(
+                client=self,
+                row=finalizer_row,
+                result_adapter=finalizer.actor_ref.result_adapter,
+                was_existing=(finalizer_row.id != finalizer_args.id)
+                if finalizer_args is not None
+                else False,
+                _redis_client=self._redis_client,
+                _settings=self._settings,
+            )
+            all_handles.append(finalizer_handle)
+
+        logger.debug(
+            "batch_streaming_enqueued",
+            kind="batch_streaming_enqueued",
+            batch_id=str(resolved_batch_id),
+            size=total_count,
+        )
+
+        return BatchHandle(
+            batch_id=resolved_batch_id,
+            job_handles=all_handles,
+            size=total_count,
+            finalizer_handle=finalizer_handle,
+        )
+
+    async def get_batch(self, batch_id: UUID) -> BatchRow | None:
+        """Fetch a single batch row by ID.
+
+        Delegates to :meth:`Backend.get_batch`. Returns ``None`` when the
+        batch does not exist.
+        """
+        return await self._backend.get_batch(batch_id)
+
+    async def list_batches(
+        self,
+        filter: BatchFilter,
+    ) -> list[BatchSummary]:
+        """List batches matching *filter*, returning :class:`BatchSummary` objects.
+
+        Delegates to :meth:`Backend.list_batches` and maps each
+        ``(BatchRow, BatchCounts)`` pair to a :class:`BatchSummary`
+        with a :class:`BatchCompletionStatus` derived from the live counts.
+        """
+        from taskq.batch import BatchCompletionStatus
+
+        pairs = await self._backend.list_batches(filter)
+        summaries: list[BatchSummary] = []
+        for row, counts in pairs:
+            completion = BatchCompletionStatus(
+                total=counts.total,
+                pending=counts.pending,
+                succeeded=counts.succeeded,
+                failed=counts.failed,
+                cancelled=counts.cancelled,
+                crashed=counts.crashed,
+                abandoned=counts.abandoned,
+            )
+            summaries.append(
+                BatchSummary(
+                    batch_id=row.id,
+                    queue=row.queue,
+                    status=row.status,
+                    expected_size=row.expected_size,
+                    consecutive_failures=row.consecutive_failures,
+                    failure_threshold=row.failure_threshold,
+                    finalizer_job_id=row.finalizer_job_id,
+                    originating_actor=row.originating_actor,
+                    created_at=row.created_at,
+                    completed_at=row.completed_at,
+                    completion=completion,
+                )
+            )
+        return summaries
 
     async def enqueue_batch_fast(
         self,

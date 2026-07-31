@@ -12,13 +12,12 @@ bucket in Dragonfly, materialized lazily on first acquisition.
 
 from __future__ import annotations
 
-import asyncio
 import json
 from typing import TYPE_CHECKING
 
 import pytest
 
-from ._assertions import fetch_effects, fetch_job_rows
+from ._assertions import fetch_effects, fetch_job_rows, wait_all
 from .actors import DeliverTenantWebhookPayload, deliver_tenant_webhook
 
 if TYPE_CHECKING:
@@ -90,7 +89,7 @@ async def test_keyed_rate_limit_per_tenant_independence(
     ]
 
     # Step 2: wait for drain to complete — bucket is now fully depleted.
-    await asyncio.gather(*(handle.wait(timeout=90) for handle in drain_handles))
+    await wait_all(drain_handles, timeout=90)
 
     # Step 3: enqueue measured jobs for both tenants back-to-back.
     tenant_a_handles = [
@@ -112,9 +111,7 @@ async def test_keyed_rate_limit_per_tenant_independence(
         for i in range(_DRAIN_SIZE)
     ]
 
-    await asyncio.gather(
-        *(handle.wait(timeout=90) for handle in [*tenant_a_handles, *tenant_b_handles])
-    )
+    await wait_all([*tenant_a_handles, *tenant_b_handles], timeout=90)
 
     # Step 4: tenant A's measured jobs face a depleted bucket.
     # After the drain completes, tenant A's bucket has 0 tokens refilling

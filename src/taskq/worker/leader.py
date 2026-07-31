@@ -45,6 +45,7 @@ from taskq.worker._leader_shared import (
     _schedule_utc_to_cron,
     archive_expiry_sweep,
     cleanup_stale_workers,
+    complete_stale_batches,
     prune_terminal_jobs,
 )
 from taskq.worker._leader_sweeps import (
@@ -75,6 +76,7 @@ __all__ = [
     "_schedule_utc_to_cron",
     "archive_expiry_sweep",
     "cleanup_stale_workers",
+    "complete_stale_batches",
     "prune_terminal_jobs",
 ]
 
