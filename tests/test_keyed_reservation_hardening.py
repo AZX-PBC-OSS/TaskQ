@@ -15,11 +15,12 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock
 
 import pytest
+from pydantic import BaseModel
 
 from taskq._ids import new_uuid
 from taskq.backend.clock import Clock
 from taskq.exceptions import ReservationUnavailable
-from taskq.ratelimit.refs import KeyedReservationRef
+from taskq.ratelimit.refs import KeyedRateLimitRef, KeyedReservationRef
 from taskq.ratelimit.registry import RateLimitRegistry
 from taskq.ratelimit.reservation import ConcurrencyReservation
 from taskq.settings import WorkerSettings
@@ -29,17 +30,31 @@ from taskq.worker._leader_shared import SweepContext
 pytestmark = pytest.mark.asyncio
 
 
-def _default_key_fn(payload: dict[str, object]) -> str:
-    return str(payload["session_id"])
+class _DefaultPayload(BaseModel):
+    session_id: str
+
+
+class _TenantPayload(BaseModel):
+    tenant_id: str
+
+
+def _default_key_fn(payload: _DefaultPayload) -> str:
+    return payload.session_id
 
 
 def _keyed_ref(
     base_name: str = "session-cap",
     slots: int = 3,
     lease: timedelta = timedelta(minutes=5),
-    key_fn: Callable[[dict[str, object]], str] = _default_key_fn,
+    key_fn: Callable[[_DefaultPayload], str] = _default_key_fn,
 ) -> KeyedReservationRef:
-    return KeyedReservationRef(base_name=base_name, key_fn=key_fn, slots=slots, lease=lease)
+    return KeyedReservationRef.typed(
+        _DefaultPayload,
+        base_name=base_name,
+        key_fn=key_fn,
+        slots=slots,
+        lease=lease,
+    )
 
 
 def _settings(max_keyed: int = 10000) -> WorkerSettings:
@@ -63,7 +78,7 @@ async def test_key_length_cap_rejects_keys_exceeding_255_chars() -> None:
 
     with pytest.raises(ValueError, match="exceeds the maximum"):
         await reg._resolve_reservation_name(  # pyright: ignore[reportPrivateUsage]  # Why: exercising private resolution helper directly, matching precedent in test_ratelimit_keyed_refs.py.
-            ref, payload={"session_id": "x"}, pg_pool=None, settings=None
+            ref, payload=_DefaultPayload(session_id="x"), pg_pool=None, settings=None
         )
 
 
@@ -74,7 +89,7 @@ async def test_key_length_cap_accepts_key_of_exactly_255_chars() -> None:
     ref = _keyed_ref(base_name="session-cap", key_fn=lambda _p: key)
 
     name = await reg._resolve_reservation_name(  # pyright: ignore[reportPrivateUsage]
-        ref, payload={"session_id": "x"}, pg_pool=None, settings=None
+        ref, payload=_DefaultPayload(session_id="x"), pg_pool=None, settings=None
     )
 
     assert name == f"session-cap:{key}"
@@ -105,7 +120,7 @@ async def test_key_character_validation_rejects_invalid_characters(
 
     with pytest.raises(ValueError, match="outside the allowed set"):
         await reg._resolve_reservation_name(  # pyright: ignore[reportPrivateUsage]
-            ref, payload={"session_id": "x"}, pg_pool=None, settings=None
+            ref, payload=_DefaultPayload(session_id="x"), pg_pool=None, settings=None
         )
 
 
@@ -127,7 +142,7 @@ async def test_key_character_validation_accepts_valid_keys(valid_key: str) -> No
     ref = _keyed_ref(base_name="session-cap", key_fn=lambda _p: valid_key)
 
     name = await reg._resolve_reservation_name(  # pyright: ignore[reportPrivateUsage]
-        ref, payload={"session_id": "x"}, pg_pool=None, settings=None
+        ref, payload=_DefaultPayload(session_id="x"), pg_pool=None, settings=None
     )
 
     assert name == f"session-cap:{valid_key}"
@@ -144,16 +159,16 @@ async def test_max_keyed_reservations_guard_raises_reservation_unavailable() -> 
     ref = _keyed_ref(base_name="session-cap")
 
     await reg._resolve_reservation_name(  # pyright: ignore[reportPrivateUsage]
-        ref, payload={"session_id": "k1"}, pg_pool=None, settings=settings
+        ref, payload=_DefaultPayload(session_id="k1"), pg_pool=None, settings=settings
     )
     await reg._resolve_reservation_name(  # pyright: ignore[reportPrivateUsage]
-        ref, payload={"session_id": "k2"}, pg_pool=None, settings=settings
+        ref, payload=_DefaultPayload(session_id="k2"), pg_pool=None, settings=settings
     )
     assert len(reg._keyed_reservation_last_used) == 2  # pyright: ignore[reportPrivateUsage]
 
     with pytest.raises(ReservationUnavailable):
         await reg._resolve_reservation_name(  # pyright: ignore[reportPrivateUsage]
-            ref, payload={"session_id": "k3"}, pg_pool=None, settings=settings
+            ref, payload=_DefaultPayload(session_id="k3"), pg_pool=None, settings=settings
         )
 
 
@@ -164,13 +179,13 @@ async def test_max_keyed_reservations_guard_allows_reusing_existing_key() -> Non
     ref = _keyed_ref(base_name="session-cap")
 
     await reg._resolve_reservation_name(  # pyright: ignore[reportPrivateUsage]
-        ref, payload={"session_id": "k1"}, pg_pool=None, settings=settings
+        ref, payload=_DefaultPayload(session_id="k1"), pg_pool=None, settings=settings
     )
     assert len(reg._keyed_reservation_last_used) == 1  # pyright: ignore[reportPrivateUsage]
 
     # Reusing the same key must not raise — no new entry is added.
     name = await reg._resolve_reservation_name(  # pyright: ignore[reportPrivateUsage]
-        ref, payload={"session_id": "k1"}, pg_pool=None, settings=settings
+        ref, payload=_DefaultPayload(session_id="k1"), pg_pool=None, settings=settings
     )
     assert name == "session-cap:k1"
 
@@ -183,7 +198,7 @@ async def test_max_keyed_reservations_guard_skipped_when_settings_none() -> None
     for i in range(5):
         await reg._resolve_reservation_name(  # pyright: ignore[reportPrivateUsage]
             ref,
-            payload={"session_id": f"k{i}"},
+            payload=_DefaultPayload(session_id=f"k{i}"),
             pg_pool=None,
             settings=None,
         )
@@ -221,13 +236,13 @@ async def test_opportunistic_eviction_reclaims_idle_capacity_on_cap_hit(
     fake_time = 1000.0
     monkeypatch.setattr(registry_mod, "monotonic", lambda: fake_time)
     await reg._resolve_reservation_name(
-        ref, payload={"session_id": "k1"}, pg_pool=None, settings=settings
+        ref, payload=_DefaultPayload(session_id="k1"), pg_pool=None, settings=settings
     )  # pyright: ignore[reportPrivateUsage]
     await reg._resolve_reservation_name(
-        ref, payload={"session_id": "k2"}, pg_pool=None, settings=settings
+        ref, payload=_DefaultPayload(session_id="k2"), pg_pool=None, settings=settings
     )  # pyright: ignore[reportPrivateUsage]
     await reg._resolve_reservation_name(
-        ref, payload={"session_id": "k3"}, pg_pool=None, settings=settings
+        ref, payload=_DefaultPayload(session_id="k3"), pg_pool=None, settings=settings
     )  # pyright: ignore[reportPrivateUsage]
     assert len(reg._keyed_reservation_last_used) == 3  # pyright: ignore[reportPrivateUsage]
 
@@ -237,13 +252,13 @@ async def test_opportunistic_eviction_reclaims_idle_capacity_on_cap_hit(
 
     # 3. Re-stamp k3 as fresh (last_used=5000) — k1 and k2 remain stale.
     await reg._resolve_reservation_name(
-        ref, payload={"session_id": "k3"}, pg_pool=None, settings=settings
+        ref, payload=_DefaultPayload(session_id="k3"), pg_pool=None, settings=settings
     )  # pyright: ignore[reportPrivateUsage]
 
     # 4. Materialise a NEW key — would exceed the cap, but opportunistic
     #    eviction reclaims the 2 stale entries first.
     name = await reg._resolve_reservation_name(  # pyright: ignore[reportPrivateUsage]
-        ref, payload={"session_id": "k4"}, pg_pool=None, settings=settings
+        ref, payload=_DefaultPayload(session_id="k4"), pg_pool=None, settings=settings
     )
 
     assert name == "session-cap:k4"
@@ -274,10 +289,10 @@ async def test_cap_hit_with_nothing_idle_still_raises_reservation_unavailable(
     fake_time = 1000.0
     monkeypatch.setattr(registry_mod, "monotonic", lambda: fake_time)
     await reg._resolve_reservation_name(
-        ref, payload={"session_id": "k1"}, pg_pool=None, settings=settings
+        ref, payload=_DefaultPayload(session_id="k1"), pg_pool=None, settings=settings
     )  # pyright: ignore[reportPrivateUsage]
     await reg._resolve_reservation_name(
-        ref, payload={"session_id": "k2"}, pg_pool=None, settings=settings
+        ref, payload=_DefaultPayload(session_id="k2"), pg_pool=None, settings=settings
     )  # pyright: ignore[reportPrivateUsage]
     assert len(reg._keyed_reservation_last_used) == 2  # pyright: ignore[reportPrivateUsage]
 
@@ -285,7 +300,7 @@ async def test_cap_hit_with_nothing_idle_still_raises_reservation_unavailable(
     # eviction reclaims 0 entries and the cap hit is genuine.
     with pytest.raises(ReservationUnavailable):
         await reg._resolve_reservation_name(  # pyright: ignore[reportPrivateUsage]
-            ref, payload={"session_id": "k3"}, pg_pool=None, settings=settings
+            ref, payload=_DefaultPayload(session_id="k3"), pg_pool=None, settings=settings
         )
 
     # Registry is unchanged — no eviction occurred.
@@ -328,10 +343,10 @@ async def test_opportunistic_eviction_scan_is_amortized_under_sustained_denials(
     fake_time = 1000.0
     monkeypatch.setattr(registry_mod, "monotonic", lambda: fake_time)
     await reg._resolve_reservation_name(  # pyright: ignore[reportPrivateUsage]
-        ref, payload={"session_id": "k1"}, pg_pool=None, settings=settings
+        ref, payload=_DefaultPayload(session_id="k1"), pg_pool=None, settings=settings
     )
     await reg._resolve_reservation_name(  # pyright: ignore[reportPrivateUsage]
-        ref, payload={"session_id": "k2"}, pg_pool=None, settings=settings
+        ref, payload=_DefaultPayload(session_id="k2"), pg_pool=None, settings=settings
     )
     assert len(reg._keyed_reservation_last_used) == 2  # pyright: ignore[reportPrivateUsage]
     assert scan_calls == []
@@ -339,14 +354,14 @@ async def test_opportunistic_eviction_scan_is_amortized_under_sustained_denials(
     # 2. First denied new key — the scan runs once (nothing idle to reclaim).
     with pytest.raises(ReservationUnavailable):
         await reg._resolve_reservation_name(  # pyright: ignore[reportPrivateUsage]
-            ref, payload={"session_id": "k3"}, pg_pool=None, settings=settings
+            ref, payload=_DefaultPayload(session_id="k3"), pg_pool=None, settings=settings
         )
     assert len(scan_calls) == 1
 
     # 3. Immediate second denial — the scan is gated: no rescan.
     with pytest.raises(ReservationUnavailable):
         await reg._resolve_reservation_name(  # pyright: ignore[reportPrivateUsage]
-            ref, payload={"session_id": "k4"}, pg_pool=None, settings=settings
+            ref, payload=_DefaultPayload(session_id="k4"), pg_pool=None, settings=settings
         )
     assert len(scan_calls) == 1, "scan must be amortized — no rescan within the min interval"
 
@@ -355,7 +370,7 @@ async def test_opportunistic_eviction_scan_is_amortized_under_sustained_denials(
     fake_time = 1000.0 + 31.0
     with pytest.raises(ReservationUnavailable):
         await reg._resolve_reservation_name(  # pyright: ignore[reportPrivateUsage]
-            ref, payload={"session_id": "k5"}, pg_pool=None, settings=settings
+            ref, payload=_DefaultPayload(session_id="k5"), pg_pool=None, settings=settings
         )
     assert len(scan_calls) == 2
 
@@ -381,30 +396,30 @@ async def test_gated_opportunistic_scan_still_reclaims_after_interval(
     fake_time = 1000.0
     monkeypatch.setattr(registry_mod, "monotonic", lambda: fake_time)
     await reg._resolve_reservation_name(  # pyright: ignore[reportPrivateUsage]
-        ref, payload={"session_id": "k1"}, pg_pool=None, settings=settings
+        ref, payload=_DefaultPayload(session_id="k1"), pg_pool=None, settings=settings
     )
     await reg._resolve_reservation_name(  # pyright: ignore[reportPrivateUsage]
-        ref, payload={"session_id": "k2"}, pg_pool=None, settings=settings
+        ref, payload=_DefaultPayload(session_id="k2"), pg_pool=None, settings=settings
     )
 
     # Both entries go stale (past the 1h idle threshold); the cap-hit for
     # k3 at t=5000 runs the first scan, evicts k1+k2, and admits k3.
     fake_time = 5000.0
     name = await reg._resolve_reservation_name(  # pyright: ignore[reportPrivateUsage]
-        ref, payload={"session_id": "k3"}, pg_pool=None, settings=settings
+        ref, payload=_DefaultPayload(session_id="k3"), pg_pool=None, settings=settings
     )
     assert name == "session-cap:k3"
 
     # Refill to the cap with a fresh key.
     await reg._resolve_reservation_name(  # pyright: ignore[reportPrivateUsage]
-        ref, payload={"session_id": "k4"}, pg_pool=None, settings=settings
+        ref, payload=_DefaultPayload(session_id="k4"), pg_pool=None, settings=settings
     )
     # Same-instant cap-hit for a 4th key — the scan is gated (nothing new
     # could have gone idle since the scan moments ago); k3/k4 are fresh,
     # so the denial is genuine.
     with pytest.raises(ReservationUnavailable):
         await reg._resolve_reservation_name(  # pyright: ignore[reportPrivateUsage]
-            ref, payload={"session_id": "k5"}, pg_pool=None, settings=settings
+            ref, payload=_DefaultPayload(session_id="k5"), pg_pool=None, settings=settings
         )
 
 
@@ -441,7 +456,7 @@ async def test_race_condition_eviction_during_ensure_slots(
 
     name = await reg._resolve_reservation_name(  # pyright: ignore[reportPrivateUsage]
         ref,
-        payload={"session_id": "s1"},
+        payload=_DefaultPayload(session_id="s1"),
         pg_pool=fake_pool,  # type: ignore[arg-type]  # ensure_slots is patched; pool is never used.
         settings=None,
     )
@@ -461,7 +476,7 @@ async def test_race_condition_no_key_error_when_pg_pool_none() -> None:
     ref = _keyed_ref(base_name="session-cap")
 
     name = await reg._resolve_reservation_name(  # pyright: ignore[reportPrivateUsage]
-        ref, payload={"session_id": "s1"}, pg_pool=None, settings=None
+        ref, payload=_DefaultPayload(session_id="s1"), pg_pool=None, settings=None
     )
 
     assert name == "session-cap:s1"
@@ -499,7 +514,7 @@ async def test_ensure_slots_failure_unwinds_materialization_for_retry(
     with pytest.raises(ConnectionError, match="transient PG blip"):
         await reg._resolve_reservation_name(  # pyright: ignore[reportPrivateUsage]
             ref,
-            payload={"session_id": "s1"},
+            payload=_DefaultPayload(session_id="s1"),
             pg_pool=fake_pool,  # type: ignore[arg-type]
             settings=None,
         )
@@ -511,7 +526,7 @@ async def test_ensure_slots_failure_unwinds_materialization_for_retry(
     # The retry re-materializes and re-attempts ensure_slots (now succeeds).
     name = await reg._resolve_reservation_name(  # pyright: ignore[reportPrivateUsage]
         ref,
-        payload={"session_id": "s1"},
+        payload=_DefaultPayload(session_id="s1"),
         pg_pool=fake_pool,  # type: ignore[arg-type]
         settings=None,
     )
@@ -535,10 +550,10 @@ async def test_keyed_cap_does_not_deny_static_colliding_reuse() -> None:
 
     # Fill the keyed cap with two fresh materialized keys.
     await reg._resolve_reservation_name(  # pyright: ignore[reportPrivateUsage]
-        ref, payload={"session_id": "k1"}, pg_pool=None, settings=settings
+        ref, payload=_DefaultPayload(session_id="k1"), pg_pool=None, settings=settings
     )
     await reg._resolve_reservation_name(  # pyright: ignore[reportPrivateUsage]
-        ref, payload={"session_id": "k2"}, pg_pool=None, settings=settings
+        ref, payload=_DefaultPayload(session_id="k2"), pg_pool=None, settings=settings
     )
     assert len(reg._keyed_reservation_last_used) == 2  # pyright: ignore[reportPrivateUsage]
 
@@ -552,7 +567,7 @@ async def test_keyed_cap_does_not_deny_static_colliding_reuse() -> None:
 
     # Must NOT raise ReservationUnavailable despite the full cap.
     name = await reg._resolve_reservation_name(  # pyright: ignore[reportPrivateUsage]
-        ref, payload={"session_id": "s1"}, pg_pool=None, settings=settings
+        ref, payload=_DefaultPayload(session_id="s1"), pg_pool=None, settings=settings
     )
     assert name == "session-cap:s1"
     # Static entry stays untracked (never evictable by the keyed sweep).
@@ -574,10 +589,10 @@ async def test_colliding_concrete_names_same_config_share_primitive() -> None:
     ref_ab = _keyed_ref(base_name="a:b")  # key "c" → concrete "a:b:c"
 
     name_a = await reg._resolve_reservation_name(  # pyright: ignore[reportPrivateUsage]
-        ref_a, payload={"session_id": "b:c"}, pg_pool=None, settings=None
+        ref_a, payload=_DefaultPayload(session_id="b:c"), pg_pool=None, settings=None
     )
     name_ab = await reg._resolve_reservation_name(  # pyright: ignore[reportPrivateUsage]
-        ref_ab, payload={"session_id": "c"}, pg_pool=None, settings=None
+        ref_ab, payload=_DefaultPayload(session_id="c"), pg_pool=None, settings=None
     )
 
     assert name_a == name_ab == "a:b:c"
@@ -604,7 +619,7 @@ async def test_collision_guard_resets_after_idle_eviction(
     fake_time = 1000.0
     monkeypatch.setattr(registry_mod, "monotonic", lambda: fake_time)
     await reg._resolve_reservation_name(  # pyright: ignore[reportPrivateUsage]
-        ref_a, payload={"session_id": "b:c"}, pg_pool=None, settings=None
+        ref_a, payload=_DefaultPayload(session_id="b:c"), pg_pool=None, settings=None
     )
 
     # Idle-evict the "a:b:c" entry (slots=3).
@@ -614,7 +629,7 @@ async def test_collision_guard_resets_after_idle_eviction(
 
     # The colliding ref now materializes its own config — no ValueError.
     name = await reg._resolve_reservation_name(  # pyright: ignore[reportPrivateUsage]
-        ref_ab, payload={"session_id": "c"}, pg_pool=None, settings=None
+        ref_ab, payload=_DefaultPayload(session_id="c"), pg_pool=None, settings=None
     )
     assert name == "a:b:c"
     assert reg.get_reservation("a:b:c").slots == 99
@@ -630,11 +645,11 @@ async def test_colliding_concrete_names_different_config_raise_value_error() -> 
     ref_ab = _keyed_ref(base_name="a:b", slots=99)  # same concrete name, different slots
 
     await reg._resolve_reservation_name(  # pyright: ignore[reportPrivateUsage]
-        ref_a, payload={"session_id": "b:c"}, pg_pool=None, settings=None
+        ref_a, payload=_DefaultPayload(session_id="b:c"), pg_pool=None, settings=None
     )
     with pytest.raises(ValueError, match="concrete-name collision"):
         await reg._resolve_reservation_name(  # pyright: ignore[reportPrivateUsage]
-            ref_ab, payload={"session_id": "c"}, pg_pool=None, settings=None
+            ref_ab, payload=_DefaultPayload(session_id="c"), pg_pool=None, settings=None
         )
 
     # The original primitive is untouched.
@@ -663,7 +678,7 @@ async def test_statically_preregistered_reservation_is_never_keyed_evicted(
 
     monkeypatch.setattr(registry_mod, "monotonic", lambda: 1000.0)
     name = await reg._resolve_reservation_name(  # pyright: ignore[reportPrivateUsage]
-        ref, payload={"session_id": "s1"}, pg_pool=None, settings=None
+        ref, payload=_DefaultPayload(session_id="s1"), pg_pool=None, settings=None
     )
     assert name == "session-cap:s1"
     assert len(reg._keyed_reservation_last_used) == 0  # pyright: ignore[reportPrivateUsage]
@@ -698,7 +713,7 @@ async def test_value_error_during_keyed_resolution_rolls_back_earlier_reservatio
             reservations=["gpu", bad_ref],
             job_id=new_uuid(),
             worker_id=new_uuid(),
-            payload={"session_id": "s1"},
+            payload=_DefaultPayload(session_id="s1"),
         )
 
     # The statically-acquired slot was rolled back: fully free again.
@@ -726,7 +741,7 @@ async def test_key_fn_exception_rolls_back_earlier_reservation() -> None:
     )
     reg.register(static_res)
 
-    def _boom(payload: dict[str, object]) -> str:
+    def _boom(payload: _DefaultPayload) -> str:
         raise RuntimeError("key derivation exploded")
 
     bad_ref = _keyed_ref(base_name="session-cap", key_fn=_boom)
@@ -737,7 +752,7 @@ async def test_key_fn_exception_rolls_back_earlier_reservation() -> None:
             reservations=["gpu", bad_ref],
             job_id=new_uuid(),
             worker_id=new_uuid(),
-            payload={"session_id": "s1"},
+            payload=_DefaultPayload(session_id="s1"),
         )
 
     free, held = static_res.table.peek_slots("gpu")
@@ -749,15 +764,14 @@ async def test_value_error_during_keyed_rate_limit_resolution_rolls_back_reserva
     validation raised after a reservation was acquired rolls the
     reservation back (reservations acquire BEFORE rate limits, so the
     leak window is the rate-limit resolution/acquire phase)."""
-    from taskq.ratelimit.refs import KeyedRateLimitRef
-
     clock = FakeClock(datetime(2025, 1, 1, tzinfo=UTC))
     reg = RateLimitRegistry()
     static_res = ConcurrencyReservation(
         name="gpu", slots=1, lease=timedelta(minutes=5), clock=clock
     )
     reg.register(static_res)
-    bad_rl_ref = KeyedRateLimitRef(
+    bad_rl_ref = KeyedRateLimitRef.typed(
+        _TenantPayload,
         base_name="api-per-tenant",
         key_fn=lambda _p: "key with spaces",  # invalid: disallowed chars
         capacity=10,
@@ -770,7 +784,7 @@ async def test_value_error_during_keyed_rate_limit_resolution_rolls_back_reserva
             reservations=["gpu"],
             job_id=new_uuid(),
             worker_id=new_uuid(),
-            payload={"tenant_id": "t1"},
+            payload=_TenantPayload(tenant_id="t1"),
         )
 
     free, held = static_res.table.peek_slots("gpu")

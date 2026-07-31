@@ -610,19 +610,27 @@ variants.
 A mixed list of static names and keyed refs is allowed:
 
 ```python
+from datetime import timedelta
+from pydantic import BaseModel
 from taskq.actor import actor
 from taskq.ratelimit import KeyedRateLimitRef, KeyedReservationRef
 
+class MyPayload(BaseModel):
+    tenant_id: str
+    session_id: str
+
 @actor(
-    rate_limits=["global-bucket", KeyedRateLimitRef(
+    rate_limits=["global-bucket", KeyedRateLimitRef.typed(
+        MyPayload,
         base_name="api-per-tenant",
-        key_fn=lambda payload: payload["tenant_id"],
+        key_fn=lambda p: p.tenant_id,
         capacity=10,
         refill_per_second=1.0,
     )],
-    reservations=["global-slots", KeyedReservationRef(
+    reservations=["global-slots", KeyedReservationRef.typed(
+        MyPayload,
         base_name="session-slots",
-        key_fn=lambda payload: payload["session_id"],
+        key_fn=lambda p: p.session_id,
         slots=3,
         lease=timedelta(minutes=5),
     )],
@@ -722,9 +730,10 @@ registry.register(ConcurrencyReservation(
 @actor(
     reservations=[
         "geocode-global",
-        KeyedReservationRef(
+        KeyedReservationRef.typed(
+            GeocodeRequest,
             base_name="geocode-session",
-            key_fn=lambda payload: payload["session_id"],
+            key_fn=lambda p: p.session_id,
             slots=3,
             lease=timedelta(minutes=5),
         ),
@@ -736,8 +745,32 @@ async def geocode_address(payload: GeocodeRequest) -> None:
     ...
 ```
 
-`key_fn` receives the actor's validated payload as a `dict[str, object]` (the same shape stored
-on the job row) and must return a non-empty string. `base_name` namespaces the derived
+`key_fn` receives the actor's validated Pydantic model and must return a non-empty string.
+The model has defaults, aliases, and validation applied. Use the `.typed()` classmethod for
+compile-time type checking of `key_fn` against the payload model:
+
+```python
+from datetime import timedelta
+from pydantic import BaseModel, Field
+from taskq.ratelimit import KeyedReservationRef
+
+class GeocodeRequest(BaseModel):
+    session_id: str = Field(alias="sessionId")  # wire name differs from attribute
+
+KeyedReservationRef.typed(
+    GeocodeRequest,
+    base_name="geocode-session",
+    key_fn=lambda p: p.session_id,  # p is GeocodeRequest — typed, alias applied
+    slots=3,
+    lease=timedelta(minutes=5),
+)
+```
+
+The `payload_type` field (required) declares the model class the registry validates the
+payload against before calling `key_fn`. Pydantic defaults populate fields absent from the
+serialized payload, aliases map wire names to model attributes, and validation errors surface
+as `PayloadValidationError` (a non-retryable payload error) rather than `KeyError` (a limiter fault).
+`base_name` namespaces the derived
 reservations — the concrete name registered for a given key is `f"{base_name}:{key}"` — so
 distinct `KeyedReservationRef` declarations never collide. `slots` and `lease` apply identically
 to every key derived from a given ref; use a separate `KeyedReservationRef` if different keys
@@ -782,6 +815,35 @@ dispatch. Registration is idempotent for identical config, which every acquisiti
 
 ---
 
+## Migrating from dict `key_fn` (pre-1.0)
+
+If you have existing keyed-ref declarations from before 1.0, update them as follows:
+
+1. **Add `payload_type`** — pass the actor's payload model class as the first argument to `.typed()`:
+
+   ```python
+   from datetime import timedelta
+   from pydantic import BaseModel
+   from taskq.ratelimit import KeyedRateLimitRef
+
+   class MyPayload(BaseModel):
+       tenant_id: str
+
+   # BEFORE (broken):
+   KeyedRateLimitRef(base_name="api-per-tenant", key_fn=lambda p: p["tenant_id"], capacity=10, refill_per_second=1.0)
+
+   # AFTER:
+   KeyedRateLimitRef.typed(MyPayload, base_name="api-per-tenant", key_fn=lambda p: p.tenant_id, capacity=10, refill_per_second=1.0)
+   ```
+
+2. **Change dict access to model-attribute access** — `p["tenant_id"]` → `p.tenant_id`. Pydantic defaults, aliases, and validators are now applied before `key_fn` runs.
+
+3. **Aliases are transparent** — `Field(alias="tenantId")` maps the wire name to the model attribute. `key_fn` uses `p.tenant_id`, not `p["tenantId"]`.
+
+4. **Budget reset hazard:** if you change a model default or alias that affects a key-deriving field, existing concrete bucket names in Redis/PG will differ from new ones. Drain affected queues before deploying such changes.
+
+---
+
 ## `KeyedRateLimitRef` — dynamic per-key token buckets
 
 A static `rate_limits=["name"]` entry caps request rate globally: every job that declares it
@@ -820,9 +882,10 @@ registry.register(TokenBucket(
 @actor(
     rate_limits=[
         "api-global",
-        KeyedRateLimitRef(
+        KeyedRateLimitRef.typed(
+            ApiRequest,
             base_name="api-per-tenant",
-            key_fn=lambda payload: payload["tenant_id"],
+            key_fn=lambda p: p.tenant_id,
             capacity=10,
             refill_per_second=1.0,
         ),
@@ -834,8 +897,31 @@ async def call_external_api(payload: ApiRequest) -> None:
     ...
 ```
 
-`key_fn` receives the actor's validated payload as a `dict[str, object]` (the same shape stored
-on the job row) and must return a non-empty string. `base_name` namespaces the derived buckets —
+`key_fn` receives the actor's validated Pydantic model and must return a non-empty string.
+The model has defaults, aliases, and validation applied. Use the `.typed()` classmethod for
+compile-time type checking of `key_fn` against the payload model:
+
+```python
+from pydantic import BaseModel, Field
+from taskq.ratelimit import KeyedRateLimitRef
+
+class ApiRequest(BaseModel):
+    tenant_id: str = Field(alias="tenantId")  # wire name differs from attribute
+
+KeyedRateLimitRef.typed(
+    ApiRequest,
+    base_name="api-per-tenant",
+    key_fn=lambda p: p.tenant_id,  # p is ApiRequest — typed, alias applied
+    capacity=10,
+    refill_per_second=1.0,
+)
+```
+
+The `payload_type` field (required) declares the model class the registry validates the
+payload against before calling `key_fn`. Pydantic defaults populate fields absent from the
+serialized payload, aliases map wire names to model attributes, and validation errors surface
+as `PayloadValidationError` (a non-retryable payload error) rather than `KeyError` (a limiter fault).
+`base_name` namespaces the derived buckets —
 the concrete name registered for a given key is `f"{base_name}:{key}"` — so distinct
 `KeyedRateLimitRef` declarations never collide. `capacity` and `refill_per_second` apply
 identically to every key derived from a given ref; use a separate `KeyedRateLimitRef` if

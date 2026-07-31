@@ -22,6 +22,7 @@ from opentelemetry.trace import SpanKind
 from pydantic import BaseModel
 
 from taskq._json import dumps as _json_dumps
+from taskq._validation import validate_actor_payload
 from taskq.backend._protocol import (
     Backend,
     CancelPhase,
@@ -226,12 +227,14 @@ async def consume_one_job(
     Returns the job's terminal outcome for span status and metric
     recording by the caller (``dispatch_one_job``).
 
-    ``payload_type`` is the actor's payload model — the consumer
-    re-validates the raw ``dict[str, object]`` row payload against this
-    model so the :class:`JobContext` handed to the actor carries a
-    typed, validated :class:`pydantic.BaseModel` instance. The bound is
-    ``BaseModel`` here (the registry is heterogeneous); per-actor ``P``
-    flows from the call site that selected ``payload_type``.
+    ``payload_type`` is the actor's payload model — the consumer validates
+    the raw ``dict[str, object]`` row payload against this model BEFORE
+    rate-limit acquisition so the :class:`JobContext` handed to the actor
+    carries a typed, validated :class:`pydantic.BaseModel` instance and a
+    :class:`~taskq.exceptions.PayloadValidationError` from an invalid payload
+    surfaces BEFORE a rate-limit token is consumed. The bound is ``BaseModel``
+    here (the registry is heterogeneous); per-actor ``P`` flows from the call
+    site that selected ``payload_type``.
 
     ``enqueuer`` is the per-loop SubJobEnqueuer constructed in ``_main``
     after ``loop_scope.bootstrap()``. When provided, the live
@@ -297,6 +300,18 @@ async def consume_one_job(
     )
     _needs_acquire = bool(_rl_limits or _rl_reservations) and rate_limit_registry is not None
 
+    # Ensure the validated model is available before rate-limit acquisition.
+    # On the dispatch path, validated_payload is already set (dispatch_one_job
+    # validates before calling consume_one_job). For direct callers, validate
+    # here. A PayloadValidationError from an invalid payload surfaces BEFORE a
+    # rate-limit token is consumed — the correct behavior.
+    if validated_payload is None:
+        validated_payload = validate_actor_payload(
+            payload_type,
+            job.payload,
+            actor=job.actor,
+        )
+
     acquired: list[AcquiredResource] = []
 
     if _needs_acquire and rate_limit_registry is not None:
@@ -306,7 +321,7 @@ async def consume_one_job(
                 reservations=_rl_reservations,
                 job_id=job.id,
                 worker_id=worker_id,
-                payload=job.payload,
+                payload=validated_payload,
                 redis_client=redis_client,
                 pg_pool=worker_pool,
                 clock=clock,
@@ -353,12 +368,6 @@ async def consume_one_job(
         _progress_buffers[job.id] = _buf
 
     try:
-        validated_payload = (
-            validated_payload
-            if validated_payload is not None
-            else payload_type.model_validate(job.payload)
-        )
-
         live_enqueuer = (
             enqueuer
             if enqueuer is not None

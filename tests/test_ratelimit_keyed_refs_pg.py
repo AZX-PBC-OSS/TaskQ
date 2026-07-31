@@ -17,6 +17,7 @@ from datetime import timedelta
 
 import asyncpg
 import pytest
+from pydantic import BaseModel
 
 from taskq._ids import new_uuid
 from taskq.migrate import apply_pending
@@ -25,6 +26,10 @@ from taskq.ratelimit.registry import RateLimitRegistry
 from taskq.settings import WorkerSettings
 
 pytestmark = pytest.mark.integration
+
+
+class _SessionPayload(BaseModel):
+    session_id: str
 
 
 async def test_keyed_reservation_lazy_registration_against_real_pg(
@@ -42,9 +47,10 @@ async def test_keyed_reservation_lazy_registration_against_real_pg(
     pool = await asyncpg.create_pool(dsn=pg_dsn, min_size=1, max_size=2)
     try:
         reg = RateLimitRegistry()
-        ref = KeyedReservationRef(
+        ref = KeyedReservationRef.typed(
+            _SessionPayload,
             base_name="keyed-refs-pg-probe",
-            key_fn=lambda p: str(p["session_id"]),
+            key_fn=lambda p: p.session_id,
             slots=2,
             lease=timedelta(seconds=10),
         )
@@ -54,7 +60,7 @@ async def test_keyed_reservation_lazy_registration_against_real_pg(
             reservations=[ref],
             job_id=new_uuid(),
             worker_id=new_uuid(),
-            payload={"session_id": "s1"},
+            payload=_SessionPayload(session_id="s1"),
             pg_pool=pool,
         )
 
@@ -81,9 +87,10 @@ async def test_keyed_reservation_lazy_registration_respects_worker_schema(
     pool = await asyncpg.create_pool(dsn=pg_dsn, min_size=1, max_size=2)
     try:
         reg = RateLimitRegistry()
-        ref = KeyedReservationRef(
+        ref = KeyedReservationRef.typed(
+            _SessionPayload,
             base_name="keyed-refs-schema-probe",
-            key_fn=lambda p: str(p["session_id"]),
+            key_fn=lambda p: p.session_id,
             slots=1,
             lease=timedelta(seconds=10),
         )
@@ -99,7 +106,7 @@ async def test_keyed_reservation_lazy_registration_respects_worker_schema(
             reservations=[ref],
             job_id=new_uuid(),
             worker_id=new_uuid(),
-            payload={"session_id": "s1"},
+            payload=_SessionPayload(session_id="s1"),
             pg_pool=pool,
             settings=settings,
         )
@@ -134,9 +141,10 @@ async def test_eviction_while_holder_active_does_not_over_admit(
     pool = await asyncpg.create_pool(dsn=pg_dsn, min_size=1, max_size=2)
     try:
         reg = RateLimitRegistry()
-        ref = KeyedReservationRef(
+        ref = KeyedReservationRef.typed(
+            _SessionPayload,
             base_name="keyed-refs-evict-probe",
-            key_fn=lambda p: str(p["session_id"]),
+            key_fn=lambda p: p.session_id,
             slots=1,
             lease=timedelta(minutes=10),
         )
@@ -148,7 +156,7 @@ async def test_eviction_while_holder_active_does_not_over_admit(
             reservations=[ref],
             job_id=new_uuid(),
             worker_id=holder_worker,
-            payload={"session_id": "s1"},
+            payload=_SessionPayload(session_id="s1"),
             pg_pool=pool,
         )
         assert len(acquired) == 1
@@ -170,7 +178,7 @@ async def test_eviction_while_holder_active_does_not_over_admit(
                 reservations=[ref],
                 job_id=new_uuid(),
                 worker_id=new_uuid(),
-                payload={"session_id": "s1"},
+                payload=_SessionPayload(session_id="s1"),
                 pg_pool=pool,
             )
 
@@ -193,7 +201,7 @@ async def test_eviction_while_holder_active_does_not_over_admit(
             reservations=[ref],
             job_id=new_uuid(),
             worker_id=new_uuid(),
-            payload={"session_id": "s1"},
+            payload=_SessionPayload(session_id="s1"),
             pg_pool=pool,
         )
         assert len(reacquired) == 1

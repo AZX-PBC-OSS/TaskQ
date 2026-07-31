@@ -572,11 +572,15 @@ async def test_bootstrap_fails_fast_on_keyed_redis_rate_limit_without_redis() ->
     """
     from taskq.ratelimit.refs import KeyedRateLimitRef
 
+    class _TenantPayload(BaseModel):
+        tenant: str = "t"
+
     @actor(
         rate_limits=[
-            KeyedRateLimitRef(
+            KeyedRateLimitRef.typed(
+                _TenantPayload,
                 base_name="keyed-tenant-budget",
-                key_fn=lambda p: str(p.get("tenant", "t")),
+                key_fn=lambda p: p.tenant,
                 capacity=5.0,
                 refill_per_second=1.0,
             )

@@ -13,6 +13,7 @@ import asyncio
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from pydantic import BaseModel
 
 from taskq._ids import new_uuid
 from taskq.exceptions import ReservationUnavailable
@@ -27,6 +28,19 @@ from taskq.testing.clock import FakeClock
 
 _START = datetime(2025, 1, 1, tzinfo=UTC)
 _RESERVED_PREFIX = QUEUE_CONCURRENCY_PREFIX
+
+
+class _SessionPayload(BaseModel):
+    session_id: str
+
+
+class _TenantPayload(BaseModel):
+    tenant_id: str
+
+
+class _CompositionPayload(BaseModel):
+    session_id: str
+    tenant_id: str
 
 
 def _reservation(
@@ -201,19 +215,21 @@ async def test_queue_cap_composes_with_keyed_refs_and_rolls_back_across_kinds() 
         TokenBucket(name="api-per-tenant:t1", capacity=1, refill_per_second=0, backend="memory")
     )
 
-    res_ref = KeyedReservationRef(
+    res_ref = KeyedReservationRef.typed(
+        _SessionPayload,
         base_name="session-cap",
-        key_fn=lambda p: str(p["session_id"]),
+        key_fn=lambda p: p.session_id,
         slots=1,
         lease=timedelta(minutes=5),
     )
-    rl_ref = KeyedRateLimitRef(
+    rl_ref = KeyedRateLimitRef.typed(
+        _TenantPayload,
         base_name="api-per-tenant",
-        key_fn=lambda p: str(p["tenant_id"]),
+        key_fn=lambda p: p.tenant_id,
         capacity=1,
         refill_per_second=0,
     )
-    payload: dict[str, object] = {"session_id": "s1", "tenant_id": "t1"}
+    payload = _CompositionPayload(session_id="s1", tenant_id="t1")
 
     # ── (a) Full acquire: queue cap first (as dispatch prepends it). ──
     acquired = await reg.acquire_for_actor(
@@ -279,9 +295,10 @@ async def test_keyed_reservation_denial_rolls_back_queue_cap() -> None:
     # Another holder occupies the keyed reservation's only slot.
     await keyed_res.acquire(new_uuid(), new_uuid())
 
-    res_ref = KeyedReservationRef(
+    res_ref = KeyedReservationRef.typed(
+        _SessionPayload,
         base_name="session-cap",
-        key_fn=lambda p: str(p["session_id"]),
+        key_fn=lambda p: p.session_id,
         slots=1,
         lease=timedelta(minutes=5),
     )
@@ -292,7 +309,7 @@ async def test_keyed_reservation_denial_rolls_back_queue_cap() -> None:
             reservations=[queue_cap, res_ref],
             job_id=new_uuid(),
             worker_id=new_uuid(),
-            payload={"session_id": "s1"},
+            payload=_SessionPayload(session_id="s1"),
         )
     assert exc_info.value.bucket_name == "session-cap:s1"
 
@@ -470,7 +487,7 @@ async def test_queue_cap_saturation_snoozes_with_operator_visible_awaiting() -> 
 
     from taskq.backend.clock import Clock
     from taskq.context import JobContext
-    from taskq.testing.actor import FakeBackend, as_backend, default_actor_config
+    from taskq.testing.actor import EmptyPayload, FakeBackend, as_backend, default_actor_config
     from taskq.testing.jobs import make_job_row
     from taskq.worker._consumer import consume_one_job
     from taskq.worker.dispatch import _effective_reservations
@@ -500,11 +517,12 @@ async def test_queue_cap_saturation_snoozes_with_operator_visible_awaiting() -> 
         new_uuid(),
         run_actor=never_called_actor,
         actor_config=default_actor_config(),
-        payload_type=BaseModel,
+        payload_type=EmptyPayload,
         clock=clk,
         rate_limit_registry=reg,
         rate_limits=[],
         reservations=list(reservations),
+        validated_payload=EmptyPayload(),
     )
 
     assert outcome == "scheduled"

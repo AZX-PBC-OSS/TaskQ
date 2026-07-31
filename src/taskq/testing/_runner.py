@@ -11,6 +11,7 @@ preserved without test-file changes.
 """
 
 import asyncio
+import traceback
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -22,6 +23,7 @@ from pydantic import BaseModel
 
 from taskq.actor_config import ActorConfig
 from taskq.backend._protocol import (
+    ErrorInfo,
     EventRow,
     JobId,
     JobRow,
@@ -30,7 +32,7 @@ from taskq.backend._protocol import (
 from taskq.backend.statemachine import TERMINAL_STATUSES
 from taskq.batch import BatchCompletionStatus, _decide_batch_status, apply_batch_terminal_outcome
 from taskq.context import JobContext
-from taskq.exceptions import Snooze
+from taskq.exceptions import PayloadValidationError, Snooze
 from taskq.retry import OnRetryExhausted, OnSuccess, RetryClassifierHook, RetryPolicy
 
 if TYPE_CHECKING:
@@ -581,16 +583,39 @@ async def run_until_drained(backend: "InMemoryBackend") -> None:
         if actor_cfg is None:
             actor_cfg = _InMemoryActorConfig(retry=RetryPolicy(jitter=0.0))
 
-        outcome = await consume_one_job(
-            backend,
-            job,
-            backend._worker_id,  # pyright: ignore[reportPrivateUsage]  # Why: test runner helper intentionally accesses private InMemoryBackend state; this module is co-located with the backend and owns this access pattern.
-            run_actor=_build_run_actor(stub, backend._cancel_events),  # pyright: ignore[reportPrivateUsage]  # Why: test runner helper intentionally accesses private InMemoryBackend state; this module is co-located with the backend and owns this access pattern.
-            actor_config=actor_cfg,
-            payload_type=actor_cfg.payload_type,
-            clock=backend._clock,  # pyright: ignore[reportPrivateUsage]  # Why: test runner helper intentionally accesses private InMemoryBackend state; this module is co-located with the backend and owns this access pattern.
-            fallback_result_ttl=actor_cfg.result_ttl,
-        )
+        # PayloadValidationError escapes consume_one_job's own try/except
+        # because validation runs BEFORE the try block (line 309-318 in
+        # _consumer.py). The production dispatch_one_job catches it via its
+        # outer except-Exception and routes through _handle_generic_exception;
+        # the test runner has no such wrapper, so we catch it here and
+        # transition the job to failed — matching the non-retryable contract
+        # documented on PayloadValidationError.
+        try:
+            outcome = await consume_one_job(
+                backend,
+                job,
+                backend._worker_id,  # pyright: ignore[reportPrivateUsage]  # Why: test runner helper intentionally accesses private InMemoryBackend state; this module is co-located with the backend and owns this access pattern.
+                run_actor=_build_run_actor(stub, backend._cancel_events),  # pyright: ignore[reportPrivateUsage]  # Why: test runner helper intentionally accesses private InMemoryBackend state; this module is co-located with the backend and owns this access pattern.
+                actor_config=actor_cfg,
+                payload_type=actor_cfg.payload_type,
+                clock=backend._clock,  # pyright: ignore[reportPrivateUsage]  # Why: test runner helper intentionally accesses private InMemoryBackend state; this module is co-located with the backend and owns this access pattern.
+                fallback_result_ttl=actor_cfg.result_ttl,
+            )
+        except PayloadValidationError as exc:
+            error_info = ErrorInfo(
+                error_class="PayloadValidationError",
+                error_message=str(exc),
+                error_traceback="".join(
+                    traceback.format_exception(type(exc), exc, exc.__traceback__)
+                ),
+            )
+            await backend.mark_failed_or_retry(
+                job_id=job.id,
+                worker_id=backend._worker_id,  # pyright: ignore[reportPrivateUsage]  # Why: test runner helper intentionally accesses private InMemoryBackend state; this module is co-located with the backend and owns this access pattern.
+                error_info=error_info,
+                next_scheduled_at=None,
+            )
+            outcome = "failed"
 
         try:
             await apply_batch_terminal_outcome(backend, job, outcome)

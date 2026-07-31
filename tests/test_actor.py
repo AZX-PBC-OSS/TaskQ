@@ -413,9 +413,13 @@ def test_reservations_accepts_mixed_str_and_keyed_reservation_ref() -> None:
 
     from taskq.ratelimit.refs import KeyedReservationRef
 
-    ref = KeyedReservationRef(
+    class _SessionPayload(BaseModel):
+        session_id: str
+
+    ref = KeyedReservationRef.typed(
+        _SessionPayload,
         base_name="geocode-session",
-        key_fn=lambda p: str(p["session_id"]),
+        key_fn=lambda p: p.session_id,
         slots=3,
         lease=_timedelta(minutes=5),
     )

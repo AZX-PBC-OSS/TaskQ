@@ -1184,12 +1184,18 @@ def test_rate_limits_page_shows_materialized_keyed_bucket(
     see that a limiter exists."""
     import asyncio
 
+    from pydantic import BaseModel
+
     from taskq.ratelimit.refs import KeyedRateLimitRef
 
+    class _TenantPayload(BaseModel):
+        tenant_id: str
+
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
-    ref = KeyedRateLimitRef(
+    ref = KeyedRateLimitRef.typed(
+        _TenantPayload,
         base_name="api-per-tenant",
-        key_fn=lambda p: str(p["tenant_id"]),
+        key_fn=lambda p: p.tenant_id,
         capacity=5,
         refill_per_second=0.5,
         backend="memory",
@@ -1197,7 +1203,7 @@ def test_rate_limits_page_shows_materialized_keyed_bucket(
     # Materialize as the dispatch path does (pg_pool=None: no publish).
     asyncio.run(
         clean_rl_registry._resolve_rate_limit_name(  # pyright: ignore[reportPrivateUsage]
-            ref, {"tenant_id": "acme"}, settings=None
+            ref, _TenantPayload(tenant_id="acme"), settings=None
         )
     )
     try:

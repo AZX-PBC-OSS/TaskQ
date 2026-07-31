@@ -4,9 +4,9 @@ Verifies that ``KeyedRateLimitRef`` materializes an independent token
 bucket per key (tenant_id) and that draining one tenant's bucket does not
 affect another tenant's bucket. The actor
 ``deliver_tenant_webhook`` declares
-``rate_limits=[KeyedRateLimitRef(base_name="e2e_per_tenant",
-key_fn=lambda p: p["tenant_id"], capacity=3, refill_per_second=1.0,
-backend="redis")]``, so each tenant gets a capacity-3 / 1-refill-per-second
+``rate_limits=[KeyedRateLimitRef.typed(DeliverTenantWebhookPayload,
+base_name="e2e_per_tenant", key_fn=lambda p: p.tenant_id, capacity=3,
+refill_per_second=1.0, backend="redis")]``, so each tenant gets a capacity-3 / 1-refill-per-second
 bucket in Dragonfly, materialized lazily on first acquisition.
 """
 
@@ -18,7 +18,12 @@ from typing import TYPE_CHECKING
 import pytest
 
 from ._assertions import fetch_effects, fetch_job_rows, wait_all
-from .actors import DeliverTenantWebhookPayload, deliver_tenant_webhook
+from .actors import (
+    DeliverTenantWebhookPayload,
+    TypedTenantPayload,
+    deliver_tenant_webhook,
+    deliver_typed_tenant_webhook,
+)
 
 if TYPE_CHECKING:
     import asyncpg
@@ -189,3 +194,88 @@ async def test_keyed_rate_limit_per_tenant_independence(
     assert b_spread < 0.5, (
         f"tenant B spread {b_spread:.2f}s ≥ 0.5s — fresh capacity-3 bucket should not pace 3 jobs"
     )
+
+
+async def test_typed_keyed_rate_limit_with_aliases(
+    e2e_client: TaskQ,
+    e2e_worker: E2EWorker,
+    e2e_pg_pool: asyncpg.Pool,
+    e2e_schema: E2ESchema,
+    run_id: str,
+) -> None:
+    """KeyedRateLimitRef.typed with aliased payload resolves key from model attribute.
+
+    The payload model uses ``Field(alias="tenantId")`` with
+    ``serialize_by_alias=True`` so the stored row carries the wire alias
+    ``tenantId`` (not ``tenant_id``). A raw-dict ``key_fn`` would fail with
+    ``KeyError`` / ``AttributeError`` — this test proves the validated
+    ``BaseModel`` reaches ``key_fn`` at acquire time.
+    """
+    tenant_a = "gamma"
+    tenant_b = "delta"
+
+    handles_a = [
+        await e2e_client.enqueue(
+            deliver_typed_tenant_webhook,
+            TypedTenantPayload(
+                run_id=run_id,
+                tenant_id=tenant_a,  # type: ignore[reportCallIssue]  # Why: validate_by_name=True allows construction by field name; pyright's pydantic stubs don't recognize this flag.
+                endpoint_id=f"ep-{i}",
+            ),
+        )
+        for i in range(3)
+    ]
+    handles_b = [
+        await e2e_client.enqueue(
+            deliver_typed_tenant_webhook,
+            TypedTenantPayload(
+                run_id=run_id,
+                tenant_id=tenant_b,  # type: ignore[reportCallIssue]  # Why: validate_by_name=True allows construction by field name; pyright's pydantic stubs don't recognize this flag.
+                endpoint_id=f"ep-{i}",
+            ),
+        )
+        for i in range(3)
+    ]
+
+    await asyncio.gather(*(h.wait(timeout=90) for h in [*handles_a, *handles_b]))
+
+    a_rows = await fetch_job_rows(
+        e2e_pg_pool, e2e_schema.schema_name, [h.job_id for h in handles_a]
+    )
+    b_rows = await fetch_job_rows(
+        e2e_pg_pool, e2e_schema.schema_name, [h.job_id for h in handles_b]
+    )
+
+    # Verify the stored row carries the wire alias — proving the model
+    # with serialize_by_alias=True stored "tenantId", not "tenant_id"
+    for row in a_rows:
+        row_payload = json.loads(row["payload"])
+        assert "tenantId" in row_payload
+        assert row_payload["tenantId"] == tenant_a
+
+    _typed_bucket_base = "e2e_typed_per_tenant"
+    a_denied = sum(
+        1
+        for row in a_rows
+        if (awaiting := json.loads(row["metadata"]).get("awaiting")) is not None
+        and awaiting.endswith(f"{_typed_bucket_base}:{tenant_a}")
+    )
+    b_denied = sum(
+        1
+        for row in b_rows
+        if (awaiting := json.loads(row["metadata"]).get("awaiting")) is not None
+        and awaiting.endswith(f"{_typed_bucket_base}:{tenant_b}")
+    )
+
+    assert a_denied == 0, f"tenant A had {a_denied} denials (expected 0)"
+    assert b_denied == 0, f"tenant B had {b_denied} denials (expected 0)"
+
+    effects = await fetch_effects(
+        e2e_pg_pool, e2e_schema.schema_name, run_id, kind="typed_tenant_delivered"
+    )
+    assert len(effects) == 6
+
+    a_effects = [r for r in effects if json.loads(r["detail"])["tenant_id"] == tenant_a]
+    b_effects = [r for r in effects if json.loads(r["detail"])["tenant_id"] == tenant_b]
+    assert len(a_effects) == 3
+    assert len(b_effects) == 3

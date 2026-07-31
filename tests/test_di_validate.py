@@ -41,6 +41,8 @@ class _HttpClient:
 
 class _Payload(BaseModel):
     x: int
+    session_id: str = ""
+    tenant_id: str = ""
 
 
 class _Result(BaseModel):
@@ -651,9 +653,10 @@ def test_keyed_reservation_ref_through_validate_does_not_raise_typeerror() -> No
     """A real @actor with reservations=[KeyedReservationRef(...)] must survive
     ProviderRegistry.validate() without TypeError — the ref is unhashable, so
     the Phase 2b membership test must be guarded by isinstance(x, str)."""
-    ref = KeyedReservationRef(
+    ref = KeyedReservationRef.typed(
+        _Payload,
         base_name="geocode-session",
-        key_fn=lambda p: str(p["session_id"]),
+        key_fn=lambda p: p.session_id,
         slots=3,
         lease=timedelta(minutes=5),
     )
@@ -673,9 +676,10 @@ def test_keyed_rate_limit_ref_through_validate_does_not_raise_typeerror() -> Non
     """A real @actor with rate_limits=[KeyedRateLimitRef(...)] must survive
     ProviderRegistry.validate() without TypeError — same reason as the
     reservation equivalent above."""
-    ref = KeyedRateLimitRef(
+    ref = KeyedRateLimitRef.typed(
+        _Payload,
         base_name="api-per-tenant",
-        key_fn=lambda p: str(p["tenant_id"]),
+        key_fn=lambda p: p.tenant_id,
         capacity=10,
         refill_per_second=1.0,
     )
@@ -694,15 +698,17 @@ def test_keyed_rate_limit_ref_through_validate_does_not_raise_typeerror() -> Non
 def test_static_unregistered_name_alongside_keyed_ref_still_raises_missing_provider() -> None:
     """The isinstance(x, str) guard must not silence real MissingProvider
     errors for co-declared static names — only ref instances are skipped."""
-    res_ref = KeyedReservationRef(
+    res_ref = KeyedReservationRef.typed(
+        _Payload,
         base_name="geocode-session",
-        key_fn=lambda p: str(p["session_id"]),
+        key_fn=lambda p: p.session_id,
         slots=3,
         lease=timedelta(minutes=5),
     )
-    rl_ref = KeyedRateLimitRef(
+    rl_ref = KeyedRateLimitRef.typed(
+        _Payload,
         base_name="api-per-tenant",
-        key_fn=lambda p: str(p["tenant_id"]),
+        key_fn=lambda p: p.tenant_id,
         capacity=10,
         refill_per_second=1.0,
     )
@@ -729,15 +735,17 @@ def test_worker_startup_shaped_validate_with_keyed_refs_succeeds() -> None:
     exercise the validation path), so a focused unit test using
     ProviderRegistry.validate directly satisfies the end-to-end-through-
     the-documented-entry-point requirement."""
-    res_ref = KeyedReservationRef(
+    res_ref = KeyedReservationRef.typed(
+        _Payload,
         base_name="geocode-session",
-        key_fn=lambda p: str(p["session_id"]),
+        key_fn=lambda p: p.session_id,
         slots=3,
         lease=timedelta(minutes=5),
     )
-    rl_ref = KeyedRateLimitRef(
+    rl_ref = KeyedRateLimitRef.typed(
+        _Payload,
         base_name="api-per-tenant",
-        key_fn=lambda p: str(p["tenant_id"]),
+        key_fn=lambda p: p.tenant_id,
         capacity=10,
         refill_per_second=1.0,
     )

@@ -578,7 +578,7 @@ async def test_payload_validation_failure_before_scope() -> None:
         assert len(fake_backend.mark_failed_or_retry_calls) == 1
         assert (
             fake_backend.mark_failed_or_retry_calls[0]["error_info"].error_class  # pyright: ignore[reportAttributeAccessIssue]  # Why: mark_failed_or_retry_calls stores untyped objects from mock; error_class exists at runtime.
-            == "ValidationError"
+            == "PayloadValidationError"
         )
 
 
@@ -1331,3 +1331,26 @@ async def test_dispatch_one_job_actor_declared_tokenbucket_instance_consumed() -
         # refill elapsed, so exactly capacity - 1 remains.
         state = await rl_registry.peek("decl_bucket", clock=clock)
         assert state.tokens_remaining == 4.0
+
+
+# ── PayloadValidationError structured attributes ────────────────────
+
+
+async def test_payload_validation_error_carries_structured_attributes() -> None:
+    """``validate_actor_payload`` wraps ``ValidationError`` as
+    ``PayloadValidationError`` with ``actor`` and ``validation_errors``
+    populated — pinning the structured attributes the dispatch path
+    relies on for non-retryable classification."""
+    from taskq._validation import validate_actor_payload
+    from taskq.exceptions import PayloadValidationError
+
+    with pytest.raises(PayloadValidationError) as exc_info:
+        validate_actor_payload(
+            _Payload,
+            {"not_a_valid_field": "oops"},
+            actor="test_actor",
+        )
+
+    assert exc_info.value.actor == "test_actor"
+    assert len(exc_info.value.validation_errors) > 0
+    assert exc_info.value.validation_errors[0]["loc"] == ("not_a_valid_field",)

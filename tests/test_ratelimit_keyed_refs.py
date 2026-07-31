@@ -16,8 +16,10 @@ from datetime import UTC, datetime, timedelta
 from enum import Enum, StrEnum
 
 import pytest
+from pydantic import BaseModel, ConfigDict, Field
 
 from taskq._ids import new_uuid
+from taskq.exceptions import PayloadValidationError
 from taskq.ratelimit.refs import KeyedReservationRef
 from taskq.ratelimit.registry import RateLimitRegistry
 from taskq.ratelimit.reservation import ConcurrencyReservation
@@ -26,8 +28,12 @@ from taskq.testing.clock import FakeClock
 _START = datetime(2025, 1, 1, tzinfo=UTC)
 
 
-def _default_key_fn(payload: dict[str, object]) -> str:
-    return str(payload["session_id"])
+class _DefaultPayload(BaseModel):
+    session_id: str
+
+
+def _default_key_fn(payload: _DefaultPayload) -> str:
+    return payload.session_id
 
 
 def _reservation(
@@ -45,9 +51,15 @@ def _keyed_ref(
     base_name: str = "session-cap",
     slots: int = 3,
     lease: timedelta = timedelta(minutes=5),
-    key_fn: Callable[[dict[str, object]], str] = _default_key_fn,
+    key_fn: Callable[[_DefaultPayload], str] = _default_key_fn,
 ) -> KeyedReservationRef:
-    return KeyedReservationRef(base_name=base_name, key_fn=key_fn, slots=slots, lease=lease)
+    return KeyedReservationRef.typed(
+        _DefaultPayload,
+        base_name=base_name,
+        key_fn=key_fn,
+        slots=slots,
+        lease=lease,
+    )
 
 
 # ── KeyedReservationRef validation ──────────────────────────────
@@ -161,7 +173,7 @@ async def test_resolve_keyed_ref_produces_base_name_colon_key() -> None:
     ref = _keyed_ref(base_name="geocode-session", slots=3, lease=timedelta(minutes=5))
 
     name = await reg._resolve_reservation_name(
-        ref, payload={"session_id": "abc123"}, pg_pool=None, settings=None
+        ref, payload=_DefaultPayload(session_id="abc123"), pg_pool=None, settings=None
     )  # pyright: ignore[reportPrivateUsage]
 
     assert name == "geocode-session:abc123"
@@ -177,13 +189,13 @@ async def test_resolve_keyed_ref_reuses_same_instance_for_same_key() -> None:
     ref = _keyed_ref(base_name="session-cap")
 
     name1 = await reg._resolve_reservation_name(
-        ref, payload={"session_id": "s1"}, pg_pool=None, settings=None
+        ref, payload=_DefaultPayload(session_id="s1"), pg_pool=None, settings=None
     )  # pyright: ignore[reportPrivateUsage]
     first_instance = reg.get_reservation(name1)
     assert len(reg.reservations) == 1
 
     name2 = await reg._resolve_reservation_name(
-        ref, payload={"session_id": "s1"}, pg_pool=None, settings=None
+        ref, payload=_DefaultPayload(session_id="s1"), pg_pool=None, settings=None
     )  # pyright: ignore[reportPrivateUsage]
     second_instance = reg.get_reservation(name2)
 
@@ -198,10 +210,10 @@ async def test_resolve_keyed_ref_different_keys_register_independently() -> None
     ref = _keyed_ref(base_name="session-cap", slots=2)
 
     name_a = await reg._resolve_reservation_name(
-        ref, payload={"session_id": "a"}, pg_pool=None, settings=None
+        ref, payload=_DefaultPayload(session_id="a"), pg_pool=None, settings=None
     )  # pyright: ignore[reportPrivateUsage]
     name_b = await reg._resolve_reservation_name(
-        ref, payload={"session_id": "b"}, pg_pool=None, settings=None
+        ref, payload=_DefaultPayload(session_id="b"), pg_pool=None, settings=None
     )  # pyright: ignore[reportPrivateUsage]
 
     assert name_a == "session-cap:a"
@@ -238,7 +250,7 @@ async def test_different_keys_do_not_share_slot_capacity() -> None:
         reservations=[ref],
         job_id=new_uuid(),
         worker_id=new_uuid(),
-        payload={"session_id": "a"},
+        payload=_DefaultPayload(session_id="a"),
         clock=clock,
     )
     assert acquired_a[0].name == "session-cap:a"
@@ -249,7 +261,7 @@ async def test_different_keys_do_not_share_slot_capacity() -> None:
         reservations=[ref],
         job_id=new_uuid(),
         worker_id=new_uuid(),
-        payload={"session_id": "b"},
+        payload=_DefaultPayload(session_id="b"),
         clock=clock,
     )
     assert acquired_b[0].name == "session-cap:b"
@@ -262,7 +274,7 @@ async def test_different_keys_do_not_share_slot_capacity() -> None:
             reservations=[ref],
             job_id=new_uuid(),
             worker_id=new_uuid(),
-            payload={"session_id": "a"},
+            payload=_DefaultPayload(session_id="a"),
             clock=clock,
         )
 
@@ -283,7 +295,7 @@ async def test_resolve_keyed_ref_empty_key_raises_value_error() -> None:
 
     with pytest.raises(ValueError, match="returned an empty key"):
         await reg._resolve_reservation_name(
-            ref, payload={"session_id": "s1"}, pg_pool=None, settings=None
+            ref, payload=_DefaultPayload(session_id="s1"), pg_pool=None, settings=None
         )  # pyright: ignore[reportPrivateUsage]
 
 
@@ -292,26 +304,31 @@ async def test_resolve_keyed_ref_key_fn_exception_propagates() -> None:
     caller of _resolve_reservation_name / acquire_for_actor."""
     reg = RateLimitRegistry()
 
-    def _boom(payload: dict[str, object]) -> str:
+    def _boom(payload: _DefaultPayload) -> str:
         raise RuntimeError("key derivation exploded")
 
     ref = _keyed_ref(base_name="session-cap", key_fn=_boom)
 
     with pytest.raises(RuntimeError, match="key derivation exploded"):
         await reg._resolve_reservation_name(
-            ref, payload={"session_id": "s1"}, pg_pool=None, settings=None
+            ref, payload=_DefaultPayload(session_id="s1"), pg_pool=None, settings=None
         )  # pyright: ignore[reportPrivateUsage]
 
 
-async def test_resolve_keyed_ref_key_fn_missing_dict_key_propagates_keyerror() -> None:
-    """key_fn raising KeyError (e.g. payload missing the expected field) propagates."""
+async def test_resolve_keyed_ref_wrong_model_type_raises_validation_error() -> None:
+    """A BaseModel payload of a different type is re-validated against the
+    ref's payload_type — a missing required field raises ValidationError,
+    not AttributeError from key_fn accessing a non-existent attribute."""
     reg = RateLimitRegistry()
-    ref = _keyed_ref(base_name="session-cap")  # key_fn does p["session_id"]
+    ref = _keyed_ref(base_name="session-cap")  # key_fn does p.session_id
 
-    with pytest.raises(KeyError):
+    class _UnrelatedPayload(BaseModel):
+        unrelated: str
+
+    with pytest.raises(PayloadValidationError):
         await reg._resolve_reservation_name(
-            ref, payload={"unrelated": "value"}, pg_pool=None, settings=None
-        )  # pyright: ignore[reportPrivateUsage]
+            ref, payload=_UnrelatedPayload(unrelated="value"), pg_pool=None, settings=None
+        )  # pyright: ignore[reportPrivateUsage]  # Why: exercising private resolution helper directly, matching existing test conventions.
 
 
 async def test_resolve_keyed_ref_key_fn_returning_non_str_raises_value_error() -> None:
@@ -322,7 +339,7 @@ async def test_resolve_keyed_ref_key_fn_returning_non_str_raises_value_error() -
 
     with pytest.raises(ValueError, match="empty key or non-string value"):
         await reg._resolve_reservation_name(
-            ref, payload={"session_id": "s1"}, pg_pool=None, settings=None
+            ref, payload=_DefaultPayload(session_id="s1"), pg_pool=None, settings=None
         )  # pyright: ignore[reportPrivateUsage]
 
 
@@ -339,7 +356,7 @@ async def test_resolve_keyed_ref_str_subclass_key_uses_value_content() -> None:
     ref = _keyed_ref(base_name="session-cap", key_fn=lambda p: TenantKey("s1"))
 
     name = await reg._resolve_reservation_name(
-        ref, payload={"session_id": "s1"}, pg_pool=None, settings=None
+        ref, payload=_DefaultPayload(session_id="s1"), pg_pool=None, settings=None
     )  # pyright: ignore[reportPrivateUsage]
 
     assert name == "session-cap:s1"
@@ -370,7 +387,7 @@ async def test_resolve_keyed_ref_str_enum_key_uses_member_value_not_repr() -> No
         ref = _keyed_ref(base_name="session-cap", key_fn=lambda p, m=member: m)
 
         name = await reg._resolve_reservation_name(
-            ref, payload={"session_id": expected}, pg_pool=None, settings=None
+            ref, payload=_DefaultPayload(session_id=expected), pg_pool=None, settings=None
         )  # pyright: ignore[reportPrivateUsage]
 
         assert name == f"session-cap:{expected}"
@@ -408,7 +425,7 @@ async def test_acquire_for_actor_composes_static_and_keyed_reservations() -> Non
         reservations=["global-cap", ref],
         job_id=job_id,
         worker_id=worker_id,
-        payload={"session_id": "abc"},
+        payload=_DefaultPayload(session_id="abc"),
         clock=clock,
     )
 
@@ -427,7 +444,7 @@ async def test_acquire_for_actor_composes_static_and_keyed_reservations() -> Non
             reservations=[ref],
             job_id=new_uuid(),
             worker_id=new_uuid(),
-            payload={"session_id": "abc"},
+            payload=_DefaultPayload(session_id="abc"),
             clock=clock,
         )
 
@@ -454,7 +471,7 @@ async def test_acquire_for_actor_keyed_only_still_and_composes_with_rate_limit()
         reservations=[ref],
         job_id=job_id,
         worker_id=worker_id,
-        payload={"session_id": "xyz"},
+        payload=_DefaultPayload(session_id="xyz"),
         clock=clock,
     )
 
@@ -480,12 +497,12 @@ async def test_evict_idle_keyed_reservations_removes_only_stale_entries(
     fake_time = 1000.0
     monkeypatch.setattr(registry_mod, "monotonic", lambda: fake_time)
     await reg._resolve_reservation_name(
-        ref, payload={"session_id": "stale"}, pg_pool=None, settings=None
+        ref, payload=_DefaultPayload(session_id="stale"), pg_pool=None, settings=None
     )  # pyright: ignore[reportPrivateUsage]
 
     fake_time = 1100.0  # 100s later — "stale" key untouched since
     await reg._resolve_reservation_name(
-        ref, payload={"session_id": "fresh"}, pg_pool=None, settings=None
+        ref, payload=_DefaultPayload(session_id="fresh"), pg_pool=None, settings=None
     )  # pyright: ignore[reportPrivateUsage]
 
     evicted = reg.evict_idle_keyed_reservations(idle_for=timedelta(seconds=50))
@@ -530,7 +547,7 @@ async def test_evict_idle_keyed_reservations_returns_zero_when_nothing_stale(
 
     monkeypatch.setattr(registry_mod, "monotonic", lambda: 42.0)
     await reg._resolve_reservation_name(
-        ref, payload={"session_id": "recent"}, pg_pool=None, settings=None
+        ref, payload=_DefaultPayload(session_id="recent"), pg_pool=None, settings=None
     )  # pyright: ignore[reportPrivateUsage]
 
     evicted = reg.evict_idle_keyed_reservations(idle_for=timedelta(hours=1))
@@ -546,13 +563,13 @@ async def test_evict_idle_keyed_reservations_re_registration_after_eviction_is_i
     ref = _keyed_ref(base_name="session-cap", slots=3, lease=timedelta(minutes=5))
 
     await reg._resolve_reservation_name(
-        ref, payload={"session_id": "s1"}, pg_pool=None, settings=None
+        ref, payload=_DefaultPayload(session_id="s1"), pg_pool=None, settings=None
     )  # pyright: ignore[reportPrivateUsage]
     reg._reservations.pop("session-cap:s1")  # pyright: ignore[reportPrivateUsage] # Why: simulating what evict_idle_keyed_reservations does, without needing monotonic control here.
     reg._keyed_reservation_last_used.pop("session-cap:s1")  # pyright: ignore[reportPrivateUsage]
 
     name = await reg._resolve_reservation_name(
-        ref, payload={"session_id": "s1"}, pg_pool=None, settings=None
+        ref, payload=_DefaultPayload(session_id="s1"), pg_pool=None, settings=None
     )  # pyright: ignore[reportPrivateUsage]
 
     assert name == "session-cap:s1"
@@ -590,3 +607,242 @@ def test_singleton_keyed_tracking_dicts_empty_at_start() -> None:
         f"_keyed_rate_limit_last_used leaked from a prior test: "
         f"{dict(_rl._keyed_rate_limit_last_used)}"  # pyright: ignore[reportPrivateUsage]
     )
+
+
+# ── Typed payload validation in _resolve_reservation_name ──────
+
+
+class _TypedPayload(BaseModel):
+    session_id: str
+    region: str = "us-east-1"
+
+
+class _AliasedPayload(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    session_id: str = Field(alias="sessionId")
+
+
+async def test_resolve_typed_res_ref_passes_validated_model_to_key_fn() -> None:
+    """A dict payload is validated via ref.payload_type.model_validate before
+    being passed to key_fn — key_fn receives a BaseModel with attribute access,
+    not a raw dict."""
+    captured: list[BaseModel] = []
+    reg = RateLimitRegistry()
+    ref = KeyedReservationRef.typed(
+        _TypedPayload,
+        base_name="session-cap",
+        key_fn=lambda p: (captured.append(p), p.session_id)[1],
+        slots=3,
+        lease=timedelta(minutes=5),
+    )
+
+    name = await reg._resolve_reservation_name(  # pyright: ignore[reportPrivateUsage]
+        ref, payload={"session_id": "s1"}, pg_pool=None, settings=None
+    )
+
+    assert name == "session-cap:s1"
+    assert isinstance(captured[0], _TypedPayload)
+    assert captured[0].session_id == "s1"
+
+
+async def test_resolve_typed_res_ref_applies_pydantic_defaults() -> None:
+    """A dict payload missing a defaulted field gets the default applied
+    during validation — key_fn can read the default value."""
+    reg = RateLimitRegistry()
+    captured: list[_TypedPayload] = []
+
+    def _capturing_key_fn(payload: _TypedPayload) -> str:
+        captured.append(payload)
+        return f"{payload.session_id}:{payload.region}"
+
+    ref = KeyedReservationRef.typed(
+        _TypedPayload,
+        base_name="session-cap",
+        key_fn=_capturing_key_fn,
+        slots=3,
+        lease=timedelta(minutes=5),
+    )
+
+    name = await reg._resolve_reservation_name(  # pyright: ignore[reportPrivateUsage]
+        ref, payload={"session_id": "s1"}, pg_pool=None, settings=None
+    )
+
+    assert name == "session-cap:s1:us-east-1"
+    assert captured[0].region == "us-east-1"
+
+
+async def test_resolve_typed_res_ref_applies_aliases() -> None:
+    """A dict payload using wire aliases (e.g. 'sessionId') is validated
+    with alias resolution — key_fn accesses the field by its Python name
+    (p.session_id)."""
+    reg = RateLimitRegistry()
+    ref = KeyedReservationRef.typed(
+        _AliasedPayload,
+        base_name="session-cap",
+        key_fn=lambda p: p.session_id,
+        slots=3,
+        lease=timedelta(minutes=5),
+    )
+
+    name = await reg._resolve_reservation_name(  # pyright: ignore[reportPrivateUsage]
+        ref, payload={"sessionId": "s1"}, pg_pool=None, settings=None
+    )
+
+    assert name == "session-cap:s1"
+
+
+async def test_resolve_typed_res_ref_accepts_basemodel_payload_directly() -> None:
+    """A BaseModel payload of the same type as ref.payload_type is accepted
+    directly — zero-cost pass-through, no re-validation."""
+    reg = RateLimitRegistry()
+    ref = KeyedReservationRef.typed(
+        _TypedPayload,
+        base_name="session-cap",
+        key_fn=lambda p: p.session_id,
+        slots=3,
+        lease=timedelta(minutes=5),
+    )
+
+    name = await reg._resolve_reservation_name(  # pyright: ignore[reportPrivateUsage]
+        ref, payload=_TypedPayload(session_id="s1"), pg_pool=None, settings=None
+    )
+
+    assert name == "session-cap:s1"
+
+
+async def test_resolve_typed_res_ref_validation_error_propagates() -> None:
+    """An invalid dict (missing required field) raises ValidationError from
+    pydantic validation, not KeyError or AttributeError from key_fn."""
+    reg = RateLimitRegistry()
+    ref = KeyedReservationRef.typed(
+        _TypedPayload,
+        base_name="session-cap",
+        key_fn=lambda p: p.session_id,
+        slots=3,
+        lease=timedelta(minutes=5),
+    )
+
+    with pytest.raises(PayloadValidationError):
+        await reg._resolve_reservation_name(  # pyright: ignore[reportPrivateUsage]
+            ref, payload={"region": "us-east-1"}, pg_pool=None, settings=None
+        )
+
+
+async def test_resolve_typed_res_ref_wrong_model_type_re_validates() -> None:
+    """A BaseModel payload of a DIFFERENT type is re-validated against
+    ref.payload_type via model_dump() → model_validate(). A compatible
+    payload (extra fields ignored) resolves successfully."""
+
+    class _CompatiblePayload(BaseModel):
+        session_id: str
+        extra_field: str = "ignored"
+
+    reg = RateLimitRegistry()
+    ref = KeyedReservationRef.typed(
+        _TypedPayload,
+        base_name="session-cap",
+        key_fn=lambda p: p.session_id,
+        slots=3,
+        lease=timedelta(minutes=5),
+    )
+
+    name = await reg._resolve_reservation_name(  # pyright: ignore[reportPrivateUsage]
+        ref,
+        payload=_CompatiblePayload(session_id="s1", extra_field="x"),
+        pg_pool=None,
+        settings=None,
+    )
+
+    assert name == "session-cap:s1"
+
+
+async def test_resolve_typed_res_ref_same_model_type_zero_cost_passthrough() -> None:
+    """A BaseModel payload of the SAME type as ref.payload_type is passed
+    directly to key_fn without re-validation — the exact same object (identity
+    check)."""
+    reg = RateLimitRegistry()
+    captured: list[_TypedPayload] = []
+
+    def _capturing_key_fn(payload: _TypedPayload) -> str:
+        captured.append(payload)
+        return payload.session_id
+
+    ref = KeyedReservationRef.typed(
+        _TypedPayload,
+        base_name="session-cap",
+        key_fn=_capturing_key_fn,
+        slots=3,
+        lease=timedelta(minutes=5),
+    )
+
+    payload = _TypedPayload(session_id="s1")
+    await reg._resolve_reservation_name(  # pyright: ignore[reportPrivateUsage]
+        ref, payload=payload, pg_pool=None, settings=None
+    )
+
+    assert len(captured) == 1
+    assert captured[0] is payload
+
+
+# ── acquire_for_actor with typed reservation refs and BaseModel/dict payloads ──
+
+
+async def test_acquire_for_actor_accepts_basemodel_payload_with_typed_reservation_ref() -> None:
+    """acquire_for_actor accepts a BaseModel payload with a typed reservation ref."""
+    clock = FakeClock(_START)
+    reg = RateLimitRegistry()
+    reg.register(
+        ConcurrencyReservation(
+            name="session-cap:s1", slots=1, lease=timedelta(seconds=30), clock=clock
+        )
+    )
+    ref = KeyedReservationRef.typed(
+        _TypedPayload,
+        base_name="session-cap",
+        key_fn=lambda p: p.session_id,
+        slots=1,
+        lease=timedelta(seconds=30),
+    )
+
+    acquired = await reg.acquire_for_actor(
+        rate_limits=[],
+        reservations=[ref],
+        job_id=new_uuid(),
+        worker_id=new_uuid(),
+        payload=_TypedPayload(session_id="s1"),
+        clock=clock,
+    )
+
+    assert len(acquired) == 1
+    assert acquired[0].name == "session-cap:s1"
+
+
+async def test_acquire_for_actor_typed_reservation_ref_with_dict_payload_validates() -> None:
+    """acquire_for_actor accepts a dict payload with a typed reservation ref —
+    the dict is validated via model_validate before key_fn is called."""
+    clock = FakeClock(_START)
+    reg = RateLimitRegistry()
+    reg.register(
+        ConcurrencyReservation(
+            name="session-cap:s1", slots=1, lease=timedelta(seconds=30), clock=clock
+        )
+    )
+    ref = KeyedReservationRef.typed(
+        _TypedPayload,
+        base_name="session-cap",
+        key_fn=lambda p: p.session_id,
+        slots=1,
+        lease=timedelta(seconds=30),
+    )
+
+    acquired = await reg.acquire_for_actor(
+        rate_limits=[],
+        reservations=[ref],
+        job_id=new_uuid(),
+        worker_id=new_uuid(),
+        payload={"session_id": "s1"},
+        clock=clock,
+    )
+
+    assert len(acquired) == 1
+    assert acquired[0].name == "session-cap:s1"
