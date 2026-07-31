@@ -25,12 +25,14 @@ from e2e.actors import (
     import_contacts_csv,
     long_running_job,
     loop_blocker_job,
+    pipeline_stage,
     quick_result,
     rebuild_search_index,
     send_welcome_email,
     short_lived_job,
     slow_deliver_webhook,
     sync_user_profile,
+    tagged_pipeline_stage,
 )
 from e2e.di import build_registry
 from taskq import ActorRef
@@ -59,6 +61,8 @@ ACTORS: dict[str, ActorRef[Any, Any]] = {
     "concurrent_tracked_worker": concurrent_tracked_worker,
     "batch_abort_worker": batch_abort_worker,
     "batch_finalizer": batch_finalizer,
+    "pipeline_stage": pipeline_stage,
+    "tagged_pipeline_stage": tagged_pipeline_stage,
 }
 
 

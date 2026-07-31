@@ -30,7 +30,7 @@ from taskq.backend._protocol import (
     JobRow,
 )
 from taskq.backend.clock import Clock
-from taskq.client._enqueuer import SubJobEnqueuer
+from taskq.client._enqueuer import SubJobEnqueuer, _parent_tags_var
 from taskq.constants import MAX_RESULT_BYTES
 from taskq.context import JobContext
 from taskq.exceptions import (
@@ -367,6 +367,8 @@ async def consume_one_job(
         _buf = _ProgressBuffer(job_id=job.id, base_seq=job.progress_seq)
         _progress_buffers[job.id] = _buf
 
+    _parent_tags_token = _parent_tags_var.set(tuple(job.tags))
+
     try:
         live_enqueuer = (
             enqueuer
@@ -601,6 +603,7 @@ async def consume_one_job(
                 await active_jobs.deregister(job.id)
 
     finally:
+        _parent_tags_var.reset(_parent_tags_token)
         if acquired and rate_limit_registry is not None:
             try:
                 await asyncio.shield(

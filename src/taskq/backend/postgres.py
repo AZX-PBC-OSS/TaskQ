@@ -9,9 +9,11 @@ Decode helpers (:mod:`taskq.backend._records`), maintenance sweeps
 (:mod:`taskq.backend._schedules`), terminal writes
 (:mod:`taskq.backend._terminal`), enqueue
 (:mod:`taskq.backend._enqueue`), reads (:mod:`taskq.backend._reads`),
-and dispatch (:mod:`taskq.backend._dispatch`) live in companion
-submodules; this module holds the cohesive core: ``__init__``, heartbeat,
-cancel signals, NOTIFY, and schedule CRUD wiring.
+bulk cancel (:mod:`taskq.backend._cancel_bulk`), filter SQL builder
+(:mod:`taskq.backend._filter_sql`), and dispatch
+(:mod:`taskq.backend._dispatch`) live in companion submodules; this
+module holds the cohesive core: ``__init__``, heartbeat, cancel
+signals, NOTIFY, and schedule CRUD wiring.
 """
 
 import asyncio
@@ -58,6 +60,7 @@ from taskq.backend._batch_sql import (
 from taskq.backend._batch_sql import (
     reset_batch_failures as _reset_batch_failures,
 )
+from taskq.backend._cancel_bulk import _cancel_where
 from taskq.backend._dispatch import (
     _dispatch_batch as _dispatch,
 )
@@ -79,6 +82,7 @@ from taskq.backend._protocol import (
     BatchCounts,
     BatchFilter,
     BatchRow,
+    BulkCancelResult,
     CancelFlag,
     ConnLike,
     EnqueueArgs,
@@ -194,6 +198,14 @@ if BACKEND_PROTOCOL_VERSION != _EXPECTED_PROTOCOL_VERSION:
         f"current BACKEND_PROTOCOL_VERSION is {BACKEND_PROTOCOL_VERSION}. "
         "Update the implementation."
     )
+
+
+def _cancel_notify_payload(job_id: UUID, worker_id: UUID) -> str:
+    return dumps_str({"type": "cancel", "job_id": str(job_id), "worker_id": str(worker_id)})
+
+
+def _cancel_notify_channels(schema: str, worker_id: UUID) -> list[str]:
+    return [events_channel(schema), worker_channel(schema, str(worker_id))]
 
 
 class PostgresBackend:
@@ -623,15 +635,8 @@ class PostgresBackend:
                 job_id=str(job_id),
             )
             if _locked_by_worker is not None:
-                payload = dumps_str(
-                    {
-                        "type": "cancel",
-                        "job_id": str(job_id),
-                        "worker_id": str(_locked_by_worker),
-                    }
-                )
-                fleet_ch = events_channel(self._schema_name)
-                worker_ch = worker_channel(self._schema_name, str(_locked_by_worker))
+                payload = _cancel_notify_payload(job_id, _locked_by_worker)
+                fleet_ch, worker_ch = _cancel_notify_channels(self._schema_name, _locked_by_worker)
                 async with self._worker_pool.acquire() as notify_conn:
                     await notify_conn.execute(
                         "SELECT pg_notify($1, $2), pg_notify($3, $4)",
@@ -658,6 +663,39 @@ class PostgresBackend:
             )
             for rec in recs
         ]
+
+    async def cancel_where(
+        self,
+        filter: JobFilter,
+        reason: str | None,
+    ) -> BulkCancelResult:
+        result, notify_targets = await _cancel_where(
+            self._worker_pool, self._schema_name, self._sql, filter, reason
+        )
+        if notify_targets:
+            channels: list[str] = []
+            payloads: list[str] = []
+            for target in notify_targets:
+                payload = _cancel_notify_payload(target.job_id, target.worker_id)
+                ch = _cancel_notify_channels(self._schema_name, target.worker_id)
+                channels.extend(ch)
+                payloads.extend([payload, payload])
+            try:
+                async with self._worker_pool.acquire() as notify_conn:
+                    await notify_conn.execute(
+                        "SELECT pg_notify(channel, payload) "
+                        "FROM unnest($1::text[], $2::text[]) AS t(channel, payload)",
+                        channels,
+                        payloads,
+                    )
+                _cancel_notify_sent_counter.add(len(notify_targets), {"schema": self._schema_name})
+            except Exception:
+                logger.warning(
+                    "cancel_where_notify_failed",
+                    notify_count=len(notify_targets),
+                    exc_info=True,
+                )
+        return result
 
     # ── Admin operations ──────────────────────────────────────────────
 

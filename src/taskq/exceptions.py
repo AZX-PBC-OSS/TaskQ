@@ -463,6 +463,24 @@ class SchemaNotMigratedError(TaskQError):
         )
 
 
+class EmptyFilterError(TaskQError):
+    """Raised when cancel_where is called with a filter that has no predicates.
+
+    A filter with no queue, status, actor, identity_key, batch_id, tags, or
+    active predicate would match every job in the table — almost certainly
+    a bug. The guardrail is intentionally loud: the caller must add at least
+    one predicate or explicitly bypass with ``allow_empty_filter=True``.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(
+            "cancel_where requires at least one filter predicate "
+            "(queue, status, actor, identity_key, batch_id, tags, or active); "
+            "an empty filter would cancel the entire table. "
+            "Pass allow_empty_filter=True to override this guardrail."
+        )
+
+
 class ScopedIdempotencyMigrationPendingError(TaskQError):
     """``idempotency_scope`` was used, but the schema has not yet had
     ``01.00.03_01_post_idempotency_scope_drop_old_index.sql`` applied.

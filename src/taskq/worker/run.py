@@ -46,7 +46,7 @@ from taskq.actor import ActorRef
 from taskq.backend._protocol import Backend, JobRow
 from taskq.backend._records import jsonb_param
 from taskq.backend.clock import Clock
-from taskq.client._enqueuer import SubJobEnqueuer
+from taskq.client._enqueuer import SubJobEnqueuer, parent_tags
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: canonical identifier regex; copying would drift the validation pattern.
 )
@@ -346,59 +346,60 @@ async def consumer_loop_stub(
         if current_task is None:
             raise RuntimeError("consumer_loop_stub must run inside a TaskGroup")
 
-        ctx: JobContext[_StubPayload] = JobContext(
-            job_id=job.id,
-            actor=job.actor,
-            queue=job.queue,
-            attempt=job.attempt,
-            worker_id=worker_id,
-            payload=_StubPayload(),
-            jobs=SubJobEnqueuer(
-                loop_scope_resolved=None,
-                worker_pool=None,
-                backend=backend,
-            ),
-            log=bind_job_context(
-                _consumer_log,
+        with parent_tags(tuple(job.tags)):
+            ctx: JobContext[_StubPayload] = JobContext(
                 job_id=job.id,
                 actor=job.actor,
                 queue=job.queue,
                 attempt=job.attempt,
-                identity_key=job.identity_key,
-                trace_id=job.trace_id or "",
-            ),
-        )
+                worker_id=worker_id,
+                payload=_StubPayload(),
+                jobs=SubJobEnqueuer(
+                    loop_scope_resolved=None,
+                    worker_pool=None,
+                    backend=backend,
+                ),
+                log=bind_job_context(
+                    _consumer_log,
+                    job_id=job.id,
+                    actor=job.actor,
+                    queue=job.queue,
+                    attempt=job.attempt,
+                    identity_key=job.identity_key,
+                    trace_id=job.trace_id or "",
+                ),
+            )
 
-        await deps.active_jobs.register(job.id, current_task, ctx)  # type: ignore[arg-type]  # Why: JobContext[_StubPayload] is a JobContext[BaseModel]; pyright cannot widen Generic[TChild] to Generic[TParent] without explicit covariance.
+            await deps.active_jobs.register(job.id, current_task, ctx)  # type: ignore[arg-type]  # Why: JobContext[_StubPayload] is a JobContext[BaseModel]; pyright cannot widen Generic[TChild] to Generic[TParent] without explicit covariance.
 
-        try:
             try:
-                await asyncio.wait_for(
-                    ctx.cancel_event.wait(),
-                    timeout=stub_work_timeout,
-                )
+                try:
+                    await asyncio.wait_for(
+                        ctx.cancel_event.wait(),
+                        timeout=stub_work_timeout,
+                    )
+                except asyncio.CancelledError:
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await asyncio.shield(backend.mark_cancelled(job.id, worker_id))
+                    raise
+                except TimeoutError:
+                    pass
+
+                if ctx.cancellation_requested:
+                    await asyncio.shield(backend.mark_cancelled(job.id, worker_id))
+                else:
+                    await asyncio.shield(backend.mark_succeeded(job.id, worker_id, None))
+
             except asyncio.CancelledError:
                 with contextlib.suppress(asyncio.CancelledError):
                     await asyncio.shield(backend.mark_cancelled(job.id, worker_id))
                 raise
-            except TimeoutError:
-                pass
 
-            if ctx.cancellation_requested:
-                await asyncio.shield(backend.mark_cancelled(job.id, worker_id))
-            else:
-                await asyncio.shield(backend.mark_succeeded(job.id, worker_id, None))
+            except Exception:
+                _consumer_log.exception("consumer-stub-error", job_id=str(job.id))
 
-        except asyncio.CancelledError:
-            with contextlib.suppress(asyncio.CancelledError):
-                await asyncio.shield(backend.mark_cancelled(job.id, worker_id))
-            raise
-
-        except Exception:
-            _consumer_log.exception("consumer-stub-error", job_id=str(job.id))
-
-        finally:
-            await deps.active_jobs.deregister(job.id)
+            finally:
+                await deps.active_jobs.deregister(job.id)
 
 
 async def di_consumer_loop(

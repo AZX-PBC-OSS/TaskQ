@@ -690,6 +690,13 @@ INSERTs are part of the parent's database transaction:
 This is the correct default for fan-out patterns where sub-jobs should only exist if the parent
 completes successfully.
 
+**Tag inheritance.** Sub-jobs enqueued via `ctx.jobs.enqueue()` inherit the parent
+job's tags by default. This makes sub-jobs findable by `JobFilter(tags=...)` and
+cancellable by `cancel_where`. Pass `inherit_tags=False` to suppress inheritance
+for a specific sub-job, or pass explicit `tags=[...]` to merge with inherited
+tags. See [Jobs & Clients — Sub-job tag inheritance](jobs-clients.md#tag-inheritance)
+for the full semantics table.
+
 **Autonomous fallback.** If no LOOP-scope `asyncpg.Connection` is registered in the DI
 container, `ctx.jobs.enqueue()` falls back to the worker pool and commits each INSERT
 independently. In this mode, sub-jobs are persisted even if the parent subsequently raises

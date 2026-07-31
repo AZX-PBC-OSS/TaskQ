@@ -53,7 +53,7 @@ from taskq.batch import (
     wait_for_batch,
 )
 from taskq.batch_policy import AbortBatchAfter, BatchFailurePolicy
-from taskq.client import CancelResult, JobEvent, JobHandle, JobsClient, TaskQ
+from taskq.client import BulkCancelResult, CancelResult, JobEvent, JobHandle, JobsClient, TaskQ
 from taskq.client._actors import ActorsClient
 from taskq.client._enqueuer import SubJobEnqueuer
 from taskq.connections import ConnFactory, PoolFactory, RedisFactory, WorkerConnections
@@ -71,6 +71,7 @@ from taskq.exceptions import (
     DependencyCycle,
     DIError,
     EmptyBatchError,
+    EmptyFilterError,
     IllegalStateTransition,
     JobFailed,
     MaxPendingExceededError,
@@ -132,6 +133,7 @@ __all__ = [
     "BatchHandle",
     "BatchRow",
     "BatchSummary",
+    "BulkCancelResult",
     "CancelPhase",
     "CancelResult",
     "Clock",
@@ -142,6 +144,7 @@ __all__ = [
     "DeregisterResult",
     "DstStrategy",
     "EmptyBatchError",
+    "EmptyFilterError",
     "EnqueueItem",
     "ErrorReporter",
     "EventRow",

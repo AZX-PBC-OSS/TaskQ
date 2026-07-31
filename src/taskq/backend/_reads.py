@@ -8,8 +8,8 @@
 from datetime import timedelta
 from typing import TYPE_CHECKING
 
-from taskq._json import dumps_str
 from taskq.backend._cursor import decode_cursor
+from taskq.backend._filter_sql import build_filter_conditions
 from taskq.backend._protocol import (
     AttemptRow,
     EventRow,
@@ -24,7 +24,6 @@ from taskq.backend._records import (
     jsonb_to_dict,
 )
 from taskq.backend._sql_templates import SqlTemplates
-from taskq.backend.statemachine import ACTIVE_STATUSES, TERMINAL_STATUSES
 from taskq.constants import RECLAIM_EVENT_VISIBILITY_DELAY
 
 if TYPE_CHECKING:
@@ -56,49 +55,10 @@ async def _list_jobs(
     schema: str,
     filters: JobFilter,
 ) -> list[JobRow]:
-    conditions: list[str] = []
-    params: list[object] = []
-    n = 0
-
-    def _next_param(expr: str) -> str:
-        nonlocal n
-        n += 1
-        return f"{expr} = ${n}"
-
-    def _next_any_param(expr: str) -> str:
-        nonlocal n
-        n += 1
-        return f"{expr} = ANY(${n})"
-
-    if filters.queue is not None:
-        conditions.append(_next_param("queue"))
-        params.append(filters.queue)
-    if filters.status is not None:
-        if isinstance(filters.status, str):
-            conditions.append(_next_param("status"))
-            params.append(filters.status)
-        else:
-            conditions.append(_next_any_param("status"))
-            params.append(list(filters.status))
-    elif filters.active is not None:
-        statuses = list(ACTIVE_STATUSES) if filters.active else list(TERMINAL_STATUSES)
-        conditions.append(_next_any_param("status"))
-        params.append(statuses)
-    if filters.actor is not None:
-        conditions.append(_next_param("actor"))
-        params.append(filters.actor)
-    if filters.identity_key is not None:
-        conditions.append(_next_param("identity_key"))
-        params.append(filters.identity_key)
-    if filters.batch_id is not None:
-        n += 1
-        conditions.append(f"metadata @> ${n}::jsonb")
-        params.append(dumps_str({"batch_id": str(filters.batch_id)}))
-
-    if filters.tags is not None and len(filters.tags) > 0:
-        n += 1
-        conditions.append(f"tags && ${n}::text[]")
-        params.append(list(filters.tags))
+    filter_sql = build_filter_conditions(filters)
+    conditions: list[str] = list(filter_sql.conditions)
+    params: list[object] = list(filter_sql.params)
+    n = len(params)
 
     if filters.cursor is not None:
         cursor_priority, cursor_scheduled_at, cursor_id = decode_cursor(filters.cursor)

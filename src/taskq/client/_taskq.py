@@ -76,7 +76,7 @@ from taskq.client._jobs import JobsClient
 from taskq.constants import RECLAIM_EVENT_VISIBILITY_DELAY, progress_channel, wake_channel
 from taskq.cron import ScheduleHandle
 from taskq.progress._events import ProgressEvent
-from taskq.types import CancelResult
+from taskq.types import BulkCancelResult, CancelResult
 
 __all__ = ["ActorsClient", "EventRow", "JobEvent", "TaskQ"]
 
@@ -480,6 +480,18 @@ class TaskQ:
     ) -> CancelResult:
         """Request cancellation of a job. Raises :class:`KeyError` if not found."""
         return await self._require_open().cancel(job_id, reason)
+
+    async def cancel_where(
+        self,
+        filter: JobFilter,
+        reason: str | None = None,
+        *,
+        allow_empty_filter: bool = False,
+    ) -> BulkCancelResult:
+        """Cancel all jobs matching *filter*. See :meth:`JobsClient.cancel_where`."""
+        return await self._require_open().cancel_where(
+            filter, reason, allow_empty_filter=allow_empty_filter
+        )
 
     # ── Schedule operations ─────────────────────────────────────────────────
 

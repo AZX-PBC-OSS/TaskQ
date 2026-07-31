@@ -40,6 +40,7 @@ from taskq.backend._protocol import (
     BatchCounts,
     BatchFilter,
     BatchRow,
+    BulkCancelResult,
     CancelFlag,
     CancelPhase,
     EnqueueArgs,
@@ -68,6 +69,7 @@ from taskq.testing._batch import (
     _prune_old_batches,
     _reset_batch_failures,
 )
+from taskq.testing._cancel_bulk import _cancel_where
 from taskq.testing._dispatch import _dispatch_batch, _set_queue_mode
 from taskq.testing._enqueue import (
     _enqueue,
@@ -638,6 +640,13 @@ class InMemoryBackend:
             and row.status == "running"
             and row.locked_by_worker == worker_id
         ]
+
+    async def cancel_where(
+        self,
+        filter: JobFilter,
+        reason: str | None,
+    ) -> BulkCancelResult:
+        return await _cancel_where(self, filter, reason)
 
     # ── Admin operations ──────────────────────────────────────────────
 

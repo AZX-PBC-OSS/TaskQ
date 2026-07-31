@@ -53,6 +53,7 @@ __all__ = [
     "BatchFilter",
     "BatchRow",
     "BatchStatus",
+    "BulkCancelResult",
     "CancelFlag",
     "CancelPhase",
     "DstStrategy",
@@ -448,7 +449,13 @@ class CancelFlag:
 
 @dataclass(frozen=True, slots=True)
 class JobFilter:
-    """Filter parameters for :meth:`Backend.list_jobs`.
+    """Filter parameters for :meth:`Backend.list_jobs` and
+    :meth:`Backend.cancel_where`.
+
+    For ``cancel_where``, the ``limit``, ``cursor``, and ``order_by``
+    fields are ignored — a bulk cancel is not paginated. Use
+    :meth:`has_predicates` to check whether the filter has at least one
+    predicate before passing it to ``cancel_where``.
 
     Heads-up: ``active=True`` is **not** Celery's 'active' — Celery's
     means 'currently executing' (``running`` only), TaskQ's means 'not
@@ -548,6 +555,26 @@ class JobFilter:
                 "terminal/non-terminal meta-filter"
             )
 
+    def has_predicates(self) -> bool:
+        """Return True if at least one filter predicate is set.
+
+        Used by ``JobsClient.cancel_where`` to reject empty filters that
+        would match the entire table. New predicate fields added to
+        ``JobFilter`` MUST be added here and in
+        ``build_filter_conditions`` — the two are kept in sync manually.
+        Non-predicate fields (``limit``, ``cursor``, ``order_by``) are
+        excluded by design.
+        """
+        return (
+            self.queue is not None
+            or self.status is not None
+            or self.actor is not None
+            or self.identity_key is not None
+            or self.batch_id is not None
+            or (self.tags is not None and len(self.tags) > 0)
+            or self.active is not None
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class ScheduleCreateArgs:
@@ -639,6 +666,35 @@ class ScheduleRecord(BaseModel):
     consecutive_failures: int
     next_fire_at: datetime
     metadata: dict[str, object]
+
+
+class BulkCancelResult(BaseModel):
+    """Structured outcome of a bulk cancellation request.
+
+    Returned by ``JobsClient.cancel_where()`` so callers can inspect
+    how many jobs were cancelled directly (pending/scheduled → terminal
+    'cancelled') vs how many had cooperative cancel requested (running →
+    cancel_phase=1).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    cancelled_directly: int
+    """Count of pending/scheduled jobs moved straight to terminal 'cancelled'."""
+
+    cancel_requested: int
+    """Count of running jobs with cancel_phase=1 set (cooperative cancel)."""
+
+    cancelled_ids: tuple[UUID, ...]
+    """IDs of jobs cancelled directly (pending/scheduled → cancelled)."""
+
+    cancel_requested_ids: tuple[UUID, ...]
+    """IDs of running jobs with cancel requested."""
+
+    @property
+    def total_affected(self) -> int:
+        """Total jobs affected by the bulk cancel."""
+        return self.cancelled_directly + self.cancel_requested
 
 
 @dataclass(frozen=True, slots=True)
@@ -770,8 +826,8 @@ class BackendDeps(Protocol):
 class Backend(Protocol):
     """Contract that both PostgresBackend and InMemoryBackend satisfy.
 
-    43 async methods plus two sync methods (``subscribe_wake`` and
-    ``subscribe_cancel_wake``) (45 methods total) covering enqueue,
+    46 async methods plus two sync methods (``subscribe_wake`` and
+    ``subscribe_cancel_wake``) (48 methods total) covering enqueue,
     dispatch, heartbeat, terminal writes, attempt history, cancel
     signals, scheduling / sweeps, read, NOTIFY hook, schedule CRUD,
     and batch operations. Method order grouped for review-grep
@@ -1025,6 +1081,31 @@ class Backend(Protocol):
         job_id: JobId,
         reason: str | None,
     ) -> bool: ...
+
+    async def cancel_where(
+        self,
+        filter: JobFilter,
+        reason: str | None,
+    ) -> BulkCancelResult:
+        """Cancel all jobs matching *filter* in a set-based operation.
+
+        Pending/scheduled jobs → terminal 'cancelled'.
+        Running jobs → cancel_phase=1 (cooperative cancel + NOTIFY).
+
+        The filter's ``limit``, ``cursor``, and ``order_by`` fields are
+        ignored — this is a bulk write, not a paginated read.
+
+        **Guardrail:** the client layer (:meth:`JobsClient.cancel_where`)
+        rejects empty filters (no predicates) with
+        :class:`EmptyFilterError`. Backend implementations receive a
+        filter that has already been validated. A direct backend call
+        with ``JobFilter()`` renders ``WHERE TRUE`` and cancels the
+        entire table — callers using the backend directly are
+        responsible for validating the filter.
+
+        Returns a :class:`BulkCancelResult` with counts and affected IDs.
+        """
+        ...
 
     async def poll_cancel_flags(
         self,

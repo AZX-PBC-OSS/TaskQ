@@ -47,7 +47,9 @@ Async-native, Postgres-backed background job library for Python 3.12+.
   isn't inside an actor should instead poll `BatchHandle.status(db_connection)`.
   See [Jobs & Clients](docs/guides/jobs-clients.md#enqueue_batch).
 - **Cancellation** — cooperative cancellation with grace periods and
-  force-cancel sweeps; `ctx.check_cancelled()` inside actor bodies.
+  force-cancel sweeps; `ctx.check_cancelled()` inside actor bodies; bulk
+  `cancel_where(filter)` for set-based cancellation by tag, queue, actor,
+  or batch ID.
 - **Progress tracking** — `ctx.progress(...)` events buffered and published
   to subscribers and the admin UI.
 - **Workgroups** — multi-worker process supervision with a shared heartbeat

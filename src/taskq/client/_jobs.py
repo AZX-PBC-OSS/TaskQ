@@ -52,8 +52,8 @@ from taskq.batch_policy import BatchFailurePolicy
 from taskq.client._args import build_batch_args, build_enqueue_args, enqueue_span
 from taskq.client._capacity import DEFAULT_CAPACITY_CACHE_TTL, ActorCapacityCache
 from taskq.client._handle import JobHandle
-from taskq.exceptions import SchemaNotMigratedError
-from taskq.types import CancelResult
+from taskq.exceptions import EmptyFilterError, PayloadValidationError, SchemaNotMigratedError
+from taskq.types import BulkCancelResult, CancelResult
 
 if TYPE_CHECKING:
     import asyncpg
@@ -1167,6 +1167,42 @@ class JobsClient:
             cancellation_initiated=initiated,
         )
         return result
+
+    async def cancel_where(
+        self,
+        filter: JobFilter,
+        reason: str | None = None,
+        *,
+        allow_empty_filter: bool = False,
+    ) -> BulkCancelResult:
+        """Cancel all jobs matching *filter* in a single set-based operation.
+
+        Pending/scheduled jobs are moved straight to terminal 'cancelled'
+        (no running actor to cooperate with). Running jobs get
+        ``cancel_phase=1`` set (cooperative cancel) — the worker's
+        heartbeat-driven cancel controller observes the phase change and
+        sets the in-process ``cancel_event``.
+
+        **Guardrail:** a filter with no predicates (no queue, status,
+        actor, identity_key, batch_id, tags, or active) is rejected with
+        :class:`EmptyFilterError` unless ``allow_empty_filter=True`` is
+        passed.
+
+        **Filter fields used:** ``queue``, ``status``, ``actor``,
+        ``identity_key``, ``batch_id``, ``tags``, ``active``. The
+        ``limit``, ``cursor``, and ``order_by`` fields are ignored.
+
+        Returns a :class:`BulkCancelResult` with counts and affected IDs.
+        """
+        from taskq.obs import record_cancel_requested
+
+        if not allow_empty_filter and not filter.has_predicates():
+            raise EmptyFilterError()
+
+        record_cancel_requested()
+
+        with self._translate_schema_errors():
+            return await self._backend.cancel_where(filter, reason)
 
     # ── Schedule CRUD ────────────────────────────────────────────────────
 
