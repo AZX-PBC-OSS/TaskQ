@@ -8,7 +8,7 @@ requires-python = ">=3.12"
 authors = [{ name = "AZX, PBC.", email = "oss@azx.io" }]
 keywords = ["jobs", "queue", "postgres", "asyncio", "opentelemetry"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Framework :: AsyncIO",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
