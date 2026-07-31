@@ -284,7 +284,7 @@ async def _prune_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                 )
                 if not lock_acquired:
                     log.warning(
-                        "prune skipped: advisory lock held",
+                        "prune-skipped-advisory-lock-held",
                         kind="prune",
                         worker_id=str(ctx.worker_id),
                     )
@@ -306,7 +306,7 @@ async def _prune_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                     last_pruned_date = today_utc
                     for status, count in result.by_status.items():
                         log.info(
-                            "prune completed",
+                            "prune-completed",
                             kind="prune",
                             status=status,
                             count=count,
@@ -314,7 +314,7 @@ async def _prune_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                             duration_ms=result.duration_ms,
                         )
                 except Exception as exc:
-                    log.error("prune failed", kind="prune", error=repr(exc))
+                    log.error("prune-failed", kind="prune", error=repr(exc))
                 finally:
                     with contextlib.suppress(*TRANSIENT_PG_ERRORS):
                         await conn.execute(
@@ -363,7 +363,7 @@ async def _archive_expiry_loop(ctx: SweepContext, shutdown: asyncio.Event) -> No
                 )
                 if not lock_acquired:
                     log.warning(
-                        "archive expiry skipped: advisory lock held",
+                        "archive-expiry-skipped-advisory-lock-held",
                         kind="archive_expiry",
                         worker_id=str(ctx.worker_id),
                     )
@@ -378,7 +378,7 @@ async def _archive_expiry_loop(ctx: SweepContext, shutdown: asyncio.Event) -> No
                     last_expiry_date = today_utc
                     for status, count in result.by_status.items():
                         log.info(
-                            "archive expiry completed",
+                            "archive-expiry-completed",
                             kind="archive_expiry",
                             status=status,
                             count=count,
@@ -486,7 +486,7 @@ async def _stranded_jobs_loop(ctx: SweepContext, shutdown: asyncio.Event) -> Non
                 rows = await conn.fetch(sql)
         except Exception as exc:
             log.warning(
-                "stranded_jobs_query_failed",
+                "stranded-jobs-query-failed",
                 error_class=type(exc).__name__,
                 error_message=str(exc),
             )

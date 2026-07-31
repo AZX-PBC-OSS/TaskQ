@@ -892,9 +892,9 @@ async def apply_pending_locked(
             c, schema=schema, phase=phase, target=target, max_steps=max_steps
         )
         if applied:
-            logger.info("applied migrations before startup", count=len(applied))
+            logger.info("migrations-applied-before-startup", count=len(applied))
         else:
-            logger.info("no pending migrations")
+            logger.info("no-pending-migrations")
         return applied
     except Exception as exc:
         if c is None:

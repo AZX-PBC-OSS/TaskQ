@@ -287,7 +287,7 @@ async def test_watch_reclaims_visibility_risk_probe_failure_never_kills_watcher(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A failing probe (permissions on pg_locks, a transient pool error)
-    is logged as 'watch_reclaims-visibility-risk-probe-failed' and
+    is logged as 'watch-reclaims-visibility-risk-probe-failed' and
     swallowed — a monitoring path must never take down the delivery path
     it monitors."""
     monkeypatch.setattr("taskq.client._taskq._VISIBILITY_RISK_CHECK_INTERVAL", 0.0)
@@ -317,7 +317,7 @@ async def test_watch_reclaims_visibility_risk_probe_failure_never_kills_watcher(
             await producer
 
     assert len(events) == 1, "probe failure must not interrupt delivery"
-    assert any(e["event"] == "watch_reclaims-visibility-risk-probe-failed" for e in captured)
+    assert any(e["event"] == "watch-reclaims-visibility-risk-probe-failed" for e in captured)
 
 
 # ── PG LISTEN transport state machine (unit, fake connection) ──────
@@ -427,7 +427,7 @@ async def test_watch_reclaims_pg_reconnects_after_listen_conn_death(
 async def test_watch_reclaims_pg_caller_owned_conn_death_permanent_poll_fallback() -> None:
     """A caller-supplied listen_conn cannot be reconnected (the caller owns
     its lifecycle): on death the generator logs
-    'watch_reclaims-listen-connection-lost' once and settles into the
+    'watch-reclaims-listen-connection-lost' once and settles into the
     permanent poll fallback — the documented limitation — still delivering
     events, without closing the caller's connection."""
     backend = _make_backend()
@@ -450,7 +450,7 @@ async def test_watch_reclaims_pg_caller_owned_conn_death_permanent_poll_fallback
         events = await asyncio.wait_for(task, timeout=5.0)
 
     assert len(events) == 1
-    lost = [e for e in captured if e["event"] == "watch_reclaims-listen-connection-lost"]
+    lost = [e for e in captured if e["event"] == "watch-reclaims-listen-connection-lost"]
     assert len(lost) == 1
     assert conn.close_calls == 0, "generator must not close a caller-owned connection"
 
@@ -462,7 +462,7 @@ async def test_watch_reclaims_pg_pool_error_propagates_not_misdiagnosed(
     failure, not a LISTEN failure: it must propagate to the caller (who
     can resume from the last-seen cursor) rather than being swallowed by
     the listen-failure fallback, which would hide a real backend outage
-    behind a 'watch_reclaims-listen-connection-lost' misdiagnosis."""
+    behind a 'watch-reclaims-listen-connection-lost' misdiagnosis."""
     backend = _make_backend()
     client = _make_client(backend)
     conn = _FakeListenConn()
@@ -536,7 +536,7 @@ async def test_watch_reclaims_pg_degraded_loop_drains_full_batches() -> None:
     poll_timeout to deliver.
 
     Ordering is the whole pin: the 250-event backlog is created only
-    AFTER the 'watch_reclaims-listen-connection-lost' log line proves
+    AFTER the 'watch-reclaims-listen-connection-lost' log line proves
     the generator is inside the fallback loop.  Events created before
     the kill would drain through the *healthy* loop's full-batch
     continue and the fallback loop would never run — an earlier revision
@@ -564,7 +564,7 @@ async def test_watch_reclaims_pg_degraded_loop_drains_full_batches() -> None:
             "generator never registered LISTEN — settle sleep insufficient"
         )
         conn.kill()  # into the caller-owned permanent poll fallback
-        await _wait_for_log(captured, "watch_reclaims-listen-connection-lost")
+        await _wait_for_log(captured, "watch-reclaims-listen-connection-lost")
         for _ in range(250):
             await _make_running_row(backend)
         events = await asyncio.wait_for(task, timeout=2.0)
@@ -606,7 +606,7 @@ async def test_watch_reclaims_pg_owned_conn_degraded_loop_drains_full_batches(
         await asyncio.sleep(0.05)  # factory conn opened, LISTEN registered
         assert len(conns) == 1
         conns[0].kill()  # into the owned-conn poll/reconnect fallback
-        await _wait_for_log(captured, "watch_reclaims-listen-connection-lost")
+        await _wait_for_log(captured, "watch-reclaims-listen-connection-lost")
         for _ in range(250):
             await _make_running_row(backend)
         events = await asyncio.wait_for(task, timeout=2.0)
