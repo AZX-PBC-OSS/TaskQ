@@ -17,10 +17,12 @@ and pass that subclass instead.
 # and breaks the typed-DSN/SecretStr coercion. Keep annotations evaluated.
 
 import math
+import re
 from datetime import timedelta
 from pathlib import Path
 from typing import Self
 
+from croniter import croniter
 from dotenvmodel import DotEnvConfig, Field, ValidationError, ValidatorContext
 from dotenvmodel.types import PostgresDsn, RedisDsn
 
@@ -122,6 +124,18 @@ class SAMLSettings(DotEnvConfig):
         return _parse_groups(self.allowed_groups)
 
 
+_VALID_SSO_BACKENDS = frozenset({"none", "oidc", "saml"})
+
+
+def _sso_backend_validator(value: str, ctx: ValidatorContext) -> str:
+    normalized = value.lower()
+    if normalized not in _VALID_SSO_BACKENDS:
+        raise ValueError(
+            f"{ctx.field_name} must be one of {sorted(_VALID_SSO_BACKENDS)}, got {value!r}"
+        )
+    return normalized
+
+
 class TaskQSettings(DotEnvConfig):
     """Top-level TaskQ runtime configuration."""
 
@@ -205,6 +219,7 @@ class TaskQSettings(DotEnvConfig):
     # -- SSO / SAML -------------------------------------------------------
     sso_backend: str = Field(
         default="none",
+        validator=_sso_backend_validator,
         description="TASKQ_SSO_BACKEND. Selects the SSO backend for the admin UI: "
         "'none' (default, unauthenticated/BYO-auth), 'oidc' (taskq[oidc]), "
         "or 'saml' (taskq[saml]). See docs/guides/sso.md.",
@@ -339,6 +354,39 @@ def _log_format_validator(value: str, ctx: ValidatorContext) -> str:
         raise ValueError(
             f"{ctx.field_name} must be one of {sorted(_VALID_LOG_FORMATS)}, got {value!r}"
         )
+    return value
+
+
+_VALID_LOG_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
+_LOG_LEVEL_CHOICES = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+
+
+def _log_level_validator(value: str, ctx: ValidatorContext) -> str:
+    normalized = value.upper()
+    if normalized not in _VALID_LOG_LEVELS:
+        raise ValueError(f"{ctx.field_name} must be one of {_LOG_LEVEL_CHOICES}, got {value!r}")
+    return normalized
+
+
+_HH_MM_PATTERN = re.compile(r"^(\d{2}):(\d{2})$")
+
+
+def _hh_mm_validator(value: str, ctx: ValidatorContext) -> str:
+    m = _HH_MM_PATTERN.match(value)
+    if m is None:
+        raise ValueError(f'{ctx.field_name} must be HH:MM format (e.g. "03:00"), got {value!r}')
+    hours = int(m.group(1))
+    minutes = int(m.group(2))
+    if not (0 <= hours <= 23 and 0 <= minutes <= 59):
+        raise ValueError(f'{ctx.field_name} must be HH:MM format (e.g. "03:00"), got {value!r}')
+    return value
+
+
+def _cron_expr_validator(value: str | None, ctx: ValidatorContext) -> str | None:
+    if value is None or value == "":
+        return value
+    if not croniter.is_valid(value):
+        raise ValueError(f"{ctx.field_name} must be a valid cron expression, got {value!r}")
     return value
 
 
@@ -663,17 +711,20 @@ class WorkerSettings(TaskQSettings):
     # -- Polling and NOTIFY listener ------------------------
     poll_interval: float = Field(
         default=1.0,
+        gt=0,
         description="TASKQ_POLL_INTERVAL (seconds). Producer loop fallback "
         "polling cadence when the NOTIFY listener is unavailable.",
     )
     notify_health_check_interval: float = Field(
         default=5.0,
+        gt=0,
         description="TASKQ_NOTIFY_HEALTH_CHECK_INTERVAL (seconds). How often "
         "_health_check_loop issues SELECT 1 on notify_conn. "
         "Detection latency before reconnect is at most this interval.",
     )
     notify_reconnect_backoff_initial: float = Field(
         default=1.0,
+        gt=0,
         description="TASKQ_NOTIFY_RECONNECT_BACKOFF_INITIAL (seconds). "
         "Initial exponential backoff delay before the first reconnect "
         "retry. Cap is 30 s (factor 2 per attempt). "
@@ -776,17 +827,20 @@ class WorkerSettings(TaskQSettings):
     )
     log_level: str = Field(
         default="INFO",
+        validator=_log_level_validator,
         description="TASKQ_LOG_LEVEL. Root logger level.",
     )
 
     # -- Pruning schedule --------------------------------------------
     prune_schedule_utc: str = Field(
         default="03:00",
+        validator=_hh_mm_validator,
         description="TASKQ_PRUNE_SCHEDULE_UTC. HH:MM (UTC) for the daily prune "
         "run. Ignored when prune_cron_expr is set.",
     )
     prune_cron_expr: str | None = Field(
         default=None,
+        validator=_cron_expr_validator,
         description="TASKQ_PRUNE_CRON_EXPR. Full 5-field cron expression. When "
         "set, takes precedence over prune_schedule_utc.",
     )
@@ -836,12 +890,14 @@ class WorkerSettings(TaskQSettings):
     )
     archive_expiry_schedule_utc: str = Field(
         default="04:00",
+        validator=_hh_mm_validator,
         description="TASKQ_ARCHIVE_EXPIRY_SCHEDULE_UTC. HH:MM (UTC) for the "
         "daily archive expiry sweep. Default 04:00, 1 hour after the "
         "prune sweep.",
     )
     archive_expiry_cron_expr: str | None = Field(
         default=None,
+        validator=_cron_expr_validator,
         description="TASKQ_ARCHIVE_EXPIRY_CRON_EXPR. Full 5-field cron "
         "expression. When set, takes precedence over "
         "archive_expiry_schedule_utc.",
