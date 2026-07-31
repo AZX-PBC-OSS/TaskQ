@@ -425,7 +425,7 @@ async def test_watchdog_continues_after_error_and_reelection(monkeypatch: Any) -
         command_timeout: float | None = None,
     ) -> FakeConn:
         open_calls.append(label)
-        if label == "leader_conn":
+        if label == "leader":
             return new_leader_conn
         return FakeConn()
 
@@ -2430,7 +2430,7 @@ async def test_factory_built_leader_conns_get_keepalive(monkeypatch: Any) -> Non
     await task
 
     assert deps.is_leader.is_set()
-    assert keepalive_calls == ["leader_conn", "leader_monitor_conn", "cron_conn"]
+    assert keepalive_calls == ["leader", "leader_monitor_conn", "cron_conn"]
 
 
 # ── Fail-fast when no rebuild path exists ───────────────────────────────

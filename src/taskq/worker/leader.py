@@ -129,13 +129,13 @@ class MaintenanceLeader:
         """Close the leader-owned dedicated conns (cron, monitor), bounded.
 
         Two call contexts: mid-run demotion (watchdog/election/cron
-        conn-died paths — the default ``mid_run=True``, the ``conn-close-*``
-        alert family) and ``run()``'s finally (final teardown — passes
+        conn-died paths - the default ``mid_run=True``, the ``conn-close-*``
+        alert family) and ``run()``'s finally (final teardown - passes
         ``mid_run=False`` for the ``conn-teardown-close-*`` family), so an
         ordinary shutdown never pages as an unexpected mid-run close
         timeout.
         """
-        # Why first: demotion must be observable immediately — the bounded
+        # Why first: demotion must be observable immediately - the bounded
         # closes below can park for seconds on a dead PG, and this flag
         # backs the leader gauge, /metrics, and the health report.
         self._deps.is_leader.clear()
@@ -144,8 +144,8 @@ class MaintenanceLeader:
             if conn is not None and not conn.is_closed():
                 # Why bounded: a dead PG can block conn.close() indefinitely,
                 # which stalled the election/watchdog/cron paths that call
-                # this (#38). The helper never raises — a superset of the
-                # previous suppress(PostgresConnectionError, OSError) — and
+                # this (#38). The helper never raises - a superset of the
+                # previous suppress(PostgresConnectionError, OSError) - and
                 # terminates the conn on timeout. Labels match the keepalive
                 # labels ("cron_conn" / "leader_monitor_conn").
                 await close_conn_bounded(
@@ -161,7 +161,7 @@ class MaintenanceLeader:
 
         The ownership contract ("TaskQ never closes caller-owned
         resources") forbids closing a caller-provided leader_conn even when
-        it is dead — the caller owns the corpse. A caller-owned conn is
+        it is dead - the caller owns the corpse. A caller-owned conn is
         therefore abandoned: our reference is dropped so the election loop
         rebuilds via ``leader_conn_factory`` / ``pg_dsn_direct``, and the
         caller's own handle is left for them to dispose of.
@@ -174,9 +174,9 @@ class MaintenanceLeader:
                 # Why bounded: same dead-PG stall risk on the watchdog/
                 # election drop path (#38). The helper never raises, so
                 # leader_conn is always nulled below and the loop can
-                # rebuild — previously a close error propagated out of the
+                # rebuild - previously a close error propagated out of the
                 # drop path and skipped the nulling.
-                await close_conn_bounded(conn, "leader_conn", CLOSE_TIMEOUT_SECS, mid_run=True)
+                await close_conn_bounded(conn, "leader", CLOSE_TIMEOUT_SECS, mid_run=True)
         else:
             log.warning(
                 "leader-conn-abandoned-caller-owned",
@@ -190,7 +190,7 @@ class MaintenanceLeader:
         """Open or reopen the leader advisory-lock connection.
 
         Uses ``deps.leader_conn_factory`` when set (credential-provider-
-        backed deployments — AAD/AWS/Vault), so reconnection after a drop
+        backed deployments - AAD/AWS/Vault), so reconnection after a drop
         re-fetches a fresh credential rather than falling back to a
         stale/absent DSN. Falls back to ``open_dedicated_conn`` with the
         DSN only when no factory is available.
@@ -199,22 +199,22 @@ class MaintenanceLeader:
         if factory is not None:
             conn = await factory()
             # Why: the factory path bypasses open_dedicated_conn, so the
-            # worker's keepalive policy must be applied here — the factory
+            # worker's keepalive policy must be applied here - the factory
             # owns the credential, TaskQ owns the socket policy.
-            apply_keepalive_to_conn(conn, label="leader_conn")
+            apply_keepalive_to_conn(conn, label="leader")
             return conn
         dsn = self._deps.settings.pg_dsn_direct
         if dsn is None:
             # Why: open_worker_deps validates this at startup, so None here
-            # means deps were built by hand — fail fast instead of letting
+            # means deps were built by hand - fail fast instead of letting
             # asyncpg.connect(str(None)) DNS-retry the host "None" forever.
             raise RuntimeError(
-                "no leader_conn_factory and pg_dsn_direct is None — "
+                "no leader_conn_factory and pg_dsn_direct is None - "
                 "cannot rebuild leader connection"
             )
         return await open_dedicated_conn(
             str(dsn),
-            label="leader_conn",
+            label="leader",
             apply_keepalive=True,
             command_timeout=self._deps.settings.dispatcher_command_timeout,
         )
@@ -233,10 +233,10 @@ class MaintenanceLeader:
             return conn
         dsn = self._deps.settings.pg_dsn_direct
         if dsn is None:
-            # Why: same fail-fast as _open_leader_conn — never connect to
+            # Why: same fail-fast as _open_leader_conn - never connect to
             # the literal host "None".
             raise RuntimeError(
-                f"no leader_conn_factory and pg_dsn_direct is None — cannot rebuild {label}"
+                f"no leader_conn_factory and pg_dsn_direct is None - cannot rebuild {label}"
             )
         return await open_dedicated_conn(
             str(dsn),
@@ -319,7 +319,7 @@ class MaintenanceLeader:
                     self._deps.leader_conn = await self._open_leader_conn()
                 except Exception as exc:
                     # Why: ``except Exception`` is deliberate at this retry
-                    # point — credential-provider factories raise
+                    # point - credential-provider factories raise
                     # azure/hvac/botocore exceptions, and a rejected fresh
                     # token raises asyncpg.InvalidPasswordError (an
                     # InvalidAuthorizationSpecificationError, NOT a
