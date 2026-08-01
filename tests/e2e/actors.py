@@ -22,7 +22,7 @@ import time
 from datetime import timedelta
 from functools import lru_cache
 from typing import Literal
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import asyncpg
 from pydantic import BaseModel, ConfigDict, Field
@@ -786,7 +786,7 @@ async def batch_abort_worker(
 
 class FinalizerPayload(BaseModel):
     run_id: str
-    batch_id: str
+    batch_id: UUID
 
 
 @actor(
@@ -801,13 +801,11 @@ async def batch_finalizer(
     pool: asyncpg.Pool,
 ) -> None:
     """Waits for batch children via wait_for_batch, then records a 'finalized' effect."""
-    from uuid import UUID
-
     from taskq import wait_for_batch
 
     status = await wait_for_batch(
         pool,
-        UUID(payload.batch_id),
+        payload.batch_id,
         schema=_effects_schema(),
         snooze_interval=timedelta(seconds=2),
     )
@@ -817,7 +815,7 @@ async def batch_finalizer(
         "finalized",
         {
             "run_id": payload.run_id,
-            "batch_id": payload.batch_id,
+            "batch_id": str(payload.batch_id),
             "total": status.total,
             "succeeded": status.succeeded,
             "failed": status.failed,
@@ -827,7 +825,7 @@ async def batch_finalizer(
 
 class AbortFinalizerPayload(BaseModel):
     run_id: str
-    batch_id: str
+    batch_id: UUID
 
 
 @actor(
@@ -849,15 +847,13 @@ async def batch_abort_finalizer(
     even when the batch is aborted.  Records either a ``finalized`` or
     ``aborted`` effect.
     """
-    from uuid import UUID
-
     from taskq import wait_for_batch
     from taskq.exceptions import BatchAbortedError
 
     try:
         status = await wait_for_batch(
             pool,
-            UUID(payload.batch_id),
+            payload.batch_id,
             schema=_effects_schema(),
             snooze_interval=timedelta(seconds=2),
         )
@@ -867,7 +863,7 @@ async def batch_abort_finalizer(
             "finalized",
             {
                 "run_id": payload.run_id,
-                "batch_id": payload.batch_id,
+                "batch_id": str(payload.batch_id),
                 "total": status.total,
                 "succeeded": status.succeeded,
                 "failed": status.failed,
@@ -880,7 +876,7 @@ async def batch_abort_finalizer(
             "aborted",
             {
                 "run_id": payload.run_id,
-                "batch_id": payload.batch_id,
+                "batch_id": str(payload.batch_id),
             },
         )
 
