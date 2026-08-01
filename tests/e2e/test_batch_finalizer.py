@@ -15,6 +15,7 @@ Uses the standard ``e2e_worker`` fixture.
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
@@ -103,7 +104,7 @@ async def test_finalizer_snoozes_then_runs(
     )
 
     assert len(finalized_effects) == 1
-    detail = finalized_effects[0]["detail"]
+    detail = json.loads(finalized_effects[0]["detail"])
     assert detail["total"] == _NUM_CHILDREN
     assert detail["succeeded"] == _NUM_CHILDREN
     assert detail["failed"] == 0

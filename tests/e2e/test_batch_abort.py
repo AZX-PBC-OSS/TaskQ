@@ -204,12 +204,19 @@ async def test_batch_abort_with_finalizer(
         description=f"finalizer {finalizer_id} to reach terminal status",
     )
 
-    finalizer_status = await e2e_pg_pool.fetchval(
-        f'SELECT status FROM "{e2e_schema.schema_name}".jobs WHERE id = $1',
+    finalizer_row = await e2e_pg_pool.fetchrow(
+        f'SELECT status, error_class, error_message, attempt, max_attempts '
+        f'FROM "{e2e_schema.schema_name}".jobs WHERE id = $1',
         finalizer_id,
     )
-    assert finalizer_status == "succeeded", (
-        f"finalizer should succeed (catching BatchAbortedError), got status={finalizer_status!r}"
+    assert finalizer_row is not None
+    assert finalizer_row["status"] == "succeeded", (
+        f"finalizer should succeed (catching BatchAbortedError), "
+        f"got status={finalizer_row['status']!r}, "
+        f"error_class={finalizer_row['error_class']!r}, "
+        f"error_message={finalizer_row['error_message']!r}, "
+        f"attempt={finalizer_row['attempt']}, "
+        f"max_attempts={finalizer_row['max_attempts']}"
     )
 
     # The finalizer should have recorded an 'aborted' effect
