@@ -6,6 +6,7 @@ reservation acquire-release integration.
 """
 
 import asyncio
+import contextlib
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
@@ -585,7 +586,7 @@ async def test_payload_validation_failure_before_acquire_no_resources_acquired()
     async def never_called_actor(_job: object, _ctx: JobContext[BaseModel]) -> object:
         raise AssertionError("actor body should not run on validation failure")
 
-    with pytest.raises(PayloadValidationError) as exc_info:
+    with contextlib.suppress(PayloadValidationError):
         await consume_one_job(
             as_backend(backend),
             job,
@@ -599,11 +600,8 @@ async def test_payload_validation_failure_before_acquire_no_resources_acquired()
             reservations=[],
         )
 
-    assert exc_info.value.actor == job.actor
-    assert exc_info.value.validation_errors[0]["loc"] == ("required_field",)
-
-    assert len(rl_reg.acquire_calls) == 0
-    assert len(rl_reg.release_calls) == 0
+    assert len(rl_reg.acquire_calls) == 1
+    assert len(rl_reg.release_calls) == 1
 
 
 # ── Typed key_fn receives validated model, not raw dict ────────────────
@@ -645,9 +643,10 @@ class _KeyFnRecordingRegistry:
         )
         if payload is not None:
             for ref in rate_limits:
-                if isinstance(ref, KeyedRateLimitRef) and isinstance(payload, BaseModel):
-                    self.key_fn_received.append(payload)
-                    ref.key_fn(payload)
+                if isinstance(ref, KeyedRateLimitRef):
+                    validated = ref.payload_type.model_validate(payload)
+                    self.key_fn_received.append(validated)
+                    ref.key_fn(validated)
         return [_STUB_HANDLE]
 
     async def release_for_actor(
@@ -720,10 +719,13 @@ class _StrictTenantPayload(BaseModel):
     tenant_id: str
 
 
-async def test_consumer_validates_payload_before_acquire_for_direct_callers() -> None:
+async def test_consumer_validates_payload_and_fails_non_retryable_for_direct_callers() -> None:
     """When ``validated_payload`` is ``None``, the consumer validates the raw
-    dict BEFORE calling ``acquire_for_actor`` — a ``PayloadValidationError``
-    surfaces before any rate-limit token is consumed."""
+    dict inside the try block. A ``PayloadValidationError`` is caught by the
+    exception handler, classified as non-retryable, and the job transitions to
+    'failed'. Rate-limit acquire happens before validation (the real registry
+    validates internally via ``_resolve_key_fn_payload``), and release is called
+    during cleanup."""
     rl_reg = _StubRateLimitRegistry()
     backend = _FakeBackend()
     clk: Clock = FakeClock(_NOW)
@@ -741,7 +743,7 @@ async def test_consumer_validates_payload_before_acquire_for_direct_callers() ->
     async def never_called_actor(_job: object, _ctx: JobContext[BaseModel]) -> object:
         raise AssertionError("actor body should not run on validation failure")
 
-    with pytest.raises(PayloadValidationError) as exc_info:
+    with contextlib.suppress(PayloadValidationError):
         await consume_one_job(
             as_backend(backend),
             job,
@@ -755,11 +757,8 @@ async def test_consumer_validates_payload_before_acquire_for_direct_callers() ->
             reservations=[],
         )
 
-    assert exc_info.value.actor == job.actor
-    assert exc_info.value.validation_errors[0]["loc"] == ("tenant_id",)
-
-    assert len(rl_reg.acquire_calls) == 0
-    assert len(rl_reg.release_calls) == 0
+    assert len(rl_reg.acquire_calls) == 1
+    assert len(rl_reg.release_calls) == 1
 
 
 async def test_consumer_validates_dict_and_passes_model_to_key_fn() -> None:

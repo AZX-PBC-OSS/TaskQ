@@ -300,18 +300,6 @@ async def consume_one_job(
     )
     _needs_acquire = bool(_rl_limits or _rl_reservations) and rate_limit_registry is not None
 
-    # Ensure the validated model is available before rate-limit acquisition.
-    # On the dispatch path, validated_payload is already set (dispatch_one_job
-    # validates before calling consume_one_job). For direct callers, validate
-    # here. A PayloadValidationError from an invalid payload surfaces BEFORE a
-    # rate-limit token is consumed — the correct behavior.
-    if validated_payload is None:
-        validated_payload = validate_actor_payload(
-            payload_type,
-            job.payload,
-            actor=job.actor,
-        )
-
     acquired: list[AcquiredResource] = []
 
     if _needs_acquire and rate_limit_registry is not None:
@@ -321,7 +309,7 @@ async def consume_one_job(
                 reservations=_rl_reservations,
                 job_id=job.id,
                 worker_id=worker_id,
-                payload=validated_payload,
+                payload=job.payload,
                 redis_client=redis_client,
                 pg_pool=worker_pool,
                 clock=clock,
@@ -370,6 +358,12 @@ async def consume_one_job(
     _parent_tags_token = _parent_tags_var.set(tuple(job.tags))
 
     try:
+        validated_payload = (
+            validated_payload
+            if validated_payload is not None
+            else validate_actor_payload(payload_type, job.payload, job.actor)
+        )
+
         live_enqueuer = (
             enqueuer
             if enqueuer is not None

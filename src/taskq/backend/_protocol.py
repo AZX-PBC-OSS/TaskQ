@@ -1283,6 +1283,8 @@ class Backend(Protocol):
     async def count_batch_non_terminal(
         self,
         batch_id: UUID,
+        *,
+        connection: "asyncpg.Connection | None" = None,
     ) -> int: ...
 
     async def prune_old_batches(

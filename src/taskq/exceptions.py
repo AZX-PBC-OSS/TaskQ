@@ -9,6 +9,8 @@ from datetime import timedelta
 from typing import TYPE_CHECKING, Literal
 from uuid import UUID
 
+from pydantic import BaseModel
+
 from taskq._scope import Scope
 from taskq.backend._protocol import JobId, JobStatus
 
@@ -139,6 +141,35 @@ class PayloadValidationError(TaskQError):
         self.payload_schema_ver = payload_schema_ver
         self.validation_errors: list[dict[str, object]] = validation_errors or []
         super().__init__(detail)
+
+
+def validate_actor_payload(
+    payload_type: type[BaseModel],
+    raw_payload: dict[str, object],
+    actor_name: str,
+) -> BaseModel:
+    """Validate a raw payload dict from a DB row against an actor's payload type.
+
+    Converts ``pydantic.ValidationError`` to :class:`PayloadValidationError`
+    (non-retryable) with operator-facing diagnostics: the actor name,
+    field-level validation errors, and the raw payload dict.
+
+    Used at every dispatch-time validation site to ensure a malformed
+    payload row fails fast with a clear error message instead of being
+    retried forever with a cryptic ``"ValidationError"`` error_class.
+    """
+    from pydantic import ValidationError
+
+    try:
+        return payload_type.model_validate(raw_payload)
+    except ValidationError as exc:
+        errs: list[dict[str, object]] = exc.errors()  # type: ignore[assignment]  # Why: pydantic v2 ErrorDetails is a TypedDict (subtype of dict[str, Any]); assignment to list[dict[str,object]] is safe at runtime but pyright cannot prove covariance
+        raise PayloadValidationError(
+            f"Payload validation failed for actor {actor_name!r}: {exc}\n"
+            f"Raw payload: {raw_payload}",
+            actor=actor_name,
+            validation_errors=errs,
+        ) from exc
 
 
 class ResultTooLarge(TaskQError):

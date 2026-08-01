@@ -22,9 +22,11 @@ from uuid import uuid4
 import pytest
 
 from taskq import EnqueueItem
+from taskq.backend.statemachine import TERMINAL_STATUSES
 from taskq.batch_policy import AbortBatchAfter
 
 from ._assertions import (
+    fetch_batch_status,
     fetch_effects,
     fetch_job_rows,
     poll_until,
@@ -114,10 +116,7 @@ async def test_batch_abort_after_threshold(
         f"got {len(attempt_effects)}"
     )
 
-    batch_status = await e2e_pg_pool.fetchval(
-        f'SELECT status FROM "{e2e_schema.schema_name}".batches WHERE id = $1',
-        batch_id,
-    )
+    batch_status = await fetch_batch_status(e2e_pg_pool, e2e_schema.schema_name, batch_id)
     assert batch_status == "aborted", f"batch row status={batch_status!r}, expected 'aborted'"
 
 
@@ -184,10 +183,7 @@ async def test_batch_abort_with_finalizer(
     )
 
     # Batch is aborted
-    batch_status = await e2e_pg_pool.fetchval(
-        f'SELECT status FROM "{e2e_schema.schema_name}".batches WHERE id = $1',
-        batch_id,
-    )
+    batch_status = await fetch_batch_status(e2e_pg_pool, e2e_schema.schema_name, batch_id)
     assert batch_status == "aborted", f"batch row status={batch_status!r}, expected 'aborted'"
 
     # Finalizer should NOT be cancelled by the abort — it's not stamped
@@ -198,13 +194,7 @@ async def test_batch_abort_with_finalizer(
             f'SELECT status FROM "{e2e_schema.schema_name}".jobs WHERE id = $1',
             finalizer_id,
         )
-        return row is not None and row["status"] in (
-            "succeeded",
-            "failed",
-            "cancelled",
-            "crashed",
-            "abandoned",
-        )
+        return row is not None and row["status"] in TERMINAL_STATUSES
 
     # With a 2 s snooze interval and children already terminal, the
     # finalizer should reach its terminal state within a few snooze cycles.

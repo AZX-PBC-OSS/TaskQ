@@ -60,6 +60,29 @@ def _make_batch_row(
     )
 
 
+async def _create_test_batch(
+    backend: InMemoryBackend,
+    *,
+    batch_id: UUID | None = None,
+    queue: str = "default",
+    expected_size: int = 3,
+    failure_threshold: int | None = None,
+    finalizer_job_id: UUID | None = None,
+    originating_actor: str | None = None,
+) -> UUID:
+    """Create a batch with sensible defaults, returning the batch ID."""
+    bid = batch_id or new_uuid()
+    await backend.create_batch(
+        bid,
+        queue=queue,
+        expected_size=expected_size,
+        failure_threshold=failure_threshold,
+        finalizer_job_id=finalizer_job_id,
+        originating_actor=originating_actor,
+    )
+    return bid
+
+
 def _make_batch_job(
     backend: InMemoryBackend,
     *,
@@ -81,12 +104,11 @@ class TestInMemoryCreateBatch:
         backend = _make_backend()
         bid = new_uuid()
 
-        await backend.create_batch(
-            bid,
-            queue="default",
+        await _create_test_batch(
+            backend,
+            batch_id=bid,
             expected_size=5,
             failure_threshold=3,
-            finalizer_job_id=None,
             originating_actor="my_actor",
         )
 
@@ -105,14 +127,7 @@ class TestInMemoryCreateBatch:
         backend = _make_backend()
         bid = new_uuid()
 
-        await backend.create_batch(
-            bid,
-            queue="default",
-            expected_size=5,
-            failure_threshold=3,
-            finalizer_job_id=None,
-            originating_actor=None,
-        )
+        await _create_test_batch(backend, batch_id=bid, expected_size=5, failure_threshold=3)
 
         result = await backend.get_batch(bid)
         assert result is not None
@@ -133,14 +148,7 @@ class TestInMemoryIncrementBatchFailures:
         backend = _make_backend()
         bid = new_uuid()
 
-        await backend.create_batch(
-            bid,
-            queue="default",
-            expected_size=5,
-            failure_threshold=3,
-            finalizer_job_id=None,
-            originating_actor=None,
-        )
+        await _create_test_batch(backend, batch_id=bid, expected_size=5, failure_threshold=3)
         _make_batch_job(backend, batch_id=bid, status="pending")
         _make_batch_job(backend, batch_id=bid, status="scheduled")
 
@@ -161,14 +169,7 @@ class TestInMemoryIncrementBatchFailures:
         backend = _make_backend()
         bid = new_uuid()
 
-        await backend.create_batch(
-            bid,
-            queue="default",
-            expected_size=5,
-            failure_threshold=3,
-            finalizer_job_id=None,
-            originating_actor=None,
-        )
+        await _create_test_batch(backend, batch_id=bid, expected_size=5, failure_threshold=3)
 
         c1, _, _ = await backend.increment_batch_failures(bid)
         c2, _, _ = await backend.increment_batch_failures(bid)
@@ -182,14 +183,7 @@ class TestInMemoryIncrementBatchFailures:
         backend = _make_backend()
         bid = new_uuid()
 
-        await backend.create_batch(
-            bid,
-            queue="default",
-            expected_size=1,
-            failure_threshold=3,
-            finalizer_job_id=None,
-            originating_actor=None,
-        )
+        await _create_test_batch(backend, batch_id=bid, expected_size=1, failure_threshold=3)
         _make_batch_job(backend, batch_id=bid, status="succeeded")
 
         count, threshold, remaining = await backend.increment_batch_failures(bid)
@@ -207,14 +201,7 @@ class TestInMemoryResetBatchFailures:
         backend = _make_backend()
         bid = new_uuid()
 
-        await backend.create_batch(
-            bid,
-            queue="default",
-            expected_size=5,
-            failure_threshold=3,
-            finalizer_job_id=None,
-            originating_actor=None,
-        )
+        await _create_test_batch(backend, batch_id=bid, expected_size=5, failure_threshold=3)
         _make_batch_job(backend, batch_id=bid, status="pending")
         _make_batch_job(backend, batch_id=bid, status="succeeded")
 
@@ -239,14 +226,7 @@ class TestInMemoryAbortBatch:
         backend = _make_backend()
         bid = new_uuid()
 
-        await backend.create_batch(
-            bid,
-            queue="default",
-            expected_size=3,
-            failure_threshold=None,
-            finalizer_job_id=None,
-            originating_actor=None,
-        )
+        await _create_test_batch(backend, batch_id=bid, expected_size=3)
         j1 = _make_batch_job(backend, batch_id=bid, status="pending")
         j2 = _make_batch_job(backend, batch_id=bid, status="scheduled")
         j3 = _make_batch_job(backend, batch_id=bid, status="running")
@@ -278,14 +258,7 @@ class TestInMemoryAbortBatch:
         backend = _make_backend()
         bid = new_uuid()
 
-        await backend.create_batch(
-            bid,
-            queue="default",
-            expected_size=3,
-            failure_threshold=None,
-            finalizer_job_id=None,
-            originating_actor=None,
-        )
+        await _create_test_batch(backend, batch_id=bid, expected_size=3)
         _make_batch_job(backend, batch_id=bid, status="pending")
 
         await backend.abort_batch(bid)
@@ -303,14 +276,7 @@ class TestInMemoryCompleteBatch:
         backend = _make_backend()
         bid = new_uuid()
 
-        await backend.create_batch(
-            bid,
-            queue="default",
-            expected_size=3,
-            failure_threshold=None,
-            finalizer_job_id=None,
-            originating_actor=None,
-        )
+        await _create_test_batch(backend, batch_id=bid, expected_size=3)
 
         await backend.complete_batch(bid)
 
@@ -322,14 +288,7 @@ class TestInMemoryCompleteBatch:
         backend = _make_backend()
         bid = new_uuid()
 
-        await backend.create_batch(
-            bid,
-            queue="default",
-            expected_size=3,
-            failure_threshold=None,
-            finalizer_job_id=None,
-            originating_actor=None,
-        )
+        await _create_test_batch(backend, batch_id=bid, expected_size=3)
         await backend.abort_batch(bid)
         aborted_row = backend._batches[bid]
 
@@ -398,22 +357,8 @@ class TestInMemoryListBatches:
         bid1 = new_uuid()
         bid2 = new_uuid()
 
-        await backend.create_batch(
-            bid1,
-            queue="default",
-            expected_size=3,
-            failure_threshold=None,
-            finalizer_job_id=None,
-            originating_actor=None,
-        )
-        await backend.create_batch(
-            bid2,
-            queue="default",
-            expected_size=3,
-            failure_threshold=None,
-            finalizer_job_id=None,
-            originating_actor=None,
-        )
+        await _create_test_batch(backend, batch_id=bid1)
+        await _create_test_batch(backend, batch_id=bid2)
         await backend.complete_batch(bid2)
 
         results = await backend.list_batches(BatchFilter(active=True))
@@ -433,22 +378,8 @@ class TestInMemoryListBatches:
         bid1 = new_uuid()
         bid2 = new_uuid()
 
-        await backend.create_batch(
-            bid1,
-            queue="default",
-            expected_size=3,
-            failure_threshold=None,
-            finalizer_job_id=None,
-            originating_actor=None,
-        )
-        await backend.create_batch(
-            bid2,
-            queue="high_priority",
-            expected_size=3,
-            failure_threshold=None,
-            finalizer_job_id=None,
-            originating_actor=None,
-        )
+        await _create_test_batch(backend, batch_id=bid1)
+        await _create_test_batch(backend, batch_id=bid2, queue="high_priority")
 
         results = await backend.list_batches(BatchFilter(queue="high_priority"))
 
@@ -460,22 +391,8 @@ class TestInMemoryListBatches:
         bid1 = new_uuid()
         bid2 = new_uuid()
 
-        await backend.create_batch(
-            bid1,
-            queue="default",
-            expected_size=3,
-            failure_threshold=None,
-            finalizer_job_id=None,
-            originating_actor=None,
-        )
-        await backend.create_batch(
-            bid2,
-            queue="default",
-            expected_size=3,
-            failure_threshold=None,
-            finalizer_job_id=None,
-            originating_actor=None,
-        )
+        await _create_test_batch(backend, batch_id=bid1)
+        await _create_test_batch(backend, batch_id=bid2)
 
         results = await backend.list_batches(BatchFilter(batch_id=bid1))
 
@@ -486,14 +403,7 @@ class TestInMemoryListBatches:
         backend = _make_backend()
         bid = new_uuid()
 
-        await backend.create_batch(
-            bid,
-            queue="default",
-            expected_size=5,
-            failure_threshold=None,
-            finalizer_job_id=None,
-            originating_actor=None,
-        )
+        await _create_test_batch(backend, batch_id=bid, expected_size=5)
         _make_batch_job(backend, batch_id=bid, status="pending")
         _make_batch_job(backend, batch_id=bid, status="succeeded")
         _make_batch_job(backend, batch_id=bid, status="failed")
@@ -514,23 +424,9 @@ class TestInMemoryListBatches:
         bid1 = new_uuid()
         bid2 = new_uuid()
 
-        await backend.create_batch(
-            bid1,
-            queue="default",
-            expected_size=3,
-            failure_threshold=None,
-            finalizer_job_id=None,
-            originating_actor=None,
-        )
+        await _create_test_batch(backend, batch_id=bid1)
         clock.advance(timedelta(seconds=10))
-        await backend.create_batch(
-            bid2,
-            queue="default",
-            expected_size=3,
-            failure_threshold=None,
-            finalizer_job_id=None,
-            originating_actor=None,
-        )
+        await _create_test_batch(backend, batch_id=bid2)
 
         results = await backend.list_batches(BatchFilter())
 
@@ -543,15 +439,7 @@ class TestInMemoryListBatches:
         backend = _make_backend(clock)
 
         for _ in range(5):
-            bid = new_uuid()
-            await backend.create_batch(
-                bid,
-                queue="default",
-                expected_size=3,
-                failure_threshold=None,
-                finalizer_job_id=None,
-                originating_actor=None,
-            )
+            await _create_test_batch(backend)
             clock.advance(timedelta(seconds=1))
 
         results = await backend.list_batches(BatchFilter(limit=2))
@@ -562,22 +450,8 @@ class TestInMemoryListBatches:
         bid1 = new_uuid()
         bid2 = new_uuid()
 
-        await backend.create_batch(
-            bid1,
-            queue="default",
-            expected_size=3,
-            failure_threshold=None,
-            finalizer_job_id=None,
-            originating_actor=None,
-        )
-        await backend.create_batch(
-            bid2,
-            queue="default",
-            expected_size=3,
-            failure_threshold=None,
-            finalizer_job_id=None,
-            originating_actor=None,
-        )
+        await _create_test_batch(backend, batch_id=bid1)
+        await _create_test_batch(backend, batch_id=bid2)
         await backend.complete_batch(bid2)
 
         results = await backend.list_batches(BatchFilter(active=False))
@@ -596,30 +470,9 @@ class TestInMemoryListBatches:
         # export/active
         bid_ea = new_uuid()
 
-        await backend.create_batch(
-            bid_ia,
-            queue="ingest",
-            expected_size=3,
-            failure_threshold=None,
-            finalizer_job_id=None,
-            originating_actor=None,
-        )
-        await backend.create_batch(
-            bid_ic,
-            queue="ingest",
-            expected_size=3,
-            failure_threshold=None,
-            finalizer_job_id=None,
-            originating_actor=None,
-        )
-        await backend.create_batch(
-            bid_ea,
-            queue="export",
-            expected_size=3,
-            failure_threshold=None,
-            finalizer_job_id=None,
-            originating_actor=None,
-        )
+        await _create_test_batch(backend, batch_id=bid_ia, queue="ingest")
+        await _create_test_batch(backend, batch_id=bid_ic, queue="ingest")
+        await _create_test_batch(backend, batch_id=bid_ea, queue="export")
         await backend.complete_batch(bid_ic)
 
         results = await backend.list_batches(BatchFilter(queue="ingest", active=True))
@@ -635,30 +488,9 @@ class TestInMemoryListBatches:
         bid1 = new_uuid()
         bid2 = new_uuid()
 
-        await backend.create_batch(
-            bid1,
-            queue="ingest",
-            expected_size=3,
-            failure_threshold=None,
-            finalizer_job_id=None,
-            originating_actor=None,
-        )
-        await backend.create_batch(
-            bid2,
-            queue="ingest",
-            expected_size=3,
-            failure_threshold=None,
-            finalizer_job_id=None,
-            originating_actor=None,
-        )
-        await backend.create_batch(
-            new_uuid(),
-            queue="export",
-            expected_size=3,
-            failure_threshold=None,
-            finalizer_job_id=None,
-            originating_actor=None,
-        )
+        await _create_test_batch(backend, batch_id=bid1, queue="ingest")
+        await _create_test_batch(backend, batch_id=bid2, queue="ingest")
+        await _create_test_batch(backend, queue="export")
 
         results = await backend.list_batches(BatchFilter(queue="ingest", batch_id=bid2))
 
@@ -792,14 +624,7 @@ class TestInMemoryPruneOldBatches:
         backend = _make_backend(clock)
         bid = new_uuid()
 
-        await backend.create_batch(
-            bid,
-            queue="default",
-            expected_size=3,
-            failure_threshold=None,
-            finalizer_job_id=None,
-            originating_actor=None,
-        )
+        await _create_test_batch(backend, batch_id=bid)
         clock.advance(timedelta(hours=1))
         await backend.complete_batch(bid)
 
@@ -814,14 +639,7 @@ class TestInMemoryPruneOldBatches:
         backend = _make_backend(clock)
         bid = new_uuid()
 
-        await backend.create_batch(
-            bid,
-            queue="default",
-            expected_size=3,
-            failure_threshold=None,
-            finalizer_job_id=None,
-            originating_actor=None,
-        )
+        await _create_test_batch(backend, batch_id=bid)
 
         cutoff = _START + timedelta(hours=100)
         pruned = await backend.prune_old_batches(cutoff)
@@ -834,14 +652,7 @@ class TestInMemoryPruneOldBatches:
         backend = _make_backend(clock)
         bid = new_uuid()
 
-        await backend.create_batch(
-            bid,
-            queue="default",
-            expected_size=3,
-            failure_threshold=None,
-            finalizer_job_id=None,
-            originating_actor=None,
-        )
+        await _create_test_batch(backend, batch_id=bid)
         clock.advance(timedelta(hours=1))
         await backend.complete_batch(bid)
 
@@ -856,14 +667,7 @@ class TestInMemoryPruneOldBatches:
         backend = _make_backend(clock)
         bid = new_uuid()
 
-        await backend.create_batch(
-            bid,
-            queue="default",
-            expected_size=3,
-            failure_threshold=None,
-            finalizer_job_id=None,
-            originating_actor=None,
-        )
+        await _create_test_batch(backend, batch_id=bid)
         _make_batch_job(backend, batch_id=bid, status="succeeded")
         clock.advance(timedelta(hours=1))
         await backend.complete_batch(bid)

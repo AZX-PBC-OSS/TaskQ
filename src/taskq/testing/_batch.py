@@ -8,13 +8,14 @@ module pattern (``_enqueue.py``, ``_terminal.py``, etc.).
 from collections.abc import Iterable
 from dataclasses import replace
 from datetime import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, get_args
 from uuid import UUID
 
 from taskq.backend._protocol import (
     BatchCounts,
     BatchFilter,
     BatchRow,
+    BatchStatus,
     CancelPhase,
     EnqueueArgs,
     JobId,
@@ -38,7 +39,8 @@ __all__ = [
     "_reset_batch_failures",
 ]
 
-_BATCH_TERMINAL_STATUSES: frozenset[str] = frozenset({"aborted", "complete"})
+_BATCH_STATUSES = frozenset(get_args(BatchStatus.__value__))
+_BATCH_TERMINAL_STATUSES: frozenset[str] = _BATCH_STATUSES - {"active"}
 
 
 def _batch_counts_for(backend: "InMemoryBackend", batch_id: UUID) -> BatchCounts:
@@ -79,7 +81,7 @@ def _create_batch(
     failure_threshold: int | None,
     finalizer_job_id: UUID | None,
     originating_actor: str | None,
-    connection: object,
+    connection: object | None = None,
 ) -> None:
     if batch_id in backend._batches:
         from taskq.exceptions import BatchIdExistsError
@@ -108,7 +110,7 @@ def _get_batch(backend: "InMemoryBackend", batch_id: UUID) -> BatchRow | None:
 def _increment_batch_failures(
     backend: "InMemoryBackend",
     batch_id: UUID,
-    connection: object,
+    connection: object | None = None,
 ) -> tuple[int, int | None, int]:
     row = backend._batches.get(batch_id)
     if row is None:
@@ -126,7 +128,7 @@ def _increment_batch_failures(
 def _reset_batch_failures(
     backend: "InMemoryBackend",
     batch_id: UUID,
-    connection: object,
+    connection: object | None = None,
 ) -> int:
     row = backend._batches.get(batch_id)
     if row is None:
@@ -141,7 +143,7 @@ def _reset_batch_failures(
 def _abort_batch(
     backend: "InMemoryBackend",
     batch_id: UUID,
-    connection: object,
+    connection: object | None = None,
 ) -> int:
     batch_id_str = str(batch_id)
     now = backend._clock.now()
@@ -174,7 +176,7 @@ def _abort_batch(
 def _complete_batch(
     backend: "InMemoryBackend",
     batch_id: UUID,
-    connection: object,
+    connection: object | None = None,
 ) -> None:
     row = backend._batches.get(batch_id)
     if row is None or row.status in _BATCH_TERMINAL_STATUSES:

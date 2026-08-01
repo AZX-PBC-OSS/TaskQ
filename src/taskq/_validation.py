@@ -8,7 +8,6 @@ from taskq.exceptions import PayloadValidationError
 def validate_actor_payload(
     payload_type: type[BaseModel],
     raw_payload: dict[str, object] | BaseModel,
-    *,
     actor: str | None = None,
 ) -> BaseModel:
     """Validate a raw payload dict (or existing BaseModel) against the actor's payload model.

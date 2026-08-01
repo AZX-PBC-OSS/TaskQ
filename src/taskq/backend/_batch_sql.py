@@ -30,9 +30,8 @@ from taskq.backend._protocol import (
     ConnLike,
     EnqueueArgs,
     JobRow,
-    parse_batch_status,
 )
-from taskq.backend._records import jsonb_to_dict
+from taskq.backend._records import _batch_row_from_record
 from taskq.backend._sql_templates import SqlTemplates
 from taskq.backend.clock import Clock
 from taskq.backend.statemachine import TERMINAL_STATUSES
@@ -91,7 +90,7 @@ counts AS (
     SELECT count(*)::int AS remaining
     FROM "{schema}".jobs
     WHERE metadata @> $2::jsonb
-      AND status NOT IN ('succeeded', 'failed', 'cancelled', 'crashed', 'abandoned')
+      AND status {terminal_not_in}
 )
 SELECT u.consecutive_failures, u.failure_threshold, c.remaining
 FROM updated u CROSS JOIN counts c"""
@@ -107,7 +106,7 @@ counts AS (
     SELECT count(*)::int AS remaining
     FROM "{schema}".jobs
     WHERE metadata @> $2::jsonb
-      AND status NOT IN ('succeeded', 'failed', 'cancelled', 'crashed', 'abandoned')
+      AND status {terminal_not_in}
 )
 SELECT c.remaining FROM updated u CROSS JOIN counts c"""
 
@@ -221,23 +220,6 @@ def render_batch_sql(schema: str) -> BatchSql:
 
 
 # ── Record conversion helpers ───────────────────────────────────────
-
-
-def _batch_row_from_record(rec: "asyncpg.Record") -> BatchRow:
-    """Convert an asyncpg Record from ``batches`` into a :class:`BatchRow`."""
-    return BatchRow(
-        id=rec["id"],
-        queue=rec["queue"],
-        status=parse_batch_status(rec["status"]),
-        expected_size=rec["expected_size"],
-        consecutive_failures=rec["consecutive_failures"],
-        failure_threshold=rec["failure_threshold"],
-        finalizer_job_id=rec["finalizer_job_id"],
-        originating_actor=rec["originating_actor"],
-        created_at=rec["created_at"],
-        completed_at=rec["completed_at"],
-        metadata=jsonb_to_dict(rec["metadata"]) or {},
-    )
 
 
 def _batch_counts_from_record(rec: "asyncpg.Record") -> BatchCounts:

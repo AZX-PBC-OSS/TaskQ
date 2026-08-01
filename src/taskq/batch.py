@@ -35,9 +35,8 @@ from taskq.backend._protocol import (
     IdempotencyKey,
     IdentityKey,
     JobRow,
-    parse_batch_status,
 )
-from taskq.backend._records import jsonb_to_dict
+from taskq.backend._records import _batch_row_from_record
 from taskq.backend.statemachine import TERMINAL_STATUSES
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
@@ -51,11 +50,13 @@ if TYPE_CHECKING:
 
 __all__ = [
     "MAX_BATCH_SIZE",
+    "MIN_SNOOZE_INTERVAL",
     "BatchCompletionStatus",
     "BatchHandle",
     "BatchSummary",
     "EnqueueItem",
     "apply_batch_terminal_outcome",
+    "decide_batch_status",
     "wait_for_batch",
 ]
 
@@ -66,6 +67,13 @@ chunk size upper bound for :meth:`enqueue_batch_streaming`.
 Exceeding this in :meth:`enqueue_batch` raises :class:`ValueError`;
 :meth:`enqueue_batch_streaming` rejects ``chunk_size`` outside
 ``[1, MAX_BATCH_SIZE]``.
+"""
+
+MIN_SNOOZE_INTERVAL: timedelta = timedelta(seconds=1)
+"""Minimum snooze interval enforced by :func:`wait_for_batch`.
+
+Caller-supplied ``snooze_interval`` values below this are clamped and a
+warning is logged.
 """
 
 
@@ -209,7 +217,7 @@ class BatchSummary:
     completion: BatchCompletionStatus
 
 
-def _decide_batch_status(
+def decide_batch_status(
     *,
     batch_id: UUID,
     batch_row: BatchRow | None,
@@ -274,6 +282,9 @@ def _decide_batch_status(
 # Build the terminal-status NOT IN clause from the canonical
 # TERMINAL_STATUSES set so the SQL never drifts when a new status is
 # added to the state machine.
+# Duplicates _TERMINAL_NOT_IN in taskq.backend._batch_sql — kept separate
+# because _batch_sql wraps the clause in "NOT IN (...)" while here it is
+# interpolated into a FILTER expression that supplies its own "NOT IN (".
 _TERMINAL_NOT_IN_SQL = ",".join(f"'{s}'" for s in TERMINAL_STATUSES)
 
 _WAIT_FOR_BATCH_SQL = (
@@ -362,8 +373,8 @@ async def apply_batch_terminal_outcome(
 
     # outcome is "cancelled" or "crashed" — the only remaining
     # terminal outcomes in AttemptOutcome that are not handled above.
-    if outcome == "cancelled" or outcome == "crashed":
-        remaining = await backend.count_batch_non_terminal(batch_id)
+    if outcome in ("cancelled", "crashed"):
+        remaining = await backend.count_batch_non_terminal(batch_id, connection=loop_conn)
         if remaining == 0:
             await backend.complete_batch(batch_id, connection=loop_conn)
         return
@@ -418,13 +429,11 @@ async def wait_for_batch(
     if not _IDENT_RE.match(schema):
         raise ValueError(f"invalid schema identifier: {schema!r}")
 
-    _min_snooze = timedelta(seconds=1)
-
     import asyncpg as _asyncpg
 
-    if snooze_interval < _min_snooze:
+    if snooze_interval < MIN_SNOOZE_INTERVAL:
         original = snooze_interval
-        snooze_interval = _min_snooze
+        snooze_interval = MIN_SNOOZE_INTERVAL
         _logger.warning(
             "snooze-interval-clamped",
             original=str(original),
@@ -449,19 +458,7 @@ async def wait_for_batch(
             return None
         if rec is None:
             return None
-        return BatchRow(
-            id=rec["id"],
-            queue=rec["queue"],
-            status=parse_batch_status(rec["status"]),
-            expected_size=rec["expected_size"],
-            consecutive_failures=rec["consecutive_failures"],
-            failure_threshold=rec["failure_threshold"],
-            finalizer_job_id=rec["finalizer_job_id"],
-            originating_actor=rec["originating_actor"],
-            created_at=rec["created_at"],
-            completed_at=rec["completed_at"],
-            metadata=jsonb_to_dict(rec["metadata"]) or {},
-        )
+        return _batch_row_from_record(rec)
 
     async def _fetch_and_decide(
         conn: "asyncpg.Connection",
@@ -500,7 +497,7 @@ async def wait_for_batch(
                 abandoned=int(row["abandoned"]),
             )
 
-        status = _decide_batch_status(
+        status = decide_batch_status(
             batch_id=batch_id,
             batch_row=batch_row,
             status=status,
@@ -519,20 +516,18 @@ async def wait_for_batch(
 
         return status
 
-    if isinstance(db, _asyncpg.Pool):
-        async with db.acquire() as conn:  # type: ignore[reportArgumentType]  # Why: Pool.acquire() returns PoolConnectionProxy; pyright stubs model it as incompatible with Connection but it is runtime-compatible
-            status = await _fetch_and_decide(conn)  # type: ignore[reportArgumentType]  # Why: PoolConnectionProxy is a runtime-compatible Connection proxy; pyright stubs model it as incompatible
-    else:
-        status = await _fetch_and_decide(db)
+    async def _fetch() -> BatchCompletionStatus:
+        if isinstance(db, _asyncpg.Pool):
+            async with db.acquire() as conn:  # type: ignore[reportArgumentType]  # Why: Pool.acquire() returns PoolConnectionProxy; pyright stubs model it as incompatible with Connection but it is runtime-compatible
+                return await _fetch_and_decide(conn)  # type: ignore[reportArgumentType]  # Why: PoolConnectionProxy is a runtime-compatible Connection proxy; pyright stubs model it as incompatible
+        return await _fetch_and_decide(db)
+
+    status = await _fetch()
 
     if status.pending > 0 and not snooze_via_exception:
         while status.pending > 0:
             await asyncio.sleep(snooze_interval.total_seconds())
-            if isinstance(db, _asyncpg.Pool):
-                async with db.acquire() as conn:  # type: ignore[reportArgumentType]  # Why: Pool.acquire() returns PoolConnectionProxy; pyright stubs model it as incompatible with Connection but it is runtime-compatible
-                    status = await _fetch_and_decide(conn)  # type: ignore[reportArgumentType]  # Why: PoolConnectionProxy is a runtime-compatible Connection proxy; pyright stubs model it as incompatible
-            else:
-                status = await _fetch_and_decide(db)
+            status = await _fetch()
 
     return status
 

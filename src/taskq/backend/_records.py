@@ -10,10 +10,12 @@ from typing import TYPE_CHECKING
 
 from taskq._json import dumps_str, loads
 from taskq.backend._protocol import (
+    BatchRow,
     IdempotencyKey,
     IdentityKey,
     JobId,
     JobRow,
+    parse_batch_status,
     parse_cancel_phase,
     parse_retry_kind,
 )
@@ -23,6 +25,7 @@ if TYPE_CHECKING:
     import asyncpg
 
 __all__ = [
+    "_batch_row_from_record",
     "_job_row_from_record",
     "compute_duration_ms",
     "jsonb_param",
@@ -108,6 +111,28 @@ def _job_row_from_record(rec: "asyncpg.Record") -> JobRow:
         span_id=rec["span_id"],
         metadata=jsonb_to_dict(rec["metadata"]) or {},
         tags=tuple(rec["tags"]) if rec["tags"] else (),
+    )
+
+
+def _batch_row_from_record(rec: "asyncpg.Record") -> BatchRow:
+    """Convert an ``asyncpg.Record`` from the ``batches`` table into a frozen
+    :class:`BatchRow`.
+
+    Shared by :mod:`taskq.backend._batch_sql` (PostgresBackend helpers) and
+    :mod:`taskq.batch` (``wait_for_batch``) to avoid duplicated field mapping.
+    """
+    return BatchRow(
+        id=rec["id"],
+        queue=rec["queue"],
+        status=parse_batch_status(rec["status"]),
+        expected_size=rec["expected_size"],
+        consecutive_failures=rec["consecutive_failures"],
+        failure_threshold=rec["failure_threshold"],
+        finalizer_job_id=rec["finalizer_job_id"],
+        originating_actor=rec["originating_actor"],
+        created_at=rec["created_at"],
+        completed_at=rec["completed_at"],
+        metadata=jsonb_to_dict(rec["metadata"]) or {},
     )
 
 
