@@ -13,7 +13,7 @@ from uuid import UUID
 
 import pytest
 from opentelemetry import trace
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
 
 import taskq.obs as obs_mod
 from taskq._ids import new_uuid
@@ -21,7 +21,13 @@ from taskq.backend._protocol import EnqueueArgs, ErrorInfo, JobRow
 from taskq.backend.clock import Clock
 from taskq.client._enqueuer import SubJobEnqueuer
 from taskq.context import JobContext
-from taskq.exceptions import ReservationUnavailable, RetryAfter, Snooze, WorkerOwnershipMismatch
+from taskq.exceptions import (
+    PayloadValidationError,
+    ReservationUnavailable,
+    RetryAfter,
+    Snooze,
+    WorkerOwnershipMismatch,
+)
 from taskq.progress._buffer import _ProgressBuffer
 from taskq.retry import RetryPolicy
 from taskq.settings import WorkerSettings
@@ -578,7 +584,7 @@ async def test_payload_validation_failure_releases_acquired_resources() -> None:
     async def never_called_actor(_job: object, _ctx: JobContext[BaseModel]) -> object:
         raise AssertionError("actor body should not run on validation failure")
 
-    with contextlib.suppress(ValidationError):
+    with contextlib.suppress(PayloadValidationError):
         await consume_one_job(
             as_backend(backend),
             job,

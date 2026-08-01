@@ -80,6 +80,7 @@ from taskq.exceptions import (
     SubEnqueueError,
     TaskQError,
     WorkerOwnershipMismatch,
+    validate_actor_payload,
 )
 from taskq.obs import ErrorReporter, NullErrorReporter
 from taskq.progress import ProgressEvent
@@ -187,6 +188,7 @@ __all__ = [
     "make_pg_pool_factory",
     "make_redis_client_factory",
     "register_cron",
+    "validate_actor_payload",
     "wait_for_batch",
 ]
 

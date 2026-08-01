@@ -38,6 +38,7 @@ from taskq.exceptions import (
     RetryAfter,
     Snooze,
     SubEnqueueError,
+    validate_actor_payload,
 )
 from taskq.obs import (
     ErrorReporter,
@@ -357,7 +358,7 @@ async def consume_one_job(
         validated_payload = (
             validated_payload
             if validated_payload is not None
-            else payload_type.model_validate(job.payload)
+            else validate_actor_payload(payload_type, job.payload, job.actor)
         )
 
         live_enqueuer = (

@@ -1,49 +1,24 @@
 """orjson-backed JSON helpers.
 
 The library never imports stdlib ``json`` directly. Use ``dumps`` / ``loads``
-from this module so behaviour is consistent (UUID, datetime, numpy support
-where compiled) and the serialization hot path stays fast.
+from this module so behaviour is consistent and the serialization hot path
+stays fast.
+
+``loads`` does NOT revive UUID-like strings into :class:`uuid.UUID` objects.
+Type coercion is the responsibility of the consuming Pydantic model
+(``model_validate`` coerces strings to ``UUID`` when the field is typed
+``UUID``, and keeps them as ``str`` when the field is typed ``str``).
+This respects the principle of least surprise: the developer's declared
+field type is the source of truth, not the deserializer's guess.
 """
 
 from __future__ import annotations
 
-import re
-from typing import Any, cast
-from uuid import UUID
+from typing import Any
 
 import orjson
 
 __all__ = ["dumps", "dumps_str", "loads", "structlog_serializer"]
-
-_UUID_RE = re.compile(
-    r"\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z",
-    re.IGNORECASE,
-)
-
-
-def _revive_uuids(value: Any) -> Any:
-    """Recursively convert UUID-like strings back to :class:`uuid.UUID`.
-
-    orjson serializes :class:`uuid.UUID` to the canonical 36-character hex
-    string but deserializes it back as a plain ``str``.  This helper walks
-    dict values and list items (not dict keys) and converts any string that
-    looks like a UUID back to a :class:`uuid.UUID` instance so that the
-    round-trip through PostgreSQL jsonb columns is transparent.
-    """
-    if isinstance(value, str):
-        if len(value) == 36 and _UUID_RE.match(value):
-            try:
-                return UUID(value)
-            except ValueError:
-                pass
-        return value
-    if isinstance(value, dict):
-        d = cast(dict[object, Any], value)
-        return {k: _revive_uuids(v) for k, v in d.items()}
-    if isinstance(value, list):
-        lst = cast(list[Any], value)
-        return [_revive_uuids(v) for v in lst]
-    return value
 
 
 def _orjson_fallback(obj: Any) -> Any:
@@ -87,12 +62,12 @@ def dumps_str(value: Any, /) -> str:
 def loads(data: bytes | bytearray | memoryview | str, /) -> Any:
     """Deserialize bytes or text to a Python value.
 
-    UUID strings produced by :func:`dumps` / :func:`dumps_str` are revived
-    back to :class:`uuid.UUID` instances so that PostgreSQL jsonb columns,
-    NOTIFY payloads, event details, and other JSON-serialised state round-trip
-    correctly.
+    Returns plain Python types (str, int, float, bool, None, list, dict).
+    UUID-like strings remain ``str`` — the consuming Pydantic model's
+    ``model_validate`` coerces them to ``UUID`` when the field is typed
+    ``UUID``, and keeps them as ``str`` when the field is typed ``str``.
     """
-    return _revive_uuids(orjson.loads(data))
+    return orjson.loads(data)
 
 
 def structlog_serializer(value: Any, /, **_kwargs: Any) -> str:

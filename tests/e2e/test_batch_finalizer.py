@@ -72,7 +72,7 @@ async def test_finalizer_snoozes_then_runs(
         actor_ref=batch_finalizer,
         payload=FinalizerPayload(
             run_id=run_id,
-            batch_id=str(batch_id),
+            batch_id=batch_id,
         ),
         metadata={"run_id": run_id},
     )

@@ -146,7 +146,7 @@ async def test_batch_abort_with_finalizer(
         actor_ref=batch_abort_finalizer,
         payload=AbortFinalizerPayload(
             run_id=run_id,
-            batch_id=str(batch_id),
+            batch_id=batch_id,
         ),
         metadata={"run_id": run_id},
     )

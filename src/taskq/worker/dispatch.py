@@ -33,6 +33,7 @@ from taskq.backend.clock import Clock
 from taskq.batch import apply_batch_terminal_outcome
 from taskq.client._enqueuer import SubJobEnqueuer
 from taskq.context import JobContext
+from taskq.exceptions import validate_actor_payload
 from taskq.obs import (
     ConsumedOutcome,
     bind_job_context,
@@ -178,7 +179,9 @@ async def dispatch_one_job(
             links=links,
         ) as consumer_span:
             try:
-                validated_payload = actor_ref.payload_type.model_validate(job.payload)
+                validated_payload = validate_actor_payload(
+                    actor_ref.payload_type, job.payload, job.actor,
+                )
 
                 span_ctx = consumer_span.get_span_context()
                 dispatch_trace_id: str = ""

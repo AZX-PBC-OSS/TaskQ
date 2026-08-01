@@ -19,7 +19,7 @@ from typing import Literal, NamedTuple, Protocol, Self
 from uuid import UUID
 
 import structlog
-from pydantic import BaseModel, ConfigDict, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, ValidationError, field_validator, model_validator
 
 from taskq.backend._protocol import Backend, ErrorInfo, JobId, JobRow, RetryKind
 from taskq.exceptions import PayloadValidationError, WorkerOwnershipMismatch
@@ -252,6 +252,9 @@ class RetryClassifier:
         if isinstance(exception, PayloadValidationError):
             return Fail(error_class="PayloadValidationError", retryable=False)
 
+        if isinstance(exception, ValidationError):
+            return Fail(error_class="PayloadValidationError", retryable=False)
+
         effective_kind = (
             override.kind if override is not None and override.kind is not None else policy.kind
         )
@@ -397,7 +400,8 @@ def decide_after_failure(
 
     override: RetryOverride | None = None
     if actor_config.retry_classifier is not None and not isinstance(
-        exception, (*actor_config.non_retryable_exceptions, PayloadValidationError)
+        exception,
+        (*actor_config.non_retryable_exceptions, PayloadValidationError, ValidationError),
     ):
         try:
             override = actor_config.retry_classifier(exception, job_state.attempt)
