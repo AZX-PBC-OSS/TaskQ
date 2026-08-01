@@ -41,7 +41,10 @@ class _FinalizerPayload(BaseModel):
     batch_id: str = ""
 
 
-@actor(name="abort_finalizer_test_child", retry=RetryPolicy(max_attempts=1, base=timedelta(milliseconds=100)))
+@actor(
+    name="abort_finalizer_test_child",
+    retry=RetryPolicy(max_attempts=1, base=timedelta(milliseconds=100)),
+)
 async def _child_actor(_payload: _ChildPayload) -> None:
     pass
 
@@ -105,7 +108,9 @@ class TestAbortFinalizerSucceeds:
 
             try:
                 await in_memory_wait_for_batch(
-                    backend, bid, snooze_interval=timedelta(seconds=1),
+                    backend,
+                    bid,
+                    snooze_interval=timedelta(seconds=1),
                 )
             except BatchAbortedError as e:
                 abort_error = e
@@ -273,8 +278,7 @@ class TestClockSkewResilience:
         from taskq.retry import Retry
 
         assert isinstance(decision, Retry), (
-            f"clock jump caused DeadlineExceeded with NULL schedule_to_close: "
-            f"decision={decision!r}"
+            f"clock jump caused DeadlineExceeded with NULL schedule_to_close: decision={decision!r}"
         )
 
     async def test_clock_jump_does_not_fail_in_memory_finalizer(self) -> None:
@@ -302,7 +306,9 @@ class TestClockSkewResilience:
 
             try:
                 await in_memory_wait_for_batch(
-                    backend, bid, snooze_interval=timedelta(seconds=1),
+                    backend,
+                    bid,
+                    snooze_interval=timedelta(seconds=1),
                 )
             except BatchAbortedError as e:
                 abort_error = e
@@ -388,18 +394,16 @@ class TestSnoozeBudgetInvariant:
                 snooze.delay,
                 metadata_update={"snooze_count": i + 1},
             )
-            assert tri == "scheduled", f"snooze {i+1} returned {tri!r}"
+            assert tri == "scheduled", f"snooze {i + 1} returned {tri!r}"
 
             row = await backend.get(job.id)
             assert row is not None
             assert row.max_attempts == 50 + i + 1
             assert row.attempt == expected_attempt, (
-                f"snooze changed attempt: expected {expected_attempt}, "
-                f"got {row.attempt}"
+                f"snooze changed attempt: expected {expected_attempt}, got {row.attempt}"
             )
             assert row.attempt < row.max_attempts, (
-                f"budget exhausted: attempt={row.attempt} >= "
-                f"max_attempts={row.max_attempts}"
+                f"budget exhausted: attempt={row.attempt} >= max_attempts={row.max_attempts}"
             )
 
             # Re-dispatch: scheduled → running, attempt++

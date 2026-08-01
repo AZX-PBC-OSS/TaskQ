@@ -205,7 +205,7 @@ async def test_batch_abort_with_finalizer(
     )
 
     finalizer_row = await e2e_pg_pool.fetchrow(
-        f'SELECT status, error_class, error_message, attempt, max_attempts '
+        f"SELECT status, error_class, error_message, attempt, max_attempts "
         f'FROM "{e2e_schema.schema_name}".jobs WHERE id = $1',
         finalizer_id,
     )

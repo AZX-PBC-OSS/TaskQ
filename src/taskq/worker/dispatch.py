@@ -180,7 +180,9 @@ async def dispatch_one_job(
         ) as consumer_span:
             try:
                 validated_payload = validate_actor_payload(
-                    actor_ref.payload_type, job.payload, job.actor,
+                    actor_ref.payload_type,
+                    job.payload,
+                    job.actor,
                 )
 
                 span_ctx = consumer_span.get_span_context()
