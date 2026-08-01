@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING
 import pytest
 import pytest_asyncio
 
-from ._assertions import wait_for_effects, wait_for_worker_ready
+from ._assertions import poll_until, wait_for_effects, wait_for_worker_ready
 from .conftest import E2EWorker, _container_logs, _stop_container
 
 if TYPE_CHECKING:
@@ -90,6 +90,20 @@ async def test_cron_schedule_registers_fires_and_completes(
         kind="cron-tick",
         min_count=1,
         timeout=150.0,
+    )
+
+    async def _job_succeeded() -> bool:
+        s = await e2e_pg_pool.fetchval(
+            f'SELECT status::text FROM "{schema}".jobs WHERE actor = $1 '
+            "ORDER BY created_at DESC LIMIT 1",
+            "cron_heartbeat",
+        )
+        return s == "succeeded"
+
+    await poll_until(
+        _job_succeeded,
+        timeout=10.0,
+        description="cron_heartbeat job to reach succeeded",
     )
 
     status = await e2e_pg_pool.fetchval(
