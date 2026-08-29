@@ -1,6 +1,8 @@
 """Unit tests for WorkerSettings invariants and DSN fallback (no PG required)."""
 
+import os
 from datetime import timedelta
+from pathlib import Path
 
 import pytest
 from dotenvmodel import ConstraintViolationError, DotEnvModelError, ValidationError
@@ -1020,3 +1022,34 @@ def test_oidc_reset_cached_forces_reload(monkeypatch: pytest.MonkeyPatch) -> Non
         assert s.oidc.issuer == "https://idp-b.example"
     finally:
         OIDCSettings.reset_cached()
+
+
+# ── Suite hermeticity vs developer dotfiles ─────────────────────────────
+
+
+def test_suite_ignores_developer_dotfiles(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A ``.env`` in the working directory is NOT read by ``load()``.
+
+    Behavior proof for the session-scoped ``_no_developer_dotfiles`` fixture
+    (``tests/conftest.py``): it points ``DOTENV_DIR`` at an empty directory so
+    a developer's gitignored ``.env`` (which ``.env.example`` tells them to
+    create, with a real-looking ``TASKQ_PG_DSN``) can never override
+    monkeypatched test env vars and redirect destructive SQL at a dev
+    database. If this test fails, that fixture is broken and EVERY
+    ``.load()``-based test is suspect on a machine with a dotfile.
+    """
+    dotenv_dir = os.environ.get("DOTENV_DIR")
+    assert dotenv_dir is not None, "_no_developer_dotfiles did not set DOTENV_DIR"
+    dotenv_path = Path(dotenv_dir)
+    assert dotenv_path.is_dir(), "DOTENV_DIR must exist (dotenvmodel raises otherwise)"
+    assert not list(dotenv_path.iterdir()), "DOTENV_DIR must be empty"
+
+    # A dotfile in the CWD that WOULD override the monkeypatched env if read
+    # (load() defaults override=True).
+    (tmp_path / ".env").write_text("TASKQ_HEARTBEAT_INTERVAL=123\n")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("TASKQ_PG_DSN", _DSN)
+    monkeypatch.delenv("TASKQ_HEARTBEAT_INTERVAL", raising=False)
+
+    s = WorkerSettings.load()
+    assert s.heartbeat_interval == 10.0  # default — the dotfile value is 123

@@ -24,6 +24,7 @@ from taskq.backend._protocol import Backend, JobId, JobRow
 from taskq.connections import WorkerConnections
 from taskq.settings import WorkerSettings
 from taskq.testing.actor import FakeBackend
+from taskq.testing.health import unique_health_sock_path
 from taskq.worker.deps import WorkerDeps
 from taskq.worker.run import (
     _main,
@@ -31,7 +32,7 @@ from taskq.worker.run import (
     register_worker,
     worker_main,
 )
-from tests.conftest import _FakePool, unique_health_sock_path
+from tests.conftest import _FakePool
 
 # ── Fixtures ────────────────────────────────────────────────────────────
 

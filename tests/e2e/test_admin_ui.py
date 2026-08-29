@@ -40,7 +40,7 @@ import secrets
 import socket
 import subprocess
 import sys
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -68,14 +68,20 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _ADMIN_ENTRY = _REPO_ROOT / "tests" / "e2e" / "admin_entry.py"
 _READY_TIMEOUT = 30.0
 _SHUTDOWN_TIMEOUT = 10.0
+# Bind-and-release port selection loses a TOCTOU race now and then under
+# parallel load; a child that exits early with "address already in use" gets
+# this many total attempts, each on a fresh port.
+_MAX_BIND_ATTEMPTS = 3
 
 
 def _free_port() -> int:
     """Ephemeral host port: bind 0, read back, close.
 
-    The bind-and-release TOCTOU race is accepted (standard practice): a lost
-    race surfaces as a readiness timeout with the subprocess logs attached,
-    never as a silent pass.
+    The bind-and-release TOCTOU race is mitigated, not eliminated: the
+    ``admin_server`` fixture detects a child that lost the race (early exit
+    with "address already in use") and retries on a fresh port; any other
+    startup failure still surfaces as a readiness timeout with the
+    subprocess logs attached, never as a silent pass.
     """
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
@@ -114,34 +120,15 @@ def _shutdown_and_collect_logs(proc: subprocess.Popen[str]) -> str:
     return out.strip()
 
 
-@pytest.fixture
-async def admin_server(e2e_schema: E2ESchema) -> AsyncIterator[httpx.AsyncClient]:
-    """Real admin UI uvicorn subprocess plus an authenticated httpx client.
+def _admin_readiness(
+    proc: subprocess.Popen[str], client: httpx.AsyncClient
+) -> Callable[[], Awaitable[bool]]:
+    """Readiness predicate for one spawned admin server.
 
-    Function-scoped: one server per test, always torn down. The readiness
-    probe hits ``/admin/jobs/count`` WITH the bearer token, so a 200 proves
-    the HTTP stack, the auth dependency, and the PG pool are all up. A
-    subprocess that crashes during startup fails fast with its logs; a
-    readiness timeout also fails with its logs.
+    Fail-fast with captured logs when the child exits during startup (the
+    caller classifies "address already in use" for a fresh-port retry);
+    otherwise probe ``/admin/jobs/count`` with the bearer token.
     """
-    port = _free_port()
-    token = secrets.token_hex(16)
-    python_path = os.environ.get("PYTHONPATH")
-    env = {
-        **os.environ,
-        "TASKQ_PG_DSN": e2e_schema.host_dsn,
-        "TASKQ_SCHEMA_NAME": e2e_schema.schema_name,
-        "TASKQ_E2E_ADMIN_TOKEN": token,
-        "TASKQ_E2E_ADMIN_PORT": str(port),
-        "PYTHONPATH": (
-            str(_REPO_ROOT) if not python_path else f"{_REPO_ROOT}{os.pathsep}{python_path}"
-        ),
-    }
-    proc = await asyncio.to_thread(_spawn_admin, env)
-    client = httpx.AsyncClient(
-        base_url=f"http://127.0.0.1:{port}",
-        headers={"Authorization": f"Bearer {token}"},
-    )
 
     async def _ready() -> bool:
         if proc.poll() is not None:
@@ -154,21 +141,73 @@ async def admin_server(e2e_schema: E2ESchema) -> AsyncIterator[httpx.AsyncClient
             return False
         return resp.status_code == 200
 
+    return _ready
+
+
+@pytest.fixture
+async def admin_server(e2e_schema: E2ESchema) -> AsyncIterator[httpx.AsyncClient]:
+    """Real admin UI uvicorn subprocess plus an authenticated httpx client.
+
+    Function-scoped: one server per test, always torn down. The readiness
+    probe hits ``/admin/jobs/count`` WITH the bearer token, so a 200 proves
+    the HTTP stack, the auth dependency, and the PG pool are all up. A
+    subprocess that crashes during startup fails fast with its logs; a
+    readiness timeout also fails with its logs.
+
+    The port is chosen bind-and-release (TOCTOU window: another process can
+    win it before the child binds), so a child that exits early with
+    "address already in use" is retried on a fresh port, up to
+    ``_MAX_BIND_ATTEMPTS`` attempts.
+    """
+    token = secrets.token_hex(16)
+    python_path = os.environ.get("PYTHONPATH")
+
+    proc: subprocess.Popen[str] | None = None
+    client: httpx.AsyncClient | None = None
     try:
-        try:
-            await poll_until(
-                _ready,
-                timeout=_READY_TIMEOUT,
-                description=f"admin server readiness at {client.base_url}",
+        for attempt in range(1, _MAX_BIND_ATTEMPTS + 1):
+            port = _free_port()
+            env = {
+                **os.environ,
+                "TASKQ_PG_DSN": e2e_schema.host_dsn,
+                "TASKQ_SCHEMA_NAME": e2e_schema.schema_name,
+                "TASKQ_E2E_ADMIN_TOKEN": token,
+                "TASKQ_E2E_ADMIN_PORT": str(port),
+                "PYTHONPATH": (
+                    str(_REPO_ROOT) if not python_path else f"{_REPO_ROOT}{os.pathsep}{python_path}"
+                ),
+            }
+            proc = await asyncio.to_thread(_spawn_admin, env)
+            client = httpx.AsyncClient(
+                base_url=f"http://127.0.0.1:{port}",
+                headers={"Authorization": f"Bearer {token}"},
             )
-        except TimeoutError:
-            logs = await asyncio.to_thread(_shutdown_and_collect_logs, proc)
-            msg = f"admin server not ready within {_READY_TIMEOUT}s\n{logs}"
-            raise RuntimeError(msg) from None
+
+            try:
+                try:
+                    await poll_until(
+                        _admin_readiness(proc, client),
+                        timeout=_READY_TIMEOUT,
+                        description=f"admin server readiness at {client.base_url}",
+                    )
+                except TimeoutError:
+                    logs = await asyncio.to_thread(_shutdown_and_collect_logs, proc)
+                    msg = f"admin server not ready within {_READY_TIMEOUT}s\n{logs}"
+                    raise RuntimeError(msg) from None
+            except RuntimeError as exc:
+                await client.aclose()
+                if "address already in use" in str(exc).lower() and attempt < _MAX_BIND_ATTEMPTS:
+                    continue  # lost the bind race — fresh port, fresh child
+                raise
+            break
+
+        assert proc is not None and client is not None
         yield client
     finally:
-        await client.aclose()
-        await asyncio.to_thread(_shutdown_and_collect_logs, proc)
+        if client is not None:
+            await client.aclose()
+        if proc is not None:
+            await asyncio.to_thread(_shutdown_and_collect_logs, proc)
 
 
 async def test_admin_ui_serves_real_job_data(

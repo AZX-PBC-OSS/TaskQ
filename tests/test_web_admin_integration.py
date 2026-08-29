@@ -30,6 +30,10 @@ from taskq.web.admin import create_router, setup_admin_state
 pytestmark = pytest.mark.integration
 
 _SCHEMA_LABEL = f"twa_{new_base62()}".lower()
+# Bind-and-release port selection loses a TOCTOU race now and then under
+# parallel load; a child that exits early with "address already in use" gets
+# this many total attempts, each on a fresh port.
+_UI_SERVE_MAX_BIND_ATTEMPTS = 3
 
 
 @pytest.fixture(autouse=True)
@@ -504,15 +508,16 @@ async def _migrated_schema_for_ui_serve(_admin_pg_dsn: str) -> None:  # pyright:
 async def test_taskq_ui_serve_starts(
     _admin_pg_dsn: str, _migrated_schema_for_ui_serve: None
 ) -> None:
-    """taskq ui serve starts and responds to GET /admin/queues."""
+    """taskq ui serve starts and responds to GET /admin/queues.
+
+    The port is chosen bind-and-release (TOCTOU window: another process can
+    win it before the child binds), so a child that exits early with
+    "address already in use" is retried on a fresh port, up to
+    ``_UI_SERVE_MAX_BIND_ATTEMPTS`` attempts.
+    """
     import asyncio
     import os
     import sys
-
-    # Grab an ephemeral port; release before subprocess binds to it.
-    with socket.socket() as _s:
-        _s.bind(("127.0.0.1", 0))
-        port = _s.getsockname()[1]
 
     # TASKQ_ENVIRONMENT=dev: this subprocess doesn't run under pytest, so the
     # _dev_environment autouse fixture's monkeypatch (parent-process only)
@@ -522,26 +527,22 @@ async def test_taskq_ui_serve_starts(
     # of binding to the port, and this test would only ever see the generic
     # "did not respond within 20s" timeout.
     subprocess_env = {**os.environ, "TASKQ_ENVIRONMENT": "dev"}
-    proc = subprocess.Popen(  # noqa: S603, ASYNC220  # Why: S603 — trusted args; ASYNC220 — Popen is intentional here, subprocess test requires a real separate process
-        [
-            sys.executable,
-            "-m",
-            "taskq.cli",
-            "ui",
-            "serve",
-            f"--pg-dsn={_admin_pg_dsn}",
-            f"--schema={_SCHEMA_LABEL}",
-            "--host=127.0.0.1",
-            f"--port={port}",
-        ],
-        env=subprocess_env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
 
-    async def _poll_until_ready(deadline: float) -> bool:
+    def _stop(p: subprocess.Popen[bytes]) -> None:
+        """SIGINT, escalate to SIGKILL on timeout. No-op if already exited."""
+        if p.poll() is None:
+            p.send_signal(signal.SIGINT)
+            try:
+                p.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                p.kill()
+                p.wait()
+
+    async def _poll_until_ready(proc: subprocess.Popen[bytes], port: int, deadline: float) -> bool:
         async with httpx.AsyncClient(timeout=2.0) as client:
             while time.time() < deadline:
+                if proc.poll() is not None:
+                    return False  # early exit — the caller classifies from stderr
                 try:
                     resp = await client.get(f"http://127.0.0.1:{port}/admin/queues")
                     if resp.status_code == 200:
@@ -551,20 +552,64 @@ async def test_taskq_ui_serve_starts(
                 await asyncio.sleep(0.5)
         return False
 
-    try:
-        ready = await _poll_until_ready(time.time() + 20)
-        if not ready:
+    for attempt in range(1, _UI_SERVE_MAX_BIND_ATTEMPTS + 1):
+        # Grab an ephemeral port; release before the subprocess binds to it.
+        with socket.socket() as _s:
+            _s.bind(("127.0.0.1", 0))
+            port = _s.getsockname()[1]
+
+        proc = subprocess.Popen(  # noqa: S603, ASYNC220  # Why: S603 — trusted args; ASYNC220 — Popen is intentional here, subprocess test requires a real separate process
+            [
+                sys.executable,
+                "-m",
+                "taskq.cli",
+                "ui",
+                "serve",
+                f"--pg-dsn={_admin_pg_dsn}",
+                f"--schema={_SCHEMA_LABEL}",
+                "--host=127.0.0.1",
+                f"--port={port}",
+            ],
+            env=subprocess_env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        try:
+            ready = await _poll_until_ready(proc, port, time.time() + 20)
+            if ready:
+                return  # server responded — test passed
+            if proc.poll() is not None:
+                # Child exited early, so its stderr is at EOF and read()
+                # cannot block.
+                stderr = proc.stderr.read().decode() if proc.stderr else ""
+                if (
+                    "address already in use" in stderr.lower()
+                    and attempt < _UI_SERVE_MAX_BIND_ATTEMPTS
+                ):
+                    # Lost the bind race — close the dead child's pipes
+                    # (stderr is drained above; stdout was never read),
+                    # then retry on a fresh port with a fresh child.
+                    if proc.stdout is not None:
+                        proc.stdout.close()
+                    if proc.stderr is not None:
+                        proc.stderr.close()
+                    continue
+                raise AssertionError(
+                    f"taskq ui serve exited during startup on port {port} "
+                    f"(rc={proc.returncode}).\nstderr: {stderr[:500]}"
+                )
+            # Still running but not responding: terminate it FIRST so stderr
+            # reaches EOF, then attach the drained logs to the failure —
+            # reading from a live child's stderr would block.
+            _stop(proc)
             stderr = proc.stderr.read().decode() if proc.stderr else ""
             raise AssertionError(
-                f"Server did not respond on port {port} within 20s.\nstderr: {stderr[:500]}"
+                f"Server did not respond on port {port} within 20s "
+                f"(process was still running; terminated to collect logs).\n"
+                f"stderr: {stderr[:500]}"
             )
-    finally:
-        proc.send_signal(signal.SIGINT)
-        try:
-            proc.wait(timeout=15)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait()
+        finally:
+            _stop(proc)
 
 
 # ── Queue detail pagination ───────────────────────────────────────

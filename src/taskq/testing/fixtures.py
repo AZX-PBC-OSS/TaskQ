@@ -7,16 +7,17 @@ consume:
 
 - **memory_jobs** — function-scoped, yields a fresh ``InMemoryBackend``.
 - **jobs_app** — function-scoped, opens ``WorkerDeps`` + ``PostgresBackend``
-  against the session-scoped ``pg_container``.
+  against the database named by the ``pg_dsn`` fixture.
 - **actor_runner** — function-scoped, yields a callable that runs an actor
   function with a synthetic ``JobContext``.
 - **backend_pair** — function-scoped, parametrised ``["memory", "pg"]``,
   yields a single ``Backend`` instance per param id.
 - **module_pg_schema** — module-scoped, creates a per-file PG schema,
-  applies migrations, seeds default data.  Reuses the session-scoped
-  ``pg_container``.  Drops the schema on module teardown.
+  applies migrations, seeds default data.  Drops the schema on module
+  teardown.
 - **module_redis_url** — module-scoped, assigns a unique Redis DB per
-  test module via atomic counter.  FLUSHDB on module teardown.
+  test module via a monotonic per-process counter (never reused).  FLUSHDB
+  at setup AND again on module teardown.
 - **clean_pg_conn** — function-scoped, truncates all tables (FK-safe
   CASCADE) then re-seeds default data within the module's PG schema.
   Returns a clean ``asyncpg.Connection``.
@@ -35,8 +36,43 @@ The ``memory_jobs`` fixture exposes ``InMemoryBackend`` directly so tests
 can call ``write_cancel_request`` + ``tick_cancel_polling`` without
 depending on ``JobsClient``.
 
-This is the only file in ``taskq.testing`` that may import asyncpg,
-testcontainers, and pytest — and only inside the fixture definitions.
+Consumer contracts
+------------------
+**PG fixtures need a consumer-provided ``pg_dsn`` fixture.** The name is
+part of the contract — ``jobs_app``, ``backend_pair``, ``module_pg_schema``
+(and everything built on them) request it by name. Minimum scope is
+``module``; it must point at a PostgreSQL cluster this test run owns
+EXCLUSIVELY: schema names are stable across runs (hashes of module path /
+node id) and fixture setup is DROP-first, so two concurrent runs sharing a
+cluster drop each other's schemas. TaskQ's own suite defines ``pg_dsn`` in
+``tests/conftest.py`` as a per-module database on a session-scoped
+testcontainer.
+
+**Event-loop scope.** All async fixtures here use
+``pytest_asyncio.fixture`` explicitly, so they work under both
+``asyncio_mode = "auto"`` and ``"strict"``. The suite must also keep
+pytest-asyncio's default loop scopes at ``module``
+(``asyncio_default_fixture_loop_scope`` / ``asyncio_default_test_loop_scope``,
+as TaskQ's own ``pyproject.toml`` sets): asyncpg pools and connections are
+bound to the event loop that created them, so the module-scoped fixtures
+(``module_pg_pool``, ``module_jobs_app``) and the tests consuming them must
+share one loop per module.
+
+**Redis DB budget.** The container is started with ``--dbnum 1024``: DB 0
+is reserved for ad-hoc use and DBs 1-1023 are handed out by the monotonic
+counter, never reused within the process (sharing would let one consumer's
+FLUSHDB wipe another's mid-run state). Exhaustion raises ``RuntimeError``.
+
+**Crash cleanup.** Containers are reaped by testcontainers' Ryuk sidecar
+even when pytest crashes, so in-container state dies with the container.
+Because every schema/DB identifier is per-run unique, anything that does
+survive (e.g. Ryuk disabled) is a resource-only leak — it can never
+collide with a future run's names.
+
+This is the only file in ``taskq.testing`` that may import asyncpg and
+testcontainers AT RUNTIME — and only inside the fixture definitions (every
+other module references asyncpg under ``TYPE_CHECKING`` only, and ``pytest``
+is also imported by ``taskq.testing.otel`` for its autouse guard fixtures).
 ``InMemoryBackend`` and ``FakeClock`` modules remain stdlib-only.
 """
 
@@ -160,12 +196,13 @@ class ActorRunnerCallable(Protocol):
 # ── memory_jobs ─────────────────────────────────────────────────────────
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def memory_jobs() -> AsyncIterator[InMemoryBackend]:
     """Yield a fresh ``InMemoryBackend`` with a ``FakeClock`` starting at
     ``datetime(2025, 1, 1, 0, 0, 0, tzinfo=UTC)``.  Default cancellation
     and cleanup grace from ``InMemoryBackend.__init__`` (30s each).
-    No teardown beyond GC (fully isolated per ).
+    No teardown beyond GC (fully isolated per fixture instance — each call
+    constructs a new backend and clock; nothing is shared at module level).
     """
     clock = FakeClock(start=datetime(2025, 1, 1, tzinfo=UTC))
     backend = InMemoryBackend(clock=clock)
@@ -282,8 +319,9 @@ async def _open_pg_backend(
     from taskq.worker.deps import open_worker_deps
 
     settings = WorkerSettings.load_from_dict(make_integration_settings_dict(pg_dsn))
-    # Override schema name — make_integration_settings_dict defaults to
-    # "taskq_test", but callers may pass custom schema names.
+    # Override schema name — make_integration_settings_dict defaults to a
+    # per-call unique name, but these fixtures manage the schema lifecycle
+    # themselves (drop/migrate/seed) under a caller-chosen name.
     settings.schema_name = schema_name
 
     # 2. Open connection, drop schema, apply migrations
@@ -446,10 +484,10 @@ async def _open_two_pg_workers(  # type: ignore[reportUnusedFunction]  # Why: mo
 # ── jobs_app ───────────────────────────────────────────────────────────
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def jobs_app(pg_dsn: str, request: pytest.FixtureRequest) -> AsyncIterator[JobsApp]:
     """Yield a :class:`JobsApp` named tuple ``(deps, backend)`` against the
-    session-scoped PG container.
+    database named by the consumer-provided ``pg_dsn`` fixture.
 
     Access the fields as ``jobs_app.deps`` and ``jobs_app.backend`` instead
     of unpacking — the named-tuple interface is clearer and type-safe.
@@ -473,14 +511,14 @@ async def jobs_app(pg_dsn: str, request: pytest.FixtureRequest) -> AsyncIterator
 # ── backend_pair ───────────────────────────────────────────────────────
 
 
-@pytest.fixture(params=["memory", "pg"], ids=["memory", "pg"])
+@pytest_asyncio.fixture(params=["memory", "pg"], ids=["memory", "pg"])
 async def backend_pair(request: pytest.FixtureRequest) -> AsyncIterator[Backend]:
     """Yield a single ``Backend`` instance per parametrize id.
 
     - ``memory``: same construction as ``memory_jobs``.
-    - ``pg``: requires the ``jobs_app`` infrastructure (testcontainers +
-      migrations); reuses the same ``pg_container`` / settings / migration
-      sequence via :func:`_open_pg_backend`.  Returns the
+    - ``pg``: requires a consumer-provided ``pg_dsn`` fixture (see the
+      module docstring) plus migrations; reuses the same settings /
+      migration sequence via :func:`_open_pg_backend`.  Returns the
       ``PostgresBackend`` instance.
 
     Tests using this fixture must be marked ``@pytest.mark.integration``
@@ -491,7 +529,7 @@ async def backend_pair(request: pytest.FixtureRequest) -> AsyncIterator[Backend]
 
     ``pg_dsn`` is resolved lazily via ``request.getfixturevalue`` only
     inside the ``pg`` branch (after the integration-marker check) so
-    the ``memory`` variant never triggers the ``pg_container`` fixture
+    the ``memory`` variant never triggers the ``pg_dsn`` fixture
     chain and stays container-free.
     """
     if request.param == "memory":
@@ -773,7 +811,7 @@ async def module_jobs_app(module_pg_schema: ModulePgSchema) -> AsyncIterator[Job
 # ── Function-scoped cleanup (per-test isolation) ────────────────────────
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def clean_pg_conn(module_pg_schema: ModulePgSchema) -> AsyncIterator[asyncpg.Connection]:
     """Per-test clean asyncpg connection on the module's PG schema.
 
@@ -791,7 +829,7 @@ async def clean_pg_conn(module_pg_schema: ModulePgSchema) -> AsyncIterator[async
         await conn.close()
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def worker_with_running_job(
     clean_pg_conn: asyncpg.Connection,
     module_pg_schema: ModulePgSchema,
@@ -844,7 +882,7 @@ async def _open_pg_backend_on_schema(
     return stack, deps, backend
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def clean_jobs_app(module_pg_schema: ModulePgSchema) -> AsyncIterator[JobsApp]:
     """Per-test clean ``JobsApp`` (WorkerDeps + PostgresBackend) on the
     module's PG schema.
@@ -894,7 +932,7 @@ def clean_redis_url(module_redis_url: str) -> str:
     return module_redis_url
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def clean_redis_client(clean_redis_url: str) -> AsyncIterator[object]:
     """Per-test clean Redis async client against the module's DB.
 

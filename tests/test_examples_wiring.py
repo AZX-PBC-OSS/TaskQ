@@ -35,8 +35,8 @@ from taskq._di.scope import Scope
 from taskq.actor import ActorRef
 from taskq.backend.clock import Clock, SystemClock
 from taskq.settings import WorkerSettings
+from taskq.testing.health import unique_health_sock_path
 from taskq.worker.run import _main
-from tests.conftest import unique_health_sock_path
 
 # ── Helpers ──────────────────────────────────────────────────────────
 

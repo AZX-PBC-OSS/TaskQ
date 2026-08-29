@@ -40,9 +40,10 @@ from taskq.exceptions import DependencyCycle, MissingProvider, ScopeViolation
 from taskq.settings import WorkerSettings
 from taskq.testing.actor import EmptyPayload
 from taskq.testing.clock import FakeClock
+from taskq.testing.health import unique_health_sock_path
 from taskq.worker.deps import WorkerDeps
 from taskq.worker.run import _main
-from tests.conftest import _FakePool, unique_health_sock_path
+from tests.conftest import _FakePool
 
 # ── Helpers ────────────────────────────────────────────────────────
 

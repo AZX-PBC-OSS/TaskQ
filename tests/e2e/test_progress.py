@@ -29,14 +29,22 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import secrets
+import socket
+import subprocess
+import sys
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import httpx
 import pytest
 
 from taskq.constants import progress_global_channel
 from taskq.progress import ProgressEvent
 
+from ._assertions import poll_until
 from .actors import GenerateReportPayload, ReportResult, generate_report
 
 if TYPE_CHECKING:
@@ -197,15 +205,62 @@ async def test_progress_fanout_pubsub(
 
 _SSE_REPO_ROOT = Path(__file__).resolve().parents[2]
 _SSE_ADMIN_ENTRY = _SSE_REPO_ROOT / "tests" / "e2e" / "admin_entry.py"
+# Bind-and-release port selection loses a TOCTOU race now and then under
+# parallel load; a child that exits early with "address already in use" gets
+# this many total attempts, each on a fresh port.
+_SSE_MAX_BIND_ATTEMPTS = 3
 
 
 def _sse_free_port() -> int:
-    """Ephemeral host port for the SSE admin server subprocess."""
-    import socket
+    """Ephemeral host port for the SSE admin server subprocess.
 
+    Bind-and-release: a lost race is detected by the caller (child exits
+    early with "address already in use") and retried on a fresh port.
+    """
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         return int(sock.getsockname()[1])
+
+
+def _shutdown_admin(proc: subprocess.Popen[str]) -> str:
+    """SIGTERM, escalate to SIGKILL on timeout, then drain captured output.
+
+    ``communicate`` waits for process exit and returns everything buffered in
+    the stdout pipe (stderr is merged into it at spawn). Repeated calls after
+    process death are safe: CPython caches the drained buffers.
+    """
+    if proc.poll() is None:
+        proc.terminate()
+    try:
+        out, _ = proc.communicate(timeout=10)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        out, _ = proc.communicate()
+    return out.strip()
+
+
+def _sse_admin_readiness(
+    proc: subprocess.Popen[str], client: httpx.AsyncClient
+) -> Callable[[], Awaitable[bool]]:
+    """Readiness predicate for one spawned SSE admin server.
+
+    Fail-fast with captured logs when the child exits during startup (the
+    caller classifies "address already in use" for a fresh-port retry);
+    otherwise probe ``/admin/jobs/count`` with the bearer token.
+    """
+
+    async def _ready() -> bool:
+        if proc.poll() is not None:
+            logs = await asyncio.to_thread(_shutdown_admin, proc)
+            msg = f"admin server exited during startup (rc={proc.returncode})\n{logs}"
+            raise RuntimeError(msg)
+        try:
+            resp = await client.get("/admin/jobs/count")
+        except httpx.HTTPError:
+            return False
+        return resp.status_code == 200
+
+    return _ready
 
 
 async def test_progress_sse_stream(
@@ -238,80 +293,73 @@ async def test_progress_sse_stream(
     stream. The SSE handler subscribes Redis BEFORE reading the PG
     snapshot, so events published between the enqueue and the subscribe
     are captured by the initial PG snapshot read.
+
+    The port is chosen bind-and-release (TOCTOU window: another process can
+    win it before the child binds), so a child that exits early with
+    "address already in use" is retried on a fresh port, up to
+    ``_SSE_MAX_BIND_ATTEMPTS`` attempts.
     """
-    import os
-    import secrets
-    import subprocess
-    import sys
-
-    import httpx
-
-    from ._assertions import poll_until
-
-    port = _sse_free_port()
     token = secrets.token_hex(16)
     python_path = os.environ.get("PYTHONPATH")
     redis_url = f"{e2e_dragonfly.host_url}/{e2e_schema.redis_db}"
-    env = {
-        **os.environ,
-        "TASKQ_PG_DSN": e2e_schema.host_dsn,
-        "TASKQ_SCHEMA_NAME": e2e_schema.schema_name,
-        "TASKQ_E2E_ADMIN_TOKEN": token,
-        "TASKQ_E2E_ADMIN_PORT": str(port),
-        "TASKQ_E2E_REDIS_URL": redis_url,
-        "PYTHONPATH": (
-            str(_SSE_REPO_ROOT) if not python_path else f"{_SSE_REPO_ROOT}{os.pathsep}{python_path}"
-        ),
-    }
-    proc = await asyncio.to_thread(
-        lambda: subprocess.Popen(  # noqa: S603
-            [sys.executable, str(_SSE_ADMIN_ENTRY)],
-            cwd=str(_SSE_REPO_ROOT),
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-        )
-    )
 
-    def _shutdown(proc: subprocess.Popen[str]) -> str:
-        if proc.poll() is None:
-            proc.terminate()
-        try:
-            out, _ = proc.communicate(timeout=10)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            out, _ = proc.communicate()
-        return out.strip()
-
-    client = httpx.AsyncClient(
-        base_url=f"http://127.0.0.1:{port}",
-        headers={"Authorization": f"Bearer {token}"},
-        timeout=httpx.Timeout(connect=10.0, read=90.0, write=10.0, pool=10.0),
-    )
-
-    async def _ready() -> bool:
-        if proc.poll() is not None:
-            logs = await asyncio.to_thread(_shutdown, proc)
-            msg = f"admin server exited during startup (rc={proc.returncode})\n{logs}"
-            raise RuntimeError(msg)
-        try:
-            resp = await client.get("/admin/jobs/count")
-        except httpx.HTTPError:
-            return False
-        return resp.status_code == 200
-
+    proc: subprocess.Popen[str] | None = None
+    client: httpx.AsyncClient | None = None
+    port = 0
     try:
-        try:
-            await poll_until(
-                _ready,
-                timeout=30.0,
-                description=f"admin server readiness at {client.base_url}",
+        for attempt in range(1, _SSE_MAX_BIND_ATTEMPTS + 1):
+            port = _sse_free_port()
+            env = {
+                **os.environ,
+                "TASKQ_PG_DSN": e2e_schema.host_dsn,
+                "TASKQ_SCHEMA_NAME": e2e_schema.schema_name,
+                "TASKQ_E2E_ADMIN_TOKEN": token,
+                "TASKQ_E2E_ADMIN_PORT": str(port),
+                "TASKQ_E2E_REDIS_URL": redis_url,
+                "PYTHONPATH": (
+                    str(_SSE_REPO_ROOT)
+                    if not python_path
+                    else f"{_SSE_REPO_ROOT}{os.pathsep}{python_path}"
+                ),
+            }
+            proc = await asyncio.to_thread(
+                lambda env=env: subprocess.Popen(  # noqa: S603
+                    [sys.executable, str(_SSE_ADMIN_ENTRY)],
+                    cwd=str(_SSE_REPO_ROOT),
+                    env=env,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                )
             )
-        except TimeoutError:
-            logs = await asyncio.to_thread(_shutdown, proc)
-            msg = f"admin server not ready within 30s\n{logs}"
-            raise RuntimeError(msg) from None
+            client = httpx.AsyncClient(
+                base_url=f"http://127.0.0.1:{port}",
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=httpx.Timeout(connect=10.0, read=90.0, write=10.0, pool=10.0),
+            )
+
+            try:
+                try:
+                    await poll_until(
+                        _sse_admin_readiness(proc, client),
+                        timeout=30.0,
+                        description=f"admin server readiness at {client.base_url}",
+                    )
+                except TimeoutError:
+                    logs = await asyncio.to_thread(_shutdown_admin, proc)
+                    msg = f"admin server not ready within 30s\n{logs}"
+                    raise RuntimeError(msg) from None
+            except RuntimeError as exc:
+                await client.aclose()
+                if (
+                    "address already in use" in str(exc).lower()
+                    and attempt < _SSE_MAX_BIND_ATTEMPTS
+                ):
+                    continue  # lost the bind race — fresh port, fresh child
+                raise
+            break
+
+        assert proc is not None and client is not None
 
         handle = await e2e_client.enqueue(generate_report, _report_payload(run_id))
         await handle.wait(timeout=60)
@@ -348,5 +396,7 @@ async def test_progress_sse_stream(
         assert "terminal" in events, f"expected a 'terminal' SSE event; events seen: {events}"
 
     finally:
-        await client.aclose()
-        await asyncio.to_thread(_shutdown, proc)
+        if client is not None:
+            await client.aclose()
+        if proc is not None:
+            await asyncio.to_thread(_shutdown_admin, proc)
