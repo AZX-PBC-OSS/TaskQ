@@ -21,7 +21,21 @@ dependencies = [
     "asyncpg>=0.31.0,<1",
     "croniter>=6.2.4",
     "dotenvmodel>=0.6.3,<1",
-    "opentelemetry-api>=1.44.0",
+    # 1.30.0 is the real floor for TaskQ's import surface, not a
+    # latest-at-the-time-of-writing pin. Most of what src/taskq uses is
+    # long-stable (trace.Span/SpanKind/StatusCode/Tracer, metrics.
+    # CallbackOptions/Meter/Observation, context.Context, util.types.
+    # Attributes), but obs/_otel.py builds `taskq.leader.lock_expires_in`
+    # with `create_histogram(..., explicit_bucket_boundaries_advisory=...)`
+    # at import time, against the no-provider `_ProxyMeter`. `_ProxyMeter`
+    # only accepts that kwarg from 1.30.0; on 1.29.0 and earlier importing
+    # taskq raises TypeError outright. Verified by execution, not inference.
+    # DO NOT raise this back toward the newest release without checking the
+    # exporters that cap the API. azure-monitor-opentelemetry-exporter
+    # declares `opentelemetry-api~=1.43.0` in every release through 1.0.0b56,
+    # so a >=1.44.0 floor makes TaskQ and Azure Monitor / Application
+    # Insights export mutually unresolvable.
+    "opentelemetry-api>=1.30.0",
     "orjson>=3.11.9",
     "pydantic>=2.13.4,<3",
     "structlog>=26.1.0,<27",
@@ -58,9 +72,18 @@ otel = [
     # Not imported anywhere under src/taskq; kept optional for operators who
     # export OTLP directly or drive auto-instrumentation via
     # `opentelemetry-instrument`.
-    "opentelemetry-sdk>=1.44.0",
-    "opentelemetry-exporter-otlp>=1.44.0",
-    "opentelemetry-instrumentation>=0.65b0,<1",
+    # These floors track the OTLP/semconv release train, which is pinned far
+    # more tightly than the core `opentelemetry-api` floor above:
+    # opentelemetry-instrumentation requires opentelemetry-semantic-
+    # conventions==<same beta>, and each semconv beta pins ONE exact API
+    # version (0.63b0->api==1.42.0, 0.64b0->1.43.0, 0.65b0->1.44.0). A
+    # >=0.65b0 floor therefore forces opentelemetry-api==1.44.0 and makes
+    # `taskq-py[otel]` unresolvable next to azure-monitor-opentelemetry-
+    # exporter (`opentelemetry-api~=1.43.0`). Same warning as the core pin:
+    # do not raise these without re-checking that constraint.
+    "opentelemetry-sdk>=1.43.0",
+    "opentelemetry-exporter-otlp>=1.43.0",
+    "opentelemetry-instrumentation>=0.64b0,<1",
 ]
 prometheus = [
     # >=0.63b0 guarantees PrometheusMetricReader's public `registry=` kwarg
@@ -500,7 +523,11 @@ dev = [
     "mkdocs>=1.6.1",
     "mkdocs-material>=9.7.7",
     "mkdocstrings[python]>=1.0.6",
-    "opentelemetry-sdk>=1.44.0",
+    # `taskq.testing.otel` imports SDK internals (opentelemetry.sdk.metrics.
+    # _internal.point). Floor matches the core opentelemetry-api floor so the
+    # suite can be resolved and run at the lower bound; normal `uv sync`
+    # still resolves to the newest release.
+    "opentelemetry-sdk>=1.30.0",
     "pip-audit>=2.10.1",
     "pyright>=1.1.411",
     "pytest>=9.1.1",
