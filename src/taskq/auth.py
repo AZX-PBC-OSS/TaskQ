@@ -33,11 +33,25 @@ Design
   userinfo (the only slot asyncpg's resolver never shadows) and
   ``sslmode=require`` is added only when no sslmode is already set.
 
-The factories fetch a fresh credential each time they are invoked (at
-pool / connection construction time). For long-lived workers, recreate
-the pool on a schedule shorter than the credential lifetime. Redis
-reconnects re-fetch automatically via the redis-py ``CredentialProvider``
-adapter.
+Credential refresh
+------------------
+
+Both transports re-fetch on every physical (re)connect, so no external
+rotation schedule is needed:
+
+* Postgres — ``password=`` is handed to asyncpg as an async callable,
+  which asyncpg awaits once per physical connection (pool creation, pool
+  growth, and replacements after ``max_inactive_connection_lifetime``
+  recycles an idle connection).
+* Redis — reconnects re-fetch via the redis-py ``CredentialProvider``
+  adapter.
+
+The one thing that cannot refresh in place is a **changed username**:
+asyncpg resolves ``user=`` once per pool / connection and accepts a
+callable only for ``password=``. Providers that rotate usernames (e.g.
+Vault dynamic database credentials) need a pool rebuild — ``SIGHUP`` /
+``taskq.worker.deps.reload_credentials`` — and raise a clear error rather
+than pairing a fresh password with a stale username.
 """
 
 from __future__ import annotations
@@ -102,8 +116,12 @@ class PgCredentialProvider(Protocol):
 
     Implementations fetch a fresh token / dynamic username+password each
     call. Called by :func:`make_pg_pool_factory` /
-    :func:`make_dedicated_conn_factory` at pool / connection construction
-    time — not on each ``acquire()``.
+    :func:`make_dedicated_conn_factory` once at pool / connection
+    construction (to resolve ``user=`` and fail fast), and then again for
+    every **physical** connection asyncpg opens thereafter — not on each
+    ``acquire()``, which hands back an already-authenticated connection
+    from the pool. Implementations are expected to cache and only hit the
+    issuing service when the cached credential is near expiry.
     """
 
     async def get_pg_credential(self) -> PgCredential:
@@ -192,6 +210,77 @@ def enrich_pg_dsn(dsn: str, credential: PgCredential) -> str:
     return urlunparse(parsed._replace(netloc=netloc, query=new_query))
 
 
+# ── Per-connection credential refresh ──────────────────────────────────
+
+
+def _make_pg_password_callable(
+    provider: PgCredentialProvider,
+    *,
+    pinned_username: str | None,
+    role: str,
+) -> Callable[[], Awaitable[str]]:
+    """Build the ``password=`` callable asyncpg invokes per physical connection.
+
+    asyncpg resolves a callable ``password`` inside ``_connect_addr``, which
+    runs for **every** physical connection — those opened when the pool is
+    created, those opened later by pool growth, and the replacements opened
+    after ``max_inactive_connection_lifetime`` recycles an idle connection. It
+    awaits the result when the callable returns an awaitable, so an async
+    provider is called directly with no thread bridge. asyncpg also retains the
+    *original* parameters (callable intact) for its SSL-mode retry path, so the
+    callable is never collapsed into a one-shot string.
+
+    This is what makes rotating credentials work without external rotation.
+    Postgres authenticates at connect time only, so a token baked in as a fixed
+    string keeps working on already-open connections and fails on every new one
+    roughly one token-lifetime after deploy — green at rollout, dead hours
+    later.
+
+    ``pinned_username`` is the username asyncpg was configured with at pool /
+    connection construction. asyncpg's ``user=`` is **not** callable — it is
+    resolved once in ``_parse_connect_arguments`` — so a provider that issues a
+    *new username* alongside each password (HashiCorp Vault dynamic database
+    credentials being the case that matters) cannot have that username applied
+    per connection. Silently pairing a fresh password with the stale username
+    would authenticate as the wrong role or fail with an opaque server-side
+    error, so a changed username is raised as a configuration error naming the
+    mechanism that does handle it (``SIGHUP`` / ``reload_credentials``, which
+    rebuilds the pool and therefore re-resolves ``user=``).
+    """
+
+    async def _fetch_password() -> str:
+        try:
+            credential = await provider.get_pg_credential()
+        except Exception as exc:
+            # Re-raised unchanged so the provider's own exception type and
+            # traceback survive for the operator; asyncpg propagates it out of
+            # create_pool()/connect() as a connection failure rather than
+            # retrying or falling back to an unauthenticated connection.
+            logger.error(
+                "pg_credential_refresh_failed",
+                role=role,
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
+            raise
+
+        if credential.username is not None and credential.username != pinned_username:
+            msg = (
+                f"PgCredentialProvider changed the username for the {role!r} connection "
+                f"mid-rotation (built with user={pinned_username!r}, provider now returns "
+                f"user={credential.username!r}). asyncpg resolves `user=` once per pool / "
+                "connection and only `password=` per physical connection, so the new "
+                "username cannot be applied in place. Send SIGHUP to the worker "
+                "(taskq.worker.deps.reload_credentials) to rebuild with the new username, "
+                "or use a provider whose username is stable across rotations."
+            )
+            raise RuntimeError(msg)
+
+        return credential.password
+
+    return _fetch_password
+
+
 # ── Factory builders ───────────────────────────────────────────────────
 #
 # All factories are zero-arg async callables matching the ``PoolFactory`` /
@@ -221,12 +310,26 @@ def make_pg_pool_factory(
     token never appears in the DSN string. The pool is owned by the
     worker (entered on its ``AsyncExitStack``).
 
-    Token refresh: the credential is fetched when the factory is invoked,
-    not on each ``acquire()``. For long-lived workers, send ``SIGHUP`` to
-    the worker process on a schedule shorter than the credential lifetime
-    — this factory is re-invoked automatically to rebuild the pool with a
-    fresh credential (see ``taskq.worker.deps.reload_credentials``); no
-    restart needed.
+    Token refresh: ``password=`` is passed as an **async callable**, which
+    asyncpg invokes and awaits once per *physical* connection — the
+    connections opened at pool creation, those opened later by pool
+    growth, and the replacements opened after
+    ``max_inactive_connection_lifetime`` recycles an idle connection. Every
+    new connection therefore authenticates with a freshly fetched
+    credential, and no external rotation is required. This matters because
+    Postgres authenticates at connect time only: a credential resolved once
+    and reused as a fixed string keeps working on already-open connections
+    while every new connection fails, roughly one token-lifetime after
+    deploy.
+
+    ``SIGHUP`` (see ``taskq.worker.deps.reload_credentials``) still works
+    and is no longer *required* for token refresh. It remains the way to
+    force a full pool rebuild — and the only way to pick up a **changed
+    username**, since asyncpg resolves ``user=`` once per pool and accepts
+    a callable only for ``password=``. A provider that rotates its username
+    (e.g. Vault dynamic database credentials) raises a ``RuntimeError``
+    naming this constraint rather than pairing a fresh password with a
+    stale username.
 
     Per-connection setup: *init* is forwarded verbatim to
     ``asyncpg.create_pool`` and runs **once per new physical connection**
@@ -246,10 +349,17 @@ def make_pg_pool_factory(
     import asyncpg  # Why: deferred so this module is import-safe without asyncpg at module load.
 
     async def factory() -> asyncpg.Pool:
+        # Fetched once here to resolve `user=` (not callable in asyncpg) and to
+        # fail fast at pool construction on a broken provider, rather than
+        # deferring the first failure to the first connection attempt. The
+        # password itself goes in as a callable so it is re-fetched per
+        # physical connection.
         credential = await provider.get_pg_credential()
         kwargs: dict[str, Any] = {
             "dsn": _ensure_sslmode_require(dsn),
-            "password": credential.password,
+            "password": _make_pg_password_callable(
+                provider, pinned_username=credential.username, role="pool"
+            ),
             "min_size": min_size,
             "max_size": max_size,
             "max_inactive_connection_lifetime": max_inactive_connection_lifetime,
@@ -277,15 +387,27 @@ def make_dedicated_conn_factory(
     :class:`taskq.TaskQ`'s ``pg_conn_factory``. Like
     :func:`make_pg_pool_factory`, the credential is passed as keyword
     arguments (precedence over userinfo and query params; the token
-    never appears in the DSN string).
+    never appears in the DSN string), and ``password=`` is an async
+    callable that asyncpg awaits per physical connection.
+
+    A dedicated connection is opened once and then held for the life of
+    the worker, so the callable normally fires exactly once — but these
+    are precisely the long-lived connections a credential expiry kills,
+    and the callable is what makes every *re-open* (a LISTEN connection
+    reconnecting after the server drops it, or ``reload_credentials``
+    rebuilding it) authenticate with a fresh credential rather than the
+    one captured when the factory was first invoked.
     """
     import asyncpg
 
     async def factory() -> asyncpg.Connection:
+        # Fetched once to resolve `user=` and fail fast; see make_pg_pool_factory.
         credential = await provider.get_pg_credential()
         kwargs: dict[str, Any] = {
             "dsn": _ensure_sslmode_require(dsn),
-            "password": credential.password,
+            "password": _make_pg_password_callable(
+                provider, pinned_username=credential.username, role="dedicated_conn"
+            ),
         }
         if credential.username is not None:
             kwargs["user"] = credential.username

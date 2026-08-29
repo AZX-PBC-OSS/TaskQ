@@ -87,8 +87,10 @@ async def test_init_hook_registers_codec_on_every_physical_connection(pg_dsn: st
             assert await c3.fetchval("SELECT 'vanilla'::init_hook_flavor") == "flavor:vanilla"
         assert pid3 in initialized_pids
 
-        # Credential fetch stays per-factory-invocation even though init ran
-        # per physical connection: one fetch for >=3 physical connections.
-        assert provider.calls == 1
+        # The credential is re-fetched per physical connection (the callable
+        # `password=` contract), on the same lifecycle that drives `init`: one
+        # fetch at construction to resolve `user=`, then one per physical
+        # connection. At least three physical connections were opened above.
+        assert provider.calls >= 4
     finally:
         await pool.close()

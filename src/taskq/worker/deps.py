@@ -651,6 +651,14 @@ async def reload_credentials(
     """Hot-swap every factory-backed PG pool, dedicated connection, and Redis
     client on *deps* with freshly-built replacements.
 
+    No longer *required* for Postgres token refresh: the :mod:`taskq.auth`
+    factories pass ``password=`` to asyncpg as an async callable, so every
+    physical connection already authenticates with a freshly fetched
+    credential. This remains the way to force a full pool rebuild — dropping
+    sessions opened under a revoked credential, and picking up a **changed
+    username**, which asyncpg resolves once per pool and cannot refresh per
+    connection.
+
     For each factory-backed resource:
     1. Build a new resource by calling the factory (which fetches a fresh
        credential — AAD token, AWS IAM token, Vault dynamic creds), bounded
