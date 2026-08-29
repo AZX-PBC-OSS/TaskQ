@@ -24,7 +24,7 @@ from taskq._di.scopes import LoopScope, ProcessScope, ThreadScope, make_resolver
 from taskq.actor import ActorRef
 from taskq.settings import WorkerSettings
 from taskq.testing.fixtures import ModulePgSchema
-from tests.conftest import unique_health_sock_path
+from taskq.testing.health import unique_health_sock_path
 
 pytestmark = pytest.mark.integration
 

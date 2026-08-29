@@ -315,8 +315,9 @@ ignore = [
 "tests/test_ratelimit_keyed_rate_limits_pg.py" = ["S608"]
 # Schema name validated against _IDENT_RE before interpolation; same as above.
 "tests/test_integration_fixtures.py" = ["S608"]
-# Same rationale — schema name is a worker-scoped constant derived from
-# PYTEST_XDIST_WORKER; all user-supplied values use $N parameter binding.
+# Same rationale — schema name is a per-process unique label
+# (f"twb_{new_base62()}".lower()); all user-supplied values use $N parameter
+# binding.
 "tests/test_worker_bootstrap.py" = ["S608"]
 # Same rationale — schema name validated against _IDENT_RE; all user-supplied
 # values use $N parameter binding.

@@ -30,7 +30,6 @@ import pytest
 import pytest_asyncio
 from testcontainers.postgres import PostgresContainer
 
-from taskq._ids import new_base62
 from taskq.settings import OIDCSettings, SAMLSettings, TaskQSettings
 from taskq.testing.actor import (
     EmptyPayload,
@@ -71,6 +70,7 @@ from taskq.testing.fixtures import (
     redis_url,
     worker_with_running_job,
 )
+from taskq.testing.health import unique_health_sock_path
 from taskq.testing.jobs import (
     error_info,
     make_enqueue_args,
@@ -131,17 +131,9 @@ def free_host_port() -> int:
         return int(sock.getsockname()[1])
 
 
-def unique_health_sock_path(module: str) -> str:
-    """Return a unique unix-socket path for one test's health server.
-
-    ``/tmp/tq-<module>-<pid>-<token>.sock``: the pid scopes across xdist
-    workers, the random token across tests within a worker (stateless — no
-    shared counter, so uniqueness survives any pytest import mode), and the
-    module label identifies the owner when debugging stale files. The short
-    ``/tmp/tq-`` prefix keeps paths well under the 104-char AF_UNIX
-    sun_path limit on macOS.
-    """
-    return f"/tmp/tq-{module}-{os.getpid()}-{new_base62()}.sock"  # noqa: S108  # Why: test-only socket files; /tmp is the shortest safe prefix.
+# unique_health_sock_path is published as taskq.testing.health.unique_health_sock_path
+# (imported above for the autouse redirect below). Test modules import it from
+# the published path directly; only the redirect shim stays repo-specific.
 
 
 @pytest.fixture(autouse=True)
@@ -190,6 +182,47 @@ def _reset_oidc_saml_cached() -> Iterator[None]:  # pyright: ignore[reportUnused
     yield
     OIDCSettings.reset_cached()
     SAMLSettings.reset_cached()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _no_developer_dotfiles(  # pyright: ignore[reportUnusedFunction]  # Why: autouse fixture consumed implicitly by the test runner; pyright does not track fixture usage.
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Iterator[None]:
+    """Make the whole suite hermetic w.r.t. the developer's gitignored dotfiles.
+
+    :meth:`TaskQSettings.load` defaults ``override=True``: dotenvmodel's
+    cascade (``.env`` → ``.env.local`` → ``.env.{env}`` → ``.env.{env}.local``,
+    rooted at ``DOTENV_DIR`` or the CWD) is written INTO ``os.environ``,
+    overriding even ``monkeypatch.setenv`` values set earlier in the same
+    test. ``.env.example`` tells developers to create exactly such a file with
+    ``TASKQ_PG_DSN=postgresql://taskq:taskq@localhost:5432/taskq`` — so on a
+    dev machine the ``settings`` fixture below would silently load the
+    developer's own DSN and ``pg_conn`` would then run
+    ``DROP SCHEMA … CASCADE`` against the developer's database.
+
+    Pointing ``DOTENV_DIR`` at an empty directory makes every ``.load()`` see
+    zero dotfiles without touching, moving, or reading the real files. The
+    directory must exist: dotenvmodel's ``load_env_files`` raises
+    ``FileNotFoundError`` for a missing ``DOTENV_DIR``
+    (``dotenvmodel/loading.py``).
+
+    A raw ``pytest.MonkeyPatch()`` instance is used, not the function-scoped
+    ``monkeypatch`` fixture (which has no session scope): ``MonkeyPatch`` is
+    the sanctioned env seam with correct undo semantics. ``DOTENV_DIR`` is the
+    one variable that CANNOT flow through ``TaskQSettings`` — it is the input
+    that tells dotenvmodel where to look for dotfiles BEFORE any settings
+    object exists. Setting it in the test process also makes subprocess
+    children spawned with ``env={**os.environ, ...}`` (e.g. the
+    ``taskq ui serve`` and e2e entry scripts, which call
+    ``WorkerSettings.load()`` themselves) hermetic for the same reason.
+    """
+    empty_dir = tmp_path_factory.mktemp("no-dotfiles")
+    mp = pytest.MonkeyPatch()
+    mp.setenv("DOTENV_DIR", str(empty_dir))
+    try:
+        yield
+    finally:
+        mp.undo()
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -363,7 +396,7 @@ __all__ = [
 def pg_container() -> Iterator[PostgresContainer]:
     """Boot a Postgres 18 container for the test session.
 
-    ``max_connections=500`` accommodates parallel test workers (``-n auto``
+    ``max_connections=1000`` accommodates parallel test workers (``-n auto``
     on 32-core machines opens 32 x ~22 connections = ~700, which exceeds
     PostgreSQL's default of 100).
     """
@@ -493,14 +526,19 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     ``--dist=loadgroup`` (set in ``pyproject.toml``) schedules every test
     that shares an ``xdist_group`` marker onto the same worker, and
     schedules everything else (ungrouped items) individually via the
-    default load-balancing strategy. Module-scoped fixtures are only safe
-    when every test in a module lands on the same worker: integration
-    modules share hashed PG schemas (``module_pg_schema``,
-    ``module_pg_pool``, ``module_jobs_app``) that two workers would
-    concurrently create/migrate/drop, and e2e modules share a PG schema,
-    a Dragonfly logical DB, and a worker container (``e2e_schema``,
-    ``e2e_pg_pool``, ``e2e_worker``) with the same failure mode if an
-    accidental ``-n`` run split a module across workers. This hook assigns
+    default load-balancing strategy.
+
+    Grouping is defense-in-depth and efficiency, NOT a correctness
+    requirement: every module-scoped name is already worker-qualified
+    (``module_pg_schema`` / ``module_pg_pool`` / ``module_jobs_app`` hash the
+    xdist worker id into the schema name, ``_module_db_name`` does the same
+    for the per-module database, and ``module_redis_url`` allocates from a
+    per-process counter), so a module accidentally split across workers
+    would get DISTINCT schemas/databases/Redis DBs rather than clobbering.
+    What grouping prevents is the waste and noise of that split: duplicated
+    create/migrate/drop work per worker, doubled pool pressure against the
+    session container, and e2e modules paying for a second worker container
+    (``e2e_schema``, ``e2e_pg_pool``, ``e2e_worker``). This hook assigns
     ``xdist_group(name=<module basename>)`` to every ``integration`` or
     ``e2e`` test that doesn't already carry an explicit ``xdist_group``
     marker, so chaos-style tests keep whatever group they already declared

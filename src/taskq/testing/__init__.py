@@ -42,6 +42,7 @@ from taskq.testing.assertions import (
     wait_for_leader,
 )
 from taskq.testing.clock import FakeClock
+from taskq.testing.health import unique_health_sock_path
 from taskq.testing.in_memory import InMemoryBackend
 from taskq.testing.job_context import JobContext
 from taskq.testing.jobs import error_info, make_enqueue_args, make_job_row
@@ -96,6 +97,7 @@ __all__ = [
     "seed_actors",
     "setup_running_job",
     "truncate_schema",
+    "unique_health_sock_path",
     "wait_for",
     "wait_for_job_status",
     "wait_for_leader",

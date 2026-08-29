@@ -15,6 +15,8 @@ import os
 from types import SimpleNamespace
 from typing import cast
 
+import pytest
+
 from taskq.settings import WorkerSettings
 from taskq.worker.deps import WorkerDeps
 from taskq.worker.health import HealthServer
@@ -31,19 +33,31 @@ def _deps(settings: WorkerSettings) -> WorkerDeps:
 
 
 def test_unique_health_sock_path_unique_per_call() -> None:
-    from tests.conftest import unique_health_sock_path
+    from taskq.testing.health import unique_health_sock_path
 
     assert unique_health_sock_path("mymod") != unique_health_sock_path("mymod")
 
 
 def test_unique_health_sock_path_module_scoped_and_short() -> None:
-    from tests.conftest import unique_health_sock_path
+    from taskq.testing.health import unique_health_sock_path
 
     path = unique_health_sock_path("mymod")
     assert "mymod" in path
     assert str(os.getpid()) in path
     # macOS AF_UNIX sun_path limit is 104 chars — keep well under it.
     assert len(path) < 80
+
+
+def test_unique_health_sock_path_rejects_path_separators() -> None:
+    """A module label containing a path separator is rejected outright:
+    embedded verbatim in the socket path, it would point at a nonexistent
+    directory and surface as a confusing ENOENT at bind time."""
+    from taskq.testing.health import unique_health_sock_path
+
+    with pytest.raises(ValueError, match="path separator"):
+        unique_health_sock_path("a/b")
+    with pytest.raises(ValueError, match="path separator"):
+        unique_health_sock_path("a\\b")
 
 
 async def test_concurrent_health_servers_with_default_settings_do_not_conflict() -> None:
@@ -103,7 +117,7 @@ async def test_reused_settings_object_across_servers_still_gets_distinct_paths()
 
 async def test_explicit_non_default_path_is_bound_verbatim() -> None:
     """The shim must not rewrite a path the test chose explicitly."""
-    from tests.conftest import unique_health_sock_path
+    from taskq.testing.health import unique_health_sock_path
 
     explicit = unique_health_sock_path("explicit")
     settings = WorkerSettings.load_from_dict(

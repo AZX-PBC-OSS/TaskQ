@@ -28,8 +28,8 @@ from taskq.migrate import apply_pending
 from taskq.ratelimit.registry import registry as rl_registry
 from taskq.ratelimit.reservation import ConcurrencyReservation
 from taskq.settings import WorkerSettings
+from taskq.testing.health import unique_health_sock_path
 from taskq.worker.run import _main
-from tests.conftest import unique_health_sock_path
 
 pytestmark = pytest.mark.integration
 

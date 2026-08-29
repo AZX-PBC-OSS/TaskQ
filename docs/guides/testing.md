@@ -4,7 +4,7 @@ TaskQ ships a dedicated `taskq.testing` package with deterministic fakes,
 pytest fixtures, OTel helpers, chaos wrappers, and assertion utilities.
 Unit tests run against `InMemoryBackend` with a `FakeClock` — no Postgres,
 no Redis, no sleeping. Integration tests use `testcontainers` to spin up real
-Postgres 18 and Redis 7.4 containers.
+Postgres 18 and Dragonfly (Redis-compatible) containers.
 
 Every symbol in `taskq.testing` lives outside the production import path so
 application code never pulls in test-only helpers.
@@ -234,25 +234,57 @@ async def test_with_memory_jobs(memory_jobs: InMemoryBackend) -> None:
 
 ### Integration fixtures (Postgres + Redis containers)
 
+Published by `taskq.testing.fixtures` (import them into your own conftest to
+use them):
+
 | Fixture | Scope | Yields | Notes |
 |---|---|---|---|
-| `pg_container` | session | `PostgresContainer` | Postgres 18 Alpine, `max_connections=1000`. Defined in `conftest.py`. |
-| `pg_dsn` | session | `str` | Asyncpg-friendly DSN. |
-| `settings` | function | `TaskQSettings` | Per-test env via `monkeypatch`. |
-| `pg_conn` | function | `asyncpg.Connection` | Drops schema before each test. Prefer `clean_pg_conn`. |
 | `jobs_app` | function | `JobsApp(deps, backend)` | Drops/migrates/seeds a per-test schema. |
-| `module_pg_schema` | module | `ModulePgSchema` | Per-file schema (hashed name). Migrates + seeds once. |
+| `module_pg_schema` | module | `ModulePgSchema` | Per-file schema (worker-qualified hashed name). Migrates + seeds once. |
 | `module_pg_pool` | module | `asyncpg.Pool` | Shared pool on the module schema. |
 | `module_jobs_app` | module | `JobsApp` | Shared `WorkerDeps` + `PostgresBackend`. |
 | `clean_pg_conn` | function | `asyncpg.Connection` | Truncates + re-seeds within the module schema. |
 | `clean_jobs_app` | function | `JobsApp` | Truncate + re-seed, then open `WorkerDeps` + backend. |
 | `worker_with_running_job` | function | `(worker_id, job_id, conn)` | Pre-created worker + running job on `clean_pg_conn`. |
-| `redis_container` | session | `RedisContainer` | Redis 7.4 Alpine. |
-| `redis_url` | function | `str` | Per-test URL on the session container (db 0). |
-| `module_redis_url` | module | `str` | Unique Redis DB (1–15) per module. `FLUSHDB` on teardown. |
+| `redis_container` | session | `RedisContainer` | Dragonfly v1.39.0 (Redis-compatible wire protocol), started with `--dbnum 1024 --proactor_threads 2 --maxmemory 512mb`. |
+| `killable_redis_container` | function | `RedisContainer` | Own Dragonfly container per test — for chaos tests that stop/restart Redis. Never stop the session container. |
+| `redis_url` | function | `str` | Per-test URL with a UNIQUE, never-reused logical DB (1–1023) allocated from a monotonic per-process counter. DB 0 is reserved. |
+| `module_redis_url` | module | `str` | Unique Redis DB (1–1023) per module. `FLUSHDB` at setup AND on teardown. |
 | `clean_redis_url` | function | `str` | `FLUSHDB` before each test. |
 | `clean_redis_client` | function | `redis.asyncio.Redis` | Fresh async client on the module DB. |
 | `backend_pair` | function | `Backend` | Parametrised `["memory", "pg"]`. The `pg` branch skips unless `@pytest.mark.integration` is set. |
+
+`redis_url_for(container, db)` is a published helper (not a fixture) that
+builds a `redis://host:port/{db}` URL for any container.
+
+The PG fixtures above request a `pg_dsn` fixture **by name** — it is part of
+the contract but is deliberately NOT published (how you provision Postgres is
+your call). Consumer contract for defining your own:
+
+- **Name:** must be `pg_dsn`, yielding an asyncpg-friendly DSN string.
+- **Scope:** `module` at minimum (per-module databases or schemas; a
+  session-scoped DSN to a per-run cluster also works).
+- **Exclusivity:** the PG cluster must belong to this test run. Schema names
+  are stable across runs (worker-qualified hashes of module path / node id)
+  and fixture setup is DROP-first, so two concurrent runs sharing one cluster
+  silently drop each other's schemas.
+
+The async fixtures use `pytest_asyncio.fixture` explicitly, so they work
+under both `asyncio_mode = "auto"` and `"strict"`. Keep pytest-asyncio's
+default loop scopes at `module` (`asyncio_default_fixture_loop_scope` /
+`asyncio_default_test_loop_scope`): asyncpg pools are bound to the loop that
+created them, so module-scoped fixtures and the tests consuming them must
+share one loop per module.
+
+For reference, TaskQ's OWN suite (`tests/conftest.py`) defines these
+additional fixtures — they are repo-private, not published:
+
+| Fixture | Scope | Yields | Notes |
+|---|---|---|---|
+| `pg_container` | session | `PostgresContainer` | Postgres 18 Alpine, `max_connections=1000`. |
+| `pg_dsn` | module | `str` | Per-module database on the shared container (worker-qualified hashed name), dropped on module teardown. |
+| `settings` | function | `TaskQSettings` | Per-test env via `monkeypatch`, then `TaskQSettings.load()`. |
+| `pg_conn` | function | `asyncpg.Connection` | Drops schema before each test. Prefer `clean_pg_conn`. |
 
 ```python
 import pytest
@@ -265,6 +297,23 @@ async def test_pg_backend(clean_jobs_app: JobsApp) -> None:
 
 `JobsApp` is a named tuple — access fields as `jobs_app.deps` and
 `jobs_app.backend` rather than unpacking.
+
+### Health-socket isolation under xdist
+
+`WorkerSettings.health_socket_path` defaults to the shared path
+`/tmp/taskq_health.sock`. Two in-process workers racing to bind it (e.g. under
+pytest-xdist) lose with `EADDRINUSE` or silently steal each other's socket.
+Mint a unique path per test with `taskq.testing.health.unique_health_sock_path`
+and pass it at settings construction time:
+
+```python
+from taskq.testing.health import unique_health_sock_path
+from taskq.testing.settings import make_integration_settings
+
+settings = make_integration_settings(
+    pg_dsn, HEALTH_SOCKET_PATH=unique_health_sock_path("my_test_module")
+)
+```
 
 ---
 
@@ -589,7 +638,7 @@ uv run pytest -m integration
 ### Testcontainers setup
 
 The session-scoped `pg_container` and `redis_container` fixtures boot
-Postgres 18 and Redis 7.4 once per session:
+Postgres 18 and Dragonfly (Redis-compatible) once per session:
 
 ```python
 import pytest
@@ -614,7 +663,10 @@ async def test_real_redis(clean_redis_client) -> None:
 ### Fast integration-test settings
 
 `make_integration_settings` constructs `WorkerSettings` with short intervals
-for bounded test timeouts (heartbeat 0.5s, lock-lease 2s, grace 0.5s):
+for bounded test timeouts (heartbeat 0.5s, lock-lease 2s, grace 0.5s). The
+schema name defaults to a **per-call unique** `tq_<token>` so concurrent
+callers on a shared database can never clobber each other; pass an explicit
+`schema_name=` when you need a deterministic name:
 
 ```python
 from taskq.testing.settings import make_integration_settings
@@ -650,9 +702,14 @@ initial states.
 
 Integration tests are grouped by module via the `pytest_collection_modifyitems`
 hook in `conftest.py`, which assigns `xdist_group(name=<module basename>)` to
-every integration test without an explicit group. This ensures module-scoped
-PG schemas land on the same xdist worker. See `pyproject.toml` for the
-`--dist=loadgroup` setting.
+every integration test without an explicit group (see `pyproject.toml` for the
+`--dist=loadgroup` setting). Grouping is defense-in-depth and efficiency, not
+a correctness requirement: every module-scoped name is already worker-qualified
+(schema names hash in the xdist worker id, per-module database names likewise,
+and Redis DBs come from a per-process counter), so a module accidentally split
+across workers would get distinct resources rather than clobbering. What
+grouping prevents is the duplicated create/migrate/drop work and doubled
+connection pressure of such a split.
 
 ---
 
