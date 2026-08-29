@@ -35,7 +35,7 @@ implementations available as extras:
 | Problem with DSN-only | What hooks give you |
 | --- | --- |
 | Token expires → **new** connections fail auth. Established sessions survive token expiry; it is pool growth / reconnects that get rejected. | Factory is called when TaskQ builds the pool; you fetch a fresh token then. |
-| A pool's password is fixed at construction — no asyncpg hook (`setup`, `server_settings`) can rotate it later. | Rebuild the pool on rotation. TaskQ does this for factory-backed pools on SIGHUP / `TASKQ_RELOAD_INTERVAL`. |
+| A password passed as a fixed string is reused for every connection the pool opens later. | The factory builders pass `password=` as an **async callable**, which asyncpg awaits once per physical connection - pool growth and idle-recycle replacements each authenticate with a freshly fetched credential. |
 | Azure Redis requires a `CredentialProvider` returning `(username, token)` per reconnect. | You own the `redis.asyncio.Redis` client → pass a `CredentialProvider`. |
 | You already run an app-wide pool (FastAPI lifespan) and want to share it. | Pass the pool directly — TaskQ will **not** close a caller-owned resource. |
 | Migrations / `TaskQ.stream()` open their own `asyncpg.connect(dsn)`. | `apply_pending_locked` and the client accept a `conn` / `conn_factory` so LISTEN/migrate work without a DSN. |
@@ -152,14 +152,33 @@ certificate.
 
 ### Token refresh for long-lived pools
 
-A pool's password is fixed at pool construction. The factory builders
-pass the token as a `password=` kwarg (never baked into the DSN string),
-but asyncpg reuses that same password for every connection the pool
-opens internally — including when `max_inactive_connection_lifetime`
-churns idle connections. Established sessions keep working after the
-token expires; **new** connections fail auth. For workloads where the
-credential expires faster than the process lifetime, trigger a
-**credential hot-reload** — no restart needed.
+**Token refresh is automatic - no external rotation schedule is
+required.** The factory builders pass the token to asyncpg as a
+`password=` **async callable** (never baked into the DSN string), and
+asyncpg invokes and awaits it once per *physical* connection: the
+connections opened at pool creation, those opened later by pool growth,
+and the replacements opened after `max_inactive_connection_lifetime`
+recycles an idle connection. Every new connection therefore
+authenticates with a freshly fetched credential.
+
+This matters because Postgres authenticates at connect time only. A
+credential resolved once and reused as a fixed string keeps working on
+already-open sessions while **new** connections fail auth - so a pool
+built that way is healthy at deploy and then, roughly one token lifetime
+later, degrades as idle connections are recycled. That was TaskQ's
+behaviour before this changed; it no longer is.
+
+Two things per-connection refresh cannot do, for which the
+**credential hot-reload** below is still the answer:
+
+* **A changed username.** asyncpg resolves `user=` once per pool and
+  accepts a callable only for `password=`. Providers that issue a fresh
+  username alongside each password (HashiCorp Vault dynamic database
+  credentials) need a pool rebuild; the password callable raises a
+  `RuntimeError` naming this rather than pairing a fresh password with
+  the stale username.
+* **Forcing a full pool rebuild** - e.g. to drop sessions opened under a
+  revoked credential, or after a DSN/endpoint change.
 
 All four triggers run the same `reload_credentials` path:
 

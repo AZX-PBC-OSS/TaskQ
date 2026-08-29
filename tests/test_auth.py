@@ -13,6 +13,7 @@ both) are exactly what this module relies on.
 from __future__ import annotations
 
 import dataclasses
+import inspect
 import ssl as ssl_module
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -56,6 +57,22 @@ def _resolve(dsn: str, **kwargs: Any) -> Any:
         gsslib=None,
     )
     return params
+
+
+async def _pw(value: Any) -> Any:
+    """Resolve a ``password=`` kwarg the way asyncpg's ``_connect_addr`` does.
+
+    The Postgres factories pass ``password=`` as an async callable so asyncpg
+    re-fetches per physical connection; asyncpg calls it and awaits the result
+    when it is awaitable. Tests assert on the resolved value through this
+    helper so they check what actually reaches the server.
+    """
+    if callable(value):
+        result = value()
+        if inspect.isawaitable(result):
+            return await result
+        return result
+    return value
 
 
 # ---- Fake providers --------------------------------------------------------------------------------------------------------
@@ -246,6 +263,8 @@ async def test_make_pg_pool_factory_fetches_credential_and_creates_pool() -> Non
         pool = await factory()
 
     assert pool is fake_pool
+    # One fetch at construction to resolve `user=` and fail fast; the
+    # password callable accounts for every later fetch.
     assert provider.calls == 1
     mock_create.assert_awaited_once()
     call_kwargs = mock_create.call_args.kwargs
@@ -253,7 +272,7 @@ async def test_make_pg_pool_factory_fetches_credential_and_creates_pool() -> Non
     assert call_kwargs["command_timeout"] == 5
     # The credential travels as kwargs (which beat userinfo and query
     # params in asyncpg's resolver) - not embedded in the DSN string.
-    assert call_kwargs["password"] == "tok-999"
+    assert await _pw(call_kwargs["password"]) == "tok-999"
     assert "tok-999" not in call_kwargs["dsn"]
     assert "sslmode=require" in call_kwargs["dsn"]
 
@@ -269,7 +288,7 @@ async def test_make_pg_pool_factory_with_username_override() -> None:
 
     call_kwargs = mock_create.call_args.kwargs
     assert call_kwargs["user"] == "vault-user"
-    assert call_kwargs["password"] == "pw"
+    assert await _pw(call_kwargs["password"]) == "pw"
     assert "pw" not in call_kwargs["dsn"]
 
 
@@ -287,7 +306,7 @@ async def test_make_pg_pool_factory_kwargs_beat_stale_userinfo() -> None:
     params = _resolve(
         call_kwargs["dsn"],
         user=call_kwargs.get("user"),
-        password=call_kwargs.get("password"),
+        password=await _pw(call_kwargs.get("password")),
     )
     assert params.user == "fresh-user"
     assert params.password == "fresh-tok"
@@ -325,7 +344,7 @@ async def test_make_pg_pool_factory_forwards_init_hook_verbatim() -> None:
     # Identity - the caller's coroutine function itself, never a wrapper.
     assert call_kwargs["init"] is init
     # Composition: the factory's own kwargs are untouched by the hook.
-    assert call_kwargs["password"] == "tok-555"
+    assert await _pw(call_kwargs["password"]) == "tok-555"
     assert call_kwargs["command_timeout"] == 5
     assert "sslmode=require" in call_kwargs["dsn"]
 
@@ -436,7 +455,7 @@ async def test_make_dedicated_conn_factory_fetches_credential_and_connects() -> 
     assert conn is fake_conn
     assert provider.calls == 1
     call_kwargs = mock_connect.call_args.kwargs
-    assert call_kwargs["password"] == "conn-tok"
+    assert await _pw(call_kwargs["password"]) == "conn-tok"
     assert "conn-tok" not in call_kwargs["dsn"]
     assert "sslmode=require" in call_kwargs["dsn"]
 
@@ -454,7 +473,7 @@ async def test_make_dedicated_conn_factory_with_username_override() -> None:
     params = _resolve(
         call_kwargs["dsn"],
         user=call_kwargs.get("user"),
-        password=call_kwargs.get("password"),
+        password=await _pw(call_kwargs.get("password")),
     )
     assert params.user == "dyn-user"
     assert params.password == "pw"
@@ -525,6 +544,166 @@ async def test_make_dedicated_conn_factory_omits_new_params_when_not_provided() 
     assert "server_settings" not in call_kwargs
     assert "connection_class" not in call_kwargs
     assert "setup" not in call_kwargs
+
+
+# ---- Per-connection credential refresh ----
+#
+# The regression these cover: the factories used to resolve the credential
+# ONCE and hand asyncpg a fixed `password=` string. asyncpg reuses that string
+# for every physical connection it opens later, so with a finite-lifetime token
+# (Entra ID, AWS IAM RDS) the pool works at deploy and then, roughly one token
+# lifetime later, every NEW physical connection fails to authenticate while the
+# already-open ones keep working. `max_inactive_connection_lifetime` (300s by
+# default) recycles idle connections continuously, so the pool degrades to
+# unusable. A test that only checks the first connection succeeds passes
+# against the bug and is worthless - these drive the callable asyncpg would.
+
+
+class _RotatingPgProvider:
+    """Provider whose credential can be changed between fetches."""
+
+    def __init__(self, password: str = "tok-1", username: str | None = None) -> None:  # noqa: S107  # Why: test fixture password, not a real credential.
+        self.password = password
+        self.username = username
+        self.calls = 0
+
+    async def get_pg_credential(self) -> PgCredential:
+        self.calls += 1
+        return PgCredential(password=self.password, username=self.username)
+
+
+async def test_pool_password_is_callable_refetched_per_physical_connection() -> None:
+    """asyncpg gets a callable, and each call yields the CURRENT credential.
+
+    Drives the callable the way ``asyncpg.connect_utils._connect_addr`` does
+    (call, then await when awaitable) once per simulated physical connection.
+    """
+    provider = _RotatingPgProvider(password="tok-1")
+    factory = make_pg_pool_factory("postgresql://user@host/db", provider)
+
+    with patch("asyncpg.create_pool", new=AsyncMock(return_value=MagicMock())) as mock_create:
+        await factory()
+
+    password_arg = mock_create.call_args.kwargs["password"]
+    assert callable(password_arg), "password must be a callable, not a resolved string"
+    calls_after_construction = provider.calls
+
+    # Physical connection 1 (opened at pool creation).
+    assert await _pw(password_arg) == "tok-1"
+    # The token rotates while the pool is alive.
+    provider.password = "tok-2"
+    # Physical connection 2 (pool growth) and 3 (idle-recycle replacement)
+    # both pick up the NEW credential - this is what the old code could not do.
+    assert await _pw(password_arg) == "tok-2"
+    assert await _pw(password_arg) == "tok-2"
+
+    assert provider.calls == calls_after_construction + 3
+
+
+async def test_dedicated_conn_password_is_callable_refetched_per_connection() -> None:
+    """The LISTEN/advisory-lock connection factory refreshes on re-open too."""
+    provider = _RotatingPgProvider(password="conn-1")
+    factory = make_dedicated_conn_factory("postgresql://user@host/db", provider)
+
+    with patch("asyncpg.connect", new=AsyncMock(return_value=MagicMock())) as mock_connect:
+        await factory()
+
+    password_arg = mock_connect.call_args.kwargs["password"]
+    assert callable(password_arg)
+    assert await _pw(password_arg) == "conn-1"
+    provider.password = "conn-2"
+    assert await _pw(password_arg) == "conn-2"
+
+
+async def test_password_callable_propagates_provider_failure() -> None:
+    """A failing token fetch surfaces as a connection error, never a silent
+    hang or an unauthenticated fallback - and the provider's own exception
+    type survives for the operator."""
+
+    class _BrokenProvider:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def get_pg_credential(self) -> PgCredential:
+            self.calls += 1
+            if self.calls == 1:
+                return PgCredential(password="ok")
+            raise TimeoutError("IMDS token endpoint unreachable")
+
+    provider = _BrokenProvider()
+    factory = make_pg_pool_factory("postgresql://user@host/db", provider)
+
+    with patch("asyncpg.create_pool", new=AsyncMock(return_value=MagicMock())) as mock_create:
+        await factory()
+
+    password_arg = mock_create.call_args.kwargs["password"]
+    with pytest.raises(TimeoutError, match="IMDS token endpoint unreachable"):
+        await _pw(password_arg)
+
+
+async def test_password_callable_logs_provider_failure() -> None:
+    """The refresh failure is observable, with the role named and no token."""
+
+    class _BrokenProvider:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def get_pg_credential(self) -> PgCredential:
+            self.calls += 1
+            if self.calls == 1:
+                return PgCredential(password="ok")
+            raise TimeoutError("boom")
+
+    factory = make_pg_pool_factory("postgresql://user@host/db", _BrokenProvider())
+    with patch("asyncpg.create_pool", new=AsyncMock(return_value=MagicMock())) as mock_create:
+        await factory()
+    password_arg = mock_create.call_args.kwargs["password"]
+
+    with structlog.testing.capture_logs() as logs, pytest.raises(TimeoutError):
+        await _pw(password_arg)
+
+    entry = next(log for log in logs if log["event"] == "pg_credential_refresh_failed")
+    assert entry["role"] == "pool"
+    assert entry["error_type"] == "TimeoutError"
+    assert entry["log_level"] == "error"
+
+
+async def test_password_callable_rejects_changed_username() -> None:
+    """asyncpg resolves `user=` once per pool and only `password=` per
+    connection, so a provider that rotates its USERNAME cannot be honoured in
+    place. That must fail loudly rather than pair a fresh password with the
+    stale username (which would authenticate as the wrong role)."""
+    provider = _RotatingPgProvider(password="pw-1", username="vault-user-a")
+    factory = make_pg_pool_factory("postgresql://old@host/db", provider)
+
+    with patch("asyncpg.create_pool", new=AsyncMock(return_value=MagicMock())) as mock_create:
+        await factory()
+
+    call_kwargs = mock_create.call_args.kwargs
+    assert call_kwargs["user"] == "vault-user-a"
+    password_arg = call_kwargs["password"]
+    assert await _pw(password_arg) == "pw-1"
+
+    # Vault issues a brand-new username/password pair on rotation.
+    provider.username = "vault-user-b"
+    provider.password = "pw-2"
+    with pytest.raises(RuntimeError, match="changed the username"):
+        await _pw(password_arg)
+
+
+async def test_password_callable_allows_username_none_providers() -> None:
+    """Providers that never issue a username (AAD, AWS IAM RDS: the DSN user
+    is fixed and only the token rotates) refresh without tripping the guard."""
+    provider = _RotatingPgProvider(password="tok-1", username=None)
+    factory = make_pg_pool_factory("postgresql://static-user@host/db", provider)
+
+    with patch("asyncpg.create_pool", new=AsyncMock(return_value=MagicMock())) as mock_create:
+        await factory()
+
+    call_kwargs = mock_create.call_args.kwargs
+    assert "user" not in call_kwargs
+    provider.password = "tok-2"
+    assert await _pw(call_kwargs["password"]) == "tok-2"
 
 
 # ---- make_redis_client_factory ----------------------------------------------------------------------------------
