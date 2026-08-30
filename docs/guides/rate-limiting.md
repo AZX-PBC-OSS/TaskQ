@@ -259,17 +259,33 @@ finally:
 
 ## Queue-level concurrency cap
 
-`actor_config.max_concurrent` (set via `@actor(max_concurrent=...)`) caps concurrency per
-actor, per worker. There was no way to cap "at most N jobs from queue X, fleet-wide"
-independent of which or how many actors publish to that queue. The queue-level concurrency
-cap fills this gap.
+`actor_config.max_concurrent` (set via `@actor(max_concurrent=...)`) is a **best-effort**
+per-actor damper, not a hard cap: dispatch reads its `running` count once per round before
+taking row locks, so concurrent dispatchers can over-admit by up to
+`(num_producers - 1) * max_concurrent` (see
+[deployment.md](deployment.md#max_concurrent-and-max_pending)). There was also no way to cap
+"at most N jobs from queue X, fleet-wide" independent of which or how many actors publish to
+that queue.
+
+The queue-level concurrency cap fills both gaps. It is leased-slot based -- acquiring a slot
+is a single read-and-write statement against one physical row -- so unlike
+`actor_config.max_concurrent` it has no read-then-decide window and **is** a hard cap.
 
 ### Mechanism
 
 Set the `max_concurrent` column on the `"{schema}".queues` table row for a queue:
 
+```bash
+taskq queues set-max-concurrent external-api --max-concurrent 20
+```
+
+Or in SQL. Note the **UPSERT**: nothing in TaskQ ever inserts a `queues` row, so a plain
+`UPDATE ... WHERE name = ...` matches zero rows and silently does nothing on a fresh
+deployment.
+
 ```sql
-UPDATE "taskq".queues SET max_concurrent = 20 WHERE name = 'external-api';
+INSERT INTO "taskq".queues (name, max_concurrent) VALUES ('external-api', 20)
+ON CONFLICT (name) DO UPDATE SET max_concurrent = EXCLUDED.max_concurrent, updated_at = now();
 ```
 
 The column is nullable — `NULL` means uncapped, matching the `actor_config.max_concurrent`
