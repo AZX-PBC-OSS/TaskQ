@@ -63,6 +63,7 @@ from taskq.obs._otel import (
     update_heartbeat_consecutive_failures,
     update_queue_depth_cache,
     update_reservation_slots_cache,
+    update_stranded_jobs_cache,
 )
 from taskq.obs._structlog import (
     bind_job_context,
@@ -117,4 +118,5 @@ __all__ = [
     "update_heartbeat_consecutive_failures",
     "update_queue_depth_cache",
     "update_reservation_slots_cache",
+    "update_stranded_jobs_cache",
 ]

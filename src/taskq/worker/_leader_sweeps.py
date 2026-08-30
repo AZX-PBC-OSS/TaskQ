@@ -24,6 +24,7 @@ from taskq.obs import (
     get_logger,
     update_queue_depth_cache,
     update_reservation_slots_cache,
+    update_stranded_jobs_cache,
 )
 from taskq.ratelimit.registry import (
     _KEYED_IDLE_THRESHOLD,  # pyright: ignore[reportPrivateUsage]  # Why: shared constant — centralised in registry.py so the sweep and the opportunistic eviction path never drift.
@@ -65,6 +66,12 @@ __all__ = [
 ]
 
 log: structlog.stdlib.BoundLogger = get_logger(__name__)
+
+#: How long before an already-warned stranded actor is warned about again.
+#: The condition is persistent by nature (it needs an operator to create the
+#: actor_config row), so re-warning every tick would be noise; never
+#: re-warning made a permanent, growing backlog invisible after one line.
+_STRANDED_REWARN_SECS: float = 3600.0
 
 
 async def _sleep_interruptible(shutdown: asyncio.Event, seconds: float) -> None:
@@ -460,10 +467,23 @@ async def _stranded_jobs_loop(ctx: SweepContext, shutdown: asyncio.Event) -> Non
     GROUP BY j.actor
     """
 
-    warned: set[str] = set()
+    # actor -> (last warned count, monotonic timestamp of that warning).
+    # NOT a plain set: a set that is only ever added to means the first tick
+    # logs once per actor and every later tick for the life of the process is
+    # silent, so a condition that starts small and grows unboundedly looks
+    # identical to one that resolved itself.
+    warned: dict[str, tuple[int, float]] = {}
     schema = ctx.deps.settings.schema_name
     if not _IDENT_RE.match(schema):
-        log.warning("invalid-schema-skipped", schema=schema)
+        # Why error, not warning: this returns, permanently disabling the
+        # detector for the process lifetime while the worker keeps running
+        # normally. That is a silent loss of a safety net, not a skipped tick.
+        log.error(
+            "stranded-jobs-detector-disabled",
+            kind="stranded_jobs_detector_disabled",
+            schema=schema,
+            reason="schema name failed identifier validation",
+        )
         return
     sql = _stranded_sql.format(schema=schema)
 
@@ -484,13 +504,40 @@ async def _stranded_jobs_loop(ctx: SweepContext, shutdown: asyncio.Event) -> Non
                 error_message=str(exc),
             )
             continue
-        for row in rows:
-            actor: str = row["actor"]
-            cnt: int = row["cnt"]
-            if actor not in warned:
-                warned.add(actor)
+        current: dict[str, int] = {row["actor"]: row["cnt"] for row in rows}
+
+        # Always publish the gauge, including the empty case: an operator needs
+        # to see the condition persist, grow, and clear. A log line at onset
+        # cannot express any of that.
+        update_stranded_jobs_cache(current)
+
+        now = time.monotonic()
+        for actor, cnt in current.items():
+            previous = warned.get(actor)
+            if previous is None:
+                should_warn = True
+            else:
+                last_count, last_time = previous
+                # Re-warn when the backlog grows, or on a slow cadence so a
+                # steady-state stall is not invisible in logs forever.
+                should_warn = cnt > last_count or (now - last_time) >= _STRANDED_REWARN_SECS
+            if should_warn:
+                warned[actor] = (cnt, now)
                 log.warning(
                     "stranded-jobs-no-actor-config",
+                    kind="stranded_jobs_no_actor_config",
                     actor=actor,
                     pending_count=cnt,
+                    first_seen=previous is None,
+                )
+
+        # Drop actors that recovered, so a recurrence warns again instead of
+        # being suppressed for the life of the process.
+        for actor in list(warned):
+            if actor not in current:
+                del warned[actor]
+                log.info(
+                    "stranded-jobs-cleared",
+                    kind="stranded_jobs_cleared",
+                    actor=actor,
                 )

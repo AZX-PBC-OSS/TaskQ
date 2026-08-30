@@ -713,3 +713,135 @@ async def test_sweep_loop_survives_transient_pg_errors() -> None:
     await asyncio.sleep(0.1)  # several ticks against the dead backend
     assert not task.done(), "sweep loop died on a transient PG error"
     await _stop_loop(task, shutdown, delay=0.0)
+
+
+# ── _stranded_jobs_loop: repeat visibility (regression) ────────────────────
+#
+# The detector exists to catch jobs that can NEVER be dispatched: the dispatch
+# CTE derives candidates from `per_actor_capacity`, which is
+# `FROM actor_config`, so a job whose actor has no row there is stranded
+# forever. It warned exactly once per actor per process lifetime, from a
+# `warned: set[str]` that was only ever added to, and emitted no metric. An
+# operator got one WARN line at onset -- the moment nobody is looking -- and
+# nothing thereafter, while the backlog grew unboundedly.
+
+
+async def _run_stranded_loop_collecting(
+    rows_sequence: list[list[dict[str, object]]],
+    *,
+    ticks: int,
+) -> tuple[list[dict[str, object]], list[dict[str, int]]]:
+    """Drive the loop over a scripted sequence of query results."""
+    import taskq.worker._leader_sweeps as sweeps_mod
+
+    class _ScriptedConn:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def fetch(self, *_a: object, **_k: object) -> list[dict[str, object]]:
+            idx = min(self.calls, len(rows_sequence) - 1)
+            self.calls += 1
+            return rows_sequence[idx]
+
+    conn = _ScriptedConn()
+    pool = FakePool(conn=conn)  # type: ignore[arg-type]  # Why: structural stand-in for an asyncpg pool.
+    deps = _make_deps(worker_pool=pool, is_leader=True)
+    deps.settings.stranded_jobs_interval = 0.01
+    leader = _make_leader(backend=_mem_backend(), deps=deps)
+
+    warnings: list[dict[str, object]] = []
+    gauge_updates: list[dict[str, int]] = []
+    original_warning = sweeps_mod.log.warning
+    original_update = sweeps_mod.update_stranded_jobs_cache
+
+    def _spy_warning(event: str, **kwargs: object) -> None:
+        if event == "stranded-jobs-no-actor-config":
+            warnings.append({"event": event, **kwargs})
+
+    def _spy_update(data: dict[str, int]) -> None:
+        gauge_updates.append(dict(data))
+
+    sweeps_mod.log.warning = _spy_warning  # type: ignore[method-assign]  # Why: test-only instrumentation.
+    sweeps_mod.update_stranded_jobs_cache = _spy_update  # type: ignore[assignment]  # Why: test-only instrumentation.
+    try:
+        shutdown = asyncio.Event()
+        task = asyncio.create_task(leader._stranded_jobs_loop(shutdown))
+        for _ in range(400):
+            if len(gauge_updates) >= ticks:
+                break
+            await asyncio.sleep(0.01)
+        await _stop_loop(task, shutdown, delay=0.0)
+    finally:
+        sweeps_mod.log.warning = original_warning  # type: ignore[method-assign]
+        sweeps_mod.update_stranded_jobs_cache = original_update  # type: ignore[assignment]
+    return warnings, gauge_updates
+
+
+async def test_stranded_jobs_publishes_a_gauge_every_tick() -> None:
+    """The condition must be visible in metrics, not only in one log line."""
+    _, gauges = await _run_stranded_loop_collecting([[{"actor": "orphan", "cnt": 7}]], ticks=3)
+    assert len(gauges) >= 3
+    assert all(g == {"orphan": 7} for g in gauges[:3])
+
+
+async def test_stranded_jobs_rewarns_when_the_backlog_grows() -> None:
+    """A growing backlog must not be silenced by the first warning."""
+    warnings, _ = await _run_stranded_loop_collecting(
+        [
+            [{"actor": "orphan", "cnt": 5}],
+            [{"actor": "orphan", "cnt": 5}],
+            [{"actor": "orphan", "cnt": 50}],
+        ],
+        ticks=4,
+    )
+    counts = [w["pending_count"] for w in warnings]
+    assert 5 in counts, "onset must warn"
+    assert 50 in counts, "growth must re-warn -- pre-fix this was silent forever"
+    # The unchanged middle tick must NOT re-warn (that would be per-tick noise).
+    assert counts.count(5) == 1
+
+
+async def test_stranded_jobs_clears_and_rewarns_on_recurrence() -> None:
+    """Recovery clears the gauge, and a recurrence warns again."""
+    warnings, gauges = await _run_stranded_loop_collecting(
+        [
+            [{"actor": "orphan", "cnt": 3}],
+            [],
+            [{"actor": "orphan", "cnt": 3}],
+        ],
+        ticks=4,
+    )
+    assert {} in gauges, "recovery must clear the gauge"
+    first_seen_flags = [w["first_seen"] for w in warnings if w["actor"] == "orphan"]
+    assert first_seen_flags.count(True) >= 2, (
+        "a recurrence must warn again; pre-fix the actor stayed in `warned` forever"
+    )
+
+
+async def test_stranded_jobs_detector_disabled_logs_at_error() -> None:
+    """The invalid-schema path disables the detector for the whole process
+    lifetime while the worker keeps running -- a silent loss of a safety net."""
+    import taskq.worker._leader_sweeps as sweeps_mod
+
+    leader = _make_leader(backend=_mem_backend(), deps=_make_deps(is_leader=True))
+    leader._deps.settings.schema_name = "bad;schema"  # type: ignore[reportPrivateUsage]  # Why: test mutates the deps the leader was constructed with.
+
+    events: list[str] = []
+    original_error = sweeps_mod.log.error
+
+    def _spy_error(event: str, **kwargs: object) -> None:
+        events.append(event)
+
+    sweeps_mod.log.error = _spy_error  # type: ignore[method-assign]  # Why: test-only instrumentation.
+    try:
+        shutdown = asyncio.Event()
+        task = asyncio.create_task(leader._stranded_jobs_loop(shutdown))
+        await asyncio.sleep(0.05)
+        assert task.done()
+        shutdown.set()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+    finally:
+        sweeps_mod.log.error = original_error  # type: ignore[method-assign]
+
+    assert "stranded-jobs-detector-disabled" in events

@@ -339,6 +339,42 @@ _queue_depth_gauge = get_meter().create_observable_gauge(
 )
 
 
+_stranded_jobs_cache: dict[str, int] = {}
+
+
+def update_stranded_jobs_cache(data: dict[str, int]) -> None:
+    """Replace the stranded-jobs cache with fresh data from the leader's query.
+
+    Stranded jobs are pending/scheduled jobs whose actor has no `actor_config`
+    row, which makes them permanently undispatchable: the dispatch CTE derives
+    its candidates from `per_actor_capacity`, which is `FROM actor_config`.
+
+    This gauge exists because the detector previously emitted a log line and
+    nothing else, exactly once per actor per process lifetime -- so the
+    condition was invisible in metrics and its only trace was a single WARN at
+    onset, which is the moment nobody is looking. An empty dict clears the
+    gauge, so recovery is visible too.
+    """
+    global _stranded_jobs_cache
+    _stranded_jobs_cache = dict(data)
+
+
+def _observe_stranded_jobs(options: CallbackOptions) -> Iterable[Observation]:
+    for actor, count in _stranded_jobs_cache.items():
+        yield Observation(count, {"actor": actor})
+
+
+_stranded_jobs_gauge = get_meter().create_observable_gauge(
+    name="taskq.jobs.stranded",
+    description=(
+        "Pending/scheduled jobs whose actor has no actor_config row and which "
+        "therefore can never be dispatched, sampled by the leader."
+    ),
+    unit="1",
+    callbacks=[_observe_stranded_jobs],
+)
+
+
 _reservation_slots_cache: dict[str, int] = {}
 
 
