@@ -64,6 +64,7 @@ from taskq.obs._otel import (
     update_queue_depth_cache,
     update_reservation_slots_cache,
 )
+from taskq.obs._redact_exc import record_exception_safe, safe_exception_message
 from taskq.obs._structlog import (
     bind_job_context,
     get_logger,
@@ -101,6 +102,7 @@ __all__ = [
     "record_dispatch_duration",
     "record_election_attempt",
     "record_error_reporter_failure",
+    "record_exception_safe",
     "record_expired_archive_jobs",
     "record_heartbeat_miss",
     "record_lock_expires_in_seconds",
@@ -110,6 +112,7 @@ __all__ = [
     "record_published_message",
     "record_ratelimit_refund_failure",
     "redact_payload",
+    "safe_exception_message",
     "safe_start_span",
     "set_otel_enabled",
     "setup_logging",

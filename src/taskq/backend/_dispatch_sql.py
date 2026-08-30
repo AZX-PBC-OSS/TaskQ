@@ -27,6 +27,7 @@ from taskq.obs import (
     record_dispatch_duration,
     safe_start_span,
 )
+from taskq.obs._redact_exc import record_exception_safe, safe_exception_message
 
 __all__ = [
     "DISPATCH_ROUND_ROBIN_SQL",
@@ -280,8 +281,13 @@ async def dispatch_batch(
             rows = await conn.fetch(sql, queue_list, limit_n, worker_id, lock_lease, oversample)
             elapsed = time.monotonic() - t0
         except Exception as exc:
-            span.set_status(StatusCode.ERROR, str(exc))
-            span.record_exception(exc)
+            # Why redacted: this text leaves the trust boundary for whatever
+            # telemetry backend is configured. str() of an asyncpg
+            # PostgresError appends the server's DETAIL line, which quotes the
+            # offending row values -- idempotency_key / identity_key /
+            # fairness_key are all caller-supplied.
+            span.set_status(StatusCode.ERROR, safe_exception_message(exc))
+            record_exception_safe(span, exc)
             raise
         returned_count = len(rows)
         span.set_status(StatusCode.OK)
