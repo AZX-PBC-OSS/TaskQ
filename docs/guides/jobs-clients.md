@@ -148,7 +148,7 @@ Serialises the payload through `ref.payload_type`, enqueues the job, and returns
 | `start_to_close` | `timedelta \| None` | `None` | Per-attempt execution timeout measured from when the worker locks the job, enforced via `asyncio.wait_for` around the actor invocation. Distinct from `schedule_to_close` — see [`start_to_close` vs `schedule_to_close`](retries.md#7-start_to_close-vs-schedule_to_close) for the precedence chain and full explanation. |
 | `heartbeat_timeout` | `timedelta \| None` | `None` | Maximum time allowed between heartbeats before the job is considered crashed. |
 | `identity_key` | `IdentityKey \| None` | `None` | Opaque string identifying the logical entity this job belongs to (e.g. `"account:42"`). Required for `unique_for` deduplication to take effect. Also used for fairness scheduling. |
-| `fairness_key` | `str \| None` | `None` | Partitions the dispatch order so no single key monopolises the queue. |
+| `fairness_key` | `str \| None` | `None` | Partitions the dispatch order so no single key monopolises the queue. **Requires the target queue to be in `round_robin` mode** (`taskq queues set-mode <queue> round_robin`); on the default `strict_fifo` the key is stored and ignored. See [workers.md](workers.md#queue-modes). |
 | `idempotency_key` | `IdempotencyKey \| None` | `None` | String preventing duplicate insertion, unique within its `idempotency_scope`. See [Idempotency key](#idempotency_key). |
 | `idempotency_scope` | `str \| None` | `None` | Namespacing scope for `idempotency_key`. `None` or `""` means the global/default scope (preserves prior global-dedupe behavior). An explicit scope (e.g. a run/batch/epoch id) allows the same business key in different scopes to both succeed. ≤ 256 chars. |
 | `trace_id` | `str \| None` | extracted from OTel span | Trace ID for distributed tracing. Automatically extracted from the active OTel span when one is valid; pass explicitly to override. |
@@ -329,7 +329,7 @@ EnqueueItem(
 | `payload` | `BaseModel` | required | Payload instance; validated against `actor_ref.payload_type` before any INSERT. |
 | `scheduled_at` | `datetime \| None` | `None` | Deferred execution time. |
 | `priority` | `int \| None` | `None` | Dispatch priority within the queue. |
-| `fairness_key` | `str \| None` | `None` | Fairness grouping key. |
+| `fairness_key` | `str \| None` | `None` | Fairness grouping key. Only affects dispatch on a `round_robin` queue -- see [workers.md](workers.md#queue-modes). |
 | `idempotency_key` | `IdempotencyKey \| str \| None` | `None` | Per-item idempotency token (≤ 256 chars). |
 | `idempotency_scope` | `str \| None` | `None` | Per-item idempotency scope (≤ 256 chars). `None` or `""` = global/default scope. |
 | `identity_key` | `IdentityKey \| None` | `None` | Opaque identity string; required for `unique_for` dedup to take effect. |

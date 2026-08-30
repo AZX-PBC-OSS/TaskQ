@@ -437,8 +437,8 @@ TASKQ_QUEUES=media taskq worker --actors myapp.actors:registry
 
 For multi-tenant queues, set `round_robin` mode to interleave by `fairness_key` cohort:
 
-```sql
-UPDATE taskq.queues SET mode = 'round_robin' WHERE name = 'multi';
+```bash
+taskq queues set-mode multi round_robin
 ```
 
 See [workers.md — Queue dispatch modes](workers.md#queue-dispatch-modes).
