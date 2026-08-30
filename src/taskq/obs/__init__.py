@@ -64,6 +64,7 @@ from taskq.obs._otel import (
     update_heartbeat_consecutive_failures,
     update_queue_depth_cache,
     update_reservation_slots_cache,
+    update_stranded_jobs_cache,
 )
 from taskq.obs._redact_exc import record_exception_safe, safe_exception_message
 from taskq.obs._structlog import (
@@ -122,4 +123,5 @@ __all__ = [
     "update_heartbeat_consecutive_failures",
     "update_queue_depth_cache",
     "update_reservation_slots_cache",
+    "update_stranded_jobs_cache",
 ]
