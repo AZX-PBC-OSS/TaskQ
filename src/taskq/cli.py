@@ -313,19 +313,21 @@ async def _up(
     target: str | None,
     max_steps: int | None,
 ) -> None:
-    conn = await asyncpg.connect(str(settings.pg_dsn))
-    try:
-        applied = await migrate_mod.apply_pending(
-            conn,
-            schema=settings.schema_name,
-            phase=phase,
-            target=target,
-            max_steps=max_steps,
-        )
-    finally:
-        # Why bounded: same dead-PG wedge risk as _status above (#38
-        # follow-up); terminate-on-timeout, never raises.
-        await close_conn_bounded(conn, "migrate-up", CLOSE_TIMEOUT_SECS)
+    # Why locked: the README names `taskq migrate up` as THE deploy step, and
+    # a container platform will happily start two replicas or retry a failed
+    # job, so "run it once, sequentially" is not something the caller can
+    # guarantee. Unlocked, the loser of a concurrent race against a virgin
+    # schema hits a bare CREATE TABLE (the pre-initial migration has no
+    # IF NOT EXISTS) and crash-loops on DuplicateTableError. apply_pending_locked
+    # serializes on the same advisory lock the admin-UI path already used, and
+    # bounds the wait so a replica cannot hang past its startup probe.
+    applied = await migrate_mod.apply_pending_locked(
+        str(settings.pg_dsn),
+        schema=settings.schema_name,
+        phase=phase,
+        target=target,
+        max_steps=max_steps,
+    )
     if not applied:
         typer.echo("no pending migrations")
         return
