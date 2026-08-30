@@ -75,6 +75,7 @@ import time
 import structlog
 
 from taskq.backend._protocol import BACKEND_PROTOCOL_VERSION, Backend
+from taskq.obs import record_capacity_refresh_failure
 
 __all__ = ["DEFAULT_CAPACITY_CACHE_TTL", "DEFAULT_CAPACITY_READ_TIMEOUT", "ActorCapacityCache"]
 
@@ -143,10 +144,24 @@ class ActorCapacityCache:
                 # caller's literal). Stamping refreshed_at bounds the
                 # retry rate to 1/ttl so a sick backend is not queried
                 # on every enqueue.
+                #
+                # Why a metric and not just this log: a load-shedding gate that
+                # RELAXES precisely when the backend is degraded needs a signal
+                # an operator can alert on. `has_snapshot=False` is the
+                # materially worse case -- the first refresh at process start
+                # failed, so there is no stored data at all and every enqueue
+                # enforces the @actor literal instead of the operator's
+                # tightened max_pending, for a full TTL at a time, indefinitely
+                # while the backend stays sick.
+                has_snapshot = bool(self._rows)
+                record_capacity_refresh_failure(has_snapshot=has_snapshot)
                 logger.warning(
                     "actor-capacity-cache-refresh-failed",
                     error_class=type(exc).__name__,
                     error=str(exc),
+                    has_snapshot=has_snapshot,
+                    degraded_to_literal=not has_snapshot,
+                    ttl_seconds=self._ttl,
                 )
             else:
                 if epoch == self._epoch:
