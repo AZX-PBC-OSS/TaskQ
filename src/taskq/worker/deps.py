@@ -938,17 +938,35 @@ def _terminate_conn_background(conn: asyncpg.Connection, label: str) -> None:
 
 
 def _drain_old_redis(client: object, drain_timeout: float) -> None:
-    """Close an old Redis client in the background."""
+    """Close an old Redis client in the background, bounded.
+
+    Delegates to :func:`taskq._close.close_redis_bounded` rather than
+    hand-rolling a close. The previous implementation retried ``aclose()``
+    with no bound after the bounded attempt had already timed out:
+
+        except TimeoutError:
+            logger.warning("redis-drain-timeout", ...)
+            with suppress(Exception):
+                await client.aclose()      # unbounded
+
+    ``suppress`` catches exceptions; it cannot stop a call that never returns.
+    The first ``aclose()`` times out precisely BECAUSE the socket is wedged --
+    an Azure Cache failover mid-rotation leaves a half-dead connection -- so
+    the retry hangs on exactly the condition that caused the timeout. Because
+    the task is fire-and-forget in a module-level set, that leaked one task
+    plus one unclosed socket per credential rotation for the life of the
+    process. A slow leak rather than a hang: it never blocked the reload or
+    shutdown, which is what kept it invisible.
+
+    The two sibling drains, ``_drain_old_pool`` and ``_drain_old_conn``, are
+    also hand-rolled but call ``terminate()`` on timeout, which is bounded and
+    non-blocking. Redis has no ``terminate()`` equivalent, which is why a retry
+    was reached for here; the correct answer is to give up, which is what
+    ``close_redis_bounded`` does.
+    """
 
     async def _close() -> None:
-        try:
-            await asyncio.wait_for(client.aclose(), timeout=drain_timeout)  # type: ignore[attr-defined]  # Why: redis-py Redis exposes aclose(); object erasure boundary.
-        except TimeoutError:
-            logger.warning("redis-drain-timeout", drain_timeout=drain_timeout)
-            with suppress(Exception):
-                await client.aclose()  # type: ignore[attr-defined]
-        except Exception as exc:
-            logger.warning("redis-drain-error", error=repr(exc))
+        await close_redis_bounded(client, "reload-drain", drain_timeout)  # type: ignore[arg-type]  # Why: object erasure boundary; redis-py Redis satisfies the _AsyncCloseable protocol at runtime.
 
     _t = asyncio.create_task(_close())
     _drain_tasks.add(_t)
