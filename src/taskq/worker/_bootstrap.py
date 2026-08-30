@@ -20,6 +20,7 @@ from typing import Any, cast
 import asyncpg
 import structlog
 
+from taskq._close import worst_case_teardown_tail
 from taskq._di import ProviderRegistry, Scope
 from taskq._di.scopes import LoopScope, ProcessScope, ThreadScope, make_resolver
 from taskq._dsn import dsn_host as _dsn_host
@@ -376,6 +377,31 @@ async def _main(
     orchestrator_holder: list[asyncio.Task[int]] = []
 
     _producer_log = structlog.get_logger("taskq.worker.run.producer")
+
+    # Why: the bounded-close tail is additive on top of the shutdown phase
+    # graces and is not modelled by the settings validator (which cannot
+    # reject this without refusing TaskQ's own defaults -- see
+    # WorkerSettings.worst_case_shutdown_seconds). Left unsurfaced, the
+    # first symptom is a SIGKILL mid-unwind during an incident, with
+    # terminal writes truncated and jobs recovered later by crash reclaim
+    # instead of finalizing cleanly. Warn once at startup, with the numbers
+    # an operator needs to size the pod grace.
+    if not settings.shutdown_budget_is_sufficient:
+        _startup_log.warning(
+            "shutdown-budget-exceeds-termination-grace",
+            worst_case_seconds=settings.worst_case_shutdown_seconds,
+            termination_grace_period=settings.termination_grace_period,
+            cancellation_grace_period=settings.cancellation_grace_period,
+            cleanup_grace_period=settings.cleanup_grace_period,
+            close_tail_seconds=worst_case_teardown_tail(),
+            remedy=(
+                "Set the pod/container termination grace to at least "
+                f"{settings.worst_case_shutdown_seconds}s (Kubernetes "
+                "terminationGracePeriodSeconds, Azure Container Apps "
+                "terminationGracePeriodSeconds), or lower "
+                "TASKQ_CANCELLATION_GRACE_PERIOD / TASKQ_CLEANUP_GRACE_PERIOD."
+            ),
+        )
 
     async with open_worker_deps(settings, connections=connections) as deps:
         # ── until_idle override resolution ──────────────────────────────

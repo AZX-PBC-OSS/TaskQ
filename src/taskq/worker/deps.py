@@ -22,6 +22,7 @@ import structlog
 
 from taskq._close import (
     CLOSE_TIMEOUT_SECS,
+    PUBLISH_DRAIN_TIMEOUT_SECS,
     close_conn_bounded,
     close_pool_bounded,
     close_redis_bounded,
@@ -567,7 +568,9 @@ async def open_worker_deps(
                 """Give in-flight fire-and-forget progress publishes a bounded
                 window to finish before the Redis client closes underneath them."""
                 if deps.pending_publish_tasks:
-                    await asyncio.wait(deps.pending_publish_tasks, timeout=2.0)
+                    await asyncio.wait(
+                        deps.pending_publish_tasks, timeout=PUBLISH_DRAIN_TIMEOUT_SECS
+                    )
 
             stack.push_async_callback(_drain_pending_publishes)
 

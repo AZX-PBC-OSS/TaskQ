@@ -278,12 +278,38 @@ See [configuration.md](configuration.md#production-example-env) for the full set
 
 Add a `PodDisruptionBudget` (`minAvailable: 1`, selector matching `app: taskq-worker`) to prevent voluntary evictions from taking all workers offline during node drains.
 
-!!! tip "terminationGracePeriodSeconds"
-    Set this above `TASKQ_TERMINATION_GRACE_PERIOD`. The Kubernetes default is
-    30s, but TaskQ's default grace period is 60s. If the kubelet SIGKILLs
-    before the worker finishes DRAINING → CANCELLING → FORCING → ABANDONING,
-    in-flight jobs are left `running` and reclaimed by the leader's sweep
-    after `lock_lease` expires.
+!!! warning "terminationGracePeriodSeconds"
+    Setting this just above `TASKQ_TERMINATION_GRACE_PERIOD` is **not enough**,
+    and is the sizing mistake most likely to bite you.
+
+    The shutdown phases (DRAINING → CANCELLING → FORCING → ABANDONING) are
+    bounded by `TASKQ_CANCELLATION_GRACE_PERIOD` + `TASKQ_CLEANUP_GRACE_PERIOD`,
+    but the bounded-close tail that unwinds *after* them is **additive** and is
+    not covered by `TASKQ_TERMINATION_GRACE_PERIOD`. Against a dead or hung
+    Postgres/Redis — an Azure Cache failover, or a token expiry dropping every
+    connection, i.e. exactly when you are being SIGTERMed — each of the 5
+    sequential bounded closes can take `CLOSE_TIMEOUT_SECS` (5s), plus a 2s
+    progress-publish drain: **27s of tail**.
+
+    Size the pod grace from the whole budget:
+
+    ```
+    terminationGracePeriodSeconds
+        >= TASKQ_CANCELLATION_GRACE_PERIOD
+         + TASKQ_CLEANUP_GRACE_PERIOD
+         + 27      # 5 bounded closes x 5s + 2s publish drain
+    ```
+
+    At TaskQ's defaults (60 / 30 / 10) the modelled worst case is **67s**, so
+    `terminationGracePeriodSeconds: 95` is a safe value at defaults — not the
+    `60`-ish the old advice implied. The worker logs
+    `shutdown-budget-exceeds-termination-grace` at startup, with the computed
+    number, whenever the configured budget does not cover it.
+
+    If the kubelet SIGKILLs mid-unwind, in-flight `write_cancel_escalation` /
+    `mark_abandoned` terminal writes may not land; those jobs are left `running`
+    and recovered later by the leader's crash-reclaim sweep after `lock_lease`
+    expires, rather than finalizing cleanly.
 
 ---
 
@@ -343,6 +369,8 @@ The admin UI service follows the same pattern with `command: ["taskq", "ui", "se
 !!! warning "stop_grace_period must exceed termination_grace_period"
     Docker's `stop_grace_period` (default 10s) controls how long Compose waits
     between SIGTERM and SIGKILL. Set it above `TASKQ_TERMINATION_GRACE_PERIOD`
+    **plus the ~27s bounded-close tail** (see the terminationGracePeriodSeconds
+    warning above)
     so the worker can complete its shutdown sequence.
 
 ---

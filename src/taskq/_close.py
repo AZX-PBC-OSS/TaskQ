@@ -19,22 +19,56 @@ if TYPE_CHECKING:
 
 __all__ = [
     "CLOSE_TIMEOUT_SECS",
+    "PUBLISH_DRAIN_TIMEOUT_SECS",
     "close_conn_bounded",
     "close_pool_bounded",
     "close_redis_bounded",
+    "worst_case_teardown_tail",
 ]
 
 logger = get_logger(__name__)
 
 # Bounds every TaskQ-initiated graceful close (pools, dedicated conns,
 # redis) on teardown AND mid-run error paths. The bound is PER-RESOURCE and
-# exit stacks unwind SEQUENTIALLY, so the worst-case teardown tail is
-# 6 closes x 5s + 2s publish drain ≈ 32s against a fully dead PG/Redis.
-# Stacked on the shutdown phase graces that can exceed a 60s Kubernetes
-# terminationGracePeriodSeconds, and the settings validator's grace margin
-# does not account for this tail — size pod grace budgets accordingly (or
-# derive the bound from the grace budget in future).
+# exit stacks unwind SEQUENTIALLY, so the per-resource bound multiplies.
+# See worst_case_teardown_tail() below for the modelled total and for why
+# it is additive on top of the shutdown phase graces rather than inside
+# them. WorkerSettings surfaces the consequence at startup
+# (`shutdown-budget-exceeds-termination-grace`).
 CLOSE_TIMEOUT_SECS: float = 5.0
+
+# Bounded closes that unwind SEQUENTIALLY on the worker's AsyncExitStack:
+# 3 pools (dispatcher, heartbeat, worker) + notify_conn + redis_client.
+#
+# The leader connection is deliberately NOT counted. orchestrate_shutdown
+# closes and nulls it before the stack unwinds, so the stack's own
+# leader guard sees None and skips -- and that close runs CONCURRENTLY
+# with the unwind rather than before it, because the orchestrator task is
+# awaited outside the `async with open_worker_deps` block. Counting it
+# would overstate the SIGTERM tail by one close.
+_SEQUENTIAL_BOUNDED_CLOSES: int = 5
+
+# Bound on the trailing progress-publish drain (asyncio.wait timeout in the
+# worker's teardown callback). Additive on top of the closes above.
+PUBLISH_DRAIN_TIMEOUT_SECS: float = 2.0
+
+
+def worst_case_teardown_tail(close_timeout: float = CLOSE_TIMEOUT_SECS) -> float:
+    """Modelled worst-case teardown tail, in seconds, against a dead backend.
+
+    This tail is strictly ADDITIVE on top of the shutdown phase graces
+    (``cancellation_grace_period`` + ``cleanup_grace_period``): the phases
+    run inside the worker's ``open_worker_deps`` context, and this tail is
+    the exit-stack unwind that happens after they finish. A deployment
+    whose pod grace is sized only from ``termination_grace_period`` is
+    therefore under-provisioned by this amount, and gets SIGKILLed
+    mid-unwind -- truncating in-flight terminal writes so those jobs are
+    recovered later by crash reclaim instead of finalizing cleanly.
+
+    Only reachable against a genuinely dead or hung Postgres/Redis; every
+    close returns promptly in the normal case.
+    """
+    return _SEQUENTIAL_BOUNDED_CLOSES * close_timeout + PUBLISH_DRAIN_TIMEOUT_SECS
 
 
 async def close_pool_bounded(pool: "asyncpg.Pool", label: str, close_timeout: float) -> None:
