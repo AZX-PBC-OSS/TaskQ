@@ -137,7 +137,23 @@ PROGRESS_CHANNEL_FMT: Final[str] = "taskq:{schema}:progress:{job_id}"
 PROGRESS_GLOBAL_CHANNEL_FMT: Final[str] = "taskq:{schema}:progress"
 """Format template for the schema-wide progress fanout channel."""
 
-_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_IDENT_RE = re.compile(r"\A[A-Za-z_][A-Za-z0-9_]*\Z")
+r"""SQL identifier validator (schema names, table/column names).
+
+``\A``/``\Z``, not ``^``/``$``: Python's ``$`` also matches immediately BEFORE
+a trailing newline, so ``"taskq\n"`` satisfied ``^...$`` and passed validation.
+Only a single trailing newline slipped through -- ``"taskq\nDROP TABLE x"`` was
+always rejected, because the rest of the string still has to match the charset,
+which admits no whitespace.
+
+Not an injection path, and it was not one before: every interpolation site
+double-quotes the validated value, and a newline is legal inside a quoted
+identifier, so ``"taskq\n"`` would address a schema literally named
+``taskq<newline>`` rather than escaping the quotes. The value of the fix is that
+this is the canonical identifier validator reused across a dozen modules (and
+re-implemented by at least one downstream consumer), so it should mean exactly
+what it appears to mean.
+"""
 
 _KEYED_KEY_RE = re.compile(r"^[A-Za-z0-9_\-:.]+$")
 """Character set for keyed-ref name components (``base_name`` and ``key``).
