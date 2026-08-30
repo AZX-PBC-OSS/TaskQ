@@ -86,8 +86,10 @@ taskq ui serve
 # WARNING log: admin-ui-no-auth — but server starts
 ```
 
-Dev environments (`TASKQ_ENVIRONMENT=dev` or `development`) bypass the check
-entirely — no `RuntimeError`, no warning. Use this only in local development:
+Dev environments (`TASKQ_ENVIRONMENT=dev` or `development`) bypass the
+`RuntimeError`, but still log the `admin-ui-no-auth` warning — that is the
+configuration actually serving an unauthenticated admin UI, so it is the one
+that most needs the signal. Use this only in local development:
 
 ```sh
 TASKQ_ENVIRONMENT=development taskq ui serve

@@ -233,12 +233,16 @@ def test_warning_no_auth_non_dev_env(monkeypatch: pytest.MonkeyPatch) -> None:
     assert len(warnings) >= 1
 
 
-# ── no WARNING when no auth in dev environment ─────────────────
+# ── WARNING when no auth in dev environment ────────────────────
 
 
-def test_no_warning_in_dev_env(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_warning_in_dev_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Set TASKQ_ENVIRONMENT=dev; call create_router(mock_pool,
-    auth_dependency=None); no 'admin-ui-no-auth' WARNING emitted."""
+    auth_dependency=None); 'admin-ui-no-auth' WARNING emitted.
+
+    The dev path is the one that genuinely serves an unauthenticated admin UI,
+    so the warning must not be scoped to non-dev.
+    """
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
     pool = _StubPool()
 
@@ -251,7 +255,7 @@ def test_no_warning_in_dev_env(monkeypatch: pytest.MonkeyPatch) -> None:
         )
 
     warnings = [e for e in captured if e.get("event") == "admin-ui-no-auth"]
-    assert len(warnings) == 0
+    assert len(warnings) == 1
 
 
 # ── SSE 429 on concurrency exhaustion ──────────────────────────
