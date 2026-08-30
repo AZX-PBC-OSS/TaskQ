@@ -171,6 +171,47 @@ def record_backpressure_error(actor: str, *, kind: str = "max_pending") -> None:
         _log.warning("otel-metric-record-failed", instrument_name="taskq.backpressure.errors")
 
 
+_capacity_refresh_failures = get_meter().create_counter(
+    "taskq.backpressure.capacity_refresh_failures",
+    description=(
+        "Failed refreshes of the enqueue-side actor_config capacity cache. "
+        "Attributes: degraded ('stale_snapshot' when a previous snapshot is "
+        "still being served, 'no_snapshot' when the cache never loaded and "
+        "every enqueue is falling back to the @actor literal)."
+    ),
+    unit="1",
+)
+
+
+def record_capacity_refresh_failure(*, has_snapshot: bool) -> None:
+    """Count a failed capacity-cache refresh.
+
+    The cache fails OPEN by design -- it keeps the last snapshot, or falls back
+    to the ``@actor`` literal, and stamps ``refreshed_at`` so a sick backend is
+    not re-queried on every enqueue. That reasoning is sound; the problem was
+    that a load-shedding gate which relaxes precisely when the backend is
+    degraded had no signal an operator could alert on, only a warning log.
+
+    ``has_snapshot=False`` is the materially worse case: the first refresh at
+    process start failed, so there is no stored data at all and every enqueue
+    enforces the code literal rather than the operator's tightened
+    ``max_pending`` -- for a full TTL at a time, indefinitely while the backend
+    stays sick.
+
+    Unconditional (not gated by ``_otel_enabled``) for the same reason as
+    ``record_backpressure_error``: this is a safety-critical signal.
+    """
+    try:
+        _capacity_refresh_failures.add(
+            1, {"degraded": "stale_snapshot" if has_snapshot else "no_snapshot"}
+        )
+    except Exception:
+        _log.warning(
+            "otel-metric-record-failed",
+            instrument_name="taskq.backpressure.capacity_refresh_failures",
+        )
+
+
 _deadline_exceeded_sweep_jobs_failed = get_meter().create_counter(
     "taskq.deadline_exceeded_sweep.jobs_failed",
     description="Jobs transitioned to failed by the deadline-exceeded sweep, labeled by actor.",
