@@ -27,6 +27,7 @@ Design notes
   subscriptions.
 """
 
+import asyncio
 import contextlib
 from collections.abc import AsyncGenerator, Callable
 from datetime import timedelta
@@ -35,7 +36,7 @@ from uuid import UUID
 
 import asyncpg
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from sse_starlette.event import ServerSentEvent
 from sse_starlette.sse import EventSourceResponse
@@ -48,6 +49,8 @@ from taskq.constants import (
     progress_channel,
 )
 from taskq.progress._events import ProgressEvent
+from taskq.settings import TaskQSettings
+from taskq.web._sse_limit import acquire_sse_slot
 
 logger = structlog.get_logger("taskq.web.progress")
 
@@ -141,6 +144,7 @@ async def _event_generator(
     progress_data: str,
     resolved_last_event_id: int | None,
     heartbeat_secs: float,
+    sse_slot_semaphore: asyncio.Semaphore | None = None,
 ) -> AsyncGenerator[ServerSentEvent, None]:
     """Yield SSE events from Redis pub/sub after the initial PG snapshot.
 
@@ -226,6 +230,12 @@ async def _event_generator(
             )
 
     finally:
+        # Released here, not in the route handler: the slot is held for the
+        # LIFE of the stream, and a client disconnect arrives as CancelledError
+        # thrown into this generator. Releasing in the handler would free the
+        # slot the instant the response was constructed, making the cap a no-op.
+        if sse_slot_semaphore is not None:
+            sse_slot_semaphore.release()
         # always release the Redis subscription; errors here
         # must not mask the primary exception.
         with contextlib.suppress(Exception):
@@ -249,6 +259,7 @@ def create_router(
     schema: str = "taskq",
     auth_dependency: Callable[..., Any] | None = None,
     sse_heartbeat_interval: timedelta = timedelta(seconds=15),
+    max_sse_connections: int | None = None,
 ) -> APIRouter:
     """Return a FastAPI ``APIRouter`` exposing the SSE progress bridge.
 
@@ -272,6 +283,15 @@ def create_router(
         ``taskq.web.admin.create_router``).
     sse_heartbeat_interval:
         Cadence for ``': keepalive'`` SSE comments (default 15 s).
+    max_sse_connections:
+        Maximum concurrent progress streams this process will serve; further
+        connections get HTTP 429. Defaults to
+        ``TASKQ_PROGRESS_MAX_SSE_CONNECTIONS`` (50). Each stream holds a Redis
+        pubsub subscription and an asyncio task for as long as the client stays
+        connected, so an uncapped endpoint lets any principal who can reach the
+        route exhaust Redis connections, event-loop tasks and file descriptors
+        on the app hosting the pipeline. The admin ``/sse/{topic}`` endpoint has
+        had such a cap; this one did not.
     """
     if not _IDENT_RE.match(schema):
         raise ValueError(f"invalid schema identifier: {schema!r}")
@@ -286,6 +306,9 @@ def create_router(
     _redis_client = redis_client
     _pg_pool = pg_pool
     _heartbeat_secs = sse_heartbeat_interval.total_seconds()
+    if max_sse_connections is None:
+        max_sse_connections = TaskQSettings.load().progress_max_sse_connections
+    _max_sse = max_sse_connections
     _progress_sql = _PROGRESS_SQL.format(schema=_schema)
 
     # ----------------------------------------------------------------
@@ -300,7 +323,7 @@ def create_router(
         job_id: UUID,
         request: Request,
         last_event_id: int | None = None,
-    ) -> EventSourceResponse:
+    ) -> Response:
         """Stream progress events for a job via SSE.
 
         On initial connection (no ``last_event_id`` / ``Last-Event-ID``
@@ -320,6 +343,44 @@ def create_router(
                 headers={"Retry-After": "2"},
             )
 
+        # Why here: after the cheap 503 guard (so an unconfigured Redis does
+        # not consume a slot) and before any pubsub subscription is created,
+        # so a rejected connection allocates nothing.
+        sse_slot_semaphore = await acquire_sse_slot("progress-stream", _max_sse)
+        # The slot is held for the LIFE of the stream, so ownership transfers
+        # to the generator on the success path only. Every early exit below
+        # (503 subscribe failure, PG error, 404 job not found) has to give it
+        # back -- otherwise a run of requests for missing jobs would exhaust
+        # the cap without a single stream ever opening. Idempotent so the
+        # generator's own release can never double-release.
+        _slot_released = False
+
+        def _release_slot() -> None:
+            nonlocal _slot_released
+            if not _slot_released:
+                _slot_released = True
+                sse_slot_semaphore.release()
+
+        try:
+            return await _serve_progress_stream(
+                job_id=job_id,
+                request=request,
+                last_event_id=last_event_id,
+                sse_slot_semaphore=sse_slot_semaphore,
+                release_slot=_release_slot,
+            )
+        except BaseException:
+            _release_slot()
+            raise
+
+    async def _serve_progress_stream(  # pyright: ignore[reportUnusedFunction]  # Why: called by progress_stream above; not a route.
+        *,
+        job_id: UUID,
+        request: Request,
+        last_event_id: int | None,
+        sse_slot_semaphore: asyncio.Semaphore,
+        release_slot: Callable[[], None],
+    ) -> Response:
         resolved_last_event_id = _resolve_last_event_id(request, last_event_id)
         channel = progress_channel(_schema, job_id)
 
@@ -346,7 +407,8 @@ def create_router(
             # helper never raises (suppress dropped), hung broker cannot
             # wedge the 503 path.
             await close_redis_bounded(pubsub, "web-progress", CLOSE_TIMEOUT_SECS)
-            return JSONResponse(  # pyright: ignore[reportReturnType]  # Why: FastAPI accepts any Response subclass here; JSONResponse is returned for the 503 before SSE upgrade.
+            release_slot()
+            return JSONResponse(
                 status_code=503,
                 content=_REDIS_503_BODY,
                 headers={"Retry-After": "2"},
@@ -398,6 +460,7 @@ def create_router(
                 progress_seq=progress_seq,
                 progress_data=progress_data,
                 resolved_last_event_id=resolved_last_event_id,
+                sse_slot_semaphore=sse_slot_semaphore,
                 heartbeat_secs=_heartbeat_secs,
             ),
             headers=_SSE_HEADERS,

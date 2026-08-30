@@ -168,6 +168,15 @@ class TaskQSettings(DotEnvConfig):
         "connections the admin UI will serve. Used to size the connection-limit "
         "semaphore.",
     )
+    progress_max_sse_connections: int = Field(
+        default=50,
+        ge=1,
+        description="TASKQ_PROGRESS_MAX_SSE_CONNECTIONS. Maximum concurrent "
+        "per-job progress SSE streams this process will serve. Each holds a "
+        "Redis pubsub subscription and an asyncio task for as long as the "
+        "client stays connected, so an uncapped endpoint is a resource-"
+        "exhaustion surface on the app hosting the pipeline.",
+    )
     admin_host: str = Field(
         default="0.0.0.0",  # noqa: S104  # Why: default bind address for the admin UI server; production deployments override via TASKQ_ADMIN_HOST env var.
         description="TASKQ_ADMIN_HOST. Bind address for ``taskq ui serve``.",

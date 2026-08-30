@@ -17,6 +17,7 @@ from jinja2 import Environment
 from taskq.backend._protocol import Backend, JobId
 from taskq.constants import events_channel
 from taskq.settings import TaskQSettings
+from taskq.web._sse_limit import acquire_sse_slot
 from taskq.web.admin._constants import (
     _ACTIVE_STATUSES,  # pyright: ignore[reportPrivateUsage]  # Why: shared constants published by the admin constants module; private prefix scopes them within the admin package.
     _ALL_STATUSES,  # pyright: ignore[reportPrivateUsage]  # Why: shared constants published by the admin constants module; private prefix scopes them within the admin package.
@@ -441,19 +442,32 @@ def register(router: APIRouter) -> None:
         request: Request,
         pool: asyncpg.Pool = Depends(get_pg_pool),
         schema: str = Depends(get_schema),
+        settings: TaskQSettings = Depends(get_settings),
     ) -> StreamingResponse:
         channel = events_channel(schema)
+        # Why capped here rather than in admin/sse.py: this endpoint lives in
+        # jobs.py and never went through the `/sse/{topic}` handler, so the
+        # `admin_max_sse_connections` semaphore that endpoint applies has never
+        # covered it. Each connection holds a PG LISTEN connection and an
+        # asyncio task for as long as the client stays open.
+        semaphore = await acquire_sse_slot("admin-jobs-live", settings.admin_max_sse_connections)
 
         async def event_stream() -> AsyncGenerator[str, None]:
             from taskq.web.admin._listen import listen_with_reconnect
 
-            async for payload in listen_with_reconnect(pool, channel):
-                if await request.is_disconnected():
-                    return
-                if payload is None:
-                    yield ": keepalive\n\n"
-                else:
-                    yield f"event: state_change\ndata: {payload}\n\n"
+            try:
+                async for payload in listen_with_reconnect(pool, channel):
+                    if await request.is_disconnected():
+                        return
+                    if payload is None:
+                        yield ": keepalive\n\n"
+                    else:
+                        yield f"event: state_change\ndata: {payload}\n\n"
+            finally:
+                # In the generator, not the handler: the slot is held for the
+                # life of the stream, and a disconnect arrives as
+                # CancelledError thrown in here.
+                semaphore.release()
 
         return StreamingResponse(
             event_stream(),
