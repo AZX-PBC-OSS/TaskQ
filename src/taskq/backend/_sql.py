@@ -39,6 +39,24 @@ INSERT INTO "{schema}".job_events
 (job_id, occurred_at, kind, detail)
 VALUES ($1, clock_timestamp(), $2, $3::jsonb)"""
 
+# Multi-row form of INSERT_EVENT_SQL for the dispatch path.
+#
+# Dispatch previously issued one awaited round trip per dispatched job, inside
+# the transaction still holding the FOR UPDATE SKIP LOCKED row locks. At a batch
+# of 50 against a managed Postgres (~1-3ms RTT) that is 50-150ms of extra
+# transaction hold per dispatch cycle, per worker -- lock hold time that
+# directly narrows the window other dispatchers can work in.
+#
+# Every row in one dispatch batch shares `kind` and `detail` (same from_state,
+# to_state and worker_id), so only the job ids vary and a single unnest over a
+# uuid[] suffices. `clock_timestamp()` is still evaluated per row, matching the
+# per-statement behaviour it replaces.
+INSERT_EVENTS_BATCH_SQL = """\
+INSERT INTO "{schema}".job_events
+(job_id, occurred_at, kind, detail)
+SELECT t.id, clock_timestamp(), $2, $3::jsonb
+FROM unnest($1::uuid[]) AS t(id)"""
+
 POLL_CANCEL_FLAGS_SQL = """\
 SELECT id, cancel_phase
 FROM "{schema}".jobs

@@ -51,7 +51,7 @@ async def _dispatch_batch(
     emitted here to make the mode selection observable when queues are
     mixed unintentionally.
     """
-    event_sql = sql.insert_event
+    event_sql = sql.insert_events_batch
     async with dispatcher_pool.acquire() as conn:
         async with conn.transaction():
             queue_modes = await _resolve_queue_modes(conn, queues, schema)
@@ -76,10 +76,14 @@ async def _dispatch_batch(
                 lock_lease=lock_lease,
                 oversample=dispatch_oversample,
             )
-            for rec in records:
+            if records:
+                # One statement, not one per job. This runs inside the
+                # transaction still holding the dispatch row locks, so each
+                # extra round trip is lock hold time; every row here shares
+                # `kind` and `detail`, so only the ids vary.
                 await conn.execute(
                     event_sql,
-                    rec["id"],
+                    [rec["id"] for rec in records],
                     "state_change",
                     jsonb_param(
                         {
