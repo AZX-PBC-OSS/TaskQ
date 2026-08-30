@@ -30,6 +30,7 @@ from taskq.cron import (
 from taskq.obs import (
     get_logger,
     record_cron_failure,
+    record_cron_lock_contention,
     record_published_message,
     safe_start_span,
     update_disabled_schedules_count,
@@ -79,6 +80,24 @@ async def tick_cron(
         CRON_LOCK_NAME,
     )
     if not lock_acquired:
+        # Why observable: this branch is benign for the sub-second leader
+        # handover it exists to cover, but it is indistinguishable from total
+        # cron failure. The lock is transaction-scoped and releases on
+        # COMMIT/ROLLBACK -- which never happens if the holding session was
+        # partitioned without a FIN (a VNet blip, as opposed to a process kill,
+        # which sends a FIN and releases cleanly). Every subsequent tick then
+        # returns here, cron stops firing fleet-wide, and neither
+        # `taskq.cron.disabled_schedules` nor `consecutive_failures` moves,
+        # because fire_schedule never runs. Silence made that state invisible.
+        # The stall is bounded by the server reaping the dead backend
+        # (tcp_keepalives_*), not unbounded -- minutes, not forever.
+        record_cron_lock_contention(str(worker_id))
+        log.debug(
+            "cron-tick-lock-contended",
+            kind="cron_tick_lock_contended",
+            worker_id=str(worker_id),
+            lock=CRON_LOCK_NAME,
+        )
         return
 
     _cron_tick_sql = (

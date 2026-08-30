@@ -439,6 +439,32 @@ _cron_consecutive_failures = get_meter().create_up_down_counter(
 )
 
 
+_cron_lock_contention = get_meter().create_counter(
+    "taskq.cron.lock_contention",
+    unit="1",
+    description=(
+        "Cron ticks that returned without firing because another session held "
+        "the cron advisory lock."
+    ),
+)
+
+
+def record_cron_lock_contention(worker_id: str) -> None:
+    """Count a cron tick skipped because the advisory lock was held.
+
+    A steady low rate is the benign leader-handover overlap. A rate equal to
+    the tick rate, sustained, means cron is not running anywhere: the lock is
+    transaction-scoped and releases on COMMIT/ROLLBACK, which never happens if
+    the holding session was partitioned without a FIN. Before this counter the
+    two were indistinguishable, because the contended branch returned in
+    silence.
+    Respects ``_otel_enabled`` -- no-op when False.
+    """
+    if not _otel_enabled:
+        return
+    _cron_lock_contention.add(1, {"worker_id": worker_id})
+
+
 def record_cron_failure(schedule_id: str, delta: int) -> None:
     """Record a cron failure delta on the UpDownCounter.
 
