@@ -192,12 +192,14 @@ orders candidates. The mode is resolved by querying the `queues` table at dispat
 
 **Setting a queue's mode:**
 
-```sql
-UPDATE taskq.queues SET mode = 'round_robin' WHERE name = 'multi';
+```bash
+taskq queues set-mode multi round_robin
 ```
 
-The change takes effect on the next worker restart. Queues not present in the table
-default to `strict_fifo`.
+The change takes effect on the next dispatch cycle -- no worker restart needed
+(`_resolve_queue_modes` re-reads the table every dispatch batch). Queues with no
+row default to `strict_fifo`, and nothing in TaskQ creates rows, so a queue is
+`strict_fifo` until you run this command.
 
 **`fairness_key` and `round_robin`:** Actors declare a `fairness_key` callable to
 assign jobs to cohorts. Without one, all jobs collapse into a single `__null__` cohort

@@ -42,6 +42,14 @@ from taskq.actor_config_ops import (
 from taskq.exceptions import ActorConfigDriftList, ActorDeregistrationError, ActorNotFoundError
 from taskq.settings import TaskQSettings, WorkerSettings
 from taskq.worker.dev import dev_watch_loop
+from taskq.worker.queue_ops import (
+    QUEUE_MODES,
+    QueueRow,
+    get_queue,
+    list_queues,
+    set_queue_max_concurrent,
+    set_queue_mode,
+)
 from taskq.worker.run import worker_main as _worker_main
 
 logger: structlog.stdlib.BoundLogger = structlog.get_logger("taskq.cli")
@@ -74,6 +82,12 @@ actor_config_app = typer.Typer(
     help="Inspect and tune stored actor_config capacity fields on a live deployment.",
 )
 app.add_typer(actor_config_app, name="actor-config")
+
+queues_app = typer.Typer(
+    no_args_is_help=True,
+    help="Inspect and configure queue dispatch mode and per-queue concurrency caps.",
+)
+app.add_typer(queues_app, name="queues")
 
 
 def _load_actor_registry(actors: str) -> Mapping[str, ActorRef[Any, Any]]:
@@ -1210,3 +1224,133 @@ def workgroup_validate(
 
 if __name__ == "__main__":
     main()
+
+
+# ── queues ─────────────────────────────────────────────────────────────
+
+
+def _print_queue_row(row: QueueRow) -> None:
+    cap = "unlimited" if row.max_concurrent is None else str(row.max_concurrent)
+    typer.echo(f"{row.name}  mode={row.mode}  max_concurrent={cap}")
+
+
+@queues_app.command("list")
+def queues_list() -> None:
+    """List every configured queue row.
+
+    Queues absent from this list are not missing -- queues are implicit and
+    are created by enqueueing onto them. An absent queue runs on the
+    defaults: strict_fifo ordering (so `fairness_key` has no effect) and no
+    concurrency cap.
+    """
+    settings = TaskQSettings.load()
+    asyncio.run(_queues_list(settings))
+
+
+async def _queues_list(settings: TaskQSettings) -> None:
+    conn = await asyncpg.connect(str(settings.pg_dsn))
+    try:
+        rows = await list_queues(conn, schema=settings.schema_name)
+    finally:
+        await conn.close()
+    if not rows:
+        typer.echo(
+            "no configured queues (all queues run on defaults: "
+            "mode=strict_fifo, max_concurrent=unlimited)"
+        )
+        return
+    for row in rows:
+        _print_queue_row(row)
+
+
+@queues_app.command("get")
+def queues_get(
+    name: Annotated[str, typer.Argument(help="Queue name.")],
+) -> None:
+    """Show one queue's stored configuration."""
+    settings = TaskQSettings.load()
+    asyncio.run(_queues_get(settings, name))
+
+
+async def _queues_get(settings: TaskQSettings, name: str) -> None:
+    conn = await asyncpg.connect(str(settings.pg_dsn))
+    try:
+        row = await get_queue(conn, name, schema=settings.schema_name)
+    finally:
+        await conn.close()
+    if row is None:
+        typer.echo(
+            f"queue {name!r} has no stored row; it runs on defaults "
+            "(mode=strict_fifo, max_concurrent=unlimited). "
+            "fairness_key has NO effect on a strict_fifo queue."
+        )
+        return
+    _print_queue_row(row)
+
+
+@queues_app.command("set-mode")
+def queues_set_mode(
+    name: Annotated[str, typer.Argument(help="Queue name.")],
+    mode: Annotated[
+        str,
+        typer.Argument(help=f"Dispatch ordering mode. One of: {', '.join(QUEUE_MODES)}."),
+    ],
+) -> None:
+    """Set a queue's dispatch ordering mode, creating the row if needed.
+
+    `round_robin` is what makes `fairness_key` do anything: on the default
+    `strict_fifo` the key is accepted, stored, and ignored. Takes effect on
+    the next dispatch cycle -- no worker restart.
+    """
+    settings = TaskQSettings.load()
+    asyncio.run(_queues_set_mode(settings, name, mode))
+
+
+async def _queues_set_mode(settings: TaskQSettings, name: str, mode: str) -> None:
+    conn = await asyncpg.connect(str(settings.pg_dsn))
+    try:
+        try:
+            row = await set_queue_mode(conn, name, mode, schema=settings.schema_name)
+        except ValueError as exc:
+            typer.echo(str(exc), err=True)
+            raise typer.Exit(code=1) from exc
+    finally:
+        await conn.close()
+    _print_queue_row(row)
+
+
+@queues_app.command("set-max-concurrent")
+def queues_set_max_concurrent(
+    name: Annotated[str, typer.Argument(help="Queue name.")],
+    max_concurrent: Annotated[
+        int | None,
+        typer.Option("--max-concurrent", min=0, help="New per-queue leased-slot cap."),
+    ] = None,
+    clear: Annotated[bool, typer.Option("--clear", help="Remove the cap (unlimited).")] = False,
+) -> None:
+    """Set or clear a queue's fleet-wide leased-slot concurrency cap.
+
+    Unlike `actor-config set --max-concurrent`, this is read once at worker
+    startup, so it needs a worker restart to take effect.
+    """
+    if clear and max_concurrent is not None:
+        typer.echo("pass either --max-concurrent or --clear, not both", err=True)
+        raise typer.Exit(code=1)
+    if not clear and max_concurrent is None:
+        typer.echo("pass --max-concurrent N or --clear", err=True)
+        raise typer.Exit(code=1)
+    settings = TaskQSettings.load()
+    asyncio.run(_queues_set_max_concurrent(settings, name, None if clear else max_concurrent))
+
+
+async def _queues_set_max_concurrent(
+    settings: TaskQSettings, name: str, max_concurrent: int | None
+) -> None:
+    conn = await asyncpg.connect(str(settings.pg_dsn))
+    try:
+        row = await set_queue_max_concurrent(
+            conn, name, max_concurrent, schema=settings.schema_name
+        )
+    finally:
+        await conn.close()
+    _print_queue_row(row)
