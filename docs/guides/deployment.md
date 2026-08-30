@@ -445,7 +445,14 @@ See [workers.md — Queue dispatch modes](workers.md#queue-dispatch-modes).
 
 ### max_concurrent and max_pending
 
-`max_concurrent` (per-actor via `@actor(max_concurrent=N)`) caps how many jobs for an actor run simultaneously **across all workers** — distinct from `TASKQ_MAX_CONCURRENCY` (total jobs per process). `max_pending` (per-actor via `@actor(max_pending=N)`) caps queued `pending` jobs; when exceeded, `enqueue` is rejected and `taskq.backpressure.errors` is incremented. Monitor `taskq.queue.depth` (leader samples every 15s) for backlog and `taskq.backpressure.errors` for sustained producer pressure.
+`max_concurrent` (per-actor via `@actor(max_concurrent=N)`) is a **best-effort** fleet-wide damper on how many jobs for an actor run simultaneously — distinct from `TASKQ_MAX_CONCURRENCY` (total jobs per process).
+
+!!! warning "`max_concurrent` is not a hard cap"
+    Dispatch reads its `running` count once per round, before taking row locks, and never rechecks it. Two worker replicas dispatching concurrently each see the same count, each admit up to the cap, and lock *disjoint* rows — so both succeed. The over-dispatch bound is `(num_producers - 1) * max_concurrent` per round, and those jobs genuinely run; reclaiming stale locks does not undo an over-dispatch.
+
+    With `max_concurrent=2` and 3 replicas you can see 6 concurrent executions. For a memory- or GPU-bound actor that is an OOMKill, a restart, and a re-dispatch.
+
+    **If you need a strict cap**, use the per-queue leased-slot reservation instead: `taskq queues set-max-concurrent <queue> --max-concurrent N`. Slots are physical rows and each acquire is a single read-and-write statement on one row, so there is no read-then-decide window. See [rate-limiting.md](rate-limiting.md#concurrency-reservations). Note it is read once at worker startup, so changing it needs a worker restart, and it bounds a *queue*, not an actor. `max_pending` (per-actor via `@actor(max_pending=N)`) caps queued `pending` jobs; when exceeded, `enqueue` is rejected and `taskq.backpressure.errors` is incremented. Monitor `taskq.queue.depth` (leader samples every 15s) for backlog and `taskq.backpressure.errors` for sustained producer pressure.
 
 ### Connection pool sizing
 

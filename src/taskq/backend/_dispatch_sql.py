@@ -49,6 +49,19 @@ WITH params AS (
     $4::interval AS lock_lease,
     $5::int      AS oversample
 ),
+-- Best-effort under concurrent dispatchers, for the same reason as
+-- `running_identities` below: this count is read ONCE, before `locked`
+-- takes its FOR UPDATE SKIP LOCKED row locks, and is never recomputed.
+-- Two dispatchers running concurrently each see the same in_flight, each
+-- admit up to `max_concurrent - in_flight`, and lock DISJOINT pending rows
+-- -- so SKIP LOCKED does not serialize them and both succeed. The
+-- over-dispatch bound is (num_producers - 1) * max_concurrent per round,
+-- and those jobs genuinely run: reclaiming stale locks does not undo an
+-- over-dispatch. `max_concurrent` is therefore a per-round admission
+-- damper, NOT a hard fleet-wide cap.
+-- For a strict fleet-wide cap use the leased-slot ConcurrencyReservation
+-- (per-queue `queues.max_concurrent`), where the read and the write are
+-- the same statement on the same row so no such window exists.
 running_per_actor AS (
   SELECT actor, count(*) AS in_flight
   FROM "{schema}".jobs
