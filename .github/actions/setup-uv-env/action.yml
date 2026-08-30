@@ -1,0 +1,58 @@
+name: Set up Python and uv
+description: >
+  Installs uv, pins the interpreter for every uv call in the calling job, and
+  performs the single locked sync that the job's `uv run --no-sync` steps rely
+  on. This action is the only place in the repository that CI is allowed to
+  build an environment; tests/test_ci_workflow.py enforces that.
+
+inputs:
+  python-version:
+    description: >
+      Interpreter for the whole job. Exported as UV_PYTHON rather than passed
+      as a per-command `--python` flag: `--python` decides one command's
+      interpreter and leaves every other uv call in the job free to disagree,
+      and a `uv run` that disagrees does not narrow the environment, it deletes
+      it and rebuilds it from the default dependency set. UV_PYTHON is read by
+      `uv sync` and `uv run` alike, so the job agrees by construction.
+    required: false
+    default: "3.12"
+  sync-args:
+    description: >
+      Extras and dependency groups for the one sync, without `--locked` (this
+      action always adds it). Set to the empty string for a job that needs no
+      project environment at all, such as one that only inspects built
+      artifacts.
+    required: false
+    default: "--all-extras --group dev"
+
+runs:
+  using: composite
+  steps:
+    - name: Install uv
+      uses: astral-sh/setup-uv@v9.0.0
+      with:
+        enable-cache: true
+        cache-dependency-glob: uv.lock
+
+    # Written to $GITHUB_ENV, not just exported here: a composite action's
+    # steps run in their own shells, so a plain `export` would be gone by the
+    # time the calling job's own steps run. $GITHUB_ENV persists for the rest
+    # of the job, which is the scope this pin needs.
+    - name: Pin the interpreter for every uv call in this job
+      shell: bash
+      run: |
+        set -euo pipefail
+        uv python install "${{ inputs.python-version }}"
+        echo "UV_PYTHON=${{ inputs.python-version }}" >> "$GITHUB_ENV"
+
+    # `--locked`, never `--frozen`. Both refuse to re-resolve, so neither can
+    # install a version uv.lock never described; they differ on what happens
+    # when pyproject.toml and uv.lock disagree. `--frozen` ignores the
+    # disagreement and produces a green job silently missing a newly added
+    # dependency. `--locked` asserts the lock is up to date and fails instead,
+    # which is the only useful behaviour when both files are right there in
+    # the checkout and the comparison is free.
+    - name: Sync the environment from the lockfile
+      if: inputs.sync-args != ''
+      shell: bash
+      run: uv sync --locked ${{ inputs.sync-args }}

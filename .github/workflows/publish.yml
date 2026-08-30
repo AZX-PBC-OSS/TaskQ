@@ -27,13 +27,17 @@ jobs:
         with:
           ref: ${{ inputs.tag_name || github.ref }}
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v9.0.0
+      # See the uv discipline comment at the top of ci.yaml. The version check
+      # below reads installed distribution metadata, so the project has to be
+      # in the environment. It used to arrive via the implicit sync inside a
+      # bare `uv run`, which resolved and installed whatever it liked on the
+      # release path; syncing through the shared action makes the release
+      # verify against the locked dependency set instead. `--no-dev` is the
+      # sanctioned pruning for a deployment artifact -- nothing in the dev
+      # group has any bearing on the packaged version.
+      - uses: ./.github/actions/setup-uv-env
         with:
-          enable-cache: true
-
-      - name: Set up Python
-        run: uv python install 3.12
+          sync-args: --no-dev
 
       - name: Verify tag matches project version
         env:
@@ -42,7 +46,7 @@ jobs:
         run: |
           set -euo pipefail
           tag="${TAG_NAME#v}"
-          version="$(uv run python -c 'import importlib.metadata, os; print(importlib.metadata.version(os.environ["DIST_NAME"]))')"
+          version="$(uv run --no-sync python -c 'import importlib.metadata, os; print(importlib.metadata.version(os.environ["DIST_NAME"]))')"
           echo "Tag: ${tag}"
           echo "project version: ${version}"
           if [ "${tag}" != "${version}" ]; then
