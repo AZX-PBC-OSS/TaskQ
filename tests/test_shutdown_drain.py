@@ -69,10 +69,25 @@ def _worker_settings(schema_name: str = "taskq") -> WorkerSettings:
 
 
 def _worker_settings_no_validate(schema_name: str = "taskq") -> WorkerSettings:
-    return WorkerSettings.load_from_dict(
-        {"TASKQ_PG_DSN": "postgresql://x:x@localhost/x", "TASKQ_SCHEMA_NAME": schema_name},
-        validate=False,  # Why: allows an intentionally-invalid schema name to test the shutdown.py-level _IDENT_RE gate.
+    """Settings carrying an arbitrary schema name, bypassing field validation.
+
+    `schema_name` is validated by a `validator=` hook, which dotenvmodel runs on
+    every load path INCLUDING `validate=False` -- deliberately, because it is
+    the one setting that reaches raw SQL as an interpolated identifier. So an
+    invalid name can no longer be loaded, and the object is mutated after
+    construction instead.
+
+    That is the point of these tests: they assert the shutdown path performs its
+    OWN `_IDENT_RE` check rather than trusting settings. That defence in depth
+    is what keeps the settings-level guard from being a single point of failure,
+    so it still needs proving.
+    """
+    settings = WorkerSettings.load_from_dict(
+        {"TASKQ_PG_DSN": "postgresql://x:x@localhost/x", "TASKQ_SCHEMA_NAME": "taskq"},
+        validate=False,
     )
+    settings.schema_name = schema_name
+    return settings
 
 
 # ── Enum-value sanity test ────────────────────────────
