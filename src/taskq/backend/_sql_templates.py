@@ -20,6 +20,7 @@ from taskq.backend._sql import (
     CANCEL_ESCALATION_SQL,
     INSERT_ATTEMPT_SQL,
     INSERT_EVENT_SQL,
+    INSERT_EVENTS_BATCH_SQL,
     POLL_CANCEL_FLAGS_SQL,
 )
 from taskq.constants import (
@@ -89,6 +90,7 @@ class SqlTemplates:
     insert_attempt: str
     insert_attempt_explicit: str
     insert_event: str
+    insert_events_batch: str
 
     # ── Owner check ────────────────────────────────────────────────
     select_owner: str
@@ -400,6 +402,7 @@ INSERT INTO "{s}".job_attempts
  error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb)""",
         insert_event=INSERT_EVENT_SQL.format(schema=s),
+        insert_events_batch=INSERT_EVENTS_BATCH_SQL.format(schema=s),
         # ── Owner check ────────────────────────────────────────────
         select_owner=f"""\
 SELECT locked_by_worker FROM "{s}".jobs WHERE id = $1""",
