@@ -220,9 +220,11 @@ class TaskQSettings(DotEnvConfig):
     admin_actions_enabled: bool = Field(
         default=False,
         description="TASKQ_ADMIN_ACTIONS_ENABLED. When True, the admin UI permits "
-        "destructive actions (run schedule now, retry job, cancel job). "
+        "state-changing actions: run schedule now, enable/disable/skip a "
+        "schedule, retry job, cancel job. "
         "Default False - prevents on-demand triggering of registered business "
-        "logic via the admin UI without explicit opt-in. Separate from "
+        "logic, and silent suppression of scheduled work, via the admin UI "
+        "without explicit opt-in. Separate from "
         "auth_dependency, which controls read access to all admin routes.",
     )
 

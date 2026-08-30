@@ -349,9 +349,15 @@ def test_csrf_mismatch_returns_403() -> None:
 # ── CSRF token match allows POST through ─────────────────────────
 
 
-def test_csrf_match_allows_post() -> None:
+def test_csrf_match_allows_post(monkeypatch: pytest.MonkeyPatch) -> None:
     """POST /admin/schedules/{id}/skip with matching CSRF token
-    passes validation (returns 404 because schedule does not exist, not 403)."""
+    passes validation (returns 404 because schedule does not exist, not 403).
+
+    `skip` is now behind `admin_actions_enabled` like every other
+    state-changing admin route, so the gate is opened here to keep this test
+    about CSRF rather than about the action gate.
+    """
+    monkeypatch.setenv("TASKQ_ADMIN_ACTIONS_ENABLED", "true")
     pool = _StubPool()
     _app, client = _mount_router(pool)
 

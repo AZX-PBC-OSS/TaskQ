@@ -315,3 +315,64 @@ def test_job_cancel_rejects_when_actions_disabled(
 
     assert resp.status_code == 403
     backend.write_cancel_request.assert_not_called()
+
+
+# ── Schedule enable / disable / skip are behind the action gate ─────────────
+#
+# These three mutated `cron_schedules` directly behind CSRF plus the router
+# auth dependency and nothing else, while `run`, `retry` and `cancel` were all
+# gated on `admin_actions_enabled`. A missing gate rather than a bypassed one --
+# but DISABLING a production cron schedule is at least as damaging as running
+# one, and it was reachable by any principal who could reach the admin UI,
+# including under the unauthenticated dev/air-gapped configuration the factory
+# supports. Silently stopping scheduled work is also far harder to notice than
+# an extra run.
+
+
+@pytest.mark.parametrize("action", ["enable", "disable", "skip"])
+def test_schedule_mutations_reject_when_actions_disabled(
+    monkeypatch: pytest.MonkeyPatch, action: str
+) -> None:
+    monkeypatch.setenv("TASKQ_ADMIN_ACTIONS_ENABLED", "false")
+    pool = _StubPool(_ScheduleRunConn())
+    _app, client = _mount_router(pool, backend=_make_backend())
+
+    resp = _csrf_post(client, f"/admin/schedules/{_FAKE_UUID}/{action}")
+
+    assert resp.status_code == 403
+
+
+@pytest.mark.parametrize("action", ["enable", "disable", "skip"])
+def test_schedule_mutations_allowed_when_actions_enabled(
+    monkeypatch: pytest.MonkeyPatch, action: str
+) -> None:
+    """The gate must not break the feature when explicitly opted in."""
+    monkeypatch.setenv("TASKQ_ADMIN_ACTIONS_ENABLED", "true")
+    pool = _StubPool(_ScheduleRunConn())
+    _app, client = _mount_router(pool, backend=_make_backend())
+
+    resp = _csrf_post(client, f"/admin/schedules/{_FAKE_UUID}/{action}")
+
+    assert resp.status_code != 403
+
+
+def test_every_state_changing_admin_route_is_gated() -> None:
+    """Inventory guard: no new ungated mutator can be added unnoticed.
+
+    Corrects the reported inventory in passing -- `actors/{actor}/deregister`
+    was already gated, so the ungated set was exactly these three.
+    """
+    from pathlib import Path
+
+    src = Path(__file__).resolve().parent.parent / "src" / "taskq" / "web" / "admin"
+    ungated: list[str] = []
+    for path in sorted(src.glob("*.py")):
+        text = path.read_text()
+        chunks = text.split("@router.post(")[1:]
+        for chunk in chunks:
+            route = chunk[: chunk.index(")")].strip("\"'")
+            body = chunk[: chunk.index("@router.") if "@router." in chunk else len(chunk)]
+            gated = "admin_actions_enabled" in body or "admin_ui_allow_rate_limit_reset" in body
+            if not gated:
+                ungated.append(f"{path.name}:{route}")
+    assert ungated == [], f"ungated state-changing admin routes: {ungated}"

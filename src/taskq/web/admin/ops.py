@@ -190,7 +190,11 @@ def register(router: APIRouter) -> None:
         pool: asyncpg.Pool = Depends(get_pg_pool),
         schema: str = Depends(get_schema),
         base_path: str = Depends(get_base_path),
+        settings: TaskQSettings = Depends(get_settings),
     ) -> RedirectResponse:
+        if not settings.admin_actions_enabled:
+            raise HTTPException(status_code=403, detail="Admin actions are disabled")
+
         enable_sql = _SCHEDULE_ENABLE_SQL.format(schema=schema)
 
         async with pool.acquire() as conn:
@@ -213,7 +217,11 @@ def register(router: APIRouter) -> None:
         pool: asyncpg.Pool = Depends(get_pg_pool),
         schema: str = Depends(get_schema),
         base_path: str = Depends(get_base_path),
+        settings: TaskQSettings = Depends(get_settings),
     ) -> RedirectResponse:
+        if not settings.admin_actions_enabled:
+            raise HTTPException(status_code=403, detail="Admin actions are disabled")
+
         disable_sql = _SCHEDULE_DISABLE_SQL.format(schema=schema)
 
         async with pool.acquire() as conn:
@@ -236,7 +244,11 @@ def register(router: APIRouter) -> None:
         pool: asyncpg.Pool = Depends(get_pg_pool),
         schema: str = Depends(get_schema),
         base_path: str = Depends(get_base_path),
+        settings: TaskQSettings = Depends(get_settings),
     ) -> RedirectResponse:
+        if not settings.admin_actions_enabled:
+            raise HTTPException(status_code=403, detail="Admin actions are disabled")
+
         fetch_sql = _SCHEDULE_FETCH_FOR_SKIP_SQL.format(schema=schema)
         skip_sql = _SCHEDULE_SKIP_SQL.format(schema=schema)
 
