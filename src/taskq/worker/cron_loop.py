@@ -34,6 +34,7 @@ from taskq.obs import (
     safe_start_span,
     update_disabled_schedules_count,
 )
+from taskq.obs._redact_exc import safe_exception_message
 from taskq.settings import WorkerSettings
 
 log: structlog.stdlib.BoundLogger = get_logger(__name__)
@@ -227,7 +228,9 @@ async def fire_schedule(
                 next_fire_at=next_fire.isoformat(),
             )
         except Exception as exc:
-            span.set_status(StatusCode.ERROR, str(exc))
+            # Redacted for the same reason as the dispatch span: span text is
+            # exported to third-party telemetry backends.
+            span.set_status(StatusCode.ERROR, safe_exception_message(exc))
             consecutive: int = (row["consecutive_failures"] or 0) + 1
             auto_disable = consecutive >= settings.cron_auto_disable_threshold
 
