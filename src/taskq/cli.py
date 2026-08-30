@@ -362,19 +362,40 @@ async def _up(
     target: str | None,
     max_steps: int | None,
 ) -> None:
+    # Why locked: the README names `taskq migrate up` as THE deploy step, and a
+    # container platform will start two replicas or retry a failed job, so "run
+    # it once, sequentially" is not something the caller can guarantee.
+    # Unlocked, the loser of a concurrent race against a virgin schema hits a
+    # bare CREATE TABLE (the pre-initial migration has no IF NOT EXISTS) and
+    # crash-loops on DuplicateTableError.
+    #
+    # Why the lock is taken here rather than by delegating to
+    # apply_pending_locked: this path owns the connection so it can run
+    # _report_up_failure diagnostics on it AFTER a failure, and
+    # apply_pending_locked converts failures into SystemExit before that could
+    # run. Both paths serialize on the same advisory lock via the shared
+    # migration_advisory_lock helper, so there is no second lock protocol.
+    #
     # conn mirrors apply_pending_locked's conn-or-None pattern: connect
     # failures land in the same guarded region as apply failures, so both
     # get the report — and the close is skipped when no conn was acquired.
     conn: asyncpg.Connection | None = None
     try:
         conn = await asyncpg.connect(str(settings.pg_dsn))
-        applied = await migrate_mod.apply_pending(
-            conn,
-            schema=settings.schema_name,
-            phase=phase,
-            target=target,
-            max_steps=max_steps,
-        )
+        async with migrate_mod.migration_advisory_lock(conn):
+            applied = await migrate_mod.apply_pending(
+                conn,
+                schema=settings.schema_name,
+                phase=phase,
+                target=target,
+                max_steps=max_steps,
+            )
+    except SystemExit as exc:
+        # Lock contention. Already a precise message; reporting it through
+        # _report_up_failure would misfile a queueing problem as a broken
+        # migration and print schema diagnostics for a schema that is fine.
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from None
     except Exception as exc:
         # Why diagnose here: both apply paths leave the connection reusable
         # (a transactional failure rolls back; the no-transaction path never

@@ -54,7 +54,7 @@ import asyncio
 import contextlib
 import hashlib
 import re
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import dataclass
 from importlib import resources
 from typing import Literal, TypeAlias
@@ -679,6 +679,16 @@ async def _record_applied(conn: asyncpg.Connection, schema: str, migration: Migr
 
 _MIGRATION_LOCK_KEY: int = 1_234_567
 
+#: Bound on how long to WAIT for another process's migration lock.
+#:
+#: `pg_advisory_lock` is a blocking acquire with no client-side bound, so a
+#: replica arriving while another holds the lock mid-DDL waited indefinitely
+#: with no log line -- long enough to blow past a container platform's startup
+#: probe, get killed, restart, and block again. This bounds the WAIT only; it
+#: is reset before the migrations themselves run so a legitimately long DDL
+#: step (index builds, ADD CONSTRAINT ... CHECK) is never killed halfway.
+DEFAULT_MIGRATION_LOCK_TIMEOUT: float = 120.0
+
 
 # ── apply-failure self-diagnosis ──────────────────────────────────────────────
 
@@ -844,6 +854,58 @@ def render_apply_failure_lines(d: ApplyFailureDiagnosis, *, startup: bool = Fals
     return lines
 
 
+@contextlib.asynccontextmanager
+async def migration_advisory_lock(
+    conn: asyncpg.Connection, lock_timeout: float = DEFAULT_MIGRATION_LOCK_TIMEOUT
+) -> AsyncGenerator[None]:
+    """Hold the migration advisory lock on *conn*, with a bounded wait.
+
+    Extracted so the CLI and :func:`apply_pending_locked` serialize on the SAME
+    lock without duplicating the acquire/reset/release protocol. The CLI cannot
+    simply delegate to ``apply_pending_locked``: it owns the connection so it
+    can run ``_report_up_failure`` diagnostics on it after a failure, and
+    ``apply_pending_locked`` converts failures to ``SystemExit`` before that
+    could run.
+
+    ``lock_timeout`` bounds only the WAIT, via Postgres' ``lock_timeout`` GUC
+    (which governs advisory-lock acquisition). It is reset to unlimited before
+    the body runs, so a long DDL step is never killed midway. ``0`` waits
+    indefinitely, the pre-existing behaviour.
+
+    Raises :class:`SystemExit` on contention rather than blocking until the
+    container platform kills the process.
+    """
+    if lock_timeout > 0:
+        # Milliseconds; applies to the advisory-lock acquire below.
+        await conn.execute(f"SET lock_timeout = {int(lock_timeout * 1000)}")
+    try:
+        await conn.execute("SELECT pg_advisory_lock($1)", _MIGRATION_LOCK_KEY)
+    except asyncpg.LockNotAvailableError as exc:
+        msg = (
+            f"could not acquire the migration advisory lock within {lock_timeout}s: "
+            "another process is applying migrations (or is wedged holding the lock). "
+            "Migrations must run once, from a single pre-deploy job or init "
+            "container -- not from every replica."
+        )
+        raise SystemExit(msg) from exc
+    finally:
+        # Reset before the DDL so a legitimately long migration step is not
+        # killed by the wait bound.
+        if lock_timeout > 0:
+            with contextlib.suppress(Exception):
+                await conn.execute("SET lock_timeout = 0")
+    try:
+        yield
+    finally:
+        # Why bounded: contextlib.suppress catches errors but cannot stop a
+        # call that never returns; a dead PG wedges the unlock indefinitely.
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(
+                conn.execute("SELECT pg_advisory_unlock($1)", _MIGRATION_LOCK_KEY),
+                timeout=CLOSE_TIMEOUT_SECS,
+            )
+
+
 async def apply_pending_locked(
     dsn: str | None = None,
     *,
@@ -853,11 +915,19 @@ async def apply_pending_locked(
     max_steps: int | None = None,
     conn: asyncpg.Connection | None = None,
     conn_factory: Callable[[], Awaitable[asyncpg.Connection]] | None = None,
+    lock_timeout: float = DEFAULT_MIGRATION_LOCK_TIMEOUT,
 ) -> list[Migration]:
     """Apply pending migrations under a session-level advisory lock.
 
     Acquires ``pg_advisory_lock`` to prevent concurrent startup races,
     applies pending migrations, and releases the lock.
+
+    ``lock_timeout`` bounds only the **wait** for the lock, via Postgres'
+    ``lock_timeout`` GUC, which applies to advisory-lock acquisition. It is
+    reset to unlimited before the migrations run, so a long DDL step is never
+    interrupted midway. Pass ``0`` to wait indefinitely (the old behaviour).
+    Losing the race raises :class:`SystemExit` naming the contention, rather
+    than hanging until the platform kills the container.
 
     Connection sources (mutually exclusive):
     * ``conn`` — pre-constructed, caller-owned; NOT closed here.
@@ -887,15 +957,20 @@ async def apply_pending_locked(
         else:
             assert dsn is not None  # guarded by validation above
             c = await asyncpg.connect(dsn)
-        await c.execute("SELECT pg_advisory_lock($1)", _MIGRATION_LOCK_KEY)
-        applied = await apply_pending(
-            c, schema=schema, phase=phase, target=target, max_steps=max_steps
-        )
+        async with migration_advisory_lock(c, lock_timeout):
+            applied = await apply_pending(
+                c, schema=schema, phase=phase, target=target, max_steps=max_steps
+            )
         if applied:
             logger.info("migrations-applied-before-startup", count=len(applied))
         else:
             logger.info("no-pending-migrations")
         return applied
+    except SystemExit:
+        # Lock-contention exit above is already precise; do not re-wrap it as
+        # "migration failed", which would misreport a queueing problem as a
+        # broken migration.
+        raise
     except Exception as exc:
         if c is None:
             # The conn was never acquired (conn_factory/asyncpg.connect
@@ -920,19 +995,15 @@ async def apply_pending_locked(
             + " — ".join(render_apply_failure_lines(diagnosis, startup=True))
         ) from exc
     finally:
-        if c is not None:
-            # Why the bounds: contextlib.suppress(Exception) catches errors
-            # but cannot stop a call that never returns — a dead PG wedges
-            # the unlock execute / conn close indefinitely, and this finally
-            # runs before the lifespan exit stack exists, so an unbounded
-            # teardown here would wedge CLI/UI startup forever. The unlock
-            # is bounded by wait_for (+suppress); the owned close goes
-            # through close_conn_bounded, which terminates the conn on
-            # timeout — worst case 2 x CLOSE_TIMEOUT_SECS instead of forever.
-            with contextlib.suppress(Exception):
-                await asyncio.wait_for(
-                    c.execute("SELECT pg_advisory_unlock($1)", _MIGRATION_LOCK_KEY),
-                    timeout=CLOSE_TIMEOUT_SECS,
-                )
-            if owns_conn:
-                await close_conn_bounded(c, "migrate", CLOSE_TIMEOUT_SECS)
+        if c is not None and owns_conn:
+            # The advisory unlock now belongs to migration_advisory_lock's own
+            # finally (bounded there for the same reason), so only the owned
+            # connection close remains here. Unlocking again would fire
+            # pg_advisory_unlock on a lock this session no longer holds, which
+            # Postgres answers with a WARNING and a false return.
+            #
+            # Why bounded: contextlib.suppress catches errors but cannot stop a
+            # call that never returns, and this finally runs before any lifespan
+            # exit stack exists, so an unbounded close would wedge CLI/UI
+            # startup forever. close_conn_bounded terminates on timeout.
+            await close_conn_bounded(c, "migrate", CLOSE_TIMEOUT_SECS)

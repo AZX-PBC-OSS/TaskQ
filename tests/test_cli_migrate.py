@@ -4,6 +4,7 @@ import asyncio
 from typing import Any
 from unittest.mock import AsyncMock
 
+import asyncpg
 import pytest
 from typer.testing import CliRunner
 
@@ -30,6 +31,12 @@ class _FakeConn:
         self.close_wait.set()  # close() completes instantly by default
         self.closed = False
         self.terminated = False
+        self.executed: list[str] = []
+
+    async def execute(self, sql: str, *args: object) -> str:
+        """Record statements so the advisory-lock protocol can be asserted."""
+        self.executed.append(sql)
+        return "SELECT 1"
 
     async def close(self) -> None:
         self.close_calls += 1
@@ -253,6 +260,59 @@ def test_migrate_up_forwards_phase_target_max_steps(monkeypatch: Any) -> None:
     assert kwargs["phase"] == "pre"
     assert kwargs["target"] == "01.00.00_01"
     assert kwargs["max_steps"] == 3
+
+
+def test_migrate_up_takes_the_advisory_lock(monkeypatch: Any) -> None:
+    """`taskq migrate up` must serialize on the migration advisory lock.
+
+    The README names it as THE deploy step and calls it idempotent, but a
+    container platform will start two replicas or retry a failed job. Unlocked,
+    the loser of a race against a virgin schema hits the pre-initial
+    migration's bare CREATE TABLE and crash-loops on DuplicateTableError.
+    """
+    fake_conn = _patch_connect(monkeypatch)
+    monkeypatch.setattr(cli_mod.migrate_mod, "apply_pending", AsyncMock(return_value=[]))
+
+    result = runner.invoke(app, ["migrate", "up"])
+    assert result.exit_code == 0, f"stderr: {result.stderr}"
+
+    joined = " | ".join(fake_conn.executed)
+    assert "pg_advisory_lock" in joined, "migrate up ran unlocked"
+    assert "pg_advisory_unlock" in joined, "the lock must be released"
+    # The wait is bounded, then reset so long DDL is not killed midway.
+    assert any(sql.startswith("SET lock_timeout =") for sql in fake_conn.executed)
+    assert "SET lock_timeout = 0" in fake_conn.executed
+    assert fake_conn.executed.index("SET lock_timeout = 0") < next(
+        i for i, sql in enumerate(fake_conn.executed) if "pg_advisory_unlock" in sql
+    )
+
+
+def test_migrate_up_lock_contention_exits_with_a_named_reason(monkeypatch: Any) -> None:
+    """Losing the race must abort with a precise message, not hang.
+
+    `pg_advisory_lock` is a BLOCKING acquire: before the bound, a replica
+    arriving mid-DDL waited indefinitely with no log line, blew past its
+    startup probe, was killed, restarted, and blocked again.
+    """
+    fake_conn = _patch_connect(monkeypatch)
+
+    async def _execute(sql: str, *args: object) -> str:
+        fake_conn.executed.append(sql)
+        if "pg_advisory_lock" in sql:
+            raise asyncpg.LockNotAvailableError("canceling statement due to lock timeout")
+        return "SELECT 1"
+
+    monkeypatch.setattr(fake_conn, "execute", _execute)
+    apply_pending_mock = AsyncMock(return_value=[])
+    monkeypatch.setattr(cli_mod.migrate_mod, "apply_pending", apply_pending_mock)
+
+    result = runner.invoke(app, ["migrate", "up"])
+    assert result.exit_code != 0
+    combined = plain_cli_output(result.output) + str(result.exception)
+    assert "another process is applying migrations" in combined
+    # It must NOT be reported as a broken migration -- that misdirects the operator.
+    assert "migration failed, aborting startup" not in combined
+    apply_pending_mock.assert_not_awaited()
 
 
 def test_migrate_up_closes_connection(monkeypatch: Any) -> None:

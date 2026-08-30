@@ -115,7 +115,11 @@ uv run taskq migrate status
 uv run taskq migrate up
 ```
 
-`migrate up` is idempotent — re-running is a no-op until new migrations land.
+`migrate up` is idempotent — re-running is a no-op until new migrations land. It
+takes a Postgres advisory lock, so concurrent invocations (two replicas, a retried
+deploy job) serialize instead of racing; a caller that cannot get the lock within
+`lock_timeout` exits with a clear message rather than blocking indefinitely. Still
+prefer running it once, from a pre-deploy job or init container.
 
 ### Define an actor
 
