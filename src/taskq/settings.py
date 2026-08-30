@@ -27,7 +27,10 @@ from dotenvmodel import DotEnvConfig, Field, ValidationError, ValidatorContext
 from dotenvmodel.types import PostgresDsn, RedisDsn
 
 from taskq._close import worst_case_teardown_tail
-from taskq.constants import RECLAIM_EVENT_VISIBILITY_DELAY
+from taskq.constants import (
+    _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining it
+    RECLAIM_EVENT_VISIBILITY_DELAY,
+)
 
 __all__ = ["OIDCSettings", "SAMLSettings", "TaskQSettings", "WorkerSettings"]
 
@@ -137,6 +140,29 @@ def _sso_backend_validator(value: str, ctx: ValidatorContext) -> str:
     return normalized
 
 
+def _schema_name_validator(value: str, ctx: ValidatorContext) -> str:
+    """Validate `schema_name` against the canonical identifier regex.
+
+    A validator hook rather than `regex=` deliberately. `regex=` is a
+    dotenvmodel BUILT-IN constraint, and built-in constraints are skipped under
+    `load_from_dict(..., validate=False)`, while validator hooks always run.
+    `schema_name` is the one setting that reaches raw SQL as an interpolated
+    identifier, so it is the last field that should be skippable.
+
+    Not currently reachable in production -- `validate=False` appears only in
+    test fixtures, and every interpolation site independently re-checks
+    `_IDENT_RE`, which is genuine defence in depth. This closes the landmine
+    before some future config-reload path steps on it. The same class was
+    already fixed for `log_format` for the same reason.
+    """
+    if not _IDENT_RE.match(value):
+        raise ValueError(
+            f"{ctx.field_name} must be a valid SQL identifier "
+            f"([A-Za-z_][A-Za-z0-9_]*), got {value!r}"
+        )
+    return value
+
+
 class TaskQSettings(DotEnvConfig):
     """Top-level TaskQ runtime configuration."""
 
@@ -148,7 +174,7 @@ class TaskQSettings(DotEnvConfig):
     )
     schema_name: str = Field(
         default="taskq",
-        regex=r"^[A-Za-z_][A-Za-z0-9_]*$",
+        validator=_schema_name_validator,
         description="Postgres schema for all TaskQ tables.",
     )
     redis_url: RedisDsn | None = Field(
