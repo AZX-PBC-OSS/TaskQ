@@ -232,6 +232,73 @@ def _resolve_rl_registry(
     return rl_registry
 
 
+async def _warn_on_cron_drift(backend: Backend, spec: CronScheduleSpec) -> None:
+    """Compare a code-declared cron spec against its stored row and warn on drift.
+
+    Only the fields a redeploy cannot change are compared. ``enabled`` is
+    deliberately excluded: it is operator-controlled at runtime (the admin UI
+    and CLI toggle it), so a disabled schedule is an intentional state, not
+    drift, and warning about it every startup would train operators to ignore
+    the event.
+
+    Never raises. Drift detection must not be able to prevent a worker from
+    starting -- unlike the actor_config equivalent, whose fail-fast is
+    load-bearing for dispatch correctness. A cron mismatch means the wrong
+    cadence, not a broken worker.
+    """
+    try:
+        stored = [
+            rec for rec in await backend.list_schedules(actor=spec.actor) if rec.name == spec.name
+        ]
+    except Exception as exc:
+        _startup_log.debug(
+            "cron-schedule-drift-check-failed",
+            actor=spec.actor,
+            name=spec.name,
+            error=repr(exc),
+        )
+        return
+
+    if not stored:
+        # Raced with a delete, or the conflict came from another constraint.
+        return
+    row = stored[0]
+
+    drifted: dict[str, dict[str, str]] = {}
+    for field, code_value in (
+        ("cron_expr", spec.cron_expr),
+        ("timezone", spec.timezone),
+        ("dst_strategy", spec.dst_strategy),
+    ):
+        stored_value = getattr(row, field)
+        if stored_value != code_value:
+            drifted[field] = {"stored": str(stored_value), "code": str(code_value)}
+
+    if not drifted:
+        _startup_log.debug(
+            "cron-schedule-already-registered",
+            actor=spec.actor,
+            name=spec.name,
+            expr=spec.cron_expr,
+        )
+        return
+
+    _startup_log.warning(
+        "cron-schedule-drift",
+        kind="cron_schedule_drift",
+        actor=spec.actor,
+        name=spec.name,
+        schedule_id=str(row.id),
+        drift=drifted,
+        remedy=(
+            "cron registration is create-only, so the stored row keeps the OLD "
+            "values and this worker fires on the stored cadence, not the one in "
+            "code. Apply the new values with TaskQ.update_schedule(...) (or "
+            "delete_schedule and restart to let registration recreate it)."
+        ),
+    )
+
+
 async def _main(
     settings: WorkerSettings,
     *,
@@ -273,8 +340,12 @@ async def _main(
     from either the explicit ``cron_registry`` argument or
     ``get_registered_crons()``.  For each spec, ``backend.create_schedule``
     is called with a :class:`ScheduleCreateArgs` inside ``try/except
-    asyncpg.UniqueViolationError: pass`` — the ``(actor, name)`` UNIQUE
-    constraint makes this registration pass create-only and skip-on-conflict.
+    asyncpg.UniqueViolationError`` — the ``(actor, name)`` UNIQUE constraint
+    makes this registration pass create-only and skip-on-conflict. The conflict
+    branch is no longer a bare ``pass``: it calls
+    :func:`_warn_on_cron_drift`, which compares the code-declared spec against
+    the stored row and warns when they differ. Write semantics are unchanged —
+    detection only.
 
     ``rate_limit_registry`` is the :class:`RateLimitRegistry` this worker
     owns and dispatches against.  Resolution order: explicit argument →
@@ -742,12 +813,19 @@ async def _main(
                     # Why: the (actor, name) UNIQUE constraint means a schedule
                     # for this (actor, name) already exists; this registration
                     # pass is insert-only and never modifies existing rows.
-                    _startup_log.debug(
-                        "cron-schedule-already-registered",
-                        actor=spec.actor,
-                        name=spec.name,
-                        expr=spec.cron_expr,
-                    )
+                    #
+                    # Create-only is deliberate -- an operator's runtime change
+                    # (disable, retime) must not be reverted by a redeploy. But
+                    # it also means that changing a @cron decorator's cron_expr,
+                    # timezone or dst_strategy in code deploys "successfully"
+                    # and silently keeps the OLD cadence. Structural
+                    # actor_config drift raises ActorConfigDriftList and refuses
+                    # to start; cron drift produced one DEBUG line that named
+                    # the code's values and never compared them to the stored
+                    # row, so the mismatch itself was undetectable at any log
+                    # level. Compare and warn, without changing the write
+                    # semantics.
+                    await _warn_on_cron_drift(backend, spec)
                 else:
                     _startup_log.info(
                         "cron-schedule-registered",
