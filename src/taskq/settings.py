@@ -23,6 +23,7 @@ from typing import Self
 from dotenvmodel import DotEnvConfig, Field, ValidationError, ValidatorContext
 from dotenvmodel.types import PostgresDsn, RedisDsn
 
+from taskq._close import worst_case_teardown_tail
 from taskq.constants import RECLAIM_EVENT_VISIBILITY_DELAY
 
 __all__ = ["OIDCSettings", "SAMLSettings", "TaskQSettings", "WorkerSettings"]
@@ -1060,3 +1061,28 @@ class WorkerSettings(TaskQSettings):
     def worker_pool_size(self) -> int:
         """Derived pool size for worker_pool: int(max_concurrency * 1.5)."""
         return int(self.max_concurrency * 1.5)
+
+    @property
+    def worst_case_shutdown_seconds(self) -> float:
+        """Modelled worst-case wall clock from SIGTERM to process exit.
+
+        The shutdown phase graces plus the bounded-close tail that unwinds
+        after them (see :func:`taskq._close.worst_case_teardown_tail`).
+
+        This is deliberately NOT enforced by ``post_load``. The cross-field
+        validator there rejects a config outright, and TaskQ's own defaults
+        (60 / 30 / 10) produce a modelled worst case above
+        ``termination_grace_period`` -- so validating it would refuse to
+        start every deployment running the defaults, turning a
+        sizing warning into a fleet-wide outage on upgrade. The number is
+        surfaced as a startup warning instead, and
+        ``docs/guides/deployment.md`` documents the pod-grace formula.
+        """
+        return (
+            self.cancellation_grace_period + self.cleanup_grace_period + worst_case_teardown_tail()
+        )
+
+    @property
+    def shutdown_budget_is_sufficient(self) -> bool:
+        """Whether ``termination_grace_period`` covers the modelled worst case."""
+        return self.worst_case_shutdown_seconds <= self.termination_grace_period
