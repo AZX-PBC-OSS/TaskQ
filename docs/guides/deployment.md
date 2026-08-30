@@ -132,7 +132,7 @@ Each migration is recorded in `{schema}.schema_migrations` with a SHA-256 checks
     backup taken before the migration was applied. Always take a backup (or
     confirm a PITR window) before upgrading. See [Upgrading](upgrading.md).
 
-**Deployment order:** (1) apply migrations as a pre-deploy job or init container, (2) start workers — they call `sync_actor_config` at startup and fail with `ActorConfigDriftList` if the schema is stale, (3) start the admin UI (optionally with `TASKQ_MIGRATE_ON_START=true`).
+**Deployment order:** (1) apply migrations as a pre-deploy job or init container, (2) start workers — they call `sync_actor_config` at startup and fail with `ActorConfigDriftList` if a registered actor's **structural** config (`queue`, `metadata`) differs from the stored row. Note this does **not** detect a stale *schema*: no schema-version precheck runs on the worker path, so a worker started against an unmigrated database fails later, at its first query, rather than at startup, (3) start the admin UI (optionally with `TASKQ_MIGRATE_ON_START=true`).
 
 For rolling deploys where actor config changes, deploy the first pod with `TASKQ_FORCE_UPDATE_ACTOR_CONFIG=true` to overwrite stored config, then deploy the rest without it. See [workers.md — ActorConfig sync](workers.md#actorconfig-sync).
 

@@ -249,6 +249,27 @@ async def _main(
 
     _producer_log = structlog.get_logger("taskq.worker.run.producer")
 
+    # Why: TASKQ_MIGRATE_ON_START is defined on TaskQSettings, so WorkerSettings
+    # inherits and happily VALIDATES it -- an operator setting it on a worker
+    # gets no error and no migration. The worker deliberately does not honour
+    # it (N replicas racing to migrate is exactly the hazard the migration
+    # advisory lock exists to prevent), so say so rather than ignoring it
+    # silently. Reading the README during an incident is precisely when this
+    # would be set.
+    if settings.migrate_on_start:
+        _startup_log.warning(
+            "migrate-on-start-ignored-by-worker",
+            setting="TASKQ_MIGRATE_ON_START",
+            reason=(
+                "the worker never applies migrations; this setting is consumed "
+                "only by `taskq ui serve`"
+            ),
+            remedy=(
+                "run `taskq migrate up` from a pre-deploy job or init container "
+                "before starting workers"
+            ),
+        )
+
     async with open_worker_deps(settings, connections=connections) as deps:
         # Only register the worker pool in DI when the user hasn't provided
         # their own asyncpg.Pool provider — and only then may the reload
