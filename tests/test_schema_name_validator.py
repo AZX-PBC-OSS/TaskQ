@@ -36,15 +36,15 @@ def test_malicious_schema_rejected_under_validate_true(cls: type) -> None:
         cls.load_from_dict({"TASKQ_SCHEMA_NAME": _MALICIOUS}, validate=True)
 
 
-@pytest.mark.parametrize("value", ["1abc", "has space", "", "semi;colon", 'quo"te'])
+@pytest.mark.parametrize("value", ["taskq\n", "1abc", "has space", "", "semi;colon", 'quo"te'])
 def test_invalid_identifiers_rejected(value: str) -> None:
-    """Note that `"taskq\n"` is deliberately absent from these cases.
+    r"""`"taskq\n"` belongs here only because both halves are in this PR.
 
-    It is accepted on this branch because `_IDENT_RE` still uses `^...$`, and
-    Python's `$` matches before a trailing newline. That is a separate finding,
-    fixed on its own branch (`fix/ident-re-trailing-newline`, which swaps the
-    anchors to `\\A`/`\\Z`). Once both land it is rejected here too, because this
-    validator delegates to `_IDENT_RE` rather than re-implementing the pattern.
+    The validator delegates to `_IDENT_RE` rather than re-implementing the
+    pattern. With `_IDENT_RE` still anchored `^...$`, Python's `$` matches
+    before a trailing newline and this case passed; the `\A`/`\Z` fix is the
+    other half of this change. Neither commit could assert the composed
+    behaviour alone, which is why the two are reviewed together.
     """
     with pytest.raises(DotEnvModelError):
         WorkerSettings.load_from_dict({"TASKQ_SCHEMA_NAME": value}, validate=False)
