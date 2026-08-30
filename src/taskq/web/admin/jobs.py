@@ -270,7 +270,9 @@ def register(router: APIRouter) -> None:
         time_to: str | None = Query(default=None),
         identity_key: str | None = Query(default=None),
         fairness_key: str | None = Query(default=None),
-        search: str | None = Query(default=None),
+        # Capped like `actor` above: `search` drives TWO unanchored ILIKEs,
+        # one of them against a cast `id::text`, evaluated per row.
+        search: str | None = Query(default=None, max_length=128),
         tags: str | None = Query(default=None),
         cursor_at: str | None = Query(default=None),
         cursor_id: str | None = Query(default=None),
@@ -416,7 +418,11 @@ def register(router: APIRouter) -> None:
         schema: str = Depends(get_schema),
         tab: str = Query(default="live"),
         status: list[str] = Query(default=[]),
-        actor: str | None = Query(default=None),
+        # Same 128-char cap the /jobs and /history routes already put on this
+        # parameter. It feeds an unanchored `actor ILIKE '%' || $n || '%'` in
+        # _build_where, which no index can serve, so an uncapped pattern is
+        # matched against every row of a full scan.
+        actor: str | None = Query(default=None, max_length=128),
         queue: str | None = Query(default=None),
         time_range: str | None = Query(default=None),
         time_from: str | None = Query(default=None),

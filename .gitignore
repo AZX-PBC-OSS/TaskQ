@@ -69,3 +69,5 @@ postgres-data/
 # Local workflow artifacts (specs/plans/reviews)
 docs/superpowers/
 .worktrees
+# Agent review artifacts
+.reviews/

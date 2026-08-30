@@ -13,9 +13,11 @@ from __future__ import annotations
 
 from uuid import UUID, uuid4
 
+import pytest
 from pydantic import BaseModel
 
-from taskq._json import dumps, dumps_str, loads
+from taskq._json import dumps, dumps_jsonb_str, dumps_str, loads
+from taskq.backend._records import jsonb_param
 
 # ── loads returns plain types (no UUID revival) ─────────────────────────
 
@@ -134,3 +136,48 @@ class TestPydanticHandlesCoercion:
         payload = UuidPayload.model_validate(raw)
         assert isinstance(payload.batch_id, UUID)
         assert payload.batch_id == uid
+
+
+# ── jsonb NUL rejection ─────────────────────────────────────────────────
+
+
+class TestDumpsJsonbStrRejectsNul:
+    """PostgreSQL ``jsonb`` decodes to ``text``, which cannot hold a NUL, so
+    ``'{"a":"\\u0000"}'::jsonb`` fails with SQLSTATE 22P05 even though the
+    same value is accepted by a ``json`` column.
+
+    Caller-supplied payloads, metadata and actor results are validated for
+    type and size only, so without this guard a NUL reaches the INSERT and
+    raises ``asyncpg.UntranslatableCharacterError``. On the terminal-write
+    path that is misread as transient infrastructure failure, leaving the job
+    ``running`` to be reclaimed and re-run forever.
+    """
+
+    def test_nul_in_value_rejected(self) -> None:
+        with pytest.raises(ValueError, match="NUL character"):
+            dumps_jsonb_str({"text": "a\x00b"})
+
+    def test_nul_in_key_rejected(self) -> None:
+        with pytest.raises(ValueError, match="NUL character"):
+            dumps_jsonb_str({"k\x00": "v"})
+
+    def test_nul_nested_in_list_rejected(self) -> None:
+        with pytest.raises(ValueError, match="NUL character"):
+            dumps_jsonb_str({"a": {"b": [{"c": "\x00"}]}})
+
+    def test_jsonb_param_rejects_nul(self) -> None:
+        with pytest.raises(ValueError, match="NUL character"):
+            jsonb_param({"text": "a\x00b"})
+
+    def test_literal_backslash_u0000_is_not_a_nul(self) -> None:
+        """The cheap prefilter looks for the six characters orjson emits for a
+        NUL, which are also what it emits for the *literal* text
+        ``\\u0000``. jsonb stores that happily, so it must not be rejected."""
+        assert dumps_jsonb_str({"text": "\\u0000"}) == '{"text":"\\\\u0000"}'
+
+    def test_other_c0_controls_are_allowed(self) -> None:
+        """Only NUL is fatal to jsonb; the rest of C0 round-trips fine."""
+        assert dumps_jsonb_str({"text": "a\x01\x1f\tb"}) == '{"text":"a\\u0001\\u001f\\tb"}'
+
+    def test_ordinary_value_unchanged(self) -> None:
+        assert dumps_jsonb_str({"n": 1}) == dumps_str({"n": 1})

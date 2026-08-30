@@ -37,7 +37,7 @@ from taskq.backend._protocol import (
     JobStatus,
 )
 from taskq.backend.clock import Clock, SystemClock
-from taskq.batch import EnqueueItem
+from taskq.batch import MAX_BATCH_SIZE, EnqueueItem
 from taskq.client._args import build_batch_args, build_enqueue_args, enqueue_span
 from taskq.client._capacity import ActorCapacityCache
 from taskq.client._handle import JobHandle
@@ -302,7 +302,19 @@ class SubJobEnqueuer:
         ``batch_id`` to correlate this batch with a caller-constructed
         identifier (e.g. a finalizer job enqueued separately that needs to
         reference the same batch).
+
+        Raises ``ValueError`` when ``items`` exceeds ``MAX_BATCH_SIZE`` — the
+        same cap :meth:`~taskq.client.JobsClient.enqueue_batch` already applies
+        to the identical operation one layer up. The backend binds every item
+        as 21 parallel array parameters to a single ``unnest`` INSERT in one
+        transaction, so an uncapped batch enqueued from inside a job body is
+        unbounded fan-out that bypasses the client-side guardrail.
         """
+        if len(items) > MAX_BATCH_SIZE:
+            raise ValueError(
+                f"items must contain at most {MAX_BATCH_SIZE} entries, got {len(items)}"
+            )
+
         resolved_batch_id = batch_id if batch_id is not None else UUID(bytes=new_job_id().bytes)
 
         conn, from_loop_scope = self._resolve_connection(connection)
