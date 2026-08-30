@@ -175,9 +175,11 @@ asyncio.run(main())
 uv run taskq worker --actors myapp.actors:registry --queues default
 ```
 
-The worker applies pending migrations at startup when
-`TASKQ_MIGRATE_ON_START=true`, elects a leader via Postgres advisory locks,
-and consumes jobs with `SKIP LOCKED` dispatch.
+The worker elects a leader via Postgres advisory locks and consumes jobs with
+`SKIP LOCKED` dispatch. It does **not** apply migrations:
+`TASKQ_MIGRATE_ON_START` is honoured only by `taskq ui serve`, and the worker
+warns if you set it. Run migrations from a pre-deploy job or init container
+(`taskq migrate up`) so replicas cannot race.
 
 ## Layout
 
@@ -247,7 +249,7 @@ through [`dotenvmodel`](https://pypi.org/project/dotenvmodel/) — drop a
 | `TASKQ_PG_DSN`                | `postgresql://taskq:taskq@localhost:5432/taskq`      | Direct PG DSN (sessions, LISTEN, advisory locks) |
 | `TASKQ_SCHEMA_NAME`           | `taskq`                                              | Schema for all TaskQ tables                   |
 | `TASKQ_REDIS_URL`             | _unset_                                              | Optional Redis URL for progress fanout        |
-| `TASKQ_MIGRATE_ON_START`      | `false`                                              | Apply pending migrations on startup           |
+| `TASKQ_MIGRATE_ON_START`      | `false`                                              | Apply pending migrations on startup (`ui serve` only; ignored by the worker) |
 
 See `src/taskq/settings.py` for the full set of knobs (pool sizes, heartbeat
 intervals, grace periods, rate-limit fallback, metrics port, admin UI

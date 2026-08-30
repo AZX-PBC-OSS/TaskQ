@@ -257,7 +257,10 @@ class TaskQSettings(DotEnvConfig):
         default=False,
         description="TASKQ_MIGRATE_ON_START. When True, apply pending migrations "
         "before the admin UI accepts its first request. Aborts startup "
-        "if migrations fail.",
+        "if migrations fail. Consumed ONLY by `taskq ui serve` -- the worker "
+        "ignores it (and warns when it is set), because N worker replicas "
+        "racing to migrate is the concurrent-migration hazard migrations are "
+        "supposed to avoid. Migrate from a pre-deploy job or init container.",
     )
     example_host: str = Field(
         default="0.0.0.0",  # noqa: S104  # Why: default bind address for the example trigger app; production deployments override via TASKQ_EXAMPLE_HOST env var.
