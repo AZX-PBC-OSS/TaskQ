@@ -167,28 +167,75 @@ def test_warning_logged_when_no_auth_non_dev(
     assert len(warning_events) >= 1
 
 
-def test_no_warning_when_no_auth_in_dev(
+@pytest.mark.parametrize("env", ["dev", "development"])
+def test_warning_logged_when_no_auth_in_dev(
+    env: str,
     monkeypatch: pytest.MonkeyPatch,
     stub_pool: _StubPool,
     structlog_capture: list[dict[str, Any]],
 ) -> None:
-    """No WARNING about unauthenticated when env is dev."""
-    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
+    """WARNING fires in dev/development too.
+
+    A dev-labeled process is the only configuration that actually serves an
+    unauthenticated admin UI (non-dev either raises or has had the guard
+    explicitly disabled), so it is the case that most needs the log line.
+    This also surfaces a production deployment mislabeled as dev, which
+    disables this check and the health/metrics token check at once.
+    """
+    monkeypatch.setenv("TASKQ_ENVIRONMENT", env)
     create_router(stub_pool)  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
-    admin_warnings = [e for e in structlog_capture if e.get("event") == "admin-ui-no-auth"]
-    assert len(admin_warnings) == 0
+    admin_warnings = [
+        e
+        for e in structlog_capture
+        if e.get("event") == "admin-ui-no-auth" and e.get("log_level") == "warning"
+    ]
+    assert len(admin_warnings) == 1
+    assert admin_warnings[0].get("environment") == env
+    detail = str(admin_warnings[0].get("detail", ""))
+    assert "served with no authentication" in detail
+    assert "TASKQ_HEALTH_REQUIRE_TOKEN" in detail
 
 
-def test_no_warning_when_no_auth_in_development(
+@pytest.mark.parametrize("env", ["dev", "development", "production", "staging", ""])
+def test_no_warning_when_auth_dependency_present(
+    env: str,
     monkeypatch: pytest.MonkeyPatch,
     stub_pool: _StubPool,
     structlog_capture: list[dict[str, Any]],
 ) -> None:
-    """No WARNING about unauthenticated when env is development."""
-    monkeypatch.setenv("TASKQ_ENVIRONMENT", "development")
-    create_router(stub_pool)  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
+    """No WARNING on a correctly configured instance, in any environment.
+
+    A warning that fires on an authenticated admin UI would be filtered out by
+    operators and stop being a signal for the case that matters.
+    """
+    monkeypatch.setenv("TASKQ_ENVIRONMENT", env)
+
+    def _auth() -> None:
+        return None
+
+    create_router(stub_pool, auth_dependency=_auth)  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
     admin_warnings = [e for e in structlog_capture if e.get("event") == "admin-ui-no-auth"]
-    assert len(admin_warnings) == 0
+    assert admin_warnings == []
+
+
+@pytest.mark.parametrize(
+    ("env", "raises"),
+    [("dev", False), ("development", False), ("production", True), ("staging", True), ("", True)],
+)
+def test_startup_behaviour_unchanged_by_the_warning_move(
+    env: str,
+    raises: bool,
+    monkeypatch: pytest.MonkeyPatch,
+    stub_pool: _StubPool,
+) -> None:
+    """The raise was restructured only so the warning could sit outside the
+    environment test; which environments start must not have changed."""
+    monkeypatch.setenv("TASKQ_ENVIRONMENT", env)
+    if raises:
+        with pytest.raises(RuntimeError, match="requires auth_dependency"):
+            create_router(stub_pool)  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
+    else:
+        create_router(stub_pool)  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
 
 
 # ── No import from taskq.worker ──────────────────────────────────────

@@ -337,15 +337,38 @@ def create_router(
 
     router = APIRouter(**router_kwargs)
 
-    if auth_dependency is None and settings.environment not in {"dev", "development"}:
-        if settings.admin_ui_require_auth:
+    if auth_dependency is None:
+        is_dev_env = settings.environment in {"dev", "development"}
+        if not is_dev_env and settings.admin_ui_require_auth:
             raise RuntimeError(
                 "admin UI requires auth_dependency in non-dev environments "
                 "(set TASKQ_ADMIN_UI_REQUIRE_AUTH=false to disable)"
             )
+        # Why this warning sits outside the environment test that governs the
+        # RuntimeError above: a dev-labeled process is the only configuration
+        # that actually serves an unauthenticated admin UI, so it is the one
+        # that most needs a log line. Keeping the warning inside the non-dev
+        # branch meant the silent case was the dangerous one.
+        suppressed_by = (
+            "TASKQ_ENVIRONMENT is a dev environment, so the fail-closed startup check did not run"
+            if is_dev_env
+            else "TASKQ_ADMIN_UI_REQUIRE_AUTH is false, so the fail-closed "
+            "startup check was suppressed"
+        )
         logger.warning(
             "admin-ui-no-auth",
             environment=settings.environment,
+            detail=(
+                "admin UI is being served with no authentication: "
+                f"{suppressed_by}. Every admin route is reachable by anyone "
+                "who can reach this port. This is unsafe if the process is "
+                "actually serving production traffic: a production "
+                "deployment mislabeled as dev disables this check and the "
+                "health/metrics token check (TASKQ_HEALTH_REQUIRE_TOKEN) at "
+                "the same time. Pass auth_dependency to create_router, or "
+                "set TASKQ_ENVIRONMENT to the real environment so startup "
+                "fails closed."
+            ),
         )
 
     @router.get("/")
