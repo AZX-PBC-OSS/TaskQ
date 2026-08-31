@@ -21,7 +21,18 @@ dependencies = [
     "asyncpg>=0.31.0,<1",
     "croniter>=6.2.4",
     "dotenvmodel>=0.6.3,<1",
-    "opentelemetry-api>=1.44.0",
+    # Floor is 1.42.0 because that is the lowest version the suite was measured
+    # green on, not because anything here needs it. TaskQ imports only stable
+    # public surface (opentelemetry.trace, .metrics, .context). The OpenTelemetry
+    # Python packages are released lock-step: opentelemetry-sdk==X requires
+    # opentelemetry-api==X and opentelemetry-semantic-conventions==0.Nb0 exactly,
+    # so a floor on ANY of them is a floor on all of them, and every floor below
+    # is the same release train. 1.41.0 is the measured break: it pairs with
+    # opentelemetry-exporter-prometheus 0.62b0, which has no `registry=` kwarg
+    # (see the prometheus extra). Do not raise this in a routine dependency bump:
+    # it is a compatibility boundary a downstream consumer resolves against, and
+    # an arbitrary floor here forces them to override our own package.
+    "opentelemetry-api>=1.42.0",
     "orjson>=3.11.9",
     "pydantic>=2.13.4,<3",
     "structlog>=26.1.0,<27",
@@ -55,17 +66,32 @@ reload = [
     "watchfiles>=1.2.0",
 ]
 otel = [
-    # Not imported anywhere under src/taskq; kept optional for operators who
-    # export OTLP directly or drive auto-instrumentation via
-    # `opentelemetry-instrument`.
-    "opentelemetry-sdk>=1.44.0",
-    "opentelemetry-exporter-otlp>=1.44.0",
-    "opentelemetry-instrumentation>=0.65b0,<1",
+    # The SDK and OTLP exporter are not imported by the runtime package; they are
+    # kept optional for operators who export OTLP directly or drive
+    # auto-instrumentation via `opentelemetry-instrument`. (src/taskq/testing/otel.py
+    # does import the SDK, but that module is a test helper, loaded only by a test
+    # suite that installs the dev group.)
+    #
+    # All three floors track the core opentelemetry-api floor, for the lock-step
+    # reason documented there. opentelemetry-instrumentation is the one that has to
+    # move with them rather than being left alone: it requires
+    # opentelemetry-semantic-conventions==0.Nb0 EXACTLY, so >=0.65b0 pins semconv to
+    # 0.65b0 and therefore opentelemetry-api to 1.44.0. Measured with
+    # `uv pip compile --resolution lowest-direct`: sdk>=1.42.0 with
+    # instrumentation>=0.65b0 still resolves api==1.44.0, so lowering the SDK floor
+    # alone would have changed nothing for anyone installing taskq[otel].
+    "opentelemetry-sdk>=1.42.0",
+    "opentelemetry-exporter-otlp>=1.42.0",
+    "opentelemetry-instrumentation>=0.63b0,<1",
 ]
 prometheus = [
     # >=0.63b0 guarantees PrometheusMetricReader's public `registry=` kwarg
     # (opentelemetry-python #5055); earlier releases hard-coded the global
-    # REGISTRY, which is not safe for isolated metric scrapes.
+    # REGISTRY, which is not safe for isolated metric scrapes. Deliberately NOT
+    # lowered with the other floors: 0.63b0 requires opentelemetry-sdk~=1.42.0, so
+    # it is exactly the pair for the 1.42.0 floor above, and it is what makes 1.42.0
+    # the floor. Dropping to 0.62b0 was measured: 7 failures in
+    # tests/test_prometheus_metrics.py, all `TypeError` on the missing kwarg.
     "opentelemetry-exporter-prometheus>=0.63b0,<1",
     "prometheus-client>=0.26.0,<1",
 ]
@@ -495,7 +521,8 @@ dev = [
     "mkdocs>=1.6.1",
     "mkdocs-material>=9.7.7",
     "mkdocstrings[python]>=1.0.6",
-    "opentelemetry-sdk>=1.44.0",
+    # Tracks the otel extra's floor; the suite is what established that number.
+    "opentelemetry-sdk>=1.42.0",
     "pip-audit>=2.10.1",
     "pyright>=1.1.411",
     "pytest>=9.1.1",

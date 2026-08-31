@@ -5,8 +5,7 @@ and ``taskq.cancellation.requested`` counter.
 """
 
 import pytest
-from opentelemetry.sdk.metrics._internal.point import NumberDataPoint
-from opentelemetry.sdk.metrics.export import InMemoryMetricReader, Metric
+from opentelemetry.sdk.metrics.export import InMemoryMetricReader, Metric, NumberDataPoint
 
 from taskq.backend._protocol import CancelPhase
 

@@ -11,8 +11,12 @@ from typing import Any
 import pytest
 import structlog
 from opentelemetry import trace
-from opentelemetry.sdk.metrics._internal.point import HistogramDataPoint, NumberDataPoint
-from opentelemetry.sdk.metrics.export import InMemoryMetricReader, Metric
+from opentelemetry.sdk.metrics.export import (
+    HistogramDataPoint,
+    InMemoryMetricReader,
+    Metric,
+    NumberDataPoint,
+)
 from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor, SpanExporter, SpanExportResult
 
