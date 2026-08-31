@@ -85,6 +85,29 @@ uv run pytest -m "not integration"
 
 If you don't have Docker available, use `uv run pytest -m "not integration"` to run the unit test suite.
 
+### Tests Must Not Leave the Machine
+
+Every lane is hermetic. The `integration`, `redis` and `e2e` tiers talk to testcontainers on this host; the unit tier talks to nothing. No test is allowed to call a live third-party service, and an autouse guard in the root `conftest.py` enforces it: a connection to a globally routable address fails the test with `OutboundNetworkBlockedError`. Anything not globally routable stays open, so loopback, Docker bridge and compose addresses, private LAN ranges and unix sockets (including `/var/run/docker.sock`) all keep working.
+
+Two rules follow from it:
+
+- **Point test fakes at unroutable names.** Use an RFC 2606 `.invalid` host (`https://idp.test.invalid`), never `example.com` or a real vendor domain. A fake on a routable domain turns a mock miss into a silent pass, because a real server answers and its response gets asserted against.
+- **Do not re-mark a test to dodge the guard.** There is no lane here that is permitted to leave the machine, so a marker cannot make the call legitimate. If you believe a call genuinely must go out, add an explicit allowance in `conftest.py` with the reason written down.
+
+#### The worked example: httpx and httpx2
+
+`taskq[oidc]` installs **both** HTTP stacks, and they cannot see each other's mocks:
+
+- `src/taskq/web/admin/auth/oidc.py` does `import httpx2 as httpx` for the discovery and JWKS fetches.
+- authlib's `AsyncOAuth2Client` subclasses `httpx.AsyncClient` for the token exchange (at the pinned authlib 1.7.x).
+- `respx` patches `httpx`'s transport only. It has no idea `httpx2` exists.
+
+So respx alone mocks half the OIDC flow. `tests/test_sso_oidc.py` closes the gap with the `_bridge_httpx2` fixture, which monkeypatches `httpx2.AsyncClient` to `httpx.AsyncClient` for the duration of the test. Remove that fixture and the discovery call escapes respx entirely, with no error from respx itself.
+
+This is not hypothetical. In a sibling repo the same shape (authlib 1.8 prefers `httpx2` whenever it is importable, so its OAuth client silently moved off the stack respx patches) sent unit-lane traffic to the real Microsoft Entra endpoint for months while the suite stayed green, because the fake issuer was a routable Microsoft domain and the live error response happened to satisfy the assertion.
+
+Three things guard it now: the socket guard blocks the call, `pytest_configure` warns at session start whenever both stacks are importable, and `tests/test_suite_hygiene.py` pins that respx still cannot see `httpx2`, that authlib's client is still on the stack respx patches (this fails on an authlib 1.8 bump, by design), and that the bridge fixture is still there.
+
 ### Property-Based Tests
 
 TaskQ uses [Hypothesis](https://hypothesis.readthedocs.io/) for property-based testing. These tests generate randomized inputs to find edge cases that hand-written tests might miss. Property-based tests live alongside the standard test suite and run as part of `uv run pytest`.

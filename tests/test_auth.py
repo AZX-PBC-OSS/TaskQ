@@ -749,7 +749,7 @@ async def test_make_redis_client_factory_builds_with_credential_provider() -> No
 async def test_make_redis_client_factory_warns_on_plaintext_scheme() -> None:
     """redis:// sends the bearer token unencrypted - the factory must warn."""
     provider = _FakeRedisProvider()
-    factory = make_redis_client_factory("redis://cache.example.com:6379", provider)
+    factory = make_redis_client_factory("redis://cache.test.invalid:6379", provider)
 
     with (
         patch("redis.asyncio.Redis.from_url", return_value=MagicMock()),
@@ -764,7 +764,7 @@ async def test_make_redis_client_factory_warns_on_plaintext_scheme() -> None:
 async def test_make_redis_client_factory_no_warning_on_tls_scheme() -> None:
     """rediss:// encrypts the token - no plaintext warning."""
     provider = _FakeRedisProvider()
-    factory = make_redis_client_factory("rediss://cache.example.com:6380", provider)
+    factory = make_redis_client_factory("rediss://cache.test.invalid:6380", provider)
 
     with (
         patch("redis.asyncio.Redis.from_url", return_value=MagicMock()),

@@ -16,7 +16,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 
 _RSA = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-_SUBJECT = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "idp.test.example.com")])
+_SUBJECT = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "idp.test.invalid")])
 _NOW = dt.datetime.now(dt.UTC)
 _CERT_OBJ = (
     x509.CertificateBuilder()
@@ -34,9 +34,9 @@ IDP_KEY_PEM: str = _RSA.private_bytes(
     serialization.PrivateFormat.TraditionalOpenSSL,
     serialization.NoEncryption(),
 ).decode("ascii")
-IDP_ENTITY_ID: str = "https://idp.test.example.com"
-SP_ENTITY_ID: str = "https://sp.test.example.com"
-ACS_URL: str = "http://testserver.local/admin/callback"
+IDP_ENTITY_ID: str = "https://idp.test.invalid"
+SP_ENTITY_ID: str = "https://sp.test.invalid"
+ACS_URL: str = "http://testserver.invalid/admin/callback"
 
 
 def _format_cert_for_saml(pem: str) -> str:

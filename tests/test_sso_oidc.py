@@ -32,7 +32,7 @@ from fastapi.testclient import TestClient
 from taskq.web.admin.auth.oidc import OIDCAuthConfig, OIDCTokenContext, create_oidc_auth
 from tests._sso_oidc_crypto import jwks_dict, make_discovery, make_token_response
 
-_ISSUER = "https://idp.test.example.com"
+_ISSUER = "https://idp.test.invalid"
 _CLIENT_ID = "test-client"
 
 

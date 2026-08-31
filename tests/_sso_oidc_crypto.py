@@ -31,7 +31,7 @@ def jwks_dict() -> dict[str, Any]:
 def make_id_token(
     claims: dict[str, Any] | None = None,
     *,
-    issuer: str = "https://idp.test.example.com",
+    issuer: str = "https://idp.test.invalid",
     client_id: str = "test-client",
     subject: str = "user-123",
     email: str | None = "user@example.com",
@@ -56,7 +56,7 @@ def make_id_token(
     return jwt.encode(header, base, _SIGN_KEYSET)
 
 
-def make_discovery(issuer: str = "https://idp.test.example.com") -> dict[str, Any]:
+def make_discovery(issuer: str = "https://idp.test.invalid") -> dict[str, Any]:
     """A minimal OIDC discovery document for the mocked issuer."""
     return {
         "issuer": issuer,
@@ -72,7 +72,7 @@ def make_discovery(issuer: str = "https://idp.test.example.com") -> dict[str, An
 def make_token_response(
     *,
     id_token_claims: dict[str, Any] | None = None,
-    issuer: str = "https://idp.test.example.com",
+    issuer: str = "https://idp.test.invalid",
     client_id: str = "test-client",
     extra_id_claims: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
