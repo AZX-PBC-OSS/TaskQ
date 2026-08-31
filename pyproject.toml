@@ -523,10 +523,13 @@ dev = [
     "mkdocs>=1.6.1",
     "mkdocs-material>=9.7.7",
     "mkdocstrings[python]>=1.0.6",
-    # `taskq.testing.otel` imports SDK internals (opentelemetry.sdk.metrics.
-    # _internal.point). Floor matches the core opentelemetry-api floor so the
-    # suite can be resolved and run at the lower bound; normal `uv sync`
-    # still resolves to the newest release.
+    # `taskq.testing.otel` imports the SDK, now via the PUBLIC
+    # opentelemetry.sdk.metrics.export path rather than the private
+    # _internal.point one it used to reach for (the names are re-exported and
+    # are the same objects; tests/test_otel_contract.py pins the field layout
+    # the public path does not promise). Floor matches the core
+    # opentelemetry-api floor so the suite can be resolved and run at the lower
+    # bound; normal `uv sync` still resolves to the newest release.
     "opentelemetry-sdk>=1.30.0",
     "pip-audit>=2.10.1",
     "pyright>=1.1.411",

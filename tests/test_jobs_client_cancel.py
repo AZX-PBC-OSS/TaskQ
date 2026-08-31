@@ -7,8 +7,7 @@ exactly once per call regardless of ``cancellation_initiated`` outcome.
 from datetime import UTC, datetime
 
 import pytest
-from opentelemetry.sdk.metrics._internal.point import NumberDataPoint
-from opentelemetry.sdk.metrics.export import InMemoryMetricReader, Metric
+from opentelemetry.sdk.metrics.export import InMemoryMetricReader, Metric, NumberDataPoint
 
 from taskq._ids import new_job_id
 from taskq.backend import EnqueueArgs
