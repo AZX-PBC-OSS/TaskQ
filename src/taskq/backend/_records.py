@@ -8,7 +8,7 @@ reuse (e.g. the rate-limit modules) and unit testing.
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from taskq._json import dumps_str, loads
+from taskq._json import dumps_jsonb_str, loads
 from taskq.backend._protocol import (
     IdempotencyKey,
     IdentityKey,
@@ -48,13 +48,17 @@ def jsonb_to_dict(value: str | dict[str, object] | None) -> dict[str, object] | 
 def jsonb_param(value: dict[str, object] | None) -> str | None:
     """Serialize a dict for jsonb parameter binding, or return ``None``.
 
-    Uses ``taskq._json.dumps_str`` (orjson) so that UUID and datetime
+    Uses ``taskq._json.dumps_jsonb_str`` (orjson) so that UUID and datetime
     values inside the dict are serialised correctly.  The caller adds
     ``::jsonb`` in the SQL string.
+
+    Raises ``ValueError`` when the value carries a NUL (U+0000), which
+    ``jsonb`` cannot store; see :func:`~taskq._json.dumps_jsonb_str` for why
+    that has to fail here rather than inside the INSERT.
     """
     if value is None:
         return None
-    return dumps_str(value)
+    return dumps_jsonb_str(value)
 
 
 def _job_row_from_record(rec: "asyncpg.Record") -> JobRow:

@@ -13,7 +13,10 @@ from uuid import UUID
 
 import orjson
 
-__all__ = ["dumps", "dumps_str", "loads", "structlog_serializer"]
+__all__ = ["dumps", "dumps_jsonb_str", "dumps_str", "loads", "structlog_serializer"]
+
+# orjson renders a NUL codepoint as exactly these six characters.
+_NUL_ESCAPE = "\\u0000"
 
 _UUID_RE = re.compile(
     r"\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z",
@@ -82,6 +85,57 @@ def dumps_str(value: Any, /) -> str:
     """Serialize to ``str``. Use only when the consumer demands text (e.g.,
     asyncpg jsonb codec). Prefer :func:`dumps` for everything else."""
     return dumps(value).decode("utf-8")
+
+
+def _has_nul(value: object, /) -> bool:
+    """True when any string anywhere in *value* contains a NUL codepoint.
+
+    Walks the value parsed back out of orjson, so only the types
+    :func:`orjson.loads` can produce need handling.
+    """
+    if isinstance(value, str):
+        return "\x00" in value
+    if isinstance(value, dict):
+        pairs = cast(dict[object, object], value)
+        return any(_has_nul(k) or _has_nul(v) for k, v in pairs.items())
+    if isinstance(value, list):
+        entries = cast(list[object], value)
+        return any(_has_nul(v) for v in entries)
+    return False
+
+
+def dumps_jsonb_str(value: Any, /) -> str:
+    """Serialize for binding to a PostgreSQL ``jsonb`` parameter.
+
+    Identical to :func:`dumps_str`, except a NUL (U+0000) anywhere in the
+    value is rejected here rather than by the database.
+
+    ``\\u0000`` is valid JSON and a ``json`` column stores it happily, but
+    ``jsonb`` decodes to ``text``, which cannot hold a NUL, so ``jsonb_in``
+    fails with SQLSTATE 22P05.  Caller-supplied payloads, metadata and actor
+    results reach ``jsonb`` columns after type-and-size validation that says
+    nothing about content, so without this guard a single NUL surfaces as an
+    ``asyncpg.UntranslatableCharacterError`` raised from deep inside the
+    INSERT: opaque to an enqueue caller, and worse on the terminal-write
+    path, where ``_TERMINAL_WRITE_INFRA_EXCEPTIONS`` reads any
+    ``PostgresError`` as transient infrastructure failure.  The job is then
+    never marked failed; it stays ``running`` until the lease sweep reclaims
+    it, re-runs, produces the same NUL, and loops, re-executing the actor's
+    already-committed side effects each time.  Raising a ``ValueError`` here
+    keeps that classification honest: it is a permanent data defect, so the
+    normal actor-failure path handles it.
+
+    The ``\\u0000`` substring test is only a cheap prefilter.  orjson emits the
+    same six characters for the *literal* text ``\\u0000``, which ``jsonb``
+    accepts, so a hit is confirmed against the parsed value before raising.
+    """
+    text = dumps(value).decode("utf-8")
+    if _NUL_ESCAPE in text and _has_nul(orjson.loads(text)):
+        raise ValueError(
+            "value contains a NUL character (U+0000), which PostgreSQL cannot "
+            "store in a jsonb column; strip control characters before storing"
+        )
+    return text
 
 
 def loads(data: bytes | bytearray | memoryview | str, /) -> Any:
