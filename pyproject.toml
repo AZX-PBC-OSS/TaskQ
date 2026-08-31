@@ -147,6 +147,21 @@ exclude-newer = "24 hours"
 # markupsafe is excluded from cooldown for the same reason as dotenvmodel —
 # it's a transitive of pydantic that we pin tightly and audit.
 exclude-newer-package = { dotenvmodel = "0d", markupsafe = false }
+# Security floors for packages TaskQ does not depend on directly. A bare
+# `uv lock --upgrade-package` fixes the resolution once; a constraint keeps it
+# fixed, and fails the lock loudly if a parent ever pins back below the floor
+# instead of silently regressing.
+#
+# cryptography>=50.0.0 -- PYSEC-2026-3552: RSA PKCS#1 v1.5 Bleichenbacher
+# oracle in pkcs7_decrypt_*; pulled in by authlib (oidc extra, dev group),
+# azure-identity/msal (aad extra) and joserfc. TaskQ never calls the PKCS#7
+# decrypt APIs, so the finding is not reachable from this codebase, but the
+# floor costs nothing and the extras hand cryptography to callers who might.
+#
+# pip>=26.2 -- PYSEC-2026-3721. pip is not a dependency of TaskQ at all; it
+# arrives in the resolved environment as a build-time tool, which is why a
+# constraint rather than a dependency bump is the lever that moves it.
+constraint-dependencies = ["cryptography>=50.0.0", "pip>=26.2"]
 
 [build-system]
 requires = ["hatchling"]
