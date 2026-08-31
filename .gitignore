@@ -68,3 +68,5 @@ postgres-data/
 .review/
 # Local workflow artifacts (specs/plans/reviews)
 docs/superpowers/
+# Agent review artifacts
+.reviews/

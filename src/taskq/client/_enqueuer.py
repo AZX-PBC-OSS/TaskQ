@@ -207,7 +207,21 @@ class SubJobEnqueuer:
         ``batch_id`` to correlate this batch with a caller-constructed
         identifier (e.g. a finalizer job enqueued separately that needs to
         reference the same batch).
+
+        Raises ``ValueError`` above 1000 items, the same cap
+        :meth:`~taskq.client.JobsClient.enqueue_batch` already applies to the
+        identical operation one layer up. The backend binds every item as 21
+        parallel array parameters to a single ``unnest`` INSERT in one
+        transaction, so an uncapped batch enqueued from inside a job body is
+        unbounded fan-out that bypasses the client-side guardrail.
+
+        The literal mirrors the peer rather than introducing a shared constant,
+        because the two call sites are being unified separately and a constant
+        added here would collide with that.
         """
+        if len(items) > 1000:
+            raise ValueError(f"items must contain at most 1000 entries, got {len(items)}")
+
         resolved_batch_id = batch_id if batch_id is not None else UUID(bytes=new_job_id().bytes)
 
         conn, from_loop_scope = self._resolve_connection(connection)
