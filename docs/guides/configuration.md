@@ -448,6 +448,7 @@ Subclass `WorkerSettings` to add application-specific config alongside TaskQ set
 from taskq.settings import WorkerSettings
 from dotenvmodel import Field
 
+
 class AppSettings(WorkerSettings):
     stripe_api_key: str = Field(description="Stripe secret key")
     sentry_dsn: str | None = Field(default=None)

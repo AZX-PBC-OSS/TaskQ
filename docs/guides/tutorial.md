@@ -32,14 +32,17 @@ from datetime import date
 from pydantic import BaseModel
 from taskq import actor
 
+
 class DigestPayload(BaseModel):
     user_id: str
     target_date: date
+
 
 class DigestResult(BaseModel):
     user_id: str
     notification_count: int
     summary: str
+
 
 @actor(queue="digests")
 async def compile_digest(payload: DigestPayload) -> DigestResult:
@@ -48,6 +51,7 @@ async def compile_digest(payload: DigestPayload) -> DigestResult:
         notification_count=0,
         summary="No new notifications",
     )
+
 
 registry = [compile_digest]
 ```
@@ -67,6 +71,7 @@ from taskq import TaskQ
 from taskq.settings import TaskQSettings
 from myapp.actors import compile_digest, DigestPayload
 
+
 async def main() -> None:
     settings = TaskQSettings.load()
     async with TaskQ(dsn=str(settings.pg_dsn)) as tq:
@@ -75,6 +80,7 @@ async def main() -> None:
             DigestPayload(user_id="u_001", target_date="2026-07-10"),
         )
         print(f"enqueued job {handle.job_id}")
+
 
 asyncio.run(main())
 ```
@@ -94,6 +100,7 @@ Replace the `@actor` decorator from Part 1:
 
 ```python
 from datetime import timedelta
+
 
 @actor(queue="digests", result_ttl=timedelta(hours=24))
 async def compile_digest(payload: DigestPayload) -> DigestResult:
@@ -118,6 +125,7 @@ from taskq.exceptions import JobFailed, ResultUnavailable
 from taskq.settings import TaskQSettings
 from myapp.actors import compile_digest, DigestPayload, DigestResult
 
+
 async def main() -> None:
     settings = TaskQSettings.load()
     async with TaskQ(dsn=str(settings.pg_dsn)) as tq:
@@ -134,6 +142,7 @@ async def main() -> None:
             print("result gone (TTL expired?)")
         except TimeoutError:
             print("timed out waiting")
+
 
 asyncio.run(main())
 ```
@@ -154,23 +163,33 @@ Configure a `RetryPolicy`, mark permanent errors as non-retryable, and use
 from taskq.exceptions import RetryAfter
 from taskq.retry import RetryPolicy
 
+
 class NotificationsAPIError(Exception):
     def __init__(self, status_code: int, retry_after: int | None = None) -> None:
         self.status_code = status_code
         self.retry_after = retry_after
         super().__init__(f"HTTP {status_code}")
 
+
 class InvalidUserError(Exception):
     pass
+
 
 async def fetch_notifications(user_id: str, target_date: date) -> list[dict]:
     raise NotImplementedError
 
+
 @actor(
     queue="digests",
     result_ttl=timedelta(hours=24),
-    retry=RetryPolicy(kind="transient", max_attempts=5, backoff="exponential",
-                      base=timedelta(seconds=10), cap=timedelta(minutes=10), jitter=0.25),
+    retry=RetryPolicy(
+        kind="transient",
+        max_attempts=5,
+        backoff="exponential",
+        base=timedelta(seconds=10),
+        cap=timedelta(minutes=10),
+        jitter=0.25,
+    ),
     non_retryable_exceptions=(InvalidUserError,),
 )
 async def compile_digest(payload: DigestPayload) -> DigestResult:
@@ -211,8 +230,7 @@ duplicate digests. Configure `unique_for` on the actor and pass
     retry=RetryPolicy(kind="transient", max_attempts=5, backoff="exponential"),
     non_retryable_exceptions=(InvalidUserError,),
 )
-async def compile_digest(payload: DigestPayload) -> DigestResult:
-    ...
+async def compile_digest(payload: DigestPayload) -> DigestResult: ...
 ```
 
 ```bash
@@ -227,6 +245,7 @@ import asyncio
 from taskq import TaskQ
 from taskq.settings import TaskQSettings
 from myapp.actors import compile_digest, DigestPayload
+
 
 async def main() -> None:
     settings = TaskQSettings.load()
@@ -244,6 +263,7 @@ async def main() -> None:
         )
         print(f"h1: was_existing={h1.was_existing}")
         print(f"h2: was_existing={h2.was_existing}, same={h2.job_id == h1.job_id}")
+
 
 asyncio.run(main())
 ```
@@ -269,19 +289,24 @@ class SendDigestEmailPayload(BaseModel):
     summary: str
     notification_count: int
 
+
 class SmtpClient:
     async def send(self, to: str, subject: str, body: str) -> str: ...
     async def aclose(self) -> None: ...
 
+
 @actor(queue="email", retry=RetryPolicy(kind="transient", max_attempts=3))
 async def send_digest_email(
-    payload: SendDigestEmailPayload, *, smtp: SmtpClient,
+    payload: SendDigestEmailPayload,
+    *,
+    smtp: SmtpClient,
 ) -> None:
     await smtp.send(
         to=f"{payload.user_id}@example.com",
         subject=f"Your digest for {payload.target_date}",
         body=payload.summary,
     )
+
 
 registry = [compile_digest, send_digest_email]
 ```
@@ -295,6 +320,7 @@ from taskq.settings import WorkerSettings
 from taskq.worker.run import worker_main
 from myapp.actors import SmtpClient, registry
 
+
 async def make_smtp_client():
     client = SmtpClient()
     try:
@@ -302,14 +328,17 @@ async def make_smtp_client():
     finally:
         await client.aclose()
 
+
 if __name__ == "__main__":
     di = ProviderRegistry()
     di.register_factory(SmtpClient, Scope.LOOP, make_smtp_client)
-    raise SystemExit(worker_main(
-        WorkerSettings.load(),
-        actor_registry={r.name: r for r in registry},
-        di_registry=di,
-    ))
+    raise SystemExit(
+        worker_main(
+            WorkerSettings.load(),
+            actor_registry={r.name: r for r in registry},
+            di_registry=di,
+        )
+    )
 ```
 
 ```bash
@@ -340,23 +369,28 @@ Instead of sending one email at a time, fan out individual send jobs using
 from taskq import EnqueueItem
 from taskq.context import JobContext
 
+
 class BatchDigestPayload(BaseModel):
     user_ids: list[str]
     target_date: date
+
 
 class BatchDigestResult(BaseModel):
     total_users: int
     batch_id: str
 
+
 @actor(queue="digests", retry=RetryPolicy(kind="transient", max_attempts=3))
 async def compile_batch_digest(
-    payload: BatchDigestPayload, ctx: JobContext[BatchDigestPayload],
+    payload: BatchDigestPayload,
+    ctx: JobContext[BatchDigestPayload],
 ) -> BatchDigestResult:
     items = [
         EnqueueItem(
             actor_ref=send_digest_email,
             payload=SendDigestEmailPayload(
-                user_id=uid, target_date=payload.target_date,
+                user_id=uid,
+                target_date=payload.target_date,
                 summary=f"Your daily digest for {payload.target_date}",
                 notification_count=0,
             ),
@@ -369,6 +403,7 @@ async def compile_batch_digest(
         total_users=len(payload.user_ids),
         batch_id=str(batch[0].job_id),
     )
+
 
 registry = [compile_digest, send_digest_email, compile_batch_digest]
 ```
@@ -386,6 +421,7 @@ from taskq import TaskQ
 from taskq.settings import TaskQSettings
 from myapp.actors import compile_batch_digest, BatchDigestPayload
 
+
 async def main() -> None:
     settings = TaskQSettings.load()
     async with TaskQ(dsn=str(settings.pg_dsn)) as tq:
@@ -400,6 +436,7 @@ async def main() -> None:
                 print(f"finished: {row.status}")
                 break
             await asyncio.sleep(1.0)
+
 
 asyncio.run(main())
 ```
@@ -422,12 +459,15 @@ Declare it with `cron()` — the worker auto-discovers and persists it at startu
 ```python
 from taskq import cron
 
+
 async def make_batch_payload() -> dict:
     from datetime import UTC, datetime
+
     return {
         "user_ids": ["u_001", "u_002", "u_003"],
         "target_date": datetime.now(UTC).date().isoformat(),
     }
+
 
 cron(
     "0 3 * * *",
@@ -490,18 +530,21 @@ from taskq import TaskQ
 from taskq.settings import TaskQSettings
 from myapp.actors import compile_batch_digest, BatchDigestPayload
 
+
 async def main() -> None:
     settings = TaskQSettings.load()
     async with TaskQ(dsn=str(settings.pg_dsn)) as tq:
         handle = await tq.enqueue(
             compile_batch_digest,
             BatchDigestPayload(
-                user_ids=[f"u_{i:03d}" for i in range(1, 501)], target_date="2026-07-10",
+                user_ids=[f"u_{i:03d}" for i in range(1, 501)],
+                target_date="2026-07-10",
             ),
         )
         await asyncio.sleep(2.0)
         result = await handle.cancel(reason="operator cancelled")
         print(f"cancellation_initiated={result.cancellation_initiated}")
+
 
 asyncio.run(main())
 ```
@@ -530,6 +573,7 @@ from taskq import JobsClient
 from taskq.testing import InMemoryBackend, FakeClock
 from myapp.actors import DigestPayload, DigestResult, compile_digest
 
+
 async def test_compile_digest_returns_result() -> None:
     clock = FakeClock(start=datetime(2026, 7, 10, tzinfo=UTC))
     backend = InMemoryBackend(clock=clock)
@@ -538,11 +582,14 @@ async def test_compile_digest_returns_result() -> None:
         compile_digest.name,
         lambda p, ctx: {"user_id": p["user_id"], "notification_count": 3, "summary": "3 new"},
     )
-    handle = await client.enqueue(compile_digest, DigestPayload(user_id="u_001", target_date="2026-07-10"))
+    handle = await client.enqueue(
+        compile_digest, DigestPayload(user_id="u_001", target_date="2026-07-10")
+    )
     await backend.run_until_drained()
     result = await handle.wait()
     assert result.user_id == "u_001"
     assert result.notification_count == 3
+
 
 async def test_compile_digest_deduplication() -> None:
     clock = FakeClock(start=datetime(2026, 7, 10, tzinfo=UTC))
@@ -553,11 +600,20 @@ async def test_compile_digest_deduplication() -> None:
         lambda p, ctx: {"user_id": p["user_id"], "notification_count": 0, "summary": ""},
     )
     identity = "u_001:2026-07-10"
-    h1 = await client.enqueue(compile_digest, DigestPayload(user_id="u_001", target_date="2026-07-10"), identity_key=identity)
-    h2 = await client.enqueue(compile_digest, DigestPayload(user_id="u_001", target_date="2026-07-10"), identity_key=identity)
+    h1 = await client.enqueue(
+        compile_digest,
+        DigestPayload(user_id="u_001", target_date="2026-07-10"),
+        identity_key=identity,
+    )
+    h2 = await client.enqueue(
+        compile_digest,
+        DigestPayload(user_id="u_001", target_date="2026-07-10"),
+        identity_key=identity,
+    )
     assert h1.was_existing is False
     assert h2.was_existing is True
     assert h2.job_id == h1.job_id
+
 
 async def test_direct_invocation_no_queue() -> None:
     result = await compile_digest(DigestPayload(user_id="u_001", target_date="2026-07-10"))

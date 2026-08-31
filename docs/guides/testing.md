@@ -157,10 +157,10 @@ from taskq.testing.clock import FakeClock
 
 clock = FakeClock(datetime(2025, 1, 1, tzinfo=UTC))
 
-clock.advance(timedelta(seconds=1))   # move forward 1s
+clock.advance(timedelta(seconds=1))  # move forward 1s
 clock.move_to(datetime(2025, 1, 2, tzinfo=UTC))  # jump to an instant
-clock.now()       # → datetime(2025, 1, 2, tzinfo=UTC)
-clock.monotonic() # → elapsed seconds since an internal epoch (always non-zero)
+clock.now()  # → datetime(2025, 1, 2, tzinfo=UTC)
+clock.monotonic()  # → elapsed seconds since an internal epoch (always non-zero)
 ```
 
 `advance(delta)` adds `delta` to the clock; `move_to(when)` sets it to an
@@ -249,6 +249,7 @@ async def test_with_memory_jobs(memory_jobs: InMemoryBackend) -> None:
 ```python
 import pytest
 
+
 @pytest.mark.integration
 async def test_pg_backend(clean_jobs_app: JobsApp) -> None:
     backend = clean_jobs_app.backend
@@ -276,6 +277,7 @@ import pytest
 from opentelemetry import trace
 from taskq.testing.otel import setup_tracer, ListSpanExporter
 
+
 async def test_span_emitted(monkeypatch: pytest.MonkeyPatch) -> None:
     provider, exporter = setup_tracer(monkeypatch)
 
@@ -302,6 +304,7 @@ async def test_span_emitted(monkeypatch: pytest.MonkeyPatch) -> None:
 
 ```python
 from taskq.testing.otel import setup_meter, counter_value, histogram_points
+
 
 async def test_metrics_recorded(monkeypatch: pytest.MonkeyPatch) -> None:
     reader = setup_meter(monkeypatch)
@@ -396,8 +399,11 @@ span = assert_has_span(exporter, "process my_actor", kind=trace.SpanKind.CONSUME
 
 # Find an OTel event by span and event name; assert state attributes.
 assert_has_otel_event(
-    exporter, "process my_actor", "lifecycle.running",
-    from_state="pending", to_state="running",
+    exporter,
+    "process my_actor",
+    "lifecycle.running",
+    from_state="pending",
+    to_state="running",
 )
 ```
 
@@ -429,9 +435,9 @@ from taskq.testing.asyncpg_chaos import ChaosConnection, ChaosException
 chaos_conn = ChaosConnection(real_conn, fail_on_call=3)
 
 async with chaos_conn.transaction():
-    await chaos_conn.execute("INSERT ...")   # call 1
-    await chaos_conn.execute("UPDATE ...")   # call 2
-    await chaos_conn.execute("DELETE ...")   # call 3 → ChaosException
+    await chaos_conn.execute("INSERT ...")  # call 1
+    await chaos_conn.execute("UPDATE ...")  # call 2
+    await chaos_conn.execute("DELETE ...")  # call 3 → ChaosException
 # transaction rolls back; calls 1 and 2 are undone
 ```
 
@@ -530,11 +536,18 @@ async def test_snooze_deterministic_outcome(
         assume(schedule_to_close > _START)
 
     job_id = new_job_id()
-    await backend.enqueue(EnqueueArgs(
-        id=job_id, actor="test_actor", queue="default",
-        payload={"key": "value"}, max_attempts=5, retry_kind="transient",
-        scheduled_at=_START, schedule_to_close=schedule_to_close,
-    ))
+    await backend.enqueue(
+        EnqueueArgs(
+            id=job_id,
+            actor="test_actor",
+            queue="default",
+            payload={"key": "value"},
+            max_attempts=5,
+            retry_kind="transient",
+            scheduled_at=_START,
+            schedule_to_close=schedule_to_close,
+        )
+    )
 
     wid = backend._worker_id
     dispatched = await backend.dispatch_batch(wid, ["default"], limit=1, lock_lease=_LOCK_LEASE)
@@ -585,6 +598,7 @@ Postgres 18 and Redis 7.4 once per session:
 
 ```python
 import pytest
+
 
 @pytest.mark.integration
 async def test_real_pg(clean_jobs_app: JobsApp) -> None:

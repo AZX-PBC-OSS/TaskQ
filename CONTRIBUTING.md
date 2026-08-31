@@ -335,6 +335,7 @@ Always use type hints:
 def process_value(value: str, default: int = 0) -> int:
     return int(value) if value else default
 
+
 # Bad
 def process_value(value, default=0):
     return int(value) if value else default
@@ -367,10 +368,7 @@ Write helpful error messages:
 
 ```python
 # Good
-raise ValueError(
-    f"Invalid queue '{queue}'. "
-    f"Configured queues: {', '.join(sorted(self._queues))}"
-)
+raise ValueError(f"Invalid queue '{queue}'. Configured queues: {', '.join(sorted(self._queues))}")
 
 # Bad
 raise ValueError("Invalid queue")

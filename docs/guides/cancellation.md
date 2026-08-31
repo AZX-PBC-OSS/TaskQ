@@ -98,6 +98,7 @@ Check `ctx.cancellation_requested` at natural loop boundaries or between I/O cal
 from taskq import actor
 from taskq.context import JobContext
 
+
 @actor
 async def long_running(payload: Payload, ctx: JobContext[Payload]) -> Result:
     for chunk in payload.chunks:

@@ -183,6 +183,7 @@ process to share a trace context in-band.
 from taskq import actor
 from taskq.context import JobContext
 
+
 @actor
 async def my_actor(payload: Payload, ctx: JobContext[Payload]) -> Result:
     span = ctx.span  # opentelemetry.trace.Span | None
@@ -352,6 +353,7 @@ contextvars. You do not need to add these fields manually.
 from taskq import actor
 from taskq.context import JobContext
 
+
 @actor
 async def my_actor(payload: Payload, ctx: JobContext[Payload]) -> Result:
     ctx.log.info("processing-started", item_count=len(payload.items))
@@ -408,6 +410,7 @@ the test:
 import pytest
 from taskq.testing.otel import setup_tracer, ListSpanExporter
 
+
 async def test_span_emitted(monkeypatch: pytest.MonkeyPatch) -> None:
     provider, exporter = setup_tracer(monkeypatch)
 
@@ -434,6 +437,7 @@ async def test_span_emitted(monkeypatch: pytest.MonkeyPatch) -> None:
 
 ```python
 from taskq.testing.otel import setup_meter, counter_value, histogram_points
+
 
 async def test_metrics_recorded(monkeypatch: pytest.MonkeyPatch) -> None:
     reader = setup_meter(monkeypatch)
@@ -544,6 +548,7 @@ a custom alerting webhook, or an external audit log — TaskQ defines an
 ```python
 from typing import Protocol
 from taskq.backend._protocol import JobRow
+
 
 class ErrorReporter(Protocol):
     async def report(self, job: JobRow, exception: BaseException) -> None: ...
