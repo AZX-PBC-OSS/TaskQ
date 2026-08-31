@@ -26,7 +26,7 @@ from tests._sso_saml_crypto import (
     build_saml_response,
 )
 
-_SSO_URL = "https://idp.test.example.com/sso"
+_SSO_URL = "https://idp.test.invalid/sso"
 _SESSION_SECRET = "s" * 32
 
 
@@ -48,7 +48,7 @@ def _config(
     )
 
 
-_TEST_BASE_URL = "http://testserver.local"
+_TEST_BASE_URL = "http://testserver.invalid"
 
 
 def _make_app(config: SAMLAuthConfig, base_path: str = "/admin") -> FastAPI:

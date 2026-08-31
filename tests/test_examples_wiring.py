@@ -334,10 +334,10 @@ def test_fan_out_wants_ctx() -> None:
 
 async def test_fake_http_client_get_returns_dict() -> None:
     client = FakeHttpClient()
-    result = await client.get("https://example.com")
+    result = await client.get("https://fetch.test.invalid")
     assert isinstance(result, dict)
     assert result["status"] == 200
-    assert "https://example.com" in str(result["url"])
+    assert "https://fetch.test.invalid" in str(result["url"])
 
 
 async def test_fake_http_client_aclose() -> None:

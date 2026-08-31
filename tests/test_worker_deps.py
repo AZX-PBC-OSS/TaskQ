@@ -346,8 +346,8 @@ async def test_pool_startup_log_redacts_credentials(
 
     # Verify dsn_host strips the password — this is the behavioral contract
     # that prevents credential leakage in all logging sites.
-    sentinel_dsn_for_check = f"postgresql://taskq:{sentinel}@db.example.com:5432/taskq"
-    assert dsn_host(sentinel_dsn_for_check) == "db.example.com"
+    sentinel_dsn_for_check = f"postgresql://taskq:{sentinel}@db.test.invalid:5432/taskq"
+    assert dsn_host(sentinel_dsn_for_check) == "db.test.invalid"
     assert sentinel not in dsn_host(sentinel_dsn_for_check)
 
     # Connect using the existing creds, ALTER USER to the sentinel, then
