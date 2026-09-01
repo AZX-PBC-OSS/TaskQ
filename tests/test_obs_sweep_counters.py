@@ -128,7 +128,6 @@ async def test_pg_sweep_increments_per_actor(
         await apply_pending(conn, schema=schema)
 
         deadline = datetime.now(UTC) - timedelta(seconds=10)
-        now = datetime.now(UTC)
 
         await conn.execute(
             f"""INSERT INTO \"{schema}\".jobs (
@@ -159,7 +158,7 @@ async def test_pg_sweep_increments_per_actor(
             deadline,
         )
 
-        count = await PostgresBackend.sweep_deadline_exceeded(conn, now, schema=schema)
+        count = await PostgresBackend.sweep_deadline_exceeded(conn, schema=schema)
         assert count == 2
     finally:
         await conn.close()

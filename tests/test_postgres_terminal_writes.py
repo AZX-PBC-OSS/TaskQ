@@ -1034,7 +1034,7 @@ class TestMarkSucceededResultExpiryFallback:
             assert timedelta(seconds=4) < skew < timedelta(seconds=6)
 
             # The sweep must leave the result alone.
-            swept = await backend.sweep_expired_results(conn, datetime.now(UTC), schema=schema)
+            swept = await backend.sweep_expired_results(conn, schema=schema)
             assert swept == 0
             row2 = await conn.fetchrow(f'SELECT result FROM "{schema}".jobs WHERE id = $1', job_id)
             assert row2 is not None and row2["result"] is not None
@@ -1057,7 +1057,7 @@ class TestMarkSucceededResultExpiryFallback:
         assert ok is True
 
         async with deps.worker_pool.acquire() as conn:
-            swept = await backend.sweep_expired_results(conn, datetime.now(UTC), schema=schema)
+            swept = await backend.sweep_expired_results(conn, schema=schema)
             assert swept == 1
             row = await conn.fetchrow(f'SELECT result FROM "{schema}".jobs WHERE id = $1', job_id)
             assert row is not None and row["result"] is None

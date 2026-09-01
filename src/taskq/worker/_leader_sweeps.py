@@ -156,7 +156,7 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                         count_4 = cast(
                             "int",
                             await ctx.backend.sweep_leaked_reservation_slots(  # type: ignore[reportAttributeAccessIssue]  # Why: guarded by hasattr; only PostgresBackend implements these maintenance sweeps.
-                                conn, now_utc, schema=ctx.deps.settings.schema_name
+                                conn, schema=ctx.deps.settings.schema_name
                             ),
                         )
                     _metric("leaked_slots", count_4, start)
@@ -176,7 +176,7 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                         count_rt = cast(
                             "int",
                             await ctx.backend.sweep_expired_results(  # type: ignore[reportAttributeAccessIssue]  # Why: guarded by hasattr above.
-                                conn, now_utc, schema=ctx.deps.settings.schema_name
+                                conn, schema=ctx.deps.settings.schema_name
                             ),
                         )
                     _metric("expired_results", count_rt, start)

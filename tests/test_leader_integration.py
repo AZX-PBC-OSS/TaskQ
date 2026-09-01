@@ -534,7 +534,6 @@ async def test_ti7_equivalence_isolate_self_vs_sweep_cancel_phase_0(pg_dsn: str)
         async with deps.dispatcher_pool.acquire() as conn:
             await PostgresBackend.sweep_expired_locks(
                 conn,
-                now,
                 timedelta(seconds=deps.settings.cancellation_grace_period),
                 timedelta(seconds=deps.settings.cleanup_grace_period),
                 schema=schema,
@@ -622,7 +621,6 @@ async def test_ti7_equivalence_cancel_phase_1_grace_divergence(pg_dsn: str) -> N
         async with deps.dispatcher_pool.acquire() as conn:
             count = await PostgresBackend.sweep_expired_locks(
                 conn,
-                now,
                 timedelta(seconds=deps.settings.cancellation_grace_period),
                 timedelta(seconds=deps.settings.cleanup_grace_period),
                 schema=schema,

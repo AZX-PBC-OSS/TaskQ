@@ -186,7 +186,6 @@ VALUES ($1, $2, COALESCE($3, clock_timestamp()), clock_timestamp(), $4, $5, $6, 
 
 async def sweep_expired_locks(
     conn: ConnLike,
-    now: datetime,
     cancel_grace: timedelta,
     cleanup_grace: timedelta,
     *,
@@ -213,12 +212,12 @@ async def sweep_expired_locks(
     attempt, regardless of the job's terminal label) and a ``job_events``
     row (kind ``'state_change'``, reason ``'lock_expired'``).
 
-    *now* is accepted for API consistency; PG uses server-side
-    ``clock_timestamp()`` for WHERE comparisons and finished-at timestamps
-    (not ``now()``, which is transaction-start time — see the module
-    docstring's note on why a long-held sweep transaction must not mix the
-    two for timestamps that need to agree with each other or with
-    ``job_events.occurred_at``).
+    PG uses server-side ``clock_timestamp()`` for WHERE comparisons and
+    finished-at timestamps (not ``now()``, which is transaction-start
+    time — see the module docstring's note on why a long-held sweep
+    transaction must not mix the two for timestamps that need to agree
+    with each other or with ``job_events.occurred_at``); this function
+    takes no ``now`` argument.
 
     A CTE snapshots ``locked_by_worker`` before the UPDATE clears it, so
     the ``job_attempts.worker_id`` is populated correctly.
@@ -324,7 +323,6 @@ async def sweep_expired_locks(
 
 async def sweep_deadline_exceeded(
     conn: ConnLike,
-    now: datetime,
     *,
     schema: str,
 ) -> int:
@@ -339,10 +337,10 @@ async def sweep_deadline_exceeded(
     uses ``COALESCE(started_at, clock_timestamp())`` to satisfy the
     ``job_attempts.started_at NOT NULL`` constraint.
 
-    *now* is accepted for API consistency; PG uses server-side
-    ``clock_timestamp()`` for the deadline comparison and finished-at
-    timestamp (not ``now()``, which is fixed at transaction start — see
-    the module docstring).
+    PG uses server-side ``clock_timestamp()`` for the deadline comparison
+    and finished-at timestamp (not ``now()``, which is fixed at
+    transaction start — see the module docstring); this function takes
+    no ``now`` argument.
 
     Returns the count of swept rows.
     """
@@ -424,7 +422,6 @@ async def sweep_deadline_exceeded(
 
 async def sweep_scheduled_to_pending(
     conn: ConnLike,
-    now: datetime,
     *,
     schema: str,
 ) -> int:
@@ -435,9 +432,9 @@ async def sweep_scheduled_to_pending(
     row per promoted job with ``kind='state_change'``, ``detail`` carrying
     ``from_state='scheduled'`` and ``to_state='pending'``.
 
-    *now* is accepted for API consistency; PG uses server-side
-    ``clock_timestamp()`` (not ``now()``, which is fixed at transaction
-    start — see the module docstring).
+    PG uses server-side ``clock_timestamp()`` (not ``now()``, which is
+    fixed at transaction start — see the module docstring); this
+    function takes no ``now`` argument.
 
     Returns the count of promoted rows.
     """
@@ -500,7 +497,6 @@ async def sweep_scheduled_to_pending(
 
 async def sweep_leaked_reservation_slots(
     conn: ConnLike,
-    now: datetime,
     *,
     schema: str,
 ) -> int:
@@ -511,9 +507,9 @@ async def sweep_leaked_reservation_slots(
     ``job_events`` writes — reservation slots are not job-state
     transitions.
 
-    *now* is accepted for API consistency; PG uses server-side
-    ``clock_timestamp()`` (not ``now()``, which is fixed at transaction
-    start — see the module docstring).
+    PG uses server-side ``clock_timestamp()`` (not ``now()``, which is
+    fixed at transaction start — see the module docstring); this
+    function takes no ``now`` argument.
 
     Returns the count of released slots.
     """
@@ -535,11 +531,14 @@ async def sweep_leaked_reservation_slots(
 
 async def sweep_expired_results(
     conn: ConnLike,
-    now: datetime,
     *,
     schema: str,
 ) -> int:
-    """Expire result rows whose ``result_expires_at`` has passed."""
+    """Expire result rows whose ``result_expires_at`` has passed.
+
+    PG uses server-side ``clock_timestamp()`` for the comparison; this
+    function takes no ``now`` argument.
+    """
     if not _IDENT_RE.match(schema):
         raise ValueError(f"invalid schema identifier: {schema!r}")
 

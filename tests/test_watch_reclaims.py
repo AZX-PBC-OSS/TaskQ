@@ -963,7 +963,6 @@ async def test_watch_reclaims_pg_listen_delivers_promptly(pg_dsn: str) -> None:
             async with tq._pool.acquire() as conn:
                 await PostgresBackend.sweep_expired_locks(
                     conn,
-                    datetime.now(UTC),
                     _GRACE,
                     _GRACE,
                     schema=schema,
@@ -1055,7 +1054,6 @@ async def test_watch_reclaims_survives_listen_connection_kill(pg_dsn: str) -> No
                 )
                 await PostgresBackend.sweep_expired_locks(
                     conn,
-                    datetime.now(UTC),
                     _GRACE,
                     _GRACE,
                     schema=schema,
@@ -1099,7 +1097,6 @@ async def test_watch_reclaims_survives_listen_connection_kill(pg_dsn: str) -> No
                 )
                 await PostgresBackend.sweep_expired_locks(
                     conn,
-                    datetime.now(UTC),
                     _GRACE,
                     _GRACE,
                     schema=schema,

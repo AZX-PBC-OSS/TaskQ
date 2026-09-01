@@ -10,7 +10,7 @@ are about PG behaviour.
 """
 
 import asyncio
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 from uuid import UUID
 
@@ -433,9 +433,8 @@ async def test_lock_expiry_recovery_sweep(jobs_app: JobsApp) -> None:
             job_id,
         )
 
-        now = datetime.now(UTC)
         count = await PostgresBackend.sweep_expired_locks(
-            conn, now, _CANCEL_GRACE, _CLEANUP_GRACE, schema=schema
+            conn, _CANCEL_GRACE, _CLEANUP_GRACE, schema=schema
         )
         assert count >= 1
 

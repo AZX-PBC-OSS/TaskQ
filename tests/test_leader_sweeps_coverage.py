@@ -270,16 +270,14 @@ class _PgSweepBackend:
     async def deadline_sweep(self, now: datetime) -> int:
         return 0
 
-    async def sweep_leaked_reservation_slots(
-        self, conn: object, now: datetime, *, schema: str
-    ) -> int:
-        self.leaked_calls.append({"now": now, "schema": schema})
+    async def sweep_leaked_reservation_slots(self, conn: object, *, schema: str) -> int:
+        self.leaked_calls.append({"schema": schema})
         if self._leaked_exc is not None:
             raise self._leaked_exc
         return 5
 
-    async def sweep_expired_results(self, conn: object, now: datetime, *, schema: str) -> int:
-        self.results_calls.append({"now": now, "schema": schema})
+    async def sweep_expired_results(self, conn: object, *, schema: str) -> int:
+        self.results_calls.append({"schema": schema})
         if self._results_exc is not None:
             raise self._results_exc
         return 3

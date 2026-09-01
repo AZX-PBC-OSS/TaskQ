@@ -88,7 +88,6 @@ class TestSweepExpiredLocks:
 
             count = await PostgresBackend.sweep_expired_locks(
                 conn,
-                datetime.now(UTC),
                 _CANCEL_GRACE,
                 _CLEANUP_GRACE,
                 schema=schema,
@@ -148,7 +147,6 @@ class TestSweepExpiredLocks:
 
             count = await PostgresBackend.sweep_expired_locks(
                 conn,
-                datetime.now(UTC),
                 _CANCEL_GRACE,
                 _CLEANUP_GRACE,
                 schema=schema,
@@ -205,7 +203,6 @@ class TestSweepExpiredLocks:
 
             count = await PostgresBackend.sweep_expired_locks(
                 conn,
-                datetime.now(UTC),
                 _CANCEL_GRACE,
                 _CLEANUP_GRACE,
                 schema=schema,
@@ -259,7 +256,6 @@ class TestSweepExpiredLocks:
 
             count = await PostgresBackend.sweep_expired_locks(
                 conn,
-                datetime.now(UTC),
                 _CANCEL_GRACE,
                 _CLEANUP_GRACE,
                 schema=schema,
@@ -296,7 +292,6 @@ class TestSweepExpiredLocks:
 
             count = await PostgresBackend.sweep_expired_locks(
                 conn,
-                datetime.now(UTC),
                 _CANCEL_GRACE,
                 _CLEANUP_GRACE,
                 schema=schema,
@@ -345,7 +340,6 @@ class TestSweepExpiredLocks:
 
             count = await PostgresBackend.sweep_expired_locks(
                 conn,
-                datetime.now(UTC),
                 _CANCEL_GRACE,
                 _CLEANUP_GRACE,
                 schema=schema,
@@ -418,7 +412,6 @@ class TestSweepExpiredLocks:
 
             count = await PostgresBackend.sweep_expired_locks(
                 conn,
-                datetime.now(UTC),
                 _CANCEL_GRACE,
                 _CLEANUP_GRACE,
                 schema=schema,
@@ -479,7 +472,6 @@ class TestSweepExpiredLocks:
 
             await PostgresBackend.sweep_expired_locks(
                 conn,
-                datetime.now(UTC),
                 _CANCEL_GRACE,
                 _CLEANUP_GRACE,
                 schema=schema,
@@ -511,7 +503,6 @@ class TestSweepExpiredLocks:
         async with deps.worker_pool.acquire() as conn:
             count = await PostgresBackend.sweep_expired_locks(
                 conn,
-                datetime.now(UTC),
                 _CANCEL_GRACE,
                 _CLEANUP_GRACE,
                 schema=schema,
@@ -578,7 +569,6 @@ class TestPollReclaimEvents:
             )
             await PostgresBackend.sweep_expired_locks(
                 conn,
-                datetime.now(UTC),
                 _CANCEL_GRACE,
                 _CLEANUP_GRACE,
                 schema=schema,
@@ -613,7 +603,6 @@ class TestPollReclaimEvents:
             )
             await PostgresBackend.sweep_expired_locks(
                 conn,
-                datetime.now(UTC),
                 _CANCEL_GRACE,
                 _CLEANUP_GRACE,
                 schema=schema,
@@ -649,7 +638,6 @@ class TestPollReclaimEvents:
                 )
             await PostgresBackend.sweep_expired_locks(
                 conn,
-                datetime.now(UTC),
                 _CANCEL_GRACE,
                 _CLEANUP_GRACE,
                 schema=schema,
@@ -701,7 +689,6 @@ class TestPollReclaimEvents:
             with pytest.raises(RuntimeError, match="simulated event INSERT failure"):
                 await PostgresBackend.sweep_expired_locks(
                     wrapped,
-                    datetime.now(UTC),
                     _CANCEL_GRACE,
                     _CLEANUP_GRACE,
                     schema=schema,
@@ -738,7 +725,6 @@ class TestPollReclaimEvents:
 
             count1 = await PostgresBackend.sweep_expired_locks(
                 conn,
-                datetime.now(UTC),
                 _CANCEL_GRACE,
                 _CLEANUP_GRACE,
                 schema=schema,
@@ -747,7 +733,6 @@ class TestPollReclaimEvents:
 
             count2 = await PostgresBackend.sweep_expired_locks(
                 conn,
-                datetime.now(UTC),
                 _CANCEL_GRACE,
                 _CLEANUP_GRACE,
                 schema=schema,
@@ -784,7 +769,6 @@ class TestPollReclaimEvents:
             async with deps.worker_pool.acquire() as conn:
                 return await PostgresBackend.sweep_expired_locks(
                     conn,
-                    datetime.now(UTC),
                     _CANCEL_GRACE,
                     _CLEANUP_GRACE,
                     schema=schema,
@@ -1007,7 +991,6 @@ class TestPollReclaimEvents:
             )
             await PostgresBackend.sweep_expired_locks(
                 conn,
-                datetime.now(UTC),
                 _CANCEL_GRACE,
                 _CLEANUP_GRACE,
                 schema=schema,
@@ -1067,7 +1050,6 @@ class TestPollReclaimEvents:
                 )
             await PostgresBackend.sweep_expired_locks(
                 conn,
-                datetime.now(UTC),
                 _CANCEL_GRACE,
                 _CLEANUP_GRACE,
                 schema=schema,
@@ -1127,7 +1109,6 @@ class TestPollReclaimEvents:
                     )
                 count = await PostgresBackend.sweep_expired_locks(
                     conn,
-                    datetime.now(UTC),
                     _CANCEL_GRACE,
                     _CLEANUP_GRACE,
                     schema=schema,
@@ -1147,7 +1128,6 @@ class TestPollReclaimEvents:
             async with deps.worker_pool.acquire() as conn:
                 count = await PostgresBackend.sweep_expired_locks(
                     conn,
-                    datetime.now(UTC),
                     _CANCEL_GRACE,
                     _CLEANUP_GRACE,
                     schema=schema,
@@ -1180,7 +1160,6 @@ class TestSweepDeadlineExceeded:
 
             count = await PostgresBackend.sweep_deadline_exceeded(
                 conn,
-                datetime.now(UTC),
                 schema=schema,
             )
 
@@ -1244,7 +1223,6 @@ class TestSweepDeadlineExceeded:
 
             count = await PostgresBackend.sweep_deadline_exceeded(
                 conn,
-                datetime.now(UTC),
                 schema=schema,
             )
 
@@ -1288,7 +1266,6 @@ class TestSweepDeadlineExceeded:
         async with deps.worker_pool.acquire() as conn:
             count = await PostgresBackend.sweep_deadline_exceeded(
                 conn,
-                datetime.now(UTC),
                 schema=schema,
             )
 
@@ -1326,7 +1303,6 @@ class TestSweepDeadlineExceeded:
 
             count = await PostgresBackend.sweep_deadline_exceeded(
                 conn,
-                datetime.now(UTC),
                 schema=schema,
             )
 
@@ -1359,7 +1335,6 @@ class TestSweep4:
 
             count = await PostgresBackend.sweep_leaked_reservation_slots(
                 conn,
-                datetime.now(UTC),
                 schema=schema,
             )
 
@@ -1394,7 +1369,6 @@ class TestSweep4:
 
             count = await PostgresBackend.sweep_leaked_reservation_slots(
                 conn,
-                datetime.now(UTC),
                 schema=schema,
             )
 
@@ -1414,7 +1388,6 @@ class TestSweep4:
         async with deps.worker_pool.acquire() as conn:
             count = await PostgresBackend.sweep_leaked_reservation_slots(
                 conn,
-                datetime.now(UTC),
                 schema=schema,
             )
 
@@ -1462,7 +1435,6 @@ class TestSweep4:
 
             count = await PostgresBackend.sweep_leaked_reservation_slots(
                 conn,
-                datetime.now(UTC),
                 schema=schema,
             )
 
@@ -1551,7 +1523,6 @@ class TestConsumerVsLeaderAttemptRowShape:
             sweep_before = datetime.now(UTC)
             count = await PostgresBackend.sweep_deadline_exceeded(
                 conn,
-                datetime.now(UTC),
                 schema=schema,
             )
 
@@ -1603,7 +1574,6 @@ class TestSweepScheduledToPending:
 
             count = await PostgresBackend.sweep_scheduled_to_pending(
                 conn,
-                datetime.now(UTC),
                 schema=schema,
             )
 
@@ -1651,7 +1621,6 @@ class TestSweepScheduledToPending:
 
             count = await PostgresBackend.sweep_scheduled_to_pending(
                 conn,
-                datetime.now(UTC),
                 schema=schema,
             )
 
@@ -1685,7 +1654,6 @@ class TestSweepScheduledToPending:
 
             count = await PostgresBackend.sweep_scheduled_to_pending(
                 conn,
-                datetime.now(UTC),
                 schema=schema,
             )
 
@@ -1717,7 +1685,6 @@ class TestSweepScheduledToPending:
 
             count = await PostgresBackend.sweep_scheduled_to_pending(
                 conn,
-                datetime.now(UTC),
                 schema=schema,
             )
 

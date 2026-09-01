@@ -306,7 +306,7 @@ async def test_property_sweep_equivalence(
             await conn.execute(isolate_sql, job_id_a, worker_id_a)
 
             await PostgresBackend.sweep_expired_locks(
-                conn, now, cancel_grace, cleanup_grace, schema=schema
+                conn, cancel_grace, cleanup_grace, schema=schema
             )
 
             row_a = await conn.fetchrow(select_sql, job_id_a)
