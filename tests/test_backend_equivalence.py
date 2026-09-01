@@ -126,12 +126,14 @@ async def _advance_and_promote(backend: Backend, target_time: datetime) -> int:
     schema: str = backend._schema_name  # type: ignore[reportPrivateUsage] # Why: PG-path helper
     pool: asyncpg.Pool = backend._worker_pool  # type: ignore[reportPrivateUsage] # Why: same pattern
     async with pool.acquire() as conn:  # type: ignore[reportUnknownVariableType] # Why: asyncpg stubs
-        # 5s margin, not 1s: scheduled_at is set from the PG server clock
-        # while scheduled_to_pending's threshold below comes from the Python
-        # client clock (datetime.now(UTC)) — these can differ by several
-        # hundred ms under this environment's connection-pool/scheduling
-        # characteristics (see test_heartbeat_integration.py's
-        # _CLOCK_JITTER_TOLERANCE), which a 1s margin doesn't reliably absorb.
+        # 5s margin, not 1s: the application process and the PG server keep
+        # separate clocks that can diverge by whole seconds (VM pause/resume
+        # and NTP drift are common causes; see tests/conftest.py's startup
+        # clock-divergence check), so the job must be pushed firmly into
+        # the server clock's past for the sweep's server-side
+        # `scheduled_at <= clock_timestamp()` predicate to pick it up — the
+        # PG implementation ignores the caller-supplied now() argument
+        # entirely.
         await conn.execute(
             f"UPDATE \"{schema}\".jobs SET scheduled_at = now() - interval '5 seconds' "
             f"WHERE status = 'scheduled'"

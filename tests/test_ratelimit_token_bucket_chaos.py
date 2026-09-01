@@ -70,7 +70,9 @@ async def test_redis_to_pg_degradation(
         assert r.allowed is True
         assert r.backend == "redis"
 
-        killable_redis_container.stop()  # type: ignore[union-attr] # Why: RedisContainer.stop(); the fixture is typed object to avoid transitive imports
+        # Why: docker-py stop blocks the loop for the whole HTTP round-trip
+        # (measured 2.4-3.8s continuous loop stalls) — off-loop.
+        await asyncio.to_thread(killable_redis_container.stop)  # type: ignore[union-attr] # Why: fixture typed object to avoid transitive imports
 
         r2 = await tb.acquire(
             redis_client=client, pg_pool=module_pg_pool, clock=clock, settings=settings
@@ -79,7 +81,8 @@ async def test_redis_to_pg_degradation(
         assert r2.backend == "postgres"
     finally:
         try:
-            killable_redis_container.start()  # type: ignore[union-attr] # Why: as above
+            # Why: docker-py start (+ readiness wait) blocks the loop — off-loop.
+            await asyncio.to_thread(killable_redis_container.start)  # type: ignore[union-attr] # Why: fixture typed object to avoid transitive imports
         except Exception as exc:
             structlog.get_logger("taskq.test_chaos").warning(
                 "redis-container-restart-failed",
@@ -130,8 +133,10 @@ async def test_redis_recovery_after_restart(
         backend="redis",
     )
 
-    host = killable_redis_container.get_container_host_ip()  # type: ignore[union-attr] # Why: RedisContainer; the fixture is typed object to avoid transitive imports
-    port = killable_redis_container.get_exposed_port(6379)  # type: ignore[union-attr] # Why: same as above
+    # Why: docker host/port resolution can hit the docker HTTP API (port
+    # inspect + status poll) — off-loop.
+    host = await asyncio.to_thread(killable_redis_container.get_container_host_ip)  # type: ignore[union-attr] # Why: fixture typed object to avoid transitive imports
+    port = await asyncio.to_thread(killable_redis_container.get_exposed_port, 6379)  # type: ignore[union-attr] # Why: same as above
     original_url = f"redis://{host}:{port}/0"
     client = redis_async.from_url(original_url, decode_responses=False)
 
@@ -141,7 +146,9 @@ async def test_redis_recovery_after_restart(
         )
         assert r.backend == "redis"
 
-        killable_redis_container.stop()  # type: ignore[union-attr] # Why: RedisContainer.stop(); the fixture is typed object to avoid transitive imports
+        # Why: docker-py stop blocks the loop for the whole HTTP round-trip
+        # (measured 2.4-3.8s continuous loop stalls) — off-loop.
+        await asyncio.to_thread(killable_redis_container.stop)  # type: ignore[union-attr] # Why: fixture typed object to avoid transitive imports
 
         r_fallback = await tb.acquire(
             redis_client=client, pg_pool=module_pg_pool, clock=clock, settings=settings
@@ -150,9 +157,14 @@ async def test_redis_recovery_after_restart(
 
         await client.aclose()
 
-        killable_redis_container.start()  # type: ignore[union-attr] # Why: same as above
+        # Why: docker-py start (+ readiness wait) blocks the loop — off-loop.
+        await asyncio.to_thread(killable_redis_container.start)  # type: ignore[union-attr] # Why: fixture typed object to avoid transitive imports
 
-        new_port = killable_redis_container.get_exposed_port(6379)  # type: ignore[union-attr] # Why: same as above; port differs after restart (testcontainers artifact)
+        # Why: get_exposed_port inspects the container via docker HTTP — off-loop.
+        new_port = await asyncio.to_thread(
+            killable_redis_container.get_exposed_port,  # type: ignore[union-attr] # Why: port differs after restart (testcontainers artifact)
+            6379,
+        )
         new_url = f"redis://{host}:{new_port}/0"
         client = redis_async.from_url(new_url, decode_responses=False)
 

@@ -405,13 +405,14 @@ class TestPollingLifecycle:
         assert result == "scheduled"
 
         async with deps.worker_pool.acquire() as conn:
-            # 5s margin, not 1s: scheduled_at is set from the PG server clock
-            # while scheduled_to_pending's threshold below comes from the
-            # Python client clock — independently reproduced (see
-            # test_heartbeat_integration.py's _CLOCK_JITTER_TOLERANCE) that
-            # these can differ by several hundred ms under this environment's
-            # connection-pool/scheduling characteristics, which a 1s margin
-            # doesn't reliably absorb.
+            # 5s margin, not 1s: the application process and the PG server
+            # keep separate clocks that can diverge by whole seconds (VM
+            # pause/resume and NTP drift are common causes; see
+            # tests/conftest.py's startup clock-divergence check), so the
+            # job must be pushed firmly into the server clock's past for
+            # the sweep's server-side `scheduled_at <= clock_timestamp()`
+            # predicate to pick it up — the PG implementation ignores the
+            # caller-supplied now() argument entirely.
             await conn.execute(
                 f"UPDATE \"{schema}\".jobs SET scheduled_at = now() - interval '5 seconds' WHERE id = $1",
                 job_id,

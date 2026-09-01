@@ -398,6 +398,15 @@ def pg_container(
     get their own disposable container instead — never this one.
     """
     with shared_service_pair(tmp_path_factory.getbasetemp().parent) as services:
+        delta = _pg_clock_delta(services.pg_dsn)
+        if abs(delta) > 0.25:
+            print(
+                f"[TaskQ] application and database clocks diverge by {delta:+.3f}s "
+                "(positive = app ahead). While this persists, wall-clock comparisons "
+                "across the two domains are unreliable — VM pause/resume and NTP drift "
+                "are common causes. Same-statement single-domain comparisons (this "
+                "suite's timing tests) are unaffected."
+            )
         yield _PgContainerShim(dsn=services.pg_dsn)
 
 
@@ -450,6 +459,45 @@ def _pg_admin(base_dsn: str, *statements: str) -> None:
         raise TimeoutError(f"database admin timed out: {statements!r}")
     if error:
         raise error[0]
+
+
+def _pg_clock_delta(base_dsn: str) -> float:
+    """Seconds between the application and database clocks (app minus DB).
+
+    Read once at container startup so divergence is attributed loudly
+    instead of silently corrupting wall-clock comparisons: the two clocks
+    are independent and can diverge or step (VM pause/resume and NTP drift
+    are common causes). Same private-thread pattern as ``_pg_admin``.
+    """
+    import asyncio
+    import threading
+    import time
+
+    result: list[float] = []
+    error: list[BaseException] = []
+
+    def _target() -> None:
+        async def _go() -> None:
+            conn = await asyncpg.connect(base_dsn)
+            try:
+                pg_epoch = await conn.fetchval("SELECT EXTRACT(EPOCH FROM clock_timestamp())")
+            finally:
+                await conn.close()
+            result.append(float(pg_epoch) - time.time())
+
+        try:
+            asyncio.run(_go())
+        except BaseException as exc:  # Why: re-raised in the calling thread below.
+            error.append(exc)
+
+    t = threading.Thread(target=_target, daemon=True)
+    t.start()
+    t.join(timeout=30)
+    if t.is_alive():
+        raise TimeoutError("clock-divergence probe timed out")
+    if error:
+        raise error[0]
+    return result[0]
 
 
 @pytest.fixture(scope="module")

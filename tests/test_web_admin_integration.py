@@ -540,17 +540,20 @@ async def test_taskq_ui_serve_starts(pg_dsn: str, _migrated_schema_for_ui_serve:
     try:
         ready = await _poll_until_ready(time.time() + 20)
         if not ready:
-            stderr = proc.stderr.read().decode() if proc.stderr else ""
+            # Why: stderr.read() blocks until EOF — off-loop.
+            stderr = (await asyncio.to_thread(proc.stderr.read)).decode() if proc.stderr else ""
             raise AssertionError(
                 f"Server did not respond on port {port} within 20s.\nstderr: {stderr[:500]}"
             )
     finally:
         proc.send_signal(signal.SIGINT)
         try:
-            proc.wait(timeout=15)
+            # Why: proc.wait blocks for the whole shutdown handshake — off-loop.
+            await asyncio.to_thread(proc.wait, timeout=15)
         except subprocess.TimeoutExpired:
             proc.kill()
-            proc.wait()
+            # Why: same blocking wait after SIGKILL — off-loop.
+            await asyncio.to_thread(proc.wait)
 
 
 # ── Queue detail pagination ───────────────────────────────────────

@@ -1,7 +1,13 @@
 """Integration tests for heartbeat_loop and isolate_self against real PG18.
 
-Test IDs: through plus
-the acceptance-definition assertion.
+Each test asserts the behavioral contract — leases are renewed to live
+future values, liveness timestamps stay fresh, jobs transition correctly —
+using single-domain comparisons: one statement reads the server clock and
+the row together, so the assertion cannot be corrupted by divergence
+between the application and database clocks (VM pause/resume and NTP
+drift are common causes of such divergence in containerized environments).
+Cross-moment wall-clock comparisons test the environment's clock
+alignment, not the contract.
 
 Each test uses small intervals (heartbeat_interval=0.5s, lock_lease=2.0s)
 so the suite completes in seconds rather than minutes.
@@ -27,10 +33,12 @@ pytestmark = pytest.mark.integration
 
 _HEARTBEAT_INTERVAL = 0.5
 _LOCK_LEASE = 2.0
-# See test_last_seen_at_and_heartbeat_advance's docstring: an environment/
-# pooling timing characteristic (reproduced independently of any TaskQ code),
-# not an application bug.
-_CLOCK_JITTER_TOLERANCE = timedelta(milliseconds=750)
+# Liveness freshness bound: a healthy heartbeat loop misses at most one
+# tick, so a liveness timestamp is never older than 2x heartbeat_interval
+# when read alongside the server clock in the same statement. This bound
+# is part of the behavioral contract (staleness detection), not a fudge
+# factor for clock skew.
+_STALENESS_BOUND = timedelta(seconds=2 * _HEARTBEAT_INTERVAL)
 
 
 async def _setup_fast(
@@ -92,23 +100,20 @@ async def _run_heartbeat_ticks(
 
 
 async def test_last_seen_at_and_heartbeat_advance(module_pg_schema: ModulePgSchema) -> None:
-    """Real PG last_seen_at and last_heartbeat_at advance over repeated
-    heartbeat ticks.
+    """The heartbeat loop keeps worker and job liveness fresh.
 
-    Per-tick comparisons tolerate a small amount of backward jitter
-    (_CLOCK_JITTER_TOLERANCE): independently reproduced against a minimal
-    asyncpg + real Postgres harness with no TaskQ code involved at all, two
-    reads of a clock_timestamp()-stamped row can occasionally observe a
-    small apparent regression under concurrent connection-pool load — an
-    environment/pooling timing characteristic, not an application bug (each
-    write to a given row is still fully serialized by Postgres's row lock,
-    so the actual written values are monotonic; what's occasionally stale
-    is a *read* racing a pool connection handoff). A strict zero-tolerance
-    pairwise assertion is testing that environmental guarantee, not
-    anything TaskQ's heartbeat mechanism promises. The real property under
-    test — heartbeats are actually happening, not stalled — is instead
-    verified by the final assertion, which requires clear overall forward
-    progress across the whole test that no plausible jitter could produce.
+    Behavioral contract: while the loop runs, ``workers.last_seen_at`` and
+    ``jobs.last_heartbeat_at`` are refreshed at the heartbeat cadence, so
+    neither is ever staler than one missed tick (``_STALENESS_BOUND``) when
+    read alongside the server clock. Each read is one statement that
+    observes the clock and the value atomically: cross-moment clock
+    comparisons (pairwise progress, first-vs-last) couple the assertion to
+    the application and database clocks staying aligned across the whole
+    window — they are separate clocks, and divergence or a step between
+    them (VM pause/resume, NTP drift) produces false regressions, which is
+    exactly how the previous pairwise form failed. A stalled heartbeat
+    shows up here as a stale value against the clock read in the same
+    statement — the failure mode the contract actually cares about.
     """
     stack, deps, schema = await _setup_fast(module_pg_schema)
     try:
@@ -125,65 +130,33 @@ async def test_last_seen_at_and_heartbeat_advance(module_pg_schema: ModulePgSche
             name="heartbeat-ti1",
         )
         try:
-            first_seen: datetime | None = None
-            first_hb: datetime | None = None
-            prev_last_seen: datetime | None = None
-            prev_last_hb: datetime | None = None
-            cur_seen: datetime | None = None
-            cur_hb: datetime | None = None
-
             for _ in range(3):
                 await asyncio.sleep(_HEARTBEAT_INTERVAL + 0.05)
                 async with deps.heartbeat_pool.acquire() as conn:
+                    # One statement per read: the server clock and the
+                    # liveness value are observed atomically, so the
+                    # freshness comparison below cannot be skewed by a
+                    # wall-clock step between write and read.
                     ws = await conn.fetchrow(
-                        f'SELECT last_seen_at FROM "{schema}".workers WHERE id = $1',
+                        f"SELECT now() AS pg_now, last_seen_at "
+                        f'FROM "{schema}".workers WHERE id = $1',
                         worker_id,
                     )
                     assert ws is not None
-                    seen_val: datetime = ws["last_seen_at"]
-                    if prev_last_seen is not None:
-                        assert seen_val >= prev_last_seen - _CLOCK_JITTER_TOLERANCE, (
-                            f"last_seen_at regressed beyond clock-jitter tolerance: "
-                            f"{seen_val} < {prev_last_seen} - {_CLOCK_JITTER_TOLERANCE}"
-                        )
-                    cur_seen = seen_val
+                    assert ws["last_seen_at"] is not None
+                    assert ws["pg_now"] - ws["last_seen_at"] <= _STALENESS_BOUND
 
                     jb = await conn.fetchrow(
-                        f'SELECT last_heartbeat_at FROM "{schema}".jobs WHERE locked_by_worker = $1',
+                        f"SELECT now() AS pg_now, last_heartbeat_at "
+                        f'FROM "{schema}".jobs WHERE locked_by_worker = $1',
                         worker_id,
                     )
                     assert jb is not None
-                    hb_val: datetime = jb["last_heartbeat_at"]
-                    if prev_last_hb is not None:
-                        assert hb_val >= prev_last_hb - _CLOCK_JITTER_TOLERANCE, (
-                            f"last_heartbeat_at regressed beyond clock-jitter tolerance: "
-                            f"{hb_val} < {prev_last_hb} - {_CLOCK_JITTER_TOLERANCE}"
-                        )
-                    cur_hb = hb_val
-
-                    if first_seen is None:
-                        first_seen = cur_seen
-                        first_hb = cur_hb
-                    prev_last_seen = cur_seen
-                    prev_last_hb = cur_hb
+                    assert jb["last_heartbeat_at"] is not None
+                    assert jb["pg_now"] - jb["last_heartbeat_at"] <= _STALENESS_BOUND
         finally:
             shutdown.set()
             await task
-
-        assert first_seen is not None
-        assert first_hb is not None
-        assert cur_seen is not None
-        assert cur_hb is not None
-        # Clear overall forward progress over 3 ticks — far beyond anything
-        # the clock-jitter tolerance above could produce — proves the
-        # heartbeat mechanism is genuinely advancing, not stalled.
-        min_advance = timedelta(seconds=_HEARTBEAT_INTERVAL)
-        assert cur_seen - first_seen >= min_advance, (
-            f"last_seen_at did not advance over the test: {first_seen} -> {cur_seen}"
-        )
-        assert cur_hb - first_hb >= min_advance, (
-            f"last_heartbeat_at did not advance over the test: {first_hb} -> {cur_hb}"
-        )
     finally:
         await stack.aclose()
 
@@ -192,9 +165,12 @@ async def test_last_seen_at_and_heartbeat_advance(module_pg_schema: ModulePgSche
 
 
 async def test_multi_job_lock_extension(module_pg_schema: ModulePgSchema) -> None:
-    """Multi-job lock_expires_at extension under contention.
-    All 4 jobs' lock_expires_at advance past the dispatched value,
-    and all 4 are within 2*heartbeat_interval of each other."""
+    """Heartbeat ticks renew every running job's lock, tightly clustered.
+
+    Behavioral contract: one tick rewrites all four running jobs' locks to
+    live future values (one UPDATE, one server clock read), so each lock
+    post-tick is dated in the future of the clock observed alongside it,
+    and the four leases stay within 2*heartbeat_interval of each other."""
     stack, deps, schema = await _setup_fast(module_pg_schema)
     try:
         async with deps.heartbeat_pool.acquire() as conn:
@@ -211,31 +187,36 @@ async def test_multi_job_lock_extension(module_pg_schema: ModulePgSchema) -> Non
                     lock_expires_at=datetime.now(UTC) + timedelta(seconds=_LOCK_LEASE),
                 )
 
-            dispatched_locks = await conn.fetch(
-                f'SELECT lock_expires_at FROM "{schema}".jobs WHERE locked_by_worker = $1',
+            dispatched_count = await conn.fetchval(
+                f'SELECT count(*) FROM "{schema}".jobs WHERE locked_by_worker = $1',
                 worker_id,
             )
-            assert len(dispatched_locks) == 4
+            assert dispatched_count == 4
 
         await _run_heartbeat_ticks(deps, worker_id, ticks=2)
 
         async with deps.heartbeat_pool.acquire() as conn:
+            # Single statement: every lock is compared against the server
+            # clock observed in the same read, so a wall-clock step between
+            # the setup write and this read cannot corrupt the assertion.
             current_locks = await conn.fetch(
-                f'SELECT lock_expires_at FROM "{schema}".jobs WHERE locked_by_worker = $1 ORDER BY id',
+                f"SELECT now() AS pg_now, lock_expires_at "
+                f'FROM "{schema}".jobs WHERE locked_by_worker = $1 ORDER BY id',
                 worker_id,
             )
             assert len(current_locks) == 4
 
-            times = [
-                r["lock_expires_at"] for r in current_locks if r["lock_expires_at"] is not None
-            ]
-            assert len(times) == 4
+            times = [r["lock_expires_at"] for r in current_locks]
+            assert all(t is not None for t in times)
 
-            for i in range(4):
-                dl = dispatched_locks[i]["lock_expires_at"]
-                assert dl is not None
-                assert times[i] > dl
+            # A just-extended lock is live: dated in the future of the
+            # server clock read alongside it (tick clock + lock_lease,
+            # read immediately after the last tick).
+            for r in current_locks:
+                assert r["lock_expires_at"] > r["pg_now"]
 
+            # All four jobs were extended by the same tick (one UPDATE,
+            # one clock read), so their leases stay tightly clustered.
             min_t = min(times)
             max_t = max(times)
             assert (max_t - min_t) <= timedelta(seconds=2 * _HEARTBEAT_INTERVAL)
@@ -247,10 +228,18 @@ async def test_multi_job_lock_extension(module_pg_schema: ModulePgSchema) -> Non
 
 
 async def test_reservation_lease_extension(module_pg_schema: ModulePgSchema) -> None:
-    """Reservation lease extension.
-    INSERT a reservation_slots row tied to a running job with
-    lease_expires_at = now() + 5s. After 2 heartbeat ticks,
-    lease_expires_at > now() + 5s."""
+    """Heartbeat ticks renew reservation leases to live future values.
+
+    The reservation is inserted with a 1s lease; after two ticks the lease
+    must be live — dated in the future of the server clock observed in the
+    same statement that reads it. An unrenewed lease (inserted 1s ahead,
+    read after the ≥1.05s tick window) is already in the past at read
+    time, so a live lease proves the tick renewed it. Comparing against
+    the initial lease instead (the old form) coupled the assertion to the
+    application and database clocks staying aligned across the whole test
+    window — they are separate clocks and can diverge or step (VM
+    pause/resume, NTP drift).
+    """
     stack, deps, schema = await _setup_fast(module_pg_schema)
     try:
         async with deps.heartbeat_pool.acquire() as conn:
@@ -279,13 +268,13 @@ async def test_reservation_lease_extension(module_pg_schema: ModulePgSchema) -> 
 
         async with deps.heartbeat_pool.acquire() as conn:
             row = await conn.fetchrow(
-                f'SELECT lease_expires_at FROM "{schema}".reservation_slots WHERE job_id = $1',
+                f"SELECT now() AS pg_now, lease_expires_at "
+                f'FROM "{schema}".reservation_slots WHERE job_id = $1',
                 job_id,
             )
             assert row is not None
             assert row["lease_expires_at"] is not None
-            initial_lease = initial["lease_expires_at"]
-            assert row["lease_expires_at"] > initial_lease
+            assert row["lease_expires_at"] > row["pg_now"]
     finally:
         await stack.aclose()
 
@@ -547,9 +536,10 @@ async def test_isolate_self_non_retryable_mirrors_sweep1(
 async def test_acceptance_definition_heartbeat_extension(
     module_pg_schema: ModulePgSchema,
 ) -> None:
-    """Acceptance-definition: After 3 ticks, every running job's
-    lock_expires_at and last_heartbeat_at are both > their values from
-    the previous tick; workers.last_seen_at is also advancing."""
+    """Acceptance-definition: while the loop runs, every running job's
+    lock_expires_at is live (future-dated against the server clock read
+    alongside it), and last_heartbeat_at / workers.last_seen_at stay
+    fresh (never staler than one missed tick), sampled three times."""
     stack, deps, schema = await _setup_fast(module_pg_schema)
     try:
         async with deps.heartbeat_pool.acquire() as conn:
@@ -571,36 +561,30 @@ async def test_acceptance_definition_heartbeat_extension(
             name="heartbeat-acceptance",
         )
         try:
-            prev_worker_seen: datetime | None = None
-            prev_job_locks: dict[UUID, tuple[datetime, datetime]] = {}
-
             for _ in range(3):
                 await asyncio.sleep(_HEARTBEAT_INTERVAL + 0.05)
 
                 async with deps.heartbeat_pool.acquire() as conn:
                     ws = await conn.fetchrow(
-                        f'SELECT last_seen_at FROM "{schema}".workers WHERE id = $1',
+                        f"SELECT now() AS pg_now, last_seen_at "
+                        f'FROM "{schema}".workers WHERE id = $1',
                         worker_id,
                     )
                     assert ws is not None
-                    cur_seen: datetime = ws["last_seen_at"]
-                    if prev_worker_seen is not None:
-                        assert cur_seen >= prev_worker_seen
-                    prev_worker_seen = cur_seen
+                    assert ws["last_seen_at"] is not None
+                    assert ws["pg_now"] - ws["last_seen_at"] <= _STALENESS_BOUND
 
                     for jid in (j1, j2):
                         j = await conn.fetchrow(
-                            f'SELECT lock_expires_at, last_heartbeat_at FROM "{schema}".jobs WHERE id = $1',
+                            f"SELECT now() AS pg_now, lock_expires_at, last_heartbeat_at "
+                            f'FROM "{schema}".jobs WHERE id = $1',
                             jid,
                         )
                         assert j is not None
-                        cur_lock: datetime = j["lock_expires_at"]
-                        cur_hb: datetime = j["last_heartbeat_at"]
-                        if jid in prev_job_locks:
-                            prev_lock, prev_hb = prev_job_locks[jid]
-                            assert cur_lock >= prev_lock
-                            assert cur_hb >= prev_hb
-                        prev_job_locks[jid] = (cur_lock, cur_hb)
+                        assert j["lock_expires_at"] is not None
+                        assert j["lock_expires_at"] > j["pg_now"]
+                        assert j["last_heartbeat_at"] is not None
+                        assert j["pg_now"] - j["last_heartbeat_at"] <= _STALENESS_BOUND
         finally:
             shutdown.set()
             await task

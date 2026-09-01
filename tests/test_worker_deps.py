@@ -123,14 +123,22 @@ async def test_dispatcher_heartbeat_use_direct_dsn(pg_dsn: str) -> None:
 
 
 async def test_heartbeat_pool_command_timeout(pg_dsn: str) -> None:
-    """heartbeat_pool has command_timeout=2s; pg_sleep(5) is cancelled."""
+    """heartbeat_pool has command_timeout=2s; a stalled query is cancelled.
+
+    The sleep length sets the stall-tolerance headroom, not the property:
+    asyncpg enforces command_timeout with an event-loop timer, so a loop
+    stalled past (sleep - timeout) lets the result beat the timer and the
+    query completes uncanceled (proven by blocking the loop during the
+    sleep; sync docker/testcontainers calls on the loop have been measured
+    stalling it for seconds under parallel runs). pg_sleep(60) keeps the
+    healthy-path runtime at ~timeout while tolerating such stalls."""
     settings = make_integration_settings(pg_dsn)
 
     async with open_worker_deps(settings) as deps:
         async with deps.heartbeat_pool.acquire() as conn:
             # asyncpg raises TimeoutError when command_timeout fires mid-query
             with pytest.raises((asyncpg.QueryCanceledError, TimeoutError)):
-                await conn.execute("SELECT pg_sleep(5)")
+                await conn.execute("SELECT pg_sleep(60)")
 
 
 async def test_leader_conn_command_timeout(pg_dsn: str) -> None:
@@ -139,13 +147,21 @@ async def test_leader_conn_command_timeout(pg_dsn: str) -> None:
     deps.leader_conn_factory is the TaskQ-built _leader_dsn_factory on stock
     deployments: the election conn, and the cron/monitor rebuilds that go
     through the same factory, must be bounded or a stalled PG hangs those
-    loops past the detector-2 budget."""
+    loops past the detector-2 budget.
+
+    pg_sleep(60), not 5: asyncpg enforces command_timeout with an
+    event-loop timer, so a loop stalled past (sleep - timeout) lets the
+    result beat the timer and the query completes uncanceled (proven by
+    blocking the loop during the sleep; sync docker/testcontainers calls
+    on the loop have been measured stalling it for seconds under parallel
+    runs). The healthy-path runtime stays ~timeout; the wider window only
+    tolerates stalls."""
     settings = make_integration_settings(pg_dsn, DISPATCHER_COMMAND_TIMEOUT="2")
 
     async with open_worker_deps(settings) as deps:
         assert deps.leader_conn is not None
         with pytest.raises((asyncpg.QueryCanceledError, TimeoutError)):
-            await deps.leader_conn.execute("SELECT pg_sleep(5)")
+            await deps.leader_conn.execute("SELECT pg_sleep(60)")
 
 
 # ── notify_conn LISTEN survives context ───────────────────────────
@@ -374,7 +390,8 @@ async def test_pool_startup_log_redacts_credentials(
     # Connect using the existing creds, ALTER USER to the sentinel, then
     # verify open_worker_deps opens successfully with the sentinel password.
     # Restore afterward.
-    base_dsn = disposable_pg_container.get_connection_url().replace(
+    # docker-py connection-url resolution is a blocking HTTP call — off the loop.
+    base_dsn = (await asyncio.to_thread(disposable_pg_container.get_connection_url)).replace(
         "postgresql+psycopg2://", "postgresql://"
     )
     admin_conn = await asyncpg.connect(base_dsn)
