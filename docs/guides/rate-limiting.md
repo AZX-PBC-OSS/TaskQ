@@ -76,10 +76,11 @@ bucket = TokenBucket(
     name="stripe_api",
     capacity=100,
     refill_per_second=10,
-    backend="memory",   # use "redis" in production
+    backend="memory",  # use "redis" in production
 )
 
 clock = FakeClock(datetime(2025, 1, 1, tzinfo=UTC))
+
 
 async def main() -> None:
     result = await bucket.acquire(clock=clock)
@@ -87,6 +88,7 @@ async def main() -> None:
         print(f"allowed, {result.remaining} tokens left")
     else:
         print(f"denied, retry in {result.retry_after}")
+
 
 asyncio.run(main())
 ```
@@ -358,18 +360,19 @@ Returned by `peek()` on all rate-limit primitives. A read-only snapshot of curre
 ```python
 from taskq.ratelimit.decision import RateLimitState
 
+
 @dataclass(frozen=True, slots=True)
 class RateLimitState:
     bucket_name: str
     backend: RateLimitBackend
-    is_exhausted: bool          # True when no tokens/capacity remain
-    tokens_remaining: float     # TB only: current tokens after refill
-    remaining: float            # SW only: remaining capacity
+    is_exhausted: bool  # True when no tokens/capacity remain
+    tokens_remaining: float  # TB only: current tokens after refill
+    remaining: float  # SW only: remaining capacity
     retry_after: timedelta | None  # If exhausted, time until next availability
-    capacity: float | None      # TB only
-    limit: int | None           # SW only
-    window: timedelta | None    # SW only
-    style: str | None           # SW only: "log" or "gcra"
+    capacity: float | None  # TB only
+    limit: int | None  # SW only
+    window: timedelta | None  # SW only
+    style: str | None  # SW only: "log" or "gcra"
     refill_per_second: float | None  # TB only
 ```
 
@@ -420,6 +423,7 @@ clean up:
 ```python
 import pytest
 from taskq.ratelimit import RateLimitRegistry
+
 
 @pytest.fixture
 def rl_registry() -> RateLimitRegistry:
@@ -590,15 +594,16 @@ Attach rate limits and reservations to an actor by name:
 from taskq.actor import actor
 from pydantic import BaseModel
 
+
 class SendEmailPayload(BaseModel):
     to: str
+
 
 @actor(
     rate_limits=["mailgun_per_minute"],
     reservations=["email_slots"],
 )
-async def send_email(payload: SendEmailPayload) -> None:
-    ...
+async def send_email(payload: SendEmailPayload) -> None: ...
 ```
 
 You can also declare the primitive **instances** directly — no separate
@@ -606,11 +611,12 @@ registration step needed; the worker registers them at bootstrap:
 
 ```python
 @actor(
-    rate_limits=[TokenBucket("mailgun_per_minute", capacity=100, refill_per_second=2, backend="redis")],
+    rate_limits=[
+        TokenBucket("mailgun_per_minute", capacity=100, refill_per_second=2, backend="redis")
+    ],
     reservations=[ConcurrencyReservation("email_slots", slots=4, lease=timedelta(minutes=2))],
 )
-async def send_email(payload: SendEmailPayload) -> None:
-    ...
+async def send_email(payload: SendEmailPayload) -> None: ...
 ```
 
 Names, instances, and keyed refs may be mixed freely in one list.
@@ -631,28 +637,35 @@ from pydantic import BaseModel
 from taskq.actor import actor
 from taskq.ratelimit import KeyedRateLimitRef, KeyedReservationRef
 
+
 class MyPayload(BaseModel):
     tenant_id: str
     session_id: str
 
+
 @actor(
-    rate_limits=["global-bucket", KeyedRateLimitRef.typed(
-        MyPayload,
-        base_name="api-per-tenant",
-        key_fn=lambda p: p.tenant_id,
-        capacity=10,
-        refill_per_second=1.0,
-    )],
-    reservations=["global-slots", KeyedReservationRef.typed(
-        MyPayload,
-        base_name="session-slots",
-        key_fn=lambda p: p.session_id,
-        slots=3,
-        lease=timedelta(minutes=5),
-    )],
+    rate_limits=[
+        "global-bucket",
+        KeyedRateLimitRef.typed(
+            MyPayload,
+            base_name="api-per-tenant",
+            key_fn=lambda p: p.tenant_id,
+            capacity=10,
+            refill_per_second=1.0,
+        ),
+    ],
+    reservations=[
+        "global-slots",
+        KeyedReservationRef.typed(
+            MyPayload,
+            base_name="session-slots",
+            key_fn=lambda p: p.session_id,
+            slots=3,
+            lease=timedelta(minutes=5),
+        ),
+    ],
 )
-async def my_actor(payload: MyPayload) -> None:
-    ...
+async def my_actor(payload: MyPayload) -> None: ...
 ```
 
 At dispatch time the worker calls `registry.acquire_for_actor()`:
@@ -676,24 +689,30 @@ singleton looks like:
 from taskq.ratelimit import registry, TokenBucket, SlidingWindow, ConcurrencyReservation
 from datetime import timedelta
 
-registry.register(TokenBucket(
-    name="mailgun_per_minute",
-    capacity=100,
-    refill_per_second=100 / 60,
-    backend="redis",
-))
-registry.register(SlidingWindow(
-    name="mailgun_sliding",
-    limit=1000,
-    window=timedelta(hours=1),
-    backend="redis",
-    style="log",
-))
-registry.register(ConcurrencyReservation(
-    name="email_slots",
-    slots=5,
-    lease=timedelta(seconds=120),
-))
+registry.register(
+    TokenBucket(
+        name="mailgun_per_minute",
+        capacity=100,
+        refill_per_second=100 / 60,
+        backend="redis",
+    )
+)
+registry.register(
+    SlidingWindow(
+        name="mailgun_sliding",
+        limit=1000,
+        window=timedelta(hours=1),
+        backend="redis",
+        style="log",
+    )
+)
+registry.register(
+    ConcurrencyReservation(
+        name="email_slots",
+        slots=5,
+        lease=timedelta(seconds=120),
+    )
+)
 ```
 
 ---
@@ -736,11 +755,13 @@ class GeocodeRequest(BaseModel):
     address: str
 
 
-registry.register(ConcurrencyReservation(
-    name="geocode-global",
-    slots=20,
-    lease=timedelta(minutes=2),
-))
+registry.register(
+    ConcurrencyReservation(
+        name="geocode-global",
+        slots=20,
+        lease=timedelta(minutes=2),
+    )
+)
 
 
 @actor(
@@ -770,8 +791,10 @@ from datetime import timedelta
 from pydantic import BaseModel, Field
 from taskq.ratelimit import KeyedReservationRef
 
+
 class GeocodeRequest(BaseModel):
     session_id: str = Field(alias="sessionId")  # wire name differs from attribute
+
 
 KeyedReservationRef.typed(
     GeocodeRequest,
@@ -842,14 +865,24 @@ If you have existing keyed-ref declarations from before 1.0, update them as foll
    from pydantic import BaseModel
    from taskq.ratelimit import KeyedRateLimitRef
 
+
    class MyPayload(BaseModel):
        tenant_id: str
 
+
    # BEFORE (broken):
-   KeyedRateLimitRef(base_name="api-per-tenant", key_fn=lambda p: p["tenant_id"], capacity=10, refill_per_second=1.0)
+   KeyedRateLimitRef(
+       base_name="api-per-tenant", key_fn=lambda p: p["tenant_id"], capacity=10, refill_per_second=1.0
+   )
 
    # AFTER:
-   KeyedRateLimitRef.typed(MyPayload, base_name="api-per-tenant", key_fn=lambda p: p.tenant_id, capacity=10, refill_per_second=1.0)
+   KeyedRateLimitRef.typed(
+       MyPayload,
+       base_name="api-per-tenant",
+       key_fn=lambda p: p.tenant_id,
+       capacity=10,
+       refill_per_second=1.0,
+   )
    ```
 
 2. **Change dict access to model-attribute access** — `p["tenant_id"]` → `p.tenant_id`. Pydantic defaults, aliases, and validators are now applied before `key_fn` runs.
@@ -887,12 +920,14 @@ class ApiRequest(BaseModel):
     endpoint: str
 
 
-registry.register(TokenBucket(
-    name="api-global",
-    capacity=100,
-    refill_per_second=10,
-    backend="redis",
-))
+registry.register(
+    TokenBucket(
+        name="api-global",
+        capacity=100,
+        refill_per_second=10,
+        backend="redis",
+    )
+)
 
 
 @actor(
@@ -921,8 +956,10 @@ compile-time type checking of `key_fn` against the payload model:
 from pydantic import BaseModel, Field
 from taskq.ratelimit import KeyedRateLimitRef
 
+
 class ApiRequest(BaseModel):
     tenant_id: str = Field(alias="tenantId")  # wire name differs from attribute
+
 
 KeyedRateLimitRef.typed(
     ApiRequest,
@@ -1056,30 +1093,38 @@ from taskq.settings import TaskQSettings
 _tq_schema = TaskQSettings.load().schema_name
 
 # 1. Define and register primitives.
-registry.register(TokenBucket(
-    name="stripe_calls",
-    capacity=100,
-    refill_per_second=10,
-    backend="redis",
-))
-registry.register(SlidingWindow(
-    name="stripe_hourly",
-    limit=3600,
-    window=timedelta(hours=1),
-    backend="redis",
-    style="gcra",
-))
-registry.register(ConcurrencyReservation(
-    name="stripe_concurrent",
-    slots=8,
-    lease=timedelta(seconds=30),
-    schema=_tq_schema,  # Must match TASKQ_SCHEMA_NAME
-))
+registry.register(
+    TokenBucket(
+        name="stripe_calls",
+        capacity=100,
+        refill_per_second=10,
+        backend="redis",
+    )
+)
+registry.register(
+    SlidingWindow(
+        name="stripe_hourly",
+        limit=3600,
+        window=timedelta(hours=1),
+        backend="redis",
+        style="gcra",
+    )
+)
+registry.register(
+    ConcurrencyReservation(
+        name="stripe_concurrent",
+        slots=8,
+        lease=timedelta(seconds=30),
+        schema=_tq_schema,  # Must match TASKQ_SCHEMA_NAME
+    )
+)
+
 
 # 2. Wire to actor.
 class ChargePayload(BaseModel):
     amount: int
     currency: str
+
 
 @actor(
     queue="payments",
@@ -1118,6 +1163,7 @@ from taskq.testing.clock import FakeClock
 
 START = datetime(2025, 1, 1, tzinfo=UTC)
 
+
 async def test_token_bucket_refill() -> None:
     tb = TokenBucket(
         name="test",
@@ -1149,6 +1195,7 @@ For sliding window tests:
 
 ```python
 from taskq.ratelimit import SlidingWindow
+
 
 async def test_sliding_window_deny_then_allow() -> None:
     sw = SlidingWindow(

@@ -194,7 +194,7 @@ async def get_actor_config(
     return _row_to_dataclass(row) if row is not None else None
 
 
-def _validate_int_field(name: str, value: int | None | Unset) -> None:
+def _validate_int_field(name: str, value: int | Unset | None) -> None:
     """Reject the two shapes that slip past ``isinstance(x, int) and x < 0``:
     ``bool`` (an ``int`` subclass — ``False`` would be written as 0, flooring
     the dispatch residual ``GREATEST(cap - in_flight, 0)`` and silently
@@ -205,7 +205,7 @@ def _validate_int_field(name: str, value: int | None | Unset) -> None:
         raise ValueError(f"{name} must be a non-negative integer; got {value!r}")
 
 
-def _validate_result_ttl(value: float | None | Unset) -> None:
+def _validate_result_ttl(value: float | Unset | None) -> None:
     """Reject bool, negative, and non-finite ``result_ttl``.
 
     NaN sails through ``value < 0`` (NaN compares False) and then breaks
@@ -228,9 +228,9 @@ async def set_actor_config_capacity(
     conn: ConnLike,
     actor: str,
     *,
-    max_concurrent: int | None | Unset = UNSET,
-    max_pending: int | None | Unset = UNSET,
-    result_ttl: float | None | Unset = UNSET,
+    max_concurrent: int | Unset | None = UNSET,
+    max_pending: int | Unset | None = UNSET,
+    result_ttl: float | Unset | None = UNSET,
     schema: str = "taskq",
 ) -> ActorConfigRow | None:
     """Update capacity fields on an existing `{schema}.actor_config` row.

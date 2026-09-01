@@ -107,6 +107,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 bearer = HTTPBearer()
 
+
 async def require_token(
     credentials: HTTPAuthorizationCredentials = Security(bearer),
 ) -> str:
@@ -114,12 +115,13 @@ async def require_token(
         raise HTTPException(status_code=401, detail="invalid admin token")
     return credentials.credentials
 
+
 # Pass to create_router():
 bundle = create_router(
     pg_pool,
     schema="taskq",
     redis_client=None,
-    auth_dependency=require_token,   # protects all routes
+    auth_dependency=require_token,  # protects all routes
     base_path="/admin",
 )
 ```
@@ -574,10 +576,10 @@ from taskq.web.admin import create_router
 router = create_router(
     pg_pool,
     schema="taskq",
-    redis_client=None,        # pass a redis.asyncio.Redis instance to enable live Redis state
-    auth_dependency=None,     # pass a FastAPI dependency callable to protect all routes
+    redis_client=None,  # pass a redis.asyncio.Redis instance to enable live Redis state
+    auth_dependency=None,  # pass a FastAPI dependency callable to protect all routes
     base_path="/admin",
-    backend=None,             # pass an existing Backend to reuse it instead of constructing one
+    backend=None,  # pass an existing Backend to reuse it instead of constructing one
 )
 ```
 
@@ -599,6 +601,7 @@ from fastapi import FastAPI
 from taskq.settings import TaskQSettings
 from taskq.web.admin import create_router, setup_admin_state
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = TaskQSettings.load()
@@ -607,15 +610,16 @@ async def lifespan(app: FastAPI):
         bundle = create_router(
             pool,
             schema=settings.schema_name,
-            redis_client=None,        # pass a redis.asyncio.Redis instance for live state
-            auth_dependency=None,     # pass a FastAPI dependency to protect all routes
+            redis_client=None,  # pass a redis.asyncio.Redis instance for live state
+            auth_dependency=None,  # pass a FastAPI dependency to protect all routes
             base_path="/admin",
         )
-        setup_admin_state(app, bundle)          # populates app.state.pg_pool, .schema, etc.
+        setup_admin_state(app, bundle)  # populates app.state.pg_pool, .schema, etc.
         app.include_router(bundle.router, prefix="/admin")
         yield
     finally:
         await pool.close()
+
 
 app = FastAPI(lifespan=lifespan)
 ```

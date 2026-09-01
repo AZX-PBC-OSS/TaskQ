@@ -229,12 +229,15 @@ Any other type (including a plain list of non-`ActorRef` objects) prints an erro
 from taskq.actor import actor
 from pydantic import BaseModel
 
+
 class EmailPayload(BaseModel):
     to: str
     subject: str
 
+
 @actor(queue="email")
 async def send_email(payload: EmailPayload) -> None: ...
+
 
 registry = [send_email]
 ```

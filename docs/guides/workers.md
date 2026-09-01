@@ -113,14 +113,16 @@ The worker accepts actors as either a `Mapping[str, ActorRef]` (keys are actor n
 from pydantic import BaseModel
 from taskq import actor, RetryPolicy
 
+
 class SendEmailPayload(BaseModel):
     to: str
     subject: str
     body: str
 
+
 @actor(queue="email", retry=RetryPolicy(kind="transient", max_attempts=5))
-async def send_email(payload: SendEmailPayload) -> None:
-    ...
+async def send_email(payload: SendEmailPayload) -> None: ...
+
 
 # Iterable form — pass the ActorRef objects directly
 registry = [send_email]

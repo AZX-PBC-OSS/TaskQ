@@ -118,42 +118,73 @@ class Backend(Protocol):
 
     # Terminal writes
     async def mark_succeeded(
-        self, job_id: JobId, worker_id: UUID, result: dict | None,
-        progress_seq: int = 0, progress_state: dict | None = None,
+        self,
+        job_id: JobId,
+        worker_id: UUID,
+        result: dict | None,
+        progress_seq: int = 0,
+        progress_state: dict | None = None,
         fallback_result_ttl: timedelta | None = None,
     ) -> bool: ...
     async def mark_succeeded_with_conn(
-        self, conn, job_id: JobId, worker_id: UUID, result: dict | None,
-        progress_seq: int = 0, progress_state: dict | None = None,
+        self,
+        conn,
+        job_id: JobId,
+        worker_id: UUID,
+        result: dict | None,
+        progress_seq: int = 0,
+        progress_state: dict | None = None,
         fallback_result_ttl: timedelta | None = None,
     ) -> bool: ...
     async def mark_failed_or_retry(
-        self, job_id: JobId, worker_id: UUID, error_info: ErrorInfo,
-        next_scheduled_at: datetime | None, progress_seq: int = 0,
+        self,
+        job_id: JobId,
+        worker_id: UUID,
+        error_info: ErrorInfo,
+        next_scheduled_at: datetime | None,
+        progress_seq: int = 0,
         progress_state: dict | None = None,
     ) -> JobRow: ...
     async def mark_cancelled(
-        self, job_id: JobId, worker_id: UUID, progress_seq: int = 0,
+        self,
+        job_id: JobId,
+        worker_id: UUID,
+        progress_seq: int = 0,
         progress_state: dict | None = None,
     ) -> bool: ...
     async def write_cancel_escalation(
-        self, job_id: JobId, worker_id: UUID, phase: Literal[2],
+        self,
+        job_id: JobId,
+        worker_id: UUID,
+        phase: Literal[2],
     ) -> bool: ...
     async def mark_abandoned(
-        self, job_id: JobId, progress_seq: int = 0,
+        self,
+        job_id: JobId,
+        progress_seq: int = 0,
         progress_state: dict | None = None,
     ) -> bool: ...
     async def mark_snoozed(
-        self, job_id: JobId, worker_id: UUID, delay: timedelta, *,
-        metadata_update: dict | None = None, progress_seq: int = 0,
-        progress_state: dict | None = None, outcome: AttemptOutcome = "snoozed",
+        self,
+        job_id: JobId,
+        worker_id: UUID,
+        delay: timedelta,
+        *,
+        metadata_update: dict | None = None,
+        progress_seq: int = 0,
+        progress_state: dict | None = None,
+        outcome: AttemptOutcome = "snoozed",
     ) -> Literal["scheduled", "failed", "noop"]: ...
     async def mark_retry_after(
-        self, job_id: JobId, worker_id: UUID, delay: timedelta, *,
-        consume_budget: bool = True, progress_seq: int = 0,
+        self,
+        job_id: JobId,
+        worker_id: UUID,
+        delay: timedelta,
+        *,
+        consume_budget: bool = True,
+        progress_seq: int = 0,
         progress_state: dict | None = None,
-    ) -> Literal["scheduled", "failed:DeadlineExceeded",
-                  "failed:MaxAttemptsExceeded", "noop"]: ...
+    ) -> Literal["scheduled", "failed:DeadlineExceeded", "failed:MaxAttemptsExceeded", "noop"]: ...
 
     # Attempt history
     async def write_attempt(self, attempt: AttemptRow) -> None: ...
@@ -161,7 +192,10 @@ class Backend(Protocol):
     async def get_events(self, job_id: JobId) -> list[EventRow]: ...
 
     async def poll_reclaim_events(
-        self, after_id: int, limit: int = 100, *,
+        self,
+        after_id: int,
+        limit: int = 100,
+        *,
         visibility_delay: timedelta | None = None,
     ) -> list[EventRow]: ...  # durable cursor for crash-reclaim events; visibility-delay filter
 
@@ -177,7 +211,10 @@ class Backend(Protocol):
     async def scheduled_to_pending(self, now: datetime) -> int: ...
     async def deadline_sweep(self, now: datetime) -> int: ...
     async def reclaim_expired_locks(
-        self, now: datetime, cancel_grace: timedelta, cleanup_grace: timedelta,
+        self,
+        now: datetime,
+        cancel_grace: timedelta,
+        cleanup_grace: timedelta,
     ) -> int: ...
 
     # Read
@@ -196,10 +233,15 @@ class Backend(Protocol):
     # Schedule CRUD
     async def create_schedule(self, args: ScheduleCreateArgs) -> ScheduleRecord: ...
     async def list_schedules(
-        self, *, actor: str | None = None, enabled: bool | None = None,
+        self,
+        *,
+        actor: str | None = None,
+        enabled: bool | None = None,
     ) -> list[ScheduleRecord]: ...
     async def update_schedule(
-        self, schedule_id: UUID, args: ScheduleUpdateArgs,
+        self,
+        schedule_id: UUID,
+        args: ScheduleUpdateArgs,
     ) -> ScheduleRecord: ...
     async def delete_schedule(self, schedule_id: UUID) -> None: ...
 ```
@@ -427,6 +469,7 @@ SQL, and nobody in application code hears about it):
 ```python
 outstanding = len(job_ids)
 
+
 async def track_completions(tq: TaskQ) -> None:
     global outstanding
     cursor = await load_reclaim_cursor()  # your own durable store
@@ -434,7 +477,7 @@ async def track_completions(tq: TaskQ) -> None:
         # evt.detail: from_state/to_state ('pending' retry, or terminal
         # 'crashed'/'cancelled'), reason='lock_expired', worker_id.
         if evt.detail["to_state"] != "pending":  # terminal reclaim only;
-            outstanding -= 1                     # retries redispatch normally
+            outstanding -= 1  # retries redispatch normally
         cursor = evt.event_id
         await save_reclaim_cursor(cursor)  # persist AFTER processing —
         # a crash before this re-delivers the event (at-least-once;

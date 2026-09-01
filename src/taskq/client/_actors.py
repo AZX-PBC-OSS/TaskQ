@@ -67,9 +67,9 @@ class ActorsClient:
         self,
         actor: str,
         *,
-        max_concurrent: int | None | Unset = UNSET,
-        max_pending: int | None | Unset = UNSET,
-        result_ttl: float | None | Unset = UNSET,
+        max_concurrent: int | Unset | None = UNSET,
+        max_pending: int | Unset | None = UNSET,
+        result_ttl: float | Unset | None = UNSET,
     ) -> ActorConfigRow | None:
         """Update capacity fields on an existing actor_config row."""
         async with self._pool.acquire() as conn:

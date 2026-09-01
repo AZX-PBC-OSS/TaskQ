@@ -38,6 +38,7 @@ Supports both plain and parameterised forms:
 @actor
 async def send_email(payload: EmailPayload) -> EmailResult: ...
 
+
 # Parameterised.
 @actor(queue="priority", max_concurrent=10, retry=RetryPolicy(max_attempts=5))
 async def process_order(payload: OrderPayload) -> OrderResult: ...
@@ -96,13 +97,16 @@ The decorator accepts any of these four shapes. Declare only what the handler bo
 from pydantic import BaseModel
 from taskq import actor
 
+
 class ResizePayload(BaseModel):
     image_id: str
     width: int
     height: int
 
+
 class ResizeResult(BaseModel):
     url: str
+
 
 @actor
 async def resize_image(payload: ResizePayload) -> ResizeResult:
@@ -116,6 +120,7 @@ async def resize_image(payload: ResizePayload) -> ResizeResult:
 from taskq import actor
 from taskq.context import JobContext
 
+
 @actor
 async def resize_image(payload: ResizePayload, ctx: JobContext[ResizePayload]) -> ResizeResult:
     if ctx.cancellation_requested:
@@ -127,6 +132,7 @@ async def resize_image(payload: ResizePayload, ctx: JobContext[ResizePayload]) -
 
 ```python
 from taskq import actor
+
 
 @actor
 async def resize_image(
@@ -149,6 +155,7 @@ worker's DI resolver maps the annotation to a registered provider at dispatch ti
 from taskq import actor
 from taskq.context import JobContext
 
+
 @actor(queue="priority")
 async def resize_image(
     payload: ResizePayload,
@@ -170,17 +177,21 @@ async def resize_image(
 from pydantic import BaseModel
 from taskq import actor
 
+
 class PdfPayload(BaseModel):
     html: str
     filename: str
 
+
 class PdfResult(BaseModel):
     s3_key: str
+
 
 @actor(queue="media")
 def generate_pdf(payload: PdfPayload) -> PdfResult:
     # CPU-bound PDF generation — runs in a thread, not the event loop.
     import weasyprint
+
     out = weasyprint.HTML(string=payload.html).write_pdf()
     # ... upload to S3 ...
     return PdfResult(s3_key=f"pdfs/{payload.filename}")
@@ -323,23 +334,25 @@ fire-and-forget actors.
 ```python
 from pydantic import BaseModel
 
+
 class OrderPayload(BaseModel):
     order_id: str
     items: list[str]
     total_cents: int
 
+
 class OrderResult(BaseModel):
     confirmation_number: str
     estimated_delivery: str
 
+
 @actor
-async def process_order(payload: OrderPayload) -> OrderResult:
-    ...
+async def process_order(payload: OrderPayload) -> OrderResult: ...
+
 
 # Fire-and-forget: R = None
 @actor
-async def audit_log(payload: AuditPayload) -> None:
-    ...
+async def audit_log(payload: AuditPayload) -> None: ...
 ```
 
 Plain `dict`, `dataclass`, and `TypedDict` are not supported as payload or result types. Pydantic
@@ -354,8 +367,7 @@ workers.
 
 ```python
 @actor(singleton=True)
-async def daily_report(payload: ReportPayload) -> None:
-    ...
+async def daily_report(payload: ReportPayload) -> None: ...
 ```
 
 **Semantics:**
@@ -392,12 +404,12 @@ the blocking job's `schedule_to_close` when available, otherwise `None`.
 ```python
 from datetime import timedelta
 
+
 @actor(
     unique_for=timedelta(minutes=15),
     unique_states=("pending", "scheduled", "running"),
 )
-async def sync_account(payload: SyncPayload) -> None:
-    ...
+async def sync_account(payload: SyncPayload) -> None: ...
 ```
 
 **Semantics:**
@@ -435,8 +447,7 @@ The `identity_key` and `unique_for` window can be overridden per-enqueue via
 
 ```python
 @actor(max_pending=1000)
-async def ingest_event(payload: EventPayload) -> None:
-    ...
+async def ingest_event(payload: EventPayload) -> None: ...
 ```
 
 **Semantics:**
@@ -487,8 +498,7 @@ Declare named rate-limit buckets and concurrency reservation slots on the actor:
     rate_limits=["openai", "vendor_x"],
     reservations=["gpu_pool"],
 )
-async def run_inference(payload: InferencePayload) -> InferenceResult:
-    ...
+async def run_inference(payload: InferencePayload) -> InferenceResult: ...
 ```
 
 `rate_limits` and `reservations` are lists of bucket/slot names defined in the rate-limiting
@@ -505,19 +515,19 @@ from datetime import timedelta
 from taskq import actor
 from taskq.retry import RetryPolicy
 
+
 @actor(
     retry=RetryPolicy(
-        kind="transient",       # "transient" | "indefinite" | "non_retryable"
-        max_attempts=5,         # ignored for kind="indefinite"
+        kind="transient",  # "transient" | "indefinite" | "non_retryable"
+        max_attempts=5,  # ignored for kind="indefinite"
         backoff="exponential",  # "exponential" | "linear" | "fixed"
         base=timedelta(seconds=10),
         cap=timedelta(hours=2),
         jitter=0.2,
-        time_budget=None,       # only used for kind="indefinite"
+        time_budget=None,  # only used for kind="indefinite"
     )
 )
-async def flaky_call(payload: CallPayload) -> CallResult:
-    ...
+async def flaky_call(payload: CallPayload) -> CallResult: ...
 ```
 
 ### `RetryPolicy` fields
@@ -551,6 +561,7 @@ Reschedules the job at `now + delay` without consuming retry budget. The job re-
 from datetime import timedelta
 from taskq.exceptions import Snooze
 
+
 @actor
 async def poll_external_api(payload: PollPayload, ctx: JobContext[PollPayload]) -> None:
     result = await check_status(payload.task_id)
@@ -571,6 +582,7 @@ Schedules a retry at a specific delay. Consumes the retry budget by default.
 ```python
 from datetime import timedelta
 from taskq.exceptions import RetryAfter
+
 
 @actor
 async def call_rate_limited_api(payload: ApiPayload) -> ApiResult:
@@ -608,6 +620,7 @@ registry = ProviderRegistry()
 # duration of the worker process).
 registry.register_value(Database, Scope.PROCESS, db_instance)
 
+
 # Register an async factory. The factory is called once per scope lifetime.
 # Use an async generator to run teardown code.
 async def create_http_client():
@@ -616,6 +629,7 @@ async def create_http_client():
         yield client
     finally:
         await client.aclose()
+
 
 registry.register_factory(HttpClient, Scope.LOOP, create_http_client)
 
@@ -869,22 +883,28 @@ from taskq.retry import RetryPolicy
 
 # --- Models ---
 
+
 class OrderPayload(BaseModel):
     order_id: str
     customer_id: str
     amount_cents: int
 
+
 class OrderResult(BaseModel):
     confirmation_number: str
     charged_at: str
 
+
 # --- DI dependency (registered with the worker's DI container) ---
+
 
 class PaymentGateway:
     async def charge(self, order_id: str, amount_cents: int) -> dict[str, str]: ...
     async def status(self, order_id: str) -> str: ...
 
+
 # --- Actor ---
+
 
 @actor(
     name="process_order",
@@ -926,7 +946,9 @@ async def process_order(
         charged_at=charge["charged_at"],
     )
 
+
 # --- Enqueue ---
+
 
 async def submit_order(client, order_id: str, customer_id: str, amount_cents: int):
     from taskq.exceptions import MaxPendingExceededError

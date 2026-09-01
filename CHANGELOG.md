@@ -13,10 +13,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   ```python
   # BEFORE (broken):
-  KeyedRateLimitRef(base_name="api-per-tenant", key_fn=lambda p: p["tenant_id"], capacity=10, refill_per_second=1.0)
+  KeyedRateLimitRef(
+      base_name="api-per-tenant", key_fn=lambda p: p["tenant_id"], capacity=10, refill_per_second=1.0
+  )
 
   # AFTER:
-  KeyedRateLimitRef.typed(MyPayload, base_name="api-per-tenant", key_fn=lambda p: p.tenant_id, capacity=10, refill_per_second=1.0)
+  KeyedRateLimitRef.typed(
+      MyPayload,
+      base_name="api-per-tenant",
+      key_fn=lambda p: p.tenant_id,
+      capacity=10,
+      refill_per_second=1.0,
+  )
   ```
 
   Use `.typed()` for compile-time type checking of `key_fn` against the payload model.

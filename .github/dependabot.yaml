@@ -1,10 +1,20 @@
 version: 2
 updates:
-  - package-ecosystem: pip
+  # `uv`, not `pip`. Dependabot's pip ecosystem reads pyproject.toml but does
+  # NOT maintain uv.lock, so the lockfile CI installs from drifts silently while
+  # the bot reports itself healthy. That is what happened here: the lock sat on
+  # authlib 1.7.2, starlette 1.3.1 and httpx2 2.9.1 while 1.8.0, 1.6.0 and
+  # 2.12.0 were available and permitted by the declared floors, and it carried
+  # two advisories (PYSEC-2026-3552, PYSEC-2026-3721) that a refresh clears.
+  # uv is a first-class ecosystem and understands both files.
+  - package-ecosystem: uv
     directory: /
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    groups:
+      python-minor-patch:
+        update-types: ["minor", "patch"]
 
   - package-ecosystem: github-actions
     directory: /
@@ -14,6 +24,22 @@ updates:
 
   - package-ecosystem: npm
     directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  # examples/Dockerfile pins `python:3.12-slim`; examples/docker-compose.yml
+  # and the root docker-compose.yml pin service images (e.g. postgres:18.4).
+  # The docker ecosystem tracks both Dockerfile and docker-compose.yml image
+  # references, per directory.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: docker
+    directory: /examples
     schedule:
       interval: weekly
     open-pull-requests-limit: 5

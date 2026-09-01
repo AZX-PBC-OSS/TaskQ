@@ -55,6 +55,7 @@ registry = ProviderRegistry()
 # Register a pre-built value (no teardown needed)
 registry.register_value(MyConfig, Scope.PROCESS, MyConfig(debug=False))
 
+
 # Register an async generator factory (yield = teardown boundary)
 async def make_db_pool():
     pool = await asyncpg.create_pool(dsn)
@@ -62,6 +63,7 @@ async def make_db_pool():
         yield pool
     finally:
         await pool.close()
+
 
 registry.register_factory(asyncpg.Pool, Scope.LOOP, make_db_pool)
 
@@ -116,6 +118,8 @@ The async-generator pattern is the most common — put teardown code after the `
 async def make_http_client():
     async with httpx.AsyncClient() as client:
         yield client
+
+
 # client.aclose() is called when the LOOP scope closes
 ```
 
@@ -144,18 +148,22 @@ class RedisClient:
     async def __aenter__(self) -> "RedisClient":
         await self._connect()
         return self
+
     async def __aexit__(self, *exc) -> None:
         await self._disconnect()
+
 
 registry.register_class(RedisClient, Scope.LOOP)
 
 # Shape 2 — AsyncCloseable (e.g. asyncpg Pool has aclose)
 registry.register_class(MyAsyncResource, Scope.LOOP)
 
+
 # Shape 4 — Plain (no teardown)
 class ReadOnlyConfig:
     def __init__(self) -> None:
         self.value = os.environ["MY_VAR"]
+
 
 registry.register_class(ReadOnlyConfig, Scope.PROCESS)
 ```
@@ -176,13 +184,14 @@ from taskq import actor
 from taskq.context import JobContext
 from taskq.di import Scope
 
+
 @actor(name="send_email", queue="email")
 async def send_email(
     payload: SendEmailPayload,
     ctx: JobContext[SendEmailPayload],
     *,
-    mailer: MailerClient,                          # scope from registry default
-    db: Annotated[asyncpg.Pool, Scope.LOOP],       # explicit scope assertion
+    mailer: MailerClient,  # scope from registry default
+    db: Annotated[asyncpg.Pool, Scope.LOOP],  # explicit scope assertion
 ) -> SendEmailResult:
     record = await db.fetch_one("SELECT * FROM users WHERE id = $1", payload.recipient_id)
     await mailer.send(to=record.email, subject=payload.subject)

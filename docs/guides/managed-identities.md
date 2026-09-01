@@ -93,9 +93,11 @@ free — no third-party dependencies required.
 ```python
 from taskq.auth import PgCredential, PgCredentialProvider, RedisCredential, RedisCredentialProvider
 
+
 # Postgres — return a password (token) and optionally a fresh username
 class PgCredentialProvider(Protocol):
     async def get_pg_credential(self) -> PgCredential: ...
+
 
 # Redis — return (username, password)
 class RedisCredentialProvider(Protocol):
@@ -292,14 +294,20 @@ provider = EntraIdProvider(cred, redis_username="<managed-identity-object-id>")
 
 WorkerConnections(
     dispatcher_pool_factory=make_pg_pool_factory(
-        settings.pg_dsn_direct, provider, max_size=settings.dispatcher_pool_size,
+        settings.pg_dsn_direct,
+        provider,
+        max_size=settings.dispatcher_pool_size,
     ),
     heartbeat_pool_factory=make_pg_pool_factory(
-        settings.pg_dsn_direct, provider,
-        max_size=settings.heartbeat_pool_size, command_timeout=2,
+        settings.pg_dsn_direct,
+        provider,
+        max_size=settings.heartbeat_pool_size,
+        command_timeout=2,
     ),
     worker_pool_factory=make_pg_pool_factory(
-        settings.pg_dsn_pooled, provider, max_size=settings.worker_pool_size,
+        settings.pg_dsn_pooled,
+        provider,
+        max_size=settings.worker_pool_size,
     ),
     notify_conn_factory=make_dedicated_conn_factory(settings.pg_dsn_direct, provider),
     leader_conn_factory=make_dedicated_conn_factory(settings.pg_dsn_direct, provider),
@@ -341,7 +349,9 @@ provider = RdsIamProvider(settings.pg_dsn_direct, region="us-east-1")
 
 WorkerConnections(
     dispatcher_pool_factory=make_pg_pool_factory(
-        settings.pg_dsn_direct, provider, max_size=settings.dispatcher_pool_size,
+        settings.pg_dsn_direct,
+        provider,
+        max_size=settings.dispatcher_pool_size,
     ),
     # ... heartbeat, worker, notify, leader similarly
 )
@@ -376,7 +386,9 @@ provider = VaultDynamicDbProvider(client, role="taskq-readonly")
 
 WorkerConnections(
     dispatcher_pool_factory=make_pg_pool_factory(
-        settings.pg_dsn_direct, provider, max_size=settings.dispatcher_pool_size,
+        settings.pg_dsn_direct,
+        provider,
+        max_size=settings.dispatcher_pool_size,
     ),
     # ...
 )
@@ -422,9 +434,9 @@ def make_cloudsql_pool_factory(connector, instance: str, user: str, db: str):
     async def pg_pool_factory() -> asyncpg.Pool:
         async def getconn() -> asyncpg.Connection:
             return await connector.connect_async(
-                instance,          # "project:region:instance"
-                "asyncpg",         # driver — asyncpg, not pg8000
-                user=user,         # IAM principal, e.g. "my-mi@project.iam"
+                instance,  # "project:region:instance"
+                "asyncpg",  # driver — asyncpg, not pg8000
+                user=user,  # IAM principal, e.g. "my-mi@project.iam"
                 db=db,
                 enable_iam_auth=True,
             )
@@ -460,6 +472,7 @@ import ssl
 sslctx = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
 sslctx.load_cert_chain("client.crt", "client.key")
 
+
 async def pg_pool_factory() -> asyncpg.Pool:
     return await asyncpg.create_pool(
         dsn=settings.pg_dsn_direct,
@@ -467,6 +480,7 @@ async def pg_pool_factory() -> asyncpg.Pool:
         min_size=1,
         max_size=4,
     )
+
 
 WorkerConnections(dispatcher_pool_factory=pg_pool_factory)
 ```
@@ -479,6 +493,7 @@ your secrets manager on each call:
 ```python
 from taskq.auth import PgCredential, PgCredentialProvider
 
+
 class SecretsManagerProvider:
     def __init__(self, client, secret_id: str) -> None:
         self._client = client
@@ -486,9 +501,11 @@ class SecretsManagerProvider:
 
     async def get_pg_credential(self) -> PgCredential:
         import asyncio, json
+
         def _fetch() -> str:
             resp = self._client.get_secret_value(SecretId=self._secret_id)
             return json.loads(resp["SecretString"])["password"]
+
         password = await asyncio.to_thread(_fetch)
         return PgCredential(password=password)
 ```
@@ -499,9 +516,9 @@ class SecretsManagerProvider:
 from taskq.auth import PgCredential, PgCredentialProvider
 import httpx
 
+
 class OAuthTokenProvider:
-    def __init__(self, token_url: str, client_id: str, client_secret: str) -> None:
-        ...
+    def __init__(self, token_url: str, client_id: str, client_secret: str) -> None: ...
 
     async def get_pg_credential(self) -> PgCredential:
         async with httpx.AsyncClient() as client:
@@ -522,10 +539,14 @@ back to the existing DSN construction, so the change is purely additive.
 from taskq import WorkerConnections
 from taskq.worker.run import worker_main
 
-worker_main(settings, actor_registry=ACTORS, connections=WorkerConnections(
-    dispatcher_pool_factory=my_factory,
-    # fields left None → TaskQ builds them from DSNs as before.
-))
+worker_main(
+    settings,
+    actor_registry=ACTORS,
+    connections=WorkerConnections(
+        dispatcher_pool_factory=my_factory,
+        # fields left None → TaskQ builds them from DSNs as before.
+    ),
+)
 ```
 
 Mixing a pre-constructed pool **and** a factory for the same role raises
@@ -534,8 +555,8 @@ Mixing a pre-constructed pool **and** a factory for the same role raises
 ### `PoolFactory` / `ConnFactory` / `RedisFactory` signatures
 
 ```python
-type PoolFactory  = Callable[[], Awaitable[asyncpg.Pool]]
-type ConnFactory  = Callable[[], Awaitable[asyncpg.Connection]]
+type PoolFactory = Callable[[], Awaitable[asyncpg.Pool]]
+type ConnFactory = Callable[[], Awaitable[asyncpg.Connection]]
 type RedisFactory = Callable[[], Awaitable[redis.asyncio.Redis]]
 ```
 
@@ -555,8 +576,8 @@ close the remaining DSN-only gaps for the LISTEN/NOTIFY transport in
 from taskq import make_dedicated_conn_factory
 
 tq = TaskQ(
-    pool=app_state.pg_pool,          # caller-owned
-    redis_client=app_state.redis,    # caller-owned
+    pool=app_state.pg_pool,  # caller-owned
+    redis_client=app_state.redis,  # caller-owned
     # LISTEN transport for tq.stream() without a DSN:
     pg_conn_factory=make_dedicated_conn_factory(settings.pg_dsn_direct, provider),  # OR
     listen_conn=app_state.listen_conn,  # pre-constructed, caller-owned
@@ -589,6 +610,7 @@ from azure.identity.aio import DefaultAzureCredential
 from taskq import TaskQ, make_pg_pool_factory, make_redis_client_factory
 from taskq.aad import EntraIdProvider
 
+
 @asynccontextmanager
 async def lifespan(app):
     # The credential is caller-owned — async with (or aclose() in a
@@ -603,8 +625,8 @@ async def lifespan(app):
         redis_client = await redis_factory()
         try:
             app.state.tq = TaskQ(
-                pool=pg_pool,              # caller-owned
-                redis_client=redis_client, # caller-owned
+                pool=pg_pool,  # caller-owned
+                redis_client=redis_client,  # caller-owned
             )
             await app.state.tq.open()
             yield

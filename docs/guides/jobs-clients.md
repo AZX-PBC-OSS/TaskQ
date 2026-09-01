@@ -321,13 +321,13 @@ Supply `batch_id` to set it explicitly; omit it and a UUIDv7 is generated automa
 from taskq import EnqueueItem
 
 EnqueueItem(
-    actor_ref=my_actor,                     # ActorRef[P, R]
-    payload=MyPayload(...),                # validated against actor.payload_type
-    scheduled_at=None,                     # datetime | None
+    actor_ref=my_actor,  # ActorRef[P, R]
+    payload=MyPayload(...),  # validated against actor.payload_type
+    scheduled_at=None,  # datetime | None
     priority=None,
     fairness_key=None,
-    idempotency_key=None,                  # str | None, ≤ 256 chars
-    idempotency_scope=None,               # str | None, ≤ 256 chars
+    idempotency_key=None,  # str | None, ≤ 256 chars
+    idempotency_scope=None,  # str | None, ≤ 256 chars
     identity_key=None,
     metadata={},
 )
@@ -504,7 +504,9 @@ from taskq import BatchAbortedError
 try:
     status = await wait_for_batch(db, batch_id)
 except BatchAbortedError as exc:
-    print(f"batch {exc.batch_id} aborted after {exc.consecutive_failures} failures (threshold={exc.threshold})")
+    print(
+        f"batch {exc.batch_id} aborted after {exc.consecutive_failures} failures (threshold={exc.threshold})"
+    )
 ```
 
 ---
@@ -560,6 +562,7 @@ from taskq import wait_for_batch
 from taskq.context import JobContext
 import asyncpg
 
+
 @actor(queue="finalizers")
 async def summarize_results(ctx: JobContext, payload: SummarizePayload) -> None:
     db = ctx.deps.worker_pool  # or acquire from pool
@@ -602,6 +605,7 @@ undesirable.
 ```python
 from taskq import EnqueueItem
 
+
 async def enqueue_from_generator(client: JobsClient, doc_ids: Iterable[str]) -> None:
     def gen() -> Iterable[EnqueueItem]:
         for doc_id in doc_ids:
@@ -632,6 +636,7 @@ finalizer created as the last statements.
 
 ```python
 from taskq import wait_for_batch
+
 
 async def wait_for_batch(
     db: "asyncpg.Connection | asyncpg.Pool",
@@ -696,6 +701,7 @@ for the full decision table.
 ```python
 from taskq import BatchFilter
 
+
 async def list_batches(
     self,
     filter: BatchFilter,
@@ -712,9 +718,9 @@ from taskq import BatchFilter
 
 BatchFilter(
     queue="notifications",  # str | None
-    active=True,            # bool | None — True: active, False: terminal
-    batch_id=UUID(...),     # UUID | None
-    limit=50,               # int (>= 0, default 100)
+    active=True,  # bool | None — True: active, False: terminal
+    batch_id=UUID(...),  # UUID | None
+    limit=50,  # int (>= 0, default 100)
 )
 ```
 
@@ -899,6 +905,7 @@ handle = await client.get(job_id, result_adapter=process_order.result_adapter)
 
 # When you only need row metadata (e.g. status, timestamps):
 from pydantic import TypeAdapter
+
 handle = await client.get(job_id, result_adapter=TypeAdapter(type(None)))
 ```
 
@@ -979,8 +986,10 @@ result = await client.cancel_where(
     JobFilter(tags=("tenant-acme",), active=True),
     reason="tenant offboarded",
 )
-print(f"cancelled {result.cancelled_directly} pending, "
-      f"requested cancel for {result.cancel_requested} running")
+print(
+    f"cancelled {result.cancelled_directly} pending, "
+    f"requested cancel for {result.cancel_requested} running"
+)
 ```
 
 ### `BulkCancelResult`
@@ -1065,12 +1074,14 @@ recent completed run of a logical entity:
 ```python
 from taskq.backend._protocol import JobFilter, JobSortField
 
-page = await client.list(JobFilter(
-    actor="sync_tenant",
-    identity_key="tenant:acme",
-    order_by=JobSortField.FINISHED_AT_DESC,
-    limit=1,
-))
+page = await client.list(
+    JobFilter(
+        actor="sync_tenant",
+        identity_key="tenant:acme",
+        order_by=JobSortField.FINISHED_AT_DESC,
+        limit=1,
+    )
+)
 if page.jobs:
     latest = page.jobs[0]
     print(f"last run: {latest.status} at {latest.finished_at}")
@@ -1080,12 +1091,14 @@ For "most recently enqueued" (regardless of completion), use
 `CREATED_AT_DESC`:
 
 ```python
-page = await client.list(JobFilter(
-    actor="sync_tenant",
-    identity_key="tenant:acme",
-    order_by=JobSortField.CREATED_AT_DESC,
-    limit=1,
-))
+page = await client.list(
+    JobFilter(
+        actor="sync_tenant",
+        identity_key="tenant:acme",
+        order_by=JobSortField.CREATED_AT_DESC,
+        limit=1,
+    )
+)
 ```
 
 ### `JobPage`
@@ -1223,10 +1236,12 @@ with a finalizer job enqueued separately.
 ```python
 from taskq import EnqueueItem
 
-await ctx.jobs.enqueue_batch([
-    EnqueueItem(actor_ref=send_email, payload=EmailPayload(to="a@example.com")),
-    EnqueueItem(actor_ref=send_email, payload=EmailPayload(to="b@example.com"), priority=1),
-])
+await ctx.jobs.enqueue_batch(
+    [
+        EnqueueItem(actor_ref=send_email, payload=EmailPayload(to="a@example.com")),
+        EnqueueItem(actor_ref=send_email, payload=EmailPayload(to="b@example.com"), priority=1),
+    ]
+)
 ```
 
 ---
@@ -1276,24 +1291,28 @@ from pydantic import BaseModel
 from taskq import TaskQ, actor
 from taskq.exceptions import JobFailed, MaxPendingExceededError
 
+
 class TranscribePayload(BaseModel):
     media_url: str
     language: str = "en"
 
+
 class TranscribeResult(BaseModel):
     transcript: str
     confidence: float
+
 
 @actor(queue="media", max_pending=500)
 async def transcribe_audio(payload: TranscribePayload) -> TranscribeResult:
     # ... call transcription service ...
     return TranscribeResult(transcript="Hello world", confidence=0.98)
 
+
 async def main() -> None:
     from taskq.settings import TaskQSettings
+
     settings = TaskQSettings.load()
     async with TaskQ(dsn=str(settings.pg_dsn)) as tq:
-
         try:
             handle = await tq.enqueue(
                 transcribe_audio,
@@ -1312,6 +1331,7 @@ async def main() -> None:
             print(f"failed: {exc.row.error_class}: {exc.row.error_message}")
         except TimeoutError:
             print("timed out waiting for transcript")
+
 
 asyncio.run(main())
 ```
@@ -1363,14 +1383,17 @@ from pydantic import BaseModel
 from taskq import TaskQ, actor, EnqueueItem
 from taskq.exceptions import MaxPendingExceededError
 
+
 class NotifyPayload(BaseModel):
     user_id: str
     message: str
+
 
 @actor(queue="notifications", max_pending=10_000)
 async def send_notification(payload: NotifyPayload) -> None:
     # ... deliver notification ...
     pass
+
 
 async def notify_users(tq: TaskQ, user_ids: list[str], message: str) -> None:
     items = [
@@ -1444,12 +1467,14 @@ Tags must match `^[\w][\w\-]+[\w]$`:
 Use `JobFilter.tags` with array-overlap semantics (matches jobs that have **any** of the given tags):
 
 ```python
-page = await client.list(JobFilter(
-    actor="send_email",
-    status="failed",
-    tags=["priority-high", "tenant-acme"],
-    limit=50,
-))
+page = await client.list(
+    JobFilter(
+        actor="send_email",
+        status="failed",
+        tags=["priority-high", "tenant-acme"],
+        limit=50,
+    )
+)
 ```
 
 SQL: `WHERE tags && $n::text[]` backed by a GIN index. Tags filtering works in the admin UI via `?tags=comma,separated,values`.

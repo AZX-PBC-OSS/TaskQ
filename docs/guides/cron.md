@@ -88,12 +88,16 @@ with a 5-second timeout:
 # myapp/payloads.py
 from pydantic import BaseModel
 
+
 class SyncPayload(BaseModel):
     cutoff: str
 
+
 def make_sync_payload() -> dict:
     from datetime import datetime, UTC
+
     return {"cutoff": datetime.now(UTC).isoformat()}
+
 
 # In your schedule declaration:
 cron("0 * * * *", "hourly_sync", payload_factory="myapp.payloads.make_sync_payload")
@@ -163,9 +167,10 @@ entity:
 from datetime import timedelta
 from taskq import actor
 
+
 @actor(unique_for=timedelta(hours=6))
-async def sync_tenant(payload: TenantPayload) -> None:
-    ...
+async def sync_tenant(payload: TenantPayload) -> None: ...
+
 
 # Cron schedule that fires hourly for tenant "acme".
 cron(
@@ -257,9 +262,9 @@ schedules = await client.list_schedules()
 # Find the schedule by actor name or inspect schedule_id
 handle = await client.create_schedule("daily_report", "0 3 * * *")
 
-await handle.disable()   # set enabled=False
-await handle.enable()    # set enabled=True (resets consecutive_failures and last_fire_error)
-await handle.delete()    # remove the schedule row
+await handle.disable()  # set enabled=False
+await handle.enable()  # set enabled=True (resets consecutive_failures and last_fire_error)
+await handle.delete()  # remove the schedule row
 ```
 
 ### Manual registration
@@ -269,11 +274,13 @@ You can register schedules programmatically without the decorator:
 ```python
 from taskq import register_cron, CronScheduleSpec
 
-register_cron(CronScheduleSpec(
-    actor="cleanup_job",
-    cron_expr="0 4 * * *",
-    timezone="UTC",
-))
+register_cron(
+    CronScheduleSpec(
+        actor="cleanup_job",
+        cron_expr="0 4 * * *",
+        timezone="UTC",
+    )
+)
 ```
 
 `register_cron()` validates the cron expression at call time. The registry is a plain list —

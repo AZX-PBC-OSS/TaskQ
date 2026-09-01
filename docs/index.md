@@ -203,13 +203,16 @@ pip install "taskq-py[redis,otel,fastapi,prometheus]"     # full
 from pydantic import BaseModel
 from taskq import actor, TaskQ
 
+
 class SendEmailPayload(BaseModel):
     to: str
     subject: str
     body: str
 
+
 class SendEmailResult(BaseModel):
     message_id: str
+
 
 # Define an actor — payload and result types are inferred from annotations.
 @actor
@@ -217,9 +220,11 @@ async def send_email(payload: SendEmailPayload) -> SendEmailResult:
     print(f"Sending '{payload.subject}' to {payload.to}")
     return SendEmailResult(message_id="msg-123")
 
+
 # Enqueue a job and wait for the result.
 async def main() -> None:
     from taskq.settings import TaskQSettings
+
     settings = TaskQSettings.load()
     async with TaskQ(dsn=str(settings.pg_dsn)) as tq:
         handle = await tq.enqueue(
@@ -228,6 +233,7 @@ async def main() -> None:
         )
         result = await handle.wait(timeout=30.0)
         print(f"sent: {result.message_id}")
+
 
 # Run the worker:
 #   taskq migrate up

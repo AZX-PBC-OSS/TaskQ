@@ -535,19 +535,19 @@ def actor_config_set(
         typer.echo("--result-ttl and --clear-result-ttl are mutually exclusive", err=True)
         raise typer.Exit(code=1)
 
-    mc: int | None | Unset = UNSET
+    mc: int | Unset | None = UNSET
     if clear_max_concurrent:
         mc = None
     elif max_concurrent is not None:
         mc = max_concurrent
 
-    mp: int | None | Unset = UNSET
+    mp: int | Unset | None = UNSET
     if clear_max_pending:
         mp = None
     elif max_pending is not None:
         mp = max_pending
 
-    rt: float | None | Unset = UNSET
+    rt: float | Unset | None = UNSET
     if clear_result_ttl:
         rt = None
     elif result_ttl is not None:
@@ -568,9 +568,9 @@ def actor_config_set(
 async def _actor_config_set(
     settings: TaskQSettings,
     actor: str,
-    max_concurrent: int | None | Unset,
-    max_pending: int | None | Unset,
-    result_ttl: float | None | Unset,
+    max_concurrent: int | Unset | None,
+    max_pending: int | Unset | None,
+    result_ttl: float | Unset | None,
 ) -> None:
     conn = await asyncpg.connect(str(settings.pg_dsn))
     try:
