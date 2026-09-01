@@ -13,11 +13,33 @@ from __future__ import annotations
 
 from uuid import UUID, uuid4
 
+import asyncpg
 import pytest
 from pydantic import BaseModel
 
 from taskq._json import dumps, dumps_jsonb_str, dumps_str, loads
 from taskq.backend._records import jsonb_param
+from taskq.worker._handlers import _TERMINAL_WRITE_INFRA_EXCEPTIONS
+
+# ── The misclassification this guard exists to prevent ──────────────────
+
+
+def test_untranslatable_character_error_matches_the_infra_tuple() -> None:
+    """Pins the framing: a NUL rejected by ``jsonb_in`` is indistinguishable
+    from a transient database fault at the terminal-write site.
+
+    ``UntranslatableCharacterError`` (SQLSTATE 22P05) derives from
+    ``DataError`` and so from ``PostgresError``, the blanket entry in
+    ``_TERMINAL_WRITE_INFRA_EXCEPTIONS``. That tuple classifies infra faults
+    as retryable, so a permanent data defect would be retried forever. If
+    this assertion ever fails, the rationale for rejecting at enqueue has
+    changed and the guard should be revisited rather than silently kept.
+    """
+    exc = asyncpg.exceptions.UntranslatableCharacterError
+    assert exc.sqlstate == "22P05"
+    assert issubclass(exc, asyncpg.PostgresError)
+    assert issubclass(exc, _TERMINAL_WRITE_INFRA_EXCEPTIONS)
+
 
 # ── loads returns plain types (no UUID revival) ─────────────────────────
 
@@ -168,6 +190,16 @@ class TestDumpsJsonbStrRejectsNul:
     def test_jsonb_param_rejects_nul(self) -> None:
         with pytest.raises(ValueError, match="NUL character"):
             jsonb_param({"text": "a\x00b"})
+
+    def test_jsonb_param_rejects_nul_nested(self) -> None:
+        with pytest.raises(ValueError, match="NUL character"):
+            jsonb_param({"outer": [{"inner": "\x00"}]})
+
+    def test_jsonb_param_none_passes_through(self) -> None:
+        assert jsonb_param(None) is None
+
+    def test_jsonb_param_clean_value_unchanged(self) -> None:
+        assert jsonb_param({"a": "b"}) == '{"a":"b"}'
 
     def test_literal_backslash_u0000_is_not_a_nul(self) -> None:
         """The cheap prefilter looks for the six characters orjson emits for a

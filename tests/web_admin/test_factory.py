@@ -218,6 +218,26 @@ def test_no_warning_when_auth_dependency_present(
     assert admin_warnings == []
 
 
+@pytest.mark.parametrize(
+    ("env", "raises"),
+    [("dev", False), ("development", False), ("production", True), ("staging", True), ("", True)],
+)
+def test_startup_behaviour_unchanged_by_the_warning_move(
+    env: str,
+    raises: bool,
+    monkeypatch: pytest.MonkeyPatch,
+    stub_pool: _StubPool,
+) -> None:
+    """The raise was restructured only so the warning could sit outside the
+    environment test; which environments start must not have changed."""
+    monkeypatch.setenv("TASKQ_ENVIRONMENT", env)
+    if raises:
+        with pytest.raises(RuntimeError, match="requires auth_dependency"):
+            create_router(stub_pool)  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
+    else:
+        create_router(stub_pool)  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
+
+
 # ── No import from taskq.worker ──────────────────────────────────────
 
 
