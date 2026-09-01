@@ -389,6 +389,15 @@ async def consumer_loop_stub(
                     await asyncio.shield(backend.mark_cancelled(job.id, worker_id))
                 else:
                     await asyncio.shield(backend.mark_succeeded(job.id, worker_id, None))
+                # fallback_result_ttl is not forwarded here: the stub path has
+                # no actor registry and therefore no @actor(result_ttl=...)
+                # literal to supply. If the stored actor_config.result_ttl is
+                # cleared (NULL), the enqueue-pinned expiry survives — the
+                # original bug, on the one path that structurally cannot fix
+                # itself. This is acceptable because the stub is a test/dev
+                # sentinel, not a production consumer. The real consumer
+                # (_consumer.py) resolves the literal from the registry and
+                # passes it through mark_succeeded_with_conn.
 
             except asyncio.CancelledError:
                 with contextlib.suppress(asyncio.CancelledError):

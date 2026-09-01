@@ -175,7 +175,9 @@ async def test_cron_fire_failure_increments_consecutive_failures() -> None:
     assert args[0] == schedule_id
     assert args[2] == 1
 
-    last_fired_at_update = [(s, a) for s, a in update_calls if "last_fired_at = now()" in s]
+    last_fired_at_update = [
+        (s, a) for s, a in update_calls if "last_fired_at = clock_timestamp()" in s
+    ]
     assert not last_fired_at_update
 
 
@@ -282,7 +284,7 @@ async def test_cron_fire_success_resets_consecutive_failures() -> None:
     ]
     assert len(success_updates) >= 1
     assert "last_fire_error = NULL" in success_updates[0][0]
-    assert "last_fired_at = now()" in success_updates[0][0]
+    assert "last_fired_at = clock_timestamp()" in success_updates[0][0]
 
 
 # ── last_fired_at NOT updated on factory failure ────────────────────
@@ -307,7 +309,7 @@ async def test_cron_fire_failure_does_not_update_last_fired_at() -> None:
     await fire_schedule(conn, row, now, settings, backend, "taskq", new_uuid(), actor_config_cache)
 
     for sql, _args in conn.execute_calls:
-        assert "last_fired_at = now()" not in sql
+        assert "last_fired_at = clock_timestamp()" not in sql
 
 
 # ── Miss within catch-up window — not skipped ─────────────────────
@@ -333,7 +335,9 @@ async def test_cron_fire_miss_within_catch_up_window_not_skipped() -> None:
     await fire_schedule(conn, row, now, settings, backend, "taskq", new_uuid(), actor_config_cache)
 
     success_updates = [
-        (sql, args) for sql, args in conn.execute_calls if "last_fired_at = now()" in sql
+        (sql, args)
+        for sql, args in conn.execute_calls
+        if "last_fired_at = clock_timestamp()" in sql
     ]
     assert len(success_updates) >= 1
 
@@ -362,7 +366,9 @@ async def test_cron_fire_miss_beyond_catch_up_window_skipped() -> None:
     await fire_schedule(conn, row, now, settings, backend, "taskq", new_uuid(), actor_config_cache)
 
     success_updates = [
-        (sql, args) for sql, args in conn.execute_calls if "last_fired_at = now()" in sql
+        (sql, args)
+        for sql, args in conn.execute_calls
+        if "last_fired_at = clock_timestamp()" in sql
     ]
     assert len(success_updates) >= 1
     _, args = success_updates[0]

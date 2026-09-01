@@ -1094,3 +1094,158 @@ class TestMarkSucceededResultExpiryFallback:
             assert row is not None
             skew = row["result_expires_at"] - row["finished_at"]
             assert timedelta(seconds=299) < skew < timedelta(seconds=301)
+
+    async def test_clock_timestamp_used_in_transactional_path(
+        self, clean_jobs_app: JobsApp
+    ) -> None:
+        """``clock_timestamp()`` not ``now()`` in the LOOP-scope
+        transactional path: ``now()`` is frozen at transaction start, so
+        an actor whose runtime exceeds its TTL would complete
+        already-expired. ``clock_timestamp()`` is the wall-clock time the
+        write executes.
+
+        This test opens a transaction, sleeps past the TTL, then calls
+        ``mark_succeeded_with_conn`` on the same connection — the
+        LOOP-scope pattern. If the SQL used ``now()`` the expiry would
+        be pinned at txn start (before the sleep) and the result would
+        be immediately expired. With ``clock_timestamp()`` the expiry is
+        computed at completion.
+
+        Also asserts ``finished_at`` uses ``clock_timestamp()`` too — a
+        long-running actor in the transactional path should record when
+        it actually finished, not when the transaction started, so the
+        two timestamp columns don't disagree by the full runtime.
+        """
+        deps = clean_jobs_app.deps
+        backend = clean_jobs_app.backend
+        schema = deps.settings.schema_name
+        ttl_seconds = 2.0
+        sleep_seconds = 3.0  # > ttl so now()-based expiry would be in the past
+
+        async with (
+            deps.worker_pool.acquire() as conn,
+            conn.transaction(),
+        ):
+            worker_id, job_id = await setup_running_job(conn, schema)
+
+            # Record the transaction start time as PG sees it.
+            txn_start = await conn.fetchval("SELECT now()")
+
+            # Sleep past the TTL — simulates a long-running actor.
+            # now() stays frozen at txn_start; clock_timestamp() advances.
+            await conn.execute(f"SELECT pg_sleep({sleep_seconds})")
+
+            ok = await backend.mark_succeeded_with_conn(
+                conn,
+                job_id,
+                worker_id,
+                {"ok": True},
+                fallback_result_ttl=timedelta(seconds=ttl_seconds),
+            )
+            assert ok is True
+
+            row = await conn.fetchrow(
+                f'SELECT result_expires_at, finished_at FROM "{schema}".jobs WHERE id = $1',
+                job_id,
+            )
+            assert row is not None
+
+            finished_at: datetime = row["finished_at"]
+            result_expires_at: datetime = row["result_expires_at"]
+
+            # finished_at must be AFTER the sleep, not frozen at txn
+            # start. If it used now() it would equal txn_start.
+            assert finished_at > txn_start + timedelta(seconds=sleep_seconds - 0.5)
+
+            # result_expires_at must be ≈ finished_at + ttl, not
+            # txn_start + ttl (which would be in the past).
+            skew = result_expires_at - finished_at
+            assert (
+                timedelta(seconds=ttl_seconds - 0.5) < skew < timedelta(seconds=ttl_seconds + 0.5)
+            )
+
+            # The result must NOT be already expired.
+            clock_now = await conn.fetchval("SELECT clock_timestamp()")
+            assert result_expires_at > clock_now
+
+    async def test_mark_failed_finished_at_uses_clock_timestamp_in_tx(
+        self, clean_jobs_app: JobsApp
+    ) -> None:
+        """``finished_at = now()`` in ``mark_failed`` is a latent bug: in a
+        LOOP-scope transaction ``now()`` is frozen at txn start, so a
+        long-running actor that fails would record the wrong completion
+        time. All terminal-write SET clauses must use
+        ``clock_timestamp()`` for the same reason ``mark_succeeded``
+        does.
+
+        This test runs the ``mark_failed`` SQL directly inside a
+        long-lived transaction to prove the ``now()`` is wrong.
+        """
+
+        deps = clean_jobs_app.deps
+        backend = clean_jobs_app.backend
+        schema = deps.settings.schema_name
+        sql = backend._sql  # pyright: ignore[reportPrivateUsage]  # Why: test-only private access
+
+        async with deps.worker_pool.acquire() as conn, conn.transaction():
+            worker_id, job_id = await setup_running_job(conn, schema)
+            txn_start = await conn.fetchval("SELECT now()")
+            await conn.execute("SELECT pg_sleep(3)")
+
+            # Execute the mark_failed SQL directly on the txn conn.
+            rec = await conn.fetchrow(
+                sql.mark_failed,
+                job_id,
+                worker_id,
+                "TestError",
+                "test",
+                None,
+                0,
+                None,
+            )
+            assert rec is not None
+            finished_at: datetime = rec["finished_at"]
+            # If finished_at used now() it would be frozen at txn_start.
+            assert finished_at > txn_start + timedelta(seconds=2)
+
+    async def test_mark_snoozed_scheduled_at_uses_clock_timestamp_in_tx(
+        self, clean_jobs_app: JobsApp
+    ) -> None:
+        """``scheduled_at = now() + delay`` in ``mark_snoozed`` is
+        inconsistent with the WHERE clause which already uses
+        ``clock_timestamp() + delay`` to check the deadline. In a
+        LOOP-scope transaction these would disagree: the deadline check
+        uses wall-clock time but the scheduled_at is computed from
+        txn-start time, so the job could be scheduled in the past
+        relative to the deadline that was just checked.
+
+        This test runs the snooze SQL directly inside a long-lived
+        transaction to prove the ``now()`` in the SET clause is wrong.
+        """
+        deps = clean_jobs_app.deps
+        backend = clean_jobs_app.backend
+        schema = deps.settings.schema_name
+        sql = backend._sql  # pyright: ignore[reportPrivateUsage]  # Why: test-only private access
+        delay = timedelta(seconds=10)
+
+        async with deps.worker_pool.acquire() as conn, conn.transaction():
+            worker_id, job_id = await setup_running_job(conn, schema)
+            txn_start = await conn.fetchval("SELECT now()")
+            await conn.execute("SELECT pg_sleep(3)")
+
+            rec = await conn.fetchrow(
+                sql.mark_snoozed,
+                job_id,
+                worker_id,
+                delay,
+                None,
+                0,
+                None,
+            )
+            assert rec is not None
+            assert rec["outcome_branch"] == "snoozed"
+            scheduled_at: datetime = rec["scheduled_at"]
+            # If scheduled_at used now() it would be txn_start + delay,
+            # but the deadline check used clock_timestamp() + delay.
+            # The scheduled_at must be after txn_start + sleep + delay - 1s tolerance.
+            assert scheduled_at > txn_start + timedelta(seconds=10)

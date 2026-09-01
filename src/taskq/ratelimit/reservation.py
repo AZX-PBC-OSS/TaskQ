@@ -42,7 +42,7 @@ _ACQUIRE_SQL_TEMPLATE = """\
 WITH free_slot AS (
     SELECT slot_index FROM "{schema}".reservation_slots
     WHERE bucket_name = $1
-      AND (job_id IS NULL OR lease_expires_at < now())
+      AND (job_id IS NULL OR lease_expires_at < clock_timestamp())
     ORDER BY slot_index
     LIMIT 1
     FOR UPDATE SKIP LOCKED
@@ -50,8 +50,8 @@ WITH free_slot AS (
 UPDATE "{schema}".reservation_slots
 SET job_id            = $2,
     held_by_worker_id = $3,
-    acquired_at       = now(),
-    lease_expires_at  = now() + $4 * INTERVAL '1 second'
+    acquired_at       = clock_timestamp(),
+    lease_expires_at  = clock_timestamp() + $4 * INTERVAL '1 second'
 WHERE (bucket_name, slot_index) IN (SELECT $1, slot_index FROM free_slot)
 RETURNING slot_index"""
 
@@ -80,7 +80,7 @@ _SYNC_DELETE_SQL_TEMPLATE = """\
 DELETE FROM "{schema}".reservation_slots
 WHERE bucket_name = $1
   AND slot_index = ANY($2)
-  AND (job_id IS NULL OR lease_expires_at < now())
+  AND (job_id IS NULL OR lease_expires_at < clock_timestamp())
 RETURNING slot_index"""
 
 _SYNC_HELD_SQL_TEMPLATE = """\
@@ -88,7 +88,7 @@ SELECT slot_index FROM "{schema}".reservation_slots
 WHERE bucket_name = $1
   AND slot_index = ANY($2)
   AND job_id IS NOT NULL
-  AND (lease_expires_at >= now() OR lease_expires_at IS NULL)
+  AND (lease_expires_at >= clock_timestamp() OR lease_expires_at IS NULL)
 ORDER BY slot_index"""
 
 
@@ -517,9 +517,9 @@ class ConcurrencyReservation:
         # Schema-name interpolation ; schema_name is
         # pre-validated against _IDENT_RE at WorkerSettings load time.
         peek_sql = (
-            f"SELECT count(*) FILTER (WHERE job_id IS NULL OR lease_expires_at < now()) AS free_count, "  # noqa: S608
+            f"SELECT count(*) FILTER (WHERE job_id IS NULL OR lease_expires_at < clock_timestamp()) AS free_count, "  # noqa: S608
             f"count(*) AS total_slots, "
-            f"count(*) FILTER (WHERE job_id IS NOT NULL AND lease_expires_at >= now()) AS held_count "
+            f"count(*) FILTER (WHERE job_id IS NOT NULL AND lease_expires_at >= clock_timestamp()) AS held_count "
             f'FROM "{schema}".reservation_slots WHERE bucket_name = $1'
         )
         async with pool.acquire() as conn:

@@ -24,6 +24,7 @@ tests.
 """
 
 import asyncio
+import math
 import time
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, cast
@@ -593,3 +594,25 @@ async def test_in_memory_get_actor_max_pending_mirrors_registered_meta() -> None
     backend.register_actor_config(actor="mp_b")
 
     assert await backend.get_actor_max_pending() == {"mp_a": 3, "mp_b": None}
+
+
+# ── Constructor validation ──────────────────────────────────────────────
+
+
+def test_read_timeout_inf_rejected() -> None:
+    """inf passes `> 0` but asyncio.wait_for(timeout=inf) doesn't bound
+    the wait — the exact indefinite lock-held hang the timeout was added
+    to prevent.  Same isfinite guard as result_ttl validation."""
+    backend = _make_backend()
+    with pytest.raises(ValueError, match="read_timeout"):
+        ActorCapacityCache(backend, read_timeout=math.inf)
+
+
+def test_read_timeout_nan_rejected() -> None:
+    """NaN passes `> 0` (nan comparisons are always False, but nan > 0 is
+    False so it *would* be caught by `<= 0`) — however it should still be
+    rejected for the same reason as inf: a non-finite timeout provides no
+    bound, and NaN in asyncio.wait_for is undefined behavior."""
+    backend = _make_backend()
+    with pytest.raises(ValueError, match="read_timeout"):
+        ActorCapacityCache(backend, read_timeout=math.nan)

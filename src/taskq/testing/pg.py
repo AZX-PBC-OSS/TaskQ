@@ -170,8 +170,8 @@ async def create_running_job(
             cancel_phase, cancel_requested_at, schedule_to_close
         ) VALUES (
             $1, $2, $3, $4::jsonb, $5, $6,
-            'running', 0, $7, now(),
-            $8, $9, now(), now(),
+            'running', 0, $7, clock_timestamp(),
+            $8, $9, clock_timestamp(), clock_timestamp(),
             $10, $11, $12
         )""",  # noqa: S608
         job_id,

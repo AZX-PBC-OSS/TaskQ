@@ -202,7 +202,7 @@ SET status = CASE
     cancel_requested_at = NULL,
     scheduled_at = CASE
         WHEN attempt < max_attempts AND retry_kind != 'non_retryable'
-            THEN now() + interval '5 seconds'
+            THEN clock_timestamp() + interval '5 seconds'
         ELSE scheduled_at
     END,
     finished_at = CASE

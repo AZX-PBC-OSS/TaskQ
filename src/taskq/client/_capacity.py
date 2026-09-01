@@ -43,9 +43,9 @@ seconds. Consequences, all by design:
   not. A backend built against an older protocol would otherwise hit
   ``AttributeError`` inside the fail-open handler on every refresh and
   silently enforce code literals forever — exactly the silent drift the
-  protocol version exists to prevent. The check fires at first *use*,
-  not at construction, so partial backend doubles that never exercise
-  the enqueue path are unaffected.
+  protocol version exists to prevent. The check fires once at first
+  *use* (cached), not at construction, so partial backend doubles that
+  never exercise the enqueue path are unaffected.
 
 Resolution rule (shared by every enqueue path), given the stored value,
 the ``@actor`` literal, and an optional per-call ``max_pending=``
@@ -70,6 +70,7 @@ this resolver can.
 """
 
 import asyncio
+import math
 import time
 
 import structlog
@@ -111,8 +112,10 @@ class ActorCapacityCache:
     ) -> None:
         if ttl < 0:
             raise ValueError(f"capacity cache ttl must be >= 0, got {ttl!r}")
-        if read_timeout <= 0:
-            raise ValueError(f"capacity cache read_timeout must be > 0, got {read_timeout!r}")
+        if read_timeout <= 0 or not math.isfinite(read_timeout):
+            raise ValueError(
+                f"capacity cache read_timeout must be a positive finite number, got {read_timeout!r}"
+            )
         self._backend = backend
         self._ttl = ttl
         self._read_timeout = read_timeout
@@ -120,6 +123,7 @@ class ActorCapacityCache:
         self._refreshed_at: float | None = None
         self._epoch = 0
         self._lock = asyncio.Lock()
+        self._backend_checked = False
 
     def _stale(self) -> bool:
         return self._refreshed_at is None or (time.monotonic() - self._refreshed_at) >= self._ttl
@@ -193,19 +197,22 @@ class ActorCapacityCache:
         first use, rather than degrading silently through the fail-open
         path (see the module docstring).
         """
-        # Why hasattr rather than callable(): test doubles (MagicMock et
-        # al.) auto-vivify attributes, often as non-callable children —
-        # those doubles are fine. The drift case this guards is a backend
-        # CLASS built before the method existed, where the attribute is
-        # genuinely absent.
-        if not hasattr(self._backend, "get_actor_max_pending"):
-            raise TypeError(
-                f"{type(self._backend).__name__} does not implement get_actor_max_pending "
-                f"(BACKEND_PROTOCOL_VERSION {BACKEND_PROTOCOL_VERSION}). A backend built "
-                "against an older protocol would silently enforce @actor literals "
-                "forever through this cache's fail-open path — failing fast at "
-                "first use instead. Implement the method or upgrade the backend."
-            )
+        # Check at first use (cached) — not per-call, this runs on the hot
+        # enqueue path. Why hasattr rather than callable(): test doubles
+        # (MagicMock et al.) auto-vivify attributes, often as non-callable
+        # children — those doubles are fine. The drift case this guards is
+        # a backend CLASS built before the method existed, where the
+        # attribute is genuinely absent.
+        if not self._backend_checked:
+            if not hasattr(self._backend, "get_actor_max_pending"):
+                raise TypeError(
+                    f"{type(self._backend).__name__} does not implement get_actor_max_pending "
+                    f"(BACKEND_PROTOCOL_VERSION {BACKEND_PROTOCOL_VERSION}). A backend built "
+                    "against an older protocol would silently enforce @actor literals "
+                    "forever through this cache's fail-open path — failing fast at "
+                    "first use instead. Implement the method or upgrade the backend."
+                )
+            self._backend_checked = True
         await self._refresh()
         stored = self._rows.get(actor)
         if stored is not None:

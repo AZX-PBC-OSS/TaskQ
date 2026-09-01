@@ -1329,7 +1329,7 @@ async def _upsert_rate_limit_bucket_row(
 
     upsert_sql = (
         f'INSERT INTO "{schema}".rate_limit_buckets (bucket_name, kind, state, updated_at) '  # noqa: S608
-        f"VALUES ($1, $2, '{{}}'::jsonb, now()) "
+        f"VALUES ($1, $2, '{{}}'::jsonb, clock_timestamp()) "
         f"ON CONFLICT (bucket_name) DO NOTHING"
     )
     async with pool.acquire() as conn:

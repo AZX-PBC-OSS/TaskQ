@@ -149,22 +149,27 @@ def render(schema: str) -> SqlTemplates:
 
     return SqlTemplates(
         # ── Terminal-write UPDATE statements ───────────────────────
+        # All terminal writes use clock_timestamp() — not now() — for
+        # every timestamp computed in the SET clause. now() is frozen at
+        # transaction start; clock_timestamp() is the wall-clock time the
+        # statement executes. In the LOOP-scope transactional path
+        # (mark_succeeded_with_conn, and any future _with_conn variant)
+        # now() would be the actor's start, not completion — the same
+        # bug class as queue-time expiry pinning. Even terminal writes
+        # that currently only run through the pool's own short
+        # transaction (where now() ≈ clock_timestamp()) use
+        # clock_timestamp() for consistency: a future _with_conn variant
+        # would inherit the correct time base without a migration.
+        #
         # result_expires_at resolution, first non-NULL wins: the stored
         # (operator-owned) result_ttl applied at completion; then the
         # caller-supplied fallback ($7 — the @actor literal the SQL cannot
         # see, also applied at completion, so a long-queued job does not
         # complete already expired); then the enqueue-time value.
-        # Why clock_timestamp() and not now(): in the LOOP-scope
-        # transactional path now() is the TRANSACTION start (≈ actor
-        # start), so an actor whose runtime exceeds its TTL would
-        # complete already expired — the same bug class as queue-time
-        # pinning, one path over. clock_timestamp() is the wall-clock
-        # time the write actually executes. finished_at keeps now() —
-        # pre-existing semantics, unchanged by this fix.
         mark_succeeded=f"""\
 UPDATE "{s}".jobs
 SET status = 'succeeded',
-    finished_at = now(),
+    finished_at = clock_timestamp(),
     locked_by_worker = NULL,
     lock_expires_at = NULL,
     result = $3::jsonb,
@@ -181,7 +186,7 @@ RETURNING *""",
         mark_failed=f"""\
 UPDATE "{s}".jobs
 SET status = 'failed',
-    finished_at = now(),
+    finished_at = clock_timestamp(),
     locked_by_worker = NULL,
     lock_expires_at = NULL,
     error_class = $3,
@@ -209,7 +214,7 @@ RETURNING *""",
         mark_cancelled=f"""\
 UPDATE "{s}".jobs
 SET status = 'cancelled',
-    finished_at = now(),
+    finished_at = clock_timestamp(),
     locked_by_worker = NULL,
     lock_expires_at = NULL,
     progress_seq = $3,
@@ -219,7 +224,7 @@ RETURNING *""",
         mark_abandoned=f"""\
 UPDATE "{s}".jobs
 SET status = 'abandoned',
-    finished_at = now(),
+    finished_at = clock_timestamp(),
     progress_seq = $2,
     progress_state = CASE WHEN $3::jsonb IS NOT NULL THEN COALESCE(progress_state, '{{}}'::jsonb) || $3::jsonb ELSE progress_state END
 WHERE id = $1 AND status = 'running' AND cancel_phase = 2
@@ -238,7 +243,7 @@ WITH params AS (
 snoozed AS (
     UPDATE "{s}".jobs j
     SET status = CASE WHEN $3::interval > interval '0' THEN 'scheduled'::"{s}".job_status ELSE 'pending'::"{s}".job_status END,
-        scheduled_at = now() + (SELECT delay FROM params),
+        scheduled_at = clock_timestamp() + (SELECT delay FROM params),
         finished_at = NULL,
         locked_by_worker = NULL,
         lock_expires_at = NULL,
@@ -257,7 +262,7 @@ snoozed AS (
 deadline_failed AS (
     UPDATE "{s}".jobs j
     SET status = 'failed',
-        finished_at = now(),
+        finished_at = clock_timestamp(),
         error_class = 'DeadlineExceeded',
         error_message = 'schedule_to_close reached before next dispatch',
         error_traceback = NULL,
@@ -286,7 +291,7 @@ WITH params AS (
         snoozed AS (
     UPDATE "{s}".jobs j
     SET status = CASE WHEN $3::interval > interval '0' THEN 'scheduled'::"{s}".job_status ELSE 'pending'::"{s}".job_status END,
-        scheduled_at = now() + (SELECT delay FROM params),
+        scheduled_at = clock_timestamp() + (SELECT delay FROM params),
         finished_at = NULL,
         locked_by_worker = NULL,
         lock_expires_at = NULL,
@@ -305,7 +310,7 @@ WITH params AS (
 max_attempts_failed AS (
     UPDATE "{s}".jobs j
     SET status = 'failed',
-        finished_at = now(),
+        finished_at = clock_timestamp(),
         error_class = 'MaxAttemptsExceeded',
         error_message = 'retry budget exhausted',
         error_traceback = NULL,
@@ -327,7 +332,7 @@ max_attempts_failed AS (
 deadline_failed AS (
     UPDATE "{s}".jobs j
     SET status = 'failed',
-        finished_at = now(),
+        finished_at = clock_timestamp(),
         error_class = 'DeadlineExceeded',
         error_message = 'schedule_to_close reached before next dispatch',
         error_traceback = NULL,
@@ -359,7 +364,7 @@ WITH params AS (
 snoozed AS (
     UPDATE "{s}".jobs j
     SET status = CASE WHEN $3::interval > interval '0' THEN 'scheduled'::"{s}".job_status ELSE 'pending'::"{s}".job_status END,
-        scheduled_at = now() + (SELECT delay FROM params),
+        scheduled_at = clock_timestamp() + (SELECT delay FROM params),
         finished_at = NULL,
         locked_by_worker = NULL,
         lock_expires_at = NULL,
@@ -377,7 +382,7 @@ snoozed AS (
 deadline_failed AS (
     UPDATE "{s}".jobs j
     SET status = 'failed',
-        finished_at = now(),
+        finished_at = clock_timestamp(),
         error_class = 'DeadlineExceeded',
         error_message = 'schedule_to_close reached before next dispatch',
         error_traceback = NULL,
@@ -419,7 +424,7 @@ WHERE "{s}".jobs.id = $1 AND "{s}".jobs.status IN ('pending', 'scheduled')
 RETURNING prev.prev_status""",
         cancel_running=f"""\
 UPDATE "{s}".jobs
-SET cancel_requested_at = now(), cancel_phase = 1
+SET cancel_requested_at = clock_timestamp(), cancel_phase = 1
 WHERE id = $1 AND status = 'running' AND cancel_phase = 0
 RETURNING locked_by_worker""",
         cancel_escalation=CANCEL_ESCALATION_SQL.format(schema=s),
@@ -453,7 +458,7 @@ SELECT * FROM "{s}".jobs
 WHERE actor = $1
   AND identity_key = $2
   AND status = ANY($3::"{s}".job_status[])
-  AND created_at > now() - $4::interval
+  AND created_at > clock_timestamp() - $4::interval
 ORDER BY created_at DESC
 LIMIT 1""",
         singleton_preflight=f"""\
@@ -484,7 +489,7 @@ SELECT
     t.fairness_key,
     t.payload,
     t.payload_schema_ver,
-    CASE WHEN COALESCE(t.scheduled_at, now()) > clock_timestamp() THEN 'scheduled'::"{s}".job_status ELSE 'pending'::"{s}".job_status END,
+    CASE WHEN COALESCE(t.scheduled_at, clock_timestamp()) > clock_timestamp() THEN 'scheduled'::"{s}".job_status ELSE 'pending'::"{s}".job_status END,
     t.priority,
     0,
     t.max_attempts,
@@ -492,7 +497,7 @@ SELECT
     t.schedule_to_close,
     t.start_to_close,
     t.heartbeat_timeout,
-    COALESCE(t.scheduled_at, now()),
+    COALESCE(t.scheduled_at, clock_timestamp()),
     t.metadata,
     t.idempotency_scope,
     t.idempotency_key,
@@ -616,7 +621,7 @@ SET status = 'pending',
     error_class = NULL,
     error_message = NULL,
     error_traceback = NULL,
-    scheduled_at = now(),
+    scheduled_at = clock_timestamp(),
     finished_at = NULL,
     result = NULL,
     result_size_bytes = NULL,

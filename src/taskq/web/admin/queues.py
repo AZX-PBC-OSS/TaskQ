@@ -42,7 +42,7 @@ _ORPHAN_QUEUES_SQL = (
     "AND NOT EXISTS ("
     '    SELECT 1 FROM "{schema}".workers w '
     "    WHERE j.queue = ANY(w.queues) "
-    "    AND w.last_seen_at > now() - interval '30 seconds'"
+    "    AND w.last_seen_at > clock_timestamp() - interval '30 seconds'"
     ") "
     "ORDER BY j.queue"
 )
@@ -51,7 +51,7 @@ _QUEUE_HAS_ALIVE_WORKER_SQL = (
     "SELECT EXISTS ("
     '    SELECT 1 FROM "{schema}".workers w '
     "    WHERE $1 = ANY(w.queues) "
-    "    AND w.last_seen_at > now() - interval '30 seconds'"
+    "    AND w.last_seen_at > clock_timestamp() - interval '30 seconds'"
     ")"
 )
 

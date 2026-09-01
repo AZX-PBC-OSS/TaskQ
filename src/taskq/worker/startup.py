@@ -42,7 +42,7 @@ SELECT actor, max_concurrent, max_pending, queue, result_ttl, metadata::jsonb
 ON CONFLICT (actor) DO UPDATE SET
     queue          = EXCLUDED.queue,
     metadata       = EXCLUDED.metadata,
-    updated_at     = now()
+    updated_at     = clock_timestamp()
 """.strip()
 
 # Fields whose stored value is operator-owned once a row exists: the
@@ -86,7 +86,7 @@ async def sync_actor_config(
            overwrites the stored value.
       3. Upsert all registered rows via ``INSERT ... ON CONFLICT (actor)
          DO UPDATE SET queue = EXCLUDED.queue, metadata =
-         EXCLUDED.metadata, updated_at = now()`` — capacity columns are
+         EXCLUDED.metadata, updated_at = clock_timestamp()`` — capacity columns are
          omitted from the ``SET`` clause so an existing row's
          ``max_concurrent`` / ``max_pending`` / ``result_ttl`` survive
          unchanged; they are populated by the ``INSERT`` list only when

@@ -152,9 +152,7 @@ async def _load_actor_retention_overrides(  # pyright: ignore[reportUnusedFuncti
     return result
 
 
-_CLEANUP_STALE_WORKERS_SQL = (
-    'DELETE FROM "{schema}".workers WHERE last_seen_at < now() - $1::interval AND id != $2'
-)
+_CLEANUP_STALE_WORKERS_SQL = 'DELETE FROM "{schema}".workers WHERE last_seen_at < clock_timestamp() - $1::interval AND id != $2'
 
 
 async def cleanup_stale_workers(
@@ -243,7 +241,7 @@ _ARCHIVE_CTE_SQL = (
     "  LIMIT $3"
     "), moved AS ("
     f'  INSERT INTO "{{schema}}".jobs_archive ({_JOBS_COLUMNS_CSV}, archived_at, expire_at)'
-    f"  SELECT {_JOBS_COLUMNS_QUALIFIED_CSV}, now(), now() + $4"
+    f"  SELECT {_JOBS_COLUMNS_QUALIFIED_CSV}, clock_timestamp(), clock_timestamp() + $4"
     '  FROM "{schema}".jobs j'
     "  JOIN candidate_ids c ON j.id = c.id"
     "  RETURNING id, actor, status"
@@ -270,7 +268,7 @@ _ARCHIVE_CTE_ACTOR_SQL = (
     "  LIMIT $3"
     "), moved AS ("
     f'  INSERT INTO "{{schema}}".jobs_archive ({_JOBS_COLUMNS_CSV}, archived_at, expire_at)'
-    f"  SELECT {_JOBS_COLUMNS_QUALIFIED_CSV}, now(), now() + $4"
+    f"  SELECT {_JOBS_COLUMNS_QUALIFIED_CSV}, clock_timestamp(), clock_timestamp() + $4"
     '  FROM "{schema}".jobs j'
     "  JOIN candidate_ids c ON j.id = c.id"
     "  RETURNING id, actor, status"
@@ -290,7 +288,7 @@ _ARCHIVE_CTE_ACTOR_SQL = (
 _EXPIRY_CTE_SQL = (
     "WITH expired AS ("
     '  SELECT id FROM "{schema}".jobs_archive'
-    "  WHERE expire_at < now()"
+    "  WHERE expire_at < clock_timestamp()"
     "  ORDER BY expire_at"
     "  LIMIT $1"
     "), deleted AS ("
