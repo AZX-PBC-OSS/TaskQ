@@ -239,24 +239,27 @@ def pytest_configure(config: pytest.Config) -> None:
     """Warn at session start when more than one HTTP stack is installed.
 
     Two importable stacks is the precondition for a mock that silently stops
-    applying: respx patches ``httpx``'s transport and cannot see ``httpx2`` at
-    all, so any code path that reaches for ``httpx2`` runs unmocked while the
-    test still reads as mocked. It is a warning and not a failure because
-    ``taskq[oidc]`` legitimately needs both — authlib is on ``httpx`` and
-    ``taskq.web.admin.auth.oidc`` is on ``httpx2``. The point is that the
-    condition is visible at session start rather than discovered later through a
-    live API call.
+    applying: stock respx patches ``httpcore`` (``httpx``'s transport) and
+    cannot see ``httpcore2`` (``httpx2``'s) at all, so any code path that
+    reaches for ``httpx2`` runs unmocked while the test still reads as mocked.
+    It is a warning and not a failure because ``taskq[oidc]`` legitimately
+    needs both — authlib is on ``httpx`` (or ``httpx2``, depending on version)
+    and ``taskq.web.admin.auth.oidc`` is on ``httpx2``. ``tests/http_mock.py``
+    registers a respx mocker aimed at every installed httpcore so both stacks
+    are covered through one route table; ``tests/test_suite_hygiene.py`` pins
+    that every test goes through it. The outbound-network guard in this file
+    is the backstop.
     """
     stacks = _installed_http_stacks()
     if len(stacks) > 1:
         config.issue_config_time_warning(
             pytest.PytestConfigWarning(
-                f"Multiple HTTP stacks installed ({', '.join(stacks)}). respx patches "
-                "httpx only and cannot intercept httpx2, so a test can look mocked while "
-                "calling out for real. tests/test_sso_oidc.py bridges the two with a "
-                "monkeypatch; tests/test_suite_hygiene.py pins that the bridge is still "
-                "needed and still present. The outbound-network guard in conftest.py is "
-                "the backstop."
+                f"Multiple HTTP stacks installed ({', '.join(stacks)}). Stock respx "
+                "patches httpcore only and cannot intercept httpx2, so a test can look "
+                "mocked while calling out for real. tests/http_mock.py mocks every "
+                "installed stack through one router; tests/test_suite_hygiene.py pins "
+                "that tests use it instead of bare respx or a client-class bridge. The "
+                "outbound-network guard in conftest.py is the backstop."
             ),
             stacklevel=2,
         )

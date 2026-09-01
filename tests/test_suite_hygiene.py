@@ -27,10 +27,13 @@ allowlisted from the worker-id scan for the same reason
 id together with the module path / node id, so the name is never
 worker-only); every other file in the published package is fully scanned.
 
-The second half of the file guards a different hazard: ``taskq[oidc]``
-installs two HTTP stacks that cannot see each other's mocks, so the OIDC
-suite's respx interception rests on a bridge fixture that nothing else
-would notice going missing. See the section comment there.
+The second half of the file guards a different hazard with the same shape:
+``taskq[oidc]`` installs two HTTP client stacks, ``httpx`` and ``httpx2``,
+which are invisible to each other's mocks. A mock that covers only some of
+the stacks in use reads as a mock while part of the traffic leaves the
+machine, or - worse - the suite compensates by substituting one stack for
+the other and then tests a client production never constructs. See the
+section comment there.
 """
 
 import re
@@ -44,6 +47,9 @@ _TESTING_PKG_DIR = _TESTS_DIR.parent / "src" / "taskq" / "testing"
 # Worker-qualified-hash exception: the worker id is one hash input among
 # several (module path / test node id), never the whole identifier.
 _TESTING_PKG_WORKER_ALLOWLIST = frozenset({"fixtures.py"})
+# tests/http_mock.py documents the retired bridge verbatim and is the one
+# module allowed to drive respx directly, so it is excluded alongside _SELF.
+_HTTP_MOCK = _TESTS_DIR / "http_mock.py"
 
 _PYTEST_XDIST_WORKER_RE = re.compile(r"PYTEST_XDIST_WORKER")
 _MODULE_SCHEMA_CONST_RE = re.compile(r"^_?SCHEMA\s*=", re.MULTILINE)
@@ -57,6 +63,10 @@ def _testing_pkg_files() -> list[Path]:
     return [
         p for p in _TESTING_PKG_DIR.rglob("*.py") if p.name not in _TESTING_PKG_WORKER_ALLOWLIST
     ]
+
+
+def _stack_scanned_files() -> list[Path]:
+    return [p for p in _test_files() if p != _HTTP_MOCK]
 
 
 def test_no_pytest_xdist_worker_derived_schema_names() -> None:
@@ -136,72 +146,96 @@ def test_testing_pkg_no_module_level_schema_constant() -> None:
 
 
 # ── Two-HTTP-stack hygiene ──────────────────────────────────────────────
-# `taskq[oidc]` installs httpx AND httpx2, and they are invisible to each
-# other's mocks. respx patches httpx's transport only, so anything reaching for
-# httpx2 runs unmocked while the test still reads as mocked. The outbound
-# guard in the root conftest.py stops such a call from reaching a real service;
-# these tests stop the condition from arising silently in the first place.
+# `taskq[oidc]` installs httpx AND httpx2, and one production code path uses
+# both: src/taskq/web/admin/auth/oidc.py fetches discovery and JWKS over
+# httpx2, while authlib's AsyncOAuth2Client performs the token exchange over
+# whichever stack authlib binds to. Stock respx patches httpcore only, so it
+# sees one half. tests/http_mock.py registers a respx mocker targeting every
+# installed httpcore instead; these guards keep the suite pointed at it.
+#
+# Three earlier guards, added when the OIDC suite still bridged the stacks,
+# are retired here. Each docstring below records which one it replaces and
+# why, so the protection moves rather than disappearing.
 
-_MOCK_HOST = "https://stack-probe.test.invalid"
+_STACK_BRIDGE_RE = re.compile(r"setattr\(\s*httpx2?\s*,\s*[\"'](?:Async)?Client[\"']")
+_BARE_RESPX_RE = re.compile(r"@respx\.mock|respx\.mock\(")
 
 
-async def test_respx_does_not_intercept_httpx2() -> None:
-    """Pin the premise: respx cannot see httpx2, so the bridge is required.
+def test_no_test_file_bridges_one_http_stack_to_another() -> None:
+    """No test may rebind one stack's client class to the other's.
 
-    If this ever starts failing because respx grew httpx2 support, the
-    ``_bridge_httpx2`` fixture in tests/test_sso_oidc.py becomes dead weight and
-    should go. Until then it is the only reason the OIDC discovery and JWKS
-    fetches are mocked at all.
+    Retires ``test_oidc_httpx2_bridge_is_still_present``, which asserted the
+    OPPOSITE: it pinned tests/test_sso_oidc.py's ``monkeypatch.setattr(httpx2,
+    "AsyncClient", httpx.AsyncClient)`` in place, because without it respx
+    silently stopped intercepting the discovery and JWKS fetches. That bridge
+    is gone - respx is now aimed at httpcore2 as well - and keeping it would
+    mean every OIDC test ran against a client class production never
+    constructs, hiding any httpx2-only difference in timeouts, redirects, TLS
+    verification, proxies or exception types.
     """
-    httpx = pytest.importorskip("httpx")
-    httpx2 = pytest.importorskip("httpx2")
-    respx = pytest.importorskip("respx")
-
-    router = respx.mock(assert_all_called=False)
-    router.get(_MOCK_HOST).mock(return_value=httpx.Response(200, json={"ok": True}))
-    router.start()
-    try:
-        async with httpx.AsyncClient() as patched:
-            assert (await patched.get(_MOCK_HOST)).status_code == 200
-        # Why raise-anything: the point is that the call escapes respx at all;
-        # httpx2's transport error type is not part of the contract being pinned.
-        with pytest.raises(Exception, match=r".") as excinfo:
-            async with httpx2.AsyncClient() as unpatched:
-                await unpatched.get(_MOCK_HOST)
-        assert not isinstance(excinfo.value, AssertionError)
-    finally:
-        router.stop()
-
-
-def test_authlib_oauth_client_is_on_the_stack_respx_patches() -> None:
-    """Fail the moment an authlib upgrade moves its client onto httpx2.
-
-    authlib 1.8 added ``integrations/httpx_client/_compat.py``, which does
-    ``try: import httpx2 / except ImportError: import httpx as httpx2`` and so
-    prefers httpx2 whenever it is importable — and httpx2 IS importable here.
-    Its ``AsyncOAuth2Client`` then subclasses ``httpx2.AsyncClient``, respx
-    stops applying to the token exchange with no error, and
-    tests/test_sso_oidc.py starts calling the configured issuer for real. That
-    is precisely how a sibling repo shipped a unit lane that talked to live
-    Microsoft Entra while passing. A bump past 1.7.x must land the httpx2
-    branch of tests/test_sso_oidc.py's bridge, not just re-pin the lock.
-    """
-    httpx = pytest.importorskip("httpx")
-    pytest.importorskip("authlib")
-    from authlib.integrations.httpx_client import AsyncOAuth2Client
-
-    assert issubclass(AsyncOAuth2Client, httpx.AsyncClient), (
-        "authlib's AsyncOAuth2Client is no longer an httpx.AsyncClient, so respx "
-        "cannot intercept the OIDC token exchange. Extend the _bridge_httpx2 "
-        "fixture in tests/test_sso_oidc.py to cover authlib's client too."
+    offenders = [
+        str(p.relative_to(_TESTS_DIR))
+        for p in _stack_scanned_files()
+        if _STACK_BRIDGE_RE.search(p.read_text())
+    ]
+    assert not offenders, (
+        "Found an httpx/httpx2 client-class bridge in:\n"
+        + "\n".join(f"  - {f}" for f in offenders)
+        + "\n\nSubstituting one stack for the other makes mocks apply while the "
+        "test exercises a client production never builds. Use "
+        "tests.http_mock.mock_http, which mocks every installed stack in place."
     )
 
 
-def test_oidc_httpx2_bridge_is_still_present() -> None:
-    """The OIDC suite's respx mocks are inert without this monkeypatch."""
-    source = (_TESTS_DIR / "test_sso_oidc.py").read_text(encoding="utf-8")
-    assert '"AsyncClient"' in source and "httpx2" in source, (
-        "tests/test_sso_oidc.py no longer bridges httpx2 to httpx. Without it "
-        "respx silently stops intercepting the discovery and JWKS fetches that "
-        "src/taskq/web/admin/auth/oidc.py makes via `import httpx2 as httpx`."
+def test_http_mocking_is_routed_through_the_multi_stack_helper() -> None:
+    """No test may call respx directly; stock respx covers httpcore only.
+
+    Retires ``test_respx_does_not_intercept_httpx2``, which pinned respx's
+    blindness to httpx2 as a premise so the bridge stayed justified. That
+    premise no longer holds: tests/http_mock.py registers a mocker whose
+    targets include httpcore2, so respx CAN see httpx2 - but only when aimed
+    through that helper. Guarding the entry point is what keeps the coverage.
+    """
+    offenders = [
+        str(p.relative_to(_TESTS_DIR))
+        for p in _stack_scanned_files()
+        if _BARE_RESPX_RE.search(p.read_text())
+    ]
+    assert not offenders, (
+        "Found a direct respx.mock() call in:\n"
+        + "\n".join(f"  - {f}" for f in offenders)
+        + "\n\nrespx's default mocker patches httpcore only, so httpx2 traffic "
+        "escapes it unmocked. Use tests.http_mock.mock_http instead."
     )
+
+
+def test_mock_http_intercepts_every_installed_stack() -> None:
+    """Every installed stack must actually be intercepted, not just declared.
+
+    Retires ``test_authlib_oauth_client_is_on_the_stack_respx_patches``, which
+    asserted that authlib's ``AsyncOAuth2Client`` subclasses ``httpx.AsyncClient``
+    so that respx would apply to the token exchange. That pinned the suite to
+    the deprecated stack: authlib 1.8 prefers httpx2 whenever it is importable,
+    and the correct upgrade would have failed that assertion for the right
+    reason. Which stack authlib picks no longer matters - what matters is that
+    every stack present is covered, which is checked here by making a real
+    request on each one.
+    """
+    pytest.importorskip("respx")
+    import importlib
+
+    from tests.http_mock import installed_stacks, mock_http, stacks_for
+
+    stacks = installed_stacks()
+    assert "httpx2" in stacks, "httpx2 is expected in every CI leg via the dev group"
+
+    url = "https://stack-coverage.test.invalid/probe"
+    with mock_http() as router:
+        router.get(url).mock(return_value=importlib.import_module("httpx").Response(200))
+        for name in sorted(stacks):
+            with importlib.import_module(name).Client() as client:
+                assert client.get(url).status_code == 200, f"{name} was not intercepted"
+        assert stacks_for(url) == set(stacks), (
+            f"expected every installed stack {sorted(stacks)} to reach the mock, "
+            f"got {sorted(stacks_for(url))}"
+        )
