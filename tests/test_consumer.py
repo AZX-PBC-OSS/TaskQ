@@ -573,10 +573,14 @@ class _StrictPayload(BaseModel):
     required_field: str
 
 
-async def test_payload_validation_failure_before_acquire_no_resources_acquired() -> None:
-    """Validation happens before acquire — an invalid payload raises
-    PayloadValidationError before any rate-limit token is consumed, so no
-    resources are acquired and no release is needed."""
+async def test_payload_validation_failure_after_acquire_releases_resources() -> None:
+    """For a direct caller (``validated_payload=None``), the consumer's own
+    ``validate_actor_payload`` call runs AFTER rate-limit acquisition, not
+    before: a plain-name rate limit like ``"tb"`` needs no payload to
+    resolve, so acquisition succeeds regardless of whether the payload later
+    proves invalid. When the JobContext-building validation then raises
+    PayloadValidationError, the already-acquired resource is released in the
+    outer ``finally`` block rather than leaked."""
     rl_reg = _StubRateLimitRegistry()
     backend = _FakeBackend()
     clk: Clock = FakeClock(_NOW)

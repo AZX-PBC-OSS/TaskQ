@@ -89,6 +89,20 @@ def _load_yaml(path: Path) -> _YamlMap:
     return cast(_YamlMap, document)
 
 
+def _on_triggers(path: Path) -> _YamlMap:
+    """The workflow's `on:` block.
+
+    PyYAML's safe_load reads the unquoted `on:` key as the boolean True (YAML
+    1.1), not the string "on" -- ``dict[str, Any].get`` has no overload for a
+    bool key, so the raw document is read as ``dict[object, Any]`` here
+    rather than through ``_load_yaml``'s ``_YamlMap`` typing.
+    """
+    document = cast("dict[object, Any]", _load_yaml(path))
+    triggers = cast(object, document.get(True) or {})
+    assert isinstance(triggers, dict), f"{path.name}: `on` is not a mapping"
+    return cast(_YamlMap, triggers)
+
+
 def _jobs(path: Path) -> dict[str, _YamlMap]:
     jobs = cast(object, _load_yaml(path).get("jobs") or {})
     assert isinstance(jobs, dict), f"{path.name}: `jobs` is not a mapping"
@@ -441,6 +455,66 @@ def test_the_matrix_job_asserts_it_is_running_the_interpreter_it_advertises() ->
             f"ci.yaml:{job_name} fans out over interpreters but never checks which one it got"
         )
     assert checked, "ci.yaml no longer has a python-version matrix; this guard is now vacuous"
+
+
+# --- publish attestations gating ---------------------------------------------------------------
+#
+# `github.event_name` inside a called reusable workflow reflects the CALLER's triggering event,
+# not the literal string `workflow_call` -- release-please.yml triggers on `push`, so a guard
+# written as `github.event_name != 'workflow_call'` is always true there too, and would silently
+# re-enable attestations on the one path that must not have them. The fix is an explicit input
+# the caller sets, which these tests pin structurally.
+
+
+def test_publish_declares_an_attestations_workflow_call_input_defaulting_on() -> None:
+    """Direct triggers (tag push, workflow_dispatch) get attestations unless a caller opts out."""
+    publish = next(wf for wf in _WORKFLOWS if wf.name == "publish.yml")
+    triggers = _on_triggers(publish)
+    workflow_call = cast(_YamlMap, triggers.get("workflow_call", {}))
+    inputs = cast(_YamlMap, workflow_call.get("inputs", {}))
+    attestations = cast(_YamlMap, inputs.get("attestations") or {})
+    assert attestations, "publish.yml's workflow_call no longer declares an `attestations` input"
+    assert attestations.get("type") == "boolean"
+    assert attestations.get("default") is True
+
+
+def test_publish_step_gates_on_the_attestations_input_not_the_caller_s_event_name() -> None:
+    """Pins the actual bug: the publish step must read `inputs.attestations`, never
+    `github.event_name`, which cannot distinguish a `workflow_call` invocation from the caller's
+    own trigger."""
+    publish = next(wf for wf in _WORKFLOWS if wf.name == "publish.yml")
+    jobs = _jobs(publish)
+    publish_job = jobs["publish"]
+    step = next(
+        step
+        for step in _steps(publish_job)
+        if "pypi-publish" in str(step.get("uses", ""))
+        or "gh-action-pypi-publish" in str(step.get("uses", ""))
+    )
+    expression = str(cast(_YamlMap, step.get("with") or {}).get("attestations", ""))
+    assert "inputs.attestations" in expression, (
+        f"publish step's attestations gate is {expression!r}; it must read the `attestations` "
+        "workflow_call input, not github.event_name (which reflects the caller's trigger, not "
+        "whether this run is a workflow_call)"
+    )
+    assert "event_name" not in expression, (
+        f"publish step's attestations gate is {expression!r}; github.event_name is always the "
+        "CALLER's trigger inside a reusable workflow and cannot detect workflow_call"
+    )
+
+
+def test_release_please_disables_attestations_on_its_publish_call() -> None:
+    """The one path where attestations must be off: PyPI rejects a Sigstore certificate whose
+    Build Config URI records release-please.yml instead of the top-level publish.yml."""
+    release_please = next(wf for wf in _WORKFLOWS if wf.name == "release-please.yml")
+    jobs = _jobs(release_please)
+    publish_job = next(job for name, job in jobs.items() if name == "publish")
+    assert publish_job.get("uses") == "./.github/workflows/publish.yml"
+    passed = cast(_YamlMap, publish_job.get("with") or {})
+    assert passed.get("attestations") is False, (
+        f"release-please.yml's call to publish.yml passes attestations={passed.get('attestations')!r}; "
+        "it must explicitly pass false, since publish.yml cannot detect this case itself"
+    )
 
 
 def test_every_documented_exception_is_still_in_use() -> None:

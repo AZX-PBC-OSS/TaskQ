@@ -79,7 +79,7 @@ FROM {schema}.maintenance_leader ml
 JOIN {schema}.workers w ON ml.worker_id = w.id;
 
 SELECT actor, count(*) AS overdue FROM {schema}.jobs
-WHERE status = 'scheduled' AND scheduled_at <= now()
+WHERE status = 'scheduled' AND scheduled_at <= clock_timestamp()
 GROUP BY actor;
 ```
 
@@ -125,7 +125,7 @@ FROM {schema}.jobs WHERE status = 'crashed'
 ORDER BY finished_at DESC LIMIT 20;
 
 SELECT j.locked_by_worker, w.hostname, w.pid, w.last_seen_at,
-       now() - w.last_seen_at AS stale_for
+       clock_timestamp() - w.last_seen_at AS stale_for
 FROM {schema}.jobs j
 LEFT JOIN {schema}.workers w ON j.locked_by_worker = w.id
 WHERE j.id = $1;
@@ -269,7 +269,7 @@ The heartbeat loop ticks every `heartbeat_interval` (default 10s). If a tick fai
 
 ```sql
 SELECT id, hostname, pid, last_seen_at,
-       now() - last_seen_at AS stale_for
+       clock_timestamp() - last_seen_at AS stale_for
 FROM {schema}.workers ORDER BY last_seen_at DESC;
 ```
 

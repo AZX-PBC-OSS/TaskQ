@@ -227,12 +227,19 @@ async def consume_one_job(
     Returns the job's terminal outcome for span status and metric
     recording by the caller (``dispatch_one_job``).
 
-    ``payload_type`` is the actor's payload model — the consumer validates
-    the raw ``dict[str, object]`` row payload against this model BEFORE
-    rate-limit acquisition so the :class:`JobContext` handed to the actor
-    carries a typed, validated :class:`pydantic.BaseModel` instance and a
-    :class:`~taskq.exceptions.PayloadValidationError` from an invalid payload
-    surfaces BEFORE a rate-limit token is consumed. The bound is ``BaseModel``
+    ``payload_type`` is the actor's payload model. On the dispatch path
+    (``dispatch_one_job``), ``validated_payload`` is already set when this
+    function is called, so the typed model exists before rate-limit
+    acquisition. For a direct caller that passes ``validated_payload=None``,
+    this function itself acquires BEFORE validating: ``rate_limit_registry
+    .acquire_for_actor`` gets the raw ``dict[str, object]`` row payload, and
+    for a ``KeyedRateLimitRef``/``KeyedReservationRef`` the registry validates
+    it internally to derive the key. The :class:`JobContext` handed to the
+    actor always carries a typed, validated :class:`pydantic.BaseModel`
+    instance — the fallback ``validate_actor_payload`` call below runs after
+    acquisition, so a :class:`~taskq.exceptions.PayloadValidationError` from
+    an invalid payload surfaces AFTER any already-acquired resources, which
+    are then released in the ``finally`` block. The bound is ``BaseModel``
     here (the registry is heterogeneous); per-actor ``P`` flows from the call
     site that selected ``payload_type``.
 
