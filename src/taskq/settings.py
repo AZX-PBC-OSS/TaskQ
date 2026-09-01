@@ -1167,37 +1167,38 @@ class WorkerSettings(TaskQSettings):
         # gap is k * timeout + period for k statements, which the invariant
         # cannot express without knowing k at settings-load time.
         if self.watchdog_enabled:
-            for loop_label, period in (("leader loops", 1.0),):
-                budget = max(period * self.watchdog_tick_grace_factor, self.watchdog_stale_floor)
-                if budget <= period + 1.0:
-                    # 1.0 = dispatcher_command_timeout's own ge= minimum: no
-                    # legal timeout can satisfy the gap, so the budget side
-                    # is what the operator must change.
-                    errors.append(
-                        ValidationError(
-                            field_name="watchdog_stale_floor",
-                            value=self.watchdog_stale_floor,
-                            error_msg=(
-                                f"the {loop_label} staleness budget max({period} x "
-                                f"watchdog_tick_grace_factor, watchdog_stale_floor) "
-                                f"({budget}) must exceed dispatcher_command_timeout's "
-                                f"1.0s minimum + the {period}s loop period"
-                            ),
-                        )
+            loop_label = "leader loops"
+            period = 1.0
+            budget = max(period * self.watchdog_tick_grace_factor, self.watchdog_stale_floor)
+            if budget <= period + 1.0:
+                # 1.0 = dispatcher_command_timeout's own ge= minimum: no
+                # legal timeout can satisfy the gap, so the budget side
+                # is what the operator must change.
+                errors.append(
+                    ValidationError(
+                        field_name="watchdog_stale_floor",
+                        value=self.watchdog_stale_floor,
+                        error_msg=(
+                            f"the {loop_label} staleness budget max({period} x "
+                            f"watchdog_tick_grace_factor, watchdog_stale_floor) "
+                            f"({budget}) must exceed dispatcher_command_timeout's "
+                            f"1.0s minimum + the {period}s loop period"
+                        ),
                     )
-                elif self.dispatcher_command_timeout + period >= budget:
-                    errors.append(
-                        ValidationError(
-                            field_name="dispatcher_command_timeout",
-                            value=self.dispatcher_command_timeout,
-                            error_msg=(
-                                f"dispatcher_command_timeout ({self.dispatcher_command_timeout}) "
-                                f"+ {period}s {loop_label} period must be < the loop's "
-                                f"staleness budget max(period x watchdog_tick_grace_factor, "
-                                f"watchdog_stale_floor) ({budget})"
-                            ),
-                        )
+                )
+            elif self.dispatcher_command_timeout + period >= budget:
+                errors.append(
+                    ValidationError(
+                        field_name="dispatcher_command_timeout",
+                        value=self.dispatcher_command_timeout,
+                        error_msg=(
+                            f"dispatcher_command_timeout ({self.dispatcher_command_timeout}) "
+                            f"+ {period}s {loop_label} period must be < the loop's "
+                            f"staleness budget max(period x watchdog_tick_grace_factor, "
+                            f"watchdog_stale_floor) ({budget})"
+                        ),
                     )
+                )
 
         return errors or None
 

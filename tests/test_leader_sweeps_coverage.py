@@ -845,3 +845,24 @@ async def test_stranded_jobs_detector_disabled_logs_at_error() -> None:
         sweeps_mod.log.error = original_error  # type: ignore[method-assign]
 
     assert "stranded-jobs-detector-disabled" in events
+
+
+def test_sweep_loop_acquire_has_timeout() -> None:
+    """Every pool.acquire() in the sweep loops must pass timeout= — without
+    it, pool exhaustion hangs the sweep indefinitely."""
+    from pathlib import Path
+
+    import taskq.worker._leader_sweeps as mod
+
+    source = Path(mod.__file__).read_text()
+    lines = source.splitlines()
+    in_sweep = False
+    violations: list[str] = []
+    for i, line in enumerate(lines, 1):
+        stripped = line.strip()
+        if stripped.startswith("async def _"):
+            in_sweep = "_loop" in stripped
+        if in_sweep and "pool.acquire()" in stripped and "timeout" not in stripped:
+            violations.append(f"line {i}: {stripped}")
+
+    assert not violations, f"pool.acquire() in sweep loops must pass timeout=: {violations}"

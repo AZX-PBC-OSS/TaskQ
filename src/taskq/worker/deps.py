@@ -443,6 +443,7 @@ async def open_worker_deps(
                     _direct_notify,
                     label="notify",
                     apply_keepalive=True,
+                    command_timeout=settings.dispatcher_command_timeout,
                 )
 
             resolved_notify_factory = _notify_dsn_factory

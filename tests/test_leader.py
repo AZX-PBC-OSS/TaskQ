@@ -2739,3 +2739,19 @@ async def test_watchdog_loop_forgets_tick_registration_on_demotion() -> None:
     assert stale == [], (
         f"stale registrations after demotion would force-exit a healthy worker: {stale}"
     )
+
+
+async def test_close_leader_owned_conns_identity_guard() -> None:
+    """_close_leader_owned_conns must only null the attribute if it still
+    points to the SAME connection object — not a fresh one created by the
+    election loop during the close suspension."""
+    from pathlib import Path
+
+    import taskq.worker.leader as leader_mod
+
+    source = Path(leader_mod.__file__).read_text()  # noqa: ASYNC240
+    assert "is conn" in source, (
+        "_close_leader_owned_conns must use identity check (is conn) before "
+        "nulling attributes — without it, a race with the election loop "
+        "nulls freshly-created connections, causing a CPU busy-spin"
+    )

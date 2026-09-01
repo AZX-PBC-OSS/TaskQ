@@ -198,3 +198,30 @@ async def test_drain_invalid_schema_raises() -> None:
     assert "invalid schema identifier" in str(exc_info.value)
     assert "foo;DROP TABLE" in str(exc_info.value)
     assert pool.acquire_count == 0
+
+
+def test_drain_local_queue_uses_transient_pg_errors_not_handrolled() -> None:
+    """drain_local_queue_to_pending must catch InterfaceError (closed pool) —
+    it's in TRANSIENT_PG_ERRORS but missing from a hand-rolled tuple."""
+    from pathlib import Path
+
+    import taskq.worker.shutdown as mod
+
+    source = Path(mod.__file__).read_text()
+    in_func = False
+    for line in source.splitlines():
+        if "async def drain_local_queue_to_pending" in line:
+            in_func = True
+        elif in_func and line.strip().startswith("async def "):
+            break
+        elif (
+            in_func
+            and "except" in line
+            and "TimeoutError" in line
+            and "PostgresConnectionError" in line
+        ):
+            pytest.fail(
+                "drain_local_queue_to_pending must use TRANSIENT_PG_ERRORS "
+                f"instead of a hand-rolled tuple — InterfaceError is missing: {line}"
+            )
+    assert in_func, "drain_local_queue_to_pending function not found"

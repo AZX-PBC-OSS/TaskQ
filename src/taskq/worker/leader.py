@@ -13,6 +13,7 @@ Failover SLA:
 
 import asyncio
 import contextlib
+import threading
 import time
 from collections.abc import Iterable
 from uuid import UUID
@@ -85,9 +86,18 @@ MAINTENANCE_LEADER_LOCK_NAME: str = "taskq:maintenance_leader"
 _WATCHDOG_INTERVAL_SECS: float = 5.0
 _meter = get_meter()
 
+# Guards _active_leaders against concurrent access: the OTel SDK reader
+# thread invokes _observe_is_leader while the event-loop thread mutates the
+# set via run() add/discard. Unsynchronized iteration raises RuntimeError:
+# Set changed size during iteration. Same failure class as the _tick_age_cache
+# race fixed in _watchdog.py.
+_active_leaders_lock = threading.Lock()
+
 
 def _observe_is_leader(options: CallbackOptions) -> Iterable[Observation]:
-    for leader in _active_leaders:
+    with _active_leaders_lock:
+        snapshot = list(_active_leaders)
+    for leader in snapshot:
         yield Observation(
             1 if leader._deps.is_leader.is_set() else 0,  # pyright: ignore[reportPrivateUsage]  # Why: OTel gauge callback reads the authoritative is_leader state from WorkerDeps; the callback is at module scope to close over the gauge registry.
             {"worker_id": str(leader._worker_id)},  # pyright: ignore[reportPrivateUsage]  # Why: gauge callback needs worker_id for the observation label; the field is private by convention but accessible from module scope by design.
@@ -156,7 +166,14 @@ class MaintenanceLeader:
                     CLOSE_TIMEOUT_SECS,
                     mid_run=mid_run,
                 )
-            setattr(self, attr, None)
+            # Identity guard: the await above suspends, and the election loop
+            # can run a full cycle during that suspension — creating fresh
+            # conns and re-setting is_leader. Unconditionally nulling would
+            # orphan the fresh conn, leaving is_leader set with no cron/monitor
+            # conn (a CPU busy-spin until the next leader_conn death). Only
+            # null if the attribute still points to the SAME conn we closed.
+            if getattr(self, attr) is conn:
+                setattr(self, attr, None)
 
     async def _drop_leader_conn(self, *, reason: str) -> None:
         """Null ``deps.leader_conn``, closing it only when TaskQ-owned.
@@ -248,7 +265,8 @@ class MaintenanceLeader:
         )
 
     async def run(self, shutdown: asyncio.Event) -> None:
-        _active_leaders.add(self)
+        with _active_leaders_lock:
+            _active_leaders.add(self)
         try:
             async with asyncio.TaskGroup() as tg:
                 tg.create_task(self._election_loop(shutdown), name="leader.election")
@@ -269,7 +287,8 @@ class MaintenanceLeader:
             # conn-teardown-close-* family so an ordinary shutdown never
             # pages as an unexpected mid-run close timeout.
             await self._close_leader_owned_conns(mid_run=False)
-            _active_leaders.discard(self)
+            with _active_leaders_lock:
+                _active_leaders.discard(self)
 
     async def _election_loop(self, shutdown: asyncio.Event) -> None:
         guard = UnexpectedLoopErrorGuard("leader.election")
@@ -599,7 +618,7 @@ class MaintenanceLeader:
     async def _cron_loop(self, shutdown: asyncio.Event) -> None:
         """Tick cron schedules every second when this worker is the leader.
 
-        Separate asyncio.Task from _leader_sweep_loop.
+        Separate asyncio.Task from _sweep_loop.
         Each tick opens a transaction on ``_cron_conn`` (a dedicated
         connection owned exclusively by this loop) and delegates to
         :func:`~taskq.worker.cron_loop.tick_cron`.
@@ -653,6 +672,12 @@ class MaintenanceLeader:
                     # conn-state error below. Keep the conn and retry:
                     # dropping it (and demoting) on every slow tick would
                     # churn leadership during catch-up bursts.
+                    #
+                    # Why type(exc) is, not isinstance: TimeoutError is an
+                    # OSError subclass — isinstance would also match raw
+                    # OSError here, but the deadline family (asyncio.timeout /
+                    # command_timeout) must keep the conn, while a raw OSError
+                    # (socket death) must drop it.
                     log.warning(
                         "cron-tick-timeout",
                         kind="cron_tick_timeout",
@@ -689,9 +714,17 @@ class MaintenanceLeader:
                 # Backstop for anything outside the transient set (see
                 # _transient.py): tolerated and logged a few times (this
                 # loop's historical blanket catch), then deliberately fatal
-                # rather than retrying a real bug forever.
+                # rather than retrying a real bug forever. Cleanup and log
+                # BEFORE guard.unexpected so the fatal iteration still drops
+                # the conn and the cron-specific log survives.
+                await self._close_leader_owned_conns()
+                log.warning(
+                    "cron-tick-failed",
+                    kind="cron_tick_unexpected",
+                    worker_id=str(self._worker_id),
+                    error=repr(exc),
+                )
                 guard.unexpected(exc)
-                log.error("cron-tick-failed", kind="cron_fire", error=str(exc))
             await asyncio.sleep(1)
 
     async def _sweep_loop(self, shutdown: asyncio.Event) -> None:
