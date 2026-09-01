@@ -20,6 +20,7 @@ import contextlib
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 from uuid import UUID
 
@@ -845,22 +846,114 @@ async def test_stranded_jobs_detector_disabled_logs_at_error() -> None:
     assert "stranded-jobs-detector-disabled" in events
 
 
-def test_sweep_loop_acquire_has_timeout() -> None:
-    """Every pool.acquire() in the sweep loops must pass timeout= — without
-    it, pool exhaustion hangs the sweep indefinitely."""
-    from pathlib import Path
+async def test_sweep_loop_acquire_has_timeout() -> None:
+    """The sweep loop's ``pool.acquire()`` calls must pass ``timeout=`` —
+    without it, pool exhaustion (acquire blocking forever, e.g. the pool is
+    fully checked out) hangs the sweep indefinitely instead of timing out
+    and recovering on the next iteration."""
+    import taskq.worker._leader_sweeps as sweeps_mod
 
-    import taskq.worker._leader_sweeps as mod
+    warn_calls: list[str] = []
+    saw_leaked_slots_failure = asyncio.Event()
+    original_warning = sweeps_mod.log.warning
 
-    source = Path(mod.__file__).read_text()
-    lines = source.splitlines()
-    in_sweep = False
+    def _spy_warning(event: str, **kw: object) -> None:
+        warn_calls.append(event)
+        if event == "sweep-leaked-slots-failed":
+            saw_leaked_slots_failure.set()
+
+    class _HangingPool:
+        """Pool whose acquire() mirrors asyncpg: with a timeout it raises
+        TimeoutError once exhausted; with no timeout it blocks forever."""
+
+        def __init__(self) -> None:
+            self.acquire_count = 0
+
+        @asynccontextmanager
+        async def acquire(self, *, timeout: float | None = None) -> AsyncGenerator[FakeConn, None]:  # noqa: ASYNC109  # Why: mirrors asyncpg.Pool.acquire signature.
+            self.acquire_count += 1
+            if timeout is None:
+                # Unbounded exhaustion: nothing ever wakes this up.
+                await asyncio.Event().wait()
+            else:
+                await asyncio.sleep(timeout)
+                raise TimeoutError("pool exhausted")
+            yield FakeConn()  # pragma: no cover  # unreachable: both branches above exit first
+
+    backend = _PgSweepBackend()
+    pool = _HangingPool()
+    settings = _worker_settings(
+        HEARTBEAT_INTERVAL="0.5",
+        LOCK_LEASE="2.0",
+        MAX_HEARTBEAT_FAILURES="3",
+        CANCELLATION_GRACE_PERIOD="0.0",
+        CLEANUP_GRACE_PERIOD="0.0",
+    )
+    settings.dispatcher_command_timeout = 0.05  # bypasses the ge=1.0 field constraint by hand
+    deps = WorkerDeps(
+        settings=settings,
+        dispatcher_pool=pool,  # type: ignore[arg-type]  # Why: _HangingPool is a deliberate asyncpg.Pool stand-in.
+        heartbeat_pool=FakePool(),  # type: ignore[arg-type]
+        worker_pool=FakePool(),  # type: ignore[arg-type]
+        notify_conn=None,
+        leader_conn=FakeConn(),  # type: ignore[arg-type]
+    )
+    deps.is_leader.set()
+    leader = _make_leader(backend=backend, deps=deps)
+    shutdown = asyncio.Event()
+
+    sweeps_mod.log.warning = _spy_warning  # type: ignore[method-assign]  # Why: test-only instrumentation, mirrors the _err spy pattern above.
+    try:
+        task = asyncio.create_task(leader._sweep_loop(shutdown))
+        try:
+            async with asyncio.timeout(2.0):
+                await saw_leaked_slots_failure.wait()
+        finally:
+            await _stop_loop(task, shutdown, delay=0.0)
+    finally:
+        sweeps_mod.log.warning = original_warning  # type: ignore[method-assign]
+
+    assert "sweep-leaked-slots-failed" in warn_calls, (
+        "acquire() without timeout= hangs forever - the sweep never times out "
+        f"and recovers: {warn_calls}"
+    )
+    assert pool.acquire_count >= 1
+
+
+def test_sweep_loop_acquire_calls_pass_timeout_ast() -> None:
+    """Structural backstop: every ``pool.acquire()`` call inside a
+    ``*_loop`` function in ``_leader_sweeps.py`` must pass a ``timeout=``
+    keyword argument.
+
+    This is deliberately AST-based (not source-text matching), so it is
+    robust to reformatting - unlike the previous version of this test,
+    which scanned for the literal substring ``pool.acquire()`` on a single
+    physical line and would silently stop catching violations the moment
+    a call was wrapped onto multiple lines (as every current call site
+    already is). It exists alongside the behavioural test above because a
+    behavioural test only proves ONE call site is guarded; a future call
+    site added without ``timeout=`` would hang just the same, and this
+    catches that shape mechanically across every loop in the module
+    without needing a dedicated behavioural test per call site.
+    """
+    import ast
+
+    import taskq.worker._leader_sweeps as sweeps_mod
+
+    source = ast.parse(Path(sweeps_mod.__file__).read_text())
     violations: list[str] = []
-    for i, line in enumerate(lines, 1):
-        stripped = line.strip()
-        if stripped.startswith("async def _"):
-            in_sweep = "_loop" in stripped
-        if in_sweep and "pool.acquire()" in stripped and "timeout" not in stripped:
-            violations.append(f"line {i}: {stripped}")
 
-    assert not violations, f"pool.acquire() in sweep loops must pass timeout=: {violations}"
+    for node in ast.walk(source):
+        if not (isinstance(node, ast.AsyncFunctionDef) and node.name.endswith("_loop")):
+            continue
+        for call in ast.walk(node):
+            if not isinstance(call, ast.Call):
+                continue
+            func = call.func
+            if not (isinstance(func, ast.Attribute) and func.attr == "acquire"):
+                continue
+            has_timeout = any(kw.arg == "timeout" for kw in call.keywords)
+            if not has_timeout:
+                violations.append(f"{node.name}: line {call.lineno}")
+
+    assert not violations, f"pool.acquire() call(s) missing timeout=: {violations}"

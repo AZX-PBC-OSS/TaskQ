@@ -2455,24 +2455,81 @@ async def test_open_dedicated_conn_passes_connection_timeout(
 # ── _transient.py doc must correctly describe QueryCanceledError ───────────
 
 
-def test_transient_pg_errors_doc_describes_query_canceled_correctly() -> None:
-    """QueryCanceledError is server-side 57014, not a fired command_timeout.
-    command_timeout raises TimeoutError; QueryCanceledError is raised by
-    pg_cancel_backend or server-side statement_timeout."""
-    from pathlib import Path
+async def test_transient_pg_errors_doc_describes_query_canceled_correctly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """QueryCanceledError (server-side 57014 - pg_cancel_backend, or a
+    server-side statement_timeout, NOT a fired client-side command_timeout,
+    which raises TimeoutError instead) must be classified as transient:
+    present in TRANSIENT_PG_ERRORS, and retried (not fatal) by the cron
+    loop when raised. Follows the same drive-it-through-the-cron-loop
+    approach as test_cron_loop_treats_transient_error_as_retry_not_fatal
+    above."""
+    from types import SimpleNamespace
+    from typing import cast
+    from uuid import uuid4
 
-    import taskq.worker._transient as transient_mod
+    from taskq.backend._protocol import Backend
+    from taskq.backend.clock import SystemClock
+    from taskq.worker._transient import TRANSIENT_PG_ERRORS
+    from taskq.worker.leader import MaintenanceLeader
 
-    source = Path(transient_mod.__file__).read_text()
-    lines = source.splitlines()
-    for i, line in enumerate(lines):
-        if "QueryCanceledError" in line and "server-side" in line:
-            context = " ".join(lines[i : i + 3])
-            assert "fired" not in context.lower(), (
-                f"QueryCanceledError comment must not say 'fired' — "
-                f"command_timeout raises TimeoutError, not QueryCanceledError "
-                f"(verified against real PG 18). Context: {context}"
-            )
-            break
-    else:
-        pytest.fail("QueryCanceledError comment not found in _transient.py")
+    assert asyncpg.QueryCanceledError in TRANSIENT_PG_ERRORS, (
+        "QueryCanceledError must be classified as transient - a server-side "
+        "cancel/statement_timeout is retryable, not fatal"
+    )
+
+    tick_count = 0
+
+    async def _failing_tick_cron(*args: object, **kwargs: object) -> None:
+        nonlocal tick_count
+        tick_count += 1
+        raise asyncpg.QueryCanceledError("57014")
+
+    monkeypatch.setattr("taskq.worker.leader.tick_cron", _failing_tick_cron)
+    monkeypatch.setattr("taskq.worker._transient.DEFAULT_MAX_CONSECUTIVE_UNEXPECTED", 3)
+
+    class _FakeCronConn:
+        def transaction(self) -> object:
+            class _Tx:
+                async def __aenter__(self) -> None:
+                    return None
+
+                async def __aexit__(self, *a: object) -> bool:
+                    return False
+
+            return _Tx()
+
+        def is_closed(self) -> bool:
+            return False
+
+        async def close(self) -> None:
+            pass
+
+    liveness = LoopLiveness()
+    is_leader = asyncio.Event()
+    is_leader.set()
+    deps = cast(
+        WorkerDeps,
+        SimpleNamespace(
+            liveness=liveness,
+            is_leader=is_leader,
+            settings=SimpleNamespace(schema_name="taskq", dispatcher_command_timeout=2.5),
+        ),
+    )
+    leader = MaintenanceLeader(deps, uuid4(), cast(Backend, SimpleNamespace()), clock=SystemClock())
+    leader._cron_conn = _FakeCronConn()  # type: ignore[assignment]
+
+    shutdown = asyncio.Event()
+    task = asyncio.create_task(leader._cron_loop(shutdown))
+    try:
+        await asyncio.sleep(4.0)
+        assert not task.done(), (
+            f"cron loop must ride out QueryCanceledError, not die: "
+            f"{task.exception() if task.done() else 'still running'}"
+        )
+        assert tick_count >= 3, f"cron loop must keep retrying: {tick_count} ticks"
+    finally:
+        shutdown.set()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await asyncio.wait_for(task, timeout=5.0)

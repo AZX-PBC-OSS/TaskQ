@@ -2744,14 +2744,40 @@ async def test_watchdog_loop_forgets_tick_registration_on_demotion() -> None:
 async def test_close_leader_owned_conns_identity_guard() -> None:
     """_close_leader_owned_conns must only null the attribute if it still
     points to the SAME connection object — not a fresh one created by the
-    election loop during the close suspension."""
-    from pathlib import Path
+    election loop during the close suspension.
 
-    import taskq.worker.leader as leader_mod
+    Simulates the race directly: start the bounded close of the stale
+    conn, suspend it mid-``await`` (via ``close_wait``), assign a fresh
+    conn to the same attribute while suspended, then let the close
+    complete. The fresh conn must survive - the attribute must still
+    point at it, not be nulled out from under the election loop.
+    """
+    leader, _deps, _backend, _leader_conn, _dp, _shutdown = await _make_leader()
 
-    source = Path(leader_mod.__file__).read_text()  # noqa: ASYNC240
-    assert "is conn" in source, (
-        "_close_leader_owned_conns must use identity check (is conn) before "
-        "nulling attributes — without it, a race with the election loop "
-        "nulls freshly-created connections, causing a CPU busy-spin"
+    stale_conn = FakeConn()
+    stale_conn.close_wait.clear()  # close() blocks until we release it below
+    leader._cron_conn = stale_conn  # type: ignore[assignment]  # Why: FakeConn is the asyncpg.Connection stand-in used throughout this module.
+
+    close_task = asyncio.create_task(leader._close_leader_owned_conns())
+
+    # Wait until the close is suspended inside stale_conn.close().
+    for _ in range(200):
+        if stale_conn.close_calls >= 1:
+            break
+        await asyncio.sleep(0.01)
+    assert stale_conn.close_calls == 1, "close() was never entered"
+
+    # While the close is suspended, the election loop creates and assigns
+    # a fresh connection to the same attribute.
+    fresh_conn = FakeConn()
+    leader._cron_conn = fresh_conn  # type: ignore[assignment]  # Why: FakeConn is the asyncpg.Connection stand-in used throughout this module.
+
+    # Let the suspended close() complete.
+    stale_conn.close_wait.set()
+    await close_task
+
+    assert leader._cron_conn is not None, (
+        "identity guard regressed: fresh conn created during the close "
+        "suspension was nulled out, orphaning it and busy-spinning"
     )
+    assert leader._cron_conn is fresh_conn

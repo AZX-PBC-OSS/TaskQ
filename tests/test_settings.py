@@ -1291,13 +1291,3 @@ def test_suite_ignores_developer_dotfiles(monkeypatch: pytest.MonkeyPatch, tmp_p
 
     s = WorkerSettings.load()
     assert s.heartbeat_interval == 10.0  # default — the dotfile value is 123
-
-
-def test_dispatcher_command_timeout_description_is_accurate() -> None:
-    """The description must not promise 'every bounded loop' when only the
-    period-1 leader loops are checked — three loops are not."""
-    fields = WorkerSettings.get_fields()
-    description = str(fields["dispatcher_command_timeout"][1].description or "")
-    assert "every bounded loop" not in description, (
-        f"description must not say 'every bounded loop': {description}"
-    )

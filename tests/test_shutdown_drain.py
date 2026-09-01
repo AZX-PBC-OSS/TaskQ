@@ -200,28 +200,31 @@ async def test_drain_invalid_schema_raises() -> None:
     assert pool.acquire_count == 0
 
 
-def test_drain_local_queue_uses_transient_pg_errors_not_handrolled() -> None:
-    """drain_local_queue_to_pending must catch InterfaceError (closed pool) —
-    it's in TRANSIENT_PG_ERRORS but missing from a hand-rolled tuple."""
-    from pathlib import Path
+async def test_drain_local_queue_uses_transient_pg_errors_not_handrolled() -> None:
+    """asyncpg.InterfaceError (e.g. a closed pool) on execute must be handled
+    as transient — logged and rowcount 0 — not propagated as fatal.
 
-    import taskq.worker.shutdown as mod
+    InterfaceError is in TRANSIENT_PG_ERRORS but was missing from an earlier
+    hand-rolled (TimeoutError, PostgresConnectionError) tuple; this drives an
+    actual InterfaceError through the drain path to pin the fix."""
+    import structlog.testing
 
-    source = Path(mod.__file__).read_text()
-    in_func = False
-    for line in source.splitlines():
-        if "async def drain_local_queue_to_pending" in line:
-            in_func = True
-        elif in_func and line.strip().startswith("async def "):
-            break
-        elif (
-            in_func
-            and "except" in line
-            and "TimeoutError" in line
-            and "PostgresConnectionError" in line
-        ):
-            pytest.fail(
-                "drain_local_queue_to_pending must use TRANSIENT_PG_ERRORS "
-                f"instead of a hand-rolled tuple — InterfaceError is missing: {line}"
-            )
-    assert in_func, "drain_local_queue_to_pending function not found"
+    worker_id = new_uuid()
+    pool = FakePool(conn_fail_execute_with=asyncpg.InterfaceError("pool is closed"))
+    settings = _worker_settings("taskq")
+    deps = WorkerDeps(
+        settings=settings,
+        dispatcher_pool=pool,  # type: ignore[arg-type]
+        heartbeat_pool=pool,  # type: ignore[arg-type]
+        worker_pool=pool,  # type: ignore[arg-type]
+        notify_conn=None,
+        leader_conn=None,
+    )
+
+    with structlog.testing.capture_logs() as captured:
+        rowcount = await drain_local_queue_to_pending(deps, worker_id)
+
+    assert rowcount == 0, "InterfaceError must be treated as transient, not fatal"
+    assert any(entry.get("event") == "drain-local-queue-failed" for entry in captured), (
+        f"expected a drain-local-queue-failed warning, got: {captured}"
+    )
