@@ -250,6 +250,27 @@ async def test_ctx_progress_unserializable_data_raises_type_error() -> None:
     assert buf.dirty is False
 
 
+async def test_flush_buffer_rejects_nul_before_touching_connection() -> None:
+    """A NUL byte in progress state — as arbitrary ``ctx.progress(**kwargs)``
+    calls can produce — must be rejected by the jsonb NUL guard
+    (``dumps_jsonb_str``) before the connection is ever touched. Postgres
+    ``jsonb_in`` rejects a stored NUL with ``UntranslatableCharacterError``
+    (asyncpg.PostgresError), which is exactly the exception class the
+    terminal-write path treats as retryable infra failure — so the guard
+    must fire first, deterministically, without reaching the DB at all."""
+    pool, conn = _make_pool_with_conn()
+    buf = _make_dirty_buffer()
+    buf.pending_state["detail"] = "bad\x00value"
+    buffers: dict[UUID, _ProgressBuffer] = {_JOB_ID: buf}
+
+    await _flush_buffer(pool, "taskq_test", _JOB_ID, _WORKER_ID, buf, buffers)
+
+    conn.fetchrow.assert_not_awaited()
+    # The buffer is left dirty (not falsely marked flushed) so the state is
+    # never silently discarded.
+    assert buf.dirty is True
+
+
 # ── Flush loop regression tests ────────────────────────────────────────────
 
 

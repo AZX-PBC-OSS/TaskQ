@@ -14,7 +14,7 @@ from uuid import UUID
 import structlog
 from asyncpg.exceptions import UniqueViolationError
 
-from taskq._json import dumps_str
+from taskq._json import dumps_jsonb_str
 from taskq.backend._protocol import (
     ConnLike,
     EnqueueArgs,
@@ -431,7 +431,13 @@ async def _enqueue_batch(
         if args.result_ttl is not None:
             result_expires_at = batch_now + args.result_ttl
         result_expires_ats.append(result_expires_at)
-        tag_jsons.append(dumps_str(list(args.tags)))
+        # tag_jsons transits the wire as $21::jsonb[] (see enqueue_batch's
+        # comment on jagged-array handling) — each element is parsed by
+        # Postgres' jsonb_in before jsonb_array_elements_text unpacks it
+        # into the text[] `tags` column, so a NUL here hits the same
+        # jsonb_in rejection as any other jsonb write; dumps_jsonb_str
+        # guards it before the value ever reaches Postgres.
+        tag_jsons.append(dumps_jsonb_str(list(args.tags)))
 
     async def _enqueue_batch_on_conn(conn: ConnLike) -> list[JobRow]:
         try:

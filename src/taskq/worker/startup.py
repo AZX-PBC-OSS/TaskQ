@@ -5,7 +5,7 @@ from collections.abc import Sequence
 import asyncpg
 import structlog
 
-from taskq._json import dumps_str, loads
+from taskq._json import dumps_jsonb_str, loads
 from taskq.actor_config import ActorConfig
 from taskq.backend._protocol import ConnLike
 from taskq.constants import (
@@ -178,7 +178,7 @@ async def sync_actor_config(
         mp_array: list[int | None] = [cfg.max_pending for cfg in actor_configs]
         queue_array: list[str] = [cfg.queue for cfg in actor_configs]
         result_ttl_array: list[float | None] = [cfg.result_ttl for cfg in actor_configs]
-        metadata_array: list[str] = [dumps_str(cfg.metadata) for cfg in actor_configs]
+        metadata_array: list[str] = [dumps_jsonb_str(cfg.metadata) for cfg in actor_configs]
 
         await conn.execute(
             _UPSERT_ACTOR_CONFIG_SQL.format(schema=schema),

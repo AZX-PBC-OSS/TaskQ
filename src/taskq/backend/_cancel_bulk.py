@@ -32,6 +32,9 @@ from taskq.backend._filter_sql import build_filter_conditions
 from taskq.backend._protocol import BulkCancelResult, JobFilter
 from taskq.backend._records import jsonb_param
 from taskq.backend._sql_templates import SqlTemplates
+from taskq.constants import (
+    _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
+)
 
 __all__ = ["_cancel_where"]
 
@@ -50,6 +53,12 @@ async def _cancel_where(
     filter: JobFilter,
     reason: str | None,
 ) -> tuple[BulkCancelResult, list[NotifyTarget]]:
+    # Defence-in-depth: re-validate the schema identifier at the call site
+    # (docs/architecture.md §Identifier validation) — construction-time
+    # validation alone is single-point.
+    if not _IDENT_RE.match(schema):
+        raise ValueError(f"invalid schema identifier: {schema!r}")
+
     filter_sql = build_filter_conditions(filter)
     conditions_str = " AND ".join(filter_sql.conditions) if filter_sql.conditions else "TRUE"
     params = list(filter_sql.params)

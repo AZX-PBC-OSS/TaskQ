@@ -13,6 +13,7 @@ asyncpg connection so no database is required:
   ``schedule_to_close_interval`` resolution.
 """
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
@@ -361,6 +362,22 @@ async def test_enqueue_batch_fast_empty_raises_value_error() -> None:
     clock = FakeClock(_NOW)
     with pytest.raises(ValueError, match="must not be empty"):
         await _enqueue_batch_fast(pool, _SQL, _SCHEMA_LABEL, clock, [])
+
+
+# ── _enqueue_batch: NUL in tags rejected before touching the pool ────────
+
+
+async def test_enqueue_batch_rejects_nul_in_tags_before_pool_use() -> None:
+    """``args.tags`` is user-supplied. ``tag_jsons`` transits the wire as
+    ``$21::jsonb[]`` (see ``enqueue_batch``'s jagged-array comment), so a NUL
+    anywhere in a tag hits the same ``jsonb_in`` rejection as any other
+    jsonb write. Passing ``pool=None`` proves the guard fires while the
+    per-row lists are still being built — before the pool is ever
+    acquired."""
+    clock = FakeClock(_NOW)
+    args = replace(_make_args(), tags=("bad\x00tag",))
+    with pytest.raises(ValueError, match="NUL"):
+        await _enqueue_batch(None, _SQL, _SCHEMA_LABEL, clock, [args])  # type: ignore[arg-type]  # Why: validation must precede pool use
 
 
 # ── _enqueue_batch_fast: schedule_to_close_interval + result_ttl ────────

@@ -7,7 +7,7 @@ from uuid import UUID
 import asyncpg
 import structlog
 
-from taskq._json import dumps_str
+from taskq._json import dumps_jsonb_str
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: canonical identifier regex; copying would drift the validation pattern.
 )
@@ -51,7 +51,7 @@ async def _flush_buffer(
         async with worker_pool.acquire() as conn:
             row = await conn.fetchrow(
                 sql,
-                dumps_str(snapshot_state),
+                dumps_jsonb_str(snapshot_state),
                 snapshot_delta,
                 job_id,
                 worker_id,

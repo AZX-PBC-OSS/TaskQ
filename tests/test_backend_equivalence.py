@@ -22,6 +22,7 @@ from taskq.backend import (
     JobFilter,
     JobRow,
 )
+from taskq.backend._cancel_bulk import _cancel_where
 from taskq.backend._protocol import ErrorInfo, EventRow, IdentityKey, JobId, JobSortField, JobStatus
 from taskq.backend._reads import _list_jobs
 from taskq.backend.statemachine import ACTIVE_STATUSES, TERMINAL_STATUSES
@@ -1863,6 +1864,23 @@ async def test_list_jobs_rejects_invalid_schema_identifier() -> None:
     """
     with pytest.raises(ValueError, match="invalid schema identifier"):
         await _list_jobs(None, "0bad;DROP TABLE jobs", JobFilter())  # type: ignore[arg-type]  # Why: validation must precede pool use
+
+
+async def test_cancel_where_rejects_invalid_schema_identifier() -> None:
+    """``_cancel_where`` interpolates the schema into raw SQL, so per the
+    defence-in-depth invariant (docs/architecture.md §Identifier
+    validation) it must re-validate the identifier at the call site and
+    raise ``ValueError`` *before* touching the pool — passing ``None`` as
+    the pool proves no database access happens first.
+    """
+    with pytest.raises(ValueError, match="invalid schema identifier"):
+        await _cancel_where(
+            None,  # type: ignore[arg-type]  # Why: validation must precede pool use
+            "0bad;DROP TABLE jobs",
+            None,  # type: ignore[arg-type]  # Why: validation must precede sql templates use
+            JobFilter(),
+            None,
+        )
 
 
 # ── order_by tie-break parity ────────────────────────────────────────

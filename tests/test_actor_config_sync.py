@@ -335,6 +335,28 @@ async def test_new_actor_no_stored_row_no_drift() -> None:
     assert len(fake_conn._execute_calls) == 1
 
 
+@pytest.mark.asyncio
+async def test_metadata_nul_byte_rejected_before_upsert() -> None:
+    """``@actor(metadata={...})`` is user-supplied. A NUL (U+0000) anywhere
+    in it must be rejected by the jsonb NUL guard *before* the UPSERT is
+    executed — a NUL reaching Postgres' jsonb parser raises
+    ``UntranslatableCharacterError`` (a ``PostgresError``), which is exactly
+    the exception class treated as retryable infra failure elsewhere in the
+    worker; the guard must fire first so this surfaces as an immediate,
+    unambiguous ``ValueError`` instead."""
+    fake_conn = FakeAsyncpgConnection()
+    fake_conn.set_select_rows([])
+
+    with pytest.raises(ValueError, match="NUL"):
+        await sync_actor_config(
+            fake_conn,  # pyright: ignore[reportArgumentType] Why: FakeAsyncpgConnection is a unit-test double; real asyncpg.Connection subtyping would require protocol-level mocking
+            [_make_config("X", metadata={"note": "bad\x00value"})],
+            force=False,
+        )
+
+    assert fake_conn._execute_calls == []
+
+
 # ── max_pending upsert array ────────────────────────────────────────────────
 
 
