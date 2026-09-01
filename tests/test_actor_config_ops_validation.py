@@ -9,9 +9,9 @@ real Postgres; these tests pin the guards that must reject a bad value
   residual ``GREATEST(cap - in_flight, 0)`` and silently pausing the
   actor.
 * NaN / ±inf ``result_ttl`` — ``nan < 0`` is False so a negative guard
-  cannot see it, but ``now() + NaN * interval '1 second'`` raises
-  ``interval out of range`` in the terminal-write UPDATE, failing every
-  completion for the actor.
+  cannot see it, but ``clock_timestamp() + NaN * interval '1 second'``
+  raises ``interval out of range`` in the terminal-write UPDATE, failing
+  every completion for the actor.
 
 Behavioral assertion: the invalid call raises ``ValueError`` naming the
 problem, and the connection never sees a statement.

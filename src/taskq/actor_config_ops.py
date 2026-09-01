@@ -209,10 +209,10 @@ def _validate_result_ttl(value: float | None | Unset) -> None:
     """Reject bool, negative, and non-finite ``result_ttl``.
 
     NaN sails through ``value < 0`` (NaN compares False) and then breaks
-    every completion for the actor — ``now() + NaN * interval '1 second'``
-    raises ``interval out of range`` in the terminal-write UPDATE. ±inf is
-    rejected on the same grounds (``interval out of range`` / meaningless
-    expiry)."""
+    every completion for the actor — ``clock_timestamp() + NaN * interval
+    '1 second'`` raises ``interval out of range`` in the terminal-write
+    UPDATE. ±inf is rejected on the same grounds (``interval out of range``
+    / meaningless expiry)."""
     if isinstance(value, bool):
         raise ValueError(
             f"result_ttl must be a non-negative number of seconds; got {value!r} (bool)"
@@ -303,7 +303,7 @@ SELECT id::text FROM "{schema}".cron_schedules
 _DEREGISTER_CANCEL_PENDING_SQL = """
 UPDATE "{schema}".jobs
    SET status = 'cancelled',
-       finished_at = now(),
+       finished_at = clock_timestamp(),
        error_class = 'ActorDeregistered',
        error_message = 'Job cancelled by actor deregistration (force=True)'
  WHERE actor = $1

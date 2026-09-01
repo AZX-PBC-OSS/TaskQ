@@ -6,7 +6,7 @@ Covers:
 - transient exhaustion (2 attempts, terminal failure)
 - cancellation does NOT consume retry budget
 - dispatch filter respects schedule_to_close (past-deadline exclusion)
-- schedule_to_close computed server-side via now() + interval
+- schedule_to_close computed server-side via clock_timestamp() + interval
 """
 
 # ruff: noqa: S608 Why: schema name is validated by WorkerSettings.post_load and _IDENT_RE before reaching SQL; asyncpg has no parameter binding for identifiers; matches existing integration test pattern
@@ -420,9 +420,13 @@ async def test_schedule_to_close_computed_server_side(
     clean_jobs_app: JobsApp,
 ) -> None:
     """enqueue with kind='indefinite', time_budget=timedelta(hours=2)
-    against real PG. Oracle: now() <= schedule_to_close AND
-    schedule_to_close <= now() + interval '2h' + interval '1 second'.
-    Verifies PG-side now() + $::interval evaluation, not Python-side.
+    against real PG. Oracle: server_now <= schedule_to_close AND
+    schedule_to_close <= server_now + interval '2h' + interval '1 second',
+    where server_now is read via a fresh single-statement ``now()`` (its
+    own implicit transaction, so it is not subject to the transaction-start
+    freezing that would matter in a multi-statement transaction).  Verifies
+    PG-side ``clock_timestamp() + $::interval`` evaluation (the SQL actually
+    used to compute schedule_to_close), not Python-side.
     """
     from pydantic import BaseModel
 

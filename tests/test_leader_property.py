@@ -164,10 +164,10 @@ def _scheduled_at_match(row_a: object, row_b: object) -> bool:
     """Compare scheduled_at with tolerance for pending-status rows.
 
     When a job transitions to 'pending', both isolate_self and
-    sweep_expired_locks compute ``now() + 5s`` using PG server-side
-    ``now()`` at slightly different wall-clock moments. Allow a
-    5-second window. For crashed rows, ``scheduled_at`` is unchanged,
-    so an exact match is expected.
+    sweep_expired_locks compute ``clock_timestamp() + 5s`` using PG's
+    server-side ``clock_timestamp()`` at slightly different wall-clock
+    moments. Allow a 5-second window. For crashed rows, ``scheduled_at``
+    is unchanged, so an exact match is expected.
     """
     sa: datetime | None = row_a["scheduled_at"]  # type: ignore[index] # Why: asyncpg.Record supports dict-style access but pyright doesn't see it.
     sb: datetime | None = row_b["scheduled_at"]  # type: ignore[index] # Why: same — asyncpg.Record dict-like access.
@@ -251,7 +251,7 @@ async def test_property_sweep_equivalence(
     equivalent row state in the equivalence domain, divergent state outside it.
 
     Equivalence domain: cancel_phase == 0 OR the lock is deeply expired
-    (lock_expires_at < now() - cancel_grace - cleanup_grace - 60s).
+    (lock_expires_at < clock_timestamp() - cancel_grace - cleanup_grace - 60s).
 
     Divergence domain: cancel_phase > 0 within grace window. isolate_self
     reclaims the job; sweep_expired_locks leaves it unchanged.

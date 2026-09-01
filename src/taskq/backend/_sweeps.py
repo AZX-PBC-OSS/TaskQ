@@ -339,7 +339,10 @@ async def sweep_deadline_exceeded(
     uses ``COALESCE(started_at, clock_timestamp())`` to satisfy the
     ``job_attempts.started_at NOT NULL`` constraint.
 
-    *now* is accepted for API consistency; PG uses server-side ``now()``.
+    *now* is accepted for API consistency; PG uses server-side
+    ``clock_timestamp()`` for the deadline comparison and finished-at
+    timestamp (not ``now()``, which is fixed at transaction start — see
+    the module docstring).
 
     Returns the count of swept rows.
     """
@@ -428,11 +431,13 @@ async def sweep_scheduled_to_pending(
     """Sweep 3: promote scheduled jobs whose ``scheduled_at`` has passed.
 
     Transitions ``status='scheduled'`` rows with ``scheduled_at <=
-    now()`` to ``status='pending'``.  Writes one ``job_events`` row per
-    promoted job with ``kind='state_change'``, ``detail`` carrying
+    clock_timestamp()`` to ``status='pending'``.  Writes one ``job_events``
+    row per promoted job with ``kind='state_change'``, ``detail`` carrying
     ``from_state='scheduled'`` and ``to_state='pending'``.
 
-    *now* is accepted for API consistency; PG uses server-side ``now()``.
+    *now* is accepted for API consistency; PG uses server-side
+    ``clock_timestamp()`` (not ``now()``, which is fixed at transaction
+    start — see the module docstring).
 
     Returns the count of promoted rows.
     """
@@ -506,7 +511,9 @@ async def sweep_leaked_reservation_slots(
     ``job_events`` writes — reservation slots are not job-state
     transitions.
 
-    *now* is accepted for API consistency; PG uses server-side ``now()``.
+    *now* is accepted for API consistency; PG uses server-side
+    ``clock_timestamp()`` (not ``now()``, which is fixed at transaction
+    start — see the module docstring).
 
     Returns the count of released slots.
     """

@@ -292,7 +292,7 @@ def time_budget_as_interval(retry: RetryPolicy) -> timedelta | None:
     """Return retry.time_budget when kind=='indefinite' and time_budget
     is set; otherwise None. Used by the enqueue path to pass
     time_budget as a `$N::interval` parameter so PG can compute
-    schedule_to_close = now() + $N::interval."""
+    schedule_to_close = clock_timestamp() + $N::interval."""
     if retry.kind == "indefinite" and retry.time_budget is not None:
         return retry.time_budget
     return None

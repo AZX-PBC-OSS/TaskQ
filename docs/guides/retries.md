@@ -53,7 +53,7 @@ The only stopping conditions are:
 
 Either condition produces `Fail(error_class="DeadlineExceeded")`.
 
-`time_budget` is the recommended way to set an upper bound without computing an absolute datetime at enqueue time. When `kind="indefinite"` and `time_budget` is set, the enqueue path passes it to PostgreSQL as an interval so that `schedule_to_close = now() + time_budget` is computed at insert time.
+`time_budget` is the recommended way to set an upper bound without computing an absolute datetime at enqueue time. When `kind="indefinite"` and `time_budget` is set, the enqueue path passes it to PostgreSQL as an interval so that `schedule_to_close = clock_timestamp() + time_budget` is computed at insert time.
 
 If neither `schedule_to_close` nor `time_budget` is set, the job retries without any time limit. A warning is logged at decoration time when `kind="indefinite"` and `time_budget=None`.
 

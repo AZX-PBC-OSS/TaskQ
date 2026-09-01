@@ -553,7 +553,7 @@ eligible_candidates → LEFT JOIN actor_config for max_concurrent
                       ROW_NUMBER() OVER (PARTITION BY actor …) for per-actor ranking
 eligible            → cap: actor_rank <= max_concurrent - in_flight, LIMIT limit_n
 UPDATE jobs         → WHERE j.id IN eligible AND j.status = 'pending'
-                      SET status='running', started_at=now(), attempt=attempt+1, …
+                      SET status='running', started_at=clock_timestamp(), attempt=attempt+1, …
 ```
 
 ### Key correctness invariants
@@ -763,7 +763,7 @@ the advisory lock is the authoritative source of truth for election.
 1. **Election loop** — acquires and renews the advisory lock.
 2. **Watchdog** — detects stale lock state; refreshes `last_seen_at`.
 3. **Scheduled-wake (Sweep 3)** — promotes `scheduled` → `pending` when
-   `scheduled_at <= now()`. Sends `pg_notify` after promoting to wake consumer loops.
+   `scheduled_at <= clock_timestamp()`. Sends `pg_notify` after promoting to wake consumer loops.
 4. **Cron** — fires cron-scheduled actors at their declared cadence.
 5. **Sweep (Sweeps 1, 2, 4)** — **leader-only** (gated on `ctx.deps.is_leader`),
    runs every 30 s: `reclaim_expired_locks` (Sweep 1, uses `FOR UPDATE SKIP LOCKED`),

@@ -22,7 +22,7 @@ Dedup mechanics, verified against the library (not guessed):
   ``identity_key`` are set (``backend/_enqueue.py._enqueue_on_conn``); the SQL
   matches the newest active row — ``status = ANY(unique_states)``, default
   ``pending``/``scheduled``/``running`` — within
-  ``created_at > now() - unique_for``
+  ``created_at > clock_timestamp() - unique_for``
   (``backend/_sql_templates.py.enqueue_unique_for_preflight``).
 - On a preflight hit the existing row is returned and no INSERT happens; the
   client flags the handle ``was_existing = (row.id != args.id)``

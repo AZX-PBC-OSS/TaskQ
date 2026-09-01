@@ -43,8 +43,8 @@ def _now_for(backend: Backend) -> datetime:
     """Return the current time for the backend's clock.
 
     InMemoryBackend uses a FakeClock starting at ``_START``;
-    PostgresBackend uses server-side ``now()`` approximated by
-    ``datetime.now(UTC)``.
+    PostgresBackend's server-side ``clock_timestamp()`` is approximated
+    by ``datetime.now(UTC)`` (the Python client clock).
     """
     if isinstance(backend, InMemoryBackend):
         return backend._clock.now()  # type: ignore[reportPrivateUsage] # Why: equivalence test helper; _clock is the canonical time source for InMemoryBackend
@@ -114,14 +114,15 @@ async def _advance_and_promote(backend: Backend, target_time: datetime) -> int:
 
     InMemoryBackend: advances the FakeClock and calls ``scheduled_to_pending``.
     PostgresBackend: forces all scheduled jobs' ``scheduled_at`` to the past
-    (so server-side ``now()`` will find them eligible) and calls
-    ``scheduled_to_pending``.
+    (so server-side ``clock_timestamp()`` will find them eligible) and
+    calls ``scheduled_to_pending``.
     """
     if isinstance(backend, InMemoryBackend):
         backend.advance_clock_to(target_time)
         return await backend.scheduled_to_pending(target_time)
-    # PG: server-side now() controls promotion; force scheduled_at to the past
-    # so that scheduled_to_pending(now()) will promote the job.
+    # PG: server-side clock_timestamp() controls promotion (the `now`
+    # argument to scheduled_to_pending is accepted for API consistency
+    # only); force scheduled_at to the past so the sweep promotes the job.
     import asyncpg
 
     schema: str = backend._schema_name  # type: ignore[reportPrivateUsage] # Why: PG-path helper
@@ -1250,8 +1251,9 @@ async def test_mark_snoozed_delay_exactly_equal_remaining_budget_fails(
     deadline, and == does NOT cross the > boundary).
 
     For InMemory: advance clock to deadline so clock.now() == schedule_to_close.
-    For PG: schedule_to_close is in the future relative to server-side now(),
-    so now() + delay(0s) <= schedule_to_close → snooze arm fires.
+    For PG: schedule_to_close is in the future relative to server-side
+    clock_timestamp(), so clock_timestamp() + delay(0s) <= schedule_to_close
+    → snooze arm fires.
     """
     # Set schedule_to_close in the future relative to the backend's "now"
     deadline = _now_for(backend_pair) + timedelta(hours=12)
@@ -1259,7 +1261,8 @@ async def test_mark_snoozed_delay_exactly_equal_remaining_budget_fails(
     await _force_job_state(backend_pair, job_id, schedule_to_close=deadline)
 
     # For InMemory: advance clock to the deadline so now == schedule_to_close.
-    # For PG: no clock manipulation needed — server-side now() < schedule_to_close.
+    # For PG: no clock manipulation needed — server-side clock_timestamp()
+    # < schedule_to_close.
     if isinstance(backend_pair, InMemoryBackend):
         backend_pair.advance_clock_to(deadline)
 

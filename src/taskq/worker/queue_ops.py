@@ -105,7 +105,7 @@ async def set_queue_mode(
         raise ValueError(msg)
     row = await conn.fetchrow(
         f'INSERT INTO "{schema}".queues (name, mode) VALUES ($1, $2) '  # noqa: S608  # Why: schema validated against _IDENT_RE above and double-quoted; values are $n-bound.
-        "ON CONFLICT (name) DO UPDATE SET mode = EXCLUDED.mode, updated_at = now() "
+        "ON CONFLICT (name) DO UPDATE SET mode = EXCLUDED.mode, updated_at = clock_timestamp() "
         "RETURNING name, mode, max_concurrent",
         name,
         mode,
@@ -129,7 +129,7 @@ async def set_queue_max_concurrent(
     row = await conn.fetchrow(
         f'INSERT INTO "{schema}".queues (name, max_concurrent) VALUES ($1, $2) '  # noqa: S608  # Why: schema validated against _IDENT_RE above and double-quoted; values are $n-bound.
         "ON CONFLICT (name) DO UPDATE SET max_concurrent = EXCLUDED.max_concurrent, "
-        "updated_at = now() RETURNING name, mode, max_concurrent",
+        "updated_at = clock_timestamp() RETURNING name, mode, max_concurrent",
         name,
         max_concurrent,
     )

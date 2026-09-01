@@ -152,7 +152,7 @@ def _patch_connect_only(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_set_result_ttl_nan_rejected_cleanly(monkeypatch: pytest.MonkeyPatch) -> None:
     """--result-ttl nan parses (float('nan')) and typer's min=0 cannot see
     it (nan < 0 is False), but writing it would break every completion
-    for the actor: now() + NaN * interval '1 second' raises
+    for the actor: clock_timestamp() + NaN * interval '1 second' raises
     'interval out of range' in the terminal-write UPDATE. The ops-layer
     finite guard rejects it, and the CLI prints the reason, not a
     traceback."""

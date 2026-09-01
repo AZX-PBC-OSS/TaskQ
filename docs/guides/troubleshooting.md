@@ -63,7 +63,7 @@ Jobs remain `scheduled` even though their `scheduled_at` has passed.
 
 ### Cause
 
-The `scheduled_to_pending` sweep (Sweep 3) runs every 1 second **on the leader only**, promoting `scheduled` jobs to `pending` when `scheduled_at <= now()`. If no leader is elected, jobs are never promoted. (`scheduled_at` still in the future is expected, not a bug.)
+The `scheduled_to_pending` sweep (Sweep 3) runs every 1 second **on the leader only**, promoting `scheduled` jobs to `pending` when `scheduled_at <= clock_timestamp()`. If no leader is elected, jobs are never promoted. (`scheduled_at` still in the future is expected, not a bug.)
 
 | Cause | Detail |
 |---|---|
@@ -115,7 +115,7 @@ Jobs appear with `status = 'crashed'` and `error_class = 'WorkerCrashed'` or `er
 | `WorkerCrashed` | Reclaim sweep (Sweep 1) | Worker died (OOM, SIGKILL, eviction). `lock_expires_at` passed; the sweep reclaimed the job. |
 | `HeartbeatLost` | `isolate_self` | Heartbeat failed > `max_heartbeat_failures` times. Worker self-isolated and shut down. |
 
-Both transition `running → crashed` only when the job is **non-retryable** (`retry_kind = 'non_retryable'` or `attempt >= max_attempts`). Retryable jobs are re-pended with `scheduled_at = now() + 5s`.
+Both transition `running → crashed` only when the job is **non-retryable** (`retry_kind = 'non_retryable'` or `attempt >= max_attempts`). Retryable jobs are re-pended with `scheduled_at = clock_timestamp() + 5s`.
 
 ### Diagnosis
 

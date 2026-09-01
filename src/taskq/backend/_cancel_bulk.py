@@ -95,7 +95,7 @@ async def _cancel_where(
     ),
     cancel_requested AS (
         UPDATE "{schema}".jobs AS j
-        SET cancel_requested_at = now(), cancel_phase = 1
+        SET cancel_requested_at = clock_timestamp(), cancel_phase = 1
         FROM (
             SELECT id, locked_by_worker
             FROM matching

@@ -285,7 +285,7 @@ deployment.
 
 ```sql
 INSERT INTO "taskq".queues (name, max_concurrent) VALUES ('external-api', 20)
-ON CONFLICT (name) DO UPDATE SET max_concurrent = EXCLUDED.max_concurrent, updated_at = now();
+ON CONFLICT (name) DO UPDATE SET max_concurrent = EXCLUDED.max_concurrent, updated_at = clock_timestamp();
 ```
 
 The column is nullable — `NULL` means uncapped, matching the `actor_config.max_concurrent`

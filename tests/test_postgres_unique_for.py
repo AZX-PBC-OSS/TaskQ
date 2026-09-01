@@ -279,7 +279,7 @@ async def test_unique_for_preflight_uses_index(
             WHERE actor = $1
               AND identity_key = $2
               AND status = ANY($3::\"{schema}\".job_status[])
-              AND created_at > now() - $4::interval
+              AND created_at > clock_timestamp() - $4::interval
             ORDER BY created_at DESC
             LIMIT 1""",
             "_unique_for_15min_actor",

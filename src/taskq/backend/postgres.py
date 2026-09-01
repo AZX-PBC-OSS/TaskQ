@@ -221,10 +221,15 @@ class PostgresBackend:
     ``taskq.worker.deps``); unpacking its fields at this layer would
     duplicate the wiring and make it fragile to pool additions.
 
-    ``clock`` is stored for future SQL paths that need wall-clock
-    ``now()`` (e.g. ``scheduled_to_pending``), but is unused in the
-    terminal-write methods which use server-side ``clock_timestamp()``
-    for all timestamp values — both WHERE comparisons and SET clauses.
+    ``clock`` is used for Python-side timestamp computations in the
+    enqueue path (e.g. comparing ``scheduled_at`` against "now" to decide
+    whether to send it as a SQL parameter, and computing
+    ``retry_after`` on a singleton collision) — never as a substitute
+    for a database timestamp. It is unused in the terminal-write and
+    sweep methods, all of which use server-side ``clock_timestamp()``
+    for every timestamp value — both WHERE comparisons and SET clauses
+    — including ``scheduled_to_pending``, whose ``now`` parameter is
+    accepted only for API-surface consistency and is otherwise ignored.
 
     ``cancellation_grace_period`` and ``cleanup_grace_period`` are the
     ``timedelta`` values used by :meth:`reclaim_expired_locks`.

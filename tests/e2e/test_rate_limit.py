@@ -16,7 +16,7 @@ Pacing mechanics verified against the library, not guessed:
   ``backend.mark_snoozed``, which deliberately does NOT consume retry budget
   (``backend/_sql_templates.py`` ``mark_snoozed`` leaves ``j.attempt``
   unchanged), so paced jobs survive unlimited denials.
-- Denied jobs return to ``scheduled`` at ``now() + retry_after`` with
+- Denied jobs return to ``scheduled`` at ``clock_timestamp() + retry_after`` with
   ``retry_after = (1 - tokens) / refill`` from the Lua script — the 0.2s
   cadence that paces every burst below.
 - Re-dispatch of denied jobs is quantized by the leader's
