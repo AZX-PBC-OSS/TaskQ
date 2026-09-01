@@ -791,6 +791,35 @@ lease for the job's duration; `extend_reservation_leases` renews them on heartbe
 
 ---
 
+## Clock Domains
+
+TaskQ runs two independent clocks: the PG server clock (`clock_timestamp()` /
+`now()` in SQL) and each process's Python wall clock (the injectable
+`Clock` in `src/taskq/backend/clock.py`). Divergence between them (NTP drift,
+VM pause) is a production reality, so the architecture rule is **one arbiter
+per predicate — the data store that owns the row also owns the time it is
+compared against**:
+
+- Every skew-sensitive timestamp decision lives in the SQL statement that owns
+  its predicate: lease/liveness writes and expiry checks, sweep and dispatch
+  gates, retry/retry-after guards, rate-limit window predicates and
+  TAT/token epoch math (`EXTRACT(EPOCH FROM clock_timestamp())`), and the cron
+  due-check, catch-up cutoff, and beyond-window recompute (read inside the
+  tick's transaction).
+- Rate-limit Lua scripts read Redis `TIME` (`redis.call('TIME')`) rather than a
+  client-supplied timestamp, so multi-node fleets share one clock; scripts are
+  non-deterministic but replication-safe under Redis ≥ 5 effect replication
+  (see the [EVAL docs](https://redis.io/docs/latest/commands/eval/)). The
+  in-memory limiter backends keep their injected `Clock` — a single process is
+  a single domain by construction.
+- Known residual: `JobsClient.create_schedule` / `update_schedule` seed the
+  first `next_fire_at` from the calling process's local clock, so app↔DB skew
+  shifts only the first fire after creation (±S). The residual is bounded and
+  self-healing — the cron tick's catch-up recompute re-anchors the chain to
+  the server clock at the first tick that sees the schedule.
+
+---
+
 ## Schema Design Decisions
 
 Source: `src/taskq/migrations/`.

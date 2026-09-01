@@ -5,21 +5,28 @@ no file I/O occurs at import time and the byte-for-byte match against the
 canonical source can be asserted in CI.  ``redis-py``'s ``register_script()``
 consumes these directly — the bytes are sent verbatim to Redis.
 
+Time domain: every script derives ``now`` from ``redis.call('TIME')`` — it
+is NEVER passed as ARGV.  The admission state these scripts measure is
+shared by the whole fleet, so the clock that stamps and measures it must be
+shared too: a caller-supplied now lets one node's clock skew shift every
+window boundary and TAT it writes (over-admission up to skew/window across
+nodes).  ``TIME`` is non-deterministic, which is safe here because Redis
+replicates script *effects* since Redis 5 (see the EVAL docs,
+https://redis.io/docs/latest/commands/eval/).
+
 ARGV contract for the token-bucket script:
 
-* ``ARGV[1]`` = now_seconds   (float, from Python ``Clock.now().timestamp()``)
-* ``ARGV[2]`` = capacity      (float)
-* ``ARGV[3]`` = refill_per_second (float; must be > 0 when the denial branch is reached)
-* ``ARGV[4]`` = requested_tokens (float; default 1.0)
-* ``ARGV[5]`` = ttl_seconds   (integer; ``math.ceil(capacity/refill*2)+60``)
+* ``ARGV[1]`` = capacity      (float)
+* ``ARGV[2]`` = refill_per_second (float; must be > 0 when the denial branch is reached)
+* ``ARGV[3]`` = requested_tokens (float; default 1.0)
+* ``ARGV[4]`` = ttl_seconds   (integer; ``math.ceil(capacity/refill*2)+60``)
 
 ARGV contract for the sliding-window log script:
 
-* ``ARGV[1]`` = now_ms       (integer milliseconds from Python Clock)
-* ``ARGV[2]`` = window_ms    (integer milliseconds, e.g. 60000 for 60 s)
-* ``ARGV[3]`` = limit        (integer, e.g. 60)
-* ``ARGV[4]`` = request_id   (UUID7 string — unique member, prevents sub-ms collision)
-* ``ARGV[5]`` = ttl_ms       (integer ms for PEXPIRE; default 2*window_ms + 60_000)
+* ``ARGV[1]`` = window_ms    (integer milliseconds, e.g. 60000 for 60 s)
+* ``ARGV[2]`` = limit        (integer, e.g. 60)
+* ``ARGV[3]`` = request_id   (UUID7 string — unique member, prevents sub-ms collision)
+* ``ARGV[4]`` = ttl_ms       (integer ms for PEXPIRE; default 2*window_ms + 60_000)
 
 ARGV contract for the sliding-window GCRA script:
 
@@ -27,7 +34,6 @@ ARGV contract for the sliding-window GCRA script:
 * ``ARGV[2]`` = delay_tolerance_ms    (window_ms, integer)
 * ``ARGV[3]`` = quantity_ms           (1 * emission_interval_ms for cost=1)
 * ``ARGV[4]`` = ttl_ms                (window_ms + 60_000 default)
-* ``ARGV[5]`` = now_ms                (integer milliseconds from Python Clock)
 
 When allowed, the script returns {1, 0, remaining_estimate, pre_acquire_tat, post_acquire_tat}
 where pre_acquire_tat and post_acquire_tat are string representations of the TAT
@@ -36,9 +42,8 @@ before and after the acquire, used for compare-and-set refunds.
 ARGV contract for the token-bucket refund script:
 
 * ``ARGV[1]`` = refund_amount (float — tokens to add back, NOT decision.remaining)
-* ``ARGV[2]`` = now_seconds  (float, from Python Clock.now().timestamp())
-* ``ARGV[3]`` = capacity     (float — bucket cap; prevents over-refund)
-* ``ARGV[4]`` = refill_per_second (float — mirrors the acquire script's
+* ``ARGV[2]`` = capacity     (float — bucket cap; prevents over-refund)
+* ``ARGV[3]`` = refill_per_second (float — mirrors the acquire script's
   elapsed-refill step so a refund does not lose accrued refill)
 """
 
@@ -46,11 +51,13 @@ from typing import Final
 
 _LUA_SRC: Final[str] = """\
 -- KEYS[1] = bucket key (format: taskq:{schema}:rl:tb:{bucket_name})
--- ARGV[1] = now_seconds (float, from Python Clock.now().timestamp())
--- ARGV[2] = capacity    (float)
--- ARGV[3] = refill_per_second (float; must be > 0)
--- ARGV[4] = requested_tokens (float; default 1.0)
--- ARGV[5] = ttl_seconds (integer; math.ceil(capacity/refill*2)+60)
+-- ARGV[1] = capacity    (float)
+-- ARGV[2] = refill_per_second (float; must be > 0)
+-- ARGV[3] = requested_tokens (float; default 1.0)
+-- ARGV[4] = ttl_seconds (integer; math.ceil(capacity/refill*2)+60)
+--
+-- now is read from redis.call('TIME') — the shared admission state must
+-- be stamped and measured by the store's own clock, never a caller's.
 --
 -- Returns: {allowed, tokens_remaining, retry_after_seconds}
 --   allowed         = 1 if granted, 0 if denied
@@ -60,11 +67,14 @@ _LUA_SRC: Final[str] = """\
 --   retry_after_seconds = "0" when allowed; seconds until `requested_tokens`
 --                         are available when denied (string for same reason)
 local key      = KEYS[1]
-local now      = tonumber(ARGV[1])
-local capacity = tonumber(ARGV[2])
-local refill   = tonumber(ARGV[3])
-local req      = tonumber(ARGV[4])
-local ttl      = tonumber(ARGV[5])
+local capacity = tonumber(ARGV[1])
+local refill   = tonumber(ARGV[2])
+local req      = tonumber(ARGV[3])
+local ttl      = tonumber(ARGV[4])
+
+-- TIME returns {seconds, microseconds}; combine into a float epoch.
+local time = redis.call('TIME')
+local now  = tonumber(time[1]) + tonumber(time[2]) / 1000000
 
 -- Read current state. data[1]=tokens, data[2]=ts (last-refill timestamp).
 local data   = redis.call('HMGET', key, 'tokens', 'ts')
@@ -76,8 +86,6 @@ if tokens == nil then
   tokens = capacity
   ts = now
 end
-
-local old_tokens = tokens
 
 -- Refill: clamp elapsed to ≥0 to guard against backward clock jitter.
 local elapsed = math.max(0, now - ts)
@@ -97,7 +105,10 @@ else
   end
 end
 
-redis.call('HMSET', key, 'tokens', tokens, 'ts', now)
+-- tostring() on the stored values: Redis converts Lua number arguments to
+-- integers by truncation, which would silently drop the fractional parts
+-- of both tokens and the ts epoch on stores that apply that conversion.
+redis.call('HMSET', key, 'tokens', tostring(tokens), 'ts', tostring(now))
 redis.call('EXPIRE', key, ttl)
 -- tostring() is required: Redis RESP2 converts Lua numbers to integers
 -- by truncation (removing the decimal part). Returning floats as strings
@@ -111,22 +122,28 @@ TOKEN_BUCKET_SCRIPT: Final[bytes] = _LUA_SRC.encode("utf-8")
 
 _SLIDING_WINDOW_LOG_SRC: Final[str] = """\
 -- KEYS[1] = window_key  (e.g. "taskq:myschema:sw:{vendor_x_per_min}")
--- ARGV[1] = now_ms      (integer milliseconds from Python Clock — never Redis TIME)
--- ARGV[2] = window_ms   (integer milliseconds, e.g. 60000 for 60 s)
--- ARGV[3] = limit       (integer, e.g. 60)
--- ARGV[4] = request_id  (UUID7 string — unique member, prevents sub-ms collision)
--- ARGV[5] = ttl_ms      (integer ms for PEXPIRE; default 2*window_ms + 60_000)
+-- ARGV[1] = window_ms   (integer milliseconds, e.g. 60000 for 60 s)
+-- ARGV[2] = limit       (integer, e.g. 60)
+-- ARGV[3] = request_id  (UUID7 string — unique member, prevents sub-ms collision)
+-- ARGV[4] = ttl_ms      (integer ms for PEXPIRE; default 2*window_ms + 60_000)
+--
+-- now_ms is derived from redis.call('TIME') — never a caller-supplied
+-- ARGV — so every node's window boundary and ZADD score live in the same
+-- clock domain as the shared sorted set.
 --
 -- Returns: {allowed, count, retry_after_ms}
 --   allowed        = 1 if granted, 0 if denied
 --   count          = window count after the operation (includes this acquire if allowed)
 --   retry_after_ms = 0 when allowed; ms until oldest entry leaves the window when denied
 local key    = KEYS[1]
-local now    = tonumber(ARGV[1])
-local window = tonumber(ARGV[2])
-local limit  = tonumber(ARGV[3])
-local req_id = ARGV[4]
-local ttl    = tonumber(ARGV[5])
+local window = tonumber(ARGV[1])
+local limit  = tonumber(ARGV[2])
+local req_id = ARGV[3]
+local ttl    = tonumber(ARGV[4])
+
+-- TIME returns {seconds, microseconds}; combine into float milliseconds.
+local time = redis.call('TIME')
+local now  = (tonumber(time[1]) + tonumber(time[2]) / 1000000) * 1000
 
 -- Step 1: evict entries older than the rolling window boundary.
 redis.call('ZREMRANGEBYSCORE', key, 0, now - window)
@@ -159,7 +176,13 @@ _SLIDING_WINDOW_GCRA_SRC: Final[str] = """\
 -- Algorithm: Brandur Leach, "Rate Limiting, Cells, and GCRA"
 --   https://brandur.org/rate-limiting
 -- Upstream commit: 4f0d73ce3a979ee917227e09faad4a0d357294be
--- TaskQ deviations: client-supplied now_ms (ARGV[5]) instead of TIME;
+-- TaskQ deviations from upstream: now is read from redis.call('TIME')
+-- rather than a caller-supplied ARGV — the TAT is shared fleet state, so
+-- the clock that advances it must be the store's own; a caller's skewed
+-- now would poison the shared admission boundary for every other node.
+-- TIME is non-deterministic, which is replication-safe because Redis
+-- replicates script EFFECTS since Redis 5 (see the EVAL docs,
+-- https://redis.io/docs/latest/commands/eval/). Further deviations:
 -- millisecond arithmetic throughout; PEXPIRE instead of EXPIRE; return
 -- shape includes pre/post TAT strings for compare-and-set refunds.
 --
@@ -168,13 +191,15 @@ _SLIDING_WINDOW_GCRA_SRC: Final[str] = """\
 -- ARGV[2] = delay_tolerance_ms   (window_ms, integer)
 -- ARGV[3] = quantity_ms          (1 * emission_interval_ms for cost=1)
 -- ARGV[4] = ttl_ms               (window_ms + 60_000 default)
--- ARGV[5] = now_ms               (integer milliseconds from Python Clock)
 local key = KEYS[1]
 local emission_interval = tonumber(ARGV[1])
 local delay_tolerance   = tonumber(ARGV[2])
 local quantity          = tonumber(ARGV[3])
 local ttl               = tonumber(ARGV[4])
-local now               = tonumber(ARGV[5])
+
+-- TIME returns {seconds, microseconds}; combine into float milliseconds.
+local time = redis.call('TIME')
+local now  = (tonumber(time[1]) + tonumber(time[2]) / 1000000) * 1000
 
 local tat_str = redis.call('GET', key)
 local tat
@@ -208,17 +233,21 @@ _REFUND_SRC: Final[str] = """\
 -- Refund script (rollback path only — do NOT call after actor completes).
 -- KEYS[1] = bucket key
 -- ARGV[1] = refund_amount (float — tokens to add back)
--- ARGV[2] = now (float seconds, client clock)
--- ARGV[3] = capacity (float — bucket cap; prevents over-refund)
--- ARGV[4] = refill_per_second (float — must mirror the acquire script's
+-- ARGV[2] = capacity (float — bucket cap; prevents over-refund)
+-- ARGV[3] = refill_per_second (float — must mirror the acquire script's
 --           refill rate so a refund does not clobber accrued-but-unread
 --           refill; parity with _InMemoryBucket.refund, which always
 --           refunds against tokens computed with elapsed * refill applied)
+--
+-- now is read from redis.call('TIME') — the elapsed-refill step must run
+-- in the same clock domain the acquire script stamped ts in.
 local key      = KEYS[1]
 local refund   = tonumber(ARGV[1])
-local now      = tonumber(ARGV[2])
-local capacity = tonumber(ARGV[3])
-local refill   = tonumber(ARGV[4])
+local capacity = tonumber(ARGV[2])
+local refill   = tonumber(ARGV[3])
+
+local time = redis.call('TIME')
+local now  = tonumber(time[1]) + tonumber(time[2]) / 1000000
 
 local data = redis.call('HMGET', key, 'tokens', 'ts')
 local tokens = tonumber(data[1])
@@ -232,8 +261,10 @@ local elapsed = math.max(0, now - ts)
 tokens = math.min(capacity, tokens + elapsed * refill)
 
 tokens = math.min(capacity, tokens + refund)
-redis.call('HMSET', key, 'tokens', tokens, 'ts', now)
-return {1, tokens}
+-- tostring() on the stored values: Redis converts Lua number arguments to
+-- integers by truncation, which would silently drop the fractional parts.
+redis.call('HMSET', key, 'tokens', tostring(tokens), 'ts', tostring(now))
+return {1, tostring(tokens)}
 """
 
 REFUND_SCRIPT: Final[bytes] = _REFUND_SRC.encode("utf-8")

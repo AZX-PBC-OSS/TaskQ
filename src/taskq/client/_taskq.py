@@ -338,7 +338,13 @@ class TaskQ:
         metadata: dict[str, object] | None = None,
         tags: list[str] | None = None,
     ) -> JobHandle[R]:
-        """Enqueue a job and return a typed handle."""
+        """Enqueue a job and return a typed handle.
+
+        ``schedule_to_close`` (absolute datetime) is deprecated — it crosses
+        clock domains (the app clock that produced it vs the database clock
+        that evaluates it).  Declare ``retry.time_budget`` on the actor
+        instead; the interval form is anchored to the database clock.
+        """
         return await self._require_open().enqueue(
             ref,
             payload,

@@ -93,6 +93,12 @@ __all__ = [
 #     `fallback_result_ttl` keyword — without it a v2 implementation
 #     keeps the enqueue-pinned result_expires_at when the stored
 #     result_ttl is cleared, silently expiring results at completion.
+#     EnqueueArgs.scheduled_at is now optional — None means immediate
+#     and the backend's server stamps/decides it. A v2-era implementation
+#     fails LOUDLY on None ('>' not supported between NoneType and
+#     datetime at its scheduled_at > now checks) rather than silently
+#     misbehaving, so per the bump rule above this is a documented
+#     no-bump incompatibility.
 BACKEND_PROTOCOL_VERSION: Final[int] = 3
 
 # ── Type aliases (PEP 695) ─────────────────────────────────────────────
@@ -266,9 +272,11 @@ literals in ``QueueName("default")``.
 @dataclass(frozen=True, slots=True)
 class EnqueueArgs:
     """Input struct for :meth:`Backend.enqueue`.  Carries every column the
-    caller specifies at enqueue time.  ``scheduled_at`` has no default —
-    callers set it explicitly (``clock.now()`` for immediate dispatch, or a
-    future datetime for deferred execution).
+    caller specifies at enqueue time.  ``scheduled_at=None`` means
+    immediate — the backend's server stamps ``now()`` and decides
+    ``status``; a non-None value is the caller's explicit absolute intent
+    (deprecated cross-domain residue, kept only for explicit scheduling —
+    prefer delay/interval forms where available).
     """
 
     id: JobId
@@ -277,7 +285,7 @@ class EnqueueArgs:
     payload: dict[str, object]
     max_attempts: int
     retry_kind: RetryKind
-    scheduled_at: datetime
+    scheduled_at: datetime | None
     payload_schema_ver: int = 1
     priority: int = 0
     max_pending: int | None = None

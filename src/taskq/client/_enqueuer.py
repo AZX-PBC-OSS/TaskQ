@@ -336,7 +336,13 @@ class SubJobEnqueuer:
         return tuple(self._pending_buffer)
 
     def _synthesize_row(self, args: EnqueueArgs) -> JobRow:
-        """Build a synthetic JobRow from EnqueueArgs for the in-memory buffer path."""
+        """Build a synthetic JobRow from EnqueueArgs for the in-memory buffer path.
+
+        Display-only guess in the Python domain: ``status``/``scheduled_at``
+        are predicted from this process's clock so callers get a plausible
+        row before the transaction commits — the stored row is decided
+        server-side and may differ (this row is never written back).
+        """
         now = self._clock.now()
         return JobRow(
             id=args.id,
@@ -346,7 +352,9 @@ class SubJobEnqueuer:
             fairness_key=args.fairness_key,
             payload=args.payload,
             payload_schema_ver=args.payload_schema_ver,
-            status="scheduled" if args.scheduled_at > now else "pending",
+            status=(
+                "pending" if args.scheduled_at is None or args.scheduled_at <= now else "scheduled"
+            ),
             priority=args.priority,
             attempt=0,
             max_attempts=args.max_attempts,
@@ -355,7 +363,7 @@ class SubJobEnqueuer:
             start_to_close=args.start_to_close,
             heartbeat_timeout=args.heartbeat_timeout,
             created_at=now,
-            scheduled_at=args.scheduled_at,
+            scheduled_at=args.scheduled_at or now,
             started_at=None,
             finished_at=None,
             last_heartbeat_at=None,

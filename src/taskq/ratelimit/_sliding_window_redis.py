@@ -3,6 +3,11 @@
 All Redis-path methods (acquire, peek, reset, refund for both log and
 GCRA styles, plus Lua-script caching helpers) live here as module-level
 functions taking ``self: SlidingWindow`` as the first parameter.
+
+Time domain: the acquire scripts derive now from ``redis.call('TIME')``
+and the peek paths read the store clock via ``redis_time_seconds`` — the
+shared sorted-set scores and TATs are store-domain, so callers on nodes
+with divergent Python clocks are all measured against the same window.
 """
 
 from datetime import timedelta
@@ -10,7 +15,7 @@ from typing import TYPE_CHECKING
 from uuid import UUID
 
 from taskq.ratelimit._decision_log import log_decision
-from taskq.ratelimit._redis_utils import ensure_redis_script, with_pg_fallback
+from taskq.ratelimit._redis_utils import ensure_redis_script, redis_time_seconds, with_pg_fallback
 from taskq.ratelimit._scripts import (
     GCRA_REFUND_SCRIPT,
     SLIDING_WINDOW_GCRA_SCRIPT,
@@ -23,7 +28,6 @@ if TYPE_CHECKING:
     import redis.asyncio as redis_async
     from redis.commands.core import AsyncScript
 
-    from taskq.backend.clock import Clock
     from taskq.ratelimit.sliding_window import SlidingWindow
     from taskq.settings import WorkerSettings
 
@@ -76,12 +80,12 @@ async def _ensure_gcra_refund_script(
 
 async def _acquire_redis_log(
     self: "SlidingWindow",
-    now_ms: int,
     request_id: UUID | None,
     redis_client: "redis_async.Redis | None",
-    clock: "Clock",
     settings: "WorkerSettings | None",
 ) -> RateLimitDecision:
+    """Redis log-style acquire — the script derives now from
+    ``redis.call('TIME')`` (store-domain), so no Python clock participates."""
     if redis_client is None:
         raise RuntimeError("redis_client not injected for redis backend")
     if settings is None:
@@ -99,7 +103,6 @@ async def _acquire_redis_log(
     ttl_ms = int(self._ttl.total_seconds() * 1000)
 
     argv: list[int | str] = [
-        now_ms,
         window_ms,
         self._limit,
         str(request_id),
@@ -127,19 +130,17 @@ async def _acquire_redis_log(
 
 async def _acquire_redis_log_wrapped(
     self: "SlidingWindow",
-    now_ms: int,
     request_id: UUID | None,
     redis_client: "redis_async.Redis | None",
     pg_pool: "asyncpg.Pool | None",
-    clock: "Clock",
     settings: "WorkerSettings | None",
 ) -> RateLimitDecision:
     """Redis log-style path with optional PG fallback on ConnectionError/TimeoutError."""
     from taskq.ratelimit._sliding_window_pg import _acquire_pg_log
 
     return await with_pg_fallback(
-        _acquire_redis_log(self, now_ms, request_id, redis_client, clock, settings),
-        lambda: _acquire_pg_log(self, pg_pool, clock, settings, request_id),
+        _acquire_redis_log(self, request_id, redis_client, settings),
+        lambda: _acquire_pg_log(self, pg_pool, settings, request_id),
         bucket_name=self._name,
         settings=settings,
         style="log",
@@ -148,11 +149,11 @@ async def _acquire_redis_log_wrapped(
 
 async def _acquire_redis_gcra(
     self: "SlidingWindow",
-    now_ms: int,
     redis_client: "redis_async.Redis | None",
-    clock: "Clock",
     settings: "WorkerSettings | None",
 ) -> RateLimitDecision:
+    """Redis GCRA acquire — the script derives now from ``redis.call('TIME')``
+    (store-domain), so no Python clock participates."""
     if redis_client is None:
         raise RuntimeError("redis_client not injected for redis backend")
     if settings is None:
@@ -174,7 +175,6 @@ async def _acquire_redis_gcra(
         delay_tolerance_ms,
         quantity_ms,
         ttl_ms,
-        now_ms,
     ]
 
     raw: list[object] = await script(keys=[key], args=argv)  # pyright: ignore[reportAssignmentType, reportUnknownMemberType, reportUnknownVariableType]  # Why: redis-py AsyncScript.__call__ has no return-type annotation — pyright cannot model the return shape; the three-element list structure is guaranteed by the Lua script contract
@@ -218,18 +218,16 @@ async def _acquire_redis_gcra(
 
 async def _acquire_redis_gcra_wrapped(
     self: "SlidingWindow",
-    now_ms: int,
     redis_client: "redis_async.Redis | None",
     pg_pool: "asyncpg.Pool | None",
-    clock: "Clock",
     settings: "WorkerSettings | None",
 ) -> RateLimitDecision:
     """Redis GCRA path with optional PG fallback on ConnectionError/TimeoutError."""
     from taskq.ratelimit._sliding_window_pg import _acquire_pg_gcra
 
     return await with_pg_fallback(
-        _acquire_redis_gcra(self, now_ms, redis_client, clock, settings),
-        lambda: _acquire_pg_gcra(self, pg_pool, clock, settings),
+        _acquire_redis_gcra(self, redis_client, settings),
+        lambda: _acquire_pg_gcra(self, pg_pool, settings),
         bucket_name=self._name,
         settings=settings,
         style="gcra",
@@ -238,10 +236,12 @@ async def _acquire_redis_gcra_wrapped(
 
 async def _peek_redis_log(
     self: "SlidingWindow",
-    now_ms: int,
     redis_client: "redis_async.Redis | None",
     settings: "WorkerSettings | None",
 ) -> RateLimitState:
+    """Read-only log-style snapshot — the retry estimate runs on the
+    store's clock (``TIME``), the same domain the acquire script's ZADD
+    scores live in."""
     if redis_client is None:
         raise RuntimeError("redis_client not injected for redis backend")
     if settings is None:
@@ -264,6 +264,7 @@ async def _peek_redis_log(
                 if isinstance(oldest_entry, (list, tuple))
                 else float(oldest_entry)
             )  # pyright: ignore[reportUnknownArgumentType]  # Why: redis-py zrange return type is untyped in the stub; isinstance narrowing is sufficient at runtime.
+            now_ms = await redis_time_seconds(redis_client) * 1000
             retry_ms = int(oldest_score) + window_ms - now_ms
             retry_after = timedelta(milliseconds=max(1, retry_ms))
 
@@ -281,10 +282,11 @@ async def _peek_redis_log(
 
 async def _peek_redis_gcra(
     self: "SlidingWindow",
-    now_ms: int,
     redis_client: "redis_async.Redis | None",
     settings: "WorkerSettings | None",
 ) -> RateLimitState:
+    """Read-only GCRA snapshot — measured against the store's clock
+    (``TIME``), the same domain the acquire script advances the TAT in."""
     if redis_client is None:
         raise RuntimeError("redis_client not injected for redis backend")
     if settings is None:
@@ -296,9 +298,10 @@ async def _peek_redis_gcra(
     emission_interval_ms = window_ms / self._limit
     delay_tolerance_ms = window_ms
 
+    now_ms = await redis_time_seconds(redis_client) * 1000
     tat_raw = await redis_client.get(key)  # pyright: ignore[reportUnknownMemberType]  # Why: redis-py get return type is untyped in the stub
-    tat = float(tat_raw) if tat_raw else float(now_ms)
-    tat = max(tat, float(now_ms))
+    tat = float(tat_raw) if tat_raw else now_ms
+    tat = max(tat, now_ms)
 
     remaining = float(max(0, int((delay_tolerance_ms - (tat - now_ms)) / emission_interval_ms)))
     is_exhausted = remaining <= 0

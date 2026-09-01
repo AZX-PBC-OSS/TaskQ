@@ -44,6 +44,7 @@ import sys
 import time
 import tomllib
 from dataclasses import dataclass, field
+from datetime import timedelta
 from pathlib import Path
 from typing import Any, cast
 from uuid import UUID
@@ -308,13 +309,21 @@ class _ChildState:
 def _health_check_sql(schema: str) -> str:
     """Build the health-check query for a worker.
 
+    Freshness is decided server-side — ``last_seen_at`` is written by PG
+    (``clock_timestamp()``), so only the server clock can measure its age
+    without mixing clock domains; a skewed supervisor clock must not be
+    able to read a healthy child as stale (the verdict kills processes).
+
     The *schema* parameter is validated against _IDENT_RE inline (defence-in-depth
     even though WorkerSettings already constrains it via the regex Field).
     """
     if not _SCHEMA_RE.match(schema):
         raise ValueError(f"invalid schema identifier: {schema!r}")
     return (
-        f'SELECT pid, last_seen_at FROM "{schema}".workers '  # noqa: S608  # Why: schema validated against _IDENT_RE immediately above.
+        f"SELECT pid, "  # noqa: S608  # Why: schema validated against _SCHEMA_RE immediately above.
+        f"(last_seen_at > clock_timestamp() - $3::interval) AS fresh, "
+        f"EXTRACT(EPOCH FROM (clock_timestamp() - last_seen_at)) AS age_s "
+        f'FROM "{schema}".workers '
         "WHERE workgroup_instance = $1 AND worker_label = $2 "
         "ORDER BY last_seen_at DESC LIMIT 1"
     )
@@ -336,7 +345,9 @@ async def _child_health_check(
     sql = _health_check_sql(schema)
     try:
         async with pg_pool.acquire(timeout=2.0) as conn:
-            row = await conn.fetchrow(sql, wg_instance, child.spec.name)
+            row = await conn.fetchrow(
+                sql, wg_instance, child.spec.name, timedelta(seconds=cfg.stale_after)
+            )
     except Exception as exc:
         child.health_failures += 1
         logger.warning(
@@ -358,7 +369,6 @@ async def _child_health_check(
         return False
 
     pid: int = row["pid"]
-    last_seen = row["last_seen_at"]
     if pid != (child.process.pid if child.process else None):
         logger.debug(
             "workgroup.health_pid_mismatch",
@@ -368,23 +378,14 @@ async def _child_health_check(
         )
         return False
 
-    if last_seen is None:
+    fresh: bool | None = row["fresh"]
+    if fresh is None:  # last_seen_at IS NULL — never registered a beat
         return False
-
-    try:
-        age = time.time() - last_seen.timestamp()
-    except (AttributeError, OSError, OverflowError):
-        logger.warning(
-            "workgroup.health_bad_timestamp",
-            worker=child.spec.name,
-            last_seen_type=type(last_seen).__name__,
-        )
-        return False
-    if age > cfg.stale_after:
+    if not fresh:
         logger.warning(
             "workgroup.health_stale",
             worker=child.spec.name,
-            age_seconds=round(age, 1),
+            age_seconds=round(float(row["age_s"] or 0.0), 1),
             stale_after=cfg.stale_after,
         )
         return False

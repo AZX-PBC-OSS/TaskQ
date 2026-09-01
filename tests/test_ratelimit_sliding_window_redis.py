@@ -1,9 +1,13 @@
 """Integration tests for SlidingWindow log-style and GCRA-style Redis backends
 against testcontainers Redis.
 
-60-in-60s window — all allowed, then denied, then retry_after wait → allowed.
+The scripts derive now from redis TIME (the store's clock), so every
+wait/elapsed scenario below uses REAL time — a FakeClock advance is
+invisible to the store.
+
+Burst fills window — all allowed, then denied, then retry_after wait → allowed.
 EVALSHA caching — register_script called exactly once across acquires.
-Sub-ms collision — 10 acquires at same now_ms with FakeClock; ZCARD == 10.
+Sub-ms collision — 10 rapid acquires; unique request_id members; ZCARD == 10.
 PEXPIRE on Redis key — TTL within expected range after one acquire.
 PEXPIRE refreshed on denial — TTL still close to 2*window_ms + 60_000 after denied acquire.
 
@@ -14,7 +18,7 @@ PEXPIRE refreshed on denial — PTTL close to window_ms + 60_000 after denied ac
 """
 
 import asyncio
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 
 import pytest
 import redis.asyncio as redis_async
@@ -25,7 +29,6 @@ from taskq.ratelimit import SlidingWindow
 from taskq.ratelimit._sliding_window_redis import _acquire_redis_log
 from taskq.ratelimit.decision import RateLimitDecision
 from taskq.settings import WorkerSettings
-from taskq.testing.clock import FakeClock
 
 pytestmark = [pytest.mark.integration, pytest.mark.redis]
 
@@ -53,20 +56,25 @@ async def _make_client(redis_url: str) -> redis_async.Redis:
 # ── 60-in-60s window — burst allowed → denied → retry_after wait → allowed ──
 
 
-async def test_log_sixty_in_sixty(redis_url: str) -> None:
-    """60 acquires in <1s all allowed; 61st denied with
-    retry_after > timedelta(0); advance clock past retry_after → allowed again.
+async def test_log_burst_deny_wait_allows(redis_url: str) -> None:
+    """60 acquires in <2s all allowed; 61st denied with retry_after >
+    timedelta(0); sleep past retry_after of REAL time → allowed again.
+
+    The script's window boundary and ZADD scores are TIME-domain (the
+    store's clock), so the wait must be real time — a FakeClock advance
+    would be invisible to the store. Window shrunk to 2 s so the
+    retry_after wait stays test-fast.
     """
     sw = SlidingWindow(
         name=_unique_name(),
         limit=60,
-        window=timedelta(seconds=60),
+        window=timedelta(seconds=2),
         backend="redis",
         style="log",
     )
     client = await _make_client(redis_url)
     settings = _settings(redis_url)
-    clock = FakeClock(start=datetime(2025, 6, 1, tzinfo=UTC))
+    clock = SystemClock()
 
     try:
         for i in range(60):
@@ -81,7 +89,7 @@ async def test_log_sixty_in_sixty(redis_url: str) -> None:
         assert r.retry_after > timedelta(0)
         assert r.remaining == 0.0
 
-        clock.advance(r.retry_after + timedelta(milliseconds=100))
+        await asyncio.sleep(r.retry_after.total_seconds() + 0.15)
 
         r = await sw.acquire(redis_client=client, clock=clock, settings=settings)
         assert r.allowed is True
@@ -139,15 +147,14 @@ async def test_log_evalsha_caching(redis_url: str) -> None:
 
 
 async def test_log_sub_ms_collision(redis_url: str) -> None:
-    """10 acquires at the same now_ms with FakeClock — each
-    request_id is unique so ZADD inserts a distinct sorted-set member,
-    preventing silent collapse. ZCARD on the key equals 10.
+    """10 acquires in quick succession — each request_id is unique so ZADD
+    inserts a distinct sorted-set member, preventing silent collapse even
+    when two acquires land inside the same millisecond. ZCARD on the key
+    equals 10.
 
-    FakeClock is acceptable here because the test deliberately pins the
-    millisecond stamp to exercise the sub-ms collision contract —
-    requires SystemClock for integration tests in general, but this test
-    is verifying a precision boundary that cannot be reproduced with wall-clock
-    jitter.
+    Scores are TIME-domain (the store's clock); same-millisecond collisions
+    happen naturally under a fast burst, and the unique-member contract is
+    what keeps them from collapsing.
     """
     name = _unique_name()
     sw = SlidingWindow(
@@ -160,13 +167,11 @@ async def test_log_sub_ms_collision(redis_url: str) -> None:
     client = await _make_client(redis_url)
     settings = _settings(redis_url)
 
-    from datetime import UTC, datetime
-
-    fake_clock = FakeClock(start=datetime(2025, 6, 1, tzinfo=UTC))
+    clock = SystemClock()
 
     try:
         for i in range(10):
-            r = await sw.acquire(redis_client=client, clock=fake_clock, settings=settings)
+            r = await sw.acquire(redis_client=client, clock=clock, settings=settings)
             assert r.allowed is True, f"acquire {i} denied"
 
         key = f"taskq:{_SCHEMA_LABEL}:sw:{{{name}}}"
@@ -261,8 +266,12 @@ async def test_log_pexpire_refreshed_on_denial(redis_url: str) -> None:
 
 
 async def test_gcra_steady_state(redis_url: str) -> None:
-    """60-burst all allowed; 61st denied with
-    retry_after ≈ 1 s (emission interval in GCRA).
+    """60-burst all allowed; 61st denied with retry_after ≈ 1 s
+    (emission interval in GCRA).
+
+    The TAT advances on the store's clock (TIME), so real elapsed time
+    during the 60 roundtrips shaves the retry below the 1.0 s emission
+    interval — the pinned invariant is 0 < retry_after <= 1.0 s.
     """
     name = _unique_name()
     sw = SlidingWindow(
@@ -274,7 +283,7 @@ async def test_gcra_steady_state(redis_url: str) -> None:
     )
     client = await _make_client(redis_url)
     settings = _settings(redis_url)
-    clock = FakeClock(start=datetime(2025, 6, 1, tzinfo=UTC))
+    clock = SystemClock()
 
     try:
         for i in range(60):
@@ -287,11 +296,9 @@ async def test_gcra_steady_state(redis_url: str) -> None:
         assert r.retry_after is not None
         assert r.remaining == 0.0
 
-        expected_ms = 1000
-        actual_ms = r.retry_after.total_seconds() * 1000
-        assert abs(actual_ms - expected_ms) <= 100, (
-            f"retry_after {actual_ms:.1f} ms not within ±100 ms of {expected_ms} ms"
-        )
+        # GCRA retry_after = emission_interval (1 s) minus the real time
+        # elapsed during the burst's roundtrips.
+        assert 0 < r.retry_after.total_seconds() <= 1.0
     finally:
         await client.aclose()
 
@@ -300,8 +307,9 @@ async def test_gcra_steady_state(redis_url: str) -> None:
 
 
 async def test_gcra_even_spacing(redis_url: str) -> None:
-    """after 60-burst, advance clock ~1.05 s → allowed; immediate
-    acquire again → denied with retry_after ≈ 1 s.
+    """after 60-burst, sleep ~1.05 s of real time → allowed; immediate
+    acquire again → denied with retry_after ≈ 1 s (the store's clock —
+    TIME — advances the TAT, so the wait must be real time).
     """
     name = _unique_name()
     sw = SlidingWindow(
@@ -313,13 +321,13 @@ async def test_gcra_even_spacing(redis_url: str) -> None:
     )
     client = await _make_client(redis_url)
     settings = _settings(redis_url)
-    clock = FakeClock(start=datetime(2025, 6, 1, tzinfo=UTC))
+    clock = SystemClock()
 
     try:
         for _ in range(60):
             await sw.acquire(redis_client=client, clock=clock, settings=settings)
 
-        clock.advance(timedelta(milliseconds=1050))
+        await asyncio.sleep(1.05)
 
         r = await sw.acquire(redis_client=client, clock=clock, settings=settings)
         assert r.allowed is True
@@ -328,11 +336,9 @@ async def test_gcra_even_spacing(redis_url: str) -> None:
         assert r.allowed is False
         assert r.retry_after is not None
 
-        expected_ms = 1000
-        actual_ms = r.retry_after.total_seconds() * 1000
-        assert abs(actual_ms - expected_ms) <= 100, (
-            f"retry_after {actual_ms:.1f} ms not within ±100 ms of {expected_ms} ms"
-        )
+        # One emission interval (1 s) minus the sub-second time already
+        # elapsed since the burst; the invariant is 0 < retry_after <= 1 s.
+        assert 0 < r.retry_after.total_seconds() <= 1.0
     finally:
         await client.aclose()
 
@@ -654,7 +660,7 @@ async def test_acquire_log_request_id_none() -> None:
         {"pg_dsn": "postgresql://u:p@h/d", "redis_url": "redis://localhost:0", "schema_name": "x"},
     )
     with pytest.raises(RuntimeError, match="request_id required"):
-        await _acquire_redis_log(sw, 0, None, object(), SystemClock(), settings)  # type: ignore[arg-type]
+        await _acquire_redis_log(sw, None, object(), settings)  # type: ignore[arg-type]
 
 
 # ── Refund log — redis_client None / settings None ─────────────────
@@ -764,15 +770,15 @@ async def test_refund_gcra_settings_none(redis_url: str) -> None:
 
 async def test_refund_gcra_success(redis_url: str) -> None:
     """refund() after a successful gcra acquire executes the GCRA_REFUND_SCRIPT
-    (lines 388-398) and rolls the stored tat back so a subsequent acquire at
-    the same instant is allowed again."""
+    and rolls the stored TIME-domain tat back so an immediate subsequent
+    acquire is allowed again."""
     name = _unique_name()
     sw = SlidingWindow(
         name=name, limit=1, window=timedelta(seconds=10), backend="redis", style="gcra"
     )
     client = await _make_client(redis_url)
     settings = _settings(redis_url)
-    clock = FakeClock(start=datetime(2025, 6, 1, tzinfo=UTC))
+    clock = SystemClock()
     try:
         decision = await sw.acquire(redis_client=client, clock=clock, settings=settings)
         assert decision.allowed is True
@@ -821,7 +827,7 @@ async def test_peek_log_oldest_empty_race() -> None:
     )
     fake_client = _FakeZrangeEmptyClient()
 
-    state = await _peek_redis_log(sw, now_ms=0, redis_client=fake_client, settings=settings)  # type: ignore[arg-type]
+    state = await _peek_redis_log(sw, redis_client=fake_client, settings=settings)  # type: ignore[arg-type]
 
     assert state.is_exhausted is True
     assert state.retry_after is None
@@ -884,7 +890,7 @@ async def test_peek_gcra_reports_state(redis_url: str) -> None:
     )
     client = await _make_client(redis_url)
     settings = _settings(redis_url)
-    clock = FakeClock(start=datetime(2025, 6, 1, tzinfo=UTC))
+    clock = SystemClock()
     try:
         for _ in range(5):
             r = await sw.acquire(redis_client=client, clock=clock, settings=settings)

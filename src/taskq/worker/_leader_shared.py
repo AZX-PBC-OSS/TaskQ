@@ -228,11 +228,14 @@ _JOB_ATTEMPTS_COLUMNS: tuple[str, ...] = (
 _JOB_ATTEMPTS_COLUMNS_CSV = ", ".join(_JOB_ATTEMPTS_COLUMNS)
 _JOB_ATTEMPTS_COLUMNS_QUALIFIED_CSV = ", ".join(f"ja.{c}" for c in _JOB_ATTEMPTS_COLUMNS)
 
+# The finished_at cutoff is computed by the SERVER clock (now() - $2::interval)
+# — the same clock that wrote finished_at — so a skewed worker host cannot
+# silently extend or shorten retention.
 _ARCHIVE_CTE_SQL = (
     "WITH candidate_ids AS ("
     '  SELECT id FROM "{schema}".jobs'
     '  WHERE status = $1::"{schema}".job_status'
-    "    AND finished_at < $2"
+    "    AND finished_at < now() - $2::interval"
     "  ORDER BY finished_at"
     "  LIMIT $3"
     "), moved AS ("
@@ -258,7 +261,7 @@ _ARCHIVE_CTE_ACTOR_SQL = (
     "WITH candidate_ids AS ("
     '  SELECT id FROM "{schema}".jobs'
     '  WHERE status = $1::"{schema}".job_status'
-    "    AND finished_at < $2"
+    "    AND finished_at < now() - $2::interval"
     "    AND actor = $5"
     "  ORDER BY finished_at"
     "  LIMIT $3"
@@ -316,12 +319,13 @@ async def prune_terminal_jobs(
 
     for status in _TERMINAL_STATUSES:
         retention = retention_per_status.get(status, timedelta(days=30))
-        cutoff = datetime.now(UTC) - retention
-        cutoffs[status] = cutoff
+        # Why: display-only — the prune predicate itself is server-side
+        # (now() - $2::interval); this Python cutoff feeds only logs/admin.
+        cutoffs[status] = datetime.now(UTC) - retention
         sql = _ARCHIVE_CTE_SQL.format(schema=schema)
 
         while True:
-            rows = await conn.fetch(sql, status, cutoff, batch_size, archive_interval)
+            rows = await conn.fetch(sql, status, retention, batch_size, archive_interval)
             if not rows:
                 break
             batch_total = 0
@@ -341,7 +345,6 @@ async def prune_terminal_jobs(
 
     if actor_overrides:
         for actor_name, actor_retention in actor_overrides.items():
-            actor_cutoff = datetime.now(UTC) - actor_retention
             sql = _ARCHIVE_CTE_ACTOR_SQL.format(schema=schema)
             for status in _TERMINAL_STATUSES:
                 if actor_retention >= retention_per_status.get(status, timedelta(days=30)):
@@ -350,7 +353,7 @@ async def prune_terminal_jobs(
                     rows = await conn.fetch(
                         sql,
                         status,
-                        actor_cutoff,
+                        actor_retention,
                         batch_size,
                         archive_interval,
                         actor_name,

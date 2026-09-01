@@ -132,7 +132,10 @@ async def _enqueue(self: "InMemoryBackend", args: EnqueueArgs) -> JobRow:
                 return existing_row
 
     now = self._clock.now()
-    status: object = "pending" if args.scheduled_at <= now else "scheduled"
+    # None means immediate: stamp from this backend's own (single-domain)
+    # clock — the InMemory mirror of the server's COALESCE stamp.
+    stamped_scheduled_at = args.scheduled_at if args.scheduled_at is not None else now
+    status: object = "pending" if stamped_scheduled_at <= now else "scheduled"
 
     resolved_schedule_to_close = (
         now + args.schedule_to_close_interval
@@ -159,7 +162,7 @@ async def _enqueue(self: "InMemoryBackend", args: EnqueueArgs) -> JobRow:
         start_to_close=args.start_to_close,
         heartbeat_timeout=args.heartbeat_timeout,
         created_at=now,
-        scheduled_at=args.scheduled_at,
+        scheduled_at=stamped_scheduled_at,
         started_at=None,
         finished_at=None,
         last_heartbeat_at=None,

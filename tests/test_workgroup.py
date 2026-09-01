@@ -5,7 +5,6 @@ import contextlib
 import signal
 import time
 from collections.abc import Coroutine
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -756,8 +755,7 @@ async def test_health_check_healthy() -> None:
     child = _make_child()
     proc = FakeProcess(returncode=None, pid=12345)
     child.process = _proc(proc)
-    now = datetime.now(UTC)
-    row = {"pid": 12345, "last_seen_at": now}
+    row = {"pid": 12345, "fresh": True, "age_s": 5.0}
     pool = _FakePool(row=row)
     cfg = WorkerHealthConfig(enabled=True, stale_after=60.0)
     result = await _child_health_check(child, pool, "taskq", cfg, UUID(int=1))
@@ -768,8 +766,7 @@ async def test_health_check_pid_mismatch() -> None:
     child = _make_child()
     proc = FakeProcess(returncode=None, pid=12345)
     child.process = _proc(proc)
-    now = datetime.now(UTC)
-    row = {"pid": 99999, "last_seen_at": now}
+    row = {"pid": 99999, "fresh": True, "age_s": 5.0}
     pool = _FakePool(row=row)
     cfg = WorkerHealthConfig(enabled=True, stale_after=60.0)
     result = await _child_health_check(child, pool, "taskq", cfg, UUID(int=1))
@@ -810,8 +807,7 @@ async def test_health_check_stale() -> None:
     child = _make_child()
     proc = FakeProcess(returncode=None, pid=12345)
     child.process = _proc(proc)
-    old_time = datetime.now(UTC) - timedelta(seconds=120)
-    row = {"pid": 12345, "last_seen_at": old_time}
+    row = {"pid": 12345, "fresh": False, "age_s": 120.0}
     pool = _FakePool(row=row)
     cfg = WorkerHealthConfig(enabled=True, stale_after=60.0)
     result = await _child_health_check(child, pool, "taskq", cfg, UUID(int=1))
@@ -819,10 +815,12 @@ async def test_health_check_stale() -> None:
 
 
 async def test_health_check_last_seen_none() -> None:
+    """last_seen_at IS NULL (never registered a beat) — the server-side
+    freshness expression is NULL, so the child is unhealthy."""
     child = _make_child()
     proc = FakeProcess(returncode=None, pid=12345)
     child.process = _proc(proc)
-    row = {"pid": 12345, "last_seen_at": None}
+    row = {"pid": 12345, "fresh": None, "age_s": None}
     pool = _FakePool(row=row)
     cfg = WorkerHealthConfig(enabled=True, stale_after=60.0)
     result = await _child_health_check(child, pool, "taskq", cfg, UUID(int=1))
@@ -958,16 +956,12 @@ async def test_run_forever_spawn_failure_continues() -> None:
 # ── Additional coverage: bad timestamp, kill timeout, graceful shutdown ─
 
 
-async def test_health_check_bad_timestamp() -> None:
-    """A last_seen_at that is not a datetime (no .timestamp()) returns False."""
-    child = _make_child()
-    proc = FakeProcess(returncode=None, pid=12345)
-    child.process = _proc(proc)
-    row: dict[str, Any] = {"pid": 12345, "last_seen_at": "not_a_datetime"}
-    pool = _FakePool(row=row)
-    cfg = WorkerHealthConfig(enabled=True, stale_after=60.0)
-    result = await _child_health_check(child, pool, "taskq", cfg, UUID(int=1))
-    assert result is False
+# test_health_check_bad_timestamp was removed with the Python-side age
+# computation: freshness is now computed by the PG server
+# (last_seen_at > clock_timestamp() - $3::interval), so a malformed Python
+# timestamp can no longer reach the verdict. The behavioral pin — a skewed
+# supervisor must not flag a healthy child — lives in
+# tests/test_workgroup_health_pg.py.
 
 
 async def test_kill_child_timeout_then_sigkill() -> None:

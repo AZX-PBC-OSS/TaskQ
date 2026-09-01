@@ -1,4 +1,5 @@
-"""Shared helpers for Redis rate-limit primitives: PG fallback and script caching."""
+"""Shared helpers for Redis rate-limit primitives: PG fallback, script caching,
+and the store-clock read."""
 
 import asyncio
 from collections.abc import Awaitable, Callable
@@ -9,11 +10,28 @@ import structlog
 from taskq.ratelimit.decision import RateLimitDecision
 
 if TYPE_CHECKING:
+    import redis.asyncio as redis_async
     from redis.commands.core import AsyncScript
 
     from taskq.settings import WorkerSettings
 
 logger = structlog.get_logger("taskq.ratelimit._redis_utils")
+
+__all__ = [
+    "ensure_redis_script",
+    "redis_time_seconds",
+    "with_pg_fallback",
+]
+
+
+async def redis_time_seconds(redis_client: "redis_async.Redis") -> float:
+    """Read the store's clock via ``TIME`` — the domain the Lua scripts stamp.
+
+    Used by the non-script peek paths so their elapsed/refill estimates run
+    in the same clock domain as the admission state they read.
+    """
+    t = await redis_client.time()  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]  # Why: redis-py time() return type is untyped in the stub; returns (seconds, microseconds)
+    return float(t[0]) + float(t[1]) / 1_000_000  # pyright: ignore[reportUnknownArgumentType, reportIndex]  # Why: t is an untyped sequence of two ints from the redis-py stub; validated at runtime
 
 
 async def with_pg_fallback(

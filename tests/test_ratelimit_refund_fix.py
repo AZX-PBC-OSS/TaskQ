@@ -332,7 +332,6 @@ async def test_acquire_pg_log_decision_carries_request_id() -> None:
     decision = await _acquire_pg_log(
         sw,
         pg_pool=pool,
-        clock=FakeClock(_START),
         settings=_FakeSettings(),
         request_id=rid,
     )

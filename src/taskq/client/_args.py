@@ -3,12 +3,15 @@
 Extracted from :meth:`JobsClient.enqueue` so that both ``JobsClient`` and
 the future ``SubJobEnqueuer`` share the same validation and argument-assembly
 logic. The helper is pure: no I/O, no global state.
-The clock is a parameter so callers can inject a ``FakeClock`` for test
-determinism.
+The ``clock`` parameter is retained for signature compatibility with the
+clients that own an injected clock, but it stamps nothing anymore —
+"immediate" is expressed as ``scheduled_at=None`` and the backend's server
+stamps and decides it (single clock arbiter).
 """
 
 import contextlib
 import re
+import warnings
 from collections.abc import Generator, Mapping, Sequence
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
@@ -88,9 +91,10 @@ def build_enqueue_args[P: BaseModel, R: BaseModel | None](
 ) -> EnqueueArgs:
     """Validate inputs and construct :class:`EnqueueArgs`.
 
-    Pure function — no I/O, no global state. The clock is a
-    parameter so the caller (JobsClient or SubJobEnqueuer) can pass
-    its own injected clock for test determinism.
+    Pure function — no I/O, no global state. The clock parameter stamps
+    nothing (see the module docstring): ``scheduled_at`` passes through as
+    ``None`` when the caller wants "immediate", and the backend's server
+    stamps and decides it.
 
     ``unique_for`` and ``unique_states`` default to ``None`` so the
     caller can pass actor-declared values (``ref.unique_for``,
@@ -125,6 +129,15 @@ def build_enqueue_args[P: BaseModel, R: BaseModel | None](
     resolved_datetime: datetime | None = None
 
     if schedule_to_close is not None:
+        warnings.warn(
+            "schedule_to_close (absolute datetime) is deprecated; declare "
+            "retry.time_budget on the actor (interval form) instead — absolute "
+            "datetimes cross clock domains (the app clock that produced them "
+            "vs the database clock that evaluates them) and can misbehave "
+            "under skew; see docs/architecture.md",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         resolved_datetime = schedule_to_close
         if budget_interval is not None:
             logger.info(
@@ -154,7 +167,7 @@ def build_enqueue_args[P: BaseModel, R: BaseModel | None](
         payload=payload_dict,
         max_attempts=ref.retry.max_attempts,
         retry_kind=ref.retry.kind,
-        scheduled_at=scheduled_at if scheduled_at is not None else clock.now(),
+        scheduled_at=scheduled_at,
         priority=resolved_priority,
         max_pending=resolved_max_pending,
         schedule_to_close=resolved_datetime,

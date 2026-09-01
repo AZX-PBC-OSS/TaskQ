@@ -367,8 +367,9 @@ async def test_enqueue_batch_fast_empty_raises_value_error() -> None:
 
 
 async def test_enqueue_batch_fast_schedule_interval_and_result_ttl() -> None:
-    """``schedule_to_close_interval`` and ``result_ttl`` are resolved into
-    the COPY record tuple; the COPY returns a row count."""
+    """``schedule_to_close_interval`` and ``result_ttl`` are carried into the
+    post-COPY fixup arrays (server-side computation); the COPY returns a row
+    count."""
     conn = _FakeEnqueueConn(copy_result="COPY 2")
     pool = _FakePool(conn)
     clock = FakeClock(_NOW)
@@ -389,8 +390,9 @@ async def test_enqueue_batch_fast_schedule_interval_and_result_ttl() -> None:
 
 
 async def test_enqueue_batch_fast_immediate_job_is_pending() -> None:
-    """A job with ``scheduled_at <= now`` is marked ``pending`` (not
-    ``scheduled``) in the COPY record."""
+    """A job with ``scheduled_at <= now`` lands ``pending`` (not
+    ``scheduled``) — decided by the post-COPY fixup UPDATE's server CASE,
+    never in Python."""
     conn = _FakeEnqueueConn(copy_result="COPY 1")
     pool = _FakePool(conn)
     clock = FakeClock(_NOW)

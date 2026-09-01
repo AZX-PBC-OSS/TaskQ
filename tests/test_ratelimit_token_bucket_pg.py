@@ -8,16 +8,16 @@ Redis backend, but backend="postgres").
 """
 
 import time
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 
 import asyncpg
 import pytest
 
 from taskq._ids import new_base62
+from taskq.backend.clock import SystemClock
 from taskq.ratelimit import TokenBucket
 from taskq.ratelimit.decision import RateLimitDecision
 from taskq.settings import WorkerSettings
-from taskq.testing.clock import FakeClock
 from taskq.testing.fixtures import ModulePgSchema
 
 pytestmark = pytest.mark.integration
@@ -40,6 +40,22 @@ def _pg_bucket(
     )
 
 
+async def _rewind_bucket_ts(pool: asyncpg.Pool, schema: str, name: str, seconds: float) -> None:
+    """Rewind the stored server-domain ``ts`` by *seconds* — the PG analog
+    of ``FakeClock.advance`` for token-bucket time travel. The elapsed
+    refill math runs on the store's clock, so simulating elapsed time must
+    manipulate the store's own ``ts`` domain, never the caller's clock."""
+    async with pool.acquire() as conn:
+        await conn.execute(
+            f'UPDATE "{schema}".rate_limit_buckets '  # noqa: S608  # Why: schema is fixture-derived; values are $1/$2-bound
+            f"SET state = jsonb_set(state, '{{ts}}', "
+            f"to_jsonb(EXTRACT(EPOCH FROM clock_timestamp()) - $2::float8)) "
+            f"WHERE bucket_name = $1",
+            name,
+            seconds,
+        )
+
+
 # ── PG fallback activation — WARNING log + ordering ────────────
 
 
@@ -60,7 +76,6 @@ async def test_pg_fallback_activation(
     settings = WorkerSettings.load_from_dict(
         {"pg_dsn": module_pg_schema.pg_dsn, "schema_name": schema},
     )
-    clock = FakeClock(datetime(2025, 1, 1, tzinfo=UTC))
 
     tb = TokenBucket(
         name="ord-test",
@@ -69,14 +84,17 @@ async def test_pg_fallback_activation(
         backend="redis",
     )
 
-    now_ts = clock.now().timestamp()
+    # Seed the PG row with a SERVER-domain ts so the fallback acquire
+    # measures ~zero elapsed refill (a Python-domain ts would be read
+    # against the server epoch and refill the bucket by the domain gap).
     async with module_pg_pool.acquire() as conn, conn.transaction():
         await conn.execute(
-            f"INSERT INTO {schema}.rate_limit_buckets "  # noqa: S608 # Why: schema is fixture-derived; values are $1/$2-bound
+            f"INSERT INTO {schema}.rate_limit_buckets "  # noqa: S608  # Why: schema is fixture-derived; values are $1-bound
             f"(bucket_name, kind, state, updated_at) "
-            f"VALUES ($1, 'token_bucket', $2::jsonb, now())",
+            f"VALUES ($1, 'token_bucket', "
+            f"jsonb_build_object('tokens', 0.0::float8, "
+            f"'ts', EXTRACT(EPOCH FROM clock_timestamp())), now())",
             "ord-test",
-            f'{{"tokens": 0.0, "ts": {now_ts}}}',
         )
 
     class _RaiseRedis:
@@ -90,14 +108,16 @@ async def test_pg_fallback_activation(
     result = await tb.acquire(
         redis_client=_RaiseRedis(),
         pg_pool=module_pg_pool,
-        clock=clock,
+        clock=SystemClock(),
         settings=settings,
     )
 
     assert result.allowed is False
     assert result.backend == "postgres"
     assert result.retry_after is not None
-    assert abs(result.retry_after.total_seconds() - 1.0) < 0.01
+    # ~1 token at 1/s from empty; real elapsed between seed and acquire
+    # shaves a few hundredths off the 1.0 s ideal.
+    assert 0.5 < result.retry_after.total_seconds() <= 1.0
 
 
 # ── burst + throttle + refill on PG ─────────────────────────────
@@ -107,18 +127,19 @@ async def test_pg_burst_throttle_refill(
     module_pg_schema: ModulePgSchema,
     module_pg_pool: asyncpg.Pool,
 ) -> None:
-    """same scenario as but backend="postgres".
+    """same scenario as the Redis test but backend="postgres".
 
     100 burst — all allowed, remaining decreases monotonically.
     Then 10 denied with retry_after > 0 (refill=0.001, negligible under
-    parallel load). Advance FakeClock 2000 s → 2 more allowed.
+    parallel load). Rewind the stored SERVER-domain ts 2000 s → 2 more
+    allowed (the elapsed-refill math runs on the store's clock, so
+    simulated time passage must rewind the store's ts, not a Python clock).
 
     Mean-per-acquire latency < 50ms is a proxy, not a true P99 measurement.
     """
     settings = WorkerSettings.load_from_dict(
         {"pg_dsn": module_pg_schema.pg_dsn, "schema_name": module_pg_schema.schema_name},
     )
-    clock = FakeClock(datetime(2025, 1, 1, tzinfo=UTC))
 
     tb = _pg_bucket(capacity=100, refill=0.001)
 
@@ -126,7 +147,7 @@ async def test_pg_burst_throttle_refill(
     start = time.perf_counter()
 
     for i in range(100):
-        r = await tb.acquire(pg_pool=module_pg_pool, clock=clock, settings=settings)
+        r = await tb.acquire(pg_pool=module_pg_pool, settings=settings)
         assert r.allowed is True, f"burst acquire {i} denied"
         assert r.backend == "postgres"
         assert r.remaining <= prev_remaining, (
@@ -141,17 +162,17 @@ async def test_pg_burst_throttle_refill(
     )
 
     for i in range(10):
-        r = await tb.acquire(pg_pool=module_pg_pool, clock=clock, settings=settings)
+        r = await tb.acquire(pg_pool=module_pg_pool, settings=settings)
         assert r.allowed is False, f"denial acquire {i} allowed unexpectedly"
         assert r.retry_after is not None
         assert r.retry_after.total_seconds() > 0, (
             f"retry_after should be positive for exhausted bucket, got {r.retry_after}"
         )
 
-    clock.advance(timedelta(seconds=2000))
+    await _rewind_bucket_ts(module_pg_pool, module_pg_schema.schema_name, tb.name, seconds=2000)
 
     for i in range(2):
-        r = await tb.acquire(pg_pool=module_pg_pool, clock=clock, settings=settings)
+        r = await tb.acquire(pg_pool=module_pg_pool, settings=settings)
         assert r.allowed is True, f"post-refill acquire {i} denied"
 
 
@@ -170,18 +191,17 @@ async def test_pg_refund_adds_tokens_back(
 ) -> None:
     """Acquire from a capacity-1 fixed-quota bucket, refund 1, acquire again succeeds."""
     settings = _settings(module_pg_schema)
-    clock = FakeClock(datetime(2025, 1, 1, tzinfo=UTC))
     tb = _pg_bucket(capacity=1, refill=0)
 
-    r1 = await tb.acquire(count=1.0, pg_pool=module_pg_pool, clock=clock, settings=settings)
+    r1 = await tb.acquire(count=1.0, pg_pool=module_pg_pool, settings=settings)
     assert r1.allowed is True
 
-    r2 = await tb.acquire(count=1.0, pg_pool=module_pg_pool, clock=clock, settings=settings)
+    r2 = await tb.acquire(count=1.0, pg_pool=module_pg_pool, settings=settings)
     assert r2.allowed is False
 
-    await tb.refund(r1, count=1.0, pg_pool=module_pg_pool, clock=clock, settings=settings)
+    await tb.refund(r1, count=1.0, pg_pool=module_pg_pool, settings=settings)
 
-    r3 = await tb.acquire(count=1.0, pg_pool=module_pg_pool, clock=clock, settings=settings)
+    r3 = await tb.acquire(count=1.0, pg_pool=module_pg_pool, settings=settings)
     assert r3.allowed is True
 
 
@@ -191,15 +211,14 @@ async def test_pg_refund_caps_at_capacity(
 ) -> None:
     """Refunding more than capacity does not exceed capacity."""
     settings = _settings(module_pg_schema)
-    clock = FakeClock(datetime(2025, 1, 1, tzinfo=UTC))
     tb = _pg_bucket(capacity=5, refill=0)
 
-    r1 = await tb.acquire(count=1.0, pg_pool=module_pg_pool, clock=clock, settings=settings)
+    r1 = await tb.acquire(count=1.0, pg_pool=module_pg_pool, settings=settings)
     assert r1.allowed is True
 
-    await tb.refund(r1, count=100.0, pg_pool=module_pg_pool, clock=clock, settings=settings)
+    await tb.refund(r1, count=100.0, pg_pool=module_pg_pool, settings=settings)
 
-    state = await tb.peek(pg_pool=module_pg_pool, clock=clock, settings=settings)
+    state = await tb.peek(pg_pool=module_pg_pool, settings=settings)
     assert state.tokens_remaining == 5.0
 
 
@@ -209,7 +228,6 @@ async def test_pg_refund_nonexistent_bucket_is_noop(
 ) -> None:
     """Refund on a bucket row that was never created completes without error."""
     settings = _settings(module_pg_schema)
-    clock = FakeClock(datetime(2025, 1, 1, tzinfo=UTC))
     tb = _pg_bucket(capacity=1, refill=0)
 
     decision = RateLimitDecision(
@@ -223,11 +241,10 @@ async def test_pg_refund_nonexistent_bucket_is_noop(
         decision,
         count=1.0,
         pg_pool=module_pg_pool,
-        clock=clock,
         settings=settings,
     )
 
-    r = await tb.acquire(count=1.0, pg_pool=module_pg_pool, clock=clock, settings=settings)
+    r = await tb.acquire(count=1.0, pg_pool=module_pg_pool, settings=settings)
     assert r.allowed is True
 
 
@@ -237,15 +254,16 @@ async def test_pg_refund_fixed_quota_recovers(
 ) -> None:
     """On a refill_per_second=0 bucket, refund recovers capacity that would never refill."""
     settings = _settings(module_pg_schema)
-    clock = FakeClock(datetime(2025, 1, 1, tzinfo=UTC))
     tb = _pg_bucket(capacity=3, refill=0)
 
     for _ in range(3):
-        r = await tb.acquire(count=1.0, pg_pool=module_pg_pool, clock=clock, settings=settings)
+        r = await tb.acquire(count=1.0, pg_pool=module_pg_pool, settings=settings)
         assert r.allowed is True
 
-    clock.advance(timedelta(seconds=9999))
-    r = await tb.acquire(count=1.0, pg_pool=module_pg_pool, clock=clock, settings=settings)
+    # Simulate 9999 s of elapsed store time — a fixed quota must not
+    # refill no matter how much (server-domain) time passes.
+    await _rewind_bucket_ts(module_pg_pool, module_pg_schema.schema_name, tb.name, seconds=9999)
+    r = await tb.acquire(count=1.0, pg_pool=module_pg_pool, settings=settings)
     assert r.allowed is False
 
     decision = RateLimitDecision(
@@ -259,13 +277,12 @@ async def test_pg_refund_fixed_quota_recovers(
         decision,
         count=2.0,
         pg_pool=module_pg_pool,
-        clock=clock,
         settings=settings,
     )
 
-    r = await tb.acquire(count=1.0, pg_pool=module_pg_pool, clock=clock, settings=settings)
+    r = await tb.acquire(count=1.0, pg_pool=module_pg_pool, settings=settings)
     assert r.allowed is True
-    r = await tb.acquire(count=1.0, pg_pool=module_pg_pool, clock=clock, settings=settings)
+    r = await tb.acquire(count=1.0, pg_pool=module_pg_pool, settings=settings)
     assert r.allowed is True
-    r = await tb.acquire(count=1.0, pg_pool=module_pg_pool, clock=clock, settings=settings)
+    r = await tb.acquire(count=1.0, pg_pool=module_pg_pool, settings=settings)
     assert r.allowed is False

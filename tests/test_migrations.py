@@ -115,6 +115,41 @@ async def test_copy_from_columns_match_jobs_table_exactly(
     )
 
 
+async def test_copy_enqueue_columns_are_copy_from_minus_server_stamped(
+    pg_conn: asyncpg.Connection, settings: TaskQSettings
+) -> None:
+    """COPY_ENQUEUE_COLUMNS (the enqueue COPY path) is COPY_FROM_COLUMNS
+    minus exactly the clock-domain-sensitive columns the post-COPY fixup
+    UPDATE stamps server-side.  Every omitted column must be safe to omit
+    from COPY: nullable or carrying a DDL default — a NOT NULL column
+    without a default would make the COPY insert fail outright.  Order is
+    positional (the record tuples are built by hand), so it must be a
+    order-preserving subsequence of COPY_FROM_COLUMNS."""
+    from taskq.backend._sql_templates import COPY_ENQUEUE_COLUMNS
+
+    await migrate_mod.apply_pending(pg_conn, schema=settings.schema_name)
+
+    omitted = {"status", "created_at", "scheduled_at", "schedule_to_close", "result_expires_at"}
+    assert set(COPY_ENQUEUE_COLUMNS) == set(COPY_FROM_COLUMNS) - omitted
+    assert list(COPY_ENQUEUE_COLUMNS) == [c for c in COPY_FROM_COLUMNS if c not in omitted]
+
+    rows = await pg_conn.fetch(
+        """
+        SELECT column_name, is_nullable, column_default
+        FROM information_schema.columns
+        WHERE table_schema = $1 AND table_name = 'jobs'
+        """,
+        settings.schema_name,
+    )
+    by_col = {r["column_name"]: r for r in rows}
+    for col in sorted(omitted):
+        rec = by_col[col]
+        assert rec["is_nullable"] == "YES" or rec["column_default"] is not None, (
+            f"column {col!r} is omitted from COPY_ENQUEUE_COLUMNS but is NOT NULL "
+            f"without a DDL default — the enqueue COPY path cannot omit it"
+        )
+
+
 async def test_jobs_archive_columns_match_jobs_plus_archive_fields(
     pg_conn: asyncpg.Connection, settings: TaskQSettings
 ) -> None:
