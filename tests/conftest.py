@@ -179,8 +179,8 @@ def _isolate_health_server_socket(  # pyright: ignore[reportUnusedFunction]  # W
 def _reset_oidc_saml_cached() -> Iterator[None]:  # pyright: ignore[reportUnusedFunction]  # Why: autouse fixture consumed implicitly by the test runner.
     """Reset dotenvmodel cached() singletons for OIDC/SAML settings after each test.
 
-    ``settings.oidc`` and ``settings.saml`` use ``OIDCSettings.cached()`` /
-    ``SAMLSettings.cached()`` (dotenvmodel 0.6.3+), which returns a process-wide
+    ``settings.oidc`` and ``settings.saml`` use dotenvmodel's
+    ``OIDCSettings.cached()`` / ``SAMLSettings.cached()``, which returns a process-wide
     singleton — the environment is read on first access and the same instance
     returned thereafter. Without this reset, a test that sets
     ``TASKQ_OIDC_*`` / ``TASKQ_SAML_*`` env vars and accesses the property

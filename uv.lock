@@ -711,15 +711,15 @@ wheels = [
 
 [[package]]
 name = "dotenvmodel"
-version = "0.6.3"
+version = "1.0.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "python-dotenv" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/3c/a0/3fde6d77de32b1d840395cbe91ef6505406cc223da22caf58461a45a9398/dotenvmodel-0.6.3.tar.gz", hash = "sha256:06302d08227be72a0a0cd262965173f7568bf27c93a2179371ec49ea5db5bc9d", size = 267001, upload-time = "2026-07-28T02:05:20.533Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/6b/6a/6238523859dddeda4613a5f42aced88913f493318c614112e36cb8723137/dotenvmodel-1.0.0.tar.gz", hash = "sha256:8dd74b8f42f21c66ca163b126b8e50a133a353938699c55b2e3c1bc00488fefc", size = 111709, upload-time = "2026-08-31T23:27:05.464Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/f0/34/1a5caf70a9bbe171adca1428672a5cfca4539f90c38cdfe8aee21c42e0b4/dotenvmodel-0.6.3-py3-none-any.whl", hash = "sha256:6ea589f3898b65f5442fb19ad1d88f9c908b42d89a5fd57d5e5f3f25471f0f22", size = 77006, upload-time = "2026-07-28T02:05:19.214Z" },
+    { url = "https://files.pythonhosted.org/packages/52/21/da8496361e260896b75e330009a9994704b6666ddd50c849dc3fe5e61f8b/dotenvmodel-1.0.0-py3-none-any.whl", hash = "sha256:5492337aabb841ee085eb54e6273fb92e52d8cce8241991d72acf7e5213a93b3", size = 99586, upload-time = "2026-08-31T23:27:04.193Z" },
 ]
 
 [[package]]
@@ -2335,11 +2335,11 @@ wheels = [
 
 [[package]]
 name = "python-dotenv"
-version = "1.2.2"
+version = "1.2.3"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/82/ed/0301aeeac3e5353ef3d94b6ec08bbcabd04a72018415dcb29e588514bba8/python_dotenv-1.2.2.tar.gz", hash = "sha256:2c371a91fbd7ba082c2c1dc1f8bf89ca22564a087c2c287cd9b662adde799cf3", size = 50135, upload-time = "2026-03-01T16:00:26.196Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/6a/53/ed9d74092561d4b01a2ef1349d52cdbc135e526c245f366b089cfca6de49/python_dotenv-1.2.3.tar.gz", hash = "sha256:a20a594dabeaa385725aa239d5244871c143ecb356add8a20fcf23773a6c3a35", size = 58945, upload-time = "2026-08-16T16:54:54.067Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/0b/d7/1959b9648791274998a9c3526f6d0ec8fd2233e4d4acce81bbae76b44b2a/python_dotenv-1.2.2-py3-none-any.whl", hash = "sha256:1d8214789a24de455a8b8bd8ae6fe3c6b69a5e3d64aa8a8e5d68e694bbcb285a", size = 22101, upload-time = "2026-03-01T16:00:25.09Z" },
+    { url = "https://files.pythonhosted.org/packages/0d/17/c5c6b53ddc18f297992099b3d9ec16c855c0ccc83263a21fe4d1c625ec6c/python_dotenv-1.2.3-py3-none-any.whl", hash = "sha256:904552145e8bfed22162c09dab1c2b9b54fefa7b23ba780f4f26ca0316b0f0d9", size = 22780, upload-time = "2026-08-16T16:54:52.473Z" },
 ]
 
 [[package]]
@@ -2801,7 +2801,7 @@ requires-dist = [
     { name = "azure-identity", marker = "extra == 'aad'", specifier = ">=1.25.3,<2" },
     { name = "boto3", marker = "extra == 'aws'", specifier = ">=1.43.56,<2" },
     { name = "croniter", specifier = ">=6.2.4" },
-    { name = "dotenvmodel", specifier = ">=0.6.3,<1" },
+    { name = "dotenvmodel", specifier = ">=1.0.0,<2" },
     { name = "fastapi", marker = "extra == 'fastapi'", specifier = ">=0.140.0,<1" },
     { name = "httpx", marker = "extra == 'oidc'", specifier = ">=0.28.1,<1" },
     { name = "httpx2", marker = "extra == 'oidc'", specifier = ">=2.9.1" },

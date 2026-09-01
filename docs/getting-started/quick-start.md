@@ -83,7 +83,7 @@ TASKQ_REDIS_URL=redis://localhost:6379/0
 > **PgBouncer warning:** Advisory locks and `LISTEN/NOTIFY` require a direct Postgres connection. Do not point `TASKQ_PG_DSN` at a PgBouncer endpoint in transaction-pooling mode.
 
 TaskQ loads configuration through `dotenvmodel` with cascading `.env` discovery:
-`.env` → `.env.local` → `.env.{env}` → `.env.{env}.local`.
+`.env` → `.env.local` → `.env.{env}` → `.env.{env}.local`, where `{env}` comes from the `ENV` variable (default `dev`). Real environment variables take precedence over `.env` files — see [Configuration](../guides/configuration.md) for the full resolution rules.
 
 The worker validates cross-field constraints at startup (e.g. `TASKQ_LOCK_LEASE` must be `>= 4 × TASKQ_HEARTBEAT_INTERVAL`). See [Worker](../guides/workers.md) for the full settings reference.
 

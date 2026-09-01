@@ -20,7 +20,7 @@ classifiers = [
 dependencies = [
     "asyncpg>=0.31.0,<1",
     "croniter>=6.2.4",
-    "dotenvmodel>=0.6.3,<1",
+    "dotenvmodel>=1.0.0,<2",
     "opentelemetry-api>=1.44.0",
     "orjson>=3.11.9",
     "pydantic>=2.13.4,<3",
@@ -129,8 +129,11 @@ exclude-newer = "24 hours"
 # only same-org dependency. Opt it out of the 24-hour supply-chain quarantine
 # so same-day releases can be adopted immediately; this is deliberate and
 # scoped to dotenvmodel only (every other dep still honors the cooldown).
-# markupsafe is excluded from cooldown for the same reason as dotenvmodel —
-# it's a transitive of pydantic that we pin tightly and audit.
+# markupsafe is opted out for a different reason: it's a toolchain transitive
+# (jinja2 via the fastapi extra; mkdocs, mkdocs-autorefs, and mkdocstrings
+# via the dev group's docs toolchain) pinned exactly by the lockfile and
+# audited on every bump, so the cooldown adds no protection while delaying
+# same-day security releases.
 exclude-newer-package = { dotenvmodel = "0d", markupsafe = false }
 
 [build-system]

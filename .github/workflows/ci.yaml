@@ -28,7 +28,7 @@ jobs:
         run: uv python install 3.12
 
       - name: Install dependencies
-        run: uv sync --all-extras --group dev
+        run: uv sync --locked --all-extras --group dev
 
       - name: Lint with ruff
         run: uv run ruff check .
@@ -53,7 +53,7 @@ jobs:
         # The e2e group is required here: tests/e2e type-checks against
         # containerspec (TYPE_CHECKING imports of BuiltImage), which the
         # default dev group deliberately does not include.
-        run: uv sync --all-extras --group dev --group e2e
+        run: uv sync --locked --all-extras --group dev --group e2e
 
       - name: Type check with pyright
         run: uv run pyright src/taskq tests
@@ -101,7 +101,7 @@ jobs:
         run: uv python install ${{ matrix.python-version }}
 
       - name: Install dependencies
-        run: uv sync --python ${{ matrix.python-version }} ${{ matrix.extras }} --group dev
+        run: uv sync --locked --python ${{ matrix.python-version }} ${{ matrix.extras }} --group dev
 
       - name: Run tests (with redis)
         if: matrix.extras == '--all-extras'
@@ -126,7 +126,7 @@ jobs:
         run: uv python install 3.12
 
       - name: Install dependencies
-        run: uv sync --python 3.12 --all-extras --group dev
+        run: uv sync --locked --python 3.12 --all-extras --group dev
 
       - name: Run tests with coverage gate
         run: uv run --python 3.12 pytest -n 2 --cov=taskq --cov-report=term-missing --cov-fail-under=90
@@ -150,7 +150,7 @@ jobs:
         run: uv python install 3.12
 
       - name: Install dependencies
-        run: uv sync --all-extras --group dev --group e2e
+        run: uv sync --locked --all-extras --group dev --group e2e
 
       - name: Run e2e tests
         run: uv run --group e2e pytest --e2e -m e2e tests/e2e --timeout=900 -q
@@ -169,7 +169,7 @@ jobs:
         run: uv python install 3.12
 
       - name: Install dependencies
-        run: uv sync --all-extras --group dev
+        run: uv sync --locked --all-extras --group dev
 
       - name: Run pip-audit
         run: uv run --with pip-audit pip-audit

@@ -238,7 +238,9 @@ any one backend.
 
 All runtime config is namespaced with the `TASKQ_` prefix and loaded
 through [`dotenvmodel`](https://pypi.org/project/dotenvmodel/) — drop a
-`.env` in the project root, or set vars in your environment.
+`.env` in the project root, or set vars in your environment. Environment
+variables take precedence over `.env` files, and `ENV` (default `dev`)
+selects optional `.env.{env}` files.
 
 | Variable                      | Default                                              | Purpose                                       |
 | ----------------------------- | ---------------------------------------------------- | --------------------------------------------- |

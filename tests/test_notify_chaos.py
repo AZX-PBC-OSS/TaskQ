@@ -318,7 +318,6 @@ async def test_tc3_shutdown_mid_reconnect() -> None:
             "notify_health_check_interval": "0.001",
         }
     )
-    deps.settings.pg_dsn_direct = deps.settings.pg_dsn  # pyright: ignore[reportAttributeAccessIssue] # Why: ensure direct DSN is set for _reconnect tests
 
     mock_conn = Mock()
     mock_conn.add_listener = AsyncMock()

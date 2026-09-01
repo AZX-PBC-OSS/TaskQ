@@ -21,6 +21,8 @@ from uuid import UUID
 
 import asyncpg
 import pytest
+from dotenvmodel import TypeCoercionError
+from dotenvmodel.types import RedisDsn
 from pydantic import BaseModel, TypeAdapter
 
 from taskq import TaskQ, actor
@@ -264,6 +266,64 @@ class TestCloseBounded:
         assert fake_pool.close_calls == 1
         assert fake_pool.terminated is True
         assert tq._pool is None
+
+
+# ---------------------------------------------------------------------------
+# TestRedisUrlWiring — redis_url is coerced via settings, never stored raw
+# ---------------------------------------------------------------------------
+
+
+class TestRedisUrlWiring:
+    """TaskQ(redis_url=...) routes the URL through TaskQSettings' RedisDsn
+    field type instead of storing a raw str — and rejects empty URLs at
+    construction rather than silently disabling Redis.
+    """
+
+    async def test_open_invalid_redis_url_raises_type_coercion_error(self) -> None:
+        """open() with a non-Redis redis_url raises TypeCoercionError
+        referencing redis_url — the field's RedisDsn type rejects the
+        scheme at startup, not at first publish."""
+        fake_pool = MagicMock(spec=asyncpg.Pool)
+        tq = TaskQ(pool=fake_pool, redis_url="http://not-redis", schema=_SCHEMA_LABEL)
+        with pytest.raises(TypeCoercionError, match="redis_url"):
+            await tq.open()
+
+    async def test_open_valid_redis_url_wires_redis_dsn_settings(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """After open() the wired settings carry a dotenvmodel RedisDsn
+        instance (coerced from the str argument), which _open_redis
+        receives — never a raw str."""
+        from taskq.client._jobs import JobsClient
+        from taskq.settings import TaskQSettings
+
+        opened_with: list[TaskQSettings] = []
+
+        async def _fake_open_redis(client: JobsClient, settings: TaskQSettings) -> None:
+            # Stand-in for the real hook: records the wired settings and
+            # skips the broker dial (client.initialize() would connect).
+            opened_with.append(settings)
+
+        monkeypatch.setattr(JobsClient, "_open_redis", _fake_open_redis)
+        fake_pool = MagicMock(spec=asyncpg.Pool)
+        tq = TaskQ(pool=fake_pool, redis_url="redis://localhost:6379/0", schema=_SCHEMA_LABEL)
+        await tq.open()
+        try:
+            assert tq._client is not None
+            redis_url = opened_with[0].redis_url
+            assert isinstance(redis_url, RedisDsn)
+            assert str(redis_url) == "redis://localhost:6379/0"
+        finally:
+            await tq.close()
+
+    def test_constructor_blank_redis_url_raises_value_error(self) -> None:
+        """redis_url="" (the os.getenv(..., "") anti-pattern) and a
+        whitespace-only URL fail at construction — dotenvmodel would
+        coerce "" to None and silently disable Redis otherwise."""
+        fake_pool = MagicMock(spec=asyncpg.Pool)
+        for blank in ("", "   "):
+            with pytest.raises(ValueError, match="non-empty"):
+                TaskQ(pool=fake_pool, redis_url=blank)
 
 
 # ---------------------------------------------------------------------------

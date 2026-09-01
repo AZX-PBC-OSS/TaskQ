@@ -1,9 +1,16 @@
 """Unit tests for WorkerSettings invariants and DSN fallback (no PG required)."""
 
 from datetime import timedelta
+from pathlib import Path
 
 import pytest
-from dotenvmodel import ConstraintViolationError, DotEnvModelError, ValidationError
+from dotenvmodel import (
+    ConstraintViolationError,
+    DotEnvModelError,
+    TypeCoercionError,
+    ValidationError,
+)
+from dotenvmodel.types import RedisDsn
 from hypothesis import given
 from hypothesis import strategies as st
 
@@ -295,10 +302,9 @@ def test_post_load_skipped_produces_none_dsn_string() -> None:
     in deps.py's explicit assertion guards and confirms that the guard is needed.
     """
     instance = object.__new__(WorkerSettings)
-    # Directly set the private Pydantic fields via __dict__ to bypass validation.
-    # This simulates deserialisation from pickle or direct construction without
+    # Simulate deserialisation from pickle or direct construction without
     # calling load() / load_from_dict() (which run post_load).
-    object.__setattr__(instance, "pg_dsn_direct", None)
+    instance.pg_dsn_direct = None
     # The footgun: str(None) == "None" (not a crash, not a missing value error)
     assert str(instance.pg_dsn_direct) == "None"
 
@@ -1020,3 +1026,244 @@ def test_oidc_reset_cached_forces_reload(monkeypatch: pytest.MonkeyPatch) -> Non
         assert s.oidc.issuer == "https://idp-b.example"
     finally:
         OIDCSettings.reset_cached()
+
+
+# ── dotenvmodel 1.0.0: .env precedence & type coercion ──────────────
+#
+# dotenvmodel 1.0.0 inverted the 0.6.3 default: ``load()`` resolves
+# process env vars > merged .env cascade > field defaults (0.6.3 let
+# .env files overwrite os.environ). ``load(override=True)`` or
+# ``DOTENV_OVERRIDE=true`` opts back into files-beat-env. The tests below
+# pin that contract so a silent reversion fails loudly.
+
+
+_LOAD_KNOB_VARS = (
+    "ENV",
+    "DOTENV_OVERRIDE",
+    "DOTENV_DIR",
+    "DOTENV_READ_DOTFILES",
+    "DOTENV_LOAD_LOCAL",
+)
+
+
+def _clear_load_knobs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Clear every process-env knob that can skew the dotenv cascade.
+
+    dotenvmodel resolves these from the process environment before any
+    ``.env`` file is read, so a stray host-shell value would reshape the
+    cascade under test: ``DOTENV_DIR`` redirects the cascade root away
+    from ``tmp_path``, ``DOTENV_READ_DOTFILES=false`` skips files
+    entirely, ``ENV`` / ``DOTENV_LOAD_LOCAL`` change which files are
+    selected, and ``DOTENV_OVERRIDE`` flips the precedence being pinned.
+    """
+    for var in _LOAD_KNOB_VARS:
+        monkeypatch.delenv(var, raising=False)
+
+
+def _chdir_with_env_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Point the dotenv cascade at a ``tmp_path`` holding one ``.env`` file.
+
+    Clearing the load knobs (see :func:`_clear_load_knobs`) keeps the
+    fixture's single ``.env`` the only file variable: the cascade always
+    probes ``.env``, and ``ENV`` (any value, including the ``dev`` default)
+    merely *adds* ``.env.{env}`` layers on top of it (later files win) —
+    with no such files here, the cascade reads exactly this one file.
+    ``monkeypatch.chdir`` restores the previous cwd afterwards.
+    """
+    _clear_load_knobs(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_text("TASKQ_SCHEMA_NAME=file_value\n", encoding="utf-8")
+
+
+def _chdir_with_env_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, files: dict[str, str]
+) -> None:
+    """Point the dotenv cascade at ``tmp_path`` with the given ``.env`` files.
+
+    ``files`` maps file names (``.env``, ``.env.local``, ``.env.staging``,
+    ...) to the ``TASKQ_SCHEMA_NAME`` value each carries. Load knobs are
+    cleared first (see :func:`_clear_load_knobs`) so only the test's own
+    ``ENV`` / ``DOTENV_*`` settings shape the cascade.
+    """
+    _clear_load_knobs(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    for name, value in files.items():
+        (tmp_path / name).write_text(f"TASKQ_SCHEMA_NAME={value}\n", encoding="utf-8")
+
+
+def test_load_env_var_beats_env_file_by_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """dotenvmodel 1.0.0 default: a real env var beats a ``.env`` value."""
+    _chdir_with_env_file(tmp_path, monkeypatch)
+    monkeypatch.setenv("TASKQ_SCHEMA_NAME", "env_value")
+    s = TaskQSettings.load()
+    assert s.schema_name == "env_value"
+
+
+def test_load_override_true_lets_env_file_beat_env_var(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``load(override=True)`` opts back into 0.6.3-style files-beat-env."""
+    _chdir_with_env_file(tmp_path, monkeypatch)
+    monkeypatch.setenv("TASKQ_SCHEMA_NAME", "env_value")
+    s = TaskQSettings.load(override=True)
+    assert s.schema_name == "file_value"
+
+
+def test_load_dotenv_override_env_var_lets_env_file_beat_env_var(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``DOTENV_OVERRIDE=true`` in the environment flips precedence for a
+    plain ``load()`` — the deployment-level equivalent of ``override=True``."""
+    _chdir_with_env_file(tmp_path, monkeypatch)
+    monkeypatch.setenv("TASKQ_SCHEMA_NAME", "env_value")
+    monkeypatch.setenv("DOTENV_OVERRIDE", "true")
+    s = TaskQSettings.load()
+    assert s.schema_name == "file_value"
+
+
+def test_env_file_beats_field_default_when_no_env_var(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The ``.env`` cascade is still read under 1.0.0: a file value beats
+    the field default when no env var is set."""
+    _chdir_with_env_file(tmp_path, monkeypatch)
+    monkeypatch.delenv("TASKQ_SCHEMA_NAME", raising=False)
+    s = TaskQSettings.load()
+    assert s.schema_name == "file_value"
+
+
+def test_load_read_dotfiles_false_ignores_env_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``read_dotfiles=False`` skips the ``.env`` cascade entirely — a
+    present ``.env`` has no effect and the field default wins."""
+    _chdir_with_env_file(tmp_path, monkeypatch)
+    monkeypatch.delenv("TASKQ_SCHEMA_NAME", raising=False)
+    s = TaskQSettings.load(read_dotfiles=False)
+    assert s.schema_name == "taskq"
+
+
+# ── .local skip under ENV=test ──────────────────────────────────────────
+
+
+_LOCAL_SKIP_FILES = {
+    ".env": "base_value",
+    ".env.local": "local_value",
+    ".env.test.local": "test_local_value",
+}
+
+
+def test_load_env_test_skips_both_local_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Under ``ENV=test`` both ``.local`` files are skipped — gitignored
+    local overrides cannot decide test outcomes, so ``.env`` wins."""
+    _chdir_with_env_files(tmp_path, monkeypatch, _LOCAL_SKIP_FILES)
+    monkeypatch.setenv("ENV", "test")
+    monkeypatch.delenv("TASKQ_SCHEMA_NAME", raising=False)
+    s = TaskQSettings.load()
+    assert s.schema_name == "base_value"
+
+
+def test_load_env_test_dotenv_load_local_restores_local_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``DOTENV_LOAD_LOCAL=true`` restores the skipped ``.local`` files
+    under ``ENV=test`` — and the later ``.env.test.local`` still beats
+    ``.env`` (later files in the chain win)."""
+    _chdir_with_env_files(tmp_path, monkeypatch, _LOCAL_SKIP_FILES)
+    monkeypatch.setenv("ENV", "test")
+    monkeypatch.setenv("DOTENV_LOAD_LOCAL", "true")
+    monkeypatch.delenv("TASKQ_SCHEMA_NAME", raising=False)
+    s = TaskQSettings.load()
+    assert s.schema_name == "test_local_value"
+
+
+def test_load_env_unset_dev_default_reads_env_local(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With ``ENV`` unset (dev default) ``.env.local`` IS read and beats
+    ``.env`` — the ``.local`` skip is test-env-only."""
+    _chdir_with_env_files(tmp_path, monkeypatch, _LOCAL_SKIP_FILES)
+    monkeypatch.delenv("TASKQ_SCHEMA_NAME", raising=False)
+    s = TaskQSettings.load()
+    assert s.schema_name == "local_value"
+
+
+# ── ENV file selection: label vs selector ───────────────────────────────
+
+
+_STAGING_FILES = {
+    ".env": "base_value",
+    ".env.staging": "staging_value",
+}
+
+
+def test_load_env_var_selects_env_specific_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``ENV=staging`` adds the ``.env.staging`` layer, which beats ``.env``
+    (later files in the chain win)."""
+    _chdir_with_env_files(tmp_path, monkeypatch, _STAGING_FILES)
+    monkeypatch.setenv("ENV", "staging")
+    monkeypatch.delenv("TASKQ_SCHEMA_NAME", raising=False)
+    s = TaskQSettings.load()
+    assert s.schema_name == "staging_value"
+
+
+def test_load_explicit_env_arg_beats_env_var(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Explicit ``load(env=...)`` beats the ``ENV`` process var — the
+    documented argument > env var > default tier."""
+    _chdir_with_env_files(tmp_path, monkeypatch, _STAGING_FILES)
+    monkeypatch.setenv("ENV", "dev")
+    monkeypatch.delenv("TASKQ_SCHEMA_NAME", raising=False)
+    s = TaskQSettings.load(env="staging")
+    assert s.schema_name == "staging_value"
+
+
+def test_taskq_environment_is_label_not_file_selector(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``TASKQ_ENVIRONMENT`` is a TaskQ deployment label, not a file
+    selector: setting it never loads ``.env.{environment}`` files."""
+    _chdir_with_env_files(tmp_path, monkeypatch, _STAGING_FILES)
+    monkeypatch.setenv("TASKQ_ENVIRONMENT", "staging")
+    monkeypatch.delenv("TASKQ_SCHEMA_NAME", raising=False)
+    s = TaskQSettings.load()
+    assert s.schema_name == "base_value"
+    assert s.environment == "staging"
+
+
+# ── Explicit-argument-beats-knob tier ───────────────────────────────────
+
+
+def test_load_explicit_override_arg_beats_dotenv_override_env_var(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``load(override=False)`` beats ``DOTENV_OVERRIDE=true`` in the
+    process env — the documented argument > ``DOTENV_*`` env var > default
+    tier, so callers can pin precedence regardless of deployment knobs."""
+    _chdir_with_env_file(tmp_path, monkeypatch)
+    monkeypatch.setenv("TASKQ_SCHEMA_NAME", "env_value")
+    monkeypatch.setenv("DOTENV_OVERRIDE", "true")
+    s = TaskQSettings.load(override=False)
+    assert s.schema_name == "env_value"
+
+
+def test_load_from_dict_coerces_redis_url_to_redis_dsn() -> None:
+    """``load_from_dict`` coerces values through field types: a ``redis://``
+    string yields a ``dotenvmodel.types.RedisDsn`` instance, not ``str``."""
+    s = TaskQSettings.load_from_dict({"TASKQ_REDIS_URL": "redis://localhost:6379/0"})
+    redis_url = s.redis_url
+    assert isinstance(redis_url, RedisDsn)
+    assert str(redis_url) == "redis://localhost:6379/0"
+
+
+def test_load_from_dict_invalid_redis_url_scheme_raises_type_coercion_error() -> None:
+    """A ``TASKQ_REDIS_URL`` with a non-Redis scheme fails type coercion."""
+    with pytest.raises(TypeCoercionError, match="redis_url"):
+        TaskQSettings.load_from_dict({"TASKQ_REDIS_URL": "http://not-redis"})

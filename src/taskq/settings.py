@@ -11,11 +11,7 @@ overrides), subclass :class:`TaskQSettings` in the consuming application
 and pass that subclass instead.
 """
 
-# NOTE: dotenvmodel resolves field types from ``__annotations__`` directly
-# rather than via ``typing.get_type_hints``. Adding ``from __future__ import
-# annotations`` to this module turns those types into forward-ref strings
-# and breaks the typed-DSN/SecretStr coercion. Keep annotations evaluated.
-
+import logging
 from datetime import timedelta
 from pathlib import Path
 from typing import Self
@@ -119,6 +115,26 @@ class SAMLSettings(DotEnvConfig):
     @property
     def allowed_groups_set(self) -> frozenset[str]:
         return _parse_groups(self.allowed_groups)
+
+
+class _NoEnvFilesWarningFilter(logging.Filter):
+    """Drop only dotenvmodel's "No .env files found in <dir>" WARNING.
+
+    Why a logger-level filter works: every dotenvmodel 1.0.0 module logs
+    through the single ``"dotenvmodel"`` logger (``LOGGER_NAME`` in
+    ``dotenvmodel/_constants.py``; ``loading.py`` hardcodes the same
+    string) — there are no child loggers, so one filter sees all of its
+    records. Why prefix matching rather than raising the logger level:
+    the level approach swallows *every* dotenvmodel warning, hiding real
+    misconfiguration (e.g. an invalid ``DOTENV_OVERRIDE`` value falling
+    back to default precedence with zero signal); this drops exactly the
+    one known-noisy warning and leaves the rest visible.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        # getMessage() rather than record.message: the message attribute is
+        # only populated during handler emission, after filtering runs.
+        return not record.getMessage().startswith("No .env files found")
 
 
 class TaskQSettings(DotEnvConfig):
@@ -250,32 +266,49 @@ class TaskQSettings(DotEnvConfig):
 
     @classmethod
     def load(
-        cls, env: str | None = None, *, override: bool = True, env_dir: Path | None = None
+        cls,
+        env: str | None = None,
+        *,
+        override: bool | None = None,
+        env_dir: Path | str | None = None,
+        read_dotfiles: bool | None = None,
+        load_local: bool | None = None,
     ) -> Self:
         """Load settings via dotenvmodel's cascading ``.env`` discovery.
+
+        All parameters are forwarded to ``DotEnvConfig.load`` unchanged
+        (resolution: explicit argument > ``DOTENV_*`` env var > default).
+        ``override=None`` keeps dotenvmodel 1.0's default precedence — the
+        process environment beats ``.env`` files; pass ``override=True``
+        or set ``DOTENV_OVERRIDE=true`` to make ``.env`` files win instead.
 
         dotenvmodel logs a WARNING ("No .env files found in <cwd>") on
         every call when no ``.env`` file is present — noisy on every CLI
         invocation in projects that configure purely via real environment
-        variables. dotenvmodel's ``load()`` exposes no quiet/verbosity
-        parameter (checked via ``inspect.signature``), so this temporarily
-        raises the ``dotenvmodel`` stdlib logger to ERROR for the duration
-        of the call and restores the previous level afterward — the same
-        level-based mechanism dotenvmodel's own ``logging_config`` helpers
-        use, just without installing an extra handler.
+        variables. ``read_dotfiles=False`` is not the answer: it silences
+        the warning but disables the ``.env`` cascade entirely, a
+        documented core TaskQ feature. This override instead installs a
+        :class:`_NoEnvFilesWarningFilter` on the ``dotenvmodel`` logger
+        for the duration of the call, dropping only that one warning;
+        every other dotenvmodel warning (e.g. an invalid ``DOTENV_*``
+        knob value) remains visible.
 
-        ``WorkerSettings.load`` calls ``super().load(...)``, so it goes
-        through this same suppression via MRO.
+        ``WorkerSettings.load`` inherits this override via MRO, so worker
+        startup gets the same quiet load.
         """
-        import logging
-
         dotenv_logger = logging.getLogger("dotenvmodel")
-        previous_level = dotenv_logger.level
-        dotenv_logger.setLevel(logging.ERROR)
+        no_env_files = _NoEnvFilesWarningFilter()
+        dotenv_logger.addFilter(no_env_files)
         try:
-            return super().load(env=env, override=override, env_dir=env_dir)
+            return super().load(
+                env=env,
+                override=override,
+                env_dir=env_dir,
+                read_dotfiles=read_dotfiles,
+                load_local=load_local,
+            )
         finally:
-            dotenv_logger.setLevel(previous_level)
+            dotenv_logger.removeFilter(no_env_files)
 
     @property
     def oidc(self) -> OIDCSettings:

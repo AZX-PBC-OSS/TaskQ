@@ -243,8 +243,8 @@ async def test_all_pg_overridden_no_dsn_needed() -> None:
     """
     settings = _make_settings()
     # Corrupt the DSNs to prove they're never used.
-    settings.pg_dsn_direct = None  # type: ignore[assignment]
-    settings.pg_dsn_pooled = None  # type: ignore[assignment]
+    settings.pg_dsn_direct = None
+    settings.pg_dsn_pooled = None
 
     dispatcher = _FakePool()
     heartbeat = _FakePool()
@@ -273,8 +273,8 @@ async def test_caller_owned_leader_conn_without_factory_or_dsn_fails_fast() -> N
     pg_dsn_direct can never be rebuilt after a drop — the watchdog would
     otherwise retry asyncpg.connect("None") forever. Fail fast at startup."""
     settings = _make_settings()
-    settings.pg_dsn_direct = None  # type: ignore[assignment]
-    settings.pg_dsn_pooled = None  # type: ignore[assignment]
+    settings.pg_dsn_direct = None
+    settings.pg_dsn_pooled = None
 
     conns = WorkerConnections(
         dispatcher_pool_factory=_make_pool_factory(_FakePool()),
@@ -293,8 +293,8 @@ async def test_caller_owned_notify_conn_without_factory_or_dsn_is_allowed() -> N
     error — NOTIFY is best-effort (poll fallback); the listener disables
     itself gracefully if the conn drops and cannot be rebuilt."""
     settings = _make_settings()
-    settings.pg_dsn_direct = None  # type: ignore[assignment]
-    settings.pg_dsn_pooled = None  # type: ignore[assignment]
+    settings.pg_dsn_direct = None
+    settings.pg_dsn_pooled = None
 
     conns = WorkerConnections(
         dispatcher_pool_factory=_make_pool_factory(_FakePool()),
@@ -376,7 +376,7 @@ async def test_unoverridden_direct_role_with_none_direct_dsn_fails_fast() -> Non
     required; without the guard, asyncpg would receive str(None) == "None".
     """
     settings = _make_settings()
-    settings.pg_dsn_direct = None  # type: ignore[assignment]
+    settings.pg_dsn_direct = None
 
     conns = WorkerConnections(
         dispatcher_pool_factory=_make_pool_factory(_FakePool()),
@@ -397,7 +397,7 @@ async def test_unoverridden_worker_pool_with_none_pooled_dsn_fails_fast() -> Non
     the pooled-DSN guard is the one exercised.
     """
     settings = _make_settings()
-    settings.pg_dsn_pooled = None  # type: ignore[assignment]
+    settings.pg_dsn_pooled = None
 
     conns = WorkerConnections(
         dispatcher_pool_factory=_make_pool_factory(_FakePool()),

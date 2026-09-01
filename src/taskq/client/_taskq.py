@@ -198,6 +198,11 @@ class TaskQ:
             raise ValueError("TaskQ accepts 'dsn' or 'pool', not both")
         if redis_url is not None and redis_client is not None:
             raise ValueError("TaskQ accepts 'redis_url' or 'redis_client', not both")
+        if redis_url is not None and not redis_url.strip():
+            # Why: dotenvmodel coerces "" to None for the optional field, so
+            # the os.getenv(..., "") anti-pattern would pass the is-not-None
+            # guard and silently disable Redis instead of failing at startup.
+            raise ValueError("TaskQ 'redis_url' must be a non-empty URL or None")
         if pg_conn_factory is not None and listen_conn is not None:
             raise ValueError("TaskQ accepts 'pg_conn_factory' or 'listen_conn', not both")
 
@@ -267,11 +272,13 @@ class TaskQ:
                 else RECLAIM_EVENT_VISIBILITY_DELAY
             ),
         )
-        settings = TaskQSettings.load_from_dict(
-            {"TASKQ_SCHEMA_NAME": self._schema},
-        )
+        # Route the Redis URL through load_from_dict so it is coerced and
+        # validated by the field's declared RedisDsn type (TypeCoercionError
+        # on an invalid scheme) instead of being stored as a raw str.
+        load_data: dict[str, str] = {"TASKQ_SCHEMA_NAME": self._schema}
         if self._redis_url is not None:
-            settings.redis_url = self._redis_url  # type: ignore[assignment]  # Why: dotenvmodel PostgresDsn/RedisDsn fields accept str values at runtime but pyright cannot verify the coercion through the model's __setattr__.
+            load_data["TASKQ_REDIS_URL"] = self._redis_url
+        settings = TaskQSettings.load_from_dict(load_data)
         self._client = JobsClient(backend, settings=settings)
         if self._redis_client is not None:
             self._client._redis_client = self._redis_client  # pyright: ignore[reportPrivateUsage]  # Why: TaskQ owns the JobsClient lifecycle; assigning the caller-owned redis_client directly bypasses _open_redis so the client is NOT entered on the exit stack — TaskQ.close() must not close a caller-owned client.

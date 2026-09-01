@@ -13,10 +13,16 @@ dotenvmodel resolves a cascading chain of `.env` files at load time:
 
 1. `.env` — base defaults, committed to the repo
 2. `.env.local` — local overrides, never committed
-3. `.env.{TASKQ_ENVIRONMENT}` — e.g. `.env.production`
-4. `.env.{TASKQ_ENVIRONMENT}.local` — local env-specific overrides, never committed
+3. `.env.{env}` — e.g. `.env.production`
+4. `.env.{env}.local` — local env-specific overrides, never committed
 
-Later files in the chain take precedence over earlier ones. Never commit `.env.local` or production env files.
+`{env}` comes from the `ENV` environment variable (default `dev`): `ENV=production` loads `.env.production` and `.env.production.local`. Later files in the chain take precedence over earlier ones within the file layer. Never commit `.env.local` or production env files.
+
+**Precedence.** Process environment variables beat the merged `.env` cascade, which beats field defaults (dotenvmodel 1.0.0 semantics, adopted by TaskQ). To opt back into the older files-beat-env-vars behaviour, set `DOTENV_OVERRIDE=true` or call `TaskQSettings.load(override=True)`.
+
+**Load-time knobs are process-environment-only.** `ENV` and the `DOTENV_*` variables (`DOTENV_OVERRIDE`, `DOTENV_LOAD_LOCAL`, `DOTENV_READ_DOTFILES`, `DOTENV_DIR`) are read from the process environment — or passed explicitly to `load()` — *before* any `.env` file is read. Setting them inside a `.env` file has no effect on that load: a value in a file cannot influence which files are selected or how they are applied.
+
+When the resolved env is `test` (case-insensitive), `.env.local` and `.env.test.local` are skipped, so gitignored local overrides cannot decide test outcomes. Restore them with `DOTENV_LOAD_LOCAL=true` (or `load_local=True`).
 
 ---
 
@@ -38,7 +44,7 @@ TASKQ_SCHEMA_NAME=taskq
 TASKQ_ENVIRONMENT=development
 ```
 
-`.env` is the committed base. `.env.local` overrides it on a developer's machine without affecting others. When `TASKQ_ENVIRONMENT=production`, dotenvmodel additionally loads `.env.production` and `.env.production.local`. Never commit `.env.local` or production env files.
+`.env` is the committed base. `.env.local` overrides it on a developer's machine without affecting others. Setting `ENV=production` additionally loads `.env.production` and `.env.production.local`. `TASKQ_ENVIRONMENT` has nothing to do with file selection — it is a TaskQ deployment label that gates the unauthenticated-admin warning (`dev`/`development` suppress it; any other value triggers it). Never commit `.env.local` or production env files.
 
 ---
 
@@ -51,7 +57,7 @@ Applies to all commands: `worker`, `migrate`, `ui serve`, `health`.
 | `TASKQ_PG_DSN` | `PostgresDsn` | `postgresql://taskq:taskq@localhost:5432/taskq` | Direct (non-PgBouncer) DSN. LISTEN/NOTIFY and advisory locks require a session-mode connection. | all |
 | `TASKQ_SCHEMA_NAME` | `str` | `taskq` | Postgres schema for all TaskQ tables. Must match `^[A-Za-z_][A-Za-z0-9_]*$`. | all |
 | `TASKQ_REDIS_URL` | `RedisDsn \| None` | `None` | Optional Redis URL. Required for real-time SSE progress fanout in the admin UI. | worker, ui serve |
-| `TASKQ_ENVIRONMENT` | `str \| None` | `None` | Deployment label. Values `dev` or `development` suppress the unauthenticated-admin warning. Any other value triggers it. | all |
+| `TASKQ_ENVIRONMENT` | `str \| None` | `None` | Deployment label; does not select `.env` files (that is `ENV`'s job). Values `dev` or `development` suppress the unauthenticated-admin warning. Any other value triggers it. | all |
 | `TASKQ_ADMIN_MAX_SSE_CONNECTIONS` | `int` | `50` | Maximum concurrent SSE connections the admin UI will serve. Min: 1. | ui serve |
 | `TASKQ_ADMIN_HOST` | `str` | `0.0.0.0` | Bind address for `taskq ui serve`. | ui serve |
 | `TASKQ_ADMIN_PORT` | `int` | `8080` | Bind port for `taskq ui serve`. Range: 1–65535. | ui serve |
@@ -438,6 +444,8 @@ These values satisfy all cross-field constraints:
 - `cancellation_grace (60) + cleanup_grace (20) < termination_grace (120) − 5` — 80 < 115 ✓
 - `cancellation_grace (60) + cleanup_grace (20) < lock_lease (90)` — 80 < 90 ✓
 
+`TASKQ_ENVIRONMENT=production` in this example is the deployment label — it gates the unauthenticated-admin warning, not file loading. Set `ENV=production` to load `.env.production` and `.env.production.local`.
+
 ---
 
 ## Extending Settings
@@ -453,4 +461,4 @@ class AppSettings(WorkerSettings):
     sentry_dsn: str | None = Field(default=None)
 ```
 
-Load with `AppSettings.load()`. All `TASKQ_*` validation constraints still apply. Additional fields follow the same dotenvmodel env-var resolution and `.env` cascade.
+Load with `AppSettings.load()` — it forwards dotenvmodel 1.0.0's full parameter surface (`env`, `override`, `env_dir`, `read_dotfiles`, `load_local`). All `TASKQ_*` validation constraints still apply. Additional fields follow the same dotenvmodel env-var resolution and `.env` cascade. String field defaults interpolate `${VAR}` references at load time (an unset reference resolves to `""` rather than keeping the literal `${...}` text).
