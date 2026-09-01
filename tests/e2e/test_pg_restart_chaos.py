@@ -72,9 +72,9 @@ from .conftest import (
 if TYPE_CHECKING:
     import asyncpg
     from containerspec import BuiltImage
+    from testcontainers.community.postgres import PostgresContainer
     from testcontainers.core.container import DockerContainer
     from testcontainers.core.network import Network
-    from testcontainers.postgres import PostgresContainer
 
     from taskq import TaskQ
 
@@ -141,7 +141,7 @@ def chaos_pg(e2e_network: Network) -> Iterator[ChaosPg]:
     port nothing listens on. An explicitly published port is part of the
     container's declared config and is restored verbatim on start.
     """
-    from testcontainers.postgres import PostgresContainer
+    from testcontainers.community.postgres import PostgresContainer
 
     alias = f"pg-restart-{uuid4().hex[:8]}"
     container = PostgresContainer(

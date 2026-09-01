@@ -272,6 +272,7 @@ class TaskQSettings(DotEnvConfig):
         override: bool | None = None,
         env_dir: Path | str | None = None,
         read_dotfiles: bool | None = None,
+        read_environ: bool | None = None,
         load_local: bool | None = None,
     ) -> Self:
         """Load settings via dotenvmodel's cascading ``.env`` discovery.
@@ -281,6 +282,9 @@ class TaskQSettings(DotEnvConfig):
         ``override=None`` keeps dotenvmodel 1.0's default precedence — the
         process environment beats ``.env`` files; pass ``override=True``
         or set ``DOTENV_OVERRIDE=true`` to make ``.env`` files win instead.
+        ``read_dotfiles=False`` / ``read_environ=False`` disable the
+        ``.env`` cascade / the process environment respectively, per
+        dotenvmodel's documented symmetry.
 
         dotenvmodel logs a WARNING ("No .env files found in <cwd>") on
         every call when no ``.env`` file is present — noisy on every CLI
@@ -305,6 +309,7 @@ class TaskQSettings(DotEnvConfig):
                 override=override,
                 env_dir=env_dir,
                 read_dotfiles=read_dotfiles,
+                read_environ=read_environ,
                 load_local=load_local,
             )
         finally:

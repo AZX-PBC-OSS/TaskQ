@@ -92,7 +92,7 @@ class ChaosSchema(NamedTuple):
 @pytest.fixture
 def chaos_pg(e2e_network: Network) -> Iterator[ChaosPg]:
     """Function-scoped chaos PG container."""
-    from testcontainers.postgres import PostgresContainer
+    from testcontainers.community.postgres import PostgresContainer
 
     alias = f"pg-sdw-{uuid4().hex[:8]}"
     container = PostgresContainer(

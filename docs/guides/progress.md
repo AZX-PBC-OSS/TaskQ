@@ -78,6 +78,7 @@ logged and recorded as a metric, never raised to the caller.
 from taskq import actor
 from taskq.context import JobContext
 
+
 @actor(queue="media")
 async def transcode_video(payload: TranscodePayload, ctx: JobContext[TranscodePayload]) -> None:
     segments = await split_into_segments(payload.url)
@@ -190,9 +191,9 @@ the Redis subscription. A catch-up snapshot is emitted from Postgres when
 from taskq.web.progress import create_router
 
 progress_router = create_router(
-    pg_pool,          # asyncpg.Pool
-    redis_client,     # redis.asyncio.Redis | None
-    schema="taskq",   # must match PostgresBackend schema
+    pg_pool,  # asyncpg.Pool
+    redis_client,  # redis.asyncio.Redis | None
+    schema="taskq",  # must match PostgresBackend schema
     auth_dependency=require_authenticated_user,  # optional FastAPI dep
     sse_heartbeat_interval=timedelta(seconds=15),
 )

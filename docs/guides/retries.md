@@ -39,6 +39,7 @@ If a retry is due but `next_scheduled_at >= schedule_to_close`, the job fails im
 from taskq import actor
 from taskq.retry import RetryPolicy
 
+
 @actor(retry=RetryPolicy(kind="transient", max_attempts=5))
 async def my_actor(payload: Payload) -> Result: ...
 ```
@@ -62,6 +63,7 @@ from datetime import timedelta
 from taskq import actor
 from taskq.retry import RetryPolicy
 
+
 @actor(retry=RetryPolicy(kind="indefinite", time_budget=timedelta(hours=2)))
 async def sync_data(payload: Payload) -> Result: ...
 ```
@@ -75,6 +77,7 @@ Use for actors where a retry would be harmful (e.g. payment operations whose ide
 ```python
 from taskq import actor
 from taskq.retry import RetryPolicy
+
 
 @actor(retry=RetryPolicy(kind="non_retryable"))
 async def charge_card(payload: Payload) -> Result: ...
@@ -387,8 +390,7 @@ async def emit_success_metric(job_row, result) -> None:
 
 
 @actor(on_success=emit_success_metric, on_success_timeout=5.0)
-async def process_order(payload: OrderPayload) -> OrderResult:
-    ...
+async def process_order(payload: OrderPayload) -> OrderResult: ...
 ```
 
 ---
@@ -411,6 +413,7 @@ If `now + delay > schedule_to_close`, the backend immediately fails the job with
 from datetime import timedelta
 from taskq.exceptions import Snooze
 
+
 async def poll_invoice(payload: Payload) -> Result:
     invoice = await fetch_invoice(payload.invoice_id)
     if invoice.status == "pending":
@@ -430,6 +433,7 @@ A negative `delay` raises `ValueError` at construction.
 ```python
 from datetime import timedelta
 from taskq.exceptions import RetryAfter
+
 
 async def call_api(payload: Payload) -> Result:
     resp = await http.post(...)

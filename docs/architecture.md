@@ -344,6 +344,7 @@ SQL, and nobody in application code hears about it):
 ```python
 outstanding = len(job_ids)
 
+
 async def track_completions(tq: TaskQ) -> None:
     global outstanding
     cursor = await load_reclaim_cursor()  # your own durable store
@@ -351,7 +352,7 @@ async def track_completions(tq: TaskQ) -> None:
         # evt.detail: from_state/to_state ('pending' retry, or terminal
         # 'crashed'/'cancelled'), reason='lock_expired', worker_id.
         if evt.detail["to_state"] != "pending":  # terminal reclaim only;
-            outstanding -= 1                     # retries redispatch normally
+            outstanding -= 1  # retries redispatch normally
         cursor = evt.event_id
         await save_reclaim_cursor(cursor)  # persist AFTER processing —
         # a crash before this re-delivers the event (at-least-once;

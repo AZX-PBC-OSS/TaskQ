@@ -108,34 +108,25 @@ def chaos_df(e2e_network: Network) -> Iterator[ChaosDf]:
     session ``e2e_dragonfly``. The network alias is unique per test and
     Docker preserves the container's network config across stop/start.
     """
-    import warnings
-
-    from testcontainers.redis import RedisContainer
+    from testcontainers.community.redis import RedisContainer
 
     alias = f"df-outage-{uuid4().hex[:8]}"
-    with warnings.catch_warnings():
-        warnings.filterwarnings(
-            "ignore",
-            message=".*wait_container_is_ready.*",
-            category=DeprecationWarning,
-            module="testcontainers.redis",
+    container = RedisContainer(image=_DRAGONFLY_IMAGE).with_command("--dbnum 128")
+    container.with_network(e2e_network).with_network_aliases(alias)
+    container.with_bind_ports(6379, free_host_port())
+    with container:
+        client = container.get_client()
+        try:
+            assert client.ping()
+        finally:
+            client.close()
+        host = container.get_container_host_ip()
+        port = container.get_exposed_port(6379)
+        yield ChaosDf(
+            container=container,
+            host_url=f"redis://{host}:{port}",
+            network_url=f"redis://{alias}:6379",
         )
-        container = RedisContainer(image=_DRAGONFLY_IMAGE).with_command("--dbnum 128")
-        container.with_network(e2e_network).with_network_aliases(alias)
-        container.with_bind_ports(6379, free_host_port())
-        with container:
-            client = container.get_client()
-            try:
-                assert client.ping()
-            finally:
-                client.close()
-            host = container.get_container_host_ip()
-            port = container.get_exposed_port(6379)
-            yield ChaosDf(
-                container=container,
-                host_url=f"redis://{host}:{port}",
-                network_url=f"redis://{alias}:6379",
-            )
 
 
 @pytest_asyncio.fixture

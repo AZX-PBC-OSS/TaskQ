@@ -62,6 +62,10 @@ postgres-data/
 .claude/
 .serena/
 
+# Sibling git worktree checkouts (full repo copies; keep untracked and
+# invisible to repo-wide tooling like ruff/git status)
+.worktrees/
+
 .shipwright/
 
 # Local review artifacts

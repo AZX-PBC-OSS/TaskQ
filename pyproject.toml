@@ -20,7 +20,7 @@ classifiers = [
 dependencies = [
     "asyncpg>=0.31.0,<1",
     "croniter>=6.2.4",
-    "dotenvmodel>=1.0.0,<2",
+    "dotenvmodel>=1.1.0,<2",
     "opentelemetry-api>=1.44.0",
     "orjson>=3.11.9",
     "pydantic>=2.13.4,<3",
@@ -114,14 +114,14 @@ vault = [
 ]
 
 [tool.uv]
-# Pin the uv toolchain to the validated 0.11.x line: setup-uv reads
+# Pin the uv toolchain to the validated 0.12.x line: setup-uv reads
 # required-version from pyproject and installs the highest match in CI.
-# A range (not ==) so contributors on any 0.11.x patch can run uv locally —
+# A range (not ==) so contributors on any 0.12.x patch can run uv locally —
 # an exact pin hard-fails every local uv command on any other version —
-# while <0.12 keeps CI and local on the same validated minor line.
+# while <0.13 keeps CI and local on the same validated minor line.
 # Trade-off vs. an exact pin: setup-uv must consult the versions manifest to
 # resolve the range (the fetch an exact pin skips); accepted per review.
-required-version = ">=0.11.19,<0.12"
+required-version = ">=0.12.8,<0.13"
 # Supply-chain hardening: never resolve to distributions published within the
 # last 24 hours, giving time for malicious releases to be detected and yanked.
 exclude-newer = "24 hours"
@@ -457,7 +457,9 @@ addopts = [
     "--timeout=300",
 ]
 filterwarnings = [
-    "ignore::DeprecationWarning:testcontainers.*",
+    # No testcontainers entry: every import migrated to the non-deprecated
+    # testcontainers.community.* modules, so any future testcontainers
+    # DeprecationWarning should SURFACE in the warnings summary, not be hidden.
     "ignore::DeprecationWarning:redis.*",
     "ignore::DeprecationWarning:onelogin.*",
 ]
@@ -490,6 +492,7 @@ dev = [
     "asyncpg-stubs>=0.31.3",
     "authlib>=1.7.2",
     "fakeredis>=2.37.0",
+    "filelock>=3.32.4",
     "httpx>=0.28.1",
     "httpx2>=2.9.1",
     "hypothesis>=6.157.1",
@@ -508,7 +511,6 @@ dev = [
     "pytest-xdist>=3.8.0",
     "python-multipart>=0.0.32",
     "pyyaml>=6.0.3",
-    "respx>=0.23.1",
     "ruff>=0.15.22",
     "testcontainers[postgres,redis]>=4.14.2",
 ]

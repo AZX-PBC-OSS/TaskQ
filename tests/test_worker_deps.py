@@ -7,12 +7,14 @@ Marked ``integration`` so they are skipped in non-integration runs.
 # ruff: noqa: SIM117 # Why: pytest.raises must wrap the async with statement; combined with-form is not valid here.
 
 import asyncio
+from collections.abc import Iterator
 
 import asyncpg
 import pytest
-from testcontainers.postgres import PostgresContainer
+from testcontainers.community.postgres import PostgresContainer
 
 from taskq.constants import wake_channel
+from taskq.testing._shared_containers import creator_labels
 from taskq.testing.settings import make_integration_settings
 from taskq.worker.deps import open_worker_deps
 
@@ -322,8 +324,29 @@ async def test_keepalive_setsockopt_fires_on_dedicated_conns(pg_dsn: str) -> Non
 # ── A-TG-05: pool startup log redacts credentials ────────────────────────
 
 
+@pytest.fixture
+def disposable_pg_container() -> Iterator[PostgresContainer]:  # pyright: ignore[reportUnusedFunction]  # Why: pytest injects this fixture; pyright does not track fixture DI.
+    """A throwaway PG container for the ALTER USER test.
+
+    ``ALTER USER ... PASSWORD`` mutates CLUSTER-WIDE auth state: run against
+    the shared session container, every OTHER xdist worker's new connections
+    would fail authentication during the sentinel window. The shared
+    container must never be mutated like this — same never-touch-the-shared-
+    one rule as ``killable_redis_container``. Labeled with the ownership
+    labels so a crashed run's leftover is sweepable (Ryuk is disabled
+    process-wide by the shared-container machinery).
+    """
+    with PostgresContainer(
+        image="postgres:18-alpine",
+        username="taskq",
+        password="taskq",
+        dbname="taskq",
+    ).with_kwargs(labels=creator_labels()) as container:
+        yield container
+
+
 async def test_pool_startup_log_redacts_credentials(
-    pg_container: PostgresContainer,
+    disposable_pg_container: PostgresContainer,
 ) -> None:
     """A-TG-05: — pool startup logs must not contain passwords.
 
@@ -335,10 +358,8 @@ async def test_pool_startup_log_redacts_credentials(
 
     Uses a sentinel password (distinct from username/schema/dbname) so that
     a substring match cannot collide with legitimate identifiers like
-    ``taskq_wake_<schema>``. The container is rebooted via DSN-rewrite —
-    we ALTER USER to a unique password for the duration of this test, then
-    restore it. This is more robust than relying on the default fixture
-    password ``taskq`` which collides with the role and schema names.
+    ``taskq_wake_<schema>``. The container's role password is rewritten via
+    ALTER USER for the duration of this test, then restored.
     """
     from taskq._dsn import dsn_host
 
@@ -353,7 +374,9 @@ async def test_pool_startup_log_redacts_credentials(
     # Connect using the existing creds, ALTER USER to the sentinel, then
     # verify open_worker_deps opens successfully with the sentinel password.
     # Restore afterward.
-    base_dsn = pg_container.get_connection_url().replace("postgresql+psycopg2://", "postgresql://")
+    base_dsn = disposable_pg_container.get_connection_url().replace(
+        "postgresql+psycopg2://", "postgresql://"
+    )
     admin_conn = await asyncpg.connect(base_dsn)
     try:
         await admin_conn.execute(f"ALTER USER taskq WITH PASSWORD '{sentinel}'")
@@ -367,8 +390,8 @@ async def test_pool_startup_log_redacts_credentials(
         async with open_worker_deps(settings):
             pass
     finally:
-        # Restore the original password so subsequent tests using the
-        # session-scoped pg_container continue to work.
+        # Restore the original password — hygiene for anything that inspects
+        # this container after the test; the container is disposable either way.
         admin_conn = await asyncpg.connect(sentinel_dsn)
         try:
             await admin_conn.execute("ALTER USER taskq WITH PASSWORD 'taskq'")

@@ -230,8 +230,8 @@ async def demo() -> None:
         send_email,
         SendEmailPayload(to="user@example.com", subject="Hello", body="World"),
     )
-    print(handle.job_id)       # UUID of the enqueued job
-    print(handle.was_existing) # False for a fresh enqueue
+    print(handle.job_id)  # UUID of the enqueued job
+    print(handle.was_existing)  # False for a fresh enqueue
 ```
 
 `InMemoryBackend` is for tests and demos only — it holds state in-process and does not persist across restarts.

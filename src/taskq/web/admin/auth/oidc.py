@@ -169,7 +169,7 @@ def create_oidc_auth(config: OIDCAuthConfig, *, base_path: str = "") -> AuthBund
             state = secrets.token_urlsafe(32)
             async with httpx.AsyncClient(timeout=10.0) as http:
                 meta = (await http.get(f"{config.issuer}/.well-known/openid-configuration")).json()
-            async with AsyncOAuth2Client(  # pyright: ignore[reportGeneralTypeIssues]  # Why: authlib ships no stubs; AsyncOAuth2Client subclasses httpx.AsyncClient but pyright cannot see __aenter__/__aexit__ across the untyped MRO.
+            async with AsyncOAuth2Client(  # pyright: ignore[reportGeneralTypeIssues]  # Why: authlib ships no stubs; AsyncOAuth2Client subclasses httpx2.AsyncClient but pyright cannot see __aenter__/__aexit__ across the untyped MRO.
                 client_id=config.client_id,
                 scope=config.scope,
                 redirect_uri=config.redirect_uri,

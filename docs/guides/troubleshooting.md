@@ -396,6 +396,7 @@ GROUP BY actor;
 
 ```python
 from taskq.ratelimit import sync_slots
+
 result = await sync_slots([my_reservation], pool=pg_pool)
 ```
 

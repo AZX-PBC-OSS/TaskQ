@@ -1,10 +1,14 @@
 """Shared test fixtures.
 
-The ``pg_container`` fixture is session-scoped — Postgres takes a few seconds
-to come up and we don't want to repeat that per test. Each test using
-``pg_conn`` gets a fresh connection on the shared container, and the
-``settings`` fixture sets ``TASKQ_*`` env vars so :meth:`TaskQSettings.load`
-sees the per-test values.
+Container topology: ONE Postgres + ONE Dragonfly shared across ALL xdist
+workers of a run (see :mod:`taskq.testing._shared_containers` — the first
+session fixture to take the state-dir file lock starts the pair; every other
+worker reuses it; a refcount tears it down when the last worker finishes).
+Under the old per-worker-session design a ``-n 4`` run booted four Postgres
+plus four Dragonfly containers, and that contention is what made heavy PG
+tests trip internal timeouts intermittently. Per-worker isolation on the
+shared containers is preserved: every module gets its own PG database
+(``pg_dsn``) and every Redis consumer its own logical DB.
 
 Tests that need PG are marked ``integration`` so non-integration runs (e.g.
 ``pytest -m 'not integration'``) skip them entirely.
@@ -24,14 +28,15 @@ import contextlib
 import glob
 import os
 from collections.abc import AsyncIterator, Iterator
+from dataclasses import dataclass
 
 import asyncpg
 import pytest
 import pytest_asyncio
-from testcontainers.postgres import PostgresContainer
 
 from taskq._ids import new_base62
 from taskq.settings import OIDCSettings, SAMLSettings, TaskQSettings
+from taskq.testing._shared_containers import shared_service_pair
 from taskq.testing.actor import (
     EmptyPayload,
     FakeBackend,
@@ -362,22 +367,38 @@ __all__ = [
 ]
 
 
-@pytest.fixture(scope="session")
-def pg_container() -> Iterator[PostgresContainer]:
-    """Boot a Postgres 18 container for the test session.
-
-    ``max_connections=500`` accommodates parallel test workers (``-n auto``
-    on 32-core machines opens 32 x ~22 connections = ~700, which exceeds
-    PostgreSQL's default of 100).
+@dataclass(frozen=True, slots=True)
+class _PgContainerShim:
+    """Minimal shim matching the ``PostgresContainer`` surface TaskQ's tests use:
+    ``get_connection_url()``. Wraps the SHARED container pair's DSN so tests that
+    take ``pg_container`` as a fixture parameter work without starting a
+    per-worker container. The DSN is the asyncpg-friendly ``postgresql://`` form
+    (the real container returns ``postgresql+psycopg2://``; every consumer
+    here replaces that prefix, so the shim returns the replaced form directly).
     """
-    with PostgresContainer(
-        image="postgres:18-alpine",
-        username="taskq",
-        password="taskq",
-        dbname="taskq",
-        command="-c max_connections=1000",
-    ) as container:
-        yield container
+
+    dsn: str
+
+    def get_connection_url(self) -> str:
+        return self.dsn
+
+
+@pytest.fixture(scope="session")
+def pg_container(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Iterator[_PgContainerShim]:
+    """One shared Postgres 18 container for the whole run — every xdist worker.
+
+    Backs onto :func:`taskq.testing._shared_containers.shared_service_pair`
+    (file lock + refcount in the per-run state dir): the first worker to take
+    the lock boots the tuned container (``max_connections=1000`` serving ALL
+    workers on ONE container, plus checkpoint tuning — see that module for the
+    measured rationale), later workers reuse it, and the last worker to finish
+    removes it. Tests that must STOP/PAUSE/MUTATE a Postgres (chaos, ALTER USER)
+    get their own disposable container instead — never this one.
+    """
+    with shared_service_pair(tmp_path_factory.getbasetemp().parent) as services:
+        yield _PgContainerShim(dsn=services.pg_dsn)
 
 
 def _module_db_name(request: pytest.FixtureRequest) -> str:
@@ -432,16 +453,19 @@ def _pg_admin(base_dsn: str, *statements: str) -> None:
 
 
 @pytest.fixture(scope="module")
-def pg_dsn(pg_container: PostgresContainer, request: pytest.FixtureRequest) -> Iterator[str]:
+def pg_dsn(pg_container: _PgContainerShim, request: pytest.FixtureRequest) -> Iterator[str]:
     """Module-scoped database on the shared container; DSN pointing at it.
 
-    Every test module gets its OWN database — schema-level isolation in a
-    shared database still shares cluster-wide state (advisory locks,
-    pg_stat_activity, connection pressure), which let modules clobber each
-    other. The database is dropped (FORCE) on module teardown; a
+    Every test module gets its OWN database on the ONE shared container —
+    schema-level isolation in a shared database still shares cluster-wide
+    state (advisory locks, pg_stat_activity, connection pressure), which let
+    modules clobber each other. The database name is hashed with the xdist
+    worker id, so the same module on parallel workers gets distinct databases
+    too. The database is dropped (FORCE) on module teardown (cheap on the
+    tuned shared cluster — see ``taskq.testing._shared_containers``); a
     drop-if-exists at setup clears stale state from crashed runs.
     """
-    base_dsn = pg_container.get_connection_url().replace("postgresql+psycopg2://", "postgresql://")
+    base_dsn = pg_container.get_connection_url()
     db_name = _module_db_name(request)
 
     _pg_admin(

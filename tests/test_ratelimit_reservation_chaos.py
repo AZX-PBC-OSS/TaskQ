@@ -19,12 +19,13 @@ from datetime import UTC, datetime, timedelta
 
 import asyncpg
 import pytest
-from testcontainers.postgres import PostgresContainer
+from testcontainers.community.postgres import PostgresContainer
 
 from taskq._ids import new_base62, new_uuid
 from taskq.backend.postgres import PostgresBackend
 from taskq.exceptions import ReservationUnavailable
 from taskq.ratelimit.reservation import ConcurrencyReservation
+from taskq.testing._shared_containers import creator_labels
 from taskq.testing.fixtures import ModulePgSchema
 
 pytestmark = pytest.mark.integration
@@ -196,7 +197,7 @@ def _chaos_pg() -> Iterator[PostgresContainer]:  # pyright: ignore[reportUnusedF
         username="taskq",
         password="taskq",
         dbname="taskq",
-    ) as container:
+    ).with_kwargs(labels=creator_labels()) as container:
         yield container
 
 

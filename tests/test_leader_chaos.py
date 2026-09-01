@@ -41,6 +41,7 @@ import pytest
 from taskq._ids import new_base62, new_uuid
 from taskq.backend.clock import SystemClock
 from taskq.backend.postgres import PostgresBackend
+from taskq.testing._shared_containers import creator_labels
 from taskq.testing.fixtures import _create_worker, _open_pg_backend, _open_two_pg_workers
 from taskq.testing.settings import shorten_chaos_settings
 from taskq.worker.deps import WorkerDeps, open_worker_deps
@@ -322,7 +323,7 @@ async def test_tc3_pg_primary_failover() -> None:
     advisory lock implicitly released → next worker on new primary
     acquires within heartbeat_interval."
     """
-    from testcontainers.postgres import PostgresContainer
+    from testcontainers.community.postgres import PostgresContainer
 
     from taskq.migrate import apply_pending
     from taskq.settings import WorkerSettings
@@ -332,7 +333,7 @@ async def test_tc3_pg_primary_failover() -> None:
         username="taskq",
         password="taskq",
         dbname="taskq",
-    ) as own_container:
+    ).with_kwargs(labels=creator_labels()) as own_container:
         own_dsn = own_container.get_connection_url().replace(
             "postgresql+psycopg2://", "postgresql://"
         )

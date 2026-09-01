@@ -1,13 +1,13 @@
 """Tests for the OIDC SSO backend against a mocked OIDC provider.
 
-Uses respx to intercept all httpx traffic — both the direct discovery/JWKS
-fetch (httpx2, aliased to httpx in production code) and authlib's httpx-based
-token endpoint — no real IdP dependency. A test RSA key signs id_tokens.
-
-respx patches httpx's transport, not httpx2's. The production code uses
-``import httpx2 as httpx`` for direct calls. The ``_bridge_httpx2`` fixture
-temporarily replaces ``httpx2.AsyncClient`` with ``httpx.AsyncClient`` so
-respx can intercept direct calls alongside authlib's token-endpoint calls.
+httpx2-native transport mocking — no real IdP dependency. An autouse fixture
+swaps ``httpx2.AsyncClient`` for a subclass that injects an
+``httpx2.MockTransport`` when the caller passes no transport of its own,
+routing every outbound call through an in-memory IdP (discovery, JWKS, token
+endpoint). Production makes its direct discovery/JWKS calls via
+``import httpx2 as httpx``, and authlib 1.8+'s ``AsyncOAuth2Client`` is
+httpx2-based too, so a single interception point inside httpx2 covers both
+call paths with consistent types. A test RSA key signs id_tokens.
 """
 
 from __future__ import annotations
@@ -17,14 +17,11 @@ from contextlib import contextmanager
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-import httpx
 import httpx2
 import pytest
-import respx
 
 pytest.importorskip("fastapi")
 pytest.importorskip("authlib")
-pytest.importorskip("respx")
 
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
@@ -36,16 +33,65 @@ _ISSUER = "https://idp.test.example.com"
 _CLIENT_ID = "test-client"
 
 
-@pytest.fixture(autouse=True)
-def _bridge_httpx2(monkeypatch: pytest.MonkeyPatch) -> None:  # pyright: ignore[reportUnusedFunction]  # Why: pytest autouse fixture consumed by test runner via parameter injection.
-    """Replace httpx2.AsyncClient with httpx.AsyncClient so respx can intercept
-    the direct discovery/JWKS calls that production code makes via httpx2."""
-    monkeypatch.setattr(httpx2, "AsyncClient", httpx.AsyncClient)
-
-
 _CLIENT_SECRET = "test-secret"
 _REDIRECT_URI = "http://localhost:8080/admin/callback"
 _SESSION_SECRET = "x" * 32
+
+
+class _MockIdP:
+    """In-memory OIDC provider: routes ``(method, host, path)`` → canned
+    responses for the ``httpx2.MockTransport`` handler.
+
+    Unmatched requests fail loudly, so a stray production call cannot
+    silently escape to the network.
+    """
+
+    def __init__(self) -> None:
+        self._routes: dict[tuple[str, str, str], httpx2.Response] = {}
+
+    def on(self, method: str, url: str, response: httpx2.Response) -> None:
+        """Register (or override) a canned response for an endpoint URL."""
+        parsed = httpx2.URL(url)
+        self._routes[(method.upper(), parsed.host, parsed.path)] = response
+
+    def reset(self) -> None:
+        self._routes.clear()
+
+    def handler(self, request: httpx2.Request) -> httpx2.Response:
+        route = self._routes.get((request.method, request.url.host, request.url.path))
+        if route is None:
+            raise AssertionError(f"unexpected request: {request.method} {request.url}")
+        return route
+
+
+_idp = _MockIdP()
+
+
+class _IdpTransportAsyncClient(httpx2.AsyncClient):
+    """``httpx2.AsyncClient`` that routes transport-less instances through the
+    mocked IdP, so every outbound call made inside a test is intercepted.
+
+    Why a subclass rather than a bare factory function: authlib's
+    ``AsyncOAuth2Client`` both subclasses the ``httpx2.AsyncClient`` attribute
+    and calls ``httpx2.AsyncClient.__init__`` explicitly, so the patched
+    attribute must remain a real class.
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        if kwargs.get("transport") is None:
+            kwargs["transport"] = httpx2.MockTransport(_idp.handler)
+        super().__init__(*args, **kwargs)
+
+
+@pytest.fixture(autouse=True)
+def _route_httpx2_through_mock_idp(monkeypatch: pytest.MonkeyPatch) -> None:  # pyright: ignore[reportUnusedFunction]  # Why: pytest autouse fixture consumed by test runner via parameter injection.
+    """Swap ``httpx2.AsyncClient`` for the MockTransport-injecting subclass.
+
+    One httpx2-native interception point covers both outbound call paths —
+    production's direct discovery/JWKS fetches and authlib's token exchange —
+    with no cross-module type bridging.
+    """
+    monkeypatch.setattr(httpx2, "AsyncClient", _IdpTransportAsyncClient)
 
 
 def _config(
@@ -88,28 +134,23 @@ def _mock_provider(
     token_response: dict[str, Any] | None = None,
     *,
     discovery: dict[str, Any] | None = None,
-) -> Generator[respx.MockRouter, None, None]:
-    """Mock the OIDC provider: respx intercepts every httpx call the backend
-    makes — discovery, JWKS, and the token endpoint — since the OIDC module
-    uses plain httpx.AsyncClient throughout (authlib's AsyncOAuth2Client
-    subclasses httpx.AsyncClient too, so one interception point covers both).
-    """
+) -> Generator[_MockIdP, None, None]:
+    """Mock the OIDC provider: registers canned discovery, JWKS, and token
+    responses on the in-memory IdP for the duration of the context. Every
+    httpx2 client built while the autouse transport fixture is active is
+    routed through the IdP's MockTransport handler."""
     disc = discovery or make_discovery(_ISSUER)
     tok = token_response or make_token_response()
     jwks_data = jwks_dict()
 
-    router = respx.mock(assert_all_called=False)
-    router.get(f"{_ISSUER}/.well-known/openid-configuration").mock(
-        return_value=httpx.Response(200, json=disc)
-    )
-    router.get(disc["jwks_uri"]).mock(return_value=httpx.Response(200, json=jwks_data))
-    router.post(f"{_ISSUER}/token").mock(return_value=httpx.Response(200, json=tok))
-    router.start()
-
+    _idp.reset()
+    _idp.on("GET", f"{_ISSUER}/.well-known/openid-configuration", httpx2.Response(200, json=disc))
+    _idp.on("GET", disc["jwks_uri"], httpx2.Response(200, json=jwks_data))
+    _idp.on("POST", f"{_ISSUER}/token", httpx2.Response(200, json=tok))
     try:
-        yield router
+        yield _idp
     finally:
-        router.stop()
+        _idp.reset()
 
 
 def _extract_state(location: str) -> str:
@@ -322,8 +363,8 @@ def test_token_endpoint_failure_redirects_with_generic_code() -> None:
         # Override token endpoint to return an error
         state = _do_login(client)
     # Re-mock with a failing token endpoint for the callback
-    with _mock_provider(make_token_response()) as router:
-        router.post(f"{_ISSUER}/token").mock(return_value=httpx.Response(500, text="boom"))
+    with _mock_provider(make_token_response()) as idp:
+        idp.on("POST", f"{_ISSUER}/token", httpx2.Response(500, text="boom"))
         # re-do login to get a fresh state cookie (previous context exited)
         state = _do_login(client)
         resp = client.get(

@@ -162,7 +162,7 @@ async def _probe_pg(dsn: str, *, attempts: int = 30, interval: float = 0.5) -> N
 def e2e_pg(e2e_network: Network) -> Iterator[E2EPg]:
     """Session PG container on the shared network (alias ``pg`` for workers),
     probed with asyncpg before yielding both the host and in-network DSNs."""
-    from testcontainers.postgres import PostgresContainer
+    from testcontainers.community.postgres import PostgresContainer
 
     container = PostgresContainer(
         image=_PG_IMAGE,
@@ -193,35 +193,24 @@ def e2e_dragonfly(e2e_network: Network) -> Iterator[E2EDragonfly]:
     """Session Dragonfly container (Redis-compatible) on the shared network
     (alias ``dragonfly``), started with enough logical DBs for one per test
     module, PING-probed before yielding host and in-network base URLs."""
-    import warnings
+    from testcontainers.community.redis import RedisContainer
 
-    from testcontainers.redis import RedisContainer
-
-    with warnings.catch_warnings():
-        warnings.filterwarnings(
-            "ignore",
-            message=".*wait_container_is_ready.*",
-            category=DeprecationWarning,
-            module="testcontainers.redis",
+    container = RedisContainer(image=_DRAGONFLY_IMAGE).with_command(f"--dbnum {_DRAGONFLY_DBNUM}")
+    container.with_network(e2e_network).with_network_aliases("dragonfly")
+    with container:
+        client = container.get_client()
+        try:
+            if not client.ping():
+                msg = "Dragonfly PING probe returned falsy"
+                raise RuntimeError(msg)
+        finally:
+            client.close()
+        host = container.get_container_host_ip()
+        port = container.get_exposed_port(6379)
+        yield E2EDragonfly(
+            host_url=f"redis://{host}:{port}",
+            network_url=_IN_NETWORK_DRAGONFLY_URL,
         )
-        container = RedisContainer(image=_DRAGONFLY_IMAGE).with_command(
-            f"--dbnum {_DRAGONFLY_DBNUM}"
-        )
-        container.with_network(e2e_network).with_network_aliases("dragonfly")
-        with container:
-            client = container.get_client()
-            try:
-                if not client.ping():
-                    msg = "Dragonfly PING probe returned falsy"
-                    raise RuntimeError(msg)
-            finally:
-                client.close()
-            host = container.get_container_host_ip()
-            port = container.get_exposed_port(6379)
-            yield E2EDragonfly(
-                host_url=f"redis://{host}:{port}",
-                network_url=_IN_NETWORK_DRAGONFLY_URL,
-            )
 
 
 # ── Session: worker image ─────────────────────────────────────────────────

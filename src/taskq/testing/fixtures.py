@@ -35,16 +35,20 @@ The ``memory_jobs`` fixture exposes ``InMemoryBackend`` directly so tests
 can call ``write_cancel_request`` + ``tick_cancel_polling`` without
 depending on ``JobsClient``.
 
-This is the only file in ``taskq.testing`` that may import asyncpg,
-testcontainers, and pytest — and only inside the fixture definitions.
-``InMemoryBackend`` and ``FakeClock`` modules remain stdlib-only.
+This is the only file in ``taskq.testing`` (besides the internal
+:mod:`taskq.testing._shared_containers` machinery it uses) that may import
+asyncpg, testcontainers, docker, filelock, and pytest — and only inside the
+fixture definitions. ``InMemoryBackend`` and ``FakeClock`` modules remain
+stdlib-only.
 """
 
 import asyncio
 import os
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Iterator
 from contextlib import AsyncExitStack, asynccontextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple, Protocol, cast
 from uuid import UUID
 
@@ -57,6 +61,13 @@ from taskq._ids import new_job_id, new_uuid
 from taskq.backend._protocol import JobId
 from taskq.client._enqueuer import SubJobEnqueuer
 from taskq.obs import bind_job_context
+from taskq.testing._shared_containers import (
+    DRAGONFLY_IMAGE,
+    DRAGONFLY_RESOURCE_FLAGS,
+    creator_labels,
+    next_redis_logical_db,
+    shared_service_pair,
+)
 from taskq.testing.clock import FakeClock
 from taskq.testing.in_memory import InMemoryBackend, PassthroughPayload
 from taskq.testing.job_context import JobContext
@@ -70,7 +81,7 @@ from taskq.testing.pg import (
 
 if TYPE_CHECKING:
     import asyncpg
-    from testcontainers.redis import RedisContainer
+    from testcontainers.community.redis import RedisContainer
 
     from taskq.backend import Backend
     from taskq.backend.postgres import PostgresBackend
@@ -515,108 +526,123 @@ async def backend_pair(request: pytest.FixtureRequest) -> AsyncIterator[Backend]
 
 # ── Redis container fixtures ───────────────────────────────────────────────
 
-# Dragonfly is a drop-in Redis replacement (RESP wire protocol, EVALSHA,
-# FLUSHDB — all verified); pinned by tag for reproducibility.
-_DRAGONFLY_IMAGE = "docker.dragonflydb.io/dragonflydb/dragonfly:v1.39.0"
+# Dragonfly image and startup flags live in ``taskq.testing._shared_containers``
+# (``DRAGONFLY_IMAGE``, ``DRAGONFLY_RESOURCE_FLAGS``) — the single source of truth
+# shared by the shared-session pair and the disposable killable container below;
+# see that module for the pinning and resource-sizing rationale.
 
-# Dragonfly sizes its memory requirement as proactor_threads x 0.25GiB and
-# EXITS at startup if host RAM doesn't cover it ("There are N threads, so
-# X GiB are required. Exiting...").  On high-core hosts (32-core WSL2 dev
-# boxes) that demand (8GiB) exceeds what the Docker VM offers, the
-# container dies before readiness, and testcontainers hangs until the
-# pytest timeout — every redis fixture ERRORs.  Pin 2 threads / 512MiB:
-# functional chaos/ratelimit tests need neither cores nor RAM, and the
-# pins make startup deterministic regardless of host size.
-_DRAGONFLY_RESOURCE_FLAGS = "--proactor_threads 2 --maxmemory 512mb"
 
-# Logical DBs available for per-module / per-test allocation (dragonfly
-# caps --dbnum at 1024; DB 0 is reserved for ad-hoc use).
-_REDIS_DB_POOL_SIZE = 1024
+class RedisContainerLike(Protocol):
+    """The ``RedisContainer`` surface ``redis_url_for`` needs — structural, so both
+    the real testcontainers object (``killable_redis_container``) and the shared-pair
+    shim (``redis_container``) satisfy it."""
+
+    def get_container_host_ip(self) -> str: ...
+
+    def get_exposed_port(self, port: int) -> int: ...
+
+
+@dataclass(frozen=True, slots=True)
+class _RedisContainerShim:
+    """Minimal shim matching the interface ``redis_url_for`` needs:
+    ``get_container_host_ip`` and ``get_exposed_port``. Wraps the SHARED Dragonfly
+    (one container for the whole run — see
+    :mod:`taskq.testing._shared_containers`) so tests that take ``redis_container``
+    as a fixture parameter work without starting a per-worker container.
+    ``state_dir`` carries the shared-pair state directory so the logical-DB
+    allocator can draw from the run-wide counter (see ``next_redis_logical_db``).
+    """
+
+    host: str
+    port: int
+    state_dir: Path
+
+    def get_container_host_ip(self) -> str:
+        return self.host
+
+    def get_exposed_port(self, port: int) -> int:
+        return self.port
 
 
 @pytest.fixture(scope="session")
-def redis_container() -> Iterator[RedisContainer]:
-    """Boot a Dragonfly container (Redis-compatible) for the test session.
+def redis_container(tmp_path_factory: pytest.TempPathFactory) -> Iterator[_RedisContainerShim]:
+    """One shared Dragonfly (Redis-compatible) container for the whole run — every
+    xdist worker.
 
-    Started with ``--dbnum 1024`` so every test module (``module_redis_url``)
-    and every test function (``redis_url``) gets its own logical DB — the
-    16-DB default would force sharing, and sharing lets one consumer's
-    FLUSHDB wipe another's mid-run state.
+    Backs onto :func:`taskq.testing._shared_containers.shared_service_pair` (file
+    lock + refcount in the per-run state dir): the first worker to take the lock
+    boots the pair (``--dbnum 1024`` so every consumer — module or test function,
+    across ALL workers — gets its own logical DB; sharing would let one consumer's
+    FLUSHDB wipe another's mid-run state); later workers reuse it; the last worker
+    to finish removes it. The shim exposes ``get_container_host_ip`` /
+    ``get_exposed_port`` so ``redis_url_for(redis_container, db)`` keeps working
+    unchanged.
     """
-    import warnings
-
-    from testcontainers.redis import RedisContainer
-
-    with warnings.catch_warnings():
-        warnings.filterwarnings(
-            "ignore",
-            message=".*wait_container_is_ready.*",
-            category=DeprecationWarning,
-            module="testcontainers.redis",
+    state_dir = tmp_path_factory.getbasetemp().parent
+    with shared_service_pair(state_dir) as services:
+        yield _RedisContainerShim(
+            host=services.redis_host, port=services.redis_port, state_dir=state_dir
         )
-        with RedisContainer(image=_DRAGONFLY_IMAGE).with_command(
-            f"--dbnum 1024 {_DRAGONFLY_RESOURCE_FLAGS}"
-        ) as rc:
-            yield rc
 
 
 @pytest.fixture
 def killable_redis_container() -> Iterator[RedisContainer]:
-    """Function-scoped Dragonfly container for chaos tests that stop/restart Redis.
+    """Function-scoped disposable Dragonfly for chaos tests that stop/restart Redis.
 
-    Chaos tests must NEVER stop the session container (``redis_container``)
-    — every other module shares it, and a slow restart leaks failures into
-    unrelated tests. Each kill test gets its own container (~1s boot).
+    Chaos tests must NEVER stop the shared container (``redis_container``) —
+    every worker of the run shares it, and a slow restart leaks failures into
+    unrelated tests. Each kill test gets its own container (~1s boot). The
+    ownership labels (``creator_labels``) keep a crashed run's leftovers
+    sweepable — Ryuk is disabled process-wide by the shared-container machinery
+    (see :mod:`taskq.testing._shared_containers`), so labeling is what lets the
+    next run's stale sweep remove these once their owner pids are dead.
     """
-    import warnings
+    from testcontainers.community.redis import RedisContainer
 
-    from testcontainers.redis import RedisContainer
-
-    with warnings.catch_warnings():
-        warnings.filterwarnings(
-            "ignore",
-            message=".*wait_container_is_ready.*",
-            category=DeprecationWarning,
-            module="testcontainers.redis",
-        )
-        with RedisContainer(image=_DRAGONFLY_IMAGE).with_command(_DRAGONFLY_RESOURCE_FLAGS) as rc:
-            yield rc
+    with (
+        RedisContainer(image=DRAGONFLY_IMAGE)
+        .with_command(DRAGONFLY_RESOURCE_FLAGS)
+        .with_kwargs(labels=creator_labels())
+    ) as rc:
+        yield rc
 
 
-def redis_url_for(container: RedisContainer, db: int = 0) -> str:
-    """Build a ``redis://host:port/{db}`` URL for *container*."""
+def redis_url_for(container: RedisContainerLike, db: int = 0) -> str:
+    """Build a ``redis://host:port/{db}`` URL for *container*.
+
+    Accepts anything with the ``RedisContainer`` host/port surface — the real
+    testcontainers object or the shared-pair shim.
+    """
     host = container.get_container_host_ip()
     port = container.get_exposed_port(6379)
     return f"redis://{host}:{port}/{db}"
 
 
 @pytest.fixture
-def redis_url(redis_container: RedisContainer) -> str:
+def redis_url(redis_container: _RedisContainerShim) -> str:
     """Per-test Redis URL with a UNIQUE logical DB — a guaranteed clean slate.
 
-    Each test function gets its own DB (never reused within the session),
-    so no setup/teardown flushing is needed and no two tests can observe
-    each other's keys.
+    Each test function gets its own DB (never reused within the run), so no
+    setup/teardown flushing is needed and no two tests can observe each other's
+    keys. DB indices are drawn from the run-wide counter (see
+    ``next_redis_logical_db``) so consumers on different xdist workers can never
+    collide inside the ONE shared Dragonfly.
     """
-    return redis_url_for(redis_container, db=_next_redis_db())
+    return redis_url_for(redis_container, db=_next_redis_db(redis_container))
 
 
-# ── Redis DB counter (module-level) ─────────────────────────────────────
+# ── Redis DB counter ──────────────────────────────────────────────────────
 
-# One logical DB per consumer (test module OR test function); the
-# container runs --dbnum 1024. No wrap-around: sharing a DB between
-# consumers would let one consumer's FLUSHDB wipe another's mid-run state.
-_redis_db_index: int = 0
+# One logical DB per consumer (test module OR test function) across EVERY xdist
+# worker of the run; the shared container runs --dbnum 1024. Allocation and the
+# never-reuse rule live in ``taskq.testing._shared_containers.next_redis_logical_db``
+# (file-backed under the pair's lock — a per-process counter would hand the SAME
+# DB to different workers' consumers on the shared container).
 
 
-def _next_redis_db() -> int:
-    """Return the next Redis DB id (1-1023), never reusing one."""
-    global _redis_db_index
-    db = _redis_db_index + 1
-    if db >= _REDIS_DB_POOL_SIZE:
-        raise RuntimeError(f"exhausted Redis logical DBs ({_REDIS_DB_POOL_SIZE})")
-    _redis_db_index += 1
-    return db
+def _next_redis_db(container: _RedisContainerShim) -> int:
+    """Next never-reused logical DB id on the shared Dragonfly (1-1023)."""
+    return next_redis_logical_db(container.state_dir)
 
 
 def _schema_name_from_test(request: pytest.FixtureRequest) -> str:
@@ -705,17 +731,18 @@ async def module_pg_schema(
 @pytest.fixture(scope="module")
 def module_redis_url(
     request: pytest.FixtureRequest,
-    redis_container: RedisContainer,
+    redis_container: _RedisContainerShim,
 ) -> Iterator[str]:
     """Module-scoped Redis URL with a unique DB per test file.
 
-    Assigns a unique Redis DB id (1-1023, never reused) via counter and
-    returns ``redis://host:port/{db}``. FLUSHDB at setup (clean slate even
-    after a crashed run) and again on teardown.
+    Assigns a unique Redis DB id (1-1023, never reused, unique across ALL
+    workers of the run — see ``_next_redis_db``) and returns
+    ``redis://host:port/{db}``. FLUSHDB at setup (clean slate even after a
+    crashed run) and again on teardown.
     """
     import redis as redis_sync
 
-    url = redis_url_for(redis_container, db=_next_redis_db())
+    url = redis_url_for(redis_container, db=_next_redis_db(redis_container))
     with redis_sync.from_url(url, decode_responses=False) as client:
         client.flushdb()
     yield url

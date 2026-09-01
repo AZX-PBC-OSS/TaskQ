@@ -125,7 +125,7 @@ class _StubPubSub:
       - ``_EXHAUST`` — signals end-of-stream: subsequent calls return None
     """
 
-    def __init__(self, messages: list[dict[str, Any] | None | object]) -> None:
+    def __init__(self, messages: list[dict[str, Any] | object | None]) -> None:
         self._messages = list(messages)
         self._pos = 0
         self.subscribed_channels: list[str | bytes] = []
@@ -171,7 +171,7 @@ class _HungPubSub(_StubPubSub):
 
     def __init__(
         self,
-        messages: list[dict[str, Any] | None | object],
+        messages: list[dict[str, Any] | object | None],
         *,
         subscribe_error: Exception | None = None,
     ) -> None:

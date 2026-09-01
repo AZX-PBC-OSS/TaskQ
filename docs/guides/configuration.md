@@ -20,7 +20,7 @@ dotenvmodel resolves a cascading chain of `.env` files at load time:
 
 **Precedence.** Process environment variables beat the merged `.env` cascade, which beats field defaults (dotenvmodel 1.0.0 semantics, adopted by TaskQ). To opt back into the older files-beat-env-vars behaviour, set `DOTENV_OVERRIDE=true` or call `TaskQSettings.load(override=True)`.
 
-**Load-time knobs are process-environment-only.** `ENV` and the `DOTENV_*` variables (`DOTENV_OVERRIDE`, `DOTENV_LOAD_LOCAL`, `DOTENV_READ_DOTFILES`, `DOTENV_DIR`) are read from the process environment — or passed explicitly to `load()` — *before* any `.env` file is read. Setting them inside a `.env` file has no effect on that load: a value in a file cannot influence which files are selected or how they are applied.
+**Load-time knobs are process-environment-only.** `ENV` and the `DOTENV_*` variables (`DOTENV_OVERRIDE`, `DOTENV_READ_DOTFILES`, `DOTENV_READ_ENVIRON`, `DOTENV_LOAD_LOCAL`, `DOTENV_DIR`) are read from the process environment — or passed explicitly to `load()` — *before* any `.env` file is read. Setting them inside a `.env` file has no effect on that load: a value in a file cannot influence which files are selected or how they are applied. The two read knobs are symmetric: `read_dotfiles=False` skips the `.env` cascade (fields resolve from the process environment and defaults); `read_environ=False` skips the process environment (fields resolve from `.env` files and defaults).
 
 When the resolved env is `test` (case-insensitive), `.env.local` and `.env.test.local` are skipped, so gitignored local overrides cannot decide test outcomes. Restore them with `DOTENV_LOAD_LOCAL=true` (or `load_local=True`).
 
@@ -456,9 +456,10 @@ Subclass `WorkerSettings` to add application-specific config alongside TaskQ set
 from taskq.settings import WorkerSettings
 from dotenvmodel import Field
 
+
 class AppSettings(WorkerSettings):
     stripe_api_key: str = Field(description="Stripe secret key")
     sentry_dsn: str | None = Field(default=None)
 ```
 
-Load with `AppSettings.load()` — it forwards dotenvmodel 1.0.0's full parameter surface (`env`, `override`, `env_dir`, `read_dotfiles`, `load_local`). All `TASKQ_*` validation constraints still apply. Additional fields follow the same dotenvmodel env-var resolution and `.env` cascade. String field defaults interpolate `${VAR}` references at load time (an unset reference resolves to `""` rather than keeping the literal `${...}` text).
+Load with `AppSettings.load()` — it forwards dotenvmodel's full parameter surface (`env`, `override`, `env_dir`, `read_dotfiles`, `read_environ`, `load_local`). All `TASKQ_*` validation constraints still apply. Additional fields follow the same dotenvmodel env-var resolution and `.env` cascade. String field defaults interpolate `${VAR}` references at load time (an unset reference resolves to `""` rather than keeping the literal `${...}` text).

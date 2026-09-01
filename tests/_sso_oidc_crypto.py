@@ -1,8 +1,8 @@
 """Shared fixtures for OIDC SSO tests: test RSA key, JWKS, signed id_tokens.
 
 Generates a single RSA keypair at module import and provides helpers to build
-signed id_tokens and JWKS dicts so tests can mock an OIDC provider via respx
-without any real IdP dependency.
+signed id_tokens and JWKS dicts so tests can mock an OIDC provider without
+any real IdP dependency.
 """
 
 from __future__ import annotations

@@ -1145,6 +1145,18 @@ def test_load_read_dotfiles_false_ignores_env_files(
     assert s.schema_name == "taskq"
 
 
+def test_load_read_environ_false_ignores_process_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``read_environ=False`` skips the process environment — a real env
+    var loses to the ``.env`` file value, the mirror image of the default
+    precedence."""
+    _chdir_with_env_file(tmp_path, monkeypatch)
+    monkeypatch.setenv("TASKQ_SCHEMA_NAME", "env_value")
+    s = TaskQSettings.load(read_environ=False)
+    assert s.schema_name == "file_value"
+
+
 # ── .local skip under ENV=test ──────────────────────────────────────────
 
 

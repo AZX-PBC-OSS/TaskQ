@@ -23,13 +23,14 @@ import asyncpg
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
-from testcontainers.postgres import PostgresContainer
+from testcontainers.community.postgres import PostgresContainer
 
 from taskq._ids import new_base62, new_uuid
 from taskq.backend.clock import SystemClock
 from taskq.backend.postgres import PostgresBackend
 from taskq.constants import wake_channel
 from taskq.settings import WorkerSettings
+from taskq.testing._shared_containers import creator_labels
 from taskq.testing.fixtures import _create_worker
 from taskq.testing.settings import make_integration_settings
 from taskq.worker.notify import _active_listeners as _active_notify_listeners
@@ -105,7 +106,7 @@ def pg_container_function_scoped() -> Iterator[PostgresContainer]:
         username="taskq",
         password="taskq",
         dbname="taskq",
-    )
+    ).with_kwargs(labels=creator_labels())
     container.with_bind_ports(5432, free_host_port())
     with container:
         yield container

@@ -8,7 +8,7 @@ import socket
 import subprocess
 import time
 import uuid
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -18,7 +18,6 @@ import httpx
 import pytest
 import pytest_asyncio
 from fastapi import FastAPI
-from testcontainers.postgres import PostgresContainer
 
 from taskq._ids import new_base62
 from taskq._json import dumps_str
@@ -73,25 +72,14 @@ def _make_backend(pool: asyncpg.Pool) -> PostgresBackend:
     )
 
 
-# ── Shared PG container (session-scoped) ──────────────────────────────────
-
-
-@pytest.fixture(scope="session")
-def _admin_pg_container() -> Iterator[PostgresContainer]:  # pyright: ignore[reportUnusedFunction]  # Why: pytest fixture consumed by test runner via parameter injection
-    with PostgresContainer(
-        image="postgres:18-alpine",
-        username="taskq",
-        password="taskq",
-        dbname="taskq",
-    ) as container:
-        yield container
-
-
-@pytest.fixture(scope="session")
-def _admin_pg_dsn(_admin_pg_container: PostgresContainer) -> str:  # pyright: ignore[reportUnusedFunction]  # Why: pytest fixture consumed by test runner via parameter injection
-    return _admin_pg_container.get_connection_url().replace(
-        "postgresql+psycopg2://", "postgresql://"
-    )
+# ── Shared PG (session-scoped, via tests/conftest.py's pg_dsn) ────────────
+#
+# This module previously booted its OWN session Postgres — under the shared-
+# container topology that would be a second long-lived Postgres for the run
+# (and under the old per-worker topology it already was a redundant extra).
+# The module-scoped pg_dsn fixture gives this file its own database on the
+# ONE shared container, which is strictly better isolation than the previous
+# same-container-same-database setup.
 
 
 # ── App factory ────────────────────────────────────────────────────────────
@@ -127,16 +115,16 @@ def _make_app(
 
 
 @pytest_asyncio.fixture
-async def pool(_admin_pg_dsn: str) -> AsyncIterator[asyncpg.Pool]:
+async def pool(pg_dsn: str) -> AsyncIterator[asyncpg.Pool]:
     """Fresh migrated schema + asyncpg pool per test."""
-    setup = await asyncpg.connect(_admin_pg_dsn)
+    setup = await asyncpg.connect(pg_dsn)
     try:
         await setup.execute(f'DROP SCHEMA IF EXISTS "{_SCHEMA_LABEL}" CASCADE')
         await apply_pending(setup, schema=_SCHEMA_LABEL)
     finally:
         await setup.close()
 
-    pg_pool = await asyncpg.create_pool(_admin_pg_dsn, min_size=1, max_size=4)
+    pg_pool = await asyncpg.create_pool(pg_dsn, min_size=1, max_size=4)
     assert pg_pool is not None
     try:
         yield pg_pool
@@ -490,9 +478,9 @@ async def test_leader_page_no_leader(pool: asyncpg.Pool) -> None:
 
 
 @pytest_asyncio.fixture
-async def _migrated_schema_for_ui_serve(_admin_pg_dsn: str) -> None:  # pyright: ignore[reportUnusedFunction]  # Why: pytest fixture consumed by test runner via parameter injection
+async def _migrated_schema_for_ui_serve(pg_dsn: str) -> None:  # pyright: ignore[reportUnusedFunction]  # Why: pytest fixture consumed by test runner via parameter injection
     """Ensure the test schema exists (subprocess test needs a real schema)."""
-    conn = await asyncpg.connect(_admin_pg_dsn)
+    conn = await asyncpg.connect(pg_dsn)
     try:
         await conn.execute(f'DROP SCHEMA IF EXISTS "{_SCHEMA_LABEL}" CASCADE')
         await apply_pending(conn, schema=_SCHEMA_LABEL)
@@ -501,9 +489,7 @@ async def _migrated_schema_for_ui_serve(_admin_pg_dsn: str) -> None:  # pyright:
 
 
 @pytest.mark.asyncio
-async def test_taskq_ui_serve_starts(
-    _admin_pg_dsn: str, _migrated_schema_for_ui_serve: None
-) -> None:
+async def test_taskq_ui_serve_starts(pg_dsn: str, _migrated_schema_for_ui_serve: None) -> None:
     """taskq ui serve starts and responds to GET /admin/queues."""
     import asyncio
     import os
@@ -529,7 +515,7 @@ async def test_taskq_ui_serve_starts(
             "taskq.cli",
             "ui",
             "serve",
-            f"--pg-dsn={_admin_pg_dsn}",
+            f"--pg-dsn={pg_dsn}",
             f"--schema={_SCHEMA_LABEL}",
             "--host=127.0.0.1",
             f"--port={port}",
