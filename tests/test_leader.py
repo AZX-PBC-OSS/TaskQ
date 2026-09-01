@@ -1030,26 +1030,28 @@ async def test_prune_loop_gates_on_is_leader() -> None:
 # ── Injected Clock controls sweep and wake-loop timestamps ────────
 
 
-async def test_scheduled_wake_uses_injected_clock() -> None:
-    """_scheduled_wake_loop passes self._clock.now() to
-    scheduled_to_pending — the value matches the FakeClock, not real time."""
+async def test_scheduled_wake_passes_no_clock_to_sweep() -> None:
+    """_scheduled_wake_loop drives scheduled_to_pending with NO clock
+    value — the backend's own clock is the arbiter (seam removal: a
+    caller-supplied ``now`` was ignored by PG and honored by InMemory, so
+    the two backends never exercised the same contract)."""
     clock = FakeClock(datetime(2025, 1, 1, tzinfo=UTC))
     backend = InMemoryBackend(clock=clock)
     deps = _make_deps(is_leader=True, heartbeat_interval=0.01)
     leader = MaintenanceLeader(deps, new_uuid(), backend, clock=clock)
 
-    captured_now: list[datetime] = []
+    called: list[bool] = []
 
-    async def _capture_scheduled_to_pending(**kw: object) -> int:
-        captured_now.append(kw.get("now"))  # type: ignore[arg-type]  # Why: test records the value passed; object is fine for capture.
+    async def _capture_scheduled_to_pending() -> int:
+        called.append(True)
         return 0
 
-    backend.scheduled_to_pending = _capture_scheduled_to_pending  # type: ignore[method-assign]  # Why: test-only interception of the now parameter.
+    backend.scheduled_to_pending = _capture_scheduled_to_pending  # type: ignore[method-assign]  # Why: test-only interception of the sweep call.
 
     shutdown = asyncio.Event()
     task = asyncio.create_task(leader._scheduled_wake_loop(shutdown))
     for _ in range(200):
-        if captured_now:
+        if called:
             break
         await asyncio.sleep(0.01)
     shutdown.set()
@@ -1057,37 +1059,36 @@ async def test_scheduled_wake_uses_injected_clock() -> None:
     with contextlib.suppress(asyncio.CancelledError):
         await task
 
-    assert captured_now
-    assert captured_now[0] == datetime(2025, 1, 1, tzinfo=UTC)
+    assert called
 
 
-async def test_sweep_loop_uses_injected_clock() -> None:
-    """_sweep_loop passes self._clock.now() to
-    reclaim_expired_locks and deadline_sweep — the value matches the
-    FakeClock, not real time."""
+async def test_sweep_loop_passes_no_clock_to_sweeps() -> None:
+    """_sweep_loop drives reclaim_expired_locks and deadline_sweep with NO
+    clock value — the backend's own clock is the arbiter (same seam
+    removal as the scheduled-wake loop)."""
     clock = FakeClock(datetime(2025, 1, 1, tzinfo=UTC))
     backend = InMemoryBackend(clock=clock)
     deps = _make_deps(is_leader=True, heartbeat_interval=0.01)
     leader = MaintenanceLeader(deps, new_uuid(), backend, clock=clock)
 
-    reclaim_now: list[datetime] = []
-    deadline_now: list[datetime] = []
+    reclaim_calls: list[bool] = []
+    deadline_calls: list[bool] = []
 
-    async def _capture_reclaim(now_utc: datetime, cg: timedelta, ug: timedelta) -> int:
-        reclaim_now.append(now_utc)
+    async def _capture_reclaim(cg: timedelta, ug: timedelta) -> int:
+        reclaim_calls.append(True)
         return 0
 
-    async def _capture_deadline(now_utc: datetime) -> int:
-        deadline_now.append(now_utc)
+    async def _capture_deadline() -> int:
+        deadline_calls.append(True)
         return 0
 
-    backend.reclaim_expired_locks = _capture_reclaim  # type: ignore[method-assign]  # Why: test-only interception of the now parameter.
-    backend.deadline_sweep = _capture_deadline  # type: ignore[method-assign]  # Why: test-only interception of the now parameter.
+    backend.reclaim_expired_locks = _capture_reclaim  # type: ignore[method-assign]  # Why: test-only interception of the sweep call.
+    backend.deadline_sweep = _capture_deadline  # type: ignore[method-assign]  # Why: test-only interception of the sweep call.
 
     shutdown = asyncio.Event()
     task = asyncio.create_task(leader._sweep_loop(shutdown))
     for _ in range(200):
-        if reclaim_now and deadline_now:
+        if reclaim_calls and deadline_calls:
             break
         await asyncio.sleep(0.01)
     shutdown.set()
@@ -1095,10 +1096,8 @@ async def test_sweep_loop_uses_injected_clock() -> None:
     with contextlib.suppress(asyncio.CancelledError):
         await task
 
-    assert len(reclaim_now) >= 1
-    assert reclaim_now[0] == datetime(2025, 1, 1, tzinfo=UTC)
-    assert len(deadline_now) >= 1
-    assert deadline_now[0] == datetime(2025, 1, 1, tzinfo=UTC)
+    assert reclaim_calls
+    assert deadline_calls
 
 
 # ── _schedule_utc_to_cron ────────────────────────────────────────────

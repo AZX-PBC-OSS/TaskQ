@@ -2,9 +2,15 @@
 
 These tests require a running Postgres container (testcontainers).
 Marked ``integration`` so they are skipped in non-integration runs.
+
+Also pins the per-run isolation of the hashed module-database names this
+module's ``pg_dsn`` fixture derives (see
+``test_module_db_names_diverge_across_serial_run_tokens``): the redteam
+repro of the concurrent-serial-runs collision landed on THIS module
+(``tq_db_5a19dc6e3f4c``), so the guards live next to the seam they protect.
 """
 
-# ruff: noqa: SIM117 # Why: pytest.raises must wrap the async with statement; combined with-form is not valid here.
+# Why: pytest.raises must wrap the async with statement; combined with-form is not valid here.
 
 import asyncio
 from collections.abc import Iterator
@@ -125,6 +131,11 @@ async def test_dispatcher_heartbeat_use_direct_dsn(pg_dsn: str) -> None:
 async def test_heartbeat_pool_command_timeout(pg_dsn: str) -> None:
     """heartbeat_pool has command_timeout=2s; a stalled query is cancelled.
 
+    The pre-assertion fails fast if a regression ever drops command_timeout
+    from the pool factory: without it the pg_sleep(60) below would burn the
+    full 60s before failing (asyncpg's default is no timeout), and this test
+    would take 2x60s per run instead of ~2s.
+
     The sleep length sets the stall-tolerance headroom, not the property:
     asyncpg enforces command_timeout with an event-loop timer, so a loop
     stalled past (sleep - timeout) lets the result beat the timer and the
@@ -135,6 +146,10 @@ async def test_heartbeat_pool_command_timeout(pg_dsn: str) -> None:
     settings = make_integration_settings(pg_dsn)
 
     async with open_worker_deps(settings) as deps:
+        # Fail fast: the pool must carry the timeout before the 60s probe.
+        assert deps.heartbeat_pool._connect_kwargs["command_timeout"] == 2, (  # type: ignore[attr-defined] # Why: asyncpg exposes no public command_timeout accessor; Pool._connect_kwargs is the constructor-kwargs store (pinned by the pg_sleep probe below).
+            "heartbeat_pool lost command_timeout=2 — pg_sleep(60) would hang for the full minute"
+        )
         async with deps.heartbeat_pool.acquire() as conn:
             # asyncpg raises TimeoutError when command_timeout fires mid-query
             with pytest.raises((asyncpg.QueryCanceledError, TimeoutError)):
@@ -149,6 +164,10 @@ async def test_leader_conn_command_timeout(pg_dsn: str) -> None:
     through the same factory, must be bounded or a stalled PG hangs those
     loops past the detector-2 budget.
 
+    The pre-assertion fails fast if a regression ever drops command_timeout
+    from the leader factory (see test_heartbeat_pool_command_timeout for
+    the 2x60s burn it prevents).
+
     pg_sleep(60), not 5: asyncpg enforces command_timeout with an
     event-loop timer, so a loop stalled past (sleep - timeout) lets the
     result beat the timer and the query completes uncanceled (proven by
@@ -160,6 +179,10 @@ async def test_leader_conn_command_timeout(pg_dsn: str) -> None:
 
     async with open_worker_deps(settings) as deps:
         assert deps.leader_conn is not None
+        # Fail fast: the conn must carry the timeout before the 60s probe.
+        assert deps.leader_conn._config.command_timeout == 2.0, (  # type: ignore[attr-defined] # Why: asyncpg exposes no public command_timeout accessor; Connection._config is the connect-time configuration record carrying it (pinned by the pg_sleep probe below).
+            "leader_conn lost dispatcher_command_timeout — pg_sleep(60) would hang for the full minute"
+        )
         with pytest.raises((asyncpg.QueryCanceledError, TimeoutError)):
             await deps.leader_conn.execute("SELECT pg_sleep(60)")
 

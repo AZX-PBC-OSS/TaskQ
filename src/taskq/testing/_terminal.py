@@ -6,7 +6,7 @@ following the :mod:`taskq.testing._runner` pattern.
 """
 
 from dataclasses import replace
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import TYPE_CHECKING, Literal
 from uuid import UUID
 
@@ -147,7 +147,7 @@ async def _mark_failed_or_retry(
     job_id: JobId,
     worker_id: UUID,
     error_info: ErrorInfo,
-    next_scheduled_at: datetime | None,
+    retry_delay: timedelta | None,
     progress_seq: int = 0,
     progress_state: dict[str, object] | None = None,
 ) -> JobRow:
@@ -161,16 +161,63 @@ async def _mark_failed_or_retry(
     if row.locked_by_worker != worker_id:
         raise WorkerOwnershipMismatch(job_id, worker_id, row.locked_by_worker)
 
-    if next_scheduled_at is not None:
+    if retry_delay is not None:
         now = self._clock.now()
+        new_scheduled = now + retry_delay
+        # Mirror the PG mark_retry deadline CTE: the backend's own clock is
+        # the single arbiter — a retry that would land past
+        # schedule_to_close fails with DeadlineExceeded instead.
+        if row.schedule_to_close is not None and new_scheduled > row.schedule_to_close:
+            merged_progress = _merge_progress(row.progress_state, progress_state)
+            updated = replace(
+                row,
+                status="failed",
+                finished_at=now,
+                locked_by_worker=None,
+                lock_expires_at=None,
+                last_heartbeat_at=None,
+                error_class="DeadlineExceeded",
+                error_message="schedule_to_close reached before next retry dispatch",
+                progress_seq=progress_seq,
+                progress_state=merged_progress,
+            )
+            self._jobs[job_id] = updated
+            self._append_attempt(
+                job_id=job_id,
+                attempt=row.attempt,
+                started_at=row.started_at,
+                now=now,
+                outcome="failed",
+                error_class="DeadlineExceeded",
+                error_message="schedule_to_close reached before next retry dispatch",
+                error_traceback=None,
+                worker_id=worker_id,
+            )
+            self._append_state_change_event(
+                job_id=job_id,
+                from_state="running",
+                to_state="failed",
+                now=now,
+                error_class="DeadlineExceeded",
+                worker_id=worker_id,
+            )
+            logger.debug(
+                "state_change",
+                kind="state_change",
+                from_state="running",
+                to_state="failed",
+                job_id=str(job_id),
+            )
+            return updated
+
         retry_status: Literal["scheduled", "pending"] = (
-            "scheduled" if next_scheduled_at > now else "pending"
+            "scheduled" if retry_delay > timedelta(0) else "pending"
         )
         merged_progress = _merge_progress(row.progress_state, progress_state)
         updated = replace(
             row,
             status=retry_status,
-            scheduled_at=next_scheduled_at,
+            scheduled_at=new_scheduled,
             finished_at=None,
             locked_by_worker=None,
             lock_expires_at=None,

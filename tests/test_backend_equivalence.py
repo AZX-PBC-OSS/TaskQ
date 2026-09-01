@@ -111,16 +111,18 @@ async def _force_job_state(backend: Backend, job_id: JobId, **overrides: object)
 async def _advance_and_promote(backend: Backend, target_time: datetime) -> int:
     """Advance to *target_time* and promote scheduled jobs to pending.
 
-    InMemoryBackend: advances the FakeClock and calls ``scheduled_to_pending``.
+    InMemoryBackend: advances the FakeClock and calls ``scheduled_to_pending``
+    (the backend's injected clock is the arbiter — the same contract PG
+    implements with its server clock).
     PostgresBackend: forces all scheduled jobs' ``scheduled_at`` to the past
-    (so server-side ``now()`` will find them eligible) and calls
+    (so the server-side predicate will find them eligible) and calls
     ``scheduled_to_pending``.
     """
     if isinstance(backend, InMemoryBackend):
         backend.advance_clock_to(target_time)
-        return await backend.scheduled_to_pending(target_time)
+        return await backend.scheduled_to_pending()
     # PG: server-side now() controls promotion; force scheduled_at to the past
-    # so that scheduled_to_pending(now()) will promote the job.
+    # so that scheduled_to_pending() will promote the job.
     import asyncpg
 
     schema: str = backend._schema_name  # type: ignore[reportPrivateUsage] # Why: PG-path helper
@@ -131,14 +133,12 @@ async def _advance_and_promote(backend: Backend, target_time: datetime) -> int:
         # and NTP drift are common causes; see tests/conftest.py's startup
         # clock-divergence check), so the job must be pushed firmly into
         # the server clock's past for the sweep's server-side
-        # `scheduled_at <= clock_timestamp()` predicate to pick it up — the
-        # PG implementation ignores the caller-supplied now() argument
-        # entirely.
+        # `scheduled_at <= clock_timestamp()` predicate to pick it up.
         await conn.execute(
             f"UPDATE \"{schema}\".jobs SET scheduled_at = now() - interval '5 seconds' "
             f"WHERE status = 'scheduled'"
         )
-    return await backend.scheduled_to_pending(datetime.now(UTC))
+    return await backend.scheduled_to_pending()
 
 
 async def _get_events(backend: Backend, job_id: JobId) -> list[EventRow]:
@@ -964,7 +964,7 @@ async def test_mark_succeeded_transitions_row_and_emits_attempt(
 async def test_mark_failed_or_retry_terminal_branch(
     backend_pair: Backend,
 ) -> None:
-    """mark_failed_or_retry(next_scheduled_at=None): running → failed;
+    """mark_failed_or_retry(retry_delay=None): running → failed;
     attempt row outcome='failed'; row carries error fields.
     Both backends must agree.
     """
@@ -976,7 +976,7 @@ async def test_mark_failed_or_retry_terminal_branch(
         error_traceback=None,
     )
 
-    row = await backend_pair.mark_failed_or_retry(job_id, wid, error_info, next_scheduled_at=None)
+    row = await backend_pair.mark_failed_or_retry(job_id, wid, error_info, retry_delay=None)
     assert row.status == "failed"
     # locked=True: mark_failed_or_retry does not clear lock fields (PG SQL omits them)
     _assert_job_row(
@@ -1085,9 +1085,7 @@ async def test_mark_failed_or_retry_ownership_mismatch_raises(backend_pair: Back
     import pytest
 
     with pytest.raises(WorkerOwnershipMismatch) as exc_info:
-        await backend_pair.mark_failed_or_retry(
-            job_id, wrong_wid, error_info, next_scheduled_at=None
-        )
+        await backend_pair.mark_failed_or_retry(job_id, wrong_wid, error_info, retry_delay=None)
     exc = exc_info.value
     assert exc.job_id == job_id
     assert exc.expected == wrong_wid
@@ -1121,9 +1119,8 @@ async def test_reclaim_expired_locks_sets_worker_crashed_error_class(
     expired_at = _now_for(backend_pair) - timedelta(seconds=1)
     await _force_job_state(backend_pair, job_id, lock_expires_at=expired_at)
 
-    # Reclaim expired locks
+    # Reclaim expired locks (the backend's own clock is the arbiter)
     reclaimed = await backend_pair.reclaim_expired_locks(
-        _now_for(backend_pair),
         cancel_grace=timedelta(seconds=30),
         cleanup_grace=timedelta(seconds=10),
     )
@@ -1160,7 +1157,6 @@ async def test_reclaim_expired_locks_writes_job_events_row(
     await _force_job_state(backend_pair, job_id, lock_expires_at=expired_at)
 
     await backend_pair.reclaim_expired_locks(
-        _now_for(backend_pair),
         cancel_grace=timedelta(seconds=30),
         cleanup_grace=timedelta(seconds=10),
     )
@@ -1191,7 +1187,6 @@ async def test_reclaim_expired_locks_retryable_job_writes_events_row(
     await _force_job_state(backend_pair, job_id, lock_expires_at=expired_at)
 
     await backend_pair.reclaim_expired_locks(
-        _now_for(backend_pair),
         cancel_grace=timedelta(seconds=30),
         cleanup_grace=timedelta(seconds=10),
     )
@@ -1225,7 +1220,6 @@ async def test_poll_reclaim_events_equivalence(backend_pair: Backend) -> None:
     await _force_job_state(backend_pair, job_id, lock_expires_at=expired_at)
 
     await backend_pair.reclaim_expired_locks(
-        _now_for(backend_pair),
         cancel_grace=timedelta(seconds=30),
         cleanup_grace=timedelta(seconds=10),
     )
@@ -1310,7 +1304,7 @@ async def test_write_cancel_request_on_failed_job_returns_false(
         error_message="fail",
         error_traceback=None,
     )
-    await backend_pair.mark_failed_or_retry(job_id, wid, error_info, next_scheduled_at=None)
+    await backend_pair.mark_failed_or_retry(job_id, wid, error_info, retry_delay=None)
 
     result = await backend_pair.write_cancel_request(job_id, reason=None)
     assert result is False
@@ -1578,7 +1572,7 @@ async def test_eq7_per_actor_row_count_cap(backend_pair: Backend) -> None:
 async def test_indefinite_tier_fail_retry_succeed(backend_pair: Backend) -> None:
     """Indefinite-tier cross-backend equivalence: enqueue a job with
     schedule_to_close in the future, dispatch, fail via mark_failed_or_retry
-    with next_scheduled_at, re-dispatch, and succeed. Validates both
+    with a retry delay, re-dispatch, and succeed. Validates both
     backends produce consistent row state across the indefinite retry cycle."""
     from taskq.backend._protocol import ErrorInfo as _ErrorInfo
     from taskq.retry import RetryPolicy as _RetryPolicy
@@ -1604,14 +1598,18 @@ async def test_indefinite_tier_fail_retry_succeed(backend_pair: Backend) -> None
     policy = _RetryPolicy(kind="indefinite", time_budget=timedelta(hours=2), jitter=0.0)
     from taskq.retry import compute_backoff as _compute_backoff
 
-    next_scheduled = _now_for(backend_pair) + timedelta(seconds=1) + _compute_backoff(policy, 1)
-    row_after = await backend_pair.mark_failed_or_retry(job_id, wid, error_info, next_scheduled)
+    # The decision payload is a DELAY — the backend's own clock derives
+    # scheduled_at from it (single arbiter).
+    retry_delay = _compute_backoff(policy, 1)
+    row_after = await backend_pair.mark_failed_or_retry(job_id, wid, error_info, retry_delay)
     assert row_after.status == "scheduled"
     assert row_after.attempt == 1
 
     # Advance/promote: force scheduled_at to the past for PG, advance fake
     # clock for InMemory, then call scheduled_to_pending.
-    await _advance_and_promote(backend_pair, next_scheduled + timedelta(seconds=1))
+    await _advance_and_promote(
+        backend_pair, _now_for(backend_pair) + retry_delay + timedelta(seconds=1)
+    )
     dispatched = await backend_pair.dispatch_batch(
         worker_id=wid,
         queues=["default"],
@@ -2093,3 +2091,129 @@ async def test_eq_active_true_with_created_at_desc(backend_pair: Backend) -> Non
         JobFilter(actor="actor_a", active=True, order_by=JobSortField.CREATED_AT_DESC, limit=10)
     )
     assert [r.id for r in rows] == [newest_active, middle_active, oldest_active]
+
+
+# ── enqueue_batch_fast: no conflict arbiter — duplicates abort the batch ──
+
+
+async def test_enqueue_batch_fast_intra_batch_duplicate_aborts_entire_batch(
+    backend_pair: Backend,
+) -> None:
+    """D7 parity pin: COPY has no ON CONFLICT arbiter, so a duplicate
+    ``idempotency_key`` WITHIN one batch violates the unique index and
+    aborts the ENTIRE batch — all-or-nothing, nothing written, and PG
+    surfaces it as ``asyncpg.UniqueViolationError``.  Pre-fix the InMemory
+    mirror silently deduplicated item-by-item and returned a count that
+    included rows PG would never have written (count=2 for a batch whose
+    every row PG would have rejected)."""
+    import asyncpg
+
+    key = f"dup-intra-{new_uuid()}"
+    args_list = [
+        EnqueueArgs(
+            id=new_job_id(),
+            actor="actor_a",
+            queue="default",
+            payload={},
+            max_attempts=3,
+            retry_kind="transient",
+            scheduled_at=_START,
+            idempotency_key=key,
+        ),
+        EnqueueArgs(
+            id=new_job_id(),
+            actor="actor_a",
+            queue="default",
+            payload={},
+            max_attempts=3,
+            retry_kind="transient",
+            scheduled_at=_START,
+            idempotency_key=key,
+        ),
+    ]
+
+    with pytest.raises(asyncpg.UniqueViolationError):
+        await backend_pair.enqueue_batch_fast(args_list)
+
+    # All-or-nothing: no row from the batch survived.
+    rows = await backend_pair.list_jobs(JobFilter(actor="actor_a", limit=100))
+    assert all(r.idempotency_key != key for r in rows), (
+        "the aborted batch must leave no rows behind"
+    )
+
+
+async def test_enqueue_batch_fast_existing_key_aborts_entire_batch(
+    backend_pair: Backend,
+) -> None:
+    """D7 parity pin, cross-call shape: a batch-fast item whose
+    ``(idempotency_scope, idempotency_key)`` already exists from an earlier
+    write aborts the whole batch on PG (COPY cannot dedupe); the InMemory
+    mirror must agree instead of silently returning the stored row's
+    count."""
+    import asyncpg
+
+    key = f"dup-existing-{new_uuid()}"
+    first = EnqueueArgs(
+        id=new_job_id(),
+        actor="actor_a",
+        queue="default",
+        payload={},
+        max_attempts=3,
+        retry_kind="transient",
+        scheduled_at=_START,
+        idempotency_key=key,
+    )
+    await backend_pair.enqueue(first)
+
+    batch = [
+        EnqueueArgs(
+            id=new_job_id(),
+            actor="actor_a",
+            queue="default",
+            payload={},
+            max_attempts=3,
+            retry_kind="transient",
+            scheduled_at=_START,
+            idempotency_key=f"{key}-fresh",
+        ),
+        # Reuses the stored key under the same scope.
+        EnqueueArgs(
+            id=new_job_id(),
+            actor="actor_a",
+            queue="default",
+            payload={},
+            max_attempts=3,
+            retry_kind="transient",
+            scheduled_at=_START,
+            idempotency_key=key,
+        ),
+    ]
+    with pytest.raises(asyncpg.UniqueViolationError):
+        await backend_pair.enqueue_batch_fast(batch)
+
+    # All-or-nothing: the fresh item must NOT have been written either.
+    rows = await backend_pair.list_jobs(JobFilter(actor="actor_a", limit=100))
+    keys = {r.idempotency_key for r in rows}
+    assert key in keys  # the earlier, valid write survives
+    assert f"{key}-fresh" not in keys, "the aborted batch must leave no rows behind"
+
+
+async def test_enqueue_batch_fast_count_is_items_written(backend_pair: Backend) -> None:
+    """D7 parity pin, count semantics: on success the count is exactly the
+    number of items — this path never deduplicates, so the count never
+    includes pre-existing rows (the InMemory mirror used to include
+    them)."""
+    args_list = [
+        EnqueueArgs(
+            id=new_job_id(),
+            actor="actor_a",
+            queue="default",
+            payload={"i": i},
+            max_attempts=3,
+            retry_kind="transient",
+            scheduled_at=_START,
+        )
+        for i in range(3)
+    ]
+    count = await backend_pair.enqueue_batch_fast(args_list)
+    assert count == 3

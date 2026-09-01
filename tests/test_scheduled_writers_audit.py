@@ -152,14 +152,14 @@ async def test_fr5_audit_only_four_paths_write_scheduled(
     assert post.status == "succeeded"
     assert post.status != "scheduled"
 
-    # ── mark_failed_or_retry Branch A (next_scheduled_at=None) → failed ──
+    # ── mark_failed_or_retry Branch A (retry_delay=None) → failed ──
     job = await _enqueue_running(backend)
     error_info = ErrorInfo(
         error_class="TestError",
         error_message="boom",
         error_traceback=None,
     )
-    row = await backend.mark_failed_or_retry(job.id, worker_id, error_info, next_scheduled_at=None)
+    row = await backend.mark_failed_or_retry(job.id, worker_id, error_info, retry_delay=None)
     assert row.status == "failed"
     assert row.status != "scheduled"
 
@@ -248,7 +248,8 @@ async def test_fr5_audit_only_four_paths_write_scheduled(
     job = await _enqueue_scheduled(backend)
     pre = _get_job(backend, job.id)
     assert pre.status == "scheduled"
-    count = await backend.scheduled_to_pending(_CLOCK_START + timedelta(hours=2))
+    backend.advance_clock_to(_CLOCK_START + timedelta(hours=2))
+    count = await backend.scheduled_to_pending()
     assert count >= 1
     post = _get_job(backend, job.id)
     assert post.status == "pending"
@@ -257,7 +258,8 @@ async def test_fr5_audit_only_four_paths_write_scheduled(
     # ── deadline_sweep on pending job with expired schedule_to_close → failed ──
     past_deadline = _CLOCK_START - timedelta(seconds=1)
     job = await _enqueue_pending_job(backend, schedule_to_close=past_deadline)
-    count = await backend.deadline_sweep(_CLOCK_START + timedelta(hours=1))
+    backend.advance_clock_to(_CLOCK_START + timedelta(hours=1))
+    count = await backend.deadline_sweep()
     assert count >= 1
     post = _get_job(backend, job.id)
     assert post.status == "failed"
@@ -278,7 +280,8 @@ async def test_fr5_audit_only_four_paths_write_scheduled(
         schedule_to_close=past_deadline,
     )
     await backend.enqueue(args)
-    count = await backend.deadline_sweep(_CLOCK_START + timedelta(hours=2))
+    backend.advance_clock_to(_CLOCK_START + timedelta(hours=2))
+    count = await backend.deadline_sweep()
     assert count >= 1
     post = _get_job(backend, job_id)
     assert post.status == "failed"
@@ -288,8 +291,11 @@ async def test_fr5_audit_only_four_paths_write_scheduled(
     job = await _enqueue_running(backend)
     pre = _get_job(backend, job.id)
     assert pre.status == "running"
+    assert pre.lock_expires_at is not None
+    # Advance the backend's OWN clock past the job's lock (earlier steps in
+    # this test already moved it, so anchor to the row, not to _CLOCK_START).
+    backend.advance_clock_to(pre.lock_expires_at + timedelta(seconds=1))
     count = await backend.reclaim_expired_locks(
-        _CLOCK_START + timedelta(hours=2),
         timedelta(seconds=30),
         timedelta(seconds=30),
     )

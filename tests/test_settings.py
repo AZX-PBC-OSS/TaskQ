@@ -1042,6 +1042,7 @@ _LOAD_KNOB_VARS = (
     "DOTENV_OVERRIDE",
     "DOTENV_DIR",
     "DOTENV_READ_DOTFILES",
+    "DOTENV_READ_ENVIRON",
     "DOTENV_LOAD_LOCAL",
 )
 
@@ -1054,7 +1055,9 @@ def _clear_load_knobs(monkeypatch: pytest.MonkeyPatch) -> None:
     cascade under test: ``DOTENV_DIR`` redirects the cascade root away
     from ``tmp_path``, ``DOTENV_READ_DOTFILES=false`` skips files
     entirely, ``ENV`` / ``DOTENV_LOAD_LOCAL`` change which files are
-    selected, and ``DOTENV_OVERRIDE`` flips the precedence being pinned.
+    selected, ``DOTENV_OVERRIDE`` flips the precedence being pinned, and
+    ``DOTENV_READ_ENVIRON=false`` drops ``os.environ`` as a value source —
+    inverting every env-beats-file pin in this section.
     """
     for var in _LOAD_KNOB_VARS:
         monkeypatch.delenv(var, raising=False)
@@ -1155,6 +1158,22 @@ def test_load_read_environ_false_ignores_process_env(
     monkeypatch.setenv("TASKQ_SCHEMA_NAME", "env_value")
     s = TaskQSettings.load(read_environ=False)
     assert s.schema_name == "file_value"
+
+
+def test_stray_host_dotenv_read_environ_cannot_reshape_precedence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stray host ``DOTENV_READ_ENVIRON=false`` is neutralized by the knob
+    guard exactly like ``DOTENV_OVERRIDE``: without the var in
+    ``_LOAD_KNOB_VARS`` the host value survives ``_clear_load_knobs`` and
+    silently inverts every env-beats-file pin in this section (dotenvmodel
+    stops reading ``os.environ`` as a value source, so the ``.env`` value
+    wins)."""
+    monkeypatch.setenv("DOTENV_READ_ENVIRON", "false")  # the stray host value
+    _chdir_with_env_file(tmp_path, monkeypatch)  # knob guard must clear it here
+    monkeypatch.setenv("TASKQ_SCHEMA_NAME", "env_value")
+    s = TaskQSettings.load()
+    assert s.schema_name == "env_value"
 
 
 # ── .local skip under ENV=test ──────────────────────────────────────────

@@ -470,12 +470,12 @@ class InMemoryBackend:
         job_id: JobId,
         worker_id: UUID,
         error_info: ErrorInfo,
-        next_scheduled_at: datetime | None,
+        retry_delay: timedelta | None,
         progress_seq: int = 0,
         progress_state: dict[str, object] | None = None,
     ) -> JobRow:
         return await _mark_failed_or_retry(
-            self, job_id, worker_id, error_info, next_scheduled_at, progress_seq, progress_state
+            self, job_id, worker_id, error_info, retry_delay, progress_seq, progress_state
         )
 
     async def mark_cancelled(
@@ -647,20 +647,21 @@ class InMemoryBackend:
         return True
 
     # ── Scheduling / sweeps ────────────────────────────────────────────
+    # No caller-supplied now: the injected Clock is the single arbiter
+    # (the mirror of PG's server-side clock_timestamp() predicates).
 
-    async def scheduled_to_pending(self, now: datetime) -> int:
-        return await _scheduled_to_pending(self, now)
+    async def scheduled_to_pending(self) -> int:
+        return await _scheduled_to_pending(self)
 
-    async def deadline_sweep(self, now: datetime) -> int:
-        return await _deadline_sweep(self, now)
+    async def deadline_sweep(self) -> int:
+        return await _deadline_sweep(self)
 
     async def reclaim_expired_locks(
         self,
-        now: datetime,
         cancel_grace: timedelta,
         cleanup_grace: timedelta,
     ) -> int:
-        return await _reclaim_expired_locks(self, now, cancel_grace, cleanup_grace)
+        return await _reclaim_expired_locks(self, cancel_grace, cleanup_grace)
 
     # ── Archive and expiry simulation ─────────────────────────────────
 

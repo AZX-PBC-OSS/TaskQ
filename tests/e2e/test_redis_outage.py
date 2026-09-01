@@ -38,6 +38,7 @@ from uuid import uuid4
 import pytest
 import pytest_asyncio
 
+from taskq.testing._shared_containers import creator_labels
 from tests.conftest import free_host_port
 
 from ._assertions import (
@@ -112,6 +113,9 @@ def chaos_df(e2e_network: Network) -> Iterator[ChaosDf]:
 
     alias = f"df-outage-{uuid4().hex[:8]}"
     container = RedisContainer(image=_DRAGONFLY_IMAGE).with_command("--dbnum 128")
+    container.with_kwargs(
+        labels=creator_labels()
+    )  # Ownership labels: sweepable under disabled Ryuk (see e2e_network's sweep).
     container.with_network(e2e_network).with_network_aliases(alias)
     container.with_bind_ports(6379, free_host_port())
     with container:
@@ -233,6 +237,9 @@ async def _start_gated_worker(
     from testcontainers.core.container import DockerContainer
 
     container = DockerContainer(image=image_tag)
+    container.with_kwargs(
+        labels=creator_labels()
+    )  # Ownership labels: sweepable under disabled Ryuk (see e2e_network's sweep).
     container.with_network(network).with_network_aliases(alias)
     for key, value in worker_env.items():
         container.with_env(key, value)

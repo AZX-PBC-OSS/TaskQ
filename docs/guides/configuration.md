@@ -18,7 +18,7 @@ dotenvmodel resolves a cascading chain of `.env` files at load time:
 
 `{env}` comes from the `ENV` environment variable (default `dev`): `ENV=production` loads `.env.production` and `.env.production.local`. Later files in the chain take precedence over earlier ones within the file layer. Never commit `.env.local` or production env files.
 
-**Precedence.** Process environment variables beat the merged `.env` cascade, which beats field defaults (dotenvmodel 1.0.0 semantics, adopted by TaskQ). To opt back into the older files-beat-env-vars behaviour, set `DOTENV_OVERRIDE=true` or call `TaskQSettings.load(override=True)`.
+**Precedence.** Process environment variables beat the merged `.env` cascade, which beats field defaults (dotenvmodel 1.x semantics, adopted by TaskQ). To opt back into the older files-beat-env-vars behaviour, set `DOTENV_OVERRIDE=true` or call `TaskQSettings.load(override=True)`.
 
 **Load-time knobs are process-environment-only.** `ENV` and the `DOTENV_*` variables (`DOTENV_OVERRIDE`, `DOTENV_READ_DOTFILES`, `DOTENV_READ_ENVIRON`, `DOTENV_LOAD_LOCAL`, `DOTENV_DIR`) are read from the process environment — or passed explicitly to `load()` — *before* any `.env` file is read. Setting them inside a `.env` file has no effect on that load: a value in a file cannot influence which files are selected or how they are applied. The two read knobs are symmetric: `read_dotfiles=False` skips the `.env` cascade (fields resolve from the process environment and defaults); `read_environ=False` skips the process environment (fields resolve from `.env` files and defaults).
 

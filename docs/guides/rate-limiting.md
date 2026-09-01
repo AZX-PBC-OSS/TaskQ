@@ -53,9 +53,11 @@ Raises `ValueError` if `capacity <= 0` or `refill_per_second < 0`.
 
 Attempts to withdraw `count` tokens. Returns a `RateLimitDecision`. All four keyword arguments default to `None`.
 
+`clock` drives the memory backend only. The Redis and Postgres backends run on the store's own clock (Redis `TIME` inside the Lua scripts, PG `clock_timestamp()`), so `clock` is accepted but never required there.
+
 - For `backend="memory"`: only `clock` is required; pass it explicitly.
-- For `backend="redis"`: `redis_client`, `clock`, and `settings` are required. `pg_pool` is only used if `TASKQ_RATE_LIMIT_PG_FALLBACK_ENABLED=true` and Redis is unreachable.
-- For `backend="postgres"`: `pg_pool`, `clock`, and `settings` are required.
+- For `backend="redis"`: `redis_client` and `settings` are required. `pg_pool` is only used if `TASKQ_RATE_LIMIT_PG_FALLBACK_ENABLED=true` and Redis is unreachable.
+- For `backend="postgres"`: `pg_pool` and `settings` are required.
 
 If denied, `decision.retry_after` holds how long to wait before trying again (`None` when `refill_per_second=0` — the quota is exhausted with no automatic recovery).
 
@@ -133,11 +135,11 @@ Raises `ValueError` if `limit < 1`, `window <= timedelta(0)`, or `style` is not 
 
 ### `acquire(*, redis_client, pg_pool, clock, settings) -> RateLimitDecision`
 
-All four keyword arguments default to `None`. `clock` is required for all backends and raises `RuntimeError` if not provided.
+All four keyword arguments default to `None`. `clock` drives the memory backend only — the store backends run on the store's own clock (Redis `TIME` in the scripts, PG `clock_timestamp()`). This matches `TokenBucket`'s contract: `clock` is required only for `backend="memory"` and raises `RuntimeError` there if not provided.
 
 - For `backend="memory"`: only `clock` is required.
-- For `backend="redis"`: `redis_client`, `clock`, and `settings` are required.
-- For `backend="postgres"`: `pg_pool`, `clock`, and `settings` are required.
+- For `backend="redis"`: `redis_client` and `settings` are required.
+- For `backend="postgres"`: `pg_pool` and `settings` are required.
 
 ### Log-style example
 
@@ -367,7 +369,7 @@ state = await bucket.peek(clock=clock)
 print(state.tokens_remaining, state.is_exhausted)
 ```
 
-For Redis backends, pass `redis_client=..., clock=..., settings=...`. For Postgres backends, pass `pg_pool=..., clock=..., settings=...`. For memory backend, only `clock` is required.
+For Redis backends, pass `redis_client=...` and `settings=...`. For Postgres backends, pass `pg_pool=...` and `settings=...`. For memory backend, only `clock` is required — the store backends run on the store's own clock and ignore it.
 
 ### `reset()` usage
 

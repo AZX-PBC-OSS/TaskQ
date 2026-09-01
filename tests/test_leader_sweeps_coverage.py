@@ -195,10 +195,10 @@ class _InstantCroniter:
 class _NotImplBackend:
     """Backend whose reclaim/deadline sweeps raise NotImplementedError."""
 
-    async def reclaim_expired_locks(self, now: datetime, cg: timedelta, ug: timedelta) -> int:
+    async def reclaim_expired_locks(self, cg: timedelta, ug: timedelta) -> int:
         raise NotImplementedError("reclaim not implemented")
 
-    async def deadline_sweep(self, now: datetime) -> int:
+    async def deadline_sweep(self) -> int:
         raise NotImplementedError("deadline not implemented")
 
 
@@ -264,22 +264,20 @@ class _PgSweepBackend:
         self._leaked_exc = leaked_exc
         self._results_exc = results_exc
 
-    async def reclaim_expired_locks(self, now: datetime, cg: timedelta, ug: timedelta) -> int:
+    async def reclaim_expired_locks(self, cg: timedelta, ug: timedelta) -> int:
         return 0
 
-    async def deadline_sweep(self, now: datetime) -> int:
+    async def deadline_sweep(self) -> int:
         return 0
 
-    async def sweep_leaked_reservation_slots(
-        self, conn: object, now: datetime, *, schema: str
-    ) -> int:
-        self.leaked_calls.append({"now": now, "schema": schema})
+    async def sweep_leaked_reservation_slots(self, conn: object, *, schema: str) -> int:
+        self.leaked_calls.append({"schema": schema})
         if self._leaked_exc is not None:
             raise self._leaked_exc
         return 5
 
-    async def sweep_expired_results(self, conn: object, now: datetime, *, schema: str) -> int:
-        self.results_calls.append({"now": now, "schema": schema})
+    async def sweep_expired_results(self, conn: object, *, schema: str) -> int:
+        self.results_calls.append({"schema": schema})
         if self._results_exc is not None:
             raise self._results_exc
         return 3
@@ -683,10 +681,10 @@ class _DeadPgSweepsBackend:
     """Backend whose reclaim/deadline sweeps raise transient PG errors
     (the dead-PG class: DNS/connect failure, not NotImplementedError)."""
 
-    async def reclaim_expired_locks(self, now: datetime, cg: timedelta, ug: timedelta) -> int:
+    async def reclaim_expired_locks(self, cg: timedelta, ug: timedelta) -> int:
         raise OSError(111, "Connect call failed")
 
-    async def deadline_sweep(self, now: datetime) -> int:
+    async def deadline_sweep(self) -> int:
         raise OSError(111, "Connect call failed")
 
 

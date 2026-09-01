@@ -37,7 +37,6 @@ from taskq.backend._protocol import (
     ErrorInfo,
     JobRow,
 )
-from taskq.backend.clock import Clock
 from taskq.exceptions import (
     ReservationUnavailable,
     RetryAfter,
@@ -201,7 +200,6 @@ async def _handle_timeout(
     worker_id: UUID,
     exc: TimeoutError,
     actor_config: ActorConfigLike,
-    clock: Clock,
     max_retry_backoff: timedelta,
     span: trace.Span,
     log: structlog.stdlib.BoundLogger,
@@ -235,7 +233,6 @@ async def _handle_timeout(
         actor_config,
         exc,
         job_state,
-        clock.now(),
         max_retry_backoff=max_retry_backoff,
     )
     if isinstance(decision, Retry):
@@ -253,7 +250,7 @@ async def _handle_timeout(
                 job.id,
                 worker_id,
                 error_info,
-                decision.next_scheduled_at,
+                decision.retry_delay,
                 progress_seq=progress_seq,
                 progress_state=progress_state,
                 log=log,
@@ -585,7 +582,6 @@ async def _handle_generic_exception(
     worker_id: UUID,
     e: Exception,
     actor_config: ActorConfigLike,
-    clock: Clock,
     max_retry_backoff: timedelta,
     span: trace.Span,
     log: structlog.stdlib.BoundLogger,
@@ -615,9 +611,7 @@ async def _handle_generic_exception(
         schedule_to_close=job.schedule_to_close,
         start_to_close=job.start_to_close,
     )
-    decision = decide_after_failure(
-        actor_config, e, job_state, clock.now(), max_retry_backoff=max_retry_backoff
-    )
+    decision = decide_after_failure(actor_config, e, job_state, max_retry_backoff=max_retry_backoff)
     if isinstance(decision, Retry):
         span.add_event(
             "lifecycle.scheduled",
@@ -633,7 +627,7 @@ async def _handle_generic_exception(
                 job.id,
                 worker_id,
                 error_info,
-                decision.next_scheduled_at,
+                decision.retry_delay,
                 progress_seq=progress_seq,
                 progress_state=progress_state,
                 log=log,
@@ -703,7 +697,6 @@ async def _dispatch_exception(
     job: JobRow,
     worker_id: UUID,
     actor_config: ActorConfigLike,
-    clock: Clock,
     max_retry_backoff: timedelta,
     consumer_span: trace.Span,
     log: structlog.stdlib.BoundLogger,
@@ -746,7 +739,6 @@ async def _dispatch_exception(
                 worker_id,
                 exc,
                 actor_config,
-                clock,
                 max_retry_backoff,
                 consumer_span,
                 log,
@@ -828,7 +820,6 @@ async def _dispatch_exception(
             worker_id,
             exc,
             actor_config,
-            clock,
             max_retry_backoff,
             consumer_span,
             log,

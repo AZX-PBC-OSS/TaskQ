@@ -120,7 +120,7 @@ class SAMLSettings(DotEnvConfig):
 class _NoEnvFilesWarningFilter(logging.Filter):
     """Drop only dotenvmodel's "No .env files found in <dir>" WARNING.
 
-    Why a logger-level filter works: every dotenvmodel 1.0.0 module logs
+    Why a logger-level filter works: every dotenvmodel 1.x module logs
     through the single ``"dotenvmodel"`` logger (``LOGGER_NAME`` in
     ``dotenvmodel/_constants.py``; ``loading.py`` hardcodes the same
     string) — there are no child loggers, so one filter sees all of its
@@ -279,7 +279,7 @@ class TaskQSettings(DotEnvConfig):
 
         All parameters are forwarded to ``DotEnvConfig.load`` unchanged
         (resolution: explicit argument > ``DOTENV_*`` env var > default).
-        ``override=None`` keeps dotenvmodel 1.0's default precedence — the
+        ``override=None`` keeps dotenvmodel's default precedence — the
         process environment beats ``.env`` files; pass ``override=True``
         or set ``DOTENV_OVERRIDE=true`` to make ``.env`` files win instead.
         ``read_dotfiles=False`` / ``read_environ=False`` disable the

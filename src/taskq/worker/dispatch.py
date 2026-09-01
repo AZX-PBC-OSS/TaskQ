@@ -316,7 +316,6 @@ async def dispatch_one_job(
                         worker_id,
                         exc,
                         actor_config,
-                        clock,
                         max_retry_backoff,
                         consumer_span,
                         handler_log,

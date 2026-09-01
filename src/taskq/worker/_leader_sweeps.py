@@ -87,11 +87,11 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
     while not shutdown.is_set():
         ctx.deps.liveness.tick("leader.sweep", period=ctx.deps.settings.sweep_interval)
         if ctx.deps.is_leader.is_set():
-            now_utc = ctx.clock.now()
             start = time.monotonic()  # Sweep 1: reclaim_expired_locks
             try:
+                # No `now` argument: the sweep's server-side predicates
+                # (clock_timestamp()) are the single arbiter.
                 count_1 = await ctx.backend.reclaim_expired_locks(
-                    now_utc,
                     timedelta(seconds=ctx.deps.settings.cancellation_grace_period),
                     timedelta(seconds=ctx.deps.settings.cleanup_grace_period),
                 )
@@ -117,7 +117,7 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                 _dbg("sweep_expired_locks_tick", "sweep_expired_locks_tick", count_1, start)
             start = time.monotonic()  # Sweep 2: deadline_sweep
             try:
-                count_2 = await ctx.backend.deadline_sweep(now_utc)
+                count_2 = await ctx.backend.deadline_sweep()
             except NotImplementedError as exc:
                 if not warned_sweep_2:
                     _err("sweep_deadline_exceeded_unimplemented", _EK3, ctx.worker_id, exc)
@@ -145,7 +145,7 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                         count_4 = cast(
                             "int",
                             await ctx.backend.sweep_leaked_reservation_slots(  # type: ignore[reportAttributeAccessIssue]  # Why: guarded by hasattr; only PostgresBackend implements these maintenance sweeps.
-                                conn, now_utc, schema=ctx.deps.settings.schema_name
+                                conn, schema=ctx.deps.settings.schema_name
                             ),
                         )
                     _metric("leaked_slots", count_4, start)
@@ -163,7 +163,7 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                         count_rt = cast(
                             "int",
                             await ctx.backend.sweep_expired_results(  # type: ignore[reportAttributeAccessIssue]  # Why: guarded by hasattr above.
-                                conn, now_utc, schema=ctx.deps.settings.schema_name
+                                conn, schema=ctx.deps.settings.schema_name
                             ),
                         )
                     _metric("expired_results", count_rt, start)

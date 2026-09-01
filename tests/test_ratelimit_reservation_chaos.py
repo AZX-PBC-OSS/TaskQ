@@ -15,7 +15,7 @@ PG dies during acquire — stop PG container mid-acquire;
 import asyncio
 import contextlib
 from collections.abc import Iterator
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 
 import asyncpg
 import pytest
@@ -79,7 +79,7 @@ async def test_worker_death_sweep_reclaim(
         )
 
     async with module_pg_pool.acquire() as conn:
-        await PostgresBackend.sweep_leaked_reservation_slots(conn, datetime.now(UTC), schema=schema)
+        await PostgresBackend.sweep_leaked_reservation_slots(conn, schema=schema)
 
     new_worker = new_uuid()
     new_job = new_uuid()

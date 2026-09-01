@@ -92,7 +92,13 @@ class SupervisorConfig:
 
 @dataclass(slots=True)
 class WorkerHealthConfig:
-    """Per-worker health-check configuration."""
+    """Per-worker health-check configuration.
+
+    The freshness verdict is server-side and exclusive at the boundary:
+    a worker whose server-measured age equals ``stale_after`` exactly is
+    already stale (the predicate is ``last_seen_at > now() - stale_after``,
+    strict ``>``).
+    """
 
     enabled: bool = False
     check_interval: float = 15.0  # seconds between DB checks

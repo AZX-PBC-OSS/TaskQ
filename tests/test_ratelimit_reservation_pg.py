@@ -7,7 +7,7 @@ release-gate with wrong worker_id.
 """
 
 import asyncio
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 from uuid import UUID
 
 import asyncpg
@@ -246,7 +246,6 @@ async def test_sweep_4_reclaims_expired_slots(
     async with module_pg_pool.acquire() as conn:
         count = await PostgresBackend.sweep_leaked_reservation_slots(
             conn,
-            datetime.now(UTC),
             schema=schema,
         )
 

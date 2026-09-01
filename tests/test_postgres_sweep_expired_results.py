@@ -91,7 +91,6 @@ class TestSweepExpiredResults:
 
         count = await PostgresBackend.sweep_expired_results(
             clean_pg_conn,
-            datetime.now(UTC),
             schema=schema,
         )
 
@@ -128,7 +127,6 @@ class TestSweepExpiredResults:
 
         count = await PostgresBackend.sweep_expired_results(
             clean_pg_conn,
-            datetime.now(UTC),
             schema=schema,
         )
 
@@ -163,7 +161,6 @@ class TestSweepExpiredResults:
 
         count = await PostgresBackend.sweep_expired_results(
             clean_pg_conn,
-            datetime.now(UTC),
             schema=schema,
         )
 
@@ -190,7 +187,6 @@ class TestSweepExpiredResults:
 
         count = await PostgresBackend.sweep_expired_results(
             clean_pg_conn,
-            datetime.now(UTC),
             schema=schema,
         )
 
@@ -242,7 +238,6 @@ class TestSweepExpiredResults:
 
         count = await PostgresBackend.sweep_expired_results(
             clean_pg_conn,
-            datetime.now(UTC),
             schema=schema,
         )
 
@@ -284,7 +279,6 @@ class TestSweepExpiredResults:
 
         count = await PostgresBackend.sweep_expired_results(
             clean_pg_conn,
-            datetime.now(UTC),
             schema=schema,
         )
 

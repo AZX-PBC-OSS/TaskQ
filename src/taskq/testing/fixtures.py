@@ -645,6 +645,37 @@ def _next_redis_db(container: _RedisContainerShim) -> int:
     return next_redis_logical_db(container.state_dir)
 
 
+# ── Per-run isolation token ────────────────────────────────────────────────
+
+RUN_TOKEN_ENV_VAR = "TASKQ_TEST_RUN_TOKEN"  # noqa: S105 # Why: env-var NAME, not a credential; the value it names carries a per-run isolation label (basetemp dir / xdist worker id).
+
+
+def run_isolation_token() -> str:
+    """The token mixed into every hashed per-module/per-test database, schema,
+    and logical-DB name: the xdist worker id under xdist, the conftest-published
+    per-invocation token in serial runs, ``master`` as a last-resort fallback
+    (direct library use outside this repo's conftest).
+
+    Why a token at all: serial bare-``pytest`` runs share
+    ``/tmp/pytest-of-<user>`` — the shared-pair state dir — across ALL
+    invocations, and the old ``worker-or-"master"`` hash input was
+    invocation-invariant, so two overlapping serial runs of the same module
+    hashed to the SAME database on the SAME shared pair and each run's
+    ``DROP DATABASE ... WITH (FORCE)`` killed the other's live pools mid-test
+    (redteam-reproduced: both runs rc=1 with pool-init failures on one
+    ``tq_db_*`` name). Under xdist each worker's state dir is already
+    per-invocation (``<basetemp>/popen-gwK``), so the worker id alone is
+    sufficient there and stays the token — behavior identical to the old
+    inputs. The session conftest derives the serial token once (the
+    invocation-unique basetemp dir name, e.g. ``pytest-41``) and publishes it
+    via :data:`RUN_TOKEN_ENV_VAR` before any naming helper runs.
+    """
+    token = os.environ.get(RUN_TOKEN_ENV_VAR)
+    if token:
+        return token
+    return os.environ.get("PYTEST_XDIST_WORKER", "master")
+
+
 def _schema_name_from_test(request: pytest.FixtureRequest) -> str:
     """Derive a unique, lowercase schema name from the test's node id.
 
@@ -654,12 +685,16 @@ def _schema_name_from_test(request: pytest.FixtureRequest) -> str:
     many test functions run sequentially within one worker process.  Hashed
     for the same 13-char PostgreSQL identifier / NOTIFY-channel budget as
     :func:`_schema_name_from_module`.
+
+    The run token (see :func:`run_isolation_token`) prefixes the hash input
+    so two concurrent SERIAL runs of the same node id never collide on one
+    schema in the shared-pair database.
     """
     import hashlib
 
-    worker = os.environ.get("PYTEST_XDIST_WORKER", "master")
+    token = run_isolation_token()
     nodeid: str = request.node.nodeid.replace(".", "_").replace("/", "_").lower()  # pyright: ignore[reportUnknownVariableType]  # Why: pytest.FixtureRequest types are incomplete; return value is always a str.
-    return "tq_" + hashlib.md5(f"{worker}_{nodeid}".encode()).hexdigest()[:10]  # noqa: S324 # Why: non-cryptographic hash for test schema naming; collisions across test nodeids are negligible with 10 hex chars.
+    return "tq_" + hashlib.md5(f"{token}_{nodeid}".encode()).hexdigest()[:10]  # noqa: S324 # Why: non-cryptographic hash for test schema naming; collisions across test nodeids are negligible with 10 hex chars.
 
 
 def _schema_name_from_module(request: pytest.FixtureRequest) -> str:
@@ -671,18 +706,19 @@ def _schema_name_from_module(request: pytest.FixtureRequest) -> str:
     The schema portion must be ≤ 13 chars, so we use ``tq_`` + 10-char
     hash suffix for modules whose full name would exceed the budget.
 
-    The xdist worker ID is incorporated into the hash input so that the
-    same module split across parallel workers does not collide on the
-    same schema.
+    The run token (see :func:`run_isolation_token`) — the xdist worker id
+    under xdist, the per-invocation token in serial runs — is incorporated
+    into the hash input so that the same module never collides across
+    parallel workers OR concurrent serial invocations.
     """
     import hashlib
 
-    worker = os.environ.get("PYTEST_XDIST_WORKER", "master")
+    token = run_isolation_token()
     full = request.module.__name__.replace(".", "_").replace("/", "_").lower()  # pyright: ignore[reportUnknownVariableType]  # Why: pytest.FixtureRequest types are incomplete; return value is always a str.
-    # Always hash (with worker) — the non-hash branch would exceed the 13-char
+    # Always hash (with token) — the non-hash branch would exceed the 13-char
     # budget once the worker suffix is appended, and hashing guarantees both
     # uniqueness across workers and the length constraint.
-    return "tq_" + hashlib.md5(f"{worker}_{full}".encode()).hexdigest()[:10]  # noqa: S324 # Why: non-cryptographic hash for test schema naming; collisions across ~100 test modules are negligible with 10 hex chars.
+    return "tq_" + hashlib.md5(f"{token}_{full}".encode()).hexdigest()[:10]  # noqa: S324 # Why: non-cryptographic hash for test schema naming; collisions across ~100 test modules are negligible with 10 hex chars.
 
 
 # ── Module-scoped PG schema ─────────────────────────────────────────────

@@ -7,7 +7,7 @@ per-schedule fire logic.
 """
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from uuid import UUID
 
 import asyncpg
@@ -186,7 +186,13 @@ async def fire_schedule(
                 payload=payload,
                 max_attempts=ac.max_attempts,
                 retry_kind=parse_retry_kind(ac.retry_kind),
-                scheduled_at=datetime.now(UTC),
+                # None = immediate: the enqueue SQL stamps the server clock
+                # (COALESCE($n, now())) and decides status in the same
+                # statement. Passing a Python-clock stamp here would shift
+                # the job's scheduled_at by the app↔DB skew — a leader
+                # skewed ahead lands every cron fire 'scheduled' and
+                # dispatch-ineligible for the skew duration.
+                scheduled_at=None,
                 payload_schema_ver=1,
                 identity_key=schedule_identity_key,
             )

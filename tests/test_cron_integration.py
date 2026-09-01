@@ -916,6 +916,19 @@ async def _job_count(pool: asyncpg.Pool, schema: str, actor: str) -> int:
         )
 
 
+async def _dispatch_eligible_count(pool: asyncpg.Pool, schema: str, actor: str) -> int:
+    """Count jobs a dispatcher could pick up right now: ``status='pending'``
+    and ``scheduled_at <= clock_timestamp()`` — both measured in the server
+    clock domain, so a skewed leader cannot influence the predicate."""
+    async with pool.acquire() as conn:
+        return await conn.fetchval(
+            f'SELECT count(*) FROM "{schema}".jobs '  # Why: schema is fixture-generated; actor is $1-bound
+            f"WHERE actor = $1 AND status = 'pending' "
+            f"AND scheduled_at <= clock_timestamp()",
+            actor,
+        )
+
+
 async def _tick(
     pool: asyncpg.Pool, settings: WorkerSettings, backend: Backend, schema: str, worker_id: UUID
 ) -> None:
@@ -927,8 +940,10 @@ async def _tick(
 class _SkewedCronDatetime:
     """Shim for ``cron_loop.datetime`` — offsets ``now()`` by *skew*.
 
-    Mirrors the module-level ``datetime`` surface the cron loop actually
-    uses (``datetime.now(tz)``).
+    The cron loop no longer reads the Python clock on the fire path (the
+    enqueue is server-stamped via ``scheduled_at=None``); patching the
+    module attribute keeps these tests an end-to-end proof that a skewed
+    Python clock cannot move any fire decision or stamp.
     """
 
     def __init__(self, skew: timedelta) -> None:
@@ -973,6 +988,10 @@ async def test_ti9_catch_up_recompute_anchored_to_server_clock_no_fire_loop(
 
         await _tick(deps.dispatcher_pool, deps.settings, backend, schema, worker_id)
         assert await _job_count(deps.dispatcher_pool, schema, "anchor_actor") == 1
+        assert await _dispatch_eligible_count(deps.dispatcher_pool, schema, "anchor_actor") == 1, (
+            "a fired job must land status='pending' with scheduled_at <= "
+            "clock_timestamp() — immediately dispatch-eligible"
+        )
 
         async with deps.dispatcher_pool.acquire() as conn:
             row = await conn.fetchrow(
@@ -1028,11 +1047,20 @@ async def test_ti10_catch_up_continues_when_python_clock_ahead(
 
         await _tick(deps.dispatcher_pool, deps.settings, backend, schema, worker_id)
         assert await _job_count(deps.dispatcher_pool, schema, "catchup_actor") == 1
+        assert await _dispatch_eligible_count(deps.dispatcher_pool, schema, "catchup_actor") == 1, (
+            "a fired job must land status='pending' with scheduled_at <= "
+            "clock_timestamp() — a leader skewed AHEAD must not stamp the "
+            "job into the server's future"
+        )
 
         await _tick(deps.dispatcher_pool, deps.settings, backend, schema, worker_id)
         assert await _job_count(deps.dispatcher_pool, schema, "catchup_actor") == 2, (
             "a within-window miss must keep catching up slot-by-slot; a "
             "skewed-ahead leader must not skip the backlog"
+        )
+        assert await _dispatch_eligible_count(deps.dispatcher_pool, schema, "catchup_actor") == 2, (
+            "every fired job must be immediately dispatch-eligible — "
+            "status='pending' and scheduled_at <= clock_timestamp()"
         )
 
 
@@ -1063,9 +1091,15 @@ async def test_ti11_due_by_server_clock_fires_under_python_clock_skew(
                 cron_expr="* * * * *",
                 next_fire_at=datetime.now(UTC),
             )
+            # Why date_trunc: the due time is the current minute boundary —
+            # always in the server's past (due), and the chained next fire
+            # (boundary + 1 min) is always in the server's future. A fixed
+            # "now - 5s" offset lands the chained next fire in the past
+            # whenever the insert happens in the first 5 s of a minute,
+            # making the final assertion a wall-clock coin flip.
             await conn.execute(
                 f'UPDATE "{schema}".cron_schedules '  # Why: schema is fixture-generated; id is $1-bound
-                f"SET next_fire_at = clock_timestamp() - interval '5 seconds' "
+                f"SET next_fire_at = date_trunc('minute', clock_timestamp()) "
                 f"WHERE id = $1",
                 schedule_id,
             )
@@ -1075,6 +1109,10 @@ async def test_ti11_due_by_server_clock_fires_under_python_clock_skew(
         await _tick(deps.dispatcher_pool, deps.settings, backend, schema, worker_id)
 
         assert await _job_count(deps.dispatcher_pool, schema, "due_actor") == 1
+        assert await _dispatch_eligible_count(deps.dispatcher_pool, schema, "due_actor") == 1, (
+            "a fired job must land status='pending' with scheduled_at <= "
+            "clock_timestamp() — immediately dispatch-eligible"
+        )
         async with deps.dispatcher_pool.acquire() as conn:
             row = await conn.fetchrow(
                 f"SELECT next_fire_at, last_fired_at "  # Why: schema is fixture-generated
@@ -1084,3 +1122,58 @@ async def test_ti11_due_by_server_clock_fires_under_python_clock_skew(
         assert row is not None
         assert row["last_fired_at"] is not None
         assert row["next_fire_at"] > await _server_now(deps.dispatcher_pool)
+
+
+@pytest.mark.asyncio
+async def test_ti12_fired_job_dispatch_eligible_under_ahead_clock_skew(
+    pg_dsn: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """C7 pin: a schedule due by the SERVER clock fires while the leader's
+    Python clock is 10 minutes AHEAD, and the fired job is immediately
+    dispatch-eligible — ``status='pending'`` and ``scheduled_at <=
+    clock_timestamp()``. Pre-fix the enqueue stamped the job with the
+    skewed Python ``datetime.now(UTC)`` (10 min in the server's future),
+    landing it ``status='scheduled'`` and invisible to dispatch for the
+    skew duration. Post-fix the fire passes ``scheduled_at=None`` so the
+    enqueue SQL stamps the server clock (``COALESCE($n, now())``) and
+    decides status in the same statement."""
+    import taskq.worker.cron_loop as cron_loop_mod
+
+    async with _open_cron_single(pg_dsn, f"test_cron_{new_base62()}") as (
+        schema,
+        _stack,
+        deps,
+        backend,
+        worker_id,
+    ):
+        async with deps.dispatcher_pool.acquire() as conn:
+            await _insert_actor_config(conn, schema, "eligible_actor")
+            schedule_id = await _insert_schedule(
+                conn,
+                schema,
+                "eligible_actor",
+                cron_expr="* * * * *",
+                next_fire_at=datetime.now(UTC),
+            )
+            # Why date_trunc: due by the server clock (the current minute
+            # boundary is always in the past) without the fixed-offset
+            # wall-clock race noted in ti11.
+            await conn.execute(
+                f'UPDATE "{schema}".cron_schedules '  # Why: schema is fixture-generated; id is $1-bound
+                f"SET next_fire_at = date_trunc('minute', clock_timestamp()) "
+                f"WHERE id = $1",
+                schedule_id,
+            )
+
+        monkeypatch.setattr(cron_loop_mod, "datetime", _SkewedCronDatetime(timedelta(minutes=10)))
+
+        await _tick(deps.dispatcher_pool, deps.settings, backend, schema, worker_id)
+
+        assert await _job_count(deps.dispatcher_pool, schema, "eligible_actor") == 1
+        assert (
+            await _dispatch_eligible_count(deps.dispatcher_pool, schema, "eligible_actor") == 1
+        ), (
+            "a cron-fired job must be immediately dispatch-eligible even when "
+            "the leader's Python clock is skewed ahead — the enqueue must "
+            "stamp the server clock, not the leader's"
+        )

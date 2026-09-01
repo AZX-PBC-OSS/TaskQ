@@ -235,5 +235,28 @@ async def _enqueue_batch_fast(
     *,
     connection: object = None,
 ) -> int:
+    if not args_list:
+        raise ValueError("args_list must not be empty")
+    # COPY has no ON CONFLICT arbiter: any duplicate idempotency key —
+    # within the batch or already stored — aborts the ENTIRE batch on PG
+    # (raw UniqueViolationError on jobs_idempotency_scope_key_uniq;
+    # nothing is written).  Mirror that here instead of silently
+    # deduplicating item-by-item, which reported a count that included
+    # rows PG would never have written (protocol parity; see
+    # Backend.enqueue_batch_fast's docstring).
+    from asyncpg.exceptions import UniqueViolationError
+
+    seen: set[tuple[str, str]] = set()
+    for args in args_list:
+        if args.idempotency_key is None:
+            continue
+        pair = (args.idempotency_scope, str(args.idempotency_key))
+        if pair in seen or pair in self._idempotency_index:
+            exc = UniqueViolationError(
+                "duplicate key value violates unique constraint 'jobs_idempotency_scope_key_uniq'"
+            )
+            exc.constraint_name = "jobs_idempotency_scope_key_uniq"
+            raise exc
+        seen.add(pair)
     rows = await _enqueue_batch(self, args_list)
     return len(rows)

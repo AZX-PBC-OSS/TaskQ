@@ -106,7 +106,7 @@ class TestFullLifecycle:
                 f"UPDATE \"{schema}\".jobs SET scheduled_at = now() - interval '5 seconds' WHERE id = $1",
                 job_id,
             )
-        count = await backend.scheduled_to_pending(datetime.now(UTC))
+        count = await backend.scheduled_to_pending()
         assert count >= 1
 
         async with deps.worker_pool.acquire() as conn:
@@ -322,7 +322,7 @@ class TestDeadlineSweep:
         async with deps.worker_pool.acquire() as conn:
             await create_pending_job(conn, schema, job_id, schedule_to_close=past)
 
-        count = await backend.deadline_sweep(datetime.now(UTC))
+        count = await backend.deadline_sweep()
         assert count >= 1
 
         async with deps.worker_pool.acquire() as conn:
@@ -361,7 +361,7 @@ class TestDeadlineSweep:
                 schedule_to_close=past,
             )
 
-        count = await backend.deadline_sweep(datetime.now(UTC))
+        count = await backend.deadline_sweep()
         assert count >= 1
 
         async with deps.worker_pool.acquire() as conn:
@@ -417,7 +417,7 @@ class TestPollingLifecycle:
                 f"UPDATE \"{schema}\".jobs SET scheduled_at = now() - interval '5 seconds' WHERE id = $1",
                 job_id,
             )
-        await backend.scheduled_to_pending(datetime.now(UTC))
+        await backend.scheduled_to_pending()
 
         dispatched2 = await backend.dispatch_batch(
             worker_id, ["default"], limit=1, lock_lease=_LOCK_LEASE

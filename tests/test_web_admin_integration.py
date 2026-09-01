@@ -1139,7 +1139,8 @@ async def test_schedule_run_now_enqueues_job(pool: asyncpg.Pool, conn: asyncpg.C
     assert resp.status_code == 200
 
     job = await conn.fetchrow(
-        f'SELECT actor, payload FROM "{_SCHEMA_LABEL}".jobs ORDER BY created_at DESC LIMIT 1',
+        f"SELECT actor, payload, status, scheduled_at, clock_timestamp() AS server_now "
+        f'FROM "{_SCHEMA_LABEL}".jobs ORDER BY created_at DESC LIMIT 1',
     )
     assert job is not None
     assert job["actor"] == "schedule_actor"
@@ -1151,6 +1152,15 @@ async def test_schedule_run_now_enqueues_job(pool: asyncpg.Pool, conn: asyncpg.C
 
         parsed = loads(str(payload))
         assert parsed.get("key") == "val"
+
+    # "Run now" is immediate: the row lands pending with a SERVER-stamped
+    # scheduled_at (scheduled_at=None at enqueue → the backend's clock
+    # stamps and decides), never an app-clock stamp.
+    assert job["status"] == "pending", (
+        f"run-now job must be dispatchable immediately, got status={job['status']!r}"
+    )
+    drift = (job["scheduled_at"] - job["server_now"]).total_seconds()
+    assert abs(drift) < 1.0, f"run-now scheduled_at drifted {drift:+.2f}s off the server clock"
 
     row_after = await conn.fetchrow(
         f'SELECT next_fire_at, consecutive_failures FROM "{_SCHEMA_LABEL}".cron_schedules WHERE id = $1',

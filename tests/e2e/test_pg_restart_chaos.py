@@ -50,6 +50,7 @@ from uuid import uuid4
 import pytest
 import pytest_asyncio
 
+from taskq.testing._shared_containers import creator_labels
 from tests.conftest import free_host_port
 
 from ._assertions import fetch_effects, poll_until, wait_for_effects, wait_for_worker_ready
@@ -154,6 +155,9 @@ def chaos_pg(e2e_network: Network) -> Iterator[ChaosPg]:
         # default of 100 connections.
         command="-c max_connections=1000",
     )
+    container.with_kwargs(
+        labels=creator_labels()
+    )  # Ownership labels: sweepable under disabled Ryuk (see e2e_network's sweep).
     container.with_network(e2e_network).with_network_aliases(alias)
     container.with_bind_ports(5432, free_host_port())
     with container:
@@ -295,6 +299,9 @@ async def _start_gated_worker(
     from testcontainers.core.container import DockerContainer
 
     container = DockerContainer(image=image_tag)
+    container.with_kwargs(
+        labels=creator_labels()
+    )  # Ownership labels: sweepable under disabled Ryuk (see e2e_network's sweep).
     container.with_network(network).with_network_aliases(alias)
     for key, value in worker_env.items():
         container.with_env(key, value)

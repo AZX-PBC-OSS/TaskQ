@@ -340,7 +340,7 @@ async def test_consume_non_retryable_exception_uses_actor_config() -> None:
     await _run_consume(job, backend, actor, actor_config=cfg)
     assert len(backend.mark_failed_or_retry_calls) == 1
     call = backend.mark_failed_or_retry_calls[0]
-    assert call["next_scheduled_at"] is None
+    assert call["retry_delay"] is None
     error_info: ErrorInfo = call["error_info"]  # type: ignore[reportAssignmentType] Why: dict[str, object] lookup returns object; runtime type is ErrorInfo
     assert error_info.error_class == "MyNonRetryableError"
 

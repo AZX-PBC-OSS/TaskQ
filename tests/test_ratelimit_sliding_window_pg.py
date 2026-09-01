@@ -26,7 +26,7 @@ from datetime import UTC, datetime, timedelta
 import asyncpg
 import pytest
 
-from taskq._ids import new_base62
+from taskq._ids import new_base62, new_uuid
 from taskq.backend._records import jsonb_to_dict
 from taskq.backend.clock import SystemClock
 from taskq.ratelimit import SlidingWindow
@@ -323,6 +323,175 @@ async def test_gcra_postgres_never_touches_redis(
     r = await sw.acquire(pg_pool=module_pg_pool, clock=clock, settings=settings)
     assert r.allowed is True
     assert r.backend == "postgres"
+
+
+# ── Unified clock contract: clock drives the memory backend only ─────
+
+
+async def test_acquire_and_peek_without_clock_on_postgres_backend(
+    module_pg_schema: ModulePgSchema,
+    module_pg_pool: asyncpg.Pool,
+) -> None:
+    """A postgres-backend acquire/peek runs entirely on the PG server
+    clock (clock_timestamp()), so it must not require a Python clock at
+    all — TokenBucket's contract. Both styles, acquire and peek."""
+    settings = _settings(module_pg_schema)
+
+    sw_log = SlidingWindow(
+        name=_unique_name(), limit=10, window=timedelta(seconds=60), backend="postgres", style="log"
+    )
+    r = await sw_log.acquire(pg_pool=module_pg_pool, settings=settings)
+    assert r.allowed is True
+    assert r.backend == "postgres"
+    state = await sw_log.peek(pg_pool=module_pg_pool, settings=settings)
+    assert state.backend == "postgres"
+
+    sw_gcra = SlidingWindow(
+        name=_gcra_unique_name(),
+        limit=10,
+        window=timedelta(seconds=60),
+        backend="postgres",
+        style="gcra",
+    )
+    r = await sw_gcra.acquire(pg_pool=module_pg_pool, settings=settings)
+    assert r.allowed is True
+    assert r.backend == "postgres"
+    state = await sw_gcra.peek(pg_pool=module_pg_pool, settings=settings)
+    assert state.backend == "postgres"
+
+
+# ── Concurrency pins — first-use and at-limit races ──────────────────
+#
+# Both pins race two acquire transactions on two DEDICATED single-connection
+# pools, each pre-warmed by a sacrificial acquire. Why the warm-up: asyncpg
+# plans a statement per connection on first use, and a cold plan costs
+# ~1.5 ms — enough to push the losing transaction's decisive statement past
+# the winner's commit and silently SERIALISE the very race these pins
+# assert (observed: cold-second-connection gathers never overlap, warm
+# ones overlap 40/40). Pre-warming both connections makes the pre-fix
+# failure deterministic; the post-fix serialization (advisory lock / row
+# preseed) is structural and timing-independent.
+
+
+async def _warm_gcra_pool(pg_dsn: str, settings: WorkerSettings) -> asyncpg.Pool:
+    """Single-connection pool whose connection has executed the GCRA
+    acquire statement set once (see the section note above)."""
+    pool = await asyncpg.create_pool(pg_dsn, min_size=1, max_size=1)
+    warm_sw = SlidingWindow(
+        name=_gcra_unique_name(),
+        limit=10,
+        window=timedelta(seconds=60),
+        backend="postgres",
+        style="gcra",
+    )
+    warm = await _acquire_pg_gcra(warm_sw, pool, settings)
+    assert warm.allowed is True
+    return pool
+
+
+async def _warm_log_pool(pg_dsn: str, settings: WorkerSettings) -> asyncpg.Pool:
+    """Single-connection pool whose connection has executed the log-style
+    acquire statement set once (see the section note above)."""
+    pool = await asyncpg.create_pool(pg_dsn, min_size=1, max_size=1)
+    warm_sw = SlidingWindow(
+        name=_unique_name(),
+        limit=10,
+        window=timedelta(seconds=60),
+        backend="postgres",
+        style="log",
+    )
+    warm = await _acquire_pg_log(warm_sw, pool, settings, new_uuid())
+    assert warm.allowed is True
+    return pool
+
+
+async def test_gcra_pg_concurrent_first_use_admits_exactly_one(
+    module_pg_schema: ModulePgSchema,
+) -> None:
+    """Two concurrent FIRST acquires on a brand-new GCRA bucket (limit=1):
+    exactly one is admitted.
+
+    ``SELECT ... FOR UPDATE`` cannot lock a row that does not exist yet,
+    so pre-fix both transactions read ``row is None``, both admit, and the
+    two upserts race last-writer-wins on the TAT. Post-fix a preseed
+    ``INSERT ... ON CONFLICT DO NOTHING`` serialises first-use on the
+    unique index (mirrors the token-bucket PG path).
+    """
+    settings = _settings(module_pg_schema)
+    name = _gcra_unique_name()
+
+    sw = SlidingWindow(
+        name=name, limit=1, window=timedelta(seconds=60), backend="postgres", style="gcra"
+    )
+
+    pool_a = await _warm_gcra_pool(module_pg_schema.pg_dsn, settings)
+    pool_b = await _warm_gcra_pool(module_pg_schema.pg_dsn, settings)
+    try:
+        decisions = await asyncio.gather(
+            _acquire_pg_gcra(sw, pool_a, settings),
+            _acquire_pg_gcra(sw, pool_b, settings),
+        )
+    finally:
+        await asyncio.gather(pool_a.close(), pool_b.close())
+
+    allowed_count = sum(1 for d in decisions if d.allowed)
+    assert allowed_count == 1, (
+        f"concurrent first-use must admit exactly one of two acquires at "
+        f"limit=1, got {allowed_count} allowed"
+    )
+
+
+async def test_log_pg_concurrent_acquires_respect_limit(
+    module_pg_schema: ModulePgSchema,
+    module_pg_pool: asyncpg.Pool,
+) -> None:
+    """limit=3 with 2 pre-filled entries, 2 concurrent acquires: exactly
+    one is allowed and the window count never exceeds the limit.
+
+    Pre-fix the DELETE+INSERT ... WHERE count < N pair is unserialised
+    under READ COMMITTED — both acquires count 2 in-window entries, both
+    insert, and the window reaches 4 > limit. Post-fix a per-bucket
+    ``pg_advisory_xact_lock`` at the top of the acquire transaction
+    serialises them (the cron loop's idiom).
+    """
+    schema = module_pg_schema.schema_name
+    settings = _settings(module_pg_schema)
+    name = _unique_name()
+
+    sw = SlidingWindow(
+        name=name, limit=3, window=timedelta(seconds=60), backend="postgres", style="log"
+    )
+
+    pool_a = await _warm_log_pool(module_pg_schema.pg_dsn, settings)
+    pool_b = await _warm_log_pool(module_pg_schema.pg_dsn, settings)
+    try:
+        for _ in range(2):
+            prefill = await _acquire_pg_log(sw, pool_a, settings, new_uuid())
+            assert prefill.allowed is True
+
+        decisions = await asyncio.gather(
+            _acquire_pg_log(sw, pool_a, settings, new_uuid()),
+            _acquire_pg_log(sw, pool_b, settings, new_uuid()),
+        )
+    finally:
+        await asyncio.gather(pool_a.close(), pool_b.close())
+
+    allowed_count = sum(1 for d in decisions if d.allowed)
+    assert allowed_count == 1, (
+        f"two concurrent acquires with one slot left must admit exactly "
+        f"one, got {allowed_count} allowed"
+    )
+
+    async with module_pg_pool.acquire() as conn:
+        window_count = await conn.fetchval(
+            f"SELECT count(*) FROM {schema}.rate_limit_window_entries "  # noqa: S608 # Why: schema is fixture-derived; bucket_name is $1-bound
+            f"WHERE bucket_name = $1 "
+            f"AND ts >= clock_timestamp() - interval '60 seconds'",
+            name,
+        )
+    assert window_count == 3, (
+        f"the in-window entry count must never exceed the limit=3, got {window_count}"
+    )
 
 
 # ── Injection-error branches — pg_pool/settings/request_id None ────

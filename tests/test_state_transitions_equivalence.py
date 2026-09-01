@@ -153,9 +153,7 @@ async def test_mark_failed_or_retry_already_terminal_equivalence(
     await pg_backend.mark_succeeded(pg_row.id, pg_worker_id, result={"ok": True})
 
     with pytest.raises(WorkerOwnershipMismatch):
-        await pg_backend.mark_failed_or_retry(
-            pg_row.id, pg_worker_id, error_info, next_scheduled_at=None
-        )
+        await pg_backend.mark_failed_or_retry(pg_row.id, pg_worker_id, error_info, retry_delay=None)
 
     mem_worker_id = mem_backend._worker_id  # type: ignore[reportPrivateUsage] # Why: test-only private access
     mem_args = EnqueueArgs(
@@ -177,7 +175,7 @@ async def test_mark_failed_or_retry_already_terminal_equivalence(
 
     with pytest.raises(WorkerOwnershipMismatch):
         await mem_backend.mark_failed_or_retry(
-            mem_job_id, mem_worker_id, error_info, next_scheduled_at=None
+            mem_job_id, mem_worker_id, error_info, retry_delay=None
         )
 
 
@@ -362,7 +360,7 @@ async def _perform_transition_pg(
                 past,
                 job_id,
             )
-        count = await backend.deadline_sweep(datetime.now(UTC))
+        count = await backend.deadline_sweep()
         assert count >= 1
 
     elif (from_status, to_status) == ("scheduled", "pending"):
@@ -373,7 +371,7 @@ async def _perform_transition_pg(
                 f"UPDATE \"{schema}\".jobs SET scheduled_at = now() - interval '5 seconds' WHERE id = $1",
                 job_id,
             )
-        count = await backend.scheduled_to_pending(datetime.now(UTC))
+        count = await backend.scheduled_to_pending()
         assert count >= 1
 
     elif (from_status, to_status) == ("scheduled", "cancelled"):
@@ -381,7 +379,7 @@ async def _perform_transition_pg(
         assert ok is True
 
     elif (from_status, to_status) == ("scheduled", "failed"):
-        count = await backend.deadline_sweep(datetime.now(UTC))
+        count = await backend.deadline_sweep()
         assert count >= 1
 
     elif (from_status, to_status) == ("running", "succeeded"):
@@ -398,7 +396,7 @@ async def _perform_transition_pg(
             error_message="test",
             error_traceback=None,
         )
-        await backend.mark_failed_or_retry(job_id, worker_id, error_info, next_scheduled_at=None)
+        await backend.mark_failed_or_retry(job_id, worker_id, error_info, retry_delay=None)
 
     elif (from_status, to_status) == ("running", "crashed"):
         async with deps.worker_pool.acquire() as conn:
@@ -406,9 +404,7 @@ async def _perform_transition_pg(
                 f"UPDATE \"{schema}\".jobs SET lock_expires_at = now() - interval '60 seconds' WHERE id = $1",
                 job_id,
             )
-        count = await backend.reclaim_expired_locks(
-            datetime.now(UTC), _CANCEL_GRACE, _CLEANUP_GRACE
-        )
+        count = await backend.reclaim_expired_locks(_CANCEL_GRACE, _CLEANUP_GRACE)
         assert count >= 1
 
     elif (from_status, to_status) == ("running", "abandoned"):
@@ -427,9 +423,7 @@ async def _perform_transition_pg(
                 f"UPDATE \"{schema}\".jobs SET lock_expires_at = now() - interval '60 seconds' WHERE id = $1",
                 job_id,
             )
-        count = await backend.reclaim_expired_locks(
-            datetime.now(UTC), _CANCEL_GRACE, _CLEANUP_GRACE
-        )
+        count = await backend.reclaim_expired_locks(_CANCEL_GRACE, _CLEANUP_GRACE)
         assert count >= 1
 
     else:
@@ -574,7 +568,7 @@ async def _perform_transition_memory(
 
         assert isinstance(backend._clock, FakeClock)  # type: ignore[reportPrivateUsage] # Why: test-only private access to verify FakeClock
         backend.advance_clock_to(backend._clock.now() + timedelta(hours=2))  # type: ignore[reportPrivateUsage] # Why: test-only private access
-        count = await backend.deadline_sweep(backend._clock.now())  # type: ignore[reportPrivateUsage] # Why: test-only private access
+        count = await backend.deadline_sweep()
         assert count >= 1
 
     elif (from_status, to_status) == ("scheduled", "pending"):
@@ -582,7 +576,7 @@ async def _perform_transition_memory(
 
         assert isinstance(backend._clock, FakeClock)  # type: ignore[reportPrivateUsage] # Why: test-only private access
         backend.advance_clock_to(backend._clock.now() + timedelta(hours=2))  # type: ignore[reportPrivateUsage] # Why: test-only private access
-        count = await backend.scheduled_to_pending(backend._clock.now())  # type: ignore[reportPrivateUsage] # Why: test-only private access
+        count = await backend.scheduled_to_pending()
         assert count >= 1
 
     elif (from_status, to_status) == ("scheduled", "cancelled"):
@@ -594,7 +588,7 @@ async def _perform_transition_memory(
 
         assert isinstance(backend._clock, FakeClock)  # type: ignore[reportPrivateUsage] # Why: test-only private access
         backend.advance_clock_to(backend._clock.now() + timedelta(hours=2))  # type: ignore[reportPrivateUsage] # Why: test-only private access
-        count = await backend.deadline_sweep(backend._clock.now())  # type: ignore[reportPrivateUsage] # Why: test-only private access
+        count = await backend.deadline_sweep()
         assert count >= 1
 
     elif (from_status, to_status) == ("running", "succeeded"):
@@ -611,7 +605,7 @@ async def _perform_transition_memory(
             error_message="test",
             error_traceback=None,
         )
-        await backend.mark_failed_or_retry(job_id, worker_id, error_info, next_scheduled_at=None)
+        await backend.mark_failed_or_retry(job_id, worker_id, error_info, retry_delay=None)
 
     elif (from_status, to_status) == ("running", "crashed"):
         from taskq.testing.clock import FakeClock
@@ -619,7 +613,6 @@ async def _perform_transition_memory(
         assert isinstance(backend._clock, FakeClock)  # type: ignore[reportPrivateUsage] # Why: test-only private access
         backend.advance_clock_to(backend._clock.now() + timedelta(minutes=2))  # type: ignore[reportPrivateUsage] # Why: test-only private access — lock_expires_at = now + 60s at dispatch, advance past it
         await backend.reclaim_expired_locks(
-            backend._clock.now(),  # type: ignore[reportPrivateUsage] # Why: test-only private access
             _CANCEL_GRACE,
             _CLEANUP_GRACE,
         )
@@ -640,7 +633,6 @@ async def _perform_transition_memory(
         assert isinstance(backend._clock, FakeClock)  # type: ignore[reportPrivateUsage] # Why: test-only private access
         backend.advance_clock_to(backend._clock.now() + timedelta(minutes=2))  # type: ignore[reportPrivateUsage] # Why: test-only private access — lock_expires_at = now + 60s at dispatch, advance past it
         await backend.reclaim_expired_locks(
-            backend._clock.now(),  # type: ignore[reportPrivateUsage] # Why: test-only private access
             _CANCEL_GRACE,
             _CLEANUP_GRACE,
         )

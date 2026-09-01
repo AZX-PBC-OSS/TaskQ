@@ -16,7 +16,7 @@ cancel signals, NOTIFY, and schedule CRUD wiring.
 
 import asyncio
 from contextlib import AbstractAsyncContextManager as AsyncContextManager
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import TYPE_CHECKING, ClassVar, Literal
 from uuid import UUID
 
@@ -384,7 +384,7 @@ class PostgresBackend:
         job_id: JobId,
         worker_id: UUID,
         error_info: ErrorInfo,
-        next_scheduled_at: datetime | None,
+        retry_delay: timedelta | None,
         progress_seq: int = 0,
         progress_state: dict[str, object] | None = None,
     ) -> JobRow:
@@ -395,7 +395,7 @@ class PostgresBackend:
             job_id,
             worker_id,
             error_info,
-            next_scheduled_at,
+            retry_delay,
             progress_seq,
             progress_state,
         )
@@ -634,72 +634,68 @@ class PostgresBackend:
         return True
 
     # ── Scheduling / sweeps ─────────────────────────────────────────────
+    # No `now` parameter: every predicate is evaluated server-side
+    # (clock_timestamp()) — the server clock is the arbiter.
 
-    async def scheduled_to_pending(self, now: datetime) -> int:
+    async def scheduled_to_pending(self) -> int:
         async with self._notify_pool.acquire() as conn:
-            return await sweep_scheduled_to_pending(conn, now, schema=self._schema_name)
+            return await sweep_scheduled_to_pending(conn, schema=self._schema_name)
 
-    async def deadline_sweep(self, now: datetime) -> int:
+    async def deadline_sweep(self) -> int:
         async with self._notify_pool.acquire() as conn:
-            return await sweep_deadline_exceeded(conn, now, schema=self._schema_name)
+            return await sweep_deadline_exceeded(conn, schema=self._schema_name)
 
     async def reclaim_expired_locks(
         self,
-        now: datetime,
         cancel_grace: timedelta,
         cleanup_grace: timedelta,
     ) -> int:
         async with self._notify_pool.acquire() as conn:
             return await sweep_expired_locks(
-                conn, now, cancel_grace, cleanup_grace, schema=self._schema_name
+                conn, cancel_grace, cleanup_grace, schema=self._schema_name
             )
 
     @staticmethod
     async def sweep_expired_locks(
         conn: ConnLike,
-        now: datetime,
         cancel_grace: timedelta,
         cleanup_grace: timedelta,
         *,
         schema: str,
     ) -> int:
-        return await sweep_expired_locks(conn, now, cancel_grace, cleanup_grace, schema=schema)
+        return await sweep_expired_locks(conn, cancel_grace, cleanup_grace, schema=schema)
 
     @staticmethod
     async def sweep_deadline_exceeded(
         conn: ConnLike,
-        now: datetime,
         *,
         schema: str,
     ) -> int:
-        return await sweep_deadline_exceeded(conn, now, schema=schema)
+        return await sweep_deadline_exceeded(conn, schema=schema)
 
     @staticmethod
     async def sweep_scheduled_to_pending(
         conn: ConnLike,
-        now: datetime,
         *,
         schema: str,
     ) -> int:
-        return await sweep_scheduled_to_pending(conn, now, schema=schema)
+        return await sweep_scheduled_to_pending(conn, schema=schema)
 
     @staticmethod
     async def sweep_leaked_reservation_slots(
         conn: ConnLike,
-        now: datetime,
         *,
         schema: str,
     ) -> int:
-        return await sweep_leaked_reservation_slots(conn, now, schema=schema)
+        return await sweep_leaked_reservation_slots(conn, schema=schema)
 
     @staticmethod
     async def sweep_expired_results(
         conn: ConnLike,
-        now: datetime,
         *,
         schema: str,
     ) -> int:
-        return await sweep_expired_results(conn, now, schema=schema)
+        return await sweep_expired_results(conn, schema=schema)
 
     # ── Read ────────────────────────────────────────────────────────────
 

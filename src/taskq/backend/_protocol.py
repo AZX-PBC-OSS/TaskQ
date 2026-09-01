@@ -99,6 +99,18 @@ __all__ = [
 #     datetime at its scheduled_at > now checks) rather than silently
 #     misbehaving, so per the bump rule above this is a documented
 #     no-bump incompatibility.
+#     mark_failed_or_retry's next_scheduled_at (datetime | None) is
+#     replaced by retry_delay (timedelta | None) — the backend derives
+#     scheduled_at, the scheduled/pending status, AND the
+#     schedule_to_close deadline outcome from its own clock (single
+#     arbiter); a v2-era implementation binding a datetime into the
+#     interval slot fails loudly at the driver instead of silently
+#     misbehaving.
+#     The vestigial `now` parameters are REMOVED from
+#     scheduled_to_pending / deadline_sweep / reclaim_expired_locks and
+#     the PostgresBackend.sweep_* statics — PG ignored them (the server
+#     clock is the arbiter); an implementation still declaring them fails
+#     loudly with TypeError on the call.
 BACKEND_PROTOCOL_VERSION: Final[int] = 3
 
 # ── Type aliases (PEP 695) ─────────────────────────────────────────────
@@ -761,18 +773,43 @@ class Backend(Protocol):
         *,
         connection: "asyncpg.Connection | None" = None,
     ) -> int:
-        """Insert multiple jobs via COPY FROM protocol for maximum throughput.
+        """Insert multiple jobs via the COPY FROM protocol for maximum throughput.
 
-        Returns the count of inserted rows. All values are pre-computed
-        in Python — no server-side expressions, no ON CONFLICT, no
-        RETURNING.  Duplicate idempotency_key causes the entire batch to
-        fail (all-or-nothing atomicity).
+        COPY cannot evaluate expressions or handle conflicts, so the write
+        is two statements inside one transaction: a bare COPY of the
+        domain-insensitive columns, then a corrective UPDATE
+        (``enqueue_batch_fast_fixup``) that stamps/decides the
+        clock-sensitive ones — ``status``, ``scheduled_at``,
+        ``schedule_to_close``, ``result_expires_at`` — from the database
+        clock (``clock_timestamp()``); ``created_at`` takes its DDL
+        default (``now()``).  Nothing is observable half-fixed: both
+        statements commit or abort together.
 
-        This is a performance-focused variant of :meth:`enqueue_batch`.
-        Use for bulk import / backfill scenarios with 10K+ rows where
-        idempotency-key collision handling is not needed.  Max batch size
-        is 50 000 (client-enforced).  See ``docs/spec/copy-from-batch-insert.md``
-        for tradeoffs.
+        Consequences of the COPY-no-conflicts shape:
+
+        - ``scheduled_at=None`` means immediate — the fixup's server-side
+          CASE stamps it and decides ``pending``/``scheduled`` (the same
+          single-arbiter contract as :meth:`enqueue`/:meth:`enqueue_batch`).
+        - ``schedule_to_close_interval``/``result_ttl`` are anchored to the
+          server clock at ENQUEUE time by the fixup — a future-scheduled
+          item with a short interval can therefore fail DeadlineExceeded
+          before it is ever dispatched.
+        - A duplicate ``idempotency_key`` — within the batch or already
+          stored — violates the unique index and aborts the ENTIRE batch
+          (all-or-nothing atomicity; nothing is written).
+
+        Returns the count of rows written.  On success this is exactly
+        ``len(args_list)`` — this path never deduplicates, so the count
+        never includes pre-existing rows.  The in-memory mirror implements
+        the same contract: duplicates raise
+        ``asyncpg.UniqueViolationError`` before any row is written, and
+        the count is the number of items.
+
+        This is a performance-focused variant of :meth:`enqueue_batch`
+        (which DOES deduplicate idempotency-key collisions via ``ON
+        CONFLICT``).  Use for bulk import / backfill with 10K+ rows where
+        collision handling is not needed.  Max batch size is 50 000
+        (client-enforced).
         """
         ...
 
@@ -865,10 +902,24 @@ class Backend(Protocol):
         job_id: JobId,
         worker_id: UUID,
         error_info: ErrorInfo,
-        next_scheduled_at: datetime | None,
+        retry_delay: timedelta | None,
         progress_seq: int = 0,
         progress_state: dict[str, object] | None = None,
-    ) -> JobRow: ...
+    ) -> JobRow:
+        """Mark a running job failed, or schedule a retry *retry_delay* later.
+
+        ``retry_delay=None`` is the terminal-fail arm (``status='failed'``,
+        the original ``error_info`` persisted).  A non-None delay is applied
+        by the backend's own clock, never the caller's: ``scheduled_at =
+        now() + delay`` and the ``scheduled``/``pending`` status derive from
+        the delay alone (zero → immediate).  The same statement arbitrates
+        the ``schedule_to_close`` deadline server-side — when
+        ``clock_timestamp() + delay`` would land past the deadline, the row
+        is failed with ``error_class='DeadlineExceeded'`` instead of
+        retried — so app↔DB clock skew can neither void the retry backoff
+        nor kill a job whose deadline has not actually passed.
+        """
+        ...
 
     async def mark_cancelled(
         self,
@@ -969,16 +1020,41 @@ class Backend(Protocol):
         ...
 
     # ── Scheduling / sweeps ─────────────────────────────────────────────
-    async def scheduled_to_pending(self, now: datetime) -> int: ...
+    # The sweep methods take no ``now`` parameter: the arbiter is the
+    # backend's own clock (PG: ``clock_timestamp()`` in the statement;
+    # InMemory: the injected Clock) — a caller-supplied timestamp would be
+    # a second, skewable domain mixed into the predicate.
+    async def scheduled_to_pending(self) -> int:
+        """Promote ``scheduled`` jobs whose ``scheduled_at`` has passed.
 
-    async def deadline_sweep(self, now: datetime) -> int: ...
+        The backend's own clock is the arbiter (PG evaluates
+        ``scheduled_at <= clock_timestamp()`` server-side; InMemory
+        compares against its injected Clock).  Returns the count of
+        promoted rows.
+        """
+        ...
+
+    async def deadline_sweep(self) -> int:
+        """Fail pending/scheduled jobs whose ``schedule_to_close`` has passed.
+
+        Transitions to ``failed`` with ``error_class='DeadlineExceeded'``,
+        arbitrated by the backend's own clock.  Returns the count of swept
+        rows.
+        """
+        ...
 
     async def reclaim_expired_locks(
         self,
-        now: datetime,
         cancel_grace: timedelta,
         cleanup_grace: timedelta,
-    ) -> int: ...
+    ) -> int:
+        """Reclaim ``running`` jobs whose lock has expired.
+
+        The expiry check is arbitrated by the backend's own clock; the
+        grace parameters only widen the carve-out for jobs with an
+        in-flight cancel request.  Returns the count of reclaimed rows.
+        """
+        ...
 
     # ── Read ────────────────────────────────────────────────────────────
     async def get(self, job_id: JobId) -> JobRow | None: ...

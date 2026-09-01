@@ -22,7 +22,12 @@ from taskq.ratelimit import TokenBucket
 from taskq.settings import WorkerSettings
 from taskq.testing.asyncpg_chaos import ChaosConnection, ChaosPool
 from taskq.testing.clock import FakeClock
-from taskq.testing.fixtures import ModulePgSchema, redis_url_for
+from taskq.testing.fixtures import (  # pyright: ignore[reportPrivateUsage]  # Why: asserting the concrete shim type below is the pin; private prefix scopes it to the testing package (same pattern as _create_worker).
+    ModulePgSchema,
+    RedisContainerLike,
+    _RedisContainerShim,
+    redis_url_for,
+)
 
 pytestmark = [pytest.mark.integration, pytest.mark.redis]
 
@@ -315,7 +320,7 @@ async def test_clock_skew_backward_step(
     backend: str,
     module_pg_schema: ModulePgSchema,
     module_pg_pool: asyncpg.Pool,
-    redis_container: object,
+    redis_container: RedisContainerLike,
 ) -> None:
     """Inject FakeClock; acquire at t=T; move clock backward 5s;
     acquire again. The elapsed clamp (max(0, now - ts)) prevents negative
@@ -340,8 +345,14 @@ async def test_clock_skew_backward_step(
     clock = FakeClock(start=t0)
 
     if backend == "redis":
-        host = redis_container.get_container_host_ip()  # type: ignore[union-attr] # Why: redis_container is a RedisContainer; typed as object in fixtures
-        port = redis_container.get_exposed_port(6379)  # type: ignore[union-attr] # Why: same as above
+        # Pin the no-docker-I/O invariant: the shared-pair shim's host/port
+        # accessors are pure attributes, so these sync calls cannot block the
+        # loop. If the fixture ever backs a real testcontainers object again
+        # (blocking docker-py HTTP per call), this assert fires here instead
+        # of the stall surfacing as a mystery loop-blocker.
+        assert isinstance(redis_container, _RedisContainerShim)
+        host = redis_container.get_container_host_ip()
+        port = redis_container.get_exposed_port(6379)
         url = f"redis://{host}:{port}/0"
         client = redis_async.from_url(url, decode_responses=False)
         try:

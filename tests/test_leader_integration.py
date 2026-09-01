@@ -375,7 +375,6 @@ async def test_ti5_sweep_1_reclaims_expired_lock(pg_dsn: str) -> None:
             )
 
         count = await backend.reclaim_expired_locks(
-            now,
             timedelta(seconds=deps.settings.cancellation_grace_period),
             timedelta(seconds=deps.settings.cleanup_grace_period),
         )
@@ -534,7 +533,6 @@ async def test_ti7_equivalence_isolate_self_vs_sweep_cancel_phase_0(pg_dsn: str)
         async with deps.dispatcher_pool.acquire() as conn:
             await PostgresBackend.sweep_expired_locks(
                 conn,
-                now,
                 timedelta(seconds=deps.settings.cancellation_grace_period),
                 timedelta(seconds=deps.settings.cleanup_grace_period),
                 schema=schema,
@@ -622,7 +620,6 @@ async def test_ti7_equivalence_cancel_phase_1_grace_divergence(pg_dsn: str) -> N
         async with deps.dispatcher_pool.acquire() as conn:
             count = await PostgresBackend.sweep_expired_locks(
                 conn,
-                now,
                 timedelta(seconds=deps.settings.cancellation_grace_period),
                 timedelta(seconds=deps.settings.cleanup_grace_period),
                 schema=schema,
@@ -822,7 +819,6 @@ async def test_ti7_crash_reclaim_observable_via_poll(pg_dsn: str) -> None:
 
         # Run Sweep 1
         count = await backend.reclaim_expired_locks(
-            now,
             timedelta(seconds=deps.settings.cancellation_grace_period),
             timedelta(seconds=deps.settings.cleanup_grace_period),
         )
@@ -902,7 +898,6 @@ async def test_ti8_fanout_outstanding_counter_reaches_zero(
 
         # Run Sweep 1
         count = await backend.reclaim_expired_locks(
-            now,
             timedelta(seconds=deps.settings.cancellation_grace_period),
             timedelta(seconds=deps.settings.cleanup_grace_period),
         )

@@ -4,7 +4,7 @@ invoke_on_retry_exhausted, safe_mark_failed_or_retry)."""
 import asyncio
 import time
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import cast
 from uuid import UUID
 
@@ -25,9 +25,6 @@ from taskq.retry import (
 )
 from taskq.testing.actor import StubActorConfig
 from taskq.testing.jobs import make_job_row
-
-_NOW = datetime(2026, 1, 1)
-
 
 # ── hook fires once per Fail, not per Retry ───────────────────
 
@@ -51,7 +48,7 @@ async def test_hook_fires_once_per_fail_not_per_retry() -> None:
             schedule_to_close=None,
             start_to_close=None,
         )
-        decision = decide_after_failure(actor_config, exception, job_state, _NOW)
+        decision = decide_after_failure(actor_config, exception, job_state)
         if isinstance(decision, Fail):
             job_row = make_job_row(attempt=attempt)
             await invoke_on_retry_exhausted(
@@ -95,7 +92,7 @@ def test_actor_config_drift_row_authoritative() -> None:
         start_to_close=None,
     )
 
-    decision = decide_after_failure(cfg_b, RuntimeError("x"), job_state, _NOW)
+    decision = decide_after_failure(cfg_b, RuntimeError("x"), job_state)
     assert isinstance(decision, Retry)  # Uses row's max_attempts=5, not cfg_b's 2
 
 
@@ -131,7 +128,7 @@ class _MismatchBackend:
         job_id: UUID,
         worker_id: UUID,
         error_info: ErrorInfo,
-        next_scheduled_at: datetime | None,
+        retry_delay: timedelta | None,
         progress_seq: int = 0,
         progress_state: dict[str, object] | None = None,
     ) -> JobRow:
@@ -158,7 +155,7 @@ async def test_worker_ownership_mismatch_at_adapter() -> None:
             error_message="fail",
             error_traceback=None,
         ),
-        next_scheduled_at=None,
+        retry_delay=None,
     )
 
     assert result is None
@@ -168,7 +165,9 @@ async def test_worker_ownership_mismatch_at_adapter() -> None:
 
 
 def test_clock_skew_no_panic() -> None:
-    """clock skew — no panic; Retry's next_scheduled_at may be in the past."""
+    """clock skew — no panic; the decision is a DELAY, so no skewed-clock
+    stamp is ever computed in Python (the backend derives scheduled_at
+    from its own clock; see mark_failed_or_retry)."""
     policy = RetryPolicy(
         kind="transient",
         max_attempts=3,
@@ -176,9 +175,6 @@ def test_clock_skew_no_panic() -> None:
         jitter=0.0,
     )
     actor_config = StubActorConfig(retry=policy)
-
-    dispatch_time = datetime(2026, 1, 1, 0, 0, 5)
-    skewed_now = datetime(2026, 1, 1, 0, 0, 0)
 
     job_state = JobRetryState(
         attempt=1,
@@ -188,12 +184,9 @@ def test_clock_skew_no_panic() -> None:
         start_to_close=None,
     )
 
-    decision = decide_after_failure(actor_config, RuntimeError("x"), job_state, skewed_now)
+    decision = decide_after_failure(actor_config, RuntimeError("x"), job_state)
     assert isinstance(decision, Retry)
-    # next_scheduled_at = skewed_now + base = 0:00:10, which is in the
-    # past relative to dispatch_time + base = 0:00:15. PG's dispatch
-    # clock filter handles the actual scheduling.
-    assert decision.next_scheduled_at < dispatch_time + policy.base
+    assert decision.retry_delay == policy.base
 
 
 # ── hook hangs longer than timeout ──────────────────────────────
@@ -239,7 +232,7 @@ def test_unknown_retry_kind_surfaces_as_validation_error() -> None:
     )
 
     with pytest.raises(ValidationError) as exc_info:
-        decide_after_failure(actor_config, RuntimeError("x"), job_state, _NOW)
+        decide_after_failure(actor_config, RuntimeError("x"), job_state)
 
     msg = str(exc_info.value)
     assert "this_value_is_not_valid" in msg
@@ -252,7 +245,8 @@ def test_decide_after_failure_indefinite_returns_retry() -> None:
     """B-TG-14: decide_after_failure with retry_kind='indefinite',
     schedule_to_close=None returns Retry through the adapter layer.
     The indefinite tier ignores max_attempts and retries on any non-fatal
-    exception when the deadline has not passed."""
+    exception — the deadline is the SQL guard's business, not the
+    classifier's."""
     policy = RetryPolicy(kind="indefinite", max_attempts=3, jitter=0.0)
     actor_config = StubActorConfig(retry=policy)
 
@@ -264,9 +258,9 @@ def test_decide_after_failure_indefinite_returns_retry() -> None:
         start_to_close=None,
     )
 
-    decision = decide_after_failure(actor_config, RuntimeError("test"), job_state, _NOW)
+    decision = decide_after_failure(actor_config, RuntimeError("test"), job_state)
     assert isinstance(decision, Retry)
-    assert decision.next_scheduled_at > _NOW
+    assert decision.retry_delay > timedelta(0)
 
 
 # ── B-TG-11: decide_after_failure with cap < base raises ValidationError ──
@@ -314,7 +308,7 @@ def test_decide_after_failure_cap_less_than_base_raises_validation_error() -> No
     )
 
     with pytest.raises(ValidationError):
-        decide_after_failure(BrokenCapActorConfig(), RuntimeError("x"), job_state, _NOW)
+        decide_after_failure(BrokenCapActorConfig(), RuntimeError("x"), job_state)
 
 
 # ── B-TG-15: invoke_on_retry_exhausted hook coroutine raising mid-execution ──
@@ -349,63 +343,12 @@ async def test_hook_coroutine_raises_after_await_is_swallowed() -> None:
     await invoke_on_retry_exhausted(raising_after_await_hook, job_row, exception, 3.0)
 
 
-# ── clock skew between consumer and PG ──────────────────────────
+# ── classifier has no clock frame ───────────────────────────────
 #
-# Verifies contract: RetryClassifier.classify receives a now parameter
-# derived from clock.now() (not datetime.now(UTC)), so classifier behaviour
-# is governed by the clock the consumer injects.
-
-
-def test_clock_skew_indefinite_tier_uses_injected_now() -> None:
-    """clock skew — classifier uses injected now, not PG's time.
-
-    Simulate PG now at time T, schedule_to_close = T + 1s, but the
-    consumer's clock is 30s behind at T - 30s. The classifier receives
-    now = T - 30s and should return Retry because from the injected
-    clock's perspective the deadline is still 31 seconds away.
-
-    Documents the invariant: classifier behaviour is governed by
-    the now parameter the consumer injects from clock.now()."""
-    from taskq.retry import RetryClassifier
-
-    pg_now = datetime(2026, 1, 1, 0, 0, 0)
-    schedule_to_close = pg_now + timedelta(seconds=1)
-    skewed_now = pg_now - timedelta(seconds=30)
-
-    policy = RetryPolicy(kind="indefinite", time_budget=timedelta(hours=4), jitter=0.0)
-    decision = RetryClassifier.classify(
-        policy=policy,
-        non_retryable_exceptions=(),
-        exception=RuntimeError("fail"),
-        attempt=1,
-        schedule_to_close=schedule_to_close,
-        now=skewed_now,
-    )
-    assert isinstance(decision, Retry), (
-        f"classifier should return Retry when clock is behind; "
-        f"schedule_to_close={schedule_to_close.isoformat()}, now={skewed_now.isoformat()}"
-    )
-
-
-def test_clock_skew_indefinite_tier_past_deadline_yet_ahead_clock() -> None:
-    """Reverse of clock is ahead of PG; deadline has passed in
-    the classifier's frame. schedule_to_close = T + 1s, now = T + 31s
-    → classifier returns Fail(DeadlineExceeded) because 31s > 1s."""
-    from taskq.retry import RetryClassifier
-
-    pg_now = datetime(2026, 1, 1, 0, 0, 0)
-    schedule_to_close = pg_now + timedelta(seconds=1)
-    skewed_now = pg_now + timedelta(seconds=31)
-
-    policy = RetryPolicy(kind="indefinite", time_budget=timedelta(hours=4), jitter=0.0)
-    decision = RetryClassifier.classify(
-        policy=policy,
-        non_retryable_exceptions=(),
-        exception=RuntimeError("fail"),
-        attempt=1,
-        schedule_to_close=schedule_to_close,
-        now=skewed_now,
-    )
-    assert isinstance(decision, Fail)
-    assert decision.error_class == "DeadlineExceeded"
-    assert decision.retryable is False
+# The two former tests here pinned the REMOVED Python deadline arbiter
+# (the classifier's clock-frame opinion of schedule_to_close) — exactly
+# the C2 hazard: a worker clock disagreeing with the server killed live
+# jobs or voided backoff.  classify() now takes neither a deadline nor a
+# clock; the SQL guard in mark_failed_or_retry is the single deadline
+# arbiter (pinned in tests/test_clock_domain_isolation.py and
+# tests/test_retry_classifier.py::test_deadline_is_not_a_classifier_input).

@@ -303,7 +303,17 @@ async def _acquire_pg_log(
     retry_after: timedelta
     count_after: int
 
+    # Serialise acquirers per bucket: under READ COMMITTED the DELETE +
+    # INSERT ... WHERE count < N pair is not serialised — two concurrent
+    # acquires can each count the pre-insert window and both insert,
+    # over-admitting past the limit. A transaction-scoped advisory lock on
+    # the bucket name (the cron loop's idiom) makes the whole
+    # delete/count/insert sequence atomic per bucket; distinct buckets
+    # hash to distinct locks and stay parallel.
+    advisory_lock_sql = "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))"
+
     async with pg_pool.acquire() as conn, conn.transaction():
+        await conn.execute(advisory_lock_sql, self._name)
         await conn.execute(delete_sql, self._name, window_ms)
 
         inserted = await conn.fetchrow(
@@ -372,6 +382,18 @@ async def _acquire_pg_gcra(
         f'FROM "{schema}".rate_limit_buckets '
         f"WHERE bucket_name = $1 FOR UPDATE"
     )
+    # Cold-start guard mirroring the token-bucket PG path: SELECT ... FOR
+    # UPDATE cannot lock a row that does not exist yet, so two concurrent
+    # first acquires would each read `row is None`, each admit, and race
+    # last-writer-wins on the TAT. Pre-seed a row stamped with the
+    # server-clock TAT (idempotent — DO NOTHING on conflict) so first use
+    # also serialises on the row lock below.
+    preseed_sql = (
+        f'INSERT INTO "{schema}".rate_limit_buckets (bucket_name, kind, state, updated_at) '  # noqa: S608  # Why: schema_name pre-validated; values are $1-bound
+        f"VALUES ($1, 'gcra', "
+        f"jsonb_build_object('tat', EXTRACT(EPOCH FROM clock_timestamp())), now()) "
+        f"ON CONFLICT (bucket_name) DO NOTHING"
+    )
     upsert_sql = (
         f'INSERT INTO "{schema}".rate_limit_buckets (bucket_name, kind, state, updated_at) '  # noqa: S608  # Why: schema_name is pre-validated; values are $1/$2-bound
         f"VALUES ($1, 'gcra', $2::jsonb, now()) "
@@ -387,9 +409,13 @@ async def _acquire_pg_gcra(
     pg_previous_state: dict[str, object] | None = None
 
     async with pg_pool.acquire() as conn, conn.transaction():
+        await conn.execute(preseed_sql, self._name)
         row = await conn.fetchrow(select_sql, self._name)
 
         if row is None:
+            # Unreachable in the normal path — the preseed above guarantees
+            # the row exists before the SELECT. Kept as a defensive fallback
+            # (e.g. a concurrent DELETE/reset between preseed and select).
             # First use: no row to fold the server epoch into — take a
             # separate read on the same connection/transaction.
             now_seconds = float(await conn.fetchval("SELECT EXTRACT(EPOCH FROM clock_timestamp())"))

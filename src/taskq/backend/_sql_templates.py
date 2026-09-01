@@ -203,21 +203,65 @@ SET status = 'failed',
     progress_state = CASE WHEN $7::jsonb IS NOT NULL THEN COALESCE(progress_state, '{{}}'::jsonb) || $7::jsonb ELSE progress_state END
 WHERE id = $1 AND status = 'running' AND locked_by_worker = $2
 RETURNING *""",
+        # mark_retry is a two-CTE single-arbiter statement, structurally
+        # mirroring mark_snoozed / mark_retry_after: the delay ($3::interval)
+        # is applied by the SERVER clock (scheduled_at = now() + delay; the
+        # status derives from the delay alone), and the schedule_to_close
+        # deadline is arbitrated in the same statement — clock_timestamp() +
+        # delay <= schedule_to_close retries; past it, the deadline_failed
+        # CTE lands 'failed' with error_class='DeadlineExceeded'.  The caller
+        # never passes a Python-domain timestamp (C1: a skewed caller could
+        # otherwise void the backoff or kill a live job).
         mark_retry=f"""\
-UPDATE "{s}".jobs
-SET status = CASE WHEN $3 > clock_timestamp() THEN 'scheduled'::"{s}".job_status ELSE 'pending'::"{s}".job_status END,
-    scheduled_at = $3,
-    finished_at = NULL,
-    locked_by_worker = NULL,
-    lock_expires_at = NULL,
-    last_heartbeat_at = NULL,
-    error_class = $4,
-    error_message = $5,
-    error_traceback = $6,
-    progress_seq = $7,
-    progress_state = CASE WHEN $8::jsonb IS NOT NULL THEN COALESCE(progress_state, '{{}}'::jsonb) || $8::jsonb ELSE progress_state END
-WHERE id = $1 AND status = 'running' AND locked_by_worker = $2
-RETURNING *""",
+WITH params AS (
+    SELECT $1::uuid AS job_id, $2::uuid AS worker_id, $3::interval AS retry_delay
+),
+retried AS (
+    UPDATE "{s}".jobs j
+    SET status = CASE WHEN $3::interval > interval '0' THEN 'scheduled'::"{s}".job_status
+                      ELSE 'pending'::"{s}".job_status END,
+        scheduled_at = now() + (SELECT retry_delay FROM params),
+        finished_at = NULL,
+        locked_by_worker = NULL,
+        lock_expires_at = NULL,
+        last_heartbeat_at = NULL,
+        error_class = $4,
+        error_message = $5,
+        error_traceback = $6,
+        progress_seq = $7,
+        progress_state = CASE WHEN $8::jsonb IS NOT NULL
+                              THEN COALESCE(j.progress_state, '{{}}'::jsonb) || $8::jsonb
+                              ELSE j.progress_state END
+    WHERE j.id = (SELECT job_id FROM params)
+      AND j.status = 'running'
+      AND j.locked_by_worker = (SELECT worker_id FROM params)
+      AND (j.schedule_to_close IS NULL
+           OR clock_timestamp() + (SELECT retry_delay FROM params) <= j.schedule_to_close)
+    RETURNING j.*, 'retried'::text AS outcome_branch
+),
+deadline_failed AS (
+    UPDATE "{s}".jobs j
+    SET status = 'failed',
+        finished_at = now(),
+        error_class = 'DeadlineExceeded',
+        error_message = 'schedule_to_close reached before next retry dispatch',
+        error_traceback = NULL,
+        locked_by_worker = NULL,
+        lock_expires_at = NULL,
+        last_heartbeat_at = NULL,
+        progress_seq = $7,
+        progress_state = CASE WHEN $8::jsonb IS NOT NULL
+                              THEN COALESCE(j.progress_state, '{{}}'::jsonb) || $8::jsonb
+                              ELSE j.progress_state END
+    WHERE j.id = (SELECT job_id FROM params)
+      AND j.status = 'running'
+      AND j.locked_by_worker = (SELECT worker_id FROM params)
+      AND j.schedule_to_close IS NOT NULL
+      AND clock_timestamp() + (SELECT retry_delay FROM params) > j.schedule_to_close
+      AND NOT EXISTS (SELECT 1 FROM retried)
+    RETURNING j.*, 'deadline_failed'::text AS outcome_branch
+)
+SELECT * FROM retried UNION ALL SELECT * FROM deadline_failed""",
         mark_cancelled=f"""\
 UPDATE "{s}".jobs
 SET status = 'cancelled',
@@ -490,7 +534,7 @@ SELECT
     t.fairness_key,
     t.payload,
     t.payload_schema_ver,
-    CASE WHEN COALESCE(t.scheduled_at, now()) > clock_timestamp() THEN 'scheduled'::"{s}".job_status ELSE 'pending'::"{s}".job_status END,
+    CASE WHEN COALESCE(t.scheduled_at, clock_timestamp()) > clock_timestamp() THEN 'scheduled'::"{s}".job_status ELSE 'pending'::"{s}".job_status END,
     t.priority,
     0,
     t.max_attempts,
@@ -502,7 +546,11 @@ SELECT
     COALESCE(clock_timestamp() + t.stc_interval, t.stc_raw),
     t.start_to_close,
     t.heartbeat_timeout,
-    COALESCE(t.scheduled_at, now()),
+    -- Immediate rows are stamped with the STATEMENT-time clock, matching
+    -- the single-row enqueue template and the COPY fixup — not now(),
+    -- which on the caller-supplied-connection path is the caller's
+    -- transaction start.
+    COALESCE(t.scheduled_at, clock_timestamp()),
     t.metadata,
     t.idempotency_scope,
     t.idempotency_key,

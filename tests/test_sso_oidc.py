@@ -12,6 +12,10 @@ call paths with consistent types. A test RSA key signs id_tokens.
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import importlib
+import time
 from collections.abc import Generator
 from contextlib import contextmanager
 from typing import Any
@@ -27,7 +31,25 @@ from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 
 from taskq.web.admin.auth.oidc import OIDCAuthConfig, OIDCTokenContext, create_oidc_auth
-from tests._sso_oidc_crypto import jwks_dict, make_discovery, make_token_response
+from tests._sso_oidc_crypto import (
+    FOREIGN_SIGN_KEYSET,
+    jwks_dict,
+    make_discovery,
+    make_token_response,
+)
+
+# Deliberately import authlib's httpx2 integration at COLLECTION time — the
+# import-order scenario the interception fixture must survive. authlib binds
+# ``class AsyncOAuth2Client(_OAuth2Client, httpx2.AsyncClient)`` ONCE, when
+# ``oauth2_client.py`` is first imported, so any module importing it before a
+# test's patch lands (this one, or any future module-level import elsewhere)
+# would otherwise leave the class bound to the REAL AsyncClient and the
+# MockTransport interception silently broken. The importlib form pins the
+# same binding side-effect without dragging pyright Unknown types into this
+# typed test module. (Placement: module level is what matters — it runs at
+# collection, before any fixture or test; none of the imports above pull
+# authlib in, so running last among them changes nothing.)
+importlib.import_module("authlib.integrations.httpx_client")
 
 _ISSUER = "https://idp.test.example.com"
 _CLIENT_ID = "test-client"
@@ -43,11 +65,14 @@ class _MockIdP:
     responses for the ``httpx2.MockTransport`` handler.
 
     Unmatched requests fail loudly, so a stray production call cannot
-    silently escape to the network.
+    silently escape to the network. Every request the handler serves is
+    recorded in ``requests`` (cleared by :meth:`reset`), so tests can
+    capture the authorization/token exchange traffic.
     """
 
     def __init__(self) -> None:
         self._routes: dict[tuple[str, str, str], httpx2.Response] = {}
+        self.requests: list[httpx2.Request] = []
 
     def on(self, method: str, url: str, response: httpx2.Response) -> None:
         """Register (or override) a canned response for an endpoint URL."""
@@ -56,8 +81,10 @@ class _MockIdP:
 
     def reset(self) -> None:
         self._routes.clear()
+        self.requests.clear()
 
     def handler(self, request: httpx2.Request) -> httpx2.Response:
+        self.requests.append(request)
         route = self._routes.get((request.method, request.url.host, request.url.path))
         if route is None:
             raise AssertionError(f"unexpected request: {request.method} {request.url}")
@@ -83,6 +110,28 @@ class _IdpTransportAsyncClient(httpx2.AsyncClient):
         super().__init__(*args, **kwargs)
 
 
+def _rebind_authlib_client_base_under_patch() -> None:
+    """Re-bind authlib's ``AsyncOAuth2Client`` base to the patched client.
+
+    authlib resolves ``httpx2.AsyncClient`` ONCE — at class-definition time
+    in ``oauth2_client.py`` — so when its integration module was imported
+    before the per-test patch (see the module-level import above), the
+    already-defined class keeps the REAL AsyncClient base and the patch
+    does not intercept it. Reloading the submodule under the live patch
+    re-executes the class definition against the patched attribute, and
+    reloading the package re-binds ``authlib.integrations.httpx_client
+    .AsyncOAuth2Client`` — the name production imports — to the reloaded
+    class. No-op when the current binding already subclasses the patched
+    client (first import under a live patch, or an earlier test's reload).
+    """
+    pkg = importlib.import_module("authlib.integrations.httpx_client")
+    client_cls: type = pkg.AsyncOAuth2Client
+    if _IdpTransportAsyncClient in client_cls.__bases__:
+        return
+    importlib.reload(importlib.import_module("authlib.integrations.httpx_client.oauth2_client"))
+    importlib.reload(pkg)
+
+
 @pytest.fixture(autouse=True)
 def _route_httpx2_through_mock_idp(monkeypatch: pytest.MonkeyPatch) -> None:  # pyright: ignore[reportUnusedFunction]  # Why: pytest autouse fixture consumed by test runner via parameter injection.
     """Swap ``httpx2.AsyncClient`` for the MockTransport-injecting subclass.
@@ -90,8 +139,22 @@ def _route_httpx2_through_mock_idp(monkeypatch: pytest.MonkeyPatch) -> None:  # 
     One httpx2-native interception point covers both outbound call paths —
     production's direct discovery/JWKS fetches and authlib's token exchange —
     with no cross-module type bridging.
+
+    Import-order robustness: authlib binds ``AsyncOAuth2Client.__bases__``
+    at class-definition time, so the patch only intercepts it if that class
+    is (re)defined while the patch is live — hence the rebind helper above
+    when it was imported earlier. The trailing assert proves the
+    interception regardless of import order: authlib calls
+    ``httpx2.AsyncClient.__init__(self, ...)`` unbound from its own
+    ``__init__``, so a base still bound to the REAL AsyncClient would
+    surface mid-test as a confusing ``super(type, obj)`` TypeError instead
+    of this clear failure.
     """
     monkeypatch.setattr(httpx2, "AsyncClient", _IdpTransportAsyncClient)
+    _rebind_authlib_client_base_under_patch()
+    pkg = importlib.import_module("authlib.integrations.httpx_client")
+    client_cls: type = pkg.AsyncOAuth2Client
+    assert _IdpTransportAsyncClient in client_cls.__bases__
 
 
 def _config(
@@ -399,3 +462,194 @@ def test_oidc_logout_clears_session() -> None:
     set_cookie = resp.headers.get("set-cookie", "")
     assert "taskq_session=" in set_cookie
     assert "Max-Age=0" in set_cookie or "expires=" in set_cookie.lower()
+
+
+# ── PKCE authorization-request surface (login redirect) ────────────────────
+
+
+def _state_cookie_payload(client: TestClient) -> dict[str, str]:
+    """Decode this client's ``taskq_oidc_state`` cookie: the signed
+    ``{"state", "cv"}`` record production issues at login (same serializer
+    secret/salt as ``oidc._state_serializer`` — ``cv`` is the PKCE
+    code_verifier)."""
+    from itsdangerous import URLSafeTimedSerializer
+
+    raw = client.cookies["taskq_oidc_state"]
+    payload = URLSafeTimedSerializer(_SESSION_SECRET, salt="taskq-oidc-state").loads(raw)
+    assert isinstance(payload, dict)
+    return {str(key): str(value) for key, value in payload.items()}
+
+
+def test_login_redirect_targets_discovered_authorization_endpoint_with_pkce() -> None:
+    """The login redirect goes to the DISCOVERED authorization endpoint and
+    carries the full authorization-code + PKCE request surface: client_id,
+    redirect_uri, scope, state, and a code_challenge that is the RFC 7636
+    S256 digest of the state cookie's verifier."""
+    config = _config()
+    app = _make_app(config)
+    client = TestClient(app)
+
+    with _mock_provider():
+        resp = client.get("/admin/login", follow_redirects=False)
+
+    assert resp.status_code == 302
+    discovered = urlparse(make_discovery(_ISSUER)["authorization_endpoint"])
+    location = urlparse(resp.headers["location"])
+    assert (location.scheme, location.netloc, location.path) == (
+        discovered.scheme,
+        discovered.netloc,
+        discovered.path,
+    )
+    query = parse_qs(location.query)
+    assert query["client_id"] == [_CLIENT_ID]
+    assert query["redirect_uri"] == [_REDIRECT_URI]
+    assert query["scope"] == ["openid profile email"]
+    assert query["code_challenge_method"] == ["S256"]
+    challenge = query["code_challenge"][0]
+    assert challenge, "login redirect carries no code_challenge"
+    # PKCE S256 binding: challenge == unpadded base64url(sha256(verifier)).
+    cookie = _state_cookie_payload(client)
+    expected_challenge = (
+        base64.urlsafe_b64encode(hashlib.sha256(cookie["cv"].encode()).digest())
+        .rstrip(b"=")
+        .decode()
+    )
+    assert challenge == expected_challenge
+    assert query["state"][0] == cookie["state"]
+
+
+# ── PKCE token-request capture (callback exchange) ─────────────────────────
+
+
+def _token_request_posts() -> list[httpx2.Request]:
+    """The POSTs the callback made to the token endpoint (call while the
+    ``_mock_provider`` context is live — its exit resets the request log)."""
+    return [r for r in _idp.requests if r.method == "POST" and r.url.path == "/token"]
+
+
+def test_callback_token_request_carries_pkce_verifier_from_state_cookie() -> None:
+    """The token exchange POST carries the SAME code_verifier the state
+    cookie recorded at login — the PKCE round-trip binding between the
+    authorization request and the token request."""
+    config = _config()
+    app = _make_app(config)
+    client = TestClient(app)
+
+    with _mock_provider():
+        state = _do_login(client)
+        cookie = _state_cookie_payload(client)
+        resp = client.get(
+            "/admin/callback",
+            params={"code": "fake-code", "state": state},
+            follow_redirects=False,
+        )
+        token_posts = _token_request_posts()
+
+    assert resp.status_code == 302
+    assert resp.headers["location"] == "/admin"  # successful exchange
+    assert len(token_posts) == 1, f"expected exactly one token request, saw {len(token_posts)}"
+    body = parse_qs(token_posts[0].content.decode())
+    assert body["grant_type"] == ["authorization_code"]
+    assert body["code"] == ["fake-code"]
+    assert body["code_verifier"] == [cookie["cv"]]
+
+
+# ── Negative ID-token validation ───────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "token_response",
+    [
+        make_token_response(signing_keyset=FOREIGN_SIGN_KEYSET),
+        make_token_response(issuer="https://attacker.example"),
+        make_token_response(client_id="other-client"),
+        make_token_response(id_token_claims={"exp": int(time.time()) - 10}),
+    ],
+    ids=["wrong-signing-key", "iss-mismatch", "aud-mismatch", "expired"],
+)
+def test_callback_rejects_invalid_id_tokens(token_response: dict[str, Any]) -> None:
+    """Every ID-token validation failure redirects to the generic error page
+    and never sets a session cookie: a token signed by a key absent from the
+    JWKS, an issuer mismatch, an audience mismatch, and an expired token."""
+    config = _config()
+    app = _make_app(config)
+    client = TestClient(app)
+
+    with _mock_provider(token_response):
+        state = _do_login(client)
+        resp = client.get(
+            "/admin/callback",
+            params={"code": "fake-code", "state": state},
+            follow_redirects=False,
+        )
+
+    assert resp.status_code == 302
+    assert "error=authentication+failed" in resp.headers["location"]
+    assert "taskq_session=" not in resp.headers.get("set-cookie", "")
+
+
+# ── Discovery / JWKS fetch failures ────────────────────────────────────────
+
+
+def test_login_discovery_failure_returns_error_redirect() -> None:
+    """A failing discovery document at login → generic error redirect."""
+    config = _config()
+    app = _make_app(config)
+    client = TestClient(app)
+
+    with _mock_provider() as idp:
+        idp.on(
+            "GET",
+            f"{_ISSUER}/.well-known/openid-configuration",
+            httpx2.Response(500, text="boom"),
+        )
+        resp = client.get("/admin/login", follow_redirects=False)
+
+    assert resp.status_code == 302
+    assert "error=authentication+failed" in resp.headers["location"]
+
+
+def test_callback_discovery_failure_returns_error_redirect() -> None:
+    """A failing discovery refetch at callback → generic error redirect, no
+    session cookie (login succeeded first, so the state cookie is valid)."""
+    config = _config()
+    app = _make_app(config)
+    client = TestClient(app)
+
+    with _mock_provider() as idp:
+        state = _do_login(client)
+        idp.on(
+            "GET",
+            f"{_ISSUER}/.well-known/openid-configuration",
+            httpx2.Response(500, text="boom"),
+        )
+        resp = client.get(
+            "/admin/callback",
+            params={"code": "fake-code", "state": state},
+            follow_redirects=False,
+        )
+
+    assert resp.status_code == 302
+    assert "error=authentication+failed" in resp.headers["location"]
+    assert "taskq_session=" not in resp.headers.get("set-cookie", "")
+
+
+def test_callback_jwks_failure_returns_error_redirect() -> None:
+    """A failing JWKS fetch at callback → generic error redirect, no session
+    cookie."""
+    config = _config()
+    app = _make_app(config)
+    client = TestClient(app)
+
+    with _mock_provider() as idp:
+        state = _do_login(client)
+        idp.on("GET", f"{_ISSUER}/jwks", httpx2.Response(500, text="boom"))
+        resp = client.get(
+            "/admin/callback",
+            params={"code": "fake-code", "state": state},
+            follow_redirects=False,
+        )
+
+    assert resp.status_code == 302
+    assert "error=authentication+failed" in resp.headers["location"]
+    assert "taskq_session=" not in resp.headers.get("set-cookie", "")

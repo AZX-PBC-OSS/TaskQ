@@ -92,7 +92,7 @@ JobsClient(
 | Parameter | Type | Default | Description |
 |---|---|---|---|
 | `backend` | `Backend` | required | The backend to delegate to. In production this is a `PostgresBackend`. In tests, use `InMemoryBackend`. |
-| `clock` | `Clock \| None` | `SystemClock()` | Clock used to generate `scheduled_at` for immediate enqueues. Inject a `FakeClock` in tests for deterministic timestamps. |
+| `clock` | `Clock \| None` | `SystemClock()` | Retained for API compatibility; it stamps nothing on the enqueue path — "immediate" jobs pass `scheduled_at=None` and the backend's server stamps and decides it. Inject a `FakeClock` in tests for the in-memory backend's own sweep/time-travel semantics. |
 | `settings` | `TaskQSettings \| None` | `None` | Settings instance threaded through to `JobHandle` for features (e.g. Redis-backed progress fanout) that need config beyond the backend connection. |
 
 ### `backend` property
@@ -142,9 +142,9 @@ Serialises the payload through `ref.payload_type`, enqueues the job, and returns
 | `ref` | `ActorRef[P, R]` | required | The actor to dispatch. |
 | `payload` | `P` | required | The payload model instance. Re-validated through `ref.payload_type` before insertion. |
 | `queue` | `QueueName \| None` | `ref.queue` | Override the actor's default queue. Must match `[A-Za-z_][A-Za-z0-9_.-]*`. |
-| `scheduled_at` | `datetime \| None` | `clock.now()` | When to make the job eligible for dispatch. `None` means immediate. Pass a future `datetime` for deferred execution. |
+| `scheduled_at` | `datetime \| None` | `None` | When to make the job eligible for dispatch. `None` means immediate — the backend's server stamps `scheduled_at` and decides `pending`/`scheduled` (the single-arbiter rule; immune to app↔DB clock skew). Pass a future **timezone-aware** `datetime` for deferred execution; naive datetimes raise `ValueError`. |
 | `priority` | `int \| None` | `None` | Dispatch priority. Higher values are dispatched first within the same queue. |
-| `schedule_to_close` | `datetime \| None` | derived from `retry.time_budget` | Hard deadline: if the job has not reached a terminal state by this datetime it fails with `DeadlineExceeded`. Overrides the actor's `time_budget`-derived interval when both are set. |
+| `schedule_to_close` | `datetime \| None` | derived from `retry.time_budget` | **Deprecated** (emits `DeprecationWarning`): an absolute datetime crosses clock domains (the app clock that produced it vs the database clock that evaluates it) and can misbehave under skew. Declare `retry.time_budget` on the actor instead — the interval form is anchored to the database clock. When supplied (timezone-aware; naive raises `ValueError`) it overrides the `time_budget`-derived interval. Hard deadline: if the job has not reached a terminal state by this datetime it fails with `DeadlineExceeded`. |
 | `start_to_close` | `timedelta \| None` | `None` | Per-attempt execution timeout measured from when the worker locks the job, enforced via `asyncio.wait_for` around the actor invocation. Distinct from `schedule_to_close` — see [`start_to_close` vs `schedule_to_close`](retries.md#7-start_to_close-vs-schedule_to_close) for the precedence chain and full explanation. |
 | `heartbeat_timeout` | `timedelta \| None` | `None` | Maximum time allowed between heartbeats before the job is considered crashed. |
 | `identity_key` | `IdentityKey \| None` | `None` | Opaque string identifying the logical entity this job belongs to (e.g. `"account:42"`). Required for `unique_for` deduplication to take effect. Also used for fairness scheduling. |
@@ -335,6 +335,19 @@ EnqueueItem(
 | `identity_key` | `IdentityKey \| None` | `None` | Opaque identity string; required for `unique_for` dedup to take effect. |
 | `metadata` | `dict[str, object]` | `{}` | Per-job metadata. Do **not** set `batch_id` here — the library overwrites it. |
 | `tags` | `list[str] \| None` | `None` | Per-job tags. See [Tags](#tags). |
+
+### Deadline anchoring on the batch/COPY arms
+
+On **every** enqueue arm — single, batch, and COPY (`enqueue_batch_fast`) —
+an interval-form `schedule_to_close` (`retry.time_budget` on the actor) is
+anchored to the **database clock at enqueue time**
+(`clock_timestamp() + interval`). The batch and COPY arms previously
+anchored it to `scheduled_at + interval`, so a future-scheduled item's
+budget started when it became dispatchable. Under the unified contract a
+future-scheduled batch item with a short `time_budget` fails
+`DeadlineExceeded` (via the deadline sweep) **before it is ever
+dispatched**. If you batch future-scheduled jobs with deadlines, size
+`time_budget` from enqueue time, not from `scheduled_at`.
 
 ### Validation
 

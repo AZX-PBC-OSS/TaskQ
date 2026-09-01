@@ -251,20 +251,33 @@ async def _peek_redis_log(
     key = f"taskq:{schema_name}:sw:{{{self._name}}}"
     window_ms = int(self._window.total_seconds() * 1000)
 
-    count = int(await redis_client.zcard(key))  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]  # Why: redis-py zcard return type is untyped in the stub
+    # Read-only window filter: eviction only happens in acquire, so the
+    # sorted set can still hold aged-out entries after the window empties
+    # with no intervening acquire. Count only members whose score is
+    # inside the window — exclusive lower bound at ``now - window``, the
+    # exact boundary the acquire script's ZREMRANGEBYSCORE evicts up to —
+    # measured against the store's clock (``TIME``), the domain the
+    # scores live in. ZCARD would count the whole key and overstate
+    # exhaustion while the next acquire is allowed.
+    now_ms = await redis_time_seconds(redis_client) * 1000
+    cutoff_ms = now_ms - window_ms
+    count = int(
+        await redis_client.zcount(key, f"({cutoff_ms}", "+inf")  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]  # Why: redis-py zcount return type is untyped in the stub
+    )
     is_exhausted = count >= self._limit
     retry_after: timedelta | None = None
 
     if is_exhausted and count > 0:
-        oldest = await redis_client.zrange(key, 0, 0, withscores=True)  # pyright: ignore[reportUnknownMemberType]  # Why: redis-py zrange return type is untyped in the stub
+        oldest = await redis_client.zrangebyscore(  # pyright: ignore[reportUnknownMemberType]  # Why: redis-py zrangebyscore return type is untyped in the stub
+            key, f"({cutoff_ms}", "+inf", start=0, num=1, withscores=True
+        )
         if oldest:
             oldest_entry = oldest[0]
             oldest_score = (
                 float(oldest_entry[1])
                 if isinstance(oldest_entry, (list, tuple))
                 else float(oldest_entry)
-            )  # pyright: ignore[reportUnknownArgumentType]  # Why: redis-py zrange return type is untyped in the stub; isinstance narrowing is sufficient at runtime.
-            now_ms = await redis_time_seconds(redis_client) * 1000
+            )  # pyright: ignore[reportUnknownArgumentType]  # Why: redis-py zrangebyscore return type is untyped in the stub; isinstance narrowing is sufficient at runtime.
             retry_ms = int(oldest_score) + window_ms - now_ms
             retry_after = timedelta(milliseconds=max(1, retry_ms))
 

@@ -170,8 +170,10 @@ class TestTerminalWritesUpdateRow:
             error_message="transient",
             error_traceback=None,
         )
-        next_at = datetime.now(UTC) + timedelta(seconds=10)
-        row = await backend.mark_failed_or_retry(job_id, worker_id, error_info, next_at)
+        # The decision is a delay — the server derives scheduled_at from it.
+        row = await backend.mark_failed_or_retry(
+            job_id, worker_id, error_info, timedelta(seconds=10)
+        )
         assert row.status == "scheduled"
         assert row.locked_by_worker is None
         assert row.lock_expires_at is None
@@ -1034,7 +1036,7 @@ class TestMarkSucceededResultExpiryFallback:
             assert timedelta(seconds=4) < skew < timedelta(seconds=6)
 
             # The sweep must leave the result alone.
-            swept = await backend.sweep_expired_results(conn, datetime.now(UTC), schema=schema)
+            swept = await backend.sweep_expired_results(conn, schema=schema)
             assert swept == 0
             row2 = await conn.fetchrow(f'SELECT result FROM "{schema}".jobs WHERE id = $1', job_id)
             assert row2 is not None and row2["result"] is not None
@@ -1057,7 +1059,7 @@ class TestMarkSucceededResultExpiryFallback:
         assert ok is True
 
         async with deps.worker_pool.acquire() as conn:
-            swept = await backend.sweep_expired_results(conn, datetime.now(UTC), schema=schema)
+            swept = await backend.sweep_expired_results(conn, schema=schema)
             assert swept == 1
             row = await conn.fetchrow(f'SELECT result FROM "{schema}".jobs WHERE id = $1', job_id)
             assert row is not None and row["result"] is None

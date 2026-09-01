@@ -2903,7 +2903,6 @@ fastapi = [
 ]
 oidc = [
     { name = "authlib" },
-    { name = "httpx" },
     { name = "httpx2" },
     { name = "itsdangerous" },
 ]
@@ -2966,13 +2965,12 @@ e2e = [
 requires-dist = [
     { name = "aiohttp", marker = "extra == 'aad'", specifier = ">=3.14.3,<4" },
     { name = "asyncpg", specifier = ">=0.31.0,<1" },
-    { name = "authlib", marker = "extra == 'oidc'", specifier = ">=1.7.2" },
+    { name = "authlib", marker = "extra == 'oidc'", specifier = ">=1.8.0" },
     { name = "azure-identity", marker = "extra == 'aad'", specifier = ">=1.25.3,<2" },
     { name = "boto3", marker = "extra == 'aws'", specifier = ">=1.43.56,<2" },
     { name = "croniter", specifier = ">=6.2.4" },
     { name = "dotenvmodel", specifier = ">=1.1.0,<2" },
     { name = "fastapi", marker = "extra == 'fastapi'", specifier = ">=0.140.0,<1" },
-    { name = "httpx", marker = "extra == 'oidc'", specifier = ">=0.28.1,<1" },
     { name = "httpx2", marker = "extra == 'oidc'", specifier = ">=2.9.1" },
     { name = "humanize", marker = "extra == 'fastapi'", specifier = ">=4.16.0" },
     { name = "hvac", marker = "extra == 'vault'", specifier = ">=2.4.0,<3" },
@@ -3024,7 +3022,7 @@ dev = [
     { name = "pytest-xdist", specifier = ">=3.8.0" },
     { name = "python-multipart", specifier = ">=0.0.32" },
     { name = "pyyaml", specifier = ">=6.0.3" },
-    { name = "ruff", specifier = ">=0.15.22" },
+    { name = "ruff", specifier = ">=0.16.5,<0.17" },
     { name = "testcontainers", extras = ["postgres", "redis"], specifier = ">=4.14.2" },
 ]
 e2e = [{ name = "containerspec", extras = ["build"], specifier = ">=0.1.7" }]

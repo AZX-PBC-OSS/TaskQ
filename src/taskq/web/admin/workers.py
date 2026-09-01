@@ -1,7 +1,5 @@
 """Workers overview and leader detail admin pages."""
 
-from datetime import UTC, datetime
-
 import asyncpg
 import structlog
 from fastapi import APIRouter, Depends
@@ -14,8 +12,6 @@ from taskq.web.admin._jsonb import decode_jsonb
 logger = structlog.get_logger("taskq.web.admin.workers")
 
 
-_WATCHDOG_THRESHOLD_SECONDS: int = 30
-
 _WORKERS_SQL = (
     "SELECT w.*, (ml.worker_id IS NOT NULL) AS is_leader "
     'FROM "{schema}".workers w '
@@ -23,22 +19,17 @@ _WORKERS_SQL = (
     "ORDER BY w.last_seen_at DESC"
 )
 
+# The watchdog freshness verdict is computed by the SERVER — the same
+# single-arbiter shape as queues.py's worker-liveness predicates
+# (last_seen_at is written by PG, so only PG can measure its age without
+# mixing the admin process's clock into the comparison).
 _LEADER_SQL = (
     "SELECT ml.*, w.hostname, w.pid, "
-    "w.last_seen_at AS worker_last_seen "
+    "w.last_seen_at AS worker_last_seen, "
+    "(ml.last_seen_at > now() - interval '30 seconds') AS watchdog_healthy "
     'FROM "{schema}".maintenance_leader ml '
     'JOIN "{schema}".workers w ON ml.worker_id = w.id'
 )
-
-
-def _is_watchdog_healthy(last_seen_at: datetime | None) -> bool | None:
-    if last_seen_at is None:
-        return None
-    now = datetime.now(UTC)
-    if last_seen_at.tzinfo is None:
-        last_seen_at = last_seen_at.replace(tzinfo=UTC)
-    diff = (now - last_seen_at).total_seconds()
-    return diff <= _WATCHDOG_THRESHOLD_SECONDS
 
 
 def register(router: APIRouter) -> None:
@@ -95,7 +86,9 @@ def register(router: APIRouter) -> None:
             return HTMLResponse(content=html)
 
         leader = dict(row)
-        watchdog_healthy = _is_watchdog_healthy(leader.get("last_seen_at"))
+        # watchdog_healthy comes from the SQL (server-side freshness
+        # verdict); NULL when the leader has never pinged.
+        watchdog_healthy = leader.get("watchdog_healthy")
         html = tmpl.get_template("leader.html").render(
             leader=leader,
             watchdog_healthy=watchdog_healthy,

@@ -6,11 +6,13 @@ retry_after are deterministic and zero-real-time.
 """
 
 from datetime import UTC, datetime, timedelta
+from typing import Literal, cast
 
 import pytest
 
 from taskq._ids import new_base62
 from taskq.ratelimit import SlidingWindow
+from taskq.ratelimit.sliding_window import SlidingWindowStyle
 from taskq.testing.clock import FakeClock
 
 _START = datetime(2025, 1, 1, tzinfo=UTC)
@@ -147,6 +149,67 @@ async def test_acquire_without_clock_raises() -> None:
     sw = _sw()
     with pytest.raises(RuntimeError, match="clock not injected"):
         await sw.acquire()
+
+
+# ── clock contract: memory-only (unified with TokenBucket) ────────────
+#
+# ``clock`` drives the memory backend only. The redis/postgres backends
+# run on the store's own clock (Redis TIME / PG clock_timestamp()), so a
+# missing clock must surface the STORE guard — never a clock error.
+
+
+@pytest.mark.parametrize("backend", ["redis", "postgres"])
+@pytest.mark.parametrize("style", ["log", "gcra"])
+async def test_acquire_without_clock_raises_store_guard(backend: str, style: str) -> None:
+    """acquire() with clock=None on a store backend raises the store
+    injection guard, not a clock error (TokenBucket's contract)."""
+    sw = SlidingWindow(
+        name=f"noclock-{backend}-{style}",
+        limit=10,
+        window=timedelta(seconds=60),
+        backend=cast(Literal["redis", "postgres"], backend),
+        style=cast(SlidingWindowStyle, style),
+    )
+    with pytest.raises(RuntimeError, match=r"(redis_client|pg_pool) not injected"):
+        await sw.acquire()
+
+
+@pytest.mark.parametrize("backend", ["redis", "postgres"])
+@pytest.mark.parametrize("style", ["log", "gcra"])
+async def test_peek_without_clock_raises_store_guard(backend: str, style: str) -> None:
+    """peek() with clock=None on a store backend raises the store
+    injection guard, not a clock error (TokenBucket's contract)."""
+    sw = SlidingWindow(
+        name=f"noclock-peek-{backend}-{style}",
+        limit=10,
+        window=timedelta(seconds=60),
+        backend=cast(Literal["redis", "postgres"], backend),
+        style=cast(SlidingWindowStyle, style),
+    )
+    with pytest.raises(RuntimeError, match=r"(redis_client|pg_pool) not injected"):
+        await sw.peek()
+
+
+async def test_memory_backend_still_requires_clock() -> None:
+    """The unified contract keeps clock REQUIRED on the memory backend —
+    both styles, acquire and peek."""
+    sw_log = _sw()
+    with pytest.raises(RuntimeError, match="clock not injected for memory backend"):
+        await sw_log.acquire()
+    with pytest.raises(RuntimeError, match="clock not injected for memory backend"):
+        await sw_log.peek()
+
+    sw_gcra = SlidingWindow(
+        name=f"sw_gcra_{new_base62()}",
+        limit=5,
+        window=timedelta(seconds=10),
+        backend="memory",
+        style="gcra",
+    )
+    with pytest.raises(RuntimeError, match="clock not injected for memory backend"):
+        await sw_gcra.acquire()
+    with pytest.raises(RuntimeError, match="clock not injected for memory backend"):
+        await sw_gcra.peek()
 
 
 # ── redis/postgres backends raise NotImplementedError ─────────────────

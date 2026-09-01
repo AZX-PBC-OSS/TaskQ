@@ -26,9 +26,9 @@ async def test_tt1_scheduled_job_promoted_after_clock_advance(
 
     Proves the acceptance definition: the in-memory test backend is
     constructed with FakeClock(start=datetime(2025, 1, 1, tzinfo=UTC));
-    test code calls memory_jobs.scheduled_to_pending(fake_clock.now())
-    to trigger scheduled-job processing, matching the example
-    verbatim.
+    test code advances the FakeClock and calls
+    memory_jobs.scheduled_to_pending() to trigger scheduled-job
+    processing — the backend's injected clock is the arbiter.
     """
     fake_clock: FakeClock = memory_jobs._clock  # type: ignore[reportPrivateUsage] # Why: verbatim pattern — direct FakeClock access is the prescribed test interface
 
@@ -46,13 +46,13 @@ async def test_tt1_scheduled_job_promoted_after_clock_advance(
     row = await memory_jobs.enqueue(args)
     assert row.status == "scheduled"
 
-    await memory_jobs.scheduled_to_pending(fake_clock.now())
+    await memory_jobs.scheduled_to_pending()
     row_after = await memory_jobs.get(row.id)
     assert row_after is not None
     assert row_after.status == "scheduled"
 
     fake_clock.move_to(datetime(2025, 1, 1, 5, 0, tzinfo=UTC))
-    await memory_jobs.scheduled_to_pending(fake_clock.now())
+    await memory_jobs.scheduled_to_pending()
     row_final = await memory_jobs.get(row.id)
     assert row_final is not None
     assert row_final.status == "pending"
@@ -67,8 +67,8 @@ async def test_tt2_deadline_sweep_fails_job_after_clock_advance(
     """deadline_sweep fails job after FakeClock advance past schedule_to_close.
 
     Proves the acceptance definition (in-memory backend half): test code
-    advances FakeClock and calls deadline_sweep(memory_jobs._clock.now())
-    to trigger deadline processing, matching the example verbatim.
+    advances FakeClock and calls deadline_sweep() to trigger deadline
+    processing — the backend's injected clock is the arbiter.
     """
     fake_clock: FakeClock = memory_jobs._clock  # type: ignore[reportPrivateUsage] # Why: verbatim pattern — direct FakeClock access is the prescribed test interface
 
@@ -88,7 +88,7 @@ async def test_tt2_deadline_sweep_fails_job_after_clock_advance(
     assert row.status == "pending"
 
     fake_clock.move_to(datetime(2025, 1, 1, 11, 0, tzinfo=UTC))
-    count = await memory_jobs.deadline_sweep(fake_clock.now())
+    count = await memory_jobs.deadline_sweep()
     assert count == 1
 
     updated = await memory_jobs.get(row.id)
@@ -137,7 +137,7 @@ async def test_tt4_cron_pattern_completes_under_one_second(
 
     wall_start = time.monotonic()
 
-    await memory_jobs.scheduled_to_pending(fake_clock.now())
+    await memory_jobs.scheduled_to_pending()
     await memory_jobs.run_until_drained()
 
     wall_elapsed = time.monotonic() - wall_start

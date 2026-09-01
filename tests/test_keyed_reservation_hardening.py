@@ -809,10 +809,10 @@ class _FakePool:
 class _SimpleBackend:
     """Backend whose reclaim/deadline sweeps return 0 and lacks PG-only sweep methods."""
 
-    async def reclaim_expired_locks(self, now: datetime, cg: timedelta, ug: timedelta) -> int:
+    async def reclaim_expired_locks(self, cg: timedelta, ug: timedelta) -> int:
         return 0
 
-    async def deadline_sweep(self, now: datetime) -> int:
+    async def deadline_sweep(self) -> int:
         return 0
 
 

@@ -105,9 +105,12 @@ else
   end
 end
 
--- tostring() on the stored values: Redis converts Lua number arguments to
--- integers by truncation, which would silently drop the fractional parts
--- of both tokens and the ts epoch on stores that apply that conversion.
+-- tostring() on the stored values normalizes the stored encoding to a
+-- decimal string and bounds precision at Lua's %.14g number formatting.
+-- This is behaviorally inert on every supported store (Redis 5/6.2/7 and
+-- Dragonfly pass number arguments through untruncated — the integer
+-- truncation documented for EVAL applies only to RETURNED numbers, which
+-- the return statement below already tostring()s for that reason).
 redis.call('HMSET', key, 'tokens', tostring(tokens), 'ts', tostring(now))
 redis.call('EXPIRE', key, ttl)
 -- tostring() is required: Redis RESP2 converts Lua numbers to integers
@@ -261,8 +264,11 @@ local elapsed = math.max(0, now - ts)
 tokens = math.min(capacity, tokens + elapsed * refill)
 
 tokens = math.min(capacity, tokens + refund)
--- tostring() on the stored values: Redis converts Lua number arguments to
--- integers by truncation, which would silently drop the fractional parts.
+-- tostring() on the stored values normalizes the stored encoding to a
+-- decimal string and bounds precision at Lua's %.14g number formatting;
+-- behaviorally inert on every supported store (number arguments are
+-- passed through untruncated — only RETURNED numbers are truncated to
+-- integers, and the return value below is already tostring()'d).
 redis.call('HMSET', key, 'tokens', tostring(tokens), 'ts', tostring(now))
 return {1, tostring(tokens)}
 """

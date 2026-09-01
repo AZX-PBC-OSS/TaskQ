@@ -11,6 +11,15 @@ under ``-n 4``. The design here is ported from the proven sibling implementation
 of four contending ones, and per-worker forced ``DROP DATABASE`` checkpoints that
 went from 2-14s each (worst 14.46s) to 0.05s.
 
+Blast-radius trade-off, stated next to that tuning rationale: ONE shared
+container concentrates the failure signature of an out-of-band ``docker rm``
+or daemon crash onto every worker at once — an instrumented kill of the shared
+pair errored ~84 tests across every PG module, vs ~1/4 of the run per worker
+under the old per-worker topology. That concentration is inherent to sharing
+and accepted for the contention win above; the ``[TaskQ]`` decision logs below
+(``pair-started`` / ``pair-reused`` / ``pair-fresh-started`` / ``pair-stopped``
+/ ``swept``) exist so such an event is diagnosable from the run's output.
+
 How the sharing works: the first session fixture to take a file lock (under the
 per-run state dir ``tmp_path_factory.getbasetemp().parent``, shared by all xdist
 workers of a run) starts BOTH containers and publishes connection info to a JSON
@@ -164,9 +173,19 @@ REDIS_DB_POOL_SIZE = 1024
 # (same repository, different tag), and a repository-wide prefix would make the sweep
 # a hazard to it (the fixed ``container_name: taskq-*`` guard below is the second line
 # of defense).
+#
+# ``taskq-e2e-worker`` (tagged ``taskq-e2e-worker:sha-<content hash>`` by containerspec)
+# is in by IMAGE PREFIX rather than via a generic ``taskq.test-managed`` label honored
+# by the sweep: the name is a repo-owned constant, so this one entry makes every e2e
+# worker-container creation site (a dozen across tests/e2e, and any future one) a
+# sweep candidate with no per-site opt-in to forget — the exact labeling omission that
+# left crashed e2e runs' worker containers unsweepable in the first place. It is safe
+# alongside the compose guard: the dev stack's containers are name-protected
+# (``taskq-*``) and run different images.
 _SWEEP_IMAGE_PREFIXES = (
     "postgres:18-alpine",
     "docker.dragonflydb.io/dragonflydb/",
+    "taskq-e2e-worker",
 )
 
 # A leftover must not outlive a dead run's pid numbers forever: over days a dead run's
@@ -219,6 +238,29 @@ def should_sweep_stale_container(
     return (not running) or (now - created > SWEEP_AGE_LIMIT)
 
 
+# e2e sessions create one pid-suffixed Docker network per test process
+# (``taskq-e2e-net-<pid>``); a crashed run leaks it — networks are outside
+# Ryuk's reap even when enabled, and Ryuk is disabled here anyway.
+_E2E_NETWORK_NAME_RE = re.compile(r"^taskq-e2e-net-(\d+)$")
+
+
+def should_sweep_stale_network(*, name: str, created: datetime, now: datetime) -> bool:
+    """The keep/remove decision for one leftover e2e Docker network — pure
+    except the pid-liveness probe, mirroring :func:`should_sweep_stale_container`
+    so the unit lane can test it without Docker.
+
+    The pid suffix IS the owner identity (the e2e suite mints it from the
+    test process's own pid): sweep iff that pid is dead, with the same 24h
+    age backstop against pid recycling. Names outside the exact pattern —
+    Docker's own bridges, the compose dev stack's networks — are never this
+    suite's to remove, however old.
+    """
+    match = _E2E_NETWORK_NAME_RE.fullmatch(name)
+    if match is None:
+        return False
+    return (not pid_alive(int(match.group(1)))) or (now - created > SWEEP_AGE_LIMIT)
+
+
 # ============================================================================================
 # Typed boundary over the untyped docker SDK
 # ============================================================================================
@@ -244,15 +286,32 @@ class _DockerContainerLike(Protocol):
     def remove(self, force: bool = ...) -> None: ...
 
 
+class _DockerNetworkLike(Protocol):
+    @property
+    def name(self) -> str: ...
+
+    @property
+    def attrs(self) -> dict[str, object]: ...
+
+    def remove(self) -> None: ...
+
+
 class _DockerContainersLike(Protocol):
     def get(self, container_id: str) -> _DockerContainerLike: ...
 
     def list(self, *, all: bool = ...) -> list[_DockerContainerLike]: ...
 
 
+class _DockerNetworksLike(Protocol):
+    def list(self) -> list[_DockerNetworkLike]: ...
+
+
 class _DockerClientLike(Protocol):
     @property
     def containers(self) -> _DockerContainersLike: ...
+
+    @property
+    def networks(self) -> _DockerNetworksLike: ...
 
 
 def _docker_client() -> _DockerClientLike:
@@ -282,18 +341,58 @@ def container_running(container_id: str) -> bool:
         return False
 
 
-def cleanup_stale_testcontainers() -> None:
-    """Remove stale testcontainers from crashed runs before starting fresh ones.
+def _created_or_now(attrs: Mapping[str, object], now: datetime) -> datetime:
+    """The ``Created`` attr, or *now* when missing/unparseable — age 0 keeps a
+    running unlabeled container (safe) and an exited one is swept anyway."""
+    try:
+        return datetime.fromisoformat(str(attrs.get("Created")))
+    except ValueError:
+        return now
 
-    The keep/remove decision lives in :func:`should_sweep_stale_container` (pure,
-    unit-tested); this wrapper only does Docker I/O and never raises — a broken daemon
-    or a container removed mid-list must not stop the suite starting.
+
+def _remove_stale_networks(client: _DockerClientLike, now: datetime) -> int:
+    """Best-effort removal of stale e2e networks (decision in
+    :func:`should_sweep_stale_network`). Never raises: a network with
+    endpoints still attached (a live run's, or one whose leftover containers
+    were removed only moments before) refuses removal with a Docker API error
+    and is simply left for a later sweep."""
+    try:
+        networks = client.networks.list()
+    except _docker_errors():
+        return 0
+    swept = 0
+    for network in networks:
+        try:
+            if should_sweep_stale_network(
+                name=network.name or "",
+                created=_created_or_now(network.attrs, now),
+                now=now,
+            ):
+                network.remove()
+                swept += 1
+        except _docker_errors():
+            continue
+    return swept
+
+
+def cleanup_stale_testcontainers() -> None:
+    """Remove stale testcontainers AND stale e2e networks from crashed runs
+    before starting fresh ones.
+
+    The keep/remove decisions live in :func:`should_sweep_stale_container`
+    and :func:`should_sweep_stale_network` (pure, unit-tested); this wrapper
+    only does Docker I/O and never raises — a broken daemon or a container
+    removed mid-list must not stop the suite starting. One ``[TaskQ]``
+    ``event=swept`` line records that the sweep ran and what it removed (its
+    ABSENCE means a Docker error short-circuited the sweep before the list).
     """
     try:
-        containers = _docker_client().containers.list(all=True)
+        client = _docker_client()
+        containers = client.containers.list(all=True)
     except _docker_errors():
         return
     now = datetime.now(tz=UTC)
+    swept_containers = 0
     for container in containers:
         try:
             # Config.Image is the name:tag the container was created with — no extra
@@ -301,23 +400,20 @@ def cleanup_stale_testcontainers() -> None:
             # was since deleted.
             config = cast("dict[str, object] | None", container.attrs.get("Config"))
             image = str((config or {}).get("Image") or "")
-            try:
-                # An unparseable timestamp is only reachable via rule 4, where age 0
-                # keeps a running container (safe) and an exited one is swept anyway.
-                created = datetime.fromisoformat(str(container.attrs.get("Created")))
-            except ValueError:
-                created = now
             if should_sweep_stale_container(
                 image=image,
                 name=container.name or "",
                 labels=container.labels,
                 running=container.status == "running",
-                created=created,
+                created=_created_or_now(container.attrs, now),
                 now=now,
             ):
                 container.remove(force=True)
+                swept_containers += 1
         except _docker_errors():
             continue
+    swept_networks = _remove_stale_networks(client, now)
+    print(f"[TaskQ] event=swept containers={swept_containers} networks={swept_networks}")
 
 
 def start_shared_services() -> SharedServices:
@@ -442,6 +538,32 @@ def _read_int(path: Path) -> int:
     return 0
 
 
+def _log_pair_event(
+    event: str,
+    info: SharedServices,
+    *,
+    state_dir: Path | None = None,
+    reason: str | None = None,
+) -> None:
+    """One ``[TaskQ]``-prefixed structured line per shared-pair decision point
+    (``pair-started`` / ``pair-reused`` / ``pair-fresh-started`` /
+    ``pair-stopped``), matching the clock-divergence diagnostic's style — this
+    module has no structlog setup. Keys are stable per event; the 12-char
+    container-id prefixes are enough to cross-reference ``docker ps`` without
+    dumping full ids, and ``state_dir`` names the owning run's checkout when
+    debugging who started/reused/stopped a pair."""
+    parts = [
+        f"event={event}",
+        f"pg={info.pg_container_id[:12]}",
+        f"redis={info.redis_container_id[:12]}",
+    ]
+    if reason is not None:
+        parts.append(f"reason={reason}")
+    if state_dir is not None:
+        parts.append(f"state_dir={state_dir}")
+    print("[TaskQ] " + " ".join(parts))
+
+
 @contextmanager
 def shared_service_pair(state_dir: Path) -> Generator[SharedServices, None, None]:
     """Acquire the shared Postgres + Dragonfly pair for one session-fixture lifetime.
@@ -453,6 +575,11 @@ def shared_service_pair(state_dir: Path) -> Generator[SharedServices, None, None
     recorded pair whose labeled owners are ALL dead (a crashed earlier run) is removed
     and re-created rather than reused, and stale containers from crashed runs are
     swept before starting fresh ones.
+
+    Every decision point logs one ``[TaskQ]`` line with stable keys
+    (:func:`_log_pair_event`): ``pair-started`` (no prior state), ``pair-reused``,
+    ``pair-fresh-started`` (a recorded pair was rejected — the reason says why), and
+    ``pair-stopped`` on the last release.
 
     Both session fixtures that share the pair (``pg_container`` in ``tests/conftest.py``
     and ``redis_container`` in :mod:`taskq.testing.fixtures`) wrap this context manager
@@ -468,6 +595,7 @@ def shared_service_pair(state_dir: Path) -> Generator[SharedServices, None, None
 
     with lock:
         info: SharedServices | None = None
+        fresh_start_reason: str | None = None
         if info_path.exists():
             try:
                 candidate = SharedServices(**json.loads(info_path.read_text()))
@@ -483,6 +611,11 @@ def shared_service_pair(state_dir: Path) -> Generator[SharedServices, None, None
                 else:
                     stop_shared_services(candidate)
                     info_path.unlink(missing_ok=True)
+                    fresh_start_reason = "recorded-owners-dead"
+            elif candidate is not None:
+                fresh_start_reason = "recorded-containers-not-running"
+            else:
+                fresh_start_reason = "corrupt-state-file"
         if info is None:
             info = start_shared_services()
             _atomic_write_text(info_path, json.dumps(asdict(info)))
@@ -491,6 +624,14 @@ def shared_service_pair(state_dir: Path) -> Generator[SharedServices, None, None
             # fresh DB space (and serial -n0 runs share this state dir across runs, so
             # without the reset each run would march the counter toward exhaustion).
             _atomic_write_text(redis_db_path, "0")
+            _log_pair_event(
+                "pair-fresh-started" if fresh_start_reason else "pair-started",
+                info,
+                state_dir=state_dir,
+                reason=fresh_start_reason,
+            )
+        else:
+            _log_pair_event("pair-reused", info)
         _atomic_write_text(count_path, str(_read_int(count_path) + 1))
 
     try:
@@ -505,6 +646,7 @@ def shared_service_pair(state_dir: Path) -> Generator[SharedServices, None, None
             if remaining <= 0:
                 stop_shared_services(info)
                 info_path.unlink(missing_ok=True)
+                _log_pair_event("pair-stopped", info)
 
 
 def next_redis_logical_db(state_dir: Path) -> int:

@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING
 import pytest
 import pytest_asyncio
 
+from taskq.testing._shared_containers import creator_labels
 from taskq.worker._watchdog import EXIT_WATCHDOG
 
 from ._assertions import wait_for_worker_ready
@@ -95,6 +96,9 @@ async def blocker_worker(
     from testcontainers.core.container import DockerContainer
 
     container = DockerContainer(image=e2e_worker_image.tag)
+    container.with_kwargs(
+        labels=creator_labels()
+    )  # Ownership labels: sweepable under disabled Ryuk (see e2e_network's sweep).
     container.with_network(e2e_network).with_network_aliases(
         f"worker-blocker-{e2e_schema.schema_name}"
     )
@@ -202,6 +206,9 @@ async def test_watchdog_kill_orphan_is_reclaimed_and_fleet_recovers(
     # The row is orphaned 'running'; the lease (3s) expires. A replacement
     # worker's leader sweep must reclaim it within the recovery window.
     replacement = DockerContainer(image=e2e_worker_image.tag)
+    replacement.with_kwargs(
+        labels=creator_labels()
+    )  # Ownership labels: sweepable under disabled Ryuk (see e2e_network's sweep).
     replacement.with_network(e2e_network).with_network_aliases(
         f"worker-repl-blocker-{e2e_schema.schema_name}"
     )

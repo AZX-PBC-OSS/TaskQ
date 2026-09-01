@@ -187,6 +187,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   log fields. Snooze / RetryAfter / ReservationUnavailable terminal
   outcomes and the stranded-jobs leader sweep also log their failure
   details instead of continuing silently.
+- `TaskQ(redis_url=...)` validation: the URL routes through `load_from_dict`, so the `RedisDsn` field type coerces and validates it — an invalid URL now raises `TypeCoercionError` fail-fast at `open()` (previously a late `ValueError` from redis-py), and an empty or whitespace-only `redis_url` raises `ValueError` at construction instead of silently disabling Redis.
+- The `.env`-not-found warning suppression is narrowed to exactly that one warning — a `logging.Filter` matched on message prefix, instead of raising the whole `dotenvmodel` logger to ERROR — so real misconfiguration warnings (e.g. an invalid `DOTENV_*` value) stay visible.
+- Docs corrected: `configuration.md` claimed `TASKQ_ENVIRONMENT` selects `.env.{env}` files — `ENV` does; `TASKQ_ENVIRONMENT` is a deployment label that gates the unauthenticated-admin warning.
 
 ### Changed
 
@@ -203,6 +206,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `stranded_jobs_query_failed`, and the `failed_details` payload of
   `sub_enqueue_flush_failed`). Log pipelines querying `fields.message`
   on these two events must switch to `error_message`.
+- **Breaking: dotenvmodel bumped to 1.x (`>=1.1.0,<2`), adopting its 1.0 defaults.** Environment-variable precedence flips: the process environment now beats `.env` files by default (previously `.env` values overwrote `os.environ`); restore the files-beat-env-vars behaviour with `DOTENV_OVERRIDE=true` or `TaskQSettings.load(override=True)`. `load()` no longer mutates `os.environ` — read `TASKQ_*` values from the settings instance, not the process environment, after a load. `TaskQSettings.load()` now forwards dotenvmodel's full parameter surface (`env`, `override`, `env_dir`, `read_dotfiles`, `read_environ`, `load_local`). Subclass string-field defaults containing `${VAR}` references are interpolated at load time (unset references resolve to `""`).
+- **Breaking: time is unified on the database clock — the enqueue and rate-limit surfaces changed shape.** `EnqueueArgs.scheduled_at` is now nullable: "immediate" enqueue passes `None` and the server stamps it (no more client-side `now()` default), and `Backend` implementations that require a non-`None` datetime fail loudly. The raw `schedule_to_close` datetime form is deprecated in favour of `schedule_to_close_interval` (or declaring `retry.time_budget` on the actor — absolute datetimes cross clock domains and can misbehave under skew); every enqueue arm writes the deadline from one domain (server clock + interval). The rate-limit Redis Lua scripts derive `now` from `redis.call('TIME')` — the caller-supplied `now` ARGV is removed.
+- **Every mixed-clock decision is now single-arbiter on the store's clock.** The application process and the database server keep separate clocks that can diverge or step (VM pause/resume, NTP drift); every place that mixed the two domains in one decision is anchored to the database clock: workgroup supervisor freshness is computed server-side (a skewed supervisor host can no longer kill healthy children); cron ticks read the server clock inside the leader transaction, with the catch-up cutoff and beyond-window recompute server-anchored (no fire-loops or silently skipped backlog under leader-clock skew); rate limiting runs on the store's clock (PG window predicates and GCRA/token-bucket epoch math are server-side; peeks measure against the store clock too); prune/archive cutoffs and enqueue-pinned result TTLs are stamped server-side; the batch COPY path is server-stamped via an in-transaction fixup (`status`, `created_at`, `scheduled_at`, `schedule_to_close`, `result_expires_at`), so dedup windows hold under skew.
+- **`taskq[oidc]` no longer installs `httpx`; its `authlib` floor is now `>=1.8.0`.** authlib 1.8.0's `httpx_client` integration is httpx2-first (httpx is only a deprecated fallback), the direct OIDC calls (discovery, JWKS fetch) use `httpx2`, and nothing under `src/taskq` imports `httpx` — the extra's `httpx` entry was redundant (authlib 1.7.x, which imported `httpx` unconditionally, is excluded by the new floor).
 
 ### Security
 
@@ -210,6 +217,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Admin UI unauthenticated business-flow trigger — `POST /schedules/{id}/run` now requires `admin_actions_enabled=True` and has cooldown rate limiting
 - Admin UI fail-closed defaults: `admin_ui_require_auth=True` raises `RuntimeError` in non-dev when no `auth_dependency`; `health_require_token=True` raises `RuntimeError` in non-dev when `health_token` is empty. Both have explicit opt-out env vars (`TASKQ_ADMIN_UI_REQUIRE_AUTH=false`, `TASKQ_HEALTH_REQUIRE_TOKEN=false`).
 - Admin UI destructive actions (run-schedule, retry-job, cancel-job) gated behind `admin_actions_enabled` (default False). Run-schedule has per-process cooldown.
+
+### Internal
+
+- Test containers are shared singletons: one Postgres and one Dragonfly container per pytest invocation, shared across all xdist workers (filelock refcount, stale-leftover sweep) with per-module database and per-test schema isolation preserved — full suite ~152 s vs the ~226–240 s baseline.
+- Docker/testcontainers calls in tests run off the event loop (`asyncio.to_thread`) — docker-py's blocking HTTP round-trips no longer stall the event loop mid-test.
+- Behavioral timing tests assert in a single clock domain (one statement reads the server clock and the row together), so application/database clock divergence cannot corrupt an assertion; liveness freshness is bounded by the missed-at-most-one-tick contract.
 
 ## 0.1.0 - 2026-07-08
 

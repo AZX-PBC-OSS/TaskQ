@@ -72,13 +72,15 @@ prometheus = [
 oidc = [
     # OAuth2/OIDC client, discovery, and JWT/JWKS validation. Vendor-neutral —
     # works against any OIDC provider (Entra, Okta, Auth0, Google); no vendor SDK.
-    "authlib>=1.7.2",
-    # HTTP client for authlib's AsyncOAuth2Client (subclasses httpx.AsyncClient
-    # for the OAuth2 token-exchange flow). authlib does not declare httpx as a
-    # hard dependency, so it must be listed here explicitly.
-    "httpx>=0.28.1,<1",
-    # HTTP client for direct OIDC calls (discovery, JWKS fetch). httpx2 is the
-    # Pydantic-maintained successor to httpx with the same API surface.
+    # >=1.8.0: from that release the httpx_client integration is httpx2-first
+    # (imports httpx2 directly; httpx is only a deprecated fallback), and 1.7.x
+    # imported httpx unconditionally — a range this extra no longer ships httpx
+    # for, hence the floor.
+    "authlib>=1.8.0",
+    # Sole HTTP client for the OIDC path: authlib's AsyncOAuth2Client subclasses
+    # httpx2.AsyncClient for the OAuth2 token-exchange flow, and the direct
+    # OIDC calls (discovery, JWKS fetch) import httpx2 — nothing under
+    # src/taskq imports httpx. (The dev group keeps httpx for tests.)
     "httpx2>=2.9.1",
     # Signed session cookies (shared with the SAML backend via _session.py).
     "itsdangerous>=2.2.0,<3",
@@ -167,7 +169,14 @@ select = [
     "RUF",   # ruff-specific
 ]
 ignore = [
-    "S101",  # assert in tests
+    # S101 stays global because production modules under src/taskq still
+    # carry type-narrowing asserts (backend/, worker/, client/, cli.py,
+    # auth.py, migrate.py, testing/) that must be converted to guards —
+    # the RuntimeError-property pattern of
+    # WorkerSettings.resolved_pg_dsn_direct — before this can be scoped
+    # to tests/** only (tests/** already has its own S101 entry in
+    # per-file-ignores).
+    "S101",
     "E501",  # long lines (formatter handles)
 ]
 
@@ -207,18 +216,6 @@ ignore = [
 "src/taskq/backend/_reads.py" = ["S608"]
 "src/taskq/backend/_dispatch.py" = ["S608", "SIM117"]
 "src/taskq/backend/_sql_templates.py" = ["S608"]
-# SIM117: pool.acquire() and conn.transaction() cannot be flattened into a
-# single async-with because conn is not bound until after the first __aenter__.
-# Schema name is validated against _IDENT_RE before interpolation; same
-# rationale as migrate.py.  All user-supplied values use $N parameter
-# binding.
-# Schema name is validated against _IDENT_RE before interpolation; same
-# rationale as migrate.py.  All user-supplied values use $N parameter
-# binding — only the schema identifier is interpolated.
-# Schema name is validated against _IDENT_RE before interpolation; same
-# rationale as migrate.py.  All user-supplied values use $N parameter
-# binding — only the schema identifier is interpolated, and it is
-# validated at construction time.
 "src/taskq/worker/dispatch.py" = ["S608"]
 # Schema name is validated against _IDENT_RE before interpolation, same
 # rationale as migrate.py. The archive-sweep column list is also
@@ -231,8 +228,6 @@ ignore = [
 # validated against _IDENT_RE before interpolation; all user-supplied
 # values use $N parameter binding.
 "tests/test_postgres_cancel_paths.py" = ["S608"]
-# Same rationale — schema name validated against _IDENT_RE; all
-# user-supplied values use $N parameter binding.
 # Same rationale — schema name validated against _IDENT_RE; all
 # user-supplied values use $N parameter binding.
 "tests/test_postgres_enqueue.py" = ["S608"]
@@ -511,7 +506,7 @@ dev = [
     "pytest-xdist>=3.8.0",
     "python-multipart>=0.0.32",
     "pyyaml>=6.0.3",
-    "ruff>=0.15.22",
+    "ruff>=0.16.5,<0.17",
     "testcontainers[postgres,redis]>=4.14.2",
 ]
 # Containerized e2e tier (tests/e2e): container image builds for worker

@@ -401,19 +401,21 @@ class SlidingWindow:
         clock domain: PG paths use ``clock_timestamp()`` and Redis paths
         use Redis ``TIME`` inside their scripts, so callers on nodes with
         divergent Python clocks are all measured against the same window.
-        The injected *clock* still drives the memory backend (its single
-        domain) and remains part of the public call shape.
+        The injected *clock* drives the memory backend only (its single
+        domain) and remains part of the public call shape — the unified
+        TokenBucket contract.
         """
-        if clock is None:
-            raise RuntimeError("clock not injected for sliding window acquire")
-
         request_id: UUID | None = new_uuid() if self._style == "log" else None
 
         match (self._backend, self._style):
             case ("memory", "log"):
+                if clock is None:
+                    raise RuntimeError("clock not injected for memory backend")
                 now_ms = int(clock.now().timestamp() * 1000)
                 return await self._acquire_memory_log(now_ms, request_id)
             case ("memory", "gcra"):
+                if clock is None:
+                    raise RuntimeError("clock not injected for memory backend")
                 now_ms = int(clock.now().timestamp() * 1000)
                 return await self._acquire_memory_gcra(now_ms)
             case ("redis", "log"):
@@ -467,16 +469,18 @@ class SlidingWindow:
 
         PG and Redis peeks measure against the store's own clock (the same
         domain their admission state is stamped in); the memory backend
-        uses the injected *clock* (its single domain).
+        uses the injected *clock* (its single domain) — the unified
+        TokenBucket contract: *clock* is required only on memory.
         """
-        if clock is None:
-            raise RuntimeError("clock not injected for sliding window peek")
-
         match (self._backend, self._style):
             case ("memory", "log"):
+                if clock is None:
+                    raise RuntimeError("clock not injected for memory backend")
                 now_ms = int(clock.now().timestamp() * 1000)
                 return await self._peek_memory_log(now_ms)
             case ("memory", "gcra"):
+                if clock is None:
+                    raise RuntimeError("clock not injected for memory backend")
                 now_ms = int(clock.now().timestamp() * 1000)
                 return await self._peek_memory_gcra(now_ms)
             case ("redis", "log"):

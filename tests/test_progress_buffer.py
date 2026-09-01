@@ -277,7 +277,7 @@ async def test_ctx_progress_snooze_preserves_seq_and_redispatch_continues() -> N
 
     # Redispatch: promote scheduled→pending, then dispatch
     clock.advance(timedelta(seconds=120))
-    await backend.scheduled_to_pending(clock.now())
+    await backend.scheduled_to_pending()
     jobs2 = await backend.dispatch_batch(
         worker_id=worker_id, queues=["default"], limit=1, lock_lease=timedelta(seconds=60)
     )

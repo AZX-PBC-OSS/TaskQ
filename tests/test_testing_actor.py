@@ -93,19 +93,17 @@ async def test_fake_backend_poll_cancel_flags_returns_empty_list() -> None:
 
 async def test_fake_backend_scheduled_to_pending_returns_zero() -> None:
     backend = FakeBackend()
-    assert await backend.scheduled_to_pending(datetime(2026, 1, 1, tzinfo=UTC)) == 0
+    assert await backend.scheduled_to_pending() == 0
 
 
 async def test_fake_backend_deadline_sweep_returns_zero() -> None:
     backend = FakeBackend()
-    assert await backend.deadline_sweep(datetime(2026, 1, 1, tzinfo=UTC)) == 0
+    assert await backend.deadline_sweep() == 0
 
 
 async def test_fake_backend_reclaim_expired_locks_returns_zero() -> None:
     backend = FakeBackend()
-    result = await backend.reclaim_expired_locks(
-        datetime(2026, 1, 1, tzinfo=UTC), timedelta(seconds=30), timedelta(seconds=60)
-    )
+    result = await backend.reclaim_expired_locks(timedelta(seconds=30), timedelta(seconds=60))
     assert result == 0
 
 
@@ -155,7 +153,7 @@ async def test_fake_backend_mark_failed_or_retry_records_call_and_returns_job_ro
             "job_id": job_id,
             "worker_id": worker_id,
             "error_info": error,
-            "next_scheduled_at": None,
+            "retry_delay": None,
         }
     ]
 

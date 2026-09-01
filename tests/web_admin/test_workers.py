@@ -16,7 +16,6 @@ from taskq.web.admin import (  # Why: importorskip guard must precede.
     create_router,
     setup_admin_state,
 )
-from taskq.web.admin.workers import _is_watchdog_healthy
 
 from . import StubRecord, _StubPool  # Why: importorskip guard must precede.
 
@@ -195,33 +194,7 @@ def test_leader_template_unhealthy_watchdog(
     assert "Unhealthy" in html
 
 
-# ── Watchdog health computation ────────────────────────────────────────
-
-
-def test_watchdog_healthy_recent() -> None:
-    """_is_watchdog_healthy returns True when last_seen_at is within 30 seconds."""
-    recent = datetime.now(UTC) - timedelta(seconds=10)
-    assert _is_watchdog_healthy(recent) is True
-
-
-def test_watchdog_unhealthy_stale() -> None:
-    """_is_watchdog_healthy returns False when last_seen_at is over 30 seconds ago."""
-    stale = datetime.now(UTC) - timedelta(seconds=60)
-    assert _is_watchdog_healthy(stale) is False
-
-
-def test_watchdog_none_last_seen() -> None:
-    """_is_watchdog_healthy returns None when last_seen_at is None."""
-    assert _is_watchdog_healthy(None) is None
-
-
-def test_watchdog_naive_datetime_treated_as_utc() -> None:
-    """Naive datetime (no tzinfo) is treated as UTC."""
-    recent_naive = datetime.now(UTC).replace(tzinfo=None) - timedelta(seconds=5)
-    assert _is_watchdog_healthy(recent_naive) is True
-
-
-# ── XSS prevention: workers and leader templates ───────────────────────
+# ── XSS prevention: workers and leader templates ──────────────────────
 
 
 def test_workers_template_autoescapes_hostname(
@@ -263,6 +236,50 @@ def test_leader_template_autoescapes_hostname(
     )
     assert "&lt;script&gt;" in html
     assert '<script>alert("xss")</script>' not in html
+
+
+# ── Leader route: the watchdog badge is decided by SQL, not Python ───────
+
+
+def test_leader_watchdog_badge_comes_from_sql_not_python_clock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """D5 pin: the Healthy/Unhealthy badge is computed by the LEADER SQL
+    (``last_seen_at > now() - interval '30 seconds' AS watchdog_healthy``)
+    — the same single-arbiter shape as queues.py's worker-liveness
+    predicates.  A row the SERVER calls healthy (watchdog_healthy=True)
+    must render Healthy even when this process's Python clock would call
+    its last_seen_at stale: mixing the app clock into a server-written
+    timestamp's freshness verdict breaks under app↔DB skew.  Pre-fix the
+    route recomputed freshness in Python and rendered Unhealthy."""
+    row = StubRecord(
+        worker_id="00000000-0000-0000-0000-000000000001",
+        hostname="leader-1",
+        pid=9999,
+        elected_at=datetime(2025, 1, 1, 0, 0, 0, tzinfo=UTC),
+        # Stale by the local Python clock — the SQL verdict is what counts.
+        last_seen_at=datetime.now(UTC) - timedelta(hours=1),
+        worker_last_seen=datetime.now(UTC) - timedelta(hours=1),
+        watchdog_healthy=True,
+    )
+    client = _build_workers_app(_FetchRowPool(_FetchRowConn(row)), monkeypatch)
+    response = client.get("/leader")  # pyright: ignore[reportUnknownMemberType]
+    assert response.status_code == 200  # pyright: ignore[reportUnknownMemberType]
+    text = response.text  # pyright: ignore[reportUnknownMemberType]
+    assert "leader-1" in text
+    assert "Healthy" in text
+    assert "Unhealthy" not in text
+
+
+def test_leader_sql_computes_watchdog_healthy_server_side() -> None:
+    """The leader SQL itself carries the server-side freshness predicate
+    (mirroring queues.py's ``last_seen_at > now() - interval '30 seconds'``
+    liveness checks) — the Python-side recomputation is gone."""
+    from taskq.web.admin import workers as workers_mod
+
+    assert "AS watchdog_healthy" in workers_mod._LEADER_SQL
+    assert "now() - interval '30 seconds'" in workers_mod._LEADER_SQL
+    assert not hasattr(workers_mod, "_is_watchdog_healthy")
 
 
 # ── Leader route: leader-present branch (lines 97-105) ──────────────────
@@ -313,22 +330,27 @@ def _build_workers_app(pool: object, monkeypatch: pytest.MonkeyPatch) -> TestCli
     return TestClient(app)
 
 
-def _leader_row(last_seen_at: datetime | None) -> StubRecord:
+def _leader_row(watchdog_healthy: bool | None) -> StubRecord:
+    """Leader row as the SQL returns it — the freshness verdict
+    (``watchdog_healthy``) is computed server-side, so the stub carries it
+    instead of the route recomputing it from last_seen_at."""
     return StubRecord(
         worker_id="00000000-0000-0000-0000-000000000001",
         hostname="leader-1",
         pid=9999,
         elected_at=datetime(2025, 1, 1, 0, 0, 0, tzinfo=UTC),
-        last_seen_at=last_seen_at,
+        last_seen_at=datetime.now(UTC) - timedelta(seconds=5),
         worker_last_seen=datetime(2025, 1, 1, 0, 0, 10, tzinfo=UTC),
+        watchdog_healthy=watchdog_healthy,
     )
 
 
 def test_leader_page_renders_when_leader_exists_healthy(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """GET /leader renders leader details with a Healthy watchdog when recent."""
-    row = _leader_row(datetime.now(UTC) - timedelta(seconds=5))
+    """GET /leader renders leader details with a Healthy badge when the SQL
+    verdict is healthy."""
+    row = _leader_row(watchdog_healthy=True)
     client = _build_workers_app(_FetchRowPool(_FetchRowConn(row)), monkeypatch)
     response = client.get("/leader")  # pyright: ignore[reportUnknownMemberType]
     assert response.status_code == 200  # pyright: ignore[reportUnknownMemberType]
@@ -341,8 +363,9 @@ def test_leader_page_renders_when_leader_exists_healthy(
 def test_leader_page_renders_when_leader_exists_unhealthy(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """GET /leader renders an Unhealthy watchdog when last_seen_at is stale."""
-    row = _leader_row(datetime.now(UTC) - timedelta(seconds=120))
+    """GET /leader renders an Unhealthy badge when the SQL verdict says the
+    leader ping is stale."""
+    row = _leader_row(watchdog_healthy=False)
     client = _build_workers_app(_FetchRowPool(_FetchRowConn(row)), monkeypatch)
     response = client.get("/leader")  # pyright: ignore[reportUnknownMemberType]
     assert response.status_code == 200  # pyright: ignore[reportUnknownMemberType]
@@ -351,11 +374,12 @@ def test_leader_page_renders_when_leader_exists_unhealthy(
     assert "Unhealthy" in text
 
 
-def test_leader_page_renders_unknown_watchdog_when_last_seen_none(
+def test_leader_page_renders_unknown_watchdog_when_verdict_none(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """GET /leader shows Unknown watchdog when leader last_seen_at is None."""
-    row = _leader_row(None)
+    """GET /leader shows Unknown watchdog when the SQL verdict is NULL
+    (the leader has never recorded a ping)."""
+    row = _leader_row(watchdog_healthy=None)
     client = _build_workers_app(_FetchRowPool(_FetchRowConn(row)), monkeypatch)
     response = client.get("/leader")  # pyright: ignore[reportUnknownMemberType]
     assert response.status_code == 200  # pyright: ignore[reportUnknownMemberType]

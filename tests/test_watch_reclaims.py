@@ -117,7 +117,8 @@ async def _make_running_row(
     )
     backend._jobs[job_id] = running_row  # type: ignore[reportPrivateUsage]  # Why: test-only private access
 
-    count = await backend.reclaim_expired_locks(_START + timedelta(seconds=1), _GRACE, _GRACE)
+    backend.advance_clock_to(_START + timedelta(seconds=1))
+    count = await backend.reclaim_expired_locks(_GRACE, _GRACE)
     assert count == 1
     return job_id
 
@@ -963,7 +964,6 @@ async def test_watch_reclaims_pg_listen_delivers_promptly(pg_dsn: str) -> None:
             async with tq._pool.acquire() as conn:
                 await PostgresBackend.sweep_expired_locks(
                     conn,
-                    datetime.now(UTC),
                     _GRACE,
                     _GRACE,
                     schema=schema,
@@ -1055,7 +1055,6 @@ async def test_watch_reclaims_survives_listen_connection_kill(pg_dsn: str) -> No
                 )
                 await PostgresBackend.sweep_expired_locks(
                     conn,
-                    datetime.now(UTC),
                     _GRACE,
                     _GRACE,
                     schema=schema,
@@ -1099,7 +1098,6 @@ async def test_watch_reclaims_survives_listen_connection_kill(pg_dsn: str) -> No
                 )
                 await PostgresBackend.sweep_expired_locks(
                     conn,
-                    datetime.now(UTC),
                     _GRACE,
                     _GRACE,
                     schema=schema,

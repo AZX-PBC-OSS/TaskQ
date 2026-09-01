@@ -123,24 +123,22 @@ class TestSweepWakesSubscriber:
         clock.advance(timedelta(minutes=10))  # pyright: ignore[reportAttributeAccessIssue] # Why: backend._clock is a FakeClock at runtime; Clock protocol does not expose advance().
 
         async with backend.subscribe_wake() as event:
-            count = await backend.scheduled_to_pending(clock.now())
+            count = await backend.scheduled_to_pending()
             assert count == 1
             assert event.is_set()
 
     async def test_scheduled_to_pending_no_rows_no_wake(self) -> None:
         """When scheduled_to_pending promotes zero jobs, no wake is fired."""
         backend = _make_inmem_backend()
-        clock = backend._clock  # type: ignore[reportPrivateUsage]
 
         async with backend.subscribe_wake() as event:
-            count = await backend.scheduled_to_pending(clock.now())
+            count = await backend.scheduled_to_pending()
             assert count == 0
             assert not event.is_set()
 
     async def test_reclaim_expired_locks_wakes_subscriber(self) -> None:
         """When reclaim_expired_locks reclaims a job to pending, wake is fired."""
         backend = _make_inmem_backend()
-        clock = backend._clock  # type: ignore[reportPrivateUsage]
         worker_id = uuid4()
 
         # Manually craft a running job with an expired lock
@@ -189,7 +187,6 @@ class TestSweepWakesSubscriber:
 
         async with backend.subscribe_wake() as event:
             count = await backend.reclaim_expired_locks(
-                clock.now(),
                 cancel_grace=timedelta(seconds=30),
                 cleanup_grace=timedelta(seconds=30),
             )
@@ -202,7 +199,6 @@ class TestSweepWakesSubscriber:
         ``poll_reclaim_events`` / ``TaskQ.watch_reclaims``) need a
         low-latency wakeup for terminal transitions too, not only retries."""
         backend = _make_inmem_backend()
-        clock = backend._clock  # type: ignore[reportPrivateUsage]
         worker_id = uuid4()
 
         # Running job with retries left but non-retryable → will go to crashed
@@ -253,7 +249,6 @@ class TestSweepWakesSubscriber:
 
         async with backend.subscribe_wake() as event:
             count = await backend.reclaim_expired_locks(
-                clock.now(),
                 cancel_grace=timedelta(seconds=30),
                 cleanup_grace=timedelta(seconds=30),
             )

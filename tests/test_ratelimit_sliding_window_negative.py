@@ -197,7 +197,8 @@ async def test_refund_redis_gcra_returns_early_without_previous_state() -> None:
 
 
 async def test_peek_redis_log_exhausted() -> None:
-    """_peek_redis_log returns is_exhausted=True and retry_after when at capacity.
+    """_peek_redis_log returns is_exhausted=True and retry_after when the
+    in-window count is at capacity.
 
     The retry estimate measures the TIME-domain score against the store's
     clock (redis TIME), so the fake client serves a fixed time().
@@ -207,12 +208,18 @@ async def test_peek_redis_log_exhausted() -> None:
         async def time(self) -> list[int]:
             return [2000, 0]
 
-        async def zcard(self, key: object) -> int:
+        async def zcount(self, key: object, min: str, max: str) -> int:
             return 10
 
-        async def zrange(
-            self, key: object, start: int, end: int, withscores: bool = True
-        ) -> list[tuple[bytes, float]]:
+        async def zrangebyscore(
+            self,
+            key: object,
+            min: str,
+            max: str,
+            start: int = 0,
+            num: int = 1,
+            withscores: bool = False,
+        ) -> list[object]:
             return [(b"req1", 1000.0)]
 
     from taskq.ratelimit._sliding_window_redis import _peek_redis_log

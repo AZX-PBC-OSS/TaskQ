@@ -266,18 +266,22 @@ async def test_log_pexpire_refreshed_on_denial(redis_url: str) -> None:
 
 
 async def test_gcra_steady_state(redis_url: str) -> None:
-    """60-burst all allowed; 61st denied with retry_after ≈ 1 s
-    (emission interval in GCRA).
+    """60-burst all allowed; 61st denied with retry_after <= one emission
+    interval (10 s at window=600 s / limit=60).
 
     The TAT advances on the store's clock (TIME), so real elapsed time
-    during the 60 roundtrips shaves the retry below the 1.0 s emission
-    interval — the pinned invariant is 0 < retry_after <= 1.0 s.
+    during the 60 roundtrips shaves the retry below the 10 s emission
+    interval — the pinned invariant is 0 < retry_after <= 10 s. The wide
+    window makes the denial deterministic: the 61st is denied for any
+    inter-await gap under ~10 s, swallowing parallel-load scheduling
+    stalls (measured up to ~4 s); a 60 s window left only ~1 s of margin
+    and flaked under load.
     """
     name = _unique_name()
     sw = SlidingWindow(
         name=name,
         limit=60,
-        window=timedelta(seconds=60),
+        window=timedelta(seconds=600),
         backend="redis",
         style="gcra",
     )
@@ -296,9 +300,9 @@ async def test_gcra_steady_state(redis_url: str) -> None:
         assert r.retry_after is not None
         assert r.remaining == 0.0
 
-        # GCRA retry_after = emission_interval (1 s) minus the real time
+        # GCRA retry_after = emission_interval (10 s) minus the real time
         # elapsed during the burst's roundtrips.
-        assert 0 < r.retry_after.total_seconds() <= 1.0
+        assert 0 < r.retry_after.total_seconds() <= 10.0
     finally:
         await client.aclose()
 
@@ -307,9 +311,17 @@ async def test_gcra_steady_state(redis_url: str) -> None:
 
 
 async def test_gcra_even_spacing(redis_url: str) -> None:
-    """after 60-burst, sleep ~1.05 s of real time → allowed; immediate
-    acquire again → denied with retry_after ≈ 1 s (the store's clock —
-    TIME — advances the TAT, so the wait must be real time).
+    """GCRA spacing is enforced in the store's clock domain.
+
+    After a 60-burst and ~1.05 s of real time, the next acquire is allowed
+    and advances the TAT by exactly one emission interval beyond the TAT it
+    observed (the deterministic spacing demo). The follow-up acquire is
+    denied only while less than ~one emission interval of store time has
+    passed since that allowed one — under parallel load the gap between two
+    awaits can exceed it, in which case admitting IS the contract, so the
+    follow-up is asserted conditionally from the decision's own
+    store-domain evidence: allowed ⇒ TAT advanced by ≥ one emission
+    interval (spacing held); denied ⇒ bounded retry within one interval.
     """
     name = _unique_name()
     sw = SlidingWindow(
@@ -331,14 +343,22 @@ async def test_gcra_even_spacing(redis_url: str) -> None:
 
         r = await sw.acquire(redis_client=client, clock=clock, settings=settings)
         assert r.allowed is True
+        # now < stored TAT here, so post = pre + exactly one emission
+        # interval (1000 ms) — spacing, proven without any timing assumption.
+        assert r.previous_state is not None
+        pre_ms = float(str(r.previous_state["pre_acquire_tat_str"]))
+        post_ms = float(str(r.previous_state["post_acquire_tat_str"]))
+        assert post_ms - pre_ms >= 999.0
 
-        r = await sw.acquire(redis_client=client, clock=clock, settings=settings)
-        assert r.allowed is False
-        assert r.retry_after is not None
-
-        # One emission interval (1 s) minus the sub-second time already
-        # elapsed since the burst; the invariant is 0 < retry_after <= 1 s.
-        assert 0 < r.retry_after.total_seconds() <= 1.0
+        r2 = await sw.acquire(redis_client=client, clock=clock, settings=settings)
+        if r2.allowed:
+            assert r2.previous_state is not None
+            r2_pre = float(str(r2.previous_state["pre_acquire_tat_str"]))
+            r2_post = float(str(r2.previous_state["post_acquire_tat_str"]))
+            assert r2_post - r2_pre >= 999.0
+        else:
+            assert r2.retry_after is not None
+            assert 0 < r2.retry_after.total_seconds() <= 1.0
     finally:
         await client.aclose()
 
@@ -396,9 +416,13 @@ async def test_gcra_pexpire_refreshed_on_denial(redis_url: str) -> None:
     """burst 60, immediately attempt one more (denied). PTTL on
     the key is close to window_ms + 60_000 (refreshed on the denied branch
     ), NOT decayed.
+
+    window=600 s makes the denial deterministic: the immediate 61st is
+    denied for any inter-await gap under ~10 s (one emission interval),
+    swallowing parallel-load scheduling stalls.
     """
     name = _unique_name()
-    window = timedelta(seconds=60)
+    window = timedelta(seconds=600)
     sw = SlidingWindow(
         name=name,
         limit=60,
@@ -452,7 +476,11 @@ async def test_gcra_cross_style_isolation(redis_url: str) -> None:
     gcra_window = SlidingWindow(
         name=name,
         limit=60,
-        window=timedelta(seconds=60),
+        # 600 s window: the gcra arm's at-limit denial must survive any
+        # parallel-load scheduling stall (denied for gaps < ~10 s, one
+        # emission interval); the log arm's denial is count-based and
+        # already stall-immune at 60 s.
+        window=timedelta(seconds=600),
         backend="redis",
         style="gcra",
     )
@@ -799,24 +827,33 @@ async def test_refund_gcra_success(redis_url: str) -> None:
 
 
 class _FakeZrangeEmptyClient:
-    """Mimics the two redis-py calls used by peek_redis_log with
-    zcard reporting the bucket exhausted but zrange racing to no members
-    (line 260->270 false branch) — a race that cannot be reproduced
-    deterministically against a real Redis server."""
+    """Mimics the redis-py calls used by peek_redis_log with zcount
+    reporting the bucket exhausted but the oldest-in-window lookup racing
+    to no members — a race that cannot be reproduced deterministically
+    against a real Redis server."""
 
-    async def zcard(self, key: str) -> int:
+    async def time(self) -> list[int]:
+        return [2000, 0]
+
+    async def zcount(self, key: str, min: str, max: str) -> int:
         return 10
 
-    async def zrange(
-        self, key: str, start: int, end: int, withscores: bool = False
+    async def zrangebyscore(
+        self,
+        key: str,
+        min: str,
+        max: str,
+        start: int = 0,
+        num: int = 1,
+        withscores: bool = False,
     ) -> list[object]:
         return []
 
 
 async def test_peek_log_oldest_empty_race() -> None:
-    """peek_redis_log: zcard reports the bucket exhausted, but zrange
-    races to no members. The peek still reports is_exhausted=True with
-    retry_after=None."""
+    """peek_redis_log: the in-window count reports the bucket exhausted,
+    but the oldest-in-window lookup races to no members. The peek still
+    reports is_exhausted=True with retry_after=None."""
     from taskq.ratelimit._sliding_window_redis import _peek_redis_log
 
     sw = SlidingWindow(
@@ -863,8 +900,7 @@ async def test_peek_log_exhausted_reports_retry_after(redis_url: str) -> None:
 
 async def test_peek_log_not_exhausted(redis_url: str) -> None:
     """peek() on backend="redis", style="log" against an unused bucket
-    reports is_exhausted=False and skips the zrange branch entirely
-    (the `count == 0` arm of line 258, i.e. the 258->270 false edge)."""
+    reports is_exhausted=False and skips the oldest-lookup branch entirely."""
     sw = SlidingWindow(
         name=_unique_name(), limit=5, window=timedelta(seconds=60), backend="redis", style="log"
     )
@@ -876,6 +912,85 @@ async def test_peek_log_not_exhausted(redis_url: str) -> None:
         assert state.is_exhausted is False
         assert state.remaining == 5.0
         assert state.retry_after is None
+    finally:
+        await client.aclose()
+
+
+async def test_peek_log_after_window_expiry_not_exhausted(redis_url: str) -> None:
+    """Read-only peek must apply the window filter itself. Eviction only
+    happens in acquire, so once the window empties with no intervening
+    acquire the sorted set still holds the aged-out entries — the peek
+    must count only in-window entries (ZCOUNT against the store's TIME)
+    and report NOT exhausted, because the very next acquire IS allowed.
+    Pre-fix the peek used ZCARD (the whole key) and overstated exhaustion.
+    """
+    name = _unique_name()
+    sw = SlidingWindow(
+        name=name, limit=1, window=timedelta(seconds=5), backend="redis", style="log"
+    )
+    client = await _make_client(redis_url)
+    settings = _settings(redis_url)
+    clock = SystemClock()
+    try:
+        r = await sw.acquire(redis_client=client, clock=clock, settings=settings)
+        assert r.allowed is True
+
+        state = await sw.peek(redis_client=client, clock=clock, settings=settings)
+        assert state.is_exhausted is True
+
+        # Age the entry past the 5 s window with NO intervening acquire —
+        # the key is not evicted until the next acquire runs. (5 s, not
+        # 1 s: the exhausted-peek above needs margin against scheduling
+        # stalls under parallel load.)
+        await asyncio.sleep(5.2)
+
+        state = await sw.peek(redis_client=client, clock=clock, settings=settings)
+        assert state.is_exhausted is False, (
+            "peek must count only in-window entries — the window has "
+            "emptied even though the key still holds the aged-out entry"
+        )
+        assert state.remaining == 1.0
+        assert state.retry_after is None
+
+        r = await sw.acquire(redis_client=client, clock=clock, settings=settings)
+        assert r.allowed is True, "the next acquire after window expiry must be allowed"
+    finally:
+        await client.aclose()
+
+
+async def test_acquire_and_peek_without_clock_on_redis_backend(redis_url: str) -> None:
+    """Unified clock contract (matches TokenBucket): the redis backend
+    runs on the store's own clock (Redis TIME inside the scripts / peek
+    reads), so an acquire/peek must not require a Python clock at all.
+    Both styles."""
+    settings = _settings(redis_url)
+    client = await _make_client(redis_url)
+    try:
+        sw_log = SlidingWindow(
+            name=_unique_name(),
+            limit=10,
+            window=timedelta(seconds=60),
+            backend="redis",
+            style="log",
+        )
+        r = await sw_log.acquire(redis_client=client, settings=settings)
+        assert r.allowed is True
+        assert r.backend == "redis"
+        state = await sw_log.peek(redis_client=client, settings=settings)
+        assert state.backend == "redis"
+
+        sw_gcra = SlidingWindow(
+            name=_unique_name(),
+            limit=10,
+            window=timedelta(seconds=60),
+            backend="redis",
+            style="gcra",
+        )
+        r = await sw_gcra.acquire(redis_client=client, settings=settings)
+        assert r.allowed is True
+        assert r.backend == "redis"
+        state = await sw_gcra.peek(redis_client=client, settings=settings)
+        assert state.backend == "redis"
     finally:
         await client.aclose()
 

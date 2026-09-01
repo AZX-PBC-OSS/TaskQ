@@ -428,7 +428,9 @@ class TestMarkFailedOrRetry:
             job_id,
             backend._worker_id,  # type: ignore[reportPrivateUsage]  # Why: test-only private access
             error_info,
-            next_scheduled,
+            # A delay — the backend's own clock (FakeClock at _START)
+            # derives scheduled_at = now + 10s == next_scheduled.
+            next_scheduled - _START,
         )
         assert result.status == "scheduled"
         assert result.attempt == 1
@@ -448,7 +450,7 @@ class TestMarkFailedOrRetry:
             job_id,
             backend._worker_id,  # type: ignore[reportPrivateUsage]  # Why: test-only private access
             error_info,
-            next_scheduled_at=None,
+            retry_delay=None,
         )
         assert result.status == "failed"
         assert result.finished_at is not None
@@ -467,7 +469,7 @@ class TestMarkFailedOrRetry:
             job_id,
             backend._worker_id,  # type: ignore[reportPrivateUsage]  # Why: test-only private access
             error_info,
-            next_scheduled_at=None,
+            retry_delay=None,
         )
         assert result.status == "failed"
 
@@ -819,7 +821,8 @@ class TestScheduledToPending:
         row = await backend.enqueue(args)
         assert row.status == "scheduled"
 
-        count = await backend.scheduled_to_pending(future)
+        backend.advance_clock_to(future)
+        count = await backend.scheduled_to_pending()
         assert count == 1
         updated = await backend.get(row.id)
         assert updated is not None
@@ -831,7 +834,8 @@ class TestScheduledToPending:
         args = _enqueue_args(scheduled_at=far_future)
         await backend.enqueue(args)
 
-        count = await backend.scheduled_to_pending(_START + timedelta(hours=1))
+        backend.advance_clock_to(_START + timedelta(hours=1))
+        count = await backend.scheduled_to_pending()
         assert count == 0
 
     async def test_skips_non_scheduled(self) -> None:
@@ -840,7 +844,8 @@ class TestScheduledToPending:
         row = await backend.enqueue(args)
         assert row.status == "pending"
 
-        count = await backend.scheduled_to_pending(_START)
+        backend.advance_clock_to(_START)
+        count = await backend.scheduled_to_pending()
         assert count == 0
 
 
@@ -853,7 +858,8 @@ class TestDeadlineSweep:
         assert row.status == "pending"
 
         now = _START + timedelta(hours=2)
-        count = await backend.deadline_sweep(now)
+        backend.advance_clock_to(now)
+        count = await backend.deadline_sweep()
         assert count == 1
         updated = await backend.get(row.id)
         assert updated is not None
@@ -868,7 +874,8 @@ class TestDeadlineSweep:
         row = await backend.enqueue(args)
 
         now = _START + timedelta(hours=2)
-        count = await backend.deadline_sweep(now)
+        backend.advance_clock_to(now)
+        count = await backend.deadline_sweep()
         assert count == 1
         updated = await backend.get(row.id)
         assert updated is not None
@@ -886,7 +893,8 @@ class TestDeadlineSweep:
         row = await backend.enqueue(args)
 
         now = _START + timedelta(hours=2)
-        await backend.deadline_sweep(now)
+        backend.advance_clock_to(now)
+        await backend.deadline_sweep()
 
         attempts = await backend.get_attempts(row.id)
         assert len(attempts) == 1
@@ -903,7 +911,8 @@ class TestDeadlineSweep:
         args = _enqueue_args(schedule_to_close=None)
         await backend.enqueue(args)
 
-        count = await backend.deadline_sweep(_START + timedelta(days=1))
+        backend.advance_clock_to(_START + timedelta(days=1))
+        count = await backend.deadline_sweep()
         assert count == 0
 
     async def test_skips_running_jobs(self) -> None:
@@ -915,7 +924,8 @@ class TestDeadlineSweep:
         row = backend._jobs[job_id]  # type: ignore[reportPrivateUsage]  # Why: test-only private access
         backend._jobs[job_id] = _replace(row, schedule_to_close=_START - timedelta(hours=1))  # type: ignore[reportPrivateUsage]  # Why: test-only private access
 
-        count = await backend.deadline_sweep(_START + timedelta(hours=1))
+        backend.advance_clock_to(_START + timedelta(hours=1))
+        count = await backend.deadline_sweep()
         assert count == 0
 
     async def test_writes_synthetic_attempt_with_null_duration_for_previously_dispatched(
@@ -940,7 +950,8 @@ class TestDeadlineSweep:
             schedule_to_close=_START - timedelta(hours=1),
         )
 
-        count = await backend.deadline_sweep(_START + timedelta(hours=1))
+        backend.advance_clock_to(_START + timedelta(hours=1))
+        count = await backend.deadline_sweep()
         assert count == 1
 
         attempts = await backend.get_attempts(job_id)
@@ -957,7 +968,8 @@ class TestDeadlineSweep:
         await backend.enqueue(args)
 
         now = _START + timedelta(hours=1)
-        count = await backend.deadline_sweep(now)
+        backend.advance_clock_to(now)
+        count = await backend.deadline_sweep()
         assert count == 0
 
     async def test_idempotent_double_sweep(self) -> None:
@@ -973,11 +985,12 @@ class TestDeadlineSweep:
         row = await backend.enqueue(args)
 
         now = _START + timedelta(hours=2)
+        backend.advance_clock_to(now)
 
-        c1 = await backend.deadline_sweep(now)
+        c1 = await backend.deadline_sweep()
         assert c1 == 1
 
-        c2 = await backend.deadline_sweep(now)
+        c2 = await backend.deadline_sweep()
         assert c2 == 0
 
         attempts = await backend.get_attempts(row.id)
@@ -1004,8 +1017,8 @@ class TestReclaimExpiredLocks:
         row = backend._jobs[job_id]  # type: ignore[reportPrivateUsage]  # Why: test-only private access
         backend._jobs[job_id] = _replace(row, lock_expires_at=_START - timedelta(seconds=1))  # type: ignore[reportPrivateUsage]  # Why: test-only private access
 
-        now = _START + timedelta(seconds=1)
-        count = await backend.reclaim_expired_locks(now, _GRACE, _GRACE)
+        backend.advance_clock_to(_START + timedelta(seconds=1))
+        count = await backend.reclaim_expired_locks(_GRACE, _GRACE)
         assert count == 1
         updated = await backend.get(job_id)
         assert updated is not None
@@ -1021,8 +1034,8 @@ class TestReclaimExpiredLocks:
         row = backend._jobs[job_id]  # type: ignore[reportPrivateUsage]  # Why: test-only private access
         backend._jobs[job_id] = _replace(row, lock_expires_at=_START - timedelta(seconds=1))  # type: ignore[reportPrivateUsage]  # Why: test-only private access
 
-        now = _START + timedelta(seconds=1)
-        count = await backend.reclaim_expired_locks(now, _GRACE, _GRACE)
+        backend.advance_clock_to(_START + timedelta(seconds=1))
+        count = await backend.reclaim_expired_locks(_GRACE, _GRACE)
         assert count == 1
         updated = await backend.get(job_id)
         assert updated is not None
@@ -1038,8 +1051,8 @@ class TestReclaimExpiredLocks:
         row = backend._jobs[job_id]  # type: ignore[reportPrivateUsage]  # Why: test-only private access
         backend._jobs[job_id] = _replace(row, lock_expires_at=_START - timedelta(seconds=1))  # type: ignore[reportPrivateUsage]  # Why: test-only private access
 
-        now = _START + timedelta(seconds=1)
-        await backend.reclaim_expired_locks(now, _GRACE, _GRACE)
+        backend.advance_clock_to(_START + timedelta(seconds=1))
+        await backend.reclaim_expired_locks(_GRACE, _GRACE)
 
         attempts = await backend.get_attempts(job_id)
         assert len(attempts) == 1
@@ -1050,8 +1063,8 @@ class TestReclaimExpiredLocks:
         await _make_running_row(backend)
 
         # Lock is still valid (expires in the future)
+        backend.advance_clock_to(_START + timedelta(seconds=1))
         count = await backend.reclaim_expired_locks(
-            _START + timedelta(seconds=1),
             _GRACE,
             _GRACE,
         )
@@ -1072,8 +1085,8 @@ class TestReclaimExpiredLocks:
             cancel_phase=1,
         )
 
+        backend.advance_clock_to(_START + timedelta(seconds=1))
         count = await backend.reclaim_expired_locks(
-            _START + timedelta(seconds=1),
             _GRACE,
             _GRACE,
         )
@@ -1100,8 +1113,8 @@ class TestReclaimExpiredLocks:
             cancel_phase=1,
         )
 
+        backend.advance_clock_to(_START + timedelta(seconds=1))
         count = await backend.reclaim_expired_locks(
-            _START + timedelta(seconds=1),
             _GRACE,
             _GRACE,
         )
@@ -1137,8 +1150,8 @@ class TestReclaimExpiredLocks:
             cancel_phase=1,
         )
 
+        backend.advance_clock_to(_START + timedelta(seconds=1))
         count = await backend.reclaim_expired_locks(
-            _START + timedelta(seconds=1),
             _GRACE,
             _GRACE,
         )
@@ -1628,9 +1641,8 @@ class TestLockExpiryAfterClockAdvance:
         assert backend._jobs[job_id].status == "running"  # type: ignore[reportPrivateUsage]  # Why: test-only private access
 
         clock.advance(lock_lease + timedelta(seconds=1))
-        now_after = clock.now()
 
-        count = await backend.reclaim_expired_locks(now_after, _GRACE, _GRACE)
+        count = await backend.reclaim_expired_locks(_GRACE, _GRACE)
         assert count == 1
 
         updated = await backend.get(job_id)

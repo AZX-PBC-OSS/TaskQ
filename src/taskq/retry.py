@@ -81,11 +81,18 @@ class RetryPolicy(BaseModel):
 
 
 class Retry(BaseModel):
-    """Retry decision: reschedule the job at next_scheduled_at."""
+    """Retry decision: reschedule the job after *retry_delay*.
+
+    The delay — not a computed timestamp — is the decision payload: the
+    backend derives ``scheduled_at = now() + retry_delay`` and the
+    scheduled/pending status from its own clock (single arbiter, immune to
+    app↔DB clock skew).  ``retry_delay=0`` means "retry immediately"
+    (lands pending).
+    """
 
     model_config = ConfigDict(frozen=True)
 
-    next_scheduled_at: datetime
+    retry_delay: timedelta
 
 
 class Fail(BaseModel):
@@ -101,14 +108,21 @@ type RetryDecision = Retry | Fail
 
 
 class JobRetryState(NamedTuple):
-    """Projection of JobRow columns consumed by the retry classifier."""
+    """Projection of JobRow columns consumed by the retry classifier.
+
+    ``schedule_to_close`` is no longer an input to classification — the
+    SQL deadline guard in ``mark_failed_or_retry`` is the single deadline
+    arbiter (one arbiter per predicate; see docs/architecture.md §Clock
+    Domains).  The field is retained on the projection for observability
+    and hook consumers.  ``start_to_close`` is reserved for per-attempt
+    timeout enforcement at the consumer level (asyncio.wait_for); not used
+    by the classifier.
+    """
 
     attempt: int
     max_attempts: int
     retry_kind: RetryKind
     schedule_to_close: datetime | None
-    # Reserved for per-attempt timeout enforcement at the consumer
-    # level (asyncio.wait_for); not used by the classifier.
     start_to_close: timedelta | None
 
 
@@ -212,27 +226,30 @@ policy in that case — a broken hook can never crash the retry pipeline.
 
 
 class RetryClassifier:
-    """Pure classifier that maps an exception + policy to a RetryDecision."""
+    """Pure classifier that maps an exception + policy to a RetryDecision.
+
+    The classifier decides retry-*kind* and backoff only — it is
+    deliberately NOT a deadline arbiter.  ``schedule_to_close`` is
+    arbitrated by the SQL guard in ``mark_failed_or_retry`` (single
+    arbiter, the backend's clock); a Python-side pre-check computed from
+    the worker's clock would disagree with it under app↔DB skew and kill
+    jobs early (or rubber-stamp them).
+    """
 
     @staticmethod
-    def _retry_or_deadline(
+    def _retry_decision(
         policy: RetryPolicy,
         attempt: int,
-        schedule_to_close: datetime | None,
-        now: datetime,
         *,
         max_retry_backoff: timedelta,
         override_delay: timedelta | None = None,
-    ) -> RetryDecision:
+    ) -> Retry:
         delay = (
             max(timedelta(0), min(override_delay, max_retry_backoff))
             if override_delay is not None
             else compute_backoff(policy, attempt, max_retry_backoff=max_retry_backoff)
         )
-        next_scheduled_at = now + delay
-        if schedule_to_close is not None and next_scheduled_at >= schedule_to_close:
-            return Fail(error_class="DeadlineExceeded", retryable=False)
-        return Retry(next_scheduled_at=next_scheduled_at)
+        return Retry(retry_delay=delay)
 
     @staticmethod
     def classify(
@@ -240,8 +257,6 @@ class RetryClassifier:
         non_retryable_exceptions: tuple[type[BaseException], ...],
         exception: BaseException,
         attempt: int,
-        schedule_to_close: datetime | None,
-        now: datetime,
         *,
         max_retry_backoff: timedelta = timedelta(hours=24),
         override: RetryOverride | None = None,
@@ -262,24 +277,18 @@ class RetryClassifier:
 
         if effective_kind == "transient":
             if attempt < policy.max_attempts:
-                return RetryClassifier._retry_or_deadline(
+                return RetryClassifier._retry_decision(
                     policy,
                     attempt,
-                    schedule_to_close,
-                    now,
                     max_retry_backoff=max_retry_backoff,
                     override_delay=override_delay,
                 )
             return Fail(error_class=type(exception).__name__, retryable=False)
 
         # effective_kind == "indefinite"
-        if schedule_to_close is not None and now >= schedule_to_close:
-            return Fail(error_class="DeadlineExceeded", retryable=False)
-        return RetryClassifier._retry_or_deadline(
+        return RetryClassifier._retry_decision(
             policy,
             attempt,
-            schedule_to_close,
-            now,
             max_retry_backoff=max_retry_backoff,
             override_delay=override_delay,
         )
@@ -364,7 +373,6 @@ def decide_after_failure(
     actor_config: ActorConfigLike,
     exception: BaseException,
     job_state: JobRetryState,
-    now: datetime,
     *,
     max_retry_backoff: timedelta = timedelta(hours=24),
     log: structlog.stdlib.BoundLogger | None = None,
@@ -381,6 +389,10 @@ def decide_after_failure(
     ``max_retry_backoff`` is the global ceiling forwarded to
     ``compute_backoff``. The consumer passes
     ``settings.max_retry_backoff`` so the knob is operator-controlled.
+
+    No clock input: the classifier decides retry-kind and backoff only —
+    the ``schedule_to_close`` deadline is arbitrated server-side by
+    ``mark_failed_or_retry`` (see RetryClassifier's docstring).
     """
     # row-stored max_attempts and retry_kind are authoritative;
     # live registration is authoritative for the other policy scalars
@@ -427,8 +439,6 @@ def decide_after_failure(
         non_retryable_exceptions=actor_config.non_retryable_exceptions,
         exception=exception,
         attempt=job_state.attempt,
-        schedule_to_close=job_state.schedule_to_close,
-        now=now,
         max_retry_backoff=max_retry_backoff,
         override=override,
     )
@@ -549,7 +559,7 @@ async def safe_mark_failed_or_retry(
     job_id: JobId,
     worker_id: UUID,
     error_info: ErrorInfo,
-    next_scheduled_at: datetime | None,
+    retry_delay: timedelta | None,
     progress_seq: int = 0,
     progress_state: dict[str, object] | None = None,
     *,
@@ -568,7 +578,7 @@ async def safe_mark_failed_or_retry(
             job_id=job_id,
             worker_id=worker_id,
             error_info=error_info,
-            next_scheduled_at=next_scheduled_at,
+            retry_delay=retry_delay,
             progress_seq=progress_seq,
             progress_state=progress_state,
         )

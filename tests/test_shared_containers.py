@@ -430,3 +430,270 @@ def test_two_session_fixtures_over_one_pair_teardown_once(
     next(redis_gen, None)
     assert pair_fakes["stop"] == [_fake_services()]
     assert not (tmp_path / "taskq-test-services.json").exists()
+
+
+# ── e2e worker image sweepability (Ryuk is disabled process-wide) ───────────
+#
+# ``TESTCONTAINERS_RYUK_DISABLED=true`` is set at import of the shared-container
+# machinery, so e2e runs lose Ryuk's crash reap: a crashed e2e run's leftover
+# worker containers must therefore be sweep candidates like every other
+# test-managed container.
+
+
+def test_e2e_worker_image_is_a_sweep_candidate() -> None:
+    """The e2e worker image (``taskq-e2e-worker:sha-<content hash>``) matches
+    the sweep prefixes: exited leftovers are swept, labeled ones go by owner
+    liveness (rule 3), and a live owner's are kept."""
+    image = "taskq-e2e-worker:sha-4f2a91c0b7"
+    assert _decide(image=image, running=False) is True
+    dead_owner = {
+        sc.CREATOR_PID_LABEL: str(_dead_pid()),
+        sc.CONTROLLER_PID_LABEL: str(_dead_pid()),
+    }
+    assert _decide(image=image, labels=dead_owner, running=True) is True
+    live_owner = {sc.CREATOR_PID_LABEL: str(os.getpid())}
+    assert _decide(image=image, labels=live_owner, running=True) is False
+
+
+def test_e2e_worker_image_running_unlabeled_leftover_is_kept_not_deleted_blindly() -> None:
+    """A RUNNING unlabeled worker container (pre-label code) keeps the rule-4
+    semantics: left alone until the 24h backstop, never killed on a guess."""
+    assert _decide(image="taskq-e2e-worker:sha-4f2a91c0b7", running=True) is False
+
+
+# ── e2e network sweep ───────────────────────────────────────────────────────
+#
+# e2e sessions create one pid-suffixed Docker network (``taskq-e2e-net-<pid>``);
+# a crashed run leaks it (networks are outside Ryuk's reap even when enabled).
+# The sweep removes them by pid liveness with the same 24h age backstop.
+
+
+def test_e2e_network_whose_pid_is_dead_is_swept() -> None:
+    assert (
+        sc.should_sweep_stale_network(
+            name=f"taskq-e2e-net-{_dead_pid()}",
+            created=_NOW - timedelta(hours=1),
+            now=_NOW,
+        )
+        is True
+    )
+
+
+def test_e2e_network_whose_pid_is_alive_is_kept() -> None:
+    assert (
+        sc.should_sweep_stale_network(
+            name=f"taskq-e2e-net-{os.getpid()}",
+            created=_NOW - timedelta(hours=1),
+            now=_NOW,
+        )
+        is False
+    )
+
+
+def test_non_e2e_network_names_are_never_swept() -> None:
+    """Docker's own bridges and anything outside the exact pid-suffixed
+    pattern are not this suite's to remove, however old."""
+    for name in (
+        "bridge",
+        "host",
+        "none",
+        "taskq-e2e-net",
+        "taskq-e2e-net-abc",
+        "taskq-e2e-net-123-extra",
+        "prefix-taskq-e2e-net-123",
+        "taskq_default",
+    ):
+        assert (
+            sc.should_sweep_stale_network(name=name, created=_NOW - timedelta(days=2), now=_NOW)
+            is False
+        ), name
+
+
+def test_ancient_e2e_network_is_swept_even_with_a_live_pid() -> None:
+    """Age backstop against pid recycling — mirrors the container sweep."""
+    assert (
+        sc.should_sweep_stale_network(
+            name=f"taskq-e2e-net-{os.getpid()}",
+            created=_NOW - sc.SWEEP_AGE_LIMIT - timedelta(seconds=1),
+            now=_NOW,
+        )
+        is True
+    )
+
+
+def test_e2e_network_exactly_at_the_age_limit_with_a_live_pid_is_kept() -> None:
+    assert (
+        sc.should_sweep_stale_network(
+            name=f"taskq-e2e-net-{os.getpid()}",
+            created=_NOW - sc.SWEEP_AGE_LIMIT,
+            now=_NOW,
+        )
+        is False
+    )
+
+
+# ── Sweep + pair lifecycle observability ([TaskQ] decision logs) ────────────
+
+
+class _FakeSweepContainer:
+    """The docker-sdk container surface the sweep reads (name/status/labels/
+    attrs/remove) — one stale, one live, one foreign, per the test's needs."""
+
+    def __init__(
+        self,
+        *,
+        name: str = "nostalgic_turing",
+        image: str = _PG_IMAGE,
+        labels: dict[str, str] | None = None,
+        status: str = "exited",
+        created: datetime = _NOW - timedelta(hours=1),
+    ) -> None:
+        self.name = name
+        self.status = status
+        self.labels = labels or {}
+        self.attrs = {
+            "Config": {"Image": image},
+            "Created": created.isoformat(),
+        }
+        self.removed = False
+
+    def remove(
+        self, force: bool = False
+    ) -> None:  # Why: mirrors the docker-sdk signature the sweep calls.
+        self.removed = True
+
+
+class _FakeSweepNetwork:
+    def __init__(
+        self,
+        *,
+        name: str,
+        created: datetime = _NOW - timedelta(hours=1),
+    ) -> None:
+        self.name = name
+        self.attrs = {"Created": created.isoformat()}
+        self.removed = False
+
+    def remove(self) -> None:
+        self.removed = True
+
+
+class _FakeSweepContainers:
+    def __init__(self, containers: list[_FakeSweepContainer]) -> None:
+        self._containers = containers
+
+    def list(
+        self, *, all: bool = True
+    ) -> list[_FakeSweepContainer]:  # Why: mirrors the docker-sdk keyword the sweep passes.
+        return self._containers
+
+
+class _FakeSweepNetworks:
+    def __init__(self, networks: list[_FakeSweepNetwork]) -> None:
+        self._networks = networks
+
+    def list(self) -> list[_FakeSweepNetwork]:
+        return self._networks
+
+
+class _FakeSweepClient:
+    def __init__(
+        self,
+        containers: list[_FakeSweepContainer],
+        networks: list[_FakeSweepNetwork],
+    ) -> None:
+        self.containers = _FakeSweepContainers(containers)
+        self.networks = _FakeSweepNetworks(networks)
+
+
+def test_sweep_removes_stale_containers_and_networks_and_logs_counts(
+    monkeypatch: MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The Docker-I/O sweep removes exactly the stale container and the stale
+    e2e network (keeping live/foreign ones) and logs one ``[TaskQ]`` line with
+    the counts."""
+    stale_container = _FakeSweepContainer(
+        labels={
+            sc.CREATOR_PID_LABEL: str(_dead_pid()),
+            sc.CONTROLLER_PID_LABEL: str(_dead_pid()),
+        }
+    )
+    live_container = _FakeSweepContainer(
+        labels={sc.CREATOR_PID_LABEL: str(os.getpid())}, status="running"
+    )
+    foreign_container = _FakeSweepContainer(image="redis:8.6.3", status="running")
+    stale_network = _FakeSweepNetwork(name=f"taskq-e2e-net-{_dead_pid()}")
+    live_network = _FakeSweepNetwork(name=f"taskq-e2e-net-{os.getpid()}")
+    foreign_network = _FakeSweepNetwork(name="bridge")
+    client = _FakeSweepClient(
+        [stale_container, live_container, foreign_container],
+        [stale_network, live_network, foreign_network],
+    )
+    monkeypatch.setattr(sc, "_docker_client", lambda: client)
+
+    sc.cleanup_stale_testcontainers()
+
+    assert stale_container.removed is True
+    assert live_container.removed is False
+    assert foreign_container.removed is False
+    assert stale_network.removed is True
+    assert live_network.removed is False
+    assert foreign_network.removed is False
+    out = capsys.readouterr().out
+    assert "event=swept containers=1 networks=1" in out
+
+
+def test_sweep_leaves_everything_when_nothing_is_stale_but_still_logs(
+    monkeypatch: MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A clean daemon still logs the zero-count sweep line — the line's
+    presence is the evidence the sweep RAN (its absence means a Docker error
+    short-circuited it)."""
+    client = _FakeSweepClient(
+        [_FakeSweepContainer(labels={sc.CREATOR_PID_LABEL: str(os.getpid())}, status="running")],
+        [_FakeSweepNetwork(name=f"taskq-e2e-net-{os.getpid()}")],
+    )
+    monkeypatch.setattr(sc, "_docker_client", lambda: client)
+
+    sc.cleanup_stale_testcontainers()
+
+    assert "event=swept containers=0 networks=0" in capsys.readouterr().out
+
+
+def test_pair_lifecycle_logs_started_reused_and_stopped(
+    tmp_path: Path,
+    pair_fakes: dict[str, list[object]],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Fresh start, later reuse, and last-release teardown each log one
+    ``[TaskQ]`` decision line with stable keys."""
+    with sc.shared_service_pair(tmp_path):
+        first = capsys.readouterr().out
+        assert "event=pair-started" in first
+        assert "event=pair-reused" not in first
+        with sc.shared_service_pair(tmp_path):
+            reused = capsys.readouterr().out
+            assert "event=pair-reused" in reused
+            assert "event=pair-started" not in reused
+    stopped = capsys.readouterr().out
+    assert "event=pair-stopped" in stopped
+
+
+def test_pair_fresh_start_after_dead_owners_logs_the_reason(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    pair_fakes: dict[str, list[object]],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The crashed-run rejection (recorded pair, all owners dead) starts a
+    FRESH pair and logs the reason."""
+    leaked = _fake_services()
+    (tmp_path / "taskq-test-services.json").write_text(json.dumps(asdict(leaked)))
+    (tmp_path / "taskq-test-services.count").write_text("1")
+    monkeypatch.setattr(sc, "services_have_live_owner", lambda info: False)
+
+    with sc.shared_service_pair(tmp_path):
+        out = capsys.readouterr().out
+
+    assert "event=pair-fresh-started" in out
+    assert "reason=recorded-owners-dead" in out
