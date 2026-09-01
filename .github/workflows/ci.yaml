@@ -13,50 +13,74 @@ concurrency:
 permissions:
   contents: read
 
+# ---------------------------------------------------------------------------
+# uv discipline. Every job in this file obeys three rules, enforced by
+# tests/test_ci_workflow.py so a forgotten flag fails a PR instead of silently
+# changing what CI tested.
+#
+# Rules 1 and 3 are not left to each job to remember: they live in the shared
+# composite action at .github/actions/setup-uv-env, which is the only place in
+# the repository that CI builds an environment. A job says what extras and
+# groups it needs and nothing else, so there is no per-job flag to forget and
+# no pair of flags that has to be kept in step by hand.
+#
+# 1. Sync exactly once per job, always with `--locked`. Both `--locked` and
+#    `--frozen` refuse to re-resolve, so neither can install a version the lock
+#    never described; they differ on what happens when pyproject.toml and
+#    uv.lock disagree. `--frozen` ignores the disagreement and produces a green
+#    job silently missing a newly added dependency. `--locked` asserts the lock
+#    is up to date and fails instead. `--locked` is the only sanctioned form.
+#
+# 2. Every command downstream of that sync uses `uv run --no-sync`, never a
+#    bare `uv run`. A bare `uv run` re-resolves the interpreter and re-syncs on
+#    every invocation. Its implicit sync is inexact (it will not uninstall an
+#    already-installed extra), but if it decides the venv it finds is on the
+#    wrong interpreter it REMOVES that venv and rebuilds it from the DEFAULT
+#    dependency set, dropping every extra and non-default group the explicit
+#    sync installed. `--no-sync` uses the environment exactly as the sync left
+#    it and downgrades that interpreter disagreement to a warning.
+#
+# 3. Pin the interpreter for the WHOLE job via UV_PYTHON, which the shared
+#    action writes to $GITHUB_ENV, not via a per-command `--python` flag.
+#    `uv python install 3.12` only downloads an interpreter; it does not
+#    select one, so a later `uv sync` with no `--python` reads .python-version
+#    (3.13) and builds a 3.13 environment under a step labelled "Set up Python
+#    3.12" -- which is what several jobs here used to do. UV_PYTHON is read by
+#    `sync` and `run` alike, so nothing downstream can disagree with the sync.
+#
+# `--no-dev` is the only sanctioned pruning, and only for deployment
+# artifacts. Anything that would otherwise be injected with `uv run --with`
+# belongs in a declared dependency group instead, so it is resolved by the
+# lock like everything else.
+
 jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v10.0.1
-        with:
-          enable-cache: true
-
-      - name: Set up Python
-        run: uv python install 3.12
-
-      - name: Install dependencies
-        run: uv sync --all-extras --group dev
+      - uses: ./.github/actions/setup-uv-env
 
       - name: Lint with ruff
-        run: uv run ruff check .
+        run: uv run --no-sync ruff check .
 
       - name: Check formatting
-        run: uv run ruff format --check .
+        run: uv run --no-sync ruff format --check .
 
   typecheck:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v10.0.1
+      # The e2e group is required here: tests/e2e type-checks against
+      # containerspec (TYPE_CHECKING imports of BuiltImage), which the
+      # default dev group deliberately does not include.
+      - uses: ./.github/actions/setup-uv-env
         with:
-          enable-cache: true
-
-      - name: Set up Python
-        run: uv python install 3.12
-
-      - name: Install dependencies
-        # The e2e group is required here: tests/e2e type-checks against
-        # containerspec (TYPE_CHECKING imports of BuiltImage), which the
-        # default dev group deliberately does not include.
-        run: uv sync --all-extras --group dev --group e2e
+          sync-args: --all-extras --group dev --group e2e
 
       - name: Type check with pyright
-        run: uv run pyright src/taskq tests
+        run: uv run --no-sync pyright src/taskq tests
 
   test:
     runs-on: ubuntu-latest
@@ -92,24 +116,35 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v10.0.1
+      # The shared action exports UV_PYTHON for the whole job. The previous
+      # shape passed `--python ${{ matrix.python-version }}` to the sync and
+      # again to each `uv run`; those happened to agree, so this leg was NOT
+      # testing a pruned environment. But the safety rested entirely on two
+      # flags being kept in step by hand: dropping the one on `uv run` would
+      # have had uv read .python-version (3.13), delete the venv the sync
+      # built, and rebuild it from the default dependency set, discarding
+      # `${{ matrix.extras }}` and the dev group. Measured on this project:
+      # 116 packages before, 111 after, and `import fastapi` failing.
+      - uses: ./.github/actions/setup-uv-env
         with:
-          enable-cache: true
+          python-version: ${{ matrix.python-version }}
+          sync-args: ${{ matrix.extras }} --group dev
 
-      - name: Set up Python ${{ matrix.python-version }}
-        run: uv python install ${{ matrix.python-version }}
-
-      - name: Install dependencies
-        run: uv sync --python ${{ matrix.python-version }} ${{ matrix.extras }} --group dev
+      # A leg must fail loudly if it is ever running an interpreter other than
+      # the one it advertises. That failure mode is otherwise invisible for as
+      # long as the imports happen to resolve, which is what would let it
+      # survive review.
+      - name: Verify the interpreter matches this matrix leg
+        run: |
+          uv run --no-sync python -c "import sys; want='${{ matrix.python-version }}'; got='.'.join(map(str, sys.version_info[:2])); assert got == want, f'matrix leg {want} is running {got}'"
 
       - name: Run tests (with redis)
         if: matrix.extras == '--all-extras'
-        run: uv run --python ${{ matrix.python-version }} pytest -n 2
+        run: uv run --no-sync pytest -n 2
 
       - name: Run tests (without redis)
         if: matrix.extras != '--all-extras'
-        run: uv run --python ${{ matrix.python-version }} pytest -n 2 -m "not redis"
+        run: uv run --no-sync pytest -n 2 -m "not redis"
 
   coverage:
     runs-on: ubuntu-latest
@@ -117,19 +152,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v10.0.1
-        with:
-          enable-cache: true
-
-      - name: Set up Python
-        run: uv python install 3.12
-
-      - name: Install dependencies
-        run: uv sync --python 3.12 --all-extras --group dev
+      - uses: ./.github/actions/setup-uv-env
 
       - name: Run tests with coverage gate
-        run: uv run --python 3.12 pytest -n 2 --cov=taskq --cov-report=term-missing --cov-fail-under=90
+        run: uv run --no-sync pytest -n 2 --cov=taskq --cov-report=term-missing --cov-fail-under=90
 
   e2e:
     # Containerized e2e tier: workers built from the packaged wheel run
@@ -141,38 +167,30 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v10.0.1
+      - uses: ./.github/actions/setup-uv-env
         with:
-          enable-cache: true
+          sync-args: --all-extras --group dev --group e2e
 
-      - name: Set up Python
-        run: uv python install 3.12
-
-      - name: Install dependencies
-        run: uv sync --all-extras --group dev --group e2e
-
+      # `--group e2e` belongs on the sync above, not here: repeating it on the
+      # run would ask uv to sync a second time, and the point of --no-sync is
+      # that the environment the sync built is the environment the tests get.
       - name: Run e2e tests
-        run: uv run --group e2e pytest --e2e -m e2e tests/e2e --timeout=900 -q
+        run: uv run --no-sync pytest --e2e -m e2e tests/e2e --timeout=900 -q
 
   security:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v10.0.1
-        with:
-          enable-cache: true
+      - uses: ./.github/actions/setup-uv-env
 
-      - name: Set up Python
-        run: uv python install 3.12
-
-      - name: Install dependencies
-        run: uv sync --all-extras --group dev
-
+      # `--with pip-audit` was both redundant and harmful: pip-audit is already
+      # declared in the `dev` group and therefore resolved by uv.lock, so the
+      # flag injected a SECOND, separately resolved copy that shadowed the
+      # locked one. The auditor that reports on the locked dependency set is
+      # now itself part of it.
       - name: Run pip-audit
-        run: uv run --with pip-audit pip-audit
+        run: uv run --no-sync pip-audit
 
   build:
     runs-on: ubuntu-latest
@@ -180,27 +198,33 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v10.0.1
+      # `sync-args: ""`: this job builds and inspects distributions and never
+      # needs a project environment, so the shared action pins the interpreter
+      # and stops there rather than installing 116 packages nothing will use.
+      - uses: ./.github/actions/setup-uv-env
         with:
-          enable-cache: true
-
-      - name: Set up Python
-        run: uv python install 3.12
+          sync-args: ""
 
       - name: Build package
         run: uv build
 
+      # `--no-project`, not `--no-sync`: this job never syncs, and these are
+      # stdlib-only inspections of the built artifacts that need no project
+      # environment at all. A bare `uv run` here would create and populate a
+      # whole .venv purely to reach `python -m zipfile`; `--no-sync` would
+      # instead create an EMPTY venv, since --no-sync does not stop uv from
+      # creating a missing one, only from populating it. `--no-project`
+      # creates nothing and uses the interpreter UV_PYTHON names.
       - name: Check package contents
         run: |
           ls -la dist/
-          uv run python -m tarfile -l dist/*.tar.gz
-          uv run python -m zipfile -l dist/*.whl
+          uv run --no-project python -m tarfile -l dist/*.tar.gz
+          uv run --no-project python -m zipfile -l dist/*.whl
 
       - name: Assert wheel ships required non-code artifacts
         run: |
           set -euo pipefail
-          listing="$(uv run python -m zipfile -l dist/*.whl)"
+          listing="$(uv run --no-project python -m zipfile -l dist/*.whl)"
           echo "$listing" | grep -q "taskq/py.typed"
           echo "$listing" | grep -q "taskq/migrations/01.00.00_01_pre_initial.sql"
           echo "$listing" | grep -q "taskq/web/templates/"
