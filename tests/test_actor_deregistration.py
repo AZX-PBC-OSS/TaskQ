@@ -487,6 +487,58 @@ async def test_deregister_without_purge_queue_keeps_queue(
     assert await _queue_exists(clean_pg_conn, schema, "kept_queue") is True
 
 
+async def test_deregister_purge_keeps_queue_referenced_by_active_jobs_of_other_actors(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_schema: ModulePgSchema,
+) -> None:
+    """jobs.actor is plain text with no FK, and jobs enqueued to
+    unregistered actors are an EXPECTED state (the CLI warns about them).
+    The purge guard must therefore also look at the jobs table: dropping
+    the queues row while non-terminal jobs still reference the queue
+    silently discards their leased-slot cap and dispatch mode (a missing
+    row defaults to strict_fifo)."""
+    schema = module_pg_schema.schema_name
+    await _insert_queue(clean_pg_conn, schema, "busy_queue")
+    await sync_actor_config(
+        clean_pg_conn,
+        [ActorConfig(actor="owner_actor", max_concurrent=5, queue="busy_queue")],
+        schema=schema,
+    )
+    # An unregistered actor's pending job on the same queue — exactly the
+    # state the purge's actor_config-only guard cannot see.
+    await _insert_job(
+        clean_pg_conn, schema, actor="never_registered", status="pending", queue="busy_queue"
+    )
+
+    result = await deregister_actor(clean_pg_conn, "owner_actor", purge_queue=True, schema=schema)
+
+    assert result.queue_purged is False
+    assert await _queue_exists(clean_pg_conn, schema, "busy_queue") is True
+
+
+async def test_deregister_purge_still_deletes_queue_with_only_terminal_job_references(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_schema: ModulePgSchema,
+) -> None:
+    """Terminal history never blocks the purge — those rows are done with
+    the queue's cap and mode; only non-terminal jobs still depend on them."""
+    schema = module_pg_schema.schema_name
+    await _insert_queue(clean_pg_conn, schema, "done_queue")
+    await sync_actor_config(
+        clean_pg_conn,
+        [ActorConfig(actor="owner_two", max_concurrent=5, queue="done_queue")],
+        schema=schema,
+    )
+    await _insert_job(
+        clean_pg_conn, schema, actor="never_registered", status="succeeded", queue="done_queue"
+    )
+
+    result = await deregister_actor(clean_pg_conn, "owner_two", purge_queue=True, schema=schema)
+
+    assert result.queue_purged is True
+    assert await _queue_exists(clean_pg_conn, schema, "done_queue") is False
+
+
 # ── idempotency ─────────────────────────────────────────────────────────
 
 

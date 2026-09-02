@@ -322,11 +322,21 @@ DELETE FROM "{schema}".actor_config WHERE actor = $1
 RETURNING queue
 """.strip()
 
+# The jobs guard exists because jobs.actor/jobs.queue are plain text with no
+# FK: jobs enqueued to unregistered actors (an expected state — the CLI warns
+# about them) are invisible to the actor_config-only guard, yet still depend
+# on the queue row's max_concurrent cap and dispatch mode. A missing row
+# means uncapped + strict_fifo, so purging under them silently changes both.
 _DEREGISTER_PURGE_QUEUE_SQL = """
 DELETE FROM "{schema}".queues
  WHERE name = $1
    AND NOT EXISTS (
        SELECT 1 FROM "{schema}".actor_config WHERE queue = $1
+   )
+   AND NOT EXISTS (
+       SELECT 1 FROM "{schema}".jobs
+        WHERE queue = $1
+          AND status = ANY($2::"{schema}".job_status[])
    )
 RETURNING name
 """.strip()
@@ -353,8 +363,12 @@ async def deregister_actor(
       2. Refuse if any enabled cron schedules reference the actor — raises
          :class:`ActorHasEnabledSchedulesError`.
       3. Delete the ``actor_config`` row.
-      4. Optionally purge the orphaned queue (if ``purge_queue=True`` and no
-         other ``actor_config`` row references the same queue).
+      4. Optionally purge the orphaned queue (if ``purge_queue=True``, no
+         other ``actor_config`` row references the same queue, and no
+         non-terminal job in the ``jobs`` table still references it —
+         ``jobs.actor``/``jobs.queue`` are plain text with no FK, so jobs
+         enqueued to unregistered actors are invisible to the
+         actor_config-only guard).
 
     **force=True:**
       1. Refuse if any running jobs reference the actor — raises
@@ -362,7 +376,7 @@ async def deregister_actor(
       2. Cancel pending/scheduled jobs for this actor.
       3. Disable enabled cron schedules for this actor.
       4. Delete the ``actor_config`` row.
-      5. Optionally purge the orphaned queue.
+      5. Optionally purge the orphaned queue (same guards as above).
 
     Terminal job history is never deleted or modified. The entire operation
     runs inside a single ``conn.transaction()`` block. If the actor has no
@@ -492,6 +506,7 @@ async def deregister_actor(
             purged_name = await conn.fetchval(
                 _DEREGISTER_PURGE_QUEUE_SQL.format(schema=schema),
                 queue_name,
+                list(ACTIVE_STATUSES),
             )
             queue_purged = purged_name is not None
 
