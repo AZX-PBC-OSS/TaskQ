@@ -39,6 +39,15 @@ from taskq.actor_config_ops import (
     list_actor_configs,
     set_actor_config_capacity,
 )
+from taskq.auth import (
+    PgCredentialProvider,
+    RedisCredentialProvider,
+    build_worker_connections,
+    make_dedicated_conn_factory,
+    make_pg_pool_factory,
+    make_redis_client_factory,
+)
+from taskq.connections import ConnFactory, PoolFactory, RedisFactory, WorkerConnections
 from taskq.exceptions import ActorConfigDriftList, ActorDeregistrationError, ActorNotFoundError
 from taskq.settings import TaskQSettings, WorkerSettings
 from taskq.worker.dev import dev_watch_loop
@@ -90,18 +99,19 @@ queues_app = typer.Typer(
 app.add_typer(queues_app, name="queues")
 
 
-def _load_actor_registry(actors: str) -> Mapping[str, ActorRef[Any, Any]]:
-    """Resolve a ``module:attr`` reference to an actor registry.
+def _import_ref(ref: str, *, example: str) -> Any:
+    """Resolve a ``module:attr`` reference to the attribute it names.
 
-    Accepts either ``Mapping[str, ActorRef]`` or an iterable of
-    ``ActorRef`` (keyed by name). On any failure prints the reason to
-    stderr and raises ``typer.Exit(code=1)`` — shared by ``worker`` and
-    ``actor-config diff``.
+    The single dotted-path resolver behind every ``module:attr`` CLI
+    option (``--actors``, the credential-provider options). On any failure
+    it prints the reason to stderr and raises ``typer.Exit(code=1)``:
+    every caller wires a resource the process cannot run without, so a
+    bad reference is fatal at startup rather than a degraded fallback.
     """
-    module_name, sep, attr_name = actors.partition(":")
+    module_name, sep, attr_name = ref.partition(":")
     if not sep or not module_name or not attr_name:
         typer.echo(
-            f"expected module:attr syntax (e.g. myapp.actors:registry); got {actors!r}",
+            f"expected module:attr syntax (e.g. {example}); got {ref!r}",
             err=True,
         )
         raise typer.Exit(code=1)
@@ -116,13 +126,24 @@ def _load_actor_registry(actors: str) -> Mapping[str, ActorRef[Any, Any]]:
         raise typer.Exit(code=1) from None
 
     try:
-        raw = getattr(module, attr_name)
+        return getattr(module, attr_name)
     except AttributeError:
         typer.echo(
             f"attribute {attr_name!r} not found in module {module_name}",
             err=True,
         )
         raise typer.Exit(code=1) from None
+
+
+def _load_actor_registry(actors: str) -> Mapping[str, ActorRef[Any, Any]]:
+    """Resolve a ``module:attr`` reference to an actor registry.
+
+    Accepts either ``Mapping[str, ActorRef]`` or an iterable of
+    ``ActorRef`` (keyed by name). On any failure prints the reason to
+    stderr and raises ``typer.Exit(code=1)`` — shared by ``worker`` and
+    ``actor-config diff``.
+    """
+    raw = _import_ref(actors, example="myapp.actors:registry")
 
     if isinstance(raw, Mapping):
         return cast(Mapping[str, ActorRef[Any, Any]], raw)
@@ -138,6 +159,99 @@ def _load_actor_registry(actors: str) -> Mapping[str, ActorRef[Any, Any]]:
         err=True,
     )
     raise typer.Exit(code=1)
+
+
+_PROVIDER_EXAMPLE: Final[str] = "myapp.auth:make_provider"
+
+
+def _resolve_provider(ref: str, *, option: str, method: str) -> Any:
+    """Resolve a ``module:attr`` reference to a credential provider.
+
+    Accepts the same shapes an application naturally exports: a provider
+    **instance** (``myapp.auth:PROVIDER``), a zero-arg **factory**
+    returning one (``myapp.auth:make_provider``), or the provider
+    **class** itself when its constructor takes no required arguments —
+    the same "resolve the ref, then adapt the accepted shapes" contract
+    :func:`_load_actor_registry` uses for ``--actors``.
+
+    Anything else is fatal: a credential path that silently fell back to
+    the DSN would authenticate with a static password and look healthy
+    until the first reconnect after the deploy.
+    """
+    obj = _import_ref(ref, example=_PROVIDER_EXAMPLE)
+    if isinstance(obj, type) or (not hasattr(obj, method) and callable(obj)):
+        try:
+            obj = obj()
+        except Exception as exc:
+            typer.echo(f"{option}: calling {ref} raised {type(exc).__name__}: {exc}", err=True)
+            raise typer.Exit(code=1) from None
+    if not callable(getattr(obj, method, None)):
+        typer.echo(
+            f"{option}: {ref} resolved to {type(obj).__name__}, which does not implement "
+            f"async {method}(). Provide a credential provider instance, a zero-arg factory "
+            "returning one, or the provider class — see docs/guides/managed-identities.md.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    return obj
+
+
+def _load_pg_credential_provider(ref: str, *, option: str) -> PgCredentialProvider:
+    return cast(
+        PgCredentialProvider, _resolve_provider(ref, option=option, method="get_pg_credential")
+    )
+
+
+def _load_redis_credential_provider(ref: str, *, option: str) -> RedisCredentialProvider:
+    return cast(
+        RedisCredentialProvider,
+        _resolve_provider(ref, option=option, method="get_redis_credential"),
+    )
+
+
+def _credential_connections(
+    settings: WorkerSettings,
+    pg_ref: str | None,
+    redis_ref: str | None,
+) -> WorkerConnections | None:
+    """Build the worker's provider-backed connections, or ``None`` when unset.
+
+    ``None`` keeps the DSN path exactly as it was, so the hook is purely
+    additive; a misconfiguration on either side exits non-zero at startup
+    instead of starting a worker whose SIGHUP rotates nothing.
+    """
+    if pg_ref is None and redis_ref is None:
+        return None
+    pg_provider = (
+        _load_pg_credential_provider(pg_ref, option="--pg-credential-provider")
+        if pg_ref is not None
+        else None
+    )
+    redis_provider = (
+        _load_redis_credential_provider(redis_ref, option="--redis-credential-provider")
+        if redis_ref is not None
+        else None
+    )
+    try:
+        return build_worker_connections(
+            settings, pg_provider=pg_provider, redis_provider=redis_provider
+        )
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from None
+
+
+def _credential_conn_factory(dsn: str, pg_ref: str | None, *, option: str) -> ConnFactory | None:
+    """Build a one-shot dedicated-connection factory for the DSN-only commands.
+
+    ``taskq migrate`` and ``taskq ui serve`` open their own connections;
+    without this they are the two places a managed-identity deployment
+    still needs a static password.
+    """
+    if pg_ref is None:
+        return None
+    provider = _load_pg_credential_provider(pg_ref, option=option)
+    return make_dedicated_conn_factory(dsn, provider)
 
 
 @worker_app.callback(invoke_without_command=True)
@@ -222,6 +336,24 @@ def worker(
         help="Maximum wall-clock seconds before forcing exit (code 4). "
         "Overrides TASKQ_IDLE_MAX_RUNTIME. Only used with --until-idle.",
     ),
+    pg_credential_provider: str | None = typer.Option(
+        None,
+        "--pg-credential-provider",
+        envvar="TASKQ_PG_CREDENTIAL_PROVIDER",
+        help="Module:attr reference to a PgCredentialProvider (e.g. "
+        f"{_PROVIDER_EXAMPLE}) — an instance, a zero-arg factory returning one, "
+        "or the provider class. Every Postgres pool and dedicated connection is "
+        "then built through it, so SIGHUP / TASKQ_RELOAD_INTERVAL rotate real "
+        "credentials. Env var TASKQ_PG_CREDENTIAL_PROVIDER (inherited by "
+        "workgroup-supervised workers).",
+    ),
+    redis_credential_provider: str | None = typer.Option(
+        None,
+        "--redis-credential-provider",
+        envvar="TASKQ_REDIS_CREDENTIAL_PROVIDER",
+        help="Module:attr reference to a RedisCredentialProvider, in the same "
+        "shapes as --pg-credential-provider. Requires TASKQ_REDIS_URL.",
+    ),
 ) -> None:
     """Start a TaskQ worker consuming from the given actor registry."""
     registry = _load_actor_registry(actors)
@@ -244,10 +376,15 @@ def worker(
     if health_socket_path is not None:
         settings.health_socket_path = health_socket_path
 
+    connections = _credential_connections(
+        settings, pg_credential_provider, redis_credential_provider
+    )
+
     try:
         code = _worker_main(
             settings,
             actor_registry=registry,
+            connections=connections,
             until_idle=until_idle,
             idle_settle_window=idle_settle_window,
             idle_poll_interval=idle_poll_interval,
@@ -316,10 +453,22 @@ _REQUEST_TIMEOUT_S: Final[float] = 2.0
 
 
 @migrate_app.command("status")
-def migrate_status() -> None:
+def migrate_status(
+    pg_credential_provider: str | None = typer.Option(
+        None,
+        "--pg-credential-provider",
+        envvar="TASKQ_PG_CREDENTIAL_PROVIDER",
+        help="Module:attr reference to a PgCredentialProvider (e.g. "
+        f"{_PROVIDER_EXAMPLE}). The connection is opened through it instead of "
+        "the DSN's static password.",
+    ),
+) -> None:
     """Show applied and pending migrations."""
     settings = TaskQSettings.load()
-    asyncio.run(_status(settings))
+    conn_factory = _credential_conn_factory(
+        str(settings.pg_dsn), pg_credential_provider, option="--pg-credential-provider"
+    )
+    asyncio.run(_status(settings, conn_factory=conn_factory))
 
 
 @migrate_app.command("up")
@@ -331,14 +480,46 @@ def migrate_up(
         None, "--target", help="Stop after this version (inclusive). E.g. 01.00.00_01"
     ),
     max_steps: int | None = typer.Option(None, "--max-steps", help="Cap number of applies."),
+    pg_credential_provider: str | None = typer.Option(
+        None,
+        "--pg-credential-provider",
+        envvar="TASKQ_PG_CREDENTIAL_PROVIDER",
+        help="Module:attr reference to a PgCredentialProvider (e.g. "
+        f"{_PROVIDER_EXAMPLE}). The connection is opened through it instead of "
+        "the DSN's static password.",
+    ),
 ) -> None:
     """Apply pending migrations."""
     settings = TaskQSettings.load()
-    asyncio.run(_up(settings, phase=phase, target=target, max_steps=max_steps))
+    conn_factory = _credential_conn_factory(
+        str(settings.pg_dsn), pg_credential_provider, option="--pg-credential-provider"
+    )
+    asyncio.run(
+        _up(
+            settings,
+            phase=phase,
+            target=target,
+            max_steps=max_steps,
+            conn_factory=conn_factory,
+        )
+    )
 
 
-async def _status(settings: TaskQSettings) -> None:
-    conn = await asyncpg.connect(str(settings.pg_dsn))
+async def _open_migrate_conn(
+    settings: TaskQSettings, conn_factory: ConnFactory | None
+) -> asyncpg.Connection:
+    """Open the one-shot connection the migrate commands run on.
+
+    ``conn_factory`` (built from --pg-credential-provider) fetches a fresh
+    credential; ``None`` keeps the DSN path.
+    """
+    if conn_factory is not None:
+        return await conn_factory()
+    return await asyncpg.connect(str(settings.pg_dsn))
+
+
+async def _status(settings: TaskQSettings, *, conn_factory: ConnFactory | None = None) -> None:
+    conn = await _open_migrate_conn(settings, conn_factory)
     try:
         applied = await migrate_mod.list_applied(conn, settings.schema_name)
     finally:
@@ -361,6 +542,7 @@ async def _up(
     phase: migrate_mod.Phase | None,
     target: str | None,
     max_steps: int | None,
+    conn_factory: ConnFactory | None = None,
 ) -> None:
     # Why locked: the README names `taskq migrate up` as THE deploy step, and a
     # container platform will start two replicas or retry a failed job, so "run
@@ -381,7 +563,7 @@ async def _up(
     # get the report — and the close is skipped when no conn was acquired.
     conn: asyncpg.Connection | None = None
     try:
-        conn = await asyncpg.connect(str(settings.pg_dsn))
+        conn = await _open_migrate_conn(settings, conn_factory)
         async with migrate_mod.migration_advisory_lock(conn):
             applied = await migrate_mod.apply_pending(
                 conn,
@@ -947,6 +1129,9 @@ def _ui_serve(
     port: int,
     run_migrate: bool,
     settings: TaskQSettings,
+    pool_factory: PoolFactory | None = None,
+    conn_factory: ConnFactory | None = None,
+    redis_factory: RedisFactory | None = None,
 ) -> None:
     from contextlib import asynccontextmanager
 
@@ -982,10 +1167,20 @@ def _ui_serve(
         )
 
         if run_migrate:
-            await migrate_mod.apply_pending_locked(pg_dsn, schema=schema)
+            if conn_factory is not None:
+                await migrate_mod.apply_pending_locked(conn_factory=conn_factory, schema=schema)
+            else:
+                await migrate_mod.apply_pending_locked(pg_dsn, schema=schema)
 
         async with AsyncExitStack() as stack:
-            pg_pool = await asyncpg.create_pool(pg_dsn, min_size=1, max_size=4)
+            # A credential-provider pool passes password= as an async
+            # callable, so every physical connection this long-lived UI
+            # process opens re-authenticates with a fresh token; the DSN
+            # path is unchanged.
+            if pool_factory is not None:
+                pg_pool = await pool_factory()
+            else:
+                pg_pool = await asyncpg.create_pool(pg_dsn, min_size=1, max_size=4)
             assert pg_pool is not None, "asyncpg.create_pool returned None"
             pool = pg_pool
 
@@ -1012,7 +1207,11 @@ def _ui_serve(
                         "Install it with: pip install 'taskq[redis]'"
                     ) from exc
 
-                client = aioredis.from_url(redis_url)
+                client = (
+                    await redis_factory()
+                    if redis_factory is not None
+                    else aioredis.from_url(redis_url)
+                )
 
                 # Why not stack.enter_async_context(client): Redis.__aexit__
                 # calls aclose() UNBOUNDED (and shielded) — a hung broker
@@ -1156,6 +1355,20 @@ def ui_serve(
         "--migrate",
         help="Apply pending migrations before starting. Aborts startup if migrations fail.",
     ),
+    pg_credential_provider: str | None = typer.Option(
+        None,
+        "--pg-credential-provider",
+        envvar="TASKQ_PG_CREDENTIAL_PROVIDER",
+        help="Module:attr reference to a PgCredentialProvider (e.g. "
+        f"{_PROVIDER_EXAMPLE}). The admin pool (and --migrate) authenticate "
+        "through it instead of the DSN's static password.",
+    ),
+    redis_credential_provider: str | None = typer.Option(
+        None,
+        "--redis-credential-provider",
+        envvar="TASKQ_REDIS_CREDENTIAL_PROVIDER",
+        help="Module:attr reference to a RedisCredentialProvider for the real-time mode client.",
+    ),
 ) -> None:
     """Start the admin UI server on the given host:port."""
     settings = TaskQSettings.load()
@@ -1171,6 +1384,31 @@ def ui_serve(
     resolved_port = port if port is not None else settings.admin_port
     resolved_migrate = run_migrate or settings.migrate_on_start
 
+    pool_factory: PoolFactory | None = None
+    conn_factory: ConnFactory | None = None
+    if pg_credential_provider is not None:
+        pg_provider = _load_pg_credential_provider(
+            pg_credential_provider, option="--pg-credential-provider"
+        )
+        pool_factory = make_pg_pool_factory(resolved_dsn, pg_provider, max_size=4)
+        conn_factory = make_dedicated_conn_factory(resolved_dsn, pg_provider)
+
+    redis_factory: RedisFactory | None = None
+    if redis_credential_provider is not None:
+        if resolved_redis is None:
+            typer.echo(
+                "--redis-credential-provider was given but no Redis URL is set - "
+                "set TASKQ_REDIS_URL (or --redis-url), or drop the Redis provider.",
+                err=True,
+            )
+            raise typer.Exit(code=1)
+        redis_factory = make_redis_client_factory(
+            resolved_redis,
+            _load_redis_credential_provider(
+                redis_credential_provider, option="--redis-credential-provider"
+            ),
+        )
+
     _ui_serve(
         resolved_dsn,
         resolved_schema,
@@ -1179,6 +1417,9 @@ def ui_serve(
         resolved_port,
         resolved_migrate,
         settings,
+        pool_factory=pool_factory,
+        conn_factory=conn_factory,
+        redis_factory=redis_factory,
     )
 
 

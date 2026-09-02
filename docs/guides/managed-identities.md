@@ -17,6 +17,12 @@ can either:
    right point in its lifecycle to build that resource — letting you fetch
    a fresh credential at construction time.
 
+If you run the stock `taskq` console script (including under the
+workgroup supervisor), you do **not** need a custom entrypoint to reach
+any of this: point `TASKQ_PG_CREDENTIAL_PROVIDER` /
+`TASKQ_REDIS_CREDENTIAL_PROVIDER` at your provider and TaskQ builds every
+factory for you — see [From the CLI](#from-the-cli-no-custom-entrypoint).
+
 For rotating-credential deployments, TaskQ provides a vendor-neutral
 **credential provider** abstraction (`taskq.auth`) with provider-specific
 implementations available as extras:
@@ -78,7 +84,10 @@ Three consequences worth knowing:
 | Client — Redis | `TaskQ(redis_client=...)` ✓ existing | — | |
 | Client — stream LISTEN conn | `TaskQ(listen_conn=...)` | `TaskQ(pg_conn_factory=...)` | Replaces the DSN-only LISTEN transport |
 | Migrate — locked apply | `apply_pending_locked(conn=...)` | `apply_pending_locked(conn_factory=...)` | `list_applied` / `apply_pending` take an open conn only — no factory |
-| Admin UI | `create_router(pg_pool=..., redis_client=...)` ✓ existing | — | The `ui serve` CLI builds from DSN; for AAD, run the admin UI in-process from your app lifespan and pass a pool. |
+| Admin UI | `create_router(pg_pool=..., redis_client=...)` ✓ existing | — | Or `taskq ui serve --pg-credential-provider` / `--redis-credential-provider` |
+| CLI — `taskq worker` | — | `--pg-credential-provider` / `--redis-credential-provider` (env: `TASKQ_PG_CREDENTIAL_PROVIDER` / `TASKQ_REDIS_CREDENTIAL_PROVIDER`) | Builds **every** worker role: all three pools, `notify_conn`, `leader_conn`, Redis |
+| CLI — `taskq workgroup start` | — | same env vars | Children are `taskq worker` subprocesses and inherit the environment |
+| CLI — `taskq migrate up` / `status` | — | `--pg-credential-provider` | One-shot connection through the provider |
 
 ---
 
@@ -152,6 +161,94 @@ is recommended where your server presents a verifiable certificate.
 `require` encrypts the connection but does **not** verify the server
 certificate.
 
+## From the CLI (no custom entrypoint)
+
+`taskq worker`, `taskq workgroup start`, `taskq ui serve` and
+`taskq migrate` resolve a credential provider from a `module:attr`
+reference — the same syntax `--actors` uses:
+
+```bash
+export TASKQ_PG_CREDENTIAL_PROVIDER=myapp.auth:make_provider
+export TASKQ_REDIS_CREDENTIAL_PROVIDER=myapp.auth:make_provider   # optional
+taskq worker --actors myapp.actors:registry
+```
+
+```python
+# myapp/auth.py
+from azure.identity.aio import DefaultAzureCredential
+from taskq.aad import EntraIdProvider
+
+
+def make_provider() -> EntraIdProvider:
+    return EntraIdProvider(DefaultAzureCredential(), redis_username="<mi-object-id>")
+```
+
+The reference may point at any of:
+
+* a **provider instance** — `myapp.auth:PROVIDER`
+* a **zero-arg factory** returning one — `myapp.auth:make_provider`
+* the **provider class**, when its constructor takes no required
+  arguments — `myapp.auth:MyProvider`
+
+Equivalent CLI flags exist for one-off runs:
+`--pg-credential-provider` / `--redis-credential-provider`.
+
+**What the worker builds.** Every Postgres role — the dispatcher,
+heartbeat and worker pools, the `notify_conn` LISTEN connection and the
+`leader_conn` advisory-lock connection — plus the Redis client is built
+through your provider, sized and timed out exactly as the DSN path sizes
+them (`TASKQ_DISPATCHER_POOL_SIZE`, `heartbeat command_timeout=2`,
+`TASKQ_POOL_MAX_INACTIVE_LIFETIME`, `dispatcher_command_timeout` on the
+dedicated connections). Because *every* role is factory-backed, SIGHUP and
+`TASKQ_RELOAD_INTERVAL` rotate all of them — a role left on the DSN
+fallback would be silently un-rotatable, since `reload_credentials`
+skips roles that have no factory.
+
+The DSN is still read: it supplies host, port, database and (for
+username-stable providers) the user. The credential itself is passed to
+asyncpg as keyword arguments and never appears in the DSN string.
+
+**Workgroups.** The supervisor spawns `taskq worker` subprocesses and
+does not scrub the environment, so exporting the env vars before
+`taskq workgroup start` configures every child. Send SIGHUP to the
+children (`pkill -HUP -f 'taskq worker'`), not to the supervisor.
+
+**Failures are fatal, never silent.** A reference that does not import,
+names a missing attribute, resolves to something without an async
+`get_pg_credential()` / `get_redis_credential()`, or names a Redis
+provider with no `TASKQ_REDIS_URL` set, exits non-zero at startup. There
+is no fallback to the DSN password: a worker that quietly authenticated
+with a static credential would look healthy until the first reconnect
+after deploy.
+
+**Other commands.**
+
+```bash
+# admin UI — pool and (with --migrate) the migration connection
+taskq ui serve --pg-credential-provider myapp.auth:make_provider
+
+# migrations — the one-shot connection
+taskq migrate up --pg-credential-provider myapp.auth:make_provider
+```
+
+`taskq ui serve` has no reload path, and does not need one: its pool
+re-authenticates per physical connection through the same `password=`
+callable described below.
+
+**Embedding.** The builder behind the worker option is public — use it
+when you have a custom entrypoint and want the same full wiring:
+
+```python
+from taskq.auth import build_worker_connections
+
+connections = build_worker_connections(
+    settings, pg_provider=provider, redis_provider=provider
+)
+worker_main(settings, actor_registry=ACTORS, connections=connections)
+```
+
+---
+
 ### Token refresh for long-lived pools
 
 **Token refresh is automatic - no external rotation schedule is
@@ -186,10 +283,18 @@ All four triggers run the same `reload_credentials` path:
 
 | Trigger | How | When to use |
 | --- | --- | --- |
-| `TASKQ_RELOAD_INTERVAL` (seconds, unset by default) | `TASKQ_RELOAD_INTERVAL=720 taskq worker` | **Recommended.** Periodic reload with no external signal — the only option on Windows (no SIGHUP) and the hands-off option everywhere else. |
+| `TASKQ_RELOAD_INTERVAL` (seconds, unset by default) | `TASKQ_RELOAD_INTERVAL=720 taskq worker --actors …` | **Recommended.** Periodic reload with no external signal — the only option on Windows (no SIGHUP) and the hands-off option everywhere else. |
 | SIGHUP | `pkill -HUP -f 'taskq worker'` | Unix on-demand rotation (cron, k8s CronJob, config-change hooks). |
 | `deps.request_reload()` | programmatic, from an embedder holding `WorkerDeps` | In-process trigger (e.g. your own secrets-watch callback). Equivalent to SIGHUP. |
 | `reload_credentials(deps, ...)` | direct async call | Lower-level (e.g. tests); returns `(reloaded, failed)`. |
+
+A reload only rotates **factory-backed** resources. On the console
+script that means the provider must be configured
+(`TASKQ_PG_CREDENTIAL_PROVIDER`, see [From the CLI](#from-the-cli-no-custom-entrypoint));
+on a pure DSN worker a reload reconnects `notify_conn` / `leader_conn`
+with the same static DSN credential and rotates nothing else. Confirm
+with the `credentials-reloaded` log line — its `resources` list names
+what actually rotated.
 
 SIGHUP delivery patterns (the console script is `taskq` — there is no
 `taskq-worker` process name):
@@ -248,7 +353,8 @@ For AWS IAM RDS (15-minute tokens), rotate every ~12 minutes:
 
 ```bash
 # hands-off (recommended)
-TASKQ_RELOAD_INTERVAL=720 taskq worker
+export TASKQ_PG_CREDENTIAL_PROVIDER=myapp.auth:make_provider
+TASKQ_RELOAD_INTERVAL=720 taskq worker --actors myapp.actors:registry
 
 # or via cron / k8s CronJob
 pkill -HUP -f 'taskq worker'
@@ -552,6 +658,13 @@ worker_main(
 Mixing a pre-constructed pool **and** a factory for the same role raises
 `ValueError` at startup — pick one.
 
+You only need this when you have a custom entrypoint. Running the stock
+console script, set `TASKQ_PG_CREDENTIAL_PROVIDER` instead
+([From the CLI](#from-the-cli-no-custom-entrypoint)); with a custom
+entrypoint, `taskq.auth.build_worker_connections(settings,
+pg_provider=…, redis_provider=…)` builds the same complete set of
+factories in one call.
+
 ### `PoolFactory` / `ConnFactory` / `RedisFactory` signatures
 
 ```python
@@ -599,6 +712,10 @@ await apply_pending_locked(conn_factory=lambda: build_conn(token), schema="taskq
 
 `conn` (caller-owned) and `conn_factory` (TaskQ-owned) are mutually
 exclusive; either replaces the `dsn` parameter.
+
+From the CLI, `taskq migrate up --pg-credential-provider
+myapp.auth:make_provider` (also `migrate status`, and `ui serve
+--migrate`) builds that `conn_factory` for you.
 
 ---
 

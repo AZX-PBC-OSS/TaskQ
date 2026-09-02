@@ -61,11 +61,13 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from urllib.parse import parse_qs, quote, urlencode, urlparse, urlunparse
 
-from taskq.connections import ConnFactory, PoolFactory, RedisFactory
+from taskq.connections import ConnFactory, PoolFactory, RedisFactory, WorkerConnections
 from taskq.obs import get_logger
 
 if TYPE_CHECKING:
     import asyncpg
+
+    from taskq.settings import WorkerSettings
 
 logger = get_logger(__name__)
 
@@ -74,6 +76,7 @@ __all__ = [
     "PgCredentialProvider",
     "RedisCredential",
     "RedisCredentialProvider",
+    "build_worker_connections",
     "enrich_pg_dsn",
     "make_dedicated_conn_factory",
     "make_pg_pool_factory",
@@ -408,6 +411,7 @@ def make_dedicated_conn_factory(
     dsn: str,
     provider: PgCredentialProvider,
     *,
+    command_timeout: float | None = None,
     setup: Callable[[asyncpg.Connection], Awaitable[None]] | None = None,
     server_settings: dict[str, str] | None = None,
     connection_class: type[asyncpg.Connection] | None = None,
@@ -428,6 +432,12 @@ def make_dedicated_conn_factory(
     reconnecting after the server drops it, or ``reload_credentials``
     rebuilding it) authenticate with a fresh credential rather than the
     one captured when the factory was first invoked.
+
+    *command_timeout* is forwarded to ``asyncpg.connect`` as the default
+    per-operation timeout. The worker's DSN-built ``notify_conn`` /
+    ``leader_conn`` carry ``dispatcher_command_timeout``; pass it here too
+    so a credential-provider deployment does not silently drop the bound
+    that keeps a wedged query from stalling leader election.
 
     *setup* is forwarded to ``asyncpg.connect`` and runs once after the
     connection is established (e.g. registering type codecs, setting
@@ -455,6 +465,8 @@ def make_dedicated_conn_factory(
         }
         if credential.username is not None:
             kwargs["user"] = credential.username
+        if command_timeout is not None:
+            kwargs["command_timeout"] = command_timeout
         if setup is not None:
             kwargs["setup"] = setup
         if server_settings is not None:
@@ -532,3 +544,86 @@ def make_redis_client_factory(
         )
 
     return factory
+
+
+# --- Whole-worker wiring ---
+
+
+def build_worker_connections(
+    settings: WorkerSettings,
+    *,
+    pg_provider: PgCredentialProvider | None = None,
+    redis_provider: RedisCredentialProvider | None = None,
+) -> WorkerConnections:
+    """Build the full set of provider-backed factories for one worker.
+
+    Every Postgres role the worker opens (dispatcher / heartbeat / worker
+    pools, the ``notify_conn`` LISTEN connection and the ``leader_conn``
+    advisory-lock connection) plus the Redis client, sized and timed out
+    exactly as :func:`taskq.worker.deps.open_worker_deps` sizes its
+    DSN-built equivalents - so switching a deployment to a credential
+    provider changes *how it authenticates*, never its connection budget
+    or its timeouts.
+
+    This is what makes the credential path reachable from the ``taskq
+    worker`` console script (``--pg-credential-provider`` /
+    ``TASKQ_PG_CREDENTIAL_PROVIDER``): every role is factory-backed, so
+    ``SIGHUP`` / ``TASKQ_RELOAD_INTERVAL`` rebuild all of them through the
+    provider. A role left on the DSN fallback would be silently
+    un-rotatable - ``reload_credentials`` skips roles with no factory - so
+    this builder deliberately covers all of them or raises.
+
+    Raises ``ValueError`` when no provider is given, or when
+    *redis_provider* is set with no ``redis_url`` configured: a Redis
+    provider that quietly did nothing is the failure mode this wiring
+    exists to remove.
+    """
+    if pg_provider is None and redis_provider is None:
+        raise ValueError(
+            "build_worker_connections requires at least one of pg_provider / redis_provider"
+        )
+
+    conns = WorkerConnections()
+
+    if pg_provider is not None:
+        direct = str(settings.resolved_pg_dsn_direct)
+        pooled = str(settings.resolved_pg_dsn_pooled)
+        lifetime = settings.pool_max_inactive_lifetime
+        conns.dispatcher_pool_factory = make_pg_pool_factory(
+            direct,
+            pg_provider,
+            max_size=settings.dispatcher_pool_size,
+            max_inactive_connection_lifetime=lifetime,
+            command_timeout=settings.dispatcher_command_timeout,
+        )
+        conns.heartbeat_pool_factory = make_pg_pool_factory(
+            direct,
+            pg_provider,
+            max_size=settings.heartbeat_pool_size,
+            max_inactive_connection_lifetime=lifetime,
+            command_timeout=2,
+        )
+        conns.worker_pool_factory = make_pg_pool_factory(
+            pooled,
+            pg_provider,
+            max_size=settings.worker_pool_size,
+            max_inactive_connection_lifetime=lifetime,
+        )
+        conns.notify_conn_factory = make_dedicated_conn_factory(
+            direct, pg_provider, command_timeout=settings.dispatcher_command_timeout
+        )
+        conns.leader_conn_factory = make_dedicated_conn_factory(
+            direct, pg_provider, command_timeout=settings.dispatcher_command_timeout
+        )
+
+    if redis_provider is not None:
+        if settings.redis_url is None:
+            raise ValueError(
+                "a Redis credential provider was configured but no Redis URL is set - "
+                "set TASKQ_REDIS_URL, or drop the Redis provider."
+            )
+        conns.redis_client_factory = make_redis_client_factory(
+            str(settings.redis_url), redis_provider
+        )
+
+    return conns

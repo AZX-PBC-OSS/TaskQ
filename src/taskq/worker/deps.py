@@ -524,6 +524,37 @@ async def open_worker_deps(
             _exit_stack=stack,
         )
 
+        # Why here: TASKQ_RELOAD_INTERVAL / SIGHUP only rotate resources that
+        # have a factory on deps, and the DSN fallbacks above are stored for
+        # notify/leader only — they reconnect with the SAME static DSN
+        # credential. A worker configured to rotate on a schedule but with no
+        # credential provider wired in therefore rotates nothing while logging
+        # a healthy-looking "credentials-reloaded". Say so once, at startup.
+        if settings.reload_interval is not None and not any(
+            (
+                conns.dispatcher_pool_factory,
+                conns.heartbeat_pool_factory,
+                conns.worker_pool_factory,
+                conns.notify_conn_factory,
+                conns.leader_conn_factory,
+                conns.redis_client_factory,
+            )
+        ):
+            logger.warning(
+                "reload-interval-set-without-credential-provider",
+                kind="reload_interval_without_provider",
+                reload_interval=settings.reload_interval,
+                reason=(
+                    "every connection is DSN-built, so a scheduled reload rebuilds "
+                    "connections with the same static credential"
+                ),
+                remedy=(
+                    "set TASKQ_PG_CREDENTIAL_PROVIDER (and TASKQ_REDIS_CREDENTIAL_PROVIDER) "
+                    "or pass connections=WorkerConnections(...); see "
+                    "docs/guides/managed-identities.md"
+                ),
+            )
+
         # LIFO teardown guards for TaskQ-owned dedicated connections.
         # orchestrate_shutdown closes and nulls a TaskQ-owned leader_conn early
         # (to release the advisory lock before the SIGTERM budget expires), and

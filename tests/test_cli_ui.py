@@ -22,6 +22,7 @@ def _make_fake_serve(calls: dict[str, object]) -> object:
         port: int,
         run_migrate: bool = False,
         settings: object = None,
+        **_kwargs: object,
     ) -> None:
         calls["pg_dsn"] = pg_dsn
         calls["schema"] = schema
