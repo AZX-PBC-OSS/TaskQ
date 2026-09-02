@@ -665,9 +665,24 @@ async def _consume_transactional(
             await loop_conn.execute("SAVEPOINT _tq_actor")
             result: object = None
             try:
-                result = await asyncio.wait_for(
-                    asyncio.shield(run_actor(job, ctx)), timeout=timeout
-                )
+                # Why no shield here: asyncio.shield leaves the shielded
+                # awaitable running when its waiter is cancelled, so
+                # wait_for(shield(actor)) enforced the deadline on the WAIT
+                # and not on the actor — the attempt was marked timed out and
+                # became retryable elsewhere while the actor body carried on,
+                # duplicating every side effect past the timeout point.  The
+                # start_to_close cancellation must reach the actor, exactly as
+                # on the autonomous path (_consume_autonomous).  Transaction
+                # integrity is the OUTER shield's job (`shield(
+                # _run_actor_in_tx())` below): that one decouples EXTERNAL
+                # cancellation from an in-flight commit.  A cancel landing
+                # mid-statement on loop_conn is safe — asyncpg sends a
+                # CancelRequest, leaves the connection usable and puts the
+                # transaction in a failed state, which the enclosing
+                # `async with loop_conn.transaction()` then rolls back; the
+                # timeout's own terminal write goes through the worker pool,
+                # not this connection.
+                result = await asyncio.wait_for(run_actor(job, ctx), timeout=timeout)
                 if active_jobs is not None:
                     entry = active_jobs.get(job.id)
                     if entry is not None and entry.cancel_phase >= CancelPhase.COOPERATIVE:
