@@ -23,6 +23,7 @@ from taskq.backend._protocol import (
 )
 from taskq.backend.clock import SystemClock
 from taskq.cron import (
+    DstStrategy,
     compute_next_fire_after,
     resolve_payload,
 )
@@ -62,7 +63,7 @@ _SCHEDULE_ENABLE_SQL = (
 _SCHEDULE_DISABLE_SQL = 'UPDATE "{schema}".cron_schedules SET enabled = false WHERE id = $1'
 
 _SCHEDULE_FETCH_FOR_SKIP_SQL = (
-    "SELECT cron_expr, timezone, next_fire_at, clock_timestamp() AS db_now "
+    "SELECT cron_expr, timezone, dst_strategy, next_fire_at, clock_timestamp() AS db_now "
     'FROM "{schema}".cron_schedules WHERE id = $1'
 )
 
@@ -267,6 +268,16 @@ def register(router: APIRouter) -> None:
             cron_expr: str = row["cron_expr"]
             tz_name: str = row["timezone"]
             current_next: datetime = row["next_fire_at"]
+            # Subscript, not .get(default): the fetch is contracted to
+            # provide this column, and a defaulting read is exactly what
+            # made the cron loop silently skip for 'allof' schedules
+            # whatever they stored (7d7e01c). The coercion mirrors
+            # cron_loop's: the column is CHECK-constrained to the three
+            # strategies, this only guards a hand-edited row.
+            dst_strategy_raw: str = row["dst_strategy"]
+            dst_strategy: DstStrategy = (
+                dst_strategy_raw if dst_strategy_raw in ("skip", "firstof", "allof") else "skip"
+            )
 
             # The advance-until-future test must run in the same clock
             # domain that later decides the schedule is due: the cron loop
@@ -277,11 +288,15 @@ def register(router: APIRouter) -> None:
             # prevent. Read from the same row fetch, so it costs no round
             # trip.
             db_now: datetime = row["db_now"]
-            new_next = compute_next_fire_after(cron_expr, tz_name, current_next)[0]
+            new_next = compute_next_fire_after(
+                cron_expr, tz_name, current_next, dst_strategy=dst_strategy
+            )[0]
             for _ in range(1000):
                 if new_next > db_now:
                     break
-                new_next = compute_next_fire_after(cron_expr, tz_name, new_next)[0]
+                new_next = compute_next_fire_after(
+                    cron_expr, tz_name, new_next, dst_strategy=dst_strategy
+                )[0]
             else:
                 raise HTTPException(
                     status_code=400, detail="cron expression produces no future fire time"
@@ -596,13 +611,32 @@ def register(router: APIRouter) -> None:
             }
         )
 
-        await rl_registry.reset(
-            bucket_name,
-            redis_client=redis_client,
-            pg_pool=pool,
-            clock=SystemClock(),
-            settings=rl_settings,
-        )
+        try:
+            await rl_registry.reset(
+                bucket_name,
+                redis_client=redis_client,
+                pg_pool=pool,
+                clock=SystemClock(),
+                settings=rl_settings,
+            )
+        except KeyError as exc:
+            # A keyed bucket a worker published to PG exists ONLY as a PG
+            # row in a standalone admin process — the registry has no
+            # primitive for it, so a reset is impossible here. The page
+            # still renders the reset button for such rows; answer it with
+            # an explanatory 404 instead of surfacing the KeyError as a 500.
+            logger.warning(
+                "rate-limit-reset-bucket-not-registered",
+                bucket_name=bucket_name,
+            )
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    f"Rate limit bucket {bucket_name!r} is not registered in this admin "
+                    "process (worker-published PG state only); reset it from a process "
+                    "that configures the bucket"
+                ),
+            ) from exc
 
         return RedirectResponse(url=f"{base_path}/rate-limits", status_code=303)
 

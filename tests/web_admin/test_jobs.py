@@ -415,6 +415,93 @@ def test_build_where_with_tags() -> None:
     assert params[-1] == ["urgent", "batch"]
 
 
+# ── Filter input bounds: status duplicates/cap, tags caps ───────────────
+
+
+def test_parse_job_statuses_dedupes_preserving_order() -> None:
+    """A repeated status filter value is redundant, not an error — the
+    closed set has 8 members, so duplicates only bloat the ANY() array
+    bind."""
+    from taskq.web.admin._constants import parse_job_statuses
+
+    assert parse_job_statuses(["pending", "failed", "pending"]) == ["pending", "failed"]
+    # Valid distinct requests are unchanged.
+    assert parse_job_statuses(["succeeded", "failed"]) == ["succeeded", "failed"]
+
+
+def test_parse_job_statuses_rejects_more_values_than_the_closed_set() -> None:
+    from fastapi import HTTPException
+
+    from taskq.web.admin._constants import parse_job_statuses
+
+    with pytest.raises(HTTPException) as exc_info:
+        parse_job_statuses(["pending"] * 9)
+    assert exc_info.value.status_code == 400
+
+
+def test_parse_job_tags_caps_item_count_and_length_and_dedupes() -> None:
+    from fastapi import HTTPException
+
+    from taskq.web.admin._constants import parse_job_tags
+
+    # Duplicates and whitespace are folded away, first-occurrence order.
+    assert parse_job_tags("urgent, batch ,urgent") == ["urgent", "batch"]
+    # Absent filter stays absent.
+    assert parse_job_tags(None) is None
+    # Valid requests unchanged.
+    assert parse_job_tags("urgent,batch") == ["urgent", "batch"]
+
+    with pytest.raises(HTTPException) as exc_info:
+        parse_job_tags(",".join(f"tag{i}" for i in range(17)))
+    assert exc_info.value.status_code == 400
+
+    # The enqueue side never stores a tag longer than _MAX_TAG_LENGTH
+    # (client/_args.py), so a longer filter term can never match anything.
+    with pytest.raises(HTTPException) as exc_info:
+        parse_job_tags("x" * 256)
+    assert exc_info.value.status_code == 400
+
+
+def test_jobs_route_rejects_over_cap_status_list(
+    monkeypatch: pytest.MonkeyPatch, make_app: Callable[..., Any]
+) -> None:
+    """9 status params (one more than the closed set) is a clean 400."""
+    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
+    client = make_app()
+    response = client.get("/jobs?" + "&".join(["status=pending"] * 9))
+    assert response.status_code == 400
+
+
+def test_jobs_route_accepts_duplicate_statuses_within_cap(
+    monkeypatch: pytest.MonkeyPatch, make_app: Callable[..., Any]
+) -> None:
+    """Duplicated-but-small status lists stay valid requests."""
+    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
+    client = make_app()
+    response = client.get("/jobs?status=pending&status=failed&status=pending")
+    assert response.status_code == 200
+
+
+def test_jobs_route_rejects_over_cap_and_oversized_tags(
+    monkeypatch: pytest.MonkeyPatch, make_app: Callable[..., Any]
+) -> None:
+    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
+    client = make_app()
+    too_many = client.get("/jobs?tags=" + ",".join(f"tag{i}" for i in range(17)))
+    assert too_many.status_code == 400
+    too_long = client.get("/jobs?tags=" + "x" * 256)
+    assert too_long.status_code == 400
+
+
+def test_jobs_route_accepts_duplicate_tags_within_caps(
+    monkeypatch: pytest.MonkeyPatch, make_app: Callable[..., Any]
+) -> None:
+    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
+    client = make_app()
+    response = client.get("/jobs?tags=urgent,batch,urgent")
+    assert response.status_code == 200
+
+
 # ── _build_order: unknown sort falls back to first entry ────────────────
 
 
