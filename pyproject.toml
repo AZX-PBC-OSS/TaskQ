@@ -204,6 +204,7 @@ select = [
     "S",     # bandit
     "C4",    # comprehensions
     "SIM",   # simplify
+    "TID",   # flake8-tidy-imports (TID251 enforces the UUIDv7 invariant below)
     "RUF",   # ruff-specific
 ]
 ignore = [
@@ -218,8 +219,45 @@ ignore = [
     "E501",  # long lines (formatter handles)
 ]
 
+# UUIDv7-only invariant (TID251). Every UUID TaskQ persists — job, worker,
+# batch, actor, schedule and event ids — is minted by `new_uuid()` /
+# `new_job_id()` in `src/taskq/_ids.py`, which wraps `uuid_utils.uuid7()`.
+# UUIDv7 (RFC 9562 §5.7) puts a 48-bit big-endian Unix-millisecond timestamp
+# in the leading bits, so ids are time-ordered: inserts land at the right-hand
+# edge of the primary-key B-tree instead of scattering random pages across the
+# index, and `ORDER BY id` is a usable creation-time order (the admin UI's
+# keyset pagination and several tie-breakers rely on that). `uuid4` is
+# uniformly random and destroys both properties, so it is banned outright
+# rather than left to review to catch.
+#
+# The ban covers tests as well as src on purpose: tests are where the next
+# contributor learns the house pattern, and an invariant contradicted on every
+# page of `tests/` is not an invariant. The rule fires on `from uuid import
+# uuid4`, on `uuid.uuid4(...)`, and through import aliases.
+#
+# A test that genuinely needs a NON-time-ordered or externally-minted id (e.g.
+# proving an ordering does not depend on id) may keep `uuid4` with an explicit
+# `# noqa: TID251` and a `Why:` comment saying so — that is the only sanctioned
+# escape hatch, and it is visible in review.
+#
+# `uuid_utils.uuid7` is banned alongside `uuid4` so callers go through
+# `new_uuid()`/`new_job_id()` (which return a stdlib `uuid.UUID`, not
+# `uuid_utils.UUID`) rather than re-deriving the conversion; `_ids.py` itself
+# is the single allowlisted call site, below.
+#
+# Python 3.14 added `uuid.uuid7()` to the stdlib, but this project supports
+# 3.12+, so `uuid_utils` remains the correct source. If the floor ever moves to
+# 3.14, only `_ids.py` changes — nothing else calls the generator directly.
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"uuid.uuid4".msg = "TaskQ ids are UUIDv7. Use `new_uuid()` / `new_job_id()` from `taskq._ids` — uuid4 is random, which wrecks primary-key B-tree insert locality and makes `ORDER BY id` meaningless. If you genuinely need a non-time-ordered id, add `# noqa: TID251` with a `Why:` comment."
+"uuid_utils.uuid4".msg = "TaskQ ids are UUIDv7. Use `new_uuid()` / `new_job_id()` from `taskq._ids` — uuid4 is random, which wrecks primary-key B-tree insert locality and makes `ORDER BY id` meaningless. If you genuinely need a non-time-ordered id, add `# noqa: TID251` with a `Why:` comment."
+"uuid_utils.uuid7".msg = "Call `new_uuid()` / `new_job_id()` from `taskq._ids` instead of `uuid_utils.uuid7()` directly — they return a stdlib `uuid.UUID` and are the single generation seam the UUIDv7 invariant is enforced at."
+
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S101", "S105", "S106"]
+# The one sanctioned `uuid_utils.uuid7()` call site: `new_uuid()` is the seam
+# every other module goes through, so the ban cannot apply to its definition.
+"src/taskq/_ids.py" = ["TID251"]
 # Same rationale — schema name validated against _IDENT_RE; all
 # user-supplied values use $N parameter binding.
 "tests/e2e/**" = ["S608"]
