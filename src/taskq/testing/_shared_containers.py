@@ -23,9 +23,13 @@ and accepted for the contention win above; the ``[TaskQ]`` decision logs below
 How the sharing works: the first session fixture to take a file lock (under the
 per-run state dir ``tmp_path_factory.getbasetemp().parent``, shared by all xdist
 workers of a run) starts BOTH containers and publishes connection info to a JSON
-state file; every other session fixture (in any worker) reuses it. A refcount
-file tears the pair down when the last reference of the last worker releases.
-Stale containers from crashed runs are removed before starting fresh ones.
+state file; every other session fixture (in any worker) reuses it. References are
+tracked as HOLDER PIDS in a machine-global registry — not as a bare counter — so the
+pair comes down when the last LIVE holder releases, a killed pytest neither wedges it
+up nor tears it down under a survivor, and a run that merely reuses a pair (serial
+invocations share one state dir, so a pair routinely outlives its creator) is visible
+to every other run's teardown and sweep decisions. Stale containers from crashed runs
+are removed before starting fresh ones.
 
 The module lives in ``taskq.testing`` (not ``tests/``) because the published
 fixture module :mod:`taskq.testing.fixtures` needs it — ``tests.conftest`` cannot
@@ -41,10 +45,12 @@ asyncpg/testcontainers/pytest.
 
 from __future__ import annotations
 
+import getpass
 import json
 import os
 import re
-from collections.abc import Generator, Mapping
+import tempfile
+from collections.abc import Generator, Iterable, Mapping
 from contextlib import contextmanager, suppress
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
@@ -54,8 +60,8 @@ from typing import Protocol, cast
 # Ryuk must not manage the shared containers: testcontainers' reaper removes a
 # container when the *registering* process exits, and the creator worker can
 # finish before other workers — Ryuk would reap the shared containers mid-run.
-# Lifecycle is explicit instead (refcount + docker rm by the last reference to
-# release). This also disables Ryuk for this process's OTHER testcontainers
+# Lifecycle is explicit instead (holder registry + docker rm by the last live
+# reference to release). This also disables Ryuk for this process's OTHER testcontainers
 # (disposable chaos containers), which is why those are labeled with
 # ``creator_labels()`` too: a crashed run's leftovers must stay sweepable.
 os.environ.setdefault("TESTCONTAINERS_RYUK_DISABLED", "true")
@@ -206,6 +212,7 @@ def should_sweep_stale_container(
     running: bool,
     created: datetime,
     now: datetime,
+    held: bool = False,
 ) -> bool:
     """The keep/remove decision for one leftover container — pure except the pid-liveness
     probe (``os.kill(pid, 0)`` reads OS state), so the unit lane can test it without
@@ -216,26 +223,36 @@ def should_sweep_stale_container(
 
     1. Named ``taskq-*`` → the docker-compose dev stack — never ours to remove.
     2. Image outside ``_SWEEP_IMAGE_PREFIXES`` → not a test container this suite manages.
-    3. Ownership label present (ours or any sibling repo's — ``OWNER_PID_LABEL_RE``) →
-       sweep iff EVERY labeled pid is dead, or the container is older than
-       ``SWEEP_AGE_LIMIT``. Two pids because the creating xdist worker can legitimately
-       exit first (see ``creator_labels``). The labels are what stop this run's sweep
-       from killing a CONCURRENTLY running pytest session's containers (a second
-       agent's worktree checkout runs the same images): a liveness-blind sweep killing
-       exactly those containers was the ~98x ConnectionRefusedError flake class in the
-       sibling repo this design is ported from.
-    4. Unlabeled → sweep iff it is not running, or older than ``SWEEP_AGE_LIMIT``. A
-       RUNNING unlabeled container may belong to a live run of pre-label code, so it is
-       left alone; exited or ancient ones are safe to remove.
+    3. Older than ``SWEEP_AGE_LIMIT`` → swept whatever the liveness signals say. Both
+       of those signals are pids, and over days a dead run's pid can be recycled by an
+       unrelated live process; the age backstop is what stops such a phantom shielding
+       a leftover forever.
+    4. *held* — some live process holds a reference in the cross-run holder registry →
+       never swept. This is the signal the pid LABELS cannot give: a pair is shared by
+       reference, so the run using it is often not the run that created it (see the
+       registry section), and the creator's pids die first.
+    5. Ownership label present (ours or any sibling repo's — ``OWNER_PID_LABEL_RE``) →
+       sweep iff EVERY labeled pid is dead. Two pids because the creating xdist worker
+       can legitimately exit first (see ``creator_labels``). The labels are what stop
+       this run's sweep from killing a CONCURRENTLY running pytest session's containers
+       (a second agent's worktree checkout runs the same images): a liveness-blind
+       sweep killing exactly those containers was the ~98x ConnectionRefusedError flake
+       class in the sibling repo this design is ported from.
+    6. Unlabeled → sweep iff it is not running. A RUNNING unlabeled container may
+       belong to a live run of pre-label code, so it is left alone; exited ones are
+       safe to remove.
     """
     if name.startswith(_PROTECTED_NAME_PREFIX):
         return False
     if not image.startswith(_SWEEP_IMAGE_PREFIXES):
         return False
+    if now - created > SWEEP_AGE_LIMIT:
+        return True
+    if held:
+        return False
     if any(OWNER_PID_LABEL_RE.match(key) for key in labels):
-        any_owner_alive = any(pid_alive(pid) for pid in labeled_pids(labels))
-        return (not any_owner_alive) or (now - created > SWEEP_AGE_LIMIT)
-    return (not running) or (now - created > SWEEP_AGE_LIMIT)
+        return not any(pid_alive(pid) for pid in labeled_pids(labels))
+    return not running
 
 
 # e2e sessions create one pid-suffixed Docker network per test process
@@ -270,6 +287,9 @@ class _DockerContainerLike(Protocol):
     """The docker SDK surface this module uses (docker-py ships no ``py.typed``, so the
     one ``cast`` at the client boundary plus this protocol keeps every downstream use
     type-checked instead of ``Unknown``)."""
+
+    @property
+    def id(self) -> str: ...
 
     @property
     def name(self) -> str: ...
@@ -392,7 +412,23 @@ def cleanup_stale_testcontainers() -> None:
     except _docker_errors():
         return
     now = datetime.now(tz=UTC)
-    swept_containers = 0
+    # The registry lock is held across the whole container pass, not just the read:
+    # it is what serializes this sweep against a concurrent invocation CLAIMING one of
+    # these containers (see ``claim_container_holders``), so no container can be
+    # removed in the gap between "nobody holds it" and someone starting to.
+    with _holder_registry() as registry:
+        held = frozenset(_read_holders(registry))
+        swept_containers = _sweep_containers(containers, held=held, now=now)
+    swept_networks = _remove_stale_networks(client, now)
+    print(f"[TaskQ] event=swept containers={swept_containers} networks={swept_networks}")
+
+
+def _sweep_containers(
+    containers: list[_DockerContainerLike], *, held: frozenset[str], now: datetime
+) -> int:
+    """The Docker-I/O half of the sweep: how many of *containers* were removed. Split
+    out so the registry lock wraps exactly the decide-and-remove pass."""
+    swept = 0
     for container in containers:
         try:
             # Config.Image is the name:tag the container was created with — no extra
@@ -407,13 +443,13 @@ def cleanup_stale_testcontainers() -> None:
                 running=container.status == "running",
                 created=_created_or_now(container.attrs, now),
                 now=now,
+                held=container.id in held,
             ):
                 container.remove(force=True)
-                swept_containers += 1
+                swept += 1
         except _docker_errors():
             continue
-    swept_networks = _remove_stale_networks(client, now)
-    print(f"[TaskQ] event=swept containers={swept_containers} networks={swept_networks}")
+    return swept
 
 
 def start_shared_services() -> SharedServices:
@@ -470,12 +506,11 @@ def services_have_live_owner(info: SharedServices) -> bool:
     """Whether the recorded containers still belong to a live test run, per their pid
     labels.
 
-    The reuse branch below can hand a NEW run containers started by a CRASHED one (under
-    ``-n0`` the state dir is shared across runs): the refcount never returns to 0 for
-    the crashed run, and — worse — every labeled pid is dead, so a concurrent run's
-    sweep would remove the reused containers mid-session (rule 3). Treating
-    all-owners-dead as crashed and starting fresh is what keeps a reused pair owned by
-    the run actually using it.
+    Secondary to the holder registry, which knows about REUSING runs as well as
+    creating ones: this answers only "did the run that started these containers die",
+    and the reuse branch takes the pair when EITHER says someone is alive. It still
+    earns its place as the fallback for a lost registry file (``/tmp`` cleaners) and
+    for the window between starting the containers and registering the first holder.
 
     Unlabeled running containers (started by pre-label code) are kept: there is no
     owner information to contradict the reuse. Any inspection error also keeps them —
@@ -498,7 +533,7 @@ def services_have_live_owner(info: SharedServices) -> bool:
 
 
 # ============================================================================================
-# State files, lock, refcount
+# State files, lock
 # ============================================================================================
 
 
@@ -515,7 +550,6 @@ class SharedServices:
 
 
 _INFO_FILENAME = "taskq-test-services.json"
-_COUNT_FILENAME = "taskq-test-services.count"
 _LOCK_FILENAME = "taskq-test-services.lock"
 _REDIS_DB_FILENAME = "taskq-test-services.redis-db"
 
@@ -530,12 +564,132 @@ def _atomic_write_text(path: Path, text: str) -> None:
 
 
 def _read_int(path: Path) -> int:
-    """Tolerant read for the refcount and DB counters: missing, empty or unparseable
-    yields 0. Zero is the self-healing value for both — see the pair teardown
-    (``<= 0``) and the DB reset-on-pair-start semantics."""
+    """Tolerant read for the logical-DB counter: missing, empty or unparseable yields
+    0 — the self-healing value, matching the reset-on-pair-start semantics."""
     with suppress(OSError, ValueError):
         return int(path.read_text().strip())
     return 0
+
+
+# ============================================================================================
+# Cross-run holder registry
+# ============================================================================================
+#
+# Why this exists (and why the container pid LABELS are not enough): the labels record
+# the process that CREATED the pair, but a pair is shared BY REFERENCE — a second
+# pytest invocation that reuses it leaves no trace on the container. Serial (``-n0``)
+# runs share one state dir (``/tmp/pytest-of-<user>``, the parent of the per-invocation
+# basetemp), so a pair routinely outlives its creator: run A starts it, long run B
+# reuses it, A finishes and its pids die. Any acquire after that read
+# ``services_have_live_owner`` — all labeled pids dead — as "crashed run", force-removed
+# the pair, and B's live asyncpg pools died mid-query (reproduced: 3 overlapping
+# invocations, ``ConnectionDoesNotExistError`` / ``ConnectionResetError`` in the long
+# one, and a refcount left at -1). A stale sweep from a run with a DIFFERENT state dir
+# (any ``-n>0`` invocation, whose state dir is per-run) had the same hole through the
+# label rule, and could not consult the other run's state dir to know better.
+#
+# The registry closes both: every acquire records ITS OWN pid against the container ids
+# it holds, so "is anyone still using this pair" is answered by live holders rather than
+# by the creator's liveness, and the answer is visible to every run on the machine
+# (fixed per-user path, its own lock) rather than only within one state dir. Dead
+# holders are pruned on every access, so a killed pytest neither wedges the pair up
+# forever nor tears it down under a survivor. Pid recycling can only ever KEEP a
+# container (fail-safe); ``SWEEP_AGE_LIMIT`` bounds that leak.
+
+_HOLDERS_FILENAME = "holders.json"
+_HOLDERS_LOCK_FILENAME = "holders.lock"
+
+
+def holder_registry_dir() -> Path:
+    """Machine-global, per-user directory for the holder registry — deliberately NOT
+    under a pytest state dir: a stale sweep must see the holders of pairs owned by
+    other invocations, whose state dirs it cannot know."""
+    return Path(tempfile.gettempdir()) / f"taskq-test-holders-{getpass.getuser()}"
+
+
+@contextmanager
+def _holder_registry() -> Generator[Path, None, None]:
+    """The registry file, under its own lock. Always taken INSIDE the pair lock where
+    both are held, so the two never deadlock against each other."""
+    from filelock import FileLock
+
+    registry_dir = holder_registry_dir()
+    registry_dir.mkdir(parents=True, exist_ok=True)
+    with FileLock(str(registry_dir / _HOLDERS_LOCK_FILENAME)):
+        yield registry_dir / _HOLDERS_FILENAME
+
+
+def _read_holders(path: Path) -> dict[str, list[int]]:
+    """``{container_id: [holder pid, ...]}`` with every dead holder — and every
+    container left with none — dropped. A missing, empty or corrupt file reads as
+    "nothing is held": the same self-healing tolerance the counters use."""
+    raw: object = None
+    with suppress(OSError, ValueError):
+        raw = json.loads(path.read_text())
+    if not isinstance(raw, dict):
+        return {}
+    holders: dict[str, list[int]] = {}
+    for key, value in cast("dict[object, object]", raw).items():
+        if not isinstance(value, list):
+            continue
+        live = [
+            pid for pid in cast("list[object]", value) if isinstance(pid, int) and pid_alive(pid)
+        ]
+        if live:
+            holders[str(key)] = live
+    return holders
+
+
+def claim_container_holders(container_ids: Iterable[str], *, pid: int | None = None) -> bool:
+    """Record one reference held by *pid* on each of *container_ids*, and report whether
+    a live holder ALREADY existed before this claim.
+
+    One entry PER ACQUISITION, duplicates included: the published surface wraps the
+    pair twice per worker (``pg_container`` and ``redis_container``), and each release
+    must retire exactly one of them.
+
+    Claim FIRST, vet second — that is why the pre-existing answer comes back from the
+    same locked section that writes the claim. The stale sweep decides under this lock
+    too, so a claim either lands before the sweep reads the registry (which then leaves
+    the containers alone) or after it has finished removing them (which
+    ``container_running`` reports, and the caller starts fresh). Vetting before claiming
+    would leave a window where a pair judged reusable is removed before it is held.
+    """
+    holder = os.getpid() if pid is None else pid
+    ids = list(container_ids)
+    with _holder_registry() as path:
+        holders = _read_holders(path)
+        already_held = any(container_id in holders for container_id in ids)
+        for container_id in ids:
+            holders.setdefault(container_id, []).append(holder)
+        _atomic_write_text(path, json.dumps(holders))
+        return already_held
+
+
+def release_container_holders(container_ids: Iterable[str], *, pid: int | None = None) -> bool:
+    """Retire one reference held by *pid* on each of *container_ids*; return whether
+    NO live holder remains on any of them — i.e. whether this release is the last one
+    and the caller owns the teardown."""
+    holder = os.getpid() if pid is None else pid
+    ids = list(container_ids)
+    with _holder_registry() as path:
+        holders = _read_holders(path)
+        for container_id in ids:
+            remaining = holders.get(container_id)
+            if remaining and holder in remaining:
+                remaining.remove(holder)
+            if not remaining:
+                holders.pop(container_id, None)
+        _atomic_write_text(path, json.dumps(holders))
+        return not any(container_id in holders for container_id in ids)
+
+
+def _recorded_pair_is(info_path: Path, info: SharedServices) -> bool:
+    """Whether the state file still names *info*'s pair — the guard on unlinking it,
+    since a concurrent invocation's fresh start may already have replaced it."""
+    with suppress(OSError, ValueError, TypeError):
+        return SharedServices(**json.loads(info_path.read_text())) == info
+    return False
 
 
 def _log_pair_event(
@@ -571,10 +725,11 @@ def shared_service_pair(state_dir: Path) -> Generator[SharedServices, None, None
     The first caller to take the lock starts the pair and publishes connection info
     into *state_dir* (the shared pytest tmpdir — ``tmp_path_factory.getbasetemp()
     .parent``, shared by every xdist worker of a run); later callers — in any worker —
-    reuse it. A refcount tears the pair down when the last reference releases. A
-    recorded pair whose labeled owners are ALL dead (a crashed earlier run) is removed
-    and re-created rather than reused, and stale containers from crashed runs are
-    swept before starting fresh ones.
+    reuse it. Each acquire registers its own pid as a holder of the pair's containers
+    and each release retires it; the pair is torn down by the release that leaves NO
+    live holder. A recorded pair that no live process holds and whose labeled owners
+    are all dead (a crashed earlier run) is removed and re-created rather than reused,
+    and stale containers from crashed runs are swept before starting fresh ones.
 
     Every decision point logs one ``[TaskQ]`` line with stable keys
     (:func:`_log_pair_event`): ``pair-started`` (no prior state), ``pair-reused``,
@@ -583,13 +738,12 @@ def shared_service_pair(state_dir: Path) -> Generator[SharedServices, None, None
 
     Both session fixtures that share the pair (``pg_container`` in ``tests/conftest.py``
     and ``redis_container`` in :mod:`taskq.testing.fixtures`) wrap this context manager
-    independently, so the per-worker refcount is 2 where both are used; the pair is
-    stopped exactly once, by the last release.
+    independently, so one worker registers two holder references; the pair is stopped
+    exactly once, by the release that retires the last live one.
     """
     from filelock import FileLock
 
     info_path = state_dir / _INFO_FILENAME
-    count_path = state_dir / _COUNT_FILENAME
     redis_db_path = state_dir / _REDIS_DB_FILENAME
     lock = FileLock(str(state_dir / _LOCK_FILENAME))
 
@@ -601,25 +755,30 @@ def shared_service_pair(state_dir: Path) -> Generator[SharedServices, None, None
                 candidate = SharedServices(**json.loads(info_path.read_text()))
             except (ValueError, TypeError):
                 candidate = None  # corrupt/torn state file: start fresh below
-            if (
-                candidate is not None
-                and container_running(candidate.pg_container_id)
-                and container_running(candidate.redis_container_id)
-            ):
-                if services_have_live_owner(candidate):
+            if candidate is None:
+                fresh_start_reason = "corrupt-state-file"
+            else:
+                recorded = (candidate.pg_container_id, candidate.redis_container_id)
+                already_held = claim_container_holders(recorded)
+                if not (container_running(recorded[0]) and container_running(recorded[1])):
+                    release_container_holders(recorded)
+                    fresh_start_reason = "recorded-containers-not-running"
+                elif already_held or services_have_live_owner(candidate):
+                    # Either liveness signal keeps the pair: a live HOLDER (some
+                    # invocation is using it right now, whether or not it started it)
+                    # or a live labeled OWNER (the registry file was wiped, or the pair
+                    # was started between the two writes). Only when both say "nobody"
+                    # is the pair a crashed run's leftover and safe to replace. The
+                    # claim above is this acquire's own reference.
                     info = candidate
                 else:
+                    release_container_holders(recorded)
                     stop_shared_services(candidate)
                     info_path.unlink(missing_ok=True)
-                    fresh_start_reason = "recorded-owners-dead"
-            elif candidate is not None:
-                fresh_start_reason = "recorded-containers-not-running"
-            else:
-                fresh_start_reason = "corrupt-state-file"
+                    fresh_start_reason = "recorded-pair-unheld"
         if info is None:
             info = start_shared_services()
             _atomic_write_text(info_path, json.dumps(asdict(info)))
-            _atomic_write_text(count_path, "0")
             # The Dragonfly's logical DBs die with the container: a fresh pair means a
             # fresh DB space (and serial -n0 runs share this state dir across runs, so
             # without the reset each run would march the counter toward exhaustion).
@@ -630,22 +789,20 @@ def shared_service_pair(state_dir: Path) -> Generator[SharedServices, None, None
                 state_dir=state_dir,
                 reason=fresh_start_reason,
             )
+            claim_container_holders((info.pg_container_id, info.redis_container_id))
         else:
             _log_pair_event("pair-reused", info)
-        _atomic_write_text(count_path, str(_read_int(count_path) + 1))
 
     try:
         yield info
     finally:
         with lock:
-            remaining = _read_int(count_path) - 1
-            _atomic_write_text(count_path, str(remaining))
-            # ``<= 0`` (not ``== 0``): a crash-torn count read as 0 mid-run can drive
-            # the count negative; the pair must still come down, and the next run's
-            # fresh start rewrites the file.
-            if remaining <= 0:
+            if release_container_holders((info.pg_container_id, info.redis_container_id)):
                 stop_shared_services(info)
-                info_path.unlink(missing_ok=True)
+                # Only OUR pair's record: a fresh start by another invocation may have
+                # already replaced the file, and unlinking that would strand its pair.
+                if _recorded_pair_is(info_path, info):
+                    info_path.unlink(missing_ok=True)
                 _log_pair_event("pair-stopped", info)
 
 

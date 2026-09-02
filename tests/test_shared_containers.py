@@ -3,8 +3,8 @@
 That module exists to keep ONE Postgres + ONE Dragonfly across all xdist workers (a
 ``-n 4`` run previously booted four of each, and the contention was the measured cause
 of heavy PG tests tripping pytest-timeout intermittently). Its keep/remove and
-refcount decisions are pure file/OS state, so the whole contract is testable without
-Docker: the Docker I/O wrappers around them are exercised by every integration run
+holder-registry decisions are pure file/OS state, so the whole contract is testable
+without Docker: the Docker I/O wrappers around them are exercised by every integration run
 and by the container census.
 
 The sweep contract pinned here is ported from the proven sibling implementation
@@ -45,6 +45,7 @@ def _decide(
     running: bool = True,
     created: datetime = _NOW - timedelta(hours=1),
     now: datetime = _NOW,
+    held: bool = False,
 ) -> bool:
     return sc.should_sweep_stale_container(
         image=image,
@@ -53,6 +54,7 @@ def _decide(
         running=running,
         created=created,
         now=now,
+        held=held,
     )
 
 
@@ -63,6 +65,26 @@ def _dead_pid() -> int:
     )  # Why: fixed argv, project interpreter; spawns a provably-dead pid for liveness tests.
     proc.wait(timeout=10)
     return proc.pid
+
+
+@pytest.fixture(autouse=True)
+def _isolated_holder_registry(  # pyright: ignore[reportUnusedFunction]  # Why: autouse fixture consumed implicitly by the test runner; pyright does not track fixture usage.
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: MonkeyPatch
+) -> None:
+    """Every test here reads and writes a PRIVATE holder registry.
+
+    The real one is machine-global per user (that is the whole point — a stale sweep
+    must see holders belonging to other invocations), so a unit test writing to it
+    would register phantom holders a concurrently running suite honors, and would read
+    that suite's real ones.
+    """
+    registry = tmp_path_factory.mktemp("holder-registry")
+    monkeypatch.setattr(sc, "holder_registry_dir", lambda: registry)
+
+
+def _holders() -> dict[str, list[int]]:
+    """The isolated registry's contents, dead holders already pruned."""
+    return sc._read_holders(sc.holder_registry_dir() / "holders.json")  # pyright: ignore[reportPrivateUsage]  # Why: the on-disk registry shape is the contract under test.
 
 
 # ── Ownership labels ────────────────────────────────────────────────────────
@@ -174,6 +196,30 @@ def test_a_running_unlabeled_container_exactly_at_the_age_limit_is_kept() -> Non
     assert _decide(running=True, created=_NOW - sc.SWEEP_AGE_LIMIT) is False
 
 
+def test_a_container_a_live_process_holds_is_kept_even_with_dead_owner_labels() -> None:
+    """The reuse case the LABELS cannot see: the run that created the pair has exited,
+    another invocation is still using it. Sweeping on the labels alone force-removed a
+    live run's Postgres mid-query — the holder registry is what vetoes that."""
+    assert (
+        _decide(
+            labels={sc.CREATOR_PID_LABEL: str(_dead_pid())},
+            held=True,
+        )
+        is False
+    )
+
+
+def test_an_unlabeled_exited_container_a_live_process_holds_is_kept() -> None:
+    """A held container is in use whatever its labels say about who made it."""
+    assert _decide(running=False, held=True) is False
+
+
+def test_an_ancient_held_container_is_swept_anyway() -> None:
+    """The age backstop outranks the holder registry: both liveness signals are pids,
+    and over days a recycled pid could shield a leftover forever."""
+    assert _decide(held=True, created=_NOW - timedelta(hours=25)) is True
+
+
 def test_a_foreign_repo_label_with_a_live_pid_is_honored() -> None:
     assert _decide(labels={"warden.test.creator-pid": str(os.getpid())}) is False
 
@@ -276,9 +322,10 @@ def test_first_acquire_starts_the_pair_and_writes_state(
                 "redis_container_id": "fake-redis-id",
             }
         )
-        assert (tmp_path / "taskq-test-services.count").read_text() == "1"
+        assert _holders() == {"fake-pg-id": [os.getpid()], "fake-redis-id": [os.getpid()]}
         assert (tmp_path / "taskq-test-services.redis-db").read_text() == "0"
     assert len(pair_fakes["start"]) == 1
+    assert _holders() == {}
 
 
 def test_later_acquires_reuse_the_running_pair_without_starting(
@@ -291,72 +338,126 @@ def test_later_acquires_reuse_the_running_pair_without_starting(
     with sc.shared_service_pair(tmp_path):
         with sc.shared_service_pair(tmp_path):
             pass
-        assert (tmp_path / "taskq-test-services.count").read_text() == "1"
+        assert _holders()["fake-pg-id"] == [os.getpid()]
         assert pair_fakes["stop"] == []
         with sc.shared_service_pair(tmp_path):
             pass
         assert len(pair_fakes["start"]) == 1
-        assert (tmp_path / "taskq-test-services.count").read_text() == "1"
+        assert _holders()["fake-pg-id"] == [os.getpid()]
         assert pair_fakes["stop"] == []
     assert len(pair_fakes["start"]) == 1
-    assert (tmp_path / "taskq-test-services.count").read_text() == "0"
+    assert _holders() == {}
 
 
 def test_last_release_stops_the_pair_and_unlinks_state(
     tmp_path: Path, pair_fakes: dict[str, list[object]]
 ) -> None:
+    me = os.getpid()
     with sc.shared_service_pair(tmp_path):
-        first = (tmp_path / "taskq-test-services.count").read_text()
+        first = _holders()["fake-pg-id"]
         with sc.shared_service_pair(tmp_path):
-            second = (tmp_path / "taskq-test-services.count").read_text()
+            second = _holders()["fake-pg-id"]
         # Inner release: one reference still held, pair must stay up.
-        assert (first, second) == ("1", "2")
+        assert (first, second) == ([me], [me, me])
         assert pair_fakes["stop"] == []
         assert (tmp_path / "taskq-test-services.json").exists()
-        assert (tmp_path / "taskq-test-services.count").read_text() == "1"
-    # Outer release: refcount zero → pair stopped, state unlinked.
-    assert (tmp_path / "taskq-test-services.count").read_text() == "0"
+        assert _holders()["fake-pg-id"] == [me]
+    # Outer release: no live holder left → pair stopped, state unlinked.
+    assert _holders() == {}
     assert pair_fakes["stop"] == [_fake_services()]
     assert not (tmp_path / "taskq-test-services.json").exists()
 
 
-def test_a_recorded_pair_whose_owners_are_all_dead_is_removed_not_reused(
+def test_a_recorded_pair_nobody_holds_and_nobody_owns_is_removed_not_reused(
     tmp_path: Path, monkeypatch: MonkeyPatch, pair_fakes: dict[str, list[object]]
 ) -> None:
-    """The crashed-run case: the state files outlive their run (the refcount never
-    returned to zero) with both labeled pids dead, and blindly reusing the pair
-    would hand a NEW run containers a concurrent run's sweep would then remove
-    mid-session. The pair must be stopped and re-created instead. The fresh
-    start also resets the refcount — the dead run's leaked reference is garbage
-    nobody will ever release, so this run becomes the sole live owner and tears
-    the fresh pair down cleanly on exit."""
+    """The crashed-run case: the state file outlives its run (the holders it left
+    behind are all dead pids, pruned on read) with both labeled pids dead too.
+    Blindly reusing the pair would hand a NEW run containers a concurrent run's sweep
+    would then remove mid-session, so it is stopped and re-created instead."""
     leaked = _fake_services()
     (tmp_path / "taskq-test-services.json").write_text(json.dumps(asdict(leaked)))
-    (tmp_path / "taskq-test-services.count").write_text("1")
+    sc.claim_container_holders((leaked.pg_container_id,), pid=_dead_pid())
 
     monkeypatch.setattr(sc, "services_have_live_owner", lambda info: False)
     with sc.shared_service_pair(tmp_path) as services:
         assert services == _fake_services()
-        assert (tmp_path / "taskq-test-services.count").read_text() == "1"
+        assert _holders()["fake-pg-id"] == [os.getpid()]
     assert pair_fakes["stop"] == [leaked, _fake_services()]
     assert len(pair_fakes["start"]) == 1
-    assert (tmp_path / "taskq-test-services.count").read_text() == "0"
+    assert _holders() == {}
     assert not (tmp_path / "taskq-test-services.json").exists()
 
 
-def test_a_crash_torn_count_file_is_tolerated(
+def test_a_pair_a_live_process_still_holds_survives_its_creators_exit(
+    tmp_path: Path, monkeypatch: MonkeyPatch, pair_fakes: dict[str, list[object]]
+) -> None:
+    """THE regression: serial invocations share one state dir, so a pair routinely
+    outlives the run that started it — invocation A starts it, long invocation B
+    reuses it, A finishes and both its labeled pids die. Judging "is anyone using
+    this" from the CREATOR's labels alone then read that as a crashed run: the next
+    acquire force-removed the containers B's asyncpg pools were connected to
+    (reproduced with three overlapping invocations: ConnectionDoesNotExistError /
+    ConnectionResetError in B, refcount left at -1). B's holder reference is what
+    keeps the pair alive.
+    """
+    live = _fake_services()
+    (tmp_path / "taskq-test-services.json").write_text(json.dumps(asdict(live)))
+    # A: the creator, now exited — no labeled pid of the pair is alive any more.
+    monkeypatch.setattr(sc, "services_have_live_owner", lambda info: False)
+    # B: a different, still-running invocation holding the pair.
+    other = os.getppid()
+    sc.claim_container_holders((live.pg_container_id, live.redis_container_id), pid=other)
+
+    # C: a third invocation acquiring and releasing while B runs.
+    with sc.shared_service_pair(tmp_path) as services:
+        assert services == live
+    assert pair_fakes["start"] == []
+    assert pair_fakes["stop"] == []
+    assert (tmp_path / "taskq-test-services.json").exists()
+    assert _holders() == {"fake-pg-id": [other], "fake-redis-id": [other]}
+
+
+def test_a_killed_invocations_reference_never_wedges_the_pair_up(
     tmp_path: Path, pair_fakes: dict[str, list[object]]
 ) -> None:
-    """A crash between truncate and write can leave the count file empty; a
-    corrupt count must never break suite startup. Zero is the self-healing
-    value: this joiner becomes the sole reference, so teardown still removes
-    the pair (worst case a lingered pair the next run's sweep clears)."""
+    """Crash safety, the other direction: a SIGKILLed pytest leaves a holder entry
+    nobody will ever release. Dead holders are pruned on every read, so the last live
+    holder's release still tears the pair down instead of leaking it until the 24h
+    sweep backstop."""
     with sc.shared_service_pair(tmp_path):
-        pass
-    (tmp_path / "taskq-test-services.count").write_text("")
+        sc.claim_container_holders(("fake-pg-id", "fake-redis-id"), pid=_dead_pid())
+    assert pair_fakes["stop"] == [_fake_services()]
+    assert _holders() == {}
+
+
+def test_a_release_never_unlinks_another_invocations_pair_record(
+    tmp_path: Path, pair_fakes: dict[str, list[object]]
+) -> None:
+    """A late release must not strand a pair started meanwhile: if the state file has
+    already been replaced by another invocation's fresh start, only OUR containers come
+    down — the record stays pointing at theirs."""
+    replacement = json.dumps(
+        asdict(sc.SharedServices(**{**asdict(_fake_services()), "pg_container_id": "other-pg-id"}))
+    )
     with sc.shared_service_pair(tmp_path):
-        assert (tmp_path / "taskq-test-services.count").read_text() == "1"
-    assert (tmp_path / "taskq-test-services.count").read_text() == "0"
+        (tmp_path / "taskq-test-services.json").write_text(replacement)
+    assert pair_fakes["stop"] == [_fake_services()]
+    assert (tmp_path / "taskq-test-services.json").read_text() == replacement
+
+
+def test_a_corrupt_holder_registry_is_tolerated(
+    tmp_path: Path, pair_fakes: dict[str, list[object]]
+) -> None:
+    """A torn or hand-mangled registry must never break suite startup: it reads as
+    "nothing is held", so this acquire becomes the sole reference and teardown still
+    removes the pair (worst case a lingered pair the next run's sweep clears)."""
+    (sc.holder_registry_dir()).mkdir(parents=True, exist_ok=True)
+    (sc.holder_registry_dir() / "holders.json").write_text("{not json")
+    with sc.shared_service_pair(tmp_path):
+        assert _holders()["fake-pg-id"] == [os.getpid()]
+    assert pair_fakes["stop"] == [_fake_services()]
+    assert _holders() == {}
 
 
 def test_a_corrupt_info_file_starts_fresh(
@@ -423,7 +524,7 @@ def test_two_session_fixtures_over_one_pair_teardown_once(
     redis_gen = redis_like(_fake_services())
     assert next(pg_gen).startswith("postgresql://")
     assert next(redis_gen) == 6666
-    assert (tmp_path / "taskq-test-services.count").read_text() == "2"
+    assert _holders()["fake-pg-id"] == [os.getpid(), os.getpid()]
     # Simulate the two session fixtures finalizing in arbitrary order.
     next(pg_gen, None)
     assert pair_fakes["stop"] == []
@@ -547,7 +648,9 @@ class _FakeSweepContainer:
         labels: dict[str, str] | None = None,
         status: str = "exited",
         created: datetime = _NOW - timedelta(hours=1),
+        container_id: str = "fake-sweep-id",
     ) -> None:
+        self.id = container_id
         self.name = name
         self.status = status
         self.labels = labels or {}
@@ -660,6 +763,25 @@ def test_sweep_leaves_everything_when_nothing_is_stale_but_still_logs(
     assert "event=swept containers=0 networks=0" in capsys.readouterr().out
 
 
+def test_the_sweep_keeps_a_container_a_live_process_holds(monkeypatch: MonkeyPatch) -> None:
+    """End to end over the Docker-I/O wrapper: a leftover whose labeled owners are all
+    dead is swept, UNLESS the cross-run holder registry says a live process still has
+    it — the shape that made a short invocation remove a long one's containers."""
+    dead_labels = {
+        sc.CREATOR_PID_LABEL: str(_dead_pid()),
+        sc.CONTROLLER_PID_LABEL: str(_dead_pid()),
+    }
+    held = _FakeSweepContainer(labels=dead_labels, status="running", container_id="held-id")
+    unheld = _FakeSweepContainer(labels=dead_labels, status="running", container_id="unheld-id")
+    sc.claim_container_holders(("held-id",), pid=os.getppid())
+    monkeypatch.setattr(sc, "_docker_client", lambda: _FakeSweepClient([held, unheld], []))
+
+    sc.cleanup_stale_testcontainers()
+
+    assert held.removed is False
+    assert unheld.removed is True
+
+
 def test_pair_lifecycle_logs_started_reused_and_stopped(
     tmp_path: Path,
     pair_fakes: dict[str, list[object]],
@@ -679,21 +801,20 @@ def test_pair_lifecycle_logs_started_reused_and_stopped(
     assert "event=pair-stopped" in stopped
 
 
-def test_pair_fresh_start_after_dead_owners_logs_the_reason(
+def test_pair_fresh_start_after_an_unheld_pair_logs_the_reason(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
     pair_fakes: dict[str, list[object]],
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """The crashed-run rejection (recorded pair, all owners dead) starts a
-    FRESH pair and logs the reason."""
+    """The crashed-run rejection (a recorded pair no live process holds and no live
+    labeled owner) starts a FRESH pair and logs the reason."""
     leaked = _fake_services()
     (tmp_path / "taskq-test-services.json").write_text(json.dumps(asdict(leaked)))
-    (tmp_path / "taskq-test-services.count").write_text("1")
     monkeypatch.setattr(sc, "services_have_live_owner", lambda info: False)
 
     with sc.shared_service_pair(tmp_path):
         out = capsys.readouterr().out
 
     assert "event=pair-fresh-started" in out
-    assert "reason=recorded-owners-dead" in out
+    assert "reason=recorded-pair-unheld" in out

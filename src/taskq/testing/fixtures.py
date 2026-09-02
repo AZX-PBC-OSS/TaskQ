@@ -66,8 +66,9 @@ would let one consumer's FLUSHDB wipe another's mid-run state). Exhaustion
 raises ``RuntimeError``.
 
 **Crash cleanup.** The shared Postgres and Dragonfly containers are
-singletons per pytest invocation (refcounted across xdist workers via a
-filelock, pid-labelled, with a stale-leftover sweep on startup — see
+singletons shared across xdist workers and concurrent invocations (tracked by
+live holder pids under a filelock, pid-labelled, with a stale-leftover sweep on
+startup — see
 :mod:`taskq.testing._shared_containers`); Ryuk is disabled for them, so
 crash cleanup relies on the pid-ownership sweep rather than the sidecar.
 Because every schema/DB identifier is per-run unique, anything that does
@@ -617,7 +618,7 @@ def redis_container(tmp_path_factory: pytest.TempPathFactory) -> Iterator[_Redis
     xdist worker.
 
     Backs onto :func:`taskq.testing._shared_containers.shared_service_pair` (file
-    lock + refcount in the per-run state dir): the first worker to take the lock
+    lock + cross-run holder registry): the first worker to take the lock
     boots the pair (``--dbnum 1024`` so every consumer — module or test function,
     across ALL workers — gets its own logical DB; sharing would let one consumer's
     FLUSHDB wipe another's mid-run state); later workers reuse it; the last worker

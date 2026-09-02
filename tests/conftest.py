@@ -3,7 +3,8 @@
 Container topology: ONE Postgres + ONE Dragonfly shared across ALL xdist
 workers of a run (see :mod:`taskq.testing._shared_containers` — the first
 session fixture to take the state-dir file lock starts the pair; every other
-worker reuses it; a refcount tears it down when the last worker finishes).
+worker reuses it; it comes down when the last LIVE holder — of this run or of
+any concurrent invocation sharing the pair — releases).
 Under the old per-worker-session design a ``-n 4`` run booted four Postgres
 plus four Dragonfly containers, and that contention is what made heavy PG
 tests trip internal timeouts intermittently. Per-worker isolation on the
@@ -460,7 +461,7 @@ def pg_container(
     """One shared Postgres 18 container for the whole run — every xdist worker.
 
     Backs onto :func:`taskq.testing._shared_containers.shared_service_pair`
-    (file lock + refcount in the per-run state dir): the first worker to take
+    (state-dir file lock + cross-run holder registry): the first worker to take
     the lock boots the tuned container (``max_connections=1000`` serving ALL
     workers on ONE container, plus checkpoint tuning — see that module for the
     measured rationale), later workers reuse it, and the last worker to finish
