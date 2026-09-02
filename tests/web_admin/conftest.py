@@ -27,11 +27,19 @@ def _dev_env(monkeypatch: pytest.MonkeyPatch) -> None:  # pyright: ignore[report
     web_admin tests so create_router's fail-closed auth check does not raise
     and mutation endpoints (run-now, retry, cancel) are accessible.
 
+    TASKQ_ADMIN_UI_SECURE_COOKIES=false for the same reason: TestClient speaks
+    http://testserver, and httpx (like a browser) refuses to store a Secure
+    cookie received over plain http. With the production default the CSRF
+    cookie would never reach the jar, so every GET-then-POST test would fail
+    with a 403 that says nothing about the behaviour under test. Tests that
+    assert on the Secure flag itself set the variable explicitly.
+
     Tests that need non-dev or actions-disabled behavior override these with
     their own monkeypatch.setenv.
     """
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
     monkeypatch.setenv("TASKQ_ADMIN_ACTIONS_ENABLED", "true")
+    monkeypatch.setenv("TASKQ_ADMIN_UI_SECURE_COOKIES", "false")
 
 
 # ── Fixtures ────────────────────────────────────────────────────────────

@@ -317,7 +317,7 @@ async def validate_csrf(request: Request) -> None:
 
 
 class _CsrfRoute(APIRoute):
-    """Custom APIRoute that sets the CSRF cookie on every GET response.
+    """Custom APIRoute that sets the CSRF cookie and the security headers.
 
     Uses the *synchronizer-token* pattern: the cookie is ``HttpOnly`` (JS
     cannot read it), and the server embeds the same token value in a hidden
@@ -325,9 +325,84 @@ class _CsrfRoute(APIRoute):
     compares the two values using ``validate_csrf``.
 
     * ``httponly=True``  — prevents XSS-driven token theft
-    * ``secure``         — True over HTTPS, False over HTTP (dev-compatible)
+    * ``secure``         — ``secure_cookies``, a *configured* value; see below
     * ``samesite=strict`` — cookie never sent on cross-site requests
+
+    Why ``secure`` is configured rather than derived from
+    ``request.url.scheme``: behind a TLS-terminating edge (Azure Application
+    Gateway, App Service) TLS ends at the gateway and the app sees plain
+    ``http``, so the derived flag silently evaporated on exactly the
+    deployments that most need it — while the session cookie, which already
+    used a configured flag, kept it. The two cookies disagreeing about the
+    same connection is the bug. Deployments that want the scheme to be
+    observed accurately should run uvicorn with ``--proxy-headers`` so
+    ``X-Forwarded-Proto`` is honoured; the warning below fires when the
+    configured value and the observed scheme disagree.
+
+    Subclass via :func:`_csrf_route_class` to bind the configured values;
+    the class attributes here are the safe defaults.
     """
+
+    secure_cookies: bool = True
+    frame_ancestors: str = "none"
+    scheme_mismatch_warned: bool = False
+
+    def _apply_framing_headers(self, response: Response) -> None:
+        """Refuse to be framed, on every admin response.
+
+        Both headers, deliberately. ``frame-ancestors`` is the current
+        standard and obsoletes ``X-Frame-Options``, but OWASP's clickjacking
+        guidance is explicit that the mechanisms are independent and that more
+        than one should be deployed where possible; XFO is what a browser too
+        old for CSP Level 2 still honours, and a browser that supports both
+        ignores XFO, so there is no conflict to resolve.
+
+        The CSP carries ``frame-ancestors`` and nothing else on purpose. The
+        admin templates use inline ``<script>`` blocks and inline ``style=``
+        attributes, so any ``default-src``/``script-src`` policy tight enough
+        to be worth having would break the UI, and one loose enough not to
+        (``'unsafe-inline'``) would buy nothing. Tightening that is a
+        template change, not a header change.
+
+        Applied to every response, not only ``text/html``: a content-type
+        test is one refactor away from a page that quietly loses the header,
+        and the directive is inert on a JSON or static response.
+        """
+        ancestors = self.frame_ancestors
+        response.headers["Content-Security-Policy"] = f"frame-ancestors '{ancestors}'"
+        response.headers["X-Frame-Options"] = "DENY" if ancestors == "none" else "SAMEORIGIN"
+
+    def _warn_on_scheme_mismatch(self, request: Request) -> None:
+        """Warn once when the configured cookie policy contradicts the wire.
+
+        Mirrors the loud ``admin-ui-no-auth`` warning: a misconfiguration that
+        weakens the deployment should not be silent. Once per router, not per
+        request — a per-request warning is a log flood that gets filtered out,
+        which is the same as being silent.
+        """
+        if self.scheme_mismatch_warned or self.secure_cookies:
+            return
+        if request.url.scheme != "https":
+            return
+        type(self).scheme_mismatch_warned = True
+        logger.warning(
+            "admin-ui-cookie-scheme-mismatch",
+            scheme=request.url.scheme,
+            secure_cookies=self.secure_cookies,
+            detail=(
+                "TASKQ_ADMIN_UI_SECURE_COOKIES is false but this request "
+                "arrived over HTTPS, so the admin UI's CSRF cookie is being "
+                "issued without the Secure flag on a TLS connection: any "
+                "plaintext request to the same host leaks it. Set "
+                "TASKQ_ADMIN_UI_SECURE_COOKIES=true (the default) unless this "
+                "is local http-only development. Note the inverse case needs "
+                "no change: behind a TLS-terminating gateway the app sees "
+                "http even though the browser used https, which is why this "
+                "flag is configured rather than inferred - run uvicorn with "
+                "--proxy-headers if you also want the observed scheme to be "
+                "accurate."
+            ),
+        )
 
     def get_route_handler(self) -> Callable[..., Any]:
         original_handler = super().get_route_handler()
@@ -344,6 +419,8 @@ class _CsrfRoute(APIRoute):
             ct = response.headers.get("content-type", "")
             if "text/html" in ct or "application/json" in ct:
                 response.headers["Cache-Control"] = "no-cache"
+            self._apply_framing_headers(response)
+            self._warn_on_scheme_mismatch(request)
             if request.method == "GET":
                 token = getattr(request.state, "_csrf_token", None)
                 if token is None:
@@ -352,12 +429,28 @@ class _CsrfRoute(APIRoute):
                     _CSRF_COOKIE_NAME,
                     token,
                     httponly=True,
-                    secure=request.url.scheme == "https",
+                    secure=self.secure_cookies,
                     samesite="strict",
                 )
             return response
 
         return csrf_aware_handler
+
+
+def _csrf_route_class(settings: TaskQSettings) -> type[_CsrfRoute]:
+    """Bind the configured cookie/framing policy into a route class.
+
+    A closure over settings rather than a read of ``request.app.state``: the
+    admin router is mounted into a *host* application whose state the router
+    does not own, and a security header that depends on the host remembering
+    to call ``setup_admin_state`` is a header that can go missing.
+    """
+
+    class _ConfiguredCsrfRoute(_CsrfRoute):
+        secure_cookies = settings.admin_ui_secure_cookies
+        frame_ancestors = settings.admin_ui_frame_ancestors
+
+    return _ConfiguredCsrfRoute
 
 
 class _AppLike(Protocol):
@@ -459,7 +552,7 @@ def create_router(
     if auth_dependency is not None:
         router_dependencies.insert(0, Depends(auth_dependency))
     router_kwargs: dict[str, Any] = {
-        "route_class": _CsrfRoute,
+        "route_class": _csrf_route_class(settings),
         "dependencies": router_dependencies,
     }
 

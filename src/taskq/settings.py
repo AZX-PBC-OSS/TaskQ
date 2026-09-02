@@ -144,6 +144,24 @@ def _sso_backend_validator(value: str, ctx: ValidatorContext) -> str:
     return normalized
 
 
+_VALID_FRAME_ANCESTORS = frozenset({"none", "self"})
+
+
+def _frame_ancestors_validator(value: str, ctx: ValidatorContext) -> str:
+    """Reject anything that is not a closed framing policy.
+
+    Why fail rather than fall back to the default: a typo that silently became
+    'no header' would take the clickjacking defence off in exactly the
+    deployment whose operator believed they had configured it.
+    """
+    normalized = value.strip().lower().strip("'")
+    if normalized not in _VALID_FRAME_ANCESTORS:
+        raise ValueError(
+            f"{ctx.field_name} must be one of {sorted(_VALID_FRAME_ANCESTORS)}, got {value!r}"
+        )
+    return normalized
+
+
 def _schema_name_validator(value: str, ctx: ValidatorContext) -> str:
     """Validate `schema_name` against the canonical identifier regex.
 
@@ -281,6 +299,27 @@ class TaskQSettings(DotEnvConfig):
         "non-dev environment, failing closed. Set to False to suppress the "
         "error and allow an unauthenticated admin UI in non-dev (not "
         "recommended - only for air-gapped or localhost-only deployments).",
+    )
+    admin_ui_frame_ancestors: str = Field(
+        default="none",
+        validator=_frame_ancestors_validator,
+        description="TASKQ_ADMIN_UI_FRAME_ANCESTORS. Who may frame admin pages: "
+        "'none' (the default, nobody) or 'self' (the admin UI's own origin, for "
+        "a host app that embeds the admin UI in its own dashboard). Emitted as "
+        "both 'Content-Security-Policy: frame-ancestors ...' and the legacy "
+        "'X-Frame-Options' (DENY / SAMEORIGIN). CSRF is no defence against UI "
+        "redress: the framed page is the real, authenticated, same-origin page, "
+        "so a tricked click carries a valid token.",
+    )
+    admin_ui_secure_cookies: bool = Field(
+        default=True,
+        description="TASKQ_ADMIN_UI_SECURE_COOKIES. Sets the 'Secure' flag on the "
+        "admin UI's CSRF cookie. A configured value, not one inferred from "
+        "request.url.scheme: behind a TLS-terminating edge (Azure Application "
+        "Gateway, App Service) the app sees plain http, so an inferred flag is "
+        "silently dropped on a connection the browser reached over HTTPS. Set "
+        "False only for local http dev, where a Secure cookie is rejected by "
+        "the browser and the admin UI stops working.",
     )
     admin_actions_enabled: bool = Field(
         default=False,
