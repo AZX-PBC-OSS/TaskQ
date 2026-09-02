@@ -28,6 +28,7 @@ from pydantic import BaseModel
 
 from taskq import actor
 from taskq._json import dumps_jsonb_str
+from taskq.backend._protocol import IdentityKey, JobFilter
 from taskq.client._args import build_enqueue_args
 from taskq.testing.clock import FakeClock
 from taskq.testing.in_memory import InMemoryBackend
@@ -195,3 +196,42 @@ def test_build_enqueue_args_rejects_queue_name_with_trailing_newline() -> None:
 def test_build_enqueue_args_rejects_tag_with_trailing_newline() -> None:
     with pytest.raises(ValueError, match="invalid tag"):
         build_enqueue_args(_hardening_actor, _Payload(), tags=["tag\n"])
+
+
+# ── JobFilter text predicates reject a NUL before reaching a backend ────
+#
+# ``JobFilter.__post_init__`` validated limit/cursor/status but not NUL in
+# queue/actor/identity_key/tags: a direct backend ``cancel_where`` /
+# ``list_jobs`` call with a NUL surfaced a raw asyncpg
+# CharacterNotInRepertoireError (SQLSTATE 22021) instead of the clean
+# ValueError the enqueue path raises. The bulk-cancel feature extended
+# this exposure to a write path.
+
+
+def test_job_filter_rejects_nul_in_queue() -> None:
+    with pytest.raises(ValueError, match="queue contains a NUL"):
+        JobFilter(queue="a\x00b")
+
+
+def test_job_filter_rejects_nul_in_actor() -> None:
+    with pytest.raises(ValueError, match="actor contains a NUL"):
+        JobFilter(actor="a\x00b")
+
+
+def test_job_filter_rejects_nul_in_identity_key() -> None:
+    with pytest.raises(ValueError, match="identity_key contains a NUL"):
+        JobFilter(identity_key=IdentityKey("a\x00b"))
+
+
+def test_job_filter_rejects_nul_in_tags() -> None:
+    with pytest.raises(ValueError, match="tag contains a NUL"):
+        JobFilter(tags=("a\x00b",))
+
+
+def test_job_filter_clean_text_predicates_still_construct() -> None:
+    """Valid predicates are unaffected — the guard is a pure prefilter."""
+    f = JobFilter(
+        queue="default", actor="my_actor", identity_key=IdentityKey("tenant-1"), tags=("t1",)
+    )
+    assert f.queue == "default"
+    assert f.tags == ("t1",)

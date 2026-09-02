@@ -616,6 +616,22 @@ class JobFilter:
                 "use status for specific status(es) or active for the "
                 "terminal/non-terminal meta-filter"
             )
+        # A NUL in a text predicate binds as text on PG (queue/actor/
+        # identity_key) or text[] (tags) and surfaces as a raw asyncpg
+        # CharacterNotInRepertoireError (SQLSTATE 22021) — the same trap
+        # EnqueueArgs._check_no_nul_text guards on the write path.
+        # Rejecting here makes both backends' list_jobs/cancel_where
+        # paths fail identically with a clean ValueError; cancel_where
+        # in particular is a write path (the bulk-cancel feature).
+        if self.queue is not None:
+            check_no_nul_str(self.queue, what="queue")
+        if self.actor is not None:
+            check_no_nul_str(self.actor, what="actor")
+        if self.identity_key is not None:
+            check_no_nul_str(self.identity_key, what="identity_key")
+        if self.tags is not None:
+            for tag in self.tags:
+                check_no_nul_str(tag, what="tag")
 
     def has_predicates(self) -> bool:
         """Return True if at least one filter predicate is set.
