@@ -28,7 +28,7 @@ from pydantic import BaseModel
 
 from taskq import actor
 from taskq._json import dumps_jsonb_str
-from taskq.backend._protocol import IdentityKey, JobFilter
+from taskq.backend._protocol import BatchFilter, IdentityKey, JobFilter
 from taskq.client._args import build_enqueue_args
 from taskq.testing.clock import FakeClock
 from taskq.testing.in_memory import InMemoryBackend
@@ -235,3 +235,25 @@ def test_job_filter_clean_text_predicates_still_construct() -> None:
     )
     assert f.queue == "default"
     assert f.tags == ("t1",)
+
+
+# ── BatchFilter.limit is bounded above ──────────────────────────────────
+#
+# BatchFilter validated only ``limit >= 0``, and ``list_batches`` has no
+# cursor pagination — every returned batch row costs a per-batch LATERAL
+# job-count join. A caller-supplied huge limit ran that join across the
+# whole table.
+
+
+def test_batch_filter_rejects_limit_above_the_bound() -> None:
+    with pytest.raises(ValueError, match="limit must be <= 500"):
+        BatchFilter(limit=10_000)
+
+
+def test_batch_filter_limit_boundaries() -> None:
+    """Zero stays allowed (it means 'no rows' — codified in
+    tests/test_batch_protocol.py) and the bound itself is allowed."""
+    assert BatchFilter(limit=0).limit == 0
+    assert BatchFilter(limit=500).limit == 500
+    with pytest.raises(ValueError, match="limit must be <= 500"):
+        BatchFilter(limit=501)
