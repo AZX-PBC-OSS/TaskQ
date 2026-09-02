@@ -647,16 +647,22 @@ class _FakeSweepContainer:
         image: str = _PG_IMAGE,
         labels: dict[str, str] | None = None,
         status: str = "exited",
-        created: datetime = _NOW - timedelta(hours=1),
+        created: datetime | None = None,
         container_id: str = "fake-sweep-id",
     ) -> None:
         self.id = container_id
         self.name = name
         self.status = status
         self.labels = labels or {}
+        # Why: anchored to the real clock — the wrapper sweep computes age against
+        # datetime.now(), so a fixed-_NOW default would cross SWEEP_AGE_LIMIT a day
+        # after authoring and trip the age backstop on every "fresh" fake.
+        effective_created = (
+            created if created is not None else datetime.now(tz=UTC) - timedelta(hours=1)
+        )
         self.attrs = {
             "Config": {"Image": image},
-            "Created": created.isoformat(),
+            "Created": effective_created.isoformat(),
         }
         self.removed = False
 
@@ -671,10 +677,15 @@ class _FakeSweepNetwork:
         self,
         *,
         name: str,
-        created: datetime = _NOW - timedelta(hours=1),
+        created: datetime | None = None,
     ) -> None:
         self.name = name
-        self.attrs = {"Created": created.isoformat()}
+        # Why: real-clock anchor, same rationale as _FakeSweepContainer — the
+        # network sweep compares against datetime.now(), not the test-module _NOW.
+        effective_created = (
+            created if created is not None else datetime.now(tz=UTC) - timedelta(hours=1)
+        )
+        self.attrs = {"Created": effective_created.isoformat()}
         self.removed = False
 
     def remove(self) -> None:
