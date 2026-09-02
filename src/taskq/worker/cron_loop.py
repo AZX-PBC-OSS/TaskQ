@@ -110,7 +110,7 @@ async def tick_cron(
 
     server_now: datetime = await conn.fetchval("SELECT clock_timestamp()")
     _cron_tick_sql = (
-        f"SELECT id, actor, cron_expr, timezone, payload_factory, "
+        f"SELECT id, actor, cron_expr, timezone, dst_strategy, payload_factory, "
         f"metadata, last_fired_at, consecutive_failures, next_fire_at, identity_key "
         f'FROM "{schema}".cron_schedules '
         f"WHERE enabled = true AND next_fire_at <= clock_timestamp() "

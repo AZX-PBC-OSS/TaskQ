@@ -203,6 +203,7 @@ async def _insert_schedule(
     metadata: dict[str, object] | None = None,
     enabled: bool = True,
     timezone: str = "UTC",
+    dst_strategy: str = "skip",
 ) -> UUID:
     schedule_id = new_uuid()
     nfa = next_fire_at or compute_next_fire_after(cron_expr, timezone, datetime.now(UTC))[0]
@@ -215,7 +216,7 @@ async def _insert_schedule(
         actor,
         cron_expr,
         timezone,
-        "skip",
+        dst_strategy,
         payload_factory,
         enabled,
         nfa,
@@ -1177,3 +1178,122 @@ async def test_ti12_fired_job_dispatch_eligible_under_ahead_clock_skew(
             "the leader's Python clock is skewed ahead — the enqueue must "
             "stamp the server clock, not the leader's"
         )
+
+
+# ── dst_strategy survives the round trip through the database ──────
+#
+# `dst_strategy` is a persisted, CHECK-constrained column set through the
+# public schedule API, and `fire_schedule` has a whole branch that enqueues a
+# SECOND job for the repeated hour when it is 'allof'.  That branch is only
+# reachable if the tick actually reads the column back.
+
+
+@pytest.mark.asyncio
+async def test_allof_schedule_fires_both_occurrences_of_a_repeated_hour(pg_dsn: str) -> None:
+    """A schedule stored with ``dst_strategy='allof'`` whose next fire lands in
+    a DST fall-back overlap enqueues BOTH occurrences of the ambiguous local
+    time — the contract 'allof' exists to provide.
+
+    America/New_York fell back on 2025-11-02 at 02:00 EDT → 01:00 EST, so local
+    01:30 happened twice: 05:30Z and 06:30Z. Firing from 01:00 EDT, an 'allof'
+    schedule owes a job for each; 'skip' owes one.
+
+    The catch-up window is widened for this test so the fixed historical fire
+    time is caught up rather than skipped — the DST dates are calendar facts
+    and cannot be expressed relative to now.
+    """
+    schema_name = f"test_cron_{new_base62()}"
+    async with _open_cron_single(pg_dsn, schema_name) as (
+        schema,
+        _stack,
+        deps,
+        backend,
+        worker_id,
+    ):
+        settings = WorkerSettings.load_from_dict(
+            {
+                "TASKQ_PG_DSN": pg_dsn,
+                "TASKQ_SCHEMA_NAME": schema,
+                "TASKQ_CRON_CATCH_UP_WINDOW": "P3650D",
+            }
+        )
+        fire_at = datetime(2025, 11, 2, 5, 0, tzinfo=UTC)  # 01:00 EDT, before the repeat
+
+        async with deps.dispatcher_pool.acquire() as conn:
+            await _insert_actor_config(conn, schema, "allof_actor")
+            await _insert_schedule(
+                conn,
+                schema,
+                "allof_actor",
+                cron_expr="30 1 * * *",
+                timezone="America/New_York",
+                dst_strategy="allof",
+                next_fire_at=fire_at,
+            )
+
+        async with deps.dispatcher_pool.acquire() as conn, conn.transaction():
+            await tick_cron(conn, settings, backend, schema, worker_id)
+
+        async with deps.dispatcher_pool.acquire() as conn:
+            scheduled_ats: list[datetime] = [
+                r["scheduled_at"]
+                for r in await conn.fetch(
+                    f'SELECT scheduled_at FROM "{schema}".jobs WHERE actor = $1 '  # Why: schema is fixture-derived; the value is $1-bound
+                    f"ORDER BY scheduled_at",
+                    "allof_actor",
+                )
+            ]
+
+        assert len(scheduled_ats) == 2, (
+            f"'allof' must enqueue both occurrences of the repeated hour, got {scheduled_ats}"
+        )
+        # The due fire is enqueued immediately (server-stamped "now"); the
+        # SECOND occurrence of the ambiguous 01:30 is enqueued for its own
+        # instant, 06:30Z — the one a 'skip' schedule never produces.
+        assert datetime(2025, 11, 2, 6, 30, tzinfo=UTC) in scheduled_ats
+
+
+@pytest.mark.asyncio
+async def test_skip_schedule_fires_a_repeated_hour_only_once(pg_dsn: str) -> None:
+    """The control for the test above: the same schedule stored with the
+    default ``dst_strategy='skip'`` owes exactly one job for the repeated
+    hour. Without this pair, 'allof' passing would not prove the column was
+    read — only that two jobs appeared."""
+    schema_name = f"test_cron_{new_base62()}"
+    async with _open_cron_single(pg_dsn, schema_name) as (
+        schema,
+        _stack,
+        deps,
+        backend,
+        worker_id,
+    ):
+        settings = WorkerSettings.load_from_dict(
+            {
+                "TASKQ_PG_DSN": pg_dsn,
+                "TASKQ_SCHEMA_NAME": schema,
+                "TASKQ_CRON_CATCH_UP_WINDOW": "P3650D",
+            }
+        )
+
+        async with deps.dispatcher_pool.acquire() as conn:
+            await _insert_actor_config(conn, schema, "skip_actor")
+            await _insert_schedule(
+                conn,
+                schema,
+                "skip_actor",
+                cron_expr="30 1 * * *",
+                timezone="America/New_York",
+                dst_strategy="skip",
+                next_fire_at=datetime(2025, 11, 2, 5, 0, tzinfo=UTC),
+            )
+
+        async with deps.dispatcher_pool.acquire() as conn, conn.transaction():
+            await tick_cron(conn, settings, backend, schema, worker_id)
+
+        async with deps.dispatcher_pool.acquire() as conn:
+            job_count: int = await conn.fetchval(
+                f'SELECT count(*) FROM "{schema}".jobs WHERE actor = $1',  # Why: schema is fixture-derived; the value is $1-bound
+                "skip_actor",
+            )
+
+        assert job_count == 1
