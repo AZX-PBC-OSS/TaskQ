@@ -276,6 +276,48 @@ async def test_phase_guard_failure_report_names_offending_migration(
     )
 
 
+# ── transaction-control guard rejection: truthful report wording ─────────
+
+
+async def test_guard_rejection_report_is_truthful_about_zero_execution(
+    monkeypatch: Any,
+) -> None:
+    """A transaction-control guard rejection executes ZERO migration
+    statements, and re-running fails identically until the offending line
+    is removed — yet the report rendered the generic no-transaction wording
+    ("statements before the failure remain applied", "the migration is
+    idempotent"), both false for a guard rejection. The report must say
+    nothing was executed and that the fix is removing the statement."""
+    offending = Migration(
+        version="01.00.02_01",
+        phase="post",
+        description="fabricated guard rejection",
+        filename="01.00.02_01_post_txctl.sql",
+        sql_template="-- taskq:no-transaction\nBEGIN;\nSELECT 1;",
+        use_transaction=False,
+    )
+    _patch_discover(monkeypatch, [offending])
+    conn = _FakeMigrateConn(applied=set())
+
+    with pytest.raises(ValueError, match="transaction-control") as excinfo:
+        await migrate_mod.apply_pending(conn, schema="taskq")  # type: ignore[arg-type]
+
+    d = await migrate_mod.diagnose_apply_failure(  # type: ignore[arg-type]  # Why: _FakeMigrateConn stands in for asyncpg.Connection; the diagnosis reads only fetchval/fetch.
+        conn, "taskq", excinfo.value
+    )
+    report = "\n".join(migrate_mod.render_apply_failure_lines(d))
+
+    assert d.failed_filename == "01.00.02_01_post_txctl.sql"
+    assert "Nothing was executed" in report
+    assert "remove the transaction-control statement" in report
+    assert "statements before the failure remain applied" not in report, (
+        "false: a guard rejection executes zero statements"
+    )
+    assert "idempotent" not in report, (
+        "false: re-running fails identically until the statement is removed"
+    )
+
+
 # ── apply_pending_locked: bounded finally teardown (dead PG) ────────────
 
 
