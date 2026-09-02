@@ -9,6 +9,8 @@ paths are asserted without killing the test process.
 
 import asyncio
 import contextlib
+import functools
+import sys
 import time
 from collections.abc import Callable
 from typing import Any
@@ -213,6 +215,7 @@ def test_loop_lag_watchdog_trips_when_loop_blocked(exit_codes: list[int]) -> Non
         _NeverResponsiveLoop(),  # type: ignore[arg-type]
         liveness,
         budget=0.05,
+        warn_budget=0.01,
         startup_grace=0.0,
     )
     watchdog.start()
@@ -229,6 +232,7 @@ def test_loop_lag_watchdog_respects_startup_grace(exit_codes: list[int]) -> None
         _NeverResponsiveLoop(),  # type: ignore[arg-type]
         liveness,
         budget=0.01,
+        warn_budget=0.005,
         startup_grace=60.0,
     )
     watchdog.start()
@@ -247,10 +251,254 @@ def test_loop_lag_watchdog_arms_early_on_first_tick(exit_codes: list[int]) -> No
         _NeverResponsiveLoop(),  # type: ignore[arg-type]
         liveness,
         budget=0.05,
+        warn_budget=0.01,
         startup_grace=60.0,
         clock=clock,
     )
     assert watchdog._armed()
+
+
+# ── Detector 4, tier 1: non-terminal lag warning ─────────────────────
+
+
+class _RecordingLoop:
+    """Loop stand-in recording call_soon_threadsafe callbacks.
+
+    Mirrors the real ``AbstractEventLoop.call_soon_threadsafe`` signature:
+    a callback plus positional args only (no arbitrary keyword arguments),
+    which is why the deferred dump must travel as a ``functools.partial``.
+    """
+
+    def __init__(self) -> None:
+        self.scheduled: list[tuple[Callable[[], object], tuple[object, ...]]] = []
+
+    def call_soon_threadsafe(
+        self, callback: Callable[[], object], *args: object, context: object = None
+    ) -> None:
+        self.scheduled.append((callback, args))
+
+
+class _ClosedLoop(_RecordingLoop):
+    """Loop stand-in whose call_soon_threadsafe raises like a closed loop."""
+
+    def call_soon_threadsafe(
+        self, callback: Callable[[], object], *args: object, context: object = None
+    ) -> None:
+        raise RuntimeError("Event loop is closed")
+
+
+def _warn_recorder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[list[int], list[dict[str, object]]]:
+    """Patch the tier-1 warn counter and faulthandler dump with recorders.
+
+    Returns (counter increments, faulthandler dump kwargs). Counter follows
+    the _Recorder idiom of the sibling-crash test; the faulthandler patch
+    keeps real thread dumps off the test's stderr and makes the warn tier's
+    dump observable.
+    """
+    from taskq.worker import _watchdog as watchdog_mod
+
+    increments: list[int] = []
+
+    class _CounterRecorder:
+        def add(self, amount: int, attrs: dict[str, object]) -> None:
+            increments.append(amount)
+
+    monkeypatch.setattr(watchdog_mod, "_loop_lag_warns", _CounterRecorder())
+
+    dumps: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        "taskq.worker._watchdog.faulthandler.dump_traceback",
+        lambda *args, **kwargs: dumps.append(kwargs),
+    )
+    return increments, dumps
+
+
+def test_loop_lag_warn_fires_once_and_never_exits(
+    monkeypatch: pytest.MonkeyPatch, exit_codes: list[int]
+) -> None:
+    """Crossing the warn budget emits exactly one tier-1 warning — warn
+    counter + faulthandler thread dump — and the watchdog keeps running;
+    crossing the terminal budget afterwards still force-exits (tier 2
+    unchanged). The latch matters: without it every poll past the warn
+    budget would re-warn, spamming metrics and stderr for one stall."""
+    increments, dumps = _warn_recorder(monkeypatch)
+    t, clock = _clock()
+    liveness = LoopLiveness(clock=clock)
+    watchdog = LoopLagWatchdog(
+        _NeverResponsiveLoop(),  # type: ignore[arg-type]
+        liveness,
+        budget=100.0,
+        warn_budget=1.0,
+        startup_grace=0.0,
+        poll_interval=0.01,
+        clock=clock,
+    )
+    watchdog.start()
+    try:
+        t[0] = 2.0  # lag 2s: past the warn budget, far under the terminal one
+        deadline = time.monotonic() + 5.0
+        while len(increments) < 1 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        # Settle through several more polls: a broken latch would re-warn.
+        time.sleep(0.1)
+        assert increments == [1]
+        assert dumps and all(
+            kwargs.get("all_threads") is True and kwargs.get("file") is sys.stderr
+            for kwargs in dumps
+        )
+        assert exit_codes == []
+
+        t[0] = 101.0  # past the terminal budget: tier 2 must still exit
+        deadline = time.monotonic() + 5.0
+        while not exit_codes and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert exit_codes == [EXIT_WATCHDOG]
+    finally:
+        watchdog.stop()
+
+
+def test_loop_lag_warn_latch_resets_on_beat(
+    monkeypatch: pytest.MonkeyPatch, exit_codes: list[int]
+) -> None:
+    """A beat (the loop scheduling again after the stall) clears the warn
+    latch, so the NEXT stall gets a fresh tier-1 warning instead of riding
+    the first stall's latch — one warn per stall, not one per process."""
+    increments, _dumps = _warn_recorder(monkeypatch)
+    t, clock = _clock()
+    liveness = LoopLiveness(clock=clock)
+    watchdog = LoopLagWatchdog(
+        _NeverResponsiveLoop(),  # type: ignore[arg-type]
+        liveness,
+        budget=100.0,
+        warn_budget=1.0,
+        startup_grace=0.0,
+        poll_interval=0.01,
+        clock=clock,
+    )
+    watchdog.start()
+    try:
+        t[0] = 2.0
+        deadline = time.monotonic() + 5.0
+        while len(increments) < 1 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert increments == [1]
+
+        watchdog._beat()  # loop recovered: last_beat moves to t=2, latch clears
+        t[0] = 4.0  # a second stall: lag 2s past the warn budget again
+        deadline = time.monotonic() + 5.0
+        while len(increments) < 2 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        time.sleep(0.1)  # settle: exactly two warns, not a stream
+        assert increments == [1, 1]
+        assert exit_codes == []
+    finally:
+        watchdog.stop()
+
+
+def test_loop_lag_warn_never_fires_while_unarmed(
+    monkeypatch: pytest.MonkeyPatch, exit_codes: list[int]
+) -> None:
+    """The warn tier obeys the same arming gate as the terminal tier:
+    during startup grace with no liveness ticks, no warning and no exit —
+    import-heavy startup must never trip either tier (a warn_budget that
+    would fire in 10ms if armed proves the gate, not the budget, held)."""
+    increments, dumps = _warn_recorder(monkeypatch)
+    _, clock = _clock()  # frozen: the clock never leaves the grace window
+    liveness = LoopLiveness(clock=clock)  # never ticked: no early arming
+    watchdog = LoopLagWatchdog(
+        _NeverResponsiveLoop(),  # type: ignore[arg-type]
+        liveness,
+        budget=0.05,
+        warn_budget=0.01,
+        startup_grace=60.0,
+        poll_interval=0.01,
+        clock=clock,
+    )
+    watchdog.start()
+    time.sleep(0.2)  # ~20 polls, all disarmed (clock frozen inside grace)
+    watchdog.stop()
+    assert increments == []
+    assert dumps == []
+    assert exit_codes == []
+
+
+def test_loop_lag_warn_schedules_deferred_task_dump(
+    monkeypatch: pytest.MonkeyPatch, exit_codes: list[int]
+) -> None:
+    """The warn tier defers the asyncio task-stack dump onto the loop via
+    call_soon_threadsafe — asyncio.all_tasks is not thread-safe, so the
+    dump must run ON the loop once it schedules again (hence the
+    'loop-lag-recovered' reason). The payload travels as a functools.partial
+    carrying the detector label because call_soon_threadsafe forwards no
+    keyword arguments of its own. A closed loop (RuntimeError) is swallowed:
+    the faulthandler dump already captured the state, and a stall crossing
+    both tiers in one poll must still deliver the terminal exit."""
+    increments, _dumps = _warn_recorder(monkeypatch)
+    loop = _RecordingLoop()
+    t, clock = _clock()
+    liveness = LoopLiveness(clock=clock)
+    watchdog = LoopLagWatchdog(
+        loop,  # type: ignore[arg-type]
+        liveness,
+        budget=100.0,
+        warn_budget=1.0,
+        startup_grace=0.0,
+        poll_interval=0.01,
+        clock=clock,
+    )
+    watchdog.start()
+    try:
+        t[0] = 2.0
+        deadline = time.monotonic() + 5.0
+        while not loop.scheduled and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert increments == [1]
+        # The loop also receives the watchdog's regular beat callbacks
+        # (bound methods); the warn tier's contribution is exactly one
+        # deferred dump.
+        deferred = [
+            callback
+            for callback, _args in loop.scheduled
+            if isinstance(callback, functools.partial)
+        ]
+        assert len(deferred) == 1
+        callback = deferred[0]
+        assert callback.func is dump_task_stacks
+        assert callback.args == ("loop-lag-recovered",)
+        assert callback.keywords == {"detector": "event-loop-lag-warn"}
+        assert exit_codes == []
+    finally:
+        watchdog.stop()
+
+    closed = _ClosedLoop()
+    t2, clock2 = _clock()
+    watchdog2 = LoopLagWatchdog(
+        closed,  # type: ignore[arg-type]
+        liveness,
+        budget=1.5,
+        warn_budget=1.0,
+        startup_grace=0.0,
+        poll_interval=0.01,
+        clock=clock2,
+    )
+    watchdog2.start()
+    try:
+        # One stall crossing BOTH tiers at once on a closed loop: the warn
+        # tier's deferred dump raises RuntimeError and is swallowed, and
+        # the terminal check in the same poll iteration still exits. (The
+        # thread then ends on the beat-scheduling return — with the loop
+        # closed there is nothing left to watch; the swallow's job is to
+        # keep that first iteration alive through the terminal tier.)
+        t2[0] = 2.0
+        deadline = time.monotonic() + 5.0
+        while not exit_codes and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert len(increments) == 2  # both watchdogs warned exactly once
+        assert exit_codes == [EXIT_WATCHDOG]
+    finally:
+        watchdog2.stop()
 
 
 # ── Trip path and dump shape ──────────────────────────────────────────

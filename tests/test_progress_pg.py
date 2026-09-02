@@ -106,6 +106,7 @@ async def _setup_worker(
             "TASKQ_SCHEMA_NAME": schema,
             "TASKQ_HEARTBEAT_INTERVAL": "0.5",
             "TASKQ_LOCK_LEASE": "30.0",
+            "TASKQ_WATCHDOG_LOOP_LAG_BUDGET": "1.2",
             "TASKQ_CANCELLATION_GRACE_PERIOD": "0.5",
             "TASKQ_CLEANUP_GRACE_PERIOD": "0.5",
             **extra,

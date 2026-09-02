@@ -42,6 +42,7 @@ def _build_cron_settings(pg_dsn: str, schema: str) -> WorkerSettings:
             "TASKQ_SCHEMA_NAME": schema.lower(),
             "TASKQ_HEARTBEAT_INTERVAL": str(_HEARTBEAT_INTERVAL),
             "TASKQ_LOCK_LEASE": str(_LOCK_LEASE),
+            "TASKQ_WATCHDOG_LOOP_LAG_BUDGET": "2.0",
             "TASKQ_CANCELLATION_GRACE_PERIOD": "0.0",
             "TASKQ_CLEANUP_GRACE_PERIOD": "0.0",
             "TASKQ_MAX_HEARTBEAT_FAILURES": "999",

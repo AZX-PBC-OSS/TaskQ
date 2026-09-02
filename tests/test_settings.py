@@ -39,13 +39,16 @@ def _load(**overrides: str) -> WorkerSettings:
 def test_lock_lease_too_small_raises() -> None:
     """lock_lease < 4 * heartbeat_interval raises ValidationError."""
     # Pin grace periods small so only the lock_lease invariant fires
-    # (cancellation+cleanup < lock_lease holds at 0.1+0.1 < 30).
+    # (cancellation+cleanup < lock_lease holds at 0.1+0.1 < 30), and the
+    # lag budget inside the lease so the lag-lease invariant stays quiet
+    # (25 < 30 - 10).
     with pytest.raises(ValidationError, match=r"lock_lease.*must be >= 4 \* heartbeat_interval"):
         _load(
             TASKQ_LOCK_LEASE="30.0",
             TASKQ_HEARTBEAT_INTERVAL="10.0",
             TASKQ_CANCELLATION_GRACE_PERIOD="0.1",
             TASKQ_CLEANUP_GRACE_PERIOD="0.1",
+            TASKQ_WATCHDOG_LOOP_LAG_BUDGET="15.0",
         )
 
 
@@ -57,6 +60,7 @@ def test_lock_lease_error_message_contains_fields() -> None:
             TASKQ_HEARTBEAT_INTERVAL="10.0",
             TASKQ_CANCELLATION_GRACE_PERIOD="0.1",
             TASKQ_CLEANUP_GRACE_PERIOD="0.1",
+            TASKQ_WATCHDOG_LOOP_LAG_BUDGET="15.0",
         )
     msg = str(exc_info.value)
     assert "lock_lease" in msg
@@ -69,11 +73,14 @@ def test_lock_lease_error_message_contains_fields() -> None:
 
 def test_lock_lease_at_boundary_accepted() -> None:
     """lock_lease == 4 * heartbeat_interval is accepted."""
+    # Lag budget pinned inside the lease (25 + 10 < 40) so the lag-lease
+    # invariant stays quiet and only the 4x boundary is under test.
     s = _load(
         TASKQ_LOCK_LEASE="40.0",
         TASKQ_HEARTBEAT_INTERVAL="10.0",
         TASKQ_CANCELLATION_GRACE_PERIOD="15.0",
         TASKQ_CLEANUP_GRACE_PERIOD="5.0",
+        TASKQ_WATCHDOG_LOOP_LAG_BUDGET="25.0",
     )
     assert s.lock_lease == 40.0
 
@@ -82,6 +89,140 @@ def test_lock_lease_above_boundary_accepted() -> None:
     """lock_lease > 4 * heartbeat_interval is accepted."""
     s = _load(TASKQ_LOCK_LEASE="60.0", TASKQ_HEARTBEAT_INTERVAL="10.0")
     assert s.lock_lease == 60.0
+
+
+# ── lag-watchdog lease invariant ────────────────────────────────────
+
+
+def test_lag_budget_plus_heartbeat_must_fit_lease() -> None:
+    """watchdog_loop_lag_budget + heartbeat_interval >= lock_lease raises.
+
+    A stalled event loop must die (the terminal lag watchdog trips at
+    watchdog_loop_lag_budget) before its leases can expire (lock_lease),
+    otherwise the leader sweep reclaims LIVE jobs' locks mid-stall and the
+    worker wakes to find its work reassigned. The heartbeat_interval term
+    is the worst-case age the last beat can carry when the stall starts.
+    """
+    # lease 8 == 4 x heartbeat 2 (the 4x invariant holds at its boundary);
+    # default lag budget 30 + 2 >= 8, so only the lag-lease invariant fires.
+    with pytest.raises(ValidationError, match=r"watchdog_loop_lag_budget.*must be <"):
+        _load(
+            TASKQ_LOCK_LEASE="8.0",
+            TASKQ_HEARTBEAT_INTERVAL="2.0",
+            TASKQ_CANCELLATION_GRACE_PERIOD="0.1",
+            TASKQ_CLEANUP_GRACE_PERIOD="0.1",
+        )
+
+
+def test_lag_lease_error_message_names_both_knobs() -> None:
+    """The error names watchdog_loop_lag_budget AND lock_lease so operators
+    know both knobs to adjust, and explains the live-reclaim semantics."""
+    with pytest.raises(ValidationError) as exc_info:
+        _load(
+            TASKQ_LOCK_LEASE="8.0",
+            TASKQ_HEARTBEAT_INTERVAL="2.0",
+            TASKQ_CANCELLATION_GRACE_PERIOD="0.1",
+            TASKQ_CLEANUP_GRACE_PERIOD="0.1",
+        )
+    msg = str(exc_info.value)
+    assert "watchdog_loop_lag_budget" in msg
+    assert "lock_lease" in msg
+    assert "LIVE" in msg
+
+
+def test_lag_lease_invariant_exempt_when_watchdog_disabled() -> None:
+    """watchdog_enabled=False exempts the config: with no terminal lag
+    detector armed, stall-vs-lease ordering is a deployment concern, not a
+    load-time guarantee (same gating as the bounded-loop invariant)."""
+    s = _load(
+        TASKQ_LOCK_LEASE="8.0",
+        TASKQ_HEARTBEAT_INTERVAL="2.0",
+        TASKQ_CANCELLATION_GRACE_PERIOD="0.1",
+        TASKQ_CLEANUP_GRACE_PERIOD="0.1",
+        TASKQ_WATCHDOG_ENABLED="false",
+    )
+    assert s.lock_lease == 8.0
+
+
+def test_lag_lease_invariant_satisfied_loads() -> None:
+    """lag budget + heartbeat strictly below the lease loads and keeps the
+    configured value (the defaults 30 + 10 < 60 are the shipped example)."""
+    s = _load(
+        TASKQ_LOCK_LEASE="40.0",
+        TASKQ_HEARTBEAT_INTERVAL="10.0",
+        TASKQ_CANCELLATION_GRACE_PERIOD="15.0",
+        TASKQ_CLEANUP_GRACE_PERIOD="5.0",
+        TASKQ_WATCHDOG_LOOP_LAG_BUDGET="25.0",
+    )
+    assert s.watchdog_loop_lag_budget == 25.0
+    defaults = _load()
+    assert defaults.watchdog_loop_lag_budget + defaults.heartbeat_interval < defaults.lock_lease
+
+
+# ── lag budget vs check interval coherence ─────────────────────────
+
+
+def test_lag_budget_at_or_below_check_interval_raises() -> None:
+    """watchdog_loop_lag_budget <= watchdog_check_interval raises.
+
+    The lag detector samples the loop once per check interval, so a budget
+    at or below its own sampling period trips on a healthy loop's beat
+    cadence — the beat is scheduled by the same poll that measures it
+    (measured: budget 1.0 against the 1.0s default check interval killed
+    an idle worker on its first armed poll).
+    """
+    with pytest.raises(ValidationError, match=r"watchdog_loop_lag_budget.*must be >"):
+        _load(
+            TASKQ_LOCK_LEASE="40.0",
+            TASKQ_HEARTBEAT_INTERVAL="10.0",
+            TASKQ_CANCELLATION_GRACE_PERIOD="15.0",
+            TASKQ_CLEANUP_GRACE_PERIOD="5.0",
+            TASKQ_WATCHDOG_LOOP_LAG_BUDGET="1.0",
+        )
+
+
+def test_lag_budget_check_interval_coherence_exempt_when_watchdog_disabled() -> None:
+    """watchdog_enabled=False exempts the coherence check too: no lag
+    detector is spawned, so the budget is inert."""
+    s = _load(
+        TASKQ_LOCK_LEASE="40.0",
+        TASKQ_HEARTBEAT_INTERVAL="10.0",
+        TASKQ_CANCELLATION_GRACE_PERIOD="15.0",
+        TASKQ_CLEANUP_GRACE_PERIOD="5.0",
+        TASKQ_WATCHDOG_LOOP_LAG_BUDGET="1.0",
+        TASKQ_WATCHDOG_ENABLED="false",
+    )
+    assert s.watchdog_loop_lag_budget == 1.0
+
+
+def test_lag_budget_above_check_interval_accepted() -> None:
+    """A budget strictly above the check interval (with headroom) loads."""
+    s = _load(
+        TASKQ_LOCK_LEASE="40.0",
+        TASKQ_HEARTBEAT_INTERVAL="10.0",
+        TASKQ_CANCELLATION_GRACE_PERIOD="15.0",
+        TASKQ_CLEANUP_GRACE_PERIOD="5.0",
+        TASKQ_WATCHDOG_LOOP_LAG_BUDGET="25.0",
+        TASKQ_WATCHDOG_CHECK_INTERVAL="3.5",
+    )
+    assert s.watchdog_loop_lag_budget == 25.0
+
+
+# ── watchdog_loop_lag_warn_budget field ─────────────────────────────
+
+
+def test_watchdog_loop_lag_warn_budget_default() -> None:
+    """Default is 5.0: tier 1 warns long before the terminal 30s tier."""
+    s = _load()
+    assert s.watchdog_loop_lag_warn_budget == 5.0
+
+
+def test_watchdog_loop_lag_warn_budget_via_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """TASKQ_WATCHDOG_LOOP_LAG_WARN_BUDGET round-trips through load()."""
+    monkeypatch.setenv("TASKQ_PG_DSN", _DSN)
+    monkeypatch.setenv("TASKQ_WATCHDOG_LOOP_LAG_WARN_BUDGET", "7.5")
+    s = WorkerSettings.load()
+    assert s.watchdog_loop_lag_warn_budget == 7.5
 
 
 # ── DSN fallback ──────────────────────────────────────────────────
@@ -247,12 +388,15 @@ def test_lock_lease_violation_before_connections() -> None:
     # If the error fires, no pool or connection was opened.
     # This is a white-box check: post_load fires inside load_from_dict
     # which is a sync call. No asyncpg calls happen synchronously.
+    # Lag budget pinned inside the lease (5 + 3 < 10) so the lag-lease
+    # invariant stays quiet and the raise is the 4x invariant's alone.
     with pytest.raises(ValidationError, match="lock_lease"):
         _load(
             TASKQ_LOCK_LEASE="10.0",
-            TASKQ_HEARTBEAT_INTERVAL="10.0",
+            TASKQ_HEARTBEAT_INTERVAL="3.0",
             TASKQ_CANCELLATION_GRACE_PERIOD="0.1",
             TASKQ_CLEANUP_GRACE_PERIOD="0.1",
+            TASKQ_WATCHDOG_LOOP_LAG_BUDGET="5.0",
         )
 
 
@@ -270,7 +414,15 @@ def test_lock_lease_invariant_universality(lock_lease: float, heartbeat_interval
 
     Picks generous cancellation/cleanup grace values that always satisfy the
     cancellation invariant (sum < lock_lease) when the invariant
-    holds, so the boundary is the only one under test.
+    holds, so the 4x boundary is the only one under test. The lag budget is
+    derived as 0.7 x lease, which keeps every other invariant quiet
+    wherever the 4x invariant holds (hb <= lease/4 < 0.3 x lease, so
+    0.7 x lease + hb < lease; and lease >= 2 in that branch, so
+    0.7 x lease > 1.0 = the default check interval) — except where the
+    draw cannot satisfy the lease invariant at all (heartbeat >= lease
+    leaves no legal positive budget), in which case the 4x violation and
+    the lag-lease violation aggregate into MultipleValidationErrors;
+    DotEnvModelError covers both shapes.
     """
     # Pin grace values small enough that is satisfied for the smallest
     # accepted lock_lease (>= 4 * heartbeat_interval >= 4 * 0.5 = 2.0).
@@ -280,11 +432,12 @@ def test_lock_lease_invariant_universality(lock_lease: float, heartbeat_interval
         "TASKQ_HEARTBEAT_INTERVAL": str(heartbeat_interval),
         "TASKQ_CANCELLATION_GRACE_PERIOD": str(grace_each),
         "TASKQ_CLEANUP_GRACE_PERIOD": str(grace_each),
+        "TASKQ_WATCHDOG_LOOP_LAG_BUDGET": str(lock_lease * 0.7),
     }
     should_raise = lock_lease < 4 * heartbeat_interval
 
     if should_raise:
-        with pytest.raises(ValidationError, match="lock_lease"):
+        with pytest.raises(DotEnvModelError, match="lock_lease"):
             _load(**overrides)
     else:
         s = _load(**overrides)

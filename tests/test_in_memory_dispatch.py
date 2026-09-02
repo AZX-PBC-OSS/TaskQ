@@ -822,7 +822,18 @@ def _build_ident(actor: str, ik: str | None) -> tuple[str, IdentityKey | None]:
 _job_spec = st.builds(
     _build_ident,
     actor=_id_actor_names,
-    ik=st.one_of(st.none(), st.text(min_size=1, max_size=10)),
+    # 9a4178a: EnqueueArgs rejects a NUL (U+0000) in identity_key at the
+    # construction chokepoint, so generated keys must stay inside that input
+    # contract. Only NUL is excluded — every other codepoint remains legal
+    # input, preserving the strategy's coverage of the identity invariant.
+    ik=st.one_of(
+        st.none(),
+        st.text(
+            min_size=1,
+            max_size=10,
+            alphabet=st.characters(exclude_characters="\x00"),
+        ),
+    ),
 )
 
 

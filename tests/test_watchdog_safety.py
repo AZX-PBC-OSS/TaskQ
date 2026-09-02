@@ -413,6 +413,7 @@ async def test_lag_watchdog_flushes_metrics_before_force_exit(
         asyncio.get_running_loop(),
         LoopLiveness(clock=clock),
         budget=30.0,
+        warn_budget=100.0,  # above the terminal budget: the flush path under test is tier 2's
         startup_grace=0.0,  # armed immediately
         poll_interval=0.01,
         clock=clock,

@@ -51,6 +51,7 @@ def _make_deps() -> WorkerDeps:
     settings = _worker_settings(
         HEARTBEAT_INTERVAL="0.5",
         LOCK_LEASE="2.0",
+        WATCHDOG_LOOP_LAG_BUDGET="1.2",
         MAX_HEARTBEAT_FAILURES="3",
         CANCELLATION_GRACE_PERIOD="0.0",
         CLEANUP_GRACE_PERIOD="0.0",
@@ -164,16 +165,16 @@ def _scheduled_at_match(row_a: object, row_b: object) -> bool:
     """Compare scheduled_at with tolerance for pending-status rows.
 
     When a job transitions to 'pending', both isolate_self and
-    sweep_expired_locks compute ``clock_timestamp() + 5s`` using PG's
-    server-side ``clock_timestamp()`` at slightly different wall-clock
-    moments. Allow a 5-second window. For crashed rows, ``scheduled_at``
-    is unchanged, so an exact match is expected.
+    sweep_expired_locks compute ``clock_timestamp() + 5s`` in two separate
+    statements, so the comparison window is the cross-statement window (see
+    _CROSS_STATEMENT_WINDOW). For crashed rows, ``scheduled_at`` is
+    unchanged, so an exact match is expected.
     """
     sa: datetime | None = row_a["scheduled_at"]  # type: ignore[index] # Why: asyncpg.Record supports dict-style access but pyright doesn't see it.
     sb: datetime | None = row_b["scheduled_at"]  # type: ignore[index] # Why: same — asyncpg.Record dict-like access.
     status: str = row_a["status"]  # type: ignore[index] # Why: same.
     if status == "pending":
-        return sa is not None and sb is not None and abs(sa - sb) < timedelta(seconds=5)
+        return sa is not None and sb is not None and abs(sa - sb) < _CROSS_STATEMENT_WINDOW
     return bool(sa == sb)
 
 
@@ -188,20 +189,37 @@ _sweep_tuple_strategy = st.tuples(
     st.integers(min_value=-3600, max_value=-1),
 ).filter(lambda t: t[0] < t[1])
 
+# Margin folded into the deep-expiry boundary on both sides when classifying
+# a draw. It absorbs app-to-database clock skew — the session pg_container
+# fixture reports divergence beyond 0.25s, so 1s is headroom — keeping the
+# deterministic classification bands clear of the sweep's own decision
+# boundary (see test_property_sweep_equivalence).
+_CLASSIFY_SKEW_MARGIN = timedelta(seconds=1)
 
-def _domain(
-    cancel_phase: int,
+# The sweep's fixed safety margin on top of the grace periods before an
+# in-flight-cancel job becomes crash-reclaim eligible (see the
+# _SWEEP_1_SQL carve-out comment in backend/_sweeps.py).
+_SWEEP_CANCEL_SAFETY = timedelta(seconds=60)
+
+# Wall-time window for comparing two server-stamped values written by
+# separate statements (isolate_self's stamp vs the sweep's stamp). Under a
+# parallel -n run contending on the shared PG container, the time between
+# those statements is seconds, not milliseconds; the contract is "stamped by
+# the same server clock in the same epoch", not "within 5s".
+_CROSS_STATEMENT_WINDOW = timedelta(seconds=60)
+
+
+def _deep_expired(
     lock_expires_at: datetime,
     now: datetime,
     cancel_grace: timedelta,
     cleanup_grace: timedelta,
-) -> str:
-    if cancel_phase == 0:
-        return "equivalence"
-    deep_threshold = now - cancel_grace - cleanup_grace - timedelta(seconds=60)
-    if lock_expires_at < deep_threshold:
-        return "equivalence"
-    return "divergence"
+) -> bool:
+    """Whether *lock_expires_at* is past the sweep's deep-expiry boundary
+    (``now - cancel_grace - cleanup_grace - 60s``), i.e. a running job with
+    an in-flight cancel (cancel_phase != 0) has become crash-reclaim
+    eligible for the sweep."""
+    return lock_expires_at < now - cancel_grace - cleanup_grace - _SWEEP_CANCEL_SAFETY
 
 
 def _pinned(
@@ -255,6 +273,23 @@ async def test_property_sweep_equivalence(
 
     Divergence domain: cancel_phase > 0 within grace window. isolate_self
     reclaims the job; sweep_expired_locks leaves it unchanged.
+
+    The sweep evaluates its deep-expiry predicate with its own
+    ``clock_timestamp()``, which this test cannot observe. Classifying a
+    draw from a single post-sweep clock reading couples the classification
+    to the sweep-to-read latency: under a parallel ``-n`` run contending on
+    the shared PG container, seconds pass between the sweep's decision and
+    the reading, and a draw near the boundary flips the classification
+    against the sweep's actual (correct) decision — a load flake, not a
+    regression. Instead the sweep is bracketed with server-clock readings
+    taken immediately before and after it: a lock deep before the sweep
+    started is deep for the sweep too (its clock is only later), and a lock
+    not deep after the sweep finished was not deep for it either, both
+    modulo _CLASSIFY_SKEW_MARGIN. Draws between those two certainties — a
+    band as wide as the sweep's own duration plus the margin — are
+    genuinely underdetermined from outside, and the product contract allows
+    either sweep outcome there, so that band asserts the disjunction of the
+    legal end states.
     """
     from taskq.backend.postgres import PostgresBackend
     from taskq.testing.fixtures import _create_worker, _open_pg_backend
@@ -305,18 +340,34 @@ async def test_property_sweep_equivalence(
             isolate_sql = _ISOLATE_JOB_SQL_TEMPLATE.format(schema=schema)
             await conn.execute(isolate_sql, job_id_a, worker_id_a)
 
+            pg_now_before = await conn.fetchval("SELECT clock_timestamp()")
+            assert isinstance(pg_now_before, datetime)
             await PostgresBackend.sweep_expired_locks(
                 conn, cancel_grace, cleanup_grace, schema=schema
             )
+            pg_now_after = await conn.fetchval("SELECT clock_timestamp()")
+            assert isinstance(pg_now_after, datetime)
 
             row_a = await conn.fetchrow(select_sql, job_id_a)
             row_b = await conn.fetchrow(select_sql, job_id_b)
             assert row_a is not None
             assert row_b is not None
 
-            pg_now = await conn.fetchval("SELECT clock_timestamp()")
-            assert isinstance(pg_now, datetime)
-            domain = _domain(cancel_phase, lock_expires_at, pg_now, cancel_grace, cleanup_grace)
+            # Conservative classification (see docstring): "equivalence"
+            # requires deep even at the pre-sweep clock minus the skew
+            # margin; "divergence" requires not-deep even at the post-sweep
+            # clock plus the margin. Both directions then hold for the
+            # sweep's own, unobservable clock with skew absorbed.
+            if cancel_phase == 0 or _deep_expired(
+                lock_expires_at, pg_now_before - _CLASSIFY_SKEW_MARGIN, cancel_grace, cleanup_grace
+            ):
+                domain = "equivalence"
+            elif not _deep_expired(
+                lock_expires_at, pg_now_after + _CLASSIFY_SKEW_MARGIN, cancel_grace, cleanup_grace
+            ):
+                domain = "divergence"
+            else:
+                domain = "ambiguous"
 
             if domain == "equivalence":
                 assert row_a["status"] == row_b["status"]
@@ -325,10 +376,25 @@ async def test_property_sweep_equivalence(
                 assert _scheduled_at_match(row_a, row_b)
                 if row_a["finished_at"] is not None:
                     assert row_b["finished_at"] is not None
-                    assert abs(row_a["finished_at"] - row_b["finished_at"]) < timedelta(seconds=5)
-            else:
+                    assert (
+                        abs(row_a["finished_at"] - row_b["finished_at"]) < _CROSS_STATEMENT_WINDOW
+                    )
+            elif domain == "divergence":
                 assert row_a["status"] != "running"
                 assert row_b["status"] == "running"
                 assert row_b["lock_expires_at"] is not None
+            else:
+                # Boundary band: both sweep outcomes are contract-legal.
+                # isolate_self reclaimed its own job unconditionally; the
+                # swept twin is either untouched (the divergence outcome) or
+                # reclaimed to the same post-state (the equivalence outcome).
+                assert row_a["status"] != "running"
+                if row_b["status"] == "running":
+                    assert row_b["locked_by_worker"] is not None
+                else:
+                    assert row_a["status"] == row_b["status"]
+                    assert row_a["locked_by_worker"] == row_b["locked_by_worker"]
+                    assert row_a["lock_expires_at"] == row_b["lock_expires_at"]
+                    assert _scheduled_at_match(row_a, row_b)
     finally:
         await stack.aclose()

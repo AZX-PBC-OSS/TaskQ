@@ -703,6 +703,7 @@ class _ScriptedConn:
         self._fetchrow_map = fetchrow_map or {}
         self._execute_map = execute_map or {}
         self._undef = undefined_table_on or set()
+        self.execute_calls: list[tuple[str, tuple[object, ...]]] = []
 
     def _match(self, mapping: dict[str, object], query: str, default: object) -> object:
         for key, value in mapping.items():
@@ -735,6 +736,7 @@ class _ScriptedConn:
 
     async def execute(self, query: str, *args: object) -> str:
         self._check_undef(query)
+        self.execute_calls.append((query, args))
         return self._match(self._execute_map, query, "UPDATE 0")  # type: ignore[return-value]
 
     def transaction(self) -> _StubTxn:
@@ -885,8 +887,12 @@ def test_schedule_disable_redirects_when_table_missing(monkeypatch: pytest.Monke
 
 
 def test_schedule_skip_redirects_on_success(monkeypatch: pytest.MonkeyPatch) -> None:
-    """POST /schedules/{id}/skip advances next_fire_at to the future and returns 303."""
+    """POST /schedules/{id}/skip advances next_fire_at strictly past the
+    database clock's now (7565d3f: the advance loop compares against db_now
+    from the row fetch, so a lagging app clock cannot write a value PG
+    already considers past) and returns 303 to the schedules page."""
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
+    db_now = datetime.now(UTC)
     conn = _ScriptedConn(
         fetchrow_map={
             "cron_expr, timezone, dst_strategy, next_fire_at": StubRecord(
@@ -894,10 +900,10 @@ def test_schedule_skip_redirects_on_success(monkeypatch: pytest.MonkeyPatch) -> 
                     "cron_expr": "* * * * *",
                     "timezone": "UTC",
                     "dst_strategy": "skip",
-                    "next_fire_at": datetime.now(UTC) - timedelta(minutes=30),
+                    "next_fire_at": db_now - timedelta(minutes=30),
                     # The skip fetch reads the server clock in the same row
                     # (clock_timestamp() AS db_now), so the stub row carries it.
-                    "db_now": datetime.now(UTC),
+                    "db_now": db_now,
                 }
             ),
         },
@@ -909,6 +915,12 @@ def test_schedule_skip_redirects_on_success(monkeypatch: pytest.MonkeyPatch) -> 
         f"/schedules/{new_uuid()}/skip", data={"csrf_token": token}, follow_redirects=False
     )
     assert resp.status_code == 303
+    assert resp.headers["location"].endswith("/schedules")
+    skip_writes = [args for sql, args in conn.execute_calls if "SET next_fire_at" in sql]
+    assert len(skip_writes) == 1
+    written_next = skip_writes[0][1]
+    assert isinstance(written_next, datetime)
+    assert written_next > db_now
 
 
 def test_schedule_skip_returns_404_when_not_found(monkeypatch: pytest.MonkeyPatch) -> None:

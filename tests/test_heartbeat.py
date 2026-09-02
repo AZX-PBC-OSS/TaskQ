@@ -138,6 +138,7 @@ def _make_deps(
         "postgresql://x:x@localhost/x",
         HEARTBEAT_INTERVAL=str(heartbeat_interval),
         LOCK_LEASE=str(lock_lease),
+        WATCHDOG_LOOP_LAG_BUDGET="1.2",
         MAX_HEARTBEAT_FAILURES=str(max_heartbeat_failures),
         CANCELLATION_GRACE_PERIOD="0.0",
         CLEANUP_GRACE_PERIOD="0.0",
@@ -515,6 +516,7 @@ async def test_custom_schema_name_flows_to_sql() -> None:
         SCHEMA_NAME="custom_ns",
         HEARTBEAT_INTERVAL="0.5",
         LOCK_LEASE="2.0",
+        WATCHDOG_LOOP_LAG_BUDGET="1.2",
         MAX_HEARTBEAT_FAILURES="3",
         CANCELLATION_GRACE_PERIOD="0.0",
         CLEANUP_GRACE_PERIOD="0.0",
@@ -769,6 +771,7 @@ def test_invalid_heartbeat_ratio_raises_validation_error() -> None:
             "postgresql://x:x@localhost/x",
             LOCK_LEASE="30.0",
             HEARTBEAT_INTERVAL="10.0",
+            WATCHDOG_LOOP_LAG_BUDGET="15.0",
             CANCELLATION_GRACE_PERIOD="0.0",
             CLEANUP_GRACE_PERIOD="0.0",
         )
@@ -781,6 +784,7 @@ def test_valid_heartbeat_ratio_passes() -> None:
         "postgresql://x:x@localhost/x",
         LOCK_LEASE="40.0",
         HEARTBEAT_INTERVAL="10.0",
+        WATCHDOG_LOOP_LAG_BUDGET="25.0",
         CANCELLATION_GRACE_PERIOD="0.0",
         CLEANUP_GRACE_PERIOD="0.0",
     )

@@ -185,7 +185,13 @@ def _worker_env(
         "TASKQ_MIGRATE_ON_START": "false",
         "TASKQ_ENVIRONMENT": "dev",
         "TASKQ_HEARTBEAT_INTERVAL": "0.5",
-        "TASKQ_LOCK_LEASE": "3.0",
+        # Lease and lag budget sized so the shutdown-deadline detector (the
+        # subject of this test, tripping at termination_grace 5.01s) wins
+        # any race with the lag detector: 6.0 + 0.5 < 8.0 keeps the
+        # lag-lease invariant, and 6.0 > 5.01 keeps a loop blocked by the
+        # close hang under detector 1's deadline, not detector 4's.
+        "TASKQ_LOCK_LEASE": "8.0",
+        "TASKQ_WATCHDOG_LOOP_LAG_BUDGET": "6.0",
         "TASKQ_CANCELLATION_GRACE_PERIOD": "0",
         "TASKQ_CLEANUP_GRACE_PERIOD": "0",
         "TASKQ_TERMINATION_GRACE_PERIOD": "5.01",

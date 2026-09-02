@@ -106,6 +106,9 @@ async def e2e_schema(
         "TASKQ_ENVIRONMENT": "dev",
         "TASKQ_HEARTBEAT_INTERVAL": "0.5",
         "TASKQ_LOCK_LEASE": "3.0",
+        # Watchdog off: this test drives dispatch caps, not the detectors;
+        # the 3s lease cannot host a coherent lag budget.
+        "TASKQ_WATCHDOG_ENABLED": "false",
         "TASKQ_CANCELLATION_GRACE_PERIOD": "1.0",
         "TASKQ_CLEANUP_GRACE_PERIOD": "1.0",
         "TASKQ_TERMINATION_GRACE_PERIOD": "15.0",

@@ -24,6 +24,9 @@ from taskq.testing.asyncpg_chaos import ChaosConnection, ChaosPool
 _GRACE = timedelta(seconds=30)
 _ACQUIRE_TIMEOUT = 3.25
 _FIXED_UUID = UUID("12345678-1234-5678-1234-567812345678")
+# Pinned dispatcher_command_timeout so the acquire-timeout forwarding is
+# observable through the fake pools.
+_ACQUIRE_TIMEOUT = 1.5
 
 _FakeFetch = Callable[..., list[dict[str, Any]]]
 
@@ -80,8 +83,11 @@ def _default_record() -> dict[str, Any]:
 class _MarkingFakePool:
     """Fake pool that tracks whether ``acquire()`` was called.
 
-    ``marker`` is a shared list that gets appended when ``acquire()`` fires;
+    ``marker`` is a shared list that gets appended when ``acquire()`` fires.
     ``acquire_timeouts`` records the ``timeout=`` each call was given.
+    Mirrors asyncpg's acquire contract: keyword-only ``timeout`` bound, and
+    the method returns the connection context (asyncpg's own ``acquire`` is
+    also a sync method returning an async context manager).
     """
 
     def __init__(self, marker: list[str], fetch_fn: _FakeFetch | None = None) -> None:
@@ -147,19 +153,22 @@ class _FakeTransaction:
 # ── Build PostgresBackend with fake deps ────────────────────────────────
 
 
-def _make_backend(
-    *,
-    dispatcher_marker: list[str] | None = None,
-    fetch_fn: _FakeFetch | None = None,
-    schema_name: str = "taskq_test",
+def _backend_with_dispatcher_pool(
+    pool: object, *, command_timeout: float = _ACQUIRE_TIMEOUT
 ) -> PostgresBackend:
-    """Construct a PostgresBackend with fake deps for unit testing."""
+    """Construct a PostgresBackend whose dispatcher_pool is *pool*.
+
+    Shared seam for every fake-pool test in this module: pins
+    ``dispatcher_command_timeout`` to *command_timeout* (default
+    ``_ACQUIRE_TIMEOUT``) so the acquire-timeout forwarding through
+    ``dispatch_batch`` is observable and variable.
+    """
     mock_deps = Mock()
-    mock_deps.settings.schema_name = schema_name
-    mock_deps.settings.dispatcher_command_timeout = _ACQUIRE_TIMEOUT
+    mock_deps.settings.schema_name = "taskq_test"
+    mock_deps.settings.dispatch_oversample = 2
+    mock_deps.settings.dispatcher_command_timeout = command_timeout
     mock_deps.worker_pool = Mock()
-    _dp = _MarkingFakePool(dispatcher_marker, fetch_fn) if dispatcher_marker is not None else Mock()
-    mock_deps.dispatcher_pool = _dp
+    mock_deps.dispatcher_pool = pool
 
     mock_clock = Mock(spec=Clock)
     mock_clock.now.return_value = NotImplemented
@@ -176,26 +185,24 @@ def _make_backend(
 def _make_backend_with_pool(
     pool: object, *, command_timeout: float = _ACQUIRE_TIMEOUT
 ) -> PostgresBackend:
-    """Construct a PostgresBackend whose dispatcher_pool is *pool*."""
-    mock_deps = Mock()
-    mock_deps.settings.schema_name = "taskq_test"
-    mock_deps.settings.dispatch_oversample = 2
-    mock_deps.settings.dispatcher_command_timeout = command_timeout
-    mock_deps.worker_pool = Mock()
-    mock_deps.dispatcher_pool = pool
-    mock_clock = Mock(spec=Clock)
-    mock_clock.now.return_value = NotImplemented
-    mock_clock.monotonic.return_value = 0.0
-    return PostgresBackend(
-        deps=mock_deps,
-        clock=mock_clock,
-        cancellation_grace_period=_GRACE,
-        cleanup_grace_period=_GRACE,
-    )
+    """Construct a PostgresBackend with *pool* as the dispatcher pool."""
+    return _backend_with_dispatcher_pool(pool, command_timeout=command_timeout)
+
+
+def _make_backend(
+    *,
+    dispatcher_marker: list[str],
+    fetch_fn: _FakeFetch | None = None,
+) -> PostgresBackend:
+    """Construct a PostgresBackend with a marking fake dispatcher pool."""
+    return _backend_with_dispatcher_pool(_MarkingFakePool(dispatcher_marker, fetch_fn))
 
 
 class _CaptureFakePool:
-    """Fake pool whose connection records fetch() parameters."""
+    """Fake pool whose connection records fetch() parameters.
+
+    Mirrors asyncpg's acquire contract: keyword-only ``timeout`` bound.
+    """
 
     def __init__(self, marker: list[str], captured: list[tuple[object, ...]]) -> None:
         self._marker = marker
@@ -242,21 +249,7 @@ def _make_capture_backend(
     captured: list[tuple[object, ...]],
 ) -> PostgresBackend:
     """Construct a PostgresBackend with a capture fake pool."""
-    mock_deps = Mock()
-    mock_deps.settings.schema_name = "taskq_test"
-    mock_deps.settings.dispatch_oversample = 2
-    mock_deps.settings.dispatcher_command_timeout = _ACQUIRE_TIMEOUT
-    mock_deps.worker_pool = Mock()
-    mock_deps.dispatcher_pool = _CaptureFakePool(marker, captured)
-    mock_clock = Mock(spec=Clock)
-    mock_clock.now.return_value = NotImplemented
-    mock_clock.monotonic.return_value = 0.0
-    return PostgresBackend(
-        deps=mock_deps,
-        clock=mock_clock,
-        cancellation_grace_period=_GRACE,
-        cleanup_grace_period=_GRACE,
-    )
+    return _backend_with_dispatcher_pool(_CaptureFakePool(marker, captured))
 
 
 # ── Tests ──────────────────────────────────────────────────────────────
@@ -280,6 +273,17 @@ class TestDispatchBatchAcquire:
         asyncio.run(backend.dispatch_batch(_FIXED_UUID, ["default"], 10, _GRACE))
         asyncio.run(backend.dispatch_batch(_FIXED_UUID, ["default"], 5, _GRACE))
         assert marker == ["acquire", "acquire"]
+
+    def test_acquire_bounded_by_command_timeout(self) -> None:
+        """The pool checkout is bounded: dispatcher_command_timeout is
+        forwarded as acquire(timeout=...) so an exhausted pool cannot park
+        the producer forever (contract added by 61cd656)."""
+        marker: list[str] = []
+        pool = _MarkingFakePool(marker)
+        backend = _backend_with_dispatcher_pool(pool)
+        asyncio.run(backend.dispatch_batch(_FIXED_UUID, ["default"], 10, _GRACE))
+        assert marker == ["acquire"]
+        assert pool.acquire_timeouts == [_ACQUIRE_TIMEOUT]
 
 
 class TestDispatchBatchHelperParams:
@@ -360,21 +364,7 @@ class TestDispatchBatchPoolSelection:
         _dp = _MarkingFakePool(dispatch_marker)
         _np = _MarkingFakePool(notify_marker)
 
-        mock_deps = Mock()
-        mock_deps.settings.schema_name = "taskq_test"
-        mock_deps.worker_pool = Mock()
-        mock_deps.dispatcher_pool = _dp
-
-        mock_clock = Mock(spec=Clock)
-        mock_clock.now.return_value = NotImplemented
-        mock_clock.monotonic.return_value = 0.0
-
-        backend = PostgresBackend(
-            deps=mock_deps,
-            clock=mock_clock,
-            cancellation_grace_period=_GRACE,
-            cleanup_grace_period=_GRACE,
-        )
+        backend = _backend_with_dispatcher_pool(_dp)
         asyncio.run(backend.dispatch_batch(_FIXED_UUID, ["default"], 10, _GRACE))
         assert dispatch_marker == ["acquire"]
         assert notify_marker == []
@@ -433,20 +423,7 @@ class TestDispatchBatchCancellation:
             async def __aexit__(self, *args: object) -> None:
                 marker.append("conn_exit")
 
-        mock_deps = Mock()
-        mock_deps.settings.schema_name = "taskq_test"
-        mock_deps.worker_pool = Mock()
-        mock_deps.dispatcher_pool = _SlowFakePool(marker)
-        mock_clock = Mock(spec=Clock)
-        mock_clock.now.return_value = NotImplemented
-        mock_clock.monotonic.return_value = 0.0
-
-        backend = PostgresBackend(
-            deps=mock_deps,
-            clock=mock_clock,
-            cancellation_grace_period=_GRACE,
-            cleanup_grace_period=_GRACE,
-        )
+        backend = _backend_with_dispatcher_pool(_SlowFakePool(marker))
 
         async def _run_and_cancel() -> None:
             task = asyncio.create_task(

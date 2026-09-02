@@ -224,6 +224,10 @@ def _worker_env(
         "TASKQ_ENVIRONMENT": "dev",
         "TASKQ_HEARTBEAT_INTERVAL": "0.5",
         "TASKQ_LOCK_LEASE": "3.0",
+        # Watchdog off: this test drives Redis-outage degradation, not the
+        # detectors; the 3s lease cannot host a lag budget that is both
+        # inside the lease and above the check interval.
+        "TASKQ_WATCHDOG_ENABLED": "false",
         "TASKQ_CANCELLATION_GRACE_PERIOD": "1.0",
         "TASKQ_CLEANUP_GRACE_PERIOD": "1.0",
         "TASKQ_TERMINATION_GRACE_PERIOD": "15.0",
