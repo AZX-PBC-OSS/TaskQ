@@ -15,11 +15,12 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from pydantic import BaseModel
 
 from taskq import RetryPolicy, Snooze, actor
+from taskq._ids import new_uuid
 from taskq.batch import EnqueueItem
 from taskq.batch_policy import AbortBatchAfter
 from taskq.client._jobs import JobsClient
@@ -93,7 +94,7 @@ class TestAbortFinalizerSucceeds:
         BatchAbortedError when the batch is aborted.
         """
         backend = _make_backend()
-        batch_id = uuid4()
+        batch_id = new_uuid()
         abort_error: BatchAbortedError | None = None
         snooze_count = 0
 
@@ -290,7 +291,7 @@ class TestClockSkewResilience:
         """
         clock = FakeClock(start=_START)
         backend = _make_backend(clock=clock)
-        batch_id = uuid4()
+        batch_id = new_uuid()
         abort_error: BatchAbortedError | None = None
 
         def _fail_child(_payload: dict[str, object], _ctx: object) -> None:

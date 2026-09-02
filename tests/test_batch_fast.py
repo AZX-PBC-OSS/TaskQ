@@ -8,12 +8,13 @@ Integration tests require a live Postgres container and are marked
 import contextlib
 import time
 from datetime import UTC, datetime
-from uuid import UUID, uuid4
+from uuid import UUID
 
 import pytest
 from pydantic import BaseModel
 
 from taskq import actor
+from taskq._ids import new_uuid
 from taskq.batch import EnqueueItem
 from taskq.client._jobs import JobsClient
 from taskq.exceptions import PayloadValidationError
@@ -263,7 +264,7 @@ class TestTI1BasicPG:
         finally:
             await conn.close()
 
-        batch_id = uuid4()
+        batch_id = new_uuid()
         items = [_make_item(i) for i in range(100)]
         async with TaskQ(dsn=pg_dsn, schema=schema) as tq:
             count = await tq.enqueue_batch_fast(items, batch_id=batch_id)
@@ -300,7 +301,7 @@ class TestTI2BatchIdInAllRows:
         finally:
             await conn.close()
 
-        batch_id = uuid4()
+        batch_id = new_uuid()
         items = [_make_item(i) for i in range(500)]
         async with TaskQ(dsn=pg_dsn, schema=schema) as tq:
             count = await tq.enqueue_batch_fast(items, batch_id=batch_id)
@@ -344,7 +345,7 @@ class TestTI3SingleItem:
         finally:
             await conn.close()
 
-        batch_id = uuid4()
+        batch_id = new_uuid()
         async with TaskQ(dsn=pg_dsn, schema=schema) as tq:
             count = await tq.enqueue_batch_fast(
                 [EnqueueItem(actor_ref=_test_actor, payload=_Payload(value=99))],
@@ -385,7 +386,7 @@ class TestTI4LargeBatch10K:
         finally:
             await conn.close()
 
-        batch_id = uuid4()
+        batch_id = new_uuid()
         items = [_make_item(i % 1000) for i in range(10_000)]
         async with TaskQ(dsn=pg_dsn, schema=schema) as tq:
             count = await tq.enqueue_batch_fast(items, batch_id=batch_id)
@@ -428,7 +429,7 @@ class TestTI5PerformanceComparison:
 
         async with TaskQ(dsn=pg_dsn, schema=schema) as tq:
             # Time COPY FROM
-            batch_id_fast = uuid4()
+            batch_id_fast = new_uuid()
             start = time.monotonic()
             count_fast = await tq.enqueue_batch_fast(items_1k, batch_id=batch_id_fast)
             elapsed_fast = time.monotonic() - start
@@ -445,7 +446,7 @@ class TestTI5PerformanceComparison:
                 await conn.close()
 
             # Time UNNEST (regular enqueue_batch)
-            batch_id_unnest = uuid4()
+            batch_id_unnest = new_uuid()
             start = time.monotonic()
             handle = await tq.enqueue_batch(items_1k, batch_id=batch_id_unnest)
             elapsed_unnest = time.monotonic() - start
@@ -482,7 +483,7 @@ class TestTI6PerformanceComparison4000:
 
         async with TaskQ(dsn=pg_dsn, schema=schema) as tq:
             # Time COPY FROM
-            batch_id_fast = uuid4()
+            batch_id_fast = new_uuid()
             start = time.monotonic()
             count_fast = await tq.enqueue_batch_fast(items_1k, batch_id=batch_id_fast)
             elapsed_fast = time.monotonic() - start
@@ -499,7 +500,7 @@ class TestTI6PerformanceComparison4000:
                 await conn.close()
 
             # Time UNNEST
-            batch_id_unnest = uuid4()
+            batch_id_unnest = new_uuid()
             start = time.monotonic()
             handle = await tq.enqueue_batch(items_1k, batch_id=batch_id_unnest)
             elapsed_unnest = time.monotonic() - start
@@ -529,7 +530,7 @@ class TestTI7TransactionalBatchFast:
         finally:
             await conn.close()
 
-        batch_id = uuid4()
+        batch_id = new_uuid()
         async with TaskQ(dsn=pg_dsn, schema=schema) as tq:
             tx_conn = await asyncpg.connect(pg_dsn)
             tr = tx_conn.transaction()
@@ -570,8 +571,8 @@ class TestTI8DuplicateIdempotencyKeyFails:
         finally:
             await conn.close()
 
-        batch_id = uuid4()
-        dup_key = f"dup-key-{uuid4()}"
+        batch_id = new_uuid()
+        dup_key = f"dup-key-{new_uuid()}"
         items = [
             EnqueueItem(actor_ref=_test_actor, payload=_Payload(value=1), idempotency_key=dup_key),
             EnqueueItem(actor_ref=_test_actor, payload=_Payload(value=2), idempotency_key=dup_key),
@@ -614,7 +615,7 @@ class TestTIScopeRoundTripThroughCopy:
         finally:
             await conn.close()
 
-        key = f"copy-key-{uuid4()}"
+        key = f"copy-key-{new_uuid()}"
         items = [
             EnqueueItem(
                 actor_ref=_test_actor,
@@ -673,7 +674,7 @@ class TestTIScopeRoundTripThroughCopy:
         finally:
             await conn.close()
 
-        key = f"copy-dup-{uuid4()}"
+        key = f"copy-dup-{new_uuid()}"
         items = [
             EnqueueItem(
                 actor_ref=_test_actor,
@@ -766,7 +767,7 @@ class TestTIPastScheduledAtNormalized:
 
         # A scheduled_at well in the past relative to the live PG clock.
         past = _START
-        batch_id = uuid4()
+        batch_id = new_uuid()
         async with TaskQ(dsn=pg_dsn, schema=schema) as tq:
             count = await tq.enqueue_batch_fast(
                 [EnqueueItem(actor_ref=_test_actor, payload=_Payload(value=1), scheduled_at=past)],

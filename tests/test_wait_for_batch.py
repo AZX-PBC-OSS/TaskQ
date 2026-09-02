@@ -10,7 +10,7 @@ individually so the file mixes unit and integration tiers.
 import asyncio
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-from uuid import UUID, uuid4
+from uuid import UUID
 
 import asyncpg
 import pytest
@@ -19,7 +19,7 @@ from hypothesis import strategies as st
 from pydantic import BaseModel
 
 from taskq import actor
-from taskq._ids import new_base62
+from taskq._ids import new_base62, new_uuid
 from taskq._json import dumps_str
 from taskq.backend._protocol import BatchRow
 from taskq.batch import BatchCompletionStatus, EnqueueItem, wait_for_batch
@@ -102,7 +102,7 @@ class TestAllChildrenTerminal:
 
     async def test_all_succeeded(self) -> None:
         backend = _make_backend()
-        batch_id = uuid4()
+        batch_id = new_uuid()
         _seed_batch(backend, 3, batch_id, status="succeeded")
 
         status = await in_memory_wait_for_batch(backend, batch_id)
@@ -121,7 +121,7 @@ class TestOneChildInFlight:
 
     async def test_raises_snooze(self) -> None:
         backend = _make_backend()
-        batch_id = uuid4()
+        batch_id = new_uuid()
         _seed_batch(backend, 2, batch_id, status="succeeded")
         _seed_batch(backend, 1, batch_id, status="pending")
 
@@ -139,7 +139,7 @@ class TestCustomSnoozeInterval:
 
     async def test_custom_interval_in_snooze(self) -> None:
         backend = _make_backend()
-        batch_id = uuid4()
+        batch_id = new_uuid()
         _seed_batch(backend, 1, batch_id, status="pending")
 
         with pytest.raises(Snooze) as exc_info:
@@ -156,7 +156,7 @@ class TestMixedTerminalWithInFlight:
 
     async def test_mixed_statuses_raises_snooze(self) -> None:
         backend = _make_backend()
-        batch_id = uuid4()
+        batch_id = new_uuid()
         _seed_batch(backend, 2, batch_id, status="succeeded")
         _seed_batch(backend, 1, batch_id, status="failed")
         _seed_batch(backend, 1, batch_id, status="cancelled")
@@ -174,7 +174,7 @@ class TestAllTerminalWithFailures:
 
     async def test_succeeded_and_failed(self) -> None:
         backend = _make_backend()
-        batch_id = uuid4()
+        batch_id = new_uuid()
         _seed_batch(backend, 2, batch_id, status="succeeded")
         _seed_batch(backend, 1, batch_id, status="failed")
 
@@ -194,7 +194,7 @@ class TestEmptyBatchId:
 
     async def test_empty_batch_returns_zero(self) -> None:
         backend = _make_backend()
-        batch_id = uuid4()
+        batch_id = new_uuid()
 
         status = await in_memory_wait_for_batch(backend, batch_id, on_empty="ok")
 
@@ -212,7 +212,7 @@ class TestSnoozeIntervalClamped:
 
     async def test_sub_second_clamped(self) -> None:
         backend = _make_backend()
-        batch_id = uuid4()
+        batch_id = new_uuid()
         _seed_batch(backend, 1, batch_id, status="pending")
 
         with pytest.raises(Snooze) as exc_info:
@@ -231,7 +231,7 @@ class TestSnoozeIntervalZeroClamped:
 
     async def test_zero_clamped(self) -> None:
         backend = _make_backend()
-        batch_id = uuid4()
+        batch_id = new_uuid()
         _seed_batch(backend, 1, batch_id, status="pending")
 
         with pytest.raises(Snooze) as exc_info:
@@ -248,7 +248,7 @@ class TestAbandonedChildIsTerminal:
 
     async def test_abandoned_counts_as_terminal(self) -> None:
         backend = _make_backend()
-        batch_id = uuid4()
+        batch_id = new_uuid()
         _seed_batch(backend, 2, batch_id, status="succeeded")
         _seed_batch(backend, 1, batch_id, status="abandoned")
 
@@ -268,7 +268,7 @@ class TestCrashedChildIsTerminal:
 
     async def test_crashed_counts_as_terminal(self) -> None:
         backend = _make_backend()
-        batch_id = uuid4()
+        batch_id = new_uuid()
         _seed_batch(backend, 2, batch_id, status="succeeded")
         _seed_batch(backend, 1, batch_id, status="crashed")
 
@@ -307,7 +307,7 @@ class TestBatchCompletionInvariant:
     @settings(max_examples=50)
     async def test_invariant(self, statuses: list[str]) -> None:
         backend = _make_backend()
-        batch_id = uuid4()
+        batch_id = new_uuid()
         terminal = {"succeeded", "failed", "cancelled", "crashed", "abandoned"}
 
         for s in statuses:
@@ -358,7 +358,7 @@ class TestExpectAtLeast:
 
     async def test_expect_at_least_satisfied(self) -> None:
         backend = _make_backend()
-        batch_id = uuid4()
+        batch_id = new_uuid()
         _seed_batch(backend, 5, batch_id, status="succeeded")
 
         status = await in_memory_wait_for_batch(backend, batch_id, expect_at_least=5)
@@ -368,7 +368,7 @@ class TestExpectAtLeast:
 
     async def test_expect_at_least_not_satisfied(self) -> None:
         backend = _make_backend()
-        batch_id = uuid4()
+        batch_id = new_uuid()
         _seed_batch(backend, 3, batch_id, status="succeeded")
 
         with pytest.raises(EmptyBatchError) as exc_info:
@@ -379,7 +379,7 @@ class TestExpectAtLeast:
 
     async def test_empty_batch_with_row_expected_size_zero_ok(self) -> None:
         backend = _make_backend()
-        batch_id = uuid4()
+        batch_id = new_uuid()
         _seed_batch_row(backend, batch_id, expected_size=0)
 
         status = await in_memory_wait_for_batch(backend, batch_id)
@@ -389,7 +389,7 @@ class TestExpectAtLeast:
 
     async def test_empty_batch_without_row_raises_by_default(self) -> None:
         backend = _make_backend()
-        batch_id = uuid4()
+        batch_id = new_uuid()
 
         with pytest.raises(EmptyBatchError) as exc_info:
             await in_memory_wait_for_batch(backend, batch_id)
@@ -399,7 +399,7 @@ class TestExpectAtLeast:
 
     async def test_empty_batch_without_row_ok_with_on_empty_ok(self) -> None:
         backend = _make_backend()
-        batch_id = uuid4()
+        batch_id = new_uuid()
 
         status = await in_memory_wait_for_batch(backend, batch_id, on_empty="ok")
 
@@ -408,7 +408,7 @@ class TestExpectAtLeast:
 
     async def test_aborted_batch_raises_batch_aborted_error(self) -> None:
         backend = _make_backend()
-        batch_id = uuid4()
+        batch_id = new_uuid()
         _seed_batch(backend, 3, batch_id, status="failed")
         _seed_batch_row(
             backend,
@@ -427,7 +427,7 @@ class TestExpectAtLeast:
 
     async def test_aborted_batch_with_pending_raises_snooze(self) -> None:
         backend = _make_backend()
-        batch_id = uuid4()
+        batch_id = new_uuid()
         _seed_batch(backend, 2, batch_id, status="failed")
         _seed_batch(backend, 1, batch_id, status="pending")
         _seed_batch_row(
@@ -443,7 +443,7 @@ class TestExpectAtLeast:
 
     async def test_exclude_job_id_omits_caller_from_count(self) -> None:
         backend = _make_backend()
-        batch_id = uuid4()
+        batch_id = new_uuid()
         _seed_batch(backend, 3, batch_id, status="succeeded")
         running_ids = _seed_batch(backend, 1, batch_id, status="running")
         exclude_id = running_ids[0]
@@ -456,7 +456,7 @@ class TestExpectAtLeast:
 
     async def test_finalizer_job_id_excluded_automatically(self) -> None:
         backend = _make_backend()
-        batch_id = uuid4()
+        batch_id = new_uuid()
         _seed_batch(backend, 3, batch_id, status="succeeded")
         finalizer_ids = _seed_batch(backend, 1, batch_id, status="running")
         finalizer_id = finalizer_ids[0]
@@ -471,7 +471,7 @@ class TestExpectAtLeast:
 
     async def test_expect_at_least_zero_with_empty_batch_and_row(self) -> None:
         backend = _make_backend()
-        batch_id = uuid4()
+        batch_id = new_uuid()
         _seed_batch_row(backend, batch_id, expected_size=0)
 
         status = await in_memory_wait_for_batch(backend, batch_id, expect_at_least=0)
@@ -491,7 +491,7 @@ class TestFullRoundTrip:
         schema = f"taskq_test_wfb_ti1_{new_base62()}".lower()
         await _setup_pg_schema(pg_dsn, schema)
 
-        batch_id = uuid4()
+        batch_id = new_uuid()
         await _enqueue_batch_pg(pg_dsn, schema, 3, batch_id)
 
         conn = await asyncpg.connect(pg_dsn)
@@ -530,7 +530,7 @@ class TestWithFailedChild:
         schema = f"taskq_test_wfb_ti2_{new_base62()}".lower()
         await _setup_pg_schema(pg_dsn, schema)
 
-        batch_id = uuid4()
+        batch_id = new_uuid()
         await _enqueue_batch_pg(pg_dsn, schema, 3, batch_id)
 
         conn = await asyncpg.connect(pg_dsn)
@@ -591,7 +591,7 @@ class TestTUGINinIndexUsed:
         finally:
             await conn.close()
 
-        batch_ids = [str(uuid4()) for _ in range(10)]
+        batch_ids = [str(new_uuid()) for _ in range(10)]
         conn = await asyncpg.connect(pg_dsn)
         try:
             records: list[tuple[object, ...]] = []
@@ -599,7 +599,7 @@ class TestTUGINinIndexUsed:
                 bid = batch_ids[i % 10]
                 records.append(
                     (
-                        uuid4(),
+                        new_uuid(),
                         "seed_actor",
                         "default",
                         "{}",
@@ -661,7 +661,7 @@ class TestFinalizerSnoozePattern:
         schema = f"taskq_test_wfb_ti3_{new_base62()}".lower()
         await _setup_pg_schema(pg_dsn, schema)
 
-        batch_id = uuid4()
+        batch_id = new_uuid()
         await _enqueue_batch_pg(pg_dsn, schema, 3, batch_id)
 
         conn = await asyncpg.connect(pg_dsn)
@@ -704,7 +704,7 @@ class TestChildFailsAndRetries:
         schema = f"taskq_test_wfb_ti4_{new_base62()}".lower()
         await _setup_pg_schema(pg_dsn, schema)
 
-        batch_id = uuid4()
+        batch_id = new_uuid()
         await _enqueue_batch_pg(pg_dsn, schema, 2, batch_id)
 
         conn = await asyncpg.connect(pg_dsn)
@@ -756,7 +756,7 @@ class TestBlockingForm:
         schema = f"taskq_test_wfb_ti5_{new_base62()}".lower()
         await _setup_pg_schema(pg_dsn, schema)
 
-        batch_id = uuid4()
+        batch_id = new_uuid()
         await _enqueue_batch_pg(pg_dsn, schema, 2, batch_id)
 
         async def _mark_succeeded() -> None:
@@ -800,7 +800,7 @@ class TestRaceGuardEnqueueBeforeWait:
         schema = f"taskq_test_wfb_ti6_{new_base62()}".lower()
         await _setup_pg_schema(pg_dsn, schema)
 
-        batch_id = uuid4()
+        batch_id = new_uuid()
         conn_a = await asyncpg.connect(pg_dsn)
         conn_b = await asyncpg.connect(pg_dsn)
         try:
@@ -808,7 +808,7 @@ class TestRaceGuardEnqueueBeforeWait:
                 await conn_a.execute(
                     f'INSERT INTO "{schema}".jobs (id, actor, queue, payload, status, max_attempts, retry_kind, metadata) '  # noqa: S608 # Why: schema is a test-local constant
                     "VALUES ($1::uuid, 'wfb_test_actor', 'default', '{}'::jsonb, 'pending', 3, 'transient', $2::jsonb)",
-                    uuid4(),
+                    new_uuid(),
                     dumps_str({"batch_id": str(batch_id)}),
                 )
 
@@ -837,7 +837,7 @@ class TestInvalidBatchIdAgainstPG:
         schema = f"taskq_test_wfb_tn1_{new_base62()}".lower()
         await _setup_pg_schema(pg_dsn, schema)
 
-        batch_id = uuid4()
+        batch_id = new_uuid()
         conn = await asyncpg.connect(pg_dsn)
         try:
             status = await wait_for_batch(conn, batch_id, schema=schema, on_empty="ok")
@@ -857,7 +857,7 @@ class TestPGUnavailable:
     """PG connection error propagates — not masked as Snooze."""
 
     async def test_connection_error_propagates(self) -> None:
-        batch_id = uuid4()
+        batch_id = new_uuid()
         with pytest.raises((OSError, asyncpg.PostgresConnectionError)):
             conn = await asyncpg.connect("postgresql://nonexistent:5432/db")
             try:

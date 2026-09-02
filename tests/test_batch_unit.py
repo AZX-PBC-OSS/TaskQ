@@ -9,12 +9,12 @@ from __future__ import annotations
 
 import asyncio
 from datetime import timedelta
-from uuid import uuid4
 
 import asyncpg
 import pytest
 
 from taskq._dsn import dsn_host
+from taskq._ids import new_uuid
 from taskq.batch import wait_for_batch
 from taskq.exceptions import Snooze
 
@@ -91,7 +91,7 @@ async def test_wait_for_batch_raises_snooze_when_in_flight() -> None:
         }
     )
     with pytest.raises(Snooze):
-        await wait_for_batch(conn, uuid4(), snooze_via_exception=True)
+        await wait_for_batch(conn, new_uuid(), snooze_via_exception=True)
 
 
 async def test_wait_for_batch_returns_status_when_all_terminal() -> None:
@@ -106,7 +106,7 @@ async def test_wait_for_batch_returns_status_when_all_terminal() -> None:
             "in_flight": 0,
         }
     )
-    status = await wait_for_batch(conn, uuid4(), snooze_via_exception=True)
+    status = await wait_for_batch(conn, new_uuid(), snooze_via_exception=True)
     assert status.total == 2
     assert status.pending == 0
     assert status.succeeded == 1
@@ -126,7 +126,7 @@ async def test_wait_for_batch_empty_batch_returns_complete() -> None:
             "in_flight": 0,
         }
     )
-    status = await wait_for_batch(conn, uuid4(), snooze_via_exception=True, on_empty="ok")
+    status = await wait_for_batch(conn, new_uuid(), snooze_via_exception=True, on_empty="ok")
     assert status.total == 0
     assert status.is_complete is True
 
@@ -147,7 +147,7 @@ async def test_wait_for_batch_clamps_small_snooze_interval() -> None:
     with pytest.raises(Snooze) as exc_info:
         await wait_for_batch(
             conn,
-            uuid4(),
+            new_uuid(),
             snooze_interval=timedelta(milliseconds=100),
             snooze_via_exception=True,
         )
@@ -189,7 +189,7 @@ async def test_wait_for_batch_polling_path_terminates() -> None:
         mp.setattr(asyncio, "sleep", fake_sleep)
         status = await wait_for_batch(
             conn,
-            uuid4(),
+            new_uuid(),
             snooze_interval=timedelta(seconds=1),
             snooze_via_exception=False,
         )
@@ -210,13 +210,13 @@ async def test_wait_for_batch_with_pool_acquires_connection() -> None:
             "in_flight": 0,
         }
     )
-    status = await wait_for_batch(pool, uuid4(), snooze_via_exception=True)
+    status = await wait_for_batch(pool, new_uuid(), snooze_via_exception=True)
     assert status.succeeded == 1
 
 
 async def test_wait_for_batch_fetchrow_none_returns_zero_status() -> None:
     conn = FakeConn(None)
-    status = await wait_for_batch(conn, uuid4(), snooze_via_exception=True, on_empty="ok")
+    status = await wait_for_batch(conn, new_uuid(), snooze_via_exception=True, on_empty="ok")
     assert status.total == 0
     assert status.is_complete is True
 
@@ -252,7 +252,7 @@ async def test_wait_for_batch_pool_polling_path_terminates() -> None:
         mp.setattr(asyncio, "sleep", fake_sleep)
         status = await wait_for_batch(
             pool,
-            uuid4(),
+            new_uuid(),
             snooze_interval=timedelta(seconds=1),
             snooze_via_exception=False,
         )

@@ -7,11 +7,12 @@ finalizer through to JobsClient, without requiring a live Postgres.
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from pydantic import BaseModel
 
 from taskq import actor
+from taskq._ids import new_uuid
 from taskq.backend._protocol import BatchFilter
 from taskq.batch import BatchCompletionStatus, BatchHandle, BatchSummary, EnqueueItem
 from taskq.batch_policy import AbortBatchAfter
@@ -68,7 +69,7 @@ class TestFacadeEnqueueBatchForwarding:
         tq, mock_jobs = _make_mock_taskq()
         items = [_make_item(i) for i in range(5)]
         policy = AbortBatchAfter(3)
-        expected_handle = BatchHandle(batch_id=uuid4(), job_handles=[], size=5)
+        expected_handle = BatchHandle(batch_id=new_uuid(), job_handles=[], size=5)
         mock_jobs.enqueue_batch.return_value = expected_handle
 
         result = await tq.enqueue_batch(items, failure_policy=policy)
@@ -81,8 +82,8 @@ class TestFacadeEnqueueBatchForwarding:
     async def test_facade_enqueue_batch_with_finalizer(self) -> None:
         tq, mock_jobs = _make_mock_taskq()
         items = [_make_item(i) for i in range(3)]
-        finalizer = _make_finalizer(uuid4())
-        expected_handle = BatchHandle(batch_id=uuid4(), job_handles=[], size=3)
+        finalizer = _make_finalizer(new_uuid())
+        expected_handle = BatchHandle(batch_id=new_uuid(), job_handles=[], size=3)
         mock_jobs.enqueue_batch.return_value = expected_handle
 
         result = await tq.enqueue_batch(items, finalizer=finalizer)
@@ -96,9 +97,9 @@ class TestFacadeEnqueueBatchForwarding:
         tq, mock_jobs = _make_mock_taskq()
         items = [_make_item(i) for i in range(3)]
         policy = AbortBatchAfter(2)
-        finalizer = _make_finalizer(uuid4())
+        finalizer = _make_finalizer(new_uuid())
         expected_handle = BatchHandle(
-            batch_id=uuid4(),
+            batch_id=new_uuid(),
             job_handles=[],
             size=3,
             finalizer_handle=None,
@@ -122,7 +123,7 @@ class TestFacadeEnqueueBatchStreaming:
             yield _make_item(0)
             yield _make_item(1)
 
-        expected_handle = BatchHandle(batch_id=uuid4(), job_handles=[], size=2)
+        expected_handle = BatchHandle(batch_id=new_uuid(), job_handles=[], size=2)
         mock_jobs.enqueue_batch_streaming.return_value = expected_handle
 
         result = await tq.enqueue_batch_streaming(gen(), chunk_size=500)
@@ -136,7 +137,7 @@ class TestFacadeEnqueueBatchStreaming:
 class TestFacadeListBatches:
     async def test_facade_list_batches(self) -> None:
         tq, mock_jobs = _make_mock_taskq()
-        bid = uuid4()
+        bid = new_uuid()
         mock_jobs.list_batches.return_value = [
             BatchSummary(
                 batch_id=bid,

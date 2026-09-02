@@ -10,7 +10,7 @@ import time
 from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import patch
-from uuid import UUID, uuid4
+from uuid import UUID
 
 import pytest
 from hypothesis import given, settings
@@ -18,6 +18,7 @@ from hypothesis import strategies as st
 from pydantic import BaseModel
 
 from taskq import actor
+from taskq._ids import new_uuid
 from taskq.batch import BatchCompletionStatus, BatchHandle, EnqueueItem
 from taskq.client._handle import JobHandle
 from taskq.client._jobs import JobsClient
@@ -560,7 +561,7 @@ class TestTI5IdempotencyKeyCollisionIntegration:
         finally:
             await conn.close()
 
-        key = f"idem-collision-{uuid4()}"
+        key = f"idem-collision-{new_uuid()}"
         items = [
             EnqueueItem(actor_ref=_test_actor, payload=_Payload(value=1), idempotency_key=key),
             EnqueueItem(actor_ref=_test_actor, payload=_Payload(value=2), idempotency_key=key),
@@ -688,13 +689,13 @@ class TestTIGinIndexUsed:
         # Seed 10 000 jobs across 5 batch IDs via copy_records_to_table
         conn = await asyncpg.connect(pg_dsn)
         try:
-            batch_ids = [str(uuid4()) for _ in range(5)]
+            batch_ids = [str(new_uuid()) for _ in range(5)]
             records: list[tuple[object, ...]] = []
             for i in range(10_000):
                 batch_id = batch_ids[i % 5]
                 records.append(
                     (
-                        uuid4(),
+                        new_uuid(),
                         "seed_actor",
                         "default",
                         "{}",
@@ -765,13 +766,13 @@ class TestTIGinNegSequentialScanForTextExtraction:
         # Seed 10 000 jobs across 5 batch IDs via copy_records_to_table
         conn = await asyncpg.connect(pg_dsn)
         try:
-            batch_ids = [str(uuid4()) for _ in range(5)]
+            batch_ids = [str(new_uuid()) for _ in range(5)]
             records: list[tuple[object, ...]] = []
             for i in range(10_000):
                 batch_id = batch_ids[i % 5]
                 records.append(
                     (
-                        uuid4(),
+                        new_uuid(),
                         "seed_actor",
                         "default",
                         "{}",

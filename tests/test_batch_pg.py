@@ -12,11 +12,12 @@ import json
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
-from uuid import UUID, uuid4
+from uuid import UUID
 
 import asyncpg
 import pytest
 
+from taskq._ids import new_job_id, new_uuid
 from taskq.backend._protocol import BatchFilter, EnqueueArgs
 from taskq.testing.fixtures import JobsApp
 from taskq.testing.jobs import make_enqueue_args
@@ -39,7 +40,7 @@ async def _insert_test_job(
     status: str = "pending",
 ) -> UUID:
     """Insert a job row directly via asyncpg with batch_id metadata."""
-    job_id = uuid4()
+    job_id = new_job_id()
     await conn.execute(
         f'INSERT INTO "{schema}".jobs '  # noqa: S608  # Why: test helper — schema is a validated constant from settings, not user input
         "(id, queue, actor, payload, max_attempts, retry_kind, metadata, status) "
@@ -58,8 +59,8 @@ async def _insert_test_job(
 class TestPostgresCreateBatch:
     async def test_create_and_get_batch(self, jobs_app: JobsApp) -> None:
         backend = jobs_app.backend
-        bid = uuid4()
-        fin_id = uuid4()
+        bid = new_uuid()
+        fin_id = new_uuid()
 
         await backend.create_batch(
             bid,
@@ -86,7 +87,7 @@ class TestPostgresCreateBatch:
 
     async def test_create_batch_with_nulls(self, jobs_app: JobsApp) -> None:
         backend = jobs_app.backend
-        bid = uuid4()
+        bid = new_uuid()
 
         await backend.create_batch(
             bid,
@@ -105,13 +106,13 @@ class TestPostgresCreateBatch:
 
     async def test_get_batch_nonexistent(self, jobs_app: JobsApp) -> None:
         backend = jobs_app.backend
-        row = await backend.get_batch(uuid4())
+        row = await backend.get_batch(new_uuid())
         assert row is None
 
     async def test_create_batch_with_connection(self, jobs_app: JobsApp) -> None:
         deps = jobs_app.deps
         backend = jobs_app.backend
-        bid = uuid4()
+        bid = new_uuid()
 
         async with deps.worker_pool.acquire() as conn:
             await backend.create_batch(
@@ -137,7 +138,7 @@ class TestPostgresIncrementBatchFailures:
         deps = jobs_app.deps
         backend = jobs_app.backend
         schema = deps.settings.schema_name
-        bid = uuid4()
+        bid = new_uuid()
 
         await backend.create_batch(bid, "default", 5, 3, None, None)
 
@@ -158,14 +159,14 @@ class TestPostgresIncrementBatchFailures:
 
     async def test_increment_no_batch_returns_zeros(self, jobs_app: JobsApp) -> None:
         backend = jobs_app.backend
-        count, threshold, remaining = await backend.increment_batch_failures(uuid4())
+        count, threshold, remaining = await backend.increment_batch_failures(new_uuid())
         assert count == 0
         assert threshold is None
         assert remaining == 0
 
     async def test_increment_with_null_threshold(self, jobs_app: JobsApp) -> None:
         backend = jobs_app.backend
-        bid = uuid4()
+        bid = new_uuid()
 
         await backend.create_batch(bid, "default", 5, None, None, None)
 
@@ -182,7 +183,7 @@ class TestPostgresAbortBatch:
         deps = jobs_app.deps
         backend = jobs_app.backend
         schema = deps.settings.schema_name
-        bid = uuid4()
+        bid = new_uuid()
 
         await backend.create_batch(bid, "default", 5, 3, None, None)
 
@@ -217,7 +218,7 @@ class TestPostgresAbortBatch:
 
     async def test_abort_no_batch_returns_zero(self, jobs_app: JobsApp) -> None:
         backend = jobs_app.backend
-        count = await backend.abort_batch(uuid4())
+        count = await backend.abort_batch(new_uuid())
         assert count == 0
 
 
@@ -229,7 +230,7 @@ class TestPostgresResetBatchFailures:
         deps = jobs_app.deps
         backend = jobs_app.backend
         schema = deps.settings.schema_name
-        bid = uuid4()
+        bid = new_uuid()
 
         await backend.create_batch(bid, "default", 5, 3, None, None)
 
@@ -250,7 +251,7 @@ class TestPostgresResetBatchFailures:
 
     async def test_reset_no_batch_returns_zero(self, jobs_app: JobsApp) -> None:
         backend = jobs_app.backend
-        remaining = await backend.reset_batch_failures(uuid4())
+        remaining = await backend.reset_batch_failures(new_uuid())
         assert remaining == 0
 
 
@@ -260,7 +261,7 @@ class TestPostgresResetBatchFailures:
 class TestPostgresCompleteBatch:
     async def test_complete_sets_status_and_completed_at(self, jobs_app: JobsApp) -> None:
         backend = jobs_app.backend
-        bid = uuid4()
+        bid = new_uuid()
 
         await backend.create_batch(bid, "default", 5, 3, None, None)
 
@@ -273,7 +274,7 @@ class TestPostgresCompleteBatch:
 
     async def test_complete_noop_if_already_terminal(self, jobs_app: JobsApp) -> None:
         backend = jobs_app.backend
-        bid = uuid4()
+        bid = new_uuid()
 
         await backend.create_batch(bid, "default", 5, 3, None, None)
         await backend.abort_batch(bid)
@@ -299,7 +300,7 @@ class TestPostgresCountBatchNonTerminal:
         deps = jobs_app.deps
         backend = jobs_app.backend
         schema = deps.settings.schema_name
-        bid = uuid4()
+        bid = new_uuid()
 
         await backend.create_batch(bid, "default", 10, 5, None, None)
 
@@ -316,7 +317,7 @@ class TestPostgresCountBatchNonTerminal:
 
     async def test_count_zero_when_no_jobs(self, jobs_app: JobsApp) -> None:
         backend = jobs_app.backend
-        bid = uuid4()
+        bid = new_uuid()
 
         await backend.create_batch(bid, "default", 10, 5, None, None)
 
@@ -332,8 +333,8 @@ class TestPostgresListBatches:
         deps = jobs_app.deps
         backend = jobs_app.backend
         schema = deps.settings.schema_name
-        bid1 = uuid4()
-        bid2 = uuid4()
+        bid1 = new_uuid()
+        bid2 = new_uuid()
 
         await backend.create_batch(bid1, "default", 10, 5, None, None)
         await backend.create_batch(bid2, "other_queue", 5, 3, None, None)
@@ -356,8 +357,8 @@ class TestPostgresListBatches:
 
     async def test_list_filter_by_queue(self, jobs_app: JobsApp) -> None:
         backend = jobs_app.backend
-        bid1 = uuid4()
-        bid2 = uuid4()
+        bid1 = new_uuid()
+        bid2 = new_uuid()
 
         await backend.create_batch(bid1, "default", 10, 5, None, None)
         await backend.create_batch(bid2, "other_queue", 5, 3, None, None)
@@ -369,8 +370,8 @@ class TestPostgresListBatches:
 
     async def test_list_filter_active_false(self, jobs_app: JobsApp) -> None:
         backend = jobs_app.backend
-        bid1 = uuid4()
-        bid2 = uuid4()
+        bid1 = new_uuid()
+        bid2 = new_uuid()
 
         await backend.create_batch(bid1, "default", 10, 5, None, None)
         await backend.create_batch(bid2, "default", 5, 3, None, None)
@@ -384,8 +385,8 @@ class TestPostgresListBatches:
 
     async def test_list_filter_by_batch_id(self, jobs_app: JobsApp) -> None:
         backend = jobs_app.backend
-        bid1 = uuid4()
-        bid2 = uuid4()
+        bid1 = new_uuid()
+        bid2 = new_uuid()
 
         await backend.create_batch(bid1, "default", 10, 5, None, None)
         await backend.create_batch(bid2, "default", 5, 3, None, None)
@@ -397,7 +398,7 @@ class TestPostgresListBatches:
     async def test_list_limit(self, jobs_app: JobsApp) -> None:
         backend = jobs_app.backend
         for _ in range(5):
-            await backend.create_batch(uuid4(), "default", 1, 1, None, None)
+            await backend.create_batch(new_uuid(), "default", 1, 1, None, None)
 
         results = await backend.list_batches(BatchFilter(limit=3))
         assert len(results) == 3
@@ -409,7 +410,7 @@ class TestPostgresListBatches:
 class TestPostgresPruneOldBatches:
     async def test_prune_completed_batch_after_cutoff(self, jobs_app: JobsApp) -> None:
         backend = jobs_app.backend
-        bid = uuid4()
+        bid = new_uuid()
 
         await backend.create_batch(bid, "default", 5, 3, None, None)
         await backend.complete_batch(bid)
@@ -423,7 +424,7 @@ class TestPostgresPruneOldBatches:
 
     async def test_prune_does_not_remove_active_batch(self, jobs_app: JobsApp) -> None:
         backend = jobs_app.backend
-        bid = uuid4()
+        bid = new_uuid()
 
         await backend.create_batch(bid, "default", 5, 3, None, None)
 
@@ -439,7 +440,7 @@ class TestPostgresPruneOldBatches:
         deps = jobs_app.deps
         backend = jobs_app.backend
         schema = deps.settings.schema_name
-        bid = uuid4()
+        bid = new_uuid()
 
         await backend.create_batch(bid, "default", 5, 3, None, None)
         await backend.complete_batch(bid)
@@ -465,7 +466,7 @@ class TestPostgresEnqueueBatchAtomicRollback:
         deps = jobs_app.deps
         backend = jobs_app.backend
         schema = deps.settings.schema_name
-        bid = uuid4()
+        bid = new_uuid()
 
         def gen() -> Iterator[EnqueueArgs]:
             yield make_enqueue_args(actor="a1", queue="default")
@@ -503,7 +504,7 @@ class TestPostgresAbortBatchNoRow:
         deps = jobs_app.deps
         backend = jobs_app.backend
         schema = deps.settings.schema_name
-        bid = uuid4()
+        bid = new_uuid()
 
         # Insert jobs with batch_id metadata but do NOT create a batches row.
         async with deps.worker_pool.acquire() as conn:
@@ -536,7 +537,7 @@ class TestPostgresConcurrentIncrement:
     async def test_concurrent_increments_final_count_matches_n(self, jobs_app: JobsApp) -> None:
         """N concurrent increment_batch_failures calls produce consecutive_failures == N."""
         backend = jobs_app.backend
-        bid = uuid4()
+        bid = new_uuid()
 
         await backend.create_batch(bid, "default", 5, 100, None, None)
 
@@ -578,7 +579,7 @@ class TestPostgresRollingDeployUndefinedTable:
             await conn.execute(f'DROP TABLE "{schema}".batches CASCADE')
 
         with pytest.raises(asyncpg.exceptions.UndefinedTableError):
-            await backend.get_batch(uuid4())
+            await backend.get_batch(new_uuid())
 
 
 # ── complete_stale_batches negative case ──────────────────────────
@@ -592,7 +593,7 @@ class TestPostgresCompleteStaleBatchesNegative:
         deps = jobs_app.deps
         backend = jobs_app.backend
         schema = deps.settings.schema_name
-        bid = uuid4()
+        bid = new_uuid()
 
         await backend.create_batch(bid, "default", 5, 3, None, None)
 
@@ -626,7 +627,7 @@ class TestPostgresAbortSetsCancelColumns:
         deps = jobs_app.deps
         backend = jobs_app.backend
         schema = deps.settings.schema_name
-        bid = uuid4()
+        bid = new_uuid()
 
         await backend.create_batch(bid, "default", 5, 3, None, None)
 

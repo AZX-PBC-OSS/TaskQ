@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime, timedelta
-from uuid import uuid4
 
 import asyncpg
 import pytest
@@ -115,7 +114,7 @@ async def test_sweep_completes_stale_batch(pg_dsn: str) -> None:
 
         await migrate_mod.apply_pending(conn, schema=schema)
 
-        bid = uuid4()
+        bid = new_uuid()
         await conn.execute(
             f'INSERT INTO "{schema}".batches (id, queue, expected_size) '  # noqa: S608  # Why: test helper — schema is a unique test-generated constant, not user input
             "VALUES ($1, 'default', 1)",
@@ -128,7 +127,7 @@ async def test_sweep_completes_stale_batch(pg_dsn: str) -> None:
             "VALUES ($1, 'default', 'test_actor', '{}'::jsonb, "
             "1, 'non_retryable', $2::jsonb, 'succeeded', "
             "0, 1, 0, 0, 1)",
-            uuid4(),
+            new_uuid(),
             json.dumps({"batch_id": str(bid)}),
         )
 

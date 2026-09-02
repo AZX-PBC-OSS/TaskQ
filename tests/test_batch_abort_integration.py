@@ -8,13 +8,14 @@ because it exercises the abort/completion hook, not wait_for_batch.
 """
 
 from datetime import UTC, datetime
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from hypothesis import given, settings
 from hypothesis import strategies as st
 from pydantic import BaseModel
 
 from taskq import actor
+from taskq._ids import new_uuid
 from taskq.batch import EnqueueItem, apply_batch_terminal_outcome
 from taskq.batch_policy import AbortBatchAfter
 from taskq.client._jobs import JobsClient
@@ -67,7 +68,7 @@ class TestAbortAfterThreshold:
         )
 
         client = _make_client(backend)
-        batch_id = uuid4()
+        batch_id = new_uuid()
         items = [_make_item(i) for i in range(5)]
         handle = await client.enqueue_batch(
             items, batch_id=batch_id, failure_policy=AbortBatchAfter(3)
@@ -117,7 +118,7 @@ class TestSuccessResetsCounter:
         )
 
         client = _make_client(backend)
-        batch_id = uuid4()
+        batch_id = new_uuid()
         items = [_make_item(i) for i in range(6)]
         handle = await client.enqueue_batch(
             items, batch_id=batch_id, failure_policy=AbortBatchAfter(3)
@@ -155,7 +156,7 @@ class TestNoAbortWithoutPolicy:
         )
 
         client = _make_client(backend)
-        batch_id = uuid4()
+        batch_id = new_uuid()
         items = [_make_item(i) for i in range(5)]
         handle = await client.enqueue_batch(items, batch_id=batch_id)
 
@@ -185,7 +186,7 @@ class TestBatchMarkedCompleteOnAllTerminal:
         register_stub(backend, _test_actor.name, _ok_stub)
 
         client = _make_client(backend)
-        batch_id = uuid4()
+        batch_id = new_uuid()
         items = [_make_item(i) for i in range(5)]
         handle = await client.enqueue_batch(
             items, batch_id=batch_id, failure_policy=AbortBatchAfter(3)
@@ -253,7 +254,7 @@ class TestBatchAbortProperty:
         )
 
         client = _make_client(backend)
-        batch_id = uuid4()
+        batch_id = new_uuid()
         items = [_make_item(i) for i in range(n_jobs)]
         handle = await client.enqueue_batch(
             items, batch_id=batch_id, failure_policy=AbortBatchAfter(threshold)
@@ -324,7 +325,7 @@ class TestAbortWinsOverComplete:
 
     async def test_abort_wins_over_complete(self) -> None:
         backend = _make_backend()
-        bid = uuid4()
+        bid = new_uuid()
 
         await backend.create_batch(
             bid,
@@ -385,7 +386,7 @@ class TestApplyBatchTerminalOutcome:
 
     async def test_succeeded_resets_failures_and_completes(self) -> None:
         backend = _make_backend()
-        bid = uuid4()
+        bid = new_uuid()
 
         await backend.create_batch(
             bid,
@@ -416,7 +417,7 @@ class TestApplyBatchTerminalOutcome:
 
     async def test_failed_increments_and_aborts_at_threshold(self) -> None:
         backend = _make_backend()
-        bid = uuid4()
+        bid = new_uuid()
 
         await backend.create_batch(
             bid,
@@ -456,7 +457,7 @@ class TestApplyBatchTerminalOutcome:
 
     async def test_failed_below_threshold_completes_when_empty(self) -> None:
         backend = _make_backend()
-        bid = uuid4()
+        bid = new_uuid()
 
         await backend.create_batch(
             bid,
@@ -484,7 +485,7 @@ class TestApplyBatchTerminalOutcome:
 
     async def test_cancelled_completes_when_empty(self) -> None:
         backend = _make_backend()
-        bid = uuid4()
+        bid = new_uuid()
 
         await backend.create_batch(
             bid,
@@ -510,7 +511,7 @@ class TestApplyBatchTerminalOutcome:
 
     async def test_snoozed_returns_immediately(self) -> None:
         backend = _make_backend()
-        bid = uuid4()
+        bid = new_uuid()
 
         await backend.create_batch(
             bid,
@@ -537,7 +538,7 @@ class TestApplyBatchTerminalOutcome:
 
     async def test_scheduled_returns_immediately(self) -> None:
         backend = _make_backend()
-        bid = uuid4()
+        bid = new_uuid()
 
         await backend.create_batch(
             bid,
@@ -599,7 +600,7 @@ class TestHookFailureGuard:
         )
 
         client = JobsClient(backend=backend, clock=FakeClock(start=_START))
-        batch_id = uuid4()
+        batch_id = new_uuid()
         items = [_make_item(i) for i in range(3)]
         handle = await client.enqueue_batch(
             items, batch_id=batch_id, failure_policy=AbortBatchAfter(2)
