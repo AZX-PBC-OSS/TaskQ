@@ -363,3 +363,46 @@ def test_log_fields_carrying_exception_text_are_listed_for_scrubbing() -> None:
                         "EXCEPTION_TRACEBACK_FIELDS"
                     )
     assert offenders == [], f"unlisted exception-text log fields: {offenders}"
+
+
+# ── repr()-flattened DETAIL/HINT/CONTEXT lines ──────────────────────
+
+
+def test_repr_flattened_detail_and_hint_lines_are_scrubbed() -> None:
+    """``repr()`` flattens the newline before DETAIL/HINT into the literal
+    two characters ``\\n``, which the line-anchored scrub cannot see — and
+    ``error=repr(exc)`` is the majority log idiom (59 sites vs 33 ``str``).
+
+    asyncpg's own ``__repr__`` renders only the primary message, so the
+    leak shape is a relayed PG error: a plain exception whose message is
+    the rendered PG text.
+    """
+    from taskq.obs._redact_exc import scrub_exception_field
+
+    exc = asyncpg.exceptions.PostgresError("some failure")
+    exc.detail = "Key (identity_key)=(" + "subject-424242" + ") already exists."
+    exc.hint = "try another identity_key"
+    relayed = RuntimeError(str(exc))
+    # Precondition: the flattened form really does leak, or this test proves nothing.
+    assert "subject-424242" in repr(relayed)
+    assert "try another" in repr(relayed)
+
+    safe = scrub_exception_field("error", repr(relayed))
+
+    assert "subject-424242" not in safe
+    assert "try another" not in safe
+    # Sensible single-line shape: the class and primary template survive,
+    # and the repr's closing quote is kept rather than amputated.
+    assert safe == "RuntimeError('some failure')"
+
+
+def test_scrub_preserves_non_detail_escaped_newlines() -> None:
+    """Only DETAIL/HINT/CONTEXT-shaped escaped lines are scrubbed — a
+    repr whose message merely spans lines keeps every line."""
+    from taskq.obs._redact_exc import scrub_exception_field
+
+    safe = scrub_exception_field("error", repr(ValueError("line one\nline two")))
+
+    assert "line one" in safe
+    assert "line two" in safe
+    assert "DETAIL" not in safe

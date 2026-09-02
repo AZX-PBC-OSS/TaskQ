@@ -51,6 +51,23 @@ __all__ = [
 #: appearing to work on a single-exception test.
 _PG_DETAIL_RE = re.compile(r"^[ \t]*(?:DETAIL|HINT|CONTEXT):.*$", re.MULTILINE)
 
+#: Companion to :data:`_PG_DETAIL_RE` for ``repr()``-flattened text.
+#: ``repr(exc)`` renders the newline before DETAIL/HINT/CONTEXT as the two
+#: literal characters ``\n``, which the line-anchored pattern above cannot
+#: see — and ``error=repr(exc)`` is a majority log idiom. Consumes from the
+#: escaped newline up to (not including) the next escaped newline or the
+#: end of the line; the closing-quote alternative (``['\"]\)?\s*$``) can
+#: only succeed at end-of-line, so it keeps a repr's trailing ``')`` when
+#: present without ever stopping the scrub early and leaving row values
+#: behind. ``MULTILINE`` makes ``$`` match per real line, so a repr line
+#: embedded in a rendered traceback (real newlines around it) is scrubbed
+#: too. Optional escaped ``\r`` covers the CRLF boundary shape.
+_PG_DETAIL_ESCAPED_RE = re.compile(
+    r"(?:\\r)?\\n[ \t]*(?:DETAIL|HINT|CONTEXT):"
+    r".*?(?=(?:\\r)?\\n|['\"]\)?\s*$)",
+    re.MULTILINE,
+)
+
 #: userinfo in a URI. Group 1 is the scheme+user, group 2 the password.
 _URI_CRED_RE = re.compile(r"(\b[a-zA-Z][a-zA-Z0-9+.-]*://[^\s:/@]+):([^\s@]+)@")
 
@@ -58,8 +75,14 @@ _MAX_MESSAGE_CHARS = 512
 
 
 def _scrub_text(text: str) -> str:
-    """Apply the line-wise DETAIL/HINT/CONTEXT and URI-credential scrubbing."""
+    """Apply the line-wise DETAIL/HINT/CONTEXT and URI-credential scrubbing.
+
+    Both newline forms are covered: real newlines (``str(exc)``) by
+    :data:`_PG_DETAIL_RE`, and the literal ``\\n`` ``repr()`` flattens them
+    into by :data:`_PG_DETAIL_ESCAPED_RE`.
+    """
     text = _PG_DETAIL_RE.sub("", text)
+    text = _PG_DETAIL_ESCAPED_RE.sub("", text)
     return _URI_CRED_RE.sub(r"\1:***@", text)
 
 

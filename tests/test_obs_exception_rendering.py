@@ -237,6 +237,38 @@ def test_terminal_write_failure_fields_are_scrubbed_in_json_logs() -> None:
     assert "DETAIL" not in parsed["infra_error_traceback"]
 
 
+def test_repr_flattened_pg_detail_is_scrubbed_in_json_logs() -> None:
+    """``error=repr(exc)`` — the majority log idiom — must be scrubbed.
+
+    ``repr()`` flattens the newline before asyncpg's ``DETAIL:`` line into
+    the literal two characters ``\\n``, which the line-anchored scrub cannot
+    see, so the row values in the DETAIL line shipped raw to the JSON
+    channel. asyncpg's own ``__repr__`` renders only the primary message,
+    so the leak shape is a relayed PG error: a plain exception whose
+    message IS the rendered PG text — what ``except Exception`` sites hand
+    to ``error=repr(exc)``.
+    """
+    obs_mod.setup_logging(log_format="json")
+    pg = _leaky_unique_violation()
+    relayed = RuntimeError(str(pg))
+    # Precondition: the flattened form really does leak, or this test proves nothing.
+    assert "ssn-123456789" in repr(relayed)
+    assert "\\nDETAIL:" in repr(relayed)
+
+    with _capture_root_json_stream() as buf:
+        log = obs_mod.get_logger("_test_repr_scrub")
+        log.error("sweep-failed", kind="sweep", error=repr(relayed))
+
+    output = buf.getvalue().strip()
+    parsed = json.loads(output)
+    assert "ssn-123456789" not in output
+    assert "tenant-88" not in output
+    # The repr stays a sensible single line: class + primary template.
+    assert "RuntimeError" in parsed["error"]
+    assert "duplicate key value violates unique constraint" in parsed["error"]
+    assert "DETAIL" not in parsed["error"]
+
+
 def test_exception_object_field_renders_scrubbed_not_dropped() -> None:
     """An exception object passed as a field value must render as the scrubbed
     safe message — previously the raw object hit the orjson fallback TypeError
