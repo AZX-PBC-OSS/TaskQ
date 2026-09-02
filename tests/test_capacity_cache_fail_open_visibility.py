@@ -22,9 +22,17 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+import pytest
 import structlog.testing
+from opentelemetry.sdk.metrics import MeterProvider
+from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 
+import taskq.obs as obs_mod
+import taskq.obs._otel as otel_mod
 from taskq.client._capacity import ActorCapacityCache
+from taskq.testing.otel import counter_data_points
+
+_FAILURE_COUNTER = "taskq.backpressure.capacity_refresh_failures"
 
 
 class _Backend:
@@ -132,15 +140,36 @@ async def test_recovery_restores_the_stored_cap() -> None:
     assert await cache.effective_max_pending("a", literal=99) == 2
 
 
-def test_counter_is_not_gated_on_otel_enabled() -> None:
-    """Same rule as record_backpressure_error: safety-critical signals are
-    counted even with telemetry off."""
-    import inspect
+def test_counter_still_records_with_telemetry_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Same rule as record_backpressure_error: a safety-critical signal is
+    counted even with telemetry off.
 
-    from taskq.obs import _otel
+    The distinction is real and load-bearing — most TaskQ counters no-op on
+    `_otel_enabled=False`. This one must not, because the condition it reports
+    is a silently relaxed backpressure gate. Recorded through the real
+    instrument rather than inferred from the function's source text, which
+    could not tell an `_otel_enabled` check in the body from one the compiler
+    never reaches.
+    """
+    reader = InMemoryMetricReader()
+    meter = MeterProvider(metric_readers=[reader]).get_meter(
+        obs_mod.INSTRUMENTATION_NAME, otel_mod._version()
+    )
+    monkeypatch.setattr(
+        otel_mod,
+        "_capacity_refresh_failures",
+        meter.create_counter(_FAILURE_COUNTER, unit="1"),
+    )
+    monkeypatch.setattr(otel_mod, "_otel_enabled", False)
 
-    src = inspect.getsource(_otel.record_capacity_refresh_failure)
-    # Strip the docstring: it mentions _otel_enabled by name to explain the
-    # exemption, so a naive substring check would match its own rationale.
-    body = src.split('"""')[-1]
-    assert "_otel_enabled" not in body
+    otel_mod.record_capacity_refresh_failure(has_snapshot=False)
+    otel_mod.record_capacity_refresh_failure(has_snapshot=True)
+
+    points = counter_data_points(reader, _FAILURE_COUNTER)
+    assert {(p.attributes or {})["degraded"] for p in points} == {
+        "no_snapshot",
+        "stale_snapshot",
+    }, f"both degradation modes must stay distinguishable with telemetry off, got {points}"
+    assert sum(int(p.value) for p in points) == 2

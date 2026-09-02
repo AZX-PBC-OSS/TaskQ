@@ -15,13 +15,19 @@ suffices.
 
 from __future__ import annotations
 
-import re
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
+from datetime import timedelta
+from typing import Any
 
+import asyncpg
 import pytest
 
 from taskq._ids import new_uuid
+from taskq.backend._dispatch import _dispatch_batch
 from taskq.backend._sql import INSERT_EVENTS_BATCH_SQL
 from taskq.backend._sql_templates import render
+from taskq.testing.fixtures import ModulePgSchema
 
 
 def test_batch_sql_is_a_single_multi_row_insert() -> None:
@@ -40,16 +46,98 @@ def test_rendered_templates_expose_the_batch_form() -> None:
     assert "VALUES ($1, clock_timestamp(), $2, $3::jsonb)" in tmpl.insert_event
 
 
-def test_dispatch_uses_the_batch_template_and_no_per_row_loop() -> None:
-    import inspect
+class _CountingConn:
+    """Delegates to a real connection, counting event-INSERT round trips.
 
-    from taskq.backend import _dispatch
+    The statement count IS the property under test: correctness never differed
+    between the loop and the batch, only the number of awaited round trips
+    taken while the dispatch row locks are still held.
+    """
 
-    src = inspect.getsource(_dispatch._dispatch_batch)
-    assert "sql.insert_events_batch" in src
-    assert not re.search(r"for rec in records:\s*\n\s+await conn\.execute", src), (
-        "per-row event INSERT loop is back"
+    def __init__(self, conn: Any, event_sql: str) -> None:
+        self._conn = conn
+        self._event_sql = event_sql
+        self.event_executes = 0
+
+    async def execute(self, sql: str, *args: object) -> str:
+        if sql == self._event_sql:
+            self.event_executes += 1
+        result: str = await self._conn.execute(sql, *args)
+        return result
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._conn, name)
+
+
+class _CountingPool:
+    """Pool stand-in yielding one _CountingConn over a real pooled connection."""
+
+    def __init__(self, pool: Any, event_sql: str) -> None:
+        self._pool = pool
+        self._event_sql = event_sql
+        self.conns: list[_CountingConn] = []
+
+    @asynccontextmanager
+    async def acquire(self, *, timeout: float | None = None) -> AsyncGenerator[_CountingConn]:  # noqa: ASYNC109  # Why: mirrors asyncpg.Pool.acquire, which _dispatch_batch calls with timeout=.
+        async with self._pool.acquire(timeout=timeout) as conn:
+            counting = _CountingConn(conn, self._event_sql)
+            self.conns.append(counting)
+            yield counting
+
+
+@pytest.mark.integration
+async def test_dispatch_writes_one_event_statement_for_the_whole_batch(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+) -> None:
+    """Dispatching N jobs issues ONE event INSERT, not N.
+
+    Driving the real ``_dispatch_batch`` and counting round trips, rather than
+    grepping its source for a `for rec in records:` loop: a reintroduced loop
+    spelled any other way — enumerate, a comprehension of awaits, a helper —
+    is the same regression and the regex would not have seen it.
+    """
+    schema = module_pg_schema.schema_name
+    tmpl = render(schema)
+    job_ids = [new_uuid() for _ in range(5)]
+    await clean_pg_conn.execute(
+        f'INSERT INTO "{schema}".actor_config (actor, queue) VALUES ($1, $2) '  # noqa: S608  # Why: schema is a test-fixture identifier, validated by render() above.
+        "ON CONFLICT (actor) DO NOTHING",
+        "a",
+        "default",
     )
+    await clean_pg_conn.execute(
+        f'INSERT INTO "{schema}".jobs '  # noqa: S608  # Why: schema is a test-fixture identifier, validated by render() above.
+        "(id, actor, queue, payload, status, max_attempts, retry_kind, scheduled_at) "
+        "SELECT id, 'a', 'default', '{}'::jsonb, 'pending', 3, 'transient', clock_timestamp() "
+        "FROM unnest($1::uuid[]) AS t(id)",
+        job_ids,
+    )
+
+    pool = _CountingPool(module_pg_pool, tmpl.insert_events_batch)
+    rows = await _dispatch_batch(
+        pool,  # type: ignore[arg-type]  # Why: duck-typed pool; only acquire() is used.
+        tmpl,
+        2,
+        5.0,
+        schema,
+        new_uuid(),
+        ["default"],
+        len(job_ids),
+        timedelta(seconds=60),
+    )
+
+    assert {r.id for r in rows} == set(job_ids), "all five jobs must dispatch"
+    executes = sum(c.event_executes for c in pool.conns)
+    assert executes == 1, (
+        f"expected ONE batched event INSERT for {len(job_ids)} jobs, got {executes} — "
+        "a per-row loop is back, holding the dispatch row locks across every round trip"
+    )
+    written = await clean_pg_conn.fetchval(
+        f"SELECT count(*) FROM \"{schema}\".job_events WHERE kind = 'state_change'"  # noqa: S608  # Why: schema is a test-fixture identifier.
+    )
+    assert written == len(job_ids), "one event per job must still be written"
 
 
 def test_schema_is_still_validated_in_the_batch_template() -> None:

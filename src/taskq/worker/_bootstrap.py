@@ -299,6 +299,59 @@ async def _warn_on_cron_drift(backend: Backend, spec: CronScheduleSpec) -> None:
     )
 
 
+def _emit_startup_warnings(settings: WorkerSettings) -> None:
+    """Emit the once-at-startup operator warnings for a worker's settings.
+
+    Extracted from ``_main`` so the warnings can be exercised directly: they
+    are pure functions of the settings with no side effect but the log line,
+    and reaching them through ``_main`` means standing up a whole worker.
+    """
+
+    # Why: the bounded-close tail is additive on top of the shutdown phase
+    # graces and is not modelled by the settings validator (which cannot
+    # reject this without refusing TaskQ's own defaults -- see
+    # WorkerSettings.worst_case_shutdown_seconds). Left unsurfaced, the
+    # first symptom is a SIGKILL mid-unwind during an incident, with
+    # terminal writes truncated and jobs recovered later by crash reclaim
+    # instead of finalizing cleanly. Warn once at startup, with the numbers
+    # an operator needs to size the pod grace.
+    if not settings.shutdown_budget_is_sufficient:
+        _startup_log.warning(
+            "shutdown-budget-exceeds-termination-grace",
+            worst_case_seconds=settings.worst_case_shutdown_seconds,
+            termination_grace_period=settings.termination_grace_period,
+            cancellation_grace_period=settings.cancellation_grace_period,
+            cleanup_grace_period=settings.cleanup_grace_period,
+            close_tail_seconds=worst_case_teardown_tail(),
+            remedy=(
+                "Set the pod/container termination grace to at least "
+                f"{settings.worst_case_shutdown_seconds}s (Kubernetes "
+                "terminationGracePeriodSeconds, Azure Container Apps "
+                "terminationGracePeriodSeconds), or lower "
+                "TASKQ_CANCELLATION_GRACE_PERIOD / TASKQ_CLEANUP_GRACE_PERIOD."
+            ),
+        )
+
+    # Why: TASKQ_MIGRATE_ON_START is defined on TaskQSettings, so WorkerSettings
+    # inherits and happily VALIDATES it -- an operator setting it on a worker
+    # gets no error and no migration. The worker deliberately does not honour
+    # it (N replicas racing to migrate is exactly the hazard the migration
+    # advisory lock exists to prevent), so say so rather than ignoring it
+    # silently. Reading the README during an incident is precisely when this
+    # would be set.
+    if settings.migrate_on_start:
+        _startup_log.warning(
+            "migrate-on-start-ignored-by-worker",
+            setting="TASKQ_MIGRATE_ON_START",
+            reason=(
+                "the worker never applies migrations; this setting is consumed only by `taskq ui serve`"
+            ),
+            remedy=(
+                "run `taskq migrate up` from a pre-deploy job or init container before starting workers"
+            ),
+        )
+
+
 async def _main(
     settings: WorkerSettings,
     *,
@@ -449,51 +502,7 @@ async def _main(
 
     _producer_log = structlog.get_logger("taskq.worker.run.producer")
 
-    # Why: the bounded-close tail is additive on top of the shutdown phase
-    # graces and is not modelled by the settings validator (which cannot
-    # reject this without refusing TaskQ's own defaults -- see
-    # WorkerSettings.worst_case_shutdown_seconds). Left unsurfaced, the
-    # first symptom is a SIGKILL mid-unwind during an incident, with
-    # terminal writes truncated and jobs recovered later by crash reclaim
-    # instead of finalizing cleanly. Warn once at startup, with the numbers
-    # an operator needs to size the pod grace.
-    if not settings.shutdown_budget_is_sufficient:
-        _startup_log.warning(
-            "shutdown-budget-exceeds-termination-grace",
-            worst_case_seconds=settings.worst_case_shutdown_seconds,
-            termination_grace_period=settings.termination_grace_period,
-            cancellation_grace_period=settings.cancellation_grace_period,
-            cleanup_grace_period=settings.cleanup_grace_period,
-            close_tail_seconds=worst_case_teardown_tail(),
-            remedy=(
-                "Set the pod/container termination grace to at least "
-                f"{settings.worst_case_shutdown_seconds}s (Kubernetes "
-                "terminationGracePeriodSeconds, Azure Container Apps "
-                "terminationGracePeriodSeconds), or lower "
-                "TASKQ_CANCELLATION_GRACE_PERIOD / TASKQ_CLEANUP_GRACE_PERIOD."
-            ),
-        )
-
-    # Why: TASKQ_MIGRATE_ON_START is defined on TaskQSettings, so WorkerSettings
-    # inherits and happily VALIDATES it -- an operator setting it on a worker
-    # gets no error and no migration. The worker deliberately does not honour
-    # it (N replicas racing to migrate is exactly the hazard the migration
-    # advisory lock exists to prevent), so say so rather than ignoring it
-    # silently. Reading the README during an incident is precisely when this
-    # would be set.
-    if settings.migrate_on_start:
-        _startup_log.warning(
-            "migrate-on-start-ignored-by-worker",
-            setting="TASKQ_MIGRATE_ON_START",
-            reason=(
-                "the worker never applies migrations; this setting is consumed "
-                "only by `taskq ui serve`"
-            ),
-            remedy=(
-                "run `taskq migrate up` from a pre-deploy job or init container "
-                "before starting workers"
-            ),
-        )
+    _emit_startup_warnings(settings)
 
     async with open_worker_deps(settings, connections=connections) as deps:
         # ── until_idle override resolution ──────────────────────────────

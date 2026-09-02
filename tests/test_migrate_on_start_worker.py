@@ -14,8 +14,10 @@ loudly rather than to implement it.
 
 from __future__ import annotations
 
-import inspect
+import ast
 from pathlib import Path
+
+import structlog.testing
 
 from taskq.settings import WorkerSettings
 
@@ -29,13 +31,35 @@ def test_worker_settings_still_accepts_the_setting() -> None:
 
 
 def test_worker_bootstrap_warns_when_the_setting_is_set() -> None:
-    from taskq.worker import _bootstrap
+    """A worker started with the setting on must SAY it is being ignored.
 
-    source = inspect.getsource(
-        _bootstrap._main
-    )  # Why: asserting the bootstrap path emits the warning; _main is the real entry point.
-    assert "migrate-on-start-ignored-by-worker" in source
-    assert "if settings.migrate_on_start:" in source
+    Emitted, not grepped: the warning is now reachable through
+    ``_emit_startup_warnings``, so the log line and the fields an operator
+    needs are asserted as they are actually produced.
+    """
+    from taskq.worker._bootstrap import _emit_startup_warnings
+
+    settings = WorkerSettings.load_from_dict({"TASKQ_MIGRATE_ON_START": "true"}, validate=False)
+    with structlog.testing.capture_logs() as logs:
+        _emit_startup_warnings(settings)
+
+    entry = next(e for e in logs if e["event"] == "migrate-on-start-ignored-by-worker")
+    assert entry["log_level"] == "warning"
+    assert entry["setting"] == "TASKQ_MIGRATE_ON_START"
+    assert "ui serve" in entry["reason"]
+    assert "taskq migrate up" in entry["remedy"], "the warning must name the remedy"
+
+
+def test_worker_bootstrap_is_silent_when_the_setting_is_unset() -> None:
+    """The control: no warning for the default, or it becomes noise operators
+    learn to ignore."""
+    from taskq.worker._bootstrap import _emit_startup_warnings
+
+    settings = WorkerSettings.load_from_dict({}, validate=False)
+    with structlog.testing.capture_logs() as logs:
+        _emit_startup_warnings(settings)
+
+    assert [e for e in logs if e["event"] == "migrate-on-start-ignored-by-worker"] == []
 
 
 def test_worker_still_does_not_apply_migrations() -> None:
@@ -45,17 +69,34 @@ def test_worker_still_does_not_apply_migrations() -> None:
     reintroduce concurrent migration across replicas.
     """
     worker_pkg = _ROOT / "src" / "taskq" / "worker"
-    for path in worker_pkg.rglob("*.py"):
-        text = path.read_text()
-        assert "apply_pending" not in text, f"{path.name} must not run migrations"
+    offenders: list[str] = []
+    for path in sorted(worker_pkg.rglob("*.py")):
+        tree = ast.parse(path.read_text())
+        for node in ast.walk(tree):
+            if (
+                (
+                    isinstance(node, ast.ImportFrom)
+                    and any(a.name.startswith("apply_pending") for a in node.names)
+                )
+                or (isinstance(node, ast.Attribute) and node.attr.startswith("apply_pending"))
+                or (isinstance(node, ast.Name) and node.id.startswith("apply_pending"))
+            ):
+                offenders.append(f"{path.name}:{node.lineno}")
+    assert not offenders, (
+        "the worker package must not run migrations — N replicas racing to "
+        "migrate is the hazard the advisory lock exists to prevent:\n"
+        + "\n".join(f"  - {o}" for o in offenders)
+    )
 
 
 def test_settings_description_scopes_it_to_ui_serve() -> None:
-    text = (_ROOT / "src" / "taskq" / "settings.py").read_text()
-    idx = text.index("migrate_on_start: bool = Field(")
-    field = text[idx : idx + 700]
-    assert "ui serve" in field
-    assert "ignores it (and warns when it is set)" in field
+    """The description is what `taskq config` and the docs render, so assert
+    the value the field actually carries rather than the source that spells
+    it."""
+    _type, info = WorkerSettings.get_fields()["migrate_on_start"]
+    description = info.description or ""
+    assert "ui serve" in description
+    assert "the worker ignores it (and warns when it is set)" in description
 
 
 def test_readme_no_longer_claims_the_worker_migrates() -> None:
