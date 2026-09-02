@@ -584,13 +584,17 @@ async def run_until_drained(backend: "InMemoryBackend") -> None:
         if actor_cfg is None:
             actor_cfg = _InMemoryActorConfig(retry=RetryPolicy(jitter=0.0))
 
-        # PayloadValidationError escapes consume_one_job's own try/except
-        # because validation runs BEFORE the try block (line 309-318 in
-        # _consumer.py). The production dispatch_one_job catches it via its
-        # outer except-Exception and routes through _handle_generic_exception;
-        # the test runner has no such wrapper, so we catch it here and
-        # transition the job to failed — matching the non-retryable contract
-        # documented on PayloadValidationError.
+        # PayloadValidationError escapes consume_one_job for two pre-actor
+        # reasons, both OUTSIDE its actor-body try/except: (1) the fallback
+        # validate_actor_payload call runs before rate-limit acquisition, so
+        # an invalid payload raises before the actor body (and before any
+        # token is consumed); (2) acquire_for_actor re-validates the payload
+        # against a keyed ref's own payload_type and raises on a cross-model
+        # mismatch. The production dispatch_one_job catches such escapes via
+        # its outer except-Exception and routes through
+        # _handle_generic_exception; the test runner has no such wrapper, so
+        # we catch it here and transition the job to failed — matching the
+        # non-retryable contract documented on PayloadValidationError.
         try:
             outcome = await consume_one_job(
                 backend,

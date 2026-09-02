@@ -4,7 +4,9 @@ from datetime import timedelta
 from uuid import UUID
 
 import pytest
+from pydantic import BaseModel
 
+import taskq
 from taskq._di.scope import Scope
 from taskq.constants import DEFAULT_RESERVATION_BACKOFF
 from taskq.exceptions import (
@@ -15,6 +17,7 @@ from taskq.exceptions import (
     DIError,
     MaxPendingExceededError,
     MissingProvider,
+    PayloadValidationError,
     ReservationUnavailable,
     RetryAfter,
     ScopeViolation,
@@ -564,3 +567,39 @@ class TestActorDeregistrationErrors:
             ActorNotFoundError,
         ):
             assert issubclass(cls, ActorDeregistrationError)
+
+
+# ── validate_actor_payload public export ─────────────────────────────
+
+
+class _IntFieldPayload(BaseModel):
+    """Payload whose only field is an int — a str value fails validation."""
+
+    count: int
+
+
+def test_public_validate_actor_payload_does_not_embed_payload_values() -> None:
+    """The top-level ``taskq.validate_actor_payload`` export is the
+    sanitized ``taskq._validation`` implementation: neither the raised
+    message nor the attached ``validation_errors`` embed attacker-controlled
+    payload values, which can otherwise be persisted to the jobs row and
+    surfaced in the web admin via ``error_message``."""
+    canary = "TOP-SECRET-canary-a1b2c3"
+
+    with pytest.raises(PayloadValidationError) as exc_info:
+        taskq.validate_actor_payload(_IntFieldPayload, {"count": canary}, "leak_probe")
+
+    assert canary not in str(exc_info.value)
+    assert all(canary not in str(err) for err in exc_info.value.validation_errors)
+
+
+def test_validate_actor_payload_single_sanitized_implementation() -> None:
+    """``taskq.validate_actor_payload`` and the ``taskq.exceptions``
+    re-export are the SAME sanitized implementation from
+    ``taskq._validation`` — the unsanitized duplicate that embedded the raw
+    payload in its message is gone from the public surface."""
+    from taskq import exceptions as exceptions_mod
+    from taskq._validation import validate_actor_payload as impl
+
+    assert taskq.validate_actor_payload is impl
+    assert exceptions_mod.validate_actor_payload is impl

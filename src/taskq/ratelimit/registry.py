@@ -421,7 +421,6 @@ class RateLimitRegistry:
         self,
         key: object,
         ref_repr: str,
-        payload: dict[str, object] | None,
         *,
         empty_key_msg: str = "an empty or non-string key",
     ) -> str:
@@ -434,6 +433,13 @@ class RateLimitRegistry:
         controls the wording of the empty/non-string error (the two
         call-sites historically used slightly different phrasing).
 
+        The error deliberately does NOT embed the payload (or its
+        ``model_dump()``): this ``ValueError`` propagates into the
+        persisted ``error_message`` (job row / web admin) via generic
+        exception handling, and payload values are attacker-controlled —
+        the same sanitization contract ``PayloadValidationError`` follows
+        in :mod:`taskq._validation`.
+
         ``isinstance`` (not an exact-type check) accepts ``str``
         subclasses — a ``class Tenant(str, Enum)`` member or a domain
         wrapper deriving from ``str`` is a natural ``key_fn`` return value
@@ -441,7 +447,7 @@ class RateLimitRegistry:
         keys, and dict lookups.
         """
         if not isinstance(key, str) or not key:
-            raise ValueError(f"{ref_repr}.key_fn returned {empty_key_msg} for payload {payload!r}")
+            raise ValueError(f"{ref_repr}.key_fn returned {empty_key_msg}")
         if len(key) > _MAX_KEYED_KEY_LEN:
             raise ValueError(
                 f"{ref_repr}.key_fn returned "
@@ -473,7 +479,6 @@ class RateLimitRegistry:
         return self._validate_keyed_key(
             ref.key_fn(key_fn_arg),
             f"{type(ref).__name__}(base_name={ref.base_name!r})",
-            payload if isinstance(payload, dict) else payload.model_dump(by_alias=True),
             empty_key_msg=empty_key_msg,
         )
 
