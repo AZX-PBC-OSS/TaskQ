@@ -144,3 +144,69 @@ def test_foreign_stdlib_exc_info_log_line_renders() -> None:
     assert parsed["event"] == "db write failed"
     assert "UniqueViolationError" in output
     assert "ssn-123456789" not in output
+
+
+def test_known_exception_string_fields_are_scrubbed_in_json_logs() -> None:
+    """``error``/``error_message``/``error_traceback`` string fields must be
+    scrubbed on the rendered JSON line — the log channel ships to the same
+    telemetry backends as spans, so the redaction doctrine applies to it too
+    (these are the exception-bearing field names actually used in src/).
+
+    Classification-style values pass through the scrubbers unchanged, so the
+    change only affects lines that genuinely carry exception text.
+    """
+    obs_mod.setup_logging(log_format="json")
+    canary = "tenant-77-ssn-987654321"
+    message = (
+        'duplicate key value violates unique constraint "jobs_identity_key_key"\n'
+        f"DETAIL:  Key (identity_key)=({canary}) already exists."
+    )
+    raw_traceback = (
+        "Traceback (most recent call last):\n"
+        '  File "job.py", line 1, in run\n'
+        f"asyncpg.exceptions.UniqueViolationError: {message}"
+    )
+
+    with _capture_root_json_stream() as buf:
+        log = obs_mod.get_logger("_test_field_scrub")
+        log.error(
+            "job-failed",
+            error=message,
+            error_message=message,
+            error_traceback=raw_traceback,
+        )
+
+    output = buf.getvalue().strip()
+    parsed = json.loads(output)
+    assert canary not in output
+    # Message-style fields keep the diagnostic template, drop the DETAIL line.
+    assert (
+        parsed["error"] == 'duplicate key value violates unique constraint "jobs_identity_key_key"'
+    )
+    assert parsed["error_message"] == parsed["error"]
+    # Traceback-style fields keep the full traceback structure, scrubbed.
+    assert parsed["error_traceback"].startswith("Traceback (most recent call last):")
+    assert "UniqueViolationError" in parsed["error_traceback"]
+    assert "DETAIL" not in parsed["error_traceback"]
+
+
+def test_exception_object_field_renders_scrubbed_not_dropped() -> None:
+    """An exception object passed as a field value must render as the scrubbed
+    safe message — previously the raw object hit the orjson fallback TypeError
+    and the whole log line was dropped."""
+    obs_mod.setup_logging(log_format="json")
+    canary = "tenant-77-ssn-987654321"
+    exc = _unique_violation(f"Key (identity_key)=({canary}) already exists.")
+    assert canary in str(exc)
+
+    with _capture_root_json_stream() as buf:
+        log = obs_mod.get_logger("_test_field_scrub")
+        log.error("job-failed", exc=exc)
+
+    output = buf.getvalue().strip()
+    assert output, "log line carrying an exception object field was dropped entirely"
+    parsed = json.loads(output)
+    assert canary not in output
+    assert (
+        parsed["exc"] == 'duplicate key value violates unique constraint "jobs_idempotency_key_key"'
+    )

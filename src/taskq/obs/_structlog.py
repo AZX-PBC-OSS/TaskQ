@@ -13,7 +13,12 @@ import structlog
 from opentelemetry import trace
 
 from taskq._json import dumps_str
-from taskq.obs._redact_exc import safe_exception_parts
+from taskq.obs._redact_exc import (
+    EXCEPTION_MESSAGE_FIELDS,
+    EXCEPTION_TRACEBACK_FIELDS,
+    safe_exception_parts,
+    scrub_exception_field,
+)
 
 __all__ = [
     "bind_job_context",
@@ -23,6 +28,8 @@ __all__ = [
     "redact_payload",
     "setup_logging",
 ]
+
+_EXCEPTION_FIELD_NAMES = EXCEPTION_MESSAGE_FIELDS | EXCEPTION_TRACEBACK_FIELDS
 
 _log: structlog.stdlib.BoundLogger = structlog.get_logger("taskq.obs._structlog")
 
@@ -96,6 +103,23 @@ def _render_exc_info_safe(
     return event_dict
 
 
+def _scrub_exception_fields(
+    logger: object, method: str, event_dict: structlog.types.EventDict
+) -> structlog.types.EventDict:
+    """Scrub the known exception-bearing field names (``error``,
+    ``error_message``, ``error_traceback``, ``exc``).
+
+    JSON logs ship to the same telemetry backends as spans, so raw
+    ``str(exc)``-shaped field values reopen the surface
+    ``record_exception_safe`` closes; exception OBJECTS additionally die in
+    the orjson fallback and drop the whole line. Values that are not exception
+    text (classification strings, ints) pass through unchanged.
+    """
+    for key in _EXCEPTION_FIELD_NAMES.intersection(event_dict):
+        event_dict[key] = scrub_exception_field(key, event_dict[key])
+    return event_dict
+
+
 def setup_logging(
     *,
     level: str = "INFO",
@@ -120,6 +144,9 @@ def setup_logging(
         _safe_processor_wrapper(structlog.processors.TimeStamper(fmt="iso", utc=True)),
         _safe_processor_wrapper(_otel_span_processor),
         _safe_processor_wrapper(structlog.processors.EventRenamer("event")),
+        # Last before the formatter handoff: final scrub of exception-bearing
+        # fields so both renderers (and any future one) see scrubbed values.
+        _safe_processor_wrapper(_scrub_exception_fields),
     ]
 
     formatter_processors: list[structlog.types.Processor]
@@ -159,6 +186,8 @@ def setup_logging(
             _safe_processor_wrapper(structlog.processors.TimeStamper(fmt="iso", utc=True)),
             _safe_processor_wrapper(structlog.stdlib.add_log_level),
             _safe_processor_wrapper(structlog.stdlib.ExtraAdder()),
+            # After ExtraAdder so foreign records' extras are scrubbed too.
+            _safe_processor_wrapper(_scrub_exception_fields),
         ],
     )
 

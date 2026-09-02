@@ -33,7 +33,14 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from opentelemetry.trace import Span
 
-__all__ = ["record_exception_safe", "safe_exception_message", "safe_exception_parts"]
+__all__ = [
+    "EXCEPTION_MESSAGE_FIELDS",
+    "EXCEPTION_TRACEBACK_FIELDS",
+    "record_exception_safe",
+    "safe_exception_message",
+    "safe_exception_parts",
+    "scrub_exception_field",
+]
 
 #: Postgres DETAIL/HINT/CONTEXT lines. Row values live there; the primary
 #: message above them is a static template.
@@ -56,17 +63,21 @@ def _scrub_text(text: str) -> str:
     return _URI_CRED_RE.sub(r"\1:***@", text)
 
 
+def _bound_message(text: str) -> str:
+    """Strip and length-bound scrubbed message text."""
+    text = text.strip()
+    if len(text) > _MAX_MESSAGE_CHARS:
+        text = text[:_MAX_MESSAGE_CHARS] + "...[truncated]"
+    return text
+
+
 def safe_exception_message(exc: BaseException) -> str:
     """Exception text with Postgres DETAIL/HINT dropped and URI creds masked.
 
     The primary Postgres message is kept: it is a static template naming the
     constraint or relation, which is the part that is actually diagnostic.
     """
-    text = _scrub_text(str(exc))
-    text = text.strip()
-    if len(text) > _MAX_MESSAGE_CHARS:
-        text = text[:_MAX_MESSAGE_CHARS] + "...[truncated]"
-    return text
+    return _bound_message(_scrub_text(str(exc)))
 
 
 def _safe_stacktrace(exc: BaseException) -> str:
@@ -153,3 +164,34 @@ def record_exception_safe(span: "Span", exc: BaseException) -> None:
             "exception.stacktrace": _safe_stacktrace(exc),
         },
     )
+
+
+#: Event-dict field names that conventionally carry exception MESSAGE text on
+#: the log channel. This is the complete set used across ``src/taskq``; values
+#: that are classification strings ("deadline_exceeded") pass the scrubbers
+#: unchanged, so scrubbing only bites text that genuinely carries exception
+#: detail.
+EXCEPTION_MESSAGE_FIELDS = frozenset({"error", "error_message", "exc"})
+
+#: Event-dict field names that conventionally carry rendered TRACEBACK text —
+#: scrubbed line-wise like :func:`_safe_stacktrace`, without the message-length
+#: bound, so the traceback stays diagnostic.
+EXCEPTION_TRACEBACK_FIELDS = frozenset({"error_traceback"})
+
+
+def scrub_exception_field(field: str, value: object) -> object:
+    """Scrub a known exception-bearing log-field value; everything else passes through.
+
+    Exception objects render as the scrubbed safe message (they previously
+    reached the orjson fallback and dropped the whole log line). Strings in
+    message-style fields get the message scrub; strings in traceback-style
+    fields get the line-wise stacktrace scrub. Non-string, non-exception
+    values (ints, bools, None) are returned unchanged.
+    """
+    if isinstance(value, BaseException):
+        return safe_exception_message(value)
+    if not isinstance(value, str):
+        return value
+    if field in EXCEPTION_TRACEBACK_FIELDS:
+        return _scrub_text(value)
+    return _bound_message(_scrub_text(value))
