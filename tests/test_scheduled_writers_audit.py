@@ -1,19 +1,22 @@
 """Audit: exactly four code paths write status='scheduled'.
 
-declares that ``status='scheduled'`` is written by EXACTLY four
-authorised code paths. This module contains two tripwire tests:
+The contract is that ``status='scheduled'`` is written by EXACTLY four
+authorised paths. Two tripwires enforce it:
 
-1. A runtime audit that calls every non-authorised Backend method on
-   an appropriate pre-state job and asserts the post-state is NOT
-   ``'scheduled'``. If a future refactor accidentally adds a fifth
-   writer, this test fails.
+1. A runtime audit that calls every non-authorised Backend method on an
+   appropriate pre-state job and asserts the post-state is NOT
+   ``'scheduled'``.
 
-2. A static-analysis audit that uses ``inspect.getsource`` to grep
-   ``mark_*`` methods on both backends for literal ``'scheduled'``
-   SQL / status writes outside the four authorised methods.
+2. An API-surface inventory: the set of ``mark_*`` methods on both backends
+   must equal a reviewed list. The runtime audit calls a hand-written
+   sequence, so it cannot notice a writer nobody added to it; this is what
+   forces that decision. It replaced a source grep for ``'scheduled'``
+   literals, which could not see a write routed through a constant or an
+   f-string and passed happily on a method the runtime audit never called.
 
-Maintenance contract: if a new method is added to ``Backend``, add it
-to the appropriate audit list below.
+Maintenance contract: if a new ``mark_*`` method is added to a backend, add a
+case to the runtime audit proving what it writes, then list it in
+``_REVIEWED_MARK_METHODS``.
 """
 
 import inspect
