@@ -19,6 +19,7 @@ the app hosting the ingestion pipeline.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Iterator
 from typing import Any
 from unittest.mock import MagicMock
 from uuid import UUID
@@ -30,8 +31,21 @@ from taskq.web import _sse_limit
 
 
 @pytest.fixture(autouse=True)
-def _clear_semaphores() -> None:  # pyright: ignore[reportUnusedFunction]  # Why: autouse fixture, invoked by pytest not by name.
+def _clear_semaphores() -> Iterator[None]:  # pyright: ignore[reportUnusedFunction]  # Why: autouse fixture, invoked by pytest not by name.
+    """Isolate the process-global slot registry, on BOTH sides of every test.
+
+    Clearing only on the way in leaks whatever the LAST test in this module
+    acquired — these tests deliberately take slots and never release them — into
+    every other module sharing the worker process. `_semaphore()` returns an
+    existing key's semaphore regardless of the limit asked for, so a leaked
+    exhausted `progress-stream` makes the real progress route answer 429 and
+    `release_after` release a semaphore it never acquired. Harmless in file
+    order, where a non-acquiring test happens to run last; under
+    `pytest-randomly` (which the CI gate runs with) it is a coin toss.
+    """
     _sse_limit._SEMAPHORES.clear()  # Why: process-global registry; tests must not leak slots into each other.
+    yield
+    _sse_limit._SEMAPHORES.clear()
 
 
 async def test_slots_are_granted_up_to_the_limit() -> None:
