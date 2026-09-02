@@ -2,12 +2,13 @@
 
 Uses a hypothesis RuleBasedStateMachine to generate random sequences
 of valid transitions, verifying that every sequence preserves invariants
-across terminal-status idempotency, cancel_phase monotonicity,
+across terminal-status idempotency, the cancellation-slate contract,
 no-orphan-running-row, and attempt-count contracts.
 
 random valid call sequences preserve invariants
     (terminal-status idempotency, no orphan running rows,
-     cancel_phase never decreases).
+     dispatchable rows carry a clean cancel slate;
+     cancel_phase only escalates within a running stint).
 exhaustive illegal (from_status, to_status) pairs all raise
     IllegalStateTransition from assert_valid_transition.
 attempt-count invariant (non-negative, never decreases across
@@ -27,7 +28,7 @@ from hypothesis import strategies as st
 from hypothesis.stateful import Bundle, RuleBasedStateMachine, invariant, precondition, rule
 
 from taskq._ids import new_uuid
-from taskq.backend._protocol import EnqueueArgs, ErrorInfo, JobId, JobStatus
+from taskq.backend._protocol import CancelPhase, EnqueueArgs, ErrorInfo, JobId, JobStatus
 from taskq.backend.statemachine import TERMINAL_STATUSES, VALID_TRANSITIONS, assert_valid_transition
 from taskq.exceptions import IllegalStateTransition, WorkerOwnershipMismatch
 from taskq.testing.clock import FakeClock
@@ -76,6 +77,7 @@ class JobStateMachine(RuleBasedStateMachine):
             cleanup_grace_period=_CLEANUP_GRACE,
         )
         self._prev_cancel_phase: dict[JobId, int] = {}
+        self._prev_status: dict[JobId, JobStatus] = {}
         self._prev_attempt: dict[JobId, int] = {}
         self._snoozed_attempt_snapshot: dict[JobId, int] = {}
 
@@ -164,6 +166,7 @@ class JobStateMachine(RuleBasedStateMachine):
         )
         asyncio.run(self.backend.enqueue(args))
         self._prev_cancel_phase[job_id] = 0
+        self._prev_status[job_id] = "pending"
         self._prev_attempt[job_id] = 0
         return jid
 
@@ -391,17 +394,46 @@ class JobStateMachine(RuleBasedStateMachine):
                     f"Terminal status {row.status!r} has outgoing transitions"
                 )
 
-    # ── Invariant: cancel_phase never decreases ──────────────
+    # ── Invariant: cancellation-slate contract ──────────────────
 
     @invariant()
-    def check_cancel_phase_monotonic(self) -> None:
+    def check_cancel_phase_contract(self) -> None:
+        """Two-part cancel_phase contract (c06ba0e):
+
+        1. A row handed back for dispatch (pending/scheduled) always
+           carries a clean cancellation slate: cancel_phase == NONE and
+           cancel_requested_at is None. Retries reuse the same row, so a
+           surviving escalated cancel would hand the next attempt an
+           already-FORCED phase — the cancel controller would fast-advance
+           past cooperative cancel and the attempt could never be
+           cancelled again.
+        2. Within a single running stint, cancel_phase only escalates
+           (the guarded writers only ever move 0 -> 1 and 1 -> 2).
+
+        Terminal rows make no monotonicity claim: mark_* terminal arms
+        keep the columns as the audit trail, while the lock-reclaim
+        sweep's exhausted arm resets them and encodes the in-flight
+        cancel in its 'cancelled' terminal label instead.
+        """
         for jid, row in self.backend._jobs.items():  # type: ignore[reportPrivateUsage] # Why: test-only private access for invariant check
-            prev = self._prev_cancel_phase.get(jid)
-            if prev is not None:
-                assert row.cancel_phase >= prev, (
-                    f"cancel_phase decreased for job {jid}: {prev} -> {row.cancel_phase}"
+            if row.status in ("pending", "scheduled"):
+                assert row.cancel_phase == CancelPhase.NONE, (
+                    f"dispatchable job {jid} carries cancel_phase="
+                    f"{row.cancel_phase!r}: retry arms must reset the slate"
                 )
+                assert row.cancel_requested_at is None, (
+                    f"dispatchable job {jid} carries cancel_requested_at="
+                    f"{row.cancel_requested_at!r}: retry arms must reset the slate"
+                )
+            elif row.status == "running" and self._prev_status.get(jid) == "running":
+                prev = self._prev_cancel_phase.get(jid)
+                if prev is not None:
+                    assert row.cancel_phase >= prev, (
+                        f"cancel_phase de-escalated mid-flight for job {jid}: "
+                        f"{prev} -> {row.cancel_phase}"
+                    )
             self._prev_cancel_phase[jid] = row.cancel_phase
+            self._prev_status[jid] = row.status
 
     # ── Invariant: no orphan running rows after terminal write
 
