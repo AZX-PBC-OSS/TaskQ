@@ -298,33 +298,6 @@ you can now remove it.
 These change what your code *does* without changing what it *accepts*. Nothing
 raises, so nothing points you at the call site — audit for them explicitly.
 
-### `SubJobEnqueuer.enqueue(tags=[])` now suppresses inheritance
-
-`tags=None` still means "no caller choice" and inherits the parent job's tags
-when `inherit_tags=True` (the default). An explicit empty list is now an
-affirmative "no tags" and suppresses inheritance. Previously `[]` was treated
-identically to `None`, so an actor passing `[]` in order to *suppress* tags
-silently received the parent's instead.
-
-```python
-# Inside an actor body, with parent tags ("tenant:acme", "batch:nightly"):
-
-await ctx.jobs.enqueue("child", payload, tags=None)  # inherits — unchanged
-await ctx.jobs.enqueue("child", payload, tags=[])    # BEFORE: inherited both
-                                                     # NOW:    no tags at all
-```
-
-**How you find out you were affected:** sub-jobs enqueued with `tags=[]` stop
-appearing in `JobFilter(tags=...)` queries and stop being selected by
-`cancel_where` filters that match on the parent's tags. If you have runbooks
-or dashboards that cancel or search a fan-out by the parent's tag, check them
-before upgrading.
-
-**What to do:** if you passed `[]` intending to inherit, pass `None` (or omit
-the argument). If you passed `[]` intending to suppress, you now get what you
-asked for and need no change. Only the `inherit_tags=True` plus non-empty
-parent-tags combination changes behaviour.
-
 ### Rate-limit refunds now credit the store that paid
 
 If you run `backend="redis"` rate limits with `rate_limit_pg_fallback_enabled`
