@@ -13,6 +13,9 @@ Contract:
   order regardless of method name.
 - Does **not** swallow ``CancelledError`` — it propagates naturally
   from the wrapped connection.
+- :class:`ChaosPool` honours ``acquire(timeout=...)`` against its
+  ``acquire_delay``, raising ``TimeoutError`` on expiry exactly as an
+  exhausted ``asyncpg.Pool`` does.
 - Defers all other semantics (transaction management, type codecs,
   connection lifecycle) to the wrapped connection.
 - The ``transaction()`` method delegates to the real connection so
@@ -20,6 +23,7 @@ Contract:
   when ``ChaosException`` is raised inside a transaction block.
 """
 
+import asyncio
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -125,15 +129,48 @@ class ChaosConnection:
 
 
 class _ChaosAcquireCtx:
-    """Async context manager yielded by :class:`ChaosPool.acquire`."""
+    """Async context manager yielded by :class:`ChaosPool.acquire`.
 
-    def __init__(self, conn: ChaosConnection) -> None:
+    Reproduces ``asyncpg.Pool.acquire``'s wait semantics: *acquire_delay*
+    models the time the pool spends without a connection to hand over, and
+    *timeout* bounds the caller's willingness to wait for one.
+
+    Matched against asyncpg 0.31.0 ``pool.py`` rather than assumed:
+    ``Pool._acquire`` runs ``await compat.wait_for(_acquire_impl(),
+    timeout=timeout)`` when *timeout* is not None and bare
+    ``await _acquire_impl()`` when it is, and ``compat.wait_for`` is
+    ``asyncio.wait_for`` on Python 3.12+.  So this double calls the same
+    ``asyncio.wait_for`` and lets the same ``TimeoutError`` propagate,
+    from the same place: ``PoolAcquireContext.__aenter__``, which is
+    where the real ``async with pool.acquire(timeout=...)`` surfaces it.
+    ``timeout=None`` waits forever in both.
+
+    The delay deliberately spans the whole acquire, because asyncpg's
+    timeout does too: ``_acquire_impl`` covers both the wait on the
+    pool's free-holder queue *and* ``ch.acquire()``'s connection setup,
+    so a slow ``setup``/``init`` hook is inside the bound, not outside it.
+    """
+
+    def __init__(
+        self, conn: ChaosConnection, acquire_delay: float | None, timeout: float | None
+    ) -> None:
         self._conn = conn
+        self._acquire_delay = acquire_delay
+        self._timeout = timeout
 
     async def __aenter__(self) -> ChaosConnection:
+        if self._acquire_delay is not None:
+            # timeout=None means "wait forever", exactly as asyncpg does —
+            # so acquire_delay=math.inf with no timeout models the wedged
+            # pool that an unbounded acquire() hangs on indefinitely.
+            await asyncio.wait_for(asyncio.sleep(self._acquire_delay), timeout=self._timeout)
         return self._conn
 
     async def __aexit__(self, *args: object) -> None:
+        # Why no release: the wrapped connection is owned by the test that
+        # built it (which closes it), not by this pool. A real
+        # PoolAcquireContext returns the holder to the pool's queue here;
+        # a single-connection double has no queue to return it to.
         pass
 
 
@@ -145,13 +182,36 @@ class ChaosPool:
     connections from ``self._worker_pool``.  Temporarily replace
     ``backend._worker_pool`` with a ``ChaosPool`` to test mid-transaction
     failures.
+
+    *acquire_delay* simulates a pool with no free connection: ``acquire()``
+    waits that many seconds before yielding.  Combined with the caller's
+    ``timeout=``, this is what makes the *bounded-wait* invariant testable
+    — a call site that forgets ``timeout=`` hangs here exactly as it would
+    against a wedged Postgres, and one that passes it raises
+    ``TimeoutError``.  Default ``None`` means a connection is immediately
+    available, so ``acquire()`` returns without waiting and ``timeout=``
+    can never fire — matching a real pool that is not exhausted, and
+    leaving the mid-transaction-failure tests unaffected.
+
+    ``timeout`` was previously accepted and silently discarded, which made
+    it impossible for any test built on this pool to observe an acquire
+    bound at all.
+
+    Deliberate divergences from ``asyncpg.Pool``, all inherent to a
+    single-connection double and none of them silent: there is no holder
+    queue (so no contention between concurrent acquirers), no
+    ``release()``/reset cycle, no ``closing``/uninitialised state (a real
+    pool raises ``InterfaceError`` from ``acquire()`` for those *before*
+    it waits, regardless of *timeout*), and no bare-``await`` acquire
+    form.  Tests needing any of those want a real pool.
     """
 
-    def __init__(self, chaos_conn: ChaosConnection) -> None:
+    def __init__(self, chaos_conn: ChaosConnection, *, acquire_delay: float | None = None) -> None:
         self._conn = chaos_conn
+        self._acquire_delay = acquire_delay
 
     def acquire(self, *, timeout: float | None = None) -> _ChaosAcquireCtx:
-        # ``timeout`` mirrors asyncpg.Pool.acquire so ChaosPool can substitute
-        # for a real pool in heartbeat tests that pass timeout=. ASYNC109 is
-        # suppressed file-wide via per-file-ignores in pyproject.toml.
-        return _ChaosAcquireCtx(self._conn)
+        # ``timeout`` mirrors asyncpg.Pool.acquire and is honoured against
+        # ``acquire_delay``. ASYNC109 is suppressed file-wide via
+        # per-file-ignores in pyproject.toml.
+        return _ChaosAcquireCtx(self._conn, self._acquire_delay, timeout)

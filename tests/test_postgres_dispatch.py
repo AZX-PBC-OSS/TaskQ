@@ -6,6 +6,7 @@ integration module.
 """
 
 import asyncio
+import math
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -18,8 +19,10 @@ from taskq._ids import new_uuid
 from taskq.backend._protocol import JobId, JobRow
 from taskq.backend.clock import Clock
 from taskq.backend.postgres import PostgresBackend
+from taskq.testing.asyncpg_chaos import ChaosConnection, ChaosPool
 
 _GRACE = timedelta(seconds=30)
+_ACQUIRE_TIMEOUT = 3.25
 _FIXED_UUID = UUID("12345678-1234-5678-1234-567812345678")
 
 _FakeFetch = Callable[..., list[dict[str, Any]]]
@@ -77,15 +80,20 @@ def _default_record() -> dict[str, Any]:
 class _MarkingFakePool:
     """Fake pool that tracks whether ``acquire()`` was called.
 
-    ``marker`` is a shared list that gets appended when ``acquire()`` fires.
+    ``marker`` is a shared list that gets appended when ``acquire()`` fires;
+    ``acquire_timeouts`` records the ``timeout=`` each call was given.
     """
 
     def __init__(self, marker: list[str], fetch_fn: _FakeFetch | None = None) -> None:
         self._marker = marker
         self._fetch_fn = fetch_fn
+        self.acquire_timeouts: list[float | None] = []
 
-    def acquire(self) -> "_MarkingFakeConn":
+    def acquire(self, *, timeout: float | None = None) -> "_MarkingFakeConn":
+        # Recorded, never discarded: a fake that swallows ``timeout=``
+        # makes the bounded-wait invariant untestable through it.
         self._marker.append("acquire")
+        self.acquire_timeouts.append(timeout)
         return _MarkingFakeConn(self._fetch_fn)
 
     async def __aenter__(self) -> "_MarkingFakePool":
@@ -148,6 +156,7 @@ def _make_backend(
     """Construct a PostgresBackend with fake deps for unit testing."""
     mock_deps = Mock()
     mock_deps.settings.schema_name = schema_name
+    mock_deps.settings.dispatcher_command_timeout = _ACQUIRE_TIMEOUT
     mock_deps.worker_pool = Mock()
     _dp = _MarkingFakePool(dispatcher_marker, fetch_fn) if dispatcher_marker is not None else Mock()
     mock_deps.dispatcher_pool = _dp
@@ -164,15 +173,38 @@ def _make_backend(
     )
 
 
+def _make_backend_with_pool(
+    pool: object, *, command_timeout: float = _ACQUIRE_TIMEOUT
+) -> PostgresBackend:
+    """Construct a PostgresBackend whose dispatcher_pool is *pool*."""
+    mock_deps = Mock()
+    mock_deps.settings.schema_name = "taskq_test"
+    mock_deps.settings.dispatch_oversample = 2
+    mock_deps.settings.dispatcher_command_timeout = command_timeout
+    mock_deps.worker_pool = Mock()
+    mock_deps.dispatcher_pool = pool
+    mock_clock = Mock(spec=Clock)
+    mock_clock.now.return_value = NotImplemented
+    mock_clock.monotonic.return_value = 0.0
+    return PostgresBackend(
+        deps=mock_deps,
+        clock=mock_clock,
+        cancellation_grace_period=_GRACE,
+        cleanup_grace_period=_GRACE,
+    )
+
+
 class _CaptureFakePool:
     """Fake pool whose connection records fetch() parameters."""
 
     def __init__(self, marker: list[str], captured: list[tuple[object, ...]]) -> None:
         self._marker = marker
         self._captured = captured
+        self.acquire_timeouts: list[float | None] = []
 
-    def acquire(self) -> "_CaptureFakeConn":
+    def acquire(self, *, timeout: float | None = None) -> "_CaptureFakeConn":
         self._marker.append("acquire")
+        self.acquire_timeouts.append(timeout)
         return _CaptureFakeConn(self._captured)
 
     async def __aenter__(self) -> "_CaptureFakePool":
@@ -213,6 +245,7 @@ def _make_capture_backend(
     mock_deps = Mock()
     mock_deps.settings.schema_name = "taskq_test"
     mock_deps.settings.dispatch_oversample = 2
+    mock_deps.settings.dispatcher_command_timeout = _ACQUIRE_TIMEOUT
     mock_deps.worker_pool = Mock()
     mock_deps.dispatcher_pool = _CaptureFakePool(marker, captured)
     mock_clock = Mock(spec=Clock)
@@ -373,7 +406,7 @@ class TestDispatchBatchCancellation:
             def __init__(self, marker: list[str]) -> None:
                 self._marker = marker
 
-            def acquire(self) -> "_SlowFakeConn":
+            def acquire(self, *, timeout: float | None = None) -> "_SlowFakeConn":
                 self._marker.append("acquire")
                 return _SlowFakeConn()
 
@@ -428,3 +461,70 @@ class TestDispatchBatchCancellation:
         # Connection was released by the async with block
         assert marker[0] == "acquire"
         assert "conn_exit" in marker
+
+
+# ── The producer's acquire is bounded ──────────────────────────────────
+#
+# `_dispatch_batch` used a bare `dispatcher_pool.acquire()`. Every
+# statement inside its transaction is bounded by the dispatcher pool's
+# `command_timeout`, so the checkout was the one unbounded wait left on
+# the producer's path: with the pool exhausted (leader loops, health
+# ping, shutdown and bootstrap share it) the producer parks forever and
+# only the stale-loop watchdog force-exiting the process ends it.
+#
+# These use ChaosPool's `acquire_delay` to model an exhausted pool.
+# Before that knob existed, ChaosPool accepted `timeout=` and discarded
+# it, so no test could observe an acquire bound at all.
+
+
+class TestDispatchBatchAcquireIsBounded:
+    """dispatch_batch passes a timeout to acquire(), and it fires."""
+
+    def test_acquire_receives_the_configured_command_timeout(self) -> None:
+        """The bound is `settings.dispatcher_command_timeout`, not a literal.
+
+        Kills the mutant that drops `timeout=` (None recorded) and the one
+        that hard-codes a value.
+        """
+        marker: list[str] = []
+        pool = _MarkingFakePool(marker)
+        backend = _make_backend_with_pool(pool)
+
+        asyncio.run(backend.dispatch_batch(_FIXED_UUID, ["default"], 10, _GRACE))
+
+        assert pool.acquire_timeouts == [_ACQUIRE_TIMEOUT]
+
+    def test_exhausted_pool_raises_instead_of_hanging(self) -> None:
+        """Against a pool that never yields a connection, dispatch_batch
+        completes with TimeoutError instead of blocking forever.
+
+        The discriminator is deliberately NOT "a TimeoutError was raised".
+        An unbounded acquire hanging inside an outer `wait_for` guard also
+        raises TimeoutError, so `pytest.raises(TimeoutError)` around a
+        guarded call passes either way — it cannot fail, which is the
+        exact defect this file's harness had. Instead `asyncio.wait`
+        reports the task as *still pending*, which only an unbounded
+        acquire can produce, and that is asserted directly.
+        """
+        bound = 0.05
+        chaos_conn = ChaosConnection(object(), fail_on_call=0)
+        pool = ChaosPool(chaos_conn, acquire_delay=math.inf)
+        backend = _make_backend_with_pool(pool, command_timeout=bound)
+
+        async def _run() -> None:
+            task = asyncio.create_task(backend.dispatch_batch(_FIXED_UUID, ["default"], 10, _GRACE))
+            # asyncio.wait never raises on expiry — it reports what is
+            # still pending, keeping "the bound fired" and "nothing
+            # bounded it" distinguishable.
+            _done, pending = await asyncio.wait({task}, timeout=bound * 20)
+            if pending:
+                task.cancel()
+                pytest.fail(
+                    f"dispatch_batch did not bound its pool acquire: still running "
+                    f"{bound * 20}s into a {bound}s timeout against an exhausted pool"
+                )
+            assert isinstance(task.exception(), TimeoutError), (
+                f"expected the acquire bound to surface as TimeoutError, got {task.exception()!r}"
+            )
+
+        asyncio.run(_run())
