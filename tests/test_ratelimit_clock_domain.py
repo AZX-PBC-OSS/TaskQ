@@ -146,7 +146,7 @@ async def test_token_bucket_pg_refill_measured_by_server_clock(
             f'INSERT INTO "{schema}".rate_limit_buckets (bucket_name, kind, state, updated_at) '  # noqa: S608  # Why: schema is fixture-derived; values are $1-bound
             f"VALUES ($1, 'token_bucket', "
             f"jsonb_build_object('tokens', 0.0::float8, "
-            f"'ts', EXTRACT(EPOCH FROM clock_timestamp())), now())",
+            f"'ts', EXTRACT(EPOCH FROM clock_timestamp())), clock_timestamp())",
             name,
         )
 

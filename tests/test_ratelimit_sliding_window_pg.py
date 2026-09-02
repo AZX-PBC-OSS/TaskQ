@@ -268,7 +268,7 @@ async def test_gcra_bucket_name_collision_guard(
     async with module_pg_pool.acquire() as conn:
         await conn.execute(
             f"INSERT INTO {schema}.rate_limit_buckets (bucket_name, kind, state, updated_at) "  # noqa: S608 # Why: schema is fixture-derived; literal values in test
-            f"VALUES ($1, 'token_bucket', $2::jsonb, now())",
+            f"VALUES ($1, 'token_bucket', $2::jsonb, clock_timestamp())",
             "collide",
             '{"tokens": 5, "ts": 0}',
         )

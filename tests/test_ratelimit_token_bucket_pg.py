@@ -93,7 +93,7 @@ async def test_pg_fallback_activation(
             f"(bucket_name, kind, state, updated_at) "
             f"VALUES ($1, 'token_bucket', "
             f"jsonb_build_object('tokens', 0.0::float8, "
-            f"'ts', EXTRACT(EPOCH FROM clock_timestamp())), now())",
+            f"'ts', EXTRACT(EPOCH FROM clock_timestamp())), clock_timestamp())",
             "ord-test",
         )
 
