@@ -21,6 +21,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+import structlog
 from fastapi import HTTPException, Request
 from fastapi.responses import Response
 
@@ -30,8 +31,36 @@ __all__ = [
     "IdentityClaims",
     "SessionManager",
     "create_auth_dependency",
+    "warn_if_no_group_allowlist",
 ]
 SESSION_COOKIE_NAME: str = "taskq_session"
+
+logger = structlog.get_logger("taskq.web.admin.auth")
+
+
+def warn_if_no_group_allowlist(backend: str, allowed_groups: frozenset[str]) -> None:
+    """Warn when completing SSO is by itself enough to reach the admin UI.
+
+    An empty ``allowed_groups`` is documented and intentional -- the default is
+    deliberately unchanged -- but it makes the authorization check "did you
+    finish SSO against this tenant?", which in a large directory is close to
+    everyone. Mirrors the loud ``admin-ui-no-auth`` warning: an operator who
+    did not choose this should not have to read the source to discover it.
+    """
+    if allowed_groups:
+        return
+    logger.warning(
+        "admin-sso-no-group-allowlist",
+        backend=backend,
+        detail=(
+            "allowed_groups is empty, so every identity that completes SSO "
+            "against this IdP gets admin read access to the TaskQ UI - no "
+            "particular group membership is required. This is the documented "
+            "default, not a failure. Set allowed_groups (together with "
+            "group_claim / group_attribute so the claim is actually read) to "
+            "restrict the UI to an operations group."
+        ),
+    )
 
 
 @dataclass(frozen=True)
@@ -64,13 +93,18 @@ class SessionManager:
     Cookie payload stores only ``subject``, ``email``, and ``groups`` (as a
     sorted list) — no raw tokens/assertions, no PII beyond what the allowlist
     check needs.  Cookie flags: ``httponly``, ``secure`` (configurable for
-    local http dev), ``samesite="lax"``.
+    local http dev), ``samesite="lax"``, ``path`` (scoped to the admin mount).
     """
 
     secret: str
     max_age_seconds: int = 28800
     secure_cookie: bool = True
     cookie_name: str = SESSION_COOKIE_NAME
+    # Why not simply "/": an admin session cookie scoped to the whole origin is
+    # handed to every unrelated route of the host application that mounts the
+    # admin UI. The backend factories set this to their ``base_path`` so the
+    # cookie is only ever sent where it is actually read.
+    cookie_path: str = "/"
     _serializer: Any = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
@@ -129,6 +163,7 @@ class SessionManager:
             self.cookie_name,
             self.create_session_cookie(claims),
             max_age=self.max_age_seconds,
+            path=self.cookie_path,
             httponly=True,
             secure=self.secure_cookie,
             samesite="lax",
@@ -138,6 +173,7 @@ class SessionManager:
         """Clear (expire) the session cookie on *response*."""
         response.delete_cookie(
             self.cookie_name,
+            path=self.cookie_path,
             httponly=True,
             secure=self.secure_cookie,
             samesite="lax",

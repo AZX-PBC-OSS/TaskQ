@@ -20,6 +20,7 @@ from taskq.web.admin.auth._session import (
     IdentityClaims,
     SessionManager,
     create_auth_dependency,
+    warn_if_no_group_allowlist,
 )
 
 __all__ = [
@@ -152,10 +153,13 @@ def create_oidc_auth(config: OIDCAuthConfig, *, base_path: str = "") -> AuthBund
             "authlib is required for the OIDC backend. Install it with: pip install 'taskq[oidc]'"
         ) from exc
 
+    warn_if_no_group_allowlist("oidc", config.allowed_groups)
+
     session_manager = SessionManager(
         secret=config.session_secret,
         max_age_seconds=config.session_max_age_seconds,
         secure_cookie=config.secure_cookie,
+        cookie_path=base_path or "/",
     )
     login_path = f"{base_path}/login"
     router = APIRouter(tags=["sso-oidc"])
