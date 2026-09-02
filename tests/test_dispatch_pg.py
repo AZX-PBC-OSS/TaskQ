@@ -18,6 +18,7 @@ import pytest
 
 from taskq._ids import new_base62, new_uuid
 from taskq.actor_config import ActorConfig
+from taskq.actor_config_ops import set_actor_config_capacity
 from taskq.backend.postgres import PostgresBackend
 from taskq.testing.fixtures import JobsApp, _open_pg_backend
 from taskq.testing.jobs import make_enqueue_args
@@ -390,6 +391,78 @@ async def test_live_capacity_change_takes_effect_without_restart(
     async with deps.worker_pool.acquire() as conn:
         running = await _count_running(conn, schema, "S")
     assert running == 4, f"expected 4 running after the live cap change, got {running}"
+
+
+@pytest.mark.asyncio
+async def test_clearing_max_concurrent_uncaps_rather_than_reverting_to_the_literal(
+    jobs_app: JobsApp,
+) -> None:
+    """Clearing a stored ``max_concurrent`` makes the actor UNLIMITED — it
+    does **not** revert to the ``@actor(max_concurrent=...)`` literal.
+
+    This asymmetry is the sharp edge of operator-owned capacity, and it is
+    documented in three places (``actor_config_ops`` module and function
+    docstrings, and the upgrading guide) while nothing proved it. Its
+    sibling — clearing ``max_pending`` reverting *to* the literal — is
+    pinned by test_actor_capacity_pg.py::test_cleared_override_reverts_to_literal_pg,
+    so a change that made the two fields behave alike would pass that test
+    and silently uncap production here.
+
+    The cause is structural: the dispatch CTE joins ``actor_config`` and
+    can only see the stored column, never the code literal, so NULL can
+    only mean "no cap". ``max_pending`` is enforced client-side where the
+    literal is still in scope, hence the difference.
+
+    Oracle: seed a literal of 2, dispatch (2 running, capped). Clear the
+    override through the real operator API, then dispatch again and
+    require every remaining job to start — the literal 2 must NOT come
+    back.
+    """
+    deps = jobs_app.deps
+    backend = jobs_app.backend
+    schema = deps.settings.schema_name
+
+    await register_worker(deps.dispatcher_pool, deps.settings)
+
+    async with deps.dispatcher_pool.acquire() as conn:
+        await sync_actor_config(
+            conn,  # type: ignore[arg-type] # Why: PoolConnectionProxy is a transparent proxy delegating to the real Connection; asyncpg's public API accepts it interchangeably
+            [ActorConfig(actor="U", max_concurrent=2, queue="default", metadata={})],
+            force=False,
+            schema=schema,
+        )
+
+    for _i in range(6):
+        await backend.enqueue(make_enqueue_args(actor="U"))
+
+    worker_id = new_uuid()
+    first = await backend.dispatch_batch(
+        worker_id=worker_id, queues=["default"], limit=10, lock_lease=_LEASE
+    )
+    assert len(first) == 2, f"expected the seeded cap of 2 to hold, got {len(first)}"
+
+    # The operator clears the override — `taskq actor-config set U
+    # --clear-max-concurrent`, through the same function the CLI calls.
+    async with deps.dispatcher_pool.acquire() as conn:
+        await set_actor_config_capacity(
+            conn,  # type: ignore[arg-type] # Why: see above
+            "U",
+            max_concurrent=None,
+            schema=schema,
+        )
+
+    second = await backend.dispatch_batch(
+        worker_id=worker_id, queues=["default"], limit=10, lock_lease=_LEASE
+    )
+    assert len(second) == 4, (
+        "clearing max_concurrent must uncap the actor, so all 4 remaining jobs "
+        f"start at once; got {len(second)}. If this is 0, the literal 2 was "
+        "wrongly treated as still in force after the clear."
+    )
+
+    async with deps.worker_pool.acquire() as conn:
+        running = await _count_running(conn, schema, "U")
+    assert running == 6, f"expected all 6 running once uncapped, got {running}"
 
 
 # ── Lock expiry during dispatch (chaos) ─────────────────────────

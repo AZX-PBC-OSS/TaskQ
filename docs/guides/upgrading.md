@@ -313,6 +313,40 @@ will return to their configured capacity. If you had raised a `capacity` to
 compensate for the drift, re-check it against the corrected behaviour rather
 than leaving the compensation in place.
 
+### `@actor(...)` capacity literals no longer win over the stored row
+
+`max_concurrent`, `max_pending` and `result_ttl` are now **operator-owned**.
+`sync_actor_config` seeds them on an actor's first registration and never
+writes them again: the UPSERT omits them from its `SET` clause, and a
+difference between the code literal and the stored row is logged at INFO as
+`actor-config-capacity-override` instead of raising `ActorConfigDriftList`.
+
+This is deliberate — it is what lets an operator retune a live fleet through
+`taskq actor set-capacity` (or `taskq.actor_config_ops`) without a redeploy,
+and all three fields take effect without a worker restart.
+
+**The upgrade hazard is on schemas that have already run a worker.** There, a
+row already exists, so changing an `@actor(max_concurrent=...)` literal and
+redeploying now has *no effect* — the stored value continues to win, silently.
+On 0.2.2 that same mismatch aborted worker startup, so the failure was loud and
+you could not miss it.
+
+Two consequences worth auditing before you upgrade:
+
+- If you tune capacity **in code** and rely on redeploys to apply it, that
+  workflow no longer works. Move the value to the operator surface, or clear
+  the override to fall back to the literal.
+- If an environment variable feeds an `@actor(...)` capacity argument, it stops
+  being the effective value on any existing schema.
+
+To see where code and stored rows disagree, check for
+`actor-config-capacity-override` in your worker logs — it names every field
+whose literal is being ignored. To hand a field back to the code literal, clear
+the override: `--clear-max-pending` and `--clear-result-ttl` write NULL, which
+their enforcement paths read as *use the `@actor(...)` value*. Note that
+`--clear-max-concurrent` does **not** do this — the dispatch SQL reads NULL as
+*unlimited*, because it cannot see the code literal once the row exists.
+
 ---
 
 ## Bounded inputs
