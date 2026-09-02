@@ -182,16 +182,16 @@ async def test_rolled_back_phase_2_write_is_reissued_on_the_next_tick(
 
     controller = make_cancel_controller(deps, worker_id, clean_jobs_app.backend)
 
-    class _Boom(Exception):
-        pass
+    class _BoomError(Exception):
+        """Raised to fail a later statement of the heartbeat tick's transaction."""
 
     try:
         async with deps.heartbeat_pool.acquire() as conn:
-            with pytest.raises(_Boom):
+            with pytest.raises(_BoomError):
                 async with conn.transaction():
                     await controller.run_in_tx(conn)
                     # A later statement of the same heartbeat tick fails.
-                    raise _Boom
+                    raise _BoomError
             # heartbeat_loop's finally.
             await controller.run_post_tx()
 
