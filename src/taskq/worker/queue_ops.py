@@ -25,7 +25,10 @@ deployment.
 from dataclasses import dataclass
 from typing import Final
 
-from taskq.backend._protocol import ConnLike
+from taskq.backend._protocol import (
+    ConnLike,
+    _validate_queue_name,  # pyright: ignore[reportPrivateUsage]  # Why: the canonical queue-name rule lives with QueueName; a second copy here would drift from the reservation-namespace ban it encodes
+)
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining it
 )
@@ -61,6 +64,20 @@ def _check_schema(schema: str) -> None:
     if not _IDENT_RE.match(schema):
         msg = f"invalid schema name: {schema!r}"
         raise ValueError(msg)
+
+
+def _check_queue_name(name: str) -> None:
+    """Reject a name the rest of TaskQ would reject, before the UPSERT.
+
+    These two upserts are the only write path in TaskQ that can put an
+    arbitrary operator-supplied string into ``queues.name``; every other
+    producer of a queue name goes through :data:`QueueName`. An
+    unvalidated ":" name is inert rather than exploitable today -- the
+    cap bootstrap matches ``WHERE name = ANY($1)`` against the validated
+    ``settings.queues`` -- but it stores a row that can never match
+    anything, which is a trap for whoever finds it later.
+    """
+    _validate_queue_name(name)
 
 
 async def list_queues(conn: ConnLike, *, schema: str = "taskq") -> list[QueueRow]:
@@ -100,6 +117,7 @@ async def set_queue_mode(
     deployment, because nothing in TaskQ ever inserts a `queues` row.
     """
     _check_schema(schema)
+    _check_queue_name(name)
     if mode not in QUEUE_MODES:
         msg = f"invalid queue mode {mode!r}; must be one of {', '.join(QUEUE_MODES)}"
         raise ValueError(msg)
@@ -131,6 +149,7 @@ async def set_queue_max_concurrent(
     allows it.
     """
     _check_schema(schema)
+    _check_queue_name(name)
     if max_concurrent is not None and max_concurrent < 1:
         msg = (
             f"max_concurrent must be >= 1 or None (NULL = uncapped), got {max_concurrent!r}; "

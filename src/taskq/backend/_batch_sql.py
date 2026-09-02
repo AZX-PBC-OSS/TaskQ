@@ -22,6 +22,7 @@ from uuid import UUID
 from asyncpg.exceptions import UniqueViolationError
 
 from taskq._json import dumps_str
+from taskq.backend._cursor import decode_batch_cursor
 from taskq.backend._enqueue import _enqueue_batch
 from taskq.backend._protocol import (
     BatchCounts,
@@ -378,6 +379,13 @@ async def list_batches(
 ) -> list[tuple[BatchRow, BatchCounts]]:
     """List batches with live job-count aggregates, filtered by the given
     :class:`BatchFilter`.
+
+    Keyset-paginated on ``(created_at, id)`` DESC via ``filter.cursor``
+    (see :func:`~taskq.backend._cursor.encode_batch_cursor`), mirroring
+    ``_list_jobs``. Both columns are ordered in the same direction, so
+    the seam is one row-wise comparison and the ordering is total --
+    ``created_at`` alone is not, because it defaults to ``now()``, the
+    transaction timestamp.
     """
     parts: list[str] = []
     params: list[object] = []
@@ -399,7 +407,25 @@ async def list_batches(
         params.append(filter.batch_id)
         idx += 1
 
-    parts.append(f"ORDER BY b.created_at DESC LIMIT ${idx}")
+    if filter.cursor is not None:
+        # Why a row-wise comparison and not `created_at < $n OR (= AND id <
+        # $m)`: one tuple compare is what stays correct once `id` is ordered
+        # WITH the primary column rather than against it, which is the shape
+        # the admin keyset settled on in 2569da5. `id` is UUIDv7 and
+        # therefore time-ordered, so `id DESC` agrees with `created_at DESC`
+        # instead of fighting it -- the tiebreaker only decides rows written
+        # inside one transaction, where `now()` stamps them all identically.
+        #
+        # decode_batch_cursor returns a datetime and a UUID, never the raw
+        # text: asyncpg types each placeholder from its `::` cast and refuses
+        # a str for timestamptz/uuid, the DataError that 500'd every admin
+        # job-list page turn before that same fix.
+        cursor_created_at, cursor_id = decode_batch_cursor(filter.cursor)
+        parts.append(f"AND (b.created_at, b.id) < (${idx}::timestamptz, ${idx + 1}::uuid)")
+        params.extend([cursor_created_at, cursor_id])
+        idx += 2
+
+    parts.append(f"ORDER BY b.created_at DESC, b.id DESC LIMIT ${idx}")
     params.append(filter.limit)
 
     full_sql = sql.list_batches_base + " " + " ".join(parts)

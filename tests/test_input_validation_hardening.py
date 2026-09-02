@@ -12,8 +12,8 @@ boundary that had none at all:
   InMemory cannot pass a payload the first real PG enqueue rejects;
 - ``JobFilter`` text predicates reject a NUL before they reach a backend
   (``list_jobs`` / ``cancel_where``);
-- ``BatchFilter.limit`` is bounded above (``list_batches`` runs a
-  per-batch count join with no cursor pagination);
+- ``BatchFilter.limit`` is NOT bounded above (``list_batches`` runs a
+  per-batch count join, but ``cursor`` is what reaches a later page);
 - ``ScheduleCreateArgs`` caller text rejects a NUL before the bind;
 - the capacity cache reports ``has_snapshot`` from "has a refresh ever
   succeeded", not from the row count of the last snapshot.
@@ -325,14 +325,16 @@ def test_job_filter_clean_text_predicates_still_construct() -> None:
 
 # ── BatchFilter.limit has no upper bound ────────────────────────────────
 #
-# ``list_batches`` has neither a cursor nor an offset, so the limit is the
-# only way to reach a batch at all: any upper bound makes the batches past
-# it unreachable by any means. Only ``limit >= 0`` is validated.
+# ``BatchFilter.cursor`` is now how a caller reaches batch 501, so the limit
+# no longer has to be the whole reachable set. It still has no upper bound:
+# a cap here would only re-break the callers written before the cursor
+# existed, and an operator asking for one large page pays for it themselves.
+# Only ``limit >= 0`` is validated.
 
 
 def test_batch_filter_accepts_a_limit_past_any_page_size() -> None:
-    """A limit large enough to reach the whole table is a legitimate request:
-    without a cursor it is the only way to see a batch beyond the first page."""
+    """A limit large enough to reach the whole table stays a legitimate
+    request — capping it is what made batch 501 unreachable before."""
     assert BatchFilter(limit=10_000).limit == 10_000
 
 

@@ -31,6 +31,7 @@ from taskq.backend._protocol import EnqueueArgs, JobFilter, JobSortField, Schedu
 from taskq.batch import EnqueueItem
 from taskq.client import CancelResult, JobHandle, JobsClient
 from taskq.client._args import build_enqueue_args
+from taskq.constants import MAX_IDEMPOTENCY_KEY_BYTES
 from taskq.cron import ScheduleHandle
 from taskq.testing.clock import FakeClock
 from taskq.testing.in_memory import InMemoryBackend
@@ -514,9 +515,14 @@ class TestIdempotencyKeyValidation:
     async def test_over_length_raises_value_error(self) -> None:
         _, client = self._make_client()
         payload = _SingletonPayload(value=1)
-        too_long = "x" * 257
+        too_long = "x" * (MAX_IDEMPOTENCY_KEY_BYTES + 1)
         with pytest.raises(
-            ValueError, match="idempotency_key must be at most 256 characters, got 257"
+            ValueError,
+            match=(
+                f"idempotency_key must be at most {MAX_IDEMPOTENCY_KEY_BYTES} UTF-8 bytes "
+                r"\(TASKQ_IDEMPOTENCY_KEY_MAX_BYTES\), got "
+                f"{MAX_IDEMPOTENCY_KEY_BYTES + 1}"
+            ),
         ):
             await client.enqueue(_singleton_actor, payload, idempotency_key=too_long)
 
@@ -526,7 +532,7 @@ class TestIdempotencyKeyValidation:
         handle = await client.enqueue(_singleton_actor, payload, idempotency_key=None)
         assert handle.job_id is not None
 
-    async def test_boundary_256_chars_is_accepted(self) -> None:
+    async def test_boundary_length_is_accepted(self) -> None:
         _, client = self._make_client()
         payload = _SingletonPayload(value=1)
         key = "x" * 256
@@ -572,9 +578,13 @@ class TestIdempotencyScopeValidation:
     async def test_over_length_raises_value_error(self) -> None:
         _, client = self._make_client()
         payload = _SingletonPayload(value=1)
-        too_long = "x" * 257
+        too_long = "x" * (MAX_IDEMPOTENCY_KEY_BYTES + 1)
         with pytest.raises(
-            ValueError, match="idempotency_scope must be at most 256 characters, got 257"
+            ValueError,
+            match=(
+                f"idempotency_scope must be at most {MAX_IDEMPOTENCY_KEY_BYTES} UTF-8 bytes "
+                r"\(TASKQ_IDEMPOTENCY_KEY_MAX_BYTES\)"
+            ),
         ):
             await client.enqueue(
                 _singleton_actor,
@@ -583,7 +593,7 @@ class TestIdempotencyScopeValidation:
                 idempotency_scope=too_long,
             )
 
-    async def test_boundary_256_chars_is_accepted(self) -> None:
+    async def test_boundary_length_is_accepted(self) -> None:
         _, client = self._make_client()
         payload = _SingletonPayload(value=1)
         scope = "x" * 256
@@ -621,12 +631,12 @@ class TestIdempotencyScopeValidation:
         object.__setattr__(backend, "enqueue", raise_immediately)
 
         payload = _SingletonPayload(value=1)
-        with pytest.raises(ValueError, match="idempotency_scope must be at most 256 characters"):
+        with pytest.raises(ValueError, match="idempotency_scope must be at most"):
             await client.enqueue(
                 _singleton_actor,
                 payload,
                 idempotency_key="k",
-                idempotency_scope="x" * 257,
+                idempotency_scope="x" * (MAX_IDEMPOTENCY_KEY_BYTES + 1),
             )
         assert not reached[0], "backend was reached before validation fired"
 

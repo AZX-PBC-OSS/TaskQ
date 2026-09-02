@@ -156,3 +156,42 @@ async def test_invalid_schema_is_rejected(
 ) -> None:
     with pytest.raises(ValueError, match="invalid schema name"):
         await list_queues(clean_pg_conn, schema='evil"; DROP SCHEMA public CASCADE; --')
+
+
+async def test_invalid_queue_name_writes_no_row(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_schema: ModulePgSchema,
+) -> None:
+    """The UPSERT is the only write path that could create a queue name the
+    rest of TaskQ rejects.
+
+    A ":" name is inert today -- the cap bootstrap matches
+    ``WHERE name = ANY($1)`` against the validated ``settings.queues`` --
+    so the row would simply never match anything: a trap for whoever
+    finds it later, not an exploit. It must never be written.
+    """
+    before = await list_queues(clean_pg_conn, schema=module_pg_schema.schema_name)
+
+    with pytest.raises(ValueError, match="invalid queue name"):
+        await set_queue_mode(
+            clean_pg_conn, "foo:eu", "round_robin", schema=module_pg_schema.schema_name
+        )
+    with pytest.raises(ValueError, match="invalid queue name"):
+        await set_queue_max_concurrent(
+            clean_pg_conn, "foo:eu", 4, schema=module_pg_schema.schema_name
+        )
+
+    assert await list_queues(clean_pg_conn, schema=module_pg_schema.schema_name) == before
+    assert await get_queue(clean_pg_conn, "foo:eu", schema=module_pg_schema.schema_name) is None
+
+
+async def test_relaxed_queue_name_charset_is_still_writable(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_schema: ModulePgSchema,
+) -> None:
+    """The charset allows a leading digit, dots and hyphens; the guard must
+    not re-tighten what was deliberately relaxed."""
+    row = await set_queue_mode(
+        clean_pg_conn, "2024-backfill.eu", "round_robin", schema=module_pg_schema.schema_name
+    )
+    assert row.name == "2024-backfill.eu"

@@ -248,7 +248,13 @@ IdentityKey = NewType("IdentityKey", str)
 """Distinguishes identity keys from idempotency keys at call sites."""
 
 
-_QUEUE_NAME_RE: Final[re.Pattern[str]] = re.compile(r"\A[A-Za-z0-9_][A-Za-z0-9_.-]*\Z")
+#: The two halves of the queue-name rule, kept as separate character classes
+#: so the pattern and the "which character lost?" diagnostic below are the
+#: SAME rule rather than two copies that can drift apart.
+_QUEUE_NAME_FIRST: Final = "[A-Za-z0-9_]"
+_QUEUE_NAME_REST: Final = "[A-Za-z0-9_.-]"
+
+_QUEUE_NAME_RE: Final[re.Pattern[str]] = re.compile(rf"\A{_QUEUE_NAME_FIRST}{_QUEUE_NAME_REST}*\Z")
 # \A/\Z, not ^/$: Python's `$` also matches immediately before a trailing
 # newline, so "default\n" satisfied ^...$ (see _IDENT_RE's docstring in
 # taskq.constants for the full rationale — same trap, same fix).
@@ -277,9 +283,40 @@ _QUEUE_NAME_RE: Final[re.Pattern[str]] = re.compile(r"\A[A-Za-z0-9_][A-Za-z0-9_.
 # costs nothing and the ban only surprised users.
 
 
+#: Human-readable form of :data:`_QUEUE_NAME_RE`, quoted in every rejection.
+#: "invalid" on its own leaves the operator guessing which character lost --
+#: and the ":" ban in particular is surprising enough to need saying, since
+#: it is the one exclusion that is about a namespace and not about tidiness.
+_QUEUE_NAME_RULE: Final = (
+    "a queue name must start with a letter, digit or underscore "
+    "and may then contain letters, digits, underscore, dot or hyphen "
+    f"({_QUEUE_NAME_FIRST}{_QUEUE_NAME_REST}*); ':' is reserved as the separator "
+    "of the 'taskq:global:queue:' reservation namespace"
+)
+
+_QUEUE_NAME_FIRST_RE: Final[re.Pattern[str]] = re.compile(_QUEUE_NAME_FIRST)
+_QUEUE_NAME_REST_RE: Final[re.Pattern[str]] = re.compile(_QUEUE_NAME_REST)
+
+
+def _queue_name_offender(v: str) -> str:
+    """Name what disqualified *v*, for the tail of the rejection message."""
+    if not v:
+        return "it is empty"
+    if not _QUEUE_NAME_FIRST_RE.match(v[0]):
+        return f"the first character {v[0]!r} is not allowed there"
+    for i, ch in enumerate(v[1:], start=1):
+        if not _QUEUE_NAME_REST_RE.match(ch):
+            return f"character {ch!r} at position {i} is not allowed"
+    # Only reachable if _QUEUE_NAME_RE grows a constraint that is not one of
+    # the two character classes it is built from (a length bound, say).
+    return "it does not match the allowed pattern"
+
+
 def _validate_queue_name(v: str) -> str:
     if not _QUEUE_NAME_RE.match(v):
-        raise ValueError(f"invalid queue name: {v!r}")
+        raise ValueError(
+            f"invalid queue name: {v!r} -- {_queue_name_offender(v)}. {_QUEUE_NAME_RULE}"
+        )
     return v
 
 
@@ -903,22 +940,42 @@ class BatchFilter:
     """Filter parameters for Backend.list_batches.
 
     Unlike JobFilter, this only carries fields relevant to batch queries:
-    queue, active (status terminality), batch_id, and limit. Job-oriented
-    fields (status, actor, tags, cursor, order_by, identity_key) are
+    queue, active (status terminality), batch_id, limit, and cursor.
+    Job-oriented fields (status, actor, tags, order_by, identity_key) are
     intentionally absent — using JobFilter for batch queries would
     silently ignore those fields, which is a type trap.
+
+    ``cursor`` is the same mechanism as :attr:`JobFilter.cursor`: an
+    opaque keyset token encoding the last row of the previous page, which
+    both backends must decode identically
+    (:func:`~taskq.backend._cursor.encode_batch_cursor`). It encodes
+    ``(created_at, id)`` where the job cursor encodes ``(priority,
+    scheduled_at, id)`` — one field fewer, same ``|``-delimited shape.
+    ``created_at`` alone is not a total order (the column defaults to
+    ``now()``, the *transaction* timestamp, so one
+    ``enqueue_batch_atomic`` stamps every row it writes identically), so
+    ``id`` is the tiebreaker; it is UUIDv7 and therefore time-ordered,
+    which lets both columns sort DESC together and makes the seam a
+    single row-wise comparison.
+
+    There is no ``order_by``: ``list_batches`` has exactly one ordering,
+    so the cursor cannot disagree with it. That sidesteps
+    :meth:`JobFilter.__post_init__`'s restriction — a job cursor is
+    rejected outright with any non-default ``order_by``, which leaves the
+    admin UI's CREATED_AT_DESC/FINISHED_AT_DESC sorts stuck on one page.
     """
 
     queue: str | None = None
     active: bool | None = None
     batch_id: UUID | None = None
     limit: int = 100
+    cursor: str | None = None
 
     def __post_init__(self) -> None:
-        # Why: no upper bound. list_batches has neither a cursor nor an
-        # offset, so the limit is the only way to reach a batch; capping it
-        # makes every batch past the cap unreachable by any means. The cost
-        # of a large listing belongs to the operator calling the Backend.
+        # Why: no upper bound. The limit bounds one page, not the reachable
+        # set -- ``cursor`` is what reaches batch 501 -- but an operator
+        # asking for a large single page is paying for it themselves, and a
+        # cap here would only re-break the callers that predate the cursor.
         if self.limit < 0:
             raise ValueError(f"limit must be >= 0, got {self.limit}")
 
@@ -939,6 +996,7 @@ class BackendSettings(Protocol):
     schema_name: str
     dispatch_oversample: int
     dispatcher_command_timeout: float
+    result_max_bytes: int
 
 
 @runtime_checkable
@@ -957,7 +1015,7 @@ class BackendDeps(Protocol):
 
     @property
     def heartbeat_pool(self) -> "asyncpg.Pool":
-        """Pool for heartbeat writes (pg_dsn_direct, command_timeout=2s)."""
+        """Pool for heartbeat writes (pg_dsn_direct, heartbeat_command_timeout)."""
         ...
 
     @property

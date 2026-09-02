@@ -8,6 +8,7 @@ from opentelemetry.sdk.metrics.export import InMemoryMetricReader, Metric
 
 from taskq.backend._protocol import JobFilter
 from taskq.client._jobs import JobsClient
+from taskq.constants import MAX_IDEMPOTENCY_KEY_BYTES
 from taskq.exceptions import EmptyFilterError
 from taskq.testing.clock import FakeClock
 from taskq.testing.in_memory import InMemoryBackend
@@ -162,7 +163,15 @@ async def test_client_cancel_where_translates_schema_errors() -> None:
     from taskq.exceptions import SchemaNotMigratedError
 
     backend = InMemoryBackend(clock=FakeClock(_NOW))
-    client = JobsClient(backend, settings=type("S", (), {"schema_name": "test_schema"})())
+    stub_settings = type(
+        "S",
+        (),
+        {
+            "schema_name": "test_schema",
+            "idempotency_key_max_bytes": MAX_IDEMPOTENCY_KEY_BYTES,
+        },
+    )()
+    client = JobsClient(backend, settings=stub_settings)
 
     await backend.enqueue(make_enqueue_args(tags=("x",), scheduled_at=_NOW))
 

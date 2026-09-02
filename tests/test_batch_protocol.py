@@ -130,6 +130,7 @@ class TestBatchFilter:
         assert f.active is None
         assert f.batch_id is None
         assert f.limit == 100
+        assert f.cursor is None
 
     def test_construction_with_values(self) -> None:
         f = BatchFilter(queue="default", active=True, batch_id=_FIXED_UUID, limit=50)
@@ -139,7 +140,7 @@ class TestBatchFilter:
         assert f.limit == 50
 
     def test_field_count(self) -> None:
-        expected = 4
+        expected = 5
         assert len(fields(BatchFilter)) == expected
 
     def test_frozen(self) -> None:
@@ -160,11 +161,17 @@ class TestBatchFilter:
 
     def test_field_names_exactly(self) -> None:
         names = {f.name for f in fields(BatchFilter)}
-        assert names == {"queue", "active", "batch_id", "limit"}
+        assert names == {"queue", "active", "batch_id", "limit", "cursor"}
 
     def test_does_not_have_job_filter_fields(self) -> None:
+        """``cursor`` is deliberately NOT forbidden: pagination is one
+        mechanism shared with JobFilter, not a job-only concept. The
+        forbidden set is the job-shaped predicates that BatchFilter would
+        silently ignore -- plus ``order_by``, which list_batches does not
+        offer at all (its single ordering is what keeps the cursor from
+        ever disagreeing with the sort)."""
         names = {f.name for f in fields(BatchFilter)}
-        forbidden = {"status", "actor", "tags", "cursor", "order_by", "identity_key"}
+        forbidden = {"status", "actor", "tags", "order_by", "identity_key"}
         assert names.isdisjoint(forbidden), (
             f"BatchFilter must not carry JobFilter fields {forbidden}, "
             f"but found: {names & forbidden}"

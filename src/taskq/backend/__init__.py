@@ -13,7 +13,12 @@ dependency through this re-export boundary.
 
 # pyright: reportUnsupportedDunderAll=false
 
-from taskq.backend._cursor import decode_cursor, encode_cursor
+from taskq.backend._cursor import (
+    decode_batch_cursor,
+    decode_cursor,
+    encode_batch_cursor,
+    encode_cursor,
+)
 from taskq.backend._protocol import (
     BACKEND_PROTOCOL_VERSION,
     AttemptOutcome,
@@ -72,6 +77,8 @@ __all__ = [  # pyright: ignore[reportUnsupportedDunderAll]  # Why: __getattr__ l
     "PostgresBackend",
     "ScheduleRecord",
     "assert_valid_transition",
+    "decode_batch_cursor",
     "decode_cursor",
+    "encode_batch_cursor",
     "encode_cursor",
 ]

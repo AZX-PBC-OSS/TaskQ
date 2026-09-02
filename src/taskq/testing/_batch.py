@@ -11,6 +11,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, get_args
 from uuid import UUID
 
+from taskq.backend._cursor import decode_batch_cursor
 from taskq.backend._protocol import (
     BatchCounts,
     BatchFilter,
@@ -214,7 +215,14 @@ def _list_batches(
     if filter.batch_id is not None:
         candidates = [b for b in candidates if b.id == filter.batch_id]
 
-    candidates.sort(key=lambda b: b.created_at, reverse=True)
+    # Mirror of the PG keyset: (created_at, id) DESC as one total order,
+    # with id -- UUIDv7, so time-ordered -- carrying the rows a FakeClock
+    # (or PG's transaction-timestamp now()) stamps identically.
+    candidates.sort(key=lambda b: (b.created_at, b.id), reverse=True)
+
+    if filter.cursor is not None:
+        cursor_key = decode_batch_cursor(filter.cursor)
+        candidates = [b for b in candidates if (b.created_at, b.id) < cursor_key]
 
     candidates = candidates[: filter.limit]
 

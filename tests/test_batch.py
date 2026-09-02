@@ -22,6 +22,7 @@ from taskq._ids import new_uuid
 from taskq.batch import BatchCompletionStatus, BatchHandle, EnqueueItem
 from taskq.client._handle import JobHandle
 from taskq.client._jobs import JobsClient
+from taskq.constants import MAX_IDEMPOTENCY_KEY_BYTES
 from taskq.exceptions import MaxPendingExceededError, PayloadValidationError
 from taskq.testing.clock import FakeClock
 from taskq.testing.in_memory import InMemoryBackend
@@ -1207,7 +1208,7 @@ class TestTU13IdempotencyKeyWhitespaceRaisesValueError:
 
 
 class TestTU14IdempotencyKeyTooLongRaisesValueError:
-    """item with idempotency_key of 257 chars raises ValueError before any I/O."""
+    """An item whose idempotency_key exceeds the byte cap raises before any I/O."""
 
     async def test_257_char_key_raises(self) -> None:
         backend = _make_backend()
@@ -1215,10 +1216,10 @@ class TestTU14IdempotencyKeyTooLongRaisesValueError:
         item = EnqueueItem(
             actor_ref=_test_actor,
             payload=_Payload(),
-            idempotency_key="x" * 257,
+            idempotency_key="x" * (MAX_IDEMPOTENCY_KEY_BYTES + 1),
         )
 
-        with pytest.raises(ValueError, match="256"):
+        with pytest.raises(ValueError, match="TASKQ_IDEMPOTENCY_KEY_MAX_BYTES"):
             await client.enqueue_batch([item])
 
     async def test_no_rows_inserted_on_too_long_key(self) -> None:
@@ -1227,7 +1228,7 @@ class TestTU14IdempotencyKeyTooLongRaisesValueError:
         item = EnqueueItem(
             actor_ref=_test_actor,
             payload=_Payload(),
-            idempotency_key="x" * 257,
+            idempotency_key="x" * (MAX_IDEMPOTENCY_KEY_BYTES + 1),
         )
 
         with contextlib.suppress(ValueError):
