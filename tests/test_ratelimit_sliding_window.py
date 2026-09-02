@@ -633,17 +633,21 @@ async def test_reset_assert_never_invalid_backend_style() -> None:
 
 
 async def test_refund_assert_never_invalid_backend_style() -> None:
-    """refund() hits the exhaustive-match fallback for an invalid (backend, style) pair."""
+    """refund() hits the exhaustive-match fallback for an invalid (backend, style) pair.
+
+    The bogus backend goes on the DECISION, not the primitive: a refund is
+    dispatched by the store that actually served the acquire (which, after a
+    Redis outage falls back to PG, is not the configured one).
+    """
     from taskq.ratelimit.decision import RateLimitDecision
 
     sw = _sw()
-    sw._backend = "bogus"  # type: ignore[assignment]  # Why: forcing an invalid backend to exercise assert_never
     decision = RateLimitDecision(
         allowed=True,
         remaining=1.0,
         retry_after=timedelta(0),
         bucket_name=sw.name,
-        backend="memory",
+        backend="bogus",  # type: ignore[arg-type]  # Why: forcing an invalid backend to exercise assert_never
     )
     with pytest.raises(AssertionError):
         await sw.refund(decision)

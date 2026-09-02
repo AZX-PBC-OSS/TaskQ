@@ -441,6 +441,17 @@ class SlidingWindow:
         clock: Clock | None = None,
         settings: "WorkerSettings | None" = None,
     ) -> None:
+        # Why decision.backend and not self._backend: with backend="redis" and
+        # rate_limit_pg_fallback_enabled (the default), an acquire during a
+        # Redis outage falls through to Postgres and records the admission
+        # THERE. The decision says which store actually holds it; the
+        # primitive's configuration only says where it prefers to go.
+        # Dispatching on the latter left the Postgres window permanently
+        # holding an admission that was released, and — for GCRA, whose
+        # previous_state differs per backend — raised KeyError out of the
+        # release path outright. Kept identical to TokenBucket.refund, which
+        # dispatches the same way for the same reason.
+        #
         # Why clock and count are unused: a sliding-window refund removes
         # the one logged entry named by *decision*'s request id, so there
         # is nothing to re-add and no timestamp to read (TokenBucket.refund
@@ -448,7 +459,7 @@ class SlidingWindow:
         # RateLimitRegistry dispatches refund/peek/reset polymorphically
         # over both primitives with one fixed keyword block — dropping
         # either here would raise TypeError there.
-        match (self._backend, self._style):
+        match (decision.backend, self._style):
             case ("redis", "log"):
                 await _refund_redis_log(self, decision, redis_client, settings)
             case ("redis", "gcra"):
@@ -462,7 +473,7 @@ class SlidingWindow:
             case ("postgres", "gcra"):
                 await _refund_pg_gcra(self, decision, pg_pool, settings)
             case _:
-                assert_never((self._backend, self._style))
+                assert_never((decision.backend, self._style))
 
     async def peek(
         self,

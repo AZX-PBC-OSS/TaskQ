@@ -383,21 +383,28 @@ class TokenBucket:
         clock: Clock | None = None,
         settings: "WorkerSettings | None" = None,
     ) -> None:
-        # Why decision and clock are unused: a token-bucket refund returns
-        # *count* tokens to the bucket, so it needs neither the original
-        # decision (SlidingWindow.refund does — it removes the log entry
-        # named by that decision's request id) nor a timestamp. Both stay
-        # in the signature because
-        # RateLimitRegistry dispatches refund/peek/reset polymorphically
-        # over TokenBucket and SlidingWindow with one fixed keyword block
-        # (redis_client, pg_pool, clock, settings) — see
-        # registry.reset_limit's call sites. Dropping it here would raise
-        # TypeError there, not merely break symmetry.
-        if self._backend == "memory":
+        # Why decision.backend and not self._backend: with backend="redis" and
+        # rate_limit_pg_fallback_enabled (the default), an acquire during a
+        # Redis outage falls through to Postgres and consumes the token THERE.
+        # The decision records which store actually paid; the primitive's own
+        # configuration only records where it prefers to go. Dispatching on the
+        # latter refunded Redis for a token Postgres spent — inflating one
+        # store's quota and destroying the other's, and for a fixed-quota
+        # bucket (refill_per_second == 0) nothing ever puts the Postgres token
+        # back, so that loss is permanent.
+        #
+        # Why clock is unused: a token-bucket refund returns *count* tokens to
+        # the bucket and needs no timestamp. It stays in the signature because
+        # RateLimitRegistry dispatches refund/peek/reset polymorphically over
+        # TokenBucket and SlidingWindow with one fixed keyword block
+        # (redis_client, pg_pool, clock, settings) — see registry.reset_limit's
+        # call sites. Dropping it would raise TypeError there, not merely break
+        # symmetry.
+        if decision.backend == "memory":
             await self._refund_memory(count)
-        elif self._backend == "redis":
+        elif decision.backend == "redis":
             await self._refund_redis(count, redis_client, settings)
-        elif self._backend == "postgres":
+        elif decision.backend == "postgres":
             await self._refund_pg(count, pg_pool, settings)
 
     async def peek(
