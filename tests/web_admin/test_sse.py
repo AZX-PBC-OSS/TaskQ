@@ -17,11 +17,12 @@ from taskq.web.admin.sse import _TOPIC_SEMAPHORES, _sse_generator
 from . import _StubPool
 
 
+# Signature mirrors taskq.web.admin.sse._sse_generator exactly — a double that
+# outlives the real signature stops standing in for anything.
 async def _finite_sse_generator(
     semaphore: asyncio.Semaphore,
     pool: object | None,
     schema: str | None,
-    topic: str,
 ) -> AsyncIterator[str]:
     try:
         sentinel_data = '{"status": "awaiting_progress_backend"}'

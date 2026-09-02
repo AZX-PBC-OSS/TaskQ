@@ -182,11 +182,12 @@ def test_sse_returns_sentinel(monkeypatch: pytest.MonkeyPatch) -> None:
 
     from taskq.web.admin import sse as sse_mod
 
+    # Signature mirrors taskq.web.admin.sse._sse_generator exactly — a double
+    # that outlives the real signature stops standing in for anything.
     async def _terminating_gen(
         semaphore: asyncio.Semaphore,
         pool: object,
         schema: object,
-        topic: str,
     ) -> AsyncIterator[str]:
         try:
             from taskq import _json
@@ -270,11 +271,12 @@ async def test_sse_429_on_concurrency_exhaustion(monkeypatch: pytest.MonkeyPatch
 
     from taskq.web.admin import sse as sse_mod
 
+    # Signature mirrors taskq.web.admin.sse._sse_generator exactly — a double
+    # that outlives the real signature stops standing in for anything.
     async def _terminating_gen(
         semaphore: asyncio.Semaphore,
         pool: object,
         schema: object,
-        topic: str,
     ) -> AsyncIterator[str]:
         try:
             from taskq import _json

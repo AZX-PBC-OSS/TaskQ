@@ -39,6 +39,12 @@ class StubConnection:
         return None
 
     async def fetchval(self, query: str, *args: object) -> object:
+        if "clock_timestamp()" in query:
+            # Postgres answers a server-clock read with a timestamp
+            # unconditionally. Returning the generic False here handed the
+            # admin factory's clock-offset probe a bool where the real
+            # database hands it a datetime.
+            return datetime.now(UTC)
         return False
 
     async def execute(self, query: str, *args: object) -> str:
