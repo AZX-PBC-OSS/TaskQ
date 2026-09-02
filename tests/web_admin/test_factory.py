@@ -375,20 +375,13 @@ def test_time_ago_naive_datetime_adds_utc() -> None:
     assert result != "—"
 
 
-def test_time_ago_renders_a_server_computed_age_as_an_age() -> None:
-    """A bare number is an age the DATABASE already computed, in seconds, so
-    it renders as a relative time — no app clock enters the calculation. It
-    used to fall through to str(), rendering a raw "42" in the UI."""
+def test_time_ago_renders_a_non_timestamp_verbatim() -> None:
+    """The filter reads a timestamp. Anything else — a number included — is
+    stringified rather than reinterpreted: no template passes a number, and
+    "an int means seconds of age" is not readable from the filter's name."""
     from taskq.web.admin._factory import _time_ago
 
-    assert _time_ago(42) == "42 seconds ago"
-
-
-def test_time_ago_renders_a_bool_verbatim_rather_than_as_an_age() -> None:
-    """bool is an int subclass; without the explicit guard a True would
-    render as "1 second ago"."""
-    from taskq.web.admin._factory import _time_ago
-
+    assert _time_ago(42) == "42"
     assert _time_ago(True) == "True"
 
 

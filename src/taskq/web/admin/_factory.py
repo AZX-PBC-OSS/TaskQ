@@ -64,10 +64,10 @@ class GZipStaticOnly(_GZipMiddleware):
 # a periodically measured offset between the two clocks, so the subtraction is
 # performed in the database's domain even though it runs in Python.
 #
-# Queries that already did the arithmetic server-side — the
+# Better still, a query can do the arithmetic server-side — the
 # `EXTRACT(EPOCH FROM clock_timestamp() - col)` shape `_LEADER_SQL` uses for
-# `watchdog_healthy` — can hand the filter that number directly and no clock
-# participates at all. That is the preferred form for new queries.
+# `watchdog_healthy` — so no clock participates at all. That is the preferred
+# form for new queries; it renders the number itself, not through this filter.
 
 _CLOCK_OFFSET_TTL: float = 30.0
 
@@ -122,19 +122,14 @@ def _db_now() -> datetime:
 def _time_ago(ts: Any) -> str:
     """Return a human-readable relative time string via humanize (e.g. '2 minutes ago').
 
-    Accepts either an age already computed by the database (a number of
-    seconds) or a database-written timestamp, which is aged against the
-    database clock rather than this process's.
+    Takes a database-written timestamp, which is aged against the database
+    clock rather than this process's. Anything that is not a timestamp is
+    stringified unchanged.
     """
     if ts is None or ts == "":
         return "—"
     try:
         import humanize
-
-        if isinstance(ts, bool):
-            return str(ts)
-        if isinstance(ts, int | float):
-            return humanize.naturaltime(timedelta(seconds=float(ts)))
 
         if isinstance(ts, str):
             dt = datetime.fromisoformat(ts)
