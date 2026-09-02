@@ -1553,3 +1553,54 @@ class TestRedisCloseBounded:
 
         assert fake.initialize_calls == 1
         assert fake.aclose_calls == 1
+
+
+# ── Explicit trace context overrides the ambient span ──────────────────
+#
+# docs/guides/jobs-clients.md: "Automatically extracted from the active
+# OTel span when one is valid; pass explicitly to override" / "pass
+# trace_id= and span_id= explicitly to override or to propagate an
+# external trace context". `JobsClient.enqueue` accepted both and then
+# passed the *extracted* values to build_enqueue_args regardless, so an
+# external trace context was silently dropped and the worker's consumer
+# span was never linked back to it.
+
+
+class TestExplicitTraceContext:
+    """Caller-supplied trace_id/span_id reach the stored job row."""
+
+    _TRACE_ID = "4bf92f3577b34da6a3ce929d0e0e4736"
+    _SPAN_ID = "00f067aa0ba902b7"
+
+    @staticmethod
+    def _make_client() -> tuple[InMemoryBackend, JobsClient]:
+        backend = InMemoryBackend(clock=FakeClock(_START))
+        return backend, JobsClient(backend)
+
+    async def test_explicit_trace_context_is_stored(self) -> None:
+        """Passing trace_id/span_id propagates them onto the job row."""
+        backend, client = self._make_client()
+
+        handle = await client.enqueue(
+            _fresh_actor,
+            _DedupPayload(value=1),
+            trace_id=self._TRACE_ID,
+            span_id=self._SPAN_ID,
+        )
+
+        row = await backend.get(handle.job_id)
+        assert row is not None
+        assert row.trace_id == self._TRACE_ID
+        assert row.span_id == self._SPAN_ID
+
+    async def test_omitted_trace_context_is_not_invented(self) -> None:
+        """Without an explicit value and without an active OTel span the
+        columns stay NULL — the override must not fabricate a context."""
+        backend, client = self._make_client()
+
+        handle = await client.enqueue(_fresh_actor, _DedupPayload(value=2))
+
+        row = await backend.get(handle.job_id)
+        assert row is not None
+        assert row.trace_id is None
+        assert row.span_id is None

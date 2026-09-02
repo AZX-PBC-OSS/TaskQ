@@ -345,6 +345,13 @@ class JobsClient:
             effective_max_pending = await self._capacity_cache.effective_max_pending(
                 ref.name, ref.max_pending
             )
+            # An explicit trace_id/span_id overrides the ambient span, per
+            # docs/guides/jobs-clients.md: "pass explicitly to override or
+            # to propagate an external trace context". Both were previously
+            # accepted and then dropped in favour of the extracted values,
+            # so cross-service propagation silently produced an unlinked
+            # consumer span. SubJobEnqueuer.enqueue has no such override and
+            # correctly exposes no parameter for one.
             args = build_enqueue_args(
                 ref,
                 payload,
@@ -356,8 +363,8 @@ class JobsClient:
                 identity_key=identity_key,
                 idempotency_key=idempotency_key,
                 idempotency_scope=idempotency_scope,
-                trace_id=extracted_trace_id,
-                span_id=extracted_span_id,
+                trace_id=trace_id if trace_id is not None else extracted_trace_id,
+                span_id=span_id if span_id is not None else extracted_span_id,
                 schedule_to_close=schedule_to_close,
                 start_to_close=start_to_close,
                 heartbeat_timeout=heartbeat_timeout,
