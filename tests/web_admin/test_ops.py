@@ -887,6 +887,9 @@ def test_schedule_skip_redirects_on_success(monkeypatch: pytest.MonkeyPatch) -> 
                     "cron_expr": "* * * * *",
                     "timezone": "UTC",
                     "next_fire_at": datetime.now(UTC) - timedelta(minutes=30),
+                    # The skip fetch reads the server clock in the same row
+                    # (clock_timestamp() AS db_now), so the stub row carries it.
+                    "db_now": datetime.now(UTC),
                 }
             ),
         },

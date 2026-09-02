@@ -836,6 +836,13 @@ async def test_property_identity_invariant(
     For every (actor, identity_key) pair, the number of running jobs is 0 or 1.
     Identity serialization means at most one member of each equivalence class
     can be dispatched.
+
+    The generator draws arbitrary text, which includes identity keys the API
+    contractually refuses: a NUL is unstorable in a PostgreSQL text column, so
+    enqueue rejects it at the EnqueueArgs chokepoint rather than letting the
+    driver raise it later as an apparently transient failure. Both arms are
+    asserted here so the strategy stays honest — narrowing it to exclude NUL
+    would hide a regression in that rejection instead of pinning it.
     """
     clock = FakeClock(_START)
     backend = _make_backend(clock)
@@ -847,6 +854,10 @@ async def test_property_identity_invariant(
     # Enqueue all generated job specs
     for actor_name, ik_raw in jobs:
         ident: IdentityKey | None = IdentityKey(ik_raw) if ik_raw is not None else None
+        if ik_raw is not None and "\x00" in ik_raw:
+            with pytest.raises(ValueError, match="NUL character"):
+                _enqueue_args(actor=actor_name, identity_key=ident)
+            continue
         args = _enqueue_args(actor=actor_name, identity_key=ident)
         await backend.enqueue(args)
 

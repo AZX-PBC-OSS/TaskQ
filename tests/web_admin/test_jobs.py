@@ -1,7 +1,7 @@
 """Tests for job detail routes, templates, traceback truncation, and XSS prevention."""
 
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
@@ -517,11 +517,12 @@ def test_build_paginated_sql_prev_direction_reverses_order() -> None:
     assert "ASC" in sql  # reversed from DESC
 
 
-# ── _parse_time_range: explicit from/to takes precedence ────────────────
+# ── _parse_time_range: explicit instants vs. a relative window ──────────
 
 
 def test_parse_time_range_explicit_from_to() -> None:
-    """_parse_time_range returns explicit from/to without consulting time_range."""
+    """_parse_time_range returns explicit from/to without consulting time_range,
+    and asks for no relative window: those are the caller's own instants."""
     from taskq.web.admin.jobs import _parse_time_range
 
     result = _parse_time_range(
@@ -529,4 +530,42 @@ def test_parse_time_range_explicit_from_to() -> None:
         time_from="2025-01-01T00:00:00+00:00",
         time_to="2025-01-02T00:00:00+00:00",
     )
-    assert result == ("2025-01-01T00:00:00+00:00", "2025-01-02T00:00:00+00:00")
+    assert result == ("2025-01-01T00:00:00+00:00", "2025-01-02T00:00:00+00:00", None)
+
+
+def test_parse_time_range_named_range_stays_relative() -> None:
+    """A named range resolves to a DURATION, not to absolute bounds computed
+    here: created_at is written by the database clock, so the window has to be
+    anchored server-side or the app-to-database skew shifts it."""
+    from taskq.web.admin.jobs import _parse_time_range
+
+    assert _parse_time_range(time_range="1h", time_from=None, time_to=None) == (
+        None,
+        None,
+        timedelta(hours=1),
+    )
+
+
+def test_parse_time_range_unknown_range_filters_nothing() -> None:
+    from taskq.web.admin.jobs import _parse_time_range
+
+    assert _parse_time_range(time_range="nonsense", time_from=None, time_to=None) == (
+        None,
+        None,
+        None,
+    )
+
+
+def test_build_where_binds_a_named_range_as_a_duration_not_an_instant() -> None:
+    """No app-clock instant may reach the query for a relative window: the
+    duration itself is bound, leaving the anchoring to the server.  (That the
+    window really is measured from the database clock is pinned end-to-end
+    against real Postgres in test_web_admin_integration.py.)"""
+    from taskq.web.admin.jobs import _build_where
+
+    _sql, params = _build_where(
+        ["pending"], None, None, None, None, None, None, None, within=timedelta(hours=1)
+    )
+
+    assert timedelta(hours=1) in params
+    assert not any(isinstance(p, datetime) for p in params)

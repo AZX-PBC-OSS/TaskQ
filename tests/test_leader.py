@@ -76,6 +76,19 @@ class _FakeTransaction:
         return None
 
 
+def _is_server_clock_read(sql: str) -> bool:
+    """Whether *sql* asks Postgres for its own clock.
+
+    Postgres answers such a statement with a timestamp unconditionally, so a
+    double that hands back its generic ``fetchval_result`` here is lying about
+    the row shape: the leader sweeps read the server clock through the same
+    connection they take the advisory lock on, and a double configured with
+    ``fetchval_result=True`` for the lock was returning that bool where the
+    real database returns a datetime.
+    """
+    return "clock_timestamp()" in sql
+
+
 class FakeConn:
     """Lightweight asyncpg.Connection stand-in with fetchval + execute recording."""
 
@@ -106,6 +119,8 @@ class FakeConn:
         self.fetchval_calls.append((sql, args))
         if self._on_fetchval is not None:
             self._on_fetchval()
+        if _is_server_clock_read(sql):
+            return datetime.now(UTC)
         return self._fetchval_result
 
     async def execute(self, sql: str, *args: object) -> str:

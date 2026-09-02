@@ -183,7 +183,11 @@ def test_schedule_disable_redirects_when_cron_not_installed(
 def test_schedule_skip_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
     past = datetime.now(UTC) - timedelta(minutes=2)
-    row = StubRecord(cron_expr="* * * * *", timezone="UTC", next_fire_at=past)
+    # The skip fetch reads the server clock in the same row
+    # (clock_timestamp() AS db_now), so the stub row carries it.
+    row = StubRecord(
+        cron_expr="* * * * *", timezone="UTC", next_fire_at=past, db_now=datetime.now(UTC)
+    )
     conn = _ScriptedConnection(fetchrow_results=[row])
     client = _make_app(_ScriptedPool(conn))
     sid = uuid4()
@@ -542,7 +546,9 @@ def test_schedule_skip_400_when_no_future_fire_time(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(
         "taskq.web.admin.ops.compute_next_fire_after", _fake_compute_next_fire_after
     )
-    row = StubRecord(cron_expr="* * * * *", timezone="UTC", next_fire_at=stale)
+    row = StubRecord(
+        cron_expr="* * * * *", timezone="UTC", next_fire_at=stale, db_now=datetime.now(UTC)
+    )
     conn = _ScriptedConnection(fetchrow_results=[row])
     client = _make_app(_ScriptedPool(conn))
     sid = uuid4()

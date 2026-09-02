@@ -466,6 +466,39 @@ async def test_reservations_page_shows_summary(
     assert re.search(r"<td[^>]*>.*?1.*?</td>", html, re.DOTALL), "free_count=1 not found"
 
 
+# ── Relative time filter is measured by the database clock ─────────
+
+
+@pytest.mark.asyncio
+async def test_jobs_relative_time_filter_is_measured_by_the_server_clock(
+    pool: asyncpg.Pool, conn: asyncpg.Connection
+) -> None:
+    """``?time_range=1h`` keeps rows the SERVER considers recent and drops the
+    rest, with the ages set relative to ``clock_timestamp()`` and never to this
+    process's clock — created_at is server-written, so an app-anchored window
+    would shift by the app-to-database skew."""
+    recent, stale = uuid.uuid4(), uuid.uuid4()
+    for jid, age_secs in ((recent, 600.0), (stale, 18_000.0)):
+        await conn.execute(
+            f"""INSERT INTO {_SCHEMA_LABEL}.jobs (
+                id, actor, queue, payload, max_attempts, retry_kind,
+                status, priority, scheduled_at, schedule_to_close, created_at
+            ) VALUES ($1, $2, 'default', '{{}}'::jsonb, 3, 'transient',
+                      'pending', 0, clock_timestamp(),
+                      clock_timestamp() + interval '60 seconds',
+                      clock_timestamp() - make_interval(secs => $3))""",  # Why: schema label is a module constant; values are $1/$2/$3-bound
+            jid,
+            f"actor_{jid.hex[:8]}",
+            age_secs,
+        )
+
+    resp = await _get(_make_app(pool), "/admin/jobs?time_range=1h")
+
+    assert resp.status_code == 200
+    assert str(recent) in resp.text
+    assert str(stale) not in resp.text
+
+
 # ── Leader page returns 200 with no leader ─────────────────────────
 
 
