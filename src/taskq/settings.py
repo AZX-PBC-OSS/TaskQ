@@ -1013,6 +1013,19 @@ class WorkerSettings(TaskQSettings):
         description="TASKQ_OTEL_ENABLED. When False, the library suppresses all span "
         "and metric creation but operations still succeed .",
     )
+    exception_redaction_enabled: bool = Field(
+        default=True,
+        description="TASKQ_EXCEPTION_REDACTION_ENABLED. When True (the default), "
+        "Postgres 'DETAIL:' lines are dropped from exception text before it "
+        "reaches spans and logs, because they quote caller-supplied row values "
+        "(idempotency_key, identity_key, fairness_key routinely hold tenant or "
+        "subject identifiers). Set to False for advanced debugging to ship the "
+        "raw text, including those row values, to every configured telemetry "
+        "backend; the worker logs a startup WARNING while it is off. URI "
+        "credential masking (scheme://user:***@host) is NOT affected by this "
+        "setting and is always applied - no debugging case justifies sending a "
+        "password to a telemetry vendor.",
+    )
     worker_group: str = Field(
         default="default",
         description="TASKQ_WORKER_GROUP. Consumer group name emitted as "

@@ -39,7 +39,12 @@ from taskq.cron import (
     compute_next_fire_after,
 )
 from taskq.exceptions import MissingProvider
-from taskq.obs import get_meter, set_otel_enabled, setup_logging
+from taskq.obs import (
+    get_meter,
+    set_exception_redaction_enabled,
+    set_otel_enabled,
+    setup_logging,
+)
 from taskq.progress._flush import progress_flush_loop
 from taskq.ratelimit._provider import register_rate_limit_registry, register_redis_pool
 from taskq.ratelimit.refs import KeyedRateLimitRef
@@ -351,6 +356,32 @@ def _emit_startup_warnings(settings: WorkerSettings) -> None:
             ),
         )
 
+    # Why: this is the one setting that deliberately widens what leaves the
+    # trust boundary, and its effect is invisible in normal operation -- an
+    # operator who flips it during an incident gets no other signal that raw
+    # row values are now being shipped to the telemetry vendor. Warn on every
+    # startup, in the same shape as the admin-ui-no-auth warning, so it cannot
+    # be left on and forgotten across a deploy.
+    if not settings.exception_redaction_enabled:
+        _startup_log.warning(
+            "exception-redaction-disabled",
+            setting="TASKQ_EXCEPTION_REDACTION_ENABLED",
+            detail=(
+                "exception redaction is OFF: raw Postgres exception text is "
+                "being written to spans and logs, and shipped to every "
+                "configured telemetry backend. That includes 'DETAIL:' lines, "
+                "which quote caller-supplied row values -- idempotency_key, "
+                "identity_key and fairness_key routinely hold tenant or "
+                "subject identifiers. URI credential masking is still applied "
+                "(a password in a DSN is never shipped), but nothing else is. "
+                "This is a debugging aid, not a supported production setting."
+            ),
+            remedy=(
+                "unset TASKQ_EXCEPTION_REDACTION_ENABLED (or set it true) and "
+                "restart as soon as the investigation is finished"
+            ),
+        )
+
 
 async def _main(
     settings: WorkerSettings,
@@ -495,6 +526,7 @@ async def _main(
     loop = asyncio.get_running_loop()
 
     set_otel_enabled(settings.otel_enabled)
+    set_exception_redaction_enabled(settings.exception_redaction_enabled)
 
     shutdown_event = asyncio.Event()
     escalate_event = asyncio.Event()

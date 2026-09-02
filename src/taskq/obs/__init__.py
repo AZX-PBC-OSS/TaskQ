@@ -76,7 +76,11 @@ from taskq.obs._otel import (
     update_reservation_slots_cache,
     update_stranded_jobs_cache,
 )
-from taskq.obs._redact_exc import record_exception_safe, safe_exception_message
+from taskq.obs._redact_exc import (
+    record_exception_safe,
+    safe_exception_message,
+    set_exception_redaction_enabled,
+)
 from taskq.obs._structlog import (
     bind_job_context,
     get_logger,
@@ -128,6 +132,7 @@ __all__ = [
     "redact_payload",
     "safe_exception_message",
     "safe_start_span",
+    "set_exception_redaction_enabled",
     "set_otel_enabled",
     "setup_logging",
     "update_disabled_schedules_count",

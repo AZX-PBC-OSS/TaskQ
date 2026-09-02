@@ -382,6 +382,42 @@ ctx.log.info(
 )
 ```
 
+### Exception redaction
+
+Exception text reaches both spans and JSON logs, and from there whatever
+telemetry backend is configured. Before it does, TaskQ drops Postgres
+`DETAIL:` lines and masks credentials in URI-shaped text.
+
+Only `DETAIL` is dropped. It is the line that quotes caller-supplied row
+values — `Key (idempotency_key)=(tenant-4417) already exists.` — and TaskQ's
+`idempotency_key`, `identity_key` and `fairness_key` routinely hold tenant or
+subject identifiers. `HINT:` (Postgres's suggested fix) and `CONTEXT:` (the
+PL/pgSQL call stack) are structural, carry no row values, and are kept.
+
+By default an operator sees:
+
+```
+duplicate key value violates unique constraint "jobs_idempotency_key_key"
+HINT:  Perhaps you meant to reference the column "jobs.queue".
+CONTEXT:  PL/pgSQL function taskq.enqueue(text) line 12 at SQL statement
+```
+
+| Variable | Default | Effect |
+|---|---|---|
+| `TASKQ_EXCEPTION_REDACTION_ENABLED` | `true` | When `false`, `DETAIL:` lines are **not** dropped, on both the span and the log path. |
+
+Setting it to `false` is a debugging aid, not a production setting. What you
+gain is the offending row value, usually the fastest way to identify which
+caller collided. What you expose is that value — a tenant or subject
+identifier — written to spans, to logs, and to every configured telemetry
+vendor, where it is retained under that vendor's policy rather than yours.
+The worker logs an `exception-redaction-disabled` WARNING on every startup
+while it is off, so an audit of startup logs will find it.
+
+URI credential masking (`postgresql://taskq:***@host`) is **not** covered by
+this toggle and is always applied. There is no debugging case for shipping a
+password to a telemetry backend.
+
 ### Logging inside an actor
 
 `ctx.log` is a `structlog.stdlib.BoundLogger` already bound with `job_id`,

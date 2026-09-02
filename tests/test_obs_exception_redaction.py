@@ -365,17 +365,21 @@ def test_log_fields_carrying_exception_text_are_listed_for_scrubbing() -> None:
     assert offenders == [], f"unlisted exception-text log fields: {offenders}"
 
 
-# ── repr()-flattened DETAIL/HINT/CONTEXT lines ──────────────────────
+# ── repr()-flattened DETAIL lines ───────────────────────────────────
 
 
-def test_repr_flattened_detail_and_hint_lines_are_scrubbed() -> None:
-    """``repr()`` flattens the newline before DETAIL/HINT into the literal
+def test_repr_flattened_detail_line_is_scrubbed_but_hint_survives() -> None:
+    """``repr()`` flattens the newline before DETAIL into the literal
     two characters ``\\n``, which the line-anchored scrub cannot see — and
     ``error=repr(exc)`` is the majority log idiom (59 sites vs 33 ``str``).
 
     asyncpg's own ``__repr__`` renders only the primary message, so the
     leak shape is a relayed PG error: a plain exception whose message is
     the rendered PG text.
+
+    HINT is asserted to SURVIVE here: it is Postgres's suggested fix, it
+    quotes no row value, and scrubbing it was pure diagnostic loss. Only
+    DETAIL is value-bearing.
     """
     from taskq.obs._redact_exc import scrub_exception_field
 
@@ -391,10 +395,9 @@ def test_repr_flattened_detail_and_hint_lines_are_scrubbed() -> None:
     assert isinstance(safe, str)  # Why: narrows the object return for the membership asserts.
 
     assert "subject-424242" not in safe
-    assert "try another" not in safe
-    # Sensible single-line shape: the class and primary template survive,
-    # and the repr's closing quote is kept rather than amputated.
-    assert safe == "RuntimeError('some failure')"
+    # Sensible single-line shape: the class, the primary template and the HINT
+    # survive, and the repr's closing quote is kept rather than amputated.
+    assert safe == "RuntimeError('some failure\\nHINT:  try another identity_key')"
 
 
 def test_scrub_preserves_non_detail_escaped_newlines() -> None:

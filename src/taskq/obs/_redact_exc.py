@@ -10,13 +10,24 @@ Two concrete leaks, both verified by execution rather than assumed:
 
 * **Postgres error DETAIL carries row values.** ``str()`` of an asyncpg
   ``PostgresError`` appends the server's ``DETAIL:`` and ``HINT:`` lines, and
-  for a constraint violation those quote the offending column values --
+  for a constraint violation the DETAIL quotes the offending column values --
   ``Key (idempotency_key)=(customer-4417-...) already exists.`` TaskQ's
   ``idempotency_key``, ``identity_key`` and ``fairness_key`` are all
   caller-supplied and routinely carry tenant or subject identifiers.
 * **Credentials in URI-shaped text.** Any ``scheme://user:password@host``
   appearing in a message is masked, so a DSN that reaches an exception by any
   route cannot be forwarded verbatim.
+
+Scope, deliberately narrow: only ``DETAIL`` is dropped. ``HINT`` is Postgres's
+suggested fix and ``CONTEXT`` is the PL/pgSQL call stack -- both structural,
+neither quotes a row value, and both were previously deleted for no privacy
+benefit. Losing them left an operator with a constraint name and nothing else.
+
+The DETAIL drop is switchable off by :func:`set_exception_redaction_enabled`
+(``TASKQ_EXCEPTION_REDACTION_ENABLED=false``) for advanced debugging, and the
+worker warns loudly at startup when it is. The URI credential mask is NOT
+switchable: no debugging case justifies shipping a password to a telemetry
+vendor.
 
 Note ``opentelemetry``'s ``Span.record_exception`` always derives
 ``exception.message`` from ``str(exception)`` with no hook to override it,
@@ -40,19 +51,21 @@ __all__ = [
     "safe_exception_message",
     "safe_exception_parts",
     "scrub_exception_field",
+    "set_exception_redaction_enabled",
 ]
 
-#: Postgres DETAIL/HINT/CONTEXT lines. Row values live there; the primary
-#: message above them is a static template.
+#: Postgres DETAIL lines. Row values live there; the primary message above
+#: them is a static template, and HINT/CONTEXT below them are structural --
+#: this pattern deliberately does not match either.
 #:
 #: Matched LINE-WISE, not to end-of-string. A chained traceback renders several
 #: exception messages, so a greedy DOTALL match starting at the first DETAIL
 #: would delete every outer frame after it -- destroying the diagnostic while
 #: appearing to work on a single-exception test.
-_PG_DETAIL_RE = re.compile(r"^[ \t]*(?:DETAIL|HINT|CONTEXT):.*$", re.MULTILINE)
+_PG_DETAIL_RE = re.compile(r"^[ \t]*DETAIL:.*$", re.MULTILINE)
 
 #: Companion to :data:`_PG_DETAIL_RE` for ``repr()``-flattened text.
-#: ``repr(exc)`` renders the newline before DETAIL/HINT/CONTEXT as the two
+#: ``repr(exc)`` renders the newline before DETAIL as the two
 #: literal characters ``\n``, which the line-anchored pattern above cannot
 #: see — and ``error=repr(exc)`` is a majority log idiom. Consumes from the
 #: escaped newline up to (not including) the next escaped newline or the
@@ -63,8 +76,7 @@ _PG_DETAIL_RE = re.compile(r"^[ \t]*(?:DETAIL|HINT|CONTEXT):.*$", re.MULTILINE)
 #: embedded in a rendered traceback (real newlines around it) is scrubbed
 #: too. Optional escaped ``\r`` covers the CRLF boundary shape.
 _PG_DETAIL_ESCAPED_RE = re.compile(
-    r"(?:\\r)?\\n[ \t]*(?:DETAIL|HINT|CONTEXT):"
-    r".*?(?=(?:\\r)?\\n|['\"]\)?\s*$)",
+    r"(?:\\r)?\\n[ \t]*DETAIL:.*?(?=(?:\\r)?\\n|['\"]\)?\s*$)",
     re.MULTILINE,
 )
 
@@ -73,16 +85,43 @@ _URI_CRED_RE = re.compile(r"(\b[a-zA-Z][a-zA-Z0-9+.-]*://[^\s:/@]+):([^\s@]+)@")
 
 _MAX_MESSAGE_CHARS = 512
 
+#: Whether DETAIL lines are dropped. Default True: the safe behaviour is what
+#: an operator gets by doing nothing. Set False by worker startup from
+#: ``TASKQ_EXCEPTION_REDACTION_ENABLED``.
+_redaction_enabled: bool = True
+
+
+def set_exception_redaction_enabled(enabled: bool) -> None:
+    """Set the module-level exception-redaction flag.
+
+    Mirrors :func:`taskq.obs.set_otel_enabled`: worker startup calls this once
+    after loading ``WorkerSettings`` so every scrub site reads a module global
+    instead of importing ``settings`` (which would be a circular import from
+    the modules that depend on ``obs``).
+
+    Passing ``False`` disables the DETAIL drop on BOTH the span and the log
+    channel -- they share :func:`_scrub_text`, so the toggle cannot be applied
+    to one and not the other. It does NOT disable the URI credential mask.
+    """
+    global _redaction_enabled
+    _redaction_enabled = enabled
+
 
 def _scrub_text(text: str) -> str:
-    """Apply the line-wise DETAIL/HINT/CONTEXT and URI-credential scrubbing.
+    """Drop Postgres DETAIL lines and mask URI credentials.
 
     Both newline forms are covered: real newlines (``str(exc)``) by
     :data:`_PG_DETAIL_RE`, and the literal ``\\n`` ``repr()`` flattens them
     into by :data:`_PG_DETAIL_ESCAPED_RE`.
+
+    The credential mask is applied unconditionally, outside the
+    ``_redaction_enabled`` guard: the debugging case that wants a row value
+    never wants a password, and a DSN reaching a telemetry vendor is a
+    credential disclosure regardless of why redaction was relaxed.
     """
-    text = _PG_DETAIL_RE.sub("", text)
-    text = _PG_DETAIL_ESCAPED_RE.sub("", text)
+    if _redaction_enabled:
+        text = _PG_DETAIL_RE.sub("", text)
+        text = _PG_DETAIL_ESCAPED_RE.sub("", text)
     return _URI_CRED_RE.sub(r"\1:***@", text)
 
 
@@ -95,10 +134,12 @@ def _bound_message(text: str) -> str:
 
 
 def safe_exception_message(exc: BaseException) -> str:
-    """Exception text with Postgres DETAIL/HINT dropped and URI creds masked.
+    """Exception text with the Postgres DETAIL dropped and URI creds masked.
 
     The primary Postgres message is kept: it is a static template naming the
     constraint or relation, which is the part that is actually diagnostic.
+    ``HINT`` and ``CONTEXT`` are kept for the same reason -- neither carries
+    row values, and both are what an operator reads next.
     """
     return _bound_message(_scrub_text(str(exc)))
 

@@ -279,6 +279,7 @@ instrumentation.
 | Env Var | Type | Default | Description | Constraints |
 |---|---|---|---|---|
 | `TASKQ_OTEL_ENABLED` | `bool` | `true` | When `false`, suppresses all OTel span and metric creation. Operations still succeed. | — |
+| `TASKQ_EXCEPTION_REDACTION_ENABLED` | `bool` | `true` | When `false`, Postgres `DETAIL:` lines (which quote caller-supplied row values) are no longer dropped from exception text on spans and logs. Debugging aid only; the worker logs an `exception-redaction-disabled` WARNING at every startup while it is off. URI credential masking is always applied and is unaffected. | — |
 | `TASKQ_WORKER_GROUP` | `str` | `default` | Consumer group name emitted as `messaging.consumer.group.name` on spans. | — |
 | `TASKQ_LOG_FORMAT` | `str` | `json` | Log renderer. `json` for production; `console` for human-readable dev output. Only these two values are valid. | Must be `json` or `console` |
 | `TASKQ_LOG_LEVEL` | `str` | `INFO` | Root logger level. | — |
