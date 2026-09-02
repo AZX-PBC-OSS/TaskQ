@@ -241,6 +241,39 @@ class Backend(Protocol):
         args: ScheduleUpdateArgs,
     ) -> ScheduleRecord: ...
     async def delete_schedule(self, schedule_id: UUID) -> None: ...
+
+    # Batch operations
+    async def enqueue_batch_atomic(
+        self,
+        items: Iterable[EnqueueArgs],
+        *,
+        batch_id: UUID,
+        queue: str,
+        batch_row: BatchRow | None,
+        finalizer_args: EnqueueArgs | None,
+        chunk_size: int = 1000,
+    ) -> list[JobRow]: ...
+    async def create_batch(
+        self,
+        batch_id: UUID,
+        queue: str,
+        expected_size: int,
+        failure_threshold: int | None,
+        finalizer_job_id: UUID | None,
+        originating_actor: str | None,
+        *,
+        connection=None,
+    ) -> None: ...
+    async def increment_batch_failures(
+        self, batch_id: UUID, *, connection=None
+    ) -> tuple[int, int | None, int]: ...
+    async def reset_batch_failures(self, batch_id: UUID, *, connection=None) -> int: ...
+    async def abort_batch(self, batch_id: UUID, *, connection=None) -> int: ...
+    async def complete_batch(self, batch_id: UUID, *, connection=None) -> None: ...
+    async def get_batch(self, batch_id: UUID) -> BatchRow | None: ...
+    async def list_batches(self, filter: BatchFilter) -> list[tuple[BatchRow, BatchCounts]]: ...
+    async def count_batch_non_terminal(self, batch_id: UUID, *, connection=None) -> int: ...
+    async def prune_old_batches(self, cutoff: datetime) -> int: ...
 ```
 
 `list_jobs` accepts a `JobFilter` whose `status` field may be a single
@@ -1267,11 +1300,19 @@ compared against**:
   (see the [EVAL docs](https://redis.io/docs/latest/commands/eval/)). The
   in-memory limiter backends keep their injected `Clock` — a single process is
   a single domain by construction.
-- Known residual: `JobsClient.create_schedule` / `update_schedule` seed the
-  first `next_fire_at` from the calling process's local clock, so app↔DB skew
-  shifts only the first fire after creation (±S). The residual is bounded and
-  self-healing — the cron tick's catch-up recompute re-anchors the chain to
-  the server clock at the first tick that sees the schedule.
+- `JobsClient.create_schedule` / `update_schedule` seed the first
+  `next_fire_at` anchored to the backend's own clock: for Postgres backends
+  the value is computed from the **server** clock (the same arbiter the cron
+  due-check and catch-up recompute use), so app↔DB skew does not shift the
+  first fire after creation. The in-memory backend keeps its injected
+  `Clock` — a single process is a single domain by construction.
+- Known residual: ephemeral progress events (Redis pub/sub → SSE, built in
+  `src/taskq/progress/_publish.py`) carry a `ts` stamped from the publishing
+  process's clock (`datetime.now(UTC)`), not the PG clock. They are ordered
+  by `seq`, never persisted, and never used as a predicate, so neither
+  ordering nor correctness is affected — but under app↔DB skew the
+  timestamps the UI shows for progress/state-change events can disagree with
+  the `job_events.occurred_at` values recorded server-side for the same job.
 
 ---
 

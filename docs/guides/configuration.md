@@ -59,6 +59,7 @@ Applies to all commands: `worker`, `migrate`, `ui serve`, `health`.
 | `TASKQ_REDIS_URL` | `RedisDsn \| None` | `None` | Optional Redis URL. Required for real-time SSE progress fanout in the admin UI. | worker, ui serve |
 | `TASKQ_ENVIRONMENT` | `str \| None` | `None` | Deployment label; does not select `.env` files (that is `ENV`'s job). Values `dev` or `development` suppress the unauthenticated-admin warning. Any other value triggers it. | all |
 | `TASKQ_ADMIN_MAX_SSE_CONNECTIONS` | `int` | `50` | Maximum concurrent SSE connections the admin UI will serve. Min: 1. | ui serve |
+| `TASKQ_PROGRESS_MAX_SSE_CONNECTIONS` | `int` | `50` | Maximum concurrent per-job progress SSE streams this process will serve. Each stream holds a Redis pubsub subscription and an asyncio task for as long as the client stays connected, so an uncapped endpoint is a resource-exhaustion surface on the app hosting the pipeline. Min: 1. | ui serve |
 | `TASKQ_ADMIN_HOST` | `str` | `0.0.0.0` | Bind address for `taskq ui serve`. | ui serve |
 | `TASKQ_ADMIN_PORT` | `int` | `8080` | Bind port for `taskq ui serve`. Range: 1–65535. | ui serve |
 | `TASKQ_ADMIN_URL` | `str` | `http://localhost:8080` | Public base URL of the admin UI as seen from a browser. Used to construct redirect URLs. Override when admin and app run on different hosts or ports. | ui serve |
@@ -245,6 +246,7 @@ instrumentation.
 | `TASKQ_POLL_INTERVAL` | `float` (seconds) | `1.0` | Fallback polling cadence when the NOTIFY listener is unavailable. | — |
 | `TASKQ_NOTIFY_HEALTH_CHECK_INTERVAL` | `float` (seconds) | `5.0` | How often the NOTIFY health check issues `SELECT 1`. Detection latency before reconnect is at most this interval. | — |
 | `TASKQ_NOTIFY_RECONNECT_BACKOFF_INITIAL` | `float` (seconds) | `1.0` | Initial backoff before the first NOTIFY reconnect. Doubles each attempt, capped at 30 s. Sequence: 1, 2, 4, 8, 16, 30. | — |
+| `TASKQ_NOTIFY_LISTENER_SETUP_TIMEOUT` | `float` (seconds) | `10.0` | Bounds each `add_listener` call during NOTIFY listener setup and reconnect — a half-open PG connection that accepts TCP but stalls on the LISTEN handshake would otherwise wedge the notify loop forever. On timeout the connection is closed (bounded) and the reconnect retry loop is entered (or the initial setup raises). | Must be > 0 |
 | `TASKQ_NOTIFY_ENABLED` | `bool` | `true` | When `true`, the worker uses LISTEN/NOTIFY for near-zero-latency dispatch wakeups with poll interval as fallback. When `false`, the worker uses poll-only dispatch. | — |
 | `TASKQ_NOTIFY_POLL_INTERVAL` | `float` (seconds) | `5.0` | Fallback poll cadence when NOTIFY is enabled. Uses `TASKQ_POLL_INTERVAL` when NOTIFY is disabled. | Min: 0.5 |
 

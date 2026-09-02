@@ -203,10 +203,14 @@ The change takes effect on the next dispatch cycle -- no worker restart needed
 row default to `strict_fifo`, and nothing in TaskQ creates rows, so a queue is
 `strict_fifo` until you run this command.
 
-**`fairness_key` and `round_robin`:** Actors declare a `fairness_key` callable to
-assign jobs to cohorts. Without one, all jobs collapse into a single `__null__` cohort
-— dispatch becomes equivalent to `strict_fifo` within that cohort. See
-[jobs-clients.md](jobs-clients.md) for `fairness_key` declaration.
+**`fairness_key` and `round_robin`:** `fairness_key` is an enqueue-time
+argument (`JobsClient.enqueue(..., fairness_key=...)`) — there is no actor-level
+declaration, and the key travels on each job's row. Jobs enqueued without one all
+collapse into the single `__null__` cohort, so a `round_robin` queue on which no job
+sets a `fairness_key` degenerates to plain priority-then-time order. The key only
+affects dispatch on a `round_robin` queue; on the default `strict_fifo` it is stored
+and ignored. See [jobs-clients.md](jobs-clients.md) for the `fairness_key` enqueue
+parameter.
 
 **`dispatch_oversample`:** The dispatch CTE gathers `residual × oversample` candidates
 per actor in the LATERAL subquery. `residual` is the actor's remaining concurrency

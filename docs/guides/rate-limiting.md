@@ -292,8 +292,11 @@ INSERT INTO "taskq".queues (name, max_concurrent) VALUES ('external-api', 20)
 ON CONFLICT (name) DO UPDATE SET max_concurrent = EXCLUDED.max_concurrent, updated_at = clock_timestamp();
 ```
 
-The column is nullable — `NULL` means uncapped, matching the `actor_config.max_concurrent`
-convention. This is DB configuration, not a decorator argument, deliberately: a per-worker
+The column is nullable — `NULL` means uncapped. This deliberately diverges from the
+`actor_config.max_concurrent` convention at one point: the actor setting accepts `0`
+as an emergency-drain mode, but a queue cap of `0` is rejected (minimum `1`) — for a
+queue, uncapped is `NULL`, and a hard stop belongs at the actor level. This is DB
+configuration, not a decorator argument, deliberately: a per-worker
 settings/env-var approach was considered and rejected because it risks configuration drift
 across a fleet during rolling deploys (two workers disagreeing on a queue's cap would make
 `RateLimitRegistry.register()`'s idempotency check raise `ValueError`). A single
