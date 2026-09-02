@@ -5,14 +5,24 @@ reservation denied, generic exception) live here.  Each handler maps a
 raised exception to the appropriate backend terminal write, span event,
 and structured log entry.
 
-Failure-logging contract:
+Failure-logging contract.  The names below are the event strings as
+emitted — alert on them verbatim:
 
 - ``state-change`` — INFO, lifecycle transitions.
 - ``job_timeout`` / ``job_exception`` — WARNING, every attempt (retryable
   or terminal), with full error_class/error_message/error_traceback.
-- ``job_failed`` — ERROR, exactly once per dead job, emitted by all five
+- ``job-failed`` — ERROR, exactly once per dead job, emitted by all five
   handlers after the terminal write persists.
 - ``terminal-write-failed`` — ERROR, infra write failure.
+
+Note the spelling split: this module emits ``job-failed`` hyphenated (the
+prevailing convention elsewhere in the tree) but ``job_timeout`` /
+``job_exception`` in snake_case.  That inconsistency is real and is left
+alone deliberately — event names are an observable contract that
+operators' alert rules already match on, and the project-wide naming
+convention (kebab vs snake vs OTel dotted namespaces) is an open
+decision.  Renaming them belongs to that decision, not to a docstring
+fix; until then this list tells the truth about what is emitted.
 
 :func:`_dispatch_exception` consolidates the exception dispatch logic
 shared between ``consume_one_job`` and ``_consume_transactional``.
@@ -167,9 +177,9 @@ def _log_job_failed(
     error_traceback: str | None = None,
     **context: object,
 ) -> None:
-    """Emit ``job_failed`` — the single ERROR event for a dead job.
+    """Emit ``job-failed`` — the single ERROR event for a dead job.
 
-    Alerting contract: exactly one ``job_failed`` per terminal
+    Alerting contract: exactly one ``job-failed`` per terminal
     (non-retryable) failure, emitted by all five handlers *after* the
     terminal write persists — never on the retry path, never on infra
     write failure (that is ``terminal-write-failed``), never on ownership
