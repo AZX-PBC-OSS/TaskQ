@@ -106,12 +106,11 @@ async def test_tt4_cron_pattern_completes_under_one_second(
     """Cron pattern with FakeClock completes in < 1 second.
 
     Proves the acceptance definition (in-memory backend half): test code
-    calls fake_clock.move_to(datetime(2025, 1, 1, 3, 0, 0, tzinfo=UTC))
-    and memory_jobs.scheduled_to_pending(fake_clock.now()) to trigger
-    scheduled-job processing, matching the example verbatim. The
-    contract requires this test to complete in under 1 second of
-    wall-clock time — FakeClock advancement replaces real-time waits
-    entirely.
+    advances FakeClock and calls memory_jobs.scheduled_to_pending() to
+    trigger scheduled-job processing — the backend's injected clock is
+    the arbiter. The contract requires this test to complete in under 1
+    second of wall-clock time — FakeClock advancement replaces real-time
+    waits entirely.
     """
 
     def succeed(payload: object, ctx: object) -> object:

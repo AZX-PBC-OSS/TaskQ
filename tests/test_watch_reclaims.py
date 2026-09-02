@@ -243,7 +243,7 @@ async def test_watch_reclaims_visibility_risk_probe_warns_by_default(
     (the operator does not have to know the diagnostic exists): when the
     backend reports a job_events writer transaction open longer than the
     margin, the watcher logs a loud structured
-    'watch_reclaims-visibility-delay-at-risk' warning on its own cadence."""
+    'watch-reclaims-visibility-delay-at-risk' warning on its own cadence."""
     from taskq.backend._protocol import LongRunningJobEventsWriter
 
     monkeypatch.setattr("taskq.client._taskq._VISIBILITY_RISK_CHECK_INTERVAL", 0.0)
@@ -278,7 +278,7 @@ async def test_watch_reclaims_visibility_risk_probe_warns_by_default(
             await producer
 
     assert len(events) == 1, "delivery must continue alongside the probe"
-    warnings = [e for e in captured if e["event"] == "watch_reclaims-visibility-delay-at-risk"]
+    warnings = [e for e in captured if e["event"] == "watch-reclaims-visibility-delay-at-risk"]
     assert warnings, "expected the built-in probe to warn about the long-open writer"
     assert warnings[0]["pid"] == 4242
     assert warnings[0]["xact_age_seconds"] == 7.5
@@ -392,7 +392,7 @@ async def test_watch_reclaims_pg_reconnects_after_listen_conn_death(
     raises into the consume loop — notifications just stop), the generator
     falls back to polling, re-establishes the LISTEN connection via the
     factory after _RECONNECT_POLL_INTERVAL poll iterations, logs
-    'watch_reclaims-listen-reconnected', and keeps delivering."""
+    'watch-reclaims-listen-reconnected', and keeps delivering."""
     monkeypatch.setattr("taskq.client._taskq._RECONNECT_POLL_INTERVAL", 2)
     backend = _make_backend()
     client = _make_client(backend)
@@ -422,7 +422,7 @@ async def test_watch_reclaims_pg_reconnects_after_listen_conn_death(
     assert len(events) == 1
     assert len(conns) == 2, "the dead LISTEN connection was never re-established"
     assert conns[1].listener_channels, "reconnected conn never re-registered LISTEN"
-    assert any(e["event"] == "watch_reclaims-listen-reconnected" for e in captured)
+    assert any(e["event"] == "watch-reclaims-listen-reconnected" for e in captured)
 
 
 async def test_watch_reclaims_pg_caller_owned_conn_death_permanent_poll_fallback() -> None:
@@ -662,7 +662,7 @@ async def test_watch_reclaims_pg_reconnect_failure_warns_on_a_cadence(
 ) -> None:
     """Persistent reconnect failure must not go quiet after one warning:
     the first failure and every 10th subsequent failure log
-    'watch_reclaims-reconnect-still-failing', matching the docstring's
+    'watch-reclaims-reconnect-still-failing', matching the docstring's
     'logged at a cadence' promise — a multi-hour outage leaves evidence
     the watcher is still degraded without spamming every attempt."""
     monkeypatch.setattr("taskq.client._taskq._RECONNECT_POLL_INTERVAL", 1)
@@ -693,7 +693,7 @@ async def test_watch_reclaims_pg_reconnect_failure_warns_on_a_cadence(
         with contextlib.suppress(asyncio.CancelledError):
             await task
 
-    warnings = [e for e in captured if e["event"] == "watch_reclaims-reconnect-still-failing"]
+    warnings = [e for e in captured if e["event"] == "watch-reclaims-reconnect-still-failing"]
     assert len(warnings) >= 3, (
         f"expected cadence logging (attempts 1, 10, 20, ...), got {len(warnings)} warning(s)"
     )
@@ -997,7 +997,7 @@ async def test_watch_reclaims_survives_listen_connection_kill(pg_dsn: str) -> No
     detected via the termination listener / is_closed() checks; the
     generator falls back to polling and delivers the pending event, then
     RE-ESTABLISHES the LISTEN connection — asserted via the
-    'watch_reclaims-listen-reconnected' log line AND a live LISTEN pid in
+    'watch-reclaims-listen-reconnected' log line AND a live LISTEN pid in
     pg_stat_activity, so the reconnect machinery cannot silently rot —
     and keeps delivering afterwards."""
     from taskq.backend.postgres import PostgresBackend
@@ -1066,10 +1066,10 @@ async def test_watch_reclaims_survives_listen_connection_kill(pg_dsn: str) -> No
             # recovery log line — without it this test passed historically
             # without ever entering the reconnect branch.
             deadline = asyncio.get_running_loop().time() + 15.0
-            while not any(e["event"] == "watch_reclaims-listen-reconnected" for e in captured):
+            while not any(e["event"] == "watch-reclaims-listen-reconnected" for e in captured):
                 assert asyncio.get_running_loop().time() < deadline, (
                     "LISTEN connection was never re-established "
-                    "(no 'watch_reclaims-listen-reconnected' log line)"
+                    "(no 'watch-reclaims-listen-reconnected' log line)"
                 )
                 await asyncio.sleep(0.1)
 

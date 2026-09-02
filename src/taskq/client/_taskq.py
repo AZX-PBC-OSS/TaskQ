@@ -670,7 +670,7 @@ class TaskQ:
         (``_VISIBILITY_RISK_CHECK_INTERVAL``, 60s) it runs the backend's
         ``check_reclaim_visibility_delay_risk`` diagnostic (when the
         backend implements it — PostgresBackend does) and logs a loud
-        ``watch_reclaims-visibility-delay-at-risk`` warning for every
+        ``watch-reclaims-visibility-delay-at-risk`` warning for every
         long-open ``job_events`` writer it finds.  That is a proxy
         warning, not proof of an actual miss.
 
@@ -1007,7 +1007,7 @@ async def _probe_visibility_risk(client: JobsClient) -> None:
         return
     for w in writers:
         logger.warning(
-            "watch_reclaims-visibility-delay-at-risk",
+            "watch-reclaims-visibility-delay-at-risk",
             pid=w.pid,
             xact_age_seconds=round(w.xact_age_seconds, 3),
             xact_start=w.xact_start.isoformat(),
@@ -1120,9 +1120,9 @@ async def _watch_reclaims_pg(
       iterations, attempts to re-establish the LISTEN connection via the
       same factory/DSN path (timeboxed at *poll_timeout* so a hanging
       factory/DSN cannot stall delivery).  On success it logs
-      ``watch_reclaims-listen-reconnected`` and resumes the LISTEN-driven
+      ``watch-reclaims-listen-reconnected`` and resumes the LISTEN-driven
       loop.  On failure it keeps polling and retries after the same
-      interval; ``watch_reclaims-reconnect-still-failing`` is logged on
+      interval; ``watch-reclaims-reconnect-still-failing`` is logged on
       the first failure and every 10th thereafter — a long outage leaves
       evidence without spamming every attempt.
 
@@ -1247,7 +1247,7 @@ async def _watch_reclaims_pg(
                         failed_attempts += 1
                         if failed_attempts == 1 or failed_attempts % 10 == 0:
                             logger.warning(
-                                "watch_reclaims-reconnect-still-failing",
+                                "watch-reclaims-reconnect-still-failing",
                                 poll_attempts=poll_iters,
                                 failed_attempts=failed_attempts,
                             )
@@ -1267,7 +1267,7 @@ async def _watch_reclaims_pg(
                     conn = new_conn
                     wake = asyncio.Event()
                     logger.info(
-                        "watch_reclaims-listen-reconnected",
+                        "watch-reclaims-listen-reconnected",
                         poll_attempts=poll_iters,
                     )
                     break

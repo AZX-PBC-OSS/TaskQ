@@ -416,7 +416,7 @@ async def sync_account(payload: SyncPayload) -> None: ...
 
 - `unique_for` only has effect when `identity_key` is also provided at enqueue time. If
   `identity_key` is omitted, `unique_for` is a **silent no-op** — the library logs a warning with
-  event name `actor-config-unique-for-ignored` and creates a fresh job every time. This is a common
+  event name `actor_config_unique_for_ignored` and creates a fresh job every time. This is a common
   footgun: configure `unique_for` on the actor but forget to pass `identity_key` at the call site.
 - Deduplication is **best-effort** — concurrent enqueues for the same `(actor, identity_key)` may
   both insert. The dispatch CTE's `running_identities` filter ensures only one runs.

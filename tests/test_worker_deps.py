@@ -3,11 +3,13 @@
 These tests require a running Postgres container (testcontainers).
 Marked ``integration`` so they are skipped in non-integration runs.
 
-Also pins the per-run isolation of the hashed module-database names this
-module's ``pg_dsn`` fixture derives (see
-``test_module_db_names_diverge_across_serial_run_tokens``): the redteam
-repro of the concurrent-serial-runs collision landed on THIS module
-(``tq_db_5a19dc6e3f4c``), so the guards live next to the seam they protect.
+The redteam repro of the concurrent-serial-runs collision landed on THIS
+module's hashed module-database name (``tq_db_5a19dc6e3f4c``), derived by
+its ``pg_dsn`` fixture. The guard against it —
+``test_module_db_names_diverge_across_serial_run_tokens`` — lives in
+``tests/test_suite_hygiene.py``, alongside the rest of the run-isolation
+naming seam's unit tests (``run_isolation_token`` / ``_module_db_name``),
+which is where that seam is owned and where the guard needs no container.
 """
 
 # Why: pytest.raises must wrap the async with statement; combined with-form is not valid here.

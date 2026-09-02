@@ -33,6 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 * **Per-key budget reset hazard during deploys:** if defaults or validators change a key-deriving field's value vs the raw row, new concrete names materialize fresh full-capacity buckets alongside old ones (temporary over-admission window). Drain affected queues before deploying payload model changes that affect key derivation.
 
+
 ### Added
 
 * `JobsClient.cancel_where(filter, reason)` — bulk cancel all jobs matching a
@@ -46,61 +47,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `inherit_tags=False` to suppress inheritance for a specific sub-job.
 * `BulkCancelResult` and `EmptyFilterError` exported from `taskq` top-level.
 
-### Changed
-
-* **Sub-jobs now inherit parent tags by default.** Every `ctx.jobs.enqueue()`
-  call inside an actor body now propagates the parent job's tags to the sub-job,
-  making sub-jobs findable by `JobFilter(tags=...)` and cancellable by
-  `cancel_where`. Pass `inherit_tags=False` per-call to opt out. This is a
-  behavior change for any code that relied on sub-job tags being empty —
-  inherited tags make sub-jobs visible to tag-based filters and bulk cancels.
-
-## [0.2.2](https://github.com/AZX-PBC-OSS/TaskQ/compare/v0.2.1...v0.2.2) (2026-07-22)
-
-
-### Continuous Integration
-
-* local self-contained publish workflow with attestations off ([#15](https://github.com/AZX-PBC-OSS/TaskQ/issues/15)) ([07fcfce](https://github.com/AZX-PBC-OSS/TaskQ/commit/07fcfced7d4cf8de26859d24b9282ba16a0a25f8))
-
-## [0.2.1](https://github.com/AZX-PBC-OSS/TaskQ/compare/v0.2.0...v0.2.1) (2026-07-22)
-
-
-### Continuous Integration
-
-* fix reusable-workflow publish — conditional attestations, manual republish dispatch ([#12](https://github.com/AZX-PBC-OSS/TaskQ/issues/12)) ([8798fdd](https://github.com/AZX-PBC-OSS/TaskQ/commit/8798fddb7b6005b15879c0121055726aa465d26d))
-
-## [0.2.0](https://github.com/AZX-PBC-OSS/TaskQ/compare/v0.1.0...v0.2.0) (2026-07-22)
-
-
-### Features
-
-* managed-identity connections, credential hot-reload, BYO pools ([df9d7c3](https://github.com/AZX-PBC-OSS/TaskQ/commit/df9d7c35ad00f267a6cffc0460a0a0a2cd0ec922))
-* managed-identity connections, credential hot-reload, BYO pools ([a754fd7](https://github.com/AZX-PBC-OSS/TaskQ/commit/a754fd730e21f939b2ad2e6e1acd0ebca78c1eb5))
-
-
-### Bug Fixes
-
-* handle ENOTSOCK in stale socket cleanup, add session backstop fixture ([dc87254](https://github.com/AZX-PBC-OSS/TaskQ/commit/dc8725424fe1c788234d51e9d73dc38b0b92facf))
-* log traceback on generic job exceptions ([63d18ca](https://github.com/AZX-PBC-OSS/TaskQ/commit/63d18caafffbcfc9b7fd390cde16a8b2f083b701))
-* PR review correctness fixes, reload hardening, isolated test infra ([5cb6483](https://github.com/AZX-PBC-OSS/TaskQ/commit/5cb64837a28a514c4f2c13ee520af6aa2c5681c8))
-* stop swallowing exceptions in worker exception handlers ([4ff0065](https://github.com/AZX-PBC-OSS/TaskQ/commit/4ff0065f242a45a34ee27f9325640114124c0540))
-* stop swallowing exceptions in worker exception handlers ([fc7786b](https://github.com/AZX-PBC-OSS/TaskQ/commit/fc7786b3ba6565f6cb4c17879dbf05f71689120d))
-* stringify job ids ([8dbf369](https://github.com/AZX-PBC-OSS/TaskQ/commit/8dbf369353fd649997dcf65013b927cd9b263396))
-
-
-### Documentation
-
-* improve examples, add real-world actors, deployment/troubleshooting/tutorial guides ([1d02b34](https://github.com/AZX-PBC-OSS/TaskQ/commit/1d02b34743014a1edf5574f961853a766761e637))
-
-
-### Continuous Integration
-
-* add release-please for automated release PRs, tags, and PyPI publish ([#10](https://github.com/AZX-PBC-OSS/TaskQ/issues/10)) ([ab86d7d](https://github.com/AZX-PBC-OSS/TaskQ/commit/ab86d7d371faf550aad8fdceb5f95b9d5da37b48))
-* only deploy docs on push to main, not on PRs ([afaffc7](https://github.com/AZX-PBC-OSS/TaskQ/commit/afaffc79c7690db6c2947f61a0e71cf7778bc3d9))
-
-## [Unreleased]
-
-### Added
 
 - **Batch failure policies (`AbortBatchAfter`)** — #55. An opt-in
   `failure_policy` parameter on `enqueue_batch()` /
@@ -231,6 +177,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `TASKQ_HEALTH_TOKEN`/`TASKQ_HEALTH_REQUIRE_TOKEN` pattern
   - `OIDCSettings`/`SAMLSettings` as separate DotEnvConfig classes with prefix scoping
 
+
+### Changed
+
+* **Sub-jobs now inherit parent tags by default.** Every `ctx.jobs.enqueue()`
+  call inside an actor body now propagates the parent job's tags to the sub-job,
+  making sub-jobs findable by `JobFilter(tags=...)` and cancellable by
+  `cancel_where`. Pass `inherit_tags=False` per-call to opt out. This is a
+  behavior change for any code that relied on sub-job tags being empty —
+  inherited tags make sub-jobs visible to tag-based filters and bulk cancels.
+
+
+- **dotenvmodel bumped 0.3.0 → 0.5.0.** `WorkerSettings` now uses dotenvmodel's native `post_load()` hook (added in 0.5.0) instead of a manual `_post_load` method called from `load()`/`load_from_dict()` overrides. The base `DotEnvConfig._load_fields` invokes `post_load` automatically on every load path — `load()`, `load_from_dict()`, and `reload()` — including under `validate=False`. The redundant `WorkerSettings.load`/`load_from_dict` overrides have been removed.
+- **Breaking: cross-field invariant exceptions changed type.** `WorkerSettings.load()`/`load_from_dict()` cross-field invariants (`lock_lease >= 4 * heartbeat_interval`, grace-budget checks) previously raised `ValueError`; they now raise `ValidationError` (single failure) or `MultipleValidationErrors` (several at once). `ConstraintViolationError` (field validators) was already not a `ValueError`. **Callers that catch `ValueError` around `WorkerSettings.load*()` will no longer catch these** — catch `DotEnvModelError` (the common base) to cover both single and aggregate cases, or `ValidationError` when at most one invariant can fire. Field-level validation (`prune_retention_*`, `default_start_to_close`, `log_format`, etc.) already raised `ConstraintViolationError` and is unaffected.
+- **`reload()` now enforces cross-field invariants and applies DSN fallback.** Previously `reload()` did not run `_post_load` (it was only called from the `load()`/`load_from_dict()` overrides), so a reload that produced invariant-violating values would silently succeed. This is now fixed by the native `post_load` hook.
+- **`log_format` validation moved from `choices=` to a `validator` hook.** `choices=` is a built-in constraint that `load_from_dict(..., validate=False)` skips, so an invalid `TASKQ_LOG_FORMAT` could previously load silently under `validate=False`. The validator hook runs regardless of `validate=`, closing the hole. Error message changed from `log_format must be 'json' or 'console'` to `log_format must be one of ['console', 'json'], got <value>`.
+- **Breaking: `wait_for_batch` default `on_empty="error"` raises
+  `EmptyBatchError` instead of silent return.** Previously, calling
+  `wait_for_batch` on a batch_id with zero jobs and no `batches` row
+  returned an empty `BatchCompletionStatus` silently. The default is now
+  `on_empty="error"`, which raises `EmptyBatchError`. Pass
+  `on_empty="ok"` to preserve the old silent-return behaviour.
+- **Breaking: structured-log field rename in sub-enqueue failure events.**
+  `sub_enqueue_re_enqueue_error` and `sub_enqueue_flush_error` now carry
+  `error_class` + `error_message` instead of the single `message` field,
+  matching the `error_class`/`error_message` convention used by every
+  other error event (`job_timeout`, `job_exception`, `job_failed`,
+  `rate_limit_release_failed`, `savepoint_rollback_failed`,
+  `stranded_jobs_query_failed`, and the `failed_details` payload of
+  `sub_enqueue_flush_failed`). Log pipelines querying `fields.message`
+  on these two events must switch to `error_message`.
+- **Breaking: `taskq.worker.actor_config` moved to `taskq.actor_config`.**
+  The `ActorConfig` dataclass (released in v0.2.0–v0.2.2 at
+  `taskq.worker.actor_config`) has moved to the top-level
+  `taskq.actor_config` module. It is shared by the client, CLI, and admin
+  UI, not worker-internal. The old import path raises `ImportError`. See
+  [docs/guides/upgrading.md](docs/guides/upgrading.md) for the full
+  migration mapping. The companion `actor_config_ops` module (listing,
+  inspecting, tuning, and deregistering actors) has likewise moved from
+  `taskq.worker.actor_config_ops` to `taskq.actor_config_ops`; it was
+  never released under the `worker.*` path.
+- **Breaking: dotenvmodel bumped to 1.x (`>=1.1.0,<2`), adopting its 1.0 defaults.** Environment-variable precedence flips: the process environment now beats `.env` files by default (previously `.env` values overwrote `os.environ`); restore the files-beat-env-vars behaviour with `DOTENV_OVERRIDE=true` or `TaskQSettings.load(override=True)`. `load()` no longer mutates `os.environ` — read `TASKQ_*` values from the settings instance, not the process environment, after a load. `TaskQSettings.load()` now forwards dotenvmodel's full parameter surface (`env`, `override`, `env_dir`, `read_dotfiles`, `read_environ`, `load_local`). Subclass string-field defaults containing `${VAR}` references are interpolated at load time (unset references resolve to `""`).
+- **Breaking: time is unified on the database clock — the enqueue and rate-limit surfaces changed shape.** `EnqueueArgs.scheduled_at` is now nullable: "immediate" enqueue passes `None` and the server stamps it (no more client-side `now()` default), and `Backend` implementations that require a non-`None` datetime fail loudly. The raw `schedule_to_close` datetime form is deprecated in favour of `schedule_to_close_interval` (or declaring `retry.time_budget` on the actor — absolute datetimes cross clock domains and can misbehave under skew); every enqueue arm writes the deadline from one domain (server clock + interval). The rate-limit Redis Lua scripts derive `now` from `redis.call('TIME')` — the caller-supplied `now` ARGV is removed.
+- **Every mixed-clock decision is now single-arbiter on the store's clock.** The application process and the database server keep separate clocks that can diverge or step (VM pause/resume, NTP drift); every place that mixed the two domains in one decision is anchored to the database clock: workgroup supervisor freshness is computed server-side (a skewed supervisor host can no longer kill healthy children); cron ticks read the server clock inside the leader transaction, with the catch-up cutoff and beyond-window recompute server-anchored (no fire-loops or silently skipped backlog under leader-clock skew); rate limiting runs on the store's clock (PG window predicates and GCRA/token-bucket epoch math are server-side; peeks measure against the store clock too); prune/archive cutoffs and enqueue-pinned result TTLs are stamped server-side; the batch COPY path is server-stamped via an in-transaction fixup (`status`, `created_at`, `scheduled_at`, `schedule_to_close`, `result_expires_at`), so dedup windows hold under skew.
+- **`taskq[oidc]` no longer installs `httpx`; its `authlib` floor is now `>=1.8.0`.** authlib 1.8.0's `httpx_client` integration is httpx2-first (httpx is only a deprecated fallback), the direct OIDC calls (discovery, JWKS fetch) use `httpx2`, and nothing under `src/taskq` imports `httpx` — the extra's `httpx` entry was redundant (authlib 1.7.x, which imported `httpx` unconditionally, is excluded by the new floor).
+
+
 ### Fixed
 
 - SQL injection in `batch.py` `BatchHandle.status()` and `wait_for_batch()` — `schema` parameter now validated against `_IDENT_RE` before SQL interpolation
@@ -275,41 +267,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The `.env`-not-found warning suppression is narrowed to exactly that one warning — a `logging.Filter` matched on message prefix, instead of raising the whole `dotenvmodel` logger to ERROR — so real misconfiguration warnings (e.g. an invalid `DOTENV_*` value) stay visible.
 - Docs corrected: `configuration.md` claimed `TASKQ_ENVIRONMENT` selects `.env.{env}` files — `ENV` does; `TASKQ_ENVIRONMENT` is a deployment label that gates the unauthenticated-admin warning.
 
-### Changed
-
-- **dotenvmodel bumped 0.3.0 → 0.5.0.** `WorkerSettings` now uses dotenvmodel's native `post_load()` hook (added in 0.5.0) instead of a manual `_post_load` method called from `load()`/`load_from_dict()` overrides. The base `DotEnvConfig._load_fields` invokes `post_load` automatically on every load path — `load()`, `load_from_dict()`, and `reload()` — including under `validate=False`. The redundant `WorkerSettings.load`/`load_from_dict` overrides have been removed.
-- **Breaking: cross-field invariant exceptions changed type.** `WorkerSettings.load()`/`load_from_dict()` cross-field invariants (`lock_lease >= 4 * heartbeat_interval`, grace-budget checks) previously raised `ValueError`; they now raise `ValidationError` (single failure) or `MultipleValidationErrors` (several at once). `ConstraintViolationError` (field validators) was already not a `ValueError`. **Callers that catch `ValueError` around `WorkerSettings.load*()` will no longer catch these** — catch `DotEnvModelError` (the common base) to cover both single and aggregate cases, or `ValidationError` when at most one invariant can fire. Field-level validation (`prune_retention_*`, `default_start_to_close`, `log_format`, etc.) already raised `ConstraintViolationError` and is unaffected.
-- **`reload()` now enforces cross-field invariants and applies DSN fallback.** Previously `reload()` did not run `_post_load` (it was only called from the `load()`/`load_from_dict()` overrides), so a reload that produced invariant-violating values would silently succeed. This is now fixed by the native `post_load` hook.
-- **`log_format` validation moved from `choices=` to a `validator` hook.** `choices=` is a built-in constraint that `load_from_dict(..., validate=False)` skips, so an invalid `TASKQ_LOG_FORMAT` could previously load silently under `validate=False`. The validator hook runs regardless of `validate=`, closing the hole. Error message changed from `log_format must be 'json' or 'console'` to `log_format must be one of ['console', 'json'], got <value>`.
-- **Breaking: `wait_for_batch` default `on_empty="error"` raises
-  `EmptyBatchError` instead of silent return.** Previously, calling
-  `wait_for_batch` on a batch_id with zero jobs and no `batches` row
-  returned an empty `BatchCompletionStatus` silently. The default is now
-  `on_empty="error"`, which raises `EmptyBatchError`. Pass
-  `on_empty="ok"` to preserve the old silent-return behaviour.
-- **Breaking: structured-log field rename in sub-enqueue failure events.**
-  `sub_enqueue_re_enqueue_error` and `sub_enqueue_flush_error` now carry
-  `error_class` + `error_message` instead of the single `message` field,
-  matching the `error_class`/`error_message` convention used by every
-  other error event (`job_timeout`, `job_exception`, `job_failed`,
-  `rate_limit_release_failed`, `savepoint_rollback_failed`,
-  `stranded_jobs_query_failed`, and the `failed_details` payload of
-  `sub_enqueue_flush_failed`). Log pipelines querying `fields.message`
-  on these two events must switch to `error_message`.
-- **Breaking: `taskq.worker.actor_config` moved to `taskq.actor_config`.**
-  The `ActorConfig` dataclass (released in v0.2.0–v0.2.2 at
-  `taskq.worker.actor_config`) has moved to the top-level
-  `taskq.actor_config` module. It is shared by the client, CLI, and admin
-  UI, not worker-internal. The old import path raises `ImportError`. See
-  [docs/guides/upgrading.md](docs/guides/upgrading.md) for the full
-  migration mapping. The companion `actor_config_ops` module (listing,
-  inspecting, tuning, and deregistering actors) has likewise moved from
-  `taskq.worker.actor_config_ops` to `taskq.actor_config_ops`; it was
-  never released under the `worker.*` path.
-- **Breaking: dotenvmodel bumped to 1.x (`>=1.1.0,<2`), adopting its 1.0 defaults.** Environment-variable precedence flips: the process environment now beats `.env` files by default (previously `.env` values overwrote `os.environ`); restore the files-beat-env-vars behaviour with `DOTENV_OVERRIDE=true` or `TaskQSettings.load(override=True)`. `load()` no longer mutates `os.environ` — read `TASKQ_*` values from the settings instance, not the process environment, after a load. `TaskQSettings.load()` now forwards dotenvmodel's full parameter surface (`env`, `override`, `env_dir`, `read_dotfiles`, `read_environ`, `load_local`). Subclass string-field defaults containing `${VAR}` references are interpolated at load time (unset references resolve to `""`).
-- **Breaking: time is unified on the database clock — the enqueue and rate-limit surfaces changed shape.** `EnqueueArgs.scheduled_at` is now nullable: "immediate" enqueue passes `None` and the server stamps it (no more client-side `now()` default), and `Backend` implementations that require a non-`None` datetime fail loudly. The raw `schedule_to_close` datetime form is deprecated in favour of `schedule_to_close_interval` (or declaring `retry.time_budget` on the actor — absolute datetimes cross clock domains and can misbehave under skew); every enqueue arm writes the deadline from one domain (server clock + interval). The rate-limit Redis Lua scripts derive `now` from `redis.call('TIME')` — the caller-supplied `now` ARGV is removed.
-- **Every mixed-clock decision is now single-arbiter on the store's clock.** The application process and the database server keep separate clocks that can diverge or step (VM pause/resume, NTP drift); every place that mixed the two domains in one decision is anchored to the database clock: workgroup supervisor freshness is computed server-side (a skewed supervisor host can no longer kill healthy children); cron ticks read the server clock inside the leader transaction, with the catch-up cutoff and beyond-window recompute server-anchored (no fire-loops or silently skipped backlog under leader-clock skew); rate limiting runs on the store's clock (PG window predicates and GCRA/token-bucket epoch math are server-side; peeks measure against the store clock too); prune/archive cutoffs and enqueue-pinned result TTLs are stamped server-side; the batch COPY path is server-stamped via an in-transaction fixup (`status`, `created_at`, `scheduled_at`, `schedule_to_close`, `result_expires_at`), so dedup windows hold under skew.
-- **`taskq[oidc]` no longer installs `httpx`; its `authlib` floor is now `>=1.8.0`.** authlib 1.8.0's `httpx_client` integration is httpx2-first (httpx is only a deprecated fallback), the direct OIDC calls (discovery, JWKS fetch) use `httpx2`, and nothing under `src/taskq` imports `httpx` — the extra's `httpx` entry was redundant (authlib 1.7.x, which imported `httpx` unconditionally, is excluded by the new floor).
 
 ### Security
 
@@ -318,11 +275,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Admin UI fail-closed defaults: `admin_ui_require_auth=True` raises `RuntimeError` in non-dev when no `auth_dependency`; `health_require_token=True` raises `RuntimeError` in non-dev when `health_token` is empty. Both have explicit opt-out env vars (`TASKQ_ADMIN_UI_REQUIRE_AUTH=false`, `TASKQ_HEALTH_REQUIRE_TOKEN=false`).
 - Admin UI destructive actions (run-schedule, retry-job, cancel-job) gated behind `admin_actions_enabled` (default False). Run-schedule has per-process cooldown.
 
+
 ### Internal
 
 - Test containers are shared singletons: one Postgres and one Dragonfly container per pytest invocation, shared across all xdist workers (filelock refcount, stale-leftover sweep) with per-module database and per-test schema isolation preserved — full suite ~152 s vs the ~226–240 s baseline.
 - Docker/testcontainers calls in tests run off the event loop (`asyncio.to_thread`) — docker-py's blocking HTTP round-trips no longer stall the event loop mid-test.
 - Behavioral timing tests assert in a single clock domain (one statement reads the server clock and the row together), so application/database clock divergence cannot corrupt an assertion; liveness freshness is bounded by the missed-at-most-one-tick contract.
+
+
+## [0.2.2](https://github.com/AZX-PBC-OSS/TaskQ/compare/v0.2.1...v0.2.2) (2026-07-22)
+
+
+### Continuous Integration
+
+* local self-contained publish workflow with attestations off ([#15](https://github.com/AZX-PBC-OSS/TaskQ/issues/15)) ([07fcfce](https://github.com/AZX-PBC-OSS/TaskQ/commit/07fcfced7d4cf8de26859d24b9282ba16a0a25f8))
+
+## [0.2.1](https://github.com/AZX-PBC-OSS/TaskQ/compare/v0.2.0...v0.2.1) (2026-07-22)
+
+
+### Continuous Integration
+
+* fix reusable-workflow publish — conditional attestations, manual republish dispatch ([#12](https://github.com/AZX-PBC-OSS/TaskQ/issues/12)) ([8798fdd](https://github.com/AZX-PBC-OSS/TaskQ/commit/8798fddb7b6005b15879c0121055726aa465d26d))
+
+## [0.2.0](https://github.com/AZX-PBC-OSS/TaskQ/compare/v0.1.0...v0.2.0) (2026-07-22)
+
+
+### Features
+
+* managed-identity connections, credential hot-reload, BYO pools ([df9d7c3](https://github.com/AZX-PBC-OSS/TaskQ/commit/df9d7c35ad00f267a6cffc0460a0a0a2cd0ec922))
+* managed-identity connections, credential hot-reload, BYO pools ([a754fd7](https://github.com/AZX-PBC-OSS/TaskQ/commit/a754fd730e21f939b2ad2e6e1acd0ebca78c1eb5))
+
+
+### Bug Fixes
+
+* handle ENOTSOCK in stale socket cleanup, add session backstop fixture ([dc87254](https://github.com/AZX-PBC-OSS/TaskQ/commit/dc8725424fe1c788234d51e9d73dc38b0b92facf))
+* log traceback on generic job exceptions ([63d18ca](https://github.com/AZX-PBC-OSS/TaskQ/commit/63d18caafffbcfc9b7fd390cde16a8b2f083b701))
+* PR review correctness fixes, reload hardening, isolated test infra ([5cb6483](https://github.com/AZX-PBC-OSS/TaskQ/commit/5cb64837a28a514c4f2c13ee520af6aa2c5681c8))
+* stop swallowing exceptions in worker exception handlers ([4ff0065](https://github.com/AZX-PBC-OSS/TaskQ/commit/4ff0065f242a45a34ee27f9325640114124c0540))
+* stop swallowing exceptions in worker exception handlers ([fc7786b](https://github.com/AZX-PBC-OSS/TaskQ/commit/fc7786b3ba6565f6cb4c17879dbf05f71689120d))
+* stringify job ids ([8dbf369](https://github.com/AZX-PBC-OSS/TaskQ/commit/8dbf369353fd649997dcf65013b927cd9b263396))
+
+
+### Documentation
+
+* improve examples, add real-world actors, deployment/troubleshooting/tutorial guides ([1d02b34](https://github.com/AZX-PBC-OSS/TaskQ/commit/1d02b34743014a1edf5574f961853a766761e637))
+
+
+### Continuous Integration
+
+* add release-please for automated release PRs, tags, and PyPI publish ([#10](https://github.com/AZX-PBC-OSS/TaskQ/issues/10)) ([ab86d7d](https://github.com/AZX-PBC-OSS/TaskQ/commit/ab86d7d371faf550aad8fdceb5f95b9d5da37b48))
+* only deploy docs on push to main, not on PRs ([afaffc7](https://github.com/AZX-PBC-OSS/TaskQ/commit/afaffc79c7690db6c2947f61a0e71cf7778bc3d9))
 
 ## 0.1.0 - 2026-07-08
 

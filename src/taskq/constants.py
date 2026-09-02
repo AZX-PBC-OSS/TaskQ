@@ -81,7 +81,7 @@ that has held ``job_events`` open longer than the margin (see
 warning, not proof of an actual miss.  Every ``TaskQ.watch_reclaims``
 consumer runs it automatically on a slow cadence (60s, see
 ``taskq.client._taskq._VISIBILITY_RISK_CHECK_INTERVAL``) and logs
-``watch_reclaims-visibility-delay-at-risk`` when it fires, so detection
+``watch-reclaims-visibility-delay-at-risk`` when it fires, so detection
 is default-on rather than opt-in; it can also be called directly from a
 dedicated monitoring/alerting loop (see ``docs/architecture.md``'s
 crash-reclaim section for what it does and does not detect).

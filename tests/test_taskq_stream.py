@@ -583,7 +583,7 @@ async def test_watch_reclaims_failed_reconnect_bounds_hung_new_conn_close(
         "increment and the loop must keep polling"
     )
     assert all(c.terminated for c in failed if c.close_calls > 0)
-    assert any(e["event"] == "watch_reclaims-reconnect-still-failing" for e in captured)
+    assert any(e["event"] == "watch-reclaims-reconnect-still-failing" for e in captured)
 
 
 async def test_watch_reclaims_reconnect_swap_bounds_hung_old_conn_close(
@@ -592,7 +592,7 @@ async def test_watch_reclaims_reconnect_swap_bounds_hung_old_conn_close(
     """Reconnect-swap close (mid-run): the OLD conn being swapped out was
     already diagnosed dead — the sharpest close()-hang case. The bounded
     close terminates it (not leaked), the swap completes, and the generator
-    logs 'watch_reclaims-listen-reconnected' and resumes LISTEN-driven
+    logs 'watch-reclaims-listen-reconnected' and resumes LISTEN-driven
     delivery."""
     import taskq.client._taskq as taskq_mod
 
@@ -640,7 +640,7 @@ async def test_watch_reclaims_reconnect_swap_bounds_hung_old_conn_close(
     assert len(conns) == 2
     assert conns[0].terminated is True, "dead swapped-out conn must be terminated, not leaked"
     assert conns[1].listener_channels, "reconnected conn never registered LISTEN"
-    assert any(e["event"] == "watch_reclaims-listen-reconnected" for e in captured)
+    assert any(e["event"] == "watch-reclaims-listen-reconnected" for e in captured)
 
 
 async def test_watch_reclaims_finally_bounds_hung_owned_conn_close(

@@ -443,7 +443,7 @@ consumer runs `PostgresBackend.check_reclaim_visibility_delay_risk` on a
 slow cadence (once a minute — cheap, and far outside the per-poll hot
 path, which is why the diagnostic is *not* part of the `Backend`
 protocol) and logs a loud structured
-`watch_reclaims-visibility-delay-at-risk` warning for every transaction
+`watch-reclaims-visibility-delay-at-risk` warning for every transaction
 it finds holding `job_events` open past the margin. The diagnostic
 itself — `PostgresBackend.check_reclaim_visibility_delay_risk` — queries
 `pg_locks`/`pg_stat_activity` and returns `LongRunningJobEventsWriter`
