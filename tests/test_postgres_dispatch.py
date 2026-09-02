@@ -22,7 +22,6 @@ from taskq.backend.postgres import PostgresBackend
 from taskq.testing.asyncpg_chaos import ChaosConnection, ChaosPool
 
 _GRACE = timedelta(seconds=30)
-_ACQUIRE_TIMEOUT = 3.25
 _FIXED_UUID = UUID("12345678-1234-5678-1234-567812345678")
 # Pinned dispatcher_command_timeout so the acquire-timeout forwarding is
 # observable through the fake pools.
