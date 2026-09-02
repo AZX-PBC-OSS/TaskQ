@@ -96,9 +96,16 @@ def _safe_stacktrace(exc: BaseException) -> str:
     return _scrub_text("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))
 
 
-def _resolve_exc_info(
-    value: object,
-) -> tuple[type[BaseException] | None, BaseException | None, TracebackType | None] | None:
+#: A validated ``(cls, exc, tb)`` triple ready for ``traceback.format_exception``.
+_ResolvedExcInfo = tuple[type[BaseException], BaseException, TracebackType | None]
+
+#: What structlog event dicts can carry on the ``exc_info`` key. Untrusted
+#: boundary input: the tuple members are ``object`` until validated at runtime,
+#: so the ``_resolve_exc_info`` narrowing checks are load-bearing, not redundant.
+_ExcInfoInput = bool | BaseException | tuple[object, object, object] | None
+
+
+def _resolve_exc_info(value: _ExcInfoInput) -> _ResolvedExcInfo | None:
     """Resolve structlog-style ``exc_info`` into a real ``(cls, exc, tb)`` triple.
 
     Mirrors the documented semantics of structlog's ``format_exc_info``: a
@@ -116,21 +123,19 @@ def _resolve_exc_info(
             and isinstance(exc, BaseException)
             and (tb is None or isinstance(tb, TracebackType))
         ):
-            return value
+            return (cls, exc, tb)
     if value:
         live = sys.exc_info()
         if live == (None, None, None):
             return None
-        return live
+        cls, exc, tb = live
+        if cls is None or exc is None:
+            return None
+        return (cls, exc, tb)
     return None
 
 
-def safe_exception_parts(
-    exc_info: bool
-    | BaseException
-    | tuple[type[BaseException] | None, BaseException | None, TracebackType | None]
-    | None,
-) -> dict[str, str] | None:
+def safe_exception_parts(exc_info: _ExcInfoInput) -> dict[str, str] | None:
     """Render structlog-style ``exc_info`` into scrubbed ``exception.*`` parts.
 
     Returns the same attribute names :func:`record_exception_safe` emits on

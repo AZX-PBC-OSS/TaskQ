@@ -18,7 +18,7 @@ import contextlib
 import io
 import json
 import logging
-from collections.abc import Generator, Iterator
+from collections.abc import Generator
 
 import asyncpg
 import pytest
@@ -58,7 +58,7 @@ def _remove_processor_formatter_handlers() -> None:
 
 
 @contextlib.contextmanager
-def _capture_root_json_stream() -> Iterator[io.StringIO]:
+def _capture_root_json_stream() -> Generator[io.StringIO, None, None]:
     """Capture output of the ProcessorFormatter root handler ``setup_logging`` installed.
 
     Fails the test if the handler is missing. Swapping the stream (rather

@@ -220,9 +220,11 @@ async def test_cron_auto_disabled_event_omits_row_values(
     # Subscript, not .get(default): production unconditionally sets this
     # attribute, and a defaulting read would pass vacuously if it ever
     # stopped (the baaec0 doctrine for contracted keys).
-    assert canary not in attrs["last_error"]
+    last_error = attrs["last_error"]
+    assert isinstance(last_error, str)
+    assert canary not in last_error
     # The diagnostic template — the part that is not row data — survives.
-    assert "duplicate key value violates unique constraint" in attrs["last_error"]
+    assert "duplicate key value violates unique constraint" in last_error
 
 
 # ── repo guard: add_event attribute dicts ──────────────────────────
