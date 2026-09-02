@@ -46,6 +46,10 @@ def _dev_environment(monkeypatch: pytest.MonkeyPatch) -> None:  # pyright: ignor
     admin_actions_enabled gate (default False) on write-action routes."""
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
     monkeypatch.setenv("TASKQ_ADMIN_ACTIONS_ENABLED", "true")
+    # TASKQ_ADMIN_UI_SECURE_COOKIES=false because httpx, like a browser, will not
+    # store a Secure cookie delivered over http://testserver; with the production
+    # default the CSRF cookie never reaches the jar and every POST here 403s.
+    monkeypatch.setenv("TASKQ_ADMIN_UI_SECURE_COOKIES", "false")
 
 
 @dataclass

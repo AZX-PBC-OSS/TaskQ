@@ -32,6 +32,10 @@ def _make_admin_app(
     # setenv must precede create_router — it calls TaskQSettings.load() internally
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
     monkeypatch.setenv("TASKQ_ADMIN_ACTIONS_ENABLED", "true" if admin_actions_enabled else "false")
+    # TASKQ_ADMIN_UI_SECURE_COOKIES=false because httpx, like a browser, will not
+    # store a Secure cookie delivered over http://testserver; with the production
+    # default the CSRF cookie never reaches the jar and every POST here 403s.
+    monkeypatch.setenv("TASKQ_ADMIN_UI_SECURE_COOKIES", "false")
     bundle = create_router(pool, schema=schema, base_path="/admin")
     app = FastAPI()
     setup_admin_state(app, bundle)
