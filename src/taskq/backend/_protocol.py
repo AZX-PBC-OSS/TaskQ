@@ -875,18 +875,6 @@ class BatchCounts:
     abandoned: int
 
 
-_MAX_BATCH_FILTER_LIMIT: Final[int] = 500
-"""Upper bound for :attr:`BatchFilter.limit`.
-
-``list_batches`` renders one per-batch LATERAL job-count join per returned
-row and offers no cursor pagination, so a caller-supplied huge limit runs
-that join across the whole table. Validation-error rather than clamp, per
-repo style (JobFilter's negative-limit check raises too, and a clamp would
-silently return a different page than the caller asked for). 500 is far
-above the listing-surface default of 100 while bounding the worst case.
-"""
-
-
 @dataclass(frozen=True, slots=True)
 class BatchFilter:
     """Filter parameters for Backend.list_batches.
@@ -904,15 +892,12 @@ class BatchFilter:
     limit: int = 100
 
     def __post_init__(self) -> None:
+        # Why: no upper bound. list_batches has neither a cursor nor an
+        # offset, so the limit is the only way to reach a batch; capping it
+        # makes every batch past the cap unreachable by any means. The cost
+        # of a large listing belongs to the operator calling the Backend.
         if self.limit < 0:
             raise ValueError(f"limit must be >= 0, got {self.limit}")
-        if self.limit > _MAX_BATCH_FILTER_LIMIT:
-            raise ValueError(
-                f"limit must be <= {_MAX_BATCH_FILTER_LIMIT}, got {self.limit}; "
-                f"list_batches runs a per-batch job-count join per returned row "
-                f"and has no cursor pagination, so an unbounded limit scans the "
-                f"whole batches table"
-            )
 
 
 # ── Backend deps protocol ───────────────────────────────────────────────

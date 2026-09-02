@@ -245,26 +245,25 @@ def test_job_filter_clean_text_predicates_still_construct() -> None:
     assert f.tags == ("t1",)
 
 
-# ── BatchFilter.limit is bounded above ──────────────────────────────────
+# ── BatchFilter.limit has no upper bound ────────────────────────────────
 #
-# BatchFilter validated only ``limit >= 0``, and ``list_batches`` has no
-# cursor pagination — every returned batch row costs a per-batch LATERAL
-# job-count join. A caller-supplied huge limit ran that join across the
-# whole table.
+# ``list_batches`` has neither a cursor nor an offset, so the limit is the
+# only way to reach a batch at all: any upper bound makes the batches past
+# it unreachable by any means. Only ``limit >= 0`` is validated.
 
 
-def test_batch_filter_rejects_limit_above_the_bound() -> None:
-    with pytest.raises(ValueError, match="limit must be <= 500"):
-        BatchFilter(limit=10_000)
+def test_batch_filter_accepts_a_limit_past_any_page_size() -> None:
+    """A limit large enough to reach the whole table is a legitimate request:
+    without a cursor it is the only way to see a batch beyond the first page."""
+    assert BatchFilter(limit=10_000).limit == 10_000
 
 
 def test_batch_filter_limit_boundaries() -> None:
     """Zero stays allowed (it means 'no rows' — codified in
-    tests/test_batch_protocol.py) and the bound itself is allowed."""
+    tests/test_batch_protocol.py); negatives stay rejected."""
     assert BatchFilter(limit=0).limit == 0
-    assert BatchFilter(limit=500).limit == 500
-    with pytest.raises(ValueError, match="limit must be <= 500"):
-        BatchFilter(limit=501)
+    with pytest.raises(ValueError, match="limit must be >= 0"):
+        BatchFilter(limit=-1)
 
 
 # ── ScheduleCreateArgs caller text rejects a NUL before the bind ────────
