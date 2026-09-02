@@ -650,6 +650,14 @@ class _FakeSweepContainer:
         created: datetime | None = None,
         container_id: str = "fake-sweep-id",
     ) -> None:
+        # Relative to the REAL clock, not to _NOW. These fakes are read by
+        # cleanup_stale_testcontainers(), which stamps `now` from
+        # datetime.now(UTC); a _NOW-derived default is a time bomb that arms
+        # SWEEP_AGE_LIMIT after _NOW, when the age backstop starts firing
+        # before the liveness and holder checks these tests are about. _NOW
+        # stays correct for the pure should_sweep_* tests, which pass both
+        # sides explicitly.
+        created = datetime.now(UTC) - timedelta(hours=1) if created is None else created
         self.id = container_id
         self.name = name
         self.status = status
@@ -679,6 +687,8 @@ class _FakeSweepNetwork:
         name: str,
         created: datetime | None = None,
     ) -> None:
+        # Real clock, for the same reason as _FakeSweepContainer above.
+        created = datetime.now(UTC) - timedelta(hours=1) if created is None else created
         self.name = name
         # Why: real-clock anchor, same rationale as _FakeSweepContainer — the
         # network sweep compares against datetime.now(), not the test-module _NOW.
