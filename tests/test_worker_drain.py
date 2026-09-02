@@ -736,12 +736,11 @@ async def test_handle_generic_exception_returns_scheduled_on_retry() -> None:
         async def mark_failed_or_retry(self, **kwargs: object) -> JobRow:
             return replace(
                 make_job_row(),
-                status="scheduled" if kwargs.get("next_scheduled_at") is not None else "failed",
+                status="scheduled" if kwargs.get("retry_delay") is not None else "failed",
             )
 
     job = make_job_row(attempt=1, max_attempts=3)
     cfg = StubActorConfig(retry=RetryPolicy(kind="transient", max_attempts=3, jitter=0.0))
-    clock = FakeClock(datetime(2025, 1, 1, tzinfo=UTC))
     log = structlog.get_logger("test")
 
     class _FakeSpan:
@@ -753,7 +752,6 @@ async def test_handle_generic_exception_returns_scheduled_on_retry() -> None:
         UUID("00000000-0000-0000-0000-000000000001"),
         RuntimeError("boom"),
         cfg,
-        clock,
         timedelta(hours=24),
         _FakeSpan(),  # type: ignore[arg-type]
         log,
@@ -783,7 +781,6 @@ async def test_handle_generic_exception_returns_failed_on_terminal() -> None:
 
     job = make_job_row(attempt=3, max_attempts=3)
     cfg = StubActorConfig(retry=RetryPolicy(kind="transient", max_attempts=3, jitter=0.0))
-    clock = FakeClock(datetime(2025, 1, 1, tzinfo=UTC))
     log = structlog.get_logger("test")
 
     class _FakeSpan:
@@ -795,7 +792,6 @@ async def test_handle_generic_exception_returns_failed_on_terminal() -> None:
         UUID("00000000-0000-0000-0000-000000000001"),
         RuntimeError("boom"),
         cfg,
-        clock,
         timedelta(hours=24),
         _FakeSpan(),  # type: ignore[arg-type]
         log,
@@ -975,12 +971,11 @@ async def test_handle_timeout_returns_scheduled_on_retry() -> None:
         """Backend whose mark_failed_or_retry returns status='scheduled' for retry."""
 
         async def mark_failed_or_retry(self, **kwargs: object) -> JobRow:
-            status = "scheduled" if kwargs.get("next_scheduled_at") is not None else "failed"
+            status = "scheduled" if kwargs.get("retry_delay") is not None else "failed"
             return replace(make_job_row(), status=status)
 
     job = make_job_row(attempt=1, max_attempts=3)
     cfg = StubActorConfig(retry=RetryPolicy(kind="transient", max_attempts=3, jitter=0.0))
-    clock = FakeClock(datetime(2025, 1, 1, tzinfo=UTC))
     log = structlog.get_logger("test")
 
     class _FakeSpan:
@@ -992,7 +987,6 @@ async def test_handle_timeout_returns_scheduled_on_retry() -> None:
         UUID("00000000-0000-0000-0000-000000000001"),
         TimeoutError("slow"),
         cfg,
-        clock,
         timedelta(hours=24),
         _FakeSpan(),  # type: ignore[arg-type]
         log,
@@ -1022,7 +1016,6 @@ async def test_handle_timeout_returns_failed_on_terminal() -> None:
 
     job = make_job_row(attempt=3, max_attempts=3)
     cfg = StubActorConfig(retry=RetryPolicy(kind="transient", max_attempts=3, jitter=0.0))
-    clock = FakeClock(datetime(2025, 1, 1, tzinfo=UTC))
     log = structlog.get_logger("test")
 
     class _FakeSpan:
@@ -1034,7 +1027,6 @@ async def test_handle_timeout_returns_failed_on_terminal() -> None:
         UUID("00000000-0000-0000-0000-000000000001"),
         TimeoutError("slow"),
         cfg,
-        clock,
         timedelta(hours=24),
         _FakeSpan(),  # type: ignore[arg-type]
         log,

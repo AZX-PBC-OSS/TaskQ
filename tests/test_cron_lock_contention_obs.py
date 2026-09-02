@@ -16,61 +16,152 @@ Note this narrows the original report: the leader lock path is NOT the same
 shape. `leader.py` calls `record_election_attempt(won=False)` and logs a warning
 on every failure branch, and the prune/archive sweeps log on contention too.
 Cron was the genuine outlier.
+
+These tests drive :func:`taskq.worker.cron_loop.tick_cron` against a recording
+connection and assert the OBSERVABLE outcome of each lock verdict -- the
+statements the tick issues, the counter it records, the log it emits -- rather
+than the shape of its source text.
 """
 
 from __future__ import annotations
 
-import inspect
-from pathlib import Path
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, cast
+from uuid import UUID
 
+import pytest
 import structlog.testing
+from opentelemetry.sdk.metrics import MeterProvider
+from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 
-from taskq.obs import record_cron_lock_contention
+import taskq.obs as obs_mod
+import taskq.obs._otel as otel_mod
+from taskq.constants import CRON_LOCK_NAME
+from taskq.settings import WorkerSettings
+from taskq.testing.actor import FakeBackend, as_backend
+from taskq.testing.otel import counter_data_points
+from taskq.worker import cron_loop
 
-_SRC = Path(__file__).resolve().parent.parent / "src" / "taskq"
+if TYPE_CHECKING:
+    import asyncpg
 
-
-def test_contended_branch_records_a_counter_and_a_log() -> None:
-    from taskq.worker import cron_loop
-
-    source = inspect.getsource(cron_loop.tick_cron)
-    head = source[: source.index("_cron_tick_sql")]
-    assert "if not lock_acquired:" in head
-    assert "record_cron_lock_contention" in head, "contended tick still has no metric"
-    assert "cron-tick-lock-contended" in head, "contended tick still has no log line"
-    # It must still return -- this is a skip, not an error path.
-    assert head.rstrip().endswith("return")
-
-
-def test_counter_helper_is_a_noop_when_otel_disabled() -> None:
-    """Must not construct instruments when telemetry is off."""
-    from taskq.obs import _otel
-
-    original = _otel._otel_enabled
-    try:
-        _otel._otel_enabled = False
-        record_cron_lock_contention("worker-1")  # must not raise
-    finally:
-        _otel._otel_enabled = original
+_NOW = datetime(2026, 1, 1, tzinfo=UTC)
+_WORKER_ID = UUID("00000000-0000-0000-0000-0000000000c1")
+_CONTENTION_COUNTER = "taskq.cron.lock_contention"
 
 
-def test_log_carries_the_fields_needed_to_diagnose() -> None:
-    from taskq.worker import cron_loop
+class _RecordingConn:
+    """Records every statement :func:`tick_cron` issues.
+
+    The lock verdict is the only input; everything downstream of it is what
+    the tests observe.  A due-schedule query reaching this fake is the
+    observable proof the tick proceeded past the lock.
+    """
+
+    def __init__(self, *, lock_acquired: bool) -> None:
+        self._lock_acquired = lock_acquired
+        self.queries: list[str] = []
+
+    async def fetchval(self, query: str, *args: object) -> object:
+        self.queries.append(query)
+        if "pg_try_advisory_xact_lock" in query:
+            return self._lock_acquired
+        if "clock_timestamp" in query:
+            return _NOW
+        raise AssertionError(f"unexpected fetchval: {query}")
+
+    async def fetch(self, query: str, *args: object) -> list[asyncpg.Record]:
+        self.queries.append(query)
+        return []
+
+    @property
+    def read_due_schedules(self) -> bool:
+        """Whether the tick got as far as reading the due-schedule set."""
+        return any("cron_schedules" in q for q in self.queries)
+
+
+@pytest.fixture
+def metric_reader(monkeypatch: pytest.MonkeyPatch) -> InMemoryMetricReader:
+    """Per-test OTel meter isolation for the cron lock-contention counter."""
+    reader = InMemoryMetricReader()
+    meter = MeterProvider(metric_readers=[reader]).get_meter(
+        obs_mod.INSTRUMENTATION_NAME, otel_mod._version()
+    )
+    monkeypatch.setattr(
+        otel_mod,
+        "_cron_lock_contention",
+        meter.create_counter(_CONTENTION_COUNTER, unit="1"),
+    )
+    return reader
+
+
+async def _tick(conn: _RecordingConn) -> None:
+    await cron_loop.tick_cron(
+        cast("asyncpg.Connection", conn),
+        WorkerSettings(),
+        as_backend(FakeBackend()),
+        "public",
+        _WORKER_ID,
+    )
+
+
+async def test_a_contended_tick_counts_logs_and_reads_no_schedules(
+    metric_reader: InMemoryMetricReader,
+) -> None:
+    """Losing the advisory lock must leave a trace and fire nothing: the
+    contention counter moves, a diagnosable log line is emitted, and the tick
+    never reaches the due-schedule query."""
+    conn = _RecordingConn(lock_acquired=False)
 
     with structlog.testing.capture_logs() as logs:
-        cron_loop.log.debug(
-            "cron-tick-lock-contended",
-            kind="cron_tick_lock_contended",
-            worker_id="w-1",
-            lock=cron_loop.CRON_LOCK_NAME,
-        )
+        await _tick(conn)
+
+    assert conn.read_due_schedules is False
+
+    points = counter_data_points(metric_reader, _CONTENTION_COUNTER)
+    assert [(p.value, p.attributes) for p in points] == [(1, {"worker_id": str(_WORKER_ID)})]
+
     entry = next(e for e in logs if e["event"] == "cron-tick-lock-contended")
-    assert entry["worker_id"] == "w-1"
-    assert entry["lock"] == cron_loop.CRON_LOCK_NAME
+    assert entry["worker_id"] == str(_WORKER_ID)
+    assert entry["lock"] == CRON_LOCK_NAME
+
+
+async def test_an_uncontended_tick_reads_schedules_and_records_no_contention(
+    metric_reader: InMemoryMetricReader,
+) -> None:
+    """The counter is a contention signal, not a tick counter: a tick that wins
+    the lock proceeds to the due-schedule query and records nothing."""
+    conn = _RecordingConn(lock_acquired=True)
+
+    with structlog.testing.capture_logs() as logs:
+        await _tick(conn)
+
+    assert conn.read_due_schedules is True
+    assert counter_data_points(metric_reader, _CONTENTION_COUNTER) == []
+    assert [e for e in logs if e["event"] == "cron-tick-lock-contended"] == []
+
+
+async def test_a_contended_tick_records_nothing_when_telemetry_is_off(
+    metric_reader: InMemoryMetricReader, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Telemetry off must mean no instrument traffic at all -- not a silently
+    swallowed exception -- while the tick's skip semantics are unchanged."""
+    monkeypatch.setattr(otel_mod, "_otel_enabled", False)
+    conn = _RecordingConn(lock_acquired=False)
+
+    await _tick(conn)
+
+    assert conn.read_due_schedules is False
+    assert counter_data_points(metric_reader, _CONTENTION_COUNTER) == []
 
 
 def test_leader_path_was_already_observable() -> None:
-    """Pins the refutation, so the narrower claim is not re-widened later."""
-    leader = (_SRC / "worker" / "leader.py").read_text()
+    """Pins the refutation, so the narrower claim is not re-widened later:
+    the leader election lock, unlike cron's, already reports every loss."""
+    from pathlib import Path
+
+    leader = (
+        Path(__file__).resolve().parent.parent / "src" / "taskq" / "worker" / "leader.py"
+    ).read_text()
     assert "record_election_attempt" in leader
     assert "election-lock-attempt-failed" in leader
