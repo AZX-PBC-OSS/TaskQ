@@ -20,11 +20,12 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from typing import ClassVar
-from uuid import UUID, uuid4
+from uuid import UUID
 
 import pytest
 
 import taskq.client._jobs as jobs_mod
+from taskq._ids import new_uuid
 from taskq.backend._protocol import (
     ScheduleCreateArgs,
     ScheduleRecord,
@@ -115,7 +116,7 @@ class _FakePgBackend:
         self.worker_pool = _FakePool(self.conn)
         self.created: list[ScheduleCreateArgs] = []
         self.updated: list[tuple[UUID, ScheduleUpdateArgs]] = []
-        self._schedule_id = uuid4()
+        self._schedule_id = new_uuid()
         self._records: dict[UUID, ScheduleRecord] = {}
 
     async def create_schedule(self, args: ScheduleCreateArgs) -> ScheduleRecord:
