@@ -683,6 +683,16 @@ class JobsClient:
         :meth:`Backend.enqueue_batch` on the caller-owned connection,
         and the batch row + finalizer are created as the last
         statements.
+
+        **Failure-policy counting limitation (caller-connection path):**
+        the batch row is created AFTER all chunk inserts — it must carry
+        the final ``expected_size`` and ``create_batch`` is INSERT, not
+        upsert — so a child job enqueued on that connection that
+        reaches a terminal state BEFORE the row exists is not counted
+        toward ``failure_policy``: ``increment_batch_failures`` finds
+        no row and returns ``(0, None, 0)``. The atomic
+        (no-connection) path is unaffected — its single transaction
+        makes the batch row and the child jobs visible together.
         """
         if chunk_size < 1 or chunk_size > MAX_BATCH_SIZE:
             raise ValueError(f"chunk_size must be in [1, {MAX_BATCH_SIZE}], got {chunk_size}")
@@ -825,14 +835,16 @@ class JobsClient:
             total_count = non_finalizer_count
             finalizer_row = all_rows[-1] if finalizer is not None else None
         else:
-            # Chunked path (caller-owned connection or no extras).
-            # M3: create the batch row BEFORE job inserts so the row exists
-            # when the first terminal write triggers the batch hook. Insert
+            # Chunked path (caller-owned connection or no extras). The
+            # batch row is created AFTER all chunk inserts: create_batch is
+            # INSERT (not upsert), so the row must carry the real
+            # expected_size, which is only known once the stream is drained.
+            # KNOWN LIMITATION: until the row exists, a child job reaching a
+            # terminal state finds no batch row — increment_batch_failures
+            # returns (0, None, 0) and the failure is NOT counted toward
+            # failure_policy (see the docstring disclosure above). Insert
             # the finalizer first so its returned row id is known for
-            # finalizer_job_id (M4). expected_size is set to 0 initially and
-            # updated to the real count after all chunks are consumed — but
-            # since create_batch is INSERT (not upsert), we use the total
-            # count known after chunking completes.
+            # finalizer_job_id (M4).
             stream = _chain()
             finalizer_row = None
             if finalizer is not None:
