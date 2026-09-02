@@ -26,6 +26,7 @@ from uuid import UUID
 
 import asyncpg
 import pytest
+import structlog
 
 from taskq._ids import new_uuid
 from taskq.backend.clock import Clock
@@ -486,6 +487,32 @@ async def test_queue_depth_loop_invalid_schema_returns_early() -> None:
         await task
 
 
+async def test_queue_depth_loop_invalid_schema_logs_error_disabled() -> None:
+    """An invalid schema permanently mutes the queue-depth sampler for the
+    process lifetime while the worker keeps running normally — a silent
+    loss of a safety net, not a skipped tick, so it must log at ERROR with
+    a ``*-disabled`` event (same rationale as the stranded-jobs detector),
+    not a warn-level skip."""
+    leader = _make_leader(backend=_mem_backend(), deps=_make_deps(is_leader=True))
+    leader._deps.settings.schema_name = "bad;schema"  # type: ignore[reportPrivateUsage]  # Why: test mutates the deps the leader was constructed with.
+    shutdown = asyncio.Event()
+    with structlog.testing.capture_logs() as captured:
+        task = asyncio.create_task(leader._queue_depth_loop(shutdown))
+        await asyncio.sleep(0.05)
+        assert task.done()
+        shutdown.set()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    disabled = [e for e in captured if e["event"] == "queue-depth-sampler-disabled"]
+    assert disabled, "invalid schema must log an error-level sampler-disabled event"
+    assert disabled[0]["log_level"] == "error"
+    assert disabled[0]["schema"] == "bad;schema"
+    assert not any(e["event"] == "invalid-schema-skipped" for e in captured), (
+        "warn-level invalid-schema-skipped must no longer be used for this case"
+    )
+
+
 # ── _reservation_slots_loop ──────────────────────────────────────────────
 
 
@@ -536,6 +563,30 @@ async def test_reservation_slots_loop_invalid_schema_returns_early() -> None:
     shutdown.set()
     with contextlib.suppress(asyncio.CancelledError):
         await task
+
+
+async def test_reservation_slots_loop_invalid_schema_logs_error_disabled() -> None:
+    """An invalid schema permanently mutes the reservation-slots sampler for
+    the process lifetime — same error-level ``*-disabled`` rationale as the
+    queue-depth sampler and the stranded-jobs detector."""
+    leader = _make_leader(backend=_mem_backend(), deps=_make_deps(is_leader=True))
+    leader._deps.settings.schema_name = "bad;schema"  # type: ignore[reportPrivateUsage]  # Why: test mutates the deps the leader was constructed with.
+    shutdown = asyncio.Event()
+    with structlog.testing.capture_logs() as captured:
+        task = asyncio.create_task(leader._reservation_slots_loop(shutdown))
+        await asyncio.sleep(0.05)
+        assert task.done()
+        shutdown.set()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    disabled = [e for e in captured if e["event"] == "reservation-slots-sampler-disabled"]
+    assert disabled, "invalid schema must log an error-level sampler-disabled event"
+    assert disabled[0]["log_level"] == "error"
+    assert disabled[0]["schema"] == "bad;schema"
+    assert not any(e["event"] == "invalid-schema-skipped" for e in captured), (
+        "warn-level invalid-schema-skipped must no longer be used for this case"
+    )
 
 
 # ── _stranded_jobs_loop ──────────────────────────────────────────────────

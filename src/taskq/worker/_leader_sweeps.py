@@ -221,6 +221,38 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                         worker_id=str(ctx.worker_id),
                         error=repr(exc),
                     )
+            # Stale-batch completion is a LEADER sweep (docs/guides/workers.md;
+            # docs/architecture.md "``complete_stale_batches`` leader sweep"):
+            # batches whose completion hook was lost (consumer crash between
+            # the terminal write and complete_batch/abort_batch) stay `active`
+            # forever without it — wait_for_batch can snooze indefinitely and
+            # prune_old_batches only deletes completed rows. Deliberately NOT
+            # nested under the keyed-registry conditions below: those are
+            # process-local and, in the default deployment, empty.
+            # hasattr guard: complete_stale_batches needs a real PG connection
+            # (dispatcher_pool). InMemoryBackend does not implement
+            # sweep_leaked_reservation_slots, so this gate keeps the sweep off
+            # the in-memory backend — same pattern as the block above.
+            if hasattr(ctx.backend, "sweep_leaked_reservation_slots"):
+                start = time.monotonic()
+                try:
+                    async with ctx.deps.dispatcher_pool.acquire(
+                        timeout=ctx.deps.settings.dispatcher_command_timeout
+                    ) as conn:
+                        stale_count = await complete_stale_batches(
+                            conn, schema=ctx.deps.settings.schema_name
+                        )
+                    _metric("stale_batches", stale_count, start)
+                    if stale_count:
+                        log.info("stale-batches-completed", kind="batch", count=stale_count)
+                except (
+                    TimeoutError,
+                    asyncpg.PostgresConnectionError,
+                    asyncpg.InterfaceError,
+                    asyncpg.exceptions.UndefinedTableError,
+                    OSError,
+                ) as exc:
+                    log.warning("stale-batches-sweep-failed", kind="batch", error=repr(exc))
         # Keyed-primitive eviction is process-local bookkeeping, NOT
         # leader-gated: every worker sweeps its OWN registry each tick (a
         # non-leader's registry would otherwise receive no periodic
@@ -264,32 +296,6 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                     worker_id=str(ctx.worker_id),
                     error=repr(exc),
                 )
-            # hasattr guard: complete_stale_batches needs a real PG connection
-            # (dispatcher_pool). InMemoryBackend does not implement
-            # sweep_leaked_reservation_slots, so this gate prevents the
-            # stale-batches sweep from running on the in-memory backend in
-            # tests — matching the same pattern used for sweep_leaked_slots
-            # and sweep_expired_results above.
-            if hasattr(ctx.backend, "sweep_leaked_reservation_slots"):
-                start = time.monotonic()
-                try:
-                    async with ctx.deps.dispatcher_pool.acquire(
-                        timeout=ctx.deps.settings.dispatcher_command_timeout
-                    ) as conn:
-                        stale_count = await complete_stale_batches(
-                            conn, schema=ctx.deps.settings.schema_name
-                        )
-                    _metric("stale_batches", stale_count, start)
-                    if stale_count:
-                        log.info("stale-batches-completed", kind="batch", count=stale_count)
-                except (
-                    TimeoutError,
-                    asyncpg.PostgresConnectionError,
-                    asyncpg.InterfaceError,
-                    asyncpg.exceptions.UndefinedTableError,
-                    OSError,
-                ) as exc:
-                    log.warning("stale-batches-sweep-failed", kind="batch", error=repr(exc))
         await _sleep_interruptible(shutdown, ctx.deps.settings.sweep_interval)
 
 
@@ -469,7 +475,16 @@ async def _archive_expiry_loop(ctx: SweepContext, shutdown: asyncio.Event) -> No
 async def _queue_depth_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
     schema = ctx.deps.settings.schema_name
     if not _IDENT_RE.match(schema):
-        log.warning("invalid-schema-skipped", schema=schema)
+        # Why error, not warning: this returns, permanently muting the
+        # sampler for the process lifetime while the worker keeps running
+        # normally — a silent loss of a safety net, not a skipped tick
+        # (same rationale as the stranded-jobs detector).
+        log.error(
+            "queue-depth-sampler-disabled",
+            kind="queue_depth_sampler_disabled",
+            schema=schema,
+            reason="schema name failed identifier validation",
+        )
         return
     sql = _QUERY_QUEUE_DEPTH_SQL_TEMPLATE.format(schema=schema)
     while not shutdown.is_set():
@@ -495,7 +510,14 @@ async def _queue_depth_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
 async def _reservation_slots_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
     schema = ctx.deps.settings.schema_name
     if not _IDENT_RE.match(schema):
-        log.warning("invalid-schema-skipped", schema=schema)
+        # Why error, not warning: same permanently-muted-sampler rationale
+        # as _queue_depth_loop above.
+        log.error(
+            "reservation-slots-sampler-disabled",
+            kind="reservation_slots_sampler_disabled",
+            schema=schema,
+            reason="schema name failed identifier validation",
+        )
         return
     sql = _QUERY_RESERVATION_SLOTS_SQL_TEMPLATE.format(schema=schema)
     while not shutdown.is_set():
