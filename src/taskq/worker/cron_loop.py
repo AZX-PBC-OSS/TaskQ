@@ -148,7 +148,11 @@ async def fire_schedule(
     """
     catch_up_cutoff = server_now - settings.cron_catch_up_window
     fire_at: datetime = row["next_fire_at"]
-    dst_strategy_raw: str = row.get("dst_strategy", "skip") or "skip"
+    # Subscript, not .get(default): the tick's SELECT is contracted to provide
+    # this column, and a defaulting read is exactly what hid its absence —
+    # every schedule silently fired with 'skip' semantics, whatever it stored,
+    # and the DST-overlap branch below was unreachable.
+    dst_strategy_raw: str = row["dst_strategy"]
     dst_strategy: DstStrategy = (
         dst_strategy_raw if dst_strategy_raw in ("skip", "firstof", "allof") else "skip"
     )
@@ -192,7 +196,7 @@ async def fire_schedule(
             ac = actor_config_cache[row["actor"]]
             actor: str = row["actor"]
 
-            identity_key_raw: object = row.get("identity_key")
+            identity_key_raw: object = row["identity_key"]
             schedule_identity_key: IdentityKey | None = (
                 IdentityKey(str(identity_key_raw)) if identity_key_raw is not None else None
             )

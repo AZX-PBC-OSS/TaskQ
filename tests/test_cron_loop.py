@@ -100,6 +100,7 @@ def _make_schedule_row(
     last_fired_at: datetime | None = None,
     schedule_id: UUID | None = None,
     identity_key: str | None = None,
+    dst_strategy: str = "skip",
 ) -> _FakeCronRecord:
     from taskq._ids import new_uuid
 
@@ -115,6 +116,9 @@ def _make_schedule_row(
             "consecutive_failures": consecutive_failures,
             "next_fire_at": next_fire_at or datetime.now(UTC),
             "identity_key": identity_key,
+            # Every column the tick's SELECT names: fire_schedule subscripts
+            # them, so a row double that omits one is not a row.
+            "dst_strategy": dst_strategy,
         }
     )
 

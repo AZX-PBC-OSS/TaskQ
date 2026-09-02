@@ -476,7 +476,7 @@ def register(router: APIRouter) -> None:
         for pg_name, pg_row in pg_state.items():
             if pg_name in redis_known:
                 continue
-            pg_kind = pg_row.get("kind")
+            pg_kind = pg_row["kind"]
             if pg_kind == "token_bucket":
                 redis_names.append((pg_name, "token_bucket"))
             elif pg_kind == "gcra":
@@ -546,11 +546,11 @@ def register(router: APIRouter) -> None:
                 buckets.append(
                     {
                         "bucket_name": name,
-                        "kind": pg_row.get("kind", ""),
+                        "kind": pg_row["kind"],
                         "backend": "postgres",
                         "config_summary": "",
-                        "pg_state": pg_row.get("state", ""),
-                        "updated_at": pg_row.get("updated_at", ""),
+                        "pg_state": pg_row["state"],
+                        "updated_at": pg_row["updated_at"],
                     }
                 )
 
@@ -674,9 +674,9 @@ def register(router: APIRouter) -> None:
             name = str(entry["bucket_name"])
             merged: dict[str, object] = dict(entry)
             if name in pg_state:
-                merged["held_count"] = pg_state[name].get("held_count", 0)
-                merged["free_count"] = pg_state[name].get("free_count", 0)
-                merged["total_slots"] = pg_state[name].get("total_slots", 0)
+                merged["held_count"] = pg_state[name]["held_count"]
+                merged["free_count"] = pg_state[name]["free_count"]
+                merged["total_slots"] = pg_state[name]["total_slots"]
             else:
                 merged["held_count"] = 0
                 merged["free_count"] = entry["configured_slots"]
@@ -688,11 +688,11 @@ def register(router: APIRouter) -> None:
                 reservations.append(
                     {
                         "bucket_name": name,
-                        "configured_slots": pg_row.get("total_slots", 0),
+                        "configured_slots": pg_row["total_slots"],
                         "lease": "—",
-                        "held_count": pg_row.get("held_count", 0),
-                        "free_count": pg_row.get("free_count", 0),
-                        "total_slots": pg_row.get("total_slots", 0),
+                        "held_count": pg_row["held_count"],
+                        "free_count": pg_row["free_count"],
+                        "total_slots": pg_row["total_slots"],
                         "is_queue_cap": name.startswith(_queue_cap_prefix),
                     }
                 )
