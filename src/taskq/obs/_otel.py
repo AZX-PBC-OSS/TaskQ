@@ -14,8 +14,10 @@ import structlog
 from opentelemetry import metrics, trace
 from opentelemetry.context import Context
 from opentelemetry.metrics import CallbackOptions, Meter, Observation
-from opentelemetry.trace import Span, Tracer
+from opentelemetry.trace import Span, StatusCode, Tracer
 from opentelemetry.util.types import Attributes
+
+from taskq.obs._redact_exc import record_exception_safe, safe_exception_message
 
 INSTRUMENTATION_NAME: str = "taskq"
 
@@ -88,6 +90,32 @@ def get_meter() -> Meter:
     return metrics.get_meter(INSTRUMENTATION_NAME, _version())
 
 
+def _record_scrubbed_error(span: Span, exc: BaseException) -> None:
+    """Give *span* a scrubbed error signal for whichever half the call site left unset.
+
+    Why: :func:`safe_start_span` turns the SDK's automatic exception handling
+    OFF (see there), so a call site that does not handle the exception itself
+    -- the ``attempt.N`` span in ``worker/_consumer.py``, which wraps user job
+    code -- would otherwise export with no error signal at all. Suppressing a
+    leak must not cost the signal.
+
+    Each half is supplied only when missing, so the call sites that already
+    scrub (``dispatch_batch``, ``cron fire``) do not get a duplicate event or
+    have their description rewritten, while ``enqueue_span`` -- which marks the
+    span ERROR but records no event -- still gets the scrubbed exception text
+    it needs to stay diagnostic.
+    """
+    try:
+        status_code = getattr(getattr(span, "status", None), "status_code", None)
+        if status_code is not StatusCode.ERROR:
+            span.set_status(StatusCode.ERROR, safe_exception_message(exc))
+        events: Iterable[object] = getattr(span, "events", ())
+        if not any(getattr(event, "name", None) == "exception" for event in events):
+            record_exception_safe(span, exc)
+    except Exception:
+        _log.warning("otel-span-error-record-failed", span_name=getattr(span, "name", ""))
+
+
 @contextlib.contextmanager
 def safe_start_span(
     name: str,
@@ -110,6 +138,9 @@ def safe_start_span(
     has no parent — it is a root span linked (not parented) to the
     ambient trace. This satisfies the "linked, not parented"
     requirement for PRODUCER spans in the cron loop.
+
+    The SDK's own exception handling is switched OFF and replaced by
+    :func:`_record_scrubbed_error` — see the comment at the call below.
     """
     if not _otel_enabled:
         yield trace.NonRecordingSpan(_NOOP_SPAN_CONTEXT)
@@ -124,6 +155,17 @@ def safe_start_span(
             kind=kind if kind is not None else trace.SpanKind.INTERNAL,
             attributes=attributes,
             links=links,
+            # Why: both default to True, and the SDK derives its event and its
+            # status description from the RAW ``str(exc)`` with no hook to
+            # override it. At every call site that scrubs and re-raises, that
+            # emitted a SECOND, unscrubbed ``exception`` event and overwrote
+            # the scrubbed status description -- shipping the Postgres DETAIL
+            # row values (idempotency_key / identity_key / fairness_key, all
+            # caller-supplied) straight to the telemetry backend, undoing
+            # ``_redact_exc`` entirely. No source-level guard can see this:
+            # the leaking call is made by the SDK, not by TaskQ.
+            record_exception=False,
+            set_status_on_exception=False,
         )
     except Exception:
         _log.warning("otel-span-creation-failed", span_name=name)
@@ -131,7 +173,13 @@ def safe_start_span(
         return
 
     with span_cm as span:
-        yield span
+        try:
+            yield span
+        except Exception as exc:
+            # ``Exception``, not ``BaseException``: mirrors what the SDK's own
+            # ``use_span`` catches, so cancellation semantics are unchanged.
+            _record_scrubbed_error(span, exc)
+            raise
 
 
 def record_cancel_requested() -> None:
