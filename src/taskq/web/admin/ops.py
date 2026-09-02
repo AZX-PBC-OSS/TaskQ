@@ -2,7 +2,7 @@
 
 import asyncio
 from collections.abc import Sequence
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 from urllib.parse import quote_plus
 from uuid import UUID
@@ -62,7 +62,8 @@ _SCHEDULE_ENABLE_SQL = (
 _SCHEDULE_DISABLE_SQL = 'UPDATE "{schema}".cron_schedules SET enabled = false WHERE id = $1'
 
 _SCHEDULE_FETCH_FOR_SKIP_SQL = (
-    'SELECT cron_expr, timezone, next_fire_at FROM "{schema}".cron_schedules WHERE id = $1'
+    "SELECT cron_expr, timezone, next_fire_at, clock_timestamp() AS db_now "
+    'FROM "{schema}".cron_schedules WHERE id = $1'
 )
 
 _SCHEDULE_SKIP_SQL = 'UPDATE "{schema}".cron_schedules SET next_fire_at = $2 WHERE id = $1'
@@ -267,10 +268,18 @@ def register(router: APIRouter) -> None:
             tz_name: str = row["timezone"]
             current_next: datetime = row["next_fire_at"]
 
+            # The advance-until-future test must run in the same clock
+            # domain that later decides the schedule is due: the cron loop
+            # fires on `next_fire_at <= clock_timestamp()` server-side, so
+            # comparing against this process's clock would let a skewed app
+            # clock write a `next_fire_at` that PG already considers past --
+            # firing immediately, which is the one outcome "skip" exists to
+            # prevent. Read from the same row fetch, so it costs no round
+            # trip.
+            db_now: datetime = row["db_now"]
             new_next = compute_next_fire_after(cron_expr, tz_name, current_next)[0]
-            now = datetime.now(UTC)
             for _ in range(1000):
-                if new_next > now:
+                if new_next > db_now:
                     break
                 new_next = compute_next_fire_after(cron_expr, tz_name, new_next)[0]
             else:

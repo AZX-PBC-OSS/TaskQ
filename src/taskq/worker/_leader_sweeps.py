@@ -356,26 +356,25 @@ async def _prune_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                             cutoff=result.cutoffs[status].isoformat(),
                             duration_ms=result.duration_ms,
                         )
-                    # Skip batch prune when all retentions are disabled —
-                    # an empty cutoffs dict means no status had a retention
-                    # period, so the fallback (datetime.now(UTC)) would
-                    # delete every completed batch. Only prune when at
-                    # least one cutoff exists.
-                    if result.cutoffs:
-                        max_cutoff = max(result.cutoffs.values())
-                        try:
-                            batch_count = await ctx.backend.prune_old_batches(max_cutoff)
-                            if batch_count:
-                                log.info("batches pruned", kind="batch", count=batch_count)
-                        except (
-                            NotImplementedError,
-                            TimeoutError,
-                            asyncpg.PostgresConnectionError,
-                            asyncpg.InterfaceError,
-                            asyncpg.exceptions.UndefinedTableError,
-                            OSError,
-                        ) as exc:
-                            log.warning("batch-prune-failed", kind="batch", error=repr(exc))
+                    # `cutoffs` carries one entry per terminal status, each
+                    # anchored to the database clock inside
+                    # prune_terminal_jobs, so the widest (most recent) of
+                    # them is the batch cutoff: a batch is prunable once no
+                    # status could still be holding a job for it.
+                    max_cutoff = max(result.cutoffs.values())
+                    try:
+                        batch_count = await ctx.backend.prune_old_batches(max_cutoff)
+                        if batch_count:
+                            log.info("batches pruned", kind="batch", count=batch_count)
+                    except (
+                        NotImplementedError,
+                        TimeoutError,
+                        asyncpg.PostgresConnectionError,
+                        asyncpg.InterfaceError,
+                        asyncpg.exceptions.UndefinedTableError,
+                        OSError,
+                    ) as exc:
+                        log.warning("batch-prune-failed", kind="batch", error=repr(exc))
                 except Exception as exc:
                     log.error("prune-failed", kind="prune", error=repr(exc))
                 finally:

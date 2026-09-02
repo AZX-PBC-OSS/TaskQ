@@ -11,7 +11,7 @@ from either of them.
 import re
 import time
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from uuid import UUID
 
 import structlog
@@ -291,6 +291,9 @@ _ARCHIVE_CTE_ACTOR_SQL = (
     "  FROM deleted GROUP BY actor, status"
 )
 
+_DB_NOW_SQL = "SELECT clock_timestamp()"
+
+
 _EXPIRY_CTE_SQL = (
     "WITH expired AS ("
     '  SELECT id FROM "{schema}".jobs_archive'
@@ -324,12 +327,17 @@ async def prune_terminal_jobs(
     cutoffs: dict[str, datetime] = {}
     archive_interval = archive_retention
 
+    # Anchored to the database clock, not this process's: the archive
+    # predicate is server-side (clock_timestamp() - $2::interval), and the
+    # caller derives `prune_old_batches`' DELETE cutoff from
+    # `max(cutoffs.values())` — so these are NOT display-only, and a Python
+    # `now` here would compare an app-clock instant against DB-written
+    # `completed_at` values, pruning batches early or late by the skew.
+    db_now: datetime = await conn.fetchval(_DB_NOW_SQL)
+
     for status in TERMINAL_STATUSES:
         retention = retention_per_status.get(status, timedelta(days=30))
-        # Why: display-only — the prune predicate itself is server-side
-        # (clock_timestamp() - $2::interval); this Python cutoff feeds only
-        # logs/admin.
-        cutoffs[status] = datetime.now(UTC) - retention
+        cutoffs[status] = db_now - retention
         sql = _ARCHIVE_CTE_SQL.format(schema=schema)
 
         while True:
@@ -405,7 +413,12 @@ async def archive_expiry_sweep(
     start = time.monotonic()
     total_deleted = 0
     by_status: dict[str, int] = {}
-    expire_before = datetime.now(UTC)
+    # Reported on the result for observability; the DELETE predicate itself
+    # is server-side (`expire_at < clock_timestamp()` in _EXPIRY_CTE_SQL).
+    # Read from the database anyway so the reported instant cannot disagree
+    # with the predicate that actually ran — the sibling cutoffs above were
+    # documented as display-only and then quietly grew a second consumer.
+    expire_before: datetime = await conn.fetchval(_DB_NOW_SQL)
     sql = _EXPIRY_CTE_SQL.format(schema=schema)
 
     while True:

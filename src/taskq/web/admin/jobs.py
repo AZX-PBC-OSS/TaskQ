@@ -6,7 +6,7 @@ to ensure route registration order (static paths before {job_id}).
 
 import uuid
 from collections.abc import AsyncGenerator
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 import asyncpg
@@ -114,7 +114,19 @@ def _build_where(
     fairness_key: str | None,
     search: str | None,
     tags: list[str] | None = None,
+    *,
+    within: timedelta | None = None,
 ) -> tuple[str, list[Any]]:
+    """Build the WHERE clause and its positional parameters.
+
+    ``within`` is the relative "last N" filter and is evaluated against
+    ``clock_timestamp()`` server-side rather than against a Python
+    ``datetime.now(UTC)`` bound: ``created_at`` is written by the database
+    clock, so anchoring the window in this process's clock would shift the
+    whole window by the app-to-database skew and silently drop rows written
+    in the last few seconds. ``time_from``/``time_to`` stay absolute --
+    those are the caller's explicit instants, not a "now" of ours.
+    """
     clauses: list[str] = ["status = ANY($1)"]
     params: list[Any] = [statuses]
     idx = 2
@@ -125,6 +137,10 @@ def _build_where(
     if queue:
         clauses.append(f"queue = ${idx}")
         params.append(queue)
+        idx += 1
+    if within is not None:
+        clauses.append(f"created_at >= clock_timestamp() - ${idx}::interval")
+        params.append(within)
         idx += 1
     if time_from:
         clauses.append(f"created_at >= ${idx}::timestamptz")
@@ -215,15 +231,19 @@ def _parse_time_range(
     time_range: str | None,
     time_from: str | None,
     time_to: str | None,
-) -> tuple[str | None, str | None]:
+) -> tuple[str | None, str | None, timedelta | None]:
+    """Resolve the time filter to ``(time_from, time_to, within)``.
+
+    An explicit from/to pair is passed through as absolute instants. A
+    named range ("1h", "7d", ...) resolves to a ``timedelta`` that
+    :func:`_build_where` evaluates against the database clock -- see its
+    docstring for why this is not resolved to an absolute bound here.
+    """
     if time_from and time_to:
-        return time_from, time_to
+        return time_from, time_to, None
     if time_range and time_range in _TIME_RANGE_MAP:
-        delta = _TIME_RANGE_MAP[time_range]
-        to_dt = datetime.now(UTC)
-        from_dt = to_dt - delta
-        return from_dt.isoformat(), to_dt.isoformat()
-    return None, None
+        return None, None, _TIME_RANGE_MAP[time_range]
+    return None, None, None
 
 
 def _normalize_row(row: dict[str, Any]) -> dict[str, Any]:
@@ -288,7 +308,7 @@ def register(router: APIRouter) -> None:
         statuses = (
             parse_job_statuses(status, default=default_statuses) if status else default_statuses
         )
-        t_from, t_to = _parse_time_range(time_range, time_from, time_to)
+        t_from, t_to, within = _parse_time_range(time_range, time_from, time_to)
 
         tag_list: list[str] | None = None
         if tags:
@@ -304,6 +324,7 @@ def register(router: APIRouter) -> None:
             fairness_key,
             search,
             tags=tag_list,
+            within=within,
         )
 
         if tab == "live":
@@ -433,8 +454,10 @@ def register(router: APIRouter) -> None:
             if status
             else sorted(_ALL_STATUSES if tab == "live" else _TERMINAL_STATUSES)
         )
-        t_from, t_to = _parse_time_range(time_range, time_from, time_to)
-        where, params = _build_where(statuses, actor, queue, t_from, t_to, None, None, None)
+        t_from, t_to, within = _parse_time_range(time_range, time_from, time_to)
+        where, params = _build_where(
+            statuses, actor, queue, t_from, t_to, None, None, None, within=within
+        )
         table = f'"{schema}".jobs' if tab == "live" else f'"{schema}".jobs_archive'
         count_sql = f"SELECT COUNT(*) FROM {table} WHERE {where}"
         async with pool.acquire() as conn:
