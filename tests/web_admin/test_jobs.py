@@ -651,8 +651,8 @@ def test_build_paginated_sql_prev_direction_reverses_order() -> None:
 
 
 def test_parse_time_range_explicit_from_to() -> None:
-    """_parse_time_range returns explicit from/to without consulting time_range,
-    and asks for no relative window: those are the caller's own instants."""
+    """_parse_time_range returns explicit from/to (absolute, caller-owned
+    instants) without consulting time_range; ``within`` stays None."""
     from taskq.web.admin.jobs import _parse_time_range
 
     result = _parse_time_range(
@@ -663,10 +663,12 @@ def test_parse_time_range_explicit_from_to() -> None:
     assert result == ("2025-01-01T00:00:00+00:00", "2025-01-02T00:00:00+00:00", None)
 
 
-def test_parse_time_range_named_range_stays_relative() -> None:
-    """A named range resolves to a DURATION, not to absolute bounds computed
-    here: created_at is written by the database clock, so the window has to be
-    anchored server-side or the app-to-database skew shifts it."""
+def test_parse_time_range_named_range_resolves_to_interval() -> None:
+    """A named range resolves to a timedelta (``within``) that _build_where
+    evaluates against clock_timestamp() server-side, never to an absolute
+    app-clock bound (7565d3f: created_at is DB-clock-written; an app-clock
+    bound would shift the window by the skew). Unknown ranges and no filter
+    resolve to no within at all."""
     from taskq.web.admin.jobs import _parse_time_range
 
     assert _parse_time_range(time_range="1h", time_from=None, time_to=None) == (
@@ -674,12 +676,12 @@ def test_parse_time_range_named_range_stays_relative() -> None:
         None,
         timedelta(hours=1),
     )
-
-
-def test_parse_time_range_unknown_range_filters_nothing() -> None:
-    from taskq.web.admin.jobs import _parse_time_range
-
-    assert _parse_time_range(time_range="nonsense", time_from=None, time_to=None) == (
+    assert _parse_time_range(time_range="bogus", time_from=None, time_to=None) == (
+        None,
+        None,
+        None,
+    )
+    assert _parse_time_range(time_range=None, time_from=None, time_to=None) == (
         None,
         None,
         None,

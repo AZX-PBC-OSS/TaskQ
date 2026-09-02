@@ -897,6 +897,7 @@ async def _main(
                 asyncio.get_running_loop(),
                 deps.liveness,
                 budget=settings.watchdog_loop_lag_budget,
+                warn_budget=settings.watchdog_loop_lag_warn_budget,
                 startup_grace=settings.watchdog_loop_lag_startup_grace,
                 poll_interval=settings.watchdog_check_interval,
                 enabled=settings.watchdog_enabled,

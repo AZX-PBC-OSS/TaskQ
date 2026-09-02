@@ -95,6 +95,10 @@ def _deps(*, is_leader: bool) -> WorkerDeps:
             "TASKQ_LOCK_LEASE": "2.0",
             "TASKQ_CANCELLATION_GRACE_PERIOD": "0.0",
             "TASKQ_CLEANUP_GRACE_PERIOD": "0.0",
+            # Not a watchdog test: disabling exempts the short-lease config
+            # from the lag-budget < lock_lease invariant (which post_load
+            # enforces even under validate=False, by design).
+            "TASKQ_WATCHDOG_ENABLED": "false",
         },
         validate=False,
     )

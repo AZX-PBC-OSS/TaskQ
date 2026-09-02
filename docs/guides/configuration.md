@@ -105,7 +105,7 @@ Extends `TaskQSettings`. All fields below apply to the worker process only.
 | Env Var | Type | Default | Description | Constraints |
 |---|---|---|---|---|
 | `TASKQ_HEARTBEAT_INTERVAL` | `float` (seconds) | `10.0` | Period between heartbeat ticks. | Min: 0.5 |
-| `TASKQ_LOCK_LEASE` | `float` (seconds) | `60.0` | Time before an unrenewed job lock is reclaimed by the sweep. Must be >= 4 × `TASKQ_HEARTBEAT_INTERVAL`. | Min: 1.0; see [Validation Constraints](#validation-constraints) |
+| `TASKQ_LOCK_LEASE` | `float` (seconds) | `60.0` | Time before an unrenewed job lock is reclaimed by the sweep. Must be >= 4 × `TASKQ_HEARTBEAT_INTERVAL`, and must exceed `TASKQ_WATCHDOG_LOOP_LAG_BUDGET` + `TASKQ_HEARTBEAT_INTERVAL` (a stalled loop dies before its leases expire). | Min: 1.0; see [Validation Constraints](#validation-constraints) |
 | `TASKQ_MAX_HEARTBEAT_FAILURES` | `int` | `3` | Consecutive heartbeat failures before the worker self-terminates. | Min: 1 |
 
 ### Leader Sweep Intervals
@@ -137,7 +137,10 @@ progress but is still running — a state that liveness probes miss,
 because the event loop can be perfectly responsive while every loop that
 matters has stopped. On a trip the worker logs the detector and a dump of
 every asyncio task (name, coroutine, await site), then **force-exits with
-code 2** so the supervisor restarts it.
+code 2** so the supervisor restarts it. The event-loop lag detector is
+two-tier: past `TASKQ_WATCHDOG_LOOP_LAG_WARN_BUDGET` it warns (thread
+dump + metric + a task dump deferred until the loop recovers, no exit);
+past `TASKQ_WATCHDOG_LOOP_LAG_BUDGET` it trips.
 
 | Env Var | Type | Default | Description | Constraints |
 |---|---|---|---|---|
@@ -145,7 +148,8 @@ code 2** so the supervisor restarts it.
 | `TASKQ_WATCHDOG_CHECK_INTERVAL` | `float` (seconds) | `1.0` | Poll cadence for the stale-tick sweep and the loop-lag thread. | Min: > 0 |
 | `TASKQ_WATCHDOG_TICK_GRACE_FACTOR` | `float` | `5.0` | Multiplier on a loop's own iteration period before its tick counts as stale. | Min: > 0 |
 | `TASKQ_WATCHDOG_STALE_FLOOR` | `float` (seconds) | `10.0` | Lower bound on any staleness budget, so a short interval cannot produce a hair-trigger. | Min: > 0 |
-| `TASKQ_WATCHDOG_LOOP_LAG_BUDGET` | `float` (seconds) | `30.0` | How long the event loop may fail to schedule before the lag detector trips. | Min: > 0 |
+| `TASKQ_WATCHDOG_LOOP_LAG_BUDGET` | `float` (seconds) | `30.0` | How long the event loop may fail to schedule before the lag detector trips. Tier 2 of the lag detector. Must stay inside `TASKQ_LOCK_LEASE` (see the lag-lease invariant below). | Min: > 0; `watchdog_loop_lag_budget + heartbeat_interval < lock_lease` |
+| `TASKQ_WATCHDOG_LOOP_LAG_WARN_BUDGET` | `float` (seconds) | `5.0` | Non-terminal tier 1 of the lag detector: past this much event-loop lag the worker emits a warning, a `faulthandler` thread dump, the `taskq.worker.watchdog_loop_lag_warns_total` metric, and a deferred asyncio task-stack dump that lands once the loop recovers. It never exits — the terminal tier is `TASKQ_WATCHDOG_LOOP_LAG_BUDGET`. | Min: > 0 |
 | `TASKQ_WATCHDOG_LOOP_LAG_STARTUP_GRACE` | `float` (seconds) | `30.0` | Grace before the lag detector arms, covering import-heavy startup and DI bootstrap. | Min: ≥ 0 |
 | `TASKQ_WATCHDOG_DUMP_INTERVAL` | `float` (seconds) | `5.0` | Interval between straggler logs (names + await sites of still-alive siblings) once the dump gate opens. | Min: > 0 |
 | `TASKQ_WATCHDOG_DUMP_AFTER_FRACTION` | `float` | `0.5` | Fraction of the shutdown deadline that must be consumed before straggler dumps begin. A drain inside the front half of its budget is within expectations and stays quiet; one `shutdown-watchdog-armed` record is always logged when the countdown starts so the window is never blind. | Range: (0, 1), exclusive; at 1.0 the trip would always fire first |
@@ -164,6 +168,10 @@ supervisor can become a restart loop. Two rules follow:
 - **Raise budgets, don't lower them,** on constrained or heavily
   oversubscribed hosts. A loaded host with slow scheduling looks exactly
   like a mildly wedged one.
+- **Keep the terminal lag budget inside the lease:**
+  `watchdog_loop_lag_budget + heartbeat_interval < lock_lease` is
+  validated at load — a stalled loop must die before its leases expire,
+  or the leader sweep reclaims LIVE jobs' locks mid-stall.
 - **Effective staleness budget** for a loop is
   `max(period × TASKQ_WATCHDOG_TICK_GRACE_FACTOR, TASKQ_WATCHDOG_STALE_FLOOR)`,
   where `period` is that loop's own interval. With the defaults, a 2 s
@@ -376,6 +384,16 @@ cancellation_grace_period + cleanup_grace_period < lock_lease
 Rationale: ensures the worker finishes its shutdown sequence before the job lock expires and the sweep can reclaim the job.
 
 Error pattern: `cancellation_grace_period + cleanup_grace_period must be < lock_lease`
+
+### Lag watchdog vs lock lease (watchdog on)
+
+```
+watchdog_loop_lag_budget + heartbeat_interval < lock_lease
+```
+
+Rationale: a stalled event loop must die (the terminal lag watchdog trips at `watchdog_loop_lag_budget`) before its leases can expire, otherwise the leader sweep reclaims LIVE jobs' locks mid-stall and the worker wakes to find its work reassigned. The `heartbeat_interval` term is the worst-case age the last beat can carry when the stall starts, so the trip is guaranteed to land inside the lease. Skipped when `watchdog_enabled=false`, since no terminal lag detector is armed then. Keep the lag budget comfortably inside `lock_lease` — both knobs must move together.
+
+Error pattern: `watchdog_loop_lag_budget ... must be < lock_lease`
 
 ### Dispatcher command timeout vs staleness budget (watchdog on)
 

@@ -21,6 +21,11 @@ from taskq.settings import WorkerSettings
 _DEFAULTS: dict[str, str] = {
     "TASKQ_HEARTBEAT_INTERVAL": "0.5",
     "TASKQ_LOCK_LEASE": "2.0",
+    # Keeps the lag-lease invariant satisfied for these fast defaults
+    # (1.2 + 0.5 < 2.0) and the budget above the 1.0s default check
+    # interval: a stalled loop dies before its 2s lease expires, without
+    # the detector tripping on its own sampling cadence.
+    "TASKQ_WATCHDOG_LOOP_LAG_BUDGET": "1.2",
     "TASKQ_CANCELLATION_GRACE_PERIOD": "0.5",
     "TASKQ_CLEANUP_GRACE_PERIOD": "0.5",
     "TASKQ_TERMINATION_GRACE_PERIOD": "7.0",
@@ -64,6 +69,10 @@ def make_integration_settings_dict(pg_dsn: str, **overrides: str) -> dict[str, s
 _CHAOS_DEFAULTS = {
     "heartbeat_interval": 1.0,
     "lock_lease": 4.0,
+    # Kept alongside the shortened lease so the pair stays inside the
+    # lag-lease invariant (1.2 + 1.0 < 4.0) even when applied to settings
+    # loaded from elsewhere.
+    "watchdog_loop_lag_budget": 1.2,
     "cancellation_grace_period": 0.0,
     "cleanup_grace_period": 0.0,
 }

@@ -1110,6 +1110,9 @@ def test_grace_budget_accepted(
 ) -> None:
     """Valid grace budget tuples are accepted by load_from_dict."""
     cancel_g, cleanup_g, term_g, lock_l, hb_int = args
+    # Lag budget derived as lease/2 keeps the lag-lease invariant satisfied
+    # whenever the 4x lease invariant holds (hb <= lease/4 < lease/2), so
+    # the grace boundaries stay the only ones under test.
     settings = WorkerSettings.load_from_dict(
         {
             "TASKQ_PG_DSN": "postgresql://x:x@localhost/x",
@@ -1119,6 +1122,7 @@ def test_grace_budget_accepted(
             "TASKQ_TERMINATION_GRACE_PERIOD": str(term_g),
             "TASKQ_LOCK_LEASE": str(lock_l),
             "TASKQ_HEARTBEAT_INTERVAL": str(hb_int),
+            "TASKQ_WATCHDOG_LOOP_LAG_BUDGET": str(lock_l / 2),
         }
     )
     assert settings.cancellation_grace_period == cancel_g

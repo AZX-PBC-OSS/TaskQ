@@ -18,9 +18,13 @@ import structlog.testing
 
 from taskq._ids import new_job_id, new_uuid
 from taskq.backend._protocol import CancelPhase, JobId, JobRow
+from taskq.backend.statemachine import TERMINAL_STATUSES
 from taskq.settings import WorkerSettings
 from taskq.testing.clock import FakeClock
 from taskq.testing.in_memory import InMemoryBackend
+from taskq.worker._leader_shared import (
+    _DB_NOW_SQL,  # pyright: ignore[reportPrivateUsage]  # Why: the fake must answer the exact DB-clock query the prune/expiry code issues; importing it keeps the two from drifting apart.
+)
 from taskq.worker.deps import WorkerDeps
 from taskq.worker.leader import (
     MaintenanceLeader,
@@ -244,6 +248,7 @@ def _make_deps(
         "postgresql://x:x@localhost/x",
         HEARTBEAT_INTERVAL=str(heartbeat_interval),
         LOCK_LEASE="2.0",
+        WATCHDOG_LOOP_LAG_BUDGET="1.2",
         MAX_HEARTBEAT_FAILURES="3",
         CANCELLATION_GRACE_PERIOD="0.0",
         CLEANUP_GRACE_PERIOD="0.0",
@@ -1232,12 +1237,24 @@ class _FakeConnForPrune(FakeConn):
         batch_rows: list[list[_FakeRecord]] | None = None,
         actor_config_rows: list[_FakeRecord] | None = None,
         fetchval_result: object = None,
+        db_now: datetime | None = None,
     ) -> None:
         super().__init__(fetchval_result=fetchval_result)
         self._batch_rows = batch_rows or []
         self._batch_index = 0
         self._actor_config_rows = actor_config_rows
         self.fetch_calls: list[tuple[str, tuple[object, ...]]] = []
+        # 7565d3f anchors prune cutoffs and the expiry reference instant to
+        # the database clock via a dedicated fetchval, while fetchval_result
+        # keeps answering the advisory-lock probes — one scalar cannot serve
+        # both, so the fake answers the DB-now query with a datetime.
+        self._db_now = db_now
+
+    async def fetchval(self, sql: str, *args: object) -> object:
+        if sql != _DB_NOW_SQL:
+            return await super().fetchval(sql, *args)
+        self.fetchval_calls.append((sql, args))
+        return self._db_now if self._db_now is not None else datetime.now(UTC)
 
     async def fetch(self, sql: str, *args: object) -> list[_FakeRecord]:
         self.fetch_calls.append((sql, args))
@@ -1251,13 +1268,20 @@ class _FakeConnForPrune(FakeConn):
 
 
 async def test_prune_terminal_jobs_returns_prune_result() -> None:
-    """prune_terminal_jobs returns PruneResult with aggregated counts."""
+    """prune_terminal_jobs returns PruneResult with aggregated counts.
+
+    Cutoffs are anchored to the database clock (7565d3f): each terminal
+    status's cutoff is exactly ``db_now - retention``, never an app-clock
+    instant — the caller feeds ``max(cutoffs.values())`` into
+    ``prune_old_batches``, so skew here would prune batches early or late.
+    """
     rows = [
         [
             _FakeRecord({"actor": "test_actor", "status": "succeeded", "cnt": 5}),
         ],
     ]
-    conn = _FakeConnForPrune(batch_rows=rows)
+    db_now = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
+    conn = _FakeConnForPrune(batch_rows=rows, db_now=db_now)
     result = await prune_terminal_jobs(
         conn,
         retention_per_status={"succeeded": timedelta(days=30)},
@@ -1269,7 +1293,7 @@ async def test_prune_terminal_jobs_returns_prune_result() -> None:
     assert result.archived == 5
     assert result.by_actor == {"test_actor": 5}
     assert result.by_status == {"succeeded": 5}
-    assert "succeeded" in result.cutoffs
+    assert result.cutoffs == {status: db_now - timedelta(days=30) for status in TERMINAL_STATUSES}
     assert result.duration_ms >= 0
 
 
@@ -1309,13 +1333,19 @@ async def test_prune_terminal_jobs_invalid_schema() -> None:
 
 
 async def test_archive_expiry_sweep_returns_result() -> None:
-    """archive_expiry_sweep returns ArchiveExpiryResult with counts."""
+    """archive_expiry_sweep returns ArchiveExpiryResult with counts.
+
+    ``expire_before`` is the database clock's instant (7565d3f) so the
+    reported value cannot disagree with the server-side
+    ``expire_at < clock_timestamp()`` predicate that actually ran.
+    """
     rows = [
         [
             _FakeRecord({"status": "succeeded", "cnt": 7}),
         ],
     ]
-    conn = _FakeConnForPrune(batch_rows=rows)
+    db_now = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
+    conn = _FakeConnForPrune(batch_rows=rows, db_now=db_now)
     result = await archive_expiry_sweep(
         conn,
         batch_size=100,
@@ -1323,7 +1353,7 @@ async def test_archive_expiry_sweep_returns_result() -> None:
     )
     assert result.total_deleted == 7
     assert result.by_status == {"succeeded": 7}
-    assert result.expire_before <= datetime.now(UTC)
+    assert result.expire_before == db_now
     assert result.duration_ms >= 0
 
 

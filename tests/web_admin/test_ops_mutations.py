@@ -47,6 +47,7 @@ class _ScriptedConnection(StubConnection):
         self._fetchrow_results = list(fetchrow_results or [])
         self._execute_results = list(execute_results or [])
         self._raise_on = raise_on or {}
+        self.execute_calls: list[tuple[str, tuple[object, ...]]] = []
 
     async def fetch(self, query: str, *args: object) -> list[StubRecord]:
         if "fetch" in self._raise_on:
@@ -61,6 +62,7 @@ class _ScriptedConnection(StubConnection):
     async def execute(self, query: str, *args: object) -> str:
         if "execute" in self._raise_on:
             raise self._raise_on["execute"]
+        self.execute_calls.append((query, args))
         return self._execute_results.pop(0) if self._execute_results else "UPDATE 1"
 
 
@@ -181,8 +183,12 @@ def test_schedule_disable_redirects_when_cron_not_installed(
 
 
 def test_schedule_skip_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Skip writes a next_fire_at strictly past the database clock's now
+    (7565d3f: db_now comes from the row fetch, so the written value is
+    future in the same clock domain the cron loop fires in) and redirects."""
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
-    past = datetime.now(UTC) - timedelta(minutes=2)
+    db_now = datetime.now(UTC)
+    past = db_now - timedelta(minutes=2)
     # The skip fetch reads the server clock in the same row
     # (clock_timestamp() AS db_now), so the stub row carries it.
     row = StubRecord(
@@ -190,7 +196,7 @@ def test_schedule_skip_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
         timezone="UTC",
         dst_strategy="skip",
         next_fire_at=past,
-        db_now=datetime.now(UTC),
+        db_now=db_now,
     )
     conn = _ScriptedConnection(fetchrow_results=[row])
     client = _make_app(_ScriptedPool(conn))
@@ -199,6 +205,11 @@ def test_schedule_skip_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
     resp = client.post(f"/schedules/{sid}/skip", data={"csrf_token": token}, follow_redirects=False)
     assert resp.status_code == 303  # pyright: ignore[reportUnknownMemberType]
     assert resp.headers["location"].endswith("/schedules")  # pyright: ignore[reportUnknownMemberType]
+    skip_writes = [args for sql, args in conn.execute_calls if "SET next_fire_at" in sql]
+    assert len(skip_writes) == 1
+    written_next = skip_writes[0][1]
+    assert isinstance(written_next, datetime)
+    assert written_next > db_now
 
 
 def test_schedule_skip_404_when_not_found(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -623,9 +634,12 @@ def test_schedules_page_not_installed(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_schedule_skip_400_when_no_future_fire_time(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The for/else 400 branch fires when compute_next_fire_after never advances past now."""
+    """The for/else 400 branch fires when compute_next_fire_after never
+    advances past the database clock's now — and the skip UPDATE never runs
+    (the 400 is raised before the write)."""
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
     stale = datetime(2000, 1, 1, tzinfo=UTC)
+    db_now = datetime.now(UTC)
 
     def _fake_compute_next_fire_after(
         cron_expr: str, timezone_name: str, after: datetime, dst_strategy: str = "skip"
@@ -640,7 +654,7 @@ def test_schedule_skip_400_when_no_future_fire_time(monkeypatch: pytest.MonkeyPa
         timezone="UTC",
         dst_strategy="skip",
         next_fire_at=stale,
-        db_now=datetime.now(UTC),
+        db_now=db_now,
     )
     conn = _ScriptedConnection(fetchrow_results=[row])
     client = _make_app(_ScriptedPool(conn))
@@ -648,6 +662,7 @@ def test_schedule_skip_400_when_no_future_fire_time(monkeypatch: pytest.MonkeyPa
     token = _get_csrf_token(client)
     resp = client.post(f"/schedules/{sid}/skip", data={"csrf_token": token})
     assert resp.status_code == 400  # pyright: ignore[reportUnknownMemberType]
+    assert not [sql for sql, _ in conn.execute_calls if "SET next_fire_at" in sql]
 
 
 # ── _fetch_redis_rl_state: remaining branches ────────────────────────────

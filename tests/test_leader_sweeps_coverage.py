@@ -137,6 +137,7 @@ def _make_deps(
     settings = _worker_settings(
         HEARTBEAT_INTERVAL=str(heartbeat_interval),
         LOCK_LEASE="2.0",
+        WATCHDOG_LOOP_LAG_BUDGET="1.2",
         MAX_HEARTBEAT_FAILURES="3",
         CANCELLATION_GRACE_PERIOD="0.0",
         CLEANUP_GRACE_PERIOD="0.0",
@@ -936,6 +937,7 @@ async def test_sweep_loop_acquire_has_timeout() -> None:
     settings = _worker_settings(
         HEARTBEAT_INTERVAL="0.5",
         LOCK_LEASE="2.0",
+        WATCHDOG_LOOP_LAG_BUDGET="1.2",
         MAX_HEARTBEAT_FAILURES="3",
         CANCELLATION_GRACE_PERIOD="0.0",
         CLEANUP_GRACE_PERIOD="0.0",

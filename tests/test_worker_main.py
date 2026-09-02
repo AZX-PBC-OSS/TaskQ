@@ -827,7 +827,7 @@ def test_worker_main_forwards_connections_to_main(settings: WorkerSettings) -> N
 async def test_main_applies_every_documented_watchdog_knob() -> None:
     """Every watchdog knob must reach the object that honours it.
 
-    The guide documents seven tunables. A knob that is documented but not
+    The guide documents eight tunables. A knob that is documented but not
     plumbed is worse than a missing one: an operator raising a budget on a
     starved host would believe they had widened a terminal detector when
     they had not. Deliberately non-default values, so a hardcoded constant
@@ -841,10 +841,15 @@ async def test_main_applies_every_documented_watchdog_knob() -> None:
             "TASKQ_TERMINATION_GRACE_PERIOD": "77.0",
             "TASKQ_CANCELLATION_GRACE_PERIOD": "1.0",
             "TASKQ_CLEANUP_GRACE_PERIOD": "1.0",
+            # Lease sized so the deliberately-large 111s lag budget sits
+            # inside it (111 + 10 < 150): the lag-lease invariant must not
+            # reject the non-default knob values under test.
+            "TASKQ_LOCK_LEASE": "150.0",
             "TASKQ_WATCHDOG_TICK_GRACE_FACTOR": "9.0",
             "TASKQ_WATCHDOG_STALE_FLOOR": "42.0",
             "TASKQ_WATCHDOG_CHECK_INTERVAL": "3.5",
             "TASKQ_WATCHDOG_LOOP_LAG_BUDGET": "111.0",
+            "TASKQ_WATCHDOG_LOOP_LAG_WARN_BUDGET": "4.5",
             "TASKQ_WATCHDOG_LOOP_LAG_STARTUP_GRACE": "222.0",
             "TASKQ_WATCHDOG_DUMP_INTERVAL": "6.5",
         }
@@ -889,6 +894,7 @@ async def test_main_applies_every_documented_watchdog_knob() -> None:
     assert h.deps.liveness.stale_floor == 42.0
     # Detector 4 (thread).
     assert lag_kwargs["budget"] == 111.0
+    assert lag_kwargs["warn_budget"] == 4.5
     assert lag_kwargs["startup_grace"] == 222.0
     assert lag_kwargs["poll_interval"] == 3.5
     # Detector 1 reuses termination_grace_period as its deadline.

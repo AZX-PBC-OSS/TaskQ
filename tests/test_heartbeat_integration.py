@@ -14,10 +14,12 @@ so the suite completes in seconds rather than minutes.
 """
 
 import asyncio
+import time
 from contextlib import AsyncExitStack
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
+import asyncpg
 import pytest
 import structlog
 
@@ -78,24 +80,6 @@ async def _setup_fast(
     return stack, deps, schema
 
 
-async def _run_heartbeat_ticks(
-    deps: WorkerDeps,
-    worker_id: UUID,
-    ticks: int,
-) -> None:
-    """Run heartbeat_loop in a background task for *ticks* ticks, then cancel."""
-    shutdown = asyncio.Event()
-    task = asyncio.create_task(
-        heartbeat_loop(deps, worker_id, shutdown),
-        name="heartbeat-integration",
-    )
-    try:
-        await asyncio.sleep(_HEARTBEAT_INTERVAL * ticks + 0.05)
-    finally:
-        shutdown.set()
-        await task
-
-
 # ── Real PG last_seen_at increments ──────────────────────────────
 
 
@@ -114,6 +98,13 @@ async def test_last_seen_at_and_heartbeat_advance(module_pg_schema: ModulePgSche
     exactly how the previous pairwise form failed. A stalled heartbeat
     shows up here as a stale value against the clock read in the same
     statement — the failure mode the contract actually cares about.
+
+    The freshness loop starts only after the first tick has landed: the
+    loop ticks immediately on start, but under a parallel ``-n`` run
+    contending on the shared PG container the first tick's pool acquire
+    and writes can take seconds, and liveness is NULL until it commits.
+    Waiting for the first tick tests the cadence contract from a running
+    loop instead of racing its startup.
     """
     stack, deps, schema = await _setup_fast(module_pg_schema)
     try:
@@ -130,6 +121,20 @@ async def test_last_seen_at_and_heartbeat_advance(module_pg_schema: ModulePgSche
             name="heartbeat-ti1",
         )
         try:
+            deadline = time.monotonic() + 30.0
+            while time.monotonic() < deadline:
+                async with deps.heartbeat_pool.acquire() as conn:
+                    seen = await conn.fetchrow(
+                        f'SELECT last_seen_at FROM "{schema}".workers WHERE id = $1',
+                        worker_id,
+                    )
+                assert seen is not None
+                if seen["last_seen_at"] is not None:
+                    break
+                await asyncio.sleep(0.2)
+            else:
+                pytest.fail("heartbeat loop never landed its first tick")
+
             for _ in range(3):
                 await asyncio.sleep(_HEARTBEAT_INTERVAL + 0.05)
                 async with deps.heartbeat_pool.acquire() as conn:
@@ -170,7 +175,15 @@ async def test_multi_job_lock_extension(module_pg_schema: ModulePgSchema) -> Non
     Behavioral contract: one tick rewrites all four running jobs' locks to
     live future values (one UPDATE, one server clock read), so each lock
     post-tick is dated in the future of the clock observed alongside it,
-    and the four leases stay within 2*heartbeat_interval of each other."""
+    and the four leases stay within 2*heartbeat_interval of each other.
+
+    The renewal is detected by polling until every lease is strictly later
+    than every setup-time lease (a tick stamps ``clock_timestamp() +
+    lock_lease`` and runs after setup, so a rewrite always lands later than
+    the originals) instead of assuming a tick lands within a fixed ~1s
+    window — under a parallel ``-n`` run contending on the shared PG
+    container the first tick can land seconds late, and reading un-renewed
+    setup stamps would test the setup, not the renewal."""
     stack, deps, schema = await _setup_fast(module_pg_schema)
     try:
         async with deps.heartbeat_pool.acquire() as conn:
@@ -193,25 +206,47 @@ async def test_multi_job_lock_extension(module_pg_schema: ModulePgSchema) -> Non
             )
             assert dispatched_count == 4
 
-        await _run_heartbeat_ticks(deps, worker_id, ticks=2)
-
-        async with deps.heartbeat_pool.acquire() as conn:
-            # Single statement: every lock is compared against the server
-            # clock observed in the same read, so a wall-clock step between
-            # the setup write and this read cannot corrupt the assertion.
-            current_locks = await conn.fetch(
-                f"SELECT now() AS pg_now, lock_expires_at "
-                f'FROM "{schema}".jobs WHERE locked_by_worker = $1 ORDER BY id',
+            originals = await conn.fetch(
+                f'SELECT lock_expires_at FROM "{schema}".jobs WHERE locked_by_worker = $1',
                 worker_id,
             )
-            assert len(current_locks) == 4
+            assert len(originals) == 4
+            original_max = max(r["lock_expires_at"] for r in originals)
+            assert original_max is not None
+
+        shutdown = asyncio.Event()
+        task = asyncio.create_task(
+            heartbeat_loop(deps, worker_id, shutdown),
+            name="heartbeat-multi-lock",
+        )
+        try:
+            current_locks: list[asyncpg.Record] = []
+            deadline = time.monotonic() + 30.0
+            while time.monotonic() < deadline:
+                async with deps.heartbeat_pool.acquire() as conn:
+                    # Single statement: every lock is compared against the
+                    # server clock observed in the same read, so a
+                    # wall-clock step between the tick and this read
+                    # cannot corrupt the assertion.
+                    current_locks = await conn.fetch(
+                        f"SELECT now() AS pg_now, lock_expires_at "
+                        f'FROM "{schema}".jobs WHERE locked_by_worker = $1 ORDER BY id',
+                        worker_id,
+                    )
+                assert len(current_locks) == 4
+                times = [r["lock_expires_at"] for r in current_locks]
+                if all(t is not None and t > original_max for t in times):
+                    break
+                await asyncio.sleep(0.2)
+            else:
+                pytest.fail("heartbeat loop never rewrote the four job locks")
 
             times = [r["lock_expires_at"] for r in current_locks]
             assert all(t is not None for t in times)
 
             # A just-extended lock is live: dated in the future of the
             # server clock read alongside it (tick clock + lock_lease,
-            # read immediately after the last tick).
+            # read in the same statement that observed the rewrite).
             for r in current_locks:
                 assert r["lock_expires_at"] > r["pg_now"]
 
@@ -220,6 +255,9 @@ async def test_multi_job_lock_extension(module_pg_schema: ModulePgSchema) -> Non
             min_t = min(times)
             max_t = max(times)
             assert (max_t - min_t) <= timedelta(seconds=2 * _HEARTBEAT_INTERVAL)
+        finally:
+            shutdown.set()
+            await task
     finally:
         await stack.aclose()
 
@@ -230,15 +268,19 @@ async def test_multi_job_lock_extension(module_pg_schema: ModulePgSchema) -> Non
 async def test_reservation_lease_extension(module_pg_schema: ModulePgSchema) -> None:
     """Heartbeat ticks renew reservation leases to live future values.
 
-    The reservation is inserted with a 1s lease; after two ticks the lease
-    must be live — dated in the future of the server clock observed in the
-    same statement that reads it. An unrenewed lease (inserted 1s ahead,
-    read after the ≥1.05s tick window) is already in the past at read
-    time, so a live lease proves the tick renewed it. Comparing against
-    the initial lease instead (the old form) coupled the assertion to the
-    application and database clocks staying aligned across the whole test
-    window — they are separate clocks and can diverge or step (VM
-    pause/resume, NTP drift).
+    The reservation is inserted with a 1s lease; once a heartbeat tick has
+    run, the lease must be live — dated in the future of the server clock
+    observed in the same statement that reads it. An unrenewed lease
+    (inserted 1s ahead) is already in the past by read time, so a live
+    lease proves a tick renewed it. The read polls until the lease is live
+    instead of assuming the first tick lands within a fixed ~1s window:
+    under a parallel ``-n`` run contending on the shared PG container, the
+    loop's first tick can land seconds late — waiting only strengthens the
+    unrenewed-lease-is-past proof, and a renewal still shows up as a live
+    lease. Comparing against the initial lease instead (the old form)
+    coupled the assertion to the application and database clocks staying
+    aligned across the whole test window — they are separate clocks and
+    can diverge or step (VM pause/resume, NTP drift).
     """
     stack, deps, schema = await _setup_fast(module_pg_schema)
     try:
@@ -264,17 +306,33 @@ async def test_reservation_lease_extension(module_pg_schema: ModulePgSchema) -> 
             assert initial is not None
             assert initial["lease_expires_at"] is not None
 
-        await _run_heartbeat_ticks(deps, worker_id, ticks=2)
-
-        async with deps.heartbeat_pool.acquire() as conn:
-            row = await conn.fetchrow(
-                f"SELECT now() AS pg_now, lease_expires_at "
-                f'FROM "{schema}".reservation_slots WHERE job_id = $1',
-                job_id,
-            )
+        shutdown = asyncio.Event()
+        task = asyncio.create_task(
+            heartbeat_loop(deps, worker_id, shutdown),
+            name="heartbeat-reservation-lease",
+        )
+        try:
+            row: asyncpg.Record | None = None
+            deadline = time.monotonic() + 30.0
+            while time.monotonic() < deadline:
+                async with deps.heartbeat_pool.acquire() as conn:
+                    row = await conn.fetchrow(
+                        f"SELECT now() AS pg_now, lease_expires_at "
+                        f'FROM "{schema}".reservation_slots WHERE job_id = $1',
+                        job_id,
+                    )
+                assert row is not None
+                if row["lease_expires_at"] is not None and row["lease_expires_at"] > row["pg_now"]:
+                    break
+                await asyncio.sleep(0.2)
             assert row is not None
-            assert row["lease_expires_at"] is not None
+            assert row["lease_expires_at"] is not None, (
+                "reservation lease was never renewed to a live value"
+            )
             assert row["lease_expires_at"] > row["pg_now"]
+        finally:
+            shutdown.set()
+            await task
     finally:
         await stack.aclose()
 

@@ -22,7 +22,7 @@ Covers:
 import asyncio
 import json
 from contextlib import AsyncExitStack
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 from typing import Any
 from uuid import UUID
 
@@ -128,6 +128,7 @@ async def _setup_worker(
         "TASKQ_PROGRESS_COALESCE_INTERVAL": "0.1",
         "TASKQ_HEARTBEAT_INTERVAL": "0.5",
         "TASKQ_LOCK_LEASE": "30.0",
+        "TASKQ_WATCHDOG_LOOP_LAG_BUDGET": "1.2",
         "TASKQ_CANCELLATION_GRACE_PERIOD": "0.5",
         "TASKQ_CLEANUP_GRACE_PERIOD": "0.5",
     }
@@ -191,7 +192,11 @@ async def _enqueue_only(
             priority=0,
             max_attempts=1,
             retry_kind="transient",
-            scheduled_at=datetime.now(UTC),
+            # None = immediate, server-stamped: dispatch eligibility is
+            # judged by clock_timestamp(), so an app-clock stamp makes the
+            # job "not yet due" whenever the app clock runs ahead of the
+            # database — a load flake, not a scheduling decision.
+            scheduled_at=None,
         )
     )
     return job_id

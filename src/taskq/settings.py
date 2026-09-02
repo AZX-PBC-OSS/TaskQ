@@ -804,7 +804,16 @@ class WorkerSettings(TaskQSettings):
         description="TASKQ_WATCHDOG_LOOP_LAG_BUDGET (seconds). How long the "
         "event loop may go without scheduling before the lag watchdog trips. "
         "Deliberately far beyond any legitimate pause (GC, a slow tick) "
-        "because the trip is terminal.",
+        "because the trip is terminal. Tier 2 of the lag detector; see "
+        "watchdog_loop_lag_warn_budget for the non-terminal tier 1.",
+    )
+    watchdog_loop_lag_warn_budget: float = Field(
+        default=5.0,
+        gt=0.0,
+        description="TASKQ_WATCHDOG_LOOP_LAG_WARN_BUDGET (seconds). Non-terminal "
+        "tier-1 event-loop lag threshold: faulthandler thread dump + metric "
+        "+ deferred asyncio task-stack dump. Never exits; the terminal tier "
+        "is watchdog_loop_lag_budget.",
     )
     watchdog_loop_lag_startup_grace: float = Field(
         default=30.0,
@@ -1307,6 +1316,63 @@ class WorkerSettings(TaskQSettings):
                         ),
                     )
                 )
+
+        # Lag-watchdog lease invariant: a stalled event loop must die (the
+        # terminal lag watchdog trips at watchdog_loop_lag_budget) before
+        # its leases can expire (lock_lease), otherwise the leader sweep
+        # reclaims LIVE jobs' locks mid-stall and the worker wakes from the
+        # stall to find its work reassigned. The heartbeat_interval term is
+        # the worst-case age the last beat can carry when the stall starts,
+        # so the trip is guaranteed to land inside the lease. Only checked
+        # when the watchdog is armed: with watchdog_enabled=False no
+        # terminal lag detector exists, and stall-vs-lease ordering is a
+        # deployment concern, not a load-time guarantee (same gating as the
+        # bounded-loop invariant above).
+        if self.watchdog_enabled and (
+            self.watchdog_loop_lag_budget + self.heartbeat_interval >= self.lock_lease
+        ):
+            errors.append(
+                ValidationError(
+                    field_name="watchdog_loop_lag_budget",
+                    value=self.watchdog_loop_lag_budget,
+                    error_msg=(
+                        f"watchdog_loop_lag_budget ({self.watchdog_loop_lag_budget}) + "
+                        f"heartbeat_interval ({self.heartbeat_interval}) must be < "
+                        f"lock_lease ({self.lock_lease}): a stalled event loop must die "
+                        f"(the terminal lag watchdog) before its leases expire, or the "
+                        f"leader sweep reclaims LIVE jobs' locks mid-stall. Keep the lag "
+                        f"budget comfortably inside lock_lease — both knobs must move "
+                        f"together."
+                    ),
+                )
+            )
+
+        # Lag budget vs check interval coherence: the lag detector samples
+        # the loop once per watchdog_check_interval and schedules the beat
+        # it measures from the same poll, so a healthy loop's observed lag
+        # is ~check_interval by construction. A budget at or below the
+        # sampling period therefore trips on health, not stalls (measured:
+        # budget 1.0 against the 1.0s default check interval force-exits an
+        # idle worker on its first armed poll). Same watchdog gating as the
+        # lease invariant above.
+        if self.watchdog_enabled and (
+            self.watchdog_loop_lag_budget <= self.watchdog_check_interval
+        ):
+            errors.append(
+                ValidationError(
+                    field_name="watchdog_loop_lag_budget",
+                    value=self.watchdog_loop_lag_budget,
+                    error_msg=(
+                        f"watchdog_loop_lag_budget ({self.watchdog_loop_lag_budget}) "
+                        f"must be > watchdog_check_interval "
+                        f"({self.watchdog_check_interval}): the detector samples the "
+                        f"loop once per check interval, so a budget at or below its "
+                        f"own sampling period trips on a healthy loop's beat cadence. "
+                        f"Raise the budget (keeping it inside lock_lease) or lower "
+                        f"watchdog_check_interval."
+                    ),
+                )
+            )
 
         return errors or None
 

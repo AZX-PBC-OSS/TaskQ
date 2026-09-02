@@ -105,6 +105,12 @@ async def blocker_worker(
     for key, value in e2e_schema.worker_env.items():
         container.with_env(key, value)
     # Fast trip: detector 4 must win before the 10s staleness floor.
+    # Re-enable the watchdog (the conftest fleet runs with it off) and size
+    # the lease to hold the fast budget: 5.0 + 0.5 < 8.0 satisfies the
+    # lag-lease invariant, and 5.0 > the 1.0s default check interval keeps
+    # the detector clear of its own sampling cadence.
+    container.with_env("TASKQ_WATCHDOG_ENABLED", "true")
+    container.with_env("TASKQ_LOCK_LEASE", "8.0")
     container.with_env("TASKQ_WATCHDOG_LOOP_LAG_BUDGET", "5.0")
     container.with_env("TASKQ_WATCHDOG_LOOP_LAG_STARTUP_GRACE", "2.0")
 
@@ -203,7 +209,7 @@ async def test_watchdog_kill_orphan_is_reclaimed_and_fleet_recovers(
         description="blocker worker to exit via the loop-lag watchdog",
     )
 
-    # The row is orphaned 'running'; the lease (3s) expires. A replacement
+    # The row is orphaned 'running'; the lease (8s) expires. A replacement
     # worker's leader sweep must reclaim it within the recovery window.
     replacement = DockerContainer(image=e2e_worker_image.tag)
     replacement.with_kwargs(
@@ -214,6 +220,17 @@ async def test_watchdog_kill_orphan_is_reclaimed_and_fleet_recovers(
     )
     for key, value in e2e_schema.worker_env.items():
         replacement.with_env(key, value)
+    # The replacement is the only live worker, and this test's tail needs
+    # the fleet to self-heal: a redispatched poison job re-blocks it, and
+    # without the lag watchdog that block is permanent — the reclaim flips
+    # the row to pending for less than a poll interval and the fresh-work
+    # assertion then starves. Run it under the same coherent watchdog knobs
+    # as the blocker (re-enabled; the conftest fleet runs with it off), so
+    # a re-blocked replacement dies, the job is re-orphaned and reclaimed
+    # again, and the cycle continues until the cancel lands.
+    replacement.with_env("TASKQ_WATCHDOG_ENABLED", "true")
+    replacement.with_env("TASKQ_LOCK_LEASE", "8.0")
+    replacement.with_env("TASKQ_WATCHDOG_LOOP_LAG_BUDGET", "5.0")
     await asyncio.to_thread(replacement.start)
     try:
         await wait_for_worker_ready(e2e_pg_pool, e2e_schema.schema_name, timeout=30.0)

@@ -40,6 +40,7 @@ The non-zero code guarantees the supervisor restarts the worker.
 import asyncio
 import contextlib
 import faulthandler
+import functools
 import os
 import sys
 import threading
@@ -92,6 +93,13 @@ _watchdog_trips = _meter.create_counter(
     "taskq.worker.watchdog_trips_total",
     unit="1",
     description="Watchdog trips leading to force-exit, labelled by detector.",
+)
+_loop_lag_warns = _meter.create_counter(
+    "taskq.worker.watchdog_loop_lag_warns_total",
+    unit="1",
+    description="Non-terminal event-loop lag warnings (tier 1: thread dump + "
+    "metric + deferred task dump), labelled by detector. The terminal tier "
+    "is watchdog_trips_total.",
 )
 
 # Tick-age observable gauge follows the codebase's cache + callback
@@ -457,9 +465,20 @@ class LoopLagWatchdog:
 
     Arms after *startup_grace* seconds or the first liveness tick,
     whichever comes first — import-heavy startup and DI bootstrap must
-    never trip it. When the loop has not scheduled a beat within
-    *budget* seconds, dumps ``faulthandler`` thread frames (thread-safe
-    off-loop) and trips.
+    never trip it. Two tiers once armed:
+
+    - Tier 1 (``warn_budget``): non-terminal. Once per stall, increments
+      the ``watchdog_loop_lag_warns_total`` counter, logs a warning,
+      dumps ``faulthandler`` thread frames (thread-safe off-loop), and
+      schedules the asyncio task-stack dump to run ON the loop once it
+      recovers (``asyncio.all_tasks`` is not thread-safe). The latch
+      clears on the next beat, so each stall warns once.
+    - Tier 2 (``budget``): terminal. When the loop has not scheduled a
+      beat within *budget* seconds, dumps thread frames and trips
+      (force-exit), because in-flight jobs are recovered by the leader
+      sweep on lock-lease expiry — which is only safe while the trip
+      lands inside the lease (see the lag-lease invariant in
+      ``WorkerSettings.post_load``).
     """
 
     def __init__(
@@ -468,6 +487,7 @@ class LoopLagWatchdog:
         liveness: LoopLiveness,
         *,
         budget: float,
+        warn_budget: float,
         startup_grace: float,
         poll_interval: float = 0.5,
         enabled: bool = True,
@@ -476,12 +496,14 @@ class LoopLagWatchdog:
         self._loop = loop
         self._liveness = liveness
         self._budget = budget
+        self._warn_budget = warn_budget
         self._startup_grace = startup_grace
         self._poll_interval = poll_interval
         self._enabled = enabled
         self._clock = clock
         self._last_beat = clock()
         self._started = clock()
+        self._warned = False
         self._stop = threading.Event()
         self._thread = threading.Thread(
             target=self._run,
@@ -500,6 +522,10 @@ class LoopLagWatchdog:
 
     def _beat(self) -> None:
         self._last_beat = self._clock()
+        # A beat means the loop scheduled again: the stall is over. Clear
+        # the latch so the NEXT stall gets a fresh tier-1 warning instead
+        # of riding this one's.
+        self._warned = False
 
     def _armed(self) -> bool:
         if self._clock() - self._started >= self._startup_grace:
@@ -527,11 +553,45 @@ class LoopLagWatchdog:
                 note="event-loop-lag detection is no longer active in this process",
             )
 
+    def _warn(self, lag: float) -> None:
+        """Tier 1: diagnose a stall without killing the worker for it."""
+        _loop_lag_warns.add(1, {"detector": "event-loop-lag-warn"})
+        _log.warning(
+            "worker-watchdog-lag-warn",
+            kind="worker_watchdog_lag_warn",
+            detector="event-loop-lag-warn",
+            lag_seconds=round(lag, 3),
+            warn_budget=self._warn_budget,
+        )
+        # Thread-state dump is safe from this thread even while the loop
+        # is blocked; the task-stack dump is not (asyncio.all_tasks is not
+        # thread-safe), so it is deferred onto the loop and lands once the
+        # loop schedules again — hence the "recovered" reason.
+        faulthandler.dump_traceback(file=sys.stderr, all_threads=True)
+        # contextlib.suppress, and functools.partial rather than keyword
+        # arguments: call_soon_threadsafe forwards only positional args
+        # (its sole keyword is `context`), so the detector label must
+        # travel inside the callable — and a loop already closed by a
+        # racing shutdown raises RuntimeError, which the faulthandler
+        # dump above has already made moot. Swallowing keeps the thread
+        # alive for the terminal tier.
+        with contextlib.suppress(RuntimeError):
+            self._loop.call_soon_threadsafe(
+                functools.partial(
+                    dump_task_stacks,
+                    "loop-lag-recovered",
+                    detector="event-loop-lag-warn",
+                )
+            )
+
     def _watch(self) -> None:
         while not self._stop.wait(self._poll_interval):
             if not self._armed():
                 continue
             lag = self._clock() - self._last_beat
+            if lag > self._warn_budget and not self._warned:
+                self._warned = True
+                self._warn(lag)
             if lag > self._budget:
                 _watchdog_trips.add(1, {"detector": "event-loop-lag"})
                 _log.critical(
