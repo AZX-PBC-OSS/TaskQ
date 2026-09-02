@@ -220,6 +220,21 @@ RETURNING *""",
         # CTE lands 'failed' with error_class='DeadlineExceeded'.  The caller
         # never passes a Python-domain timestamp (C1: a skewed caller could
         # otherwise void the backoff or kill a live job).
+        #
+        # Every arm that hands the job back for another dispatch (this
+        # template's `retried` CTE, and the `snoozed` CTEs of mark_snoozed /
+        # mark_retry_after_consume_*) also RESETS cancel_phase and
+        # cancel_requested_at, byte-for-byte as _sweeps.py's _SWEEP_1_SQL and
+        # heartbeat.py's _ISOLATE_JOB_SQL_TEMPLATE do on their retry arm.
+        # Retries reuse the SAME job row, so a cancel that escalated to
+        # phase 2 in the same instant the actor raised a retryable exception
+        # would otherwise be inherited by the next attempt: the cancel
+        # controller's PG-observation fast-advance sees db_phase=FORCED,
+        # jumps the local phase straight to FORCED without ever calling
+        # task.cancel(), and the attempt becomes uncancellable.  The
+        # TERMINAL arms deliberately keep the cancel columns — they are the
+        # audit trail of why the job ended, and mark_abandoned's
+        # `cancel_phase = 2` guard reads them.
         mark_retry=f"""\
 WITH params AS (
     SELECT $1::uuid AS job_id, $2::uuid AS worker_id, $3::interval AS retry_delay
@@ -233,6 +248,8 @@ retried AS (
         locked_by_worker = NULL,
         lock_expires_at = NULL,
         last_heartbeat_at = NULL,
+        cancel_phase = 0,
+        cancel_requested_at = NULL,
         error_class = $4,
         error_message = $5,
         error_traceback = $6,
@@ -307,6 +324,8 @@ snoozed AS (
         locked_by_worker = NULL,
         lock_expires_at = NULL,
         last_heartbeat_at = NULL,
+        cancel_phase = 0,
+        cancel_requested_at = NULL,
         max_attempts = j.max_attempts + 1,
         metadata = j.metadata || COALESCE((SELECT metadata_update FROM params), '{{}}'::jsonb),
         progress_seq = (SELECT progress_seq FROM params),
@@ -355,6 +374,8 @@ WITH params AS (
         locked_by_worker = NULL,
         lock_expires_at = NULL,
         last_heartbeat_at = NULL,
+        cancel_phase = 0,
+        cancel_requested_at = NULL,
         progress_seq = (SELECT progress_seq FROM params),
         progress_state = CASE WHEN (SELECT progress_state FROM params) IS NOT NULL THEN COALESCE(j.progress_state, '{{}}'::jsonb) || (SELECT progress_state FROM params) ELSE j.progress_state END
     WHERE j.id = (SELECT job_id FROM params)
@@ -428,6 +449,8 @@ snoozed AS (
         locked_by_worker = NULL,
         lock_expires_at = NULL,
         last_heartbeat_at = NULL,
+        cancel_phase = 0,
+        cancel_requested_at = NULL,
         max_attempts = j.max_attempts + 1,
         progress_seq = (SELECT progress_seq FROM params),
         progress_state = CASE WHEN (SELECT progress_state FROM params) IS NOT NULL THEN COALESCE(j.progress_state, '{{}}'::jsonb) || (SELECT progress_state FROM params) ELSE j.progress_state END

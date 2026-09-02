@@ -225,8 +225,8 @@ async def _mark_failed_or_retry(
             error_class=error_info.error_class,
             error_message=error_info.error_message,
             error_traceback=error_info.error_traceback,
-            cancel_phase=row.cancel_phase,
-            cancel_requested_at=row.cancel_requested_at,
+            cancel_phase=CancelPhase.NONE,
+            cancel_requested_at=None,
             progress_seq=progress_seq,
             progress_state=merged_progress,
         )
@@ -523,8 +523,8 @@ async def _mark_snoozed(
         last_heartbeat_at=None,
         max_attempts=row.max_attempts + 1,
         metadata=new_metadata,
-        cancel_phase=row.cancel_phase,
-        cancel_requested_at=row.cancel_requested_at,
+        cancel_phase=CancelPhase.NONE,
+        cancel_requested_at=None,
         progress_seq=progress_seq,
         progress_state=merged_progress,
     )
@@ -682,8 +682,8 @@ async def _mark_retry_after(
         locked_by_worker=None,
         lock_expires_at=None,
         last_heartbeat_at=None,
-        cancel_phase=row.cancel_phase,
-        cancel_requested_at=row.cancel_requested_at,
+        cancel_phase=CancelPhase.NONE,
+        cancel_requested_at=None,
         progress_seq=progress_seq,
         progress_state=merged_progress,
     )
