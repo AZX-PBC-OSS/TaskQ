@@ -103,6 +103,31 @@ def _render_exc_info_safe(
     return event_dict
 
 
+class _ExcInfoSafeBoundLogger(structlog.stdlib.BoundLogger):
+    """``BoundLogger`` whose ``.exception()`` never sets ``exc_info`` on the record.
+
+    Why: structlog's own ``exception()`` proxies to ``logging.Logger.exception``,
+    and *that* hard-codes ``exc_info=True`` in the stdlib call — so
+    ``record.exc_info`` is populated with the live ``sys.exc_info()`` triple no
+    matter what the processor chain did to the event dict. Every root handler
+    then reads it: ``setup_logging`` installs on the ROOT logger and
+    ``worker_main`` calls it unconditionally, and Azure Monitor's
+    ``configure_azure_monitor()`` attaches its ``LoggingHandler`` alongside,
+    reads ``record.exc_info`` directly, and ships the raw ``str(exc)`` plus the
+    full traceback to the App Insights ``exceptions`` table — Postgres DETAIL
+    row values and all.
+
+    No processor can close that, because the leak is added *after* the chain
+    runs. Routing to ``error`` instead keeps ``exc_info`` inside the event dict,
+    where :func:`_render_exc_info_safe` replaces it with scrubbed
+    ``exception.*`` fields before the record exists.
+    """
+
+    def exception(self, event: str | None = None, *args: object, **kw: object) -> object:
+        kw.setdefault("exc_info", True)
+        return self._proxy_to_logger("error", event, *args, **kw)  # type: ignore[arg-type]  # Why: structlog types *event_args as str; callers pass logging-style args of any type, matching the base class's own Any-typed signature.
+
+
 def _scrub_exception_fields(
     logger: object, method: str, event_dict: structlog.types.EventDict
 ) -> structlog.types.EventDict:
@@ -149,12 +174,20 @@ def setup_logging(
         # Last before the formatter handoff: final scrub of exception-bearing
         # fields so both renderers (and any future one) see scrubbed values.
         _safe_processor_wrapper(_scrub_exception_fields),
+        # SHARED, not formatter-local: whatever survives this chain becomes
+        # ``record.msg`` and is read by every root handler, not just TaskQ's.
+        # A raw exception object or ``sys.exc_info()`` triple left on the event
+        # dict is therefore an export surface for any vendor handler that
+        # stringifies values. Console pays for this with a plain scrubbed
+        # ``exception.stacktrace`` field instead of ConsoleRenderer's pretty
+        # traceback — the same record reaches the same vendor handlers whichever
+        # renderer the operator picked, so the dev view does not get an
+        # unredacted exemption.
+        _safe_processor_wrapper(_render_exc_info_safe),
     ]
 
     formatter_processors: list[structlog.types.Processor]
     if log_format == "console":
-        # Console keeps ``exc_info`` intact: ``ConsoleRenderer`` renders the
-        # pretty traceback itself (its own redaction-free dev view).
         renderer: structlog.types.Processor = structlog.dev.ConsoleRenderer()
         formatter_processors = [
             structlog.stdlib.ProcessorFormatter.remove_processors_meta,
@@ -166,8 +199,11 @@ def setup_logging(
         renderer = structlog.processors.JSONRenderer(serializer=structlog_serializer)
         formatter_processors = [
             structlog.stdlib.ProcessorFormatter.remove_processors_meta,
-            # Before the renderer so orjson never sees the raw tuple; NOT in the
-            # shared chain, which the console formatter also consumes.
+            # Still needed for FOREIGN records: ``ProcessorFormatter`` lifts
+            # their ``record.exc_info`` onto the event dict here, after the
+            # shared chain has run, and orjson drops the whole line on a raw
+            # tuple. Idempotent for TaskQ's own records — ``exc_info`` is
+            # already gone by then.
             _safe_processor_wrapper(_render_exc_info_safe),
             renderer,
         ]
@@ -177,7 +213,7 @@ def setup_logging(
             *shared_processors,
             structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
         ],
-        wrapper_class=structlog.stdlib.BoundLogger,
+        wrapper_class=_ExcInfoSafeBoundLogger,
         logger_factory=structlog.stdlib.LoggerFactory(),
         cache_logger_on_first_use=True,
     )

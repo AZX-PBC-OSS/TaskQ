@@ -340,14 +340,18 @@ def test_logging_configured_flag_set_after_setup() -> None:
     assert structlog_mod._logging_configured is True
 
 
-# ── wrapper_class is structlog.stdlib.BoundLogger ──────────────────
+# ── wrapper_class is a structlog.stdlib.BoundLogger ──────────────────
 
 
 def test_configured_wrapper_class_is_stdlib_bound_logger() -> None:
     obs_mod.setup_logging()
 
     cfg = structlog.get_config()
-    assert cfg["wrapper_class"] is structlog.stdlib.BoundLogger
+    # A SUBCLASS, not the class itself: `_ExcInfoSafeBoundLogger` overrides
+    # `.exception()` so it never reaches `logging.Logger.exception`, which
+    # hard-codes `exc_info=True` onto the record for every root handler to
+    # read. The stdlib-bridge contract this test guards is the base class.
+    assert issubclass(cfg["wrapper_class"], structlog.stdlib.BoundLogger)
 
 
 # ── cache_logger_on_first_use is True ────────────────────────────────────
