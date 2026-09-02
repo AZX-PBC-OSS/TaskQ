@@ -475,7 +475,16 @@ async def _archive_expiry_loop(ctx: SweepContext, shutdown: asyncio.Event) -> No
 async def _queue_depth_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
     schema = ctx.deps.settings.schema_name
     if not _IDENT_RE.match(schema):
-        log.warning("invalid-schema-skipped", schema=schema)
+        # Why error, not warning: this returns, permanently muting the
+        # sampler for the process lifetime while the worker keeps running
+        # normally — a silent loss of a safety net, not a skipped tick
+        # (same rationale as the stranded-jobs detector).
+        log.error(
+            "queue-depth-sampler-disabled",
+            kind="queue_depth_sampler_disabled",
+            schema=schema,
+            reason="schema name failed identifier validation",
+        )
         return
     sql = _QUERY_QUEUE_DEPTH_SQL_TEMPLATE.format(schema=schema)
     while not shutdown.is_set():
@@ -501,7 +510,14 @@ async def _queue_depth_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
 async def _reservation_slots_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
     schema = ctx.deps.settings.schema_name
     if not _IDENT_RE.match(schema):
-        log.warning("invalid-schema-skipped", schema=schema)
+        # Why error, not warning: same permanently-muted-sampler rationale
+        # as _queue_depth_loop above.
+        log.error(
+            "reservation-slots-sampler-disabled",
+            kind="reservation_slots_sampler_disabled",
+            schema=schema,
+            reason="schema name failed identifier validation",
+        )
         return
     sql = _QUERY_RESERVATION_SLOTS_SQL_TEMPLATE.format(schema=schema)
     while not shutdown.is_set():
