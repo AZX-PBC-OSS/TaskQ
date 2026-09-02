@@ -692,7 +692,7 @@ class PostgresBackend:
                 _cancel_notify_sent_counter.add(len(notify_targets), {"schema": self._schema_name})
             except Exception:
                 logger.warning(
-                    "cancel_where_notify_failed",
+                    "cancel-where-notify-failed",
                     notify_count=len(notify_targets),
                     exc_info=True,
                 )

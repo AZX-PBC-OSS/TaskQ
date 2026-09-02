@@ -662,7 +662,7 @@ async def test_password_callable_logs_provider_failure() -> None:
     with structlog.testing.capture_logs() as logs, pytest.raises(TimeoutError):
         await _pw(password_arg)
 
-    entry = next(log for log in logs if log["event"] == "pg_credential_refresh_failed")
+    entry = next(log for log in logs if log["event"] == "pg-credential-refresh-failed")
     assert entry["role"] == "pool"
     assert entry["error_type"] == "TimeoutError"
     assert entry["log_level"] == "error"

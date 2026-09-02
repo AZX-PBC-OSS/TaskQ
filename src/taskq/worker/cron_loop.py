@@ -281,7 +281,10 @@ async def fire_schedule(
                     "cron.auto_disabled",
                     {
                         "schedule_name": row["actor"],
-                        "last_error": str(exc),
+                        # Redacted for the same reason as set_status above: span
+                        # event attributes are exported to telemetry backends,
+                        # and str(exc) of a constraint violation quotes row values.
+                        "last_error": safe_exception_message(exc),
                         "failure_count": consecutive,
                     },
                 )
