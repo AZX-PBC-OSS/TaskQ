@@ -611,13 +611,32 @@ def register(router: APIRouter) -> None:
             }
         )
 
-        await rl_registry.reset(
-            bucket_name,
-            redis_client=redis_client,
-            pg_pool=pool,
-            clock=SystemClock(),
-            settings=rl_settings,
-        )
+        try:
+            await rl_registry.reset(
+                bucket_name,
+                redis_client=redis_client,
+                pg_pool=pool,
+                clock=SystemClock(),
+                settings=rl_settings,
+            )
+        except KeyError as exc:
+            # A keyed bucket a worker published to PG exists ONLY as a PG
+            # row in a standalone admin process — the registry has no
+            # primitive for it, so a reset is impossible here. The page
+            # still renders the reset button for such rows; answer it with
+            # an explanatory 404 instead of surfacing the KeyError as a 500.
+            logger.warning(
+                "rate-limit-reset-bucket-not-registered",
+                bucket_name=bucket_name,
+            )
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    f"Rate limit bucket {bucket_name!r} is not registered in this admin "
+                    "process (worker-published PG state only); reset it from a process "
+                    "that configures the bucket"
+                ),
+            ) from exc
 
         return RedirectResponse(url=f"{base_path}/rate-limits", status_code=303)
 

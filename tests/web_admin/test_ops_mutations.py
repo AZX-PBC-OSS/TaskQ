@@ -433,6 +433,24 @@ def test_rate_limit_reset_succeeds_when_enabled(monkeypatch: pytest.MonkeyPatch)
     assert resp.headers["location"].endswith("/rate-limits")  # pyright: ignore[reportUnknownMemberType]
 
 
+def test_rate_limit_reset_pg_only_bucket_is_not_a_500(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A keyed bucket a worker published to PG renders on the rate-limits
+    page (with its reset button) even in a standalone admin process whose
+    registry is empty — clicking reset on such a row must answer with a
+    clean, explanatory error, not the registry's raw KeyError as a 500."""
+    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
+    monkeypatch.setenv("TASKQ_ADMIN_UI_ALLOW_RATE_LIMIT_RESET", "true")
+    # The registry stays EMPTY — the bucket exists only as a PG row.
+    monkeypatch.setattr(rl_registry, "_rate_limits", {})
+    conn = _ScriptedConnection()
+    client = _make_app(_ScriptedPool(conn))
+    token = _get_csrf_token(client)
+    resp = client.post("/rate-limits/legacy-bucket/reset", data={"csrf_token": token})
+    assert resp.status_code != 500  # pyright: ignore[reportUnknownMemberType]
+    assert resp.status_code == 404  # pyright: ignore[reportUnknownMemberType]
+    assert "not registered in this admin process" in resp.text  # pyright: ignore[reportUnknownMemberType]
+
+
 # ── Rate-limits page ─────────────────────────────────────────────────────
 
 
