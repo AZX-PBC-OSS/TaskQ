@@ -18,7 +18,14 @@ from typing import Any, cast
 
 import orjson
 
-__all__ = ["dumps", "dumps_jsonb_str", "dumps_str", "loads", "structlog_serializer"]
+__all__ = [
+    "check_no_nul_str",
+    "dumps",
+    "dumps_jsonb_str",
+    "dumps_str",
+    "loads",
+    "structlog_serializer",
+]
 
 # orjson renders a NUL codepoint as exactly these six characters.
 _NUL_ESCAPE = "\\u0000"
@@ -111,6 +118,28 @@ def dumps_jsonb_str(value: Any, /) -> str:
             "store in a jsonb column; strip control characters before storing"
         )
     return text
+
+
+def check_no_nul_str(value: str, /, *, what: str = "value") -> None:
+    """Raise ``ValueError`` if *value* contains a NUL (U+0000) codepoint.
+
+    For callers binding plain text directly (a ``text`` or ``text[]``
+    parameter) rather than transiting jsonb, so :func:`dumps_jsonb_str`
+    doesn't apply. PostgreSQL rejects a NUL in a ``text`` value with
+    ``CharacterNotInRepertoireError`` (SQLSTATE 22021) -- a
+    ``PostgresError`` subclass, exactly like jsonb's
+    ``UntranslatableCharacterError`` that :func:`dumps_jsonb_str` guards
+    against, and it trips the same ``_TERMINAL_WRITE_INFRA_EXCEPTIONS``
+    misclassification: a permanent data defect read as transient infra
+    failure, so the job retries forever instead of failing. Raising a
+    ``ValueError`` here, before the value ever reaches the pool, keeps
+    that classification honest.
+    """
+    if "\x00" in value:
+        raise ValueError(
+            f"{what} contains a NUL character (U+0000), which PostgreSQL cannot "
+            "store in a text column; strip control characters before storing"
+        )
 
 
 def loads(data: bytes | bytearray | memoryview | str, /) -> Any:

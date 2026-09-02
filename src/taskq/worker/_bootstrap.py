@@ -672,7 +672,9 @@ async def _main(
                 )
                 for ref in actor_registry.values()
             ]
-            async with deps.dispatcher_pool.acquire() as conn:
+            async with deps.dispatcher_pool.acquire(
+                timeout=settings.dispatcher_command_timeout
+            ) as conn:
                 await sync_actor_config(
                     conn,
                     actor_configs,
@@ -725,7 +727,9 @@ async def _main(
         # other hard-required startup step in this function already does —
         # this is a deliberate consistency choice, not an oversight.
         try:
-            async with deps.dispatcher_pool.acquire() as conn:
+            async with deps.dispatcher_pool.acquire(
+                timeout=settings.dispatcher_command_timeout
+            ) as conn:
                 cap_rows = await conn.fetch(
                     f'SELECT name, max_concurrent FROM "{settings.schema_name}".queues '  # noqa: S608  # Why: schema validated at construction and re-checked above; asyncpg cannot bind identifiers.
                     f"WHERE name = ANY($1) AND max_concurrent IS NOT NULL",

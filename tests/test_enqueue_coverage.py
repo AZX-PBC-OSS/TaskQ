@@ -380,6 +380,48 @@ async def test_enqueue_batch_rejects_nul_in_tags_before_pool_use() -> None:
         await _enqueue_batch(None, _SQL, _SCHEMA_LABEL, clock, [args])  # type: ignore[arg-type]  # Why: validation must precede pool use
 
 
+# ── _enqueue / _enqueue_with_conn: NUL in tags rejected (single-job path) ──
+#
+# Unlike the batch path, single-job ``tags`` binds directly as
+# ``$21::text[]`` -- there is no jsonb transit, so ``dumps_jsonb_str``'s
+# guard does not run here. PostgreSQL rejects a NUL in ``text`` with
+# ``CharacterNotInRepertoireError`` (SQLSTATE 22021), a ``PostgresError``
+# subclass just like jsonb's ``UntranslatableCharacterError`` -- so without
+# a guard it hits the same infra-vs-data-defect misclassification trap.
+
+
+async def test_enqueue_rejects_nul_in_tags_before_pool_use() -> None:
+    """``_enqueue`` validates tags before ``pool.acquire()`` -- passing
+    ``pool=None`` proves the guard fires before the pool is ever touched."""
+    clock = FakeClock(_NOW)
+    args = replace(_make_args(), tags=("bad\x00tag",))
+    with pytest.raises(ValueError, match="NUL"):
+        await _enqueue(None, _SQL, _SCHEMA_LABEL, clock, args)  # type: ignore[arg-type]  # Why: validation must precede pool use
+
+
+async def test_enqueue_with_conn_rejects_nul_in_tags_before_query() -> None:
+    """``_enqueue_with_conn`` validates tags before running any query on the
+    caller-owned connection -- passing ``conn=None`` proves the guard fires
+    before the connection is ever used."""
+    clock = FakeClock(_NOW)
+    args = replace(_make_args(), tags=("bad\x00tag",))
+    with pytest.raises(ValueError, match="NUL"):
+        await _enqueue_with_conn(None, _SQL, _SCHEMA_LABEL, clock, args)  # type: ignore[arg-type]  # Why: validation must precede conn use
+
+
+async def test_enqueue_accepts_clean_tags() -> None:
+    """A tag list with no NUL is unaffected -- the guard is a pure prefilter
+    and the INSERT proceeds normally."""
+    rec = _Record(_full_record())
+    conn = _FakeEnqueueConn(fetchrow_map={"RETURNING": rec, "INSERT": rec})
+    args = replace(_make_args(), tags=("clean", "tags"))
+    clock = FakeClock(_NOW)
+
+    row = await _enqueue_on_conn(conn, _SQL, _SCHEMA_LABEL, clock, args)
+
+    assert isinstance(row, JobRow)
+
+
 # ── _enqueue_batch_fast: schedule_to_close_interval + result_ttl ────────
 
 

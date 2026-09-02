@@ -14,7 +14,7 @@ from uuid import UUID
 import structlog
 from asyncpg.exceptions import UniqueViolationError
 
-from taskq._json import dumps_jsonb_str
+from taskq._json import check_no_nul_str, dumps_jsonb_str
 from taskq.backend._protocol import (
     ConnLike,
     EnqueueArgs,
@@ -111,6 +111,22 @@ class _LegacyIdempotencyKeyConflictError(Exception):
             idempotency_scope=self.idempotency_scope,
             detail=self.detail,
         )
+
+
+def _validate_no_nul_tags(args: EnqueueArgs) -> None:
+    """Reject a NUL (U+0000) in any tag before it is ever bound to a query.
+
+    ``tags`` binds directly as ``$N::text[]`` on the single-job enqueue
+    path -- no jsonb transit, so :func:`~taskq._json.dumps_jsonb_str`'s
+    guard does not run for it. Without this, a NUL tag reaches Postgres as
+    ``CharacterNotInRepertoireError`` (SQLSTATE 22021), a ``PostgresError``
+    subclass indistinguishable from transient infra failure to
+    ``worker._handlers._TERMINAL_WRITE_INFRA_EXCEPTIONS``, so the job
+    would retry forever. Called by the pool-owning and connection-owning
+    entrypoints before either touches a connection.
+    """
+    for tag in args.tags:
+        check_no_nul_str(tag, what="tag")
 
 
 async def _enqueue_on_conn(
@@ -320,6 +336,7 @@ async def _enqueue_with_conn(
     clock: Clock,
     args: EnqueueArgs,
 ) -> JobRow:
+    _validate_no_nul_tags(args)
     try:
         return await _enqueue_on_conn(conn, sql, schema, clock, args)
     except _LegacyIdempotencyKeyConflictError as exc:
@@ -340,6 +357,7 @@ async def _enqueue(
     clock: Clock,
     args: EnqueueArgs,
 ) -> JobRow:
+    _validate_no_nul_tags(args)
     try:
         async with pool.acquire() as conn:
             async with conn.transaction():

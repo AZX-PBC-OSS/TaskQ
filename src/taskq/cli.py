@@ -436,7 +436,7 @@ async def _actor_config_list(settings: TaskQSettings) -> None:
     try:
         rows = await list_actor_configs(conn, schema=settings.schema_name)
     finally:
-        await conn.close()
+        await close_conn_bounded(conn, "actor-config-list", CLOSE_TIMEOUT_SECS)
     if not rows:
         typer.echo("no actor_config rows")
         return
@@ -458,7 +458,7 @@ async def _actor_config_get(settings: TaskQSettings, actor: str) -> None:
     try:
         row = await get_actor_config(conn, actor, schema=settings.schema_name)
     finally:
-        await conn.close()
+        await close_conn_bounded(conn, "actor-config-get", CLOSE_TIMEOUT_SECS)
     if row is None:
         typer.echo(f"no stored actor_config row for actor {actor!r}", err=True)
         raise typer.Exit(code=1)
@@ -588,7 +588,7 @@ async def _actor_config_set(
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from None
     finally:
-        await conn.close()
+        await close_conn_bounded(conn, "actor-config-set", CLOSE_TIMEOUT_SECS)
     if row is None:
         typer.echo(
             f"no stored actor_config row for actor {actor!r} — it must be registered by a "
@@ -655,7 +655,7 @@ async def _actor_config_deregister(
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=2) from None
     finally:
-        await conn.close()
+        await close_conn_bounded(conn, "actor-config-deregister", CLOSE_TIMEOUT_SECS)
 
     typer.echo(
         f"Deregistered actor {result.actor!r}:"
@@ -796,7 +796,7 @@ async def _actor_config_diff(
     try:
         rows = await list_actor_configs(conn, schema=settings.schema_name)
     finally:
-        await conn.close()
+        await close_conn_bounded(conn, "actor-config-diff", CLOSE_TIMEOUT_SECS)
     stored_by_actor = {row.actor: row for row in rows}
 
     names = sorted(set(registry) | set(stored_by_actor))
@@ -1273,7 +1273,7 @@ async def _queues_list(settings: TaskQSettings) -> None:
     try:
         rows = await list_queues(conn, schema=settings.schema_name)
     finally:
-        await conn.close()
+        await close_conn_bounded(conn, "queues-list", CLOSE_TIMEOUT_SECS)
     if not rows:
         typer.echo(
             "no configured queues (all queues run on defaults: "
@@ -1298,7 +1298,7 @@ async def _queues_get(settings: TaskQSettings, name: str) -> None:
     try:
         row = await get_queue(conn, name, schema=settings.schema_name)
     finally:
-        await conn.close()
+        await close_conn_bounded(conn, "queues-get", CLOSE_TIMEOUT_SECS)
     if row is None:
         typer.echo(
             f"queue {name!r} has no stored row; it runs on defaults "
@@ -1336,7 +1336,7 @@ async def _queues_set_mode(settings: TaskQSettings, name: str, mode: str) -> Non
             typer.echo(str(exc), err=True)
             raise typer.Exit(code=1) from exc
     finally:
-        await conn.close()
+        await close_conn_bounded(conn, "queues-set-mode", CLOSE_TIMEOUT_SECS)
     _print_queue_row(row)
 
 
@@ -1373,5 +1373,5 @@ async def _queues_set_max_concurrent(
             conn, name, max_concurrent, schema=settings.schema_name
         )
     finally:
-        await conn.close()
+        await close_conn_bounded(conn, "queues-set-max-concurrent", CLOSE_TIMEOUT_SECS)
     _print_queue_row(row)

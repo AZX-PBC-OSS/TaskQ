@@ -957,3 +957,38 @@ def test_sweep_loop_acquire_calls_pass_timeout_ast() -> None:
                 violations.append(f"{node.name}: line {call.lineno}")
 
     assert not violations, f"pool.acquire() call(s) missing timeout=: {violations}"
+
+
+def test_bootstrap_dispatcher_pool_acquire_calls_pass_timeout_ast() -> None:
+    """Structural backstop: every ``dispatcher_pool.acquire()`` call in
+    ``taskq.worker._bootstrap`` must pass a ``timeout=`` keyword argument.
+
+    This invariant has recurred three times: PR #67 fixed 8 sites, a 9th
+    was found during a later merge in ``_leader_sweeps.py``, and two more
+    turned up in ``_bootstrap.py`` -- a file that branch never touched.
+    Module-scope rather than restricted to functions named ``*_loop``
+    (like the sibling check above): bootstrap's acquire sites live inside
+    one large ``_main`` startup function, not per-concern loop functions,
+    so scoping by function-name suffix would miss them entirely.
+    """
+    import ast
+
+    import taskq.worker._bootstrap as bootstrap_mod
+
+    source = ast.parse(Path(bootstrap_mod.__file__).read_text())
+    violations: list[str] = []
+
+    for node in ast.walk(source):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if not (isinstance(func, ast.Attribute) and func.attr == "acquire"):
+            continue
+        target = func.value
+        if not (isinstance(target, ast.Attribute) and target.attr == "dispatcher_pool"):
+            continue
+        has_timeout = any(kw.arg == "timeout" for kw in node.keywords)
+        if not has_timeout:
+            violations.append(f"line {node.lineno}")
+
+    assert not violations, f"dispatcher_pool.acquire() call(s) missing timeout=: {violations}"
