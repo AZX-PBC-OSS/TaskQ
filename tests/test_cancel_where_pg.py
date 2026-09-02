@@ -159,9 +159,18 @@ class TestCancelWherePostgres:
             result = await cancel_task
 
             assert result.cancelled_directly == 0
+            assert result.cancel_requested == 1, (
+                "statement 2's fresh snapshot is the entire rationale of the "
+                "two-statement design: it must catch the job claimed between "
+                "the two statements and request cooperative cancel"
+            )
             updated = await backend.get(row.id)
             assert updated is not None
             assert updated.status == "running"
+            assert updated.cancel_phase == 1, (
+                "the concurrently-claimed job must land in cooperative "
+                "cancel (phase 1), not be clobbered to terminal 'cancelled'"
+            )
         finally:
             await deps.worker_pool.release(claim_conn)
 
