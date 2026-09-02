@@ -121,6 +121,10 @@ class ActorCapacityCache:
         self._read_timeout = read_timeout
         self._rows: dict[str, int | None] = {}
         self._refreshed_at: float | None = None
+        # True once a refresh has succeeded and been stored — independent
+        # of row count, because a successful read of an EMPTY
+        # actor_config table is still a snapshot (see _refresh).
+        self._has_snapshot = False
         self._epoch = 0
         self._lock = asyncio.Lock()
         self._backend_checked = False
@@ -152,12 +156,15 @@ class ActorCapacityCache:
                 # Why a metric and not just this log: a load-shedding gate that
                 # RELAXES precisely when the backend is degraded needs a signal
                 # an operator can alert on. `has_snapshot=False` is the
-                # materially worse case -- the first refresh at process start
-                # failed, so there is no stored data at all and every enqueue
-                # enforces the @actor literal instead of the operator's
-                # tightened max_pending, for a full TTL at a time, indefinitely
-                # while the backend stays sick.
-                has_snapshot = bool(self._rows)
+                # materially worse case -- no refresh has EVER succeeded, so
+                # there is no stored data at all and every enqueue enforces
+                # the @actor literal instead of the operator's tightened
+                # max_pending, for a full TTL at a time, indefinitely while
+                # the backend stays sick. It is tracked separately from the
+                # row count because a successful read of an empty
+                # actor_config table is a snapshot too: failing that reads
+                # as stale-serving, not as degraded-to-literal.
+                has_snapshot = self._has_snapshot
                 record_capacity_refresh_failure(has_snapshot=has_snapshot)
                 logger.warning(
                     "actor-capacity-cache-refresh-failed",
@@ -170,6 +177,7 @@ class ActorCapacityCache:
             else:
                 if epoch == self._epoch:
                     self._rows = rows
+                    self._has_snapshot = True
             if epoch != self._epoch:
                 # invalidate() fired while the read was in flight: the
                 # result may predate the change the caller wanted

@@ -21,9 +21,11 @@ boundary that had none at all:
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 
 import pytest
+import structlog.testing
 from pydantic import BaseModel
 
 from taskq import actor
@@ -35,6 +37,7 @@ from taskq.backend._protocol import (
     ScheduleCreateArgs,
 )
 from taskq.client._args import build_enqueue_args
+from taskq.client._capacity import ActorCapacityCache
 from taskq.testing.clock import FakeClock
 from taskq.testing.in_memory import InMemoryBackend
 from taskq.testing.jobs import make_enqueue_args
@@ -337,3 +340,45 @@ def test_schedule_create_args_clean_text_still_constructs() -> None:
     )
     assert args.name == "nightly"
     assert args.payload_factory == "make_report"
+
+
+# ── The capacity cache reports snapshot-ness from refresh success ───────
+#
+# ``has_snapshot = bool(self._rows)`` misread a SUCCESSFUL refresh of an
+# empty actor_config table as "no snapshot": the next refresh failure
+# then reported ``has_snapshot=False`` / ``degraded_to_literal=True`` — a
+# false alarm on the metric built to be alertable, and the wrong
+# stale-vs-literal distinction (empty-but-healthy is stale-serving, not
+# degraded).
+
+
+class _CapacityBackend:
+    """Backend double whose capacity read can fail on demand."""
+
+    def __init__(self, rows: dict[str, int] | None = None) -> None:
+        self.rows = rows or {}
+        self.fail = False
+
+    async def get_actor_max_pending(self) -> dict[str, int]:
+        if self.fail:
+            raise ConnectionError("pg unreachable")
+        return dict(self.rows)
+
+
+async def test_capacity_cache_empty_successful_snapshot_then_failure_reports_snapshot() -> None:
+    """A successful refresh of an empty actor_config table is still a
+    snapshot: the next refresh failure must report stale-serving, not the
+    materially-worse degraded-to-literal mode."""
+    backend = _CapacityBackend()  # healthy read that returns zero rows
+    cache = ActorCapacityCache(backend, ttl=0.01)
+
+    assert await cache.effective_max_pending("a", literal=10) == 10
+
+    backend.fail = True
+    await asyncio.sleep(0.02)  # let the TTL expire
+    with structlog.testing.capture_logs() as logs:
+        assert await cache.effective_max_pending("a", literal=10) == 10
+
+    entry = next(e for e in logs if e["event"] == "actor-capacity-cache-refresh-failed")
+    assert entry["has_snapshot"] is True
+    assert entry["degraded_to_literal"] is False
