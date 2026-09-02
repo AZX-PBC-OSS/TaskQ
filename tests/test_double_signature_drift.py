@@ -40,6 +40,19 @@ _TESTS_DIR: Final = Path(__file__).resolve().parent
 #: allowed" from "not yet detected".
 _NARROWER_BY_DESIGN: Final[dict[tuple[str, str], str]] = {
     (
+        "test_cli_credential_provider.py",
+        "redis.asyncio.Redis.from_url",
+    ): "Why: from_url takes the URL plus the whole Redis client kwarg surface. The "
+    "double records url + kwargs and models none of them; these tests assert which "
+    "credential path built the client, not how the client is configured.",
+    (
+        "test_cli_credential_provider.py",
+        "asyncpg.create_pool",
+    ): "Why: asyncpg.create_pool takes the DSN positionally plus ~25 connection "
+    "kwargs. These tests assert which credential path built the pool, so the double "
+    "records the kwargs it was given and models none of them; the CLI builds every "
+    "pool with keyword arguments only.",
+    (
         "test_cli_health.py",
         "asyncio.open_unix_connection",
     ): "Why: stdlib `limit` and **kwds are never passed by the CLI; the double takes "
