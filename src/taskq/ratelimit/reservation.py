@@ -53,7 +53,7 @@ SET job_id            = $2,
     acquired_at       = clock_timestamp(),
     lease_expires_at  = clock_timestamp() + $4 * INTERVAL '1 second'
 WHERE (bucket_name, slot_index) IN (SELECT $1, slot_index FROM free_slot)
-RETURNING slot_index"""
+RETURNING slot_index, acquired_at"""
 
 _RELEASE_SQL_TEMPLATE = """\
 UPDATE "{schema}".reservation_slots
@@ -64,6 +64,14 @@ SET job_id            = NULL,
 WHERE bucket_name       = $1
   AND slot_index        = $2
   AND held_by_worker_id = $3"""
+
+# Fenced form: only the lease that stamped ``acquired_at`` may free the slot.
+# Built from the unfenced template so the two can never drift apart.
+_RELEASE_FENCED_SQL_TEMPLATE = (
+    _RELEASE_SQL_TEMPLATE
+    + """
+  AND acquired_at       = $4"""
+)
 
 _SYNC_EXISTING_SQL_TEMPLATE = """\
 SELECT slot_index FROM "{schema}".reservation_slots
@@ -90,6 +98,53 @@ WHERE bucket_name = $1
   AND job_id IS NOT NULL
   AND (lease_expires_at >= clock_timestamp() OR lease_expires_at IS NULL)
 ORDER BY slot_index"""
+
+
+class SlotLease(int):
+    """A slot index that also carries the fence identifying its exact lease.
+
+    The value IS the ``slot_index`` — it subclasses ``int`` so every existing
+    use (ordering, equality, ``$N`` binding, dict keys, logging) is unchanged
+    and the token rides along the acquire→release round trip untouched, even
+    through :class:`~taskq.ratelimit.composition.ReservationHandle`, which
+    stores it as its ``slot_index``.
+
+    ``acquired_at`` is the slot row's own acquisition timestamp, stamped by the
+    same clock that stores it (``clock_timestamp()`` on PG, the injected
+    :class:`~taskq.backend.clock.Clock` in memory).  It identifies the LEASE
+    rather than the holder: a job id cannot, because a retry reuses the same
+    job row, and a worker id cannot, because the same worker is a plausible
+    target for the redispatch.  A slot can only be re-acquired after it was
+    released (``acquired_at`` goes NULL) or after its lease expired (so the new
+    ``acquired_at`` is strictly later than ``lease_expires_at``, itself later
+    than the old ``acquired_at``) — in both cases the old fence can no longer
+    match.  Under a frozen ``FakeClock`` a release-then-reacquire within the
+    same instant is the one case two leases can share a fence; real time never
+    stands still, and the zombie case this fences against requires expiry,
+    which requires the clock to have moved.
+    """
+
+    # No __slots__: CPython rejects a nonempty __slots__ on a subtype of int
+    # (int is variable-length), so instances carry a __dict__.  One dict per
+    # in-flight reservation slot is not a budget anyone will notice.
+    acquired_at: datetime
+
+    def __new__(cls, slot_index: int, acquired_at: datetime) -> "SlotLease":
+        lease = super().__new__(cls, slot_index)
+        lease.acquired_at = acquired_at
+        return lease
+
+    def __repr__(self) -> str:
+        return f"SlotLease({int(self)}, acquired_at={self.acquired_at!r})"
+
+
+def _fence_of(slot_index: int) -> "datetime | None":
+    """The lease fence carried by *slot_index*, if it carries one.
+
+    A plain ``int`` (a hand-rolled release, e.g. from an admin tool or a test)
+    has no fence and releases on the holder gate alone, exactly as before.
+    """
+    return slot_index.acquired_at if isinstance(slot_index, SlotLease) else None
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,7 +195,7 @@ class _InMemorySlotTable:
         job_id: UUID,
         worker_id: UUID,
         lease: timedelta,
-    ) -> int:
+    ) -> SlotLease:
         now = self._clock.now()
         with self._lock:
             bucket = self._buckets.get(bucket_name)
@@ -158,7 +213,7 @@ class _InMemorySlotTable:
                         acquired_at=now,
                         lease_expires_at=now + lease,
                     )
-                    return i
+                    return SlotLease(i, now)
 
             raise ReservationUnavailable(bucket_name, DEFAULT_RESERVATION_BACKOFF)
 
@@ -168,12 +223,18 @@ class _InMemorySlotTable:
         slot_index: int,
         worker_id: UUID,
     ) -> bool:
+        """Free the slot held by *worker_id*.  Fenced when *slot_index* is a
+        :class:`SlotLease`: a stale lease's release frees nothing.
+        """
+        fence = _fence_of(slot_index)
         with self._lock:
             bucket = self._buckets.get(bucket_name)
             if bucket is None:
                 return False
             slot = bucket.get(slot_index)
             if slot is None or slot.worker_id != worker_id:
+                return False
+            if fence is not None and slot.acquired_at != fence:
                 return False
             bucket[slot_index] = _SlotState()
             return True
@@ -304,6 +365,7 @@ class ConcurrencyReservation:
         "_lease",
         "_lock_lease",
         "_name",
+        "_release_fenced_sql",
         "_release_sql",
         "_schema",
         "_slots",
@@ -350,6 +412,7 @@ class ConcurrencyReservation:
         self._ensure_sql = _ENSURE_SLOTS_SQL_TEMPLATE.format(schema=schema)
         self._acquire_sql = _ACQUIRE_SQL_TEMPLATE.format(schema=schema)
         self._release_sql = _RELEASE_SQL_TEMPLATE.format(schema=schema)
+        self._release_fenced_sql = _RELEASE_FENCED_SQL_TEMPLATE.format(schema=schema)
 
         if clock is not None:
             self._table: _InMemorySlotTable | None = _InMemorySlotTable(clock)
@@ -400,8 +463,14 @@ class ConcurrencyReservation:
         job_id: UUID,
         worker_id: UUID,
         pool: "asyncpg.Pool | None" = None,
-    ) -> int:
-        """Acquire a slot. Returns ``slot_index``.
+    ) -> SlotLease:
+        """Acquire a slot. Returns the acquired ``slot_index``.
+
+        The return value is a :class:`SlotLease` — an ``int`` that also
+        carries the fence :meth:`release` needs to tell this lease apart from
+        an earlier, expired one on the same slot.  Pass it back to
+        :meth:`release` (which is what ``ReservationHandle`` does) to get that
+        protection.
 
         When *pool* is ``None``, the in-memory table (``clock=`` at
         construction) is used.  Raises :class:`ReservationUnavailable` when
@@ -446,15 +515,15 @@ class ConcurrencyReservation:
             )
             raise ReservationUnavailable(self._name, DEFAULT_RESERVATION_BACKOFF)
 
-        slot_index: int = row["slot_index"]
+        slot_lease = SlotLease(row["slot_index"], row["acquired_at"])
         logger.debug(
             "reservation-acquired",
             bucket_name=self._name,
-            slot_index=slot_index,
+            slot_index=int(slot_lease),
             job_id=str(job_id),
             worker_id=worker_id,
         )
-        return slot_index
+        return slot_lease
 
     async def release(
         self,
@@ -463,6 +532,16 @@ class ConcurrencyReservation:
         pool: "asyncpg.Pool | None" = None,
     ) -> None:
         """Release slot. No-op if ``worker_id`` mismatch.
+
+        Also a no-op when *slot_index* is a :class:`SlotLease` whose fence no
+        longer matches the slot row — i.e. the caller is releasing a lease that
+        has since expired and been re-acquired.  Without that gate a zombie
+        attempt (heartbeats stalled, job reclaimed and redispatched, original
+        coroutine never cancelled) frees the slot its own LIVE successor
+        holds, and the bucket silently exceeds ``max_concurrent``: the job id
+        cannot discriminate, because a retry reuses the same job row, and
+        neither can the worker id, because the redispatch commonly lands on
+        the same worker.  A plain ``int`` releases unfenced, as before.
 
         When *pool* is ``None``, the in-memory table is used.
         """
@@ -482,13 +561,23 @@ class ConcurrencyReservation:
             )
             return
 
+        fence = _fence_of(slot_index)
         async with pool.acquire() as conn:
-            await conn.execute(
-                self._release_sql,
-                self._name,
-                slot_index,
-                worker_id,
-            )
+            if fence is None:
+                await conn.execute(
+                    self._release_sql,
+                    self._name,
+                    slot_index,
+                    worker_id,
+                )
+            else:
+                await conn.execute(
+                    self._release_fenced_sql,
+                    self._name,
+                    int(slot_index),
+                    worker_id,
+                    fence,
+                )
         logger.debug(
             "reservation-released",
             bucket_name=self._name,

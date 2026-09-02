@@ -47,6 +47,15 @@ class ReservationHandle:
 
     ``release()`` calls ``ConcurrencyReservation.release(slot_index, worker_id, pool)``
     which sets the slot row's ``job_id`` to ``NULL``.  Idempotent.
+
+    ``slot_index`` is whatever ``acquire()`` returned — in practice a
+    :class:`~taskq.ratelimit.reservation.SlotLease`, an ``int`` subclass that
+    also carries the lease fence.  Storing and handing it back unchanged is
+    what makes ``release()`` safe against a zombie attempt: a handle from a
+    lease that has since expired and been re-acquired frees nothing, so the
+    bucket cannot silently exceed ``max_concurrent``.  Anything that rebuilds
+    a handle must carry the value through as-is rather than re-deriving an
+    ``int`` from it.
     """
 
     name: str

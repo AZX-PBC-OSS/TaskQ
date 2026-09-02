@@ -603,6 +603,15 @@ async def consume_one_job(
 
     finally:
         _parent_tags_var.reset(_parent_tags_token)
+        # Why unconditional, even when the terminal write failed: the actor
+        # body has stopped either way, so the resource it was holding really
+        # is free — keeping the slot until its lease expires would throttle
+        # the bucket for no benefit. It is safe to release here because a
+        # reservation release is fenced to the exact lease acquired above
+        # (taskq.ratelimit.reservation.SlotLease): if this attempt's lease
+        # already expired and the redispatched attempt re-acquired the slot,
+        # this release frees nothing rather than stealing the live holder's
+        # slot.
         if acquired and rate_limit_registry is not None:
             try:
                 await asyncio.shield(
