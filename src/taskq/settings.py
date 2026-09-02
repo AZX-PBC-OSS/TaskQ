@@ -218,9 +218,13 @@ class TaskQSettings(DotEnvConfig):
     )
     environment: str | None = Field(
         default=None,
-        description="TASKQ_ENVIRONMENT. Deployment environment label. "
-        "Values 'dev' and 'development' suppress the unauthenticated-admin "
-        "WARNING; any other value (or None/empty) triggers it.",
+        description="TASKQ_ENVIRONMENT. Deployment environment label. The "
+        "unauthenticated-admin WARNING ('admin-ui-no-auth') fires in EVERY "
+        "environment whenever the admin UI is served without auth_dependency. "
+        "'dev' and 'development' additionally skip the fail-closed "
+        "RuntimeError (the WARNING then notes the absence is the dev "
+        "exemption); any other value (or None/empty) fails closed when "
+        "admin_ui_require_auth is True.",
     )
     admin_max_sse_connections: int = Field(
         default=50,
