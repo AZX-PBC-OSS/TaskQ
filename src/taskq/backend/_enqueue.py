@@ -52,6 +52,12 @@ logger: structlog.stdlib.BoundLogger = get_logger(__name__)
 
 _SINGLETON_CONSTRAINT_NAME = "jobs_singleton_uniq"
 
+#: Serializes the unique_for preflight-then-insert for one
+#: (schema, actor, identity_key). No schema interpolation, so it is not a
+#: SqlTemplates entry; see the call site for why this is a lock and not an
+#: index.
+_UNIQUE_FOR_LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))"
+
 # The old single-column idempotency index, still present alongside the new
 # composite one during the rolling-deploy window between
 # 01.00.03_01_pre_idempotency_scope.sql and
@@ -126,8 +132,45 @@ async def _enqueue_on_conn(
     count, INSERT, idempotency-key SELECT on conflict, and pg_notify.
     Does NOT acquire from ``worker_pool`` and does NOT open a
     transaction — the caller is responsible for both.
+
+    The unique_for single-flight guarantee depends on that transaction: the
+    advisory lock below is transaction-scoped, so on a caller-supplied
+    connection with no open transaction it is released at statement end and
+    the preflight is advisory only. That is the same connection on which the
+    caller has already taken responsibility for atomicity.
     """
     if args.unique_for is not None and args.identity_key is not None:
+        # Why a lock at all: what follows is a check-then-insert. Under READ
+        # COMMITTED two dispatchers enqueuing the same (actor, identity_key)
+        # both run the preflight before either commits, both see nothing, and
+        # both insert — two jobs sharing an identity_key running at once,
+        # which is precisely what the feature exists to prevent. Measured: a
+        # warm pool and 100 concurrent enqueues produced 6 rows.
+        #
+        # Why not a partial unique index (the jobs_singleton_uniq shape):
+        #   1. identity_key is ALSO the serialization/fairness cohort key, and
+        #      actors without unique_for legitimately keep many active jobs
+        #      under one identity_key — jobs_identity_active_idx covers exactly
+        #      these columns and this predicate and is deliberately NOT unique.
+        #      A unique index would reject all of them.
+        #   2. unique_for is a WINDOW (created_at > clock_timestamp() - $n).
+        #      An index predicate must be IMMUTABLE, so it cannot express the
+        #      window and would keep rejecting long after it elapsed.
+        #   3. unique_states is per-actor configurable; one index predicate
+        #      cannot vary by actor.
+        # A lock, unlike an index, serializes exactly the callers that race
+        # and leaves the window and state-set semantics to the preflight.
+        #
+        # Transaction-scoped, not session-scoped: it releases on COMMIT with
+        # no unlock call to leak on an error path, and it is safe under
+        # PgBouncer transaction pooling. hashtextextended(name, 0) follows the
+        # convention already used for the prune and archive-expiry locks; a
+        # collision between two different identity keys costs a little
+        # needless serialization and never correctness.
+        await conn.execute(
+            _UNIQUE_FOR_LOCK_SQL,
+            f"taskq:unique_for:{schema}:{args.actor}:{args.identity_key}",
+        )
         existing_rec = await conn.fetchrow(
             sql.enqueue_unique_for_preflight,
             args.actor,
