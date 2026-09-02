@@ -300,15 +300,26 @@ SELECT id::text FROM "{schema}".cron_schedules
  WHERE actor = $1 AND enabled = true
 """.strip()
 
+# The FROM-subquery snapshot pattern (same as backend/_cancel_bulk.py): the
+# subquery captures each row's pre-cancel status — UPDATE ... RETURNING can
+# only see the new value — and the repeated status predicate on the target
+# re-evaluates rows concurrently modified since the snapshot (EPQ-safe).
 _DEREGISTER_CANCEL_PENDING_SQL = """
-UPDATE "{schema}".jobs
+UPDATE "{schema}".jobs AS j
    SET status = 'cancelled',
        finished_at = clock_timestamp(),
        error_class = 'ActorDeregistered',
        error_message = 'Job cancelled by actor deregistration (force=True)'
- WHERE actor = $1
-   AND status IN ('pending', 'scheduled')
-RETURNING id
+  FROM (
+      SELECT id, status AS prev_status
+        FROM "{schema}".jobs
+       WHERE actor = $1
+         AND status IN ('pending', 'scheduled')
+       ORDER BY id
+  ) AS prev
+ WHERE j.id = prev.id
+   AND j.status IN ('pending', 'scheduled')
+RETURNING j.id, prev.prev_status
 """.strip()
 
 _DEREGISTER_DISABLE_SCHEDULES_SQL = """
@@ -473,17 +484,26 @@ async def deregister_actor(
             )
             jobs_cancelled = len(cancelled_rows)
             if cancelled_rows:
-                detail = jsonb_param(
-                    {
-                        "from_state": "pending_or_scheduled",
-                        "to_state": "cancelled",
-                        "reason": "actor_deregistered",
-                    }
-                )
                 event_sql = INSERT_EVENT_SQL.format(schema=schema)
                 await conn.executemany(
                     event_sql,
-                    [(row["id"], "state_change", detail) for row in cancelled_rows],
+                    [
+                        (
+                            row["id"],
+                            "state_change",
+                            jsonb_param(
+                                {
+                                    # The row's real prior status, not a
+                                    # 'pending_or_scheduled' placeholder —
+                                    # same contract as _cancel_bulk.py.
+                                    "from_state": str(row["prev_status"]),
+                                    "to_state": "cancelled",
+                                    "reason": "actor_deregistered",
+                                }
+                            ),
+                        )
+                        for row in cancelled_rows
+                    ],
                 )
 
             disable_result = await conn.execute(

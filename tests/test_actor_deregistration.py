@@ -343,6 +343,47 @@ async def test_deregister_force_writes_job_events_on_cancel(
         assert detail["reason"] == "actor_deregistered"
 
 
+async def test_deregister_force_cancel_events_record_real_prev_status(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_schema: ModulePgSchema,
+) -> None:
+    """Each force-cancel state_change event must carry the job's actual
+    prior status — 'pending' vs 'scheduled' — the way every other cancel
+    path does (backend/_cancel_bulk.py captures prev_status per row), not
+    a synthetic 'pending_or_scheduled' that audit consumers cannot
+    distinguish."""
+    schema = module_pg_schema.schema_name
+    await sync_actor_config(
+        clean_pg_conn,
+        [ActorConfig(actor="prev_evt_actor", max_concurrent=5, queue="default")],
+        schema=schema,
+    )
+    pending_id = await _insert_job(clean_pg_conn, schema, actor="prev_evt_actor", status="pending")
+    scheduled_id = await _insert_job(
+        clean_pg_conn, schema, actor="prev_evt_actor", status="scheduled"
+    )
+
+    await deregister_actor(clean_pg_conn, "prev_evt_actor", force=True, schema=schema)
+
+    import json
+
+    for jid, expected_prev in ((pending_id, "pending"), (scheduled_id, "scheduled")):
+        events = await clean_pg_conn.fetch(
+            f"SELECT kind, detail::text AS detail "  # noqa: S608  # Why: schema validated by _IDENT_RE; jid is a test UUID.
+            f'  FROM "{schema}".job_events '
+            f" WHERE job_id = $1 "
+            f" ORDER BY occurred_at",
+            jid,
+        )
+        state_changes = [e for e in events if e["kind"] == "state_change"]
+        assert len(state_changes) == 1
+        detail = json.loads(state_changes[0]["detail"])
+        assert detail["from_state"] == expected_prev, (
+            f"job {jid} was {expected_prev} before the cancel; event says "
+            f"{detail.get('from_state')!r}"
+        )
+
+
 async def test_deregister_force_refuses_with_running_jobs(
     clean_pg_conn: asyncpg.Connection,
     module_pg_schema: ModulePgSchema,
