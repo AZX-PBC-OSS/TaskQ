@@ -2,8 +2,8 @@
 
 Covers job_attempts written inside terminal methods (not by
 external callers), job_events writes, cancel_phase
-preservation on mark_cancelled, mark_abandoned cancel_phase=2
-guard, write_cancel_request / write_cancel_escalation
+preservation on mark_cancelled, cancel-state clearing on retry,
+mark_abandoned cancel_phase=2 guard, write_cancel_request / write_cancel_escalation
 event rows, and WorkerOwnershipMismatch from mark_failed_or_retry.
 """
 
@@ -754,13 +754,28 @@ class TestWriteCancelEscalationEvents:
         assert row.cancel_phase == 0  # unchanged
 
 
-# ── Branch B: cancel_phase preserved on transient retry ───────────────
+# ── Branch B: cancel state cleared on transient retry ─────────────────
 
 
-class TestCancelPhasePreservedOnRetry:
-    """cancel_phase is preserved on Branch B (transient retry)."""
+class TestCancelPhaseClearedOnRetry:
+    """Branch B (transient retry) starts the next attempt with a clean slate.
 
-    async def test_cancel_phase1_survives_retry(self) -> None:
+    These previously asserted the opposite — that cancel_phase survived the
+    retry — which is what made a job permanently uncancellable: a retry reuses
+    the SAME job row, so the redispatched attempt was born at the phase the
+    failed attempt had reached.  At phase 2 the cancel controller's
+    PG-observation fast-advance jumps the local phase straight to FORCED
+    without ever calling task.cancel(), so nothing can cancel the new attempt
+    and phase-3 abandonment has no live escalation behind it.
+
+    Clearing matches the crash-reclaim sweep (_SWEEP_1_SQL) and isolate_self,
+    which have always reset both columns on their retry arm for exactly this
+    reason: "the next dispatch doesn't immediately re-cancel the retried job".
+    A caller whose cancel lost the race can still cancel the pending/scheduled
+    row, which the cancel path handles directly.
+    """
+
+    async def test_cancel_phase1_cleared_on_retry(self) -> None:
         backend = _make_backend()
         job_id, wid = await _enqueue_and_dispatch(backend, max_attempts=3)
         _set_cancel_phase(backend, job_id, 1)
@@ -777,11 +792,12 @@ class TestCancelPhasePreservedOnRetry:
             retry_delay=timedelta(seconds=10),
         )
         assert result.status == "scheduled"
-        assert result.cancel_phase == 1
+        assert result.cancel_phase == 0
+        assert result.cancel_requested_at is None
         assert result.locked_by_worker is None
         assert result.lock_expires_at is None
 
-    async def test_cancel_phase2_survives_retry(self) -> None:
+    async def test_cancel_phase2_cleared_on_retry(self) -> None:
         backend = _make_backend()
         job_id, wid = await _enqueue_and_dispatch(backend, max_attempts=3)
         _set_cancel_phase(backend, job_id, 2)
@@ -798,7 +814,8 @@ class TestCancelPhasePreservedOnRetry:
             retry_delay=timedelta(seconds=10),
         )
         assert result.status == "scheduled"
-        assert result.cancel_phase == 2
+        assert result.cancel_phase == 0
+        assert result.cancel_requested_at is None
 
 
 # ── progress_seq / progress_state plumb-through ───────────────────────
