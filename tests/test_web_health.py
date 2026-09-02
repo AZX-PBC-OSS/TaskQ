@@ -1,7 +1,5 @@
 """Tests for taskq.web.health: create_health_router FastAPI router."""
 
-import inspect
-import re
 from types import SimpleNamespace
 
 import asyncpg
@@ -16,6 +14,7 @@ from taskq.web.health import create_health_router
 from taskq.worker._watchdog import LoopLiveness
 from taskq.worker.health import build_ready_body, compute_health
 from taskq.worker.shutdown import ShutdownPhase
+from tests._import_discipline import imports_guarded_by_try, module_level_imports
 
 pytestmark = pytest.mark.asyncio
 
@@ -172,10 +171,24 @@ async def test_ready_503_when_pg_ping_fails() -> None:
 # ── Import discipline ─────────────────────────────────────────────────
 
 
-async def test_no_lazy_fastapi_import() -> None:
-    """Import discipline. Verify the module source does not contain a try/except import pattern."""
-    source = inspect.getsource(create_health_router)
-    assert not re.search(r"try\s*:\s*import\s+fastapi", source)
+def test_fastapi_is_a_hard_dependency_of_the_health_router() -> None:
+    """FastAPI must be imported outright, not behind a try/except.
+
+    A guarded import makes the dependency optional by construction: the except
+    arm decides what happens without it and the module still imports, so a
+    missing FastAPI surfaces as a health endpoint that quietly is not there
+    rather than as an ImportError at startup. Parsed rather than regexed —
+    the previous check only matched one particular spelling of the pattern and
+    would have missed `try:\n    from fastapi import ...`.
+    """
+    import taskq.web.health as health_mod
+
+    guarded = {name for name in imports_guarded_by_try(health_mod) if name.startswith("fastapi")}
+    assert not guarded, f"fastapi imported behind a try/except: {sorted(guarded)}"
+    assert any(
+        name == "fastapi" or name.startswith("fastapi.")
+        for name in module_level_imports(health_mod)
+    ), "fastapi must be imported at module level"
 
 
 # ── Helper-parity behavioural test ────────────────────────────────────

@@ -1,7 +1,6 @@
 """Tests for the SSE endpoint and template scaffold in taskq.web.admin.sse."""
 
 import asyncio
-import inspect
 from collections.abc import AsyncIterator, Callable
 from typing import Any
 
@@ -13,6 +12,7 @@ pytest.importorskip("jinja2")
 import taskq.web.admin.sse as _sse_mod
 from taskq.web.admin import create_router
 from taskq.web.admin.sse import _TOPIC_SEMAPHORES, _sse_generator
+from tests._import_discipline import couples_to_at_import_time, has_future_annotations
 
 from . import _StubPool
 
@@ -168,15 +168,16 @@ def test_sse_console_template_has_htmx_sse_attributes(
 
 
 def test_sse_no_worker_import() -> None:
-    """Nsse.py does not import from taskq.worker.*."""
-    source = inspect.getsource(_sse_mod)
-    assert "taskq.worker" not in source
+    """sse.py must not couple to taskq.worker at import time. Parsed rather
+    than grepped: a substring check also matches the name in a comment or a
+    docstring, and cannot tell a module-level import from a lazy one."""
+    assert couples_to_at_import_time(_sse_mod, "taskq.worker") == []
 
 
 def test_sse_no_future_annotations() -> None:
-    """sse.py has no from __future__ import annotations."""
-    source = inspect.getsource(_sse_mod)
-    assert "from __future__ import annotations" not in source
+    """FastAPI resolves handler annotations at runtime; PEP 563 stringifies
+    them and breaks dependency injection."""
+    assert has_future_annotations(_sse_mod) is False
 
 
 # ── SSE generator: keepalive-only path (no PG pool/schema) ──────────────

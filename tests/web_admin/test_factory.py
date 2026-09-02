@@ -1,6 +1,5 @@
 """Tests for taskq.web.admin: create_router factory function and related invariants."""
 
-import inspect
 from collections.abc import Callable
 from datetime import timedelta
 from typing import Any
@@ -21,8 +20,21 @@ import taskq.web.admin.queues as _queues_mod
 import taskq.web.admin.sse as _sse_mod
 import taskq.web.admin.workers as _workers_mod
 from taskq.web.admin import AdminBundle, create_router, setup_admin_state
+from tests._import_discipline import couples_to_at_import_time, has_future_annotations
 
 from . import _StubPool
+
+#: Every module in the admin package, checked as one set so a new module is
+#: covered by adding it here rather than by remembering to write two tests.
+_ADMIN_MODULES = (
+    _factory_mod,
+    _static_mod,
+    _jobs_mod,
+    _ops_mod,
+    _queues_mod,
+    _sse_mod,
+    _workers_mod,
+)
 
 # ── create_router returns APIRouter ────────────────────────────────────
 
@@ -242,45 +254,41 @@ def test_startup_behaviour_unchanged_by_the_warning_move(
 
 
 def test_no_worker_import() -> None:
-    """NThe package does not import from taskq.worker at module level.
+    """The admin package must not couple to ``taskq.worker`` at import time.
 
-    Lazy imports inside function bodies (e.g. ``rate_limits_page`` importing
-    ``WorkerSettings`` on-demand) are allowed — they avoid module-level coupling
-    and are only resolved when the handler is actually invoked.  The
-    ``inspect.getsource`` check cannot distinguish module-level from function-body
-    imports, so ``_ops_mod`` is excluded here.
+    Parsed, not grepped. The previous substring check could not tell a
+    module-level import from one inside a handler body, so ``ops.py`` — which
+    legitimately imports ``WorkerSettings`` lazily inside ``rate_limits_page``
+    — had to be excluded outright, losing the guarantee for the one module
+    that actually imports from taskq.worker. It is checked here like every
+    other module.
     """
-    for mod in (
-        _factory_mod,
-        _static_mod,
-        _queues_mod,
-        _jobs_mod,
-        _workers_mod,
-        # _ops_mod: contains a lazy import from taskq.worker.deps inside the
-        # rate_limits_page handler body, not at module level.  Excluded from
-        # this module-level import check — see docstring above.
-        _sse_mod,
-    ):
-        source = inspect.getsource(mod)
-        assert "taskq.worker" not in source
+    offenders = {
+        mod.__name__: hits
+        for mod in _ADMIN_MODULES
+        if (hits := couples_to_at_import_time(mod, "taskq.worker"))
+    }
+    assert not offenders, (
+        "admin modules importing taskq.worker at module level:\n"
+        + "\n".join(f"  - {m}: {', '.join(h)}" for m, h in offenders.items())
+        + "\n\nImport it inside the handler body instead, so the admin package "
+        "stays importable without the worker."
+    )
 
 
 # ── No from __future__ import annotations ──────────────────────────────
 
 
 def test_no_future_annotations() -> None:
-    """No from __future__ import annotations."""
-    for mod in (
-        _factory_mod,
-        _static_mod,
-        _queues_mod,
-        _jobs_mod,
-        _workers_mod,
-        _ops_mod,
-        _sse_mod,
-    ):
-        source = inspect.getsource(mod)
-        assert "from __future__ import annotations" not in source
+    """FastAPI resolves handler annotations at runtime; PEP 563 stringifies
+    them and breaks dependency injection. Parsed rather than grepped so a
+    mention in a comment or docstring cannot trip it."""
+    offenders = sorted(mod.__name__ for mod in _ADMIN_MODULES if has_future_annotations(mod))
+    assert not offenders, (
+        "admin modules using `from __future__ import annotations`, which "
+        "stringifies the annotations FastAPI needs at runtime:\n"
+        + "\n".join(f"  - {m}" for m in offenders)
+    )
 
 
 # ── Public surface preserved ──────────────────────────────────────────
