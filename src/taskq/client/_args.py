@@ -3,10 +3,9 @@
 Extracted from :meth:`JobsClient.enqueue` so that both ``JobsClient`` and
 the future ``SubJobEnqueuer`` share the same validation and argument-assembly
 logic. The helper is pure: no I/O, no global state.
-The ``clock`` parameter is retained for signature compatibility with the
-clients that own an injected clock, but it stamps nothing anymore —
-"immediate" is expressed as ``scheduled_at=None`` and the backend's server
-stamps and decides it (single clock arbiter).
+Neither helper takes a clock: "immediate" is expressed as
+``scheduled_at=None`` and the backend's server stamps it and decides the
+status, so there is no app-clock value to inject (single clock arbiter).
 """
 
 import contextlib
@@ -27,7 +26,6 @@ from pydantic import BaseModel
 from taskq._ids import new_job_id
 from taskq.actor import ActorRef
 from taskq.backend._protocol import EnqueueArgs, IdempotencyKey, IdentityKey, QueueName
-from taskq.backend.clock import Clock
 from taskq.obs import record_published_message, safe_start_span
 from taskq.retry import time_budget_as_interval
 
@@ -117,14 +115,12 @@ def build_enqueue_args[P: BaseModel, R: BaseModel | None](
     unique_for: timedelta | None = None,
     unique_states: tuple[str, ...] | None = None,
     tags: list[str] | None = None,
-    clock: Clock,
 ) -> EnqueueArgs:
     """Validate inputs and construct :class:`EnqueueArgs`.
 
-    Pure function — no I/O, no global state. The clock parameter stamps
-    nothing (see the module docstring): ``scheduled_at`` passes through as
-    ``None`` when the caller wants "immediate", and the backend's server
-    stamps and decides it.
+    Pure function — no I/O, no global state and no clock (see the module
+    docstring): ``scheduled_at`` passes through as ``None`` when the caller
+    wants "immediate", and the backend's server stamps and decides it.
 
     ``unique_for`` and ``unique_states`` default to ``None`` so the
     caller can pass actor-declared values (``ref.unique_for``,
@@ -250,7 +246,6 @@ def build_enqueue_args[P: BaseModel, R: BaseModel | None](
 def build_batch_args(
     items: Sequence["EnqueueItem[Any, Any]"],
     batch_id: UUID,
-    clock: Clock,
     *,
     max_pending_by_actor: Mapping[str, int | None] | None = None,
 ) -> list[EnqueueArgs]:
@@ -289,7 +284,6 @@ def build_batch_args(
             start_to_close=item.start_to_close,
             max_pending=item_max_pending,
             tags=item.tags,
-            clock=clock,
         )
         # Stamp batch_id AFTER build_enqueue_args, which strips any
         # caller-supplied batch_id as a security boundary (H5).

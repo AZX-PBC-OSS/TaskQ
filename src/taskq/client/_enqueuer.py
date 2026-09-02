@@ -189,7 +189,6 @@ class SubJobEnqueuer:
                 unique_for=unique_for,
                 unique_states=unique_states,
                 max_pending=effective_max_pending,
-                clock=self._clock,
             )
             if _batch_id is not None:
                 # H5: stamp batch_id AFTER build_enqueue_args, which strips
@@ -328,7 +327,7 @@ class SubJobEnqueuer:
                         ref.name, ref.max_pending
                     )
             args_list = build_batch_args(
-                items, resolved_batch_id, self._clock, max_pending_by_actor=effective_mp
+                items, resolved_batch_id, max_pending_by_actor=effective_mp
             )
 
             if from_loop_scope and self._backend.supports_transactional_simulation:

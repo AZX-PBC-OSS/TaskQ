@@ -363,7 +363,6 @@ class JobsClient:
                 heartbeat_timeout=heartbeat_timeout,
                 max_pending=effective_max_pending,
                 tags=tags,
-                clock=self._clock,
             )
             span.set_attribute("messaging.message.id", str(args.id))
             if ref.unique_for is not None and args.identity_key is None:
@@ -528,9 +527,7 @@ class JobsClient:
         # Phase 3: Build per-item EnqueueArgs — carrying the resolved
         # limits so a per-item backend check enforces the same value the
         # aggregated check just admitted.
-        args_list = build_batch_args(
-            items, resolved_batch_id, self._clock, max_pending_by_actor=effective_mp
-        )
+        args_list = build_batch_args(items, resolved_batch_id, max_pending_by_actor=effective_mp)
 
         queue = items[0].actor_ref.queue
         has_batch_extras = failure_policy is not None or finalizer is not None
@@ -550,7 +547,6 @@ class JobsClient:
                 metadata=dict(finalizer.metadata),
                 start_to_close=finalizer.start_to_close,
                 tags=finalizer.tags,
-                clock=self._clock,
             )
 
         # Build BatchRow when failure_policy OR finalizer is set (C3:
@@ -717,7 +713,6 @@ class JobsClient:
                 metadata=dict(finalizer.metadata),
                 start_to_close=finalizer.start_to_close,
                 tags=finalizer.tags,
-                clock=self._clock,
             )
 
         # Build a lazy generator of EnqueueArgs, validating payloads on the fly.
@@ -751,7 +746,6 @@ class JobsClient:
                     metadata=dict(item.metadata),
                     start_to_close=item.start_to_close,
                     tags=item.tags,
-                    clock=self._clock,
                 )
                 # Stamp batch_id AFTER build_enqueue_args, which strips any
                 # caller-supplied batch_id as a security boundary (H5).
@@ -857,7 +851,7 @@ class JobsClient:
                             validation_errors=errs_v,
                         ) from exc
                     global_idx += 1
-                chunk_args = build_batch_args(chunk_items, resolved_batch_id, self._clock)
+                chunk_args = build_batch_args(chunk_items, resolved_batch_id)
                 chunk_rows = await self._backend.enqueue_batch(chunk_args, connection=connection)  # type: ignore[call-arg]  # Why: asyncpg.Connection is compatible with the protocol's connection parameter at runtime
                 for i, row in enumerate(chunk_rows):
                     all_handles.append(
@@ -1031,7 +1025,7 @@ class JobsClient:
             validate_actor_payload(ref.payload_type, item.payload, actor=ref.name)
 
         # Phase 2: Build per-item EnqueueArgs
-        args_list = build_batch_args(items, resolved_batch_id, self._clock)
+        args_list = build_batch_args(items, resolved_batch_id)
 
         # Phase 3: COPY FROM via backend
         count = await self._backend.enqueue_batch_fast(args_list, connection=connection)
