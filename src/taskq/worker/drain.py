@@ -94,9 +94,22 @@ async def drain_monitor_loop(
         worker_id=str(worker_id),
     )
 
+    # Worst-case seconds ONE iteration can consume: the count bound plus
+    # the trailing poll sleep. A slow-but-recovering count_active_jobs
+    # that spends the whole bound is a transient this loop rides out
+    # (TRANSIENT_PG_ERRORS below), so the liveness tick period — and the
+    # staleness budget derived from it — must cover that gap. Registering
+    # only the poll interval makes the budget equal the count bound (both
+    # max(5*poll, 10)); the gap exceeds it by one poll and detector 2
+    # force-exits a healthy worker for a single degraded query. Same
+    # timeout + period model as the leader-loop staleness invariant in
+    # settings.py.
+    count_bound = max(idle_poll_interval * 5, 10.0)
+    tick_period = count_bound + idle_poll_interval
+
     try:
         while not shutdown_event.is_set():
-            deps.liveness.tick("drain_monitor", period=idle_poll_interval)
+            deps.liveness.tick("drain_monitor", period=tick_period)
 
             # Check max_runtime
             if max_runtime is not None:
@@ -125,7 +138,7 @@ async def drain_monitor_loop(
             try:
                 queue_count = await asyncio.wait_for(
                     backend.count_active_jobs(queues),
-                    timeout=max(idle_poll_interval * 5, 10.0),
+                    timeout=count_bound,
                 )
             except TRANSIENT_PG_ERRORS:
                 _log.warning("drain-monitor-count-error", worker_id=str(worker_id))
