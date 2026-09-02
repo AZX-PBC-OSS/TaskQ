@@ -15,7 +15,7 @@ import random
 import secrets
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta
-from typing import Literal, NamedTuple, Protocol, Self
+from typing import Final, Literal, NamedTuple, Protocol, Self
 from uuid import UUID
 
 import structlog
@@ -128,6 +128,18 @@ class JobRetryState(NamedTuple):
 
 _production_rng = random.Random(secrets.randbits(128))  # noqa: S311  Why: random.Random is for timing jitter, not cryptography; seeded via secrets.randbits(128) by design
 
+# Why: an ``indefinite`` policy has no attempt ceiling, so ``attempt`` is
+# unbounded.  ``base_s * 2 ** (attempt - 1)`` builds an exact Python int and
+# raises OverflowError as soon as it stops being convertible to float
+# (attempt >= 1025), which would escape compute_backoff → classify →
+# _dispatch_exception and crash the failure path instead of retrying.
+# Clamping the exponent cannot change the curve: 2.0 ** 1023 is the largest
+# power of two a float holds, and timedelta's microsecond resolution puts the
+# smallest positive ``base`` at 1e-6 s, so ``base * 2 ** 1023 >= 8.9e301``
+# already dwarfs every timedelta-representable ``cap`` — min(cap_s, ...)
+# saturates at cap_s either way (and base == 0 yields 0 either way).
+_MAX_BACKOFF_EXPONENT: Final[int] = 1023
+
 
 def compute_backoff(
     policy: RetryPolicy,
@@ -165,7 +177,7 @@ def compute_backoff(
     cap_s = min(policy.cap.total_seconds(), max_retry_backoff.total_seconds())
 
     if policy.backoff == "exponential":
-        raw = min(cap_s, base_s * 2 ** (attempt - 1))
+        raw = min(cap_s, base_s * 2.0 ** min(attempt - 1, _MAX_BACKOFF_EXPONENT))
     elif policy.backoff == "linear":
         raw = min(cap_s, base_s * attempt)
     else:
