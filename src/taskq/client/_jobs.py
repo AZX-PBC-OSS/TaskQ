@@ -693,6 +693,14 @@ class JobsClient:
         no row and returns ``(0, None, 0)``. The atomic
         (no-connection) path is unaffected — its single transaction
         makes the batch row and the child jobs visible together.
+
+        **max_pending:** NOT enforced on this path — unlike
+        :meth:`enqueue_batch`, which runs one aggregated per-actor
+        check before the INSERT, neither the chunked
+        :meth:`Backend.enqueue_batch` inserts nor the atomic delegation
+        consult ``max_pending``. The caller is responsible for ensuring
+        the stream will not exceed actor limits (the same bulk-import
+        semantics :meth:`enqueue_batch_fast` discloses).
         """
         if chunk_size < 1 or chunk_size > MAX_BATCH_SIZE:
             raise ValueError(f"chunk_size must be in [1, {MAX_BATCH_SIZE}], got {chunk_size}")
