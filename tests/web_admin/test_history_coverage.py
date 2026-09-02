@@ -11,7 +11,7 @@ summary branches that the default empty ``StubPool`` cannot reach.
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
-from uuid import UUID, uuid4
+from uuid import UUID
 
 import pytest
 
@@ -21,6 +21,7 @@ pytest.importorskip("jinja2")
 from fastapi import FastAPI  # Why: importorskip guard must precede.
 from fastapi.testclient import TestClient
 
+from taskq._ids import new_uuid
 from taskq.web.admin import create_router, setup_admin_state
 from taskq.web.admin._history import (
     _CURSOR_NULL_SENTINEL,
@@ -92,7 +93,7 @@ def _history_job_row(
     finished_at: datetime | None = None,
 ) -> StubRecord:
     return StubRecord(
-        id=job_id or uuid4(),
+        id=job_id or new_uuid(),
         actor="send_email",
         queue="default",
         status=status,

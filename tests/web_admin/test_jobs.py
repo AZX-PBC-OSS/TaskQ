@@ -3,13 +3,13 @@
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from uuid import uuid4
 
 import pytest
 
 pytest.importorskip("fastapi")
 pytest.importorskip("jinja2")
 
+from taskq._ids import new_uuid
 from taskq.web.admin import create_router
 from taskq.web.admin.jobs import _normalize_row, _truncate_traceback
 
@@ -362,7 +362,7 @@ def test_job_detail_template_truncates_job_error_traceback(
 
 class TestNormalizeRow:
     def test_converts_uuid_to_string(self) -> None:
-        uid = uuid4()
+        uid = new_uuid()
         result = _normalize_row({"id": uid})
         assert isinstance(result["id"], str)
         assert result["id"] == str(uid)
@@ -381,7 +381,7 @@ class TestNormalizeRow:
         assert result == {"status": "running", "actor": "test"}
 
     def test_handles_mixed_row(self) -> None:
-        uid = uuid4()
+        uid = new_uuid()
         dt = datetime(2025, 6, 1, tzinfo=UTC)
         result = _normalize_row({"id": uid, "started_at": dt, "tags": ["a"], "name": "job1"})
         assert result["id"] == str(uid)

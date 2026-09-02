@@ -166,7 +166,7 @@ async def test_deregister_route_returns_409_when_actor_has_active_jobs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """POST deregister with an active job returns 409 Conflict."""
-    from uuid import uuid4
+    from taskq._ids import new_uuid
 
     schema = module_pg_schema.schema_name
     await _seed_actor_config(clean_pg_conn, schema, "blocked-actor", queue="default")
@@ -174,7 +174,7 @@ async def test_deregister_route_returns_409_when_actor_has_active_jobs(
     await clean_pg_conn.execute(
         f'INSERT INTO "{schema}".jobs (id, actor, queue, payload, status, max_attempts, retry_kind) '
         f"VALUES ($1, 'blocked-actor', 'default', '{{}}'::jsonb, 'pending'::\"{schema}\".job_status, 3, 'transient')",
-        uuid4(),
+        new_uuid(),
     )
     app = _make_admin_app(module_pg_pool, schema, monkeypatch, admin_actions_enabled=True)
 
@@ -197,11 +197,11 @@ async def test_deregister_route_with_force_cancels_pending_job(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """POST deregister with force=true cancels pending jobs through the admin route."""
-    from uuid import uuid4
+    from taskq._ids import new_job_id
 
     schema = module_pg_schema.schema_name
     await _seed_actor_config(clean_pg_conn, schema, "force-admin-actor", queue="default")
-    job_id = uuid4()
+    job_id = new_job_id()
     await clean_pg_conn.execute(
         f'INSERT INTO "{schema}".jobs (id, actor, queue, payload, status, max_attempts, retry_kind) '
         f"VALUES ($1, 'force-admin-actor', 'default', '{{}}'::jsonb, 'pending'::\"{schema}\".job_status, 3, 'transient')",
@@ -274,14 +274,14 @@ async def test_deregister_route_returns_409_for_enabled_schedules(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """POST deregister with an enabled schedule returns 409 Conflict."""
-    from uuid import uuid4
+    from taskq._ids import new_uuid
 
     schema = module_pg_schema.schema_name
     await _seed_actor_config(clean_pg_conn, schema, "sched-409-actor", queue="default")
     await clean_pg_conn.execute(
         f'INSERT INTO "{schema}".cron_schedules (id, actor, cron_expr, enabled, next_fire_at) '
         f"VALUES ($1, 'sched-409-actor', '*/5 * * * *', true, now())",
-        uuid4(),
+        new_uuid(),
     )
     app = _make_admin_app(module_pg_pool, schema, monkeypatch, admin_actions_enabled=True)
 

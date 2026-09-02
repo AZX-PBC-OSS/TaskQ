@@ -19,7 +19,7 @@ import pytest
 import pytest_asyncio
 from fastapi import FastAPI
 
-from taskq._ids import new_base62
+from taskq._ids import new_base62, new_job_id, new_uuid
 from taskq._json import dumps_str
 from taskq.backend.clock import SystemClock
 from taskq.backend.postgres import PostgresBackend
@@ -156,7 +156,7 @@ async def _seed_jobs(
 ) -> list[uuid.UUID]:
     ids: list[uuid.UUID] = []
     for _ in range(count):
-        jid = uuid.uuid4()
+        jid = new_job_id()
         ids.append(jid)
         sa = datetime.now(UTC)
         stc = sa + timedelta(seconds=60)
@@ -181,7 +181,7 @@ async def _seed_jobs(
 async def _seed_running_job(
     conn: asyncpg.Connection, *, queue: str, worker_id: uuid.UUID
 ) -> uuid.UUID:
-    jid = uuid.uuid4()
+    jid = new_job_id()
     expires_at = datetime.now(UTC) + timedelta(seconds=60)
     await conn.execute(
         f"""INSERT INTO {_SCHEMA_LABEL}.jobs (
@@ -204,7 +204,7 @@ async def _seed_running_job(
 
 
 async def _seed_worker(conn: asyncpg.Connection, *, hostname: str = "worker-host-1") -> uuid.UUID:
-    wid = uuid.uuid4()
+    wid = new_uuid()
     await conn.execute(
         f"INSERT INTO {_SCHEMA_LABEL}.workers (id, hostname, pid, queues) VALUES ($1, $2, $3, $4)",
         wid,
@@ -342,11 +342,10 @@ async def test_schedules_page_no_cron_table(pool: asyncpg.Pool, conn: asyncpg.Co
 async def test_schedules_page_renders_columns(pool: asyncpg.Pool, conn: asyncpg.Connection) -> None:
     """Schedules page renders actor, consecutive_failures, and last_fire_error."""
     import re
-    import uuid as _uuid
 
     from taskq._json import dumps_str
 
-    sid = _uuid.uuid4()
+    sid = new_uuid()
     next_fire = datetime.now(UTC) + timedelta(minutes=5)
     await conn.execute(
         f"""INSERT INTO {_SCHEMA_LABEL}.cron_schedules
@@ -477,7 +476,7 @@ async def test_jobs_relative_time_filter_is_measured_by_the_server_clock(
     rest, with the ages set relative to ``clock_timestamp()`` and never to this
     process's clock — created_at is server-written, so an app-anchored window
     would shift by the app-to-database skew."""
-    recent, stale = uuid.uuid4(), uuid.uuid4()
+    recent, stale = new_uuid(), new_uuid()
     for jid, age_secs in ((recent, 600.0), (stale, 18_000.0)):
         await conn.execute(
             f"""INSERT INTO {_SCHEMA_LABEL}.jobs (
@@ -797,7 +796,7 @@ async def test_post_queues_returns_405(pool: asyncpg.Pool) -> None:
 @pytest.mark.asyncio
 async def test_post_job_detail_returns_405(pool: asyncpg.Pool) -> None:
     """POST to /admin/jobs/{id} returns HTTP 405 Method Not Allowed."""
-    resp = await _post(_make_app(pool), f"/admin/jobs/{uuid.uuid4()}")
+    resp = await _post(_make_app(pool), f"/admin/jobs/{new_uuid()}")
     assert resp.status_code == 405
 
 
@@ -891,7 +890,7 @@ async def _seed_scheduled_job(
     delay: timedelta = timedelta(hours=1),
 ) -> uuid.UUID:
     """Seed a deferred job with scheduled_at in the future (status='scheduled')."""
-    jid = uuid.uuid4()
+    jid = new_job_id()
     sa = datetime.now(UTC) + delay
     stc = sa + timedelta(hours=1)
     await conn.execute(
@@ -1019,7 +1018,7 @@ async def test_cancel_button_visibility(pool: asyncpg.Pool, conn: asyncpg.Connec
 @pytest.mark.asyncio
 async def test_admin_archive_fallback(pool: asyncpg.Pool, conn: asyncpg.Connection) -> None:
     """GET /admin/jobs/{id} falls back to jobs_archive and renders Archived badge."""
-    jid = uuid.uuid4()
+    jid = new_job_id()
     now = datetime.now(UTC)
     archived_at_val = now - timedelta(hours=1)
     expire_at_val = now + timedelta(days=365)
@@ -1072,7 +1071,7 @@ async def test_admin_archive_fallback(pool: asyncpg.Pool, conn: asyncpg.Connecti
 @pytest.mark.asyncio
 async def test_admin_unknown_job_404(pool: asyncpg.Pool) -> None:
     """GET /admin/jobs/{unknown_uuid} returns 404 when absent from both tables."""
-    unknown_id = uuid.uuid4()
+    unknown_id = new_uuid()
     resp = await _get(_make_app(pool), f"/admin/jobs/{unknown_id}")
     assert resp.status_code == 404
 
@@ -1090,7 +1089,7 @@ async def _seed_schedule(
     last_fire_error: str | None = None,
     static_payload: dict[str, object] | None = None,
 ) -> uuid.UUID:
-    sid = uuid.uuid4()
+    sid = new_uuid()
     next_fire = datetime.now(UTC) + timedelta(minutes=5)
     metadata: dict[str, object] = {}
     if static_payload is not None:
@@ -1306,7 +1305,7 @@ async def test_schedule_run_now_enqueues_job(pool: asyncpg.Pool, conn: asyncpg.C
 async def test_schedule_skip_unknown_returns_404(pool: asyncpg.Pool) -> None:
     """POST /admin/schedules/{unknown}/skip returns 404."""
     app = _make_app(pool)
-    resp = await _post_schedule_action(app, uuid.uuid4(), "skip")
+    resp = await _post_schedule_action(app, new_uuid(), "skip")
     assert resp.status_code == 404
 
 
@@ -1317,7 +1316,7 @@ async def test_schedule_skip_unknown_returns_404(pool: asyncpg.Pool) -> None:
 async def test_schedule_run_unknown_returns_404(pool: asyncpg.Pool) -> None:
     """POST /admin/schedules/{unknown}/run returns 404."""
     app = _make_app(pool)
-    resp = await _post_schedule_action(app, uuid.uuid4(), "run")
+    resp = await _post_schedule_action(app, new_uuid(), "run")
     assert resp.status_code == 404
 
 

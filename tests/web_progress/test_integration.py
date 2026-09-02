@@ -38,7 +38,7 @@ pytest.importorskip("sse_starlette")
 import redis.asyncio as aioredis
 from fastapi import FastAPI, HTTPException
 
-from taskq._ids import new_base62
+from taskq._ids import new_base62, new_job_id, new_uuid
 from taskq.constants import progress_channel
 from taskq.migrate import apply_pending
 from taskq.progress._events import ProgressEvent
@@ -113,7 +113,7 @@ async def _seed_running_job(
     progress_state: dict[str, Any] | None = None,
     status: str = "running",
 ) -> uuid.UUID:
-    job_id = uuid.uuid4()
+    job_id = new_job_id()
     expires_at = datetime.now(UTC) + timedelta(seconds=300)
     ps = progress_state if progress_state is not None else {}
     async with pool.acquire() as conn:
@@ -136,7 +136,7 @@ async def _seed_running_job(
             3,
             "transient",
             status,
-            uuid.uuid4(),
+            new_uuid(),
             expires_at,
             _json_dumps(ps),
             progress_seq,
@@ -425,7 +425,7 @@ async def test_terminal_stream_closes(pool: asyncpg.Pool, redis_client: aioredis
 async def test_404_on_unknown_job_id(pool: asyncpg.Pool, redis_client: aioredis.Redis) -> None:
     """GET /jobs/api/job/<random-uuid>/progress/stream returns HTTP 404."""
     app = _make_app(pool, redis_client)
-    unknown = uuid.uuid4()
+    unknown = new_uuid()
     resp = await _get_json(app, f"/jobs/api/job/{unknown}/progress/stream")
     assert resp.status_code == 404
     assert "application/json" in resp.headers.get("content-type", "")

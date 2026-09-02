@@ -3,7 +3,6 @@
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from uuid import uuid4
 
 import pytest
 
@@ -12,6 +11,7 @@ pytest.importorskip("jinja2")
 
 from asyncpg.exceptions import UndefinedTableError
 
+from taskq._ids import new_uuid
 from taskq.web.admin import create_router
 from taskq.web.admin.ops import _fetch_redis_rl_state
 
@@ -808,7 +808,7 @@ def test_schedule_enable_redirects_on_success(monkeypatch: pytest.MonkeyPatch) -
     client = _make_client_with_pool(_ScriptedPool(conn))
     token = _get_csrf_token(client)
     resp = client.post(
-        f"/schedules/{uuid4()}/enable", data={"csrf_token": token}, follow_redirects=False
+        f"/schedules/{new_uuid()}/enable", data={"csrf_token": token}, follow_redirects=False
     )
     assert resp.status_code == 303
 
@@ -819,7 +819,7 @@ def test_schedule_enable_returns_404_when_not_found(monkeypatch: pytest.MonkeyPa
     conn = _ScriptedConn(execute_map={"SET enabled = true": "UPDATE 0"})
     client = _make_client_with_pool(_ScriptedPool(conn))
     token = _get_csrf_token(client)
-    resp = client.post(f"/schedules/{uuid4()}/enable", data={"csrf_token": token})
+    resp = client.post(f"/schedules/{new_uuid()}/enable", data={"csrf_token": token})
     assert resp.status_code == 404
 
 
@@ -830,7 +830,7 @@ def test_schedule_enable_redirects_when_table_missing(monkeypatch: pytest.Monkey
     client = _make_client_with_pool(_ScriptedPool(conn))
     token = _get_csrf_token(client)
     resp = client.post(
-        f"/schedules/{uuid4()}/enable", data={"csrf_token": token}, follow_redirects=False
+        f"/schedules/{new_uuid()}/enable", data={"csrf_token": token}, follow_redirects=False
     )
     assert resp.status_code == 303
     assert "cron+scheduling+not+installed" in resp.headers.get("location", "")
@@ -846,7 +846,7 @@ def test_schedule_disable_redirects_on_success(monkeypatch: pytest.MonkeyPatch) 
     client = _make_client_with_pool(_ScriptedPool(conn))
     token = _get_csrf_token(client)
     resp = client.post(
-        f"/schedules/{uuid4()}/disable", data={"csrf_token": token}, follow_redirects=False
+        f"/schedules/{new_uuid()}/disable", data={"csrf_token": token}, follow_redirects=False
     )
     assert resp.status_code == 303
 
@@ -857,7 +857,7 @@ def test_schedule_disable_returns_404_when_not_found(monkeypatch: pytest.MonkeyP
     conn = _ScriptedConn(execute_map={"SET enabled = false": "UPDATE 0"})
     client = _make_client_with_pool(_ScriptedPool(conn))
     token = _get_csrf_token(client)
-    resp = client.post(f"/schedules/{uuid4()}/disable", data={"csrf_token": token})
+    resp = client.post(f"/schedules/{new_uuid()}/disable", data={"csrf_token": token})
     assert resp.status_code == 404
 
 
@@ -868,7 +868,7 @@ def test_schedule_disable_redirects_when_table_missing(monkeypatch: pytest.Monke
     client = _make_client_with_pool(_ScriptedPool(conn))
     token = _get_csrf_token(client)
     resp = client.post(
-        f"/schedules/{uuid4()}/disable", data={"csrf_token": token}, follow_redirects=False
+        f"/schedules/{new_uuid()}/disable", data={"csrf_token": token}, follow_redirects=False
     )
     assert resp.status_code == 303
     assert "cron+scheduling+not+installed" in resp.headers.get("location", "")
@@ -898,7 +898,7 @@ def test_schedule_skip_redirects_on_success(monkeypatch: pytest.MonkeyPatch) -> 
     client = _make_client_with_pool(_ScriptedPool(conn))
     token = _get_csrf_token(client)
     resp = client.post(
-        f"/schedules/{uuid4()}/skip", data={"csrf_token": token}, follow_redirects=False
+        f"/schedules/{new_uuid()}/skip", data={"csrf_token": token}, follow_redirects=False
     )
     assert resp.status_code == 303
 
@@ -909,7 +909,7 @@ def test_schedule_skip_returns_404_when_not_found(monkeypatch: pytest.MonkeyPatc
     conn = _ScriptedConn(fetchrow_map={"cron_expr, timezone, next_fire_at": None})
     client = _make_client_with_pool(_ScriptedPool(conn))
     token = _get_csrf_token(client)
-    resp = client.post(f"/schedules/{uuid4()}/skip", data={"csrf_token": token})
+    resp = client.post(f"/schedules/{new_uuid()}/skip", data={"csrf_token": token})
     assert resp.status_code == 404
 
 
@@ -920,7 +920,7 @@ def test_schedule_skip_redirects_when_table_missing(monkeypatch: pytest.MonkeyPa
     client = _make_client_with_pool(_ScriptedPool(conn))
     token = _get_csrf_token(client)
     resp = client.post(
-        f"/schedules/{uuid4()}/skip", data={"csrf_token": token}, follow_redirects=False
+        f"/schedules/{new_uuid()}/skip", data={"csrf_token": token}, follow_redirects=False
     )
     assert resp.status_code == 303
     assert "cron+scheduling+not+installed" in resp.headers.get("location", "")
@@ -932,7 +932,7 @@ def test_schedule_skip_redirects_when_table_missing(monkeypatch: pytest.MonkeyPa
 def test_schedule_run_now_enqueues_job(monkeypatch: pytest.MonkeyPatch) -> None:
     """POST /schedules/{id}/run enqueues a job via the backend and returns 303."""
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
-    backend = StubBackend(job_row=_stub_job_row(uuid4()))
+    backend = StubBackend(job_row=_stub_job_row(new_uuid()))
     conn = _ScriptedConn(
         fetchrow_map={
             "payload_factory, enabled, metadata": StubRecord(
@@ -951,7 +951,7 @@ def test_schedule_run_now_enqueues_job(monkeypatch: pytest.MonkeyPatch) -> None:
     client = _make_client_with_pool(_ScriptedPool(conn), backend=backend)
     token = _get_csrf_token(client)
     resp = client.post(
-        f"/schedules/{uuid4()}/run", data={"csrf_token": token}, follow_redirects=False
+        f"/schedules/{new_uuid()}/run", data={"csrf_token": token}, follow_redirects=False
     )
     assert resp.status_code == 303
     assert len(backend.enqueue_calls) == 1
@@ -960,23 +960,23 @@ def test_schedule_run_now_enqueues_job(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_schedule_run_now_returns_404_when_not_found(monkeypatch: pytest.MonkeyPatch) -> None:
     """POST /schedules/{id}/run returns 404 when the schedule does not exist."""
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
-    backend = StubBackend(job_row=_stub_job_row(uuid4()))
+    backend = StubBackend(job_row=_stub_job_row(new_uuid()))
     conn = _ScriptedConn(fetchrow_map={"payload_factory, enabled, metadata": None})
     client = _make_client_with_pool(_ScriptedPool(conn), backend=backend)
     token = _get_csrf_token(client)
-    resp = client.post(f"/schedules/{uuid4()}/run", data={"csrf_token": token})
+    resp = client.post(f"/schedules/{new_uuid()}/run", data={"csrf_token": token})
     assert resp.status_code == 404
 
 
 def test_schedule_run_now_redirects_when_table_missing(monkeypatch: pytest.MonkeyPatch) -> None:
     """POST /schedules/{id}/run redirects with error when cron_schedules is missing."""
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
-    backend = StubBackend(job_row=_stub_job_row(uuid4()))
+    backend = StubBackend(job_row=_stub_job_row(new_uuid()))
     conn = _ScriptedConn(undefined_table_on={"cron_schedules"})
     client = _make_client_with_pool(_ScriptedPool(conn), backend=backend)
     token = _get_csrf_token(client)
     resp = client.post(
-        f"/schedules/{uuid4()}/run", data={"csrf_token": token}, follow_redirects=False
+        f"/schedules/{new_uuid()}/run", data={"csrf_token": token}, follow_redirects=False
     )
     assert resp.status_code == 303
     assert "cron+scheduling+not+installed" in resp.headers.get("location", "")
@@ -985,7 +985,7 @@ def test_schedule_run_now_redirects_when_table_missing(monkeypatch: pytest.Monke
 def test_schedule_run_now_redirects_on_payload_type_error(monkeypatch: pytest.MonkeyPatch) -> None:
     """POST /schedules/{id}/run redirects when the payload factory returns a non-dict type."""
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
-    backend = StubBackend(job_row=_stub_job_row(uuid4()))
+    backend = StubBackend(job_row=_stub_job_row(new_uuid()))
     conn = _ScriptedConn(
         fetchrow_map={
             "payload_factory, enabled, metadata": StubRecord(
@@ -1001,7 +1001,7 @@ def test_schedule_run_now_redirects_on_payload_type_error(monkeypatch: pytest.Mo
     client = _make_client_with_pool(_ScriptedPool(conn), backend=backend)
     token = _get_csrf_token(client)
     resp = client.post(
-        f"/schedules/{uuid4()}/run", data={"csrf_token": token}, follow_redirects=False
+        f"/schedules/{new_uuid()}/run", data={"csrf_token": token}, follow_redirects=False
     )
     assert resp.status_code == 303
     assert "factory+returned+unexpected+type" in resp.headers.get("location", "")
@@ -1012,7 +1012,7 @@ def test_schedule_run_now_redirects_on_payload_factory_error(
 ) -> None:
     """POST /schedules/{id}/run redirects when the payload factory import fails."""
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
-    backend = StubBackend(job_row=_stub_job_row(uuid4()))
+    backend = StubBackend(job_row=_stub_job_row(new_uuid()))
     conn = _ScriptedConn(
         fetchrow_map={
             "payload_factory, enabled, metadata": StubRecord(
@@ -1028,7 +1028,7 @@ def test_schedule_run_now_redirects_on_payload_factory_error(
     client = _make_client_with_pool(_ScriptedPool(conn), backend=backend)
     token = _get_csrf_token(client)
     resp = client.post(
-        f"/schedules/{uuid4()}/run", data={"csrf_token": token}, follow_redirects=False
+        f"/schedules/{new_uuid()}/run", data={"csrf_token": token}, follow_redirects=False
     )
     assert resp.status_code == 303
     assert len(backend.enqueue_calls) == 0
@@ -1039,7 +1039,7 @@ def test_schedule_run_now_redirects_when_actor_not_configured(
 ) -> None:
     """POST /schedules/{id}/run redirects when the actor is not in actor_config."""
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
-    backend = StubBackend(job_row=_stub_job_row(uuid4()))
+    backend = StubBackend(job_row=_stub_job_row(new_uuid()))
     conn = _ScriptedConn(
         fetchrow_map={
             "payload_factory, enabled, metadata": StubRecord(
@@ -1056,7 +1056,7 @@ def test_schedule_run_now_redirects_when_actor_not_configured(
     client = _make_client_with_pool(_ScriptedPool(conn), backend=backend)
     token = _get_csrf_token(client)
     resp = client.post(
-        f"/schedules/{uuid4()}/run", data={"csrf_token": token}, follow_redirects=False
+        f"/schedules/{new_uuid()}/run", data={"csrf_token": token}, follow_redirects=False
     )
     assert resp.status_code == 303
     assert "not+configured" in resp.headers.get("location", "")

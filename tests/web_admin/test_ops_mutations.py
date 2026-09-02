@@ -8,7 +8,6 @@ control fetch/fetchrow/execute results and force errors on demand.
 
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from uuid import uuid4
 
 import pytest
 from asyncpg.exceptions import UndefinedTableError
@@ -16,6 +15,7 @@ from asyncpg.exceptions import UndefinedTableError
 pytest.importorskip("fastapi")
 pytest.importorskip("jinja2")
 
+from taskq._ids import new_uuid
 from taskq.ratelimit.decision import RateLimitState
 from taskq.ratelimit.registry import registry as rl_registry
 from taskq.ratelimit.reservation import ConcurrencyReservation
@@ -105,7 +105,7 @@ def test_schedule_enable_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
     conn = _ScriptedConnection(execute_results=["UPDATE 1"])
     client = _make_app(_ScriptedPool(conn))
-    sid = uuid4()
+    sid = new_uuid()
     token = _get_csrf_token(client)
     resp = client.post(
         f"/schedules/{sid}/enable", data={"csrf_token": token}, follow_redirects=False
@@ -118,7 +118,7 @@ def test_schedule_enable_404_when_not_found(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
     conn = _ScriptedConnection(execute_results=["UPDATE 0"])
     client = _make_app(_ScriptedPool(conn))
-    sid = uuid4()
+    sid = new_uuid()
     token = _get_csrf_token(client)
     resp = client.post(f"/schedules/{sid}/enable", data={"csrf_token": token})
     assert resp.status_code == 404  # pyright: ignore[reportUnknownMemberType]
@@ -128,7 +128,7 @@ def test_schedule_enable_redirects_when_cron_not_installed(monkeypatch: pytest.M
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
     conn = _ScriptedConnection(raise_on={"execute": UndefinedTableError("missing")})
     client = _make_app(_ScriptedPool(conn))
-    sid = uuid4()
+    sid = new_uuid()
     token = _get_csrf_token(client)
     resp = client.post(
         f"/schedules/{sid}/enable", data={"csrf_token": token}, follow_redirects=False
@@ -144,7 +144,7 @@ def test_schedule_disable_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
     conn = _ScriptedConnection(execute_results=["UPDATE 1"])
     client = _make_app(_ScriptedPool(conn))
-    sid = uuid4()
+    sid = new_uuid()
     token = _get_csrf_token(client)
     resp = client.post(
         f"/schedules/{sid}/disable", data={"csrf_token": token}, follow_redirects=False
@@ -156,7 +156,7 @@ def test_schedule_disable_404_when_not_found(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
     conn = _ScriptedConnection(execute_results=["UPDATE 0"])
     client = _make_app(_ScriptedPool(conn))
-    sid = uuid4()
+    sid = new_uuid()
     token = _get_csrf_token(client)
     resp = client.post(f"/schedules/{sid}/disable", data={"csrf_token": token})
     assert resp.status_code == 404  # pyright: ignore[reportUnknownMemberType]
@@ -168,7 +168,7 @@ def test_schedule_disable_redirects_when_cron_not_installed(
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
     conn = _ScriptedConnection(raise_on={"execute": UndefinedTableError("missing")})
     client = _make_app(_ScriptedPool(conn))
-    sid = uuid4()
+    sid = new_uuid()
     token = _get_csrf_token(client)
     resp = client.post(
         f"/schedules/{sid}/disable", data={"csrf_token": token}, follow_redirects=False
@@ -190,7 +190,7 @@ def test_schedule_skip_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     conn = _ScriptedConnection(fetchrow_results=[row])
     client = _make_app(_ScriptedPool(conn))
-    sid = uuid4()
+    sid = new_uuid()
     token = _get_csrf_token(client)
     resp = client.post(f"/schedules/{sid}/skip", data={"csrf_token": token}, follow_redirects=False)
     assert resp.status_code == 303  # pyright: ignore[reportUnknownMemberType]
@@ -201,7 +201,7 @@ def test_schedule_skip_404_when_not_found(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
     conn = _ScriptedConnection(fetchrow_results=[None])
     client = _make_app(_ScriptedPool(conn))
-    sid = uuid4()
+    sid = new_uuid()
     token = _get_csrf_token(client)
     resp = client.post(f"/schedules/{sid}/skip", data={"csrf_token": token})
     assert resp.status_code == 404  # pyright: ignore[reportUnknownMemberType]
@@ -211,7 +211,7 @@ def test_schedule_skip_redirects_when_cron_not_installed(monkeypatch: pytest.Mon
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
     conn = _ScriptedConnection(raise_on={"fetchrow": UndefinedTableError("missing")})
     client = _make_app(_ScriptedPool(conn))
-    sid = uuid4()
+    sid = new_uuid()
     token = _get_csrf_token(client)
     resp = client.post(f"/schedules/{sid}/skip", data={"csrf_token": token}, follow_redirects=False)
     assert resp.status_code == 303  # pyright: ignore[reportUnknownMemberType]
@@ -226,9 +226,9 @@ def test_schedule_run_now_redirects_when_cron_not_installed(
 ) -> None:
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
     conn = _ScriptedConnection(raise_on={"fetchrow": UndefinedTableError("missing")})
-    backend = StubBackend(job_row=_stub_job_row(uuid4()))
+    backend = StubBackend(job_row=_stub_job_row(new_uuid()))
     client = _make_app(_ScriptedPool(conn), backend=backend)
-    sid = uuid4()
+    sid = new_uuid()
     token = _get_csrf_token(client)
     resp = client.post(f"/schedules/{sid}/run", data={"csrf_token": token}, follow_redirects=False)
     assert resp.status_code == 303  # pyright: ignore[reportUnknownMemberType]
@@ -238,9 +238,9 @@ def test_schedule_run_now_redirects_when_cron_not_installed(
 def test_schedule_run_now_404_when_not_found(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
     conn = _ScriptedConnection(fetchrow_results=[None])
-    backend = StubBackend(job_row=_stub_job_row(uuid4()))
+    backend = StubBackend(job_row=_stub_job_row(new_uuid()))
     client = _make_app(_ScriptedPool(conn), backend=backend)
-    sid = uuid4()
+    sid = new_uuid()
     token = _get_csrf_token(client)
     resp = client.post(f"/schedules/{sid}/run", data={"csrf_token": token})
     assert resp.status_code == 404  # pyright: ignore[reportUnknownMemberType]
@@ -261,9 +261,9 @@ def test_schedule_run_now_redirects_on_factory_type_error(
 
     row = StubRecord(actor="cleanup", payload_factory="pkg.factory", enabled=True, metadata={})
     conn = _ScriptedConnection(fetchrow_results=[row])
-    backend = StubBackend(job_row=_stub_job_row(uuid4()))
+    backend = StubBackend(job_row=_stub_job_row(new_uuid()))
     client = _make_app(_ScriptedPool(conn), backend=backend)
-    sid = uuid4()
+    sid = new_uuid()
     token = _get_csrf_token(client)
     resp = client.post(f"/schedules/{sid}/run", data={"csrf_token": token}, follow_redirects=False)
     assert resp.status_code == 303  # pyright: ignore[reportUnknownMemberType]
@@ -286,9 +286,9 @@ def test_schedule_run_now_redirects_on_factory_generic_error(
 
     row = StubRecord(actor="cleanup", payload_factory="pkg.factory", enabled=True, metadata={})
     conn = _ScriptedConnection(fetchrow_results=[row])
-    backend = StubBackend(job_row=_stub_job_row(uuid4()))
+    backend = StubBackend(job_row=_stub_job_row(new_uuid()))
     client = _make_app(_ScriptedPool(conn), backend=backend)
-    sid = uuid4()
+    sid = new_uuid()
     token = _get_csrf_token(client)
     resp = client.post(f"/schedules/{sid}/run", data={"csrf_token": token}, follow_redirects=False)
     assert resp.status_code == 303  # pyright: ignore[reportUnknownMemberType]
@@ -304,9 +304,9 @@ def test_schedule_run_now_redirects_when_actor_not_configured(
         actor="cleanup", payload_factory=None, enabled=True, metadata={"static_payload": {}}
     )
     conn = _ScriptedConnection(fetchrow_results=[schedule_row, None])
-    backend = StubBackend(job_row=_stub_job_row(uuid4()))
+    backend = StubBackend(job_row=_stub_job_row(new_uuid()))
     client = _make_app(_ScriptedPool(conn), backend=backend)
-    sid = uuid4()
+    sid = new_uuid()
     token = _get_csrf_token(client)
     resp = client.post(f"/schedules/{sid}/run", data={"csrf_token": token}, follow_redirects=False)
     assert resp.status_code == 303  # pyright: ignore[reportUnknownMemberType]
@@ -321,9 +321,9 @@ def test_schedule_run_now_succeeds_and_enqueues(monkeypatch: pytest.MonkeyPatch)
     )
     actor_config_row = StubRecord(queue="default", max_attempts=3, retry_kind="transient")
     conn = _ScriptedConnection(fetchrow_results=[schedule_row, actor_config_row])
-    backend = StubBackend(job_row=_stub_job_row(uuid4()))
+    backend = StubBackend(job_row=_stub_job_row(new_uuid()))
     client = _make_app(_ScriptedPool(conn), backend=backend)
-    sid = uuid4()
+    sid = new_uuid()
     token = _get_csrf_token(client)
     resp = client.post(f"/schedules/{sid}/run", data={"csrf_token": token}, follow_redirects=False)
     assert resp.status_code == 303  # pyright: ignore[reportUnknownMemberType]
@@ -551,7 +551,7 @@ def test_schedule_skip_400_when_no_future_fire_time(monkeypatch: pytest.MonkeyPa
     )
     conn = _ScriptedConnection(fetchrow_results=[row])
     client = _make_app(_ScriptedPool(conn))
-    sid = uuid4()
+    sid = new_uuid()
     token = _get_csrf_token(client)
     resp = client.post(f"/schedules/{sid}/skip", data={"csrf_token": token})
     assert resp.status_code == 400  # pyright: ignore[reportUnknownMemberType]

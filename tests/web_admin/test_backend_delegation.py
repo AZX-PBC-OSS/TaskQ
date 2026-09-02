@@ -7,13 +7,13 @@ backend is configured.
 
 from collections.abc import Callable
 from typing import Any
-from uuid import uuid4
 
 import pytest
 
 pytest.importorskip("fastapi")
 pytest.importorskip("jinja2")
 
+from taskq._ids import new_job_id, new_uuid
 from taskq.backend._protocol import JobId
 
 from . import StubBackend, _stub_job_row
@@ -34,7 +34,7 @@ def test_cancel_returns_503_without_backend(
     """POST /jobs/{id}/cancel returns 503 when no backend is configured."""
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
     client = make_app()
-    jid = uuid4()
+    jid = new_job_id()
     token = _get_csrf_token(client)
     resp = client.post(f"/jobs/{jid}/cancel", data={"csrf_token": token})
     assert resp.status_code == 503  # pyright: ignore[reportUnknownMemberType]
@@ -46,7 +46,7 @@ def test_retry_returns_503_without_backend(
     """POST /jobs/{id}/retry returns 503 when no backend is configured."""
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
     client = make_app()
-    jid = uuid4()
+    jid = new_job_id()
     token = _get_csrf_token(client)
     resp = client.post(f"/jobs/{jid}/retry", data={"csrf_token": token})
     assert resp.status_code == 503  # pyright: ignore[reportUnknownMemberType]
@@ -58,7 +58,7 @@ def test_schedule_run_returns_503_without_backend(
     """POST /schedules/{id}/run returns 503 when no backend is configured."""
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
     client = make_app()
-    sid = uuid4()
+    sid = new_uuid()
     token = _get_csrf_token(client)
     resp = client.post(f"/schedules/{sid}/run", data={"csrf_token": token})
     assert resp.status_code == 503  # pyright: ignore[reportUnknownMemberType]
@@ -73,7 +73,7 @@ def test_cancel_delegates_to_backend(
 ) -> None:
     """POST /jobs/{id}/cancel calls backend.get and backend.write_cancel_request."""
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
-    jid = uuid4()
+    jid = new_job_id()
     job_row = _stub_job_row(jid, status="pending")
     backend = StubBackend(job_row=job_row)
     client, backend = make_app_with_backend(backend=backend)
@@ -92,7 +92,7 @@ def test_cancel_returns_404_when_job_not_found(
 ) -> None:
     """POST /jobs/{id}/cancel returns 404 when backend.get returns None."""
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
-    jid = uuid4()
+    jid = new_job_id()
     backend = StubBackend(job_row=None)
     client, backend = make_app_with_backend(backend=backend)
 
@@ -108,7 +108,7 @@ def test_cancel_returns_409_for_terminal_job(
 ) -> None:
     """POST /jobs/{id}/cancel returns 409 when job is in a terminal state."""
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
-    jid = uuid4()
+    jid = new_job_id()
     job_row = _stub_job_row(jid, status="succeeded")
     backend = StubBackend(job_row=job_row)
     client, backend = make_app_with_backend(backend=backend)
@@ -125,7 +125,7 @@ def test_cancel_passes_reason_to_backend(
 ) -> None:
     """POST /jobs/{id}/cancel?reason=... passes the reason to the backend."""
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
-    jid = uuid4()
+    jid = new_job_id()
     job_row = _stub_job_row(jid, status="running")
     backend = StubBackend(job_row=job_row)
     client, backend = make_app_with_backend(backend=backend)
@@ -151,7 +151,7 @@ def test_retry_delegates_to_backend(
 ) -> None:
     """POST /jobs/{id}/retry calls backend.get and backend.retry_job."""
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
-    jid = uuid4()
+    jid = new_job_id()
     job_row = _stub_job_row(jid, status="failed")
     backend = StubBackend(job_row=job_row)
     client, backend = make_app_with_backend(backend=backend)
@@ -169,7 +169,7 @@ def test_retry_returns_404_when_job_not_found(
 ) -> None:
     """POST /jobs/{id}/retry returns 404 when backend.get returns None."""
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
-    jid = uuid4()
+    jid = new_job_id()
     backend = StubBackend(job_row=None)
     client, backend = make_app_with_backend(backend=backend)
 
@@ -185,7 +185,7 @@ def test_retry_returns_409_for_non_retryable_job(
 ) -> None:
     """POST /jobs/{id}/retry returns 409 when job is not in a retryable state."""
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
-    jid = uuid4()
+    jid = new_job_id()
     job_row = _stub_job_row(jid, status="pending")
     backend = StubBackend(job_row=job_row)
     client, backend = make_app_with_backend(backend=backend)
@@ -202,7 +202,7 @@ def test_retry_succeeds_for_crashed_job(
 ) -> None:
     """POST /jobs/{id}/retry succeeds for a crashed job."""
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
-    jid = uuid4()
+    jid = new_job_id()
     job_row = _stub_job_row(jid, status="crashed")
     backend = StubBackend(job_row=job_row)
     client, backend = make_app_with_backend(backend=backend)
@@ -219,7 +219,7 @@ def test_retry_succeeds_for_cancelled_job(
 ) -> None:
     """POST /jobs/{id}/retry succeeds for a cancelled job."""
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
-    jid = uuid4()
+    jid = new_job_id()
     job_row = _stub_job_row(jid, status="cancelled")
     backend = StubBackend(job_row=job_row)
     client, backend = make_app_with_backend(backend=backend)
