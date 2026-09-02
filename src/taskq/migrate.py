@@ -593,11 +593,19 @@ async def apply_pending(
         if m.phase == "post" and m.version in pre_versions:
             pre_key = f"{m.version}:pre"
             if pre_key not in eligible_keys:
-                raise ValueError(
+                exc = ValueError(
                     f"migration {m.key} cannot be applied before its pre-phase "
                     f"counterpart {pre_key}. Run `taskq migrate up --phase pre` "
                     f"(or a plain `taskq migrate up`) first."
                 )
+                # Why tag: this raises BEFORE the per-migration loop, so the
+                # loop's except-clause tagging never runs and the diagnosis
+                # would fall back to the first-unrecorded heuristic — which
+                # blames an unrelated, earlier-version file under --phase.
+                # Same mechanism the loop uses (tag, not wrap) so the
+                # caller-visible exception type is unchanged.
+                exc.__dict__["taskq_failed_migration"] = m
+                raise exc
         eligible_keys.add(m.key)
 
     # The ledger must be able to record how each migration runs. An existing

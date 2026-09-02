@@ -238,6 +238,44 @@ async def test_apply_pending_tags_exception_from_no_transaction_statement(
     assert getattr(excinfo.value, "taskq_failed_migration", None) is failing
 
 
+# ── phase-ordering guard: failure-report attribution ────────────────────
+
+
+async def test_phase_guard_failure_report_names_offending_migration(
+    monkeypatch: Any,
+) -> None:
+    """``migrate up --phase post`` on a stale schema trips the ordering
+    guard BEFORE the per-migration loop, so its ValueError carries no
+    ``taskq_failed_migration`` tag and the diagnosis fell back to the
+    first-unrecorded heuristic — the report named the pre_initial FILE
+    while the headline named the post VIOLATION. The guard knows the
+    offending migration; it must tag it (the loop's mechanism) so the
+    report is self-consistent."""
+    _patch_discover(monkeypatch, _two_pair_migrations())
+    conn = _FakeMigrateConn(applied=set())  # stale schema: nothing applied yet
+
+    with pytest.raises(ValueError, match="cannot be applied before its pre-phase") as excinfo:
+        await migrate_mod.apply_pending(
+            conn,
+            schema="taskq",
+            phase="post",  # type: ignore[arg-type]
+        )
+
+    d = await migrate_mod.diagnose_apply_failure(  # type: ignore[arg-type]  # Why: _FakeMigrateConn stands in for asyncpg.Connection; the diagnosis reads only fetchval/fetch.
+        conn, "taskq", excinfo.value
+    )
+
+    assert d.failed_filename == "01.00.03_01_post_fabricated.sql", (
+        "the report must name the offending post migration, not the first "
+        "unapplied pre in discover() order"
+    )
+    lines = migrate_mod.render_apply_failure_lines(d)
+    assert "01.00.03_01_post_fabricated.sql" in lines[0]
+    assert "01.00.00_01_pre_fabricated.sql" not in "\n".join(lines), (
+        "the misattributed first-unapplied file must not appear anywhere in the report"
+    )
+
+
 # ── apply_pending_locked: bounded finally teardown (dead PG) ────────────
 
 
