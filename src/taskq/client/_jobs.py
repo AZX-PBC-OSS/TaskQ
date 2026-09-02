@@ -17,9 +17,9 @@ either an :class:`~taskq.testing.in_memory.InMemoryBackend` (tests) or a
 from collections.abc import Generator, Iterable
 from contextlib import AsyncExitStack, contextmanager
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from itertools import islice
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
 import structlog
@@ -1207,6 +1207,45 @@ class JobsClient:
 
     # ── Schedule CRUD ────────────────────────────────────────────────────
 
+    def _server_clock_pool(self) -> "asyncpg.Pool | None":
+        """The pool a server-clock read runs on, or ``None`` when this
+        backend is not pool-backed (in-memory tests).
+
+        The :class:`Backend` protocol deliberately does not expose pools
+        (they live on ``BackendDeps``); ``PostgresBackend`` carries them
+        as private accessors delegating to its deps, so probe the public
+        ``BackendDeps`` shape first and the Postgres accessor second.
+        """
+        for attr in ("worker_pool", "_worker_pool"):
+            pool = getattr(self._backend, attr, None)
+            if pool is not None:
+                # Why: cast — duck-typed probe; only an asyncpg-shaped pool reaches this line in practice.
+                return cast("asyncpg.Pool", pool)
+        return None
+
+    async def _schedule_seed_now(self) -> datetime:
+        """Read the clock that arbitrates a schedule's due-check, for
+        seeding ``next_fire_at``.
+
+        The cron loop's due-check is server-side
+        (``next_fire_at <= clock_timestamp()``) and its normal-path
+        recompute re-anchors on the STORED fire time — only a miss
+        beyond ``cron_catch_up_window`` re-anchors on the server clock —
+        so the seed fixes the fire chain's phase for the schedule's
+        life. Pool-backed (Postgres) clients therefore read the server
+        clock first: one row, ``SELECT clock_timestamp()``, mirroring
+        the worker bootstrap's schedule seeding. Pool-less clients
+        (in-memory tests) have no second clock domain and use the
+        client's injected Clock — tests wire it to the backend's clock.
+        """
+        pool = self._server_clock_pool()
+        if pool is None:
+            return self._clock.now()
+        async with pool.acquire() as conn:
+            # Why: annotated assignment — clock_timestamp() is non-null in Postgres; mirrors the worker bootstrap's read.
+            seed_now: datetime = await conn.fetchval("SELECT clock_timestamp()")
+        return seed_now
+
     async def create_schedule[P: BaseModel, R: BaseModel | None](
         self,
         actor: str | ActorRef[P, R],
@@ -1236,19 +1275,23 @@ class JobsClient:
         Does NOT validate actor existence at creation time — any string
         actor name is accepted (validation is deferred to fire time).
 
-        The first ``next_fire_at`` is seeded from this process's local
-        clock (``compute_next_fire_after`` over ``datetime.now(UTC)``); the
-        cron loop's due-check is server-side, so app↔DB clock skew shifts
-        only the FIRST fire after creation by the skew (±S). The residual
-        is bounded and self-healing: the tick's catch-up recompute
-        re-anchors the fire chain to the PG server clock at the first tick
-        that sees the schedule.
+        The first ``next_fire_at`` is seeded from the clock that
+        arbitrates its due-check: on a Postgres-backed client the PG
+        server clock is read first (one-row ``SELECT clock_timestamp()``
+        via the backend's pool, mirroring the worker bootstrap), so
+        app↔DB clock skew cannot shift the fire chain; on a pool-less
+        (in-memory) client the seed comes from the client's injected
+        Clock. This matters permanently: the cron loop's normal path
+        recomputes every subsequent fire from the STORED fire time
+        (only a miss beyond ``cron_catch_up_window`` re-anchors on the
+        server clock), so the seed — not any per-tick correction —
+        fixes the chain's phase for the schedule's life.
 
         Args:
             dst_strategy: How to handle DST gaps and overlaps.
                 ``skip`` (default) advances past gaps, uses the first
-                occurrence in overlaps. ``firstof`` explicitly selects the
-                earlier wall-clock time in overlaps. ``allof`` fires at
+                occurrence in overlaps. ``firstof`` explicitly selects
+                the earlier wall-clock time in overlaps. ``allof`` fires at
                 both occurrences in overlaps.
         """
         from taskq.cron import (
@@ -1271,7 +1314,7 @@ class JobsClient:
         if static_payload is not None:
             metadata["static_payload"] = static_payload
 
-        now = datetime.now(UTC)
+        now = await self._schedule_seed_now()
         next_fire = compute_next_fire_after(cron_expr, timezone, now, dst_strategy=dst_strategy)[0]
 
         args = ScheduleCreateArgs(
@@ -1329,9 +1372,11 @@ class JobsClient:
         pass ``clear_payload_factory=True`` — ``None`` for payload_factory
         means "don't change this field."
 
-        When *cron_expr* changes, the recomputed ``next_fire_at`` is seeded
-        from this process's local clock — the same first-fire ±S residual
-        (and self-healing at the next tick) as ``create_schedule``.
+        When *cron_expr* changes, the recomputed ``next_fire_at`` is
+        seeded from the same clock as ``create_schedule`` (the PG
+        server clock on Postgres-backed clients; the client's injected
+        Clock in-memory) — the stored chain keeps its server-anchored
+        phase.
         """
         from taskq.cron import compute_next_fire_after
 
@@ -1345,7 +1390,7 @@ class JobsClient:
 
         next_fire_at: datetime | None = None
         if cron_expr is not None:
-            now = datetime.now(UTC)
+            now = await self._schedule_seed_now()
             records = await self._backend.list_schedules(actor=None, enabled=None)
             existing = next((r for r in records if r.id == schedule_id), None)
             tz = existing.timezone if existing is not None else "UTC"
