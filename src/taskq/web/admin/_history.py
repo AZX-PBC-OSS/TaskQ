@@ -15,6 +15,7 @@ from taskq.web.admin._constants import (
     _FETCH_SIZE,  # pyright: ignore[reportPrivateUsage]  # Why: shared constants published by the admin constants module; private prefix scopes them within the admin package.
     _PAGE_SIZE,  # pyright: ignore[reportPrivateUsage]  # Why: shared constants published by the admin constants module; private prefix scopes them within the admin package.
     parse_job_statuses,
+    parse_text_filter,
 )
 from taskq.web.admin._factory import get_pg_pool, get_realtime_ctx, get_schema, get_templates
 
@@ -149,6 +150,12 @@ def register(router: APIRouter) -> None:
             cursor_at = None
         if cursor_id == "":
             cursor_id = None
+
+        # NUL guard before the text binds ($2/$3): asyncpg rejects a NUL in
+        # a text parameter with an opaque 22021 — the same class the jobs
+        # list filters guard against via parse_text_filter.
+        actor = parse_text_filter(actor, "actor")
+        queue = parse_text_filter(queue, "queue")
 
         statuses = parse_job_statuses(status)
 

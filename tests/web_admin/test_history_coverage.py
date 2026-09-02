@@ -188,6 +188,20 @@ def test_history_actor_and_queue_filters(
     assert response.status_code == 200  # pyright: ignore[reportUnknownMemberType]
 
 
+def test_history_nul_in_text_filters_returns_400(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A %00 in the actor/queue filter is a clean 400, not an asyncpg 22021 500.
+
+    Both are bound as text parameters ($2/$3) by the history SQL — the
+    same driver-level NUL class the jobs list filters guard against.
+    """
+    client = _build_history_app(_StubPool(), monkeypatch)
+    for param in ("actor", "queue"):
+        response = client.get(f"/history?{param}=bad%00name")  # pyright: ignore[reportUnknownMemberType]
+        assert response.status_code == 400, (param, response.status_code)  # pyright: ignore[reportUnknownMemberType]
+
+
 # ── GET /history: cursor validation (400 cases) ─────────────────────────
 
 

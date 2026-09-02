@@ -2,6 +2,7 @@
 
 from fastapi import HTTPException
 
+from taskq._json import check_no_nul_str
 from taskq.client._args import (
     _MAX_TAG_LENGTH,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the enqueue-side tag length contract rather than redefining a drifting copy of it.
 )
@@ -52,6 +53,27 @@ def parse_job_statuses(raw: list[str], *, default: list[str] | None = None) -> l
     return deduped
 
 
+def parse_text_filter(raw: str | None, what: str) -> str | None:
+    """Validate a scalar text filter; raises HTTPException on a NUL.
+
+    Every admin list filter is bound as a ``text`` parameter, and
+    PostgreSQL rejects a NUL in a ``text`` value with
+    ``CharacterNotInRepertoireError`` (SQLSTATE 22021) — an opaque 500
+    from deep inside the driver. This is the admin-route counterpart of
+    the client path's ``JobFilter``/``EnqueueArgs`` NUL guards
+    (:func:`taskq._json.check_no_nul_str`): reject at parse time with a
+    clean 400 instead. *raw* is returned unchanged (``None`` included) —
+    blank-normalization stays each route's own concern.
+    """
+    if raw is None:
+        return None
+    try:
+        check_no_nul_str(raw, what=what)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return raw
+
+
 def parse_job_tags(raw: str | None) -> list[str] | None:
     """Parse the comma-joined ``tags`` filter; raises HTTPException on bad input.
 
@@ -59,7 +81,9 @@ def parse_job_tags(raw: str | None) -> list[str] | None:
     stripped and deduplicated (first-occurrence order), the item count is
     capped, and each item is capped at the enqueue-side ``_MAX_TAG_LENGTH``
     — the stored tags can never exceed it, so a longer filter term can
-    never match anything.
+    never match anything. A NUL in an item is rejected here because the
+    list is bound as ``text[]`` — the same SQLSTATE-22021 class
+    :func:`parse_text_filter` guards for scalar filters.
     """
     if not raw:
         return None
@@ -77,6 +101,10 @@ def parse_job_tags(raw: str | None) -> list[str] | None:
                 status_code=400,
                 detail=f"tag filter exceeds {_MAX_TAG_LENGTH} characters: {t[:64]!r}…",
             )
+        try:
+            check_no_nul_str(t, what="tag filter item")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
     seen: set[str] = set()
     deduped: list[str] = []
     for t in items:
