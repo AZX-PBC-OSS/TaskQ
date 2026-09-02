@@ -678,7 +678,20 @@ def _health_deps(liveness: LoopLiveness, *, watchdog_enabled: bool) -> WorkerDep
     from types import SimpleNamespace
     from typing import cast
 
+    from taskq.settings import WorkerSettings
     from taskq.worker.shutdown import ShutdownPhase
+
+    # Real settings, not a hand-listed SimpleNamespace: compute_health reads a
+    # growing set of fields, and a stub that enumerates them turns every new
+    # read into an AttributeError in this test rather than a behaviour change.
+    # load_from_dict (not the bare constructor) is what runs post_load, so the
+    # defaults are the ones a deployed worker actually sees.
+    settings = WorkerSettings.load_from_dict(
+        {"TASKQ_PG_DSN": "postgresql://taskq:taskq@127.0.0.1:1/taskq"}
+    )
+    settings.watchdog_enabled = watchdog_enabled
+    settings.redis_url = None
+    settings.health_pg_ping_timeout = 0.2  # _PingPool answers instantly
 
     return cast(
         WorkerDeps,
@@ -686,12 +699,7 @@ def _health_deps(liveness: LoopLiveness, *, watchdog_enabled: bool) -> WorkerDep
             shutdown_phase=ShutdownPhase.NONE,
             dispatcher_pool=_PingPool(),
             heartbeat_pool=_PingPool(),
-            settings=SimpleNamespace(
-                health_pg_ping_timeout=0.2,
-                max_heartbeat_failures=3,
-                redis_url=None,
-                watchdog_enabled=watchdog_enabled,
-            ),
+            settings=settings,
             is_leader=SimpleNamespace(is_set=lambda: False),
             active_jobs=SimpleNamespace(count=lambda: 0),
             heartbeat_failures=0,
