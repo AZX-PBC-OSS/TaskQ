@@ -234,7 +234,10 @@ IdentityKey = NewType("IdentityKey", str)
 """Distinguishes identity keys from idempotency keys at call sites."""
 
 
-_QUEUE_NAME_RE: Final[re.Pattern[str]] = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*$")
+_QUEUE_NAME_RE: Final[re.Pattern[str]] = re.compile(r"\A[A-Za-z_][A-Za-z0-9_.-]*\Z")
+# \A/\Z, not ^/$: Python's `$` also matches immediately before a trailing
+# newline, so "default\n" satisfied ^...$ (see _IDENT_RE's docstring in
+# taskq.constants for the full rationale — same trap, same fix).
 
 
 def _validate_queue_name(v: str) -> str:

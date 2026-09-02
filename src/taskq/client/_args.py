@@ -42,8 +42,13 @@ __all__ = ["build_enqueue_args", "enqueue_span"]
 
 logger: structlog.stdlib.BoundLogger = structlog.get_logger(__name__)
 
-_TAG_RE: re.Pattern[str] = re.compile(r"^[\w][\w\-]+[\w]$")
-"""Tag validation regex matching River's pattern: starts/ends with word char, middle allows hyphens, min 3 chars."""
+_TAG_RE: re.Pattern[str] = re.compile(r"\A[\w][\w\-]+[\w]\Z")
+"""Tag validation regex matching River's pattern: starts/ends with word char, middle allows hyphens, min 3 chars.
+
+``\\A``/``\\Z``, not ``^``/``$``: Python's ``$`` also matches immediately
+before a trailing newline, so ``"tag\\n"`` satisfied ``^...$`` (see
+``_IDENT_RE``'s docstring in taskq.constants — same trap, same fix).
+"""
 _MAX_TAG_LENGTH: int = 255
 
 
@@ -64,7 +69,7 @@ def _validate_and_dedup_tags(tags: list[str] | None) -> tuple[str, ...]:
             raise ValueError(f"tag exceeds {_MAX_TAG_LENGTH} characters: {tag!r}")
         if not _TAG_RE.match(tag):
             raise ValueError(
-                f"invalid tag {tag!r}: must match pattern ^[\\w][\\w\\-]+[\\w]$ "
+                f"invalid tag {tag!r}: must match pattern \\A[\\w][\\w\\-]+[\\w]\\Z "
                 f"(at least 3 chars, word chars and hyphens only, no leading/trailing hyphens)"
             )
         if tag not in seen:

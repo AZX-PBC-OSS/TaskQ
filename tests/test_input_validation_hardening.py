@@ -178,3 +178,20 @@ async def test_in_memory_enqueue_accepts_clean_payload_and_metadata() -> None:
     # Parity cuts both ways: the PG-side guard passes the same values.
     assert dumps_jsonb_str({"value": "clean"}) is not None
     assert dumps_jsonb_str({"note": "clean"}) is not None
+
+
+# ── The trailing-newline trap, at the real chokepoints ──────────────────
+#
+# `^...$` let a single trailing newline past the queue-name and tag
+# validators (see tests/test_ident_re_anchoring.py for the regex-level
+# pins, and that file's docstring for why this matters).
+
+
+def test_build_enqueue_args_rejects_queue_name_with_trailing_newline() -> None:
+    with pytest.raises(ValueError, match="invalid queue name"):
+        build_enqueue_args(_hardening_actor, _Payload(), queue="default\n")
+
+
+def test_build_enqueue_args_rejects_tag_with_trailing_newline() -> None:
+    with pytest.raises(ValueError, match="invalid tag"):
+        build_enqueue_args(_hardening_actor, _Payload(), tags=["tag\n"])
