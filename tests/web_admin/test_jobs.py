@@ -429,14 +429,13 @@ def test_parse_job_statuses_dedupes_preserving_order() -> None:
     assert parse_job_statuses(["succeeded", "failed"]) == ["succeeded", "failed"]
 
 
-def test_parse_job_statuses_rejects_more_values_than_the_closed_set() -> None:
-    from fastapi import HTTPException
-
+def test_parse_job_statuses_dedupes_a_long_repeated_list_rather_than_rejecting_it() -> None:
+    """Invalid values are rejected before the dedup, so a list longer than the
+    closed set can only be duplicates — which the dedup already absorbs. It is
+    a well-formed request, not a 400."""
     from taskq.web.admin._constants import parse_job_statuses
 
-    with pytest.raises(HTTPException) as exc_info:
-        parse_job_statuses(["pending"] * 9)
-    assert exc_info.value.status_code == 400
+    assert parse_job_statuses(["pending"] * 9) == ["pending"]
 
 
 def test_parse_job_tags_caps_item_count_and_length_and_dedupes() -> None:
@@ -462,20 +461,10 @@ def test_parse_job_tags_caps_item_count_and_length_and_dedupes() -> None:
     assert exc_info.value.status_code == 400
 
 
-def test_jobs_route_rejects_over_cap_status_list(
+def test_jobs_route_accepts_duplicate_statuses(
     monkeypatch: pytest.MonkeyPatch, make_app: Callable[..., Any]
 ) -> None:
-    """9 status params (one more than the closed set) is a clean 400."""
-    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
-    client = make_app()
-    response = client.get("/jobs?" + "&".join(["status=pending"] * 9))
-    assert response.status_code == 400
-
-
-def test_jobs_route_accepts_duplicate_statuses_within_cap(
-    monkeypatch: pytest.MonkeyPatch, make_app: Callable[..., Any]
-) -> None:
-    """Duplicated-but-small status lists stay valid requests."""
+    """Duplicated status lists stay valid requests — the dedup absorbs them."""
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
     client = make_app()
     response = client.get("/jobs?status=pending&status=failed&status=pending")

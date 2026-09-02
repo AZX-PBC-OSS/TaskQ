@@ -24,23 +24,15 @@ def parse_job_statuses(raw: list[str], *, default: list[str] | None = None) -> l
     """Validate and return the requested status list; raises HTTPException on bad input.
 
     When *raw* is empty, returns *default* (or all terminal statuses when
-    *default* is ``None``). More values than the closed set (8) is
-    rejected — no valid request needs them, since duplicates are deduped
-    (first-occurrence order) and the set has no more members than that.
+    *default* is ``None``). Values outside the closed set are rejected;
+    what survives is deduplicated in first-occurrence order, which alone
+    bounds the returned list to the set's 8 members however long *raw* is.
     """
     invalid = [s for s in raw if s not in _ALL_STATUSES]
     if invalid:
         raise HTTPException(
             status_code=400,
             detail=f"invalid status value(s): {invalid!r}; allowed: {sorted(_ALL_STATUSES)!r}",
-        )
-    if len(raw) > len(_ALL_STATUSES):
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"too many status values: {len(raw)}; at most {len(_ALL_STATUSES)} "
-                "(the full closed set) are accepted — duplicates are deduplicated"
-            ),
         )
     if not raw:
         return default if default is not None else sorted(_TERMINAL_STATUSES)
