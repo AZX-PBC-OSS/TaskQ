@@ -21,6 +21,7 @@ from pydantic import BaseModel
 
 from taskq._json import loads
 from taskq.backend._protocol import (
+    DST_STRATEGIES,
     Backend,
     DstStrategy,
     IdentityKey,
@@ -29,6 +30,7 @@ from taskq.backend._protocol import (
 )
 
 __all__ = [
+    "DST_STRATEGIES",
     "CronScheduleSpec",
     "DstStrategy",
     "ScheduleHandle",

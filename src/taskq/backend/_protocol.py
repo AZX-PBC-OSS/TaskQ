@@ -46,6 +46,7 @@ from taskq._json import check_no_nul_str
 
 __all__ = [
     "BACKEND_PROTOCOL_VERSION",
+    "DST_STRATEGIES",
     "JOB_STATUS_VALUES",
     "AttemptOutcome",
     "AttemptRow",
@@ -171,6 +172,14 @@ type QueueMode = Literal["strict_fifo", "round_robin"]
 type RateLimitBackend = Literal["redis", "postgres", "memory"]
 
 type DstStrategy = Literal["skip", "firstof", "allof"]
+
+#: Runtime membership set of every :data:`DstStrategy` literal value — the
+#: single source of truth the schedule-write validation
+#: (:meth:`ScheduleCreateArgs.__post_init__`) and the row-value coercions
+#: (worker cron loop, admin ops) all consult, so none can drift from the
+#: Literal or from each other. Re-exported via :mod:`taskq.cron` (the cron
+#: public surface those callers already import from).
+DST_STRATEGIES: Final[frozenset[str]] = frozenset(get_args(DstStrategy.__value__))
 
 type BatchStatus = Literal["active", "complete", "aborted"]
 """Lifecycle status of a batch row in the ``batches`` table."""
@@ -687,6 +696,11 @@ class ScheduleCreateArgs:
 
         if not croniter.is_valid(self.cron_expr):
             raise ValueError(f"Invalid cron expression: {self.cron_expr!r}")
+        if self.dst_strategy not in DST_STRATEGIES:
+            raise ValueError(
+                f"Invalid dst_strategy: {self.dst_strategy!r}; "
+                f"valid strategies are {sorted(DST_STRATEGIES)}"
+            )
         self._check_no_nul_text()
 
     def _check_no_nul_text(self) -> None:

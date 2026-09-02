@@ -23,6 +23,7 @@ from taskq.backend._protocol import (
 )
 from taskq.backend.clock import SystemClock
 from taskq.cron import (
+    DST_STRATEGIES,
     DstStrategy,
     compute_next_fire_after,
     resolve_payload,
@@ -276,7 +277,7 @@ def register(router: APIRouter) -> None:
             # strategies, this only guards a hand-edited row.
             dst_strategy_raw: str = row["dst_strategy"]
             dst_strategy: DstStrategy = (
-                dst_strategy_raw if dst_strategy_raw in ("skip", "firstof", "allof") else "skip"
+                dst_strategy_raw if dst_strategy_raw in DST_STRATEGIES else "skip"
             )
 
             # The advance-until-future test must run in the same clock

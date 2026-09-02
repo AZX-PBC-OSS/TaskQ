@@ -328,6 +328,21 @@ def test_schedule_create_args_rejects_nul_in_cron_expr_via_croniter() -> None:
         )
 
 
+def test_schedule_create_args_rejects_bogus_dst_strategy() -> None:
+    """``dst_strategy`` was an inert Literal on a dataclass: a bogus value
+    constructed fine and only died later as a raw asyncpg
+    CheckViolationError from the INSERT — instead of the clean ValueError
+    its sibling fields raise."""
+    with pytest.raises(ValueError, match="Invalid dst_strategy"):
+        ScheduleCreateArgs(
+            actor="a",
+            cron_expr="*/5 * * * *",
+            timezone="UTC",
+            next_fire_at=_START,
+            dst_strategy="bogus",  # type: ignore[arg-type]  # Why: deliberately invalid — the constructor must reject it at parse time.
+        )
+
+
 def test_schedule_create_args_clean_text_still_constructs() -> None:
     args = ScheduleCreateArgs(
         actor="report_actor",

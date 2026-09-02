@@ -22,6 +22,7 @@ from taskq.constants import (
     CRON_LOCK_NAME,
 )
 from taskq.cron import (
+    DST_STRATEGIES,
     compute_next_fire_after,
 )
 from taskq.cron import (
@@ -153,9 +154,7 @@ async def fire_schedule(
     # every schedule silently fired with 'skip' semantics, whatever it stored,
     # and the DST-overlap branch below was unreachable.
     dst_strategy_raw: str = row["dst_strategy"]
-    dst_strategy: DstStrategy = (
-        dst_strategy_raw if dst_strategy_raw in ("skip", "firstof", "allof") else "skip"
-    )
+    dst_strategy: DstStrategy = dst_strategy_raw if dst_strategy_raw in DST_STRATEGIES else "skip"
     if fire_at < catch_up_cutoff:
         fire_at = compute_next_fire_after(
             row["cron_expr"], row["timezone"], server_now, dst_strategy=dst_strategy
