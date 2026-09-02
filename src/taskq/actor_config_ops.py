@@ -393,10 +393,19 @@ async def deregister_actor(
        reset to ``@actor(...)`` defaults. Stop all workers for this actor
        before calling deregister.
 
-       A job dispatched between the running check and the cancel UPDATE
-       (force=True) will be left running with no ``actor_config`` row.
-       When its lock expires, the leader sweep transitions it to a
-       terminal state (crashed/cancelled) — it is NOT re-dispatched.
+        A job dispatched between the running check and the cancel UPDATE
+        (force=True) will be left running with no ``actor_config`` row.
+        When its lock expires, the leader sweep's retry branch returns it
+        to **pending** with a short backoff (only jobs with no attempts
+        remaining — or a cancel request still in flight — transition to a
+        terminal crashed/cancelled state). Because dispatch candidates
+        are drawn from ``actor_config``, that pending job is then
+        stranded: it is never dispatched while the actor stays
+        unregistered, and the leader's stranded-jobs detector warns about
+        it on its interval. If the actor name is ever re-registered
+        (e.g. a redeploy reintroduces it), the stranded job silently
+        dispatches against the new code — cancel or retry it manually if
+        that is not wanted.
 
        A cron schedule that fires between the disable UPDATE and the
        ``actor_config`` DELETE will enqueue a job that can never be
