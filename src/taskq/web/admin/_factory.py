@@ -8,9 +8,10 @@ import hmac
 import importlib
 import pkgutil
 import secrets
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -51,14 +52,89 @@ class GZipStaticOnly(_GZipMiddleware):
 
 
 # ── Jinja2 filter: humanized relative timestamps ────────────────────────
+#
+# Every timestamp the admin UI renders was written by the database clock
+# (`clock_timestamp()`), so the age of a row belongs to the database's clock
+# domain. Answering "how stale is this?" by subtracting from this process's
+# `datetime.now()` makes every rendered age wrong by exactly the app-to-database
+# skew — NTP drift, a paused VM, a container clock, WSL2's documented stepping —
+# and that question is asked during an incident, when the wrong answer costs the
+# most. The rest of this branch removes mixed-domain arithmetic by pushing it
+# into SQL; a Jinja filter cannot issue a query, so it uses the next best thing:
+# a periodically measured offset between the two clocks, so the subtraction is
+# performed in the database's domain even though it runs in Python.
+#
+# Queries that already did the arithmetic server-side — the
+# `EXTRACT(EPOCH FROM clock_timestamp() - col)` shape `_LEADER_SQL` uses for
+# `watchdog_healthy` — can hand the filter that number directly and no clock
+# participates at all. That is the preferred form for new queries.
+
+_CLOCK_OFFSET_TTL: float = 30.0
+
+
+@dataclass
+class _DbClockOffset:
+    """Measured ``database_now - app_now``, in seconds."""
+
+    seconds: float = 0.0
+    expires_at: float = 0.0
+
+
+_db_clock_offset = _DbClockOffset()
+
+
+async def refresh_db_clock_offset(pool: asyncpg.Pool) -> None:
+    """Re-measure the app-to-database clock offset, at most once per TTL.
+
+    Installed as a router-level dependency so every admin request keeps the
+    offset fresh for the (synchronous) Jinja filter. Failures are swallowed
+    and the previous offset kept: a clock probe must never take down a page,
+    and a slightly stale offset is still far closer to the truth than
+    ignoring skew entirely.
+    """
+    now = time.monotonic()
+    if now < _db_clock_offset.expires_at:
+        return
+    try:
+        before = datetime.now(UTC)
+        async with pool.acquire() as conn:
+            db_now: datetime = await conn.fetchval("SELECT clock_timestamp()")
+        after = datetime.now(UTC)
+    except Exception:
+        # Back off for a full TTL rather than probing on every request.
+        _db_clock_offset.expires_at = now + _CLOCK_OFFSET_TTL
+        return
+    # Why the midpoint: the round trip happens between the two local reads, so
+    # the server's instant is best compared against the middle of that window
+    # rather than either end — the same correction NTP applies. On a local
+    # database this is sub-millisecond, but it costs nothing and keeps the
+    # measurement honest over a slow link.
+    app_now = before + (after - before) / 2
+    _db_clock_offset.seconds = (db_now - app_now).total_seconds()
+    _db_clock_offset.expires_at = now + _CLOCK_OFFSET_TTL
+
+
+def _db_now() -> datetime:
+    """This process's best estimate of the database's current instant."""
+    return datetime.now(UTC) + timedelta(seconds=_db_clock_offset.seconds)
 
 
 def _time_ago(ts: Any) -> str:
-    """Return a human-readable relative time string via humanize (e.g. '2 minutes ago')."""
+    """Return a human-readable relative time string via humanize (e.g. '2 minutes ago').
+
+    Accepts either an age already computed by the database (a number of
+    seconds) or a database-written timestamp, which is aged against the
+    database clock rather than this process's.
+    """
     if ts is None or ts == "":
         return "—"
     try:
         import humanize
+
+        if isinstance(ts, bool):
+            return str(ts)
+        if isinstance(ts, int | float):
+            return humanize.naturaltime(timedelta(seconds=float(ts)))
 
         if isinstance(ts, str):
             dt = datetime.fromisoformat(ts)
@@ -70,7 +146,7 @@ def _time_ago(ts: Any) -> str:
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=UTC)
 
-        return humanize.naturaltime(datetime.now(UTC) - dt)
+        return humanize.naturaltime(_db_now() - dt)
     except Exception:
         return str(ts) if ts else "—"
 
@@ -141,6 +217,11 @@ def get_pg_pool(request: Request) -> asyncpg.Pool:
     """Dependency: yields the asyncpg pool from ``app.state``."""
     pool: asyncpg.Pool = request.app.state.pg_pool
     return pool
+
+
+async def _refresh_clock_offset(pool: asyncpg.Pool = Depends(get_pg_pool)) -> None:
+    """Router-level dependency: keep the app-to-database clock offset fresh."""
+    await refresh_db_clock_offset(pool)
 
 
 def get_backend(request: Request) -> Backend | None:
@@ -367,9 +448,20 @@ def create_router(
     env.filters["time_ago"] = _time_ago
     env.filters["iso_attr"] = _iso_attr
 
-    router_kwargs: dict[str, Any] = {"route_class": _CsrfRoute}
+    # Why router-level: the relative-time filter is synchronous and cannot
+    # query, so the app-to-database clock offset it needs has to be refreshed
+    # by something that can. Every admin route serves timestamps, so the
+    # dependency belongs on the router rather than being repeated per page --
+    # and repeating it per page is how one page would end up telling a
+    # different story about staleness than the next. It is cached for
+    # _CLOCK_OFFSET_TTL, so this is one extra query per 30 s, not per request.
+    router_dependencies: list[Any] = [Depends(_refresh_clock_offset)]
     if auth_dependency is not None:
-        router_kwargs["dependencies"] = [Depends(auth_dependency)]
+        router_dependencies.insert(0, Depends(auth_dependency))
+    router_kwargs: dict[str, Any] = {
+        "route_class": _CsrfRoute,
+        "dependencies": router_dependencies,
+    }
 
     router = APIRouter(**router_kwargs)
 
