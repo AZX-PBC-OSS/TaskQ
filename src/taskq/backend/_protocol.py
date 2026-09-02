@@ -660,8 +660,15 @@ class ScheduleCreateArgs:
 
     Carries every column the caller specifies at schedule creation time.
     ``next_fire_at`` is computed client-side via
-    :func:`~taskq.cron._compute_next_fire_after` — the initial value
-    is an approximation; the leader's tick corrects on first fire.
+    :func:`~taskq.cron.compute_next_fire_after`, seeded from the clock
+    that arbitrates the schedule's due-check: a PG-backed client anchors
+    on the PG server clock (one-row ``SELECT clock_timestamp()`` via
+    ``JobsClient._schedule_seed_now`` — the same clock domain as the
+    server-side due-check), an in-memory client on its injected ``Clock``.
+    The seed is exact, not approximate: the cron loop's normal path
+    recomputes every subsequent fire from the STORED fire time (only a
+    miss beyond ``cron_catch_up_window`` re-anchors on the server clock),
+    so the seed fixes the fire chain's phase for the schedule's life.
     """
 
     actor: str
@@ -711,7 +718,7 @@ class ScheduleUpdateArgs:
     ``consecutive_failures = 0`` and ``last_fire_error = NULL``.
     When ``cron_expr`` is provided, ``next_fire_at`` must also be
     provided (recomputed by the caller via
-    :func:`~taskq.cron._compute_next_fire_after`).
+    :func:`~taskq.cron.compute_next_fire_after`).
 
     To explicitly clear ``payload_factory`` (set the column to NULL),
     set ``clear_payload_factory=True`` — ``None`` for payload_factory
@@ -731,7 +738,7 @@ class ScheduleUpdateArgs:
         if self.cron_expr is not None and self.next_fire_at is None:
             raise ValueError(
                 "next_fire_at must be provided when cron_expr is changed; "
-                "recompute via _compute_next_fire_after"
+                "recompute via compute_next_fire_after"
             )
         if self.clear_payload_factory and self.payload_factory is not None:
             raise ValueError(
