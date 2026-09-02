@@ -78,9 +78,26 @@ def test_queues_item_nul_rejected_at_load() -> None:
         _load(TASKQ_QUEUES="default,ba\x00d")
 
 
+def test_queues_item_colon_rejected_at_load() -> None:
+    """ ":" is the segment separator of the ``taskq:global:queue:`` cap
+    namespace, so a queue named "foo:eu" would derive the same cap name as
+    queue "foo" in an "eu" sub-namespace. The worker's ``queues`` list is
+    an enforcing chokepoint for that, not just a declaration."""
+    with pytest.raises(ValidationError, match=r"queues\[1\] must be a valid queue name"):
+        _load(TASKQ_QUEUES="default,foo:eu")
+
+
 def test_queues_valid_names_load() -> None:
     s = _load(TASKQ_QUEUES="default,high_priority,q-1.2")
     assert s.queues == ["default", "high_priority", "q-1.2"]
+
+
+def test_queues_leading_digit_names_load() -> None:
+    """A leading digit is accepted since the charset relaxation — the ban
+    was copied from ``_IDENT_RE`` (PG identifiers), and a queue name is
+    never a PG identifier: it is always a ``$n``-bound parameter."""
+    s = _load(TASKQ_QUEUES="default,2024-backfill,1queue")
+    assert s.queues == ["default", "2024-backfill", "1queue"]
 
 
 # ── schema_name: PG's 63-byte identifier limit ──────────────────────────

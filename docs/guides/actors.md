@@ -49,7 +49,7 @@ async def process_order(payload: OrderPayload) -> OrderResult: ...
 | Parameter | Type | Default | Description |
 |---|---|---|---|
 | `name` | `str \| None` | `fn.__qualname__` | Actor name stored in the `actor_config` table and on every job row. Override when the qualified name would be unstable across refactors. |
-| `queue` | `str` | `"default"` | Queue this actor is dispatched on. Must match `[A-Za-z_][A-Za-z0-9_.-]*`. Can be overridden per-enqueue. |
+| `queue` | `str` | `"default"` | Queue this actor is dispatched on. Must match `[A-Za-z0-9_][A-Za-z0-9_.-]*` — note `:` is excluded, because it separates segments in the `taskq:global:queue:` concurrency-cap namespace. Can be overridden per-enqueue. |
 | `retry` | `RetryPolicy \| None` | `RetryPolicy()` | Retry policy — see [Retry policy](#retry-policy). `None` resolves to the default `RetryPolicy()`. |
 | `result_ttl` | `timedelta \| None` | `None` | How long the result JSONB is retained after a job succeeds. `None` means retain indefinitely. Only the *seed* value: once a worker has synced this actor once, the stored `actor_config.result_ttl` is authoritative and this literal is ignored — see [ActorConfig sync](workers.md#actorconfig-sync). |
 | `singleton` | `bool` | `False` | Enforce at most one active job of this actor fleet-wide — see [Singleton actors](#singleton-actors). |

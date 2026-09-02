@@ -27,6 +27,7 @@ from datetime import UTC, datetime
 import pytest
 import structlog.testing
 from pydantic import BaseModel
+from pydantic import ValidationError as PydanticValidationError
 
 from taskq import actor
 from taskq._json import dumps_jsonb_str
@@ -34,10 +35,12 @@ from taskq.backend._protocol import (
     BatchFilter,
     IdentityKey,
     JobFilter,
+    QueueName,
     ScheduleCreateArgs,
 )
 from taskq.client._args import build_enqueue_args
 from taskq.client._capacity import ActorCapacityCache
+from taskq.ratelimit.registry import queue_concurrency_reservation_name
 from taskq.testing.clock import FakeClock
 from taskq.testing.in_memory import InMemoryBackend
 from taskq.testing.jobs import make_enqueue_args
@@ -71,7 +74,7 @@ async def _hardening_actor(_payload: _Payload) -> None:
         "bad name",  # interior space
         "bad\nname",  # interior newline
         "bad\tname",  # interior tab
-        "1queue",  # leading digit
+        "foo:eu",  # ":" would forge a sub-namespace in the queue-cap prefix
         "queue!",  # character outside the allowed set
         "",  # empty
     ],
@@ -124,6 +127,8 @@ def test_actor_declaration_rejects_invalid_queue_name() -> None:
         "my.queue",  # dot: allowed after the first char
         "_internal",  # leading underscore
         "Q_2.x",
+        "1queue",  # leading digit: accepted since the charset relaxation
+        "2024-backfill",  # the real-world name the old rule rejected
     ],
 )
 def test_valid_queue_names_still_pass(good_queue: str) -> None:
@@ -136,6 +141,79 @@ async def test_valid_queue_name_enqueues_end_to_end_on_in_memory() -> None:
     args = build_enqueue_args(_hardening_actor, _Payload(), queue="my-queue")
     row = await backend.enqueue(args)
     assert row.queue == "my-queue"
+
+
+async def test_leading_digit_queue_name_enqueues_end_to_end_on_in_memory() -> None:
+    """The relaxation is only real if a leading-digit name survives the
+    whole enqueue path, not merely the regex."""
+    backend = InMemoryBackend(clock=FakeClock(start=_START))
+    args = build_enqueue_args(_hardening_actor, _Payload(), queue="2024-backfill")
+    row = await backend.enqueue(args)
+    assert row.queue == "2024-backfill"
+
+
+def test_actor_declaration_accepts_leading_digit_queue_name() -> None:
+    """``@actor(queue="1queue")`` must now succeed at decoration time."""
+
+    async def handler(payload: _Payload) -> None:
+        pass
+
+    ref = actor(name="leading_digit_queue_actor", queue="1queue")(handler)
+    assert ref.queue == "1queue"
+    assert build_enqueue_args(ref, _Payload()).queue == "1queue"
+
+
+# ── ":" stays banned, and this is the reason ────────────────────────────
+#
+# The fleet-wide per-queue concurrency cap is registered under
+# ``f"{QUEUE_CONCURRENCY_PREFIX}{queue}"`` in one flat, name-keyed
+# registry. ":" is that namespace's segment separator, so a queue named
+# "foo:eu" derives the same cap name as queue "foo" would in an "eu"
+# sub-namespace — two queues, one cap. Assert the collision exists (so
+# the ban keeps earning its place) and that the validator forecloses it.
+
+
+def test_colon_in_queue_name_would_collide_in_the_cap_namespace() -> None:
+    assert queue_concurrency_reservation_name("foo:eu") == (
+        f"{queue_concurrency_reservation_name('foo')}:eu"
+    )
+
+
+def test_actor_declaration_rejects_colon_in_queue_name() -> None:
+    async def handler(payload: _Payload) -> None:
+        pass
+
+    with pytest.raises(ValueError, match="invalid queue name"):
+        actor(name="colon_queue_actor", queue="foo:eu")(handler)
+
+
+# ── ``QueueName`` annotates; it does not enforce on its own ─────────────
+#
+# The alias is ``Annotated[str, AfterValidator(...)]``, so it validates
+# only inside pydantic model validation. On a plain function parameter or
+# a ``str`` dataclass field it is documentation — which is exactly how the
+# original bug slipped in. Pin both halves so nobody mistakes the
+# annotation for a chokepoint, and so the alias itself stays wired to the
+# canonical validator when it IS used in a model.
+
+
+def test_queue_name_annotation_is_inert_on_a_plain_parameter() -> None:
+    def takes_a_queue(q: QueueName) -> str:
+        return q
+
+    assert takes_a_queue("foo:eu") == "foo:eu", (
+        "QueueName is an annotation, not a runtime guard — the enforcing "
+        "chokepoints must call _validate_queue_name explicitly"
+    )
+
+
+def test_queue_name_annotation_enforces_inside_a_pydantic_model() -> None:
+    class _Model(BaseModel):
+        queue: QueueName
+
+    with pytest.raises(PydanticValidationError):
+        _Model(queue="foo:eu")
+    assert _Model(queue="2024-backfill").queue == "2024-backfill"
 
 
 # ── InMemory enqueue mirrors PG's bind-time NUL guard for jsonb ─────────

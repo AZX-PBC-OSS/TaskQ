@@ -248,10 +248,33 @@ IdentityKey = NewType("IdentityKey", str)
 """Distinguishes identity keys from idempotency keys at call sites."""
 
 
-_QUEUE_NAME_RE: Final[re.Pattern[str]] = re.compile(r"\A[A-Za-z_][A-Za-z0-9_.-]*\Z")
+_QUEUE_NAME_RE: Final[re.Pattern[str]] = re.compile(r"\A[A-Za-z0-9_][A-Za-z0-9_.-]*\Z")
 # \A/\Z, not ^/$: Python's `$` also matches immediately before a trailing
 # newline, so "default\n" satisfied ^...$ (see _IDENT_RE's docstring in
 # taskq.constants for the full rationale — same trap, same fix).
+#
+# Why ":" is excluded — this is the load-bearing restriction, not the
+# charset's general tidiness. A queue's fleet-wide concurrency cap is
+# registered under the flat name
+# `f"{QUEUE_CONCURRENCY_PREFIX}{queue}"` (ratelimit/registry.py's
+# `queue_concurrency_reservation_name`), where the prefix is the
+# `taskq:global:queue:` namespace and ":" is that namespace's segment
+# separator. A queue named "foo:eu" would therefore register as
+# `taskq:global:queue:foo:eu` — indistinguishable, in a namespace that is
+# one flat dict keyed by concrete name, from queue "foo" in an "eu"
+# sub-namespace. Two queues could then share (or steal) one cap's slots.
+# The same separator ambiguity is why `taskq.ratelimit.refs` rejects a
+# keyed `base_name` that derives into this prefix. Keep ":" out.
+#
+# Why the FIRST character allows a digit — the leading-letter rule was
+# copied from `_IDENT_RE` (taskq.constants), where it is load-bearing
+# because a Postgres identifier genuinely cannot start with a digit and
+# `_IDENT_RE` guards names that are INTERPOLATED into SQL as identifiers.
+# A queue name is not an identifier: it is always bound as a `$n`
+# parameter (jobs.queue, workers.queues, queues.name), and it reaches
+# OTel only as a metric *dimension value* (`{"queue": queue}` in
+# obs/_otel.py), which carries no such restriction. So "2024-backfill"
+# costs nothing and the ban only surprised users.
 
 
 def _validate_queue_name(v: str) -> str:

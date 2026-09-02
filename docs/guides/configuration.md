@@ -269,7 +269,7 @@ instrumentation.
 
 | Env Var | Type | Default | Description | Constraints |
 |---|---|---|---|---|
-| `TASKQ_QUEUES` | `list[str]` | `["default"]` | Queue names this worker consumes. Set as a comma-separated string: `TASKQ_QUEUES=default,priority`. | — |
+| `TASKQ_QUEUES` | `list[str]` | `["default"]` | Queue names this worker consumes. Set as a comma-separated string: `TASKQ_QUEUES=default,priority`. Each name must match `[A-Za-z0-9_][A-Za-z0-9_.-]*`; rejected at load time otherwise. | — |
 | `TASKQ_POOL_MAX_INACTIVE_LIFETIME` | `float` (seconds) | `300.0` | Closes asyncpg connections idle longer than this. Applied to all three pools. | Min: 0.0 |
 | `TASKQ_WORKER_LABEL` | `str \| None` | `None` | Human-readable label for this worker. Stored in `workers.worker_label` for correlation with workgroup supervisors and external monitoring. When omitted, hostname + pid is used. | — |
 | `TASKQ_WORKGROUP_INSTANCE` | `str \| None` | `None` | UUIDv7 identifying the workgroup orchestrator that launched this worker. Stored in `workers.workgroup_instance` for cross-process correlation. Set automatically by the workgroup supervisor. | — |

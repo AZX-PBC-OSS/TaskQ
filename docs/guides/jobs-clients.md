@@ -151,7 +151,7 @@ Serialises the payload through `ref.payload_type`, enqueues the job, and returns
 |---|---|---|---|
 | `ref` | `ActorRef[P, R]` | required | The actor to dispatch. |
 | `payload` | `P` | required | The payload model instance. Re-validated through `ref.payload_type` before insertion. |
-| `queue` | `QueueName \| None` | `ref.queue` | Override the actor's default queue. Must match `[A-Za-z_][A-Za-z0-9_.-]*`. |
+| `queue` | `QueueName \| None` | `ref.queue` | Override the actor's default queue. Must match `[A-Za-z0-9_][A-Za-z0-9_.-]*` — note `:` is excluded, because it separates segments in the `taskq:global:queue:` concurrency-cap namespace. |
 | `scheduled_at` | `datetime \| None` | `None` | When to make the job eligible for dispatch. `None` means immediate — the backend's server stamps `scheduled_at` and decides `pending`/`scheduled` (the single-arbiter rule; immune to app↔DB clock skew). Pass a future **timezone-aware** `datetime` for deferred execution; naive datetimes raise `ValueError`. |
 | `priority` | `int \| None` | `None` | Dispatch priority. Higher values are dispatched first within the same queue. |
 | `schedule_to_close` | `datetime \| None` | derived from `retry.time_budget` | **Deprecated** (emits `DeprecationWarning`): an absolute datetime crosses clock domains (the app clock that produced it vs the database clock that evaluates it) and can misbehave under skew. Declare `retry.time_budget` on the actor instead — the interval form is anchored to the database clock. When supplied (timezone-aware; naive raises `ValueError`) it overrides the `time_budget`-derived interval. Hard deadline: if the job has not reached a terminal state by this datetime it fails with `DeadlineExceeded`. |

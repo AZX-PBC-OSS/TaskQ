@@ -83,7 +83,16 @@ def test_callers_reject_the_trailing_newline_end_to_end() -> None:
 
 @pytest.mark.parametrize(
     "value",
-    ["default", "q1", "my-queue", "my.queue", "_internal", "Q_2.x"],
+    [
+        "default",
+        "q1",
+        "my-queue",
+        "my.queue",
+        "_internal",
+        "Q_2.x",
+        "1queue",  # leading digit: allowed — a queue name is not a PG identifier
+        "2024-backfill",
+    ],
 )
 def test_valid_queue_names_still_accepted(value: str) -> None:
     assert _QUEUE_NAME_RE.match(value)
@@ -97,7 +106,9 @@ def test_valid_queue_names_still_accepted(value: str) -> None:
         "\ndefault",
         "default\n\n",
         "deafult ",  # charset (space) — never valid, pinned for clarity
-        "1queue",
+        "foo:eu",  # ":" separates the taskq:global:queue: cap namespace
+        ":leading",
+        "trailing:",
         "",
     ],
 )
