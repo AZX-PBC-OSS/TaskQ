@@ -79,6 +79,7 @@ from taskq.obs._otel import (
 from taskq.obs._redact_exc import (
     record_exception_safe,
     safe_exception_message,
+    set_exception_message_max_chars,
     set_exception_redaction_enabled,
 )
 from taskq.obs._structlog import (
@@ -132,6 +133,7 @@ __all__ = [
     "redact_payload",
     "safe_exception_message",
     "safe_start_span",
+    "set_exception_message_max_chars",
     "set_exception_redaction_enabled",
     "set_otel_enabled",
     "setup_logging",

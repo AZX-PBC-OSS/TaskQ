@@ -41,6 +41,7 @@ from taskq.cron import (
 from taskq.exceptions import MissingProvider
 from taskq.obs import (
     get_meter,
+    set_exception_message_max_chars,
     set_exception_redaction_enabled,
     set_otel_enabled,
     setup_logging,
@@ -527,6 +528,7 @@ async def _main(
 
     set_otel_enabled(settings.otel_enabled)
     set_exception_redaction_enabled(settings.exception_redaction_enabled)
+    set_exception_message_max_chars(settings.exception_message_max_chars)
 
     shutdown_event = asyncio.Event()
     escalate_event = asyncio.Event()

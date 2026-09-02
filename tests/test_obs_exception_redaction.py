@@ -23,7 +23,11 @@ import ast
 import asyncpg
 import pytest
 
-from taskq.obs import record_exception_safe, safe_exception_message
+from taskq.obs import (
+    record_exception_safe,
+    safe_exception_message,
+    set_exception_message_max_chars,
+)
 
 
 def _unique_violation(detail: str) -> asyncpg.exceptions.UniqueViolationError:
@@ -81,10 +85,31 @@ def test_uri_credentials_are_masked(raw: str) -> None:
     assert "internal" in safe or "h/db" in safe
 
 
-def test_message_is_length_bounded() -> None:
+def test_message_is_length_bounded_and_reports_what_it_dropped() -> None:
+    """A bounded message says how much was cut, so the bound is actionable.
+
+    Why the remainder count matters: a bare truncation marker leaves an
+    operator unable to tell whether raising the bound would reveal anything,
+    which is how a diagnostic gets quietly lost. Mirrors the admin UI's
+    ``_truncate_traceback``.
+    """
     safe = safe_exception_message(Exception("x" * 5000))
-    assert len(safe) < 600
-    assert safe.endswith("...[truncated]")
+    assert safe.endswith("... (3000 more characters)")
+    assert len(safe) <= 2000 + len("... (3000 more characters)")
+
+
+def test_message_bound_is_configurable() -> None:
+    """An actor that formats large context into its message can raise the bound."""
+    try:
+        set_exception_message_max_chars(4000)
+        safe = safe_exception_message(Exception("x" * 5000))
+        assert safe.endswith("... (1000 more characters)")
+    finally:
+        set_exception_message_max_chars(2000)
+
+
+def test_short_messages_are_untouched() -> None:
+    assert safe_exception_message(Exception("boom")) == "boom"
 
 
 def test_record_exception_safe_emits_a_redacted_exception_event() -> None:

@@ -51,6 +51,7 @@ __all__ = [
     "safe_exception_message",
     "safe_exception_parts",
     "scrub_exception_field",
+    "set_exception_message_max_chars",
     "set_exception_redaction_enabled",
 ]
 
@@ -83,7 +84,16 @@ _PG_DETAIL_ESCAPED_RE = re.compile(
 #: userinfo in a URI. Group 1 is the scheme+user, group 2 the password.
 _URI_CRED_RE = re.compile(r"(\b[a-zA-Z][a-zA-Z0-9+.-]*://[^\s:/@]+):([^\s@]+)@")
 
-_MAX_MESSAGE_CHARS = 512
+#: Default bound on scrubbed message text. 2000 to match
+#: ``web/admin/jobs.py``'s ``_TRACEBACK_DISPLAY_LIMIT`` — one number for "how
+#: much error text do we keep", not two. Overridable via
+#: ``TASKQ_EXCEPTION_MESSAGE_MAX_CHARS`` because no single number suits both a
+#: terse constraint violation and an actor that formats a large object into its
+#: message. Truncation reports the remainder rather than ending mid-sentence, so
+#: an operator can see text was dropped and raise the bound.
+_DEFAULT_MAX_MESSAGE_CHARS = 2000
+
+_max_message_chars: int = _DEFAULT_MAX_MESSAGE_CHARS
 
 #: Whether DETAIL lines are dropped. Default True: the safe behaviour is what
 #: an operator gets by doing nothing. Set False by worker startup from
@@ -125,12 +135,28 @@ def _scrub_text(text: str) -> str:
     return _URI_CRED_RE.sub(r"\1:***@", text)
 
 
+def set_exception_message_max_chars(limit: int) -> None:
+    """Set the module-level bound on scrubbed message text.
+
+    Mirrors :func:`set_exception_redaction_enabled`: a module global set once
+    at worker startup, so the obs layer needs no import of settings.
+    """
+    global _max_message_chars
+    _max_message_chars = limit
+
+
 def _bound_message(text: str) -> str:
-    """Strip and length-bound scrubbed message text."""
+    """Strip and length-bound scrubbed message text.
+
+    Reports the dropped character count, matching ``_truncate_traceback`` in
+    the admin UI — a bare "...[truncated]" hides how much is missing, so an
+    operator cannot tell whether raising the bound would help.
+    """
     text = text.strip()
-    if len(text) > _MAX_MESSAGE_CHARS:
-        text = text[:_MAX_MESSAGE_CHARS] + "...[truncated]"
-    return text
+    if len(text) <= _max_message_chars:
+        return text
+    remaining = len(text) - _max_message_chars
+    return text[:_max_message_chars] + f"... ({remaining} more characters)"
 
 
 def safe_exception_message(exc: BaseException) -> str:

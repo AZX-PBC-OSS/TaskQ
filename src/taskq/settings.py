@@ -29,7 +29,7 @@ from taskq.backend._protocol import (
     # Cycle-safe by import direction: nothing in _protocol's own chain
     # imports taskq.settings, and taskq/__init__ always finishes loading
     # backend._protocol (via taskq.actor) before anything loads settings.
-    _QUEUE_NAME_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical queue-name charset rather than redefining it
+    _validate_queue_name,  # pyright: ignore[reportPrivateUsage]  # Why: the canonical queue-name validator; the enqueue and actor chokepoints run the same one, so the charset cannot drift between them.
 )
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining it
@@ -563,15 +563,19 @@ def _queue_names_validator(value: list[str], ctx: ValidatorContext) -> list[str]
 
     Queue names flow into the registration INSERT's ``text[]`` parameter and
     must satisfy the same rule the backend enforces for enqueue-time queue
-    names (``backend/_protocol.py``'s ``_QUEUE_NAME_RE``). A NUL is outside
-    that charset, so the rule covers it too.
+    names. Delegates to ``backend/_protocol.py``'s ``_validate_queue_name``
+    rather than re-testing the regex, so this chokepoint cannot drift from
+    the enqueue and actor ones. A NUL is outside that charset, so the rule
+    covers it too.
     """
     for i, item in enumerate(value):
-        if not _QUEUE_NAME_RE.match(item):
+        try:
+            _validate_queue_name(item)
+        except ValueError as exc:
             raise ValueError(
                 f"{ctx.field_name}[{i}] must be a valid queue name (letters, "
-                f"digits, '_', '.', '-'; first char a letter or '_'), got {item!r}"
-            )
+                f"digits, '_', '.', '-'; no ':'), got {item!r}"
+            ) from exc
     return value
 
 
@@ -1012,6 +1016,17 @@ class WorkerSettings(TaskQSettings):
         default=True,
         description="TASKQ_OTEL_ENABLED. When False, the library suppresses all span "
         "and metric creation but operations still succeed .",
+    )
+    exception_message_max_chars: int = Field(
+        default=2000,
+        ge=100,
+        description="TASKQ_EXCEPTION_MESSAGE_MAX_CHARS. Bound on exception "
+        "message text on spans and logs, after scrubbing. Matches the admin "
+        "UI's traceback bound so there is one number for how much error text "
+        "is kept, not two. Truncation appends the dropped character count, so "
+        "an operator can see text was cut and raise this. Raise it when an "
+        "actor formats large context into its messages; the stack trace is a "
+        "separate field and is not bounded by this.",
     )
     exception_redaction_enabled: bool = Field(
         default=True,
