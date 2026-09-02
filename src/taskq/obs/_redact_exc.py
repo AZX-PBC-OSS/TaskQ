@@ -1,8 +1,8 @@
-"""Credential- and PII-safe exception text for telemetry spans.
+"""Credential- and PII-safe exception text for telemetry spans and logs.
 
-Spans are shipped to third-party backends (Azure Monitor / Application
-Insights, OTLP collectors, vendor SaaS). Whatever reaches a span attribute
-leaves the trust boundary, so exception text must be scrubbed before it goes
+Spans and JSON log lines leave the trust boundary for whatever telemetry
+backend is configured (Azure Monitor / Application Insights, an OTLP
+collector, a vendor SaaS), so exception text must be scrubbed before it goes
 there -- the same discipline :func:`taskq._dsn.dsn_host` already applies to
 logs, which the span path bypassed entirely.
 
@@ -25,13 +25,15 @@ it.
 """
 
 import re
+import sys
 import traceback
+from types import TracebackType
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from opentelemetry.trace import Span
 
-__all__ = ["record_exception_safe", "safe_exception_message"]
+__all__ = ["record_exception_safe", "safe_exception_message", "safe_exception_parts"]
 
 #: Postgres DETAIL/HINT/CONTEXT lines. Row values live there; the primary
 #: message above them is a static template.
@@ -48,15 +50,19 @@ _URI_CRED_RE = re.compile(r"(\b[a-zA-Z][a-zA-Z0-9+.-]*://[^\s:/@]+):([^\s@]+)@")
 _MAX_MESSAGE_CHARS = 512
 
 
+def _scrub_text(text: str) -> str:
+    """Apply the line-wise DETAIL/HINT/CONTEXT and URI-credential scrubbing."""
+    text = _PG_DETAIL_RE.sub("", text)
+    return _URI_CRED_RE.sub(r"\1:***@", text)
+
+
 def safe_exception_message(exc: BaseException) -> str:
     """Exception text with Postgres DETAIL/HINT dropped and URI creds masked.
 
     The primary Postgres message is kept: it is a static template naming the
     constraint or relation, which is the part that is actually diagnostic.
     """
-    text = str(exc)
-    text = _PG_DETAIL_RE.sub("", text)
-    text = _URI_CRED_RE.sub(r"\1:***@", text)
+    text = _scrub_text(str(exc))
     text = text.strip()
     if len(text) > _MAX_MESSAGE_CHARS:
         text = text[:_MAX_MESSAGE_CHARS] + "...[truncated]"
@@ -76,9 +82,61 @@ def _safe_stacktrace(exc: BaseException) -> str:
     row values -- but a secret written as a literal in application code would
     appear. Do not put credentials in source.
     """
-    rendered = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
-    rendered = _PG_DETAIL_RE.sub("", rendered)
-    return _URI_CRED_RE.sub(r"\1:***@", rendered)
+    return _scrub_text("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))
+
+
+def _resolve_exc_info(
+    value: object,
+) -> tuple[type[BaseException] | None, BaseException | None, TracebackType | None] | None:
+    """Resolve structlog-style ``exc_info`` into a real ``(cls, exc, tb)`` triple.
+
+    Mirrors the documented semantics of structlog's ``format_exc_info``: a
+    ``BaseException`` instance, a valid 3-tuple, or any other truthy value
+    resolved against ``sys.exc_info()``. Returns ``None`` when *value* does
+    not represent an exception or no exception is currently being handled.
+    """
+    if isinstance(value, BaseException):
+        return (value.__class__, value, value.__traceback__)
+    if isinstance(value, tuple) and len(value) == 3:
+        cls, exc, tb = value
+        if (
+            isinstance(cls, type)
+            and issubclass(cls, BaseException)
+            and isinstance(exc, BaseException)
+            and (tb is None or isinstance(tb, TracebackType))
+        ):
+            return value
+    if value:
+        live = sys.exc_info()
+        if live == (None, None, None):
+            return None
+        return live
+    return None
+
+
+def safe_exception_parts(
+    exc_info: bool
+    | BaseException
+    | tuple[type[BaseException] | None, BaseException | None, TracebackType | None]
+    | None,
+) -> dict[str, str] | None:
+    """Render structlog-style ``exc_info`` into scrubbed ``exception.*`` parts.
+
+    Returns the same attribute names :func:`record_exception_safe` emits on
+    spans (``exception.type`` / ``exception.message`` / ``exception.stacktrace``)
+    so both telemetry channels share one scrubbed shape, or ``None`` when
+    *exc_info* resolves to nothing (structlog's behavior of leaving the event
+    dict without an exception entry).
+    """
+    resolved = _resolve_exc_info(exc_info)
+    if resolved is None:
+        return None
+    _cls, exc, _tb = resolved
+    return {
+        "exception.type": type(exc).__qualname__,
+        "exception.message": safe_exception_message(exc),
+        "exception.stacktrace": _scrub_text("".join(traceback.format_exception(*resolved))),
+    }
 
 
 def record_exception_safe(span: "Span", exc: BaseException) -> None:

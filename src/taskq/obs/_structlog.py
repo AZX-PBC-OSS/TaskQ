@@ -13,6 +13,7 @@ import structlog
 from opentelemetry import trace
 
 from taskq._json import dumps_str
+from taskq.obs._redact_exc import safe_exception_parts
 
 __all__ = [
     "bind_job_context",
@@ -76,6 +77,25 @@ def _safe_processor_wrapper(
     return _wrapper
 
 
+def _render_exc_info_safe(
+    logger: object, method: str, event_dict: structlog.types.EventDict
+) -> structlog.types.EventDict:
+    """Replace ``exc_info`` with scrubbed ``exception.*`` keys on the JSON channel.
+
+    Mirrors structlog's ``format_exc_info`` key semantics — pop ``exc_info``,
+    render only when it resolves to a real exception — but renders through the
+    ``_redact_exc`` helpers so Postgres DETAIL row values and URI credentials
+    never reach the JSON log line. Without this, ``log.exception()`` shipped a
+    leftover ``"exc_info": true`` bool and foreign stdlib records with real
+    ``exc_info`` tuples died in the orjson fallback (whole line dropped).
+    """
+    exc_info = event_dict.pop("exc_info", None)
+    parts = safe_exception_parts(exc_info)
+    if parts is not None:
+        event_dict.update(parts)
+    return event_dict
+
+
 def setup_logging(
     *,
     level: str = "INFO",
@@ -102,12 +122,26 @@ def setup_logging(
         _safe_processor_wrapper(structlog.processors.EventRenamer("event")),
     ]
 
+    formatter_processors: list[structlog.types.Processor]
     if log_format == "console":
+        # Console keeps ``exc_info`` intact: ``ConsoleRenderer`` renders the
+        # pretty traceback itself (its own redaction-free dev view).
         renderer: structlog.types.Processor = structlog.dev.ConsoleRenderer()
+        formatter_processors = [
+            structlog.stdlib.ProcessorFormatter.remove_processors_meta,
+            renderer,
+        ]
     else:
         from taskq._json import structlog_serializer
 
         renderer = structlog.processors.JSONRenderer(serializer=structlog_serializer)
+        formatter_processors = [
+            structlog.stdlib.ProcessorFormatter.remove_processors_meta,
+            # Before the renderer so orjson never sees the raw tuple; NOT in the
+            # shared chain, which the console formatter also consumes.
+            _safe_processor_wrapper(_render_exc_info_safe),
+            renderer,
+        ]
 
     structlog.configure(
         processors=[
@@ -120,10 +154,7 @@ def setup_logging(
     )
 
     formatter = structlog.stdlib.ProcessorFormatter(
-        processors=[
-            structlog.stdlib.ProcessorFormatter.remove_processors_meta,
-            renderer,
-        ],
+        processors=formatter_processors,
         foreign_pre_chain=[
             _safe_processor_wrapper(structlog.processors.TimeStamper(fmt="iso", utc=True)),
             _safe_processor_wrapper(structlog.stdlib.add_log_level),
