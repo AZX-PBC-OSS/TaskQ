@@ -1246,3 +1246,47 @@ async def test_run_forever_liveness_restarts_crashed_child() -> None:
         # Trigger graceful shutdown
         signal_handlers[signal.SIGTERM]()
         await asyncio.wait_for(task, timeout=3.0)
+
+
+# ── child-exit events carry the workgroup's identity ───────────────────
+#
+# `_handle_child_exit` received `actors` and `wg_instance` and dropped
+# both from every event it logs. `workgroup.start` logs them once at
+# startup, but the events that matter operationally — a child exiting and
+# the CRITICAL burst-limit trip — carried only the worker name, so they
+# could not be correlated back to the workgroup instance that owns them.
+
+
+@pytest.mark.asyncio
+async def test_child_exit_events_carry_workgroup_identity() -> None:
+    """Both the exit event and the CRITICAL burst-limit event identify the
+    workgroup instance and its actor set."""
+    import structlog
+
+    scfg = SupervisorConfig(
+        backoff_initial=0.01,
+        backoff_max=0.1,
+        backoff_factor=2.0,
+        burst_limit=1,
+        burst_window=60.0,
+    )
+    child = _make_child()
+    child.backoff = 0.01
+    shutting_down = asyncio.Event()
+    wg_instance = UUID(int=7)
+
+    with structlog.testing.capture_logs() as captured:
+        child.process = _proc(FakeProcess(returncode=1))
+        await _handle_child_exit(child, "billing,email", wg_instance, scfg, shutting_down)
+        child.process = _proc(FakeProcess(returncode=1))
+        await _handle_child_exit(child, "billing,email", wg_instance, scfg, shutting_down)
+
+    exits = [e for e in captured if e["event"] == "workgroup-child-exit"]
+    assert exits, "no workgroup-child-exit event captured"
+    assert all(e["instance_id"] == str(wg_instance) for e in exits)
+    assert all(e["actors"] == "billing,email" for e in exits)
+
+    burst = [e for e in captured if e["event"] == "workgroup-burst-limit-exceeded"]
+    assert len(burst) == 1
+    assert burst[0]["instance_id"] == str(wg_instance)
+    assert burst[0]["actors"] == "billing,email"

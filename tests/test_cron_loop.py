@@ -518,3 +518,61 @@ async def test_cron_fire_without_identity_key_leaves_it_none() -> None:
     enqueued = [j for j in backend._jobs.values() if j.actor == "plain_actor"]
     assert len(enqueued) == 1
     assert enqueued[0].identity_key is None
+
+
+# ── cron fire events carry the firing worker's id ──────────────────────
+#
+# `fire_schedule` receives `worker_id` and dropped it from every event it
+# logs, while the 13 sibling leader-loop events in `_leader_sweeps.py` all
+# carry `worker_id=`. Cron runs only on the leader and leadership moves
+# between workers across a rolling deploy, so "which worker fired (or
+# failed) this schedule" is exactly the attribution needed to debug one.
+
+
+async def test_cron_fired_event_carries_worker_id() -> None:
+    """The success event identifies the worker that fired the schedule."""
+    import structlog
+
+    now = datetime(2025, 1, 1, 10, 0, 0, tzinfo=UTC)
+    worker_id = new_uuid()
+    row = _make_schedule_row(actor="attributed_actor", next_fire_at=now)
+    backend = InMemoryBackend(clock=FakeClock(now))
+    backend.register_actor_config(actor="attributed_actor", queue="default")
+    conn = _FakeCronConn(actor_config_row=_make_actor_config_row())
+    actor_config_cache: dict[str, _ActorConfig] = {}
+
+    with structlog.testing.capture_logs() as captured:
+        await fire_schedule(
+            conn, row, now, _cron_settings(), backend, "taskq", worker_id, actor_config_cache
+        )
+
+    fired = [e for e in captured if e["event"] == "cron fired"]
+    assert len(fired) == 1
+    assert fired[0]["worker_id"] == str(worker_id)
+
+
+async def test_cron_fire_failed_event_carries_worker_id() -> None:
+    """The failure event identifies the worker too — the case where the
+    attribution actually matters."""
+    import structlog
+
+    now = datetime(2025, 1, 1, 10, 5, 0, tzinfo=UTC)
+    worker_id = new_uuid()
+    row = _make_schedule_row(
+        actor="failing_actor",
+        payload_factory="nonexistent.module.fn",
+        consecutive_failures=0,
+        next_fire_at=datetime(2025, 1, 1, 10, 0, 0, tzinfo=UTC),
+    )
+    conn = _FakeCronConn(actor_config_row=_make_actor_config_row())
+    backend = InMemoryBackend(clock=FakeClock(now))
+    actor_config_cache: dict[str, _ActorConfig] = {}
+
+    with structlog.testing.capture_logs() as captured:
+        await fire_schedule(
+            conn, row, now, _cron_settings(), backend, "taskq", worker_id, actor_config_cache
+        )
+
+    failed = [e for e in captured if e["event"] == "cron fire failed"]
+    assert len(failed) == 1
+    assert failed[0]["worker_id"] == str(worker_id)

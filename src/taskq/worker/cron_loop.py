@@ -172,7 +172,7 @@ async def fire_schedule(
     with safe_start_span(
         "cron fire",
         kind=SpanKind.PRODUCER,
-        attributes={"cron_schedule_name": row["actor"]},
+        attributes={"cron_schedule_name": row["actor"], "taskq.worker_id": str(worker_id)},
         links=links,
         new_root=True,
     ) as span:
@@ -261,6 +261,7 @@ async def fire_schedule(
                 "cron fired",
                 kind="cron_fire",
                 actor=actor,
+                worker_id=str(worker_id),
                 schedule_id=str(row["id"]),
                 next_fire_at=next_fire.isoformat(),
             )
@@ -305,6 +306,7 @@ async def fire_schedule(
                     "cron schedule auto-disabled",
                     kind="cron_fire",
                     actor=row["actor"],
+                    worker_id=str(worker_id),
                     schedule_id=str(row["id"]),
                     consecutive_failures=consecutive,
                     error=str(exc),
@@ -322,6 +324,7 @@ async def fire_schedule(
                     log.warning(
                         "cron error UPDATE skipped; schedule no longer enabled",
                         kind="cron_fire",
+                        worker_id=str(worker_id),
                         schedule_id=str(row["id"]),
                     )
 
@@ -329,6 +332,7 @@ async def fire_schedule(
                     "cron fire failed",
                     kind="cron_fire",
                     actor=row["actor"],
+                    worker_id=str(worker_id),
                     schedule_id=str(row["id"]),
                     consecutive_failures=consecutive,
                     error=str(exc),

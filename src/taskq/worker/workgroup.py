@@ -525,7 +525,13 @@ async def _handle_child_exit(
         return None
 
     rc = proc.returncode
-    logger.info("workgroup-child-exit", worker=child.spec.name, exit_code=rc)
+    logger.info(
+        "workgroup-child-exit",
+        worker=child.spec.name,
+        exit_code=rc,
+        actors=actors,
+        instance_id=str(wg_instance),
+    )
 
     child.process = None
 
@@ -538,6 +544,8 @@ async def _handle_child_exit(
             worker=child.spec.name,
             restarts=len(child.restart_times),
             window_s=scfg.burst_window,
+            actors=actors,
+            instance_id=str(wg_instance),
         )
         return None
 
@@ -549,6 +557,8 @@ async def _handle_child_exit(
         worker=child.spec.name,
         delay_s=round(delay, 1),
         attempt=child.restart_count,
+        actors=actors,
+        instance_id=str(wg_instance),
     )
     return delay
 
