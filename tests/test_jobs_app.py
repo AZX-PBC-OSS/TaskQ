@@ -18,7 +18,7 @@ from taskq.backend import Backend, EnqueueArgs
 from taskq.backend.postgres import PostgresBackend
 from taskq.settings import WorkerSettings
 from taskq.testing.fixtures import _open_pg_backend
-from taskq.worker.deps import WorkerDeps
+from taskq.worker.deps import WorkerConnections, WorkerDeps
 
 pytestmark = pytest.mark.integration
 
@@ -81,10 +81,17 @@ async def test_open_pg_backend_cleans_up_on_constructor_failure(
     @asynccontextmanager
     async def _tracked_open(
         settings: WorkerSettings,
+        *,
+        connections: WorkerConnections | None = None,
     ) -> AsyncGenerator[WorkerDeps, None]:
-        """Wraps the real ``open_worker_deps``; sets aexit_called on exit."""
+        """Wraps the real ``open_worker_deps``; sets aexit_called on exit.
+
+        Mirrors the real signature including ``connections``, which this test
+        never passes: a wrapper that silently drops a parameter it forwards
+        for stops being a wrapper the moment a caller uses it.
+        """
         nonlocal aexit_called
-        async with real_open(settings) as deps:
+        async with real_open(settings, connections=connections) as deps:
             yield deps
         aexit_called = True
 
