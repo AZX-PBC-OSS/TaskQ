@@ -334,7 +334,22 @@ def test_record_cron_failure_reset(otel_reader: InMemoryMetricReader) -> None:
     dps = counter_data_points(otel_reader, "taskq.cron.consecutive_failures")
     assert len(dps) == 1
     assert dps[0].value == 0
-    assert dps[0].attributes == {}
+    assert dps[0].attributes == {"schedule_id": "schedule-1"}
+
+
+def test_record_cron_failure_is_dimensioned_per_schedule(
+    otel_reader: InMemoryMetricReader,
+) -> None:
+    """cron_auto_disable_threshold is evaluated per schedule, so the metric
+    that watches it has to be readable per schedule: summed across schedules,
+    one schedule failing 10 times is indistinguishable from ten schedules
+    failing once, and only the first trips the threshold."""
+    obs_mod.record_cron_failure("schedule-a", 3)
+    obs_mod.record_cron_failure("schedule-b", 1)
+
+    dps = counter_data_points(otel_reader, "taskq.cron.consecutive_failures")
+    by_schedule = {dp.attributes["schedule_id"]: dp.value for dp in dps if dp.attributes}
+    assert by_schedule == {"schedule-a": 3, "schedule-b": 1}
 
 
 def test_record_cron_failure_disabled() -> None:

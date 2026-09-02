@@ -367,24 +367,28 @@ def record_process_duration(actor: str, queue: str, elapsed: float) -> None:
 
 #: Why identity values are not metric dimensions
 #: ------------------------------------------------
-#: ``worker_id`` is a fresh UUID per worker PROCESS and ``schedule_id`` a UUID
-#: per cron row. Azure Monitor counts every unique (metric, dimension key,
-#: dimension value) combination seen in 12 hours as an active time series, caps
-#: a subscription at 50,000 of them per region, and advises staying under ~100
-#: values per dimension. On Kubernetes every deploy, restart and autoscale
-#: event mints a new ``worker_id``, so these dimensions grow without bound --
-#: and the failure mode is throttled ingestion across EVERY custom metric in
-#: the subscription, with no backfill of what was dropped. Not repairable
-#: after the fact, so the dimension is not carried at all.
+#: ``worker_id`` is a fresh UUID per worker PROCESS. Azure Monitor counts every
+#: unique (metric, dimension key, dimension value) combination seen in 12 hours
+#: as an active time series, caps a subscription at 50,000 of them per region,
+#: and advises staying under ~100 values per dimension. On Kubernetes every
+#: deploy, restart and autoscale event mints a new ``worker_id``, so the
+#: dimension grows without bound -- and the failure mode is throttled ingestion
+#: across EVERY custom metric in the subscription, with no backfill of what was
+#: dropped. Not repairable after the fact, so it is not carried at all.
 #:
-#: The signal is not lost: per-worker and per-schedule attribution lives on
-#: spans and log lines, where cardinality is free (``worker_id`` is bound via
-#: contextvars onto every log line; ``schedule_id`` is on the cron-fire and
-#: auto-disable logs; ``taskq.worker_id`` is a cron-fire span attribute).
+#: The signal is not lost: per-worker attribution lives on spans and log lines,
+#: where cardinality is free (``worker_id`` is bound via contextvars onto every
+#: log line; ``taskq.worker_id`` is a cron-fire span attribute).
 #:
-#: The ``worker_id`` / ``schedule_id`` parameters below are kept: they are part
-#: of the published ``taskq.obs`` surface, and dropping them would be a
-#: breaking change for a value the callers already have to hand.
+#: ``schedule_id`` is NOT in the same class and stays a dimension on
+#: ``taskq.cron.consecutive_failures``: schedules are a bounded set an operator
+#: creates by hand, not a per-process UUID, and ``cron_auto_disable_threshold``
+#: is evaluated per schedule -- summed across schedules the metric no longer
+#: matches the mechanism it exists to monitor.
+#:
+#: The ``worker_id`` parameters below are kept: they are part of the published
+#: ``taskq.obs`` surface, and dropping them would be a breaking change for a
+#: value the callers already have to hand.
 
 _lock_expires_in_seconds = get_meter().create_histogram(
     "taskq.lock.expires_in_seconds",
@@ -583,11 +587,7 @@ def record_election_attempt(worker_id: str, *, won: bool) -> None:
 
 _cron_consecutive_failures = get_meter().create_up_down_counter(
     "taskq.cron.consecutive_failures",
-    description=(
-        "Consecutive cron execution failures, summed across schedules. No "
-        "dimensions: a non-zero value means at least one schedule is failing, "
-        "and the cron-fire logs name which."
-    ),
+    description="Consecutive cron execution failures, labeled by schedule_id.",
     unit="1",
 )
 
@@ -630,8 +630,7 @@ def record_cron_failure(schedule_id: str, delta: int) -> None:
     """
     if not _otel_enabled:
         return
-    del schedule_id  # Why: not a dimension -- see the cardinality note above.
-    _cron_consecutive_failures.add(delta)
+    _cron_consecutive_failures.add(delta, {"schedule_id": schedule_id})
 
 
 _disabled_schedules_count: int = 0

@@ -871,11 +871,11 @@ class TestReservationCancelCronMetrics:
             cron_dps = [
                 p for p in cron_metric[0].data.data_points if isinstance(p, NumberDataPoint)
             ]
-            # One series, no schedule_id dimension: a UUID per cron row is an
-            # unbounded Azure Monitor time-series source. Which schedule failed
-            # is on the cron-fire and auto-disable logs.
+            # One series per schedule: the auto-disable threshold is per
+            # schedule, so a sum across schedules cannot tell one schedule
+            # failing N times from N schedules failing once.
             assert len(cron_dps) == 1
-            assert dict(cron_dps[0].attributes or {}) == {}
+            assert dict(cron_dps[0].attributes or {}) == {"schedule_id": "schedule_1"}
             assert cron_dps[0].value == 2
 
             obs_mod.record_cron_failure("schedule_1", delta=-2)

@@ -12,14 +12,15 @@ restart and autoscale event mints new values, so a ``worker_id`` dimension adds
 time series without bound. The consequence is not a bad chart -- it is
 throttled ingestion across every custom metric in the subscription, and Azure
 does not backfill what was throttled, so it is not repairable after the fact.
-The same argument applies to ``schedule_id``.
+``schedule_id`` is deliberately NOT in this table: schedules are a bounded set
+an operator creates by hand, and ``cron_auto_disable_threshold`` is evaluated
+per schedule, so ``taskq.cron.consecutive_failures`` keeps that dimension.
 
 The assertion is therefore the failure mode itself: recording from several
 distinct identities must produce ONE time series, not one per identity. Worker
-and schedule attribution is not lost -- it lives on spans and log lines, where
-cardinality is free (``taskq.worker_id`` on the cron-fire span; ``worker_id``
-bound via contextvars onto every log line; ``schedule_id`` on the cron-fire and
-auto-disable logs).
+attribution is not lost -- it lives on spans and log lines, where cardinality
+is free (``taskq.worker_id`` on the cron-fire span; ``worker_id`` bound via
+contextvars onto every log line).
 """
 
 from __future__ import annotations
@@ -68,12 +69,6 @@ _CASES: list[tuple[str, str, str, Callable[[str], None]]] = [
         "taskq.cron.lock_contention",
         "counter",
         obs_mod.record_cron_lock_contention,
-    ),
-    (
-        "_cron_consecutive_failures",
-        "taskq.cron.consecutive_failures",
-        "counter",
-        lambda ident: obs_mod.record_cron_failure(ident, 1),
     ),
 ]
 
