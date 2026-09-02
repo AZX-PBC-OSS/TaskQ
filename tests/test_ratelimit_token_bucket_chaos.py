@@ -5,11 +5,10 @@ Exercises:
 - PG fallback recovery (restart Redis, verify return to redis backend)
 - Both backends unavailable (PG error propagates from acquire)
 - PG contention (50 concurrent acquires, no deadlock)
-- Clock skew (backward FakeClock step does not inflate remaining)
+- Clock skew (a backward step of the STORE clock neither refills nor indebts)
 """
 
 import asyncio
-from datetime import UTC, datetime, timedelta
 
 import asyncpg
 import pytest
@@ -21,7 +20,6 @@ from taskq.backend.clock import SystemClock
 from taskq.ratelimit import TokenBucket
 from taskq.settings import WorkerSettings
 from taskq.testing.asyncpg_chaos import ChaosConnection, ChaosPool
-from taskq.testing.clock import FakeClock
 from taskq.testing.fixtures import (  # pyright: ignore[reportPrivateUsage]  # Why: asserting the concrete shim type below is the pin; private prefix scopes it to the testing package (same pattern as _create_worker).
     ModulePgSchema,
     RedisContainerLike,
@@ -312,37 +310,76 @@ async def test_pg_contention_50_concurrent(
     assert allowed_count == int(expected_consumed)
 
 
-# ── Clock skew ────────────────────────────────────────────────────
+# ── Clock skew: the STORE's clock, in the store's own domain ──────────
+#
+# The refill math for the redis and postgres backends runs entirely inside
+# the store (``redis.call('TIME')`` / ``clock_timestamp()``); no Python clock
+# participates.  Simulating a backward step of that clock therefore means
+# moving the store's own persisted ``ts`` FORWARD relative to the store's
+# now — which is exactly the state a backward step leaves behind: the last
+# write is stamped in the future.  Injecting a FakeClock here would be inert.
+
+_SKEW_SECS = 600.0
+
+
+async def _skew_redis_ts_forward(
+    client: "redis_async.Redis", schema: str, name: str, seconds: float
+) -> None:
+    """Move the bucket's stored ``ts`` *seconds* into the store's future."""
+    key = f"taskq:{schema}:rl:tb:{{{name}}}"
+    stored = await client.hget(key, "ts")  # pyright: ignore[reportGeneralTypeIssues, reportUnknownMemberType]  # Why: redis-py's async hget is typed as returning Awaitable[Any].
+    assert stored is not None, "acquire must have persisted a ts to skew"
+    await client.hset(key, "ts", str(float(stored) + seconds))  # pyright: ignore[reportGeneralTypeIssues, reportUnknownMemberType]  # Why: as above.
+
+
+async def _skew_pg_ts_forward(pool: asyncpg.Pool, schema: str, name: str, seconds: float) -> None:
+    """PG analog of :func:`_skew_redis_ts_forward`, in the server domain."""
+    async with pool.acquire() as conn:
+        updated = await conn.execute(
+            f'UPDATE "{schema}".rate_limit_buckets '  # noqa: S608  # Why: schema is fixture-derived; values are $1/$2-bound
+            f"SET state = jsonb_set(state, '{{ts}}', "
+            f"to_jsonb((state->>'ts')::float8 + $2::float8)) "
+            f"WHERE bucket_name = $1",
+            name,
+            seconds,
+        )
+    assert updated == "UPDATE 1", "acquire must have persisted a bucket row to skew"
 
 
 @pytest.mark.parametrize("backend", ["redis", "postgres"])
-async def test_clock_skew_backward_step(
+async def test_a_backward_step_of_the_store_clock_neither_refills_nor_indebts(
     backend: str,
     module_pg_schema: ModulePgSchema,
     module_pg_pool: asyncpg.Pool,
     redis_container: RedisContainerLike,
 ) -> None:
-    """Inject FakeClock; acquire at t=T; move clock backward 5s;
-    acquire again. The elapsed clamp (max(0, now - ts)) prevents negative
-    refill — remaining does NOT increase from the backward step.
+    """A backward step of the store clock must cost the bucket nothing and
+    credit it nothing.
+
+    Acquire once from a capacity-10 bucket (remaining 9), then step the store
+    clock back 600s by stamping the persisted ``ts`` 600s into the store's
+    future, then acquire again.  The elapsed clamp turns those 600
+    unaccountable seconds into zero refill, so the second acquire is admitted
+    and leaves exactly 8.
+
+    Without the clamp the refill term runs in reverse: 9 - 600*1.0 = -591, the
+    acquire is DENIED, and the debt outlives the clock recovering because
+    ``ts`` is restamped forward on every acquire.  That is the regression this
+    pins — an assertion of the form ``remaining <= remaining_after_first``
+    would accept the debt, since a token debt is also a decrease.
     """
     schema = module_pg_schema.schema_name
     settings = WorkerSettings.load_from_dict(
         {"pg_dsn": module_pg_schema.pg_dsn, "schema_name": schema},
     )
 
-    capacity = 10.0
-    refill = 1.0
     bucket_name = _unique_name()
     tb = TokenBucket(
         name=bucket_name,
-        capacity=capacity,
-        refill_per_second=refill,
+        capacity=10.0,
+        refill_per_second=1.0,
         backend=backend,
     )
-
-    t0 = datetime(2025, 1, 1, 0, 0, 0, tzinfo=UTC)
-    clock = FakeClock(start=t0)
 
     if backend == "redis":
         # Pin the no-docker-I/O invariant: the shared-pair shim's host/port
@@ -353,33 +390,30 @@ async def test_clock_skew_backward_step(
         assert isinstance(redis_container, _RedisContainerShim)
         host = redis_container.get_container_host_ip()
         port = redis_container.get_exposed_port(6379)
-        url = f"redis://{host}:{port}/0"
-        client = redis_async.from_url(url, decode_responses=False)
+        client = redis_async.from_url(f"redis://{host}:{port}/0", decode_responses=False)
         try:
-            r1 = await tb.acquire(
-                redis_client=client, pg_pool=module_pg_pool, clock=clock, settings=settings
-            )
+            r1 = await tb.acquire(redis_client=client, pg_pool=module_pg_pool, settings=settings)
             assert r1.allowed is True
-            remaining_after_first = r1.remaining
+            assert r1.remaining == pytest.approx(9.0)
 
-            clock.move_to(t0 - timedelta(seconds=5))
+            await _skew_redis_ts_forward(client, schema, bucket_name, _SKEW_SECS)
 
-            r2 = await tb.acquire(
-                redis_client=client, pg_pool=module_pg_pool, clock=clock, settings=settings
-            )
-            assert r2.remaining <= remaining_after_first, (
-                f"Backward clock skew inflated remaining: {r2.remaining} > {remaining_after_first}"
-            )
+            r2 = await tb.acquire(redis_client=client, pg_pool=module_pg_pool, settings=settings)
         finally:
             await client.aclose()
     else:
-        r1 = await tb.acquire(pg_pool=module_pg_pool, clock=clock, settings=settings)
+        r1 = await tb.acquire(pg_pool=module_pg_pool, settings=settings)
         assert r1.allowed is True
-        remaining_after_first = r1.remaining
+        assert r1.remaining == pytest.approx(9.0)
 
-        clock.move_to(t0 - timedelta(seconds=5))
+        await _skew_pg_ts_forward(module_pg_pool, schema, bucket_name, _SKEW_SECS)
 
-        r2 = await tb.acquire(pg_pool=module_pg_pool, clock=clock, settings=settings)
-        assert r2.remaining <= remaining_after_first, (
-            f"Backward clock skew inflated remaining: {r2.remaining} > {remaining_after_first}"
-        )
+        r2 = await tb.acquire(pg_pool=module_pg_pool, settings=settings)
+
+    assert r2.allowed is True, (
+        f"a backward store-clock step must not deny: remaining={r2.remaining}"
+    )
+    assert r2.remaining == pytest.approx(8.0), (
+        f"a backward store-clock step must neither refill nor indebt the "
+        f"bucket: expected 8.0, got {r2.remaining}"
+    )

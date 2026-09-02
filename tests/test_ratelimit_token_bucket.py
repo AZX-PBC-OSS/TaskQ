@@ -160,7 +160,16 @@ async def test_memory_backend_no_external_deps() -> None:
 
 
 async def test_backward_clock_step_safe() -> None:
-    """backward clock step clamps elapsed to 0; no negative refill."""
+    """A backward clock step must cost the bucket nothing and credit it
+    nothing: the elapsed clamp turns 30 unaccountable seconds into zero
+    refill, so the balance is exactly the pre-step balance less what this
+    call consumes.
+
+    Unclamped, ``elapsed`` would be -30s and the refill term would run in
+    reverse (50 - 30*10 - 1 = -251), leaving a token debt that outlives the
+    clock recovering, because ``ts`` is stamped forward on every acquire.
+    Asserting only ``remaining <= 50`` would accept that debt.
+    """
     tb = _bucket(capacity=100, refill=10)
     clock = FakeClock(_START)
 
@@ -171,7 +180,7 @@ async def test_backward_clock_step_safe() -> None:
     clock.advance(timedelta(seconds=-30))
     r2 = await tb.acquire(count=1, clock=clock)
     assert r2.allowed is True
-    assert r2.remaining <= 50.0
+    assert r2.remaining == pytest.approx(49.0)
 
 
 # ── Logging: allowed acquire ──────────────────────────────────────────
