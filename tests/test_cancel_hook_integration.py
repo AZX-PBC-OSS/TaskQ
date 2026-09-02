@@ -113,7 +113,7 @@ async def _enqueue_and_dispatch(
     schema = backend._schema_name
     async with backend._worker_pool.acquire() as conn:
         await conn.execute(
-            f"UPDATE \"{schema}\".jobs SET status = 'running', locked_by_worker = $1, lock_expires_at = now() + $2::interval, started_at = now(), last_heartbeat_at = now() WHERE id = $3",  # noqa: S608 # Why: schema identifier from validated WorkerSettings; asyncpg has no parameter binding for identifiers
+            f"UPDATE \"{schema}\".jobs SET status = 'running', locked_by_worker = $1, lock_expires_at = clock_timestamp() + $2::interval, started_at = clock_timestamp(), last_heartbeat_at = clock_timestamp() WHERE id = $3",  # noqa: S608 # Why: schema identifier from validated WorkerSettings; asyncpg has no parameter binding for identifiers
             worker_id,
             lock_lease,
             job_id,
@@ -231,41 +231,6 @@ class _ChaosPool:
                 yield _FlakyConnection(conn, self._error_sql_trigger, self)
             else:
                 yield conn
-
-
-# Derived from src/taskq/backend/postgres.py:84-119 (_SWEEP_1_SQL).
-# TODO: switch to the public helper once one is exposed.
-_SWEEP_1_SQL_TEST = """\
-WITH snap AS (
-    SELECT id, locked_by_worker
-    FROM \"{schema}\".jobs
-    WHERE status = 'running'
-      AND lock_expires_at < now()
-      AND (cancel_phase = 0
-           OR lock_expires_at < now() - $1::interval - $2::interval - interval '60 seconds')
-    FOR UPDATE SKIP LOCKED
-)
-UPDATE \"{schema}\".jobs j
-SET status = CASE
-        WHEN j.attempt < j.max_attempts AND j.retry_kind != 'non_retryable'
-            THEN 'pending'::\"{schema}\".job_status
-        ELSE 'crashed'::\"{schema}\".job_status
-    END,
-    locked_by_worker = NULL,
-    lock_expires_at = NULL,
-    scheduled_at = CASE
-        WHEN j.attempt < j.max_attempts AND j.retry_kind != 'non_retryable'
-            THEN clock_timestamp() + interval '5 seconds'
-        ELSE j.scheduled_at
-    END,
-    finished_at = CASE
-        WHEN NOT (j.attempt < j.max_attempts AND j.retry_kind != 'non_retryable')
-            THEN clock_timestamp()
-        ELSE j.finished_at
-    END
-FROM snap
-WHERE j.id = snap.id
-RETURNING j.id, j.status, j.attempt, j.started_at, snap.locked_by_worker"""
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -649,23 +614,34 @@ async def test_worker_dies_phase1(pg_dsn: str) -> None:
                 await asyncio.sleep(0.2)
 
                 schema = settings.schema_name
-                sweep_sql = _SWEEP_1_SQL_TEST.format(schema=schema)
 
-                async with deps.worker_pool.acquire() as sweep_conn:
+                async with deps.worker_pool.acquire() as sweep_conn, sweep_conn.transaction():
                     # Simulate process death: reset the row to running + expired lock.
-                    # In a real SIGKILL, the terminal write never commits; here the
-                    # asyncio.shield in mark_cancelled already committed, so we undo
-                    # it to faithfully test the sweep's reclaim path (_SWEEP_1_SQL).
+                    # In a real SIGKILL the terminal write never commits, so BOTH
+                    # halves of it must be undone here — the jobs row and the
+                    # job_attempts row mark_cancelled recorded for this attempt.
+                    # Leaving the attempt row behind is not a state a crashed
+                    # worker can produce (the sweep only ever sees an attempt it
+                    # is the first to terminate), and it made the sweep collide
+                    # on job_attempts_pkey.
                     await sweep_conn.execute(
-                        f"UPDATE \"{schema}\".jobs SET status = 'running'::\"{schema}\".job_status, locked_by_worker = $1, cancel_phase = 1, lock_expires_at = now() - interval '70 seconds' WHERE id = $2",  # noqa: S608 # Why: schema identifier from validated WorkerSettings; asyncpg has no parameter binding for identifiers
+                        f"UPDATE \"{schema}\".jobs SET status = 'running'::\"{schema}\".job_status, locked_by_worker = $1, cancel_phase = 1, lock_expires_at = clock_timestamp() - interval '70 seconds' WHERE id = $2",  # noqa: S608 # Why: schema identifier from validated WorkerSettings; asyncpg has no parameter binding for identifiers
                         worker_id,
                         job_id,
                     )
                     await sweep_conn.execute(
-                        sweep_sql,
-                        timedelta(seconds=settings.cancellation_grace_period),
-                        timedelta(seconds=settings.cleanup_grace_period),
+                        f'DELETE FROM "{schema}".job_attempts WHERE job_id = $1',  # noqa: S608 # Why: schema identifier from validated WorkerSettings; asyncpg has no parameter binding for identifiers
+                        job_id,
                     )
+
+                # The reclaim sweep runs through its public entry point: a
+                # local copy of the production statement drifted out of the
+                # server-clock domain once already and silently stopped
+                # exercising the shipped predicates.
+                await backend.reclaim_expired_locks(
+                    timedelta(seconds=settings.cancellation_grace_period),
+                    timedelta(seconds=settings.cleanup_grace_period),
+                )
 
                 row = await backend.get(job_id)
                 assert row is not None
