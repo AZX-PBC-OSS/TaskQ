@@ -37,6 +37,10 @@ from taskq.testing.in_memory import InMemoryBackend
 
 _START = datetime(2025, 1, 1, tzinfo=UTC)
 _LOCK_LEASE = timedelta(seconds=60)
+#: Statuses in which a job is waiting to be dispatched. The retry arms hand a
+#: job back through these, and that is the only point cancel state may reset.
+_DISPATCHABLE_STATUSES: frozenset[str] = frozenset({"pending", "scheduled"})
+
 _CANCEL_GRACE = timedelta(seconds=30)
 _CLEANUP_GRACE = timedelta(seconds=30)
 
@@ -391,15 +395,41 @@ class JobStateMachine(RuleBasedStateMachine):
                     f"Terminal status {row.status!r} has outgoing transitions"
                 )
 
-    # ── Invariant: cancel_phase never decreases ──────────────
+    # ── Invariant: cancel_phase only ever resets on a dispatch hand-back ──
 
     @invariant()
-    def check_cancel_phase_monotonic(self) -> None:
+    def check_cancel_phase_only_clears_on_dispatch_handback(self) -> None:
+        """``cancel_phase`` never decreases, except to zero when the job is
+        handed back for dispatch.
+
+        This invariant used to be unconditional monotonicity, which the retry
+        arms deliberately broke: a retry REUSES the same job row, so a
+        ``cancel_phase`` left in place was inherited by the next attempt,
+        which was then dispatched already at FORCED. The cancel controller's
+        fast-advance jumped straight to FORCED without ever calling
+        ``task.cancel()``, so that attempt could never be cancelled again —
+        only abandoned while its coroutine kept running. Clearing on every arm
+        that hands the job back mirrors ``_SWEEP_1_SQL`` and
+        ``_ISOLATE_JOB_SQL_TEMPLATE``, which already did it.
+
+        So the reset is correct, and narrowing the invariant to permit it
+        makes this STRONGER than the version it replaces: a clear is now only
+        legal on the hand-back, must go all the way to zero, and is still a
+        failure anywhere else — while running (which would silently drop a
+        live cancel) or on a terminal row (whose columns are the audit trail
+        that ``mark_abandoned``'s ``cancel_phase=2`` guard reads).
+        """
         for jid, row in self.backend._jobs.items():  # type: ignore[reportPrivateUsage] # Why: test-only private access for invariant check
             prev = self._prev_cancel_phase.get(jid)
-            if prev is not None:
-                assert row.cancel_phase >= prev, (
-                    f"cancel_phase decreased for job {jid}: {prev} -> {row.cancel_phase}"
+            if prev is not None and row.cancel_phase < prev:
+                assert row.status in _DISPATCHABLE_STATUSES, (
+                    f"cancel_phase decreased for job {jid} ({prev} -> "
+                    f"{row.cancel_phase}) while status={row.status!r}; it may "
+                    "only be cleared when the job is handed back for dispatch"
+                )
+                assert row.cancel_phase == 0, (
+                    f"cancel_phase partially decreased for job {jid}: {prev} -> "
+                    f"{row.cancel_phase}; a dispatch hand-back must clear it fully"
                 )
             self._prev_cancel_phase[jid] = row.cancel_phase
 
