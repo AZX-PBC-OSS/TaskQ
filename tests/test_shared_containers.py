@@ -662,15 +662,9 @@ class _FakeSweepContainer:
         self.name = name
         self.status = status
         self.labels = labels or {}
-        # Why: anchored to the real clock — the wrapper sweep computes age against
-        # datetime.now(), so a fixed-_NOW default would cross SWEEP_AGE_LIMIT a day
-        # after authoring and trip the age backstop on every "fresh" fake.
-        effective_created = (
-            created if created is not None else datetime.now(tz=UTC) - timedelta(hours=1)
-        )
         self.attrs = {
             "Config": {"Image": image},
-            "Created": effective_created.isoformat(),
+            "Created": created.isoformat(),
         }
         self.removed = False
 
@@ -690,12 +684,7 @@ class _FakeSweepNetwork:
         # Real clock, for the same reason as _FakeSweepContainer above.
         created = datetime.now(UTC) - timedelta(hours=1) if created is None else created
         self.name = name
-        # Why: real-clock anchor, same rationale as _FakeSweepContainer — the
-        # network sweep compares against datetime.now(), not the test-module _NOW.
-        effective_created = (
-            created if created is not None else datetime.now(tz=UTC) - timedelta(hours=1)
-        )
-        self.attrs = {"Created": effective_created.isoformat()}
+        self.attrs = {"Created": created.isoformat()}
         self.removed = False
 
     def remove(self) -> None:
