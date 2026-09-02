@@ -40,6 +40,40 @@ the other and then tests a client production never constructs. See the
 section comment there.
 """
 
+# ── Static guards elsewhere in the suite: triage of record ────────────────
+#
+# A sweep of every test that read source text rather than exercising
+# behaviour finished on this branch. Recorded here so the survivors are not
+# mistaken for ones nobody looked at.
+#
+# DELIBERATELY STATIC — codebase invariants with no runtime expression. A
+# running system cannot be asked "does this module import that one at import
+# time"; the property is structural, so the check is too. All are AST-based or
+# an inventory of an artifact, not substring greps:
+#   - tests/_import_discipline.py (+ its callers in web_admin/test_factory,
+#     web_admin/test_sse, test_web_health) — module-level import coupling and
+#     `from __future__ import annotations`.
+#   - test_notify.py — ast.NodeVisitor guard on pool attribute access.
+#   - test_retry_classifier.py — taskq.retry's import boundary from
+#     taskq.backend. (Its AST walk runs in a subprocess for no reason that
+#     survives inspection; harmless, and cosmetic to unpick.)
+#   - test_leader_sweeps_coverage.py — the acquire-timeout AST invariant.
+#   - test_scheduled_writers_audit.py — inventory of `mark_*` methods.
+#   - test_sse_connection_caps.py::test_no_uncapped_sse_endpoint_remains —
+#     inventory over the web package; it guards endpoints not yet written.
+#   - test_max_concurrent_docs_contract.py, and the README/deployment-guide
+#     checks in test_migrate_on_start_worker.py — documentation contracts,
+#     reading docs rather than source. Same shape as test_ci_workflow.py.
+#   - this file — greps the TEST tree for anti-patterns, which is its job.
+#
+# The rule that settled each case: if a scanner's protection was already
+# provided by behavioural tests, it was deleted rather than rewritten, and the
+# claim was measured — revert the guarded thing, count what fails — rather than
+# asserted. Files where that measurement was made carry the numbers in a
+# comment at the site (test_schema_name_validator.py, test_shutdown_integration.py,
+# test_obs_exception_redaction.py, test_pr39_followup_fixes.py,
+# test_drain_old_redis_bounded.py).
+
 import hashlib
 import os
 import re
