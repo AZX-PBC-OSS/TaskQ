@@ -51,7 +51,10 @@ from typing import TYPE_CHECKING, Protocol, get_type_hints, overload
 import structlog
 from pydantic import BaseModel, TypeAdapter
 
-from taskq.backend._protocol import JobStatus
+from taskq.backend._protocol import (
+    JobStatus,
+    _validate_queue_name,  # pyright: ignore[reportPrivateUsage]  # Why: the canonical queue-name validator; the enqueue path (client._args) runs the same one, so the charset cannot drift between the two chokepoints.
+)
 from taskq.ratelimit.refs import KeyedRateLimitRef, KeyedReservationRef
 from taskq.ratelimit.reservation import ConcurrencyReservation
 from taskq.ratelimit.sliding_window import SlidingWindow
@@ -227,6 +230,11 @@ class ActorRef[P: BaseModel, R: BaseModel | None]:
         priority: int = 0,
     ) -> None:
         self.name = name
+        # A malformed declared queue strands every job the actor ever
+        # enqueues on a queue no worker drains; fail at decoration time
+        # (import time in the common case) instead. Same validator the
+        # enqueue path runs — see client._args.build_enqueue_args.
+        _validate_queue_name(queue)
         self.queue = queue
         self.is_sync = is_sync
         self.wants_ctx = wants_ctx

@@ -155,13 +155,15 @@ re-implemented by at least one downstream consumer), so it should mean exactly
 what it appears to mean.
 """
 
-_KEYED_KEY_RE = re.compile(r"^[A-Za-z0-9_\-:.]+$")
+_KEYED_KEY_RE = re.compile(r"\A[A-Za-z0-9_\-:.]+\Z")
 """Character set for keyed-ref name components (``base_name`` and ``key``).
 
 Both segments of the concrete name ``f"{base_name}:{key}"`` flow into Redis
 key names and PG text columns — this regex prevents control characters,
 spaces, slashes, and other metacharacters from reaching storage.  Mirrors
-the ``_IDENT_RE`` approach for schema identifiers.
+the ``_IDENT_RE`` approach for schema identifiers, including the
+``\\A``/``\\Z`` anchoring: ``$`` also matches immediately before a trailing
+newline, so ``"key\\n"`` satisfied ``^...$``.
 """
 
 _MAX_KEYED_KEY_LEN = 255

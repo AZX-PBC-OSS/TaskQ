@@ -105,6 +105,7 @@ async def test_key_length_cap_accepts_key_of_exactly_255_chars() -> None:
         "key;DROP TABLE",
         "key\x00null",
         "key\nnewline",
+        "key\n",  # trailing newline: `$` matched before it before the \A...\Z re-anchor
         "key\ttab",
         "key@symbol",
         "key/slash",

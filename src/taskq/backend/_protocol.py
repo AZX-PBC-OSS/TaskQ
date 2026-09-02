@@ -234,7 +234,10 @@ IdentityKey = NewType("IdentityKey", str)
 """Distinguishes identity keys from idempotency keys at call sites."""
 
 
-_QUEUE_NAME_RE: Final[re.Pattern[str]] = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*$")
+_QUEUE_NAME_RE: Final[re.Pattern[str]] = re.compile(r"\A[A-Za-z_][A-Za-z0-9_.-]*\Z")
+# \A/\Z, not ^/$: Python's `$` also matches immediately before a trailing
+# newline, so "default\n" satisfied ^...$ (see _IDENT_RE's docstring in
+# taskq.constants for the full rationale — same trap, same fix).
 
 
 def _validate_queue_name(v: str) -> str:
@@ -613,6 +616,22 @@ class JobFilter:
                 "use status for specific status(es) or active for the "
                 "terminal/non-terminal meta-filter"
             )
+        # A NUL in a text predicate binds as text on PG (queue/actor/
+        # identity_key) or text[] (tags) and surfaces as a raw asyncpg
+        # CharacterNotInRepertoireError (SQLSTATE 22021) — the same trap
+        # EnqueueArgs._check_no_nul_text guards on the write path.
+        # Rejecting here makes both backends' list_jobs/cancel_where
+        # paths fail identically with a clean ValueError; cancel_where
+        # in particular is a write path (the bulk-cancel feature).
+        if self.queue is not None:
+            check_no_nul_str(self.queue, what="queue")
+        if self.actor is not None:
+            check_no_nul_str(self.actor, what="actor")
+        if self.identity_key is not None:
+            check_no_nul_str(self.identity_key, what="identity_key")
+        if self.tags is not None:
+            for tag in self.tags:
+                check_no_nul_str(tag, what="tag")
 
     def has_predicates(self) -> bool:
         """Return True if at least one filter predicate is set.
@@ -661,6 +680,26 @@ class ScheduleCreateArgs:
 
         if not croniter.is_valid(self.cron_expr):
             raise ValueError(f"Invalid cron expression: {self.cron_expr!r}")
+        self._check_no_nul_text()
+
+    def _check_no_nul_text(self) -> None:
+        """Reject a NUL (U+0000) in caller-supplied text bound as text.
+
+        Mirrors :meth:`EnqueueArgs._check_no_nul_text`: every text column
+        in the ``create_schedule`` INSERT is caller text, and an unguarded
+        NUL surfaces as asyncpg ``CharacterNotInRepertoireError``
+        (SQLSTATE 22021) instead of a clean ``ValueError``.
+        ``cron_expr`` needs no check here — ``croniter.is_valid`` above
+        already rejects it. ``metadata`` transits jsonb via
+        ``jsonb_param``, which guards it at bind time.
+        """
+        check_no_nul_str(self.actor, what="actor")
+        check_no_nul_str(self.name, what="name")
+        check_no_nul_str(self.timezone, what="timezone")
+        if self.payload_factory is not None:
+            check_no_nul_str(self.payload_factory, what="payload_factory")
+        if self.identity_key is not None:
+            check_no_nul_str(self.identity_key, what="identity_key")
 
 
 @dataclass(frozen=True, slots=True)
@@ -810,6 +849,18 @@ class BatchCounts:
     abandoned: int
 
 
+_MAX_BATCH_FILTER_LIMIT: Final[int] = 500
+"""Upper bound for :attr:`BatchFilter.limit`.
+
+``list_batches`` renders one per-batch LATERAL job-count join per returned
+row and offers no cursor pagination, so a caller-supplied huge limit runs
+that join across the whole table. Validation-error rather than clamp, per
+repo style (JobFilter's negative-limit check raises too, and a clamp would
+silently return a different page than the caller asked for). 500 is far
+above the listing-surface default of 100 while bounding the worst case.
+"""
+
+
 @dataclass(frozen=True, slots=True)
 class BatchFilter:
     """Filter parameters for Backend.list_batches.
@@ -829,6 +880,13 @@ class BatchFilter:
     def __post_init__(self) -> None:
         if self.limit < 0:
             raise ValueError(f"limit must be >= 0, got {self.limit}")
+        if self.limit > _MAX_BATCH_FILTER_LIMIT:
+            raise ValueError(
+                f"limit must be <= {_MAX_BATCH_FILTER_LIMIT}, got {self.limit}; "
+                f"list_batches runs a per-batch job-count join per returned row "
+                f"and has no cursor pagination, so an unbounded limit scans the "
+                f"whole batches table"
+            )
 
 
 # ── Backend deps protocol ───────────────────────────────────────────────

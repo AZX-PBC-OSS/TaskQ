@@ -25,7 +25,13 @@ from pydantic import BaseModel
 
 from taskq._ids import new_job_id
 from taskq.actor import ActorRef
-from taskq.backend._protocol import EnqueueArgs, IdempotencyKey, IdentityKey, QueueName
+from taskq.backend._protocol import (
+    EnqueueArgs,
+    IdempotencyKey,
+    IdentityKey,
+    QueueName,
+    _validate_queue_name,  # pyright: ignore[reportPrivateUsage]  # Why: the canonical queue-name validator; redefining it here would let the enqueue and actor chokepoints drift.
+)
 from taskq.obs import record_published_message, safe_start_span
 from taskq.retry import time_budget_as_interval
 
@@ -36,8 +42,13 @@ __all__ = ["build_enqueue_args", "enqueue_span"]
 
 logger: structlog.stdlib.BoundLogger = structlog.get_logger(__name__)
 
-_TAG_RE: re.Pattern[str] = re.compile(r"^[\w][\w\-]+[\w]$")
-"""Tag validation regex matching River's pattern: starts/ends with word char, middle allows hyphens, min 3 chars."""
+_TAG_RE: re.Pattern[str] = re.compile(r"\A[\w][\w\-]+[\w]\Z")
+"""Tag validation regex matching River's pattern: starts/ends with word char, middle allows hyphens, min 3 chars.
+
+``\\A``/``\\Z``, not ``^``/``$``: Python's ``$`` also matches immediately
+before a trailing newline, so ``"tag\\n"`` satisfied ``^...$`` (see
+``_IDENT_RE``'s docstring in taskq.constants — same trap, same fix).
+"""
 _MAX_TAG_LENGTH: int = 255
 
 
@@ -58,7 +69,7 @@ def _validate_and_dedup_tags(tags: list[str] | None) -> tuple[str, ...]:
             raise ValueError(f"tag exceeds {_MAX_TAG_LENGTH} characters: {tag!r}")
         if not _TAG_RE.match(tag):
             raise ValueError(
-                f"invalid tag {tag!r}: must match pattern ^[\\w][\\w\\-]+[\\w]$ "
+                f"invalid tag {tag!r}: must match pattern \\A[\\w][\\w\\-]+[\\w]\\Z "
                 f"(at least 3 chars, word chars and hyphens only, no leading/trailing hyphens)"
             )
         if tag not in seen:
@@ -214,11 +225,18 @@ def build_enqueue_args[P: BaseModel, R: BaseModel | None](
     resolved_unique_states = unique_states if unique_states is not None else ref.unique_states
     resolved_max_pending = max_pending if max_pending is not None else ref.max_pending
     resolved_start_to_close = start_to_close if start_to_close is not None else ref.start_to_close
+    resolved_queue = queue if queue is not None else ref.queue
+    # The ``QueueName`` annotation above is inert at runtime (an
+    # AfterValidator only fires inside pydantic model validation), so the
+    # charset check must run here explicitly — for the per-call override
+    # and the actor-declared default alike. Without it a typo'd queue name
+    # strands jobs on a queue no worker's ``queue = ANY($1)`` ever matches.
+    _validate_queue_name(resolved_queue)
 
     return EnqueueArgs(
         id=new_job_id(),
         actor=ref.name,
-        queue=queue if queue is not None else ref.queue,
+        queue=resolved_queue,
         payload=payload_dict,
         max_attempts=ref.retry.max_attempts,
         retry_kind=ref.retry.kind,
