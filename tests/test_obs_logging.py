@@ -940,3 +940,103 @@ def test_redact_payload_performance_under_10us() -> None:
 
     avg_us = sum(durations) / len(durations)
     assert avg_us < 10, f"redact_payload avg {avg_us:.2f}µs exceeds 10µs budget"
+
+
+# ── event names: kebab-case, matching the existing convention ──────
+#
+# Two events introduced by this integration shipped with snake_case names
+# while every other log event in the codebase is kebab-case
+# ("state-change", "job-failed", "cron-tick-lock-contended", ...). They never
+# existed on main, so renaming them breaks no downstream consumer.
+
+
+async def test_cancel_where_notify_failed_event_name_is_kebab(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The bulk-cancel NOTIFY failure warning emits ``cancel-where-notify-failed``."""
+    import contextlib
+    from datetime import timedelta
+    from unittest.mock import Mock
+
+    from taskq._ids import new_uuid
+    from taskq.backend import postgres as pg_mod
+    from taskq.backend._cancel_bulk import NotifyTarget
+    from taskq.backend._protocol import BulkCancelResult, JobFilter
+    from taskq.backend.clock import Clock
+    from taskq.backend.postgres import PostgresBackend
+
+    mock_deps = Mock()
+    mock_deps.settings.schema_name = "taskq_test"
+    pool = Mock()
+
+    class _NotifyFailsConn:
+        async def execute(self, sql: str, *args: object) -> str:
+            raise RuntimeError("pg_notify pipe broken")
+
+    @contextlib.asynccontextmanager
+    async def _acquire_failing_notify():
+        yield _NotifyFailsConn()
+
+    pool.acquire = lambda: _acquire_failing_notify()
+    mock_deps.worker_pool = pool
+    backend = PostgresBackend(
+        deps=mock_deps,
+        clock=Mock(spec=Clock),
+        cancellation_grace_period=timedelta(seconds=30),
+        cleanup_grace_period=timedelta(seconds=30),
+    )
+
+    result = BulkCancelResult(
+        cancelled_directly=0,
+        cancel_requested=1,
+        cancelled_ids=(),
+        cancel_requested_ids=(),
+    )
+    target = NotifyTarget(job_id=new_uuid(), worker_id=new_uuid())
+
+    async def _fake_cancel_where(
+        pool: object, schema: str, sql: object, filter: object, reason: object
+    ) -> tuple[BulkCancelResult, list[NotifyTarget]]:
+        return result, [target]
+
+    monkeypatch.setattr(pg_mod, "_cancel_where", _fake_cancel_where)
+
+    with structlog.testing.capture_logs() as logs:
+        await backend.cancel_where(JobFilter(tags=("tenant-x",)), reason="offboard")
+
+    events = [e["event"] for e in logs]
+    assert "cancel-where-notify-failed" in events
+    assert "cancel_where_notify_failed" not in events
+
+
+async def test_pg_credential_refresh_failed_event_name_is_kebab() -> None:
+    """The per-connection credential refresh failure emits ``pg-credential-refresh-failed``."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from taskq.auth import PgCredential, make_pg_pool_factory
+
+    from .test_auth import _pw
+
+    class _BrokenProvider:
+        """Succeeds at pool-build time, fails on the per-connection refresh."""
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def get_pg_credential(self) -> PgCredential:
+            self.calls += 1
+            if self.calls == 1:
+                return PgCredential(password="ok")
+            raise TimeoutError("IMDS token endpoint unreachable")
+
+    factory = make_pg_pool_factory("postgresql://user@host/db", _BrokenProvider())
+    with patch("asyncpg.create_pool", new=AsyncMock(return_value=MagicMock())) as mock_create:
+        await factory()
+    password_arg = mock_create.call_args.kwargs["password"]
+
+    with structlog.testing.capture_logs() as logs, pytest.raises(TimeoutError):
+        await _pw(password_arg)
+
+    events = [e["event"] for e in logs]
+    assert "pg-credential-refresh-failed" in events
+    assert "pg_credential_refresh_failed" not in events
