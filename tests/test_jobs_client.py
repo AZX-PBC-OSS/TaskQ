@@ -1077,8 +1077,7 @@ class TestBatchStreamingEventName:
         _backend, client = _make_client()
 
         items = [
-            EnqueueItem(actor_ref=_streaming_log_actor, payload=_DedupPayload())
-            for _ in range(2)
+            EnqueueItem(actor_ref=_streaming_log_actor, payload=_DedupPayload()) for _ in range(2)
         ]
 
         with structlog.testing.capture_logs() as logs:
