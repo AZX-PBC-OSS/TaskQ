@@ -118,7 +118,7 @@ async def _mark_succeeded(
         worker_id=worker_id,
     )
     logger.debug(
-        "state_change",
+        "state-change",
         kind="state_change",
         from_state="running",
         to_state="succeeded",
@@ -202,7 +202,7 @@ async def _mark_failed_or_retry(
                 worker_id=worker_id,
             )
             logger.debug(
-                "state_change",
+                "state-change",
                 kind="state_change",
                 from_state="running",
                 to_state="failed",
@@ -251,7 +251,7 @@ async def _mark_failed_or_retry(
             worker_id=worker_id,
         )
         logger.debug(
-            "state_change",
+            "state-change",
             kind="state_change",
             from_state="running",
             to_state="scheduled",
@@ -294,7 +294,7 @@ async def _mark_failed_or_retry(
         worker_id=worker_id,
     )
     logger.debug(
-        "state_change",
+        "state-change",
         kind="state_change",
         from_state="running",
         to_state="failed",
@@ -346,7 +346,7 @@ async def _mark_cancelled(
         worker_id=worker_id,
     )
     logger.debug(
-        "state_change",
+        "state-change",
         kind="state_change",
         from_state="running",
         to_state="cancelled",
@@ -387,7 +387,7 @@ async def _write_cancel_escalation(
         cancel_phase_to=CancelPhase.FORCED,
     )
     logger.debug(
-        "state_change",
+        "state-change",
         kind="state_change",
         from_state="running",
         to_state="running",
@@ -438,7 +438,7 @@ async def _mark_abandoned(
         worker_id=row.locked_by_worker,
     )
     logger.debug(
-        "state_change",
+        "state-change",
         kind="state_change",
         from_state="running",
         to_state="abandoned",
@@ -500,7 +500,7 @@ async def _mark_snoozed(
             worker_id=worker_id,
         )
         logger.debug(
-            "state_change",
+            "state-change",
             kind="state_change",
             from_state="running",
             to_state="failed",
@@ -547,7 +547,7 @@ async def _mark_snoozed(
         worker_id=worker_id,
     )
     logger.debug(
-        "state_change",
+        "state-change",
         kind="state_change",
         from_state="running",
         to_state="scheduled",
@@ -608,7 +608,7 @@ async def _mark_retry_after(
             worker_id=worker_id,
         )
         logger.debug(
-            "state_change",
+            "state-change",
             kind="state_change",
             from_state="running",
             to_state="failed",
@@ -655,7 +655,7 @@ async def _mark_retry_after(
             worker_id=worker_id,
         )
         logger.debug(
-            "state_change",
+            "state-change",
             kind="state_change",
             from_state="running",
             to_state="failed",
@@ -706,7 +706,7 @@ async def _mark_retry_after(
         worker_id=worker_id,
     )
     logger.debug(
-        "state_change",
+        "state-change",
         kind="state_change",
         from_state="running",
         to_state="scheduled",

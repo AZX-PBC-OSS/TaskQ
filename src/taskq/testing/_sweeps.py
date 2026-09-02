@@ -43,7 +43,7 @@ async def _scheduled_to_pending(self: "InMemoryBackend") -> int:
                 now=now,
             )
             logger.debug(
-                "state_change",
+                "state-change",
                 kind="state_change",
                 from_state="scheduled",
                 to_state="pending",
@@ -95,7 +95,7 @@ async def _deadline_sweep(self: "InMemoryBackend") -> int:
             )
             record_deadline_exceeded_swept(actor=row.actor)
             logger.debug(
-                "state_change",
+                "state-change",
                 kind="state_change",
                 from_state=row.status,
                 to_state="failed",
@@ -171,7 +171,7 @@ async def _reclaim_expired_locks(
                     reason="lock_expired",
                 )
                 logger.debug(
-                    "state_change",
+                    "state-change",
                     kind="state_change",
                     from_state="running",
                     to_state="pending",
@@ -197,7 +197,7 @@ async def _reclaim_expired_locks(
                     reason="lock_expired",
                 )
                 logger.debug(
-                    "state_change",
+                    "state-change",
                     kind="state_change",
                     from_state="running",
                     to_state=new_status,

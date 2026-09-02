@@ -220,11 +220,58 @@ def test_log_state_change_emits_correct_kind_and_states() -> None:
 
     assert len(captured) == 1
     entry = captured[0]
+    # The EVENT name as well as the kind: asserting only `kind` is what let the
+    # two backends drift apart, the in-memory path emitting "state_change" as
+    # its event name against this one's "state-change" for the same logical
+    # transition. Operators filtering on event saw one backend's transitions.
+    assert entry["event"] == "state-change"
     assert entry["kind"] == "state_change"
     assert entry["from_state"] == "pending"
     assert entry["to_state"] == "running"
     assert entry["job_id"] == str(job_id)
     assert entry["log_level"] == "info"
+
+
+def test_every_backend_emits_one_state_change_event_name() -> None:
+    """All state-change log emitters agree on a single event name.
+
+    The divergence this pins spanned 18 call sites across four modules of the
+    in-memory backend against one in the Postgres path, so no single runtime
+    path observes it: catching it means looking at every emitter at once.
+    ``kind=`` deliberately stays snake_case — it is the persisted
+    ``job_events.kind`` value and part of the Backend protocol's Literal, not
+    a log event name.
+    """
+    import ast
+    from pathlib import Path
+
+    src_root = Path(obs_mod.__file__).resolve().parent.parent
+    levels = {"debug", "info", "warning", "error", "exception", "critical"}
+    emitters: dict[str, list[str]] = {}
+    for path in sorted(src_root.rglob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text())):
+            if not (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr in levels
+                and node.args
+            ):
+                continue
+            first = node.args[0]
+            if not (isinstance(first, ast.Constant) and isinstance(first.value, str)):
+                continue
+            name = first.value
+            if "state" in name and "change" in name and "cancel" not in name:
+                emitters.setdefault(name, []).append(
+                    f"{path.relative_to(src_root).as_posix()}:{node.lineno}"
+                )
+
+    assert emitters, "no state-change log emitters found — the scan is broken"
+    assert set(emitters) == {"state-change"}, (
+        "state-change is logged under more than one event name; operators "
+        "filtering on event see only some backends' transitions:\n"
+        + "\n".join(f"  {n!r}: {len(s)} site(s), e.g. {s[0]}" for n, s in sorted(emitters.items()))
+    )
 
 
 # ── log_cancel_phase_change emits correct kind and phases ────────
