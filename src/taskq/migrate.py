@@ -441,15 +441,22 @@ def _reject_transaction_control(migration: Migration, statements: list[str]) -> 
     build when it was not. ``SAVEPOINT``/``RELEASE`` would fail loudly at
     execution time, but the guard's value is rejecting the whole file before
     any statement executes — a rejected file applies nothing.
+
+    A rejection raises ``ValueError`` tagged ``taskq_guard_rejection`` so the
+    failure report can distinguish it from a mid-file execution failure: a
+    rejected file executes zero statements and does not heal on re-run
+    until the statement is removed.
     """
     for statement in statements:
         word = _transaction_control_word(statement)
         if word is not None:
-            raise ValueError(
+            exc = ValueError(
                 f"migration {migration.filename!r} is marked no-transaction but contains "
                 f"transaction-control statement {word!r}; remove it — "
                 "the runner manages transactions"
             )
+            exc.__dict__["taskq_guard_rejection"] = True
+            raise exc
 
 
 async def list_applied(conn: asyncpg.Connection, schema: str) -> set[str]:
@@ -593,11 +600,19 @@ async def apply_pending(
         if m.phase == "post" and m.version in pre_versions:
             pre_key = f"{m.version}:pre"
             if pre_key not in eligible_keys:
-                raise ValueError(
+                exc = ValueError(
                     f"migration {m.key} cannot be applied before its pre-phase "
                     f"counterpart {pre_key}. Run `taskq migrate up --phase pre` "
                     f"(or a plain `taskq migrate up`) first."
                 )
+                # Why tag: this raises BEFORE the per-migration loop, so the
+                # loop's except-clause tagging never runs and the diagnosis
+                # would fall back to the first-unrecorded heuristic — which
+                # blames an unrelated, earlier-version file under --phase.
+                # Same mechanism the loop uses (tag, not wrap) so the
+                # caller-visible exception type is unchanged.
+                exc.__dict__["taskq_failed_migration"] = m
+                raise exc
         eligible_keys.add(m.key)
 
     # The ledger must be able to record how each migration runs. An existing
@@ -739,6 +754,15 @@ class ApplyFailureDiagnosis:
     schema: str
     """Schema the report names in the INVALID-index line."""
 
+    guard_rejected: bool = False
+    """True when the failure was the transaction-control guard refusing the
+    file (:func:`_reject_transaction_control`) rather than a statement
+    failing mid-file — read from the exception's ``taskq_guard_rejection``
+    tag. The report then says nothing was executed and that the fix is
+    removing the statement, instead of the generic no-transaction wording
+    ("statements before the failure remain applied", "re-run — the
+    migration is idempotent"), both false for a guard rejection."""
+
     def __post_init__(self) -> None:
         # Why: the renderer branches on use_transaction whenever
         # failed_filename is set, so the pair must stay consistent — a
@@ -799,12 +823,19 @@ async def diagnose_apply_failure(
         with contextlib.suppress(Exception):
             invalid = await list_invalid_indexes(conn, schema)
 
+    # Guard rejections carry their own tag (set by
+    # _reject_transaction_control, preserved by the loop's re-raise of the
+    # same object); `is True` keeps an exotic/mocked attribute from
+    # steering the report, mirroring the Migration tag guard above.
+    guard_rejected = getattr(exc, "taskq_guard_rejection", False) is True
+
     return ApplyFailureDiagnosis(
         headline=headline,
         failed_filename=failed.filename if failed is not None else None,
         use_transaction=failed.use_transaction if failed is not None else None,
         invalid_indexes=tuple(invalid),
         schema=schema,
+        guard_rejected=guard_rejected,
     )
 
 
@@ -813,8 +844,20 @@ def render_apply_failure_lines(d: ApplyFailureDiagnosis, *, startup: bool = Fals
 
     ``startup=False`` reproduces the ``migrate up`` CLI report verbatim;
     ``startup=True`` swaps only the action line for the restart-safe
-    variant (:data:`_STARTUP_ACTION_LINE`).
+    variant (:data:`_STARTUP_ACTION_LINE`) — except for guard rejections,
+    where neither action line is truthful (nothing executed, and re-run or
+    restart fails identically until the statement is removed), so the
+    guard branch renders the same remove-and-rerun guidance either way.
     """
+    if d.failed_filename is not None and d.guard_rejected:
+        return [
+            f"migration {d.failed_filename} failed: {d.headline}",
+            "Nothing was executed — the file was rejected before any "
+            "statement ran (transaction-control statements are forbidden "
+            "in a -- taskq:no-transaction migration).",
+            "Action: remove the transaction-control statement and re-run `taskq migrate up`.",
+        ]
+
     if startup:
         action = _STARTUP_ACTION_LINE
     elif d.failed_filename is None:
@@ -870,7 +913,10 @@ async def migration_advisory_lock(
     ``lock_timeout`` bounds only the WAIT, via Postgres' ``lock_timeout`` GUC
     (which governs advisory-lock acquisition). It is reset to unlimited before
     the body runs, so a long DDL step is never killed midway. ``0`` waits
-    indefinitely, the pre-existing behaviour.
+    indefinitely, the pre-existing behaviour. If the reset fails (a wedged
+    caller-owned connection), the failure is logged as a warning naming the
+    connection and the lock flow proceeds — that connection keeps the wait
+    bound as its session-wide ``lock_timeout`` until it is closed.
 
     Raises :class:`SystemExit` on contention rather than blocking until the
     container platform kills the process.
@@ -892,8 +938,22 @@ async def migration_advisory_lock(
         # Reset before the DDL so a legitimately long migration step is not
         # killed by the wait bound.
         if lock_timeout > 0:
-            with contextlib.suppress(Exception):
+            try:
                 await conn.execute("SET lock_timeout = 0")
+            except Exception as exc:
+                # Why warn, not raise: the lock is held and the migrations
+                # still need to run, so aborting here would trade a stale
+                # GUC for a failed migration run. But the swallowed failure
+                # must be visible — a caller-owned connection keeps the
+                # wait bound as its session-wide lock_timeout, so later
+                # deliberate long lock waits abort at the wait bound.
+                # repr(conn) is the only name an anonymous connection has.
+                logger.warning(
+                    "migration-lock-timeout-reset-failed",
+                    conn=repr(conn),
+                    lock_timeout_ms=int(lock_timeout * 1000),
+                    error=repr(exc),
+                )
     try:
         yield
     finally:

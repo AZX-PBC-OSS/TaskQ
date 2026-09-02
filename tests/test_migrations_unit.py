@@ -722,6 +722,19 @@ def _generic_diagnosis() -> migrate.ApplyFailureDiagnosis:
     )
 
 
+def _guard_rejection_diagnosis() -> migrate.ApplyFailureDiagnosis:
+    return migrate.ApplyFailureDiagnosis(
+        headline="migration '01.00.02_01_post_txctl.sql' is marked no-transaction "
+        "but contains transaction-control statement 'BEGIN'; remove it — "
+        "the runner manages transactions",
+        failed_filename="01.00.02_01_post_txctl.sql",
+        use_transaction=False,
+        invalid_indexes=(),
+        schema="taskq",
+        guard_rejected=True,
+    )
+
+
 # Expected line lists mirror tests/test_cli_migrate.py verbatim so CLI
 # byte-identity is pinned at the renderer level.
 _TX_DEFAULT_LINES = [
@@ -742,6 +755,19 @@ _NT_DEFAULT_LINES = [
 _GENERIC_DEFAULT_LINES = [
     "migration failed: boom",
     "Action: fix the error and re-run `taskq migrate up` — already-applied migrations are skipped.",
+]
+# A guard rejection executed nothing and does not heal on re-run, so the
+# report must say so instead of the (false) generic no-transaction wording —
+# and the startup restart-safe action line is equally false, so the guard
+# variant renders identically for both surfaces.
+_GUARD_REJECTION_LINES = [
+    "migration 01.00.02_01_post_txctl.sql failed: migration '01.00.02_01_post_txctl.sql' "
+    "is marked no-transaction but contains transaction-control statement 'BEGIN'; "
+    "remove it — the runner manages transactions",
+    "Nothing was executed — the file was rejected before any "
+    "statement ran (transaction-control statements are forbidden "
+    "in a -- taskq:no-transaction migration).",
+    "Action: remove the transaction-control statement and re-run `taskq migrate up`.",
 ]
 
 
@@ -768,6 +794,18 @@ _GENERIC_DEFAULT_LINES = [
             True,
             [*_GENERIC_DEFAULT_LINES[:-1], _STARTUP_ACTION_LINE],
             id="generic-startup",
+        ),
+        pytest.param(
+            _guard_rejection_diagnosis,
+            False,
+            _GUARD_REJECTION_LINES,
+            id="guard-rejection-default",
+        ),
+        pytest.param(
+            _guard_rejection_diagnosis,
+            True,
+            _GUARD_REJECTION_LINES,
+            id="guard-rejection-startup-identical",
         ),
     ],
 )
