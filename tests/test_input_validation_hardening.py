@@ -27,9 +27,11 @@ import pytest
 from pydantic import BaseModel
 
 from taskq import actor
+from taskq._json import dumps_jsonb_str
 from taskq.client._args import build_enqueue_args
 from taskq.testing.clock import FakeClock
 from taskq.testing.in_memory import InMemoryBackend
+from taskq.testing.jobs import make_enqueue_args
 
 _START = datetime(2025, 1, 1, tzinfo=UTC)
 
@@ -125,3 +127,54 @@ async def test_valid_queue_name_enqueues_end_to_end_on_in_memory() -> None:
     args = build_enqueue_args(_hardening_actor, _Payload(), queue="my-queue")
     row = await backend.enqueue(args)
     assert row.queue == "my-queue"
+
+
+# ── InMemory enqueue mirrors PG's bind-time NUL guard for jsonb ─────────
+#
+# ``EnqueueArgs._check_no_nul_text`` deliberately skips payload/metadata:
+# on PG they transit jsonb via ``jsonb_param`` → ``dumps_jsonb_str``, which
+# rejects a NUL at bind time. The InMemory mirror never called
+# ``jsonb_param``, so a NUL payload passed on InMemory and raised
+# ValueError on the first real PG enqueue — an app validated against
+# InMemory broke in production.
+
+
+async def test_in_memory_enqueue_rejects_nul_in_payload_value() -> None:
+    backend = InMemoryBackend(clock=FakeClock(start=_START))
+    payload = {"value": "a\x00b"}
+    args = make_enqueue_args(payload=payload)
+
+    with pytest.raises(ValueError) as mem_excinfo:
+        await backend.enqueue(args)
+
+    # The rejection must equal the PG bind path's for the same value —
+    # the exact guard jsonb_param runs, not a lookalike message.
+    with pytest.raises(ValueError) as pg_excinfo:
+        dumps_jsonb_str(payload)
+    assert str(mem_excinfo.value) == str(pg_excinfo.value)
+
+
+async def test_in_memory_enqueue_rejects_nul_in_metadata() -> None:
+    backend = InMemoryBackend(clock=FakeClock(start=_START))
+    metadata = {"note": "a\x00b"}
+    args = make_enqueue_args(metadata=metadata)
+
+    with pytest.raises(ValueError) as mem_excinfo:
+        await backend.enqueue(args)
+
+    with pytest.raises(ValueError) as pg_excinfo:
+        dumps_jsonb_str(metadata)
+    assert str(mem_excinfo.value) == str(pg_excinfo.value)
+
+
+async def test_in_memory_enqueue_accepts_clean_payload_and_metadata() -> None:
+    backend = InMemoryBackend(clock=FakeClock(start=_START))
+    args = make_enqueue_args(payload={"value": "clean"}, metadata={"note": "clean"})
+
+    row = await backend.enqueue(args)
+
+    assert row.payload == {"value": "clean"}
+    assert row.metadata == {"note": "clean"}
+    # Parity cuts both ways: the PG-side guard passes the same values.
+    assert dumps_jsonb_str({"value": "clean"}) is not None
+    assert dumps_jsonb_str({"note": "clean"}) is not None
