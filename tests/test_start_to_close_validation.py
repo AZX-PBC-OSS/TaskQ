@@ -18,7 +18,6 @@ from taskq.actor import actor
 from taskq.batch import EnqueueItem
 from taskq.client._args import build_batch_args, build_enqueue_args
 from taskq.settings import WorkerSettings
-from taskq.testing.clock import FakeClock
 
 _DSN = "postgresql://taskq:taskq@localhost:5432/taskq"
 _START = datetime(2025, 1, 1, tzinfo=UTC)
@@ -101,32 +100,26 @@ class TestEnqueueStartToClose:
     """build_enqueue_args rejects non-positive per-call start_to_close."""
 
     def test_negative_raises(self) -> None:
-        clock = FakeClock(_START)
         with pytest.raises(ValueError, match=r"start_to_close must be > 0"):
             build_enqueue_args(
                 _test_actor,
                 _Payload(),
                 start_to_close=timedelta(seconds=-1),
-                clock=clock,
             )
 
     def test_zero_raises(self) -> None:
-        clock = FakeClock(_START)
         with pytest.raises(ValueError, match=r"start_to_close must be > 0"):
             build_enqueue_args(
                 _test_actor,
                 _Payload(),
                 start_to_close=timedelta(seconds=0),
-                clock=clock,
             )
 
     def test_positive_accepted(self) -> None:
-        clock = FakeClock(_START)
         args = build_enqueue_args(
             _test_actor,
             _Payload(),
             start_to_close=timedelta(seconds=30),
-            clock=clock,
         )
         assert args.start_to_close == timedelta(seconds=30)
 
@@ -138,7 +131,6 @@ class TestBatchStartToClose:
     """EnqueueItem.start_to_close passes through to EnqueueArgs via build_batch_args."""
 
     def test_start_to_close_passes_through(self) -> None:
-        clock = FakeClock(_START)
         batch_id = UUID("12345678-1234-5678-1234-567812345678")
         items = [
             EnqueueItem(
@@ -148,22 +140,20 @@ class TestBatchStartToClose:
             ),
         ]
 
-        args_list = build_batch_args(items, batch_id, clock)
+        args_list = build_batch_args(items, batch_id)
 
         assert len(args_list) == 1
         assert args_list[0].start_to_close == timedelta(seconds=45)
 
     def test_none_default_passes_through(self) -> None:
-        clock = FakeClock(_START)
         batch_id = UUID("12345678-1234-5678-1234-567812345678")
         items = [EnqueueItem(actor_ref=_test_actor, payload=_Payload(value=1))]
 
-        args_list = build_batch_args(items, batch_id, clock)
+        args_list = build_batch_args(items, batch_id)
 
         assert args_list[0].start_to_close is None
 
     def test_negative_raises(self) -> None:
-        clock = FakeClock(_START)
         batch_id = UUID("12345678-1234-5678-1234-567812345678")
         items = [
             EnqueueItem(
@@ -174,10 +164,9 @@ class TestBatchStartToClose:
         ]
 
         with pytest.raises(ValueError, match=r"start_to_close must be > 0"):
-            build_batch_args(items, batch_id, clock)
+            build_batch_args(items, batch_id)
 
     def test_zero_raises(self) -> None:
-        clock = FakeClock(_START)
         batch_id = UUID("12345678-1234-5678-1234-567812345678")
         items = [
             EnqueueItem(
@@ -188,4 +177,4 @@ class TestBatchStartToClose:
         ]
 
         with pytest.raises(ValueError, match=r"start_to_close must be > 0"):
-            build_batch_args(items, batch_id, clock)
+            build_batch_args(items, batch_id)

@@ -245,9 +245,9 @@ def test_leader_watchdog_badge_comes_from_sql_not_python_clock(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """D5 pin: the Healthy/Unhealthy badge is computed by the LEADER SQL
-    (``last_seen_at > now() - interval '30 seconds' AS watchdog_healthy``)
-    — the same single-arbiter shape as queues.py's worker-liveness
-    predicates.  A row the SERVER calls healthy (watchdog_healthy=True)
+    (``watchdog_healthy``) — the same single-arbiter shape as queues.py's
+    worker-liveness predicates.  A row the SERVER calls healthy
+    (watchdog_healthy=True)
     must render Healthy even when this process's Python clock would call
     its last_seen_at stale: mixing the app clock into a server-written
     timestamp's freshness verdict breaks under app↔DB skew.  Pre-fix the
@@ -271,15 +271,32 @@ def test_leader_watchdog_badge_comes_from_sql_not_python_clock(
     assert "Unhealthy" not in text
 
 
-def test_leader_sql_computes_watchdog_healthy_server_side() -> None:
-    """The leader SQL itself carries the server-side freshness predicate
-    (mirroring queues.py's ``last_seen_at > now() - interval '30 seconds'``
-    liveness checks) — the Python-side recomputation is gone."""
-    from taskq.web.admin import workers as workers_mod
-
-    assert "AS watchdog_healthy" in workers_mod._LEADER_SQL
-    assert "now() - interval '30 seconds'" in workers_mod._LEADER_SQL
-    assert not hasattr(workers_mod, "_is_watchdog_healthy")
+def test_leader_watchdog_badge_follows_an_unhealthy_verdict_on_a_fresh_looking_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The mirror image, and the half a Python recomputation would get wrong
+    in the other direction: a row the SERVER calls stale
+    (``watchdog_healthy=False``) must render Unhealthy even though its
+    ``last_seen_at`` is seconds old by this process's Python clock — which is
+    exactly what a clock ahead of the database's produces.  Recomputing
+    locally would render Healthy and hide a dead leader."""
+    now = datetime.now(UTC)
+    row = StubRecord(
+        worker_id="00000000-0000-0000-0000-000000000001",
+        hostname="leader-1",
+        pid=9999,
+        elected_at=now - timedelta(hours=1),
+        # Fresh by the local Python clock — the SQL verdict is what counts.
+        last_seen_at=now,
+        worker_last_seen=now,
+        watchdog_healthy=False,
+    )
+    client = _build_workers_app(_FetchRowPool(_FetchRowConn(row)), monkeypatch)
+    response = client.get("/leader")  # pyright: ignore[reportUnknownMemberType]
+    assert response.status_code == 200  # pyright: ignore[reportUnknownMemberType]
+    text = response.text  # pyright: ignore[reportUnknownMemberType]
+    assert "leader-1" in text
+    assert "Unhealthy" in text
 
 
 # ── Leader route: leader-present branch (lines 97-105) ──────────────────

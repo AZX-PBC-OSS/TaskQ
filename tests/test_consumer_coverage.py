@@ -427,7 +427,6 @@ async def test_transactional_generic_exception_discards_buffer() -> None:
     from taskq.worker._consumer import _consume_transactional
 
     backend = _TxBackend()
-    clk: Clock = FakeClock(_NOW)
     cfg = default_actor_config()
     job = make_job_row(attempt=1, max_attempts=1)
     enqueuer = SubJobEnqueuer(
@@ -470,7 +469,6 @@ async def test_transactional_generic_exception_discards_buffer() -> None:
         _FakeConnection(),
         actor,
         cfg,
-        clk,
         None,
         timedelta(hours=24),
         None,
@@ -494,7 +492,6 @@ async def test_transactional_completed_then_cancel_re_raises() -> None:
     from taskq.worker._consumer import _consume_transactional
 
     backend = _TxBackend()
-    clk: Clock = FakeClock(_NOW)
     cfg = default_actor_config()
     job = make_job_row()
     enqueuer = SubJobEnqueuer(
@@ -536,7 +533,6 @@ async def test_transactional_completed_then_cancel_re_raises() -> None:
         _FakeConnection(),
         actor,
         cfg,
-        clk,
         None,
         timedelta(hours=24),
         None,

@@ -275,17 +275,13 @@ async def test_per_actor_priority() -> None:
     async def test_prio_actor(payload: DummyPayload) -> None:
         pass
 
-    clock = FakeClock(start=_START)
-
-    args = build_enqueue_args(test_prio_actor, DummyPayload(), clock=clock)
+    args = build_enqueue_args(test_prio_actor, DummyPayload())
     assert args.priority == 10
 
-    args_override = build_enqueue_args(test_prio_actor, DummyPayload(), priority=5, clock=clock)
+    args_override = build_enqueue_args(test_prio_actor, DummyPayload(), priority=5)
     assert args_override.priority == 5
 
-    args_explicit_zero = build_enqueue_args(
-        test_prio_actor, DummyPayload(), priority=0, clock=clock
-    )
+    args_explicit_zero = build_enqueue_args(test_prio_actor, DummyPayload(), priority=0)
     assert args_explicit_zero.priority == 0
 
 
@@ -505,17 +501,15 @@ def test_enqueue_priority_validation() -> None:
     async def test_enq_prio_actor(payload: DummyPayload) -> None:
         pass
 
-    clock = FakeClock(start=_START)
+    with pytest.raises(ValueError, match="smallint"):
+        build_enqueue_args(test_enq_prio_actor, DummyPayload(), priority=40000)
 
     with pytest.raises(ValueError, match="smallint"):
-        build_enqueue_args(test_enq_prio_actor, DummyPayload(), priority=40000, clock=clock)
-
-    with pytest.raises(ValueError, match="smallint"):
-        build_enqueue_args(test_enq_prio_actor, DummyPayload(), priority=-40000, clock=clock)
+        build_enqueue_args(test_enq_prio_actor, DummyPayload(), priority=-40000)
 
     # Valid priorities should succeed
-    args = build_enqueue_args(test_enq_prio_actor, DummyPayload(), priority=32767, clock=clock)
+    args = build_enqueue_args(test_enq_prio_actor, DummyPayload(), priority=32767)
     assert args.priority == 32767
 
-    args = build_enqueue_args(test_enq_prio_actor, DummyPayload(), priority=-32768, clock=clock)
+    args = build_enqueue_args(test_enq_prio_actor, DummyPayload(), priority=-32768)
     assert args.priority == -32768

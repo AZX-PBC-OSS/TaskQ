@@ -345,7 +345,6 @@ async def test_shielded_success_not_marked_cancelled() -> None:
 
     fb = _FakeBackend()
     job = _dc_replace(make_job_row(), locked_by_worker=_WORKER_ID)
-    clk: Clock = FakeClock(_NOW)
     enqueuer = SubJobEnqueuer(
         loop_scope_resolved=None,
         worker_pool=None,
@@ -393,7 +392,6 @@ async def test_shielded_success_not_marked_cancelled() -> None:
         _FakeConnection(),  # loop_conn
         actor,
         default_actor_config(),
-        clk,
         None,
         timedelta(hours=24),
         None,

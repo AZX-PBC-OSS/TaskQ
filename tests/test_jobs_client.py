@@ -657,7 +657,7 @@ class TestEnqueueWasExisting:
     def _make_client() -> tuple[InMemoryBackend, JobsClient]:
         clock = FakeClock(_START)
         backend = InMemoryBackend(clock=clock)
-        client = JobsClient(backend, clock=clock)
+        client = JobsClient(backend)
         return backend, client
 
     async def test_enqueue_fresh_insert_was_existing_false(self) -> None:
@@ -741,7 +741,7 @@ async def test_singleton_plus_unique_for_unique_for_fires_first() -> None:
     window returns was_existing=True via unique_for; no SingletonCollisionError."""
     clock = FakeClock(_START)
     backend = InMemoryBackend(clock=clock)
-    client = JobsClient(backend, clock=clock)
+    client = JobsClient(backend)
 
     identity = "account:42"
     handle1 = await client.enqueue(
@@ -769,7 +769,7 @@ async def test_unique_for_no_identity_no_dedup_fresh_jobs() -> None:
     no dedup occurs; fresh job created on every call."""
     clock = FakeClock(_START)
     backend = InMemoryBackend(clock=clock)
-    client = JobsClient(backend, clock=clock)
+    client = JobsClient(backend)
 
     handle1 = await client.enqueue(
         _nodup_no_identity_actor,
@@ -946,13 +946,11 @@ class TestBuildEnqueueArgs:
         """build_enqueue_args produces EnqueueArgs whose fields match what
         JobsClient.enqueue would have produced inline.
         """
-        backend, client = self._make_client()
-        clock = backend._clock  # type: ignore[reportPrivateUsage]  # Why: test-only access to FakeClock for deterministic comparison
+        _, client = self._make_client()
 
         args = build_enqueue_args(
             _fresh_actor,
             _DedupPayload(value=42),
-            clock=clock,
         )
 
         handle = await client.enqueue(_fresh_actor, _DedupPayload(value=42))
@@ -971,39 +969,30 @@ class TestBuildEnqueueArgs:
 
     async def test_singleton_actor_args(self) -> None:
         """build_enqueue_args for a singleton actor injects metadata."""
-        _, client = self._make_client()
-        clock = client._clock  # type: ignore[reportPrivateUsage]  # Why: test-only access to FakeClock
 
         args = build_enqueue_args(
             _singleton_actor,
             _SingletonPayload(value=1),
-            clock=clock,
         )
 
         assert args.metadata == {"singleton": True}
 
     async def test_idempotency_key_validation_in_helper(self) -> None:
         """build_enqueue_args raises ValueError on invalid idempotency_key."""
-        _, client = self._make_client()
-        clock = client._clock  # type: ignore[reportPrivateUsage]  # Why: test-only access to FakeClock
 
         with pytest.raises(ValueError, match="idempotency_key must not be empty"):
             build_enqueue_args(
                 _fresh_actor,
                 _DedupPayload(value=1),
                 idempotency_key="",
-                clock=clock,
             )
 
     async def test_unique_for_from_ref(self) -> None:
         """build_enqueue_args uses ref.unique_for when not overridden."""
-        _, client = self._make_client()
-        clock = client._clock  # type: ignore[reportPrivateUsage]  # Why: test-only access to FakeClock
 
         args = build_enqueue_args(
             _unique_for_dedup_actor,
             _DedupPayload(value=1),
-            clock=clock,
         )
 
         assert args.unique_for == timedelta(minutes=15)
@@ -1011,8 +1000,6 @@ class TestBuildEnqueueArgs:
 
     async def test_max_pending_from_ref(self) -> None:
         """build_enqueue_args uses ref.max_pending when not overridden."""
-        _, client = self._make_client()
-        clock = client._clock  # type: ignore[reportPrivateUsage]  # Why: test-only access to FakeClock
 
         @actor(name="_bargs_max_pending", max_pending=5)
         async def _bargs_max_pending(payload: _SingletonPayload) -> None:
@@ -1021,7 +1008,6 @@ class TestBuildEnqueueArgs:
         args = build_enqueue_args(
             _bargs_max_pending,
             _SingletonPayload(value=1),
-            clock=clock,
         )
 
         assert args.max_pending == 5
@@ -1029,8 +1015,6 @@ class TestBuildEnqueueArgs:
     async def test_start_to_close_per_call_wins_over_actor_default(self) -> None:
         """build_enqueue_args resolves per-call start_to_close over the
         actor's declared default when both are given."""
-        _, client = self._make_client()
-        clock = client._clock  # type: ignore[reportPrivateUsage]  # Why: test-only access to FakeClock
 
         @actor(name="_bargs_stc_both", start_to_close=timedelta(minutes=1))
         async def _bargs_stc_both(payload: _SingletonPayload) -> None:
@@ -1040,7 +1024,6 @@ class TestBuildEnqueueArgs:
             _bargs_stc_both,
             _SingletonPayload(value=1),
             start_to_close=timedelta(seconds=30),
-            clock=clock,
         )
 
         assert args.start_to_close == timedelta(seconds=30)
@@ -1048,8 +1031,6 @@ class TestBuildEnqueueArgs:
     async def test_start_to_close_falls_back_to_actor_default(self) -> None:
         """build_enqueue_args uses ref.start_to_close when the per-call
         override is None."""
-        _, client = self._make_client()
-        clock = client._clock  # type: ignore[reportPrivateUsage]  # Why: test-only access to FakeClock
 
         @actor(name="_bargs_stc_actor_default", start_to_close=timedelta(minutes=2))
         async def _bargs_stc_actor_default(payload: _SingletonPayload) -> None:
@@ -1058,7 +1039,6 @@ class TestBuildEnqueueArgs:
         args = build_enqueue_args(
             _bargs_stc_actor_default,
             _SingletonPayload(value=1),
-            clock=clock,
         )
 
         assert args.start_to_close == timedelta(minutes=2)
@@ -1066,13 +1046,10 @@ class TestBuildEnqueueArgs:
     async def test_start_to_close_none_when_unset_everywhere(self) -> None:
         """build_enqueue_args yields start_to_close=None when neither the
         per-call override nor the actor default is set."""
-        _, client = self._make_client()
-        clock = client._clock  # type: ignore[reportPrivateUsage]  # Why: test-only access to FakeClock
 
         args = build_enqueue_args(
             _fresh_actor,
             _DedupPayload(value=1),
-            clock=clock,
         )
 
         assert args.start_to_close is None

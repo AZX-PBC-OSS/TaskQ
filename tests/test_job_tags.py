@@ -361,22 +361,18 @@ class TestBuildEnqueueArgs:
 
     def test_build_enqueue_args_with_tags(self) -> None:
         """build_enqueue_args includes tags in the resulting EnqueueArgs."""
-        clock = FakeClock(start=_START)
         args = build_enqueue_args(
             _tag_actor,
             _TagPayload(value="test"),
             tags=["alpha", "beta"],
-            clock=clock,
         )
         assert args.tags == ("alpha", "beta")
 
     def test_build_enqueue_args_without_tags(self) -> None:
         """build_enqueue_args defaults to empty tags."""
-        clock = FakeClock(start=_START)
         args = build_enqueue_args(
             _tag_actor,
             _TagPayload(value="test"),
-            clock=clock,
         )
         assert args.tags == ()
 

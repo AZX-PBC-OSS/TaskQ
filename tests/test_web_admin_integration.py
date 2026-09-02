@@ -478,6 +478,56 @@ async def test_leader_page_no_leader(pool: asyncpg.Pool) -> None:
     assert "No leader elected" in resp.text or "no leader" in resp.text.lower()
 
 
+# ── Leader watchdog badge is the DATABASE's freshness verdict ──────
+#
+# last_seen_at is written by the server, so only the server can measure its
+# age without mixing the admin process's clock into the comparison.  These
+# two tests move the heartbeat relative to the SERVER clock and read the
+# badge back off the rendered page; the admin process's own clock is never
+# consulted, and nothing here depends on how the predicate is spelled.
+
+
+async def _seed_leader(conn: asyncpg.Connection, worker_id: uuid.UUID, *, age_secs: int) -> None:
+    """Elect *worker_id* leader with a heartbeat *age_secs* old by PG's clock."""
+    await conn.execute(
+        f"""INSERT INTO {_SCHEMA_LABEL}.maintenance_leader
+                (worker_id, elected_at, last_seen_at)
+            VALUES ($1, clock_timestamp(), clock_timestamp() - make_interval(secs => $2))""",
+        worker_id,
+        float(age_secs),
+    )
+
+
+@pytest.mark.asyncio
+async def test_leader_page_shows_healthy_for_a_server_fresh_heartbeat(
+    pool: asyncpg.Pool, conn: asyncpg.Connection
+) -> None:
+    """A heartbeat the SERVER considers fresh renders the Healthy badge."""
+    await _seed_leader(conn, await _seed_worker(conn, hostname="leader-host"), age_secs=0)
+
+    resp = await _get(_make_app(pool), "/admin/leader")
+
+    assert resp.status_code == 200
+    assert "leader-host" in resp.text
+    assert "Healthy" in resp.text
+    assert "Unhealthy" not in resp.text
+
+
+@pytest.mark.asyncio
+async def test_leader_page_shows_unhealthy_for_a_server_stale_heartbeat(
+    pool: asyncpg.Pool, conn: asyncpg.Connection
+) -> None:
+    """A heartbeat the SERVER considers stale renders the Unhealthy badge —
+    the verdict flips on the server-measured age of last_seen_at alone."""
+    await _seed_leader(conn, await _seed_worker(conn, hostname="leader-host"), age_secs=300)
+
+    resp = await _get(_make_app(pool), "/admin/leader")
+
+    assert resp.status_code == 200
+    assert "leader-host" in resp.text
+    assert "Unhealthy" in resp.text
+
+
 # ── taskq ui serve starts and responds ─────────────────────────────
 
 
