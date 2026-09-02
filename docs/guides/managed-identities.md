@@ -243,9 +243,7 @@ when you have a custom entrypoint and want the same full wiring:
 ```python
 from taskq.auth import build_worker_connections
 
-connections = build_worker_connections(
-    settings, pg_provider=provider, redis_provider=provider
-)
+connections = build_worker_connections(settings, pg_provider=provider, redis_provider=provider)
 worker_main(settings, actor_registry=ACTORS, connections=connections)
 ```
 
@@ -672,13 +670,15 @@ exit codes; `worker_main` is the thin sync wrapper over it.
 import asyncio, asyncpg
 from taskq.worker import worker_main_async
 
+
 async def main() -> int:
-    pool = await asyncpg.create_pool(dsn)      # this loop
-    registry = build_actors(pool)              # actors close over it
+    pool = await asyncpg.create_pool(dsn)  # this loop
+    registry = build_actors(pool)  # actors close over it
     try:
         return await worker_main_async(settings, actor_registry=registry)
     finally:
-        await pool.close()                     # yours to close
+        await pool.close()  # yours to close
+
 
 raise SystemExit(asyncio.run(main()))
 ```
@@ -693,7 +693,7 @@ pass that in rather than restating it in a second config system:
 connections = build_worker_connections(
     worker_settings,
     pg_provider=provider,
-    pg_dsn=my_settings.taskq_pg_dsn,      # or pg_dsn_direct=/pg_dsn_pooled= for a pgbouncer split
+    pg_dsn=my_settings.taskq_pg_dsn,  # or pg_dsn_direct=/pg_dsn_pooled= for a pgbouncer split
     redis_url=my_settings.taskq_redis_url,
 )
 ```

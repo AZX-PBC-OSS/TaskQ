@@ -5,7 +5,10 @@ Regression cover for the sizing trap: the settings validator enforces only
 exit-stack unwind that runs *after* those phases is additive and was invisible.
 Against a dead Postgres/Redis the worker can therefore need materially longer
 than ``termination_grace_period``, get SIGKILLed mid-unwind, and leave terminal
-writes unlanded -- at TaskQ's own defaults, which pass the validator.
+writes unlanded. The shipped default (75/30/10) covers the modelled worst case;
+custom grace combinations can still fall short, which is why the shortfall is
+surfaced as a startup warning rather than a validation error (an operator may
+deliberately run a tighter budget than the dead-backend worst case).
 """
 
 from __future__ import annotations
@@ -42,32 +45,39 @@ def test_worst_case_shutdown_is_phases_plus_tail() -> None:
     assert s.worst_case_shutdown_seconds == 30.0 + 10.0 + worst_case_teardown_tail()
 
 
-def test_taskq_defaults_pass_the_validator_but_exceed_the_budget() -> None:
-    """The exact trap: defaults are valid AND insufficient.
+def test_taskq_defaults_cover_the_modelled_worst_case() -> None:
+    """The shipped default must cover the modelled worst case.
 
-    This is why the shortfall is a startup warning rather than a validation
-    error -- rejecting it would refuse to start every deployment on defaults.
+    History: the default used to be 60s while the modelled worst case at
+    the default graces (30 + 10 + 27s tail) is 67s — every deployment
+    running the defaults raised its own ``shutdown-budget-exceeds-
+    termination-grace`` boot warning, which made the warning pure noise
+    (a downstream redteam finding). 75 keeps 8s of headroom over the 67s
+    modelled SIGTERM path and also covers the ~72s sibling-crash path
+    (six sequential closes) that the model itself understates — see the
+    sibling-crash caveat in ``taskq/_close.py``.
     """
     s = _settings()
     assert (s.termination_grace_period, s.cancellation_grace_period, s.cleanup_grace_period) == (
-        60.0,
+        75.0,
         30.0,
         10.0,
     )
-    # Passes the documented validator invariant...
+    # Still passes the documented validator invariant...
     assert s.cancellation_grace_period + s.cleanup_grace_period < s.termination_grace_period - 5.0
-    # ...and is still short of the real worst case.
+    # ...and now covers the real worst case instead of falling short of it.
     assert s.worst_case_shutdown_seconds == 67.0
-    assert s.shutdown_budget_is_sufficient is False
+    assert s.shutdown_budget_is_sufficient is True
 
 
 def test_sufficient_budget_is_recognised() -> None:
     s = _settings(
-        TASKQ_TERMINATION_GRACE_PERIOD="95",
+        TASKQ_TERMINATION_GRACE_PERIOD="60",
         TASKQ_CANCELLATION_GRACE_PERIOD="30",
         TASKQ_CLEANUP_GRACE_PERIOD="10",
     )
-    assert s.shutdown_budget_is_sufficient is True
+    # The pre-fix default: valid, and short of the 67s modelled worst case.
+    assert s.shutdown_budget_is_sufficient is False
 
     lowered = _settings(TASKQ_CANCELLATION_GRACE_PERIOD="20", TASKQ_CLEANUP_GRACE_PERIOD="5")
     assert lowered.worst_case_shutdown_seconds == 52.0
@@ -86,20 +96,40 @@ def test_sufficient_budget_is_recognised() -> None:
 # spelled.
 
 
+def test_no_startup_warning_at_default_settings() -> None:
+    """The control: the shipped defaults must be silent, or the warning is
+    noise on every default deployment and operators learn to ignore it
+    (the downstream redteam finding that motivated raising the default)."""
+    from taskq.worker._bootstrap import _emit_startup_warnings
+
+    s = _settings()
+    assert s.shutdown_budget_is_sufficient is True
+    with structlog.testing.capture_logs() as logs:
+        _emit_startup_warnings(s)
+    assert [e for e in logs if e["event"] == "shutdown-budget-exceeds-termination-grace"] == []
+
+
 def test_startup_warning_names_the_numbers_and_the_remedy() -> None:
     """The warning has to be actionable: the shortfall is fixed in the
     orchestrator's pod spec, not in TaskQ, so it must carry the number."""
     from taskq.worker._bootstrap import _startup_log
 
-    s = _settings()
+    # The pre-fix default shape (60s grace, 30/10 phases): valid, and
+    # short of the modelled worst case — the exact configuration the
+    # warning exists for.
+    s = _settings(
+        TASKQ_TERMINATION_GRACE_PERIOD="60",
+        TASKQ_CANCELLATION_GRACE_PERIOD="30",
+        TASKQ_CLEANUP_GRACE_PERIOD="10",
+    )
+    assert s.shutdown_budget_is_sufficient is False
     with structlog.testing.capture_logs() as logs:
-        if not s.shutdown_budget_is_sufficient:
-            _startup_log.warning(
-                "shutdown-budget-exceeds-termination-grace",
-                worst_case_seconds=s.worst_case_shutdown_seconds,
-                termination_grace_period=s.termination_grace_period,
-                close_tail_seconds=worst_case_teardown_tail(),
-            )
+        _startup_log.warning(
+            "shutdown-budget-exceeds-termination-grace",
+            worst_case_seconds=s.worst_case_shutdown_seconds,
+            termination_grace_period=s.termination_grace_period,
+            close_tail_seconds=worst_case_teardown_tail(),
+        )
     entry = next(log for log in logs if log["event"] == "shutdown-budget-exceeds-termination-grace")
     assert entry["worst_case_seconds"] == 67.0
     assert entry["close_tail_seconds"] == 27.0

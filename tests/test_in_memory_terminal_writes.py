@@ -13,11 +13,13 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 import pytest
+from pydantic import BaseModel, TypeAdapter
 
 from taskq._ids import new_job_id, new_uuid
 from taskq.actor_config import ActorConfig
 from taskq.backend._protocol import CancelPhase, EnqueueArgs, ErrorInfo, JobId, RetryKind
-from taskq.exceptions import WorkerOwnershipMismatch
+from taskq.client import JobHandle, JobsClient
+from taskq.exceptions import ResultUnavailable, WorkerOwnershipMismatch
 from taskq.testing.clock import FakeClock
 from taskq.testing.in_memory import InMemoryBackend
 
@@ -1522,9 +1524,12 @@ class TestMarkSucceededResultExpiryFallback:
         ok = await backend.mark_succeeded(job_id, wid, {"ok": True})
         assert ok is True
 
-        row = await backend.get(job_id)
-        assert row is not None
-        assert row.result_expires_at == _START + ttl
+        # The pinned expiry is already 40s in the past at completion, so
+        # the public get() read reports the post-sweep view (result gone —
+        # pinned by TestGetExpiredResults below). This test pins the WRITE:
+        # what mark_succeeded kept in storage, read directly.
+        stored = backend._jobs[job_id]  # type: ignore[reportPrivateUsage]  # Why: test-only private access to pin the stored write; the public get() path now applies read-side result expiry
+        assert stored.result_expires_at == _START + ttl
 
     async def test_run_until_drained_wires_stub_result_ttl_as_fallback(self) -> None:
         """Wiring pin: ``register_stub(result_ttl=...)`` must reach the
@@ -1568,3 +1573,212 @@ class TestMarkSucceededResultExpiryFallback:
         # Completion happened at _START + 45s; the stub's literal applied
         # from completion — not the enqueue-pinned _START + 5s (40s past).
         assert row.result_expires_at == clock.now() + ttl
+
+
+class _ProbeResult(BaseModel):
+    """Result model for the wait()-expiry tests (non-None R)."""
+
+    ok: bool = True
+
+
+class TestGetExpiredResults:
+    """Read-side result TTL: ``get`` / ``JobHandle.wait`` honor the clock.
+
+    PostgresBackend nulls an expired result via the leader's
+    ``sweep_expired_results`` (``_SWEEP_RESULT_TTL_SQL``); until that sweep
+    fires, a read can still observe the result. The in-memory backend has no
+    leader loop, so ``get`` applies the sweep's predicate directly against
+    the injected Clock — a read past ``result_expires_at`` returns the exact
+    post-sweep row shape (``result`` / ``result_size_bytes`` /
+    ``result_expires_at`` all ``None``) while every other column, terminal
+    status included, is untouched.
+
+    Write-side resolution (stored row → fallback literal → enqueue pin) is
+    pinned by ``TestMarkSucceededResultExpiryFallback``; these tests pin the
+    read side end-to-end through ``run_until_drained`` so a stub's
+    ``result_ttl`` flows exactly the way a real worker's literal would.
+    """
+
+    async def _complete_ttl_job(
+        self,
+        backend: InMemoryBackend,
+        clock: FakeClock,
+        *,
+        actor: str = "ttl_read_actor",
+        stub_result_ttl: timedelta | None = timedelta(seconds=60),
+        enqueue_result_ttl: timedelta | None = None,
+    ) -> JobId:
+        """Register a succeeding stub, enqueue, and drain.
+
+        Leaves the clock parked at the job's completion time, so callers
+        control expiry purely by advancing the clock afterwards.
+        """
+        backend.register_stub(
+            actor,
+            lambda payload, ctx: {"ok": True},
+            result_ttl=stub_result_ttl,
+        )
+        args = EnqueueArgs(
+            id=new_job_id(),
+            actor=actor,
+            queue="default",
+            payload={},
+            max_attempts=3,
+            retry_kind="transient",
+            scheduled_at=clock.now(),
+            result_ttl=enqueue_result_ttl,
+        )
+        await backend.enqueue(args)
+        await backend.run_until_drained()
+        return args.id
+
+    async def test_result_present_before_expiry(self) -> None:
+        """Before the clock passes result_expires_at, get returns the live
+        result with its expiry metadata intact."""
+        clock = FakeClock(_START)
+        backend = InMemoryBackend(clock=clock)
+        job_id = await self._complete_ttl_job(backend, clock)
+
+        row = await backend.get(job_id)
+        assert row is not None
+        assert row.status == "succeeded"
+        assert row.result == {"ok": True}
+        assert row.result_size_bytes is not None
+        assert row.result_expires_at == _START + timedelta(seconds=60)
+
+    async def test_result_expired_after_clock_passes_expiry(self) -> None:
+        """Past result_expires_at, get reports the post-sweep row shape:
+        result, result_size_bytes, and result_expires_at all None."""
+        clock = FakeClock(_START)
+        backend = InMemoryBackend(clock=clock)
+        job_id = await self._complete_ttl_job(backend, clock)
+
+        clock.advance(timedelta(seconds=61))
+        row = await backend.get(job_id)
+        assert row is not None
+        assert row.result is None
+        assert row.result_size_bytes is None
+        assert row.result_expires_at is None
+
+    async def test_expired_read_does_not_revive_or_mutate_terminal_state(
+        self,
+    ) -> None:
+        """Expiry drops only the result columns: the terminal status and
+        finished_at survive, and repeated reads are stable."""
+        clock = FakeClock(_START)
+        backend = InMemoryBackend(clock=clock)
+        job_id = await self._complete_ttl_job(backend, clock)
+        completed_at = clock.now()
+
+        clock.advance(timedelta(seconds=120))
+        first = await backend.get(job_id)
+        assert first is not None
+        assert first.status == "succeeded"
+        assert first.finished_at == completed_at
+
+        second = await backend.get(job_id)
+        assert second is not None
+        assert second.status == "succeeded"
+        assert second.result is None
+
+    async def test_expiry_boundary_is_strictly_less_than(self) -> None:
+        """At exactly result_expires_at the result is still available —
+        the sweep predicate is ``result_expires_at < now``, matching
+        ``_SWEEP_RESULT_TTL_SQL``; one second past it, the result is gone."""
+        clock = FakeClock(_START)
+        backend = InMemoryBackend(clock=clock)
+        job_id = await self._complete_ttl_job(backend, clock)
+
+        clock.move_to(_START + timedelta(seconds=60))
+        at_boundary = await backend.get(job_id)
+        assert at_boundary is not None
+        assert at_boundary.result == {"ok": True}
+
+        clock.advance(timedelta(seconds=1))
+        past_boundary = await backend.get(job_id)
+        assert past_boundary is not None
+        assert past_boundary.result is None
+
+    async def test_stored_actor_config_ttl_drives_expiry(self) -> None:
+        """End-to-end precedence on the read side: the stored actor_config
+        row's result_ttl (10s) drives expiry even when the stub's literal
+        (300s) would have kept the result alive far longer."""
+        clock = FakeClock(_START)
+        backend = InMemoryBackend(clock=clock)
+        backend.register_actor_configs(
+            [
+                ActorConfig(
+                    actor="stored_ttl_read_actor",
+                    max_concurrent=None,
+                    queue="default",
+                    result_ttl=10.0,
+                )
+            ]
+        )
+        job_id = await self._complete_ttl_job(
+            backend,
+            clock,
+            actor="stored_ttl_read_actor",
+            stub_result_ttl=timedelta(seconds=300),
+        )
+
+        clock.advance(timedelta(seconds=11))
+        row = await backend.get(job_id)
+        assert row is not None
+        assert row.result is None
+
+    async def test_enqueue_pinned_ttl_in_past_at_completion_reads_expired(
+        self,
+    ) -> None:
+        """Third COALESCE arm on the read side: with neither a stored
+        override nor a worker literal, the enqueue-pinned expiry is kept —
+        a completion that lands after it reads back already expired, the
+        same state the PG sweep would leave behind."""
+        clock = FakeClock(_START)
+        backend = InMemoryBackend(clock=clock)
+        # Advance the clock so the job completes 45s after enqueue while
+        # carrying a 5s enqueue-pinned expiry.
+        backend.register_stub("enqueue_pinned_actor", lambda payload, ctx: {"ok": True})
+        args = EnqueueArgs(
+            id=new_job_id(),
+            actor="enqueue_pinned_actor",
+            queue="default",
+            payload={},
+            max_attempts=3,
+            retry_kind="transient",
+            scheduled_at=clock.now(),
+            result_ttl=timedelta(seconds=5),
+        )
+        await backend.enqueue(args)
+        clock.advance(timedelta(seconds=45))
+        await backend.run_until_drained()
+
+        row = await backend.get(args.id)
+        assert row is not None
+        assert row.status == "succeeded"
+        assert row.result is None
+        assert row.result_expires_at is None
+
+    async def test_wait_returns_value_before_expiry_and_raises_after(self) -> None:
+        """The downstream-facing contract: JobHandle.wait returns R before
+        expiry and raises ResultUnavailable once the clock has passed it —
+        previously untestable in-memory because get never expired results."""
+        clock = FakeClock(_START)
+        backend = InMemoryBackend(clock=clock)
+        client = JobsClient(backend)
+        job_id = await self._complete_ttl_job(backend, clock)
+        row = await backend.get(job_id)
+        assert row is not None
+        handle: JobHandle[_ProbeResult] = JobHandle(
+            client=client,
+            row=row,
+            result_adapter=TypeAdapter(_ProbeResult),
+            was_existing=False,
+        )
+
+        value = await handle.wait(timeout=1.0)
+        assert value == _ProbeResult(ok=True)
+
+        clock.advance(timedelta(seconds=61))
+        with pytest.raises(ResultUnavailable):
+            await handle.wait(timeout=1.0)

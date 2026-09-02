@@ -300,6 +300,7 @@ def test_default_values() -> None:
     assert s.heartbeat_interval == 10.0
     assert s.lock_lease == 60.0
     assert s.max_heartbeat_failures == 3
+    assert s.termination_grace_period == 75.0
     assert s.cancellation_grace_period == 30.0
     assert s.cleanup_grace_period == 10.0
     assert s.pool_max_inactive_lifetime == 300.0

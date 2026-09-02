@@ -398,11 +398,13 @@ starting the worker:
 ```python
 from taskq.worker.health import register_readiness_check
 
+
 async def search_index_reachable() -> str | None:
     """Return None when healthy, or a reason string when not."""
     if not await index.ping():
         return "search index unreachable"
     return None
+
 
 register_readiness_check("search_index", search_index_reachable)
 ```
@@ -422,8 +424,10 @@ Add a `PodDisruptionBudget` (`minAvailable: 1`, selector matching `app: taskq-wo
 
     The shutdown phases (DRAINING → CANCELLING → FORCING → ABANDONING) are
     bounded by `TASKQ_CANCELLATION_GRACE_PERIOD` + `TASKQ_CLEANUP_GRACE_PERIOD`,
-    but the bounded-close tail that unwinds *after* them is **additive** and is
-    not covered by `TASKQ_TERMINATION_GRACE_PERIOD`. Against a dead or hung
+    but the bounded-close tail that unwinds *after* them is **additive**, and
+    nothing *enforces* that it fits inside `TASKQ_TERMINATION_GRACE_PERIOD` —
+    the shipped default does cover it, but a custom value below the worst case
+    only warns at startup. Against a dead or hung
     Postgres/Redis — an Azure Cache failover, or a token expiry dropping every
     connection, i.e. exactly when you are being SIGTERMed — each of the 5
     sequential bounded closes can take `CLOSE_TIMEOUT_SECS` (5s), plus a 2s
@@ -438,11 +442,15 @@ Add a `PodDisruptionBudget` (`minAvailable: 1`, selector matching `app: taskq-wo
          + 27      # 5 bounded closes x 5s + 2s publish drain
     ```
 
-    At TaskQ's defaults (60 / 30 / 10) the modelled worst case is **67s**, so
-    `terminationGracePeriodSeconds: 95` is a safe value at defaults — not the
-    `60`-ish the old advice implied. The worker logs
+    At TaskQ's defaults (75 / 30 / 10) the modelled worst case is **67s**, so
+    `terminationGracePeriodSeconds: 80` is a safe value at defaults — not the
+    `60`-ish the old advice implied. (The default grace itself covers the
+    model; it is 75 rather than 67 so the ~72s sibling-crash path — six
+    sequential closes where the orchestrated leader-conn close never ran —
+    fits inside it too.) The worker logs
     `shutdown-budget-exceeds-termination-grace` at startup, with the computed
-    number, whenever the configured budget does not cover it.
+    number, whenever the configured budget does not cover it — i.e. for
+    custom grace combinations, not for the shipped defaults.
 
     If the kubelet SIGKILLs mid-unwind, in-flight `write_cancel_escalation` /
     `mark_abandoned` terminal writes may not land; those jobs are left `running`

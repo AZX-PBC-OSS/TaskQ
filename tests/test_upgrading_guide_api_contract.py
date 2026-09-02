@@ -24,6 +24,13 @@ import pytest
 from pydantic import BaseModel
 
 import taskq
+import taskq.backend
+from taskq.backend.statemachine import (
+    ACTIVE_STATUSES,
+    TERMINAL_STATUSES,
+    VALID_TRANSITIONS,
+    assert_valid_transition,
+)
 from taskq.exceptions import PayloadValidationError
 
 
@@ -96,3 +103,32 @@ def test_validate_actor_payload_accepts_a_basemodel_as_raw_payload() -> None:
 
     assert isinstance(validated, _IntFieldPayload)
     assert validated.count == 3
+
+
+# ── State-machine constants via taskq.backend (upgrading.md import note) ──
+
+
+def test_terminal_statuses_reexport_is_the_statemachine_object() -> None:
+    """``taskq.backend.TERMINAL_STATUSES`` is the exact object the internal
+    ``taskq.backend.statemachine`` module defines — the identity the
+    guide's before/after promises (a switch, not a copy)."""
+    assert taskq.backend.TERMINAL_STATUSES is TERMINAL_STATUSES
+
+
+def test_terminal_statuses_is_a_declared_backend_export() -> None:
+    """The public path is a declared ``__all__`` entry, not an accidental
+    attribute — what makes it the covered surface the guide points at."""
+    assert "TERMINAL_STATUSES" in taskq.backend.__all__
+
+
+def test_state_machine_constants_reexported_from_backend() -> None:
+    """The other state-machine names the guide's note mentions are
+    re-exported from ``taskq.backend`` as the same objects too."""
+    pairs: list[tuple[str, object]] = [
+        ("ACTIVE_STATUSES", ACTIVE_STATUSES),
+        ("VALID_TRANSITIONS", VALID_TRANSITIONS),
+        ("assert_valid_transition", assert_valid_transition),
+    ]
+    for name, internal_obj in pairs:
+        assert getattr(taskq.backend, name) is internal_obj
+        assert name in taskq.backend.__all__

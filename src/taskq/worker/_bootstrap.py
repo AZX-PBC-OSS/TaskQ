@@ -7,6 +7,8 @@ The ``_main`` coroutine wires the full TaskGroup of long-lived siblings
 
 ``_emit_sub_enqueue_startup_warnings`` checks LOOP-scope connection
 resolution and warns about PgBouncer transaction-mode footguns.
+``_emit_queue_subscription_warnings`` warns when a registered actor
+targets a queue this worker does not consume.
 """
 
 import asyncio
@@ -66,6 +68,7 @@ from taskq.worker.shutdown import ShutdownPhase, install_signal_handlers
 from taskq.worker.startup import sync_actor_config
 
 __all__ = [
+    "_emit_queue_subscription_warnings",
     "_emit_sub_enqueue_startup_warnings",
     "_main",
     "worker_main",
@@ -190,6 +193,61 @@ def _emit_sub_enqueue_startup_warnings(
                 "endpoint."
             ),
         )
+
+
+def _emit_queue_subscription_warnings(
+    settings: WorkerSettings,
+    actor_registry: Mapping[str, ActorRef[Any, Any]],
+    log: structlog.stdlib.BoundLogger,
+) -> None:
+    """Warn once at bootstrap when a registered actor targets a queue this
+    worker does not consume.
+
+    Why a warning and not a fatal error: an actor on queue ``"cron"`` fed
+    to a worker whose ``settings.queues`` is ``["default"]`` is a perfectly
+    legitimate split-queue topology — some *other* worker consumes
+    ``"cron"``. But when no worker anywhere subscribes to the queue, every
+    job the actor enqueues sits pending forever with no signal, and
+    enqueue keeps succeeding the whole while. This warning is the only
+    bootstrap-time visibility into that stranding mode: the leader's
+    stranded-jobs check (:attr:`WorkerSettings.stranded_jobs_interval`)
+    fires much later and only for pending jobs whose actor has no
+    ``actor_config`` row at all — an actor that synced a row onto an
+    unconsumed queue stays invisible to it, because dispatch never sees
+    the queue and nothing else inspects the registration.
+
+    Payload contract: one warning per bootstrap listing every stranded
+    actor — ``actors`` maps actor name → its declared queue (the
+    ``@actor(queue=...)`` literal, which ``sync_actor_config`` stores as
+    the structural value), ``worker_queues`` carries this worker's
+    subscription so the gap is visible without cross-referencing config,
+    and ``note`` states the only-if-no-other-worker clarification so an
+    operator running a deliberate split-queue fleet knows it may be
+    benign. Workgroup children run ``_main`` with their own per-child
+    registry and queue list, so the check holds per child worker.
+
+    Pure function of (settings, actor_registry): no side effect beyond
+    the log line, extracted from ``_main`` so tests can exercise it
+    directly without standing up a worker.
+    """
+    consumed = set(settings.queues)
+    stranded = {ref.name: ref.queue for ref in actor_registry.values() if ref.queue not in consumed}
+    if not stranded:
+        return
+
+    log.warning(
+        "actors-on-unconsumed-queues",
+        actors=stranded,
+        worker_queues=list(settings.queues),
+        note=(
+            "actors above are registered on queues this worker does not "
+            "consume, so it will never dispatch their jobs. This is only a "
+            "problem if no other worker consumes those queues — otherwise "
+            "jobs for these actors strand as pending forever. Verify with "
+            "`taskq actor-config list` (queue column) that some worker's "
+            "TASKQ_QUEUES / --queues includes each queue listed here."
+        ),
+    )
 
 
 def _resolve_rl_registry(
@@ -319,13 +377,17 @@ def _emit_startup_warnings(settings: WorkerSettings) -> None:
     """
 
     # Why: the bounded-close tail is additive on top of the shutdown phase
-    # graces and is not modelled by the settings validator (which cannot
-    # reject this without refusing TaskQ's own defaults -- see
-    # WorkerSettings.worst_case_shutdown_seconds). Left unsurfaced, the
-    # first symptom is a SIGKILL mid-unwind during an incident, with
-    # terminal writes truncated and jobs recovered later by crash reclaim
-    # instead of finalizing cleanly. Warn once at startup, with the numbers
-    # an operator needs to size the pod grace.
+    # graces and is deliberately not modelled by the settings validator,
+    # which cannot reject a sub-worst-case budget without taking away a
+    # legitimate operator choice (a tight deployment that would rather be
+    # SIGKILLed mid-unwind than wait out a hung close) — see
+    # WorkerSettings.worst_case_shutdown_seconds. The shipped default
+    # covers the model, so this warning only fires for custom budgets that
+    # fall short. Left unsurfaced, the first symptom is a SIGKILL
+    # mid-unwind during an incident, with terminal writes truncated and
+    # jobs recovered later by crash reclaim instead of finalizing cleanly.
+    # Warn once at startup, with the numbers an operator needs to size the
+    # pod grace.
     if not settings.shutdown_budget_is_sufficient:
         _startup_log.warning(
             "shutdown-budget-exceeds-termination-grace",
@@ -701,6 +763,7 @@ async def _main(
                 actor_registry,
                 _startup_log,
             )
+            _emit_queue_subscription_warnings(settings, actor_registry, _startup_log)
 
         worker_id = await register_worker(deps.dispatcher_pool, settings)
 

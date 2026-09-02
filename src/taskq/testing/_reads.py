@@ -3,9 +3,16 @@
 ``get``, ``list_jobs``, ``count_pending_jobs``, ``get_attempts``, and
 ``get_events`` live here as module-level functions taking
 ``self: InMemoryBackend`` as the first parameter.
+
+``get`` additionally applies the PG result-TTL sweep predicate
+(:data:`taskq.backend._sweeps._SWEEP_RESULT_TTL_SQL`) against the injected
+Clock, so a read past ``result_expires_at`` deterministically reports the
+result as unavailable. ``list_jobs`` does not — it exposes raw stored rows,
+matching PostgresBackend's pre-sweep list behaviour.
 """
 
-from datetime import timedelta
+from dataclasses import replace
+from datetime import datetime, timedelta
 from functools import cmp_to_key
 from typing import TYPE_CHECKING
 
@@ -31,11 +38,43 @@ __all__ = [
     "_get_events",
     "_list_jobs",
     "_poll_reclaim_events",
+    "_post_sweep_result_view",
 ]
 
 
+def _post_sweep_result_view(row: JobRow, now: datetime) -> JobRow:
+    """Return *row* as the PG result-TTL sweep would have left it.
+
+    PostgresBackend nulls an expired result via the leader-only
+    ``sweep_expired_results`` — but only when that sweep happens to fire,
+    so a read landing between expiry and the next sweep still observes the
+    result. The in-memory backend has no leader loop to schedule, so
+    ``get`` evaluates the same predicate against the injected Clock on
+    every read: a row past its result TTL reads back in the exact
+    post-sweep shape, deterministically.
+
+    Predicate parity with ``_SWEEP_RESULT_TTL_SQL``, field for field: the
+    comparison is strictly ``<`` (a read at exactly ``result_expires_at``
+    still sees the result), and a row whose ``result`` is already ``None``
+    is untouched. Only ``result`` / ``result_size_bytes`` /
+    ``result_expires_at`` are nulled — the stored row is never mutated,
+    only the returned copy — so status and every other column (terminal
+    ones included) pass through unchanged, and an expired result can
+    neither revive nor alter a terminal state. Downstream code that
+    handles :class:`~taskq.exceptions.ResultUnavailable` from
+    ``JobHandle.wait`` therefore sees the same failure mode on both
+    backends.
+    """
+    if row.result is not None and row.result_expires_at is not None and row.result_expires_at < now:
+        return replace(row, result=None, result_size_bytes=None, result_expires_at=None)
+    return row
+
+
 async def _get(self: "InMemoryBackend", job_id: JobId) -> JobRow | None:
-    return self._jobs.get(job_id)
+    row = self._jobs.get(job_id)
+    if row is None:
+        return None
+    return _post_sweep_result_view(row, self._clock.now())
 
 
 async def _list_jobs(self: "InMemoryBackend", filters: JobFilter) -> list[JobRow]:

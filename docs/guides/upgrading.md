@@ -201,6 +201,35 @@ from taskq.actor_config_ops import (
 )
 ```
 
+### State-machine constants: `taskq.backend.statemachine` → `taskq.backend`
+
+> **Unreleased.** Not a breaking change — the old path still imports. This
+> is guidance for embedders reviewing their imports against the public API
+> surface.
+
+`TERMINAL_STATUSES` (and `ACTIVE_STATUSES`, `VALID_TRANSITIONS`,
+`assert_valid_transition`) are re-exported from the public
+`taskq.backend` package. The defining module,
+`taskq.backend.statemachine`, is an internal layout detail — `taskq.backend`
+is the covered surface: `tests/test_backend_init_coverage.py` pins that
+every `taskq.backend.__all__` entry resolves and that each re-export is
+identical to its submodule source, so that is the path that stays stable.
+
+**Old (internal defining module — works today, not the covered surface):**
+
+```python
+from taskq.backend.statemachine import TERMINAL_STATUSES
+```
+
+**New:**
+
+```python
+from taskq.backend import TERMINAL_STATUSES
+```
+
+The same one-line switch applies to `ACTIVE_STATUSES`,
+`VALID_TRANSITIONS`, and `assert_valid_transition`.
+
 ---
 
 ## Breaking API changes

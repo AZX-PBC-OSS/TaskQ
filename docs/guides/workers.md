@@ -175,6 +175,24 @@ The dispatch CTE filters `jobs.queue = ANY($queues)`, so one worker process can 
 
 Actors declare which queue they target via `@actor(queue="...")`. A worker that does not include that queue in its `TASKQ_QUEUES` list will never pick up those jobs.
 
+### Actors on unconsumed queues
+
+An actor registered on a queue this worker does not consume is **stranded from this worker's perspective**: `enqueue` keeps succeeding (any client can insert into any queue), but this worker's dispatch CTE filters `jobs.queue = ANY($queues)` and will never claim those jobs. If no *other* worker consumes the queue either, the jobs sit `pending` forever with no error anywhere — the silent pile-up failure mode.
+
+This is deliberately a warning, not a fatal error, because a split-queue topology is legitimate: one process consuming `["default"]` while another consumes `["cron"]` is a normal deployment shape. At bootstrap, every worker whose registry contains an actor targeting a queue outside its own subscription logs one warning:
+
+```
+actors-on-unconsumed-queues  actors={"nightly": "cron", "mailer": "email"}  worker_queues=["default"]
+```
+
+The `note` field spells out the condition under which it is a real problem: only when no other worker consumes those queues.
+
+How to detect and resolve stranding:
+
+- **At startup**: the `actors-on-unconsumed-queues` warning names every affected actor, its declared queue, and this worker's subscription.
+- **After the fact**: `taskq actor-config list` shows each registered actor's stored `queue` column — cross-check that every queue appearing there is consumed by *some* worker's `TASKQ_QUEUES` / `--queues`. The admin UI's Jobs page (`taskq ui serve`) shows pending jobs per queue and makes a growing backlog on one queue visible.
+- **Fix**: either add the actor's queue to this worker (`TASKQ_QUEUES=default,cron` / repeat the `--queues` flag), or point the actor at a consumed queue via `@actor(queue=...)` and re-register (see [troubleshooting.md](troubleshooting.md) — "Jobs stuck in `pending`").
+
 ### Queue dispatch modes
 
 Each queue has a `mode` column in the `queues` table that controls how the dispatch CTE
@@ -719,7 +737,7 @@ All variables use the `TASKQ_` prefix. `WorkerSettings` extends `TaskQSettings`;
 | `TASKQ_HEARTBEAT_INTERVAL` | `float` | `10.0` | Seconds between heartbeat ticks |
 | `TASKQ_LOCK_LEASE` | `float` | `60.0` | Seconds before a lock is reclaimed; must be `>= 4 * heartbeat_interval` |
 | `TASKQ_MAX_HEARTBEAT_FAILURES` | `int` | `3` | Consecutive heartbeat failures before `isolate_self` |
-| `TASKQ_TERMINATION_GRACE_PERIOD` | `float` | `60.0` | Total seconds from SIGTERM to forced exit |
+| `TASKQ_TERMINATION_GRACE_PERIOD` | `float` | `75.0` | Total seconds from SIGTERM to forced exit; sized to cover the default shutdown worst case (67s) |
 | `TASKQ_CANCELLATION_GRACE_PERIOD` | `float` | `30.0` | Seconds for cooperative cancel phase |
 | `TASKQ_CLEANUP_GRACE_PERIOD` | `float` | `10.0` | Seconds for force-cancel cleanup phase |
 | `TASKQ_MAX_RETRY_BACKOFF` | `timedelta` | `PT24H` | Global ceiling on per-attempt retry backoff |

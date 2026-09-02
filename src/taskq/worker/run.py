@@ -62,6 +62,8 @@ from taskq.worker.deps import WorkerDeps
 from taskq.worker.dispatch import dispatch_one_job
 
 __all__ = [  # pyright: ignore[reportUnsupportedDunderAll]  # Why: _main is lazily re-exported via __getattr__
+    "_emit_queue_subscription_warnings",
+    "_emit_sub_enqueue_startup_warnings",
     "_main",
     "consumer_loop_stub",
     "deregister_worker",
@@ -79,6 +81,9 @@ if TYPE_CHECKING:
     # names below; runtime resolution stays in __getattr__ to defer the
     # _bootstrap import cost.
     from taskq.worker._bootstrap import (
+        _emit_queue_subscription_warnings as _emit_queue_subscription_warnings,
+    )
+    from taskq.worker._bootstrap import (
         _emit_sub_enqueue_startup_warnings as _emit_sub_enqueue_startup_warnings,
     )
     from taskq.worker._bootstrap import (
@@ -87,12 +92,17 @@ if TYPE_CHECKING:
 
 
 def __getattr__(name: str) -> object:
-    if name in ("_main", "_emit_sub_enqueue_startup_warnings"):
-        from taskq.worker._bootstrap import _emit_sub_enqueue_startup_warnings, _main
+    if name in ("_main", "_emit_sub_enqueue_startup_warnings", "_emit_queue_subscription_warnings"):
+        from taskq.worker._bootstrap import (
+            _emit_queue_subscription_warnings,
+            _emit_sub_enqueue_startup_warnings,
+            _main,
+        )
 
         return {
             "_main": _main,
             "_emit_sub_enqueue_startup_warnings": _emit_sub_enqueue_startup_warnings,
+            "_emit_queue_subscription_warnings": _emit_queue_subscription_warnings,
         }[name]
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 

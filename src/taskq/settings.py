@@ -775,11 +775,21 @@ class WorkerSettings(TaskQSettings):
 
     # ── Cancellation and cleanup grace periods ───────────
     termination_grace_period: float = Field(
-        default=60.0,
+        default=75.0,
         ge=5.0,
         description="TASKQ_TERMINATION_GRACE_PERIOD (seconds). Total wall-clock "
-        "budget from SIGTERM to forced exit. Must satisfy "
-        "cancellation_grace + cleanup_grace < termination_grace - 5.",
+        "budget from SIGTERM to forced exit; the shutdown watchdog counts "
+        "it down from the first shutdown signal. Must satisfy "
+        "cancellation_grace + cleanup_grace < termination_grace - 5, and "
+        "should cover the modelled worst case cancellation_grace + "
+        "cleanup_grace + the ~27s bounded-close teardown tail (see "
+        "WorkerSettings.worst_case_shutdown_seconds) — the default does: "
+        "30 + 10 + 27 = 67s, with headroom for the ~72s sibling-crash "
+        "path that model understates. A value below the worst case still "
+        "loads but logs shutdown-budget-exceeds-termination-grace at "
+        "startup. Size the pod/container grace "
+        "(terminationGracePeriodSeconds / stop_grace_period) from the "
+        "same worst case, not from this setting alone.",
     )
     cancellation_grace_period: float = Field(
         default=30.0,
@@ -1583,13 +1593,13 @@ class WorkerSettings(TaskQSettings):
         after them (see :func:`taskq._close.worst_case_teardown_tail`).
 
         This is deliberately NOT enforced by ``post_load``. The cross-field
-        validator there rejects a config outright, and TaskQ's own defaults
-        (60 / 30 / 10) produce a modelled worst case above
-        ``termination_grace_period`` -- so validating it would refuse to
-        start every deployment running the defaults, turning a
-        sizing warning into a fleet-wide outage on upgrade. The number is
-        surfaced as a startup warning instead, and
-        ``docs/guides/deployment.md`` documents the pod-grace formula.
+        validator there rejects a config outright, and a budget below this
+        dead-backend worst case is a legitimate operator choice (a tight
+        dev deployment that would rather be SIGKILLed mid-unwind than wait
+        out a hung close). The shipped default covers the model — raising
+        the validator to reject sub-worst-case budgets would take that
+        choice away. The number is surfaced as a startup warning instead,
+        and ``docs/guides/deployment.md`` documents the pod-grace formula.
         """
         return (
             self.cancellation_grace_period + self.cleanup_grace_period + worst_case_teardown_tail()
