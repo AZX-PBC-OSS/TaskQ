@@ -106,8 +106,14 @@ Emitted by `JobsClient.enqueue` and `SubJobEnqueuer.enqueue`.
 | `taskq.identity_key` | identity key string, or `""` |
 
 The enqueue span's `trace_id` and `span_id` are stored in the `jobs` table row
-(`trace_id`, `span_id` columns). The worker reads these values at dispatch time
-to reconstruct the span context.
+(`trace_id`, `span_id` columns). At dispatch time the worker reads them and
+attaches them to the consumer span as a **span link**
+(`links=[Link(...)]`) — it does not parent the consumer span to them. The
+consumer span therefore starts a **new root trace**, and a backend such as
+Application Insights shows enqueue and execution under two unrelated
+`operation_Id` values, joined only by the link. Parenting instead of linking is
+a separate change: it needs the W3C `traceparent` sampling flags persisted on
+the row, which the current two-column schema does not carry.
 
 ### Dispatch span
 

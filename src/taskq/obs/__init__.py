@@ -1,9 +1,18 @@
 """Vendor-neutral observability bootstrap.
 
 The library never imports vendor SDKs (Sentry, Datadog, PostHog, App Insights).
-Instead, it emits OpenTelemetry spans/metrics/logs and lets operators wire any
+Instead, it emits OpenTelemetry spans and metrics and lets operators wire any
 OTLP-compatible backend by configuring environment variables (or by passing an
 already-configured ``TracerProvider`` / ``MeterProvider``).
+
+Logs are NOT an OTel signal here: there is no ``LoggerProvider`` and no
+``LoggingHandler`` anywhere in the library. :func:`setup_logging` configures
+structlog over the stdlib ``logging`` root logger, so log lines reach a
+telemetry backend only if the operator has attached a handler to that root
+logger themselves -- which is what ``configure_azure_monitor()`` does. That is
+incidental wiring, not an emission path this library owns, and it is why
+exception text has to be scrubbed inside the processor chain rather than at an
+exporter (see ``_redact_exc``).
 
 Common deployment shapes:
 
