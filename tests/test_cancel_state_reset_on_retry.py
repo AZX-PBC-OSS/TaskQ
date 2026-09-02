@@ -56,12 +56,12 @@ async def _worker_of(backend: Backend) -> UUID:
     """A worker id that exists in the backend's ``workers`` table."""
     if isinstance(backend, InMemoryBackend):
         return backend._worker_id  # pyright: ignore[reportPrivateUsage]  # Why: canonical worker identity for InMemoryBackend; mirrors tests/test_backend_equivalence.py
-    schema: str = backend._schema_name  # pyright: ignore[reportPrivateUsage]  # Why: PG-path helper mirrors tests/test_backend_equivalence.py
-    pool = backend._worker_pool  # pyright: ignore[reportPrivateUsage]  # Why: same
+    schema: str = backend._schema_name  # type: ignore[reportPrivateUsage, reportAttributeAccessIssue] # Why: PG-path helper mirrors tests/test_backend_equivalence.py
+    pool = backend._worker_pool  # type: ignore[reportPrivateUsage, reportAttributeAccessIssue] # Why: same
     worker_id = new_uuid()
     async with pool.acquire() as conn:  # pyright: ignore[reportUnknownVariableType]  # Why: asyncpg stubs yield PoolConnectionProxy | Unknown
         await conn.execute(
-            f'INSERT INTO "{schema}".workers (id, hostname, pid, queues) VALUES ($1, $2, $3, $4)',
+            f'INSERT INTO "{schema}".workers (id, hostname, pid, queues) VALUES ($1, $2, $3, $4)',  # noqa: S608 # Why: schema is fixture-derived and _IDENT_RE-validated; every value is $N-bound
             worker_id,
             "test-host",
             12345,
@@ -91,11 +91,11 @@ async def _force_cancel_escalated(backend: Backend, job_id: JobId) -> None:
             cancel_requested_at=datetime.now(UTC),
         )
         return
-    schema: str = backend._schema_name  # pyright: ignore[reportPrivateUsage]  # Why: PG-path helper mirrors tests/test_backend_equivalence.py
-    pool = backend._worker_pool  # pyright: ignore[reportPrivateUsage]  # Why: same
+    schema: str = backend._schema_name  # type: ignore[reportPrivateUsage, reportAttributeAccessIssue] # Why: PG-path helper mirrors tests/test_backend_equivalence.py
+    pool = backend._worker_pool  # type: ignore[reportPrivateUsage, reportAttributeAccessIssue] # Why: same
     async with pool.acquire() as conn:  # pyright: ignore[reportUnknownVariableType]  # Why: asyncpg stubs yield PoolConnectionProxy | Unknown
         await conn.execute(
-            f'UPDATE "{schema}".jobs '
+            f'UPDATE "{schema}".jobs '  # noqa: S608 # Why: schema is fixture-derived and _IDENT_RE-validated; the job id is $1-bound
             "SET cancel_phase = 2, cancel_requested_at = clock_timestamp() WHERE id = $1",
             job_id,
         )
