@@ -159,6 +159,7 @@ from taskq.backend.clock import Clock
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
     DEFAULT_CHUNK_SIZE,
+    DEFAULT_RECLAIM_POLL_LIMIT,
     RECLAIM_EVENT_VISIBILITY_DELAY,
     events_channel,
     wake_channel,
@@ -547,7 +548,7 @@ class PostgresBackend:
     async def poll_reclaim_events(
         self,
         after_id: int,
-        limit: int = 100,
+        limit: int = DEFAULT_RECLAIM_POLL_LIMIT,
         *,
         visibility_delay: timedelta | None = None,
     ) -> list[EventRow]:

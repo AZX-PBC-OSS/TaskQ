@@ -61,7 +61,7 @@ from taskq.backend._protocol import (
 )
 from taskq.backend.clock import Clock
 from taskq.backend.statemachine import ACTIVE_STATUSES
-from taskq.constants import MAX_RESULT_BYTES
+from taskq.constants import DEFAULT_CHUNK_SIZE, DEFAULT_RECLAIM_POLL_LIMIT, MAX_RESULT_BYTES
 from taskq.retry import OnRetryExhausted, OnSuccess, RetryClassifierHook, RetryPolicy
 from taskq.testing._batch import (
     _abort_batch,
@@ -282,7 +282,7 @@ class InMemoryBackend:
     async def poll_reclaim_events(
         self,
         after_id: int,
-        limit: int = 100,
+        limit: int = DEFAULT_RECLAIM_POLL_LIMIT,
         *,
         visibility_delay: timedelta | None = None,
     ) -> list[EventRow]:
@@ -848,7 +848,7 @@ class InMemoryBackend:
         queue: str,
         batch_row: BatchRow | None,
         finalizer_args: EnqueueArgs | None,
-        chunk_size: int = 1000,
+        chunk_size: int = DEFAULT_CHUNK_SIZE,
     ) -> list[JobRow]:
         return await _enqueue_batch_atomic(
             self,

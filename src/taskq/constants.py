@@ -18,6 +18,7 @@ __all__ = [
     "DEFAULT_MAX_RETRY_BACKOFF",
     "DEFAULT_PRUNE_BATCH_SIZE",
     "DEFAULT_PRUNE_RETENTION",
+    "DEFAULT_RECLAIM_POLL_LIMIT",
     "DEFAULT_RESERVATION_BACKOFF",
     "EVENTS_CHANNEL_FMT",
     "IDEMPOTENCY_KEY_BYTES_CEILING",
@@ -147,6 +148,17 @@ Why 1000: it keeps a single chunk's parameter array well inside asyncpg's
 comfortable range while amortising the round trip. Every caller can
 override it per call via ``chunk_size=``; this is only the default, shared
 so the client, backend and SQL layers cannot drift apart.
+"""
+
+DEFAULT_RECLAIM_POLL_LIMIT: Final[int] = 100
+"""Default rows per ``poll_reclaim_events`` call.
+
+Why shared: this default is declared on the Backend protocol and repeated
+by every implementation. If they drift, a caller relying on the protocol
+default silently gets a different batch size per backend — the same class
+of divergence that made the in-memory and Postgres backends disagree
+before. The value itself is a poll batch, not a tuning knob: callers that
+care pass ``limit=`` explicitly.
 """
 
 MAX_RESULT_BYTES: Final[int] = 65536

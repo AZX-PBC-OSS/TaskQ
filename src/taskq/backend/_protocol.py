@@ -43,6 +43,7 @@ else:
 from pydantic import AfterValidator, BaseModel, ConfigDict
 
 from taskq._json import check_no_nul_str
+from taskq.constants import DEFAULT_CHUNK_SIZE, DEFAULT_RECLAIM_POLL_LIMIT
 
 __all__ = [
     "BACKEND_PROTOCOL_VERSION",
@@ -1309,7 +1310,7 @@ class Backend(Protocol):
     async def poll_reclaim_events(
         self,
         after_id: int,
-        limit: int = 100,
+        limit: int = DEFAULT_RECLAIM_POLL_LIMIT,
         *,
         visibility_delay: timedelta | None = None,
     ) -> list[EventRow]:
@@ -1508,7 +1509,7 @@ class Backend(Protocol):
         queue: str,
         batch_row: BatchRow | None,
         finalizer_args: EnqueueArgs | None,
-        chunk_size: int = 1000,
+        chunk_size: int = DEFAULT_CHUNK_SIZE,
     ) -> list[JobRow]: ...
 
     async def create_batch(

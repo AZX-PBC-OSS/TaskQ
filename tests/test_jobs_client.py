@@ -242,43 +242,44 @@ class TestList:
         assert len(page.jobs) == 2
         assert all(j.queue == "alpha" for j in page.jobs)
 
-    async def test_list_order_by_created_at_desc_never_returns_cursor(self) -> None:
-        """Regression: next_cursor was always encoded from the default
-        (priority, scheduled_at, id) keyset regardless of order_by,
-        producing a non-None cursor that JobFilter.__post_init__ would
-        reject if the caller tried to use it.  With a non-default
-        order_by the cursor must be None even on a full page.
+    @pytest.mark.parametrize(
+        "order_by",
+        [JobSortField.CREATED_AT_DESC, JobSortField.FINISHED_AT_DESC],
+    )
+    async def test_list_pages_the_whole_set_under_a_non_default_ordering(
+        self, order_by: JobSortField
+    ) -> None:
+        """Every ordering the backend can page, the client must hand back a
+        cursor for.  The backend gained that ability when ``id`` was ordered
+        *with* the sort column; this client kept its own older guard, so
+        ``list()`` withheld the token and a caller could not walk past page
+        one no matter what the backend supported.
+
+        Asserted by completeness: paging with a limit smaller than the set
+        must reconstruct the unpaged listing exactly, element for element.
+        A gap, a duplicate or a reordering all fail this.
         """
         backend, client = _make_client()
 
-        # Enqueue 5 jobs (more than limit=3) so the page is exactly full.
         for _ in range(5):
-            args = make_enqueue_args(scheduled_at=_START)
-            await backend.enqueue(args)
-
-        page = await client.list(JobFilter(limit=3, order_by=JobSortField.CREATED_AT_DESC))
-        assert len(page.jobs) == 3
-        assert page.next_cursor is None
-
-    async def test_list_order_by_finished_at_desc_never_returns_cursor(self) -> None:
-        """Regression: same bug as CREATED_AT_DESC — next_cursor was
-        always encoded from the default keyset.  Here jobs are run to
-        completion so finished_at is set, the page is full, and the
-        cursor must still be None.
-        """
-        backend, client = _make_client()
-
-        # Enqueue 5 jobs and run them to completion so finished_at is set.
-        for _ in range(5):
-            args = make_enqueue_args(scheduled_at=_START)
-            await backend.enqueue(args)
-
+            await backend.enqueue(make_enqueue_args(scheduled_at=_START))
         backend.register_stub("test_actor", lambda payload, ctx: {"ok": True})
         await backend.run_until_drained()
 
-        page = await client.list(JobFilter(limit=3, order_by=JobSortField.FINISHED_AT_DESC))
-        assert len(page.jobs) == 3
-        assert page.next_cursor is None
+        expected = [j.id for j in (await client.list(JobFilter(limit=50, order_by=order_by))).jobs]
+        assert len(expected) == 5, "all five jobs must be visible unpaged"
+
+        walked: list[UUID] = []
+        cursor: str | None = None
+        for _ in range(5):  # bounded: a broken seam must fail, not spin
+            page = await client.list(JobFilter(limit=2, order_by=order_by, cursor=cursor))
+            walked.extend(j.id for j in page.jobs)
+            cursor = page.next_cursor
+            if cursor is None:
+                break
+
+        assert cursor is None, "paging did not terminate within the expected page count"
+        assert walked == expected
 
     async def test_list_order_by_scheduled_at_asc_still_returns_cursor(self) -> None:
         """The cursor-suppression fix must not over-suppress: explicit

@@ -1077,11 +1077,10 @@ from taskq.backend._protocol import JobSortField
     columns of the ordering that produced it — `(priority, scheduled_at,
     id)` for the default, `(created_at, id)` and `(finished_at, id)` for
     the others — so cursors are not interchangeable between orderings.
-    Build one with `encode_job_cursor(row, order_by)` from
-    `taskq.backend._cursor`, passing the same `order_by` you list with —
-    `JobsClient.list()` fills in `JobPage.next_cursor` for the default
-    ordering only, so under `CREATED_AT_DESC`/`FINISHED_AT_DESC` encode
-    the last row of the page yourself.
+    `JobsClient.list()` fills in `JobPage.next_cursor` for every ordering,
+    encoded from that ordering's own columns, so feed a page's cursor back
+    with the same `order_by` you listed with. Changing `order_by` while
+    reusing a cursor is a caller error, not a supported way to re-sort.
 
     Each ordering tie-breaks on `id` in the **same** direction as its
     primary column (`created_at DESC, id DESC`). That is what makes a page

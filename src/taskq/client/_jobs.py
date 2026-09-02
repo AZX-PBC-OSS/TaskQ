@@ -30,7 +30,7 @@ from pydantic import BaseModel, TypeAdapter, ValidationError
 from taskq._close import CLOSE_TIMEOUT_SECS, close_redis_bounded
 from taskq._validation import validate_actor_payload
 from taskq.actor import ActorRef
-from taskq.backend._cursor import encode_cursor
+from taskq.backend._cursor import encode_job_cursor
 from taskq.backend._protocol import (
     Backend,
     BatchFilter,
@@ -42,7 +42,6 @@ from taskq.backend._protocol import (
     JobFilter,
     JobId,
     JobPage,
-    JobSortField,
     QueueName,
     ScheduleCreateArgs,
     ScheduleUpdateArgs,
@@ -1132,21 +1131,15 @@ class JobsClient:
         executing') and ``active=False`` selects terminal ones.  See
         :class:`JobFilter` for full semantics.
 
-        ``next_cursor`` is always ``None`` when a non-default
-        ``order_by`` is used, because cursor pagination only applies to
-        the default ordering (``order_by=None`` or
-        ``JobSortField.SCHEDULED_AT_ASC``).
+        ``next_cursor`` is returned for every ordering, encoded from the
+        columns that ordering actually sorts by, and is only ``None`` on
+        the last page.
         """
         with self._translate_schema_errors():
             rows = await self._backend.list_jobs(filter)
         next_cursor: str | None = None
-        if (
-            rows
-            and len(rows) == filter.limit
-            and (filter.order_by is None or filter.order_by is JobSortField.SCHEDULED_AT_ASC)
-        ):
-            last = rows[-1]
-            next_cursor = encode_cursor(last.priority, last.scheduled_at, last.id)
+        if rows and len(rows) == filter.limit:
+            next_cursor = encode_job_cursor(rows[-1], filter.order_by)
         return JobPage(jobs=rows, next_cursor=next_cursor)
 
     # ── Cancel ─────────────────────────────────────────────────────────

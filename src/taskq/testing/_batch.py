@@ -23,6 +23,7 @@ from taskq.backend._protocol import (
     JobRow,
 )
 from taskq.backend.statemachine import TERMINAL_STATUSES
+from taskq.constants import DEFAULT_CHUNK_SIZE
 
 if TYPE_CHECKING:
     from taskq.testing.in_memory import InMemoryBackend
@@ -237,7 +238,7 @@ async def _enqueue_batch_atomic(
     queue: str,
     batch_row: BatchRow | None,
     finalizer_args: EnqueueArgs | None,
-    chunk_size: int = 1000,
+    chunk_size: int = DEFAULT_CHUNK_SIZE,
 ) -> list[JobRow]:
     batch_id_str = str(batch_id)
     rows: list[JobRow] = []

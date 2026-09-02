@@ -18,6 +18,7 @@ from taskq.backend._protocol import (
     JobRow,
 )
 from taskq.backend.statemachine import ACTIVE_STATUSES, TERMINAL_STATUSES
+from taskq.constants import DEFAULT_RECLAIM_POLL_LIMIT
 
 if TYPE_CHECKING:
     from taskq.testing.in_memory import InMemoryBackend
@@ -106,7 +107,7 @@ async def _get_events(self: "InMemoryBackend", job_id: JobId) -> list[EventRow]:
 async def _poll_reclaim_events(
     self: "InMemoryBackend",
     after_id: int,
-    limit: int = 100,
+    limit: int = DEFAULT_RECLAIM_POLL_LIMIT,
     *,
     visibility_delay: timedelta | None = None,
 ) -> list[EventRow]:

@@ -25,6 +25,7 @@ from taskq.backend._records import (
 from taskq.backend._sql_templates import SqlTemplates
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
+    DEFAULT_RECLAIM_POLL_LIMIT,
     RECLAIM_EVENT_VISIBILITY_DELAY,
 )
 
@@ -189,7 +190,7 @@ async def _poll_reclaim_events(
     pool: "asyncpg.Pool",
     sql: SqlTemplates,
     after_id: int,
-    limit: int = 100,
+    limit: int = DEFAULT_RECLAIM_POLL_LIMIT,
     *,
     visibility_delay: timedelta | None = None,
 ) -> list[EventRow]:
