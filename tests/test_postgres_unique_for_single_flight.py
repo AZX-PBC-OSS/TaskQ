@@ -93,7 +93,7 @@ async def test_concurrent_enqueues_create_exactly_one_job(
     client = JobsClient(backend)
     identity = f"single-flight-{new_base62()}"
 
-    async def _enqueue() -> JobHandle:
+    async def _enqueue() -> JobHandle[None]:
         return await client.enqueue(_single_flight_actor, _Payload(value=1), identity_key=identity)
 
     results = await asyncio.gather(*[_enqueue() for _ in range(_RACERS)])
