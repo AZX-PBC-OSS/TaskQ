@@ -20,7 +20,7 @@ classifiers = [
 dependencies = [
     "asyncpg>=0.31.0,<1",
     "croniter>=6.2.4",
-    "dotenvmodel>=0.6.3,<1",
+    "dotenvmodel>=1.1.0,<2",
     # 1.30.0 is the real floor for TaskQ's import surface, not a
     # latest-at-the-time-of-writing pin. Most of what src/taskq uses is
     # long-stable (trace.Span/SpanKind/StatusCode/Tracer, metrics.
@@ -95,13 +95,15 @@ prometheus = [
 oidc = [
     # OAuth2/OIDC client, discovery, and JWT/JWKS validation. Vendor-neutral —
     # works against any OIDC provider (Entra, Okta, Auth0, Google); no vendor SDK.
-    "authlib>=1.7.2",
-    # HTTP client for authlib's AsyncOAuth2Client (subclasses httpx.AsyncClient
-    # for the OAuth2 token-exchange flow). authlib does not declare httpx as a
-    # hard dependency, so it must be listed here explicitly.
-    "httpx>=0.28.1,<1",
-    # HTTP client for direct OIDC calls (discovery, JWKS fetch). httpx2 is the
-    # Pydantic-maintained successor to httpx with the same API surface.
+    # >=1.8.0: from that release the httpx_client integration is httpx2-first
+    # (imports httpx2 directly; httpx is only a deprecated fallback), and 1.7.x
+    # imported httpx unconditionally — a range this extra no longer ships httpx
+    # for, hence the floor.
+    "authlib>=1.8.0",
+    # Sole HTTP client for the OIDC path: authlib's AsyncOAuth2Client subclasses
+    # httpx2.AsyncClient for the OAuth2 token-exchange flow, and the direct
+    # OIDC calls (discovery, JWKS fetch) import httpx2 — nothing under
+    # src/taskq imports httpx. (The dev group keeps httpx for tests.)
     "httpx2>=2.9.1",
     # Signed session cookies (shared with the SAML backend via _session.py).
     "itsdangerous>=2.2.0,<3",
@@ -152,8 +154,11 @@ exclude-newer = "24 hours"
 # only same-org dependency. Opt it out of the 24-hour supply-chain quarantine
 # so same-day releases can be adopted immediately; this is deliberate and
 # scoped to dotenvmodel only (every other dep still honors the cooldown).
-# markupsafe is excluded from cooldown for the same reason as dotenvmodel —
-# it's a transitive of pydantic that we pin tightly and audit.
+# markupsafe is opted out for a different reason: it's a toolchain transitive
+# (jinja2 via the fastapi extra; mkdocs, mkdocs-autorefs, and mkdocstrings
+# via the dev group's docs toolchain) pinned exactly by the lockfile and
+# audited on every bump, so the cooldown adds no protection while delaying
+# same-day security releases.
 exclude-newer-package = { dotenvmodel = "0d", markupsafe = false }
 # Security floors for packages TaskQ does not depend on directly. A bare
 # `uv lock --upgrade-package` fixes the resolution once; a constraint keeps it
@@ -202,7 +207,14 @@ select = [
     "RUF",   # ruff-specific
 ]
 ignore = [
-    "S101",  # assert in tests
+    # S101 stays global because production modules under src/taskq still
+    # carry type-narrowing asserts (backend/, worker/, client/, cli.py,
+    # auth.py, migrate.py, testing/) that must be converted to guards —
+    # the RuntimeError-property pattern of
+    # WorkerSettings.resolved_pg_dsn_direct — before this can be scoped
+    # to tests/** only (tests/** already has its own S101 entry in
+    # per-file-ignores).
+    "S101",
     "E501",  # long lines (formatter handles)
 ]
 
@@ -247,18 +259,6 @@ ignore = [
 "src/taskq/backend/_cancel_bulk.py" = ["S608", "SIM117", "S311"]
 "src/taskq/backend/_dispatch.py" = ["S608", "SIM117"]
 "src/taskq/backend/_sql_templates.py" = ["S608"]
-# SIM117: pool.acquire() and conn.transaction() cannot be flattened into a
-# single async-with because conn is not bound until after the first __aenter__.
-# Schema name is validated against _IDENT_RE before interpolation; same
-# rationale as migrate.py.  All user-supplied values use $N parameter
-# binding.
-# Schema name is validated against _IDENT_RE before interpolation; same
-# rationale as migrate.py.  All user-supplied values use $N parameter
-# binding — only the schema identifier is interpolated.
-# Schema name is validated against _IDENT_RE before interpolation; same
-# rationale as migrate.py.  All user-supplied values use $N parameter
-# binding — only the schema identifier is interpolated, and it is
-# validated at construction time.
 "src/taskq/worker/dispatch.py" = ["S608"]
 # Schema name is validated against _IDENT_RE before interpolation, same
 # rationale as migrate.py. The archive-sweep column list is also
@@ -271,8 +271,6 @@ ignore = [
 # validated against _IDENT_RE before interpolation; all user-supplied
 # values use $N parameter binding.
 "tests/test_postgres_cancel_paths.py" = ["S608"]
-# Same rationale — schema name validated against _IDENT_RE; all
-# user-supplied values use $N parameter binding.
 # Same rationale — schema name validated against _IDENT_RE; all
 # user-supplied values use $N parameter binding.
 "tests/test_postgres_enqueue.py" = ["S608"]
@@ -505,7 +503,9 @@ addopts = [
     "--timeout=300",
 ]
 filterwarnings = [
-    "ignore::DeprecationWarning:testcontainers.*",
+    # No testcontainers entry: every import migrated to the non-deprecated
+    # testcontainers.community.* modules, so any future testcontainers
+    # DeprecationWarning should SURFACE in the warnings summary, not be hidden.
     "ignore::DeprecationWarning:redis.*",
     "ignore::DeprecationWarning:onelogin.*",
 ]
@@ -538,6 +538,7 @@ dev = [
     "asyncpg-stubs>=0.31.3",
     "authlib>=1.7.2",
     "fakeredis>=2.37.0",
+    "filelock>=3.32.4",
     "httpx>=0.28.1",
     "httpx2>=2.9.1",
     "hypothesis>=6.157.1",
@@ -564,7 +565,7 @@ dev = [
     "python-multipart>=0.0.32",
     "pyyaml>=6.0.3",
     "respx>=0.23.1",
-    "ruff>=0.15.22",
+    "ruff>=0.16.5,<0.17",
     "testcontainers[postgres,redis]>=4.14.2",
 ]
 # Containerized e2e tier (tests/e2e): container image builds for worker

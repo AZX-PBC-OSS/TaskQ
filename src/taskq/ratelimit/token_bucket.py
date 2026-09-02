@@ -39,9 +39,11 @@ return contract, the ``capacity``/``refill_per_second`` constructor validation,
 and the ``acquire`` dispatch logic into a fourth module, creating an inner
 platform where every backend module re-imports from a thin orchestrator that
 exists only to satisfy a line-count rule. The three paths share the same
-arithmetic, the same clock/now conventions, and the same logging discipline;
-co-location keeps the arithmetic consistent and the dispatch logic visible
-end-to-end without indirection.
+arithmetic, the same time-domain rule (the store owns the clock: Redis ``TIME``
+in the script, ``EXTRACT(EPOCH FROM clock_timestamp())`` on PG; the injected
+``Clock`` drives only the memory backend, its single domain), and the same
+logging discipline; co-location keeps the arithmetic consistent and the
+dispatch logic visible end-to-end without indirection.
 """
 
 import asyncio
@@ -56,7 +58,7 @@ from taskq.backend._protocol import RateLimitBackend
 from taskq.backend._records import jsonb_param, jsonb_to_dict
 from taskq.backend.clock import Clock
 from taskq.ratelimit._decision_log import log_decision
-from taskq.ratelimit._redis_utils import ensure_redis_script, with_pg_fallback
+from taskq.ratelimit._redis_utils import ensure_redis_script, redis_time_seconds, with_pg_fallback
 from taskq.ratelimit._scripts import REFUND_SCRIPT, TOKEN_BUCKET_SCRIPT
 from taskq.ratelimit.decision import RateLimitDecision, RateLimitState
 
@@ -314,9 +316,9 @@ class TokenBucket:
         if self._backend == "memory":
             return await self._acquire_memory(count, clock)
         if self._backend == "redis":
-            return await self._acquire_redis_wrapped(count, redis_client, pg_pool, clock, settings)
+            return await self._acquire_redis_wrapped(count, redis_client, pg_pool, settings)
         if self._backend == "postgres":
-            return await self._acquire_pg(count, pg_pool, clock, settings)
+            return await self._acquire_pg(count, pg_pool, settings)
 
         raise RuntimeError(f"unknown backend: {self._backend!r}")
 
@@ -333,9 +335,9 @@ class TokenBucket:
         if self._backend == "memory":
             await self._refund_memory(count)
         elif self._backend == "redis":
-            await self._refund_redis(decision, count, redis_client, clock, settings)
+            await self._refund_redis(decision, count, redis_client, settings)
         elif self._backend == "postgres":
-            await self._refund_pg(count, pg_pool, clock, settings)
+            await self._refund_pg(count, pg_pool, settings)
 
     async def peek(
         self,
@@ -348,9 +350,9 @@ class TokenBucket:
         if self._backend == "memory":
             return await self._peek_memory(clock)
         if self._backend == "redis":
-            return await self._peek_redis(redis_client, clock, settings)
+            return await self._peek_redis(redis_client, settings)
         if self._backend == "postgres":
-            return await self._peek_pg(pg_pool, clock, settings)
+            return await self._peek_pg(pg_pool, settings)
 
         raise RuntimeError(f"unknown backend: {self._backend!r}")
 
@@ -396,19 +398,19 @@ class TokenBucket:
     async def _peek_redis(
         self,
         redis_client: "redis_async.Redis | None",
-        clock: Clock | None,
         settings: "WorkerSettings | None",
     ) -> RateLimitState:
+        """Read-only Redis state snapshot — the elapsed-refill estimate runs
+        on the store's clock (``TIME``), the same domain the acquire script
+        stamps ``ts`` in."""
         if redis_client is None:
             raise RuntimeError("redis_client not injected for redis backend")
-        if clock is None:
-            raise RuntimeError("clock not injected for redis backend")
         if settings is None:
             raise RuntimeError("settings not injected for redis backend")
 
         schema_name = settings.schema_name
         key = f"taskq:{schema_name}:rl:tb:{{{self._name}}}"
-        now_seconds = clock.now().timestamp()
+        now_seconds = await redis_time_seconds(redis_client)
 
         raw = await redis_client.hmget(key, ["tokens", "ts"])  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType, reportGeneralTypeIssues]  # Why: redis-py hmget return type is untyped in the stub; all operations reflect correct runtime behavior.
 
@@ -454,20 +456,22 @@ class TokenBucket:
     async def _peek_pg(
         self,
         pg_pool: "asyncpg.Pool | None",
-        clock: Clock | None,
         settings: "WorkerSettings | None",
     ) -> RateLimitState:
+        """Read-only PG state snapshot — the elapsed-refill estimate runs on
+        the server epoch returned alongside the state (same domain the
+        acquire path stamps)."""
         if pg_pool is None:
             raise RuntimeError("pg_pool not injected for postgres backend")
         if settings is None:
             raise RuntimeError("settings not injected for postgres backend")
-        if clock is None:
-            raise RuntimeError("clock not injected for postgres backend")
 
-        now = clock.now().timestamp()
         schema = settings.schema_name
 
-        select_sql = f'SELECT state FROM "{schema}".rate_limit_buckets WHERE bucket_name=$1'  # noqa: S608  # Why: schema_name is pre-validated against _IDENT_RE at settings load time; bucket_name is $1-bound
+        select_sql = (
+            f"SELECT state, EXTRACT(EPOCH FROM clock_timestamp()) AS now_s "  # noqa: S608  # Why: schema_name is pre-validated against _IDENT_RE at settings load time; bucket_name is $1-bound
+            f'FROM "{schema}".rate_limit_buckets WHERE bucket_name=$1'
+        )
 
         async with pg_pool.acquire() as conn:
             row = await conn.fetchrow(select_sql, self._name)
@@ -475,6 +479,7 @@ class TokenBucket:
         if row is None:
             tokens = self._capacity
         else:
+            now = float(row["now_s"])
             state = jsonb_to_dict(row["state"])
             tokens = float(state.get("tokens", self._capacity))  # type: ignore[index]  # Why: rate_limit_buckets.state is NOT NULL; jsonb_to_dict only returns None for SQL NULL, which cannot occur here; fallback for rows missing keys (e.g. from schema migrations or interop writes)
             ts = float(state.get("ts", now))  # type: ignore[index]  # Why: same — state is non-None; fallback to now for rows missing "ts"
@@ -521,13 +526,10 @@ class TokenBucket:
         decision: RateLimitDecision,
         count: float,
         redis_client: "redis_async.Redis | None",
-        clock: Clock | None,
         settings: "WorkerSettings | None",
     ) -> None:
         if redis_client is None:
             raise RuntimeError("redis_client not injected for redis backend refund")
-        if clock is None:
-            raise RuntimeError("clock not injected for redis backend refund")
         if settings is None:
             raise RuntimeError("settings not injected for redis backend refund")
 
@@ -535,9 +537,8 @@ class TokenBucket:
 
         schema_name = settings.schema_name
         key = f"taskq:{schema_name}:rl:tb:{{{self._name}}}"
-        now_seconds = clock.now().timestamp()
 
-        argv: list[float] = [count, now_seconds, self._capacity, self._refill]
+        argv: list[float] = [count, self._capacity, self._refill]
         await script(keys=[key], args=argv)  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]  # Why: redis-py AsyncScript.__call__ has no return-type annotation; refund return value is not consumed
 
     async def _ensure_refund_script(self, redis_client: "redis_async.Redis") -> "AsyncScript":
@@ -552,7 +553,6 @@ class TokenBucket:
         self,
         count: float,
         pg_pool: "asyncpg.Pool | None",
-        clock: Clock | None,
         settings: "WorkerSettings | None",
     ) -> None:
         """Refund tokens on the PG backend using FOR UPDATE on rate_limit_buckets.
@@ -560,20 +560,21 @@ class TokenBucket:
         Mirrors the Redis refund script: apply the elapsed-refill step so a
         refund landing after idle time does not lose accrued tokens, then add
         ``count`` capped at ``capacity``. If the bucket row does not exist
-        (never created or already reset), this is a no-op.
+        (never created or already reset), this is a no-op. The elapsed math
+        and the stored ``ts`` are server-domain (``EXTRACT(EPOCH FROM
+        clock_timestamp())`` read in the same locked transaction), matching
+        the acquire path's stamps.
         """
         if pg_pool is None:
             raise RuntimeError("pg_pool not injected for postgres backend refund")
         if settings is None:
             raise RuntimeError("settings not injected for postgres backend refund")
-        if clock is None:
-            raise RuntimeError("clock not injected for postgres backend refund")
 
-        now = clock.now().timestamp()
         schema = settings.schema_name
 
         select_sql = (
-            f'SELECT state FROM "{schema}".rate_limit_buckets WHERE bucket_name=$1 FOR UPDATE'  # noqa: S608  # Why: schema_name is pre-validated against _IDENT_RE at settings load time; bucket_name is $1-bound
+            f"SELECT state, EXTRACT(EPOCH FROM clock_timestamp()) AS now_s "  # noqa: S608  # Why: schema_name is pre-validated against _IDENT_RE at settings load time; bucket_name is $1-bound
+            f'FROM "{schema}".rate_limit_buckets WHERE bucket_name=$1 FOR UPDATE'
         )
         update_sql = f'UPDATE "{schema}".rate_limit_buckets SET state=$1::jsonb, updated_at=clock_timestamp() WHERE bucket_name=$2'  # noqa: S608  # Why: schema_name is pre-validated against _IDENT_RE at settings load time; values are $1/$2-bound
 
@@ -583,6 +584,7 @@ class TokenBucket:
             if row is None:
                 return
 
+            now = float(row["now_s"])
             state = jsonb_to_dict(row["state"])
             tokens = float(state.get("tokens", self._capacity))  # type: ignore[index]  # Why: rate_limit_buckets.state is NOT NULL; jsonb_to_dict only returns None for SQL NULL, which cannot occur here; fallback for rows missing keys (e.g. from schema migrations or interop writes)
             ts = float(state.get("ts", now))  # type: ignore[index]  # Why: same — state is non-None; fallback to now for rows missing "ts"
@@ -609,26 +611,23 @@ class TokenBucket:
         self,
         count: float,
         redis_client: "redis_async.Redis | None",
-        clock: Clock | None,
         settings: "WorkerSettings | None",
     ) -> RateLimitDecision:
+        """Redis acquire — the script derives now from ``redis.call('TIME')``
+        (store-domain), so no Python clock participates."""
         if redis_client is None:
             raise RuntimeError("redis_client not injected for redis backend")
         if settings is None:
             raise RuntimeError("settings not injected for redis backend")
-        if clock is None:
-            raise RuntimeError("clock not injected for redis backend")
 
         script = await self._ensure_script(redis_client)
 
         schema_name = settings.schema_name
         key = f"taskq:{schema_name}:rl:tb:{{{self._name}}}"
 
-        now_seconds = clock.now().timestamp()
         ttl_seconds = self._compute_ttl_seconds()
 
         argv: list[float | int] = [
-            now_seconds,
             self._capacity,
             self._refill,
             count,
@@ -671,13 +670,12 @@ class TokenBucket:
         count: float,
         redis_client: "redis_async.Redis | None",
         pg_pool: "asyncpg.Pool | None",
-        clock: Clock | None,
         settings: "WorkerSettings | None",
     ) -> RateLimitDecision:
         """Redis path with optional PG fallback on ConnectionError/TimeoutError."""
         return await with_pg_fallback(
-            self._acquire_redis(count, redis_client, clock, settings),
-            lambda: self._acquire_pg(count, pg_pool, clock, settings),
+            self._acquire_redis(count, redis_client, settings),
+            lambda: self._acquire_pg(count, pg_pool, settings),
             bucket_name=self._name,
             settings=settings,
         )
@@ -686,33 +684,39 @@ class TokenBucket:
         self,
         count: float,
         pg_pool: "asyncpg.Pool | None",
-        clock: Clock | None,
         settings: "WorkerSettings | None",
     ) -> RateLimitDecision:
         """PG fallback path using FOR UPDATE on rate_limit_buckets.
 
         Runs in a single transaction: SELECT … FOR UPDATE (blocking, NOT SKIP
         LOCKED), compute token arithmetic in Python, upsert the new state.
+        The epoch math runs on ``EXTRACT(EPOCH FROM clock_timestamp())``
+        read in the same transaction, so the stored ``ts`` is server-domain
+        by construction — a node with a skewed Python clock cannot mint
+        phantom refill.
         """
         if pg_pool is None:
             raise RuntimeError("pg_pool not injected for postgres backend")
         if settings is None:
             raise RuntimeError("settings not injected for postgres backend")
-        if clock is None:
-            raise RuntimeError("clock not injected for postgres backend")
 
-        now = clock.now().timestamp()
         schema = settings.schema_name
 
         # Schema-name interpolation ; schema_name is
         # pre-validated against _IDENT_RE at WorkerSettings load time.
+        # The preseed stamps ts server-side via jsonb_build_object so the
+        # first acquire's elapsed math is server-domain even before the
+        # SELECT below folds the epoch in.
         preseed_sql = (
             f'INSERT INTO "{schema}".rate_limit_buckets (bucket_name, kind, state, updated_at) '  # noqa: S608  # Why: schema_name pre-validated; values are $1/$2-bound
-            f"VALUES ($1, 'token_bucket', $2::jsonb, clock_timestamp()) "
+            f"VALUES ($1, 'token_bucket', "
+            f"jsonb_build_object('tokens', $2::float8, "
+            f"'ts', EXTRACT(EPOCH FROM clock_timestamp())), clock_timestamp()) "
             f"ON CONFLICT (bucket_name) DO NOTHING"
         )
         select_sql = (
-            f'SELECT state FROM "{schema}".rate_limit_buckets WHERE bucket_name=$1 FOR UPDATE'  # noqa: S608  # Why: schema_name is pre-validated against _IDENT_RE at settings load time; bucket_name is $1-bound
+            f"SELECT state, EXTRACT(EPOCH FROM clock_timestamp()) AS now_s "  # noqa: S608  # Why: schema_name is pre-validated against _IDENT_RE at settings load time; bucket_name is $1-bound
+            f'FROM "{schema}".rate_limit_buckets WHERE bucket_name=$1 FOR UPDATE'
         )
         upsert_sql = (
             f'INSERT INTO "{schema}".rate_limit_buckets (bucket_name, kind, state, updated_at) '  # noqa: S608  # Why: schema_name pre-validated; values are $1/$2-bound
@@ -727,17 +731,18 @@ class TokenBucket:
             # tokens. Pre-seed a full-capacity row (idempotent — DO NOTHING
             # on conflict) so the very first acquire also serializes on the
             # row lock below.
-            preseed_state = jsonb_param({"tokens": self._capacity, "ts": now})
-            await conn.execute(preseed_sql, self._name, preseed_state)
+            await conn.execute(preseed_sql, self._name, self._capacity)
             row = await conn.fetchrow(select_sql, self._name)
 
             if row is None:
                 # Unreachable in the normal path — the preseed above guarantees
                 # the row exists before the SELECT. Kept as a defensive fallback
                 # (e.g. a concurrent DELETE between preseed and select).
+                now = float(await conn.fetchval("SELECT EXTRACT(EPOCH FROM clock_timestamp())"))
                 tokens = self._capacity
                 ts = now
             else:
+                now = float(row["now_s"])
                 state = jsonb_to_dict(row["state"])
                 tokens = float(state.get("tokens", self._capacity))  # type: ignore[index]  # Why: rate_limit_buckets.state is NOT NULL; jsonb_to_dict only returns None for SQL NULL, which cannot occur here; fallback for rows missing keys (e.g. from schema migrations or interop writes)
                 ts = float(state.get("ts", now))  # type: ignore[index]  # Why: same — state is non-None; fallback to now for rows missing "ts"
@@ -764,7 +769,7 @@ class TokenBucket:
             # to conn.execute fails because asyncpg does not auto-encode
             # Python dicts as jsonb.
             state_param = jsonb_param({"tokens": tokens, "ts": now})
-            # updated_at uses server-side clock_timestamp(); state ts is client-supplied
+            # updated_at and the state ts are both server-domain now
             await conn.execute(upsert_sql, self._name, state_param)
 
         result = RateLimitDecision(

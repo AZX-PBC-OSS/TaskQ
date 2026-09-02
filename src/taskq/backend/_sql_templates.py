@@ -71,6 +71,20 @@ COPY_FROM_COLUMNS: Final[tuple[str, ...]] = (
     "tags",
 )
 
+# Column list for the enqueue COPY path only.  Every clock-domain-sensitive
+# column is OMITTED so COPY writes the DDL default (status 'pending',
+# created_at/scheduled_at now()) or NULL (schedule_to_close,
+# result_expires_at), and the post-COPY fixup UPDATE
+# (enqueue_batch_fast_fixup) stamps/decides them from the server clock —
+# never from the caller's Python clock.  COPY_FROM_COLUMNS stays intact: it
+# is shared by the archive CTE column lists in worker/_leader_shared.py.
+_COPY_ENQUEUE_OMITTED: Final[frozenset[str]] = frozenset(
+    {"status", "created_at", "scheduled_at", "schedule_to_close", "result_expires_at"}
+)
+COPY_ENQUEUE_COLUMNS: Final[tuple[str, ...]] = tuple(
+    c for c in COPY_FROM_COLUMNS if c not in _COPY_ENQUEUE_OMITTED
+)
+
 
 @dataclass(frozen=True, slots=True)
 class SqlTemplates:
@@ -102,7 +116,6 @@ class SqlTemplates:
 
     # ── Enqueue SQL templates ──────────────────────────────────────
     enqueue: str
-    enqueue_with_interval: str
     enqueue_unique_for_preflight: str
     singleton_preflight: str
     enqueue_max_pending_count: str
@@ -111,6 +124,7 @@ class SqlTemplates:
     enqueue_batch: str
     enqueue_batch_fetch_existing: str
     enqueue_batch_fetch_by_ids: str
+    enqueue_batch_fast_fixup: str
 
     # ── Read SQL templates ─────────────────────────────────────────
     get_job: str
@@ -132,8 +146,9 @@ class SqlTemplates:
     # ── Admin operations ───────────────────────────────────────────
     retry_job: str
 
-    # ── COPY FROM column list ──────────────────────────────────────
+    # ── COPY FROM column lists ─────────────────────────────────────
     copy_from_columns: tuple[str, ...]
+    copy_enqueue_columns: tuple[str, ...]
 
 
 def render(schema: str) -> SqlTemplates:
@@ -196,21 +211,65 @@ SET status = 'failed',
     progress_state = CASE WHEN $7::jsonb IS NOT NULL THEN COALESCE(progress_state, '{{}}'::jsonb) || $7::jsonb ELSE progress_state END
 WHERE id = $1 AND status = 'running' AND locked_by_worker = $2
 RETURNING *""",
+        # mark_retry is a two-CTE single-arbiter statement, structurally
+        # mirroring mark_snoozed / mark_retry_after: the delay ($3::interval)
+        # is applied by the SERVER clock (scheduled_at = clock_timestamp() +
+        # delay; the status derives from the delay alone), and the schedule_to_close
+        # deadline is arbitrated in the same statement — clock_timestamp() +
+        # delay <= schedule_to_close retries; past it, the deadline_failed
+        # CTE lands 'failed' with error_class='DeadlineExceeded'.  The caller
+        # never passes a Python-domain timestamp (C1: a skewed caller could
+        # otherwise void the backoff or kill a live job).
         mark_retry=f"""\
-UPDATE "{s}".jobs
-SET status = CASE WHEN $3 > clock_timestamp() THEN 'scheduled'::"{s}".job_status ELSE 'pending'::"{s}".job_status END,
-    scheduled_at = $3,
-    finished_at = NULL,
-    locked_by_worker = NULL,
-    lock_expires_at = NULL,
-    last_heartbeat_at = NULL,
-    error_class = $4,
-    error_message = $5,
-    error_traceback = $6,
-    progress_seq = $7,
-    progress_state = CASE WHEN $8::jsonb IS NOT NULL THEN COALESCE(progress_state, '{{}}'::jsonb) || $8::jsonb ELSE progress_state END
-WHERE id = $1 AND status = 'running' AND locked_by_worker = $2
-RETURNING *""",
+WITH params AS (
+    SELECT $1::uuid AS job_id, $2::uuid AS worker_id, $3::interval AS retry_delay
+),
+retried AS (
+    UPDATE "{s}".jobs j
+    SET status = CASE WHEN $3::interval > interval '0' THEN 'scheduled'::"{s}".job_status
+                      ELSE 'pending'::"{s}".job_status END,
+        scheduled_at = clock_timestamp() + (SELECT retry_delay FROM params),
+        finished_at = NULL,
+        locked_by_worker = NULL,
+        lock_expires_at = NULL,
+        last_heartbeat_at = NULL,
+        error_class = $4,
+        error_message = $5,
+        error_traceback = $6,
+        progress_seq = $7,
+        progress_state = CASE WHEN $8::jsonb IS NOT NULL
+                              THEN COALESCE(j.progress_state, '{{}}'::jsonb) || $8::jsonb
+                              ELSE j.progress_state END
+    WHERE j.id = (SELECT job_id FROM params)
+      AND j.status = 'running'
+      AND j.locked_by_worker = (SELECT worker_id FROM params)
+      AND (j.schedule_to_close IS NULL
+           OR clock_timestamp() + (SELECT retry_delay FROM params) <= j.schedule_to_close)
+    RETURNING j.*, 'retried'::text AS outcome_branch
+),
+deadline_failed AS (
+    UPDATE "{s}".jobs j
+    SET status = 'failed',
+        finished_at = clock_timestamp(),
+        error_class = 'DeadlineExceeded',
+        error_message = 'schedule_to_close reached before next retry dispatch',
+        error_traceback = NULL,
+        locked_by_worker = NULL,
+        lock_expires_at = NULL,
+        last_heartbeat_at = NULL,
+        progress_seq = $7,
+        progress_state = CASE WHEN $8::jsonb IS NOT NULL
+                              THEN COALESCE(j.progress_state, '{{}}'::jsonb) || $8::jsonb
+                              ELSE j.progress_state END
+    WHERE j.id = (SELECT job_id FROM params)
+      AND j.status = 'running'
+      AND j.locked_by_worker = (SELECT worker_id FROM params)
+      AND j.schedule_to_close IS NOT NULL
+      AND clock_timestamp() + (SELECT retry_delay FROM params) > j.schedule_to_close
+      AND NOT EXISTS (SELECT 1 FROM retried)
+    RETURNING j.*, 'deadline_failed'::text AS outcome_branch
+)
+SELECT * FROM retried UNION ALL SELECT * FROM deadline_failed""",
         mark_cancelled=f"""\
 UPDATE "{s}".jobs
 SET status = 'cancelled',
@@ -429,6 +488,13 @@ WHERE id = $1 AND status = 'running' AND cancel_phase = 0
 RETURNING locked_by_worker""",
         cancel_escalation=CANCEL_ESCALATION_SQL.format(schema=s),
         # ── Enqueue SQL templates ──────────────────────────────────
+        # schedule_to_close is single-domain server-side on this arm: the
+        # interval form anchors to clock_timestamp() (matching the previous
+        # enqueue_with_interval behaviour), and a raw absolute datetime (the
+        # deprecated caller-domain form) only applies when the interval is
+        # NULL — clock_timestamp() + NULL::interval is NULL, so COALESCE
+        # falls through to $22.  $22 is a NEW trailing slot (bound after
+        # $21::text[]): $12 is start_to_close and must not be displaced.
         enqueue=f"""\
 INSERT INTO "{s}".jobs
 (id, actor, queue, identity_key, fairness_key,
@@ -437,19 +503,7 @@ INSERT INTO "{s}".jobs
  schedule_to_close, start_to_close, heartbeat_timeout,
  scheduled_at,
  idempotency_scope, idempotency_key, trace_id, span_id, metadata, result_expires_at, tags)
-VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, CASE WHEN COALESCE($14, clock_timestamp()) > clock_timestamp() THEN 'scheduled'::"{s}".job_status ELSE 'pending'::"{s}".job_status END, $8, $9, $10, $11, $12, $13, COALESCE($14, clock_timestamp()), $15, $16, $17, $18, $19::jsonb, $20, $21::text[])
-ON CONFLICT (idempotency_scope, idempotency_key) WHERE idempotency_key IS NOT NULL
-DO NOTHING
-RETURNING *""",
-        enqueue_with_interval=f"""\
-INSERT INTO "{s}".jobs
-(id, actor, queue, identity_key, fairness_key,
- payload, payload_schema_ver, status, priority,
- max_attempts, retry_kind,
- schedule_to_close, start_to_close, heartbeat_timeout,
- scheduled_at,
- idempotency_scope, idempotency_key, trace_id, span_id, metadata, result_expires_at, tags)
-VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, CASE WHEN COALESCE($14, clock_timestamp()) > clock_timestamp() THEN 'scheduled'::"{s}".job_status ELSE 'pending'::"{s}".job_status END, $8, $9, $10, clock_timestamp() + $11::interval, $12, $13, COALESCE($14, clock_timestamp()), $15, $16, $17, $18, $19::jsonb, $20, $21::text[])
+VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, CASE WHEN COALESCE($14, clock_timestamp()) > clock_timestamp() THEN 'scheduled'::"{s}".job_status ELSE 'pending'::"{s}".job_status END, $8, $9, $10, COALESCE(clock_timestamp() + $11::interval, $22), $12, $13, COALESCE($14, clock_timestamp()), $15, $16, $17, $18, $19::jsonb, clock_timestamp() + $20::interval, $21::text[])
 ON CONFLICT (idempotency_scope, idempotency_key) WHERE idempotency_key IS NOT NULL
 DO NOTHING
 RETURNING *""",
@@ -494,16 +548,27 @@ SELECT
     0,
     t.max_attempts,
     t.retry_kind,
-    t.schedule_to_close,
+    -- Same single-domain shape as the single-row enqueue template: the
+    -- interval form anchors to clock_timestamp(); a raw absolute datetime
+    -- (deprecated caller-domain form) applies only when the interval is
+    -- NULL (clock_timestamp() + NULL::interval is NULL).
+    COALESCE(clock_timestamp() + t.stc_interval, t.stc_raw),
     t.start_to_close,
     t.heartbeat_timeout,
+    -- Immediate rows are stamped with the STATEMENT-time clock, matching
+    -- the single-row enqueue template and the COPY fixup — not now(),
+    -- which on the caller-supplied-connection path is the caller's
+    -- transaction start.
     COALESCE(t.scheduled_at, clock_timestamp()),
     t.metadata,
     t.idempotency_scope,
     t.idempotency_key,
     t.trace_id,
     t.span_id,
-    t.result_expires_at,
+    -- result_expires_at is anchored to the server clock (the TTL sweep
+    -- compares clock_timestamp() server-side); NULL ttl → NULL (PG:
+    -- clock_timestamp() + NULL::interval is NULL).
+    clock_timestamp() + t.result_ttl,
     -- Pg text[][] does not support jagged arrays (empty sub-array () has different
     -- dimensionality from ('a','b')).  We pass tags via jsonb[] transit ($21::jsonb[])
     -- and unpack each element into text[] with jsonb_array_elements_text(…)::text[].
@@ -512,15 +577,15 @@ FROM unnest(
     $1::uuid[], $2::text[], $3::text[], $4::text[], $5::text[],
     $6::jsonb[], $7::int[],
     $8::int[], $9::int[], $10::text[],
-    $11::timestamptz[], $12::interval[], $13::interval[],
+    $11::interval[], $12::interval[], $13::interval[],
     $14::timestamptz[], $15::jsonb[], $16::text[], $17::text[], $18::text[], $19::text[],
-    $20::timestamptz[], $21::jsonb[]
+    $20::interval[], $21::jsonb[], $22::timestamptz[]
 ) AS t(id, actor, queue, identity_key, fairness_key,
     payload, payload_schema_ver,
     priority, max_attempts, retry_kind,
-    schedule_to_close, start_to_close, heartbeat_timeout,
+    stc_interval, start_to_close, heartbeat_timeout,
     scheduled_at, metadata, idempotency_scope, idempotency_key, trace_id, span_id,
-    result_expires_at, tags_jsonb)
+    result_ttl, tags_jsonb, stc_raw)
 ON CONFLICT (idempotency_scope, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
 RETURNING id, actor, queue, identity_key, status, idempotency_key, idempotency_scope""",
         enqueue_batch_fetch_existing=f"""\
@@ -529,6 +594,30 @@ JOIN unnest($1::text[], $2::text[]) AS pairs(scope, key)
   ON j.idempotency_scope = pairs.scope AND j.idempotency_key = pairs.key""",
         enqueue_batch_fetch_by_ids=f"""\
 SELECT * FROM "{s}".jobs WHERE id = ANY($1::uuid[])""",
+        # Post-COPY corrective UPDATE for enqueue_batch_fast.  COPY cannot
+        # compute/decide anything, so it writes only domain-insensitive
+        # columns (COPY_ENQUEUE_COLUMNS) and this UPDATE — executed inside
+        # the same transaction, before the notify — stamps status,
+        # scheduled_at, schedule_to_close and result_expires_at from the
+        # server clock.  The status CASE is byte-for-byte the INSERT arms'
+        # semantics (enqueue / enqueue_batch above), which is what makes a
+        # NULL ("immediate") scheduled_at safe on this path too.
+        enqueue_batch_fast_fixup=f"""\
+WITH params AS (
+    SELECT * FROM unnest(
+        $1::uuid[], $2::timestamptz[], $3::interval[], $4::timestamptz[], $5::interval[]
+    ) AS t(id, scheduled_at, stc_interval, stc_raw, result_ttl)
+)
+UPDATE "{s}".jobs j
+SET status            = CASE WHEN COALESCE(p.scheduled_at, clock_timestamp()) > clock_timestamp()
+                             THEN 'scheduled'::"{s}".job_status
+                             ELSE 'pending'::"{s}".job_status END,
+    scheduled_at      = COALESCE(p.scheduled_at, clock_timestamp()),
+    schedule_to_close = COALESCE(clock_timestamp() + p.stc_interval, p.stc_raw),
+    result_expires_at = CASE WHEN p.result_ttl IS NULL THEN NULL
+                             ELSE clock_timestamp() + p.result_ttl END
+FROM params p
+WHERE j.id = p.id""",
         # ── Read SQL templates ─────────────────────────────────────
         get_job=f"""\
 SELECT * FROM "{s}".jobs WHERE id = $1""",
@@ -628,6 +717,7 @@ SET status = 'pending',
     result_expires_at = NULL
 WHERE id = $1 AND status IN ('failed', 'crashed', 'cancelled')
 RETURNING id""",
-        # ── COPY FROM column list ──────────────────────────────────
+        # ── COPY FROM column lists ─────────────────────────────────
         copy_from_columns=COPY_FROM_COLUMNS,
+        copy_enqueue_columns=COPY_ENQUEUE_COLUMNS,
     )

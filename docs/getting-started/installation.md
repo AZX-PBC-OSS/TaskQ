@@ -112,7 +112,9 @@ TASKQ_REDIS_URL=redis://localhost:6379/0
     [Configuration](../guides/configuration.md).
 
 TaskQ loads configuration through `dotenvmodel` with cascading `.env` discovery:
-`.env` → `.env.local` → `.env.{env}` → `.env.{env}.local`.
+`.env` → `.env.local` → `.env.{env}` → `.env.{env}.local`, where `{env}` comes from the
+`ENV` variable (default `dev`). Real environment variables take precedence over `.env`
+files — see [Configuration](../guides/configuration.md) for the full resolution rules.
 
 ---
 

@@ -204,7 +204,7 @@ class TestClockTimeTravel:
 
         # Advance clock and promote scheduled→pending
         clock.advance(timedelta(hours=1))
-        await backend.scheduled_to_pending(clock.now())
+        await backend.scheduled_to_pending()
 
         # Now dispatchable
         result = await backend.dispatch_batch(backend._worker_id, ["default"], 10, _GRACE)
@@ -412,7 +412,7 @@ class TestClockAdvanceDuringDispatch:
 
         # Advance to t+7s: only job_B
         clock.advance(timedelta(seconds=7))
-        await backend.scheduled_to_pending(clock.now())
+        await backend.scheduled_to_pending()
         result = await backend.dispatch_batch(backend._worker_id, ["default"], 10, _GRACE)
         assert len(result) == 1
         assert result[0].id == args_b.id
@@ -423,7 +423,7 @@ class TestClockAdvanceDuringDispatch:
 
         # Advance to t+15s: job_A now dispatchable
         clock.advance(timedelta(seconds=8))
-        await backend.scheduled_to_pending(clock.now())
+        await backend.scheduled_to_pending()
         result = await backend.dispatch_batch(backend._worker_id, ["default"], 10, _GRACE)
         assert len(result) == 1
         assert result[0].id == args_a.id

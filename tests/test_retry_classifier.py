@@ -1,17 +1,22 @@
-"""Unit tests for RetryClassifier.classify (no PG required)."""
+"""Unit tests for RetryClassifier.classify (no PG required).
 
+The classifier decides retry-kind and backoff only — it is NOT a deadline
+arbiter.  ``schedule_to_close`` is arbitrated by the SQL guard in
+``mark_failed_or_retry`` (single arbiter, the backend's clock); the
+deadline-outcome pins live in tests/test_clock_domain_isolation.py and the
+state-transition suites.
+"""
+
+import inspect
 import subprocess
 import sys
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from taskq.exceptions import PayloadValidationError
 from taskq.retry import Fail, Retry, RetryClassifier, RetryPolicy, compute_backoff
-
-_NOW = datetime(2026, 1, 1, tzinfo=None)
-
 
 # ── non_retryable_exceptions tuple match ──────────────────────────
 
@@ -24,8 +29,6 @@ def test_non_retryable_exceptions_tuple_match() -> None:
         non_retryable_exceptions=(ValueError,),
         exception=ValueError("test"),
         attempt=1,
-        schedule_to_close=None,
-        now=_NOW,
     )
     assert isinstance(decision, Fail)
     assert decision.retryable is False
@@ -43,8 +46,6 @@ def test_payload_validation_error_always_non_retryable() -> None:
         non_retryable_exceptions=(),
         exception=PayloadValidationError("bad payload"),
         attempt=1,
-        schedule_to_close=None,
-        now=_NOW,
     )
     assert isinstance(decision, Fail)
     assert decision.retryable is False
@@ -62,8 +63,6 @@ def test_non_retryable_policy_path() -> None:
         non_retryable_exceptions=(),
         exception=RuntimeError("oops"),
         attempt=1,
-        schedule_to_close=None,
-        now=_NOW,
     )
     assert isinstance(decision, Fail)
     assert decision.retryable is False
@@ -73,18 +72,16 @@ def test_non_retryable_policy_path() -> None:
 
 
 def test_transient_under_budget() -> None:
-    """transient, max_attempts=3, attempt=1, schedule_to_close=None → Retry with next_scheduled_at > now."""
+    """transient, max_attempts=3, attempt=1 → Retry with a positive delay."""
     policy = RetryPolicy(kind="transient", max_attempts=3, jitter=0.0)
     decision = RetryClassifier.classify(
         policy=policy,
         non_retryable_exceptions=(),
         exception=RuntimeError("fail"),
         attempt=1,
-        schedule_to_close=None,
-        now=_NOW,
     )
     assert isinstance(decision, Retry)
-    assert decision.next_scheduled_at > _NOW
+    assert decision.retry_delay > timedelta(0)
 
 
 # ── transient exhausted ────────────────────────────────────────────
@@ -98,8 +95,6 @@ def test_transient_exhausted() -> None:
         non_retryable_exceptions=(),
         exception=RuntimeError("fail"),
         attempt=3,
-        schedule_to_close=None,
-        now=_NOW,
     )
     assert isinstance(decision, Fail)
     assert decision.retryable is False
@@ -116,148 +111,47 @@ def test_max_attempts_one_immediate_fail() -> None:
         non_retryable_exceptions=(),
         exception=RuntimeError("once"),
         attempt=1,
-        schedule_to_close=None,
-        now=_NOW,
     )
     assert isinstance(decision, Fail)
     assert decision.retryable is False
 
 
-# ── DeadlineExceeded short-circuit fires ───────────────────────────
+# ── the deadline is not a classifier input ────────────────────────
 
 
-def test_deadline_exceeded_short_circuit() -> None:
-    """transient, base=10s, jitter=0.0, schedule_to_close=now+1s → Fail('DeadlineExceeded')."""
-    policy = RetryPolicy(
-        kind="transient",
-        max_attempts=5,
-        base=timedelta(seconds=10),
-        jitter=0.0,
-    )
-    decision = RetryClassifier.classify(
-        policy=policy,
-        non_retryable_exceptions=(),
-        exception=RuntimeError("fail"),
-        attempt=1,
-        schedule_to_close=_NOW + timedelta(seconds=1),
-        now=_NOW,
-    )
-    assert isinstance(decision, Fail)
-    assert decision.error_class == "DeadlineExceeded"
-    assert decision.retryable is False
+def test_deadline_is_not_a_classifier_input() -> None:
+    """C2: classify takes NO ``schedule_to_close`` and NO ``now`` parameter —
+    a Python-side deadline pre-check computed from the worker's clock
+    disagrees with the SQL guard under app↔DB skew and kills jobs early
+    (or rubber-stamps them).  The structural pin keeps the arbiter from
+    silently returning: re-adding either input must be a conscious,
+    reviewed change.  The deadline-outcome behavior is pinned against the
+    SQL in tests/test_clock_domain_isolation.py
+    (test_retry_deadline_arbitrated_server_side)."""
+    params = inspect.signature(RetryClassifier.classify).parameters
+    assert "schedule_to_close" not in params
+    assert "now" not in params
 
 
-# ── deadline boundary (>= triggers Fail) ─────────────────────────
-
-
-def test_deadline_boundary_retry_when_before() -> None:
-    """schedule_to_close=now+11s (1s past next_scheduled_at of now+10s) → Retry, NOT DeadlineExceeded."""
-    policy = RetryPolicy(
-        kind="transient",
-        max_attempts=5,
-        base=timedelta(seconds=10),
-        jitter=0.0,
-    )
-    decision = RetryClassifier.classify(
-        policy=policy,
-        non_retryable_exceptions=(),
-        exception=RuntimeError("fail"),
-        attempt=1,
-        schedule_to_close=_NOW + timedelta(seconds=11),
-        now=_NOW,
-    )
-    assert isinstance(decision, Retry)
-
-
-# ── no deadline check when schedule_to_close is None ──────────────
-
-
-def test_no_deadline_check_when_no_schedule_to_close() -> None:
-    """same policy as but schedule_to_close=None → Retry (no deadline check)."""
-    policy = RetryPolicy(
-        kind="transient",
-        max_attempts=5,
-        base=timedelta(seconds=10),
-        jitter=0.0,
-    )
-    decision = RetryClassifier.classify(
-        policy=policy,
-        non_retryable_exceptions=(),
-        exception=RuntimeError("fail"),
-        attempt=1,
-        schedule_to_close=None,
-        now=_NOW,
-    )
-    assert isinstance(decision, Retry)
-
-
-# ── indefinite tier with future deadline → Retry ────────────────
+# ── indefinite tier ignores max_attempts and deadlines ───────────
 
 
 def test_indefinite_future_deadline_retry() -> None:
-    """indefinite, schedule_to_close=now+1h, attempt=1 → Retry(next_scheduled_at=now+backoff)."""
+    """indefinite, attempt=1 → Retry(retry_delay=backoff) — the deadline is
+    the SQL guard's business, not the classifier's."""
     policy = RetryPolicy(kind="indefinite", time_budget=timedelta(hours=4), jitter=0.0)
     decision = RetryClassifier.classify(
         policy=policy,
         non_retryable_exceptions=(),
         exception=RuntimeError("fail"),
         attempt=1,
-        schedule_to_close=_NOW + timedelta(hours=1),
-        now=_NOW,
     )
     assert isinstance(decision, Retry)
-    assert decision.next_scheduled_at > _NOW
-
-
-# ── indefinite backoff overshoots deadline → DeadlineExceeded ───
-
-
-def test_indefinite_backoff_overshoots_deadline() -> None:
-    """indefinite, schedule_to_close=now+1s, base=30s, attempt=1
-    → Fail(error_class='DeadlineExceeded') — backoff overshoots deadline."""
-    policy = RetryPolicy(
-        kind="indefinite",
-        base=timedelta(seconds=30),
-        jitter=0.0,
-    )
-    decision = RetryClassifier.classify(
-        policy=policy,
-        non_retryable_exceptions=(),
-        exception=RuntimeError("fail"),
-        attempt=1,
-        schedule_to_close=_NOW + timedelta(seconds=1),
-        now=_NOW,
-    )
-    assert isinstance(decision, Fail)
-    assert decision.error_class == "DeadlineExceeded"
-    assert decision.retryable is False
-
-
-# ── indefinite deadline in past → DeadlineExceeded ──────────────
-
-
-def test_indefinite_deadline_in_past() -> None:
-    """indefinite, schedule_to_close=now-1s → Fail(error_class='DeadlineExceeded')."""
-    policy = RetryPolicy(kind="indefinite", time_budget=timedelta(hours=4), jitter=0.0)
-    decision = RetryClassifier.classify(
-        policy=policy,
-        non_retryable_exceptions=(),
-        exception=RuntimeError("fail"),
-        attempt=1,
-        schedule_to_close=_NOW - timedelta(seconds=1),
-        now=_NOW,
-    )
-    assert isinstance(decision, Fail)
-    assert decision.error_class == "DeadlineExceeded"
-    assert decision.retryable is False
-
-
-# ── indefinite ignores max_attempts ─────────────────────────────
+    assert decision.retry_delay > timedelta(0)
 
 
 def test_indefinite_ignores_max_attempts() -> None:
-    """indefinite, schedule_to_close=None, attempt=1000,
-    max_attempts=3 → Retry(...) — max_attempts ignored."""
+    """indefinite, attempt=1000, max_attempts=3 → Retry(...) — max_attempts ignored."""
     policy = RetryPolicy(
         kind="indefinite",
         max_attempts=3,
@@ -269,8 +163,6 @@ def test_indefinite_ignores_max_attempts() -> None:
         non_retryable_exceptions=(),
         exception=RuntimeError("fail"),
         attempt=1000,
-        schedule_to_close=None,
-        now=_NOW,
     )
     assert isinstance(decision, Retry)
 
@@ -280,16 +172,13 @@ def test_indefinite_ignores_max_attempts() -> None:
 
 def test_indefinite_non_retryable_exceptions_override() -> None:
     """indefinite + non_retryable_exceptions=(ValueError,)
-    raising ValueError → Fail immediately ; error_class is
-    'ValueError', NOT 'DeadlineExceeded'."""
+    raising ValueError → Fail immediately; error_class is 'ValueError'."""
     policy = RetryPolicy(kind="indefinite", time_budget=timedelta(hours=4))
     decision = RetryClassifier.classify(
         policy=policy,
         non_retryable_exceptions=(ValueError,),
         exception=ValueError("test"),
         attempt=1,
-        schedule_to_close=_NOW + timedelta(hours=1),
-        now=_NOW,
     )
     assert isinstance(decision, Fail)
     assert decision.error_class == "ValueError"
@@ -309,14 +198,11 @@ def test_indefinite_backoff_capped() -> None:
         non_retryable_exceptions=(),
         exception=RuntimeError("fail"),
         attempt=100,
-        schedule_to_close=_NOW + timedelta(hours=24),
-        now=_NOW,
         max_retry_backoff=timedelta(hours=24),
     )
     assert isinstance(decision, Retry)
-    delta = decision.next_scheduled_at - _NOW
     max_delta = cap.total_seconds() * (1 + policy.jitter)
-    assert delta.total_seconds() <= max_delta
+    assert decision.retry_delay.total_seconds() <= max_delta
 
 
 # ── subclass of non_retryable matched ─────────────────────────────
@@ -334,8 +220,6 @@ def test_subclass_of_non_retryable_matched() -> None:
         non_retryable_exceptions=(ValueError,),
         exception=MyValueError("sub"),
         attempt=1,
-        schedule_to_close=None,
-        now=_NOW,
     )
     assert isinstance(decision, Fail)
     assert decision.retryable is False
@@ -382,8 +266,6 @@ def test_classify_transient_retry_vs_fail(max_attempts: int, attempt: int) -> No
         non_retryable_exceptions=(),
         exception=RuntimeError("fail"),
         attempt=attempt,
-        schedule_to_close=None,
-        now=_NOW,
     )
     if attempt < max_attempts:
         assert isinstance(decision, Retry)
@@ -396,69 +278,21 @@ def test_classify_transient_retry_vs_fail(max_attempts: int, attempt: int) -> No
 
 
 @settings(max_examples=200)
-@given(
-    delta_now=st.integers(min_value=-3600, max_value=3600),
-    delta_s2c=st.integers(min_value=-3600, max_value=3600),
-    attempt=st.integers(min_value=1, max_value=1000),
-    s2c_none=st.booleans(),
-)
-def test_indefinite_retry_invariant(
-    delta_now: int,
-    delta_s2c: int,
-    attempt: int,
-    s2c_none: bool,
-) -> None:
-    """indefinite-retry invariant. For any (schedule_to_close, now, attempt):
-    - decision is Retry iff schedule_to_close is None or
-      (now < schedule_to_close and now + compute_backoff(policy, attempt) < schedule_to_close).
-    - Otherwise decision == Fail(error_class='DeadlineExceeded', retryable=False).
-
-    Verifies indefinite tier ignores max_attempts and uses deadline logic only."""
-    base_now = datetime(2026, 1, 1)
-    now = base_now + timedelta(seconds=delta_now)
-
-    if s2c_none:
-        schedule_to_close: datetime | None = None
-    else:
-        schedule_to_close = base_now + timedelta(seconds=delta_s2c)
-
+@given(attempt=st.integers(min_value=1, max_value=1000))
+def test_indefinite_retry_invariant(attempt: int) -> None:
+    """indefinite-retry invariant: for ANY attempt (max_attempts is ignored)
+    the decision is Retry with exactly the computed backoff — the tier has
+    no budget to exhaust and no deadline opinion (the SQL guard owns the
+    deadline; one arbiter per predicate)."""
     policy = RetryPolicy(kind="indefinite", time_budget=timedelta(hours=4), jitter=0.0)
     decision = RetryClassifier.classify(
         policy=policy,
         non_retryable_exceptions=(),
         exception=RuntimeError("fail"),
         attempt=attempt,
-        schedule_to_close=schedule_to_close,
-        now=now,
     )
-
-    if schedule_to_close is None:
-        assert isinstance(decision, Retry), (
-            f"schedule_to_close=None must always Retry, got {decision} "
-            f"at attempt={attempt}, now={now.isoformat()}"
-        )
-    elif now >= schedule_to_close:
-        assert isinstance(decision, Fail), (
-            f"now >= schedule_to_close must Fail, got {decision} "
-            f"at now={now.isoformat()}, s2c={schedule_to_close.isoformat()}"
-        )
-        assert decision.error_class == "DeadlineExceeded"
-        assert decision.retryable is False
-    else:
-        expected_next = now + compute_backoff(policy, attempt)
-        if expected_next < schedule_to_close:
-            assert isinstance(decision, Retry), (
-                f"backoff within deadline must Retry, got {decision} "
-                f"at attempt={attempt}, now={now.isoformat()}, s2c={schedule_to_close.isoformat()}"
-            )
-            assert abs((decision.next_scheduled_at - expected_next).total_seconds()) < 0.001, (
-                f"next_scheduled_at mismatch: expected {expected_next.isoformat()}, "
-                f"got {decision.next_scheduled_at.isoformat()}"
-            )
-        else:
-            assert isinstance(decision, Fail), (
-                f"backoff overshoots deadline must Fail(DeadlineExceeded), got {decision} "
-                f"at attempt={attempt}, now={now.isoformat()}, s2c={schedule_to_close.isoformat()}"
-            )
-            assert decision.error_class == "DeadlineExceeded"
-            assert decision.retryable is False
+    assert isinstance(decision, Retry), f"indefinite must always Retry, got {decision}"
+    expected = compute_backoff(policy, attempt)
+    assert decision.retry_delay == expected, (
+        f"retry_delay mismatch: expected {expected}, got {decision.retry_delay}"
+    )

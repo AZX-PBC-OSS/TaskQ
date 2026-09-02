@@ -739,11 +739,14 @@ class TestTI9PayloadValidationFailureIntegration:
 
 @pytest.mark.integration
 class TestTIPastScheduledAtNormalized:
-    """Past scheduled_at is normalized to now() — matches enqueue/enqueue_batch.
+    """An explicit past scheduled_at is the caller's absolute intent.
 
-    Regression: enqueue_batch_fast stored the stale past timestamp instead
-    of normalizing it to the batch clock like the regular enqueue path
-    (which uses ``COALESCE($N, now())``).
+    Every enqueue arm (single, batch, COPY) stores a non-None scheduled_at
+    verbatim and lets the server CASE decide the status — a past value
+    lands ``pending`` and is immediately dispatchable.  "Immediate" is
+    expressed as ``scheduled_at=None`` (the server stamps it); the COPY arm
+    used to normalize past values to the Python batch clock, a cross-domain
+    decision the post-COPY fixup UPDATE removed.
     """
 
     async def test_past_scheduled_at_not_stored_stale(self, pg_dsn: str) -> None:
@@ -780,7 +783,10 @@ class TestTIPastScheduledAtNormalized:
                 dumps_str({"batch_id": str(batch_id)}),
             )
             assert rec is not None
+            # Past ⇒ pending (immediately dispatchable), and the caller's
+            # explicit absolute is preserved verbatim — byte-for-byte the
+            # INSERT arms' semantics.
             assert rec["status"] == "pending"
-            assert rec["scheduled_at"] != past
+            assert rec["scheduled_at"] == past
         finally:
             await conn.close()

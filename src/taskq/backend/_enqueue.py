@@ -7,7 +7,7 @@
 wrappers that delegate.
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 from uuid import UUID
 
@@ -173,6 +173,9 @@ async def _enqueue_on_conn(
             schedule_to_close: datetime | None = preflight_rec["schedule_to_close"]
             retry_after = None
             if schedule_to_close is not None:
+                # Why: advisory hint only — this mixes domains by design (a
+                # server-read schedule_to_close minus a Python now) to steer
+                # the caller's retry timing; it is never a stored predicate.
                 now_utc = clock.now()
                 remaining = schedule_to_close - now_utc
                 if remaining.total_seconds() > 0:
@@ -210,20 +213,13 @@ async def _enqueue_on_conn(
             )
 
     is_new = False
-    use_interval = args.schedule_to_close_interval is not None
-    sql_stmt = sql.enqueue_with_interval if use_interval else sql.enqueue
-    param_12: object = args.schedule_to_close_interval if use_interval else args.schedule_to_close
-    enqueue_now = clock.now()
-    scheduled_at_param: datetime | None = (
-        args.scheduled_at if args.scheduled_at > enqueue_now else None
-    )
-    result_expires_at: datetime | None = None
-    if args.result_ttl is not None:
-        result_expires_at = enqueue_now + args.result_ttl
+    # None means immediate — the server stamps scheduled_at (COALESCE) and
+    # decides status in the same statement; there is no Python pre-decision.
+    scheduled_at_param: datetime | None = args.scheduled_at
 
     try:
         rec = await conn.fetchrow(
-            sql_stmt,
+            sql.enqueue,
             args.id,
             args.actor,
             args.queue,
@@ -234,7 +230,7 @@ async def _enqueue_on_conn(
             args.priority,
             args.max_attempts,
             args.retry_kind,
-            param_12,
+            args.schedule_to_close_interval,
             args.start_to_close,
             args.heartbeat_timeout,
             scheduled_at_param,
@@ -243,8 +239,9 @@ async def _enqueue_on_conn(
             args.trace_id,
             args.span_id,
             jsonb_param(args.metadata),
-            result_expires_at,
+            args.result_ttl,
             list(args.tags),
+            args.schedule_to_close,
         )
     except UniqueViolationError as exc:
         if exc.constraint_name == _SINGLETON_CONSTRAINT_NAME:
@@ -388,7 +385,6 @@ async def _enqueue_batch(
     pool: "asyncpg.Pool",
     sql: SqlTemplates,
     schema: str,
-    clock: Clock,
     args_list: list[EnqueueArgs],
     *,
     connection: "asyncpg.Connection | None" = None,
@@ -406,7 +402,8 @@ async def _enqueue_batch(
     priorities: list[int] = []
     max_attempts_list: list[int] = []
     retry_kinds: list[str] = []
-    schedule_to_closes: list[object] = []
+    stc_intervals: list[timedelta | None] = []
+    stc_raws: list[datetime | None] = []
     start_to_closes: list[object] = []
     heartbeat_timeouts: list[object] = []
     scheduled_ats: list[datetime | None] = []
@@ -415,10 +412,8 @@ async def _enqueue_batch(
     idempotency_scopes: list[str] = []
     trace_ids: list[str | None] = []
     span_ids: list[str | None] = []
-    result_expires_ats: list[datetime | None] = []
+    result_ttls: list[timedelta | None] = []
     tag_jsons: list[str] = []
-
-    batch_now = clock.now()
 
     for args in args_list:
         ids.append(UUID(bytes=args.id.bytes))
@@ -431,13 +426,16 @@ async def _enqueue_batch(
         priorities.append(args.priority)
         max_attempts_list.append(args.max_attempts)
         retry_kinds.append(args.retry_kind)
-        if args.schedule_to_close_interval is not None:
-            schedule_to_closes.append(args.scheduled_at + args.schedule_to_close_interval)
-        else:
-            schedule_to_closes.append(args.schedule_to_close)
+        # schedule_to_close and result_expires_at are resolved server-side
+        # (COALESCE(clock_timestamp() + stc_interval, stc_raw) and
+        # clock_timestamp() + result_ttl in enqueue_batch) — never in Python.
+        stc_intervals.append(args.schedule_to_close_interval)
+        stc_raws.append(args.schedule_to_close)
         start_to_closes.append(args.start_to_close)
         heartbeat_timeouts.append(args.heartbeat_timeout)
-        scheduled_ats.append(args.scheduled_at if args.scheduled_at > batch_now else None)
+        # None means immediate — the server stamps/decides (COALESCE in
+        # enqueue_batch); there is no Python pre-decision.
+        scheduled_ats.append(args.scheduled_at)
         metadatas.append(jsonb_param(args.metadata) or "{}")
         idempotency_keys.append(
             str(args.idempotency_key) if args.idempotency_key is not None else None
@@ -445,10 +443,9 @@ async def _enqueue_batch(
         idempotency_scopes.append(args.idempotency_scope)
         trace_ids.append(args.trace_id)
         span_ids.append(args.span_id)
-        result_expires_at: datetime | None = None
-        if args.result_ttl is not None:
-            result_expires_at = batch_now + args.result_ttl
-        result_expires_ats.append(result_expires_at)
+        # result_expires_at is resolved server-side (clock_timestamp() +
+        # result_ttl in enqueue_batch) — never in Python.
+        result_ttls.append(args.result_ttl)
         # tag_jsons transits the wire as $21::jsonb[] (see enqueue_batch's
         # comment on jagged-array handling) — each element is parsed by
         # Postgres' jsonb_in before jsonb_array_elements_text unpacks it
@@ -471,7 +468,7 @@ async def _enqueue_batch(
                 priorities,
                 max_attempts_list,
                 retry_kinds,
-                schedule_to_closes,
+                stc_intervals,
                 start_to_closes,
                 heartbeat_timeouts,
                 scheduled_ats,
@@ -480,8 +477,9 @@ async def _enqueue_batch(
                 idempotency_keys,
                 trace_ids,
                 span_ids,
-                result_expires_ats,
+                result_ttls,
                 tag_jsons,
+                stc_raws,
             )
         except UniqueViolationError as exc:
             if exc.constraint_name == _LEGACY_IDEMPOTENCY_KEY_CONSTRAINT_NAME:
@@ -593,7 +591,6 @@ async def _enqueue_batch_fast(
     pool: "asyncpg.Pool",
     sql: SqlTemplates,
     schema: str,
-    clock: Clock,
     args_list: list[EnqueueArgs],
     *,
     connection: "asyncpg.Connection | None" = None,
@@ -601,23 +598,24 @@ async def _enqueue_batch_fast(
     if not args_list:
         raise ValueError("args_list must not be empty")
 
-    batch_now = clock.now()
+    ids: list[UUID] = []
+    scheduled_ats: list[datetime | None] = []
+    stc_intervals: list[timedelta | None] = []
+    stc_raws: list[datetime | None] = []
+    result_ttls: list[timedelta | None] = []
 
+    # COPY can only write literal values, so it writes the
+    # domain-insensitive columns (sql.copy_enqueue_columns) and the fixup
+    # UPDATE below stamps status/scheduled_at/schedule_to_close/
+    # result_expires_at from the server clock inside the same transaction —
+    # never from this process's Python clock.
     records: list[tuple[object, ...]] = []
     for args in args_list:
-        is_scheduled = args.scheduled_at > batch_now
-        status = "scheduled" if is_scheduled else "pending"
-        scheduled_at = args.scheduled_at if args.scheduled_at > batch_now else batch_now
-
-        resolved_stc: datetime | None
-        if args.schedule_to_close_interval is not None:
-            resolved_stc = args.scheduled_at + args.schedule_to_close_interval
-        else:
-            resolved_stc = args.schedule_to_close
-
-        result_expires_at: datetime | None = None
-        if args.result_ttl is not None:
-            result_expires_at = batch_now + args.result_ttl
+        ids.append(UUID(bytes=args.id.bytes))
+        scheduled_ats.append(args.scheduled_at)
+        stc_intervals.append(args.schedule_to_close_interval)
+        stc_raws.append(args.schedule_to_close)
+        result_ttls.append(args.result_ttl)
 
         records.append(
             (
@@ -628,16 +626,12 @@ async def _enqueue_batch_fast(
                 args.fairness_key,
                 jsonb_param(args.payload) or "{}",
                 args.payload_schema_ver,
-                status,
                 args.priority,
                 0,
                 args.max_attempts,
                 args.retry_kind,
-                resolved_stc,
                 args.start_to_close,
                 args.heartbeat_timeout,
-                batch_now,
-                scheduled_at,
                 None,
                 None,
                 None,
@@ -652,7 +646,6 @@ async def _enqueue_batch_fast(
                 0,
                 None,
                 None,
-                result_expires_at,
                 args.idempotency_scope,
                 str(args.idempotency_key) if args.idempotency_key is not None else None,
                 args.trace_id,
@@ -667,7 +660,7 @@ async def _enqueue_batch_fast(
             result = await conn.copy_records_to_table(
                 "jobs",
                 records=records,
-                columns=sql.copy_from_columns,
+                columns=sql.copy_enqueue_columns,
                 schema_name=schema,
             )
         except UniqueViolationError as exc:
@@ -693,6 +686,14 @@ async def _enqueue_batch_fast(
                 raise ScopedIdempotencyMigrationPendingError(detail=str(exc)) from exc
             raise
         count = int(result.split()[-1])
+        await conn.execute(
+            sql.enqueue_batch_fast_fixup,
+            ids,
+            scheduled_ats,
+            stc_intervals,
+            stc_raws,
+            result_ttls,
+        )
         await conn.execute(
             sql.enqueue_notify,
             wake_channel(schema),

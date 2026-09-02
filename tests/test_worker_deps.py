@@ -2,17 +2,25 @@
 
 These tests require a running Postgres container (testcontainers).
 Marked ``integration`` so they are skipped in non-integration runs.
+
+Also pins the per-run isolation of the hashed module-database names this
+module's ``pg_dsn`` fixture derives (see
+``test_module_db_names_diverge_across_serial_run_tokens``): the redteam
+repro of the concurrent-serial-runs collision landed on THIS module
+(``tq_db_5a19dc6e3f4c``), so the guards live next to the seam they protect.
 """
 
-# ruff: noqa: SIM117 # Why: pytest.raises must wrap the async with statement; combined with-form is not valid here.
+# Why: pytest.raises must wrap the async with statement; combined with-form is not valid here.
 
 import asyncio
+from collections.abc import Iterator
 
 import asyncpg
 import pytest
-from testcontainers.postgres import PostgresContainer
+from testcontainers.community.postgres import PostgresContainer
 
 from taskq.constants import wake_channel
+from taskq.testing._shared_containers import creator_labels
 from taskq.testing.settings import make_integration_settings
 from taskq.worker.deps import open_worker_deps
 
@@ -121,14 +129,31 @@ async def test_dispatcher_heartbeat_use_direct_dsn(pg_dsn: str) -> None:
 
 
 async def test_heartbeat_pool_command_timeout(pg_dsn: str) -> None:
-    """heartbeat_pool has command_timeout=2s; pg_sleep(5) is cancelled."""
+    """heartbeat_pool has command_timeout=2s; a stalled query is cancelled.
+
+    The pre-assertion fails fast if a regression ever drops command_timeout
+    from the pool factory: without it the pg_sleep(60) below would burn the
+    full 60s before failing (asyncpg's default is no timeout), and this test
+    would take 2x60s per run instead of ~2s.
+
+    The sleep length sets the stall-tolerance headroom, not the property:
+    asyncpg enforces command_timeout with an event-loop timer, so a loop
+    stalled past (sleep - timeout) lets the result beat the timer and the
+    query completes uncanceled (proven by blocking the loop during the
+    sleep; sync docker/testcontainers calls on the loop have been measured
+    stalling it for seconds under parallel runs). pg_sleep(60) keeps the
+    healthy-path runtime at ~timeout while tolerating such stalls."""
     settings = make_integration_settings(pg_dsn)
 
     async with open_worker_deps(settings) as deps:
+        # Fail fast: the pool must carry the timeout before the 60s probe.
+        assert deps.heartbeat_pool._connect_kwargs["command_timeout"] == 2, (  # type: ignore[attr-defined] # Why: asyncpg exposes no public command_timeout accessor; Pool._connect_kwargs is the constructor-kwargs store (pinned by the pg_sleep probe below).
+            "heartbeat_pool lost command_timeout=2 — pg_sleep(60) would hang for the full minute"
+        )
         async with deps.heartbeat_pool.acquire() as conn:
             # asyncpg raises TimeoutError when command_timeout fires mid-query
             with pytest.raises((asyncpg.QueryCanceledError, TimeoutError)):
-                await conn.execute("SELECT pg_sleep(5)")
+                await conn.execute("SELECT pg_sleep(60)")
 
 
 async def test_leader_conn_command_timeout(pg_dsn: str) -> None:
@@ -137,13 +162,29 @@ async def test_leader_conn_command_timeout(pg_dsn: str) -> None:
     deps.leader_conn_factory is the TaskQ-built _leader_dsn_factory on stock
     deployments: the election conn, and the cron/monitor rebuilds that go
     through the same factory, must be bounded or a stalled PG hangs those
-    loops past the detector-2 budget."""
+    loops past the detector-2 budget.
+
+    The pre-assertion fails fast if a regression ever drops command_timeout
+    from the leader factory (see test_heartbeat_pool_command_timeout for
+    the 2x60s burn it prevents).
+
+    pg_sleep(60), not 5: asyncpg enforces command_timeout with an
+    event-loop timer, so a loop stalled past (sleep - timeout) lets the
+    result beat the timer and the query completes uncanceled (proven by
+    blocking the loop during the sleep; sync docker/testcontainers calls
+    on the loop have been measured stalling it for seconds under parallel
+    runs). The healthy-path runtime stays ~timeout; the wider window only
+    tolerates stalls."""
     settings = make_integration_settings(pg_dsn, DISPATCHER_COMMAND_TIMEOUT="2")
 
     async with open_worker_deps(settings) as deps:
         assert deps.leader_conn is not None
+        # Fail fast: the conn must carry the timeout before the 60s probe.
+        assert deps.leader_conn._config.command_timeout == 2.0, (  # type: ignore[attr-defined] # Why: asyncpg exposes no public command_timeout accessor; Connection._config is the connect-time configuration record carrying it (pinned by the pg_sleep probe below).
+            "leader_conn lost dispatcher_command_timeout — pg_sleep(60) would hang for the full minute"
+        )
         with pytest.raises((asyncpg.QueryCanceledError, TimeoutError)):
-            await deps.leader_conn.execute("SELECT pg_sleep(5)")
+            await deps.leader_conn.execute("SELECT pg_sleep(60)")
 
 
 # ── notify_conn LISTEN survives context ───────────────────────────
@@ -322,8 +363,29 @@ async def test_keepalive_setsockopt_fires_on_dedicated_conns(pg_dsn: str) -> Non
 # ── A-TG-05: pool startup log redacts credentials ────────────────────────
 
 
+@pytest.fixture
+def disposable_pg_container() -> Iterator[PostgresContainer]:  # pyright: ignore[reportUnusedFunction]  # Why: pytest injects this fixture; pyright does not track fixture DI.
+    """A throwaway PG container for the ALTER USER test.
+
+    ``ALTER USER ... PASSWORD`` mutates CLUSTER-WIDE auth state: run against
+    the shared session container, every OTHER xdist worker's new connections
+    would fail authentication during the sentinel window. The shared
+    container must never be mutated like this — same never-touch-the-shared-
+    one rule as ``killable_redis_container``. Labeled with the ownership
+    labels so a crashed run's leftover is sweepable (Ryuk is disabled
+    process-wide by the shared-container machinery).
+    """
+    with PostgresContainer(
+        image="postgres:18-alpine",
+        username="taskq",
+        password="taskq",
+        dbname="taskq",
+    ).with_kwargs(labels=creator_labels()) as container:
+        yield container
+
+
 async def test_pool_startup_log_redacts_credentials(
-    pg_container: PostgresContainer,
+    disposable_pg_container: PostgresContainer,
 ) -> None:
     """A-TG-05: — pool startup logs must not contain passwords.
 
@@ -335,10 +397,8 @@ async def test_pool_startup_log_redacts_credentials(
 
     Uses a sentinel password (distinct from username/schema/dbname) so that
     a substring match cannot collide with legitimate identifiers like
-    ``taskq_wake_<schema>``. The container is rebooted via DSN-rewrite —
-    we ALTER USER to a unique password for the duration of this test, then
-    restore it. This is more robust than relying on the default fixture
-    password ``taskq`` which collides with the role and schema names.
+    ``taskq_wake_<schema>``. The container's role password is rewritten via
+    ALTER USER for the duration of this test, then restored.
     """
     from taskq._dsn import dsn_host
 
@@ -353,7 +413,10 @@ async def test_pool_startup_log_redacts_credentials(
     # Connect using the existing creds, ALTER USER to the sentinel, then
     # verify open_worker_deps opens successfully with the sentinel password.
     # Restore afterward.
-    base_dsn = pg_container.get_connection_url().replace("postgresql+psycopg2://", "postgresql://")
+    # docker-py connection-url resolution is a blocking HTTP call — off the loop.
+    base_dsn = (await asyncio.to_thread(disposable_pg_container.get_connection_url)).replace(
+        "postgresql+psycopg2://", "postgresql://"
+    )
     admin_conn = await asyncpg.connect(base_dsn)
     try:
         await admin_conn.execute(f"ALTER USER taskq WITH PASSWORD '{sentinel}'")
@@ -367,8 +430,8 @@ async def test_pool_startup_log_redacts_credentials(
         async with open_worker_deps(settings):
             pass
     finally:
-        # Restore the original password so subsequent tests using the
-        # session-scoped pg_container continue to work.
+        # Restore the original password — hygiene for anything that inspects
+        # this container after the test; the container is disposable either way.
         admin_conn = await asyncpg.connect(sentinel_dsn)
         try:
             await admin_conn.execute("ALTER USER taskq WITH PASSWORD 'taskq'")

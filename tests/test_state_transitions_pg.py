@@ -106,7 +106,7 @@ class TestFullLifecycle:
                 f"UPDATE \"{schema}\".jobs SET scheduled_at = now() - interval '5 seconds' WHERE id = $1",
                 job_id,
             )
-        count = await backend.scheduled_to_pending(datetime.now(UTC))
+        count = await backend.scheduled_to_pending()
         assert count >= 1
 
         async with deps.worker_pool.acquire() as conn:
@@ -322,7 +322,7 @@ class TestDeadlineSweep:
         async with deps.worker_pool.acquire() as conn:
             await create_pending_job(conn, schema, job_id, schedule_to_close=past)
 
-        count = await backend.deadline_sweep(datetime.now(UTC))
+        count = await backend.deadline_sweep()
         assert count >= 1
 
         async with deps.worker_pool.acquire() as conn:
@@ -361,7 +361,7 @@ class TestDeadlineSweep:
                 schedule_to_close=past,
             )
 
-        count = await backend.deadline_sweep(datetime.now(UTC))
+        count = await backend.deadline_sweep()
         assert count >= 1
 
         async with deps.worker_pool.acquire() as conn:
@@ -405,18 +405,19 @@ class TestPollingLifecycle:
         assert result == "scheduled"
 
         async with deps.worker_pool.acquire() as conn:
-            # 5s margin, not 1s: scheduled_at is set from the PG server clock
-            # while scheduled_to_pending's threshold below comes from the
-            # Python client clock — independently reproduced (see
-            # test_heartbeat_integration.py's _CLOCK_JITTER_TOLERANCE) that
-            # these can differ by several hundred ms under this environment's
-            # connection-pool/scheduling characteristics, which a 1s margin
-            # doesn't reliably absorb.
+            # 5s margin, not 1s: the application process and the PG server
+            # keep separate clocks that can diverge by whole seconds (VM
+            # pause/resume and NTP drift are common causes; see
+            # tests/conftest.py's startup clock-divergence check), so the
+            # job must be pushed firmly into the server clock's past for
+            # the sweep's server-side `scheduled_at <= clock_timestamp()`
+            # predicate to pick it up — the PG implementation ignores the
+            # caller-supplied now() argument entirely.
             await conn.execute(
                 f"UPDATE \"{schema}\".jobs SET scheduled_at = now() - interval '5 seconds' WHERE id = $1",
                 job_id,
             )
-        await backend.scheduled_to_pending(datetime.now(UTC))
+        await backend.scheduled_to_pending()
 
         dispatched2 = await backend.dispatch_batch(
             worker_id, ["default"], limit=1, lock_lease=_LOCK_LEASE

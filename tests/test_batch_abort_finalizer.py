@@ -240,11 +240,13 @@ class TestClockSkewResilience:
         assert row.error_class is None
 
     async def test_clock_jump_does_not_cause_deadline_exceeded(self) -> None:
-        """RetryClassifier must not return DeadlineExceeded when schedule_to_close is NULL.
+        """RetryClassifier must never return DeadlineExceeded regardless of
+        client-side clock skew.
 
-        Even if the Python clock jumps forward, ``decide_after_failure``
-        checks ``schedule_to_close is not None and now >= schedule_to_close``
-        — with NULL, this is always False.
+        ``decide_after_failure`` takes no clock/deadline input at all (C1/C2:
+        the ``schedule_to_close`` deadline is arbitrated server-side, inside
+        ``mark_failed_or_retry``'s SQL, never by the classifier) — so a
+        client-side clock jump cannot influence its decision either way.
         """
         from taskq.retry import JobRetryState, RetryPolicy, decide_after_failure
         from taskq.testing._runner import _InMemoryActorConfig
@@ -264,13 +266,11 @@ class TestClockSkewResilience:
 
         # Jump the clock forward by 1 hour
         clock.move_to(_START + timedelta(hours=1))
-        now = clock.now()
 
         decision = decide_after_failure(
             actor_config,
             RuntimeError("test error"),
             job_state,
-            now,
             max_retry_backoff=timedelta(hours=24),
         )
 

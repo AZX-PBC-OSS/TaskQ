@@ -375,7 +375,6 @@ async def test_ti5_sweep_1_reclaims_expired_lock(pg_dsn: str) -> None:
             )
 
         count = await backend.reclaim_expired_locks(
-            now,
             timedelta(seconds=deps.settings.cancellation_grace_period),
             timedelta(seconds=deps.settings.cleanup_grace_period),
         )
@@ -820,7 +819,6 @@ async def test_ti7_crash_reclaim_observable_via_poll(pg_dsn: str) -> None:
 
         # Run Sweep 1
         count = await backend.reclaim_expired_locks(
-            now,
             timedelta(seconds=deps.settings.cancellation_grace_period),
             timedelta(seconds=deps.settings.cleanup_grace_period),
         )
@@ -900,7 +898,6 @@ async def test_ti8_fanout_outstanding_counter_reaches_zero(
 
         # Run Sweep 1
         count = await backend.reclaim_expired_locks(
-            now,
             timedelta(seconds=deps.settings.cancellation_grace_period),
             timedelta(seconds=deps.settings.cleanup_grace_period),
         )

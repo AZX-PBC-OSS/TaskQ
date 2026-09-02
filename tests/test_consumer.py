@@ -109,17 +109,21 @@ async def test_indefinite_retry_emits_lifecycle_scheduled(
 
     assert len(backend.mark_failed_or_retry_calls) == 1
     call = backend.mark_failed_or_retry_calls[0]
-    assert call["next_scheduled_at"] is not None
+    assert call["retry_delay"] is not None
 
 
-# ── indefinite-tier deadline emits lifecycle.failed ──────────────────
+# ── indefinite-tier deadline: the consumer defers to the SQL arbiter ──
 
 
-async def test_indefinite_deadline_emits_lifecycle_failed(
+async def test_indefinite_deadline_emits_lifecycle_scheduled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """indefinite-tier deadline emits `lifecycle.failed` with
-    error_class='DeadlineExceeded'."""
+    """indefinite-tier job failing near its deadline emits
+    `lifecycle.scheduled` and passes a retry DELAY — the classifier is not
+    a deadline arbiter (C2).  Whether the deadline actually kills the
+    retry is decided by the SQL guard in mark_failed_or_retry and pinned
+    at the backend layer (tests/test_clock_domain_isolation.py::
+    test_retry_deadline_arbitrated_server_side)."""
 
     async def actor(_job: object, _ctx: JobContext[BaseModel]) -> object:
         raise RuntimeError("transient failure")
@@ -150,27 +154,29 @@ async def test_indefinite_deadline_emits_lifecycle_failed(
             clock=clk,
         )
 
-    events = exporter.events_on("test-span", "lifecycle.failed")
+    failed_events = exporter.events_on("test-span", "lifecycle.failed")
+    assert failed_events == []
+    events = exporter.events_on("test-span", "lifecycle.scheduled")
     assert len(events) == 1
     attrs = events[0].attributes  # type: ignore[reportUnknownMemberType]  # Why: events_on returns list[Any]; at runtime these are Event objects with .attributes
     assert attrs is not None
-    assert attrs["error_class"] == "DeadlineExceeded"
     assert attrs["from_state"] == "running"
-    assert attrs["to_state"] == "failed"
+    assert attrs["to_state"] == "scheduled"
 
     assert len(backend.mark_failed_or_retry_calls) == 1
     call = backend.mark_failed_or_retry_calls[0]
-    assert call["next_scheduled_at"] is None
+    assert call["retry_delay"] == timedelta(seconds=30)
 
 
-# ── transient-tier deadline ALSO emits lifecycle.failed ──────────────
+# ── transient-tier near-deadline: same single-arbiter contract ──────
 
 
-async def test_transient_deadline_emits_lifecycle_failed(
+async def test_transient_deadline_emits_lifecycle_scheduled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """transient-tier deadline emits `lifecycle.failed` with
-    error_class='DeadlineExceeded'."""
+    """transient-tier job failing near its deadline also emits
+    `lifecycle.scheduled` with a retry delay — same C2 contract as the
+    indefinite tier (the deadline outcome belongs to the SQL guard)."""
 
     async def actor(_job: object, _ctx: JobContext[BaseModel]) -> object:
         raise RuntimeError("transient failure")
@@ -201,11 +207,12 @@ async def test_transient_deadline_emits_lifecycle_failed(
             clock=clk,
         )
 
-    events = exporter.events_on("test-span", "lifecycle.failed")
+    failed_events = exporter.events_on("test-span", "lifecycle.failed")
+    assert failed_events == []
+    events = exporter.events_on("test-span", "lifecycle.scheduled")
     assert len(events) == 1
     attrs = events[0].attributes  # type: ignore[reportUnknownMemberType]  # Why: events_on returns list[Any]; at runtime these are Event objects with .attributes
     assert attrs is not None
-    assert attrs["error_class"] == "DeadlineExceeded"
 
 
 # ── indefinite-tier Retry does NOT emit taskq.indefinite_retry ────────
@@ -2064,7 +2071,7 @@ async def test_generic_exception_retry_path_logs_warning_only(
 
     assert len(backend.mark_failed_or_retry_calls) == 1
     call = backend.mark_failed_or_retry_calls[0]
-    assert call["next_scheduled_at"] is not None
+    assert call["retry_delay"] is not None
 
 
 async def test_timeout_retry_path_logs_warning_only(
@@ -2118,7 +2125,7 @@ async def test_timeout_retry_path_logs_warning_only(
 
     assert len(backend.mark_failed_or_retry_calls) == 1
     call = backend.mark_failed_or_retry_calls[0]
-    assert call["next_scheduled_at"] is not None
+    assert call["retry_delay"] is not None
 
 
 # ── Ownership mismatch: terminal write lost → NO job-failed ─────────────
@@ -2132,7 +2139,7 @@ class _OwnershipMismatchBackend(_FakeBackend):
         job_id: UUID,
         worker_id: UUID,
         error_info: ErrorInfo,
-        next_scheduled_at: datetime | None,
+        retry_delay: timedelta | None,
         progress_seq: int = 0,
         progress_state: dict[str, object] | None = None,
     ) -> JobRow:

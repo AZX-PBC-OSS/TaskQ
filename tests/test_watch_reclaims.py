@@ -117,7 +117,8 @@ async def _make_running_row(
     )
     backend._jobs[job_id] = running_row  # type: ignore[reportPrivateUsage]  # Why: test-only private access
 
-    count = await backend.reclaim_expired_locks(_START + timedelta(seconds=1), _GRACE, _GRACE)
+    backend.advance_clock_to(_START + timedelta(seconds=1))
+    count = await backend.reclaim_expired_locks(_GRACE, _GRACE)
     assert count == 1
     return job_id
 

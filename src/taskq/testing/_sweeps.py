@@ -3,10 +3,14 @@
 ``scheduled_to_pending``, ``deadline_sweep``, and ``reclaim_expired_locks``
 live here as module-level functions taking ``self: InMemoryBackend`` as
 the first parameter, following the :mod:`taskq.testing._runner` pattern.
+
+No caller-supplied ``now``: the backend's injected ``Clock`` is the single
+arbiter — the InMemory mirror of PG's server-side ``clock_timestamp()``
+predicates (parity by construction).
 """
 
 from dataclasses import replace
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import TYPE_CHECKING
 
 import structlog
@@ -26,7 +30,8 @@ __all__ = [
 logger = structlog.get_logger("taskq.testing.in_memory")
 
 
-async def _scheduled_to_pending(self: "InMemoryBackend", now: datetime) -> int:
+async def _scheduled_to_pending(self: "InMemoryBackend") -> int:
+    now = self._clock.now()
     count = 0
     for job_id, row in list(self._jobs.items()):
         if row.status == "scheduled" and row.scheduled_at <= now:
@@ -51,7 +56,8 @@ async def _scheduled_to_pending(self: "InMemoryBackend", now: datetime) -> int:
     return count
 
 
-async def _deadline_sweep(self: "InMemoryBackend", now: datetime) -> int:
+async def _deadline_sweep(self: "InMemoryBackend") -> int:
+    now = self._clock.now()
     count = 0
     for job_id, row in list(self._jobs.items()):
         if (
@@ -101,7 +107,6 @@ async def _deadline_sweep(self: "InMemoryBackend", now: datetime) -> int:
 
 async def _reclaim_expired_locks(
     self: "InMemoryBackend",
-    now: datetime,
     cancel_grace: timedelta,
     cleanup_grace: timedelta,
 ) -> int:
@@ -116,6 +121,7 @@ async def _reclaim_expired_locks(
     #   slate for the next dispatch); the exhausted branch lands on
     #   'cancelled' when a cancel was in-flight, 'crashed' otherwise,
     #   while the attempt row records outcome='crashed' either way.
+    now = self._clock.now()
     deep_expiry_margin = cancel_grace + cleanup_grace + timedelta(seconds=60)
     count = 0
     for job_id, row in list(self._jobs.items()):
@@ -146,7 +152,7 @@ async def _reclaim_expired_locks(
             self._attempts.setdefault(job_id, []).append(attempt_row)
 
             if row.attempt < row.max_attempts and row.retry_kind != "non_retryable":
-                new_scheduled = self._clock.now() + timedelta(seconds=5)
+                new_scheduled = now + timedelta(seconds=5)
                 self._jobs[job_id] = replace(
                     row,
                     status="pending",

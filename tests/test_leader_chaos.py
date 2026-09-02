@@ -31,16 +31,19 @@ pyproject.toml; the ignores serve as documentation of the access site.
 """
 
 import asyncio
-from contextlib import AsyncExitStack, suppress
+from collections.abc import AsyncGenerator
+from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from datetime import timedelta
 from uuid import UUID
 
 import asyncpg
 import pytest
+from testcontainers.community.postgres import PostgresContainer
 
 from taskq._ids import new_base62, new_uuid
 from taskq.backend.clock import SystemClock
 from taskq.backend.postgres import PostgresBackend
+from taskq.testing._shared_containers import creator_labels
 from taskq.testing.fixtures import _create_worker, _open_pg_backend, _open_two_pg_workers
 from taskq.testing.settings import shorten_chaos_settings
 from taskq.worker.deps import WorkerDeps, open_worker_deps
@@ -290,6 +293,29 @@ async def test_tc2_partition_leader_via_monitor_conn(pg_dsn: str) -> None:
 # ── PG primary failover (approximation via container stop/start) ───
 
 
+@asynccontextmanager
+async def _off_loop_container(
+    container: PostgresContainer,
+) -> AsyncGenerator[PostgresContainer, None]:
+    """Enter/exit a testcontainers container with the blocking calls off the event loop.
+
+    Why: docker-py is requests-based — container start (+ readiness wait) and
+    stop are blocking HTTP round-trips that can run for seconds; executed on
+    the loop they stall it for the whole round-trip, defeating every
+    client-side timeout sharing that loop.
+    """
+    try:
+        started = await asyncio.to_thread(container.start)
+    except BaseException:
+        with suppress(Exception):
+            await asyncio.to_thread(container.stop)
+        raise
+    try:
+        yield started
+    finally:
+        await asyncio.to_thread(container.stop)
+
+
 @pytest.mark.slow
 @pytest.mark.asyncio
 @pytest.mark.xdist_group(name="chaos")
@@ -322,18 +348,19 @@ async def test_tc3_pg_primary_failover() -> None:
     advisory lock implicitly released → next worker on new primary
     acquires within heartbeat_interval."
     """
-    from testcontainers.postgres import PostgresContainer
-
     from taskq.migrate import apply_pending
     from taskq.settings import WorkerSettings
 
-    with PostgresContainer(
-        image="postgres:18-alpine",
-        username="taskq",
-        password="taskq",
-        dbname="taskq",
+    async with _off_loop_container(
+        PostgresContainer(
+            image="postgres:18-alpine",
+            username="taskq",
+            password="taskq",
+            dbname="taskq",
+        ).with_kwargs(labels=creator_labels())
     ) as own_container:
-        own_dsn = own_container.get_connection_url().replace(
+        # Why: get_connection_url resolves the mapped port via docker HTTP — off-loop.
+        own_dsn = (await asyncio.to_thread(own_container.get_connection_url)).replace(
             "postgresql+psycopg2://", "postgresql://"
         )
         schema_name = f"tc3_{new_base62()}".lower()
@@ -370,7 +397,9 @@ async def test_tc3_pg_primary_failover() -> None:
         try:
             _leader, shutdown, task = await _start_leader_and_wait_for_win(deps, backend, worker_id)
             try:
-                own_container.stop()
+                # Why: docker-py stop blocks the loop for the whole HTTP round-trip
+                # (measured 2.4-3.8s continuous loop stalls) — off-loop.
+                await asyncio.to_thread(own_container.stop)
                 await asyncio.sleep(5)
 
                 # Cancel the leader DURING the downtime window — after
@@ -386,7 +415,8 @@ async def test_tc3_pg_primary_failover() -> None:
 
                 for _attempt in range(3):
                     try:
-                        own_container.start()
+                        # Why: docker-py start (+ readiness wait) blocks the loop — off-loop.
+                        await asyncio.to_thread(own_container.start)
                         break
                     except Exception:
                         if _attempt == 2:
@@ -394,7 +424,8 @@ async def test_tc3_pg_primary_failover() -> None:
                         await asyncio.sleep(2)
 
                 # Container restart may remap the port; recapture the DSN.
-                new_own_dsn = own_container.get_connection_url().replace(
+                # Why: get_connection_url resolves the mapped port via docker HTTP — off-loop.
+                new_own_dsn = (await asyncio.to_thread(own_container.get_connection_url)).replace(
                     "postgresql+psycopg2://", "postgresql://"
                 )
 

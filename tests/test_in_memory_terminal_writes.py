@@ -281,7 +281,7 @@ class TestSingleAttemptRowPerTransition:
             job_id,
             wid,
             error_info,
-            next_scheduled_at=_START + timedelta(seconds=10),
+            retry_delay=timedelta(seconds=10),
         )
 
         attempts = await backend.get_attempts(job_id)
@@ -774,7 +774,7 @@ class TestCancelPhasePreservedOnRetry:
             job_id,
             wid,
             error_info,
-            next_scheduled_at=_START + timedelta(seconds=10),
+            retry_delay=timedelta(seconds=10),
         )
         assert result.status == "scheduled"
         assert result.cancel_phase == 1
@@ -795,7 +795,7 @@ class TestCancelPhasePreservedOnRetry:
             job_id,
             wid,
             error_info,
-            next_scheduled_at=_START + timedelta(seconds=10),
+            retry_delay=timedelta(seconds=10),
         )
         assert result.status == "scheduled"
         assert result.cancel_phase == 2

@@ -1743,7 +1743,6 @@ class TestReclaimExpiredLocksInstance:
             )
 
         count = await backend.reclaim_expired_locks(
-            datetime.now(UTC),
             _CANCEL_GRACE,
             _CLEANUP_GRACE,
         )
@@ -1788,7 +1787,6 @@ class TestReclaimExpiredLocksInstance:
             )
 
         count = await backend.reclaim_expired_locks(
-            datetime.now(UTC),
             _CANCEL_GRACE,
             _CLEANUP_GRACE,
         )
@@ -1829,7 +1827,6 @@ class TestReclaimExpiredLocksInstance:
             )
 
         count = await backend.reclaim_expired_locks(
-            datetime.now(UTC),
             _CANCEL_GRACE,
             _CLEANUP_GRACE,
         )

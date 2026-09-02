@@ -318,7 +318,7 @@ async def test_sync_actor_failure_via_consumer() -> None:
 
 @pytest.mark.asyncio
 async def test_sync_actor_retry_policy_kicks_in() -> None:
-    """Sync actor with transient failure triggers mark_failed_or_retry with next_scheduled_at."""
+    """Sync actor with transient failure triggers mark_failed_or_retry with a retry delay."""
 
     def sync_fn(payload: SimplePayload) -> None:
         raise RuntimeError("retry me")
@@ -336,7 +336,7 @@ async def test_sync_actor_retry_policy_kicks_in() -> None:
     # The batch hook skips non-terminal outcomes.
     assert outcome == "scheduled"
     assert len(backend.mark_failed_or_retry_calls) == 1
-    assert backend.mark_failed_or_retry_calls[0]["next_scheduled_at"] is not None
+    assert backend.mark_failed_or_retry_calls[0]["retry_delay"] is not None
 
 
 @pytest.mark.asyncio

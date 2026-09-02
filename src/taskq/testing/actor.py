@@ -173,7 +173,7 @@ class FakeBackend:
         job_id: UUID,
         worker_id: UUID,
         error_info: ErrorInfo,
-        next_scheduled_at: datetime | None,
+        retry_delay: timedelta | None,
         progress_seq: int = 0,
         progress_state: dict[str, object] | None = None,
     ) -> JobRow:
@@ -182,7 +182,7 @@ class FakeBackend:
                 "job_id": job_id,
                 "worker_id": worker_id,
                 "error_info": error_info,
-                "next_scheduled_at": next_scheduled_at,
+                "retry_delay": retry_delay,
             }
         )
         return _make_job_row()
@@ -278,15 +278,13 @@ class FakeBackend:
     async def poll_cancel_flags(self, worker_id: UUID) -> list[CancelFlag]:
         return []
 
-    async def scheduled_to_pending(self, now: datetime) -> int:
+    async def scheduled_to_pending(self) -> int:
         return 0
 
-    async def deadline_sweep(self, now: datetime) -> int:
+    async def deadline_sweep(self) -> int:
         return 0
 
-    async def reclaim_expired_locks(
-        self, now: datetime, cancel_grace: timedelta, cleanup_grace: timedelta
-    ) -> int:
+    async def reclaim_expired_locks(self, cancel_grace: timedelta, cleanup_grace: timedelta) -> int:
         return 0
 
     async def get(self, job_id: UUID) -> JobRow | None:

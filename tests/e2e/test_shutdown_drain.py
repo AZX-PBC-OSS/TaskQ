@@ -33,6 +33,8 @@ from uuid import uuid4
 import pytest
 import pytest_asyncio
 
+from taskq.testing._shared_containers import creator_labels
+
 from ._assertions import (
     fetch_effects,
     fetch_job_rows,
@@ -133,6 +135,9 @@ async def drain_worker(
     from testcontainers.core.container import DockerContainer
 
     container = DockerContainer(image=e2e_worker_image.tag)
+    container.with_kwargs(
+        labels=creator_labels()
+    )  # Ownership labels: sweepable under disabled Ryuk (see e2e_network's sweep).
     container.with_network(e2e_network).with_network_aliases(
         f"worker-drain-{e2e_schema.schema_name}-{uuid4().hex[:6]}"
     )
@@ -246,6 +251,9 @@ async def test_sigterm_drains_inflight_job(
     )
 
     replacement = DockerContainer(image=e2e_worker_image.tag)
+    replacement.with_kwargs(
+        labels=creator_labels()
+    )  # Ownership labels: sweepable under disabled Ryuk (see e2e_network's sweep).
     replacement.with_network(e2e_network).with_network_aliases(
         f"worker-repl-{e2e_schema.schema_name}"
     )

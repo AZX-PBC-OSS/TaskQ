@@ -982,7 +982,7 @@ async def test_demoted_leader_loops_still_tick_liveness() -> None:
     liveness = LoopLiveness()
 
     class _Backend:
-        async def scheduled_to_pending(self, *, now: object) -> int:
+        async def scheduled_to_pending(self) -> int:
             raise AssertionError("demoted leader must not run scheduled_to_pending")
 
     deps = cast(
@@ -1328,7 +1328,7 @@ class _CommandTimeoutBackend:
     def __init__(self, stall_secs: float) -> None:
         self._stall_secs = stall_secs
 
-    async def scheduled_to_pending(self, *, now: object) -> int:
+    async def scheduled_to_pending(self) -> int:
         await asyncio.sleep(self._stall_secs)
         raise TimeoutError("simulated asyncpg command_timeout")
 
@@ -1539,7 +1539,7 @@ async def test_scheduled_wake_survives_query_canceled(
     from taskq.worker.leader import MaintenanceLeader
 
     class _Backend:
-        async def scheduled_to_pending(self, *, now: object) -> int:
+        async def scheduled_to_pending(self) -> int:
             raise asyncpg.QueryCanceledError("canceling statement due to user request")
 
     liveness = LoopLiveness(grace_factor=3.0, stale_floor=1.0)
@@ -1621,7 +1621,7 @@ async def test_scheduled_wake_notify_path_gap_stays_within_budget(
     from taskq.worker.leader import MaintenanceLeader
 
     class _SlowButSuccessfulBackend:
-        async def scheduled_to_pending(self, *, now: object) -> int:
+        async def scheduled_to_pending(self) -> int:
             await asyncio.sleep(2.4)
             return 1  # due jobs: the loop proceeds to the notify leg
 
@@ -1801,7 +1801,7 @@ async def test_scheduled_wake_backstop_tolerates_then_goes_fatal(
     calls = 0
 
     class _BuggyBackend:
-        async def scheduled_to_pending(self, *, now: object) -> int:
+        async def scheduled_to_pending(self) -> int:
             nonlocal calls
             calls += 1
             raise ValueError("this is a bug, not a PG moment")
@@ -1934,7 +1934,7 @@ async def test_scheduled_wake_rides_out_every_transient_shape(
     exc_factory = cast(_Callable[[], BaseException], make_exc)
 
     class _FlakyBackend:
-        async def scheduled_to_pending(self, *, now: object) -> int:
+        async def scheduled_to_pending(self) -> int:
             nonlocal calls
             calls += 1
             raise exc_factory()

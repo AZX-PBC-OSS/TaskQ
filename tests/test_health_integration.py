@@ -1,8 +1,10 @@
 """Integration tests for end-to-end health endpoints.
 
-Uses the session-scoped ``pg_container`` fixture from ``tests/conftest.py``,
-spawning a worker subprocess via ``tests/_worker_harness.py`` and driving
-CLI commands through the Unix health socket.
+Runs against the shared session Postgres via the ``pg_dsn`` fixture from
+``tests/conftest.py`` (one container for the whole run), spawning a worker
+subprocess via ``tests/_worker_harness.py`` and driving CLI commands through
+the Unix health socket. The pause/unpause chaos test uses its own disposable
+container (``paused_pg``) — the shared one must never be paused.
 
 Tests poll ``os.path.exists(socket_path)`` with a 5 s deadline for worker
 readiness rather than relying on a ``worker-ready`` stderr line — the
@@ -18,14 +20,17 @@ import socket
 import subprocess
 import sys
 import time
+from collections.abc import AsyncGenerator, AsyncIterator
 
 import asyncpg
 import pytest
 import pytest_asyncio
+from testcontainers.community.postgres import PostgresContainer
 
 from taskq._ids import new_base62
 from taskq.migrate import apply_pending
 from taskq.settings import WorkerSettings
+from taskq.testing._shared_containers import creator_labels
 
 pytestmark = pytest.mark.integration
 
@@ -34,6 +39,29 @@ pytestmark = pytest.mark.integration
 
 
 _WS = WorkerSettings
+
+
+@contextlib.asynccontextmanager
+async def _off_loop_container(
+    container: PostgresContainer,
+) -> AsyncGenerator[PostgresContainer, None]:
+    """Enter/exit a testcontainers container with the blocking calls off the event loop.
+
+    Why: docker-py is requests-based — container start (+ readiness wait) and
+    stop are blocking HTTP round-trips that can run for seconds; executed on
+    the loop they stall it for the whole round-trip, defeating every
+    client-side timeout sharing that loop.
+    """
+    try:
+        started = await asyncio.to_thread(container.start)
+    except BaseException:
+        with contextlib.suppress(Exception):
+            await asyncio.to_thread(container.stop)
+        raise
+    try:
+        yield started
+    finally:
+        await asyncio.to_thread(container.stop)
 
 
 _SOCK_PREFIX = f"/tmp/tq-integ-{os.getpid()}-"  # noqa: S108 # Why: macOS AF_UNIX limit is 104 chars; /tmp is the shortest safe prefix.
@@ -184,12 +212,40 @@ def test_ti1_live_and_ready_happy(pg_dsn: str, health_schema_name: str) -> None:
 # ── Readiness 503 when PG paused ────────────────────────────
 
 
+@pytest_asyncio.fixture
+async def paused_pg() -> AsyncIterator[tuple[str, PostgresContainer, str]]:
+    """Disposable PG container (DSN, container, prepared schema) for the pause test.
+
+    ``test_ti2`` pauses the container to prove readiness fails; pausing the
+    SHARED session container would freeze the ONE Postgres every xdist worker
+    of the run tests against for the whole pause window. This test therefore
+    gets its own throwaway container (same pattern as
+    ``killable_redis_container``), labeled with the ownership labels so a
+    crashed run's leftover is sweepable (Ryuk is disabled process-wide by the
+    shared-container machinery).
+    """
+    async with _off_loop_container(
+        PostgresContainer(
+            image="postgres:18-alpine",
+            username="taskq",
+            password="taskq",
+            dbname="taskq",
+        ).with_kwargs(labels=creator_labels())
+    ) as container:
+        # Why: get_connection_url resolves the mapped port via docker HTTP — off-loop.
+        dsn = (await asyncio.to_thread(container.get_connection_url)).replace(
+            "postgresql+psycopg2://", "postgresql://"
+        )
+        schema = f"tq_h_{new_base62()}".lower()
+        await _prepare_schema(dsn, schema)
+        yield dsn, container, schema
+
+
 @pytest.mark.xdist_group(name="chaos")
 def test_ti2_ready_fails_when_pg_stopped(
-    pg_dsn: str,
-    pg_container: object,  # PostgresContainer — dynamic inspect for stop/start
-    health_schema_name: str,
+    paused_pg: tuple[str, PostgresContainer, str],
 ) -> None:
+    pg_dsn, pg_container, health_schema_name = paused_pg
     socket_path = _next_sock_path()
     proc: subprocess.Popen[bytes] | None = None
     try:
@@ -203,6 +259,7 @@ def test_ti2_ready_fails_when_pg_stopped(
         assert json.loads(pre.stdout.strip())["ready"] is True
 
         docker_container = pg_container._container  # type: ignore[attr-defined] # Why: testcontainers' _container is not part of the public PostgresContainer API; accessing the Docker SDK object to pause/unpause is unavoidable here.
+        assert docker_container is not None  # a started container always has one
         docker_container.pause()
         try:
             post_stop = _run_cli("health", "ready", env=worker_env)

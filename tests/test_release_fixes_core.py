@@ -176,14 +176,11 @@ async def test_handle_generic_exception_propagates_infra_write_failure() -> None
     from the terminal write so that _run_terminal_path's outer guard (or the
     dispatch.py direct-call guard) catches them consistently — instead of
     swallowing them and causing a false terminal Redis publish."""
-    from datetime import UTC, datetime
-
     import asyncpg
     import structlog
 
     from taskq.retry import RetryPolicy
     from taskq.testing.actor import StubActorConfig
-    from taskq.testing.clock import FakeClock
     from taskq.testing.jobs import make_job_row
     from taskq.worker._handlers import _handle_generic_exception
 
@@ -191,7 +188,6 @@ async def test_handle_generic_exception_propagates_infra_write_failure() -> None
     backend = _RaisingBackend(infra_exc)
     job = make_job_row(attempt=1, max_attempts=3)
     actor_config = StubActorConfig(retry=RetryPolicy(max_attempts=3))
-    clock = FakeClock(datetime(2025, 1, 1, tzinfo=UTC))
     log = structlog.get_logger("test")
 
     class _FakeSpan:
@@ -209,7 +205,6 @@ async def test_handle_generic_exception_propagates_infra_write_failure() -> None
             _WORKER_ID,
             actor_exc,
             actor_config,
-            clock,
             timedelta(hours=24),
             _FakeSpan(),  # type: ignore[arg-type]
             log,
@@ -226,15 +221,12 @@ async def test_dispatch_exception_swallows_infra_failure_all_handlers(
     """Infra failures during ANY terminal handler's write are caught in
     _run_terminal_path — not just _handle_generic_exception's — so they can
     never be re-dispatched into generic handling as the actor's failure."""
-    from datetime import UTC, datetime
-
     import asyncpg
     import structlog
 
     from taskq.exceptions import Snooze
     from taskq.retry import RetryPolicy
     from taskq.testing.actor import StubActorConfig
-    from taskq.testing.clock import FakeClock
     from taskq.testing.jobs import make_job_row
     from taskq.worker._handlers import _dispatch_exception
 
@@ -255,7 +247,6 @@ async def test_dispatch_exception_swallows_infra_failure_all_handlers(
     backend = _RaisingTerminalBackend()
     job = make_job_row(attempt=1, max_attempts=3)
     actor_config = StubActorConfig(retry=RetryPolicy(max_attempts=3))
-    clock = FakeClock(datetime(2025, 1, 1, tzinfo=UTC))
     log = structlog.get_logger("test")
 
     class _FakeSpan:
@@ -276,7 +267,6 @@ async def test_dispatch_exception_swallows_infra_failure_all_handlers(
         job=job,
         worker_id=_WORKER_ID,
         actor_config=actor_config,
-        clock=clock,
         max_retry_backoff=timedelta(hours=24),
         consumer_span=_FakeSpan(),  # type: ignore[arg-type]
         log=log,
@@ -427,20 +417,16 @@ class _FakeSpan:
 async def test_generic_exception_traceback_without_active_exception() -> None:
     """Direct call outside an except block: error_traceback must come from
     the explicit exception, not the ambient (empty) one."""
-    from datetime import UTC, datetime
-
     import structlog
 
     from taskq.retry import RetryPolicy
     from taskq.testing.actor import StubActorConfig
-    from taskq.testing.clock import FakeClock
     from taskq.testing.jobs import make_job_row
     from taskq.worker._handlers import _handle_generic_exception
 
     backend = _RecordingTerminalBackend()
     job = make_job_row(attempt=1, max_attempts=3)
     actor_config = StubActorConfig(retry=RetryPolicy(max_attempts=3))
-    clock = FakeClock(datetime(2025, 1, 1, tzinfo=UTC))
     log = MagicMock(spec=structlog.stdlib.BoundLogger)
     log.bind.return_value = log
 
@@ -452,7 +438,6 @@ async def test_generic_exception_traceback_without_active_exception() -> None:
         _WORKER_ID,
         actor_exc,
         actor_config,
-        clock,
         timedelta(hours=24),
         _FakeSpan(),  # type: ignore[arg-type]
         log,
@@ -476,20 +461,16 @@ async def test_generic_exception_traceback_without_active_exception() -> None:
 @pytest.mark.asyncio
 async def test_timeout_traceback_without_active_exception() -> None:
     """Same regression pin for _handle_timeout."""
-    from datetime import UTC, datetime
-
     import structlog
 
     from taskq.retry import RetryPolicy
     from taskq.testing.actor import StubActorConfig
-    from taskq.testing.clock import FakeClock
     from taskq.testing.jobs import make_job_row
     from taskq.worker._handlers import _handle_timeout
 
     backend = _RecordingTerminalBackend()
     job = make_job_row(attempt=1, max_attempts=3)
     actor_config = StubActorConfig(retry=RetryPolicy(max_attempts=3))
-    clock = FakeClock(datetime(2025, 1, 1, tzinfo=UTC))
     log = MagicMock(spec=structlog.stdlib.BoundLogger)
     log.bind.return_value = log
 
@@ -501,7 +482,6 @@ async def test_timeout_traceback_without_active_exception() -> None:
         _WORKER_ID,
         timeout_exc,
         actor_config,
-        clock,
         timedelta(hours=24),
         _FakeSpan(),  # type: ignore[arg-type]
         log,

@@ -26,7 +26,7 @@ from datetime import UTC, datetime, timedelta
 import asyncpg
 import pytest
 
-from taskq._ids import new_base62
+from taskq._ids import new_base62, new_uuid
 from taskq.backend._records import jsonb_to_dict
 from taskq.backend.clock import SystemClock
 from taskq.ratelimit import SlidingWindow
@@ -38,7 +38,6 @@ from taskq.ratelimit._sliding_window_pg import (
 )
 from taskq.ratelimit.decision import RateLimitDecision
 from taskq.settings import WorkerSettings
-from taskq.testing.clock import FakeClock
 from taskq.testing.fixtures import ModulePgSchema
 
 pytestmark = pytest.mark.integration
@@ -194,16 +193,16 @@ async def test_gcra_pg_fallback_burst_and_deny(
     module_pg_pool: asyncpg.Pool,
 ) -> None:
     """backend="postgres", style="gcra". Burst 60 acquires — all
-    allowed. 61st denied with retry_after ≈ 1 s. Advance FakeClock
-    retry_after + 50 ms → allowed. Verify rate_limit_buckets row has
+    allowed. 61st denied with retry_after ≈ 1 s. Sleep retry_after +
+    50 ms of REAL time → allowed. Verify rate_limit_buckets row has
     kind='gcra' and state tat float.
 
-    Uses FakeClock so wall-clock elapsed time during the 60 PG roundtrips
-    does not slide the GCRA window (parallel-load robustness).
+    The TAT math runs on the PG server epoch, so the wait must be real
+    time (a FakeClock advance would be invisible to the store).
     """
     schema = module_pg_schema.schema_name
     settings = _settings(module_pg_schema)
-    clock = FakeClock(datetime(2025, 1, 1, tzinfo=UTC))
+    clock = SystemClock()
     name = _gcra_unique_name()
 
     sw = SlidingWindow(
@@ -227,13 +226,13 @@ async def test_gcra_pg_fallback_burst_and_deny(
     assert r.remaining == 0.0
 
     # GCRA retry_after = emission_interval - elapsed_during_burst.
-    # With 60 PG roundtrips, elapsed time reduces retry_below 1.0 s;
+    # With 60 PG roundtrips, elapsed time reduces retry below 1.0 s;
     # the invariant is 0 < retry_after <= emission_interval (1.0 s).
     assert r.retry_after.total_seconds() <= 1.0
 
     async with module_pg_pool.acquire() as conn:
         row = await conn.fetchrow(
-            f"SELECT kind, state FROM {schema}.rate_limit_buckets "  # noqa: S608 # Why: schema is fixture-derived; bucket_name is $1-bound
+            f"SELECT kind, state FROM {schema}.rate_limit_buckets "  # noqa: S608  # Why: schema is fixture-derived; bucket_name is $1-bound
             f"WHERE bucket_name = $1",
             name,
         )
@@ -245,7 +244,7 @@ async def test_gcra_pg_fallback_burst_and_deny(
     assert isinstance(state["tat"], float | int)
 
     wait = r.retry_after.total_seconds() + 0.05
-    clock.advance(timedelta(seconds=wait))
+    await asyncio.sleep(wait)
 
     r = await sw.acquire(pg_pool=module_pg_pool, clock=clock, settings=settings)
     assert r.allowed is True
@@ -324,6 +323,175 @@ async def test_gcra_postgres_never_touches_redis(
     r = await sw.acquire(pg_pool=module_pg_pool, clock=clock, settings=settings)
     assert r.allowed is True
     assert r.backend == "postgres"
+
+
+# ── Unified clock contract: clock drives the memory backend only ─────
+
+
+async def test_acquire_and_peek_without_clock_on_postgres_backend(
+    module_pg_schema: ModulePgSchema,
+    module_pg_pool: asyncpg.Pool,
+) -> None:
+    """A postgres-backend acquire/peek runs entirely on the PG server
+    clock (clock_timestamp()), so it must not require a Python clock at
+    all — TokenBucket's contract. Both styles, acquire and peek."""
+    settings = _settings(module_pg_schema)
+
+    sw_log = SlidingWindow(
+        name=_unique_name(), limit=10, window=timedelta(seconds=60), backend="postgres", style="log"
+    )
+    r = await sw_log.acquire(pg_pool=module_pg_pool, settings=settings)
+    assert r.allowed is True
+    assert r.backend == "postgres"
+    state = await sw_log.peek(pg_pool=module_pg_pool, settings=settings)
+    assert state.backend == "postgres"
+
+    sw_gcra = SlidingWindow(
+        name=_gcra_unique_name(),
+        limit=10,
+        window=timedelta(seconds=60),
+        backend="postgres",
+        style="gcra",
+    )
+    r = await sw_gcra.acquire(pg_pool=module_pg_pool, settings=settings)
+    assert r.allowed is True
+    assert r.backend == "postgres"
+    state = await sw_gcra.peek(pg_pool=module_pg_pool, settings=settings)
+    assert state.backend == "postgres"
+
+
+# ── Concurrency pins — first-use and at-limit races ──────────────────
+#
+# Both pins race two acquire transactions on two DEDICATED single-connection
+# pools, each pre-warmed by a sacrificial acquire. Why the warm-up: asyncpg
+# plans a statement per connection on first use, and a cold plan costs
+# ~1.5 ms — enough to push the losing transaction's decisive statement past
+# the winner's commit and silently SERIALISE the very race these pins
+# assert (observed: cold-second-connection gathers never overlap, warm
+# ones overlap 40/40). Pre-warming both connections makes the pre-fix
+# failure deterministic; the post-fix serialization (advisory lock / row
+# preseed) is structural and timing-independent.
+
+
+async def _warm_gcra_pool(pg_dsn: str, settings: WorkerSettings) -> asyncpg.Pool:
+    """Single-connection pool whose connection has executed the GCRA
+    acquire statement set once (see the section note above)."""
+    pool = await asyncpg.create_pool(pg_dsn, min_size=1, max_size=1)
+    warm_sw = SlidingWindow(
+        name=_gcra_unique_name(),
+        limit=10,
+        window=timedelta(seconds=60),
+        backend="postgres",
+        style="gcra",
+    )
+    warm = await _acquire_pg_gcra(warm_sw, pool, settings)
+    assert warm.allowed is True
+    return pool
+
+
+async def _warm_log_pool(pg_dsn: str, settings: WorkerSettings) -> asyncpg.Pool:
+    """Single-connection pool whose connection has executed the log-style
+    acquire statement set once (see the section note above)."""
+    pool = await asyncpg.create_pool(pg_dsn, min_size=1, max_size=1)
+    warm_sw = SlidingWindow(
+        name=_unique_name(),
+        limit=10,
+        window=timedelta(seconds=60),
+        backend="postgres",
+        style="log",
+    )
+    warm = await _acquire_pg_log(warm_sw, pool, settings, new_uuid())
+    assert warm.allowed is True
+    return pool
+
+
+async def test_gcra_pg_concurrent_first_use_admits_exactly_one(
+    module_pg_schema: ModulePgSchema,
+) -> None:
+    """Two concurrent FIRST acquires on a brand-new GCRA bucket (limit=1):
+    exactly one is admitted.
+
+    ``SELECT ... FOR UPDATE`` cannot lock a row that does not exist yet,
+    so pre-fix both transactions read ``row is None``, both admit, and the
+    two upserts race last-writer-wins on the TAT. Post-fix a preseed
+    ``INSERT ... ON CONFLICT DO NOTHING`` serialises first-use on the
+    unique index (mirrors the token-bucket PG path).
+    """
+    settings = _settings(module_pg_schema)
+    name = _gcra_unique_name()
+
+    sw = SlidingWindow(
+        name=name, limit=1, window=timedelta(seconds=60), backend="postgres", style="gcra"
+    )
+
+    pool_a = await _warm_gcra_pool(module_pg_schema.pg_dsn, settings)
+    pool_b = await _warm_gcra_pool(module_pg_schema.pg_dsn, settings)
+    try:
+        decisions = await asyncio.gather(
+            _acquire_pg_gcra(sw, pool_a, settings),
+            _acquire_pg_gcra(sw, pool_b, settings),
+        )
+    finally:
+        await asyncio.gather(pool_a.close(), pool_b.close())
+
+    allowed_count = sum(1 for d in decisions if d.allowed)
+    assert allowed_count == 1, (
+        f"concurrent first-use must admit exactly one of two acquires at "
+        f"limit=1, got {allowed_count} allowed"
+    )
+
+
+async def test_log_pg_concurrent_acquires_respect_limit(
+    module_pg_schema: ModulePgSchema,
+    module_pg_pool: asyncpg.Pool,
+) -> None:
+    """limit=3 with 2 pre-filled entries, 2 concurrent acquires: exactly
+    one is allowed and the window count never exceeds the limit.
+
+    Pre-fix the DELETE+INSERT ... WHERE count < N pair is unserialised
+    under READ COMMITTED — both acquires count 2 in-window entries, both
+    insert, and the window reaches 4 > limit. Post-fix a per-bucket
+    ``pg_advisory_xact_lock`` at the top of the acquire transaction
+    serialises them (the cron loop's idiom).
+    """
+    schema = module_pg_schema.schema_name
+    settings = _settings(module_pg_schema)
+    name = _unique_name()
+
+    sw = SlidingWindow(
+        name=name, limit=3, window=timedelta(seconds=60), backend="postgres", style="log"
+    )
+
+    pool_a = await _warm_log_pool(module_pg_schema.pg_dsn, settings)
+    pool_b = await _warm_log_pool(module_pg_schema.pg_dsn, settings)
+    try:
+        for _ in range(2):
+            prefill = await _acquire_pg_log(sw, pool_a, settings, new_uuid())
+            assert prefill.allowed is True
+
+        decisions = await asyncio.gather(
+            _acquire_pg_log(sw, pool_a, settings, new_uuid()),
+            _acquire_pg_log(sw, pool_b, settings, new_uuid()),
+        )
+    finally:
+        await asyncio.gather(pool_a.close(), pool_b.close())
+
+    allowed_count = sum(1 for d in decisions if d.allowed)
+    assert allowed_count == 1, (
+        f"two concurrent acquires with one slot left must admit exactly "
+        f"one, got {allowed_count} allowed"
+    )
+
+    async with module_pg_pool.acquire() as conn:
+        window_count = await conn.fetchval(
+            f"SELECT count(*) FROM {schema}.rate_limit_window_entries "  # noqa: S608 # Why: schema is fixture-derived; bucket_name is $1-bound
+            f"WHERE bucket_name = $1 "
+            f"AND ts >= clock_timestamp() - interval '60 seconds'",
+            name,
+        )
+    assert window_count == 3, (
+        f"the in-window entry count must never exceed the limit=3, got {window_count}"
+    )
 
 
 # ── Injection-error branches — pg_pool/settings/request_id None ────
@@ -463,7 +631,7 @@ async def test_acquire_log_request_id_none(
     )
     settings = _settings(module_pg_schema)
     with pytest.raises(RuntimeError, match="request_id required"):
-        await _acquire_pg_log(sw, module_pg_pool, SystemClock(), settings, None)
+        await _acquire_pg_log(sw, module_pg_pool, settings, None)
 
 
 async def test_acquire_gcra_settings_none(
@@ -512,7 +680,7 @@ async def test_refund_gcra_pg_pool_none(
     """refund() with a populated previous_state and pg_pool=None raises
     RuntimeError (line 191-192)."""
     settings = _settings(module_pg_schema)
-    clock = FakeClock(datetime(2025, 1, 1, tzinfo=UTC))
+    clock = SystemClock()
     name = _gcra_unique_name()
     sw = SlidingWindow(
         name=name, limit=10, window=timedelta(seconds=10), backend="postgres", style="gcra"
@@ -532,7 +700,7 @@ async def test_refund_gcra_settings_none(
     """refund() with a populated previous_state and settings=None raises
     RuntimeError (line 193-194)."""
     settings = _settings(module_pg_schema)
-    clock = FakeClock(datetime(2025, 1, 1, tzinfo=UTC))
+    clock = SystemClock()
     name = _gcra_unique_name()
     sw = SlidingWindow(
         name=name, limit=10, window=timedelta(seconds=10), backend="postgres", style="gcra"
@@ -552,7 +720,7 @@ async def test_refund_gcra_success(
     to its pre-acquire value (lines 195-208 executed)."""
     schema = module_pg_schema.schema_name
     settings = _settings(module_pg_schema)
-    clock = FakeClock(datetime(2025, 1, 1, tzinfo=UTC))
+    clock = SystemClock()
     name = _gcra_unique_name()
     sw = SlidingWindow(
         name=name, limit=10, window=timedelta(seconds=10), backend="postgres", style="gcra"
@@ -631,16 +799,15 @@ class _FakePgPool:
 
 async def test_peek_log_oldest_row_none() -> None:
     """peek_pg_log: count query reports the bucket exhausted, but the
-    oldest-row query races to no rows (line 70->76 false branch) — the
-    peek still returns is_exhausted=True with retry_after=None."""
+    oldest-row query races to no rows — the peek still returns
+    is_exhausted=True with retry_after=None (the retry estimate and the
+    window boundary both come from clock_timestamp() server-side)."""
     sw = SlidingWindow(
         name="fake_log", limit=5, window=timedelta(seconds=10), backend="postgres", style="log"
     )
     fake_pool = _FakePgPool(fetchrow_returns=[{"count": 5}, None])
 
-    state = await _peek_pg_log(
-        sw, now_ms=0, pg_pool=fake_pool, clock=SystemClock(), settings=_fake_settings()
-    )  # type: ignore[arg-type]
+    state = await _peek_pg_log(sw, pg_pool=fake_pool, settings=_fake_settings())  # type: ignore[arg-type]
 
     assert state.is_exhausted is True
     assert state.retry_after is None
@@ -649,16 +816,16 @@ async def test_peek_log_oldest_row_none() -> None:
 async def test_peek_log_retry_after_clamped_to_1ms() -> None:
     """peek_pg_log: the oldest row's ts is exactly `now - window`, making
     the raw retry_after compute to timedelta(0); the clamp raises it to
-    1 ms (line 73-74)."""
+    1 ms. The server-domain now comes back alongside ts in the same row
+    (clock_timestamp() AS server_now)."""
     now_dt = datetime(2025, 1, 1, tzinfo=UTC)
     window = timedelta(seconds=10)
     sw = SlidingWindow(name="fake_log2", limit=5, window=window, backend="postgres", style="log")
-    fake_pool = _FakePgPool(fetchrow_returns=[{"count": 5}, {"ts": now_dt - window}])
-    clock = FakeClock(now_dt)
+    fake_pool = _FakePgPool(
+        fetchrow_returns=[{"count": 5}, {"ts": now_dt - window, "server_now": now_dt}]
+    )
 
-    state = await _peek_pg_log(
-        sw, now_ms=0, pg_pool=fake_pool, clock=clock, settings=_fake_settings()
-    )  # type: ignore[arg-type]
+    state = await _peek_pg_log(sw, pg_pool=fake_pool, settings=_fake_settings())  # type: ignore[arg-type]
 
     assert state.is_exhausted is True
     assert state.retry_after == timedelta(milliseconds=1)
@@ -666,28 +833,26 @@ async def test_peek_log_retry_after_clamped_to_1ms() -> None:
 
 async def test_peek_gcra_retry_after_clamped_to_1ms() -> None:
     """peek_pg_gcra: with limit=3 and window=1s, a stored tat offset of
-    exactly `window - emission_interval` seconds ahead of `now` makes
-    the raw retry_after_seconds compute to 0.0; the clamp raises it to
-    1 ms (line 131-132). Derived analytically: emission = window/limit,
+    exactly `window - emission_interval` seconds ahead of the server read
+    of `now` makes the raw retry_after_seconds compute to 0.0; the clamp
+    raises it to 1 ms. Derived analytically: emission = window/limit,
     boundary = window - emission is the exact float where int-truncated
     `remaining` first reports 0 (exhausted) while the continuous
-    retry_after_seconds formula also lands on exactly 0.0."""
+    retry_after_seconds formula also lands on exactly 0.0. The server
+    epoch (``EXTRACT(EPOCH FROM clock_timestamp()) AS now_s``) rides in
+    the same row as the state."""
     sw = SlidingWindow(
         name="fake_gcra", limit=3, window=timedelta(seconds=1), backend="postgres", style="gcra"
     )
     now_seconds = 0.0
     boundary = 1.0 - (1.0 / 3)
     fake_pool = _FakePgPool(
-        fetchrow_returns=[{"kind": "gcra", "state": {"tat": now_seconds + boundary}}]
+        fetchrow_returns=[
+            {"kind": "gcra", "state": {"tat": now_seconds + boundary}, "now_s": now_seconds}
+        ]
     )
 
-    state = await _peek_pg_gcra(
-        sw,
-        now_ms=int(now_seconds * 1000),
-        pg_pool=fake_pool,
-        clock=SystemClock(),
-        settings=_fake_settings(),
-    )  # type: ignore[arg-type]
+    state = await _peek_pg_gcra(sw, pg_pool=fake_pool, settings=_fake_settings())  # type: ignore[arg-type]
 
     assert state.is_exhausted is True
     assert state.retry_after == timedelta(milliseconds=1)
@@ -696,14 +861,14 @@ async def test_peek_gcra_retry_after_clamped_to_1ms() -> None:
 async def test_acquire_log_oldest_row_none_fallback() -> None:
     """acquire_pg_log: the INSERT ... WHERE (subquery) < limit fails
     (denied), and the subsequent oldest-row lookup also races to no
-    rows — retry_after falls back to 1 ms (line 285-286)."""
+    rows — retry_after falls back to 1 ms."""
     sw = SlidingWindow(
         name="fake_log3", limit=1, window=timedelta(seconds=10), backend="postgres", style="log"
     )
     fake_pool = _FakePgPool(fetchrow_returns=[None, None])
 
     decision = await _acquire_pg_log(
-        sw, fake_pool, SystemClock(), _fake_settings(), "11111111-1111-1111-1111-111111111111"
+        sw, fake_pool, _fake_settings(), "11111111-1111-1111-1111-111111111111"
     )  # type: ignore[arg-type]
 
     assert decision.allowed is False
@@ -712,16 +877,15 @@ async def test_acquire_log_oldest_row_none_fallback() -> None:
 
 async def test_acquire_log_retry_after_clamped_to_1ms() -> None:
     """acquire_pg_log: denied, oldest row present with ts exactly
-    `now - window` so the raw retry_after computes to timedelta(0); the
-    clamp raises it to 1 ms (line 283-284)."""
+    `now - window` (and the server-domain now in the same row) so the raw
+    retry_after computes to timedelta(0); the clamp raises it to 1 ms."""
     now_dt = datetime(2025, 1, 1, tzinfo=UTC)
     window = timedelta(seconds=10)
     sw = SlidingWindow(name="fake_log4", limit=1, window=window, backend="postgres", style="log")
-    fake_pool = _FakePgPool(fetchrow_returns=[None, {"ts": now_dt - window}])
-    clock = FakeClock(now_dt)
+    fake_pool = _FakePgPool(fetchrow_returns=[None, {"ts": now_dt - window, "server_now": now_dt}])
 
     decision = await _acquire_pg_log(
-        sw, fake_pool, clock, _fake_settings(), "11111111-1111-1111-1111-111111111111"
+        sw, fake_pool, _fake_settings(), "11111111-1111-1111-1111-111111111111"
     )  # type: ignore[arg-type]
 
     assert decision.allowed is False
@@ -732,14 +896,15 @@ async def test_acquire_gcra_kind_collision_race_on_upsert() -> None:
     """acquire_pg_gcra: SELECT finds an existing gcra row (allowing the
     acquire to proceed), but the upsert's RETURNING clause comes back
     empty — simulating a competing writer that flipped `kind` away from
-    'gcra' between the SELECT and the upsert. Raises RuntimeError
-    (line 361-362)."""
+    'gcra' between the SELECT and the upsert. Raises RuntimeError."""
     now_dt = datetime(1970, 1, 1, tzinfo=UTC)
+    now_s = now_dt.timestamp()
     sw = SlidingWindow(
         name="collide_race", limit=3, window=timedelta(seconds=1), backend="postgres", style="gcra"
     )
-    clock = FakeClock(now_dt)
-    fake_pool = _FakePgPool(fetchrow_returns=[{"kind": "gcra", "state": {"tat": 0.0}}, None])
+    fake_pool = _FakePgPool(
+        fetchrow_returns=[{"kind": "gcra", "state": {"tat": 0.0}, "now_s": now_s}, None]
+    )
 
     with pytest.raises(RuntimeError, match="collide_race"):
-        await _acquire_pg_gcra(sw, fake_pool, clock, _fake_settings())  # type: ignore[arg-type]
+        await _acquire_pg_gcra(sw, fake_pool, _fake_settings())  # type: ignore[arg-type]

@@ -32,6 +32,8 @@ from typing import TYPE_CHECKING
 import pytest
 import pytest_asyncio
 
+from taskq.testing._shared_containers import creator_labels
+
 from ._assertions import fetch_effects, poll_until, wait_for_effects
 from .actors import LongRunningPayload, long_running_job
 from .conftest import (
@@ -127,6 +129,9 @@ async def e2e_worker_second(
     from testcontainers.core.container import DockerContainer
 
     container = DockerContainer(image=e2e_worker_image.tag)
+    container.with_kwargs(
+        labels=creator_labels()
+    )  # Ownership labels: sweepable under disabled Ryuk (see e2e_network's sweep).
     container.with_network(e2e_network).with_network_aliases(f"worker2-{e2e_schema.schema_name}")
     for key, value in e2e_schema.worker_env.items():
         container.with_env(key, value)

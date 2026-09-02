@@ -130,8 +130,8 @@ class TestConcurrentTerminalWrites:
 
         elif method == "mark_failed_or_retry":
             results = await asyncio.gather(
-                backend.mark_failed_or_retry(job_id, worker_a, error_info, next_scheduled_at=None),
-                backend.mark_failed_or_retry(job_id, worker_b, error_info, next_scheduled_at=None),
+                backend.mark_failed_or_retry(job_id, worker_a, error_info, retry_delay=None),
+                backend.mark_failed_or_retry(job_id, worker_b, error_info, retry_delay=None),
                 return_exceptions=True,
             )
             row_a = results[0]

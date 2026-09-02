@@ -72,8 +72,6 @@ class TestPydanticValidationErrorNotCaught:
                 non_retryable_exceptions=(),
                 exception=exc,
                 attempt=1,
-                schedule_to_close=None,
-                now=_START,
             )
             assert isinstance(decision, Fail), (
                 "pydantic.ValidationError must be non-retryable in the "
@@ -99,8 +97,6 @@ class TestPayloadValidationErrorNonRetryable:
             non_retryable_exceptions=(),
             exception=PayloadValidationError("bad payload"),
             attempt=1,
-            schedule_to_close=None,
-            now=_START,
         )
         from taskq.retry import Fail
 
@@ -165,8 +161,6 @@ class TestDispatchConvertsValidationError:
                 non_retryable_exceptions=(),
                 exception=converted,
                 attempt=1,
-                schedule_to_close=None,
-                now=_START,
             )
             from taskq.retry import Fail
 

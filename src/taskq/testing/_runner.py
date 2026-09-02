@@ -545,8 +545,9 @@ async def run_until_drained(backend: "InMemoryBackend") -> None:
     from taskq.worker._consumer import consume_one_job
 
     while True:
-        # Step 1: promote scheduled→pending
-        await backend.scheduled_to_pending(backend._clock.now())  # pyright: ignore[reportPrivateUsage]  # Why: test runner helper intentionally accesses private InMemoryBackend state; this module is co-located with the backend and owns this access pattern.
+        # Step 1: promote scheduled→pending (the backend's own clock is
+        # the arbiter — no caller-supplied now).
+        await backend.scheduled_to_pending()
 
         # Step 2: dispatch one job
         queues = list({r.queue for r in backend._jobs.values()})  # pyright: ignore[reportPrivateUsage]  # Why: test runner helper intentionally accesses private InMemoryBackend state; this module is co-located with the backend and owns this access pattern.
@@ -613,7 +614,7 @@ async def run_until_drained(backend: "InMemoryBackend") -> None:
                 job_id=job.id,
                 worker_id=backend._worker_id,  # pyright: ignore[reportPrivateUsage]  # Why: test runner helper intentionally accesses private InMemoryBackend state; this module is co-located with the backend and owns this access pattern.
                 error_info=error_info,
-                next_scheduled_at=None,
+                retry_delay=None,
             )
             outcome = "failed"
 

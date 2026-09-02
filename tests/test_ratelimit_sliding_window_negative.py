@@ -114,7 +114,7 @@ async def test_peek_redis_log_raises_without_redis_client() -> None:
 
     sw = SlidingWindow("test", limit=5, window=timedelta(seconds=10), backend="redis", style="log")
     with pytest.raises(RuntimeError, match="redis_client not injected"):
-        await _peek_redis_log(sw, now_ms=0, redis_client=None, settings=None)
+        await _peek_redis_log(sw, redis_client=None, settings=None)
 
 
 async def test_peek_redis_log_raises_without_settings() -> None:
@@ -127,7 +127,7 @@ async def test_peek_redis_log_raises_without_settings() -> None:
 
     sw = SlidingWindow("test", limit=5, window=timedelta(seconds=10), backend="redis", style="log")
     with pytest.raises(RuntimeError, match="settings not injected"):
-        await _peek_redis_log(sw, now_ms=0, redis_client=_FakeRedis(), settings=None)
+        await _peek_redis_log(sw, redis_client=_FakeRedis(), settings=None)
 
 
 async def test_peek_redis_gcra_raises_without_redis_client() -> None:
@@ -136,7 +136,7 @@ async def test_peek_redis_gcra_raises_without_redis_client() -> None:
 
     sw = SlidingWindow("test", limit=5, window=timedelta(seconds=10), backend="redis", style="gcra")
     with pytest.raises(RuntimeError, match="redis_client not injected"):
-        await _peek_redis_gcra(sw, now_ms=0, redis_client=None, settings=None)
+        await _peek_redis_gcra(sw, redis_client=None, settings=None)
 
 
 async def test_reset_redis_log_raises_without_redis_client() -> None:
@@ -197,40 +197,57 @@ async def test_refund_redis_gcra_returns_early_without_previous_state() -> None:
 
 
 async def test_peek_redis_log_exhausted() -> None:
-    """_peek_redis_log returns is_exhausted=True and retry_after when at capacity."""
+    """_peek_redis_log returns is_exhausted=True and retry_after when the
+    in-window count is at capacity.
+
+    The retry estimate measures the TIME-domain score against the store's
+    clock (redis TIME), so the fake client serves a fixed time().
+    """
 
     class _FakeRedis:
-        async def zcard(self, key: object) -> int:
+        async def time(self) -> list[int]:
+            return [2000, 0]
+
+        async def zcount(self, key: object, min: str, max: str) -> int:
             return 10
 
-        async def zrange(
-            self, key: object, start: int, end: int, withscores: bool = True
-        ) -> list[tuple[bytes, float]]:
+        async def zrangebyscore(
+            self,
+            key: object,
+            min: str,
+            max: str,
+            start: int = 0,
+            num: int = 1,
+            withscores: bool = False,
+        ) -> list[object]:
             return [(b"req1", 1000.0)]
 
     from taskq.ratelimit._sliding_window_redis import _peek_redis_log
 
     sw = SlidingWindow("test", limit=5, window=timedelta(seconds=10), backend="redis", style="log")
-    state = await _peek_redis_log(
-        sw, now_ms=5000, redis_client=_FakeRedis(), settings=_make_settings()
-    )
+    state = await _peek_redis_log(sw, redis_client=_FakeRedis(), settings=_make_settings())
     assert state.is_exhausted is True
     assert state.retry_after is not None
 
 
 async def test_peek_redis_gcra_exhausted() -> None:
-    """_peek_redis_gcra returns is_exhausted=True when TAT is far in the future."""
+    """_peek_redis_gcra returns is_exhausted=True when TAT is far in the future.
+
+    The TAT is TIME-domain ms; the peek measures it against the store's
+    clock (redis TIME), so the fake client serves a fixed time().
+    """
 
     class _FakeRedis:
+        async def time(self) -> list[int]:
+            return [5, 0]
+
         async def get(self, key: object) -> str | None:
             return "20000.0"
 
     from taskq.ratelimit._sliding_window_redis import _peek_redis_gcra
 
     sw = SlidingWindow("test", limit=5, window=timedelta(seconds=10), backend="redis", style="gcra")
-    state = await _peek_redis_gcra(
-        sw, now_ms=5000, redis_client=_FakeRedis(), settings=_make_settings()
-    )
+    state = await _peek_redis_gcra(sw, redis_client=_FakeRedis(), settings=_make_settings())
     assert state.is_exhausted is True
     assert state.retry_after is not None
 
@@ -284,7 +301,7 @@ async def test_peek_pg_log_raises_without_pg_pool() -> None:
         "test", limit=5, window=timedelta(seconds=10), backend="postgres", style="log"
     )
     with pytest.raises(RuntimeError, match="pg_pool not injected"):
-        await _peek_pg_log(sw, now_ms=0, pg_pool=None, clock=None, settings=None)
+        await _peek_pg_log(sw, pg_pool=None, settings=None)
 
 
 async def test_peek_pg_gcra_raises_without_pg_pool() -> None:
@@ -295,7 +312,7 @@ async def test_peek_pg_gcra_raises_without_pg_pool() -> None:
         "test", limit=5, window=timedelta(seconds=10), backend="postgres", style="gcra"
     )
     with pytest.raises(RuntimeError, match="pg_pool not injected"):
-        await _peek_pg_gcra(sw, now_ms=0, pg_pool=None, clock=None, settings=None)
+        await _peek_pg_gcra(sw, pg_pool=None, settings=None)
 
 
 async def test_reset_pg_log_raises_without_pg_pool() -> None:
@@ -330,7 +347,7 @@ async def test_acquire_pg_log_raises_without_pg_pool() -> None:
         "test", limit=5, window=timedelta(seconds=10), backend="postgres", style="log"
     )
     with pytest.raises(RuntimeError, match="pg_pool not injected"):
-        await _acquire_pg_log(sw, pg_pool=None, clock=None, settings=None, request_id=uuid4())
+        await _acquire_pg_log(sw, pg_pool=None, settings=None, request_id=uuid4())
 
 
 async def test_acquire_pg_gcra_raises_without_pg_pool() -> None:
@@ -341,4 +358,4 @@ async def test_acquire_pg_gcra_raises_without_pg_pool() -> None:
         "test", limit=5, window=timedelta(seconds=10), backend="postgres", style="gcra"
     )
     with pytest.raises(RuntimeError, match="pg_pool not injected"):
-        await _acquire_pg_gcra(sw, pg_pool=None, clock=None, settings=None)
+        await _acquire_pg_gcra(sw, pg_pool=None, settings=None)

@@ -395,29 +395,39 @@ class SlidingWindow:
         clock: Clock | None = None,
         settings: "WorkerSettings | None" = None,
     ) -> RateLimitDecision:
-        if clock is None:
-            raise RuntimeError("clock not injected for sliding window acquire")
+        """Acquire one admission slot.
 
-        now_ms = int(clock.now().timestamp() * 1000)
+        The shared admission state is measured in the data store's own
+        clock domain: PG paths use ``clock_timestamp()`` and Redis paths
+        use Redis ``TIME`` inside their scripts, so callers on nodes with
+        divergent Python clocks are all measured against the same window.
+        The injected *clock* drives the memory backend only (its single
+        domain) and remains part of the public call shape — the unified
+        TokenBucket contract.
+        """
         request_id: UUID | None = new_uuid() if self._style == "log" else None
 
         match (self._backend, self._style):
             case ("memory", "log"):
+                if clock is None:
+                    raise RuntimeError("clock not injected for memory backend")
+                now_ms = int(clock.now().timestamp() * 1000)
                 return await self._acquire_memory_log(now_ms, request_id)
             case ("memory", "gcra"):
+                if clock is None:
+                    raise RuntimeError("clock not injected for memory backend")
+                now_ms = int(clock.now().timestamp() * 1000)
                 return await self._acquire_memory_gcra(now_ms)
             case ("redis", "log"):
                 return await _acquire_redis_log_wrapped(
-                    self, now_ms, request_id, redis_client, pg_pool, clock, settings
+                    self, request_id, redis_client, pg_pool, settings
                 )
             case ("redis", "gcra"):
-                return await _acquire_redis_gcra_wrapped(
-                    self, now_ms, redis_client, pg_pool, clock, settings
-                )
+                return await _acquire_redis_gcra_wrapped(self, redis_client, pg_pool, settings)
             case ("postgres", "log"):
-                return await _acquire_pg_log(self, pg_pool, clock, settings, request_id)
+                return await _acquire_pg_log(self, pg_pool, settings, request_id)
             case ("postgres", "gcra"):
-                return await _acquire_pg_gcra(self, pg_pool, clock, settings)
+                return await _acquire_pg_gcra(self, pg_pool, settings)
             case _:
                 assert_never((self._backend, self._style))
 
@@ -455,24 +465,32 @@ class SlidingWindow:
         clock: Clock | None = None,
         settings: "WorkerSettings | None" = None,
     ) -> RateLimitState:
-        if clock is None:
-            raise RuntimeError("clock not injected for sliding window peek")
+        """Read-only state snapshot.
 
-        now_ms = int(clock.now().timestamp() * 1000)
-
+        PG and Redis peeks measure against the store's own clock (the same
+        domain their admission state is stamped in); the memory backend
+        uses the injected *clock* (its single domain) — the unified
+        TokenBucket contract: *clock* is required only on memory.
+        """
         match (self._backend, self._style):
             case ("memory", "log"):
+                if clock is None:
+                    raise RuntimeError("clock not injected for memory backend")
+                now_ms = int(clock.now().timestamp() * 1000)
                 return await self._peek_memory_log(now_ms)
             case ("memory", "gcra"):
+                if clock is None:
+                    raise RuntimeError("clock not injected for memory backend")
+                now_ms = int(clock.now().timestamp() * 1000)
                 return await self._peek_memory_gcra(now_ms)
             case ("redis", "log"):
-                return await _peek_redis_log(self, now_ms, redis_client, settings)
+                return await _peek_redis_log(self, redis_client, settings)
             case ("redis", "gcra"):
-                return await _peek_redis_gcra(self, now_ms, redis_client, settings)
+                return await _peek_redis_gcra(self, redis_client, settings)
             case ("postgres", "log"):
-                return await _peek_pg_log(self, now_ms, pg_pool, clock, settings)
+                return await _peek_pg_log(self, pg_pool, settings)
             case ("postgres", "gcra"):
-                return await _peek_pg_gcra(self, now_ms, pg_pool, clock, settings)
+                return await _peek_pg_gcra(self, pg_pool, settings)
             case _:
                 assert_never((self._backend, self._style))
 

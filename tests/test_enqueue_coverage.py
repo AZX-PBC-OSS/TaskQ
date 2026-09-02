@@ -348,9 +348,8 @@ async def test_idempotency_key_conflict_returns_existing_row() -> None:
 async def test_enqueue_batch_empty_raises_value_error() -> None:
     """An empty ``args_list`` raises ``ValueError`` before any SQL runs."""
     pool = _FakePool(_FakeEnqueueConn())
-    clock = FakeClock(_NOW)
     with pytest.raises(ValueError, match="must not be empty"):
-        await _enqueue_batch(pool, _SQL, _SCHEMA_LABEL, clock, [])
+        await _enqueue_batch(pool, _SQL, _SCHEMA_LABEL, [])
 
 
 # ── _enqueue_batch_fast: empty args_list ─────────────────────────────────
@@ -359,9 +358,8 @@ async def test_enqueue_batch_empty_raises_value_error() -> None:
 async def test_enqueue_batch_fast_empty_raises_value_error() -> None:
     """An empty ``args_list`` raises ``ValueError`` before any COPY runs."""
     pool = _FakePool(_FakeEnqueueConn())
-    clock = FakeClock(_NOW)
     with pytest.raises(ValueError, match="must not be empty"):
-        await _enqueue_batch_fast(pool, _SQL, _SCHEMA_LABEL, clock, [])
+        await _enqueue_batch_fast(pool, _SQL, _SCHEMA_LABEL, [])
 
 
 # ── _enqueue_batch: NUL in tags rejected before touching the pool ────────
@@ -374,10 +372,9 @@ async def test_enqueue_batch_rejects_nul_in_tags_before_pool_use() -> None:
     jsonb write. Passing ``pool=None`` proves the guard fires while the
     per-row lists are still being built — before the pool is ever
     acquired."""
-    clock = FakeClock(_NOW)
     args = replace(_make_args(), tags=("bad\x00tag",))
     with pytest.raises(ValueError, match="NUL"):
-        await _enqueue_batch(None, _SQL, _SCHEMA_LABEL, clock, [args])  # type: ignore[arg-type]  # Why: validation must precede pool use
+        await _enqueue_batch(None, _SQL, _SCHEMA_LABEL, [args])  # type: ignore[arg-type]  # Why: validation must precede pool use
 
 
 # ── _enqueue / _enqueue_with_conn: NUL in tags rejected (single-job path) ──
@@ -426,18 +423,18 @@ async def test_enqueue_accepts_clean_tags() -> None:
 
 
 async def test_enqueue_batch_fast_schedule_interval_and_result_ttl() -> None:
-    """``schedule_to_close_interval`` and ``result_ttl`` are resolved into
-    the COPY record tuple; the COPY returns a row count."""
+    """``schedule_to_close_interval`` and ``result_ttl`` are carried into the
+    post-COPY fixup arrays (server-side computation); the COPY returns a row
+    count."""
     conn = _FakeEnqueueConn(copy_result="COPY 2")
     pool = _FakePool(conn)
-    clock = FakeClock(_NOW)
     args = _make_args(
         schedule_to_close_interval=timedelta(hours=1),
         result_ttl=timedelta(hours=2),
         scheduled_at=_NOW + timedelta(minutes=5),
     )
 
-    count = await _enqueue_batch_fast(pool, _SQL, _SCHEMA_LABEL, clock, [args])
+    count = await _enqueue_batch_fast(pool, _SQL, _SCHEMA_LABEL, [args])
 
     assert count == 2
     # pg_notify issued after COPY.
@@ -448,14 +445,14 @@ async def test_enqueue_batch_fast_schedule_interval_and_result_ttl() -> None:
 
 
 async def test_enqueue_batch_fast_immediate_job_is_pending() -> None:
-    """A job with ``scheduled_at <= now`` is marked ``pending`` (not
-    ``scheduled``) in the COPY record."""
+    """A job with ``scheduled_at <= now`` lands ``pending`` (not
+    ``scheduled``) — decided by the post-COPY fixup UPDATE's server CASE,
+    never in Python."""
     conn = _FakeEnqueueConn(copy_result="COPY 1")
     pool = _FakePool(conn)
-    clock = FakeClock(_NOW)
     args = _make_args(scheduled_at=_NOW)  # immediate
 
-    count = await _enqueue_batch_fast(pool, _SQL, _SCHEMA_LABEL, clock, [args])
+    count = await _enqueue_batch_fast(pool, _SQL, _SCHEMA_LABEL, [args])
     assert count == 1
 
 
@@ -584,10 +581,9 @@ async def test_enqueue_batch_legacy_violation_retries_and_dedupes() -> None:
     # row is fetched via the (scope, key) pairs join.
     second = _FakeEnqueueConn(fetch_map={"JOIN unnest": [existing_rec]})
     pool = _FakePoolSequence([first, second])
-    clock = FakeClock(_NOW)
     args = _make_args(idempotency_key="k")
 
-    rows = await _enqueue_batch(pool, _SQL, _SCHEMA_LABEL, clock, [args])  # type: ignore[arg-type]
+    rows = await _enqueue_batch(pool, _SQL, _SCHEMA_LABEL, [args])  # type: ignore[arg-type]
 
     assert len(rows) == 1
     assert rows[0].id == existing_id
@@ -598,10 +594,9 @@ async def test_enqueue_batch_legacy_violation_twice_raises_typed_error() -> None
     first = _LegacyFailConn(_legacy_violation())
     second = _LegacyFailConn(_legacy_violation())
     pool = _FakePoolSequence([first, second])
-    clock = FakeClock(_NOW)
 
     with pytest.raises(ScopedIdempotencyMigrationPendingError) as exc_info:
-        await _enqueue_batch(pool, _SQL, _SCHEMA_LABEL, clock, [_make_args(idempotency_key="k")])  # type: ignore[arg-type]
+        await _enqueue_batch(pool, _SQL, _SCHEMA_LABEL, [_make_args(idempotency_key="k")])  # type: ignore[arg-type]
 
     assert isinstance(exc_info.value.__cause__, asyncpg.UniqueViolationError)
     assert pool.acquire_count == 2
@@ -609,14 +604,12 @@ async def test_enqueue_batch_legacy_violation_twice_raises_typed_error() -> None
 
 async def test_enqueue_batch_with_conn_legacy_violation_converts_without_retry() -> None:
     conn = _LegacyFailConn(_legacy_violation())
-    clock = FakeClock(_NOW)
 
     with pytest.raises(ScopedIdempotencyMigrationPendingError) as exc_info:
         await _enqueue_batch(
             None,
             _SQL,
             _SCHEMA_LABEL,
-            clock,
             [_make_args(idempotency_key="k")],
             connection=conn,  # type: ignore[arg-type]
         )

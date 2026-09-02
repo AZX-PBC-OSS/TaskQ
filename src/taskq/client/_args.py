@@ -3,15 +3,20 @@
 Extracted from :meth:`JobsClient.enqueue` so that both ``JobsClient`` and
 the future ``SubJobEnqueuer`` share the same validation and argument-assembly
 logic. The helper is pure: no I/O, no global state.
-The clock is a parameter so callers can inject a ``FakeClock`` for test
-determinism.
+The ``clock`` parameter is retained for signature compatibility with the
+clients that own an injected clock, but it stamps nothing anymore —
+"immediate" is expressed as ``scheduled_at=None`` and the backend's server
+stamps and decides it (single clock arbiter).
 """
 
 import contextlib
+import inspect
 import re
+import warnings
 from collections.abc import Generator, Mapping, Sequence
 from dataclasses import replace
 from datetime import datetime, timedelta
+from types import FrameType
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
@@ -64,6 +69,33 @@ def _validate_and_dedup_tags(tags: list[str] | None) -> tuple[str, ...]:
     return tuple(result)
 
 
+def _user_stacklevel() -> int:
+    """stacklevel that blames the first frame outside the taskq package.
+
+    Why not a static level: the user's call line sits at a different depth
+    per public entry — 3 frames above ``build_enqueue_args`` via
+    ``JobsClient.enqueue``, 4 via the ``TaskQ.enqueue`` facade, and a
+    different depth again via ``SubJobEnqueuer`` — and the shared helper
+    cannot know which one fired.  Walking to the first frame whose module
+    is not ``taskq``/``taskq.*`` attributes the user's call line on every
+    path (blaming a third-party wrapper is also correct: it is the
+    caller's code).  Degenerate fully-internal stacks fall back to 3, the
+    nearest public-wrapper depth.
+    """
+    current = inspect.currentframe()
+    # currentframe() lands in this helper; one f_back step reaches
+    # build_enqueue_args's frame (stacklevel 1 blames it).
+    frame: FrameType | None = current.f_back if current is not None else None
+    level = 1  # stacklevel 1 blames build_enqueue_args itself
+    while frame is not None:
+        module: object = frame.f_globals.get("__name__", "")
+        if isinstance(module, str) and module != "taskq" and not module.startswith("taskq."):
+            return level
+        level += 1
+        frame = frame.f_back
+    return 3
+
+
 def build_enqueue_args[P: BaseModel, R: BaseModel | None](
     ref: ActorRef[P, R],
     payload: P,
@@ -89,9 +121,10 @@ def build_enqueue_args[P: BaseModel, R: BaseModel | None](
 ) -> EnqueueArgs:
     """Validate inputs and construct :class:`EnqueueArgs`.
 
-    Pure function — no I/O, no global state. The clock is a
-    parameter so the caller (JobsClient or SubJobEnqueuer) can pass
-    its own injected clock for test determinism.
+    Pure function — no I/O, no global state. The clock parameter stamps
+    nothing (see the module docstring): ``scheduled_at`` passes through as
+    ``None`` when the caller wants "immediate", and the backend's server
+    stamps and decides it.
 
     ``unique_for`` and ``unique_states`` default to ``None`` so the
     caller can pass actor-declared values (``ref.unique_for``,
@@ -116,6 +149,25 @@ def build_enqueue_args[P: BaseModel, R: BaseModel | None](
     if start_to_close is not None and start_to_close <= timedelta(0):
         raise ValueError(f"start_to_close must be > 0, got {start_to_close!r}")
 
+    if scheduled_at is not None and scheduled_at.tzinfo is None:
+        raise ValueError(
+            f"scheduled_at must be timezone-aware (e.g. datetime.now(UTC)); "
+            f"got a naive datetime {scheduled_at.isoformat()!r}"
+        )
+
+    # result_ttl and schedule_to_close_interval feed server-side
+    # clock-anchored computations; a negative value would silently anchor
+    # the deadline/expiry in the past.  Mirrors start_to_close's boundary
+    # check (and actor-config ops' non-negative result_ttl rule).
+    if ref.result_ttl is not None and ref.result_ttl < timedelta(0):
+        raise ValueError(f"result_ttl must be non-negative, got {ref.result_ttl!r}")
+    budget_interval = time_budget_as_interval(ref.retry)
+    if budget_interval is not None and budget_interval < timedelta(0):
+        raise ValueError(
+            f"schedule_to_close_interval (from retry.time_budget) must be "
+            f"non-negative, got {budget_interval!r}"
+        )
+
     payload_dict = ref.payload_type.model_validate(payload).model_dump(mode="json")
     metadata_dict: dict[str, object] = dict(metadata) if metadata is not None else {}
     # Security boundary: "batch_id" is a reserved key injected by the library
@@ -126,11 +178,25 @@ def build_enqueue_args[P: BaseModel, R: BaseModel | None](
     if ref.singleton:
         metadata_dict["singleton"] = True
 
-    budget_interval = time_budget_as_interval(ref.retry)
     resolved_interval: timedelta | None = None
     resolved_datetime: datetime | None = None
 
     if schedule_to_close is not None:
+        if schedule_to_close.tzinfo is None:
+            raise ValueError(
+                f"schedule_to_close must be timezone-aware "
+                f"(e.g. datetime.now(UTC) + timedelta(...)); "
+                f"got a naive datetime {schedule_to_close.isoformat()!r}"
+            )
+        warnings.warn(
+            "schedule_to_close (absolute datetime) is deprecated; declare "
+            "retry.time_budget on the actor (interval form) instead — absolute "
+            "datetimes cross clock domains (the app clock that produced them "
+            "vs the database clock that evaluates them) and can misbehave "
+            "under skew; see docs/architecture.md",
+            DeprecationWarning,
+            stacklevel=_user_stacklevel(),
+        )
         resolved_datetime = schedule_to_close
         if budget_interval is not None:
             logger.info(
@@ -160,7 +226,7 @@ def build_enqueue_args[P: BaseModel, R: BaseModel | None](
         payload=payload_dict,
         max_attempts=ref.retry.max_attempts,
         retry_kind=ref.retry.kind,
-        scheduled_at=scheduled_at if scheduled_at is not None else clock.now(),
+        scheduled_at=scheduled_at,
         priority=resolved_priority,
         max_pending=resolved_max_pending,
         schedule_to_close=resolved_datetime,

@@ -93,13 +93,12 @@ def test_retry_decision_smart_mode_round_trip() -> None:
     """Retry and Fail both resolve via RetryDecision TypeAdapter smart-mode."""
     adapter: TypeAdapter[Retry | Fail] = TypeAdapter(RetryDecision)
 
-    now = datetime(2026, 1, 1)
-    retry = Retry(next_scheduled_at=now + timedelta(seconds=5))
+    retry = Retry(retry_delay=timedelta(seconds=5))
     fail = Fail(error_class="ValueError", retryable=False)
 
     retry_out: Retry | Fail = adapter.validate_python(retry.model_dump())
     assert isinstance(retry_out, Retry)
-    assert retry_out.next_scheduled_at == retry.next_scheduled_at
+    assert retry_out.retry_delay == retry.retry_delay
 
     fail_out: Retry | Fail = adapter.validate_python(fail.model_dump())
     assert isinstance(fail_out, Fail)

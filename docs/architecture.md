@@ -141,7 +141,7 @@ class Backend(Protocol):
         job_id: JobId,
         worker_id: UUID,
         error_info: ErrorInfo,
-        next_scheduled_at: datetime | None,
+        retry_delay: timedelta | None,
         progress_seq: int = 0,
         progress_state: dict | None = None,
     ) -> JobRow: ...
@@ -207,15 +207,12 @@ class Backend(Protocol):
     # Admin operations
     async def retry_job(self, job_id: JobId) -> bool: ...
 
-    # Scheduling / sweeps
-    async def scheduled_to_pending(self, now: datetime) -> int: ...
-    async def deadline_sweep(self, now: datetime) -> int: ...
-    async def reclaim_expired_locks(
-        self,
-        now: datetime,
-        cancel_grace: timedelta,
-        cleanup_grace: timedelta,
-    ) -> int: ...
+    # Scheduling / sweeps — no `now` parameter: the backend's own clock
+    # (PG: clock_timestamp() in the statement; InMemory: the injected
+    # Clock) is the arbiter.
+    async def scheduled_to_pending(self) -> int: ...
+    async def deadline_sweep(self) -> int: ...
+    async def reclaim_expired_locks(self, cancel_grace, cleanup_grace) -> int: ...
 
     # Read
     async def get(self, job_id: JobId) -> JobRow | None: ...
@@ -1235,6 +1232,46 @@ against it and `key_fn` always receives the validated Pydantic model:
 
 Reservation slots are pre-allocated in `reservation_slots` rows and held with a
 lease for the job's duration; `extend_reservation_leases` renews them on heartbeat.
+
+---
+
+## Clock Domains
+
+TaskQ runs two independent clocks: the PG server clock (`clock_timestamp()` /
+`now()` in SQL) and each process's Python wall clock (the injectable
+`Clock` in `src/taskq/backend/clock.py`). Divergence between them (NTP drift,
+VM pause) is a production reality, so the architecture rule is **one arbiter
+per predicate — the data store that owns the row also owns the time it is
+compared against**:
+
+- Every skew-sensitive timestamp decision lives in the SQL statement that owns
+  its predicate: lease/liveness writes and expiry checks, sweep and dispatch
+  gates, retry/retry-after guards, rate-limit window predicates and
+  TAT/token epoch math (`EXTRACT(EPOCH FROM clock_timestamp())`), and the cron
+  due-check, catch-up cutoff, and beyond-window recompute (read inside the
+  tick's transaction). This now includes the retry path end-to-end:
+  `mark_failed_or_retry` takes a *delay* — the backend derives
+  `scheduled_at = now() + delay`, the scheduled/pending status, AND the
+  `schedule_to_close` deadline outcome from its own clock in one statement;
+  the Python retry classifier (`taskq.retry.RetryClassifier`) decides
+  retry-kind and backoff only and takes no deadline and no clock input, so
+  no second, skewable arbiter can disagree with the SQL.
+- Known residual: the enqueue-time singleton collision hint
+  (`SingletonCollisionError.retry_after`) mixes domains *by design* — a
+  server-read `schedule_to_close` minus a Python now — to steer the
+  caller's retry timing. It is advisory metadata only and is never stored
+  or compared as a predicate.
+- Rate-limit Lua scripts read Redis `TIME` (`redis.call('TIME')`) rather than a
+  client-supplied timestamp, so multi-node fleets share one clock; scripts are
+  non-deterministic but replication-safe under Redis ≥ 5 effect replication
+  (see the [EVAL docs](https://redis.io/docs/latest/commands/eval/)). The
+  in-memory limiter backends keep their injected `Clock` — a single process is
+  a single domain by construction.
+- Known residual: `JobsClient.create_schedule` / `update_schedule` seed the
+  first `next_fire_at` from the calling process's local clock, so app↔DB skew
+  shifts only the first fire after creation (±S). The residual is bounded and
+  self-healing — the cron tick's catch-up recompute re-anchors the chain to
+  the server clock at the first tick that sees the schedule.
 
 ---
 

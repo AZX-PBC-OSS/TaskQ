@@ -14,7 +14,7 @@ import contextlib
 import importlib.util
 import math
 from collections.abc import Callable, Coroutine, Mapping
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any, cast
 
 import asyncpg
@@ -787,11 +787,18 @@ async def _main(
                 ) from exc
 
         if _cron_registry:
+            # Why: seed the first next_fire_at from the PG server clock — the
+            # cron tick's due-check and catch-up cutoff are server-side, so a
+            # Python-clock seed would shift the first fire by the app↔DB skew.
+            async with deps.dispatcher_pool.acquire(
+                timeout=settings.dispatcher_command_timeout
+            ) as _seed_conn:
+                seed_now: datetime = await _seed_conn.fetchval("SELECT clock_timestamp()")
             for spec in _cron_registry:
                 next_fires = compute_next_fire_after(
                     spec.cron_expr,
                     spec.timezone,
-                    datetime.now(tz=UTC),
+                    seed_now,
                     dst_strategy=spec.dst_strategy,
                 )
                 next_fire = next_fires[0]

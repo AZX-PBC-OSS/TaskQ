@@ -53,7 +53,7 @@ def test_hook_returning_none_falls_through_to_default_policy_kind() -> None:
     policy = RetryPolicy(kind="transient", max_attempts=3, jitter=0.0)
     actor_config = StubActorConfig(retry=policy, retry_classifier=lambda exc, attempt: None)
 
-    decision = decide_after_failure(actor_config, RuntimeError("x"), _job_state(), _NOW)
+    decision = decide_after_failure(actor_config, RuntimeError("x"), _job_state())
 
     assert isinstance(decision, Retry)
 
@@ -72,7 +72,7 @@ def test_hook_override_kind_indefinite_wins_over_transient_policy() -> None:
     )
 
     job_state = _job_state(attempt=2, max_attempts=2, retry_kind="transient")
-    decision = decide_after_failure(actor_config, RuntimeError("x"), job_state, _NOW)
+    decision = decide_after_failure(actor_config, RuntimeError("x"), job_state)
 
     assert isinstance(decision, Retry)
 
@@ -84,7 +84,7 @@ def test_hook_override_only_affects_that_occurrence() -> None:
     actor_config_no_hook = StubActorConfig(retry=policy)
 
     job_state = _job_state(attempt=2, max_attempts=2, retry_kind="transient")
-    decision = decide_after_failure(actor_config_no_hook, RuntimeError("x"), job_state, _NOW)
+    decision = decide_after_failure(actor_config_no_hook, RuntimeError("x"), job_state)
 
     assert isinstance(decision, Fail)
 
@@ -103,7 +103,7 @@ def test_hook_override_kind_non_retryable_causes_immediate_fail(policy_kind: str
     )
 
     job_state = _job_state(attempt=1, max_attempts=5, retry_kind=policy_kind)
-    decision = decide_after_failure(actor_config, RuntimeError("x"), job_state, _NOW)
+    decision = decide_after_failure(actor_config, RuntimeError("x"), job_state)
 
     assert isinstance(decision, Fail)
     assert decision.retryable is False
@@ -114,7 +114,7 @@ def test_hook_override_kind_non_retryable_causes_immediate_fail(policy_kind: str
 
 def test_hook_override_delay_produces_retry_at_now_plus_delay() -> None:
     """A hook returning RetryOverride(delay=timedelta(seconds=X)) produces
-    a Retry decision with next_scheduled_at == now + X, not the policy's
+    a Retry decision with retry_delay == X, not the policy's
     computed exponential/linear backoff."""
     policy = RetryPolicy(kind="transient", max_attempts=3, base=timedelta(seconds=5), jitter=0.0)
     override_delay = timedelta(seconds=42)
@@ -123,10 +123,10 @@ def test_hook_override_delay_produces_retry_at_now_plus_delay() -> None:
         retry_classifier=lambda exc, attempt: RetryOverride(delay=override_delay),
     )
 
-    decision = decide_after_failure(actor_config, RuntimeError("x"), _job_state(), _NOW)
+    decision = decide_after_failure(actor_config, RuntimeError("x"), _job_state())
 
     assert isinstance(decision, Retry)
-    assert decision.next_scheduled_at == _NOW + override_delay
+    assert decision.retry_delay == override_delay
 
 
 def test_hook_override_delay_clamped_to_max_retry_backoff() -> None:
@@ -144,12 +144,11 @@ def test_hook_override_delay_clamped_to_max_retry_backoff() -> None:
         actor_config,
         RuntimeError("x"),
         _job_state(),
-        _NOW,
         max_retry_backoff=max_retry_backoff,
     )
 
     assert isinstance(decision, Retry)
-    assert decision.next_scheduled_at == _NOW + max_retry_backoff
+    assert decision.retry_delay == max_retry_backoff
 
 
 def test_negative_delay_raises_validation_error_at_construction() -> None:
@@ -180,7 +179,7 @@ def test_non_retryable_exceptions_isinstance_match_wins_over_hook() -> None:
         retry_classifier=hook,
     )
 
-    decision = decide_after_failure(actor_config, ValueError("excluded"), _job_state(), _NOW)
+    decision = decide_after_failure(actor_config, ValueError("excluded"), _job_state())
 
     assert not hook_called, "hook must not be called for non_retryable_exceptions"
     assert isinstance(decision, Fail)
@@ -205,7 +204,7 @@ def test_payload_validation_error_wins_over_hook_in_adapter() -> None:
     )
 
     decision = decide_after_failure(
-        actor_config, PayloadValidationError("bad payload"), _job_state(), _NOW
+        actor_config, PayloadValidationError("bad payload"), _job_state()
     )
 
     assert not hook_called, "hook must not be called for PayloadValidationError"
@@ -223,8 +222,6 @@ def test_payload_validation_error_wins_over_hook_in_pure_classifier() -> None:
         non_retryable_exceptions=(),
         exception=PayloadValidationError("bad payload"),
         attempt=1,
-        schedule_to_close=None,
-        now=_NOW,
         override=RetryOverride(kind="indefinite"),
     )
 
@@ -247,7 +244,7 @@ def test_hook_raising_exception_falls_back_to_default_classification_and_logs() 
     actor_config = StubActorConfig(retry=policy, retry_classifier=bad_hook)
 
     with structlog.testing.capture_logs() as captured:
-        decision = decide_after_failure(actor_config, RuntimeError("x"), _job_state(), _NOW)
+        decision = decide_after_failure(actor_config, RuntimeError("x"), _job_state())
 
     assert isinstance(decision, Retry)
     warnings = [e for e in captured if e.get("event") == "retry-classifier-hook-failed"]
@@ -270,7 +267,7 @@ def test_hook_returning_dict_falls_back_to_default_and_logs() -> None:
     actor_config = StubActorConfig(retry=policy, retry_classifier=bad_hook)  # type: ignore[arg-type]  # Why: intentionally passing a hook with a wrong return type to test runtime validation
 
     with structlog.testing.capture_logs() as captured:
-        decision = decide_after_failure(actor_config, RuntimeError("x"), _job_state(), _NOW)
+        decision = decide_after_failure(actor_config, RuntimeError("x"), _job_state())
 
     assert isinstance(decision, Retry)
     warnings = [e for e in captured if e.get("event") == "retry-classifier-hook-invalid-return"]
@@ -290,7 +287,7 @@ def test_hook_returning_non_retryable_dict_does_not_cause_immediate_fail() -> No
     policy = RetryPolicy(kind="transient", max_attempts=3, jitter=0.0)
     actor_config = StubActorConfig(retry=policy, retry_classifier=bad_hook)  # type: ignore[arg-type]  # Why: intentionally passing a hook with a wrong return type to test runtime validation
 
-    decision = decide_after_failure(actor_config, RuntimeError("x"), _job_state(), _NOW)
+    decision = decide_after_failure(actor_config, RuntimeError("x"), _job_state())
 
     assert isinstance(decision, Retry), (
         "invalid return must be discarded; static transient policy should retry"
@@ -344,7 +341,7 @@ def test_hook_branches_on_exception_attribute(
     )
 
     job_state = _job_state(attempt=1, max_attempts=max_attempts, retry_kind=retry_kind)
-    decision = decide_after_failure(actor_config, HttpError(status_code), job_state, _NOW)
+    decision = decide_after_failure(actor_config, HttpError(status_code), job_state)
 
     assert isinstance(decision, expected_type)
     if isinstance(decision, Fail):
@@ -361,7 +358,7 @@ def test_hook_returning_none_falls_through_to_default_indefinite_policy() -> Non
     )
 
     decision = decide_after_failure(
-        actor_config, HttpError(status_code=None), _job_state(retry_kind="indefinite"), _NOW
+        actor_config, HttpError(status_code=None), _job_state(retry_kind="indefinite")
     )
 
     assert isinstance(decision, Retry)
@@ -370,25 +367,28 @@ def test_hook_returning_none_falls_through_to_default_indefinite_policy() -> Non
 # ── hook override delay vs schedule_to_close deadline ───────────────────
 
 
-def test_hook_override_delay_exceeding_deadline_produces_fail_deadline() -> None:
-    """A hook returning RetryOverride(delay=10h) with schedule_to_close
-    only 1h away produces Fail(DeadlineExceeded) — the override delay is
-    honoured but the deadline still wins."""
+def test_hook_override_delay_honoured_deadline_is_sqls_business() -> None:
+    """A hook returning RetryOverride(delay=10h) with schedule_to_close only
+    1h away still produces Retry(retry_delay=10h) — the override delay is
+    honoured, and the deadline outcome belongs to the SQL guard in
+    mark_failed_or_retry (the classifier is not a deadline arbiter; pinned
+    in tests/test_clock_domain_isolation.py)."""
     policy = RetryPolicy(kind="transient", max_attempts=5, jitter=0.0)
-    schedule_to_close = _NOW + timedelta(hours=1)
     actor_config = StubActorConfig(
         retry=policy,
         retry_classifier=lambda exc, attempt: RetryOverride(delay=timedelta(hours=10)),
     )
 
     job_state = _job_state(
-        attempt=1, max_attempts=5, retry_kind="transient", schedule_to_close=schedule_to_close
+        attempt=1,
+        max_attempts=5,
+        retry_kind="transient",
+        schedule_to_close=_NOW + timedelta(hours=1),
     )
-    decision = decide_after_failure(actor_config, RuntimeError("x"), job_state, _NOW)
+    decision = decide_after_failure(actor_config, RuntimeError("x"), job_state)
 
-    assert isinstance(decision, Fail)
-    assert decision.error_class == "DeadlineExceeded"
-    assert decision.retryable is False
+    assert isinstance(decision, Retry)
+    assert decision.retry_delay == timedelta(hours=10)
 
 
 # ── end-to-end via InMemoryBackend.register_stub ────────────────────────

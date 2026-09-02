@@ -132,7 +132,10 @@ async def _enqueue(self: "InMemoryBackend", args: EnqueueArgs) -> JobRow:
                 return existing_row
 
     now = self._clock.now()
-    status: object = "pending" if args.scheduled_at <= now else "scheduled"
+    # None means immediate: stamp from this backend's own (single-domain)
+    # clock — the InMemory mirror of the server's COALESCE stamp.
+    stamped_scheduled_at = args.scheduled_at if args.scheduled_at is not None else now
+    status: object = "pending" if stamped_scheduled_at <= now else "scheduled"
 
     resolved_schedule_to_close = (
         now + args.schedule_to_close_interval
@@ -159,7 +162,7 @@ async def _enqueue(self: "InMemoryBackend", args: EnqueueArgs) -> JobRow:
         start_to_close=args.start_to_close,
         heartbeat_timeout=args.heartbeat_timeout,
         created_at=now,
-        scheduled_at=args.scheduled_at,
+        scheduled_at=stamped_scheduled_at,
         started_at=None,
         finished_at=None,
         last_heartbeat_at=None,
@@ -232,5 +235,28 @@ async def _enqueue_batch_fast(
     *,
     connection: object = None,
 ) -> int:
+    if not args_list:
+        raise ValueError("args_list must not be empty")
+    # COPY has no ON CONFLICT arbiter: any duplicate idempotency key —
+    # within the batch or already stored — aborts the ENTIRE batch on PG
+    # (raw UniqueViolationError on jobs_idempotency_scope_key_uniq;
+    # nothing is written).  Mirror that here instead of silently
+    # deduplicating item-by-item, which reported a count that included
+    # rows PG would never have written (protocol parity; see
+    # Backend.enqueue_batch_fast's docstring).
+    from asyncpg.exceptions import UniqueViolationError
+
+    seen: set[tuple[str, str]] = set()
+    for args in args_list:
+        if args.idempotency_key is None:
+            continue
+        pair = (args.idempotency_scope, str(args.idempotency_key))
+        if pair in seen or pair in self._idempotency_index:
+            exc = UniqueViolationError(
+                "duplicate key value violates unique constraint 'jobs_idempotency_scope_key_uniq'"
+            )
+            exc.constraint_name = "jobs_idempotency_scope_key_uniq"
+            raise exc
+        seen.add(pair)
     rows = await _enqueue_batch(self, args_list)
     return len(rows)

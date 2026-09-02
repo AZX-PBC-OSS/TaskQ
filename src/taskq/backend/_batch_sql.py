@@ -33,7 +33,6 @@ from taskq.backend._protocol import (
 )
 from taskq.backend._records import _batch_row_from_record
 from taskq.backend._sql_templates import SqlTemplates
-from taskq.backend.clock import Clock
 from taskq.backend.statemachine import TERMINAL_STATUSES
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
@@ -425,7 +424,6 @@ async def enqueue_batch_atomic(
     schema: str,
     sql: SqlTemplates,
     batch_sql: BatchSql,
-    clock: Clock,
     items: Iterable[EnqueueArgs],
     *,
     batch_id: UUID,
@@ -471,7 +469,6 @@ async def enqueue_batch_atomic(
                     pool,
                     sql,
                     schema,
-                    clock,
                     chunk,
                     connection=cast("asyncpg.Connection | None", conn),
                 )
@@ -486,7 +483,6 @@ async def enqueue_batch_atomic(
                     pool,
                     sql,
                     schema,
-                    clock,
                     [finalizer_args],
                     connection=cast("asyncpg.Connection | None", conn),
                 )

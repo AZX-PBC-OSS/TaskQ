@@ -20,6 +20,8 @@ from typing import TYPE_CHECKING
 import pytest
 import pytest_asyncio
 
+from taskq.testing._shared_containers import creator_labels
+
 from ._assertions import poll_until, wait_for_effects, wait_for_worker_ready
 from .conftest import E2EWorker, _container_logs, _stop_container
 
@@ -45,6 +47,9 @@ async def cron_worker(
     from testcontainers.core.container import DockerContainer
 
     container = DockerContainer(image=e2e_worker_image.tag)
+    container.with_kwargs(
+        labels=creator_labels()
+    )  # Ownership labels: sweepable under disabled Ryuk (see e2e_network's sweep).
     container.with_network(e2e_network).with_network_aliases(
         f"worker-cron-{e2e_schema.schema_name}"
     )
@@ -92,24 +97,24 @@ async def test_cron_schedule_registers_fires_and_completes(
         timeout=150.0,
     )
 
+    status: str | None = None
+
     async def _job_succeeded() -> bool:
-        s = await e2e_pg_pool.fetchval(
+        nonlocal status
+        status = await e2e_pg_pool.fetchval(
             f'SELECT status::text FROM "{schema}".jobs WHERE actor = $1 '
             "ORDER BY created_at DESC LIMIT 1",
             "cron_heartbeat",
         )
-        return s == "succeeded"
+        return status == "succeeded"
 
+    # The cron-tick effect lands at enqueue; the job itself still has to be
+    # dispatched and run to completion — wait for it rather than asserting
+    # whatever state a single immediate read happens to catch.
     await poll_until(
         _job_succeeded,
-        timeout=10.0,
-        description="cron_heartbeat job to reach succeeded",
-    )
-
-    status = await e2e_pg_pool.fetchval(
-        f'SELECT status::text FROM "{schema}".jobs WHERE actor = $1 '
-        "ORDER BY created_at DESC LIMIT 1",
-        "cron_heartbeat",
+        timeout=60.0,
+        description="cron_heartbeat job to reach status='succeeded'",
     )
     assert status == "succeeded"
 

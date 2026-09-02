@@ -75,7 +75,6 @@ def _make_mock_deps(
     if listener_setup_timeout is not None:
         settings_dict["notify_listener_setup_timeout"] = str(listener_setup_timeout)
     settings = WorkerSettings.load_from_dict(settings_dict)
-    settings.pg_dsn_direct = settings.pg_dsn  # pyright: ignore[reportAttributeAccessIssue] # Why: ensure direct DSN is set for reconnect tests; post_load already did this but making it explicit
     deps = Mock()
     deps.settings = settings
     deps.notify_conn = _mock_conn()

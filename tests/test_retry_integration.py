@@ -119,7 +119,6 @@ async def test_transient_retry_succeeds_after_retries(
         _StubConfig(policy),
         exception,
         job_state_1,
-        datetime.now(UTC),
     )
     assert isinstance(decision_1, Retry)
 
@@ -132,7 +131,7 @@ async def test_transient_retry_succeeds_after_retries(
         job_id,
         worker_id,
         error_info,
-        decision_1.next_scheduled_at,
+        decision_1.retry_delay,
     )
     assert row_1.status == "scheduled"
 
@@ -153,7 +152,6 @@ async def test_transient_retry_succeeds_after_retries(
         _StubConfig(policy),
         exception,
         job_state_2,
-        datetime.now(UTC),
     )
     assert isinstance(decision_2, Retry)
 
@@ -161,7 +159,7 @@ async def test_transient_retry_succeeds_after_retries(
         job_id,
         worker_id,
         error_info,
-        decision_2.next_scheduled_at,
+        decision_2.retry_delay,
     )
     assert row_2.status == "scheduled"
 
@@ -252,7 +250,6 @@ async def test_transient_exhaustion(
         _StubConfig(policy),
         exception,
         job_state_1,
-        datetime.now(UTC),
     )
     assert isinstance(decision_1, Retry)
 
@@ -265,7 +262,7 @@ async def test_transient_exhaustion(
         job_id,
         worker_id,
         error_info,
-        decision_1.next_scheduled_at,
+        decision_1.retry_delay,
     )
     assert row_1.status == "scheduled"
 
@@ -284,7 +281,6 @@ async def test_transient_exhaustion(
         _StubConfig(policy),
         exception,
         job_state_2,
-        datetime.now(UTC),
     )
     assert isinstance(decision_2, Fail)
 
@@ -559,13 +555,11 @@ async def test_indefinite_retry_polling_pattern(
             schedule_to_close=datetime.now(UTC) + timedelta(minutes=30),
             start_to_close=None,
         )
-        decision = decide_after_failure(
-            _StubConfig(policy), exception, job_state, datetime.now(UTC)
-        )
+        decision = decide_after_failure(_StubConfig(policy), exception, job_state)
         assert isinstance(decision, Retry), f"attempt {attempt_num} should be Retry"
 
         row_after = await backend.mark_failed_or_retry(
-            job_id, worker_id, error_info, decision.next_scheduled_at
+            job_id, worker_id, error_info, decision.retry_delay
         )
         assert row_after.status == "scheduled"
 
@@ -614,10 +608,10 @@ async def test_indefinite_retry_deadline_enforcement(
 ) -> None:
     """indefinite retry deadline enforcement. Actor with
     time_budget=timedelta(seconds=2) fails. On second attempt, push
-    schedule_to_close past via PG-side UPDATE. Classifier returns
-    Fail(DeadlineExceeded); job transitions to failed with
-    error_class='DeadlineExceeded' in the same dispatch cycle
-    (no round-trip through the deadline-exceeded sweep)."""
+    schedule_to_close past via PG-side UPDATE. The classifier has no
+    deadline opinion (it still returns Retry); the SQL deadline guard in
+    mark_failed_or_retry fails the job with error_class='DeadlineExceeded'
+    in the same write (no round-trip through the deadline-exceeded sweep)."""
 
     deps = clean_jobs_app.deps
     backend = clean_jobs_app.backend
@@ -654,13 +648,11 @@ async def test_indefinite_retry_deadline_enforcement(
         schedule_to_close=datetime.now(UTC) + timedelta(seconds=30),
         start_to_close=None,
     )
-    decision_1 = decide_after_failure(
-        _StubConfig(policy), exception, job_state_1, datetime.now(UTC)
-    )
+    decision_1 = decide_after_failure(_StubConfig(policy), exception, job_state_1)
     assert isinstance(decision_1, Retry)
 
     row_1 = await backend.mark_failed_or_retry(
-        job_id, worker_id, error_info, decision_1.next_scheduled_at
+        job_id, worker_id, error_info, decision_1.retry_delay
     )
     assert row_1.status == "scheduled"
 
@@ -680,12 +672,15 @@ async def test_indefinite_retry_deadline_enforcement(
         schedule_to_close=datetime.now(UTC) - timedelta(seconds=30),
         start_to_close=None,
     )
-    decision_2 = decide_after_failure(
-        _StubConfig(policy), exception, job_state_2, datetime.now(UTC)
-    )
-    assert isinstance(decision_2, Fail)
-    assert decision_2.error_class == "DeadlineExceeded"
+    decision_2 = decide_after_failure(_StubConfig(policy), exception, job_state_2)
+    # C2: the classifier is not a deadline arbiter — it still decides Retry.
+    assert isinstance(decision_2, Retry)
 
-    row_2 = await backend.mark_failed_or_retry(job_id, worker_id, error_info, None)
+    # The SQL deadline guard arbitrates: the delay cannot land before the
+    # (already-past) schedule_to_close, so the write fails the job.
+    row_2 = await backend.mark_failed_or_retry(
+        job_id, worker_id, error_info, decision_2.retry_delay
+    )
     assert row_2.status == "failed"
+    assert row_2.error_class == "DeadlineExceeded"
     assert row_2.attempt == 2

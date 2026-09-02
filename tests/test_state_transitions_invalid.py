@@ -108,7 +108,7 @@ async def test_pending_to_failed_blocked_by_mark_failed_or_retry(
             args.id,
             worker_id,
             ErrorInfo(error_class="TestError", error_message="test", error_traceback=None),
-            next_scheduled_at=None,
+            retry_delay=None,
         )
 
 
@@ -128,7 +128,7 @@ async def test_pending_to_failed_allowed_via_deadline_sweep(
     await memory_jobs.enqueue(args)
 
     memory_jobs.advance_clock_to(_START + timedelta(seconds=20))
-    count = await memory_jobs.deadline_sweep(datetime(2025, 1, 1, 0, 0, 20, tzinfo=UTC))
+    count = await memory_jobs.deadline_sweep()
     assert count == 1
 
     row = await memory_jobs.get(args.id)
@@ -198,7 +198,7 @@ async def test_scheduled_to_failed_blocked_by_mark_failed_or_retry(
             args.id,
             worker_id,
             ErrorInfo(error_class="TestError", error_message="test", error_traceback=None),
-            next_scheduled_at=None,
+            retry_delay=None,
         )
 
 
@@ -223,7 +223,7 @@ async def test_scheduled_to_failed_allowed_via_deadline_sweep(
     assert row.status == "scheduled"
 
     memory_jobs.advance_clock_to(_START + timedelta(seconds=20))
-    count = await memory_jobs.deadline_sweep(datetime(2025, 1, 1, 0, 0, 20, tzinfo=UTC))
+    count = await memory_jobs.deadline_sweep()
     assert count == 1
 
     row = await memory_jobs.get(args.id)

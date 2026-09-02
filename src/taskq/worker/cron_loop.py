@@ -7,7 +7,7 @@ per-schedule fire logic.
 """
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from uuid import UUID
 
 import asyncpg
@@ -72,6 +72,13 @@ async def tick_cron(
 
     *conn* MUST already be in an open transaction — the advisory lock is
     transaction-scoped and releases on COMMIT/ROLLBACK.
+
+    The catch-up cutoff and the beyond-window recompute seed are read from
+    the PG server clock inside this transaction: the due-check
+    (``next_fire_at <= now()``) is server-side, so every croniter seed must
+    come from the same domain.  Seeding from the leader's Python clock
+    shifts every recomputed fire by the app↔DB skew and can recompute
+    ``next_fire_at`` into the server's past (a fire loop).
     """
     if not _IDENT_RE.match(schema):
         raise ValueError(f"invalid schema identifier: {schema!r}")
@@ -101,6 +108,7 @@ async def tick_cron(
         )
         return
 
+    server_now: datetime = await conn.fetchval("SELECT clock_timestamp()")
     _cron_tick_sql = (
         f"SELECT id, actor, cron_expr, timezone, payload_factory, "
         f"metadata, last_fired_at, consecutive_failures, next_fire_at, identity_key "
@@ -109,19 +117,18 @@ async def tick_cron(
         f"ORDER BY next_fire_at"
     )
     rows = await conn.fetch(_cron_tick_sql)
-    now = datetime.now(UTC)
 
     actor_config_cache: dict[str, _ActorConfig] = {}
     for row in rows:
         await fire_schedule(
-            conn, row, now, settings, backend, schema, worker_id, actor_config_cache
+            conn, row, server_now, settings, backend, schema, worker_id, actor_config_cache
         )
 
 
 async def fire_schedule(
     conn: asyncpg.Connection,
     row: asyncpg.Record,
-    now: datetime,
+    server_now: datetime,
     settings: WorkerSettings,
     backend: Backend,
     schema: str,
@@ -131,10 +138,15 @@ async def fire_schedule(
     """Fire a single due schedule, handling miss, payload resolution, enqueue,
     success/error UPDATE branches, OTel spans, and metrics.
 
+    *server_now* is the PG server clock read inside the caller's tick
+    transaction (``clock_timestamp()``) — the single domain for the
+    catch-up cutoff and the beyond-window recompute, matching the
+    server-side due-check that selected this row.
+
     Two separate UPDATE branches for auto-disable vs non-disable (anti-pattern #3:
     ``enabled = NOT $4`` would incorrectly re-enable an already-enabled schedule).
     """
-    catch_up_cutoff = now - settings.cron_catch_up_window
+    catch_up_cutoff = server_now - settings.cron_catch_up_window
     fire_at: datetime = row["next_fire_at"]
     dst_strategy_raw: str = row.get("dst_strategy", "skip") or "skip"
     dst_strategy: DstStrategy = (
@@ -142,7 +154,7 @@ async def fire_schedule(
     )
     if fire_at < catch_up_cutoff:
         fire_at = compute_next_fire_after(
-            row["cron_expr"], row["timezone"], now, dst_strategy=dst_strategy
+            row["cron_expr"], row["timezone"], server_now, dst_strategy=dst_strategy
         )[0]
         log.warning(
             "cron missed slots skipped",
@@ -194,7 +206,13 @@ async def fire_schedule(
                 payload=payload,
                 max_attempts=ac.max_attempts,
                 retry_kind=parse_retry_kind(ac.retry_kind),
-                scheduled_at=datetime.now(UTC),
+                # None = immediate: the enqueue SQL stamps the server clock
+                # (COALESCE($n, now())) and decides status in the same
+                # statement. Passing a Python-clock stamp here would shift
+                # the job's scheduled_at by the app↔DB skew — a leader
+                # skewed ahead lands every cron fire 'scheduled' and
+                # dispatch-ineligible for the skew duration.
+                scheduled_at=None,
                 payload_schema_ver=1,
                 identity_key=schedule_identity_key,
             )

@@ -71,12 +71,12 @@ async def test_in_memory_sweep_increments_per_actor(
     increment per swept job with the correct ``actor`` label."""
     backend = InMemoryBackend(clock=FakeClock(_START))
     deadline = _START + timedelta(hours=1)
-    now = _START + timedelta(hours=2)
 
     await backend.enqueue(_enqueue_args(actor="actor_alpha", schedule_to_close=deadline))
     await backend.enqueue(_enqueue_args(actor="actor_beta", schedule_to_close=deadline))
 
-    count = await backend.deadline_sweep(now)
+    backend.advance_clock_to(_START + timedelta(hours=2))
+    count = await backend.deadline_sweep()
     assert count == 2
 
     dps = counter_data_points(metric_reader, "taskq.deadline_exceeded_sweep.jobs_failed")
@@ -95,9 +95,9 @@ async def test_in_memory_sweep_no_sweep_no_counter(
 ) -> None:
     """When no jobs are swept, the counter has no data points."""
     backend = InMemoryBackend(clock=FakeClock(_START))
-    now = _START + timedelta(hours=2)
 
-    count = await backend.deadline_sweep(now)
+    backend.advance_clock_to(_START + timedelta(hours=2))
+    count = await backend.deadline_sweep()
     assert count == 0
 
     dps = counter_data_points(metric_reader, "taskq.deadline_exceeded_sweep.jobs_failed")

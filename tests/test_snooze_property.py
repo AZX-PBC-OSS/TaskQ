@@ -125,7 +125,7 @@ async def test_snooze_deterministic_outcome_and_attempt_round_trip(
 
         # Round-trip: advance clock past scheduled_at, promote, dispatch again
         backend.advance_clock_to(new_scheduled_at + timedelta(seconds=1))
-        await backend.scheduled_to_pending(new_scheduled_at + timedelta(seconds=1))
+        await backend.scheduled_to_pending()
 
         dispatched2 = await backend.dispatch_batch(
             worker_id=wid,

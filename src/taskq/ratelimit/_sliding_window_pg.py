@@ -3,6 +3,12 @@
 All PG-path methods (acquire, peek, reset, refund for both log and GCRA
 styles) live here as module-level functions taking ``self: SlidingWindow``
 as the first parameter, following the testing-module pattern.
+
+Time domain: every window predicate and TAT epoch runs on the PG server
+clock (``clock_timestamp()`` / ``EXTRACT(EPOCH FROM clock_timestamp())``)
+read in the same statement or transaction as the state it measures — the
+shared window state is server-domain by construction, so callers on nodes
+with divergent Python clocks are all measured against the same window.
 """
 
 from datetime import timedelta
@@ -18,7 +24,6 @@ from taskq.ratelimit.decision import RateLimitDecision, RateLimitState
 if TYPE_CHECKING:
     import asyncpg
 
-    from taskq.backend.clock import Clock
     from taskq.ratelimit.sliding_window import SlidingWindow
     from taskq.settings import WorkerSettings
 
@@ -38,9 +43,7 @@ __all__ = [
 
 async def _peek_pg_log(
     self: "SlidingWindow",
-    now_ms: int,
     pg_pool: "asyncpg.Pool | None",
-    clock: "Clock",
     settings: "WorkerSettings | None",
 ) -> RateLimitState:
     if pg_pool is None:
@@ -48,34 +51,39 @@ async def _peek_pg_log(
     if settings is None:
         raise RuntimeError("settings not injected for postgres backend")
 
-    now_dt = clock.now()
     window_ms = int(self._window.total_seconds() * 1000)
     schema = settings.schema_name
 
+    # Why clock_timestamp() in the predicates: the window boundary is
+    # measured in the same domain as the stored ``ts`` values (both are the
+    # PG server clock), so a skewed caller cannot shrink or stretch the
+    # window it is measured against.
     count_sql = (
         f'SELECT count(*) FROM "{schema}".rate_limit_window_entries '  # noqa: S608
         f"WHERE bucket_name = $1 "
-        f"AND ts >= $2::timestamptz - ($3::bigint * INTERVAL '1 millisecond')"
+        f"AND ts >= clock_timestamp() - ($2::bigint * INTERVAL '1 millisecond')"
     )
     oldest_sql = (
-        f'SELECT ts FROM "{schema}".rate_limit_window_entries '  # noqa: S608
+        f"SELECT ts, clock_timestamp() AS server_now "  # noqa: S608
+        f'FROM "{schema}".rate_limit_window_entries '
         f"WHERE bucket_name = $1 "
-        f"AND ts >= $2::timestamptz - ($3::bigint * INTERVAL '1 millisecond') "
+        f"AND ts >= clock_timestamp() - ($2::bigint * INTERVAL '1 millisecond') "
         f"ORDER BY ts ASC LIMIT 1"
     )
 
     async with pg_pool.acquire() as conn:
-        count_row = await conn.fetchrow(count_sql, self._name, now_dt, window_ms)
+        count_row = await conn.fetchrow(count_sql, self._name, window_ms)
         count = int(count_row["count"]) if count_row else 0
 
         is_exhausted = count >= self._limit
         retry_after: timedelta | None = None
 
         if is_exhausted and count > 0:
-            oldest_row = await conn.fetchrow(oldest_sql, self._name, now_dt, window_ms)
+            oldest_row = await conn.fetchrow(oldest_sql, self._name, window_ms)
             if oldest_row is not None:
                 oldest_ts = oldest_row["ts"]
-                retry_after = (oldest_ts + timedelta(milliseconds=window_ms)) - now_dt
+                server_now = oldest_row["server_now"]
+                retry_after = (oldest_ts + timedelta(milliseconds=window_ms)) - server_now
                 if retry_after is not None and retry_after <= timedelta(0):
                     retry_after = timedelta(milliseconds=1)
 
@@ -93,9 +101,7 @@ async def _peek_pg_log(
 
 async def _peek_pg_gcra(
     self: "SlidingWindow",
-    now_ms: int,
     pg_pool: "asyncpg.Pool | None",
-    clock: "Clock",
     settings: "WorkerSettings | None",
 ) -> RateLimitState:
     if pg_pool is None:
@@ -103,7 +109,6 @@ async def _peek_pg_gcra(
     if settings is None:
         raise RuntimeError("settings not injected for postgres backend")
 
-    now_seconds = now_ms / 1000.0
     window_ms = int(self._window.total_seconds() * 1000)
     window_seconds = window_ms / 1000.0
     emission_interval_seconds = window_seconds / self._limit
@@ -111,18 +116,20 @@ async def _peek_pg_gcra(
     schema = settings.schema_name
 
     select_sql = (
-        f'SELECT state FROM "{schema}".rate_limit_buckets '  # noqa: S608
+        f"SELECT state, EXTRACT(EPOCH FROM clock_timestamp()) AS now_s "  # noqa: S608  # Why: schema_name pre-validated; bucket_name is $1-bound
+        f'FROM "{schema}".rate_limit_buckets '
         f"WHERE bucket_name = $1 AND kind = 'gcra'"
     )
 
     async with pg_pool.acquire() as conn:
         row = await conn.fetchrow(select_sql, self._name)
-
-    if row is None:
-        current_tat = now_seconds
-    else:
-        state = jsonb_to_dict(row["state"])
-        current_tat = float(state.get("tat", now_seconds))  # type: ignore[index]  # Why: state is non-None; fallback to now_seconds for rows missing "tat"
+        if row is None:
+            now_seconds = float(await conn.fetchval("SELECT EXTRACT(EPOCH FROM clock_timestamp())"))
+            current_tat = now_seconds
+        else:
+            now_seconds = float(row["now_s"])
+            state = jsonb_to_dict(row["state"])
+            current_tat = float(state.get("tat", now_seconds))  # type: ignore[index]  # Why: state is non-None; fallback to now_seconds for rows missing "tat"
 
     tat = max(now_seconds, current_tat)
     remaining = float(
@@ -245,10 +252,15 @@ async def _refund_pg_log(
 async def _acquire_pg_log(
     self: "SlidingWindow",
     pg_pool: "asyncpg.Pool | None",
-    clock: "Clock",
     settings: "WorkerSettings | None",
     request_id: UUID | None,
 ) -> RateLimitDecision:
+    """Acquire log-style against PG.
+
+    Every window predicate and the inserted ``ts`` are ``clock_timestamp()``
+    — the PG server clock owns the shared window state, so nodes with
+    divergent Python clocks all get measured against the same window.
+    """
     if pg_pool is None:
         raise RuntimeError("pg_pool not injected for postgres backend")
     if settings is None:
@@ -256,48 +268,57 @@ async def _acquire_pg_log(
     if request_id is None:
         raise RuntimeError("request_id required for log-style PG acquire")
 
-    now_dt = clock.now()
     window_ms = int(self._window.total_seconds() * 1000)
     schema = settings.schema_name
 
     delete_sql = (
         f'DELETE FROM "{schema}".rate_limit_window_entries '  # noqa: S608  # Why: schema_name is pre-validated against _IDENT_RE at settings load time; bucket_name is $1-bound
         f"WHERE bucket_name = $1 "
-        f"AND ts < $2::timestamptz - ($3::bigint * INTERVAL '1 millisecond')"
+        f"AND ts < clock_timestamp() - ($2::bigint * INTERVAL '1 millisecond')"
     )
     insert_sql = (
-        f'INSERT INTO "{schema}".rate_limit_window_entries (bucket_name, ts, request_id) '  # noqa: S608  # Why: schema_name pre-validated; values are $1/$2/$4/$5-bound
-        f"SELECT $1, $2::timestamptz, $4::uuid "
+        f'INSERT INTO "{schema}".rate_limit_window_entries (bucket_name, ts, request_id) '  # noqa: S608  # Why: schema_name pre-validated; values are $1/$3-bound
+        f"SELECT $1, clock_timestamp(), $3::uuid "
         f"WHERE ("
         f'SELECT count(*) FROM "{schema}".rate_limit_window_entries '
         f"WHERE bucket_name = $1 "
-        f"AND ts >= $2::timestamptz - ($3::bigint * INTERVAL '1 millisecond')"
-        f") < $5::integer "
+        f"AND ts >= clock_timestamp() - ($2::bigint * INTERVAL '1 millisecond')"
+        f") < $4::integer "
         f"RETURNING 1"
     )
     retry_select_sql = (
-        f'SELECT ts FROM "{schema}".rate_limit_window_entries '  # noqa: S608  # Why: schema_name pre-validated; bucket_name is $1-bound
+        f"SELECT ts, clock_timestamp() AS server_now "  # noqa: S608  # Why: schema_name pre-validated; bucket_name is $1-bound
+        f'FROM "{schema}".rate_limit_window_entries '
         f"WHERE bucket_name = $1 "
-        f"AND ts >= $2::timestamptz - ($3::bigint * INTERVAL '1 millisecond') "
+        f"AND ts >= clock_timestamp() - ($2::bigint * INTERVAL '1 millisecond') "
         f"ORDER BY ts ASC LIMIT 1"
     )
     count_sql = (
         f'SELECT count(*) FROM "{schema}".rate_limit_window_entries '  # noqa: S608  # Why: schema_name pre-validated; bucket_name is $1-bound
         f"WHERE bucket_name = $1 "
-        f"AND ts >= $2::timestamptz - ($3::bigint * INTERVAL '1 millisecond')"
+        f"AND ts >= clock_timestamp() - ($2::bigint * INTERVAL '1 millisecond')"
     )
 
     allowed: bool
     retry_after: timedelta
     count_after: int
 
+    # Serialise acquirers per bucket: under READ COMMITTED the DELETE +
+    # INSERT ... WHERE count < N pair is not serialised — two concurrent
+    # acquires can each count the pre-insert window and both insert,
+    # over-admitting past the limit. A transaction-scoped advisory lock on
+    # the bucket name (the cron loop's idiom) makes the whole
+    # delete/count/insert sequence atomic per bucket; distinct buckets
+    # hash to distinct locks and stay parallel.
+    advisory_lock_sql = "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))"
+
     async with pg_pool.acquire() as conn, conn.transaction():
-        await conn.execute(delete_sql, self._name, now_dt, window_ms)
+        await conn.execute(advisory_lock_sql, self._name)
+        await conn.execute(delete_sql, self._name, window_ms)
 
         inserted = await conn.fetchrow(
             insert_sql,
             self._name,
-            now_dt,
             window_ms,
             request_id,
             self._limit,
@@ -305,15 +326,16 @@ async def _acquire_pg_log(
 
         if inserted is not None:
             allowed = True
-            count_row = await conn.fetchrow(count_sql, self._name, now_dt, window_ms)
+            count_row = await conn.fetchrow(count_sql, self._name, window_ms)
             count_after = int(count_row["count"]) if count_row is not None else self._limit
             retry_after = timedelta(0)
         else:
             allowed = False
-            oldest_row = await conn.fetchrow(retry_select_sql, self._name, now_dt, window_ms)
+            oldest_row = await conn.fetchrow(retry_select_sql, self._name, window_ms)
             if oldest_row is not None:
                 oldest_ts = oldest_row["ts"]
-                retry_after = (oldest_ts + timedelta(milliseconds=window_ms)) - now_dt
+                server_now = oldest_row["server_now"]
+                retry_after = (oldest_ts + timedelta(milliseconds=window_ms)) - server_now
                 if retry_after <= timedelta(0):
                     retry_after = timedelta(milliseconds=1)
             else:
@@ -335,16 +357,20 @@ async def _acquire_pg_log(
 async def _acquire_pg_gcra(
     self: "SlidingWindow",
     pg_pool: "asyncpg.Pool | None",
-    clock: "Clock",
     settings: "WorkerSettings | None",
 ) -> RateLimitDecision:
+    """Acquire GCRA-style against PG.
+
+    The TAT epoch math runs on ``EXTRACT(EPOCH FROM clock_timestamp())``
+    read inside the same locked transaction, so the stored TAT is
+    server-domain by construction and a node with a skewed Python clock
+    cannot move the shared admission boundary.
+    """
     if pg_pool is None:
         raise RuntimeError("pg_pool not injected for postgres backend")
     if settings is None:
         raise RuntimeError("settings not injected for postgres backend")
 
-    now_dt = clock.now()
-    now_seconds = now_dt.timestamp()
     window_ms = int(self._window.total_seconds() * 1000)
     window_seconds = window_ms / 1000.0
     emission_interval_seconds = window_seconds / self._limit
@@ -352,8 +378,21 @@ async def _acquire_pg_gcra(
     schema = settings.schema_name
 
     select_sql = (
-        f'SELECT kind, state FROM "{schema}".rate_limit_buckets '  # noqa: S608  # Why: schema_name is pre-validated against _IDENT_RE at settings load time; bucket_name is $1-bound
+        f"SELECT kind, state, EXTRACT(EPOCH FROM clock_timestamp()) AS now_s "  # noqa: S608  # Why: schema_name is pre-validated against _IDENT_RE at settings load time; bucket_name is $1-bound
+        f'FROM "{schema}".rate_limit_buckets '
         f"WHERE bucket_name = $1 FOR UPDATE"
+    )
+    # Cold-start guard mirroring the token-bucket PG path: SELECT ... FOR
+    # UPDATE cannot lock a row that does not exist yet, so two concurrent
+    # first acquires would each read `row is None`, each admit, and race
+    # last-writer-wins on the TAT. Pre-seed a row stamped with the
+    # server-clock TAT (idempotent — DO NOTHING on conflict) so first use
+    # also serialises on the row lock below.
+    preseed_sql = (
+        f'INSERT INTO "{schema}".rate_limit_buckets (bucket_name, kind, state, updated_at) '  # noqa: S608  # Why: schema_name pre-validated; values are $1-bound
+        f"VALUES ($1, 'gcra', "
+        f"jsonb_build_object('tat', EXTRACT(EPOCH FROM clock_timestamp())), clock_timestamp()) "
+        f"ON CONFLICT (bucket_name) DO NOTHING"
     )
     upsert_sql = (
         f'INSERT INTO "{schema}".rate_limit_buckets (bucket_name, kind, state, updated_at) '  # noqa: S608  # Why: schema_name pre-validated; values are $1/$2-bound
@@ -370,9 +409,16 @@ async def _acquire_pg_gcra(
     pg_previous_state: dict[str, object] | None = None
 
     async with pg_pool.acquire() as conn, conn.transaction():
+        await conn.execute(preseed_sql, self._name)
         row = await conn.fetchrow(select_sql, self._name)
 
         if row is None:
+            # Unreachable in the normal path — the preseed above guarantees
+            # the row exists before the SELECT. Kept as a defensive fallback
+            # (e.g. a concurrent DELETE/reset between preseed and select).
+            # First use: no row to fold the server epoch into — take a
+            # separate read on the same connection/transaction.
+            now_seconds = float(await conn.fetchval("SELECT EXTRACT(EPOCH FROM clock_timestamp())"))
             current_tat = now_seconds
         else:
             existing_kind: str = row["kind"]
@@ -381,6 +427,7 @@ async def _acquire_pg_gcra(
                     f"bucket_name {self._name!r} is already registered with kind != 'gcra'; "
                     f"refusing to corrupt prior state. Rename one of the colliding registrations."
                 )
+            now_seconds = float(row["now_s"])
             state = jsonb_to_dict(row["state"])
             current_tat = float(state.get("tat", now_seconds))  # type: ignore[index]  # Why: rate_limit_buckets.state is NOT NULL; jsonb_to_dict only returns None for SQL NULL, which cannot occur here; fallback to now_seconds for rows missing "tat" (e.g. from schema migrations or interop writes)
 

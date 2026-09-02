@@ -170,8 +170,10 @@ class TestTerminalWritesUpdateRow:
             error_message="transient",
             error_traceback=None,
         )
-        next_at = datetime.now(UTC) + timedelta(seconds=10)
-        row = await backend.mark_failed_or_retry(job_id, worker_id, error_info, next_at)
+        # The decision is a delay — the server derives scheduled_at from it.
+        row = await backend.mark_failed_or_retry(
+            job_id, worker_id, error_info, timedelta(seconds=10)
+        )
         assert row.status == "scheduled"
         assert row.locked_by_worker is None
         assert row.lock_expires_at is None

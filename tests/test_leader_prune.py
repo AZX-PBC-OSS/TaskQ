@@ -1096,3 +1096,41 @@ async def test_concurrent_archive_expiry_lock(
     finally:
         await conn1.close()
         await conn2.close()
+
+
+# ── C10: prune cutoff anchored to the server clock ─────────────────
+
+
+async def test_prune_cutoff_anchored_to_server_clock(
+    pg_conn: asyncpg.Connection,
+    settings: TaskQSettings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A job finished 40 s ago (server-stamped) with 30 s retention MUST be
+    pruned even when the worker's Python clock is 120 s behind.  Pre-fix:
+    cutoff = python_now - 30 s = server_now - 150 s → ``finished_at <
+    cutoff`` is false → retention silently extended.  The predicate must be
+    computed by the same clock that wrote ``finished_at`` — the server's."""
+    from taskq.worker import _leader_shared
+
+    class _SkewedDatetime:
+        @staticmethod
+        def now(tz: object = None) -> datetime:
+            return datetime.now(UTC if tz is None else tz) - timedelta(seconds=120)
+
+    monkeypatch.setattr(_leader_shared, "datetime", _SkewedDatetime)
+
+    await _apply(pg_conn, settings)
+    await _seed_terminal_job(
+        pg_conn,
+        settings.schema_name,
+        status="succeeded",
+        finished_at=datetime.now(UTC) - timedelta(seconds=40),
+    )
+    result = await prune_terminal_jobs(
+        pg_conn,
+        retention_per_status={"succeeded": timedelta(seconds=30)},
+        archive_retention=timedelta(days=1),
+        schema=settings.schema_name,
+    )
+    assert result.total_deleted == 1  # pre-fix: 0 — the job survives past its retention

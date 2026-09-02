@@ -572,7 +572,6 @@ class MaintenanceLeader:
         while not shutdown.is_set():
             self._deps.liveness.tick("leader.scheduled_wake", period=1.0)
             if self._deps.is_leader.is_set():
-                now_utc = self._clock.now()
                 start = time.monotonic()
                 try:
                     # Why one deadline for the WHOLE iteration: the count > 0
@@ -583,7 +582,10 @@ class MaintenanceLeader:
                     # a healthy leader. asyncio.timeout raises TimeoutError,
                     # which the transient-PG branch below already handles.
                     async with asyncio.timeout(self._deps.settings.dispatcher_command_timeout):
-                        count = await self._backend.scheduled_to_pending(now=now_utc)
+                        # No `now` argument — the sweep's server-side
+                        # predicate (scheduled_at <= clock_timestamp()) is
+                        # the single arbiter.
+                        count = await self._backend.scheduled_to_pending()
                         _metric("scheduled_to_pending", count, start)
                         _dbg("scheduled_wake_tick", "scheduled_wake_tick", count, start)
                         if count > 0:

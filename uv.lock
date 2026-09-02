@@ -814,15 +814,15 @@ wheels = [
 
 [[package]]
 name = "dotenvmodel"
-version = "0.6.3"
+version = "1.1.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "python-dotenv" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/3c/a0/3fde6d77de32b1d840395cbe91ef6505406cc223da22caf58461a45a9398/dotenvmodel-0.6.3.tar.gz", hash = "sha256:06302d08227be72a0a0cd262965173f7568bf27c93a2179371ec49ea5db5bc9d", size = 267001, upload-time = "2026-07-28T02:05:20.533Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/1e/9a/203ed84655cb0edc47e52d115d84ac259bc5ea7bc70b359239ee2eb614c4/dotenvmodel-1.1.0.tar.gz", hash = "sha256:291ff32da2a6c5df5c8d4639b3126f6550c72a71685fc409cd6dd98627815285", size = 114434, upload-time = "2026-09-01T03:43:26.664Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/f0/34/1a5caf70a9bbe171adca1428672a5cfca4539f90c38cdfe8aee21c42e0b4/dotenvmodel-0.6.3-py3-none-any.whl", hash = "sha256:6ea589f3898b65f5442fb19ad1d88f9c908b42d89a5fd57d5e5f3f25471f0f22", size = 77006, upload-time = "2026-07-28T02:05:19.214Z" },
+    { url = "https://files.pythonhosted.org/packages/58/ec/00e9d21d91c0474ea3d33fb09622b62ec477e77fbf613a61ff62f5069008/dotenvmodel-1.1.0-py3-none-any.whl", hash = "sha256:a4cf17adb23a589783730390a71c675c2eb9a6f9f4eddaa0b2cdf546c5337f8b", size = 101782, upload-time = "2026-09-01T03:43:25.609Z" },
 ]
 
 [[package]]
@@ -2921,7 +2921,6 @@ fastapi = [
 ]
 oidc = [
     { name = "authlib" },
-    { name = "httpx" },
     { name = "httpx2" },
     { name = "itsdangerous" },
 ]
@@ -2954,6 +2953,7 @@ dev = [
     { name = "asyncpg-stubs" },
     { name = "authlib" },
     { name = "fakeredis" },
+    { name = "filelock" },
     { name = "httpx" },
     { name = "httpx2" },
     { name = "hypothesis" },
@@ -2984,13 +2984,12 @@ e2e = [
 requires-dist = [
     { name = "aiohttp", marker = "extra == 'aad'", specifier = ">=3.14.3,<4" },
     { name = "asyncpg", specifier = ">=0.31.0,<1" },
-    { name = "authlib", marker = "extra == 'oidc'", specifier = ">=1.7.2" },
+    { name = "authlib", marker = "extra == 'oidc'", specifier = ">=1.8.0" },
     { name = "azure-identity", marker = "extra == 'aad'", specifier = ">=1.25.3,<2" },
     { name = "boto3", marker = "extra == 'aws'", specifier = ">=1.43.56,<2" },
     { name = "croniter", specifier = ">=6.2.4" },
-    { name = "dotenvmodel", specifier = ">=0.6.3,<1" },
+    { name = "dotenvmodel", specifier = ">=1.1.0,<2" },
     { name = "fastapi", marker = "extra == 'fastapi'", specifier = ">=0.140.0,<1" },
-    { name = "httpx", marker = "extra == 'oidc'", specifier = ">=0.28.1,<1" },
     { name = "httpx2", marker = "extra == 'oidc'", specifier = ">=2.9.1" },
     { name = "humanize", marker = "extra == 'fastapi'", specifier = ">=4.16.0" },
     { name = "hvac", marker = "extra == 'vault'", specifier = ">=2.4.0,<3" },
@@ -3023,6 +3022,7 @@ dev = [
     { name = "asyncpg-stubs", specifier = ">=0.31.3" },
     { name = "authlib", specifier = ">=1.7.2" },
     { name = "fakeredis", specifier = ">=2.37.0" },
+    { name = "filelock", specifier = ">=3.32.4" },
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "httpx2", specifier = ">=2.9.1" },
     { name = "hypothesis", specifier = ">=6.157.1" },
@@ -3042,7 +3042,7 @@ dev = [
     { name = "python-multipart", specifier = ">=0.0.32" },
     { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "respx", specifier = ">=0.23.1" },
-    { name = "ruff", specifier = ">=0.15.22" },
+    { name = "ruff", specifier = ">=0.16.5,<0.17" },
     { name = "testcontainers", extras = ["postgres", "redis"], specifier = ">=4.14.2" },
 ]
 e2e = [{ name = "containerspec", extras = ["build"], specifier = ">=0.1.7" }]

@@ -18,7 +18,7 @@ from taskq.actor import actor
 from taskq.backend._protocol import EnqueueArgs, ErrorInfo
 from taskq.client._jobs import JobsClient
 from taskq.exceptions import RetryAfter, Snooze
-from taskq.retry import Fail, Retry, RetryClassifier, RetryPolicy
+from taskq.retry import Retry, RetryClassifier, RetryPolicy
 from taskq.testing.clock import FakeClock
 from taskq.testing.in_memory import InMemoryBackend
 
@@ -354,8 +354,6 @@ async def test_indefinite_retry_attempt_unchanged() -> None:
         non_retryable_exceptions=(),
         exception=RuntimeError("fail"),
         attempt=1,
-        schedule_to_close=_START + timedelta(hours=2),
-        now=clock.now(),
     )
     assert isinstance(decision, Retry)
 
@@ -363,7 +361,7 @@ async def test_indefinite_retry_attempt_unchanged() -> None:
         args.id,
         backend._worker_id,  # type: ignore[reportPrivateUsage] # Why: test-only
         error_info,
-        decision.next_scheduled_at,
+        decision.retry_delay,
     )
     assert row.status == "scheduled"
     assert row.attempt == 1
@@ -374,11 +372,12 @@ async def test_indefinite_retry_attempt_unchanged() -> None:
 
 async def test_indefinite_retry_exceeds_deadline() -> None:
     """indefinite actor fails; advance FakeClock past schedule_to_close.
-    Classifier returns Fail(DeadlineExceeded); row transitions to failed.
+    The classifier has no deadline opinion (it still returns Retry); the
+    deadline guard inside mark_failed_or_retry — the InMemory mirror of
+    the PG mark_retry deadline CTE — fails the row in the same write.
 
     Dispatches the job while schedule_to_close is still in the future,
-    then advances clock past the deadline. The classify call detects
-    the deadline and returns Fail(DeadlineExceeded)."""
+    then advances clock past the deadline."""
     clock = FakeClock(start=_START)
     backend = InMemoryBackend(clock=clock)
 
@@ -418,25 +417,25 @@ async def test_indefinite_retry_exceeds_deadline() -> None:
         non_retryable_exceptions=(),
         exception=RuntimeError("fail"),
         attempt=1,
-        schedule_to_close=_START + timedelta(seconds=2),
-        now=clock.now(),
     )
-    assert isinstance(decision, Fail)
-    assert decision.error_class == "DeadlineExceeded"
-    assert not decision.retryable
+    # C2: the classifier is not a deadline arbiter — it still decides Retry.
+    assert isinstance(decision, Retry)
 
     error_info = ErrorInfo(
         error_class="RuntimeError",
         error_message="fail",
         error_traceback=None,
     )
+    # The backend's deadline guard (its own clock is the single arbiter)
+    # fails the write: clock.now() + delay lands past schedule_to_close.
     row = await backend.mark_failed_or_retry(
         args.id,
         backend._worker_id,  # type: ignore[reportPrivateUsage] # Why: test-only
         error_info,
-        None,
+        decision.retry_delay,
     )
     assert row.status == "failed"
+    assert row.error_class == "DeadlineExceeded"
     assert row.attempt == 1
 
 
@@ -644,8 +643,6 @@ async def test_indefinite_no_time_budget_retries_forever() -> None:
             non_retryable_exceptions=(),
             exception=RuntimeError(f"fail {attempt}"),
             attempt=attempt,
-            schedule_to_close=None,
-            now=_START,
         )
         assert isinstance(decision, Retry), f"attempt {attempt} should be Retry, got {decision}"
-        assert decision.next_scheduled_at > _START
+        assert decision.retry_delay > timedelta(0)

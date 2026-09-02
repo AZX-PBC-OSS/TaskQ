@@ -144,7 +144,7 @@ class TestSubscribeWakeScheduledToPending:
 
             # Advance clock and promote to pending
             backend.advance_clock_to(_START + timedelta(hours=2))
-            await backend.scheduled_to_pending(_START + timedelta(hours=2))
+            await backend.scheduled_to_pending()
 
             # Wake event should be set after scheduled→pending promotion
             assert event.is_set(), "subscribe_wake event was not set by scheduled_to_pending()"

@@ -19,12 +19,13 @@ from datetime import timedelta
 
 import asyncpg
 import pytest
-from testcontainers.postgres import PostgresContainer
+from testcontainers.community.postgres import PostgresContainer
 
 from taskq._ids import new_base62, new_uuid
 from taskq.backend.postgres import PostgresBackend
 from taskq.exceptions import ReservationUnavailable
 from taskq.ratelimit.reservation import ConcurrencyReservation
+from taskq.testing._shared_containers import creator_labels
 from taskq.testing.fixtures import ModulePgSchema
 
 pytestmark = pytest.mark.integration
@@ -196,7 +197,7 @@ def _chaos_pg() -> Iterator[PostgresContainer]:  # pyright: ignore[reportUnusedF
         username="taskq",
         password="taskq",
         dbname="taskq",
-    ) as container:
+    ).with_kwargs(labels=creator_labels()) as container:
         yield container
 
 
@@ -210,7 +211,10 @@ async def test_pg_dies_during_acquire(_chaos_pg: PostgresContainer) -> None:
     Uses its own function-scoped PG container so the session-scoped one
     is not affected by the stop/restart cycle.
     """
-    pg_dsn = _chaos_pg.get_connection_url().replace("postgresql+psycopg2://", "postgresql://")
+    # Why: get_connection_url resolves the mapped port via docker HTTP — off-loop.
+    pg_dsn = (await asyncio.to_thread(_chaos_pg.get_connection_url)).replace(
+        "postgresql+psycopg2://", "postgresql://"
+    )
 
     # uses its own PG container, so it needs its own schema setup.
     # We use the same schema hardcoded name since module_pg_schema is for
@@ -248,10 +252,22 @@ async def test_pg_dies_during_acquire(_chaos_pg: PostgresContainer) -> None:
             )
             assert row is not None
 
-            _chaos_pg.stop()
+            # Why: docker-py stop blocks the loop for the whole HTTP round-trip
+            # (measured 2.4-3.8s continuous loop stalls) — off-loop.
+            await asyncio.to_thread(_chaos_pg.stop)
 
+            # InterfaceError: with the stop off the event loop, the loop is free to
+            # observe the socket death while the container is being removed, so
+            # asyncpg marks the connection closed before commit() runs and raises
+            # InterfaceError instead of a write-failure PostgresConnectionError.
             with pytest.raises(
-                (asyncpg.PostgresConnectionError, ConnectionError, OSError, TimeoutError)
+                (
+                    asyncpg.PostgresConnectionError,
+                    asyncpg.InterfaceError,
+                    ConnectionError,
+                    OSError,
+                    TimeoutError,
+                )
             ):
                 await asyncio.wait_for(tx.commit(), timeout=5.0)
         finally:
@@ -263,13 +279,15 @@ async def test_pg_dies_during_acquire(_chaos_pg: PostgresContainer) -> None:
         # Retry up to 3 times with a brief cooldown between attempts.
         for attempt in range(3):
             try:
-                _chaos_pg.start()
+                # Why: docker-py start (+ readiness wait) blocks the loop — off-loop.
+                await asyncio.to_thread(_chaos_pg.start)
                 break
             except Exception:
                 if attempt == 2:
                     raise
                 await asyncio.sleep(2)
-        fresh_dsn = _chaos_pg.get_connection_url().replace(
+        # Why: get_connection_url resolves the mapped port via docker HTTP — off-loop.
+        fresh_dsn = (await asyncio.to_thread(_chaos_pg.get_connection_url)).replace(
             "postgresql+psycopg2://", "postgresql://"
         )
 
@@ -280,6 +298,8 @@ async def test_pg_dies_during_acquire(_chaos_pg: PostgresContainer) -> None:
                 break
             except (asyncpg.PostgresConnectionError, ConnectionError, OSError):
                 await asyncio.sleep(0.5)
+        else:
+            raise TimeoutError(f"PG did not accept connections within 15s of restart: {fresh_dsn}")
 
         conn2 = await asyncpg.connect(fresh_dsn)
         try:

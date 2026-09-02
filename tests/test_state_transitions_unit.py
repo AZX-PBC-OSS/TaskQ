@@ -146,7 +146,7 @@ async def test_running_to_failed_retry_exhausted(
         job_id,
         worker_id,
         ErrorInfo(error_class="ValueError", error_message="boom", error_traceback=None),
-        next_scheduled_at=None,
+        retry_delay=None,
     )
     assert updated.status == "failed"
     assert updated.error_class == "ValueError"
@@ -180,7 +180,7 @@ async def test_running_to_failed_non_retryable(
         job_id,
         worker_id,
         ErrorInfo(error_class="TypeError", error_message="non-retryable", error_traceback=None),
-        next_scheduled_at=None,
+        retry_delay=None,
     )
     assert updated.status == "failed"
     assert updated.error_class == "TypeError"
@@ -386,7 +386,9 @@ async def test_running_to_scheduled_transient_retry(
             error_message="transient",
             error_traceback=None,
         ),
-        next_scheduled_at=next_at,
+        # The decision is a delay — the backend's own clock (FakeClock at
+        # _START) derives scheduled_at = now + 30s == next_at.
+        retry_delay=next_at - _START,
     )
     assert updated.status == "scheduled"
     assert updated.scheduled_at == next_at
@@ -411,7 +413,7 @@ async def test_scheduled_to_pending(memory_jobs: InMemoryBackend) -> None:
     await memory_jobs.enqueue(args)
 
     memory_jobs.advance_clock_to(future)
-    count = await memory_jobs.scheduled_to_pending(future)
+    count = await memory_jobs.scheduled_to_pending()
     assert count == 1
 
     row = await memory_jobs.get(args.id)
@@ -567,11 +569,8 @@ async def test_running_to_crashed_reclaim(
     assert expired is not None
 
     memory_jobs.advance_clock_to(expired + timedelta(seconds=1))
-    now = memory_jobs._clock.now()  # type: ignore[reportPrivateUsage] # Why: test-only private access for sweep time param
 
-    count = await memory_jobs.reclaim_expired_locks(
-        now, timedelta(seconds=30), timedelta(seconds=30)
-    )
+    count = await memory_jobs.reclaim_expired_locks(timedelta(seconds=30), timedelta(seconds=30))
     assert count == 1
 
     row = await memory_jobs.get(job_id)
@@ -612,17 +611,16 @@ async def test_running_to_pending_bypass_reclaim(
     assert expired is not None
 
     memory_jobs.advance_clock_to(expired + timedelta(seconds=1))
-    now = memory_jobs._clock.now()  # type: ignore[reportPrivateUsage] # Why: test-only private access for sweep time param
 
-    count = await memory_jobs.reclaim_expired_locks(
-        now, timedelta(seconds=30), timedelta(seconds=30)
-    )
+    count = await memory_jobs.reclaim_expired_locks(timedelta(seconds=30), timedelta(seconds=30))
     assert count == 1
 
     row = await memory_jobs.get(job_id)
     assert row is not None
     assert row.status == "pending"
-    assert row.scheduled_at == now + timedelta(seconds=5)
+    # The sweep's 5s backoff is stamped from the backend's own clock,
+    # which the test advanced to expired + 1s.
+    assert row.scheduled_at == expired + timedelta(seconds=6)
     assert row.locked_by_worker is None
     assert row.lock_expires_at is None
 

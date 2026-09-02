@@ -257,11 +257,11 @@ async def _mark_failed_or_retry(
     job_id: JobId,
     worker_id: UUID,
     error_info: ErrorInfo,
-    next_scheduled_at: datetime | None,
+    retry_delay: timedelta | None,
     progress_seq: int = 0,
     progress_state: dict[str, object] | None = None,
 ) -> JobRow:
-    if next_scheduled_at is None:
+    if retry_delay is None:
         return await _mark_failed(
             pool, sql, job_id, worker_id, error_info, progress_seq, progress_state
         )
@@ -272,7 +272,7 @@ async def _mark_failed_or_retry(
         job_id,
         worker_id,
         error_info,
-        next_scheduled_at,
+        retry_delay,
         progress_seq,
         progress_state,
     )
@@ -347,17 +347,18 @@ async def _mark_retry(
     job_id: JobId,
     worker_id: UUID,
     error_info: ErrorInfo,
-    next_scheduled_at: datetime,
+    retry_delay: timedelta,
     progress_seq: int,
     progress_state: dict[str, object] | None,
 ) -> JobRow:
+    branch: str
     async with pool.acquire() as conn:
         async with conn.transaction():
             rec = await conn.fetchrow(
                 sql.mark_retry,
                 job_id,
                 worker_id,
-                next_scheduled_at,
+                retry_delay,
                 error_info.error_class,
                 error_info.error_message,
                 error_info.error_traceback,
@@ -368,43 +369,83 @@ async def _mark_retry(
                 actual = await _select_owner(conn, sql, job_id)
                 raise WorkerOwnershipMismatch(job_id, worker_id, actual)
 
+            branch = rec["outcome_branch"]
             row = _job_row_from_record(rec)
             duration_ms = (
                 compute_duration_ms(row.started_at, clock.now())
-                if row.started_at is not None
-                else None
+                if row.started_at is not None and branch == "retried"
+                else compute_duration_ms(row.started_at, row.finished_at)
             )
 
-            await _insert_attempt(
-                conn,
-                sql,
-                job_id,
-                row.attempt,
-                row.started_at,
-                "failed",
-                error_info.error_class,
-                error_info.error_message,
-                error_info.error_traceback,
-                duration_ms,
-                worker_id,
-            )
-            await _insert_state_change_event(
-                conn,
-                sql,
-                job_id,
-                "running",
-                "scheduled",
-                error_class=error_info.error_class,
-                worker_id=worker_id,
-            )
+            if branch == "retried":
+                await _insert_attempt(
+                    conn,
+                    sql,
+                    job_id,
+                    row.attempt,
+                    row.started_at,
+                    "failed",
+                    error_info.error_class,
+                    error_info.error_message,
+                    error_info.error_traceback,
+                    duration_ms,
+                    worker_id,
+                )
+                await _insert_state_change_event(
+                    conn,
+                    sql,
+                    job_id,
+                    "running",
+                    "scheduled",
+                    error_class=error_info.error_class,
+                    worker_id=worker_id,
+                )
+            else:
+                # deadline_failed — the SQL deadline guard (the single
+                # arbiter) decided the retry cannot land before
+                # schedule_to_close; the row is terminal.  The attempt/event
+                # rows mirror mark_snoozed's deadline branch.
+                await _insert_attempt(
+                    conn,
+                    sql,
+                    job_id,
+                    row.attempt,
+                    row.started_at,
+                    "failed",
+                    "DeadlineExceeded",
+                    "schedule_to_close reached before next retry dispatch",
+                    None,
+                    duration_ms,
+                    worker_id,
+                )
+                await _insert_state_change_event(
+                    conn,
+                    sql,
+                    job_id,
+                    "running",
+                    "failed",
+                    error_class="DeadlineExceeded",
+                    worker_id=worker_id,
+                )
 
+    if branch == "retried":
+        log_state_change(
+            logger,
+            from_state="running",
+            to_state="scheduled",
+            job_id=str(job_id),
+            worker_id=str(worker_id),
+            attempt=row.attempt,
+        )
+        return row
     log_state_change(
         logger,
         from_state="running",
-        to_state="scheduled",
+        to_state="failed",
         job_id=str(job_id),
         worker_id=str(worker_id),
         attempt=row.attempt,
+        reason="schedule_to_close",
     )
     return row
 

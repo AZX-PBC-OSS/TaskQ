@@ -1235,6 +1235,14 @@ class JobsClient:
         Does NOT validate actor existence at creation time — any string
         actor name is accepted (validation is deferred to fire time).
 
+        The first ``next_fire_at`` is seeded from this process's local
+        clock (``compute_next_fire_after`` over ``datetime.now(UTC)``); the
+        cron loop's due-check is server-side, so app↔DB clock skew shifts
+        only the FIRST fire after creation by the skew (±S). The residual
+        is bounded and self-healing: the tick's catch-up recompute
+        re-anchors the fire chain to the PG server clock at the first tick
+        that sees the schedule.
+
         Args:
             dst_strategy: How to handle DST gaps and overlaps.
                 ``skip`` (default) advances past gaps, uses the first
@@ -1319,6 +1327,10 @@ class JobsClient:
         To explicitly clear ``payload_factory`` (set the column to NULL),
         pass ``clear_payload_factory=True`` — ``None`` for payload_factory
         means "don't change this field."
+
+        When *cron_expr* changes, the recomputed ``next_fire_at`` is seeded
+        from this process's local clock — the same first-fire ±S residual
+        (and self-healing at the next tick) as ``create_schedule``.
         """
         from taskq.cron import compute_next_fire_after
 

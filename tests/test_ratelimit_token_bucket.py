@@ -259,11 +259,21 @@ async def test_acquire_postgres_without_settings_raises() -> None:
         await tb.acquire(clock=FakeClock(_START), pg_pool=_FakePgPool())
 
 
-async def test_acquire_postgres_without_clock_raises() -> None:
-    """backend="postgres" requires clock; RuntimeError when absent."""
-    tb = _pg_bucket()
-    with pytest.raises(RuntimeError, match="clock not injected for postgres backend"):
-        await tb.acquire(pg_pool=_FakePgPool(), settings=_FakeSettings())
+async def test_acquire_postgres_works_without_python_clock() -> None:
+    """C8 pin: the postgres acquire path never consults a Python clock —
+    the epoch math runs on the server clock folded into the locked read —
+    so a missing *clock* argument is not an error (the memory backend is
+    the only path that requires one)."""
+    now = _START.timestamp()
+    pool = _FakeFullPgPool(
+        fetchrow_result={"state": f'{{"tokens": 10.0, "ts": {now}}}', "now_s": now}
+    )
+    tb = _pg_bucket(capacity=10, refill=1, name="pg-no-clock")
+
+    r = await tb.acquire(count=1, pg_pool=pool, settings=_FakeSettings())
+
+    assert r.allowed is True
+    assert r.backend == "postgres"
 
 
 # ── backend="postgres" never touches Redis ─────────────────────────────
@@ -280,7 +290,6 @@ async def test_postgres_backend_never_touches_redis(
         self: TokenBucket,
         count: float,
         pg_pool: object,
-        clock: object,
         settings: WorkerSettings,
     ) -> RateLimitDecision:
         pg_calls.append("called")
@@ -329,7 +338,6 @@ async def test_pg_fallback_disabled_re_raises(
         self: TokenBucket,
         count: float,
         pg_pool: object,
-        clock: object,
         settings: WorkerSettings,
     ) -> RateLimitDecision:
         pg_calls.append("called")
@@ -373,11 +381,15 @@ async def test_acquire_redis_without_settings_raises() -> None:
         await tb.acquire(redis_client=_FakeRedisClient(), clock=FakeClock(_START))
 
 
-async def test_acquire_redis_without_clock_raises() -> None:
-    """backend="redis" requires clock; RuntimeError when absent."""
+async def test_acquire_redis_works_without_python_clock() -> None:
+    """C8 pin: the redis acquire path never consults a Python clock — the
+    script derives now from redis TIME — so a missing *clock* argument is
+    not an error (the memory backend is the only path that requires one)."""
     tb = _redis_bucket()
-    with pytest.raises(RuntimeError, match="clock not injected for redis backend"):
-        await tb.acquire(redis_client=_FakeRedisClient(), settings=_FakeSettings())
+    r = await tb.acquire(redis_client=_FakeRedisClient(), settings=_FakeSettings())
+
+    assert r.backend == "redis"
+    assert r.allowed is True
 
 
 # ── Redis fake: ARGV order, key format, register_script once ─────────
@@ -411,12 +423,19 @@ class _FakeRedisClient:
         self.hmget_return: list[object] | None = None
         self.hmget_calls: list[tuple[str, list[str]]] = []
         self.deleted_keys: list[str] = []
+        # TIME-domain clock served to redis_time_seconds(); defaults to
+        # _START's epoch so ts-vs-now deltas are exactly zero unless a
+        # test overrides it.
+        self.time_return: list[int] = [int(_START.timestamp()), 0]
 
     def register_script(self, script: bytes) -> _FakeAsyncScript:
         self.register_script_calls.append(script)
         if self._custom_script is not None:
             return self._custom_script
         return _FakeAsyncScript(script)
+
+    async def time(self) -> list[int]:
+        return self.time_return
 
     async def hmget(self, key: str, fields: list[str]) -> list[object]:
         self.hmget_calls.append((key, fields))
@@ -451,13 +470,16 @@ class _NullAsyncCtx:
 
 class _FakePgConn:
     """Hand-rolled connection stub mimicking the asyncpg.Connection surface
-    used by TokenBucket's PG paths (fetchrow/execute/transaction)."""
+    used by TokenBucket's PG paths (fetchrow/fetchval/execute/transaction)."""
 
     def __init__(self, pool: "_FakeFullPgPool") -> None:
         self._pool = pool
 
     async def fetchrow(self, sql: str, *args: object) -> Any:
         return self._pool.fetchrow_result
+
+    async def fetchval(self, sql: str, *args: object) -> Any:
+        return self._pool.fetchval_result
 
     async def execute(self, sql: str, *args: object) -> None:
         self._pool.execute_calls.append((sql, args))
@@ -483,8 +505,11 @@ class _FakeFullPgPool:
     controls what ``conn.fetchrow`` returns regardless of what SQL is
     executed beforehand (e.g. simulating a row disappearing after preseed)."""
 
-    def __init__(self, fetchrow_result: object = None) -> None:
+    def __init__(self, fetchrow_result: object = None, fetchval_result: object = None) -> None:
         self.fetchrow_result = fetchrow_result
+        self.fetchval_result = (
+            fetchval_result if fetchval_result is not None else _START.timestamp()
+        )
         self.execute_calls: list[tuple[str, tuple[object, ...]]] = []
 
     def acquire(self) -> _FakeAcquireCtx:
@@ -514,13 +539,13 @@ async def test_redis_argv_order_and_key_format() -> None:
     key = call["keys"][0]
     assert key == "taskq:taskq_test:rl:tb:{my_bucket}"
 
+    # ARGV carries no clock: the script reads redis TIME for now.
     argv = call["args"]
-    assert len(argv) == 5
-    assert argv[0] == _START.timestamp()
-    assert argv[1] == 100.0
-    assert argv[2] == 10.0
-    assert argv[3] == 1.0
-    ttl_val = argv[4]
+    assert len(argv) == 4
+    assert argv[0] == 100.0
+    assert argv[1] == 10.0
+    assert argv[2] == 1.0
+    ttl_val = argv[3]
     assert ttl_val == math.ceil(100 / 10 * 2) + 60
 
 
@@ -668,8 +693,10 @@ async def test_refund_postgres_without_pg_pool_raises() -> None:
         await tb.refund(decision, clock=FakeClock(_START), settings=_FakeSettings())
 
 
-async def test_refund_postgres_without_clock_raises() -> None:
-    """backend="postgres" refund requires clock; RuntimeError when absent."""
+async def test_refund_postgres_works_without_python_clock() -> None:
+    """C8 pin: the postgres refund path never consults a Python clock —
+    a missing *clock* argument is not an error (the memory backend is the
+    only path that requires one). Row-absent refund is a no-op."""
     tb = _pg_bucket()
     decision = RateLimitDecision(
         allowed=True,
@@ -678,8 +705,9 @@ async def test_refund_postgres_without_clock_raises() -> None:
         bucket_name="pg-test",
         backend="postgres",
     )
-    with pytest.raises(RuntimeError, match="clock not injected for postgres backend refund"):
-        await tb.refund(decision, pg_pool=_FakePgPool(), settings=_FakeSettings())
+    await tb.refund(
+        decision, pg_pool=_FakeFullPgPool(fetchrow_result=None), settings=_FakeSettings()
+    )
 
 
 async def test_refund_postgres_without_settings_raises() -> None:
@@ -872,7 +900,8 @@ async def test_refund_redis_dispatches_to_refund_script() -> None:
     assert len(script_obj.calls) == 1
     call = script_obj.calls[0]
     assert call["keys"][0] == "taskq:taskq_test:rl:tb:{refund-redis}"
-    assert call["args"] == [5, _START.timestamp(), 100.0, 10.0]
+    # ARGV carries no clock: the script reads redis TIME for now.
+    assert call["args"] == [5, 100.0, 10.0]
 
 
 async def test_refund_unknown_backend_is_silent_noop() -> None:
@@ -902,13 +931,15 @@ async def test_refund_redis_without_client_raises() -> None:
         await tb.refund(decision, clock=FakeClock(_START), settings=_FakeSettings())
 
 
-async def test_refund_redis_without_clock_raises() -> None:
+async def test_refund_redis_works_without_python_clock() -> None:
+    """C8 pin: the redis refund path never consults a Python clock — the
+    script reads redis TIME — so a missing *clock* argument is not an
+    error."""
     tb = _redis_bucket()
     decision = RateLimitDecision(
         allowed=True, remaining=1.0, retry_after=timedelta(0), bucket_name="test", backend="redis"
     )
-    with pytest.raises(RuntimeError, match="clock not injected for redis backend refund"):
-        await tb.refund(decision, redis_client=_FakeRedisClient(), settings=_FakeSettings())
+    await tb.refund(decision, redis_client=_FakeRedisClient(), settings=_FakeSettings())
 
 
 async def test_refund_redis_without_settings_raises() -> None:
@@ -963,10 +994,17 @@ async def test_peek_redis_without_client_raises() -> None:
         await tb.peek(clock=FakeClock(_START), settings=_FakeSettings())
 
 
-async def test_peek_redis_without_clock_raises() -> None:
-    tb = _redis_bucket()
-    with pytest.raises(RuntimeError, match="clock not injected for redis backend"):
-        await tb.peek(redis_client=_FakeRedisClient(), settings=_FakeSettings())
+async def test_peek_redis_works_without_python_clock() -> None:
+    """C8 pin: the redis peek path never consults a Python clock — the
+    elapsed estimate runs on the store's clock (TIME)."""
+    client = _FakeRedisClient()
+    client.hmget_return = ["5.0", str(_START.timestamp())]
+    tb = _redis_bucket(capacity=5, refill=1, name="peek-no-clock")
+
+    state = await tb.peek(redis_client=client, settings=_FakeSettings())
+
+    assert state.is_exhausted is False
+    assert state.tokens_remaining == 5.0
 
 
 async def test_peek_redis_without_settings_raises() -> None:
@@ -976,13 +1014,16 @@ async def test_peek_redis_without_settings_raises() -> None:
 
 
 async def test_peek_redis_exhausted_computes_retry_after() -> None:
-    """peek() on redis with tokens<=0 and refill>0 computes a positive retry_after."""
+    """peek() on redis with tokens<=0 and refill>0 computes a positive retry_after.
+
+    The elapsed math runs on the store's clock: the fake serves _START's
+    epoch from time() and the same ts from hmget, so elapsed is exactly
+    zero."""
     client = _FakeRedisClient()
     client.hmget_return = ["0.0", str(_START.timestamp())]
     tb = _redis_bucket(capacity=5, refill=2, name="peek-exhausted")
-    clock = FakeClock(_START)
 
-    state = await tb.peek(redis_client=client, clock=clock, settings=_FakeSettings())
+    state = await tb.peek(redis_client=client, settings=_FakeSettings())
 
     assert state.is_exhausted is True
     assert state.backend == "redis"
@@ -995,7 +1036,7 @@ async def test_peek_redis_missing_key_defaults_to_full_capacity() -> None:
     client = _FakeRedisClient()
     tb = _redis_bucket(capacity=42, refill=1, name="peek-fresh")
 
-    state = await tb.peek(redis_client=client, clock=FakeClock(_START), settings=_FakeSettings())
+    state = await tb.peek(redis_client=client, settings=_FakeSettings())
 
     assert state.is_exhausted is False
     assert state.tokens_remaining == 42.0
@@ -1040,16 +1081,27 @@ async def test_peek_pg_without_settings_raises() -> None:
         await tb.peek(pg_pool=_FakeFullPgPool(), clock=FakeClock(_START))
 
 
-async def test_peek_pg_without_clock_raises() -> None:
-    tb = _pg_bucket()
-    with pytest.raises(RuntimeError, match="clock not injected for postgres backend"):
-        await tb.peek(pg_pool=_FakeFullPgPool(), settings=_FakeSettings())
+async def test_peek_pg_works_without_python_clock() -> None:
+    """C8 pin: the postgres peek path never consults a Python clock — the
+    elapsed estimate runs on the server epoch returned with the state."""
+    now = _START.timestamp()
+    pool = _FakeFullPgPool(
+        fetchrow_result={"state": f'{{"tokens": 5.0, "ts": {now}}}', "now_s": now}
+    )
+    tb = _pg_bucket(capacity=5, refill=1, name="pg-peek-no-clock")
+
+    state = await tb.peek(pg_pool=pool, settings=_FakeSettings())
+
+    assert state.is_exhausted is False
+    assert state.tokens_remaining == 5.0
 
 
 async def test_peek_pg_exhausted_computes_retry_after() -> None:
     """peek() on postgres with tokens<=0 and refill>0 computes a positive retry_after."""
     now = _START.timestamp()
-    pool = _FakeFullPgPool(fetchrow_result={"state": f'{{"tokens": 0.0, "ts": {now}}}'})
+    pool = _FakeFullPgPool(
+        fetchrow_result={"state": f'{{"tokens": 0.0, "ts": {now}}}', "now_s": now}
+    )
     tb = _pg_bucket(capacity=5, refill=2, name="pg-peek-exhausted")
 
     state = await tb.peek(pg_pool=pool, clock=FakeClock(_START), settings=_FakeSettings())
@@ -1102,7 +1154,7 @@ async def test_reset_pg_executes_delete() -> None:
 
 
 async def test_acquire_pg_defensive_row_none_uses_full_capacity() -> None:
-    pool = _FakeFullPgPool(fetchrow_result=None)
+    pool = _FakeFullPgPool(fetchrow_result=None, fetchval_result=_START.timestamp())
     tb = _pg_bucket(capacity=10, refill=1, name="pg-row-none")
 
     r = await tb.acquire(count=3, pg_pool=pool, clock=FakeClock(_START), settings=_FakeSettings())
@@ -1118,7 +1170,9 @@ async def test_acquire_pg_defensive_row_none_uses_full_capacity() -> None:
 async def test_acquire_pg_existing_row_allowed_decodes_state() -> None:
     """acquire() decodes an existing row's jsonb state and allows when tokens suffice."""
     now = _START.timestamp()
-    pool = _FakeFullPgPool(fetchrow_result={"state": f'{{"tokens": 10.0, "ts": {now}}}'})
+    pool = _FakeFullPgPool(
+        fetchrow_result={"state": f'{{"tokens": 10.0, "ts": {now}}}', "now_s": now}
+    )
     tb = _pg_bucket(capacity=10, refill=1, name="pg-row-existing-allowed")
 
     r = await tb.acquire(count=4, pg_pool=pool, clock=FakeClock(_START), settings=_FakeSettings())
@@ -1131,7 +1185,9 @@ async def test_acquire_pg_existing_row_allowed_decodes_state() -> None:
 async def test_acquire_pg_existing_row_denied_with_refill_computes_retry_after() -> None:
     """acquire() on an existing exhausted row with refill>0 denies and computes retry_after."""
     now = _START.timestamp()
-    pool = _FakeFullPgPool(fetchrow_result={"state": f'{{"tokens": 0.0, "ts": {now}}}'})
+    pool = _FakeFullPgPool(
+        fetchrow_result={"state": f'{{"tokens": 0.0, "ts": {now}}}', "now_s": now}
+    )
     tb = _pg_bucket(capacity=10, refill=2, name="pg-row-existing-denied")
 
     r = await tb.acquire(count=5, pg_pool=pool, clock=FakeClock(_START), settings=_FakeSettings())
@@ -1144,7 +1200,9 @@ async def test_acquire_pg_existing_row_denied_with_refill_computes_retry_after()
 async def test_acquire_pg_existing_row_denied_fixed_quota_retry_after_none() -> None:
     """acquire() on an existing exhausted row with refill=0 denies with retry_after=None."""
     now = _START.timestamp()
-    pool = _FakeFullPgPool(fetchrow_result={"state": f'{{"tokens": 0.0, "ts": {now}}}'})
+    pool = _FakeFullPgPool(
+        fetchrow_result={"state": f'{{"tokens": 0.0, "ts": {now}}}', "now_s": now}
+    )
     tb = _pg_bucket(capacity=10, refill=0, name="pg-row-existing-fixed")
 
     r = await tb.acquire(count=1, pg_pool=pool, clock=FakeClock(_START), settings=_FakeSettings())

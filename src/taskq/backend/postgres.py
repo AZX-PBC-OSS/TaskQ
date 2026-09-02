@@ -320,7 +320,6 @@ class PostgresBackend:
             self._worker_pool,
             self._sql,
             self._schema_name,
-            self._clock,
             args_list,
             connection=connection,
         )
@@ -335,7 +334,6 @@ class PostgresBackend:
             self._worker_pool,
             self._sql,
             self._schema_name,
-            self._clock,
             args_list,
             connection=connection,
         )
@@ -441,7 +439,7 @@ class PostgresBackend:
         job_id: JobId,
         worker_id: UUID,
         error_info: ErrorInfo,
-        next_scheduled_at: datetime | None,
+        retry_delay: timedelta | None,
         progress_seq: int = 0,
         progress_state: dict[str, object] | None = None,
     ) -> JobRow:
@@ -452,7 +450,7 @@ class PostgresBackend:
             job_id,
             worker_id,
             error_info,
-            next_scheduled_at,
+            retry_delay,
             progress_seq,
             progress_state,
         )
@@ -717,27 +715,22 @@ class PostgresBackend:
         return True
 
     # ── Scheduling / sweeps ─────────────────────────────────────────────
+    # No `now` parameter: every predicate is evaluated server-side
+    # (clock_timestamp()) — the server clock is the arbiter.
 
-    async def scheduled_to_pending(self, now: datetime) -> int:
-        # `now` is part of the Backend protocol (InMemoryBackend genuinely
-        # needs it — it has no server clock of its own) but PostgresBackend
-        # ignores it: the sweep uses server-side clock_timestamp().
-        del now
+    async def scheduled_to_pending(self) -> int:
         async with self._notify_pool.acquire() as conn:
             return await sweep_scheduled_to_pending(conn, schema=self._schema_name)
 
-    async def deadline_sweep(self, now: datetime) -> int:
-        del now  # Why: see scheduled_to_pending above.
+    async def deadline_sweep(self) -> int:
         async with self._notify_pool.acquire() as conn:
             return await sweep_deadline_exceeded(conn, schema=self._schema_name)
 
     async def reclaim_expired_locks(
         self,
-        now: datetime,
         cancel_grace: timedelta,
         cleanup_grace: timedelta,
     ) -> int:
-        del now  # Why: see scheduled_to_pending above.
         async with self._notify_pool.acquire() as conn:
             return await sweep_expired_locks(
                 conn, cancel_grace, cleanup_grace, schema=self._schema_name
@@ -858,7 +851,6 @@ class PostgresBackend:
             self._schema_name,
             self._sql,
             self._batch_sql,
-            self._clock,
             items,
             batch_id=batch_id,
             queue=queue,

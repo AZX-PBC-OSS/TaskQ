@@ -18,6 +18,7 @@ Both backends unavailable — stop both Redis and PG; acquire() raises
 error propagates without WARNING (no fallback attempted).
 """
 
+import asyncio
 from datetime import timedelta
 
 import asyncpg
@@ -84,7 +85,10 @@ async def test_redis_to_pg_degradation(
         backend="redis",
         style=style,
     )
-    client = await _make_redis_client(redis_url_for(killable_redis_container))
+    # Why: redis_url_for resolves the mapped port via docker HTTP — off-loop.
+    client = await _make_redis_client(
+        await asyncio.to_thread(redis_url_for, killable_redis_container)
+    )
 
     try:
         r = await sw.acquire(
@@ -93,7 +97,9 @@ async def test_redis_to_pg_degradation(
         assert r.allowed is True
         assert r.backend == "redis"
 
-        killable_redis_container.stop()  # type: ignore[union-attr] # Why: RedisContainer.stop(); the fixture is typed object to avoid transitive imports
+        # Why: docker-py stop blocks the loop for the whole HTTP round-trip
+        # (measured 2.4-3.8s continuous loop stalls) — off-loop.
+        await asyncio.to_thread(killable_redis_container.stop)  # type: ignore[union-attr] # Why: fixture typed object to avoid transitive imports
 
         r2 = await sw.acquire(
             redis_client=client, pg_pool=module_pg_pool, clock=clock, settings=settings
@@ -103,7 +109,8 @@ async def test_redis_to_pg_degradation(
         assert r2.allowed is True
     finally:
         try:
-            killable_redis_container.start()  # type: ignore[union-attr] # Why: as above
+            # Why: docker-py start (+ readiness wait) blocks the loop — off-loop.
+            await asyncio.to_thread(killable_redis_container.start)  # type: ignore[union-attr] # Why: fixture typed object to avoid transitive imports
         except Exception as exc:
             structlog.get_logger("taskq.test_chaos").warning(
                 "redis-container-restart-failed",
@@ -143,7 +150,10 @@ async def test_redis_dies_mid_lua(
         backend="redis",
         style=style,
     )
-    client = await _make_redis_client(redis_url_for(killable_redis_container))
+    # Why: redis_url_for resolves the mapped port via docker HTTP — off-loop.
+    client = await _make_redis_client(
+        await asyncio.to_thread(redis_url_for, killable_redis_container)
+    )
 
     try:
         r = await sw.acquire(
@@ -152,7 +162,9 @@ async def test_redis_dies_mid_lua(
         assert r.allowed is True
         assert r.backend == "redis"
 
-        killable_redis_container.stop()  # type: ignore[union-attr] # Why: RedisContainer.stop(); the fixture is typed object to avoid transitive imports
+        # Why: docker-py stop blocks the loop for the whole HTTP round-trip
+        # (measured 2.4-3.8s continuous loop stalls) — off-loop.
+        await asyncio.to_thread(killable_redis_container.stop)  # type: ignore[union-attr] # Why: fixture typed object to avoid transitive imports
 
         r2 = await sw.acquire(
             redis_client=client, pg_pool=module_pg_pool, clock=clock, settings=settings
@@ -180,7 +192,8 @@ async def test_redis_dies_mid_lua(
             assert row["kind"] == "gcra"
     finally:
         try:
-            killable_redis_container.start()  # type: ignore[union-attr] # Why: RedisContainer.start(); the fixture is typed object to avoid transitive imports
+            # Why: docker-py start (+ readiness wait) blocks the loop — off-loop.
+            await asyncio.to_thread(killable_redis_container.start)  # type: ignore[union-attr] # Why: fixture typed object to avoid transitive imports
         except Exception as exc:
             structlog.get_logger("taskq.test_chaos").warning(
                 "redis-container-restart-failed",

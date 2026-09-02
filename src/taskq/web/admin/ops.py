@@ -363,7 +363,7 @@ def register(router: APIRouter) -> None:
                 payload=payload,
                 max_attempts=ac_row["max_attempts"],
                 retry_kind=parse_retry_kind(ac_row["retry_kind"]),
-                scheduled_at=SystemClock().now(),
+                scheduled_at=None,  # Why: "run now" is immediate — the server stamps and decides, immune to app↔DB clock skew.
             )
 
         await backend.enqueue(args)

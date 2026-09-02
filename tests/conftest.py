@@ -1,10 +1,14 @@
 """Shared test fixtures.
 
-The ``pg_container`` fixture is session-scoped — Postgres takes a few seconds
-to come up and we don't want to repeat that per test. Each test using
-``pg_conn`` gets a fresh connection on the shared container, and the
-``settings`` fixture sets ``TASKQ_*`` env vars so :meth:`TaskQSettings.load`
-sees the per-test values.
+Container topology: ONE Postgres + ONE Dragonfly shared across ALL xdist
+workers of a run (see :mod:`taskq.testing._shared_containers` — the first
+session fixture to take the state-dir file lock starts the pair; every other
+worker reuses it; a refcount tears it down when the last worker finishes).
+Under the old per-worker-session design a ``-n 4`` run booted four Postgres
+plus four Dragonfly containers, and that contention is what made heavy PG
+tests trip internal timeouts intermittently. Per-worker isolation on the
+shared containers is preserved: every module gets its own PG database
+(``pg_dsn``) and every Redis consumer its own logical DB.
 
 Tests that need PG are marked ``integration`` so non-integration runs (e.g.
 ``pytest -m 'not integration'``) skip them entirely.
@@ -24,13 +28,14 @@ import contextlib
 import glob
 import os
 from collections.abc import AsyncIterator, Iterator
+from dataclasses import dataclass
 
 import asyncpg
 import pytest
 import pytest_asyncio
-from testcontainers.postgres import PostgresContainer
 
 from taskq.settings import OIDCSettings, SAMLSettings, TaskQSettings
+from taskq.testing._shared_containers import shared_service_pair
 from taskq.testing.actor import (
     EmptyPayload,
     FakeBackend,
@@ -51,6 +56,7 @@ from taskq.testing.assertions import (
     wait_for_leader,
 )
 from taskq.testing.fixtures import (
+    RUN_TOKEN_ENV_VAR,
     JobsApp,
     ModulePgSchema,
     actor_runner,
@@ -68,6 +74,7 @@ from taskq.testing.fixtures import (
     module_redis_url,
     redis_container,
     redis_url,
+    run_isolation_token,
     worker_with_running_job,
 )
 from taskq.testing.health import unique_health_sock_path
@@ -171,8 +178,8 @@ def _isolate_health_server_socket(  # pyright: ignore[reportUnusedFunction]  # W
 def _reset_oidc_saml_cached() -> Iterator[None]:  # pyright: ignore[reportUnusedFunction]  # Why: autouse fixture consumed implicitly by the test runner.
     """Reset dotenvmodel cached() singletons for OIDC/SAML settings after each test.
 
-    ``settings.oidc`` and ``settings.saml`` use ``OIDCSettings.cached()`` /
-    ``SAMLSettings.cached()`` (dotenvmodel 0.6.3+), which returns a process-wide
+    ``settings.oidc`` and ``settings.saml`` use dotenvmodel's
+    ``OIDCSettings.cached()`` / ``SAMLSettings.cached()``, which returns a process-wide
     singleton — the environment is read on first access and the same instance
     returned thereafter. Without this reset, a test that sets
     ``TASKQ_OIDC_*`` / ``TASKQ_SAML_*`` env vars and accesses the property
@@ -237,6 +244,44 @@ def _sweep_health_sock_files() -> Iterator[None]:  # pyright: ignore[reportUnuse
     for path in glob.glob(f"/tmp/tq-*-{os.getpid()}-*.sock"):  # noqa: S108  # Why: matches unique_health_sock_path's own prefix.
         with contextlib.suppress(OSError):
             os.unlink(path)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _publish_run_isolation_token(  # pyright: ignore[reportUnusedFunction]  # Why: autouse fixture consumed implicitly by the test runner; pyright does not track fixture usage.
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Iterator[None]:
+    """Publish the per-invocation isolation token for this run, once, before
+    any naming helper runs (autouse session fixtures instantiate before every
+    module/function fixture of the tests they apply to).
+
+    The token feeds every hashed per-module/per-test database and schema name
+    (``_module_db_name`` here, ``_schema_name_from_test`` /
+    ``_schema_name_from_module`` in :mod:`taskq.testing.fixtures`) via
+    :func:`taskq.testing.fixtures.run_isolation_token`. Without it, two
+    concurrent bare-``pytest`` invocations of the same module hashed to the
+    SAME database on the SAME shared pair — serial runs share
+    ``/tmp/pytest-of-<user>`` (the shared-pair state dir) across all
+    invocations and the ``worker-or-"master"`` fallback is
+    invocation-invariant — and each run's ``DROP DATABASE ... WITH (FORCE)``
+    killed the other's live pools mid-test (redteam-reproduced: both runs
+    rc=1 on one ``tq_db_*`` name).
+
+    Under xdist the worker id is already invocation-unique (each worker's
+    state dir is ``<basetemp>/popen-gwK`` with a per-invocation basetemp), so
+    it IS the token and per-worker names are unchanged. Serial runs use the
+    invocation-unique basetemp dir name (``pytest-N``) — pytest allocates it
+    under a lock, so two overlapping runs can never hold the same one.
+    """
+    token = os.environ.get("PYTEST_XDIST_WORKER") or tmp_path_factory.getbasetemp().name
+    previous = os.environ.get(RUN_TOKEN_ENV_VAR)
+    os.environ[RUN_TOKEN_ENV_VAR] = token
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop(RUN_TOKEN_ENV_VAR, None)
+        else:
+            os.environ[RUN_TOKEN_ENV_VAR] = previous
 
 
 class _FakePool:
@@ -392,36 +437,63 @@ __all__ = [
 ]
 
 
-@pytest.fixture(scope="session")
-def pg_container() -> Iterator[PostgresContainer]:
-    """Boot a Postgres 18 container for the test session.
-
-    ``max_connections=1000`` accommodates parallel test workers (``-n auto``
-    on 32-core machines opens 32 x ~22 connections = ~700, which exceeds
-    PostgreSQL's default of 100).
+@dataclass(frozen=True, slots=True)
+class _PgContainerShim:
+    """Minimal shim matching the ``PostgresContainer`` surface TaskQ's tests use:
+    ``get_connection_url()``. Wraps the SHARED container pair's DSN so tests that
+    take ``pg_container`` as a fixture parameter work without starting a
+    per-worker container. The DSN is the asyncpg-friendly ``postgresql://`` form
+    (the real container returns ``postgresql+psycopg2://``; every consumer
+    here replaces that prefix, so the shim returns the replaced form directly).
     """
-    with PostgresContainer(
-        image="postgres:18-alpine",
-        username="taskq",
-        password="taskq",
-        dbname="taskq",
-        command="-c max_connections=1000",
-    ) as container:
-        yield container
+
+    dsn: str
+
+    def get_connection_url(self) -> str:
+        return self.dsn
+
+
+@pytest.fixture(scope="session")
+def pg_container(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Iterator[_PgContainerShim]:
+    """One shared Postgres 18 container for the whole run — every xdist worker.
+
+    Backs onto :func:`taskq.testing._shared_containers.shared_service_pair`
+    (file lock + refcount in the per-run state dir): the first worker to take
+    the lock boots the tuned container (``max_connections=1000`` serving ALL
+    workers on ONE container, plus checkpoint tuning — see that module for the
+    measured rationale), later workers reuse it, and the last worker to finish
+    removes it. Tests that must STOP/PAUSE/MUTATE a Postgres (chaos, ALTER USER)
+    get their own disposable container instead — never this one.
+    """
+    with shared_service_pair(tmp_path_factory.getbasetemp().parent) as services:
+        delta = _pg_clock_delta(services.pg_dsn)
+        if abs(delta) > 0.25:
+            print(
+                f"[TaskQ] application and database clocks diverge by {delta:+.3f}s "
+                "(positive = app ahead). While this persists, wall-clock comparisons "
+                "across the two domains are unreliable — VM pause/resume and NTP drift "
+                "are common causes. Same-statement single-domain comparisons (this "
+                "suite's timing tests) are unaffected."
+            )
+        yield _PgContainerShim(dsn=services.pg_dsn)
 
 
 def _module_db_name(request: pytest.FixtureRequest) -> str:
     """Derive a unique, lowercase database name from the test module path.
 
-    Mirrors the schema-name hashing in ``taskq.testing.fixtures`` (worker
-    id included so the same module on parallel xdist workers gets distinct
-    databases), sized well under PostgreSQL's 63-char identifier limit.
+    Mirrors the schema-name hashing in ``taskq.testing.fixtures`` (the run
+    isolation token from :func:`run_isolation_token` is included so the same
+    module gets distinct databases across parallel xdist workers AND across
+    concurrent serial invocations sharing one container pair), sized well
+    under PostgreSQL's 63-char identifier limit.
     """
     import hashlib
 
-    worker = os.environ.get("PYTEST_XDIST_WORKER", "master")
+    token = run_isolation_token()
     full = request.module.__name__.replace(".", "_").replace("/", "_").lower()
-    return "tq_db_" + hashlib.md5(f"{worker}_{full}".encode()).hexdigest()[:12]  # noqa: S324 # Why: non-cryptographic hash for test database naming; collisions across ~100 modules are negligible.
+    return "tq_db_" + hashlib.md5(f"{token}_{full}".encode()).hexdigest()[:12]  # noqa: S324 # Why: non-cryptographic hash for test database naming; collisions across ~100 modules are negligible.
 
 
 def _pg_admin(base_dsn: str, *statements: str) -> None:
@@ -461,17 +533,66 @@ def _pg_admin(base_dsn: str, *statements: str) -> None:
         raise error[0]
 
 
+def _pg_clock_delta(base_dsn: str) -> float:
+    """Seconds between the application and database clocks (app minus DB).
+
+    Read once at container startup so divergence is attributed loudly
+    instead of silently corrupting wall-clock comparisons: the two clocks
+    are independent and can diverge or step (VM pause/resume and NTP drift
+    are common causes). Same private-thread pattern as ``_pg_admin``.
+
+    One-shot diagnostic, not a guard: it cannot see divergence that begins
+    AFTER session start (a mid-run VM pause steps the clocks with no
+    follow-up probe) — same-statement single-domain comparisons (this
+    suite's timing tests) are unaffected either way.
+    """
+    import asyncio
+    import threading
+    import time
+
+    result: list[float] = []
+    error: list[BaseException] = []
+
+    def _target() -> None:
+        async def _go() -> None:
+            conn = await asyncpg.connect(base_dsn)
+            try:
+                pg_epoch = await conn.fetchval("SELECT EXTRACT(EPOCH FROM clock_timestamp())")
+            finally:
+                await conn.close()
+            result.append(float(pg_epoch) - time.time())
+
+        try:
+            asyncio.run(_go())
+        except BaseException as exc:  # Why: re-raised in the calling thread below.
+            error.append(exc)
+
+    t = threading.Thread(target=_target, daemon=True)
+    t.start()
+    t.join(timeout=30)
+    if t.is_alive():
+        raise TimeoutError("clock-divergence probe timed out")
+    if error:
+        raise error[0]
+    return result[0]
+
+
 @pytest.fixture(scope="module")
-def pg_dsn(pg_container: PostgresContainer, request: pytest.FixtureRequest) -> Iterator[str]:
+def pg_dsn(pg_container: _PgContainerShim, request: pytest.FixtureRequest) -> Iterator[str]:
     """Module-scoped database on the shared container; DSN pointing at it.
 
-    Every test module gets its OWN database — schema-level isolation in a
-    shared database still shares cluster-wide state (advisory locks,
-    pg_stat_activity, connection pressure), which let modules clobber each
-    other. The database is dropped (FORCE) on module teardown; a
-    drop-if-exists at setup clears stale state from crashed runs.
+    Every test module gets its OWN database on the ONE shared container —
+    schema-level isolation in a shared database still shares cluster-wide
+    state (advisory locks, pg_stat_activity, connection pressure), which let
+    modules clobber each other. The database name is hashed with the run
+    isolation token (see ``_publish_run_isolation_token``), so the same
+    module gets distinct databases on parallel xdist workers AND in
+    concurrent serial runs sharing the pair. The database is dropped
+    (FORCE) on module teardown (cheap on the tuned shared cluster — see
+    ``taskq.testing._shared_containers``); a drop-if-exists at setup clears
+    stale state from crashed runs.
     """
-    base_dsn = pg_container.get_connection_url().replace("postgresql+psycopg2://", "postgresql://")
+    base_dsn = pg_container.get_connection_url()
     db_name = _module_db_name(request)
 
     _pg_admin(

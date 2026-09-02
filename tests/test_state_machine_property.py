@@ -223,13 +223,13 @@ class JobStateMachine(RuleBasedStateMachine):
         wid = row.locked_by_worker
         if wid is None:
             return
-        now = self.backend._clock.now()  # type: ignore[reportPrivateUsage] # Why: test-only private access
-        next_scheduled = now + timedelta(seconds=5)
         error_info = ErrorInfo(
             error_class="TransientError", error_message="retry", error_traceback=None
         )
         with suppress(WorkerOwnershipMismatch):
-            asyncio.run(self.backend.mark_failed_or_retry(job_id, wid, error_info, next_scheduled))
+            asyncio.run(
+                self.backend.mark_failed_or_retry(job_id, wid, error_info, timedelta(seconds=5))
+            )
 
     # ── Mark retry-after: running -> scheduled (via RetryAfter) ────────
     # Exercises RetryAfter running→scheduled, MaxAttemptsExceeded
@@ -254,10 +254,9 @@ class JobStateMachine(RuleBasedStateMachine):
     @precondition(lambda self: bool(self._expired_lock_running()))
     @rule()
     def reclaim_expired_locks_rule(self) -> None:
-        now = self.backend._clock.now()  # type: ignore[reportPrivateUsage] # Why: test-only private access
         asyncio.run(
             self.backend.reclaim_expired_locks(
-                now, cancel_grace=_CANCEL_GRACE, cleanup_grace=_CLEANUP_GRACE
+                cancel_grace=_CANCEL_GRACE, cleanup_grace=_CLEANUP_GRACE
             )
         )
 
@@ -356,8 +355,7 @@ class JobStateMachine(RuleBasedStateMachine):
             return
         earliest = min(scheduled)
         self.backend.advance_clock_to(earliest + timedelta(seconds=1))
-        now = self.backend._clock.now()  # type: ignore[reportPrivateUsage] # Why: test-only private access
-        asyncio.run(self.backend.scheduled_to_pending(now))
+        asyncio.run(self.backend.scheduled_to_pending())
 
     # ── Cancel-during-wake-window: promote then cancel ────────────────
     # Deliberately interleaves promote_scheduled with cancel_pending_rule
@@ -372,8 +370,7 @@ class JobStateMachine(RuleBasedStateMachine):
             return
         earliest = row.scheduled_at
         self.backend.advance_clock_to(earliest + timedelta(seconds=1))
-        now = self.backend._clock.now()  # type: ignore[reportPrivateUsage] # Why: test-only private access
-        asyncio.run(self.backend.scheduled_to_pending(now))
+        asyncio.run(self.backend.scheduled_to_pending())
         updated = self.backend._jobs.get(job_id)  # type: ignore[reportPrivateUsage] # Why: test-only private access
         if updated is not None and updated.status == "pending":
             asyncio.run(self.backend.write_cancel_request(job_id, "cancel during wake"))

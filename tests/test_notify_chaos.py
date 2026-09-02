@@ -23,13 +23,14 @@ import asyncpg
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
-from testcontainers.postgres import PostgresContainer
+from testcontainers.community.postgres import PostgresContainer
 
 from taskq._ids import new_base62, new_uuid
 from taskq.backend.clock import SystemClock
 from taskq.backend.postgres import PostgresBackend
 from taskq.constants import wake_channel
 from taskq.settings import WorkerSettings
+from taskq.testing._shared_containers import creator_labels
 from taskq.testing.fixtures import _create_worker
 from taskq.testing.settings import make_integration_settings
 from taskq.worker.notify import _active_listeners as _active_notify_listeners
@@ -105,7 +106,7 @@ def pg_container_function_scoped() -> Iterator[PostgresContainer]:
         username="taskq",
         password="taskq",
         dbname="taskq",
-    )
+    ).with_kwargs(labels=creator_labels())
     container.with_bind_ports(5432, free_host_port())
     with container:
         yield container
@@ -204,7 +205,8 @@ async def test_tc2_pg_container_stop_start(
 
     Marked ``@pytest.mark.slow`` — opt-in for routine CI.
     """
-    pg_dsn = pg_container_function_scoped.get_connection_url().replace(
+    # Why: get_connection_url resolves the mapped port via docker HTTP — off-loop.
+    pg_dsn = (await asyncio.to_thread(pg_container_function_scoped.get_connection_url)).replace(
         "postgresql+psycopg2://", "postgresql://"
     )
     ws = WorkerSettings.load_from_dict(
@@ -239,12 +241,15 @@ async def test_tc2_pg_container_stop_start(
                 await asyncio.sleep(0.2)
 
                 wrapped = pg_container_function_scoped.get_wrapped_container()
-                wrapped.stop()
+                # Why: docker-py stop blocks the loop for the whole HTTP round-trip
+                # (measured 2.4-3.8s continuous loop stalls) — off-loop.
+                await asyncio.to_thread(wrapped.stop)
                 await asyncio.sleep(2.0)
 
                 for _attempt in range(3):
                     try:
-                        wrapped.start()
+                        # Why: docker-py start blocks the loop — off-loop.
+                        await asyncio.to_thread(wrapped.start)
                         break
                     except Exception:
                         if _attempt == 2:
@@ -255,9 +260,10 @@ async def test_tc2_pg_container_stop_start(
                 # reconnect_notify_conn uses the current port. The factory is
                 # a closure that captured the old DSN at startup — it must be
                 # replaced with a new closure pointing at the new port.
-                pg_dsn = pg_container_function_scoped.get_connection_url().replace(
-                    "postgresql+psycopg2://", "postgresql://"
-                )
+                # Why: get_connection_url resolves the mapped port via docker HTTP — off-loop.
+                pg_dsn = (
+                    await asyncio.to_thread(pg_container_function_scoped.get_connection_url)
+                ).replace("postgresql+psycopg2://", "postgresql://")
                 from taskq.worker.deps import open_dedicated_conn
 
                 async def _new_notify_factory() -> asyncpg.Connection:
@@ -318,7 +324,6 @@ async def test_tc3_shutdown_mid_reconnect() -> None:
             "notify_health_check_interval": "0.001",
         }
     )
-    deps.settings.pg_dsn_direct = deps.settings.pg_dsn  # pyright: ignore[reportAttributeAccessIssue] # Why: ensure direct DSN is set for _reconnect tests
 
     mock_conn = Mock()
     mock_conn.add_listener = AsyncMock()

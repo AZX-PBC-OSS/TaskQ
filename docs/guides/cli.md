@@ -1,6 +1,6 @@
 # CLI reference
 
-The `taskq` CLI is the primary operational interface for managing migrations, running workers, probing health, and serving the admin UI. All commands load settings from `TASKQ_*` environment variables or `.env` files via dotenvmodel.
+The `taskq` CLI is the primary operational interface for managing migrations, running workers, probing health, and serving the admin UI. All commands load settings from `TASKQ_*` environment variables or `.env` files via dotenvmodel; environment variables take precedence over `.env` files.
 
 ## Installation
 

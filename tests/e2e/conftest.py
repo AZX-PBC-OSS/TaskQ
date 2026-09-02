@@ -31,6 +31,8 @@ from uuid import uuid4
 import pytest
 import pytest_asyncio
 
+from taskq.testing._shared_containers import cleanup_stale_testcontainers, creator_labels
+
 from ._assertions import poll_until, wait_for_worker_ready
 
 if TYPE_CHECKING:
@@ -125,9 +127,21 @@ class E2EWorker(NamedTuple):
 def e2e_network() -> Iterator[Network]:
     """One Docker network per test process (pid-suffixed so parallel
     validations never collide), shared by the PG, Dragonfly, and worker
-    containers."""
+    containers.
+
+    The stale sweep runs here — the first fixture in the session's container
+    dependency graph — because e2e never starts the shared pair (the only
+    other sweep entry point). With Ryuk disabled process-wide (see
+    :mod:`taskq.testing._shared_containers`), this is what reaps a CRASHED
+    run's leftovers: labeled containers whose owner pids are dead, exited
+    unlabeled ones, and this suite's pid-suffixed networks. Live runs are
+    safe: their containers' ownership labels and network pid suffixes prove
+    liveness to the sweep. Best-effort by design — a Docker hiccup never
+    blocks the session.
+    """
     from testcontainers.core.network import Network
 
+    cleanup_stale_testcontainers()
     network = Network()
     network.name = f"taskq-e2e-net-{os.getpid()}"
     with network:
@@ -162,8 +176,14 @@ async def _probe_pg(dsn: str, *, attempts: int = 30, interval: float = 0.5) -> N
 @pytest.fixture(scope="session")
 def e2e_pg(e2e_network: Network) -> Iterator[E2EPg]:
     """Session PG container on the shared network (alias ``pg`` for workers),
-    probed with asyncpg before yielding both the host and in-network DSNs."""
-    from testcontainers.postgres import PostgresContainer
+    probed with asyncpg before yielding both the host and in-network DSNs.
+
+    Labeled with the ownership labels: Ryuk is disabled process-wide (see
+    :mod:`taskq.testing._shared_containers`), so labeling is what lets a
+    future run's sweep remove this container if the session crashes — an
+    unlabeled RUNNING leftover would otherwise be kept for 24h.
+    """
+    from testcontainers.community.postgres import PostgresContainer
 
     container = PostgresContainer(
         image=_PG_IMAGE,
@@ -175,6 +195,7 @@ def e2e_pg(e2e_network: Network) -> Iterator[E2EPg]:
         # asyncpg pools would otherwise approach PG's default of 100.
         command="-c max_connections=1000",
     )
+    container.with_kwargs(labels=creator_labels())
     container.with_network(e2e_network).with_network_aliases("pg")
     with container:
         host_dsn = container.get_connection_url().replace("postgresql+psycopg2://", "postgresql://")
@@ -193,36 +214,30 @@ def e2e_pg(e2e_network: Network) -> Iterator[E2EPg]:
 def e2e_dragonfly(e2e_network: Network) -> Iterator[E2EDragonfly]:
     """Session Dragonfly container (Redis-compatible) on the shared network
     (alias ``dragonfly``), started with enough logical DBs for one per test
-    module, PING-probed before yielding host and in-network base URLs."""
-    import warnings
+    module, PING-probed before yielding host and in-network base URLs.
 
-    from testcontainers.redis import RedisContainer
+    Labeled with the ownership labels for sweepability under disabled Ryuk —
+    see ``e2e_pg``.
+    """
+    from testcontainers.community.redis import RedisContainer
 
-    with warnings.catch_warnings():
-        warnings.filterwarnings(
-            "ignore",
-            message=".*wait_container_is_ready.*",
-            category=DeprecationWarning,
-            module="testcontainers.redis",
+    container = RedisContainer(image=_DRAGONFLY_IMAGE).with_command(f"--dbnum {_DRAGONFLY_DBNUM}")
+    container.with_kwargs(labels=creator_labels())
+    container.with_network(e2e_network).with_network_aliases("dragonfly")
+    with container:
+        client = container.get_client()
+        try:
+            if not client.ping():
+                msg = "Dragonfly PING probe returned falsy"
+                raise RuntimeError(msg)
+        finally:
+            client.close()
+        host = container.get_container_host_ip()
+        port = container.get_exposed_port(6379)
+        yield E2EDragonfly(
+            host_url=f"redis://{host}:{port}",
+            network_url=_IN_NETWORK_DRAGONFLY_URL,
         )
-        container = RedisContainer(image=_DRAGONFLY_IMAGE).with_command(
-            f"--dbnum {_DRAGONFLY_DBNUM}"
-        )
-        container.with_network(e2e_network).with_network_aliases("dragonfly")
-        with container:
-            client = container.get_client()
-            try:
-                if not client.ping():
-                    msg = "Dragonfly PING probe returned falsy"
-                    raise RuntimeError(msg)
-            finally:
-                client.close()
-            host = container.get_container_host_ip()
-            port = container.get_exposed_port(6379)
-            yield E2EDragonfly(
-                host_url=f"redis://{host}:{port}",
-                network_url=_IN_NETWORK_DRAGONFLY_URL,
-            )
 
 
 # ── Session: worker image ─────────────────────────────────────────────────
@@ -506,6 +521,12 @@ async def e2e_worker(
     from testcontainers.core.container import DockerContainer
 
     container = DockerContainer(image=e2e_worker_image.tag)
+    # Ownership labels: Ryuk is disabled process-wide, so a crashed session's
+    # worker containers must stay sweepable via the e2e sweep (the
+    # ``taskq-e2e-worker`` image prefix makes them sweep candidates; the
+    # labels let the sweep remove RUNNING leftovers once their owner pids
+    # die, instead of keeping them for the 24h backstop).
+    container.with_kwargs(labels=creator_labels())
     container.with_network(e2e_network).with_network_aliases(f"worker-{e2e_schema.schema_name}")
     for key, value in e2e_schema.worker_env.items():
         container.with_env(key, value)
