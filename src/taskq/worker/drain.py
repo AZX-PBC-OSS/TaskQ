@@ -71,6 +71,11 @@ async def drain_monitor_loop(
     (after all phase work completes), exactly as the SIGTERM signal
     handler does.
 
+    Forgets the liveness registration on every exit path (same contract
+    as the producer loop, run.py): the monitor stops ticking the moment
+    it returns, while the watchdog keeps sweeping until the
+    orchestration's finally sets shutdown_event.
+
     Double-orchestration guard (H2): if orchestrator_holder is already
     non-empty or deps.shutdown_phase is not ShutdownPhase.NONE, the
     monitor skips triggering — a SIGTERM-driven orchestration is already
@@ -89,65 +94,19 @@ async def drain_monitor_loop(
         worker_id=str(worker_id),
     )
 
-    while not shutdown_event.is_set():
-        deps.liveness.tick("drain_monitor", period=idle_poll_interval)
+    try:
+        while not shutdown_event.is_set():
+            deps.liveness.tick("drain_monitor", period=idle_poll_interval)
 
-        # Check max_runtime
-        if max_runtime is not None:
-            elapsed = time.monotonic() - start_time
-            if elapsed >= max_runtime:
-                _log.info(
-                    "drain-monitor-timeout",
-                    elapsed=elapsed,
-                    max_runtime=max_runtime,
-                    worker_id=str(worker_id),
-                )
-                await _trigger_drain_shutdown(
-                    deps,
-                    settings,
-                    worker_id,
-                    shutdown_event,
-                    escalate_event,
-                    orchestrator_holder,
-                    backend,
-                    exit_code=EXIT_DRAIN_TIMEOUT,
-                )
-                return
-
-        # Check idle condition — catch only recoverable transient errors
-        # (F3). Non-recoverable errors propagate and tear down the TaskGroup.
-        try:
-            queue_count = await asyncio.wait_for(
-                backend.count_active_jobs(queues),
-                timeout=max(idle_poll_interval * 5, 10.0),
-            )
-        except TRANSIENT_PG_ERRORS:
-            _log.warning("drain-monitor-count-error", worker_id=str(worker_id))
-            queue_count = -1  # unknown — don't trigger
-
-        active_count = deps.active_jobs.count()
-        is_idle = queue_count == 0 and active_count == 0
-
-        if is_idle:
-            if idle_since is None:
-                idle_since = time.monotonic()
-                _log.debug(
-                    "drain-monitor-idle-detected",
-                    worker_id=str(worker_id),
-                    queue_count=queue_count,
-                    active_count=active_count,
-                )
-            else:
-                idle_elapsed = time.monotonic() - idle_since
-                if idle_elapsed >= idle_settle_window:
+            # Check max_runtime
+            if max_runtime is not None:
+                elapsed = time.monotonic() - start_time
+                if elapsed >= max_runtime:
                     _log.info(
-                        "drain-monitor-drained",
+                        "drain-monitor-timeout",
+                        elapsed=elapsed,
+                        max_runtime=max_runtime,
                         worker_id=str(worker_id),
-                        idle_elapsed=idle_elapsed,
-                        drain_failures=deps.drain_failures,
-                    )
-                    exit_code = (
-                        EXIT_DRAIN_WITH_FAILURES if deps.drain_failures > 0 else EXIT_DRAIN_CLEAN
                     )
                     await _trigger_drain_shutdown(
                         deps,
@@ -157,21 +116,78 @@ async def drain_monitor_loop(
                         escalate_event,
                         orchestrator_holder,
                         backend,
-                        exit_code=exit_code,
+                        exit_code=EXIT_DRAIN_TIMEOUT,
                     )
                     return
-        else:
-            if idle_since is not None:
-                _log.debug(
-                    "drain-monitor-idle-reset",
-                    worker_id=str(worker_id),
-                    queue_count=queue_count,
-                    active_count=active_count,
-                )
-            idle_since = None
 
-        # Wait for poll interval or shutdown
-        await _sleep_interruptible(shutdown_event, idle_poll_interval)
+            # Check idle condition — catch only recoverable transient errors
+            # (F3). Non-recoverable errors propagate and tear down the TaskGroup.
+            try:
+                queue_count = await asyncio.wait_for(
+                    backend.count_active_jobs(queues),
+                    timeout=max(idle_poll_interval * 5, 10.0),
+                )
+            except TRANSIENT_PG_ERRORS:
+                _log.warning("drain-monitor-count-error", worker_id=str(worker_id))
+                queue_count = -1  # unknown — don't trigger
+
+            active_count = deps.active_jobs.count()
+            is_idle = queue_count == 0 and active_count == 0
+
+            if is_idle:
+                if idle_since is None:
+                    idle_since = time.monotonic()
+                    _log.debug(
+                        "drain-monitor-idle-detected",
+                        worker_id=str(worker_id),
+                        queue_count=queue_count,
+                        active_count=active_count,
+                    )
+                else:
+                    idle_elapsed = time.monotonic() - idle_since
+                    if idle_elapsed >= idle_settle_window:
+                        _log.info(
+                            "drain-monitor-drained",
+                            worker_id=str(worker_id),
+                            idle_elapsed=idle_elapsed,
+                            drain_failures=deps.drain_failures,
+                        )
+                        exit_code = (
+                            EXIT_DRAIN_WITH_FAILURES
+                            if deps.drain_failures > 0
+                            else EXIT_DRAIN_CLEAN
+                        )
+                        await _trigger_drain_shutdown(
+                            deps,
+                            settings,
+                            worker_id,
+                            shutdown_event,
+                            escalate_event,
+                            orchestrator_holder,
+                            backend,
+                            exit_code=exit_code,
+                        )
+                        return
+            else:
+                if idle_since is not None:
+                    _log.debug(
+                        "drain-monitor-idle-reset",
+                        worker_id=str(worker_id),
+                        queue_count=queue_count,
+                        active_count=active_count,
+                    )
+                idle_since = None
+
+            # Wait for poll interval or shutdown
+            await _sleep_interruptible(shutdown_event, idle_poll_interval)
+    finally:
+        # The tick registration must not outlive the loop: this monitor
+        # returns (or is cancelled) while orchestrate_shutdown is still
+        # running its phases, and shutdown_event is set only in the
+        # orchestrator's finally — the watchdog sweeps that whole window.
+        # A lingering entry goes stale and detector 2 force-exits the
+        # worker mid-grace. Mirrors the producer loop's forget (run.py).
+        deps.liveness.forget("drain_monitor")
 
     _log.info("drain-monitor-exit", reason="shutdown_event", worker_id=str(worker_id))
 
