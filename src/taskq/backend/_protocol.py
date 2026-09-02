@@ -179,7 +179,12 @@ type DstStrategy = Literal["skip", "firstof", "allof"]
 #: (worker cron loop, admin ops) all consult, so none can drift from the
 #: Literal or from each other. Re-exported via :mod:`taskq.cron` (the cron
 #: public surface those callers already import from).
-DST_STRATEGIES: Final[frozenset[str]] = frozenset(get_args(DstStrategy.__value__))
+#:
+#: Why: annotated as ``frozenset[DstStrategy]`` (not ``frozenset[str]``) —
+#: pyright narrows ``raw in DST_STRATEGIES`` to the Literal union only with
+#: the parameterised element type, which is what lets the coercion sites
+#: assign the checked value without a cast.
+DST_STRATEGIES: Final[frozenset[DstStrategy]] = frozenset(get_args(DstStrategy.__value__))
 
 type BatchStatus = Literal["active", "complete", "aborted"]
 """Lifecycle status of a batch row in the ``batches`` table."""

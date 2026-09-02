@@ -388,6 +388,7 @@ def test_repr_flattened_detail_and_hint_lines_are_scrubbed() -> None:
     assert "try another" in repr(relayed)
 
     safe = scrub_exception_field("error", repr(relayed))
+    assert isinstance(safe, str)  # Why: narrows the object return for the membership asserts.
 
     assert "subject-424242" not in safe
     assert "try another" not in safe
@@ -402,6 +403,7 @@ def test_scrub_preserves_non_detail_escaped_newlines() -> None:
     from taskq.obs._redact_exc import scrub_exception_field
 
     safe = scrub_exception_field("error", repr(ValueError("line one\nline two")))
+    assert isinstance(safe, str)  # Why: narrows the object return for the membership asserts.
 
     assert "line one" in safe
     assert "line two" in safe
