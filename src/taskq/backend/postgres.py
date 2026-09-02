@@ -354,6 +354,7 @@ class PostgresBackend:
             self._dispatcher_pool,
             self._sql,
             self._deps.settings.dispatch_oversample,
+            self._deps.settings.dispatcher_command_timeout,
             self._schema_name,
             worker_id,
             queues,

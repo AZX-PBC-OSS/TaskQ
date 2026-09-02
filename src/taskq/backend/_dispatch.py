@@ -18,6 +18,9 @@ from taskq.backend._records import (
     jsonb_param,
 )
 from taskq.backend._sql_templates import SqlTemplates
+from taskq.constants import (
+    _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
+)
 from taskq.obs import get_logger
 
 if TYPE_CHECKING:
@@ -35,6 +38,7 @@ async def _dispatch_batch(
     dispatcher_pool: "asyncpg.Pool",
     sql: SqlTemplates,
     dispatch_oversample: int,
+    acquire_timeout: float,
     schema: str,
     worker_id: UUID,
     queues: list[str],
@@ -52,7 +56,7 @@ async def _dispatch_batch(
     mixed unintentionally.
     """
     event_sql = sql.insert_events_batch
-    async with dispatcher_pool.acquire() as conn:
+    async with dispatcher_pool.acquire(timeout=acquire_timeout) as conn:
         async with conn.transaction():
             queue_modes = await _resolve_queue_modes(conn, queues, schema)
             if len(queue_modes) > 1:
@@ -107,11 +111,19 @@ async def _resolve_queue_modes(
     ``{"strict_fifo"}`` when all queues are strict FIFO, ``{"round_robin"}``
     when all are round-robin, or a mixed set. The caller selects the
     round-robin SQL variant when ``"round_robin"`` appears in the set.
+
+    *schema* is re-validated here rather than trusted from the caller:
+    this is also reachable as the public ``PostgresBackend.resolve_queue_modes``
+    static method, which takes an arbitrary schema and a caller-supplied
+    connection, so construction-time validation on the backend instance
+    does not cover it (architecture.md §Key Invariants 4).
     """
+    if not _IDENT_RE.match(schema):
+        raise ValueError(f"invalid schema identifier: {schema!r}")
     if not queues:
         return {"strict_fifo"}
     rows = await conn.fetch(
-        f'SELECT name, mode FROM "{schema}".queues WHERE name = ANY($1)',  # Why: schema validated at construction; asyncpg cannot bind identifiers.
+        f'SELECT name, mode FROM "{schema}".queues WHERE name = ANY($1)',  # Why: schema re-validated against _IDENT_RE immediately above; asyncpg cannot bind identifiers as parameters.
         queues,
     )
     modes_by_queue: dict[str, str] = {r["name"]: r["mode"] for r in rows}

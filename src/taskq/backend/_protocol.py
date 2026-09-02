@@ -846,6 +846,7 @@ class BackendSettings(Protocol):
 
     schema_name: str
     dispatch_oversample: int
+    dispatcher_command_timeout: float
 
 
 @runtime_checkable
@@ -854,7 +855,7 @@ class BackendDeps(Protocol):
 
     @property
     def settings(self) -> BackendSettings:
-        """Settings object with schema_name and dispatch_oversample."""
+        """Settings carrying the backend-visible knobs (see BackendSettings)."""
         ...
 
     @property

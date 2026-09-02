@@ -125,7 +125,12 @@ def _row_to_event(row: JobRow) -> JobEvent:
 @dataclass(slots=True)
 class _ClientSettings:
     schema_name: str
-    dispatch_oversample: int = 2  # Satisfies BackendSettings protocol; unused in client paths
+    # Both satisfy the BackendSettings protocol. dispatch_oversample is
+    # unused in client paths (the client never dispatches); the acquire
+    # bound is used if a client is ever handed a dispatcher_pool, and
+    # mirrors WorkerSettings.dispatcher_command_timeout's default.
+    dispatch_oversample: int = 2
+    dispatcher_command_timeout: float = 5.0
 
 
 @dataclass(slots=True)
