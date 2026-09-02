@@ -233,11 +233,21 @@ class _CancelController:
                 elapsed = loop.time() - active.cancel_observed_at
 
             # ── Phase 2: forced escalation ───────────────────────────
-            if (
-                active.cancel_phase == CancelPhase.COOPERATIVE
-                and elapsed is not None
-                and elapsed >= self._cancel_grace
-            ):
+            # Why the second arm: a local phase of FORCED (or beyond) while PG
+            # still reads COOPERATIVE is the signature of a phase-2 write that
+            # was applied in memory but rolled back with its heartbeat
+            # transaction — another job's statement failed inside the same
+            # tick, or the COMMIT itself did.  Without re-issuing it, PG would
+            # stay at phase 1 forever: the escalation only ever fires from a
+            # local COOPERATIVE phase, so mark_abandoned's `cancel_phase = 2`
+            # guard could never match and the job would never again be
+            # cancellable.  Re-issuing is safe: the escalation UPDATE is itself
+            # guarded by `cancel_phase = 1`, and task.cancel() on an
+            # already-cancelling task is a no-op.
+            phase_2_due = active.cancel_phase == CancelPhase.COOPERATIVE or (
+                active.cancel_phase >= CancelPhase.FORCED and db_phase == CancelPhase.COOPERATIVE
+            )
+            if phase_2_due and elapsed is not None and elapsed >= self._cancel_grace:
                 tag = await conn.execute(
                     self._escalation_sql,
                     active.job_id,
@@ -309,11 +319,29 @@ class _CancelController:
 
         Each entry is processed unconditionally: failures propagate to the
         caller (heartbeat_loop), which counts them toward heartbeat_failures.
+
+        An abandon that did NOT apply (``mark_abandoned`` returns ``False``,
+        because its ``cancel_phase = 2`` guard did not match) leaves the job
+        registered and its phase back at FORCED, so a later tick can re-issue
+        the escalation and re-queue the abandon.  Deregistering there would
+        strand a still-running job with no route back to cancellation.
         """
         worker_id = self._worker_id
         while self._pending_abandons:
             job_id = self._pending_abandons.popleft()
-            await asyncio.shield(self._backend.mark_abandoned(job_id))
+            abandoned = await asyncio.shield(self._backend.mark_abandoned(job_id))
+            if not abandoned:
+                entry = self._deps.active_jobs.get(job_id)
+                if entry is not None:
+                    entry.cancel_phase = CancelPhase.FORCED
+                _log.warning(
+                    "cancel-abandon-not-applied",
+                    kind="state_change",
+                    cause="abandon_guard_unmatched",
+                    job_id=str(job_id),
+                    worker_id=worker_id,
+                )
+                continue
             await self._deps.active_jobs.deregister(job_id)
             log_cancel_phase_change(
                 _log,

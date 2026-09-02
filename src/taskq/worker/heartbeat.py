@@ -70,35 +70,63 @@ async def heartbeat_loop(
         _in_tx_failed = False
         tick_start = time.monotonic()
         try:
-            async with deps.heartbeat_pool.acquire(timeout=interval) as conn, conn.transaction():
-                await conn.execute(update_worker_liveness_sql, worker_id)
-                jobs_tag = await conn.execute(update_jobs_lock_sql, worker_id, lock_lease)
-                await conn.execute(update_reservation_leases_sql, worker_id, lock_lease)
+            _tick_raised = False
+            try:
+                async with (
+                    deps.heartbeat_pool.acquire(timeout=interval) as conn,
+                    conn.transaction(),
+                ):
+                    await conn.execute(update_worker_liveness_sql, worker_id)
+                    jobs_tag = await conn.execute(update_jobs_lock_sql, worker_id, lock_lease)
+                    await conn.execute(update_reservation_leases_sql, worker_id, lock_lease)
+                    if cancel_controller is not None:
+                        try:
+                            await cancel_controller.run_in_tx(conn)  # type: ignore[arg-type]  # Why: asyncpg PoolConnectionProxy is a Connection subclass at runtime; pyright types don't reflect this delegation.
+                        except Exception as hook_exc:
+                            _in_tx_failed = True
+                            deps.heartbeat_failures += 1
+                            update_heartbeat_consecutive_failures(
+                                str(worker_id), deps.heartbeat_failures
+                            )
+                            logger.warning(
+                                "heartbeat-hook-failure",
+                                kind="state_change",
+                                cause="heartbeat_hook_failure",
+                                worker_id=str(worker_id),
+                                error=repr(hook_exc),
+                            )
+                            raise OSError(
+                                f"cancel_controller.run_in_tx failed: {hook_exc!r}"
+                            ) from hook_exc
+                    if deps.is_leader.is_set():
+                        await conn.execute(update_leader_ping_sql, worker_id)
+            except BaseException:
+                _tick_raised = True
+                raise
+            finally:
+                # Why finally: run_post_tx MUST follow run_in_tx on every tick
+                # (see taskq.worker.cancel's module docstring).  Phase-3 jobs
+                # queued before an error would otherwise never be drained, and
+                # the drain is also where an abandon that could not apply is
+                # handed back for a later tick.  Row locks are gone either way
+                # by the time this runs — the transaction has committed or
+                # rolled back — so mark_abandoned cannot self-deadlock here.
                 if cancel_controller is not None:
                     try:
-                        await cancel_controller.run_in_tx(conn)  # type: ignore[arg-type]  # Why: asyncpg PoolConnectionProxy is a Connection subclass at runtime; pyright types don't reflect this delegation.
-                    except Exception as hook_exc:
-                        _in_tx_failed = True
-                        deps.heartbeat_failures += 1
-                        update_heartbeat_consecutive_failures(
-                            str(worker_id), deps.heartbeat_failures
-                        )
+                        await cancel_controller.run_post_tx()
+                    except Exception as post_exc:
+                        # A post-tx failure on a healthy tick is the tick's
+                        # failure and propagates to the handlers below; on an
+                        # already-failing tick it must NOT displace the
+                        # original error, which is the root cause worth
+                        # reporting.
+                        if not _tick_raised:
+                            raise
                         logger.warning(
-                            "heartbeat-hook-failure",
-                            kind="state_change",
-                            cause="heartbeat_hook_failure",
+                            "heartbeat-post-tx-failure",
                             worker_id=str(worker_id),
-                            error=repr(hook_exc),
+                            error=repr(post_exc),
                         )
-                        raise OSError(
-                            f"cancel_controller.run_in_tx failed: {hook_exc!r}"
-                        ) from hook_exc
-                if deps.is_leader.is_set():
-                    await conn.execute(update_leader_ping_sql, worker_id)
-            # Transaction committed: row locks released.  Run post-tx work
-            # (phase-3 mark_abandoned calls) now that deadlock is impossible.
-            if cancel_controller is not None:
-                await cancel_controller.run_post_tx()
             deps.heartbeat_failures = 0
             update_heartbeat_consecutive_failures(str(worker_id), 0)
             tick_duration_s = time.monotonic() - tick_start
