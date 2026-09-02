@@ -6,6 +6,7 @@ to ensure route registration order (static paths before {job_id}).
 
 import uuid
 from collections.abc import AsyncGenerator
+from dataclasses import replace
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -14,6 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from jinja2 import Environment
 
+from taskq.backend._cursor import CursorValue, JobOrdering, SortColumn
 from taskq.backend._protocol import Backend, JobId
 from taskq.constants import events_channel
 from taskq.settings import TaskQSettings
@@ -42,22 +44,26 @@ from taskq.web.admin._jsonb import decode_jsonb
 
 # ── Jobs list page constants ─────────────────────────────────────────────
 
-# Sortable columns per tab. Value: SQL column name, cursor type.
-# Cursor type 'ts' = timestamp, 'text' = text, 'int' = integer.
-_SORTABLE_LIVE: dict[str, tuple[str, str]] = {
-    "created_at": ("created_at", "ts"),
-    "actor": ("actor", "text"),
-    "queue": ("queue", "text"),
-    "status": ("status", "text"),
-    "attempt": ("attempt", "int"),
+# Sortable columns per tab, as the same :class:`SortColumn` the backend's
+# ``list_jobs`` orderings are built from — so the admin's keyset and the
+# client's page through one implementation instead of two that drift.
+# ``descending`` here is a placeholder: the request's ``order`` supplies
+# it in _build_order.  ``nullable`` marks the columns that take NULLS
+# LAST placement and therefore have a NULL range to page through.
+_SORTABLE_LIVE: dict[str, SortColumn] = {
+    "created_at": SortColumn("created_at", "ts", descending=True),
+    "actor": SortColumn("actor", "text", descending=True),
+    "queue": SortColumn("queue", "text", descending=True),
+    "status": SortColumn("status", "text", descending=True),
+    "attempt": SortColumn("attempt", "int", descending=True),
 }
-_SORTABLE_ARCHIVE: dict[str, tuple[str, str]] = {
-    "finished_at": ("finished_at", "ts"),
-    "created_at": ("created_at", "ts"),
-    "actor": ("actor", "text"),
-    "queue": ("queue", "text"),
-    "status": ("status", "text"),
-    "attempt": ("attempt", "int"),
+_SORTABLE_ARCHIVE: dict[str, SortColumn] = {
+    "finished_at": SortColumn("finished_at", "ts", descending=True, nullable=True),
+    "created_at": SortColumn("created_at", "ts", descending=True),
+    "actor": SortColumn("actor", "text", descending=True),
+    "queue": SortColumn("queue", "text", descending=True),
+    "status": SortColumn("status", "text", descending=True),
+    "attempt": SortColumn("attempt", "int", descending=True),
 }
 
 _TIME_RANGE_MAP: dict[str, timedelta] = {
@@ -181,43 +187,55 @@ def _is_descending(order: str) -> bool:
     return order == "desc"
 
 
-def _build_order(
-    sort: str, order: str, sortable: dict[str, tuple[str, str]]
-) -> tuple[str, str, str | None]:
-    """Return (order_clause, cursor_col, cursor_type) for validated sort params."""
-    col, ctype = sortable.get(sort, (None, None))
-    if col is None:
-        col, ctype = next(iter(sortable.values()))
-    direction = "DESC" if _is_descending(order) else "ASC"
-    return f"{col} {direction}, id {direction}", col, ctype
+def _build_order(sort: str, order: str, sortable: dict[str, SortColumn]) -> JobOrdering:
+    """Resolve the requested sort to the ordering that pages it.
+
+    ``id`` is appended in the SAME direction as the primary column, never
+    against it: the keyset predicate is a row-wise tuple comparison, which
+    can only describe a page seam when every column of the tuple sorts the
+    same way.  ``id`` is UUIDv7 and therefore time-ordered, so ordering it
+    with the primary column reorders nothing in practice.
+    """
+    col = sortable.get(sort) or next(iter(sortable.values()))
+    descending = _is_descending(order)
+    return JobOrdering(
+        (
+            replace(col, descending=descending),
+            SortColumn("id", "uuid", descending=descending),
+        )
+    )
 
 
-def _coerce_cursor_value(cursor_at: str, cursor_type: str | None) -> Any | None:
-    """Bind the cursor at the column's own type, or ``None`` if unparseable.
+def _cursor_values(
+    ordering: JobOrdering, cursor_at: str | None, cursor_id: str | None
+) -> tuple[CursorValue, ...] | None:
+    """Parse the query-string cursor to the columns' own Python types.
 
     The cursor round-trips through the query string as text, but asyncpg
     infers each placeholder's type from its ``::`` cast and refuses a
-    ``str`` for a ``timestamptz`` or ``int`` parameter -- so a raw
+    ``str`` for a ``timestamptz``/``uuid``/``int`` parameter -- so a raw
     hand-off raised ``DataError`` and 500'd every timestamp page turn.
-    A malformed cursor (hand-edited URL, stale bookmark) returns ``None``
-    so the caller falls back to the unpaged first page rather than
-    surfacing a driver error to the operator.
+
+    An empty ``cursor_at`` on a nullable column is not a missing cursor:
+    it is a seam *inside* the NULL range (``finished_at DESC NULLS LAST``
+    ends in the unfinished rows), and parses to ``None``.  A malformed
+    cursor -- hand-edited URL, stale bookmark, or an empty value on a
+    column that has no NULL range -- returns ``None`` so the caller falls
+    back to the unpaged first page rather than surfacing a driver error.
     """
+    if not cursor_id:
+        return None
     try:
-        if cursor_type == "ts":
-            return datetime.fromisoformat(cursor_at)
-        if cursor_type == "int":
-            return int(float(cursor_at))
+        return (ordering.columns[0].parse(cursor_at or ""), ordering.columns[-1].parse(cursor_id))
     except ValueError:
         return None
-    return cursor_at
 
 
 def _build_paginated_sql(
     schema: str,
     table: str,
     cols: str,
-    sortable: dict[str, tuple[str, str]],
+    sortable: dict[str, SortColumn],
     where: str,
     params: list[Any],
     cursor_at: str | None,
@@ -227,37 +245,26 @@ def _build_paginated_sql(
     order: str,
 ) -> tuple[str, list[Any]]:
     """Build a keyset-paginated SELECT for the given table and column list."""
-    order_clause, cursor_col, cursor_type = _build_order(sort, order, sortable)
+    ordering = _build_order(sort, order, sortable)
+    # "next" walks the ORDER BY forwards and "prev" walks it backwards.
+    # The ordering renders both the reversed comparison and the reversed
+    # NULLS placement from that one flag -- reversing only the directions
+    # would strand the NULL range at the wrong end of a "prev" page.
+    forward = cursor_dir != "prev"
     from_clause = f'SELECT {cols} FROM "{schema}".{table}'
 
     cursor_clause = ""
-    cursor_value = _coerce_cursor_value(cursor_at, cursor_type) if cursor_at else None
-    if cursor_value is not None and cursor_id:
-        # Why both inputs: the keyset predicate must match the EFFECTIVE scan
-        # direction. "next" walks the ORDER BY forwards and "prev" walks it
-        # backwards, so the comparison flips with the sort direction too --
-        # descending+next and ascending+prev both scan towards smaller values.
-        # Choosing the operator from cursor_dir alone made ascending Next
-        # re-filter with "<", returning rows the operator had already seen.
-        # The tiebreaker `id` is ordered in the same direction as the primary
-        # column, which is what makes the row-wise tuple comparison correct
-        # for every sortable column without special-casing any of them.
-        descending = _is_descending(order) != (cursor_dir == "prev")
-        op = "<" if descending else ">"
-        cast = {"ts": "::timestamptz", "int": "::int"}.get(cursor_type or "", "")
-        cursor_clause = (
-            f" AND ({cursor_col}, id) {op} (${len(params) + 1}{cast}, ${len(params) + 2}::uuid)"
-        )
-        params = [*params, cursor_value, cursor_id]
+    values = _cursor_values(ordering, cursor_at, cursor_id)
+    if values is not None:
+        predicate, cursor_params = ordering.sql_after(values, len(params) + 1, forward=forward)
+        cursor_clause = f" AND {predicate}"
+        params = [*params, *cursor_params]
 
-    outer_order = order_clause
-    # Reverse for prev direction
-    if cursor_dir == "prev":
-        rev_order = (
-            order_clause.replace("DESC", "~~TMP~~").replace("ASC", "DESC").replace("~~TMP~~", "ASC")
-        )
+    outer_order = ordering.order_by_sql()
+    if not forward:
         inner = (
-            f"{from_clause} WHERE {where} {cursor_clause} ORDER BY {rev_order} LIMIT {_FETCH_SIZE}"
+            f"{from_clause} WHERE {where} {cursor_clause} "
+            f"ORDER BY {ordering.order_by_sql(forward=False)} LIMIT {_FETCH_SIZE}"
         )
         return f"SELECT * FROM ({inner}) sub ORDER BY {outer_order}", params
     sql = f"{from_clause} WHERE {where} {cursor_clause} ORDER BY {outer_order} LIMIT {_FETCH_SIZE}"
@@ -293,6 +300,17 @@ def _normalize_row(row: dict[str, Any]) -> dict[str, Any]:
             # asyncpg returns text[] as list; pass through as-is for template
             pass
     return row
+
+
+def _cursor_field(value: Any) -> str:
+    """Render a row value as the ``cursor_at`` query parameter.
+
+    A NULL sort value is an empty parameter, never the string ``"None"``:
+    under NULLS LAST the unfinished rows are a real range that has to be
+    paged through, and ``str(None)`` made its seam unparseable — the page
+    turn then silently re-served the page the operator was already on.
+    """
+    return "" if value is None else str(value)
 
 
 def _truncate_traceback(tb: str | None) -> str | None:
@@ -415,12 +433,18 @@ def register(router: APIRouter) -> None:
         # A page reached via "prev" already knows a "next" page exists (we
         # came from it), and vice versa — so has_next/has_prev must be
         # direction-aware rather than both derived from the same flag.
+        #
+        # `cursor_id` and not `cursor_at` is what marks a page as paged-into:
+        # on a NULLS LAST column the seam value itself is legitimately empty
+        # (a cursor inside the `finished_at IS NULL` range), and reading
+        # emptiness as "no cursor" hid the link back.
+        paged_in = bool(cursor_id)
         if cursor_dir == "prev":
             has_prev = overfetched
-            has_next = bool(cursor_at)
+            has_next = paged_in
         else:
             has_next = overfetched
-            has_prev = bool(cursor_at)
+            has_prev = paged_in
 
         next_cursor_at: str = ""
         next_cursor_id: str = ""
@@ -429,12 +453,12 @@ def register(router: APIRouter) -> None:
         if display_rows:
             # Use the active sort column as the cursor key
             sortable = _SORTABLE_LIVE if tab == "live" else _SORTABLE_ARCHIVE
-            cursor_col, _ = sortable.get(sort, next(iter(sortable.values())))
+            cursor_col = (sortable.get(sort) or next(iter(sortable.values()))).name
             last = display_rows[-1]
-            next_cursor_at = str(last.get(cursor_col, ""))
+            next_cursor_at = _cursor_field(last.get(cursor_col))
             next_cursor_id = str(last["id"])
             first = display_rows[0]
-            prev_cursor_at = str(first.get(cursor_col, ""))
+            prev_cursor_at = _cursor_field(first.get(cursor_col))
             prev_cursor_id = str(first["id"])
 
         realtime_mode, mode_label = realtime_ctx

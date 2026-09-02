@@ -1072,12 +1072,21 @@ from taskq.backend._protocol import JobSortField
 | `JobSortField.CREATED_AT_DESC` | Latest `created_at` first | "Most recently enqueued" queries. |
 | `JobSortField.FINISHED_AT_DESC` | Latest `finished_at` first | "Latest completed run" queries. Jobs with `finished_at IS NULL` sort last (`NULLS LAST`). |
 
-!!! warning "Cursor pagination requires default ordering"
-    Keyset cursor pagination (the `cursor` field) is only valid with the
-    default `SCHEDULED_AT_ASC` ordering. Combining a non-default `order_by`
-    with a `cursor` raises `ValueError` at `JobFilter.__post_init__` time.
-    Use `limit` to cap result sets when sorting by `CREATED_AT_DESC` or
-    `FINISHED_AT_DESC`.
+!!! note "Cursors are per-ordering"
+    Every ordering pages with a cursor, but a cursor encodes the sort
+    columns of the ordering that produced it — `(priority, scheduled_at,
+    id)` for the default, `(created_at, id)` and `(finished_at, id)` for
+    the others — so cursors are not interchangeable between orderings.
+    Build one with `encode_job_cursor(row, order_by)` from
+    `taskq.backend._cursor`, passing the same `order_by` you list with —
+    `JobsClient.list()` fills in `JobPage.next_cursor` for the default
+    ordering only, so under `CREATED_AT_DESC`/`FINISHED_AT_DESC` encode
+    the last row of the page yourself.
+
+    Each ordering tie-breaks on `id` in the **same** direction as its
+    primary column (`created_at DESC, id DESC`). That is what makes a page
+    seam expressible as a single keyset comparison; `id` is UUIDv7 and
+    therefore time-ordered, so it reorders nothing in practice.
 
 ### Querying the latest run by `identity_key`
 

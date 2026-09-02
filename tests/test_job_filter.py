@@ -120,17 +120,19 @@ async def test_list_jobs_order_by_scheduled_at_asc_matches_default() -> None:
     assert [r.id for r in explicit] == [early.id, late.id]
 
 
-def test_job_filter_cursor_with_non_default_order_by_raises() -> None:
-    """Cursor pagination is only valid with the default ordering; combining
-    a cursor with a non-default order_by raises ValueError at the boundary."""
-    with pytest.raises(ValueError, match="cursor pagination"):
-        JobFilter(order_by=JobSortField.CREATED_AT_DESC, cursor="opaque")
+def test_job_filter_accepts_a_cursor_with_every_ordering() -> None:
+    """A cursor is valid with every ordering, not just the default.
 
-
-def test_job_filter_cursor_with_default_order_by_allowed() -> None:
-    """A cursor with order_by=None or SCHEDULED_AT_ASC is allowed."""
-    JobFilter(cursor="opaque")
-    JobFilter(order_by=JobSortField.SCHEDULED_AT_ASC, cursor="opaque")
+    The boundary used to reject the combination outright because the two
+    DESC orderings tie-broke on ``id`` in the opposite direction to their
+    primary column, which no keyset comparison can express. Now that each
+    ordering runs ``id`` with its primary column and carries its own
+    cursor shape, the refusal has nothing left to protect against —
+    ``test_backend_equivalence`` pages every ordering end to end on both
+    backends.
+    """
+    for order_by in (None, *JobSortField):
+        JobFilter(order_by=order_by, cursor="opaque")
 
 
 # ── Multi-status sequence support ────────────────────────────────────

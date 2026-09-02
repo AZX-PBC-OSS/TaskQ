@@ -543,11 +543,26 @@ def test_build_order_unknown_sort_falls_back() -> None:
     """_build_order uses the first sortable column when sort is not recognized."""
     from taskq.web.admin.jobs import _SORTABLE_LIVE, _build_order
 
-    order_clause, cursor_col, cursor_type = _build_order("nonexistent", "asc", _SORTABLE_LIVE)
-    first_col, first_type = next(iter(_SORTABLE_LIVE.values()))
-    assert cursor_col == first_col
-    assert cursor_type == first_type
-    assert "ASC" in order_clause
+    ordering = _build_order("nonexistent", "asc", _SORTABLE_LIVE)
+    first = next(iter(_SORTABLE_LIVE.values()))
+    assert ordering.columns[0].name == first.name
+    assert ordering.columns[0].kind == first.kind
+    assert "ASC" in ordering.order_by_sql()
+
+
+def test_build_order_ties_the_id_tiebreaker_to_the_sort_direction() -> None:
+    """``id`` runs WITH the primary column, in both directions.
+
+    A row-wise tuple comparison can only express a page seam when every
+    column of the tuple sorts the same way; an ``id`` pinned to one
+    direction leaves half the sorts unpageable.
+    """
+    from taskq.web.admin.jobs import _SORTABLE_LIVE, _build_order
+
+    for order in ("asc", "desc"):
+        ordering = _build_order("created_at", order, _SORTABLE_LIVE)
+        assert ordering.columns[-1].name == "id"
+        assert {c.descending for c in ordering.columns} == {order == "desc"}
 
 
 # ── _build_paginated_sql: cursor and direction ──────────────────────────
@@ -692,3 +707,105 @@ def test_build_where_binds_a_named_range_as_a_duration_not_an_instant() -> None:
 
     assert timedelta(hours=1) in params
     assert not any(isinstance(p, datetime) for p in params)
+
+
+# ── Pagination links must carry the active sort ─────────────────────────
+
+
+def _render_job_table(stub_pool: _StubPool, **context: Any) -> str:
+    """Render the jobs table partial with one paged row.
+
+    The row's own fields are irrelevant here — every assertion in this
+    section is about the pagination links, so the row exists only to make
+    the table render at all.
+    """
+    bundle = create_router(stub_pool)  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
+    defaults: dict[str, Any] = {
+        "jobs": [
+            {
+                "id": "abc-123",
+                "actor": "send_email",
+                "queue": "default",
+                "status": "failed",
+                "created_at": "2025-01-01T12:00:00",
+                "scheduled_at": "2025-01-01T12:00:00",
+                "started_at": None,
+                "finished_at": None,
+                "duration_ms": None,
+                "attempt": 1,
+                "max_attempts": 3,
+                "priority": 5,
+                "identity_key": None,
+                "fairness_key": None,
+                "progress_state": None,
+                "error_message": None,
+            }
+        ],
+        "tab": "archived",
+        "statuses": ["failed"],
+        "all_statuses": ["failed"],
+        "active_statuses": [],
+        "terminal_statuses": ["failed"],
+        "has_next": True,
+        "has_prev": True,
+        "next_cursor_at": "2025-01-01T11:00:00",
+        "next_cursor_id": str(new_uuid()),
+        "prev_cursor_at": "2025-01-01T13:00:00",
+        "prev_cursor_id": str(new_uuid()),
+        "cursor_dir": "next",
+        "live": "off",
+    }
+    return bundle.templates.get_template("_partials/job_table.html").render(
+        **{**defaults, **context}
+    )
+
+
+def _page_links(html: str) -> list[str]:
+    """The Previous/Next hrefs, in document order."""
+    return [
+        line.split('href="', 1)[1].split('"', 1)[0]
+        for line in html.splitlines()
+        if "cursor_dir=" in line and 'href="' in line
+    ]
+
+
+def test_pagination_links_carry_the_active_sort(stub_pool: _StubPool) -> None:
+    """Clicking a column header then Next must keep sorting by that column.
+
+    The cursor encodes the value of the SORT column. A page link that
+    drops ``sort``/``order`` sends that value back to be compared against
+    the *default* column, so Next either serves nonsense or — as here,
+    where the cursor no longer matches anything — silently re-serves the
+    page the operator is already on.
+    """
+    links = _page_links(_render_job_table(stub_pool, sort="finished_at", order="asc"))
+
+    assert links, "expected Previous and Next links"
+    for href in links:
+        assert "sort=finished_at" in href, href
+        assert "order=asc" in href, href
+
+
+def test_pagination_links_keep_the_filter_state(stub_pool: _StubPool) -> None:
+    """Sort is added to the page links, not swapped in for the filters."""
+    links = _page_links(
+        _render_job_table(stub_pool, sort="finished_at", order="desc", actor_filter="send_email")
+    )
+
+    assert links
+    for href in links:
+        assert "actor=send_email" in href, href
+        assert "status=failed" in href, href
+
+
+def test_pagination_links_survive_an_empty_cursor_value(stub_pool: _StubPool) -> None:
+    """A NULL sort value is an empty ``cursor_at``, not a dropped link.
+
+    ``finished_at DESC NULLS LAST`` ends in the unfinished rows, so the
+    seam between two of them carries no value — only the id.
+    """
+    links = _page_links(
+        _render_job_table(stub_pool, sort="finished_at", order="desc", next_cursor_at="")
+    )
+
+    assert any("cursor_dir=next" in href and "cursor_at=&" in href for href in links), links

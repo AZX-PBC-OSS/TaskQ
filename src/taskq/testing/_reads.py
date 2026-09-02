@@ -6,16 +6,16 @@
 """
 
 from datetime import timedelta
+from functools import cmp_to_key
 from typing import TYPE_CHECKING
 
-from taskq.backend._cursor import decode_cursor
+from taskq.backend._cursor import ordering_for
 from taskq.backend._protocol import (
     AttemptRow,
     EventRow,
     JobFilter,
     JobId,
     JobRow,
-    JobSortField,
 )
 from taskq.backend.statemachine import ACTIVE_STATUSES, TERMINAL_STATUSES
 
@@ -63,40 +63,17 @@ async def _list_jobs(self: "InMemoryBackend", filters: JobFilter) -> list[JobRow
         filter_tags = set(filters.tags)
         candidates = [r for r in candidates if filter_tags & set(r.tags)]
 
-    if filters.order_by is JobSortField.CREATED_AT_DESC:
-        # PG: ORDER BY created_at DESC, id ASC. A single reverse=True key
-        # would invert the id tie-break to DESC, so sort the id ASC
-        # tie-breaker first and let sort stability preserve it under the
-        # primary DESC sort.
-        candidates.sort(key=lambda r: r.id)
-        candidates.sort(key=lambda r: r.created_at, reverse=True)
-    elif filters.order_by is JobSortField.FINISHED_AT_DESC:
-        # PG: ORDER BY finished_at DESC NULLS LAST, id ASC. NULLS LAST for
-        # DESC: non-None finished_at sorts before None via the leading bool
-        # (True > False under reverse=True); finished_at is only compared
-        # when both rows share the same bool, so None-vs-None never reaches
-        # an ordered comparison. Same two-pass idiom as CREATED_AT_DESC for
-        # the id ASC tie-break.
-        candidates.sort(key=lambda r: r.id)
-        candidates.sort(
-            key=lambda r: (r.finished_at is not None, r.finished_at),
-            reverse=True,
-        )
-    else:
-        candidates.sort(key=lambda r: (-r.priority, r.scheduled_at, r.id))
+    # One descriptor drives the sort and the cursor seam on both backends
+    # (``taskq.backend._cursor``), so the in-memory mirror cannot order
+    # rows one way while comparing the cursor another.
+    ordering = ordering_for(filters.order_by)
+    candidates.sort(key=cmp_to_key(ordering.compare_rows))
 
     if filters.cursor is not None:
-        cursor_priority, cursor_scheduled_at, cursor_id = decode_cursor(filters.cursor)
-        start_idx = 0
-        for i, r in enumerate(candidates):
-            key = (-r.priority, r.scheduled_at, r.id)
-            cursor_key = (-cursor_priority, cursor_scheduled_at, cursor_id)
-            if key > cursor_key:
-                start_idx = i
-                break
-        else:
-            return []
-        candidates = candidates[start_idx:]
+        cursor_values = ordering.decode(filters.cursor)
+        candidates = [
+            r for r in candidates if ordering.compare(ordering.values(r), cursor_values) > 0
+        ]
 
     return candidates[: filters.limit]
 

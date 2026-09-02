@@ -8,7 +8,7 @@
 from datetime import timedelta
 from typing import TYPE_CHECKING
 
-from taskq.backend._cursor import decode_cursor
+from taskq.backend._cursor import ordering_for
 from taskq.backend._filter_sql import build_filter_conditions
 from taskq.backend._protocol import (
     AttemptRow,
@@ -16,7 +16,6 @@ from taskq.backend._protocol import (
     JobFilter,
     JobId,
     JobRow,
-    JobSortField,
     LongRunningJobEventsWriter,
 )
 from taskq.backend._records import (
@@ -69,20 +68,18 @@ async def _list_jobs(
     params: list[object] = list(filter_sql.params)
     n = len(params)
 
+    ordering = ordering_for(filters.order_by)
+
     if filters.cursor is not None:
-        cursor_priority, cursor_scheduled_at, cursor_id = decode_cursor(filters.cursor)
-        n += 1
-        p_idx = n
-        n += 1
-        s_idx = n
-        n += 1
-        i_idx = n
-        conditions.append(
-            f"(priority < ${p_idx} OR "
-            f"(priority = ${p_idx} AND scheduled_at > ${s_idx}) OR "
-            f"(priority = ${p_idx} AND scheduled_at = ${s_idx} AND id > ${i_idx}))"
-        )
-        params.extend([cursor_priority, cursor_scheduled_at, cursor_id])
+        # The cursor is decoded to the columns' own Python types, never
+        # bound as the raw text it travels as: asyncpg types each
+        # placeholder from its ``::`` cast and refuses a ``str`` for
+        # timestamptz/uuid/int — the DataError that 500'd every admin
+        # job-list page turn before 2569da5.
+        cursor_sql, cursor_params = ordering.sql_after(ordering.decode(filters.cursor), n + 1)
+        conditions.append(cursor_sql)
+        params.extend(cursor_params)
+        n += len(cursor_params)
 
     where_clause = ""
     if conditions:
@@ -92,12 +89,7 @@ async def _list_jobs(
     limit_idx = n
     params.append(filters.limit)
 
-    if filters.order_by is JobSortField.CREATED_AT_DESC:
-        order_clause = "ORDER BY created_at DESC, id ASC"
-    elif filters.order_by is JobSortField.FINISHED_AT_DESC:
-        order_clause = "ORDER BY finished_at DESC NULLS LAST, id ASC"
-    else:
-        order_clause = "ORDER BY priority DESC, scheduled_at ASC, id ASC"
+    order_clause = f"ORDER BY {ordering.order_by_sql()}"
 
     sql_text = (
         f'SELECT * FROM "{schema}".jobs {where_clause} '  # Why: schema validated against _IDENT_RE immediately above; dynamic WHERE clauses use positional params.

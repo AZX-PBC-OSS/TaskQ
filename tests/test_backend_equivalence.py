@@ -1885,9 +1885,17 @@ async def test_cancel_where_rejects_invalid_schema_identifier() -> None:
 # ── order_by tie-break parity ────────────────────────────────────────
 
 
-async def test_eq_order_by_created_at_desc_ties_break_id_asc(backend_pair: Backend) -> None:
-    """PG orders ``created_at DESC, id ASC``. Rows tied on ``created_at``
-    must break by ``id ASC`` on both backends."""
+async def test_eq_order_by_created_at_desc_ties_break_id_desc(backend_pair: Backend) -> None:
+    """PG orders ``created_at DESC, id DESC``. Rows tied on ``created_at``
+    must break by ``id DESC`` on both backends.
+
+    The tiebreaker runs WITH the primary column, not against it: a keyset
+    cursor is a row-wise tuple comparison, which can only express a page
+    seam when every column of the tuple sorts the same way.  ``id`` is
+    UUIDv7 and therefore time-ordered, so ``id DESC`` under
+    ``created_at DESC`` is also the more natural order -- newest first all
+    the way down -- and it is what lets this ordering page at all.
+    """
     ids = [new_job_id() for _ in range(4)]
     for jid in ids:
         await backend_pair.enqueue(
@@ -1908,13 +1916,14 @@ async def test_eq_order_by_created_at_desc_ties_break_id_asc(backend_pair: Backe
     rows = await backend_pair.list_jobs(
         JobFilter(actor="actor_a", order_by=JobSortField.CREATED_AT_DESC, limit=10)
     )
-    assert [r.id for r in rows] == sorted(ids)
+    assert [r.id for r in rows] == sorted(ids, reverse=True)
 
 
-async def test_eq_order_by_finished_at_desc_ties_break_id_asc(backend_pair: Backend) -> None:
-    """PG orders ``finished_at DESC NULLS LAST, id ASC``. Ties among
+async def test_eq_order_by_finished_at_desc_ties_break_id_desc(backend_pair: Backend) -> None:
+    """PG orders ``finished_at DESC NULLS LAST, id DESC``. Ties among
     finished rows *and* among unfinished (NULL) rows must break by
-    ``id ASC`` on both backends."""
+    ``id DESC`` on both backends -- with the primary column, so the seam
+    stays a single row-wise comparison (see the CREATED_AT_DESC case)."""
     finished_ids = [new_job_id() for _ in range(2)]
     unfinished_ids = [new_job_id() for _ in range(2)]
     for jid in (*finished_ids, *unfinished_ids):
@@ -1936,7 +1945,10 @@ async def test_eq_order_by_finished_at_desc_ties_break_id_asc(backend_pair: Back
     rows = await backend_pair.list_jobs(
         JobFilter(actor="actor_a", order_by=JobSortField.FINISHED_AT_DESC, limit=10)
     )
-    assert [r.id for r in rows] == [*sorted(finished_ids), *sorted(unfinished_ids)]
+    assert [r.id for r in rows] == [
+        *sorted(finished_ids, reverse=True),
+        *sorted(unfinished_ids, reverse=True),
+    ]
 
 
 # ── cursor pagination: ties and mid-pagination mutation ────────────────
@@ -2249,3 +2261,135 @@ async def test_enqueue_batch_fast_count_is_items_written(backend_pair: Backend) 
     ]
     count = await backend_pair.enqueue_batch_fast(args_list)
     assert count == 3
+
+
+# ── keyset pagination under every ordering ─────────────────────────────
+#
+# The assertion that matters is completeness, not shape: page the whole
+# set with a limit smaller than it and require the concatenated pages to
+# equal the unpaged listing element for element.  That catches an
+# off-by-one at a seam (a duplicate), a tiebreaker that is not part of
+# the sort key (a dropped row) and a cursor whose order disagrees with
+# the ORDER BY (a reordering) in one comparison.
+#
+# The seed is deliberately degenerate: half the rows share one
+# ``created_at`` (PG's ``now()`` is the transaction timestamp, so a batch
+# enqueue stamps them identically), two share one ``finished_at``, and
+# most have ``finished_at IS NULL`` -- the NULLS LAST range that a naive
+# tuple comparison against a NULL cursor value silently drops.
+
+_ORDER_BYS: tuple[JobSortField | None, ...] = (
+    None,
+    JobSortField.SCHEDULED_AT_ASC,
+    JobSortField.CREATED_AT_DESC,
+    JobSortField.FINISHED_AT_DESC,
+)
+
+_PAGE_LIMIT = 3
+_SEEDED_JOBS = 8
+
+
+async def _seed_for_ordering(backend: Backend) -> list[JobId]:
+    """Seed ``_SEEDED_JOBS`` jobs whose every sort column has ties."""
+    ids = [new_job_id() for _ in range(_SEEDED_JOBS)]
+    for i, jid in enumerate(ids):
+        await backend.enqueue(
+            EnqueueArgs(
+                id=jid,
+                actor="actor_a",
+                queue="default",
+                payload={},
+                max_attempts=3,
+                retry_kind="transient",
+                scheduled_at=_START + timedelta(minutes=i // 2),
+                priority=i % 3,
+            )
+        )
+    tie = _START + timedelta(hours=1)
+    for i, jid in enumerate(ids):
+        overrides: dict[str, object] = {
+            # Half the rows collapse onto one instant: the id tiebreaker
+            # alone has to carry the ordering there.
+            "created_at": tie if i < _SEEDED_JOBS // 2 else tie + timedelta(minutes=i),
+        }
+        if i % 3 == 0:
+            overrides["finished_at"] = tie + timedelta(minutes=i % 2)
+        await _force_job_state(backend, jid, **overrides)
+    return ids
+
+
+async def _page_all(backend: Backend, order_by: JobSortField | None, *, limit: int) -> list[JobId]:
+    from taskq.backend._cursor import encode_job_cursor
+
+    seen: list[JobId] = []
+    cursor: str | None = None
+    for _ in range(_SEEDED_JOBS + 2):  # bounded: a non-advancing cursor must not hang
+        page = await backend.list_jobs(
+            JobFilter(actor="actor_a", limit=limit, cursor=cursor, order_by=order_by)
+        )
+        if not page:
+            break
+        seen.extend(r.id for r in page)
+        cursor = encode_job_cursor(page[-1], order_by)
+    return seen
+
+
+@pytest.mark.parametrize("order_by", _ORDER_BYS)
+async def test_eq_every_ordering_pages_over_the_whole_set(
+    backend_pair: Backend, order_by: JobSortField | None
+) -> None:
+    ids = await _seed_for_ordering(backend_pair)
+
+    unpaged = await backend_pair.list_jobs(
+        JobFilter(actor="actor_a", limit=_SEEDED_JOBS * 2, order_by=order_by)
+    )
+    seen = await _page_all(backend_pair, order_by, limit=_PAGE_LIMIT)
+
+    assert len(seen) == len(set(seen)), "a job was returned on two pages"
+    assert set(seen) == set(ids), "a job was never returned on any page"
+    assert seen == [r.id for r in unpaged], "paging reordered the result"
+
+
+@pytest.mark.parametrize("order_by", _ORDER_BYS)
+async def test_eq_paging_is_stable_when_the_sort_column_is_one_value(
+    backend_pair: Backend, order_by: JobSortField | None
+) -> None:
+    """Collapse every sort column to a single value: the id tiebreaker is
+    then the entire ordering, which is where a tiebreaker running against
+    the primary column stops being expressible as a cursor."""
+    ids = await _seed_for_ordering(backend_pair)
+    flat = _START + timedelta(hours=2)
+    for jid in ids:
+        await _force_job_state(
+            backend_pair,
+            jid,
+            created_at=flat,
+            scheduled_at=flat,
+            finished_at=flat,
+            priority=5,
+        )
+
+    unpaged = await backend_pair.list_jobs(
+        JobFilter(actor="actor_a", limit=_SEEDED_JOBS * 2, order_by=order_by)
+    )
+    seen = await _page_all(backend_pair, order_by, limit=_PAGE_LIMIT)
+
+    assert len(seen) == len(set(seen))
+    assert seen == [r.id for r in unpaged]
+
+
+async def test_eq_finished_at_paging_covers_the_null_range(backend_pair: Backend) -> None:
+    """``finished_at DESC NULLS LAST`` puts the unfinished rows after every
+    finished one.  A page turn whose seam is a NULL cursor value must keep
+    walking that range instead of comparing against NULL and dropping it."""
+    ids = await _seed_for_ordering(backend_pair)
+
+    seen = await _page_all(backend_pair, JobSortField.FINISHED_AT_DESC, limit=_PAGE_LIMIT)
+
+    rows = await backend_pair.list_jobs(
+        JobFilter(actor="actor_a", limit=_SEEDED_JOBS * 2, order_by=JobSortField.FINISHED_AT_DESC)
+    )
+    unfinished = [r.id for r in rows if r.finished_at is None]
+    assert unfinished, "seed must contain finished_at IS NULL rows"
+    assert set(seen) == set(ids)
+    assert set(unfinished) <= set(seen), "the NULL range was never paged into"

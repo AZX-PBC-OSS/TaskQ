@@ -115,6 +115,12 @@ __all__ = [
 #     arbiter); a v2-era implementation binding a datetime into the
 #     interval slot fails loudly at the driver instead of silently
 #     misbehaving.
+#     list_jobs — every JobFilter.order_by now tie-breaks on `id` in the
+#     SAME direction as its primary column (`created_at DESC, id DESC`,
+#     not `id ASC`) and accepts a cursor, whose shape is the ordering's
+#     own columns. A v2-era implementation still ordering `id ASC` pages
+#     silently wrongly against the new cursor, so this belongs in the
+#     same unreleased bump rather than being additive.
 #     The vestigial `now` parameters are REMOVED from
 #     scheduled_to_pending / deadline_sweep / reclaim_expired_locks and
 #     the PostgresBackend.sweep_* statics — PG ignored them (the server
@@ -199,9 +205,17 @@ class JobSortField(Enum):
 
     ``CREATED_AT_DESC`` and ``FINISHED_AT_DESC`` serve "latest run by business
     key" queries: newest-created first and most-recently-finished first
-    (``NULLS LAST``) respectively.  Cursor pagination is only valid with the
-    default ordering; :meth:`JobFilter.__post_init__` rejects a cursor
-    combined with a non-default ``order_by``.
+    (``NULLS LAST``) respectively.
+
+    Every ordering pages with a cursor.  Each one orders ``id`` *with* its
+    primary column rather than against it -- ``created_at DESC, id DESC``,
+    not ``created_at DESC, id ASC`` -- which is what makes the page seam a
+    single row-wise comparison.  ``id`` is UUIDv7 and therefore
+    time-ordered, so running it with a timestamp column reorders nothing
+    in practice.  The ordering and the cursor shape it pages with are one
+    object, :class:`~taskq.backend._cursor.JobOrdering`; a cursor encodes
+    the columns of the ordering it was produced under, so cursors are not
+    interchangeable between orderings.
     """
 
     SCHEDULED_AT_ASC = "scheduled_at_asc"
@@ -598,10 +612,14 @@ class JobFilter:
     yet finished' (``pending`` + ``scheduled`` + ``running``).  Read the
     ``active`` section below before relying on the name.
 
-    ``cursor`` is an opaque keyset-pagination token encoding
-    ``(priority, scheduled_at, id)`` from the last row of the previous
-    page.  Both backends must agree on cursor encoding and comparison
-    semantics.
+    ``cursor`` is an opaque keyset-pagination token encoding the sort
+    columns of ``order_by``'s ordering from the last row of the previous
+    page -- ``(priority, scheduled_at, id)`` for the default,
+    ``(created_at, id)`` and ``(finished_at, id)`` for the others.  Encode
+    it with :func:`~taskq.backend._cursor.encode_job_cursor`, passing the
+    same ``order_by``: a cursor is only meaningful under the ordering that
+    produced it.  Both backends must agree on cursor encoding and
+    comparison semantics.
 
     ``batch_id`` is a :class:`UUID`. The PG backend converts it to its
     canonical string form at the SQL boundary; the in-memory backend
@@ -666,16 +684,6 @@ class JobFilter:
         # silently drop rows.  Reject it here so both fail identically.
         if self.limit < 0:
             raise ValueError(f"limit must be >= 0, got {self.limit}")
-        if (
-            self.cursor is not None
-            and self.order_by is not None
-            and self.order_by is not JobSortField.SCHEDULED_AT_ASC
-        ):
-            raise ValueError(
-                "cursor pagination is only supported with the default ordering "
-                "(order_by=None or JobSortField.SCHEDULED_AT_ASC); "
-                "non-default order_by changes the keyset the cursor encodes"
-            )
         if self.status is not None:
             values = (self.status,) if isinstance(self.status, str) else tuple(self.status)
             unknown = [v for v in values if v not in JOB_STATUS_VALUES]
@@ -959,10 +967,9 @@ class BatchFilter:
     single row-wise comparison.
 
     There is no ``order_by``: ``list_batches`` has exactly one ordering,
-    so the cursor cannot disagree with it. That sidesteps
-    :meth:`JobFilter.__post_init__`'s restriction — a job cursor is
-    rejected outright with any non-default ``order_by``, which leaves the
-    admin UI's CREATED_AT_DESC/FINISHED_AT_DESC sorts stuck on one page.
+    so the cursor cannot disagree with it. ``list_jobs`` has three, and
+    binds each to its own cursor shape through
+    :class:`~taskq.backend._cursor.JobOrdering` for the same reason.
     """
 
     queue: str | None = None

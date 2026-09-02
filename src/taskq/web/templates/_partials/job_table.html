@@ -1,5 +1,15 @@
 {% from "_partials/job_card.html" import status_badge, duration_fmt, timestamp_cell %}
 
+{# Every jobs-list link carries the same filter state; one definition so a
+   filter added to the page cannot be dropped by five of the six links. #}
+{% macro filter_qs() %}{% for s in statuses %}&status={{ s | urlencode }}{% endfor %}{% if actor_filter %}&actor={{ actor_filter | urlencode }}{% endif %}{% if queue_filter %}&queue={{ queue_filter | urlencode }}{% endif %}{% if time_range %}&time_range={{ time_range | urlencode }}{% endif %}{% if identity_key %}&identity_key={{ identity_key | urlencode }}{% endif %}{% if fairness_key %}&fairness_key={{ fairness_key | urlencode }}{% endif %}{% if search %}&search={{ search | urlencode }}{% endif %}{% if tags_filter %}&tags={{ tags_filter | urlencode }}{% endif %}{% if live == 'off' %}&live=off{% endif %}{% endmacro %}
+
+{# A page link must carry the active sort as well as the cursor: the cursor
+   encodes the value of the SORT column, so a Next that drops sort/order
+   compares last page's created_at against the default column and serves a
+   nonsense page (in practice, the same page forever). #}
+{% macro page_url(cursor_at, cursor_id, cursor_dir) %}{{ base_path }}/jobs?tab={{ tab }}&cursor_at={{ cursor_at | urlencode }}&cursor_id={{ cursor_id | urlencode }}&cursor_dir={{ cursor_dir }}{% if sort %}&sort={{ sort | urlencode }}{% endif %}&order={{ order | urlencode }}{{ filter_qs() }}{% endmacro %}
+
 {# Sortable column header macro #}
 {% macro sort_header(label, field, current_sort, current_order) %}
     {% set is_active = (current_sort == field) %}
@@ -8,8 +18,8 @@
     {% if is_active %}
         {% set indicator = ' ▲' if current_order == 'asc' else ' ▼' %}
     {% endif %}
-    <a href="{{ base_path }}/jobs?tab={{ tab }}&sort={{ field }}&order={{ next_order }}{% for s in statuses %}&status={{ s | urlencode }}{% endfor %}{% if actor_filter %}&actor={{ actor_filter | urlencode }}{% endif %}{% if queue_filter %}&queue={{ queue_filter | urlencode }}{% endif %}{% if time_range %}&time_range={{ time_range | urlencode }}{% endif %}{% if identity_key %}&identity_key={{ identity_key | urlencode }}{% endif %}{% if fairness_key %}&fairness_key={{ fairness_key | urlencode }}{% endif %}{% if search %}&search={{ search | urlencode }}{% endif %}{% if tags_filter %}&tags={{ tags_filter | urlencode }}{% endif %}{% if live == 'off' %}&live=off{% endif %}"
-       hx-get="{{ base_path }}/jobs?tab={{ tab }}&sort={{ field }}&order={{ next_order }}{% for s in statuses %}&status={{ s | urlencode }}{% endfor %}{% if actor_filter %}&actor={{ actor_filter | urlencode }}{% endif %}{% if queue_filter %}&queue={{ queue_filter | urlencode }}{% endif %}{% if time_range %}&time_range={{ time_range | urlencode }}{% endif %}{% if identity_key %}&identity_key={{ identity_key | urlencode }}{% endif %}{% if fairness_key %}&fairness_key={{ fairness_key | urlencode }}{% endif %}{% if search %}&search={{ search | urlencode }}{% endif %}{% if tags_filter %}&tags={{ tags_filter | urlencode }}{% endif %}{% if live == 'off' %}&live=off{% endif %}"
+    <a href="{{ base_path }}/jobs?tab={{ tab }}&sort={{ field }}&order={{ next_order }}{{ filter_qs() }}"
+       hx-get="{{ base_path }}/jobs?tab={{ tab }}&sort={{ field }}&order={{ next_order }}{{ filter_qs() }}"
        hx-target="#job-table-container" hx-swap="outerHTML"
        class="no-underline hover:text-slate-700 dark:hover:text-slate-200 {{ 'text-blue-600 dark:text-blue-400' if is_active else '' }}">
         {{ label }}{{ indicator }}
@@ -118,16 +128,16 @@
         <span>Showing {{ jobs | length }} results</span>
         <div class="flex gap-1">
             {% if has_prev %}
-            <a href="{{ base_path }}/jobs?tab={{ tab }}&cursor_at={{ prev_cursor_at | urlencode }}&cursor_id={{ prev_cursor_id | urlencode }}&cursor_dir=prev{% for s in statuses %}&status={{ s | urlencode }}{% endfor %}{% if actor_filter %}&actor={{ actor_filter | urlencode }}{% endif %}{% if queue_filter %}&queue={{ queue_filter | urlencode }}{% endif %}{% if time_range %}&time_range={{ time_range | urlencode }}{% endif %}{% if identity_key %}&identity_key={{ identity_key | urlencode }}{% endif %}{% if fairness_key %}&fairness_key={{ fairness_key | urlencode }}{% endif %}{% if search %}&search={{ search | urlencode }}{% endif %}{% if tags_filter %}&tags={{ tags_filter | urlencode }}{% endif %}{% if live == 'off' %}&live=off{% endif %}"
-               hx-get="{{ base_path }}/jobs?tab={{ tab }}&cursor_at={{ prev_cursor_at | urlencode }}&cursor_id={{ prev_cursor_id | urlencode }}&cursor_dir=prev{% for s in statuses %}&status={{ s | urlencode }}{% endfor %}{% if actor_filter %}&actor={{ actor_filter | urlencode }}{% endif %}{% if queue_filter %}&queue={{ queue_filter | urlencode }}{% endif %}{% if time_range %}&time_range={{ time_range | urlencode }}{% endif %}{% if identity_key %}&identity_key={{ identity_key | urlencode }}{% endif %}{% if fairness_key %}&fairness_key={{ fairness_key | urlencode }}{% endif %}{% if search %}&search={{ search | urlencode }}{% endif %}{% if tags_filter %}&tags={{ tags_filter | urlencode }}{% endif %}{% if live == 'off' %}&live=off{% endif %}"
+            <a href="{{ page_url(prev_cursor_at, prev_cursor_id, 'prev') }}"
+               hx-get="{{ page_url(prev_cursor_at, prev_cursor_id, 'prev') }}"
                hx-target="#job-table-container" hx-swap="outerHTML"
                class="inline-flex items-center gap-1 px-2.5 py-1 rounded border border-slate-300 dark:border-slate-600 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors">
                 <i data-lucide="chevron-left" class="w-3.5 h-3.5"></i> Previous
             </a>
             {% endif %}
             {% if has_next %}
-            <a href="{{ base_path }}/jobs?tab={{ tab }}&cursor_at={{ next_cursor_at | urlencode }}&cursor_id={{ next_cursor_id | urlencode }}&cursor_dir=next{% for s in statuses %}&status={{ s | urlencode }}{% endfor %}{% if actor_filter %}&actor={{ actor_filter | urlencode }}{% endif %}{% if queue_filter %}&queue={{ queue_filter | urlencode }}{% endif %}{% if time_range %}&time_range={{ time_range | urlencode }}{% endif %}{% if identity_key %}&identity_key={{ identity_key | urlencode }}{% endif %}{% if fairness_key %}&fairness_key={{ fairness_key | urlencode }}{% endif %}{% if search %}&search={{ search | urlencode }}{% endif %}{% if tags_filter %}&tags={{ tags_filter | urlencode }}{% endif %}{% if live == 'off' %}&live=off{% endif %}"
-               hx-get="{{ base_path }}/jobs?tab={{ tab }}&cursor_at={{ next_cursor_at | urlencode }}&cursor_id={{ next_cursor_id | urlencode }}&cursor_dir=next{% for s in statuses %}&status={{ s | urlencode }}{% endfor %}{% if actor_filter %}&actor={{ actor_filter | urlencode }}{% endif %}{% if queue_filter %}&queue={{ queue_filter | urlencode }}{% endif %}{% if time_range %}&time_range={{ time_range | urlencode }}{% endif %}{% if identity_key %}&identity_key={{ identity_key | urlencode }}{% endif %}{% if fairness_key %}&fairness_key={{ fairness_key | urlencode }}{% endif %}{% if search %}&search={{ search | urlencode }}{% endif %}{% if tags_filter %}&tags={{ tags_filter | urlencode }}{% endif %}{% if live == 'off' %}&live=off{% endif %}"
+            <a href="{{ page_url(next_cursor_at, next_cursor_id, 'next') }}"
+               hx-get="{{ page_url(next_cursor_at, next_cursor_id, 'next') }}"
                hx-target="#job-table-container" hx-swap="outerHTML"
                class="inline-flex items-center gap-1 px-2.5 py-1 rounded border border-slate-300 dark:border-slate-600 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors">
                 Next <i data-lucide="chevron-right" class="w-3.5 h-3.5"></i>

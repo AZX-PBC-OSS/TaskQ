@@ -19,11 +19,13 @@ import pytest
 from pydantic import BaseModel
 
 from taskq.actor import actor
+from taskq.backend._cursor import SortColumn
 from taskq.client import JobsClient
 from taskq.web.admin._constants import (
     _ALL_STATUSES,  # pyright: ignore[reportPrivateUsage]  # Why: the admin package publishes its shared constants under a private prefix; the route module imports them the same way.
 )
 from taskq.web.admin.jobs import (
+    _SORTABLE_ARCHIVE,  # pyright: ignore[reportPrivateUsage]  # Why: same private-prefix-within-package convention as the route module itself.
     _SORTABLE_LIVE,  # pyright: ignore[reportPrivateUsage]  # Why: same private-prefix-within-package convention as the route module itself.
     _build_paginated_sql,  # pyright: ignore[reportPrivateUsage]  # Why: the query builder under test; exercised against real PG so the assertions are on rows, not SQL.
 )
@@ -74,28 +76,40 @@ async def _seed(deps: WorkerDeps, backend: PostgresBackend) -> list[tuple[UUID, 
     return [(r["id"], r["created_at"]) for r in rows]
 
 
+def _cursor_at(value: datetime | None) -> str:
+    """The query-string form of a sort value.
+
+    A NULL sort value is an EMPTY parameter, never ``str(None)``: under
+    NULLS LAST the unfinished rows are a real range that has to be paged
+    through, and its seams carry no value — only the id.
+    """
+    return "" if value is None else value.isoformat()
+
+
 async def _page(
     deps: WorkerDeps,
     *,
-    cursor: tuple[UUID, datetime] | None,
+    cursor: tuple[UUID, datetime | None] | None,
     cursor_dir: str,
     order: str,
     sort: str = "created_at",
     raw_cursor: tuple[str, str] | None = None,
-) -> list[tuple[UUID, datetime]]:
+    sortable: dict[str, SortColumn] = _SORTABLE_LIVE,
+    value_col: str = "created_at",
+) -> list[tuple[UUID, datetime | None]]:
     schema = deps.settings.schema_name
     where = "status = ANY($1)"
     params: list[object] = [sorted(_ALL_STATUSES)]
     if raw_cursor is not None:
         cursor_at, cursor_id = raw_cursor
     else:
-        cursor_at = cursor[1].isoformat() if cursor else None
+        cursor_at = _cursor_at(cursor[1]) if cursor else None
         cursor_id = str(cursor[0]) if cursor else None
     sql, query_params = _build_paginated_sql(
         schema,
         "jobs",
-        "id, created_at",
-        _SORTABLE_LIVE,
+        f"id, {value_col}",
+        sortable,
         where,
         params,
         cursor_at,
@@ -106,7 +120,7 @@ async def _page(
     )
     async with deps.worker_pool.acquire() as conn:
         rows = await conn.fetch(sql, *query_params)
-    return [(r["id"], r["created_at"]) for r in rows]
+    return [(r["id"], r[value_col]) for r in rows]
 
 
 async def test_next_page_ascending_advances_forward(
@@ -227,3 +241,112 @@ async def test_unparseable_cursor_falls_back_to_the_first_page(
         raw_cursor=("not-a-timestamp", str(seeded[0][0])),
     )
     assert rows == seeded
+
+
+# ── nullable sort columns: the NULLS LAST range ─────────────────────────
+
+
+async def _seed_finished(deps: WorkerDeps, backend: PostgresBackend) -> list[UUID]:
+    """Seed jobs with finished timestamps, a tie, and unfinished rows.
+
+    Returns the ids in ``finished_at DESC NULLS LAST, id DESC`` order --
+    the order the first page must produce.  Two rows share one
+    ``finished_at`` so the id tiebreaker alone decides them, and the
+    majority are ``finished_at IS NULL``: that range is where a tuple
+    comparison against a NULL cursor value silently drops every remaining
+    row, and where ``str(None)`` as a cursor made Next re-serve the page
+    the operator was already on.
+    """
+    client = JobsClient(backend)
+    schema = deps.settings.schema_name
+    ids: list[UUID] = []
+    for _ in range(_ROWS):
+        handle = await client.enqueue(_admin_pagination_actor, _Payload())
+        ids.append(handle.job_id)
+
+    base = datetime(2026, 1, 1, tzinfo=UTC)
+    async with deps.worker_pool.acquire() as conn:
+        for offset, job_id in enumerate(ids[:4]):
+            await conn.execute(
+                f'UPDATE "{schema}".jobs SET finished_at = $2 WHERE id = $1',  # noqa: S608  # Why: schema is fixture-derived and validated; values are $1/$2-bound.
+                job_id,
+                base + timedelta(minutes=offset // 2),  # rows 0/1 and 2/3 tie
+            )
+        rows = await conn.fetch(
+            f'SELECT id, finished_at FROM "{schema}".jobs '  # noqa: S608  # Why: as above.
+            f"ORDER BY finished_at DESC NULLS LAST, id DESC",
+        )
+    ordered = [r["id"] for r in rows]
+    assert any(r["finished_at"] is None for r in rows), "seed must contain NULL rows"
+    return ordered
+
+
+async def _finished_page(
+    deps: WorkerDeps, *, cursor: tuple[UUID, datetime | None] | None, cursor_dir: str
+) -> list[UUID]:
+    rows = await _page(
+        deps,
+        cursor=cursor,
+        cursor_dir=cursor_dir,
+        order="desc",
+        sort="finished_at",
+        sortable=_SORTABLE_ARCHIVE,
+        value_col="finished_at",
+    )
+    return [i for i, _ in rows]
+
+
+async def test_every_seam_on_a_nullable_sort_column_pages_correctly(
+    clean_jobs_app: tuple[WorkerDeps, PostgresBackend],
+) -> None:
+    """From EVERY row, Next must return exactly the rows after it.
+
+    Asserting one seam proves one seam; walking all of them is what
+    catches a predicate that works for the valued range and drops (or
+    repeats) the NULL range behind it.
+    """
+    deps, backend = clean_jobs_app
+    expected = await _seed_finished(deps, backend)
+
+    assert await _finished_page(deps, cursor=None, cursor_dir="next") == expected
+
+    async with deps.worker_pool.acquire() as conn:
+        values = {
+            r["id"]: r["finished_at"]
+            for r in await conn.fetch(
+                f'SELECT id, finished_at FROM "{deps.settings.schema_name}".jobs'  # noqa: S608  # Why: schema is fixture-derived and validated.
+            )
+        }
+
+    for i, job_id in enumerate(expected):
+        following = await _finished_page(deps, cursor=(job_id, values[job_id]), cursor_dir="next")
+        assert following == expected[i + 1 :], (
+            f"Next from position {i} returned {[str(j) for j in following]}"
+        )
+
+
+async def test_prev_from_the_null_range_walks_back_over_the_valued_rows(
+    clean_jobs_app: tuple[WorkerDeps, PostgresBackend],
+) -> None:
+    """Reversing the scan reverses the NULLS placement too.
+
+    Going backwards from an unfinished row, every finished row precedes
+    it — reversing only the comparison directions leaves the NULL range
+    stranded at the wrong end and loses those rows.
+    """
+    deps, backend = clean_jobs_app
+    expected = await _seed_finished(deps, backend)
+
+    async with deps.worker_pool.acquire() as conn:
+        values = {
+            r["id"]: r["finished_at"]
+            for r in await conn.fetch(
+                f'SELECT id, finished_at FROM "{deps.settings.schema_name}".jobs'  # noqa: S608  # Why: schema is fixture-derived and validated.
+            )
+        }
+
+    for i, job_id in enumerate(expected):
+        preceding = await _finished_page(deps, cursor=(job_id, values[job_id]), cursor_dir="prev")
+        assert preceding == expected[:i], (
+            f"Prev from position {i} returned {[str(j) for j in preceding]}"
+        )
