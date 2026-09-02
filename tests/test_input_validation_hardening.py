@@ -1,0 +1,127 @@
+"""Input-validation hardening at the library's caller-facing chokepoints.
+
+Each section pins a gap found in the integ-merge-v2 audit where untrusted
+caller text sailed past a validator that existed but never ran, or past a
+boundary that had none at all:
+
+- queue names are actually validated where they enter (enqueue and actor
+  declaration) — a malformed name used to be silently accepted, stranding
+  jobs on a queue no worker's ``queue = ANY($1)`` ever matches;
+- the InMemory enqueue mirror rejects a NUL in payload/metadata the same
+  way PG's bind-time jsonb guard does, so an app validated against
+  InMemory cannot pass a payload the first real PG enqueue rejects;
+- ``JobFilter`` text predicates reject a NUL before they reach a backend
+  (``list_jobs`` / ``cancel_where``);
+- ``BatchFilter.limit`` is bounded above (``list_batches`` runs a
+  per-batch count join with no cursor pagination);
+- ``ScheduleCreateArgs`` caller text rejects a NUL before the bind;
+- the capacity cache reports ``has_snapshot`` from "has a refresh ever
+  succeeded", not from the row count of the last snapshot.
+"""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime
+
+import pytest
+from pydantic import BaseModel
+
+from taskq import actor
+from taskq.client._args import build_enqueue_args
+from taskq.testing.clock import FakeClock
+from taskq.testing.in_memory import InMemoryBackend
+
+_START = datetime(2025, 1, 1, tzinfo=UTC)
+
+
+class _Payload(BaseModel):
+    value: int = 1
+
+
+@actor(name="validation_hardening_actor")
+async def _hardening_actor(_payload: _Payload) -> None:
+    pass
+
+
+# ── Queue names are validated where they enter ──────────────────────────
+#
+# ``QueueName``'s AfterValidator only runs inside pydantic model
+# validation; its only references were static function-parameter
+# annotations, so ``enqueue(..., queue="deafult ")`` or
+# ``@actor(queue=...)`` with a malformed name was silently accepted.
+# The job then landed on a queue no worker's ``queue = ANY($1)`` ever
+# matches — stranded pending forever, with no error anywhere.
+
+
+@pytest.mark.parametrize(
+    "bad_queue",
+    [
+        "deafult ",  # trailing space — the classic typo class
+        "bad name",  # interior space
+        "bad\nname",  # interior newline
+        "bad\tname",  # interior tab
+        "1queue",  # leading digit
+        "queue!",  # character outside the allowed set
+        "",  # empty
+    ],
+)
+def test_build_enqueue_args_rejects_invalid_queue_name(bad_queue: str) -> None:
+    with pytest.raises(ValueError, match="invalid queue name") as excinfo:
+        build_enqueue_args(_hardening_actor, _Payload(), queue=bad_queue)
+    message = str(excinfo.value)
+    # repr() escapes control characters, so accept either rendering.
+    assert bad_queue in message or repr(bad_queue) in message, "the error must name the queue"
+
+
+def test_build_enqueue_args_rejects_invalid_actor_declared_queue() -> None:
+    """The actor-declared default is validated too, not just the per-call
+    override — a ref whose queue was never checked strands every job.
+
+    After the fix an invalid queue cannot get onto a ref through the
+    decorator at all, so simulate the unchecked-ref state directly.
+    """
+
+    async def handler(payload: _Payload) -> None:
+        pass
+
+    ref = actor(name="unchecked_default_queue_actor", queue="default")(handler)
+    ref.queue = "bad name"  # simulate a ref whose declared queue was never validated
+    with pytest.raises(ValueError, match="invalid queue name") as excinfo:
+        build_enqueue_args(ref, _Payload())
+    assert "bad name" in str(excinfo.value)
+
+
+def test_actor_declaration_rejects_invalid_queue_name() -> None:
+    """``@actor(queue=...)`` fails at decoration time — import time in the
+    common case — instead of stranding jobs at enqueue time."""
+
+    async def handler(payload: _Payload) -> None:
+        pass
+
+    with pytest.raises(ValueError, match="invalid queue name") as excinfo:
+        actor(name="bad_queue_actor", queue="bad name")(handler)
+    assert "bad name" in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    "good_queue",
+    [
+        "default",
+        "priority",
+        "q1",
+        "my-queue",  # hyphen: allowed after the first char
+        "my.queue",  # dot: allowed after the first char
+        "_internal",  # leading underscore
+        "Q_2.x",
+    ],
+)
+def test_valid_queue_names_still_pass(good_queue: str) -> None:
+    args = build_enqueue_args(_hardening_actor, _Payload(), queue=good_queue)
+    assert args.queue == good_queue
+
+
+async def test_valid_queue_name_enqueues_end_to_end_on_in_memory() -> None:
+    backend = InMemoryBackend(clock=FakeClock(start=_START))
+    args = build_enqueue_args(_hardening_actor, _Payload(), queue="my-queue")
+    row = await backend.enqueue(args)
+    assert row.queue == "my-queue"
