@@ -69,14 +69,15 @@ def test_error_message_names_the_field_and_the_rule() -> None:
     assert "valid SQL identifier" in msg
 
 
-def test_uses_a_validator_hook_not_a_builtin_constraint() -> None:
-    """Pin the mechanism, not just the behaviour: reverting to `regex=` would
-    reopen the bypass while keeping every behavioural test above green under
-    validate=True."""
-    from pathlib import Path
-
-    src = (Path(__file__).resolve().parent.parent / "src" / "taskq" / "settings.py").read_text()
-    idx = src.index("schema_name: str = Field(")
-    field = src[idx : idx + 250]
-    assert "validator=_schema_name_validator" in field
-    assert "regex=" not in field, "built-in constraint is back; it is skipped by validate=False"
+# A source scan asserting `validator=_schema_name_validator` in the field
+# definition used to live here, on the stated grounds that reverting to
+# `regex=` "would keep every behavioural test above green". That reasoning was
+# wrong, and measurably so: every test in this file loads with
+# `validate=False`, which is precisely where a built-in constraint is skipped
+# and a validator hook is not. Reverting the field to
+# `regex=r"\A[A-Za-z_][A-Za-z0-9_]*\Z"` fails NINE tests here — both
+# `test_malicious_schema_rejected_under_validate_false` parametrisations, all
+# six `test_invalid_identifiers_rejected` cases and
+# `test_error_message_names_the_field_and_the_rule` — each with "DID NOT RAISE
+# DotEnvModelError". The behaviour is fully pinned; the scan added nothing
+# except a second thing to update when the field moves.

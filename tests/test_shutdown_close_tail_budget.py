@@ -74,23 +74,16 @@ def test_sufficient_budget_is_recognised() -> None:
     assert lowered.shutdown_budget_is_sufficient is True
 
 
-def test_publish_drain_constant_is_the_one_deps_actually_uses() -> None:
-    """The model must not drift from the real teardown literal.
-
-    ``deps.py`` bounds the progress-publish drain with this same constant;
-    a future edit that changes one without the other would silently make the
-    startup warning lie.
-    """
-    import inspect
-
-    from taskq.worker import deps as deps_mod
-
-    source = inspect.getsource(deps_mod.open_worker_deps)
-    assert "timeout=PUBLISH_DRAIN_TIMEOUT_SECS" in source, (
-        "the publish drain must be bounded by the shared constant, or "
-        "worst_case_teardown_tail() no longer models the real teardown"
-    )
-    assert "timeout=2.0" not in source, "a re-hardcoded literal would desync the model"
+# The claim "deps.py bounds the publish drain with this same constant, so the
+# model cannot drift from the real teardown" used to be a grep of
+# open_worker_deps' source for "timeout=PUBLISH_DRAIN_TIMEOUT_SECS". It is now
+# executed instead, in
+# tests/test_worker_deps_teardown.py::test_teardown_bounds_the_publish_drain_by_the_shared_constant:
+# that test shrinks the constant to 50ms, hands the real open_worker_deps a
+# publish that never lands, and fails if teardown outlives the bound.
+# Re-hardcoding `timeout=2.0` fails it with "teardown took 2.01s with the drain
+# bound at 0.05s" — the drift this file cares about, measured rather than
+# spelled.
 
 
 def test_startup_warning_names_the_numbers_and_the_remedy() -> None:

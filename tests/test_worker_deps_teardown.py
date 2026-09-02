@@ -21,6 +21,7 @@ No ``pytestmark`` — must run under ``pytest -m "not integration"``.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from typing import Any, Self
 
 import asyncpg
@@ -552,3 +553,68 @@ async def test_teardown_close_timeout_logs_close_timeout_field(
     assert "drain_timeout" not in event, (
         f"drain_timeout= belongs to the reload path's drain events, got {event!r}"
     )
+
+
+# ── Bounded publish drain ──────────────────────────────────────────────
+#
+# The startup budget warning models the teardown tail as
+# ``5 * CLOSE_TIMEOUT_SECS + PUBLISH_DRAIN_TIMEOUT_SECS`` (see
+# tests/test_shutdown_close_tail_budget.py). That model is only true while the
+# real drain is bounded by the same constant; a re-hardcoded literal in
+# deps.py would silently make the warning lie about the shutdown budget,
+# which is what gets a pod SIGKILLed mid-unwind with terminal writes unlanded.
+
+
+async def test_teardown_bounds_the_publish_drain_by_the_shared_constant(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A progress publish that never finishes must not hold teardown open past
+    ``PUBLISH_DRAIN_TIMEOUT_SECS``, and the bound must be THAT constant — the
+    one ``worst_case_teardown_tail()`` sizes the shutdown budget with.
+
+    Driving it through the real ``open_worker_deps`` rather than asserting on
+    its source text is what makes the coupling real: with the constant shrunk
+    to 50ms a re-hardcoded ``timeout=2.0`` finishes two orders of magnitude
+    late, and the elapsed assertion below catches it with a wide margin rather
+    than a tight race.
+    """
+    _shrink_teardown_timeout(monkeypatch)
+    monkeypatch.setattr(deps_mod, "PUBLISH_DRAIN_TIMEOUT_SECS", 0.05)
+    settings = _make_settings()
+
+    async def redis_factory() -> Any:
+        return _FakeRedisClient()
+
+    conns = WorkerConnections(
+        dispatcher_pool=_FakePool("dispatcher"),  # type: ignore[arg-type]
+        heartbeat_pool=_FakePool("heartbeat"),  # type: ignore[arg-type]
+        worker_pool=_FakePool("worker"),  # type: ignore[arg-type]
+        notify_conn=_FakeConn("notify"),  # type: ignore[arg-type]
+        leader_conn=_FakeConn("leader"),  # type: ignore[arg-type]
+        redis_client_factory=redis_factory,
+    )
+
+    async def _publish_that_never_lands() -> None:
+        await asyncio.Event().wait()
+
+    loop = asyncio.get_running_loop()
+    never_finishes = asyncio.create_task(_publish_that_never_lands())
+    async with asyncio.timeout(5):
+        async with open_worker_deps(settings, connections=conns) as deps:
+            deps.pending_publish_tasks.add(never_finishes)
+            started = loop.time()
+        elapsed = loop.time() - started
+
+    try:
+        assert never_finishes.done() is False, (
+            "the drain must time out on an unfinished publish, not await it"
+        )
+        assert elapsed < 1.0, (
+            f"teardown took {elapsed:.2f}s with the drain bound at 0.05s — the "
+            "publish drain is not using PUBLISH_DRAIN_TIMEOUT_SECS, so "
+            "worst_case_teardown_tail() no longer models the real teardown"
+        )
+    finally:
+        never_finishes.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await never_finishes
