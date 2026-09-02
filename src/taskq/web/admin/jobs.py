@@ -169,6 +169,16 @@ def _build_where(
     return " AND ".join(clauses), params
 
 
+def _is_descending(order: str) -> bool:
+    """Single source of truth for the sort direction.
+
+    ``_build_order`` and the keyset predicate must agree exactly: a
+    predicate derived independently of the ORDER BY is how ascending Next
+    ended up filtering backwards.
+    """
+    return order == "desc"
+
+
 def _build_order(
     sort: str, order: str, sortable: dict[str, tuple[str, str]]
 ) -> tuple[str, str, str | None]:
@@ -176,8 +186,29 @@ def _build_order(
     col, ctype = sortable.get(sort, (None, None))
     if col is None:
         col, ctype = next(iter(sortable.values()))
-    direction = "DESC" if order == "desc" else "ASC"
+    direction = "DESC" if _is_descending(order) else "ASC"
     return f"{col} {direction}, id {direction}", col, ctype
+
+
+def _coerce_cursor_value(cursor_at: str, cursor_type: str | None) -> Any | None:
+    """Bind the cursor at the column's own type, or ``None`` if unparseable.
+
+    The cursor round-trips through the query string as text, but asyncpg
+    infers each placeholder's type from its ``::`` cast and refuses a
+    ``str`` for a ``timestamptz`` or ``int`` parameter -- so a raw
+    hand-off raised ``DataError`` and 500'd every timestamp page turn.
+    A malformed cursor (hand-edited URL, stale bookmark) returns ``None``
+    so the caller falls back to the unpaged first page rather than
+    surfacing a driver error to the operator.
+    """
+    try:
+        if cursor_type == "ts":
+            return datetime.fromisoformat(cursor_at)
+        if cursor_type == "int":
+            return int(float(cursor_at))
+    except ValueError:
+        return None
+    return cursor_at
 
 
 def _build_paginated_sql(
@@ -198,20 +229,24 @@ def _build_paginated_sql(
     from_clause = f'SELECT {cols} FROM "{schema}".{table}'
 
     cursor_clause = ""
-    if cursor_at and cursor_id:
-        op = "<" if cursor_dir == "next" else ">"
-        if cursor_type == "ts":
-            cursor_clause = f" AND ({cursor_col}, id) {op} (${len(params) + 1}::timestamptz, ${len(params) + 2}::uuid)"
-        elif cursor_type == "int":
-            cursor_clause = (
-                f" AND ({cursor_col}, id) {op} (${len(params) + 1}::int, ${len(params) + 2}::uuid)"
-            )
-            cursor_at = str(int(float(cursor_at)))  # normalize
-        else:
-            cursor_clause = (
-                f" AND ({cursor_col}, id) {op} (${len(params) + 1}, ${len(params) + 2}::uuid)"
-            )
-        params = [*params, cursor_at, cursor_id]
+    cursor_value = _coerce_cursor_value(cursor_at, cursor_type) if cursor_at else None
+    if cursor_value is not None and cursor_id:
+        # Why both inputs: the keyset predicate must match the EFFECTIVE scan
+        # direction. "next" walks the ORDER BY forwards and "prev" walks it
+        # backwards, so the comparison flips with the sort direction too --
+        # descending+next and ascending+prev both scan towards smaller values.
+        # Choosing the operator from cursor_dir alone made ascending Next
+        # re-filter with "<", returning rows the operator had already seen.
+        # The tiebreaker `id` is ordered in the same direction as the primary
+        # column, which is what makes the row-wise tuple comparison correct
+        # for every sortable column without special-casing any of them.
+        descending = _is_descending(order) != (cursor_dir == "prev")
+        op = "<" if descending else ">"
+        cast = {"ts": "::timestamptz", "int": "::int"}.get(cursor_type or "", "")
+        cursor_clause = (
+            f" AND ({cursor_col}, id) {op} (${len(params) + 1}{cast}, ${len(params) + 2}::uuid)"
+        )
+        params = [*params, cursor_value, cursor_id]
 
     outer_order = order_clause
     # Reverse for prev direction
