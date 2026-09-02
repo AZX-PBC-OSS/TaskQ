@@ -46,6 +46,13 @@ CLOSE_TIMEOUT_SECS: float = 5.0
 # with the unwind rather than before it, because the orchestrator task is
 # awaited outside the `async with open_worker_deps` block. Counting it
 # would overstate the SIGTERM tail by one close.
+#
+# Caveat, sibling-crash path: when a sibling crash (not SIGTERM) tears
+# the worker down (worker/_bootstrap.py's _guarded sets shutdown_event
+# with no orchestrator), the early leader close never ran, so the exit
+# stack's leader guard closes a TaskQ-owned leader conn sequentially
+# too: 6 closes ≈ 32s on that path, not the 27s modelled here. The
+# startup warning's number understates the crash path by one close.
 _SEQUENTIAL_BOUNDED_CLOSES: int = 5
 
 # Bound on the trailing progress-publish drain (asyncio.wait timeout in the
@@ -67,6 +74,13 @@ def worst_case_teardown_tail(close_timeout: float = CLOSE_TIMEOUT_SECS) -> float
 
     Only reachable against a genuinely dead or hung Postgres/Redis; every
     close returns promptly in the normal case.
+
+    Sibling-crash caveat: on the path where a sibling crash (not an
+    orchestrated shutdown) tears the worker down, the orchestrator's
+    early leader-conn close never runs and the exit stack's leader guard
+    closes a TaskQ-owned leader conn sequentially as well — six bounded
+    closes, ~32s at the default bound, understated by the 27s modelled
+    here.
     """
     return _SEQUENTIAL_BOUNDED_CLOSES * close_timeout + PUBLISH_DRAIN_TIMEOUT_SECS
 
