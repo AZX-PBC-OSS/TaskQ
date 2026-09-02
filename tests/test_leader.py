@@ -537,7 +537,11 @@ async def test_watchdog_reopen_uses_leader_conn_factory_not_dsn(monkeypatch: Any
     import taskq.worker.leader as leader_mod
 
     async def fail_if_called(
-        dsn: str, *, label: str = "", apply_keepalive: bool = True
+        dsn: str,
+        *,
+        label: str = "",
+        apply_keepalive: bool = True,
+        command_timeout: float | None = None,
     ) -> FakeConn:
         raise AssertionError(
             f"open_dedicated_conn called with dsn={dsn!r} label={label!r} — "
@@ -2466,7 +2470,11 @@ async def test_open_leader_conn_fails_fast_without_factory_or_dsn(monkeypatch: A
     import taskq.worker.leader as leader_mod
 
     async def fail_if_called(
-        dsn: str, *, label: str = "", apply_keepalive: bool = True
+        dsn: str,
+        *,
+        label: str = "",
+        apply_keepalive: bool = True,
+        command_timeout: float | None = None,
     ) -> FakeConn:
         raise AssertionError(f"open_dedicated_conn must not be called (dsn={dsn!r})")
 
@@ -2485,7 +2493,11 @@ async def test_open_dedicated_conn_fails_fast_without_factory_or_dsn(monkeypatch
     import taskq.worker.leader as leader_mod
 
     async def fail_if_called(
-        dsn: str, *, label: str = "", apply_keepalive: bool = True
+        dsn: str,
+        *,
+        label: str = "",
+        apply_keepalive: bool = True,
+        command_timeout: float | None = None,
     ) -> FakeConn:
         raise AssertionError(f"open_dedicated_conn must not be called (dsn={dsn!r})")
 

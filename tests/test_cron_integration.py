@@ -674,10 +674,10 @@ async def test_tc1_leader_failover_mid_tick(pg_dsn: str, monkeypatch: pytest.Mon
         async def _fire_always_crash(
             conn: asyncpg.Connection,
             row: asyncpg.Record,
-            now: datetime,
+            server_now: datetime,
             settings: WorkerSettings,
             backend: Backend,
-            schema_arg: str,
+            schema: str,
             worker_id: UUID,
             actor_config_cache: dict[str, object],
         ) -> None:
