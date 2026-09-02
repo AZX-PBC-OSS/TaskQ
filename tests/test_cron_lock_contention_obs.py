@@ -119,9 +119,12 @@ async def test_a_contended_tick_counts_logs_and_reads_no_schedules(
     assert conn.read_due_schedules is False
 
     points = counter_data_points(metric_reader, _CONTENTION_COUNTER)
-    assert [(p.value, p.attributes) for p in points] == [(1, {"worker_id": str(_WORKER_ID)})]
+    # No dimensions: worker_id is a per-process UUID and would mint a new
+    # Azure Monitor time series on every deploy, restart and autoscale.
+    assert [(p.value, p.attributes) for p in points] == [(1, {})]
 
     entry = next(e for e in logs if e["event"] == "cron-tick-lock-contended")
+    # Per-worker attribution lives here instead, where cardinality is free.
     assert entry["worker_id"] == str(_WORKER_ID)
     assert entry["lock"] == CRON_LOCK_NAME
 

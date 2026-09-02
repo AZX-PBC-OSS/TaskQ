@@ -365,9 +365,30 @@ def record_process_duration(actor: str, queue: str, elapsed: float) -> None:
     _process_duration.record(elapsed, {"actor": actor, "queue": queue})
 
 
+#: Why identity values are not metric dimensions
+#: ------------------------------------------------
+#: ``worker_id`` is a fresh UUID per worker PROCESS and ``schedule_id`` a UUID
+#: per cron row. Azure Monitor counts every unique (metric, dimension key,
+#: dimension value) combination seen in 12 hours as an active time series, caps
+#: a subscription at 50,000 of them per region, and advises staying under ~100
+#: values per dimension. On Kubernetes every deploy, restart and autoscale
+#: event mints a new ``worker_id``, so these dimensions grow without bound --
+#: and the failure mode is throttled ingestion across EVERY custom metric in
+#: the subscription, with no backfill of what was dropped. Not repairable
+#: after the fact, so the dimension is not carried at all.
+#:
+#: The signal is not lost: per-worker and per-schedule attribution lives on
+#: spans and log lines, where cardinality is free (``worker_id`` is bound via
+#: contextvars onto every log line; ``schedule_id`` is on the cron-fire and
+#: auto-disable logs; ``taskq.worker_id`` is a cron-fire span attribute).
+#:
+#: The ``worker_id`` / ``schedule_id`` parameters below are kept: they are part
+#: of the published ``taskq.obs`` surface, and dropping them would be a
+#: breaking change for a value the callers already have to hand.
+
 _lock_expires_in_seconds = get_meter().create_histogram(
     "taskq.lock.expires_in_seconds",
-    description="Remaining TTL at each heartbeat renewal, labeled by worker_id.",
+    description="Remaining TTL at each heartbeat renewal. No dimensions.",
     unit="s",
     explicit_bucket_boundaries_advisory=(0, 5, 10, 15, 20, 30, 45, 60),
 )
@@ -381,7 +402,8 @@ def record_lock_expires_in_seconds(worker_id: str, remaining_ttl: float) -> None
     """
     if not _otel_enabled:
         return
-    _lock_expires_in_seconds.record(remaining_ttl, {"worker_id": worker_id})
+    del worker_id  # Why: not a dimension -- see the cardinality note above.
+    _lock_expires_in_seconds.record(remaining_ttl)
 
 
 _heartbeat_misses = get_meter().create_counter(
@@ -399,7 +421,8 @@ def record_heartbeat_miss(worker_id: str) -> None:
     """
     if not _otel_enabled:
         return
-    _heartbeat_misses.add(1, {"worker_id": worker_id})
+    del worker_id  # Why: not a dimension -- see the cardinality note above.
+    _heartbeat_misses.add(1)
 
 
 _queue_depth_cache: dict[str, int] = {}
@@ -532,13 +555,13 @@ def record_ratelimit_refund_failure(bucket: str, backend: str) -> None:
 
 _leader_election_attempts = get_meter().create_counter(
     "taskq.leader.election_attempts",
-    description="Leader election attempts, labeled by worker_id.",
+    description="Leader election attempts. No dimensions.",
     unit="1",
 )
 
 _leader_election_failures = get_meter().create_counter(
     "taskq.leader.election_failures",
-    description="Leader election failures, labeled by worker_id.",
+    description="Election attempts that did not win the lock. No dimensions.",
     unit="1",
 )
 
@@ -552,14 +575,19 @@ def record_election_attempt(worker_id: str, *, won: bool) -> None:
     """
     if not _otel_enabled:
         return
-    _leader_election_attempts.add(1, {"worker_id": worker_id})
+    del worker_id  # Why: not a dimension -- see the cardinality note above.
+    _leader_election_attempts.add(1)
     if not won:
-        _leader_election_failures.add(1, {"worker_id": worker_id})
+        _leader_election_failures.add(1)
 
 
 _cron_consecutive_failures = get_meter().create_up_down_counter(
     "taskq.cron.consecutive_failures",
-    description="Consecutive cron execution failures per schedule.",
+    description=(
+        "Consecutive cron execution failures, summed across schedules. No "
+        "dimensions: a non-zero value means at least one schedule is failing, "
+        "and the cron-fire logs name which."
+    ),
     unit="1",
 )
 
@@ -587,7 +615,8 @@ def record_cron_lock_contention(worker_id: str) -> None:
     """
     if not _otel_enabled:
         return
-    _cron_lock_contention.add(1, {"worker_id": worker_id})
+    del worker_id  # Why: not a dimension -- see the cardinality note above.
+    _cron_lock_contention.add(1)
 
 
 def record_cron_failure(schedule_id: str, delta: int) -> None:
@@ -601,7 +630,8 @@ def record_cron_failure(schedule_id: str, delta: int) -> None:
     """
     if not _otel_enabled:
         return
-    _cron_consecutive_failures.add(delta, {"schedule_id": schedule_id})
+    del schedule_id  # Why: not a dimension -- see the cardinality note above.
+    _cron_consecutive_failures.add(delta)
 
 
 _disabled_schedules_count: int = 0
@@ -683,24 +713,27 @@ def record_expired_archive_jobs(status: str, count: int = 1) -> None:
     _expired_archive_jobs.add(count, {"status": status})
 
 
-_heartbeat_consecutive_failures_cache: dict[str, int] = {}
+#: One process runs one worker, so this is a scalar, not a per-``worker_id``
+#: map: keying it by worker id produced one Observation -- one time series --
+#: per id on every scrape. See the cardinality note above.
+_heartbeat_consecutive_failures_count: int = 0
 
 
 def update_heartbeat_consecutive_failures(worker_id: str, count: int) -> None:
-    """Update the module-level heartbeat consecutive-failures cache.
+    """Update the module-level heartbeat consecutive-failures value.
 
     Called by the heartbeat loop after each tick so the synchronous
     gauge callback can read the latest value on scrape.
     """
-    global _heartbeat_consecutive_failures_cache
-    _heartbeat_consecutive_failures_cache[worker_id] = count
+    global _heartbeat_consecutive_failures_count
+    del worker_id  # Why: not a dimension -- see the cardinality note above.
+    _heartbeat_consecutive_failures_count = count
 
 
 def _observe_heartbeat_consecutive_failures(
     options: CallbackOptions,
 ) -> Iterable[Observation]:
-    for wid, count in _heartbeat_consecutive_failures_cache.items():
-        yield Observation(count, {"worker_id": wid})
+    yield Observation(_heartbeat_consecutive_failures_count)
 
 
 _heartbeat_consecutive_failures_gauge = get_meter().create_observable_gauge(

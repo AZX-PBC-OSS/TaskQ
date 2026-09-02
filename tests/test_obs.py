@@ -219,7 +219,7 @@ def test_record_heartbeat_miss(otel_reader: InMemoryMetricReader) -> None:
     dps = counter_data_points(otel_reader, "taskq.heartbeat.misses")
     assert len(dps) == 1
     assert dps[0].value == 1
-    assert dps[0].attributes == {"worker_id": "worker-1"}
+    assert dps[0].attributes == {}
 
 
 def test_record_heartbeat_miss_disabled() -> None:
@@ -292,7 +292,7 @@ def test_record_election_attempt_win(otel_reader: InMemoryMetricReader) -> None:
     attempts_dps = counter_data_points(otel_reader, "taskq.leader.election_attempts")
     assert len(attempts_dps) == 1
     assert attempts_dps[0].value == 1
-    assert attempts_dps[0].attributes == {"worker_id": "worker-1"}
+    assert attempts_dps[0].attributes == {}
 
     failure_dps = counter_data_points(otel_reader, "taskq.leader.election_failures")
     assert len(failure_dps) == 0
@@ -334,7 +334,7 @@ def test_record_cron_failure_reset(otel_reader: InMemoryMetricReader) -> None:
     dps = counter_data_points(otel_reader, "taskq.cron.consecutive_failures")
     assert len(dps) == 1
     assert dps[0].value == 0
-    assert dps[0].attributes == {"schedule_id": "schedule-1"}
+    assert dps[0].attributes == {}
 
 
 def test_record_cron_failure_disabled() -> None:

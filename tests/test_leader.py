@@ -324,8 +324,8 @@ async def test_election_win_sets_is_leader(monkeypatch: Any) -> None:  # type: i
     counter_calls: list[tuple[int, dict[str, object]]] = []
     import taskq.obs._otel as otel_mod
 
-    otel_mod._leader_election_attempts.add = lambda amount, attrs: counter_calls.append(
-        (int(amount), _as_dict(attrs))
+    otel_mod._leader_election_attempts.add = lambda amount, attrs=None: counter_calls.append(
+        (int(amount), _as_dict(attrs or {}))
     )  # type: ignore[method-assign]  # Why: test-only instrumentation to observe OTel counter calls.
 
     task = asyncio.create_task(leader._election_loop(shutdown))
@@ -339,7 +339,7 @@ async def test_election_win_sets_is_leader(monkeypatch: Any) -> None:  # type: i
     assert deps.is_leader.is_set()
     assert leader._leader_monitor_conn is not None
     assert any("maintenance_leader" in sql for sql, _ in leader_conn.execute_calls)
-    assert counter_calls == [(1, {"worker_id": str(leader._worker_id)})]
+    assert counter_calls == [(1, {})]
 
 
 # ── Election loss does not set is_leader ───────────────────────────
@@ -358,11 +358,11 @@ async def test_election_loss_does_not_set_is_leader(monkeypatch: Any) -> None:  
     failure_calls: list[tuple[int, dict[str, object]]] = []
     import taskq.obs._otel as otel_mod
 
-    otel_mod._leader_election_attempts.add = lambda amount, attrs: counter_calls.append(
-        (int(amount), _as_dict(attrs))
+    otel_mod._leader_election_attempts.add = lambda amount, attrs=None: counter_calls.append(
+        (int(amount), _as_dict(attrs or {}))
     )  # type: ignore[method-assign]
-    otel_mod._leader_election_failures.add = lambda amount, attrs: failure_calls.append(
-        (int(amount), _as_dict(attrs))
+    otel_mod._leader_election_failures.add = lambda amount, attrs=None: failure_calls.append(
+        (int(amount), _as_dict(attrs or {}))
     )  # type: ignore[method-assign]
 
     task = asyncio.create_task(leader._election_loop(shutdown))
@@ -375,8 +375,8 @@ async def test_election_loss_does_not_set_is_leader(monkeypatch: Any) -> None:  
 
     assert not deps.is_leader.is_set()
     assert leader._leader_monitor_conn is None
-    assert counter_calls == [(1, {"worker_id": str(leader._worker_id)})]
-    assert failure_calls == [(1, {"worker_id": str(leader._worker_id)})]
+    assert counter_calls == [(1, {})]
+    assert failure_calls == [(1, {})]
 
 
 # ── Watchdog failure clears is_leader (parametrized) ────────────────
@@ -911,10 +911,10 @@ async def test_otel_metrics_emitted(monkeypatch: Any) -> None:  # type: ignore[r
     import taskq.worker._leader_sweeps as _leader_sweeps_mod
 
     _leader_sweeps_mod._sweep_rows_counter.add = lambda amount, attrs: sweep_rows_calls.append(  # type: ignore[method-assign]
-        (int(amount), _as_dict(attrs))
+        (int(amount), _as_dict(attrs or {}))
     )
-    otel_mod._leader_election_attempts.add = lambda amount, attrs: election_calls.append(  # type: ignore[method-assign]
-        (int(amount), _as_dict(attrs))
+    otel_mod._leader_election_attempts.add = lambda amount, attrs=None: election_calls.append(  # type: ignore[method-assign]
+        (int(amount), _as_dict(attrs or {}))
     )
 
     # Run election
@@ -926,7 +926,7 @@ async def test_otel_metrics_emitted(monkeypatch: Any) -> None:  # type: ignore[r
     shutdown.set()
     await task
 
-    assert election_calls == [(1, {"worker_id": str(leader._worker_id)})]
+    assert election_calls == [(1, {})]
 
     # Populate backend with expired jobs, run sweep
     _now = leader._clock.now()  # type: ignore[reportPrivateUsage]  # Why: test reads injected clock to align job timestamps with sweep time.

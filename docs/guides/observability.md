@@ -210,9 +210,9 @@ they represent safety-critical signals.
 | `taskq.cancellation.phase_transitions` | `1` | — | Cancel phase transitions (0→1, 1→2, etc.). | yes |
 | `taskq.backpressure.errors` | — | `actor`, `kind` | Enqueue rejections due to backpressure. `kind` is currently `"max_pending"`. | unconditional |
 | `taskq.deadline_exceeded_sweep.jobs_failed` | `1` | `actor` | Jobs failed by the deadline-exceeded sweep. | unconditional |
-| `taskq.heartbeat.misses` | `1` | `worker_id` | Heartbeat renewal failures per worker. | yes |
-| `taskq.leader.election_attempts` | `1` | `worker_id` | Leader election attempts. | yes |
-| `taskq.leader.election_failures` | `1` | `worker_id` | Election attempts that did not win the lock. | yes |
+| `taskq.heartbeat.misses` | `1` | — | Heartbeat renewal failures. | yes |
+| `taskq.leader.election_attempts` | `1` | — | Leader election attempts. | yes |
+| `taskq.leader.election_failures` | `1` | — | Election attempts that did not win the lock. | yes |
 | `taskq.error_reporter.failures` | `1` | `reporter_type` | `ErrorReporter` invocation failures. | yes |
 | `taskq.progress.publish_failures` | `1` | — | Redis publish failures for progress fanout. | yes |
 | `taskq.ratelimit.refund_failures` | `1` | `bucket`, `backend` | Rate-limit refund/rollback failures. | yes |
@@ -227,7 +227,7 @@ they represent safety-critical signals.
 |---|---|---|---|
 | `messaging.process.duration` | `s` | `actor`, `queue` | End-to-end job execution duration from dispatch to terminal state. |
 | `taskq.dispatch.duration` | `s` | `queue` | Batch dispatch SQL query latency (SQL execution only). |
-| `taskq.lock.expires_in_seconds` | `s` | `worker_id` | Remaining lock TTL at each heartbeat renewal. Buckets: 0, 5, 10, 15, 20, 30, 45, 60 s. |
+| `taskq.lock.expires_in_seconds` | `s` | — | Remaining lock TTL at each heartbeat renewal. Buckets: 0, 5, 10, 15, 20, 30, 45, 60 s. |
 | `taskq.heartbeat.tick_duration_seconds` | `s` | — | Wall-clock seconds per heartbeat tick. |
 | `taskq.maintenance_leader.sweep_duration_ms` | `ms` | — | Per-sweep-tick wall-clock duration. |
 
@@ -245,7 +245,40 @@ they represent safety-critical signals.
 
 | Metric name | Unit | Attributes | Description |
 |---|---|---|---|
-| `taskq.cron.consecutive_failures` | `1` | `schedule_id` | Consecutive cron execution failures per schedule. On success the caller adds a negative delta equal to the current count to reset to zero. |
+| `taskq.cron.consecutive_failures` | `1` | — | Consecutive cron execution failures, summed across schedules. On success the caller adds a negative delta equal to the current count for that schedule, so a non-zero total means at least one schedule is failing; the `cron fired` and `cron schedule auto-disabled` logs name which. |
+
+### Dimension cardinality
+
+No metric carries `worker_id`, `schedule_id`, `job_id` or any other identity
+value as a dimension, and new instruments must not add one.
+
+Azure Monitor counts every unique combination of metric name, dimension key and
+dimension value published in the last 12 hours as an *active time series*, caps
+a subscription at **50,000** of them per region, allows 10 dimension keys per
+metric, and documents **fewer than 100 valid values per dimension** as the
+practical ceiling (up to 300 is a grey area; beyond that, use custom logs).
+`worker_id` is a fresh UUID per worker *process*, so on Kubernetes every deploy,
+restart and autoscale event mints new series. Exceeding the cap throttles
+ingestion for *every* custom metric in the subscription, and throttled points
+are not backfilled — the data is gone, so this is not repairable after the fact.
+
+Per-worker and per-schedule attribution is on the channels where cardinality is
+free:
+
+- **Logs** — `worker_id` is bound via contextvars onto every log line;
+  `schedule_id` is on the `cron fired`, `cron schedule auto-disabled` and
+  `cron-tick-lock-contended` lines.
+- **Spans** — `taskq.worker_id` is an attribute of the `cron fire` span.
+
+The `record_*` helpers still *accept* `worker_id` / `schedule_id`: they are part
+of the published `taskq.obs` surface and the callers already hold the value.
+They are simply not recorded as dimensions.
+
+The one exception is `taskq.maintenance_leader.is_leader`, which is still
+labeled by `worker_id`: the shipped Prometheus alert
+(`sum(taskq_maintenance_leader_is_leader) != 1`) detects split-brain by summing
+one series per pod, so the dimension is load-bearing there. Operators exporting
+to Azure Monitor should drop it with an SDK View.
 
 ### Metric recording and sampling independence
 

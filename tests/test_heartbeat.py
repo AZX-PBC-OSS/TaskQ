@@ -214,13 +214,13 @@ def _restore_heartbeat_module_globals() -> Any:  # pyright: ignore[reportUnusedF
 
     saved_isolate = hb_mod.isolate_self
     saved_record = hb_mod._tick_duration.record  # type: ignore[reportPrivateUsage]
-    saved_hb_cache = dict(otel_mod._heartbeat_consecutive_failures_cache)
+    saved_hb_count = otel_mod._heartbeat_consecutive_failures_count
     try:
         yield
     finally:
         hb_mod.isolate_self = saved_isolate  # type: ignore[method-assign]
         hb_mod._tick_duration.record = saved_record  # type: ignore[method-assign,reportPrivateUsage]
-        otel_mod._heartbeat_consecutive_failures_cache = saved_hb_cache
+        otel_mod._heartbeat_consecutive_failures_count = saved_hb_count
 
 
 async def _patch_tick_duration(record_to: Any) -> None:
@@ -643,13 +643,11 @@ async def test_consecutive_failures_gauge_is_registered() -> None:
             CallbackOptions(),
         )
     )
-    matching = [
-        obs
-        for obs in observations
-        if obs.attributes is not None and obs.attributes.get("worker_id") == test_wid
-    ]
-    assert len(matching) == 1
-    assert matching[0].value == 3
+    # One process, one worker: a single dimensionless series, not one per
+    # worker_id (which would grow without bound across restarts).
+    assert len(observations) == 1
+    assert dict(observations[0].attributes or {}) == {}
+    assert observations[0].value == 3
 
     otel_mod.update_heartbeat_consecutive_failures(test_wid, 0)
 
