@@ -15,11 +15,11 @@ not autouse, so no worker (and no dispatch) exists unless a test pulls it in.
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
-from uuid import uuid4
 
 import pytest
 
 from taskq import EnqueueItem
+from taskq._ids import new_uuid
 
 from ._assertions import fetch_effects, wait_all
 from .actors import WelcomeEmailPayload, WelcomeEmailResult, send_welcome_email
@@ -53,7 +53,7 @@ async def test_enqueue_batch_with_explicit_batch_id(
     execution; and a direct SQL read of ``metadata->>'batch_id'`` for every
     job row confirms the library persisted the explicit UUID.
     """
-    batch_id = uuid4()
+    batch_id = new_uuid()
 
     items = [
         EnqueueItem(

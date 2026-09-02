@@ -376,9 +376,9 @@ async def test_admin_queue_overview(
     # overview shows multiple queues. The jobs table requires several
     # NOT NULL columns; this mirrors the minimal column set the
     # enqueue path writes.
-    import uuid as uuid_mod
+    from taskq._ids import new_job_id
 
-    other_job_id = uuid_mod.uuid4()
+    other_job_id = new_job_id()
     async with e2e_pg_pool.acquire() as conn:
         await conn.execute(
             f'INSERT INTO "{e2e_schema.schema_name}".jobs '

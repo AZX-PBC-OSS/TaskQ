@@ -18,12 +18,12 @@ import contextlib
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
-from uuid import uuid4
 
 import pytest
 import pytest_asyncio
 
 from taskq import JobFailed
+from taskq._ids import new_uuid
 
 from ._assertions import poll_until
 from .actors import (
@@ -100,7 +100,7 @@ async def _start_idle_worker(
 
     container = DockerContainer(image=e2e_worker_image.tag)
     container.with_network(e2e_network).with_network_aliases(
-        f"worker-idle-{e2e_schema.schema_name}-{uuid4().hex[:6]}"
+        f"worker-idle-{e2e_schema.schema_name}-{new_uuid().hex[:6]}"
     )
     for key, value in e2e_schema.worker_env.items():
         container.with_env(key, value)

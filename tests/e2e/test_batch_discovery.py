@@ -17,11 +17,11 @@ Uses the standard ``e2e_worker`` fixture.
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
-from uuid import uuid4
 
 import pytest
 
 from taskq import BatchFilter, EnqueueItem
+from taskq._ids import new_uuid
 from taskq.batch_policy import AbortBatchAfter
 
 from ._assertions import fetch_effects, poll_until, wait_all_ignoring_failures, wait_for_effects
@@ -55,8 +55,8 @@ async def test_list_batches_active_and_completed(
     run_id_b = f"{run_id}-b"
     run_id_a = f"{run_id}-a"
 
-    batch_b_id = uuid4()
-    batch_a_id = uuid4()
+    batch_b_id = new_uuid()
+    batch_a_id = new_uuid()
 
     batch_b_items = [
         EnqueueItem(

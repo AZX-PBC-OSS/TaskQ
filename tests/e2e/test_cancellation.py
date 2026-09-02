@@ -21,11 +21,11 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
-from uuid import uuid4
 
 import pytest
 
 from taskq import JobFailed, JobFilter
+from taskq._ids import new_uuid
 from taskq.batch import EnqueueItem
 
 from ._assertions import fetch_effects, wait_for_effects, wait_for_handle_status
@@ -246,7 +246,7 @@ async def test_cancel_where_batch_id_filter(
 ) -> None:
     """cancel_where with batch_id cancels all jobs in a batch."""
     future = datetime.now(UTC) + timedelta(seconds=120)
-    bid = uuid4()
+    bid = new_uuid()
 
     items = [
         EnqueueItem(

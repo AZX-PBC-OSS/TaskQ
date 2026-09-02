@@ -22,12 +22,13 @@ import time
 from datetime import timedelta
 from functools import lru_cache
 from typing import Literal
-from uuid import UUID, uuid4
+from uuid import UUID
 
 import asyncpg
 from pydantic import BaseModel, ConfigDict, Field
 
 from taskq import EnqueueItem, JobContext, RetryPolicy, Snooze, actor
+from taskq._ids import new_uuid
 from taskq.ratelimit import KeyedRateLimitRef, TokenBucket, registry
 from taskq.settings import WorkerSettings
 
@@ -270,7 +271,7 @@ async def import_contacts_csv(
         )
         for index, start_row in enumerate(range(0, payload.rows, payload.chunk_size))
     ]
-    batch_id = uuid4()
+    batch_id = new_uuid()
     await ctx.jobs.enqueue_batch(items, batch_id=batch_id)
     await _record_effect(
         pool,

@@ -35,11 +35,11 @@ import asyncio
 import contextlib
 from collections.abc import AsyncIterator, Iterator
 from typing import TYPE_CHECKING, NamedTuple
-from uuid import uuid4
 
 import pytest
 import pytest_asyncio
 
+from taskq._ids import new_uuid
 from taskq.testing._shared_containers import creator_labels
 from taskq.worker._watchdog import EXIT_WATCHDOG
 from tests.conftest import free_host_port
@@ -95,7 +95,7 @@ def chaos_pg(e2e_network: Network) -> Iterator[ChaosPg]:
     """Function-scoped chaos PG container."""
     from testcontainers.community.postgres import PostgresContainer
 
-    alias = f"pg-sdw-{uuid4().hex[:8]}"
+    alias = f"pg-sdw-{new_uuid().hex[:8]}"
     container = PostgresContainer(
         image=_PG_IMAGE,
         username=_PG_USER,
@@ -127,7 +127,7 @@ async def chaos_schema(
 
     from taskq.migrate import apply_pending_locked
 
-    schema = f"tsw_{uuid4().hex[:10]}"
+    schema = f"tsw_{new_uuid().hex[:10]}"
     if not _SCHEMA_NAME_RE.fullmatch(schema):
         msg = f"derived chaos schema name {schema!r} is not a valid PG identifier"
         raise RuntimeError(msg)

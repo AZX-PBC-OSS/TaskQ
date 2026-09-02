@@ -12,11 +12,11 @@ from __future__ import annotations
 
 from datetime import timedelta
 from typing import TYPE_CHECKING
-from uuid import uuid4
 
 import pytest
 
 from taskq import EmptyBatchError, EnqueueItem, wait_for_batch
+from taskq._ids import new_uuid
 
 from ._assertions import fetch_effects, wait_for_effects
 from .actors import ImportContactsChunkPayload, import_contacts_chunk
@@ -39,7 +39,7 @@ async def test_wrong_batch_id_raises_empty_error(
     run_id: str,
 ) -> None:
     """A batch_id with no jobs and no batches row → EmptyBatchError."""
-    fake_batch_id = uuid4()
+    fake_batch_id = new_uuid()
 
     async with e2e_pg_pool.acquire() as conn:
         with pytest.raises(EmptyBatchError):
@@ -60,7 +60,7 @@ async def test_expect_at_least_with_too_few_jobs(
     run_id: str,
 ) -> None:
     """3 jobs enqueued, expect_at_least=5 → EmptyBatchError after completion."""
-    batch_id = uuid4()
+    batch_id = new_uuid()
 
     items = [
         EnqueueItem(

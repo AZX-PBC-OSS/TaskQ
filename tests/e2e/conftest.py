@@ -26,11 +26,11 @@ import subprocess
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple
-from uuid import uuid4
 
 import pytest
 import pytest_asyncio
 
+from taskq._ids import new_uuid
 from taskq.testing._shared_containers import cleanup_stale_testcontainers, creator_labels
 
 from ._assertions import poll_until, wait_for_worker_ready
@@ -609,10 +609,10 @@ async def e2e_client(e2e_schema: E2ESchema) -> AsyncIterator[TaskQ]:
 
 @pytest.fixture
 def run_id() -> str:
-    """Fresh uuid4 hex correlation id per test. Actors copy it into
+    """Fresh UUIDv7 hex correlation id per test. Actors copy it into
     ``e2e_effects.detail->>'run_id'`` so assertions can never
     cross-contaminate even if a reset is missed."""
-    return uuid4().hex
+    return new_uuid().hex
 
 
 @pytest.fixture(autouse=True)

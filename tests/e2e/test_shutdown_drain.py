@@ -28,11 +28,11 @@ import asyncio
 import contextlib
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
-from uuid import uuid4
 
 import pytest
 import pytest_asyncio
 
+from taskq._ids import new_uuid
 from taskq.testing._shared_containers import creator_labels
 
 from ._assertions import (
@@ -139,7 +139,7 @@ async def drain_worker(
         labels=creator_labels()
     )  # Ownership labels: sweepable under disabled Ryuk (see e2e_network's sweep).
     container.with_network(e2e_network).with_network_aliases(
-        f"worker-drain-{e2e_schema.schema_name}-{uuid4().hex[:6]}"
+        f"worker-drain-{e2e_schema.schema_name}-{new_uuid().hex[:6]}"
     )
     for key, value in e2e_schema.worker_env.items():
         container.with_env(key, value)
@@ -264,7 +264,7 @@ async def test_sigterm_drains_inflight_job(
     try:
         await wait_for_worker_ready(e2e_pg_pool, e2e_schema.schema_name, timeout=30.0)
 
-        run_id_2 = uuid4().hex
+        run_id_2 = new_uuid().hex
         handle2 = await e2e_client.enqueue(
             send_welcome_email,
             WelcomeEmailPayload(

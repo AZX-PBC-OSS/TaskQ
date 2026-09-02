@@ -17,11 +17,11 @@ from __future__ import annotations
 
 import json
 from typing import TYPE_CHECKING
-from uuid import uuid4
 
 import pytest
 
 from taskq import EnqueueItem
+from taskq._ids import new_uuid
 
 from ._assertions import fetch_effects, wait_all_ignoring_failures, wait_for_effects
 from .actors import (
@@ -51,7 +51,7 @@ async def test_finalizer_snoozes_then_runs(
     run_id: str,
 ) -> None:
     """5 children + 1 finalizer → finalizer waits for children, records counts."""
-    batch_id = uuid4()
+    batch_id = new_uuid()
 
     children = [
         EnqueueItem(

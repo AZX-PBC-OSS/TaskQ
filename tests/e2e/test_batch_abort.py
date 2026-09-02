@@ -17,11 +17,11 @@ Uses ``e2e_worker_serial`` for serialized dispatch.
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
-from uuid import uuid4
 
 import pytest
 
 from taskq import EnqueueItem
+from taskq._ids import new_uuid
 from taskq.backend.statemachine import TERMINAL_STATUSES
 from taskq.batch_policy import AbortBatchAfter
 
@@ -61,7 +61,7 @@ async def test_batch_abort_after_threshold(
     run_id: str,
 ) -> None:
     """10 all-fail jobs with AbortBatchAfter(3) → 3-4 failed, rest cancelled."""
-    batch_id = uuid4()
+    batch_id = new_uuid()
 
     items = [
         EnqueueItem(
@@ -130,7 +130,7 @@ async def test_batch_abort_with_finalizer(
     """Abort policy + finalizer: batch aborts, finalizer is NOT cancelled
     (it's not stamped with batch_id) and reaches a terminal *succeeded*
     state by catching BatchAbortedError inside the actor."""
-    batch_id = uuid4()
+    batch_id = new_uuid()
     _num_children = 5
 
     children = [
