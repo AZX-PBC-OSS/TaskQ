@@ -1112,6 +1112,13 @@ class RateLimitRegistry:
         before iterating (token consumption is permanent after actor ran).
         Releases in reverse acquisition order.  Each release failure is caught,
         logged at ERROR, and loop continues (same pattern as rollback).
+
+        Why *pg_pool* is unused: each handle captured the pool it needs at
+        acquisition time, so ``handle.release()`` is self-contained. The
+        parameter mirrors :meth:`acquire_for_actor`, which does need it, so
+        the acquire/release pair reads as one symmetric surface at the call
+        site (``taskq.worker._consumer`` passes the same ``worker_pool`` to
+        both). It is public API, so it is kept rather than removed.
         """
         for handle in acquired:
             if isinstance(handle, RateLimitHandle):

@@ -838,7 +838,7 @@ async def reload_credentials(
                 await asyncio.wait_for(old_leader.close(), timeout=drain_timeout)
             except TimeoutError:
                 logger.warning("conn-drain-timeout", label="leader", drain_timeout=drain_timeout)
-                _terminate_conn_background(old_leader, "leader")
+                _terminate_conn_background(old_leader)
             except Exception as exc:
                 logger.warning("conn-drain-error", label="leader", error=repr(exc))
             # Identity-guard: the close above suspends, and the election
@@ -926,7 +926,7 @@ def _drain_old_conn(conn: asyncpg.Connection, label: str, drain_timeout: float) 
     _t.add_done_callback(_drain_tasks.discard)
 
 
-def _terminate_conn_background(conn: asyncpg.Connection, label: str) -> None:
+def _terminate_conn_background(conn: asyncpg.Connection) -> None:
     """Terminate a connection whose graceful close already timed out."""
 
     async def _terminate() -> None:

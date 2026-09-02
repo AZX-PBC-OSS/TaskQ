@@ -602,6 +602,12 @@ class _RedisContainerShim:
         return self.host
 
     def get_exposed_port(self, port: int) -> int:
+        # Why *port* is ignored: this shim stands in for a
+        # testcontainers container object, whose callers ask for the host
+        # mapping of a given container port. The shared container
+        # publishes exactly one port, already resolved into self.port, so
+        # the lookup is constant — but the parameter must stay for callers
+        # written against the real testcontainers interface.
         return self.port
 
 
@@ -807,7 +813,6 @@ async def module_pg_schema(
 
 @pytest.fixture(scope="module")
 def module_redis_url(
-    request: pytest.FixtureRequest,
     redis_container: _RedisContainerShim,
 ) -> Iterator[str]:
     """Module-scoped Redis URL with a unique DB per test file.

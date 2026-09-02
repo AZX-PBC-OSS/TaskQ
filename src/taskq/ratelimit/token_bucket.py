@@ -332,10 +332,20 @@ class TokenBucket:
         clock: Clock | None = None,
         settings: "WorkerSettings | None" = None,
     ) -> None:
+        # Why decision and clock are unused: a token-bucket refund returns
+        # *count* tokens to the bucket, so it needs neither the original
+        # decision (SlidingWindow.refund does — it removes the log entry
+        # named by that decision's request id) nor a timestamp. Both stay
+        # in the signature because
+        # RateLimitRegistry dispatches refund/peek/reset polymorphically
+        # over TokenBucket and SlidingWindow with one fixed keyword block
+        # (redis_client, pg_pool, clock, settings) — see
+        # registry.reset_limit's call sites. Dropping it here would raise
+        # TypeError there, not merely break symmetry.
         if self._backend == "memory":
             await self._refund_memory(count)
         elif self._backend == "redis":
-            await self._refund_redis(decision, count, redis_client, settings)
+            await self._refund_redis(count, redis_client, settings)
         elif self._backend == "postgres":
             await self._refund_pg(count, pg_pool, settings)
 
@@ -523,7 +533,6 @@ class TokenBucket:
 
     async def _refund_redis(
         self,
-        decision: RateLimitDecision,
         count: float,
         redis_client: "redis_async.Redis | None",
         settings: "WorkerSettings | None",

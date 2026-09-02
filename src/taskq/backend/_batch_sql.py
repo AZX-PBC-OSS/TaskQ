@@ -443,6 +443,12 @@ async def enqueue_batch_atomic(
     materializes the full list.  On any exception (including generator
     failure mid-stream) the transaction is rolled back and the exception
     re-raised (MEDIUM-4).
+
+    Why *queue* is unused here: this implementation takes each job's queue
+    from ``args.queue`` and the batch row's from *batch_row*, so the
+    batch-level queue is already carried by both. It is part of the
+    ``Backend.enqueue_batch_atomic`` protocol signature and the InMemory
+    implementation does read it, so it stays.
     """
     batch_id_str = str(batch_id)
     all_rows: list[JobRow] = []

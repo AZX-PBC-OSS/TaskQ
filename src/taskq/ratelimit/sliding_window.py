@@ -441,6 +441,13 @@ class SlidingWindow:
         clock: Clock | None = None,
         settings: "WorkerSettings | None" = None,
     ) -> None:
+        # Why clock and count are unused: a sliding-window refund removes
+        # the one logged entry named by *decision*'s request id, so there
+        # is nothing to re-add and no timestamp to read (TokenBucket.refund
+        # does use count). Both stay in the signature because
+        # RateLimitRegistry dispatches refund/peek/reset polymorphically
+        # over both primitives with one fixed keyword block — dropping
+        # either here would raise TypeError there.
         match (self._backend, self._style):
             case ("redis", "log"):
                 await _refund_redis_log(self, decision, redis_client, settings)
@@ -502,6 +509,10 @@ class SlidingWindow:
         clock: Clock | None = None,
         settings: "WorkerSettings | None" = None,
     ) -> None:
+        # Why clock is unused: resetting clears the window outright, with
+        # no timestamp to stamp (TokenBucket.reset does re-stamp, so it
+        # uses its clock). Retained for the polymorphic keyword block
+        # described on refund above.
         match (self._backend, self._style):
             case ("memory", "log"):
                 await self._reset_memory_log()

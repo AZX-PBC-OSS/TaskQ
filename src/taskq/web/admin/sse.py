@@ -47,7 +47,6 @@ async def _sse_generator(
     semaphore: asyncio.Semaphore,
     pool: asyncpg.Pool | None,
     schema: str | None,
-    topic: str,
 ) -> AsyncGenerator[str, None]:
     try:
         yield 'event: status\ndata: {"status":"awaiting_progress_backend"}\n\n'
@@ -96,7 +95,7 @@ def register(router: APIRouter) -> None:
                 status_code=429,
                 detail="too many SSE connections for this topic",
             ) from None
-        gen = _sse_generator(semaphore, pool, schema, topic)
+        gen = _sse_generator(semaphore, pool, schema)
         return StreamingResponse(
             content=gen,
             media_type="text/event-stream; charset=utf-8",

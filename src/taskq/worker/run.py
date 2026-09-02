@@ -276,6 +276,14 @@ async def producer_loop_stub(
 ) -> None:
     """Observe producer_stop_event and shutdown_event; exit cleanly.
 
+    Why the unused parameters: this is a drop-in stand-in for
+    :func:`producer_loop` (used when a worker runs consume-only), so it
+    takes that function's signature verbatim and the caller can swap one
+    for the other without a shim. ``deps``, ``local_queue``, ``backend``
+    and ``worker_id`` are exactly the arguments it does not need because
+    it never dispatches — a divergent signature here would move that
+    branch into every call site.
+
     Outer loop: ``while not (producer_stop_event.is_set() or shutdown_event.is_set())``.
     Body races ``producer_stop_event.wait()`` against ``shutdown_event.wait()`` via
     ``asyncio.wait(..., return_when=FIRST_COMPLETED)``; the loser is cancelled
