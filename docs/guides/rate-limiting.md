@@ -235,7 +235,7 @@ print(result.inserted, result.deleted, result.skipped_held)
 
 ```python
 from datetime import timedelta, UTC, datetime
-from uuid import uuid4
+from taskq._ids import new_job_id, new_uuid
 from taskq.ratelimit import ConcurrencyReservation
 from taskq.testing.clock import FakeClock
 
@@ -248,8 +248,8 @@ gpu_res = ConcurrencyReservation(
     clock=clock,  # omit in production; pass pg_pool to acquire() instead
 )
 
-job_id = uuid4()
-worker_id = uuid4()
+job_id = new_job_id()
+worker_id = new_uuid()
 
 slot_index = await gpu_res.acquire(job_id, worker_id)
 try:

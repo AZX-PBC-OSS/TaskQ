@@ -13,13 +13,14 @@ These actors demonstrate:
   attempt history.
 """
 
-from uuid import UUID, uuid4
+from uuid import UUID
 
 import asyncpg
 from pydantic import BaseModel, Field
 
 from examples.actors.basic import CounterPayload, counter
 from taskq import JobContext, actor
+from taskq._ids import new_uuid
 from taskq.batch import EnqueueItem, wait_for_batch
 
 
@@ -36,7 +37,7 @@ class BatchFinalizerPayload(BaseModel):
 @actor(name="batch_counter", queue="examples")
 async def batch_counter(payload: BatchCounterPayload, ctx: JobContext[BatchCounterPayload]) -> None:
     """Enqueues N counter jobs as a single batch, then a finalizer that waits for them."""
-    batch_id = uuid4()
+    batch_id = new_uuid()
     items = [
         EnqueueItem(
             actor_ref=counter,
