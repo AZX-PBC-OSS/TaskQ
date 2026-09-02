@@ -9,11 +9,10 @@ actually released and that refunds are idempotent across both backends.
 
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from uuid import uuid4
 
 import pytest
 
-from taskq._ids import new_base62
+from taskq._ids import new_base62, new_uuid
 from taskq.ratelimit import SlidingWindow
 from taskq.ratelimit.decision import RateLimitDecision
 from taskq.testing.clock import FakeClock
@@ -88,7 +87,7 @@ async def test_refund_log_memory_idempotent_unknown_request_id() -> None:
         retry_after=timedelta(0),
         bucket_name=sw.name,
         backend="memory",
-        request_id=str(uuid4()),
+        request_id=str(new_uuid()),
     )
     await sw.refund(decision)
 
@@ -147,7 +146,7 @@ async def test_refund_memory_log_raises_when_not_initialised() -> None:
         retry_after=timedelta(0),
         bucket_name=sw.name,
         backend="memory",
-        request_id=str(uuid4()),
+        request_id=str(new_uuid()),
     )
     with pytest.raises(RuntimeError, match="memory log not initialised"):
         await sw._refund_memory_log(decision)
@@ -176,7 +175,7 @@ async def test_refund_pg_log_executes_delete_by_request_id() -> None:
         style="log",
     )
     pool = _FakePgPool()
-    rid = str(uuid4())
+    rid = str(new_uuid())
     decision = RateLimitDecision(
         allowed=True,
         remaining=9.0,
@@ -236,7 +235,7 @@ async def test_refund_pg_log_raises_without_pool() -> None:
         retry_after=timedelta(0),
         bucket_name="refund-pg-log-nopool",
         backend="postgres",
-        request_id=str(uuid4()),
+        request_id=str(new_uuid()),
     )
 
     with pytest.raises(RuntimeError, match="pg_pool not injected"):
@@ -258,7 +257,7 @@ async def test_refund_pg_log_raises_without_settings() -> None:
         retry_after=timedelta(0),
         bucket_name="refund-pg-log-nosettings",
         backend="postgres",
-        request_id=str(uuid4()),
+        request_id=str(new_uuid()),
     )
 
     with pytest.raises(RuntimeError, match="settings not injected"):
@@ -326,7 +325,7 @@ async def test_acquire_pg_log_decision_carries_request_id() -> None:
         backend="postgres",
         style="log",
     )
-    rid = uuid4()
+    rid = new_uuid()
     pool = _FakeFullPgPool(fetchrow_result={"count": 1})
 
     decision = await _acquire_pg_log(

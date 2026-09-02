@@ -61,8 +61,8 @@ async def test_producer_loop_forgets_liveness_registration_on_exit() -> None:
     normally-draining worker — this test fails without it."""
     from types import SimpleNamespace
     from typing import cast
-    from uuid import uuid4
 
+    from taskq._ids import new_uuid
     from taskq.backend._protocol import Backend
     from taskq.worker.deps import WorkerDeps
     from taskq.worker.run import producer_loop
@@ -101,7 +101,7 @@ async def test_producer_loop_forgets_liveness_registration_on_exit() -> None:
             shutdown_event,
             producer_stop_event,
             backend=cast(Backend, _Backend()),
-            worker_id=uuid4(),
+            worker_id=new_uuid(),
         )
     )
     try:
@@ -973,8 +973,8 @@ async def test_demoted_leader_loops_still_tick_liveness() -> None:
     so detector 2 never false-trips on an ordinary leadership change."""
     from types import SimpleNamespace
     from typing import cast
-    from uuid import uuid4
 
+    from taskq._ids import new_uuid
     from taskq.backend._protocol import Backend
     from taskq.backend.clock import SystemClock
     from taskq.worker.leader import MaintenanceLeader
@@ -996,7 +996,7 @@ async def test_demoted_leader_loops_still_tick_liveness() -> None:
     )
     leader = MaintenanceLeader(
         deps,
-        uuid4(),
+        new_uuid(),
         cast(Backend, _Backend()),
         clock=SystemClock(),
     )
@@ -1075,8 +1075,8 @@ async def test_leader_dedicated_conn_uses_dispatcher_command_timeout(
 ) -> None:
     from types import SimpleNamespace
     from typing import cast
-    from uuid import uuid4
 
+    from taskq._ids import new_uuid
     from taskq.backend._protocol import Backend
     from taskq.backend.clock import SystemClock
     from taskq.worker import leader as leader_mod
@@ -1108,7 +1108,7 @@ async def test_leader_dedicated_conn_uses_dispatcher_command_timeout(
     )
     leader = MaintenanceLeader(
         deps,
-        uuid4(),
+        new_uuid(),
         cast(Backend, SimpleNamespace()),
         clock=SystemClock(),
     )
@@ -1128,8 +1128,8 @@ async def test_open_leader_conn_dsn_fallback_applies_command_timeout(
     could hang the election loop's tick past the detector-2 budget."""
     from types import SimpleNamespace
     from typing import cast
-    from uuid import uuid4
 
+    from taskq._ids import new_uuid
     from taskq.backend._protocol import Backend
     from taskq.backend.clock import SystemClock
     from taskq.worker import leader as leader_mod
@@ -1161,7 +1161,7 @@ async def test_open_leader_conn_dsn_fallback_applies_command_timeout(
     )
     leader = MaintenanceLeader(
         deps,
-        uuid4(),
+        new_uuid(),
         cast(Backend, SimpleNamespace()),
         clock=SystemClock(),
     )
@@ -1341,8 +1341,8 @@ async def _wake_loop_under_watchdog(
 ) -> tuple[LoopLiveness, asyncio.Event, asyncio.Task[None], asyncio.Task[None]]:
     from types import SimpleNamespace
     from typing import cast
-    from uuid import uuid4
 
+    from taskq._ids import new_uuid
     from taskq.backend._protocol import Backend
     from taskq.backend.clock import SystemClock
     from taskq.worker import _watchdog as mod
@@ -1362,7 +1362,7 @@ async def _wake_loop_under_watchdog(
     )
     leader = MaintenanceLeader(
         deps,
-        uuid4(),
+        new_uuid(),
         cast(Backend, _CommandTimeoutBackend(stall_secs)),
         clock=SystemClock(),
     )
@@ -1493,8 +1493,8 @@ async def test_election_loop_survives_query_canceled_probe() -> None:
     TaskGroup and tear the worker down."""
     from types import SimpleNamespace
     from typing import cast
-    from uuid import uuid4
 
+    from taskq._ids import new_uuid
     from taskq.backend._protocol import Backend
     from taskq.backend.clock import SystemClock
     from taskq.worker.leader import MaintenanceLeader
@@ -1502,7 +1502,9 @@ async def test_election_loop_survives_query_canceled_probe() -> None:
     deps = _leader_deps()
     deps.is_leader.set()
     deps.leader_conn = cast(asyncpg.Connection, _QueryCanceledConn())
-    leader = MaintenanceLeader(deps, uuid4(), cast(Backend, SimpleNamespace()), clock=SystemClock())
+    leader = MaintenanceLeader(
+        deps, new_uuid(), cast(Backend, SimpleNamespace()), clock=SystemClock()
+    )
 
     shutdown = asyncio.Event()
     task = asyncio.create_task(leader._election_loop(shutdown))
@@ -1529,10 +1531,10 @@ async def test_scheduled_wake_survives_query_canceled(
     (and not trip detector 2; the loop keeps ticking)."""
     from types import SimpleNamespace
     from typing import cast
-    from uuid import uuid4
 
     import asyncpg
 
+    from taskq._ids import new_uuid
     from taskq.backend._protocol import Backend
     from taskq.backend.clock import SystemClock
     from taskq.worker import _watchdog as mod
@@ -1554,7 +1556,7 @@ async def test_scheduled_wake_survives_query_canceled(
             dispatcher_pool=None,
         ),
     )
-    leader = MaintenanceLeader(deps, uuid4(), cast(Backend, _Backend()), clock=SystemClock())
+    leader = MaintenanceLeader(deps, new_uuid(), cast(Backend, _Backend()), clock=SystemClock())
     shutdown = asyncio.Event()
     wake_task = asyncio.create_task(leader._scheduled_wake_loop(shutdown))
     watchdog_task = asyncio.create_task(
@@ -1613,8 +1615,8 @@ async def test_scheduled_wake_notify_path_gap_stays_within_budget(
     body bounded at 2.5s the gap is 3.5s and the leader rides it out."""
     from types import SimpleNamespace
     from typing import cast
-    from uuid import uuid4
 
+    from taskq._ids import new_uuid
     from taskq.backend._protocol import Backend
     from taskq.backend.clock import SystemClock
     from taskq.worker import _watchdog as mod
@@ -1638,7 +1640,7 @@ async def test_scheduled_wake_notify_path_gap_stays_within_budget(
         ),
     )
     leader = MaintenanceLeader(
-        deps, uuid4(), cast(Backend, _SlowButSuccessfulBackend()), clock=SystemClock()
+        deps, new_uuid(), cast(Backend, _SlowButSuccessfulBackend()), clock=SystemClock()
     )
     shutdown = asyncio.Event()
     wake_task = asyncio.create_task(leader._scheduled_wake_loop(shutdown))
@@ -1671,8 +1673,8 @@ async def test_cron_multi_statement_tick_gap_stays_within_budget(
     false trip of a healthy leader."""
     from types import SimpleNamespace
     from typing import cast
-    from uuid import uuid4
 
+    from taskq._ids import new_uuid
     from taskq.backend._protocol import Backend
     from taskq.backend.clock import SystemClock
     from taskq.worker import _watchdog as mod
@@ -1712,7 +1714,9 @@ async def test_cron_multi_statement_tick_gap_stays_within_budget(
             settings=SimpleNamespace(schema_name="taskq", dispatcher_command_timeout=2.5),
         ),
     )
-    leader = MaintenanceLeader(deps, uuid4(), cast(Backend, SimpleNamespace()), clock=SystemClock())
+    leader = MaintenanceLeader(
+        deps, new_uuid(), cast(Backend, SimpleNamespace()), clock=SystemClock()
+    )
     leader._cron_conn = _CronConn()  # type: ignore[assignment]
 
     shutdown = asyncio.Event()
@@ -1787,10 +1791,10 @@ async def test_scheduled_wake_backstop_tolerates_then_goes_fatal(
     deliberately: never an infinite silent retry, never a quiet crash."""
     from types import SimpleNamespace
     from typing import cast
-    from uuid import uuid4
 
     import structlog.testing
 
+    from taskq._ids import new_uuid
     from taskq.backend._protocol import Backend
     from taskq.backend.clock import SystemClock
     from taskq.worker import _transient as transient_mod
@@ -1818,7 +1822,9 @@ async def test_scheduled_wake_backstop_tolerates_then_goes_fatal(
             dispatcher_pool=None,
         ),
     )
-    leader = MaintenanceLeader(deps, uuid4(), cast(Backend, _BuggyBackend()), clock=SystemClock())
+    leader = MaintenanceLeader(
+        deps, new_uuid(), cast(Backend, _BuggyBackend()), clock=SystemClock()
+    )
     shutdown = asyncio.Event()
     task = asyncio.create_task(leader._scheduled_wake_loop(shutdown))
     try:
@@ -1924,8 +1930,8 @@ async def test_scheduled_wake_rides_out_every_transient_shape(
     from collections.abc import Callable as _Callable
     from types import SimpleNamespace
     from typing import cast
-    from uuid import uuid4
 
+    from taskq._ids import new_uuid
     from taskq.backend._protocol import Backend
     from taskq.backend.clock import SystemClock
     from taskq.worker.leader import MaintenanceLeader
@@ -1951,7 +1957,9 @@ async def test_scheduled_wake_rides_out_every_transient_shape(
             dispatcher_pool=None,
         ),
     )
-    leader = MaintenanceLeader(deps, uuid4(), cast(Backend, _FlakyBackend()), clock=SystemClock())
+    leader = MaintenanceLeader(
+        deps, new_uuid(), cast(Backend, _FlakyBackend()), clock=SystemClock()
+    )
     shutdown = asyncio.Event()
     task = asyncio.create_task(leader._scheduled_wake_loop(shutdown))
     try:
@@ -2001,8 +2009,8 @@ async def test_cron_loop_treats_transient_error_as_retry_not_fatal(
     from collections.abc import Callable
     from types import SimpleNamespace
     from typing import cast
-    from uuid import uuid4
 
+    from taskq._ids import new_uuid
     from taskq.backend._protocol import Backend
     from taskq.backend.clock import SystemClock
     from taskq.worker.leader import MaintenanceLeader
@@ -2045,7 +2053,9 @@ async def test_cron_loop_treats_transient_error_as_retry_not_fatal(
             settings=SimpleNamespace(schema_name="taskq", dispatcher_command_timeout=2.5),
         ),
     )
-    leader = MaintenanceLeader(deps, uuid4(), cast(Backend, SimpleNamespace()), clock=SystemClock())
+    leader = MaintenanceLeader(
+        deps, new_uuid(), cast(Backend, SimpleNamespace()), clock=SystemClock()
+    )
     leader._cron_conn = _FakeCronConn()  # type: ignore[assignment]
 
     shutdown = asyncio.Event()
@@ -2073,8 +2083,8 @@ async def test_election_probe_cleanup_runs_before_guard_raises(
     drops the conn and clears is_leader."""
     from types import SimpleNamespace
     from typing import cast
-    from uuid import uuid4
 
+    from taskq._ids import new_uuid
     from taskq.backend._protocol import Backend
     from taskq.backend.clock import SystemClock
     from taskq.worker.leader import MaintenanceLeader
@@ -2117,7 +2127,9 @@ async def test_election_probe_cleanup_runs_before_guard_raises(
             dispatcher_pool=None,
         ),
     )
-    leader = MaintenanceLeader(deps, uuid4(), cast(Backend, SimpleNamespace()), clock=SystemClock())
+    leader = MaintenanceLeader(
+        deps, new_uuid(), cast(Backend, SimpleNamespace()), clock=SystemClock()
+    )
 
     cleanup_calls: list[str] = []
 
@@ -2153,8 +2165,8 @@ async def test_election_probe_unexpected_continues_not_falls_through(
     to re-election and guard.ok(), which would reset the streak."""
     from types import SimpleNamespace
     from typing import cast
-    from uuid import uuid4
 
+    from taskq._ids import new_uuid
     from taskq.backend._protocol import Backend
     from taskq.backend.clock import SystemClock
     from taskq.worker.leader import MaintenanceLeader
@@ -2208,7 +2220,9 @@ async def test_election_probe_unexpected_continues_not_falls_through(
             dispatcher_pool=None,
         ),
     )
-    leader = MaintenanceLeader(deps, uuid4(), cast(Backend, SimpleNamespace()), clock=SystemClock())
+    leader = MaintenanceLeader(
+        deps, new_uuid(), cast(Backend, SimpleNamespace()), clock=SystemClock()
+    )
 
     async def _noop(*a: object, **k: object) -> None:
         pass
@@ -2244,8 +2258,8 @@ async def test_cron_timeout_branch_sleeps_before_next_tick(
     """After a timeout, the cron loop must sleep, not re-issue back-to-back."""
     from types import SimpleNamespace
     from typing import cast
-    from uuid import uuid4
 
+    from taskq._ids import new_uuid
     from taskq.backend._protocol import Backend
     from taskq.backend.clock import SystemClock
     from taskq.worker.leader import MaintenanceLeader
@@ -2286,7 +2300,9 @@ async def test_cron_timeout_branch_sleeps_before_next_tick(
             settings=SimpleNamespace(schema_name="taskq", dispatcher_command_timeout=0.1),
         ),
     )
-    leader = MaintenanceLeader(deps, uuid4(), cast(Backend, SimpleNamespace()), clock=SystemClock())
+    leader = MaintenanceLeader(
+        deps, new_uuid(), cast(Backend, SimpleNamespace()), clock=SystemClock()
+    )
     leader._cron_conn = _FakeCronConn()  # type: ignore[assignment]
 
     shutdown = asyncio.Event()
@@ -2467,8 +2483,8 @@ async def test_transient_pg_errors_doc_describes_query_canceled_correctly(
     above."""
     from types import SimpleNamespace
     from typing import cast
-    from uuid import uuid4
 
+    from taskq._ids import new_uuid
     from taskq.backend._protocol import Backend
     from taskq.backend.clock import SystemClock
     from taskq.worker._transient import TRANSIENT_PG_ERRORS
@@ -2517,7 +2533,9 @@ async def test_transient_pg_errors_doc_describes_query_canceled_correctly(
             settings=SimpleNamespace(schema_name="taskq", dispatcher_command_timeout=2.5),
         ),
     )
-    leader = MaintenanceLeader(deps, uuid4(), cast(Backend, SimpleNamespace()), clock=SystemClock())
+    leader = MaintenanceLeader(
+        deps, new_uuid(), cast(Backend, SimpleNamespace()), clock=SystemClock()
+    )
     leader._cron_conn = _FakeCronConn()  # type: ignore[assignment]
 
     shutdown = asyncio.Event()

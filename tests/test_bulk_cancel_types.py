@@ -1,15 +1,14 @@
-from uuid import uuid4
-
 import pytest
 from pydantic import ValidationError
 
+from taskq._ids import new_uuid
 from taskq.exceptions import EmptyFilterError, TaskQError
 from taskq.types import BulkCancelResult
 
 
 class TestBulkCancelResult:
     def test_construction(self) -> None:
-        ids = [uuid4() for _ in range(3)]
+        ids = [new_uuid() for _ in range(3)]
         result = BulkCancelResult(
             cancelled_directly=2,
             cancel_requested=1,
@@ -46,7 +45,7 @@ class TestBulkCancelResult:
         result = BulkCancelResult(
             cancelled_directly=1,
             cancel_requested=0,
-            cancelled_ids=[uuid4()],
+            cancelled_ids=[new_uuid()],
             cancel_requested_ids=[],
         )
         assert isinstance(result.cancelled_ids, tuple)
@@ -54,7 +53,7 @@ class TestBulkCancelResult:
 
     def test_list_input_coerced_to_tuple(self) -> None:
         """Pydantic v2 coerces list inputs to tuples."""
-        ids = [uuid4() for _ in range(2)]
+        ids = [new_uuid() for _ in range(2)]
         result = BulkCancelResult(
             cancelled_directly=2,
             cancel_requested=0,

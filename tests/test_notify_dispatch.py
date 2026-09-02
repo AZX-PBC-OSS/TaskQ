@@ -11,11 +11,10 @@ import asyncio
 import contextlib
 from datetime import UTC, datetime, timedelta
 from unittest.mock import Mock
-from uuid import uuid4
 
 import pytest
 
-from taskq._ids import new_job_id
+from taskq._ids import new_job_id, new_uuid
 from taskq.backend._protocol import EnqueueArgs, JobRow
 from taskq.backend.clock import Clock
 from taskq.backend.postgres import PostgresBackend
@@ -139,7 +138,7 @@ class TestSweepWakesSubscriber:
     async def test_reclaim_expired_locks_wakes_subscriber(self) -> None:
         """When reclaim_expired_locks reclaims a job to pending, wake is fired."""
         backend = _make_inmem_backend()
-        worker_id = uuid4()
+        worker_id = new_uuid()
 
         # Manually craft a running job with an expired lock
         job_id = new_job_id()
@@ -199,7 +198,7 @@ class TestSweepWakesSubscriber:
         ``poll_reclaim_events`` / ``TaskQ.watch_reclaims``) need a
         low-latency wakeup for terminal transitions too, not only retries."""
         backend = _make_inmem_backend()
-        worker_id = uuid4()
+        worker_id = new_uuid()
 
         # Running job with retries left but non-retryable → will go to crashed
         # condition: row.attempt < row.max_attempts AND row.retry_kind != "non_retryable"
@@ -315,7 +314,7 @@ class TestPollFallback:
                 shutdown,
                 stop_event,
                 backend=backend,
-                worker_id=uuid4(),
+                worker_id=new_uuid(),
             )
         )
         await asyncio.wait_for(run_and_stop(), timeout=2.0)
@@ -375,7 +374,7 @@ class TestPollFallback:
                 shutdown,
                 stop_event,
                 backend=backend,
-                worker_id=uuid4(),
+                worker_id=new_uuid(),
             )
         )
         await asyncio.wait_for(run_and_stop(), timeout=2.0)
@@ -454,7 +453,7 @@ class TestEagerRecheck:
                 shutdown,
                 stop_event,
                 backend=backend,
-                worker_id=uuid4(),
+                worker_id=new_uuid(),
             )
         )
         await asyncio.wait_for(run_and_stop(), timeout=2.0)
@@ -523,7 +522,7 @@ class TestEagerRecheck:
                 shutdown,
                 stop_event,
                 backend=backend,
-                worker_id=uuid4(),
+                worker_id=new_uuid(),
             )
         )
         await asyncio.wait_for(run_and_stop(), timeout=2.0)
@@ -596,7 +595,7 @@ class TestNotifyDisabled:
                 shutdown,
                 stop_event,
                 backend=backend,
-                worker_id=uuid4(),
+                worker_id=new_uuid(),
             )
         )
         await asyncio.wait_for(run_and_stop(), timeout=2.0)
@@ -669,7 +668,7 @@ class TestWakeEventLifecycle:
                 shutdown,
                 stop_event,
                 backend=backend,
-                worker_id=uuid4(),
+                worker_id=new_uuid(),
             )
         )
         await asyncio.wait_for(run_and_stop(), timeout=2.0)
@@ -757,7 +756,7 @@ async def test_producer_uses_notify_poll_with_wake_subscribe(
             shutdown,
             stop_event,
             backend=backend,
-            worker_id=uuid4(),
+            worker_id=new_uuid(),
         )
     )
     await asyncio.wait_for(run_and_stop(), timeout=2.0)

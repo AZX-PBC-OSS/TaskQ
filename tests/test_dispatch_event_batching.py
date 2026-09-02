@@ -16,10 +16,10 @@ suffices.
 from __future__ import annotations
 
 import re
-from uuid import uuid4
 
 import pytest
 
+from taskq._ids import new_uuid
 from taskq.backend._sql import INSERT_EVENTS_BATCH_SQL
 from taskq.backend._sql_templates import render
 
@@ -64,7 +64,7 @@ async def test_events_land_once_per_dispatched_job(clean_pg_conn, module_pg_sche
     schema = module_pg_schema.schema_name
     tmpl = render(schema)
 
-    job_ids = [uuid4() for _ in range(5)]
+    job_ids = [new_uuid() for _ in range(5)]
     await clean_pg_conn.execute(
         f'INSERT INTO "{schema}".jobs '  # noqa: S608  # Why: schema is a test-fixture identifier, validated by render() above.
         "(id, actor, queue, payload, status, max_attempts, retry_kind) "

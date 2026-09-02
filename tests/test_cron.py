@@ -466,9 +466,9 @@ def test_resolve_factory_invalid_dotted_path() -> None:
 def test_schedule_record_roundtrip() -> None:
     """ScheduleRecord roundtrips through model_validate correctly."""
     now = datetime(2025, 6, 1, 12, 0, 0, tzinfo=UTC)
-    from uuid import uuid4
+    from taskq._ids import new_uuid
 
-    uid = uuid4()
+    uid = new_uuid()
     data = {
         "id": uid,
         "actor": "my_actor",
@@ -497,10 +497,10 @@ def test_schedule_record_roundtrip() -> None:
 
 def test_schedule_record_frozen() -> None:
     """ScheduleRecord is frozen (ConfigDict(frozen=True))."""
-    from uuid import uuid4
+    from taskq._ids import new_uuid
 
     record = ScheduleRecord(
-        id=uuid4(),
+        id=new_uuid(),
         actor="a",
         cron_expr="0 * * * *",
         timezone="UTC",
@@ -552,12 +552,11 @@ class _StubBackend:
 @pytest.mark.asyncio
 async def test_schedule_handle_disable() -> None:
     """ScheduleHandle.disable() delegates to backend.update_schedule with ScheduleUpdateArgs(enabled=False)."""
-    from uuid import uuid4
-
+    from taskq._ids import new_uuid
     from taskq.backend._protocol import ScheduleUpdateArgs
 
     stub = _StubBackend()
-    uid = uuid4()
+    uid = new_uuid()
     handle = ScheduleHandle(
         schedule_id=uid,
         actor="a",
@@ -583,12 +582,11 @@ async def test_schedule_handle_enable() -> None:
     The backend resets consecutive_failures and last_fire_error when enabled=True;
     the handle does not need to pass those fields explicitly.
     """
-    from uuid import uuid4
-
+    from taskq._ids import new_uuid
     from taskq.backend._protocol import ScheduleUpdateArgs
 
     stub = _StubBackend()
-    uid = uuid4()
+    uid = new_uuid()
     handle = ScheduleHandle(
         schedule_id=uid,
         actor="a",
@@ -610,10 +608,10 @@ async def test_schedule_handle_enable() -> None:
 @pytest.mark.asyncio
 async def test_schedule_handle_delete() -> None:
     """ScheduleHandle.delete() delegates to backend.delete_schedule with schedule_id."""
-    from uuid import uuid4
+    from taskq._ids import new_uuid
 
     stub = _StubBackend()
-    uid = uuid4()
+    uid = new_uuid()
     handle = ScheduleHandle(
         schedule_id=uid,
         actor="a",
@@ -632,10 +630,10 @@ async def test_schedule_handle_delete() -> None:
 
 def test_schedule_handle_frozen() -> None:
     """ScheduleHandle is frozen (frozen=True, slots=True)."""
-    from uuid import uuid4
+    from taskq._ids import new_uuid
 
     handle = ScheduleHandle(
-        schedule_id=uuid4(),
+        schedule_id=new_uuid(),
         actor="a",
         cron_expr="0 * * * *",
         timezone="UTC",

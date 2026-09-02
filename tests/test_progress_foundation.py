@@ -6,11 +6,12 @@ Covers deliverables — no PG or Redis required.
 
 from dataclasses import fields
 from datetime import UTC, datetime
-from uuid import UUID, uuid4
+from uuid import UUID
 
 import pytest
 from pydantic import BaseModel, ValidationError
 
+from taskq._ids import new_job_id, new_uuid
 from taskq.constants import (
     PROGRESS_CHANNEL_FMT,
     PROGRESS_GLOBAL_CHANNEL_FMT,
@@ -41,7 +42,7 @@ def test_progress_event_is_pydantic_basemodel() -> None:
 def test_progress_event_frozen() -> None:
     event = ProgressEvent(
         kind="progress",
-        job_id=uuid4(),
+        job_id=new_job_id(),
         actor="test_actor",
         ts=datetime.now(UTC),
         seq=1,
@@ -54,7 +55,7 @@ def test_progress_event_frozen() -> None:
 def test_progress_event_defaults() -> None:
     event = ProgressEvent(
         kind="progress",
-        job_id=uuid4(),
+        job_id=new_job_id(),
         actor="test_actor",
         ts=datetime.now(UTC),
         seq=1,
@@ -69,7 +70,7 @@ def test_progress_event_defaults() -> None:
 
 
 def test_progress_event_all_fields() -> None:
-    job_id = uuid4()
+    job_id = new_job_id()
     ts = datetime(2026, 5, 3, 12, 34, 56, 123000, tzinfo=UTC)
     event = ProgressEvent(
         kind="progress",
@@ -99,7 +100,7 @@ def test_progress_event_all_fields() -> None:
 
 
 def test_progress_event_kind_literal() -> None:
-    job_id = uuid4()
+    job_id = new_job_id()
     ts = datetime.now(UTC)
     ProgressEvent(kind="progress", job_id=job_id, actor="a", ts=ts, seq=1, status="running")
     ProgressEvent(kind="state_change", job_id=job_id, actor="a", ts=ts, seq=1, status="succeeded")
@@ -113,7 +114,7 @@ def test_progress_event_data_type_is_dict_str_object() -> None:
 
 
 def test_progress_event_model_dump_json_excludes_none() -> None:
-    job_id = uuid4()
+    job_id = new_job_id()
     ts = datetime(2026, 5, 3, 12, 34, 56, 123000, tzinfo=UTC)
     event = ProgressEvent(
         kind="progress",
@@ -131,7 +132,7 @@ def test_progress_event_model_dump_json_excludes_none() -> None:
 
 
 def test_progress_event_model_dump_json_includes_set_fields() -> None:
-    job_id = uuid4()
+    job_id = new_job_id()
     ts = datetime(2026, 5, 3, 12, 34, 56, 123000, tzinfo=UTC)
     event = ProgressEvent(
         kind="progress",
@@ -155,7 +156,7 @@ def test_progress_event_model_dump_json_includes_set_fields() -> None:
 
 
 def test_progress_event_state_change_with_terminal() -> None:
-    job_id = uuid4()
+    job_id = new_job_id()
     ts = datetime.now(UTC)
     event = ProgressEvent(
         kind="state_change",
@@ -172,7 +173,7 @@ def test_progress_event_state_change_with_terminal() -> None:
 
 
 def test_progress_event_uuid_serializes_to_string() -> None:
-    job_id = uuid4()
+    job_id = new_job_id()
     ts = datetime.now(UTC)
     event = ProgressEvent(
         kind="progress",
@@ -202,7 +203,7 @@ def test_progress_buffer_fields() -> None:
 
 
 def test_progress_buffer_construction_with_defaults() -> None:
-    job_id = uuid4()
+    job_id = new_job_id()
     buf = _ProgressBuffer(job_id=job_id, base_seq=0)
     assert buf.job_id == job_id
     assert buf.base_seq == 0
@@ -213,7 +214,7 @@ def test_progress_buffer_construction_with_defaults() -> None:
 
 
 def test_progress_buffer_construction_with_all_values() -> None:
-    job_id = uuid4()
+    job_id = new_job_id()
     buf = _ProgressBuffer(
         job_id=job_id,
         base_seq=10,
@@ -230,7 +231,7 @@ def test_progress_buffer_construction_with_all_values() -> None:
 
 
 def test_progress_buffer_is_mutable() -> None:
-    job_id = uuid4()
+    job_id = new_job_id()
     buf = _ProgressBuffer(job_id=job_id, base_seq=0)
     buf.pending_seq_delta = 5
     buf.dirty = True
@@ -241,7 +242,7 @@ def test_progress_buffer_is_mutable() -> None:
 
 
 def test_progress_buffer_pending_state_default_factory_independent() -> None:
-    job_id = uuid4()
+    job_id = new_job_id()
     buf1 = _ProgressBuffer(job_id=job_id, base_seq=0)
     buf2 = _ProgressBuffer(job_id=job_id, base_seq=0)
     buf1.pending_state["step"] = 1
@@ -263,7 +264,7 @@ def test_progress_buffer_data_type_is_dict_str_object() -> None:
 
 
 def test_progress_channel_format() -> None:
-    job_id = uuid4()
+    job_id = new_job_id()
     result = progress_channel("taskq", job_id)
     assert result == f"taskq:taskq:progress:{job_id}"
 
@@ -275,7 +276,7 @@ def test_progress_channel_with_str_job_id() -> None:
 
 def test_progress_channel_validates_schema() -> None:
     with pytest.raises(ValueError, match="invalid schema identifier"):
-        progress_channel("bad-schema", uuid4())
+        progress_channel("bad-schema", new_uuid())
 
 
 def test_progress_global_channel_format() -> None:
@@ -289,7 +290,7 @@ def test_progress_global_channel_validates_schema() -> None:
 
 
 def test_progress_channel_matches_fmt_constant() -> None:
-    job_id = uuid4()
+    job_id = new_job_id()
     assert progress_channel("myschema", job_id) == PROGRESS_CHANNEL_FMT.format(
         schema="myschema", job_id=job_id
     )
@@ -303,7 +304,7 @@ def test_progress_global_channel_matches_fmt_constant() -> None:
 
 def test_progress_channel_rejects_empty_schema() -> None:
     with pytest.raises(ValueError, match="invalid schema identifier"):
-        progress_channel("", uuid4())
+        progress_channel("", new_uuid())
 
 
 def test_progress_global_channel_rejects_empty_schema() -> None:
@@ -313,7 +314,7 @@ def test_progress_global_channel_rejects_empty_schema() -> None:
 
 def test_progress_channel_rejects_digit_start_schema() -> None:
     with pytest.raises(ValueError, match="invalid schema identifier"):
-        progress_channel("1bad", uuid4())
+        progress_channel("1bad", new_uuid())
 
 
 def test_progress_global_channel_rejects_digit_start_schema() -> None:
@@ -322,7 +323,7 @@ def test_progress_global_channel_rejects_digit_start_schema() -> None:
 
 
 def test_progress_channel_underscore_schema() -> None:
-    job_id = uuid4()
+    job_id = new_job_id()
     result = progress_channel("_private", job_id)
     assert result == f"taskq:_private:progress:{job_id}"
 

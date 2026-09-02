@@ -339,15 +339,14 @@ async def test_reset_pg_gcra_raises_without_pg_pool() -> None:
 
 async def test_acquire_pg_log_raises_without_pg_pool() -> None:
     """_acquire_pg_log raises RuntimeError when pg_pool is None."""
-    from uuid import uuid4
-
+    from taskq._ids import new_uuid
     from taskq.ratelimit._sliding_window_pg import _acquire_pg_log
 
     sw = SlidingWindow(
         "test", limit=5, window=timedelta(seconds=10), backend="postgres", style="log"
     )
     with pytest.raises(RuntimeError, match="pg_pool not injected"):
-        await _acquire_pg_log(sw, pg_pool=None, settings=None, request_id=uuid4())
+        await _acquire_pg_log(sw, pg_pool=None, settings=None, request_id=new_uuid())
 
 
 async def test_acquire_pg_gcra_raises_without_pg_pool() -> None:

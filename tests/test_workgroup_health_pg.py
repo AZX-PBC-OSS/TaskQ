@@ -12,11 +12,12 @@ import time
 from datetime import timedelta
 from types import SimpleNamespace
 from typing import cast
-from uuid import UUID, uuid4
+from uuid import UUID
 
 import asyncpg
 import pytest
 
+from taskq._ids import new_uuid
 from taskq.settings import TaskQSettings
 from taskq.worker.workgroup import (
     WorkerHealthConfig,
@@ -33,13 +34,13 @@ async def _seed_worker_row(
 ) -> tuple[int, str, UUID]:
     """Insert a workers row whose ``last_seen_at`` is *age* old by the SERVER
     clock, in its own fresh workgroup instance; return (pid, label, instance)."""
-    wg_instance, label, pid = uuid4(), "w1", 4242
+    wg_instance, label, pid = new_uuid(), "w1", 4242
     async with pool.acquire() as conn:
         await conn.execute(
             f'INSERT INTO "{schema}".workers '  # noqa: S608  # Why: schema validated against _IDENT_RE by the module fixtures.
             "(id, workgroup_instance, worker_label, pid, hostname, queues, last_seen_at) "
             "VALUES ($1, $2, $3, $4, 'supervisor-test', ARRAY['default'], clock_timestamp() - $5::interval)",
-            uuid4(),
+            new_uuid(),
             wg_instance,
             label,
             pid,

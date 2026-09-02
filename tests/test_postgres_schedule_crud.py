@@ -379,10 +379,10 @@ class TestUpdateSchedule:
 
     async def test_update_nonexistent_raises_keyerror(self, clean_jobs_app: JobsApp) -> None:
         backend = clean_jobs_app.backend
-        from uuid import uuid4
+        from taskq._ids import new_uuid
 
         with pytest.raises(KeyError, match="not found"):
-            await backend.update_schedule(uuid4(), ScheduleUpdateArgs(enabled=True))
+            await backend.update_schedule(new_uuid(), ScheduleUpdateArgs(enabled=True))
 
 
 # ── delete_schedule ────────────────────────────────────────────────────────
@@ -419,10 +419,10 @@ class TestDeleteSchedule:
 
     async def test_delete_nonexistent_schedule_is_idempotent(self, clean_jobs_app: JobsApp) -> None:
         backend = clean_jobs_app.backend
-        from uuid import uuid4
+        from taskq._ids import new_uuid
 
         # Should not raise
-        await backend.delete_schedule(uuid4())
+        await backend.delete_schedule(new_uuid())
 
 
 # ── update_schedule clear_payload_factory ──────────────────────────────────

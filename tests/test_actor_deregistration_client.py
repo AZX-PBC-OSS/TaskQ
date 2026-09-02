@@ -5,11 +5,10 @@ deregister_actor → real Postgres. No Docker worker container needed —
 the tests seed actor_config rows directly and call through the client.
 """
 
-from uuid import uuid4
-
 import asyncpg
 import pytest
 
+from taskq._ids import new_uuid
 from taskq.actor_config import ActorConfig
 from taskq.exceptions import (
     ActorHasActiveJobsError,
@@ -35,7 +34,7 @@ async def _insert_job(conn: asyncpg.Connection, schema: str, actor: str, status:
     await conn.execute(
         f'INSERT INTO "{schema}".jobs (id, actor, queue, payload, status, max_attempts, retry_kind) '  # noqa: S608  # Why: schema validated by _IDENT_RE in apply_pending; actor/status are test constants.
         f"VALUES ($1, $2, 'default', '{{}}'::jsonb, $3::\"{schema}\".job_status, 3, 'transient')",
-        uuid4(),
+        new_uuid(),
         actor,
         status,
     )

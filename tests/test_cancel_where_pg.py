@@ -3,11 +3,11 @@
 import asyncio
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
-from uuid import uuid4
 
 import asyncpg
 import pytest
 
+from taskq._ids import new_job_id, new_uuid
 from taskq.backend._cancel_bulk import _cancel_where
 from taskq.backend._protocol import Backend, JobFilter
 from taskq.testing.fixtures import JobsApp
@@ -71,7 +71,7 @@ class TestCancelWherePostgres:
 
     async def test_pg_cancel_where_batch_id_filter(self, backend_pair: Backend) -> None:
         """cancel_where works with batch_id filter on Postgres."""
-        bid = uuid4()
+        bid = new_uuid()
         for _ in range(3):
             await backend_pair.enqueue(
                 make_enqueue_args(
@@ -99,7 +99,7 @@ class TestCancelWherePostgres:
         args = make_enqueue_args(tags=("tenant-acme",), scheduled_at=_NOW)
         row = await backend.enqueue(args)
 
-        worker_id = uuid4()
+        worker_id = new_uuid()
         async with deps.worker_pool.acquire() as conn:
             await conn.execute(
                 f'UPDATE "{schema}".jobs '
@@ -138,7 +138,7 @@ class TestCancelWherePostgres:
 
         args = make_enqueue_args(tags=("tenant-acme",), scheduled_at=_NOW)
         row = await backend.enqueue(args)
-        worker_id = uuid4()
+        worker_id = new_uuid()
 
         claim_conn = await deps.worker_pool.acquire()
         try:
@@ -181,7 +181,7 @@ class TestCancelWherePostgres:
 
         args = make_enqueue_args(tags=("tenant-acme",), scheduled_at=_NOW)
         row = await backend.enqueue(args)
-        worker_id = uuid4()
+        worker_id = new_uuid()
         async with deps.worker_pool.acquire() as conn:
             await conn.execute(
                 f'UPDATE "{schema}".jobs '
@@ -246,7 +246,7 @@ class TestDeadlockRetry:
     def _ps_success_row() -> dict[str, object]:
         return {
             "cancelled_directly": 1,
-            "cancelled_ids": [uuid4()],
+            "cancelled_ids": [new_uuid()],
             "cancelled_prev_statuses": ["pending"],
         }
 
@@ -260,10 +260,10 @@ class TestDeadlockRetry:
 
     @staticmethod
     def _running_success_row() -> dict[str, object]:
-        wid = uuid4()
+        wid = new_uuid()
         return {
             "cancel_requested": 1,
-            "cancel_requested_ids": [uuid4()],
+            "cancel_requested_ids": [new_uuid()],
             "cancel_requested_workers": [wid],
         }
 
@@ -346,7 +346,7 @@ class TestDeadlockRetry:
     async def test_notify_target_filters_none_worker_id(self) -> None:
         """A running job with NULL locked_by_worker is excluded from
         notify_targets (no worker to NOTIFY)."""
-        jid = uuid4()
+        jid = new_job_id()
         pool, _ = self._mock_pool_and_conn(
             fetch_rows=[
                 None,

@@ -13,11 +13,11 @@ import contextlib
 import time
 from types import SimpleNamespace
 from typing import Any, cast
-from uuid import uuid4
 
 import asyncpg
 import pytest
 
+from taskq._ids import new_uuid
 from taskq.backend._protocol import Backend
 from taskq.backend.clock import SystemClock
 from taskq.worker._watchdog import LoopLiveness
@@ -128,7 +128,9 @@ async def test_cron_loop_treats_transient_error_as_retry_not_fatal(
             ),
         ),
     )
-    leader = MaintenanceLeader(deps, uuid4(), cast(Backend, SimpleNamespace()), clock=SystemClock())
+    leader = MaintenanceLeader(
+        deps, new_uuid(), cast(Backend, SimpleNamespace()), clock=SystemClock()
+    )
     leader._cron_conn = _FakeCronConn()  # type: ignore[assignment]
 
     shutdown = asyncio.Event()
@@ -216,7 +218,9 @@ async def test_election_probe_cleanup_runs_before_guard_raises(
             dispatcher_pool=None,
         ),
     )
-    leader = MaintenanceLeader(deps, uuid4(), cast(Backend, SimpleNamespace()), clock=SystemClock())
+    leader = MaintenanceLeader(
+        deps, new_uuid(), cast(Backend, SimpleNamespace()), clock=SystemClock()
+    )
 
     # Track cleanup calls without actually clearing is_leader or nulling
     # leader_conn, so the probe keeps running and the guard can reach the
@@ -331,7 +335,9 @@ async def test_election_probe_unexpected_does_not_reach_guard_ok(
             dispatcher_pool=None,
         ),
     )
-    leader = MaintenanceLeader(deps, uuid4(), cast(Backend, SimpleNamespace()), clock=SystemClock())
+    leader = MaintenanceLeader(
+        deps, new_uuid(), cast(Backend, SimpleNamespace()), clock=SystemClock()
+    )
 
     # Prevent _open_leader_conn from being called (which would fail since
     # pg_dsn_direct is None) by making the election loop think the conn is
@@ -514,7 +520,9 @@ async def test_cron_timeout_branch_sleeps_before_next_tick(
             ),
         ),
     )
-    leader = MaintenanceLeader(deps, uuid4(), cast(Backend, SimpleNamespace()), clock=SystemClock())
+    leader = MaintenanceLeader(
+        deps, new_uuid(), cast(Backend, SimpleNamespace()), clock=SystemClock()
+    )
     leader._cron_conn = _FakeCronConn()  # type: ignore[assignment]
 
     shutdown = asyncio.Event()

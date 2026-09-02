@@ -435,10 +435,10 @@ def test_worker_settings_log_format_rejects_invalid_value_even_when_validate_dis
 
 
 def test_bind_job_context_binds_mandatory_fields() -> None:
-    from uuid import uuid4
+    from taskq._ids import new_job_id
 
     obs_mod.setup_logging()
-    job_id = uuid4()
+    job_id = new_job_id()
 
     with structlog.testing.capture_logs() as captured:
         bound_log = obs_mod.bind_job_context(
@@ -465,10 +465,10 @@ def test_bind_job_context_binds_mandatory_fields() -> None:
 
 
 def test_bind_job_context_identity_key_omitted_when_none() -> None:
-    from uuid import uuid4
+    from taskq._ids import new_job_id
 
     obs_mod.setup_logging()
-    job_id = uuid4()
+    job_id = new_job_id()
 
     with structlog.testing.capture_logs() as captured:
         bound_log = obs_mod.bind_job_context(
@@ -487,10 +487,10 @@ def test_bind_job_context_identity_key_omitted_when_none() -> None:
 
 
 def test_bind_job_context_identity_key_present_when_set() -> None:
-    from uuid import uuid4
+    from taskq._ids import new_job_id
 
     obs_mod.setup_logging()
-    job_id = uuid4()
+    job_id = new_job_id()
 
     with structlog.testing.capture_logs() as captured:
         bound_log = obs_mod.bind_job_context(
@@ -512,10 +512,10 @@ def test_bind_job_context_identity_key_present_when_set() -> None:
 
 
 def test_bind_job_context_batch_id_omitted_when_none() -> None:
-    from uuid import uuid4
+    from taskq._ids import new_job_id
 
     obs_mod.setup_logging()
-    job_id = uuid4()
+    job_id = new_job_id()
 
     with structlog.testing.capture_logs() as captured:
         bound_log = obs_mod.bind_job_context(
@@ -535,10 +535,10 @@ def test_bind_job_context_batch_id_omitted_when_none() -> None:
 
 
 def test_bind_job_context_batch_id_present_when_set() -> None:
-    from uuid import uuid4
+    from taskq._ids import new_job_id
 
     obs_mod.setup_logging()
-    job_id = uuid4()
+    job_id = new_job_id()
 
     with structlog.testing.capture_logs() as captured:
         bound_log = obs_mod.bind_job_context(
@@ -561,10 +561,10 @@ def test_bind_job_context_batch_id_present_when_set() -> None:
 
 
 def test_bind_job_context_span_id_omitted_when_none() -> None:
-    from uuid import uuid4
+    from taskq._ids import new_job_id
 
     obs_mod.setup_logging()
-    job_id = uuid4()
+    job_id = new_job_id()
 
     with structlog.testing.capture_logs() as captured:
         bound_log = obs_mod.bind_job_context(
@@ -587,10 +587,10 @@ def test_bind_job_context_span_id_omitted_when_none() -> None:
 
 
 def test_bind_job_context_trace_id_empty_string_when_no_otel() -> None:
-    from uuid import uuid4
+    from taskq._ids import new_job_id
 
     obs_mod.setup_logging()
-    job_id = uuid4()
+    job_id = new_job_id()
 
     with structlog.testing.capture_logs() as captured:
         bound_log = obs_mod.bind_job_context(
@@ -612,10 +612,10 @@ def test_bind_job_context_trace_id_empty_string_when_no_otel() -> None:
 
 
 def test_bind_job_context_returns_new_logger_does_not_mutate_original() -> None:
-    from uuid import uuid4
+    from taskq._ids import new_job_id
 
     obs_mod.setup_logging()
-    job_id = uuid4()
+    job_id = new_job_id()
     original_log = obs_mod.get_logger("test")
 
     bound_log = obs_mod.bind_job_context(
@@ -732,11 +732,12 @@ def test_bind_job_context_performance_bounded() -> None:
     """
     import statistics
     import time
-    from uuid import uuid4
+
+    from taskq._ids import new_job_id
 
     obs_mod.setup_logging()
     log = obs_mod.get_logger("test.perf")
-    job_id = uuid4()
+    job_id = new_job_id()
 
     durations: list[float] = []
     for _ in range(200):
@@ -762,10 +763,10 @@ def test_bind_job_context_performance_bounded() -> None:
 
 
 def test_log_state_change_emits_correct_fields() -> None:
-    from uuid import uuid4
+    from taskq._ids import new_job_id
 
     obs_mod.setup_logging()
-    job_id = uuid4()
+    job_id = new_job_id()
 
     with structlog.testing.capture_logs() as captured:
         bound_log = obs_mod.bind_job_context(
@@ -789,10 +790,10 @@ def test_log_state_change_emits_correct_fields() -> None:
 
 
 def test_log_state_change_with_extra_fields() -> None:
-    from uuid import uuid4
+    from taskq._ids import new_job_id
 
     obs_mod.setup_logging()
-    job_id = uuid4()
+    job_id = new_job_id()
 
     with structlog.testing.capture_logs() as captured:
         bound_log = obs_mod.bind_job_context(
@@ -832,10 +833,10 @@ def test_log_state_change_unknown_states_do_not_raise() -> None:
 
 
 def test_log_cancel_phase_change_emits_correct_fields() -> None:
-    from uuid import uuid4
+    from taskq._ids import new_job_id
 
     obs_mod.setup_logging()
-    job_id = uuid4()
+    job_id = new_job_id()
 
     with structlog.testing.capture_logs() as captured:
         bound_log = obs_mod.bind_job_context(
@@ -859,10 +860,10 @@ def test_log_cancel_phase_change_emits_correct_fields() -> None:
 
 
 def test_log_cancel_phase_change_does_not_include_cancel_observed_at() -> None:
-    from uuid import uuid4
+    from taskq._ids import new_job_id
 
     obs_mod.setup_logging()
-    job_id = uuid4()
+    job_id = new_job_id()
 
     with structlog.testing.capture_logs() as captured:
         bound_log = obs_mod.bind_job_context(

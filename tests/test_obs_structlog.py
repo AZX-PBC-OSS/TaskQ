@@ -12,7 +12,6 @@ global state between tests, handling the ``cache_logger_on_first_use`` +
 import io
 import json
 import logging
-from uuid import uuid4
 
 import jsonschema
 import pytest
@@ -20,6 +19,7 @@ import structlog
 from opentelemetry.sdk.trace import TracerProvider
 
 import taskq.obs as obs_mod
+from taskq._ids import new_job_id
 
 _LOG_LINE_SCHEMA: dict[str, object] = {
     "type": "object",
@@ -104,7 +104,7 @@ def test_rendered_json_log_has_level_and_timestamp() -> None:
 def test_bound_logger_carries_job_context_fields() -> None:
     """Bound logger carries job context fields."""
     obs_mod.setup_logging()
-    job_id = uuid4()
+    job_id = new_job_id()
 
     with structlog.testing.capture_logs() as captured:
         bound_log = obs_mod.bind_job_context(
@@ -133,7 +133,7 @@ def test_bound_logger_carries_job_context_fields() -> None:
 def test_identity_key_omitted_when_none() -> None:
     """identity_key omitted when None."""
     obs_mod.setup_logging()
-    job_id = uuid4()
+    job_id = new_job_id()
 
     with structlog.testing.capture_logs() as captured:
         bound_log = obs_mod.bind_job_context(
@@ -157,7 +157,7 @@ def test_identity_key_omitted_when_none() -> None:
 def test_batch_id_omitted_when_none() -> None:
     """batch_id omitted when None."""
     obs_mod.setup_logging()
-    job_id = uuid4()
+    job_id = new_job_id()
 
     with structlog.testing.capture_logs() as captured:
         bound_log = obs_mod.bind_job_context(
@@ -179,7 +179,7 @@ def test_batch_id_omitted_when_none() -> None:
 def test_batch_id_present_when_supplied() -> None:
     """batch_id present when supplied."""
     obs_mod.setup_logging()
-    job_id = uuid4()
+    job_id = new_job_id()
 
     with structlog.testing.capture_logs() as captured:
         bound_log = obs_mod.bind_job_context(
@@ -204,7 +204,7 @@ def test_batch_id_present_when_supplied() -> None:
 def test_log_state_change_emits_correct_kind_and_states() -> None:
     """log_state_change emits correct kind and states."""
     obs_mod.setup_logging()
-    job_id = uuid4()
+    job_id = new_job_id()
 
     with structlog.testing.capture_logs() as captured:
         bound_log = obs_mod.bind_job_context(
@@ -233,7 +233,7 @@ def test_log_state_change_emits_correct_kind_and_states() -> None:
 def test_log_cancel_phase_change_emits_correct_kind_and_phases() -> None:
     """log_cancel_phase_change emits correct kind and phases."""
     obs_mod.setup_logging()
-    job_id = uuid4()
+    job_id = new_job_id()
 
     with structlog.testing.capture_logs() as captured:
         bound_log = obs_mod.bind_job_context(
@@ -304,7 +304,7 @@ def test_otel_span_processor_injects_trace_id_and_span_id() -> None:
 def test_trace_id_empty_when_no_active_span() -> None:
     """trace_id="" when no active span."""
     obs_mod.setup_logging()
-    job_id = uuid4()
+    job_id = new_job_id()
 
     with structlog.testing.capture_logs() as captured:
         bound_log = obs_mod.bind_job_context(
@@ -451,7 +451,7 @@ def test_worker_id_appears_on_worker_scope_logs() -> None:
 def test_schema_validation_passes_for_complete_log_line() -> None:
     """Mandatory field schema validation passes for complete line."""
     obs_mod.setup_logging()
-    job_id = uuid4()
+    job_id = new_job_id()
 
     with structlog.testing.capture_logs() as captured:
         bound_log = obs_mod.bind_job_context(

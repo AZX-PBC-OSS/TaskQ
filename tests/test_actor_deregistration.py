@@ -10,11 +10,11 @@ and the ``NOT EXISTS`` subquery for queue purging.
 """
 
 import asyncio
-from uuid import uuid4
 
 import asyncpg
 import pytest
 
+from taskq._ids import new_job_id, new_uuid
 from taskq.actor_config import ActorConfig
 from taskq.actor_config_ops import DeregisterResult, deregister_actor, get_actor_config
 from taskq.exceptions import (
@@ -40,7 +40,7 @@ async def _insert_job(
     queue: str = "default",
 ) -> str:
     """Insert a minimal job row with the given status; return its UUID string."""
-    job_id = uuid4()
+    job_id = new_job_id()
     await conn.execute(
         f"""INSERT INTO "{schema}".jobs (
             id, actor, queue, payload, max_attempts, retry_kind, status
@@ -66,7 +66,7 @@ async def _insert_schedule(
     enabled: bool = True,
 ) -> str:
     """Insert a cron schedule row; return its UUID string."""
-    schedule_id = uuid4()
+    schedule_id = new_uuid()
     await conn.execute(
         f"""INSERT INTO "{schema}".cron_schedules (
             id, actor, cron_expr, enabled, next_fire_at

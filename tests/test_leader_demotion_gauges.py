@@ -18,7 +18,6 @@ import asyncio
 from collections.abc import Iterator
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
-from uuid import uuid4
 
 import pytest
 from opentelemetry.sdk.metrics import MeterProvider
@@ -26,6 +25,7 @@ from opentelemetry.sdk.metrics.export import InMemoryMetricReader, NumberDataPoi
 
 import taskq.obs as obs_mod
 import taskq.obs._otel as otel_mod
+from taskq._ids import new_uuid
 from taskq.backend._protocol import Backend
 from taskq.backend.clock import SystemClock
 from taskq.testing.otel import collect_metrics
@@ -122,7 +122,9 @@ def _leader(is_leader: asyncio.Event) -> MaintenanceLeader:
             settings=SimpleNamespace(schema_name="taskq", dispatcher_command_timeout=2.5),
         ),
     )
-    return MaintenanceLeader(deps, uuid4(), cast(Backend, SimpleNamespace()), clock=SystemClock())
+    return MaintenanceLeader(
+        deps, new_uuid(), cast(Backend, SimpleNamespace()), clock=SystemClock()
+    )
 
 
 @pytest.fixture(autouse=True)

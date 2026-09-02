@@ -18,10 +18,10 @@ from __future__ import annotations
 
 from typing import Any
 from unittest.mock import AsyncMock
-from uuid import uuid4
 
 import structlog.testing
 
+from taskq._ids import new_uuid
 from taskq.cron import CronScheduleSpec
 from taskq.worker._bootstrap import _warn_on_cron_drift
 
@@ -45,7 +45,7 @@ def _spec(**overrides: Any) -> CronScheduleSpec:
 def _stored(**overrides: Any) -> Any:
     class _Row:
         def __init__(self) -> None:
-            self.id = uuid4()
+            self.id = new_uuid()
             self.actor = "nightly_report"
             self.name = ""
             self.cron_expr = "0 3 * * *"

@@ -6,7 +6,7 @@ cohort interleave. All tests use InMemoryBackend (unit tier).
 """
 
 from datetime import UTC, datetime, timedelta
-from uuid import UUID, uuid4
+from uuid import UUID
 
 import pytest
 
@@ -83,7 +83,7 @@ async def _dispatch_cycles(
 async def test_starvation_regression_intra_queue() -> None:
     """Spec Test 1: 1700 copy jobs + 1 monitor job — monitor dispatched within 2 cycles."""
     backend = _make_backend()
-    wid = uuid4()
+    wid = new_uuid()
     await _enqueue_bulk(backend, "copy_file", "default", 1700, max_concurrent=5)
     await _enqueue_bulk(backend, "migration_monitor", "default", 1, max_concurrent=1)
     results = await _dispatch_cycles(backend, wid, ["default"], limit=30)
@@ -96,7 +96,7 @@ async def test_starvation_regression_intra_queue() -> None:
 async def test_starvation_regression_cross_queue() -> None:
     """Spec Test 2: 1700 copy jobs on 'copy' + 1 monitor on 'monitor' — monitor dispatched."""
     backend = _make_backend()
-    wid = uuid4()
+    wid = new_uuid()
     await _enqueue_bulk(backend, "copy_file", "copy", 1700, max_concurrent=5)
     await _enqueue_bulk(backend, "migration_monitor", "monitor", 1, max_concurrent=1)
     results = await _dispatch_cycles(backend, wid, ["copy", "monitor"], limit=30)
@@ -110,7 +110,7 @@ async def test_starvation_regression_cross_queue() -> None:
 async def test_pending_rank_ordering() -> None:
     """Spec Test 3: rank-1 jobs from all actors dispatch before any rank-2."""
     backend = _make_backend()
-    wid = uuid4()
+    wid = new_uuid()
     await _enqueue_bulk(backend, "A", "default", 50, max_concurrent=10)
     await _enqueue_bulk(backend, "B", "default", 10, max_concurrent=1)
     await _enqueue_bulk(backend, "C", "default", 10, max_concurrent=1)
@@ -134,7 +134,7 @@ async def test_pending_rank_ordering() -> None:
 async def test_identity_dedup_ordering() -> None:
     """Spec Test 5: deterministic identity dedup selects highest-priority, earliest-scheduled."""
     backend = _make_backend()
-    wid = uuid4()
+    wid = new_uuid()
     earlier = _START - timedelta(hours=2)
     later = _START - timedelta(hours=1)
     ik = IdentityKey("dedup-test-1")
@@ -191,7 +191,7 @@ async def test_identity_dedup_ordering() -> None:
 async def test_identity_dedup_slot_preservation() -> None:
     """Spec Test 6: identity dedup doesn't waste max_concurrent slots."""
     backend = _make_backend()
-    wid = uuid4()
+    wid = new_uuid()
     ik = IdentityKey("dedup-test-2")
     for _ in range(5):
         await _enqueue_bulk(backend, "A", "default", 1, max_concurrent=5, identity_key=ik)
@@ -221,7 +221,7 @@ async def test_oversample_absorption() -> None:
     (identity dedup doesn't collapse more than it should).
     """
     backend = _make_backend()
-    wid = uuid4()
+    wid = new_uuid()
     for ident in ["x", "y", "z"]:
         for _ in range(2):
             await _enqueue_bulk(
@@ -241,7 +241,7 @@ async def test_oversample_absorption() -> None:
 async def test_oversample_absorption_identity_dedupped() -> None:
     """Identity dedup: 2 per identity, 3 identities — dispatches 1 per identity."""
     backend = _make_backend()
-    wid = uuid4()
+    wid = new_uuid()
     for ident in ["x", "y", "z"]:
         for _ in range(2):
             await _enqueue_bulk(
@@ -308,7 +308,7 @@ def test_priority_smallint_validation() -> None:
 async def test_actor_config_gate_registered() -> None:
     """Spec Test 12: registered actors dispatch."""
     backend = _make_backend()
-    wid = uuid4()
+    wid = new_uuid()
     await _enqueue_bulk(backend, "registered_actor", "default", 1, max_concurrent=5)
     dispatched = await backend.dispatch_batch(wid, ["default"], limit=30, lock_lease=_LOCK_LEASE)
     assert any(j.actor == "registered_actor" for j in dispatched)
@@ -318,7 +318,7 @@ async def test_actor_config_gate_registered() -> None:
 async def test_actor_config_gate_unregistered() -> None:
     """Spec Test 12: unregistered actors do NOT dispatch when actor_config is populated."""
     backend = _make_backend()
-    wid = uuid4()
+    wid = new_uuid()
     # Register one actor so _actor_configs_meta is non-empty → gate activates
     backend.register_actor_config(actor="some_actor")
     # Enqueue for a different unregistered actor
@@ -343,7 +343,7 @@ async def test_actor_config_gate_unregistered() -> None:
 async def test_actor_config_gate_empty_allows_all() -> None:
     """When _actor_configs_meta is empty, all actors pass the gate."""
     backend = _make_backend()
-    wid = uuid4()
+    wid = new_uuid()
     # No actor_config registered → gate is open
     await backend.enqueue(
         EnqueueArgs(
@@ -373,7 +373,7 @@ async def test_round_robin_cohort_interleave() -> None:
     sort ensures cohort interleave within each actor's pending window.
     """
     backend = _make_backend()
-    wid = uuid4()
+    wid = new_uuid()
     backend.set_queue_mode("rr_queue", "round_robin")  # type: ignore[reportPrivateUsage]
     backend.register_actor_config(actor="A", max_concurrent=4)
 
@@ -415,7 +415,7 @@ async def test_round_robin_cohort_interleave() -> None:
 async def test_round_robin_priority_tiebreak() -> None:
     """Fairness_rank interleave preserves priority ordering within each cohort."""
     backend = _make_backend()
-    wid = uuid4()
+    wid = new_uuid()
     backend.set_queue_mode("rr_queue", "round_robin")  # type: ignore[reportPrivateUsage]
     backend.register_actor_config(actor="A", max_concurrent=5)
 

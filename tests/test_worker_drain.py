@@ -7,7 +7,6 @@ from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
-from uuid import uuid4
 
 import pytest
 from pydantic import BaseModel
@@ -413,7 +412,7 @@ async def test_drain_monitor_triggers_shutdown_when_idle() -> None:
         await drain_monitor_loop(
             deps,
             deps.settings,
-            uuid4(),
+            new_uuid(),
             shutdown_event,
             escalate_event,
             orchestrator_holder,
@@ -443,7 +442,7 @@ async def test_drain_monitor_exit_code_3_on_failures() -> None:
         await drain_monitor_loop(
             deps,
             deps.settings,
-            uuid4(),
+            new_uuid(),
             shutdown_event,
             escalate_event,
             orchestrator_holder,
@@ -472,7 +471,7 @@ async def test_drain_monitor_exit_code_4_on_timeout() -> None:
         await drain_monitor_loop(
             deps,
             deps.settings,
-            uuid4(),
+            new_uuid(),
             shutdown_event,
             escalate_event,
             orchestrator_holder,
@@ -512,7 +511,7 @@ async def test_drain_monitor_resets_settle_on_new_jobs() -> None:
             drain_monitor_loop(
                 deps,
                 deps.settings,
-                uuid4(),
+                new_uuid(),
                 shutdown_event,
                 escalate_event,
                 orchestrator_holder,
@@ -545,7 +544,7 @@ async def test_drain_monitor_does_not_trigger_when_active_jobs() -> None:
             drain_monitor_loop(
                 deps,
                 deps.settings,
-                uuid4(),
+                new_uuid(),
                 shutdown_event,
                 escalate_event,
                 orchestrator_holder,
@@ -583,7 +582,7 @@ async def test_drain_monitor_skips_when_orchestration_already_active() -> None:
             drain_monitor_loop(
                 deps,
                 deps.settings,
-                uuid4(),
+                new_uuid(),
                 shutdown_event,
                 escalate_event,
                 orchestrator_holder,
@@ -626,7 +625,7 @@ async def test_drain_monitor_continues_after_count_error() -> None:
         await drain_monitor_loop(
             deps,
             deps.settings,
-            uuid4(),
+            new_uuid(),
             shutdown_event,
             escalate_event,
             orchestrator_holder,
@@ -657,7 +656,7 @@ async def test_drain_monitor_propagates_non_recoverable_error() -> None:
         await drain_monitor_loop(
             deps,
             deps.settings,
-            uuid4(),
+            new_uuid(),
             shutdown_event,
             escalate_event,
             orchestrator_holder,
@@ -694,7 +693,7 @@ async def test_drain_monitor_settle_window_zero() -> None:
         await drain_monitor_loop(
             deps,
             deps.settings,
-            uuid4(),
+            new_uuid(),
             shutdown_event,
             escalate_event,
             orchestrator_holder,

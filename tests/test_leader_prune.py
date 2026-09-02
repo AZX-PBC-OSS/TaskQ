@@ -15,6 +15,7 @@ import asyncpg
 import pytest
 
 from taskq import migrate as migrate_mod
+from taskq._ids import new_job_id, new_uuid
 from taskq._json import dumps_str
 from taskq.backend._sql_templates import COPY_FROM_COLUMNS
 from taskq.settings import TaskQSettings
@@ -40,7 +41,7 @@ async def _seed_terminal_job(
     job_id: uuid.UUID | None = None,
     metadata: dict[str, object] | None = None,
 ) -> uuid.UUID:
-    jid = job_id or uuid.uuid4()
+    jid = job_id or new_uuid()
     now = datetime.now(UTC)
     md_str = dumps_str(metadata) if metadata else "{}"
     await conn.execute(
@@ -123,7 +124,7 @@ async def _seed_archive_row(
     job_id: uuid.UUID | None = None,
     archived_at: datetime | None = None,
 ) -> uuid.UUID:
-    jid = job_id or uuid.uuid4()
+    jid = job_id or new_uuid()
     now = datetime.now(UTC)
     await conn.execute(
         f"""INSERT INTO {schema}.jobs_archive (
@@ -202,7 +203,7 @@ async def _seed_terminal_jobs_bulk(
     records: list[tuple[object, ...]] = []
     ids: list[uuid.UUID] = []
     for _ in range(count):
-        jid = uuid.uuid4()
+        jid = new_job_id()
         ids.append(jid)
         records.append(
             (
@@ -248,7 +249,7 @@ async def _seed_archive_rows_bulk(
     records: list[tuple[object, ...]] = []
     ids: list[uuid.UUID] = []
     for _ in range(count):
-        jid = uuid.uuid4()
+        jid = new_job_id()
         ids.append(jid)
         records.append(
             (
@@ -407,7 +408,7 @@ async def _seed_fully_distinctive_terminal_job(
     *,
     idempotency_scope: str,
 ) -> uuid.UUID:
-    jid = uuid.uuid4()
+    jid = new_job_id()
     now = datetime.now(UTC)
     old = now - timedelta(days=31)
     await conn.execute(
@@ -906,7 +907,7 @@ async def test_non_terminal_untouched(pg_conn: asyncpg.Connection, settings: Tas
 
     for status in ("pending", "running"):
         for _ in range(5):
-            jid = uuid.uuid4()
+            jid = new_job_id()
             job_ids.append(jid)
             await pg_conn.execute(
                 f"""INSERT INTO {schema}.jobs (

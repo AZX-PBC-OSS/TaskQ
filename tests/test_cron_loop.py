@@ -101,11 +101,11 @@ def _make_schedule_row(
     schedule_id: UUID | None = None,
     identity_key: str | None = None,
 ) -> _FakeCronRecord:
-    from uuid import uuid4
+    from taskq._ids import new_uuid
 
     return _FakeCronRecord(
         {
-            "id": schedule_id or uuid4(),
+            "id": schedule_id or new_uuid(),
             "actor": actor,
             "cron_expr": cron_expr,
             "timezone": timezone,

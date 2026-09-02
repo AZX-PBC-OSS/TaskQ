@@ -7,8 +7,8 @@ order_by are ignored (they are handled by the caller).
 """
 
 import re
-from uuid import uuid4
 
+from taskq._ids import new_uuid
 from taskq.backend._filter_sql import build_filter_conditions
 from taskq.backend._protocol import IdentityKey, JobFilter
 from taskq.backend.statemachine import ACTIVE_STATUSES, TERMINAL_STATUSES
@@ -33,7 +33,7 @@ class TestBuildFilterConditions:
         assert result.params == (["alpha", "beta"],)
 
     def test_batch_id_filter(self) -> None:
-        bid = uuid4()
+        bid = new_uuid()
         result = build_filter_conditions(JobFilter(batch_id=bid))
         assert len(result.conditions) == 1
         assert "metadata" in result.conditions[0]
@@ -134,7 +134,7 @@ class TestSQLInjectionSafety:
                 queue="myqueue",
                 actor="myactor",
                 tags=("tag1", "tag2"),
-                batch_id=uuid4(),
+                batch_id=new_uuid(),
             )
         )
         allowed_substrings = {

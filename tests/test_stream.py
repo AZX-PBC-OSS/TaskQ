@@ -33,8 +33,8 @@ import asyncio
 import dataclasses
 import shutil
 from datetime import UTC, datetime, timedelta
-from typing import Any, cast
-from uuid import UUID, uuid4
+from typing import Any
+from uuid import UUID
 
 import asyncpg
 import pytest
@@ -162,7 +162,7 @@ async def test_stream_nonexistent_job_raises_key_error() -> None:
     tq = _inject_tq(backend)
 
     with pytest.raises(KeyError):
-        async for _ in tq.stream(cast(JobId, uuid4())):
+        async for _ in tq.stream(new_job_id()):
             pass
 
 
@@ -203,7 +203,7 @@ async def test_stream_before_open_raises_runtime_error() -> None:
     """
     tq = TaskQ(dsn="postgresql://localhost/test")
     with pytest.raises(RuntimeError, match=r"tq\.open"):
-        async for _ in tq.stream(cast(JobId, uuid4())):
+        async for _ in tq.stream(new_job_id()):
             pass
 
 
@@ -211,14 +211,14 @@ async def test_stream_before_open_raises_runtime_error() -> None:
 
 
 async def test_stream_on_uuid_that_never_exists_raises_key_error() -> None:
-    """stream() on a uuid4() that never exists raises KeyError
+    """stream() on a new_uuid() that never exists raises KeyError
     (open TaskQ with an in-memory backend that has no jobs).
     """
     backend = _make_backend()
     tq = _inject_tq(backend)
 
     with pytest.raises(KeyError):
-        async for _ in tq.stream(cast(JobId, uuid4())):
+        async for _ in tq.stream(new_job_id()):
             pass
 
 

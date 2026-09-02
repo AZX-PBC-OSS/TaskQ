@@ -11,12 +11,13 @@ is the source of truth.
 
 from __future__ import annotations
 
-from uuid import UUID, uuid4
+from uuid import UUID
 
 import asyncpg
 import pytest
 from pydantic import BaseModel
 
+from taskq._ids import new_uuid
 from taskq._json import dumps, dumps_jsonb_str, dumps_str, loads
 from taskq.backend._records import jsonb_param
 from taskq.worker._handlers import _TERMINAL_WRITE_INFRA_EXCEPTIONS
@@ -49,7 +50,7 @@ class TestLoadsReturnsPlainTypes:
 
     def test_uuid_like_string_stays_str(self) -> None:
         """A string that looks like a UUID must remain a str after loads."""
-        uid = str(uuid4())
+        uid = str(new_uuid())
         data = dumps_str({"batch_id": uid})
         result = loads(data)
         assert isinstance(result["batch_id"], str), (
@@ -60,15 +61,15 @@ class TestLoadsReturnsPlainTypes:
 
     def test_nested_uuid_like_string_stays_str(self) -> None:
         """UUID-like strings in nested dicts must remain str."""
-        uid = str(uuid4())
+        uid = str(new_uuid())
         data = dumps_str({"outer": {"inner": {"batch_id": uid}}})
         result = loads(data)
         assert isinstance(result["outer"]["inner"]["batch_id"], str)
 
     def test_uuid_like_string_in_list_stays_str(self) -> None:
         """UUID-like strings in lists must remain str."""
-        uid1 = str(uuid4())
-        uid2 = str(uuid4())
+        uid1 = str(new_uuid())
+        uid2 = str(new_uuid())
         data = dumps_str({"ids": [uid1, uid2]})
         result = loads(data)
         assert all(isinstance(v, str) for v in result["ids"])
@@ -102,7 +103,7 @@ class TestPydanticHandlesCoercion:
         class MyPayload(BaseModel):
             batch_id: str
 
-        uid = uuid4()
+        uid = new_uuid()
         data = dumps_str({"batch_id": str(uid)})
         raw = loads(data)
         payload = MyPayload.model_validate(raw)
@@ -115,7 +116,7 @@ class TestPydanticHandlesCoercion:
         class MyPayload(BaseModel):
             batch_id: UUID
 
-        uid = uuid4()
+        uid = new_uuid()
         data = dumps_str({"batch_id": str(uid)})
         raw = loads(data)
         payload = MyPayload.model_validate(raw)
@@ -132,7 +133,7 @@ class TestPydanticHandlesCoercion:
         class StrPayload(BaseModel):
             batch_id: str
 
-        uid = uuid4()
+        uid = new_uuid()
         data = dumps({"batch_id": uid})
         raw = loads(data)
         # After loads, batch_id is a str (orjson serializes UUID to string)
@@ -151,7 +152,7 @@ class TestPydanticHandlesCoercion:
         class UuidPayload(BaseModel):
             batch_id: UUID
 
-        uid = uuid4()
+        uid = new_uuid()
         data = dumps({"batch_id": uid})
         raw = loads(data)
         assert isinstance(raw["batch_id"], str)

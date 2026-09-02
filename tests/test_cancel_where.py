@@ -2,8 +2,8 @@
 
 from dataclasses import replace
 from datetime import UTC, datetime
-from uuid import uuid4
 
+from taskq._ids import new_uuid
 from taskq.backend._protocol import CancelPhase, JobFilter
 from taskq.testing.clock import FakeClock
 from taskq.testing.in_memory import InMemoryBackend
@@ -44,7 +44,7 @@ async def test_cancel_where_running_jobs_cooperative() -> None:
     args = make_enqueue_args(tags=("tenant-acme",), scheduled_at=_NOW)
     row = await backend.enqueue(args)
     backend._jobs[row.id] = replace(
-        backend._jobs[row.id], status="running", locked_by_worker=uuid4()
+        backend._jobs[row.id], status="running", locked_by_worker=new_uuid()
     )
 
     result = await backend.cancel_where(
@@ -72,7 +72,7 @@ async def test_cancel_where_mixed_statuses() -> None:
     args3 = make_enqueue_args(tags=("tenant-acme",), scheduled_at=_NOW)
     row3 = await backend.enqueue(args3)
     backend._jobs[row3.id] = replace(
-        backend._jobs[row3.id], status="running", locked_by_worker=uuid4()
+        backend._jobs[row3.id], status="running", locked_by_worker=new_uuid()
     )
 
     result = await backend.cancel_where(
@@ -120,7 +120,7 @@ async def test_cancel_where_filter_by_batch_id() -> None:
     """cancel_where works with batch_id filter."""
     backend = InMemoryBackend(clock=FakeClock(_NOW))
 
-    bid = uuid4()
+    bid = new_uuid()
     for _ in range(3):
         args = make_enqueue_args(
             tags=("tenant-acme",),
@@ -128,7 +128,9 @@ async def test_cancel_where_filter_by_batch_id() -> None:
             metadata={"batch_id": str(bid)},
         )
         await backend.enqueue(args)
-    await backend.enqueue(make_enqueue_args(scheduled_at=_NOW, metadata={"batch_id": str(uuid4())}))
+    await backend.enqueue(
+        make_enqueue_args(scheduled_at=_NOW, metadata={"batch_id": str(new_uuid())})
+    )
 
     result = await backend.cancel_where(
         JobFilter(batch_id=bid),
@@ -200,7 +202,7 @@ async def test_cancel_where_already_cooperative_cancel_not_recounted() -> None:
 
     args = make_enqueue_args(tags=("tenant-acme",), scheduled_at=_NOW)
     row = await backend.enqueue(args)
-    worker_id = uuid4()
+    worker_id = new_uuid()
     backend._jobs[row.id] = replace(
         backend._jobs[row.id],
         status="running",
@@ -247,7 +249,7 @@ async def test_cancel_where_running_event_only_cancel_request() -> None:
     args = make_enqueue_args(tags=("tenant-acme",), scheduled_at=_NOW)
     row = await backend.enqueue(args)
     backend._jobs[row.id] = replace(
-        backend._jobs[row.id], status="running", locked_by_worker=uuid4()
+        backend._jobs[row.id], status="running", locked_by_worker=new_uuid()
     )
 
     await backend.cancel_where(
@@ -268,7 +270,7 @@ async def test_cancel_where_wakes_cancel_subscribers() -> None:
     args = make_enqueue_args(tags=("tenant-acme",), scheduled_at=_NOW)
     row = await backend.enqueue(args)
     backend._jobs[row.id] = replace(
-        backend._jobs[row.id], status="running", locked_by_worker=uuid4()
+        backend._jobs[row.id], status="running", locked_by_worker=new_uuid()
     )
 
     async with backend.subscribe_cancel_wake() as event:
