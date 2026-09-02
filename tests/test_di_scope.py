@@ -1,18 +1,14 @@
 """Unit tests for Scope IntEnum and LifecycleDetectionWarning."""
 
-from pathlib import Path
+from types import ModuleType
 
 import pytest
 
+import taskq._di as _di_init_mod
+import taskq._di.scope as _scope_mod
+import taskq.di as _di_mod
 from taskq._di.scope import LifecycleDetectionWarning, Scope
-
-_REPO_ROOT = Path(__file__).parent.parent
-_SCOPE_PY = _REPO_ROOT / "src/taskq/_di/scope.py"
-_INIT_PY = _REPO_ROOT / "src/taskq/_di/__init__.py"
-_DI_PY = _REPO_ROOT / "src/taskq/di.py"
-
-_FORBIDDEN_IMPORT = "from __future__ import annotations"
-
+from tests._import_discipline import has_future_annotations
 
 # ── Scope enum membership and ordering ──────────────────────────────
 
@@ -67,10 +63,12 @@ def test_public_di_import() -> None:
 # ── No from __future__ import annotations ───────────────────────────
 
 
-@pytest.mark.parametrize("path", [_SCOPE_PY, _INIT_PY, _DI_PY])
-def test_no_future_annotations(path: Path) -> None:
-    """Files must not contain 'from __future__ import annotations'."""
-    assert _FORBIDDEN_IMPORT not in path.read_text()
+@pytest.mark.parametrize("module", [_scope_mod, _di_init_mod, _di_mod])
+def test_no_future_annotations(module: ModuleType) -> None:
+    """The DI machinery resolves annotations at runtime; PEP 563 stringifies
+    them. Parsed rather than grepped, so the phrase in a comment or docstring
+    cannot trip it."""
+    assert has_future_annotations(module) is False
 
 
 # ── DIError exception surface ───────────────────────────────────────────────

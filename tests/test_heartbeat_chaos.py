@@ -379,16 +379,22 @@ async def test_tc4_isolate_self_fresh_connect_fails(pg_dsn: str) -> None:
         await stack.aclose()
 
 
-# ── command_timeout fires QueryCanceledError ─────────────────────
+# ── QueryCanceledError counts toward heartbeat isolation ─────────
 
 
-async def test_tc5_command_timeout_query_canceled(pg_dsn: str) -> None:
-    """command_timeout fires QueryCanceledError and counts toward isolation.
+async def test_tc5_query_canceled_counts_toward_isolation(pg_dsn: str) -> None:
+    """A server-side cancellation during the heartbeat counts as a failure and
+    isolates the worker once the budget is spent.
 
-    Wrap heartbeat pool with ChaosConnection injecting QueryCanceledError
-    on the jobs UPDATE (2nd execute call). After max_heartbeat_failures + 1
-    such ticks (3 with max=2), assert shutdown event is set.
-    Validates 's explicit inclusion of QueryCanceledError.
+    The heartbeat pool is wrapped with a ChaosConnection injecting
+    QueryCanceledError on the jobs UPDATE; after max_heartbeat_failures + 1
+    such ticks (3 with max=2) the shutdown event must be set. This pins
+    QueryCanceledError's membership of TRANSIENT_PG_ERRORS.
+
+    Named for what it injects, not for command_timeout: command_timeout raises
+    TimeoutError, not QueryCanceledError (verified against PG 18), and nothing
+    here exercises command_timeout at all. 57014 is server-side cancellation —
+    a DBA, or a server-side statement_timeout.
     """
     stack, deps, schema = await _setup(pg_dsn, MAX_HEARTBEAT_FAILURES="2")
     try:

@@ -10,6 +10,7 @@ Covers:
 - payload factory error redirect uses generic error code, not exception text
 """
 
+import re
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID
@@ -20,6 +21,7 @@ pytest.importorskip("fastapi")
 pytest.importorskip("jinja2")
 
 from fastapi import FastAPI
+from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
 from taskq.web.admin import create_router, setup_admin_state
@@ -356,23 +358,58 @@ def test_schedule_mutations_allowed_when_actions_enabled(
     assert resp.status_code != 403
 
 
-def test_every_state_changing_admin_route_is_gated() -> None:
+def _post_route_paths(app: FastAPI, *, prefix: str) -> set[str]:
+    """Every POST path the app serves, as concrete request paths.
+
+    Walks nested routers: FastAPI defers ``include_router`` expansion behind a
+    wrapper object, so ``app.routes`` alone reports none of the admin routes.
+    """
+    found: set[str] = set()
+
+    def _walk(routes: object) -> None:
+        for route in routes:  # type: ignore[union-attr]  # Why: every node walked here is an iterable route collection.
+            if isinstance(route, APIRoute) and "POST" in (route.methods or set()):
+                path = route.path
+                found.add(path if path.startswith(prefix) else f"{prefix}{path}")
+            # FastAPI wraps an included router; the version in use exposes it
+            # as `original_router` rather than a plain `routes` attribute.
+            inner = getattr(route, "original_router", None)
+            nested = getattr(route, "routes", None) or getattr(inner, "routes", None)
+            if nested is not None:
+                _walk(nested)
+
+    _walk(app.routes)
+    return found
+
+
+def test_every_state_changing_admin_route_is_gated(monkeypatch: pytest.MonkeyPatch) -> None:
     """Inventory guard: no new ungated mutator can be added unnoticed.
 
-    Corrects the reported inventory in passing -- `actors/{actor}/deregister`
-    was already gated, so the ungated set was exactly these three.
-    """
-    from pathlib import Path
+    Every POST route the router actually registers is called with both action
+    gates off and must be refused. Enumerating the live routes rather than
+    splitting the source on ``@router.post(`` means a new mutator is covered
+    the moment it is registered — including one declared through a helper, a
+    loop or an ``add_api_route`` call, none of which the text scan could see.
 
-    src = Path(__file__).resolve().parent.parent / "src" / "taskq" / "web" / "admin"
+    Corrects the reported inventory in passing: ``actors/{actor}/deregister``
+    was already gated, so the ungated set was exactly the three schedule
+    mutators.
+    """
+    monkeypatch.setenv("TASKQ_ADMIN_ACTIONS_ENABLED", "false")
+    monkeypatch.setenv("TASKQ_ADMIN_UI_ALLOW_RATE_LIMIT_RESET", "false")
+    pool = _StubPool(_ScheduleRunConn())
+    app, client = _mount_router(pool, backend=_make_backend())
+
+    post_paths = sorted(_post_route_paths(app, prefix="/admin"))
+    assert post_paths, "no POST routes discovered — the enumeration is broken"
+
     ungated: list[str] = []
-    for path in sorted(src.glob("*.py")):
-        text = path.read_text()
-        chunks = text.split("@router.post(")[1:]
-        for chunk in chunks:
-            route = chunk[: chunk.index(")")].strip("\"'")
-            body = chunk[: chunk.index("@router.") if "@router." in chunk else len(chunk)]
-            gated = "admin_actions_enabled" in body or "admin_ui_allow_rate_limit_reset" in body
-            if not gated:
-                ungated.append(f"{path.name}:{route}")
-    assert ungated == [], f"ungated state-changing admin routes: {ungated}"
+    for path in post_paths:
+        concrete = re.sub(r"\{[^}]+\}", str(_FAKE_UUID), path)
+        resp = _csrf_post(client, concrete)
+        if resp.status_code != 403:
+            ungated.append(f"{path} -> {resp.status_code}")
+    assert ungated == [], (
+        "state-changing admin routes reachable with both action gates off:\n"
+        + "\n".join(f"  - {u}" for u in ungated)
+    )

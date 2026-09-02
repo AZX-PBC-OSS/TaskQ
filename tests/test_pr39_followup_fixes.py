@@ -590,35 +590,12 @@ def test_dispatcher_command_timeout_description_is_accurate() -> None:
 # cancellation (57014), not a fired command_timeout.
 
 
-def test_transient_pg_errors_doc_describes_query_canceled_correctly() -> None:
-    """The TRANSIENT_PG_ERRORS source comment must describe
-    QueryCanceledError as server-side 57014 cancellation (pg_cancel_backend
-    or server-side statement_timeout), not as a fired command_timeout.
-    XBeg9 tested with real PG 18: command_timeout raises TimeoutError, not
-    QueryCanceledError."""
-
-    from pathlib import Path
-
-    import taskq.worker._transient as transient_mod
-
-    source = Path(transient_mod.__file__).read_text()
-    # The Sphinx #: comment above QueryCanceledError must not claim it is
-    # "a fired command_timeout" — that is TimeoutError's shape, not
-    # QueryCanceledError's. QueryCanceledError is server-side 57014.
-    # Find the line mentioning QueryCanceledError and check its context.
-    lines = source.splitlines()
-    for i, line in enumerate(lines):
-        if "QueryCanceledError" in line and "server-side" in line:
-            # Check the surrounding lines for the incorrect claim
-            context = " ".join(lines[i : i + 3])
-            assert "fired" not in context.lower(), (
-                f"the QueryCanceledError comment must not say 'fired' — "
-                f"XBeg9 proved with real PG 18 that command_timeout raises "
-                f"TimeoutError, not QueryCanceledError. "
-                f"QueryCanceledError is server-side 57014 cancellation "
-                f"(pg_cancel_backend or server-side statement_timeout). "
-                f"Context: {context}"
-            )
-            break
-    else:
-        pytest.fail("QueryCanceledError comment not found in _transient.py")
+# A test asserting the word "fired" is absent from the QueryCanceledError
+# comment in _transient.py used to sit here. The finding it came from is real —
+# command_timeout raises TimeoutError, so 57014 is server-side cancellation
+# only — but a comment is not a contract a test can hold, and this one both
+# over- and under-fired: any rewording that used "fired" in an unrelated sense
+# failed it, and any wrong comment avoiding that one word passed. The
+# behaviour that actually matters, QueryCanceledError being classified
+# transient, is asserted in test_watchdog_safety.py
+# (`issubclass(..., TRANSIENT_PG_ERRORS)`). Comment accuracy is review's job.

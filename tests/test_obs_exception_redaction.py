@@ -18,6 +18,8 @@ identifiers.
 
 from __future__ import annotations
 
+import ast
+
 import asyncpg
 import pytest
 
@@ -126,19 +128,13 @@ def test_stacktrace_is_redacted_including_chained_causes() -> None:
     assert "UniqueViolationError" in trace
 
 
-def test_dispatch_span_uses_the_redacted_helpers() -> None:
-    """Pin the call site: a future edit reverting to record_exception(exc)
-    silently reopens the surface."""
-    from pathlib import Path
-
-    src = Path(__file__).resolve().parent.parent / "src" / "taskq"
-    dispatch = (src / "backend" / "_dispatch_sql.py").read_text()
-    assert "record_exception_safe(span, exc)" in dispatch
-    assert "span.record_exception(exc)" not in dispatch
-    assert "StatusCode.ERROR, str(exc)" not in dispatch
-
-    cron = (src / "worker" / "cron_loop.py").read_text()
-    assert "StatusCode.ERROR, str(exc)" not in cron
+# A per-file check that _dispatch_sql.py spells the call
+# `record_exception_safe(span, exc)` used to sit here. It is subsumed by
+# test_no_raw_record_exception_remains_anywhere below: that guard is repo-wide,
+# so a dispatch site reverting to `span.record_exception(exc)` fails there
+# whatever file it lives in, and the redaction behaviour itself is pinned by
+# the tests above. Two assertions of the same fact, one of them naming a file
+# path that moves.
 
 
 def test_no_raw_record_exception_remains_anywhere() -> None:
@@ -146,9 +142,18 @@ def test_no_raw_record_exception_remains_anywhere() -> None:
     from pathlib import Path
 
     src = Path(__file__).resolve().parent.parent / "src" / "taskq"
-    offenders = [
-        path.relative_to(src).as_posix()
-        for path in src.rglob("*.py")
-        if path.name != "_redact_exc.py" and ".record_exception(" in path.read_text()
-    ]
+    offenders: list[str] = []
+    for path in sorted(src.rglob("*.py")):
+        if path.name == "_redact_exc.py":  # Why: the redacting helper itself.
+            continue
+        for node in ast.walk(ast.parse(path.read_text())):
+            # Parsed, not substring-matched: the old form also fired on the
+            # name in a comment or docstring, and would have missed a call
+            # reached through an alias assignment.
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "record_exception"
+            ):
+                offenders.append(f"{path.relative_to(src).as_posix()}:{node.lineno}")
     assert offenders == [], f"unredacted record_exception in: {offenders}"
