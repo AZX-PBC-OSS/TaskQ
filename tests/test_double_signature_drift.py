@@ -59,6 +59,10 @@ _NARROWER_BY_DESIGN: Final[dict[tuple[str, str], str]] = {
         "taskq.cli.asyncpg.connect",
     ): "Why: as above — third-party breadth the CLI never uses.",
     (
+        "test_queue_ops_validation.py",
+        "taskq.cli.asyncpg.connect",
+    ): "Why: as above — third-party breadth the CLI never uses.",
+    (
         "test_cli_worker.py",
         "taskq.cli.importlib.import_module",
     ): "Why: the CLI never passes `package`; the double takes the name it asserts on.",
