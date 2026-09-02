@@ -112,26 +112,70 @@ async def test_drain_never_raises_into_the_background_task() -> None:
     assert task.exception() is None
 
 
-def test_drain_uses_the_canonical_bounded_close() -> None:
-    """No hand-rolled second close routine -- the codebase states the
-    'every close is bounded' invariant explicitly elsewhere."""
-    import inspect
+# ── The siblings: bounded because terminate() is ────────────────────────
+#
+# `_drain_old_pool` and `_drain_old_conn` were already safe, and that is the
+# context for the redis fix: they answer a timed-out graceful close with
+# `terminate()`, which is immediate and non-blocking. Redis has no equivalent,
+# which is why a retry was reached for there instead. Driving them with a
+# wedged close is what proves the timeout path is actually bounded — the
+# earlier `"terminate()" in inspect.getsource(...)` check would have passed on
+# a `terminate()` call sitting in an unreachable branch.
+#
+# (The redis helper's own "bounded, one attempt, no hand-rolled retry" claim
+# needs no separate source scan: test_wedged_client_does_not_hang_the_drain_task
+# above hangs forever if the unbounded retry returns, and its
+# `aclose_calls == 1` fails if a second close is bolted on.)
 
-    src = inspect.getsource(deps_mod._drain_old_redis)
-    # Strip the docstring: it deliberately quotes the old buggy code, so a
-    # naive substring check would match its own explanation.
-    body = src.split('"""')[-1]
-    assert "close_redis_bounded(" in body
-    assert "suppress(Exception)" not in body, "the unbounded retry is back"
-    assert "await client.aclose()" not in body, "hand-rolled close is back"
+
+class _WedgedPool:
+    """A pool whose close() never returns — a stuck connection holder."""
+
+    def __init__(self) -> None:
+        self.terminate_calls = 0
+
+    async def close(self) -> None:
+        await asyncio.Event().wait()  # never completes
+
+    def terminate(self) -> None:
+        self.terminate_calls += 1
 
 
-@pytest.mark.parametrize("helper", ["_drain_old_pool", "_drain_old_conn"])
-def test_sibling_drains_bound_their_timeout_path(helper: str) -> None:
-    """Context for the fix: the siblings were already safe because they call
-    terminate(), which is bounded and non-blocking. Redis has no equivalent,
-    which is why a retry was reached for here."""
-    import inspect
+class _WedgedConn:
+    """A connection whose close() never returns — a half-dead socket."""
 
-    src = inspect.getsource(getattr(deps_mod, helper))
-    assert "terminate()" in src
+    def __init__(self) -> None:
+        self.terminate_calls = 0
+
+    async def close(self) -> None:
+        await asyncio.Event().wait()  # never completes
+
+    def terminate(self) -> None:
+        self.terminate_calls += 1
+
+
+@pytest.mark.parametrize(
+    ("helper", "wedged"),
+    [("_drain_old_pool", _WedgedPool), ("_drain_old_conn", _WedgedConn)],
+)
+async def test_sibling_drains_terminate_a_close_that_never_returns(
+    helper: str, wedged: type[_WedgedPool] | type[_WedgedConn]
+) -> None:
+    """A graceful close that never returns must not leave the drain task
+    hanging: past the timeout the resource is terminated and the task ends.
+    Unbounded, this leaks one task plus one old-credential session per
+    rotation, for the life of the process."""
+    target = wedged()
+    deps_mod._drain_tasks.clear()  # Why: module-global registry; isolate this test.
+
+    getattr(deps_mod, helper)(target, "test-label", 0.05)
+    task = next(iter(deps_mod._drain_tasks))
+
+    async with asyncio.timeout(5):
+        await task
+
+    assert task.done()
+    assert not task.cancelled()
+    assert target.terminate_calls == 1, (
+        "a close() that never returns must be answered by terminate()"
+    )
