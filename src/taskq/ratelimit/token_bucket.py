@@ -73,6 +73,64 @@ logger = structlog.get_logger("taskq.ratelimit.token_bucket")
 
 _DEFAULT_FIXED_QUOTA_TTL: Final[timedelta] = timedelta(seconds=86400)
 
+#: Ceiling for the *derived* default TTL.
+#:
+#: The default is "twice the time to refill from empty, plus a minute", which
+#: is unbounded as ``refill_per_second`` approaches zero: at 1e-15 tokens/s it
+#: is 2e16 seconds, past what ``timedelta`` accepts, and a denormal rate makes
+#: ``capacity / refill`` overflow to ``inf`` before ``timedelta`` is even
+#: reached. Either raised ``OverflowError`` straight out of the constructor,
+#: from a rate the constructor's own contract (``refill_per_second >= 0``)
+#: accepts and the admission arithmetic handles exactly.
+#:
+#: Clamping rather than rejecting: the TTL is a storage-eviction hint that the
+#: token math never reads, so bounding it changes nothing observable about
+#: rate limiting, whereas rejecting a legal positive rate would break an
+#: operator configuring a genuinely slow trickle (a monthly quota, a value
+#: from config). A year is far more conservative than the policy this module
+#: already applies to the extreme case: a bucket with ``refill == 0`` can
+#: NEVER recover its state and is nonetheless given 24 h. A bucket that takes
+#: longer than a year to refill is a fixed quota over any operational horizon.
+_MAX_TTL: Final[timedelta] = timedelta(days=365)
+
+
+def _retry_after(seconds: float) -> timedelta:
+    """Bound an advisory retry hint into a representable ``timedelta``.
+
+    Same unbounded quantity as the default TTL, on the hot path: the wait for
+    a deficit of tokens is ``deficit / refill_per_second``, so a very slow
+    refill produces a number ``timedelta`` cannot hold (and a denormal rate
+    produces ``inf`` outright). Every denial went through this conversion, so
+    an out-of-range rate crashed the acquire itself, not just construction.
+    The Redis path can additionally receive ``inf``/``nan`` from the Lua
+    script's own division.
+
+    The value is advisory — a hint for how long to back off — so clamping it
+    to :data:`_MAX_TTL` loses nothing: no caller sleeps for a year, and every
+    such caller is being told the same thing either way ("not any time soon").
+    Negative and non-finite inputs collapse to a valid bound rather than
+    propagating out of the primitive.
+    """
+    if not math.isfinite(seconds):
+        return _MAX_TTL
+    if seconds <= 0.0:
+        return timedelta(0)
+    # Why the comparison happens in seconds: timedelta(seconds=...) raises on
+    # an out-of-range float, so clamping the timedelta afterwards is too late.
+    if seconds >= _MAX_TTL.total_seconds():
+        return _MAX_TTL
+    return timedelta(seconds=seconds)
+
+
+def _default_ttl(capacity: float, refill_per_second: float) -> timedelta:
+    """Derive the default key TTL, bounded by :data:`_MAX_TTL`."""
+    if refill_per_second == 0.0:
+        return _DEFAULT_FIXED_QUOTA_TTL
+    seconds = capacity / refill_per_second * 2 + 60
+    if not math.isfinite(seconds) or seconds >= _MAX_TTL.total_seconds():
+        return _MAX_TTL
+    return timedelta(seconds=math.ceil(seconds))
+
 
 @dataclass(frozen=True, slots=True)
 class _LuaResult:
@@ -159,11 +217,10 @@ class _InMemoryBucket:
                     backend="memory",
                 )
 
-            retry_seconds = (count - tokens) / self._refill
             return RateLimitDecision(
                 allowed=False,
                 remaining=tokens,
-                retry_after=timedelta(seconds=retry_seconds),
+                retry_after=_retry_after((count - tokens) / self._refill),
                 bucket_name=self._name,
                 backend="memory",
             )
@@ -183,8 +240,7 @@ class _InMemoryBucket:
             is_exhausted = tokens <= 0.0
             retry_after: timedelta | None = None
             if is_exhausted and self._refill > 0.0:
-                retry_seconds = (1.0 - tokens) / self._refill
-                retry_after = timedelta(seconds=max(0.0, retry_seconds))
+                retry_after = _retry_after((1.0 - tokens) / self._refill)
 
             return RateLimitState(
                 bucket_name=self._name,
@@ -239,12 +295,7 @@ class TokenBucket:
         self._refill = refill_per_second
         self._backend: RateLimitBackend = backend
 
-        if ttl is not None:
-            self._ttl = ttl
-        elif refill_per_second == 0.0:
-            self._ttl = _DEFAULT_FIXED_QUOTA_TTL
-        else:
-            self._ttl = timedelta(seconds=math.ceil(capacity / refill_per_second * 2) + 60)
+        self._ttl = ttl if ttl is not None else _default_ttl(capacity, refill_per_second)
 
         self._mem_bucket: _InMemoryBucket | None = None
         if backend == "memory":
@@ -436,8 +487,7 @@ class TokenBucket:
         is_exhausted = tokens <= 0.0
         retry_after: timedelta | None = None
         if is_exhausted and self._refill > 0.0:
-            retry_seconds = (1.0 - tokens) / self._refill
-            retry_after = timedelta(seconds=max(0.0, retry_seconds))
+            retry_after = _retry_after((1.0 - tokens) / self._refill)
 
         return RateLimitState(
             bucket_name=self._name,
@@ -499,8 +549,7 @@ class TokenBucket:
         is_exhausted = tokens <= 0.0
         retry_after: timedelta | None = None
         if is_exhausted and self._refill > 0.0:
-            retry_seconds = (1.0 - tokens) / self._refill
-            retry_after = timedelta(seconds=max(0.0, retry_seconds))
+            retry_after = _retry_after((1.0 - tokens) / self._refill)
 
         return RateLimitState(
             bucket_name=self._name,
@@ -653,7 +702,7 @@ class TokenBucket:
         elif self._refill == 0.0:
             retry_after = None
         else:
-            retry_after = timedelta(seconds=lua.retry_after_seconds)
+            retry_after = _retry_after(lua.retry_after_seconds)
 
         result = RateLimitDecision(
             allowed=lua.allowed,
@@ -771,8 +820,7 @@ class TokenBucket:
                 if self._refill == 0.0:
                     retry_after = None
                 else:
-                    retry_after_seconds = (count - tokens) / self._refill
-                    retry_after = timedelta(seconds=retry_after_seconds)
+                    retry_after = _retry_after((count - tokens) / self._refill)
 
             # _jsonb_param serializes via orjson — passing a dict directly
             # to conn.execute fails because asyncpg does not auto-encode
@@ -792,7 +840,13 @@ class TokenBucket:
         return result
 
     def _compute_ttl_seconds(self) -> int:
-        """Compute the TTL for the Redis key based on bucket parameters."""
-        if self._refill == 0.0:
-            return 86400
-        return math.ceil(self._capacity / self._refill * 2) + 60
+        """The Redis key's EXPIRE, in whole seconds.
+
+        Reads ``self._ttl`` rather than re-deriving from capacity/refill:
+        recomputing here silently discarded an explicit ``ttl=`` on the Redis
+        path (the memory and PG paths honoured it) and carried its own copy of
+        the overflow. ``SlidingWindow`` already derives its Redis TTL from
+        ``self._ttl``; the two primitives now agree. Floored at one second
+        because EXPIRE 0 deletes the key outright.
+        """
+        return max(1, int(self._ttl.total_seconds()))
