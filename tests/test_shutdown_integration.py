@@ -17,7 +17,6 @@ anchors:,,,.
 import asyncio
 import contextlib
 import inspect as _inspect
-import textwrap
 from collections.abc import Callable
 from datetime import datetime, timezone
 from unittest.mock import MagicMock
@@ -831,12 +830,17 @@ async def test_tn1_signal_handler_must_not_await(
     handler = record[0]
     assert callable(handler), f"handler is not callable: {handler!r}"
 
+    # `add_signal_handler` invokes its callback synchronously, in the signal
+    # context: a coroutine function would simply never run. This assertion is
+    # the whole check — a companion scan for `"await " not in getsource(...)`
+    # used to follow it and could not fail. Python rejects `await` in a
+    # non-async def at compile time ("SyntaxError: 'await' outside async
+    # function"), so given the assertion above, the substring could only ever
+    # have appeared inside a nested `async def` (legal, and not a defect) or
+    # in a comment or string literal (a false positive).
     assert not _inspect.iscoroutinefunction(handler), (
-        f"signal handler is a coroutine function: {handler!r}"
+        f"signal handler is a coroutine function and would never run: {handler!r}"
     )
-
-    source_lines = textwrap.dedent(_inspect.getsource(handler))  # type: ignore[arg-type] # Why: handler is a function from record (typed as list[object]); pyright cannot narrow across the list assignment boundary.
-    assert "await " not in source_lines, f"signal handler contains await:\n{source_lines}"
 
 
 async def test_tn2_abandoning_runs_with_zero_jobs(
