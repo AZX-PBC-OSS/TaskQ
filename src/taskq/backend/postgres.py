@@ -158,6 +158,7 @@ from taskq.backend._terminal import (
 from taskq.backend.clock import Clock
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
+    DEFAULT_CHUNK_SIZE,
     RECLAIM_EVENT_VISIBILITY_DELAY,
     events_channel,
     wake_channel,
@@ -844,7 +845,7 @@ class PostgresBackend:
         queue: str,
         batch_row: BatchRow | None,
         finalizer_args: EnqueueArgs | None,
-        chunk_size: int = 1000,
+        chunk_size: int = DEFAULT_CHUNK_SIZE,
     ) -> list[JobRow]:
         return await _enqueue_batch_atomic(
             self._worker_pool,

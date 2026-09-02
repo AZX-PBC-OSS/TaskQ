@@ -62,7 +62,7 @@ from taskq.client._capacity import (
     ActorCapacityCache,
 )
 from taskq.client._handle import JobHandle
-from taskq.constants import MAX_IDEMPOTENCY_KEY_BYTES
+from taskq.constants import DEFAULT_CHUNK_SIZE, MAX_IDEMPOTENCY_KEY_BYTES
 from taskq.exceptions import EmptyFilterError, PayloadValidationError, SchemaNotMigratedError
 from taskq.types import BulkCancelResult, CancelResult
 
@@ -680,7 +680,7 @@ class JobsClient:
         connection: "asyncpg.Connection | None" = None,
         failure_policy: BatchFailurePolicy | None = None,
         finalizer: EnqueueItem | None = None,
-        chunk_size: int = 1000,
+        chunk_size: int = DEFAULT_CHUNK_SIZE,
     ) -> BatchHandle:
         """Enqueue jobs from a lazy iterable in chunks, returning a single
         :class:`~taskq.batch.BatchHandle`.

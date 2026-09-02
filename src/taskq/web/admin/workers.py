@@ -6,7 +6,14 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import HTMLResponse
 from jinja2 import Environment
 
-from taskq.web.admin._factory import get_pg_pool, get_realtime_ctx, get_schema, get_templates
+from taskq.settings import TaskQSettings
+from taskq.web.admin._factory import (
+    get_pg_pool,
+    get_realtime_ctx,
+    get_schema,
+    get_settings,
+    get_templates,
+)
 from taskq.web.admin._jsonb import decode_jsonb
 
 logger = structlog.get_logger("taskq.web.admin.workers")
@@ -26,7 +33,7 @@ _WORKERS_SQL = (
 _LEADER_SQL = (
     "SELECT ml.*, w.hostname, w.pid, "
     "w.last_seen_at AS worker_last_seen, "
-    "(ml.last_seen_at > clock_timestamp() - interval '30 seconds') AS watchdog_healthy "
+    "(ml.last_seen_at > clock_timestamp() - make_interval(secs => {live_secs})) AS watchdog_healthy "
     'FROM "{schema}".maintenance_leader ml '
     'JOIN "{schema}".workers w ON ml.worker_id = w.id'
 )
@@ -68,8 +75,11 @@ def register(router: APIRouter) -> None:
         schema: str = Depends(get_schema),
         tmpl: Environment = Depends(get_templates),
         realtime_ctx: tuple[str, str] = Depends(get_realtime_ctx),
+        settings: TaskQSettings = Depends(get_settings),
     ) -> HTMLResponse:
-        leader_sql = _LEADER_SQL.format(schema=schema)
+        leader_sql = _LEADER_SQL.format(
+            schema=schema, live_secs=settings.admin_worker_liveness_seconds
+        )
         row: asyncpg.Record | None = None
         async with pool.acquire() as conn:
             row = await conn.fetchrow(leader_sql)

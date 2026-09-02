@@ -57,9 +57,12 @@ Applies to all commands: `worker`, `migrate`, `ui serve`, `health`.
 | `TASKQ_PG_DSN` | `PostgresDsn` | `postgresql://taskq:taskq@localhost:5432/taskq` | Direct (non-PgBouncer) DSN. LISTEN/NOTIFY and advisory locks require a session-mode connection. | all |
 | `TASKQ_SCHEMA_NAME` | `str` | `taskq` | Postgres schema for all TaskQ tables. Must match `^[A-Za-z_][A-Za-z0-9_]*$`. | all |
 | `TASKQ_REDIS_URL` | `RedisDsn \| None` | `None` | Optional Redis URL. Required for real-time SSE progress fanout in the admin UI. | worker, ui serve |
+| `TASKQ_PG_CREDENTIAL_PROVIDER` | `str \| None` | `None` | `module:attr` reference to a `PgCredentialProvider`. Overridden by `--pg-credential-provider` on `taskq worker` / `migrate` / `ui serve`. See [Managed identities](managed-identities.md). | worker, migrate, ui serve |
+| `TASKQ_REDIS_CREDENTIAL_PROVIDER` | `str \| None` | `None` | `module:attr` reference to a `RedisCredentialProvider`. Requires `TASKQ_REDIS_URL`. Overridden by `--redis-credential-provider`. | worker, ui serve |
 | `TASKQ_ENVIRONMENT` | `str \| None` | `None` | Deployment label; does not select `.env` files (that is `ENV`'s job). Values `dev` or `development` suppress the unauthenticated-admin warning. Any other value triggers it. | all |
 | `TASKQ_ADMIN_MAX_SSE_CONNECTIONS` | `int` | `50` | Maximum concurrent SSE connections the admin UI will serve. Min: 1. | ui serve |
 | `TASKQ_PROGRESS_MAX_SSE_CONNECTIONS` | `int` | `50` | Maximum concurrent per-job progress SSE streams this process will serve. Each stream holds a Redis pubsub subscription and an asyncio task for as long as the client stays connected, so an uncapped endpoint is a resource-exhaustion surface on the app hosting the pipeline. Min: 1. | ui serve |
+| `TASKQ_ADMIN_WORKER_LIVENESS_SECONDS` | `int` | `30` | How recently a worker must have written `last_seen_at` to count as alive in the admin UI (orphan-queue banner, leader `watchdog_healthy`). Measured by Postgres against `clock_timestamp()`. Must comfortably exceed `TASKQ_HEARTBEAT_INTERVAL`. Min: 1. | ui serve |
 | `TASKQ_ADMIN_HOST` | `str` | `0.0.0.0` | Bind address for `taskq ui serve`. | ui serve |
 | `TASKQ_ADMIN_PORT` | `int` | `8080` | Bind port for `taskq ui serve`. Range: 1–65535. | ui serve |
 | `TASKQ_ADMIN_URL` | `str` | `http://localhost:8080` | Public base URL of the admin UI as seen from a browser. Used to construct redirect URLs. Override when admin and app run on different hosts or ports. | ui serve |

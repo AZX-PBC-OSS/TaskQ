@@ -468,3 +468,74 @@ async def test_reload_interval_with_provider_does_not_warn(
 
     events = [entry.get("event") for entry in captured]
     assert "reload-interval-set-without-credential-provider" not in events
+
+
+# ── Provider refs are settings, so the .env cascade reaches them ───────
+
+
+async def test_provider_configurable_by_dotenv_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, fake_pg: list[Any]
+) -> None:
+    """A provider named only in `.env` configures the worker.
+
+    The refs used to be read by Typer's ``envvar=``, which sees
+    ``os.environ`` and nothing else; every other TaskQ setting honours
+    dotenvmodel's ``.env`` cascade.
+    """
+    (tmp_path / ".env").write_text(f"TASKQ_PG_CREDENTIAL_PROVIDER={_MODULE}:PROVIDER\n")
+    # DOTENV_DIR, not chdir: the session-wide _no_developer_dotfiles
+    # fixture pins dotenvmodel at an empty directory.
+    monkeypatch.setenv("DOTENV_DIR", str(tmp_path))
+
+    _result, settings, connections = _invoke_worker(monkeypatch)
+    assert connections is not None, ".env did not reach the worker command"
+    async with open_worker_deps(settings, connections=connections) as deps:
+        reloaded, _failed = await reload_credentials(deps, drain_timeout=0.1)
+        await asyncio.sleep(0.05)
+    assert "dispatcher" in reloaded
+
+
+def test_explicit_flag_beats_dotenv_provider(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, fake_pg: list[Any]
+) -> None:
+    """An explicit --pg-credential-provider still wins over the loaded value."""
+    (tmp_path / ".env").write_text("TASKQ_PG_CREDENTIAL_PROVIDER=no.such.module:make_provider\n")
+    # DOTENV_DIR, not chdir: the session-wide _no_developer_dotfiles
+    # fixture pins dotenvmodel at an empty directory.
+    monkeypatch.setenv("DOTENV_DIR", str(tmp_path))
+
+    result, _settings, connections = _invoke_worker(
+        monkeypatch, "--pg-credential-provider", f"{_MODULE}:PROVIDER"
+    )
+    assert result.exit_code == 0, f"stderr: {result.stderr}"
+    assert connections is not None
+
+
+def test_empty_provider_env_is_treated_as_unset(
+    monkeypatch: pytest.MonkeyPatch, fake_pg: list[Any]
+) -> None:
+    """``TASKQ_PG_CREDENTIAL_PROVIDER=`` means "no provider", not a bad ref."""
+    monkeypatch.setenv("TASKQ_PG_CREDENTIAL_PROVIDER", "")
+    result, _settings, connections = _invoke_worker(monkeypatch)
+    assert result.exit_code == 0, f"stderr: {result.stderr}"
+    assert connections is None
+
+
+def test_migrate_status_uses_dotenv_provider(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, fake_pg: list[Any]
+) -> None:
+    """`taskq migrate status` opens its connection through a .env-named provider."""
+    (tmp_path / ".env").write_text(f"TASKQ_PG_CREDENTIAL_PROVIDER={_MODULE}:PROVIDER\n")
+    # DOTENV_DIR, not chdir: the session-wide _no_developer_dotfiles
+    # fixture pins dotenvmodel at an empty directory.
+    monkeypatch.setenv("DOTENV_DIR", str(tmp_path))
+
+    captured: dict[str, Any] = {}
+
+    async def fake_status(settings: Any, *, conn_factory: Any = None, **_kw: Any) -> None:
+        captured["conn_factory"] = conn_factory
+
+    monkeypatch.setattr("taskq.cli._status", fake_status)
+    result = runner.invoke(app, ["migrate", "status"])
+    assert result.exit_code == 0, f"stderr: {result.stderr}"
+    assert captured["conn_factory"] is not None, ".env did not reach `migrate status`"

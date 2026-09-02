@@ -31,7 +31,7 @@ from taskq.backend._protocol import (
 )
 from taskq.backend.clock import Clock
 from taskq.client._enqueuer import SubJobEnqueuer, _parent_tags_var
-from taskq.constants import MAX_RESULT_BYTES
+from taskq.constants import DEFAULT_MAX_RETRY_BACKOFF, MAX_RESULT_BYTES
 from taskq.context import JobContext
 from taskq.exceptions import (
     ReservationUnavailable,
@@ -204,7 +204,7 @@ async def consume_one_job(
     payload_type: type[BaseModel],
     clock: Clock,
     logger: structlog.stdlib.BoundLogger | None = None,
-    max_retry_backoff: timedelta = timedelta(hours=24),
+    max_retry_backoff: timedelta = DEFAULT_MAX_RETRY_BACKOFF,
     active_jobs: ActiveJobRegistry | None = None,
     enqueuer: SubJobEnqueuer | None = None,
     loop_conn: asyncpg.Connection | None = None,

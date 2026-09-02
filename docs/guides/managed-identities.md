@@ -22,6 +22,8 @@ workgroup supervisor), you do **not** need a custom entrypoint to reach
 any of this: point `TASKQ_PG_CREDENTIAL_PROVIDER` /
 `TASKQ_REDIS_CREDENTIAL_PROVIDER` at your provider and TaskQ builds every
 factory for you — see [From the CLI](#from-the-cli-no-custom-entrypoint).
+Both are ordinary TaskQ settings, so they can equally live in a `.env`
+file alongside `TASKQ_PG_DSN`; the matching CLI flag, when given, wins.
 
 For rotating-credential deployments, TaskQ provides a vendor-neutral
 **credential provider** abstraction (`taskq.auth`) with provider-specific
@@ -87,7 +89,7 @@ Three consequences worth knowing:
 | Admin UI | `create_router(pg_pool=..., redis_client=...)` ✓ existing | — | Or `taskq ui serve --pg-credential-provider` / `--redis-credential-provider` |
 | CLI — `taskq worker` | — | `--pg-credential-provider` / `--redis-credential-provider` (env: `TASKQ_PG_CREDENTIAL_PROVIDER` / `TASKQ_REDIS_CREDENTIAL_PROVIDER`) | Builds **every** worker role: all three pools, `notify_conn`, `leader_conn`, Redis |
 | CLI — `taskq workgroup start` | — | same env vars | Children are `taskq worker` subprocesses and inherit the environment |
-| CLI — `taskq migrate up` / `status` | — | `--pg-credential-provider` | One-shot connection through the provider |
+| CLI — `taskq migrate up` / `status` | — | `--pg-credential-provider` (env: `TASKQ_PG_CREDENTIAL_PROVIDER`) | One-shot connection through the provider |
 
 ---
 

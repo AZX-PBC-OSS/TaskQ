@@ -33,6 +33,7 @@ from taskq.backend._protocol import Backend, JobRow
 from taskq.backend.clock import Clock
 from taskq.batch import apply_batch_terminal_outcome
 from taskq.client._enqueuer import SubJobEnqueuer
+from taskq.constants import DEFAULT_MAX_RETRY_BACKOFF
 from taskq.context import JobContext
 from taskq.obs import (
     ConsumedOutcome,
@@ -118,7 +119,7 @@ async def dispatch_one_job(
     actor_config: ActorConfigLike,
     clock: Clock,
     active_jobs: ActiveJobRegistry | None = None,
-    max_retry_backoff: timedelta = timedelta(hours=24),
+    max_retry_backoff: timedelta = DEFAULT_MAX_RETRY_BACKOFF,
     logger_arg: structlog.stdlib.BoundLogger | None = None,
     enqueuer: SubJobEnqueuer,
 ) -> AttemptOutcome:

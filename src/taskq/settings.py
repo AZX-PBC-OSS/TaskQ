@@ -33,6 +33,9 @@ from taskq.backend._protocol import (
 )
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining it
+    DEFAULT_MAX_RETRY_BACKOFF,
+    DEFAULT_PRUNE_BATCH_SIZE,
+    DEFAULT_PRUNE_RETENTION,
     IDEMPOTENCY_KEY_BYTES_CEILING,
     MAX_IDEMPOTENCY_KEY_BYTES,
     MAX_RESULT_BYTES,
@@ -288,6 +291,19 @@ class TaskQSettings(DotEnvConfig):
         "polls PG in polling/degraded mode. Injected as poll_interval_ms "
         "into every template.",
     )
+    admin_worker_liveness_seconds: int = Field(
+        default=30,
+        ge=1,
+        description="TASKQ_ADMIN_WORKER_LIVENESS_SECONDS. How recently a worker "
+        "must have written last_seen_at to count as alive in the admin UI: it "
+        "drives the 'queue has pending jobs but no alive worker' banner and the "
+        "leader's watchdog_healthy verdict. Must comfortably exceed "
+        "TASKQ_HEARTBEAT_INTERVAL (default 10 s), so the default 30 s is three "
+        "beats; a deployment that lengthens the heartbeat, or whose PG is "
+        "cross-region, has to raise this or every healthy worker reads as dead. "
+        "Measured by Postgres against clock_timestamp(), never by the admin "
+        "process's own clock.",
+    )
     admin_ui_allow_rate_limit_reset: bool = Field(
         default=False,
         description="TASKQ_ADMIN_UI_ALLOW_RATE_LIMIT_RESET. When True, the admin UI "
@@ -333,6 +349,26 @@ class TaskQSettings(DotEnvConfig):
         "logic, and silent suppression of scheduled work, via the admin UI "
         "without explicit opt-in. Separate from "
         "auth_dependency, which controls read access to all admin routes.",
+    )
+
+    # -- Managed identities -----------------------------------------------
+    pg_credential_provider: str | None = Field(
+        default=None,
+        description="TASKQ_PG_CREDENTIAL_PROVIDER. Module:attr reference to a "
+        "PgCredentialProvider (e.g. myapp.auth:make_provider) - an instance, a "
+        "zero-arg factory returning one, or the provider class. Every Postgres "
+        "pool and dedicated connection is then built through it, so SIGHUP / "
+        "TASKQ_RELOAD_INTERVAL rotate real credentials. The CLI options "
+        "--pg-credential-provider (taskq worker / migrate / ui serve) override "
+        "it. The ref is resolved, not validated, at load time: the import lives "
+        "in the CLI so a bad ref exits 1 with a pointed message instead of a "
+        "settings traceback. See docs/guides/managed-identities.md.",
+    )
+    redis_credential_provider: str | None = Field(
+        default=None,
+        description="TASKQ_REDIS_CREDENTIAL_PROVIDER. Module:attr reference to a "
+        "RedisCredentialProvider, in the same shapes as pg_credential_provider. "
+        "Requires TASKQ_REDIS_URL. Overridden by --redis-credential-provider.",
     )
 
     # -- SSO / SAML -------------------------------------------------------
@@ -771,7 +807,7 @@ class WorkerSettings(TaskQSettings):
 
     # -- Retry backoff ceiling -------------------------------------------
     max_retry_backoff: timedelta = Field(
-        default=timedelta(hours=24),
+        default=DEFAULT_MAX_RETRY_BACKOFF,
         description=(
             "TASKQ_MAX_RETRY_BACKOFF (interval). Global ceiling on retry backoff "
             "per attempt - caps the per-actor RetryPolicy.cap so a misconfigured "
@@ -1148,14 +1184,14 @@ class WorkerSettings(TaskQSettings):
         "set, takes precedence over prune_schedule_utc.",
     )
     prune_batch_size: int = Field(
-        default=10000,
+        default=DEFAULT_PRUNE_BATCH_SIZE,
         ge=1,
         description="TASKQ_PRUNE_BATCH_SIZE. Rows to delete per batch.",
     )
 
     # -- Per-status prune retention --------------------------------
     prune_retention_period: timedelta = Field(
-        default=timedelta(days=30),
+        default=DEFAULT_PRUNE_RETENTION,
         validator=_non_negative_timedelta,
         description="TASKQ_PRUNE_RETENTION_PERIOD. Global fallback retention. "
         "timedelta(0) means archive all terminal jobs immediately (valid). "

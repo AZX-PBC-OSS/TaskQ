@@ -22,6 +22,8 @@ from taskq.backend.clock import Clock
 from taskq.backend.statemachine import TERMINAL_STATUSES
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
+    DEFAULT_PRUNE_BATCH_SIZE,
+    DEFAULT_PRUNE_RETENTION,
 )
 from taskq.obs import (
     get_logger,
@@ -313,7 +315,7 @@ async def prune_terminal_jobs(
     *,
     retention_per_status: dict[str, timedelta],
     archive_retention: timedelta,
-    batch_size: int = 10000,
+    batch_size: int = DEFAULT_PRUNE_BATCH_SIZE,
     schema: str = "taskq",
     actor_overrides: dict[str, timedelta] | None = None,
 ) -> PruneResult:
@@ -336,7 +338,7 @@ async def prune_terminal_jobs(
     db_now: datetime = await conn.fetchval(_DB_NOW_SQL)
 
     for status in TERMINAL_STATUSES:
-        retention = retention_per_status.get(status, timedelta(days=30))
+        retention = retention_per_status.get(status, DEFAULT_PRUNE_RETENTION)
         cutoffs[status] = db_now - retention
         sql = _ARCHIVE_CTE_SQL.format(schema=schema)
 
@@ -363,7 +365,7 @@ async def prune_terminal_jobs(
         for actor_name, actor_retention in actor_overrides.items():
             sql = _ARCHIVE_CTE_ACTOR_SQL.format(schema=schema)
             for status in TERMINAL_STATUSES:
-                if actor_retention >= retention_per_status.get(status, timedelta(days=30)):
+                if actor_retention >= retention_per_status.get(status, DEFAULT_PRUNE_RETENTION):
                     continue
                 while True:
                     rows = await conn.fetch(
@@ -405,7 +407,7 @@ async def prune_terminal_jobs(
 async def archive_expiry_sweep(
     conn: ConnLike,
     *,
-    batch_size: int = 10000,
+    batch_size: int = DEFAULT_PRUNE_BATCH_SIZE,
     schema: str = "taskq",
 ) -> ArchiveExpiryResult:
     if not _IDENT_RE.match(schema):

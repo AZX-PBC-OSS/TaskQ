@@ -37,6 +37,7 @@ from taskq.backend._sql_templates import SqlTemplates
 from taskq.backend.statemachine import TERMINAL_STATUSES
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
+    DEFAULT_CHUNK_SIZE,
 )
 
 if TYPE_CHECKING:
@@ -456,7 +457,7 @@ async def enqueue_batch_atomic(
     queue: str,
     batch_row: BatchRow | None,
     finalizer_args: EnqueueArgs | None,
-    chunk_size: int = 1000,
+    chunk_size: int = DEFAULT_CHUNK_SIZE,
 ) -> list[JobRow]:
     """Enqueue all items in a single transaction, stamping each with
     ``metadata.batch_id``.  Optionally insert a batch row and enqueue a

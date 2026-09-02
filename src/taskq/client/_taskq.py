@@ -75,6 +75,7 @@ from taskq.client._actors import ActorsClient
 from taskq.client._handle import JobHandle
 from taskq.client._jobs import JobsClient
 from taskq.constants import (
+    DEFAULT_CHUNK_SIZE,
     MAX_RESULT_BYTES,
     RECLAIM_EVENT_VISIBILITY_DELAY,
     progress_channel,
@@ -540,7 +541,7 @@ class TaskQ:
         connection: "asyncpg.Connection | None" = None,
         failure_policy: BatchFailurePolicy | None = None,
         finalizer: EnqueueItem | None = None,
-        chunk_size: int = 1000,
+        chunk_size: int = DEFAULT_CHUNK_SIZE,
     ) -> BatchHandle:
         """Enqueue jobs from a lazy iterable in chunks.
 

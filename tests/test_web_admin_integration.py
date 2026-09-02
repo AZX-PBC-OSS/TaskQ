@@ -1408,3 +1408,46 @@ async def test_error_query_param_rendered_with_autoescape(
     html = resp.text
     assert "&lt;script&gt;" in html
     assert "<script>alert(1)</script>" not in html
+
+
+# ── Worker-liveness window is configurable ────────────────────────────────
+
+
+async def _seed_stale_worker(conn: asyncpg.Connection, *, age_seconds: int) -> uuid.UUID:
+    wid = new_uuid()
+    await conn.execute(
+        f"INSERT INTO {_SCHEMA_LABEL}.workers (id, hostname, pid, queues, last_seen_at) "
+        f"VALUES ($1, $2, $3, $4, clock_timestamp() - make_interval(secs => $5))",
+        wid,
+        "stale-host",
+        4242,
+        ["default"],
+        age_seconds,
+    )
+    return wid
+
+
+@pytest.mark.asyncio
+async def test_orphan_queue_liveness_window_is_configurable(
+    pool: asyncpg.Pool, conn: asyncpg.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """TASKQ_ADMIN_WORKER_LIVENESS_SECONDS decides whether a queue looks orphaned.
+
+    One worker, last seen 45 s ago, and pending jobs on its queue. A 10 s
+    window must call the queue orphaned; a 120 s window must not. With a
+    hardcoded 30 s threshold the second assertion cannot hold.
+    """
+    await _seed_jobs(conn, queue="default", count=1)
+    await _seed_stale_worker(conn, age_seconds=45)
+
+    banner = "no alive worker"
+
+    monkeypatch.setenv("TASKQ_ADMIN_WORKER_LIVENESS_SECONDS", "10")
+    resp = await _get(_make_app(pool), "/admin/queues")
+    assert resp.status_code == 200
+    assert banner in resp.text, "45 s-old worker counted as alive inside a 10 s window"
+
+    monkeypatch.setenv("TASKQ_ADMIN_WORKER_LIVENESS_SECONDS", "120")
+    resp = await _get(_make_app(pool), "/admin/queues")
+    assert resp.status_code == 200
+    assert banner not in resp.text, "45 s-old worker counted as dead inside a 120 s window"

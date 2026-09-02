@@ -9,10 +9,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import HTMLResponse
 from jinja2 import Environment
 
+from taskq.settings import TaskQSettings
 from taskq.web.admin._factory import (
     get_pg_pool,
     get_realtime_ctx,
     get_schema,
+    get_settings,
     get_templates,
 )
 
@@ -42,7 +44,7 @@ _ORPHAN_QUEUES_SQL = (
     "AND NOT EXISTS ("
     '    SELECT 1 FROM "{schema}".workers w '
     "    WHERE j.queue = ANY(w.queues) "
-    "    AND w.last_seen_at > clock_timestamp() - interval '30 seconds'"
+    "    AND w.last_seen_at > clock_timestamp() - make_interval(secs => {live_secs})"
     ") "
     "ORDER BY j.queue"
 )
@@ -51,7 +53,7 @@ _QUEUE_HAS_ALIVE_WORKER_SQL = (
     "SELECT EXISTS ("
     '    SELECT 1 FROM "{schema}".workers w '
     "    WHERE $1 = ANY(w.queues) "
-    "    AND w.last_seen_at > clock_timestamp() - interval '30 seconds'"
+    "    AND w.last_seen_at > clock_timestamp() - make_interval(secs => {live_secs})"
     ")"
 )
 
@@ -82,9 +84,12 @@ def register(router: APIRouter) -> None:
         schema: str = Depends(get_schema),
         tmpl: Environment = Depends(get_templates),
         realtime_ctx: tuple[str, str] = Depends(get_realtime_ctx),
+        settings: TaskQSettings = Depends(get_settings),
     ) -> HTMLResponse:
         overview_sql = _QUEUE_OVERVIEW_SQL.format(schema=schema)
-        orphan_sql = _ORPHAN_QUEUES_SQL.format(schema=schema)
+        orphan_sql = _ORPHAN_QUEUES_SQL.format(
+            schema=schema, live_secs=settings.admin_worker_liveness_seconds
+        )
         rows: list[asyncpg.Record] = []
         orphan_rows: list[asyncpg.Record] = []
         async with pool.acquire() as conn:
@@ -108,6 +113,7 @@ def register(router: APIRouter) -> None:
         schema: str = Depends(get_schema),
         tmpl: Environment = Depends(get_templates),
         realtime_ctx: tuple[str, str] = Depends(get_realtime_ctx),
+        settings: TaskQSettings = Depends(get_settings),
         status: str = Query(default="pending"),
         cursor_at: str | None = Query(default=None),
         cursor_id: str | None = Query(default=None),
@@ -117,7 +123,9 @@ def register(router: APIRouter) -> None:
 
         detail_first_sql = _QUEUE_DETAIL_SQL_FIRST.format(schema=schema, limit=_FETCH_SIZE)
         detail_cursor_sql = _QUEUE_DETAIL_SQL_CURSOR.format(schema=schema, limit=_FETCH_SIZE)
-        has_worker_sql = _QUEUE_HAS_ALIVE_WORKER_SQL.format(schema=schema)
+        has_worker_sql = _QUEUE_HAS_ALIVE_WORKER_SQL.format(
+            schema=schema, live_secs=settings.admin_worker_liveness_seconds
+        )
 
         if cursor_at == "":
             cursor_at = None

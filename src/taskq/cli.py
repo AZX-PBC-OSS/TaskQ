@@ -209,6 +209,17 @@ def _load_redis_credential_provider(ref: str, *, option: str) -> RedisCredential
     )
 
 
+def _resolved_ref(flag: str | None, configured: str | None) -> str | None:
+    """Resolve a credential-provider ref: explicit CLI flag beats settings.
+
+    The refs used to be read by Typer's ``envvar=``, which sees
+    ``os.environ`` and nothing else. They are now ordinary settings, so
+    they take part in dotenvmodel's ``.env`` cascade like everything else;
+    the flag-wins precedence Typer gave them is preserved here.
+    """
+    return flag if flag is not None else configured
+
+
 def _credential_connections(
     settings: WorkerSettings,
     pg_ref: str | None,
@@ -339,20 +350,19 @@ def worker(
     pg_credential_provider: str | None = typer.Option(
         None,
         "--pg-credential-provider",
-        envvar="TASKQ_PG_CREDENTIAL_PROVIDER",
         help="Module:attr reference to a PgCredentialProvider (e.g. "
         f"{_PROVIDER_EXAMPLE}) — an instance, a zero-arg factory returning one, "
         "or the provider class. Every Postgres pool and dedicated connection is "
         "then built through it, so SIGHUP / TASKQ_RELOAD_INTERVAL rotate real "
-        "credentials. Env var TASKQ_PG_CREDENTIAL_PROVIDER (inherited by "
-        "workgroup-supervised workers).",
+        "credentials. Overrides TASKQ_PG_CREDENTIAL_PROVIDER (inherited by "
+        "workgroup-supervised workers) via dotenvmodel.",
     ),
     redis_credential_provider: str | None = typer.Option(
         None,
         "--redis-credential-provider",
-        envvar="TASKQ_REDIS_CREDENTIAL_PROVIDER",
         help="Module:attr reference to a RedisCredentialProvider, in the same "
-        "shapes as --pg-credential-provider. Requires TASKQ_REDIS_URL.",
+        "shapes as --pg-credential-provider. Requires TASKQ_REDIS_URL. "
+        "Overrides TASKQ_REDIS_CREDENTIAL_PROVIDER via dotenvmodel.",
     ),
 ) -> None:
     """Start a TaskQ worker consuming from the given actor registry."""
@@ -377,7 +387,9 @@ def worker(
         settings.health_socket_path = health_socket_path
 
     connections = _credential_connections(
-        settings, pg_credential_provider, redis_credential_provider
+        settings,
+        _resolved_ref(pg_credential_provider, settings.pg_credential_provider),
+        _resolved_ref(redis_credential_provider, settings.redis_credential_provider),
     )
 
     try:
@@ -457,16 +469,17 @@ def migrate_status(
     pg_credential_provider: str | None = typer.Option(
         None,
         "--pg-credential-provider",
-        envvar="TASKQ_PG_CREDENTIAL_PROVIDER",
         help="Module:attr reference to a PgCredentialProvider (e.g. "
         f"{_PROVIDER_EXAMPLE}). The connection is opened through it instead of "
-        "the DSN's static password.",
+        "the DSN's static password. Overrides TASKQ_PG_CREDENTIAL_PROVIDER.",
     ),
 ) -> None:
     """Show applied and pending migrations."""
     settings = TaskQSettings.load()
     conn_factory = _credential_conn_factory(
-        str(settings.pg_dsn), pg_credential_provider, option="--pg-credential-provider"
+        str(settings.pg_dsn),
+        _resolved_ref(pg_credential_provider, settings.pg_credential_provider),
+        option="--pg-credential-provider",
     )
     asyncio.run(_status(settings, conn_factory=conn_factory))
 
@@ -483,16 +496,17 @@ def migrate_up(
     pg_credential_provider: str | None = typer.Option(
         None,
         "--pg-credential-provider",
-        envvar="TASKQ_PG_CREDENTIAL_PROVIDER",
         help="Module:attr reference to a PgCredentialProvider (e.g. "
         f"{_PROVIDER_EXAMPLE}). The connection is opened through it instead of "
-        "the DSN's static password.",
+        "the DSN's static password. Overrides TASKQ_PG_CREDENTIAL_PROVIDER.",
     ),
 ) -> None:
     """Apply pending migrations."""
     settings = TaskQSettings.load()
     conn_factory = _credential_conn_factory(
-        str(settings.pg_dsn), pg_credential_provider, option="--pg-credential-provider"
+        str(settings.pg_dsn),
+        _resolved_ref(pg_credential_provider, settings.pg_credential_provider),
+        option="--pg-credential-provider",
     )
     asyncio.run(
         _up(
@@ -1358,16 +1372,16 @@ def ui_serve(
     pg_credential_provider: str | None = typer.Option(
         None,
         "--pg-credential-provider",
-        envvar="TASKQ_PG_CREDENTIAL_PROVIDER",
         help="Module:attr reference to a PgCredentialProvider (e.g. "
         f"{_PROVIDER_EXAMPLE}). The admin pool (and --migrate) authenticate "
-        "through it instead of the DSN's static password.",
+        "through it instead of the DSN's static password. Overrides "
+        "TASKQ_PG_CREDENTIAL_PROVIDER.",
     ),
     redis_credential_provider: str | None = typer.Option(
         None,
         "--redis-credential-provider",
-        envvar="TASKQ_REDIS_CREDENTIAL_PROVIDER",
-        help="Module:attr reference to a RedisCredentialProvider for the real-time mode client.",
+        help="Module:attr reference to a RedisCredentialProvider for the real-time "
+        "mode client. Overrides TASKQ_REDIS_CREDENTIAL_PROVIDER.",
     ),
 ) -> None:
     """Start the admin UI server on the given host:port."""
@@ -1384,17 +1398,24 @@ def ui_serve(
     resolved_port = port if port is not None else settings.admin_port
     resolved_migrate = run_migrate or settings.migrate_on_start
 
+    resolved_pg_provider_ref = _resolved_ref(
+        pg_credential_provider, settings.pg_credential_provider
+    )
+    resolved_redis_provider_ref = _resolved_ref(
+        redis_credential_provider, settings.redis_credential_provider
+    )
+
     pool_factory: PoolFactory | None = None
     conn_factory: ConnFactory | None = None
-    if pg_credential_provider is not None:
+    if resolved_pg_provider_ref is not None:
         pg_provider = _load_pg_credential_provider(
-            pg_credential_provider, option="--pg-credential-provider"
+            resolved_pg_provider_ref, option="--pg-credential-provider"
         )
         pool_factory = make_pg_pool_factory(resolved_dsn, pg_provider, max_size=4)
         conn_factory = make_dedicated_conn_factory(resolved_dsn, pg_provider)
 
     redis_factory: RedisFactory | None = None
-    if redis_credential_provider is not None:
+    if resolved_redis_provider_ref is not None:
         if resolved_redis is None:
             typer.echo(
                 "--redis-credential-provider was given but no Redis URL is set - "
@@ -1405,7 +1426,7 @@ def ui_serve(
         redis_factory = make_redis_client_factory(
             resolved_redis,
             _load_redis_credential_provider(
-                redis_credential_provider, option="--redis-credential-provider"
+                resolved_redis_provider_ref, option="--redis-credential-provider"
             ),
         )
 

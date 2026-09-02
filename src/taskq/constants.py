@@ -14,6 +14,10 @@ from uuid import UUID
 __all__ = [
     "BTREE_MAX_ITEM_BYTES",
     "CRON_LOCK_NAME",
+    "DEFAULT_CHUNK_SIZE",
+    "DEFAULT_MAX_RETRY_BACKOFF",
+    "DEFAULT_PRUNE_BATCH_SIZE",
+    "DEFAULT_PRUNE_RETENTION",
     "DEFAULT_RESERVATION_BACKOFF",
     "EVENTS_CHANNEL_FMT",
     "IDEMPOTENCY_KEY_BYTES_CEILING",
@@ -102,6 +106,47 @@ DEFAULT_RESERVATION_BACKOFF: Final[timedelta] = timedelta(seconds=5)
 Callers MUST coalesce via an identity check (``is None``), NOT truthiness,
 because ``timedelta(0)`` is falsy and represents an allowed decision that
 must be passed through unchanged.
+"""
+
+DEFAULT_MAX_RETRY_BACKOFF: Final[timedelta] = timedelta(hours=24)
+"""Default ceiling on a single retry's backoff.
+
+Why 24 h: it is one standard on-call rotation, and it mirrors Dramatiq's
+DEFAULT_MAX_BACKOFF. The effective ceiling is
+``WorkerSettings.max_retry_backoff``; this is the value that setting
+defaults to, and the fallback every retry-computation signature carries
+so a caller that constructs one directly (tests, the in-memory backend)
+gets the same cap as a worker loaded from settings. Named here because
+six call sites had it as an independent literal, where a change to one
+would have silently disagreed with the rest.
+"""
+
+DEFAULT_PRUNE_BATCH_SIZE: Final[int] = 10000
+"""Default rows deleted per batch by the prune and archive-expiry sweeps.
+
+The effective value is ``WorkerSettings.prune_batch_size``; the sweep
+functions carry it as a signature default for direct callers. Batching at
+all is what keeps a prune off a long-held lock; the size itself is the
+lock-duration / round-trip trade-off.
+"""
+
+DEFAULT_PRUNE_RETENTION: Final[timedelta] = timedelta(days=30)
+"""Fallback retention for a terminal status with no configured period.
+
+The effective value is ``WorkerSettings.prune_retention_period`` (and the
+per-status fields that override it); the sweep uses this constant when
+``retention_per_status`` has no entry for a status, so a status added to
+``TERMINAL_STATUSES`` without a matching setting is retained rather than
+pruned immediately.
+"""
+
+DEFAULT_CHUNK_SIZE: Final[int] = 1000
+"""Default rows per round trip for the chunked bulk-job APIs.
+
+Why 1000: it keeps a single chunk's parameter array well inside asyncpg's
+comfortable range while amortising the round trip. Every caller can
+override it per call via ``chunk_size=``; this is only the default, shared
+so the client, backend and SQL layers cannot drift apart.
 """
 
 MAX_RESULT_BYTES: Final[int] = 65536

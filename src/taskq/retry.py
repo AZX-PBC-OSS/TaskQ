@@ -22,6 +22,7 @@ import structlog
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator, model_validator
 
 from taskq.backend._protocol import Backend, ErrorInfo, JobId, JobRow, RetryKind
+from taskq.constants import DEFAULT_MAX_RETRY_BACKOFF
 from taskq.exceptions import PayloadValidationError, ResultTooLarge, WorkerOwnershipMismatch
 
 __all__ = [
@@ -146,7 +147,7 @@ def compute_backoff(
     attempt: int,
     rng: random.Random | None = None,
     *,
-    max_retry_backoff: timedelta = timedelta(hours=24),
+    max_retry_backoff: timedelta = DEFAULT_MAX_RETRY_BACKOFF,
 ) -> timedelta:
     """Compute the backoff delay for a given attempt (1-indexed).
 
@@ -270,7 +271,7 @@ class RetryClassifier:
         exception: BaseException,
         attempt: int,
         *,
-        max_retry_backoff: timedelta = timedelta(hours=24),
+        max_retry_backoff: timedelta = DEFAULT_MAX_RETRY_BACKOFF,
         override: RetryOverride | None = None,
     ) -> RetryDecision:
         if isinstance(exception, non_retryable_exceptions):
@@ -397,7 +398,7 @@ def decide_after_failure(
     exception: BaseException,
     job_state: JobRetryState,
     *,
-    max_retry_backoff: timedelta = timedelta(hours=24),
+    max_retry_backoff: timedelta = DEFAULT_MAX_RETRY_BACKOFF,
     log: structlog.stdlib.BoundLogger | None = None,
 ) -> RetryDecision:
     """Adapter between the pure classifier and the consumer loop.

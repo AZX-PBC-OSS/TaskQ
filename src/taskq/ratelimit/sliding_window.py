@@ -13,7 +13,7 @@ import asyncio
 import dataclasses
 from collections import deque
 from datetime import timedelta
-from typing import TYPE_CHECKING, Literal, assert_never
+from typing import TYPE_CHECKING, Final, Literal, assert_never
 from uuid import UUID
 
 import structlog
@@ -56,6 +56,18 @@ logger = structlog.get_logger("taskq.ratelimit.sliding_window")
 type SlidingWindowStyle = Literal["log", "gcra"]
 
 _VALID_STYLES: frozenset[str] = frozenset({"log", "gcra"})
+
+_TTL_SAFETY_MARGIN: Final[timedelta] = timedelta(minutes=1)
+"""Slack added to a derived key TTL so a key never expires under a live window.
+
+Why one minute: the TTL is derived from the window itself, and expiring a
+key a hair early would drop counters that are still inside the window
+(silently allowing over-limit traffic) whenever the backend's clock and
+the caller's disagree, or a request lands right on the boundary. A minute
+is far beyond any plausible skew between a worker and Redis/PG while
+staying negligible against the key volume. Callers who care about the
+exact value pass ``ttl=`` explicitly.
+"""
 
 
 class _InMemorySlidingWindowLog:
@@ -345,9 +357,9 @@ class SlidingWindow:
         if ttl is not None:
             self._ttl = ttl
         elif style == "gcra":
-            self._ttl = window + timedelta(milliseconds=60_000)
+            self._ttl = window + _TTL_SAFETY_MARGIN
         else:
-            self._ttl = 2 * window + timedelta(milliseconds=60_000)
+            self._ttl = 2 * window + _TTL_SAFETY_MARGIN
 
         self._mem_log: _InMemorySlidingWindowLog | None = None
         self._mem_gcra: _InMemorySlidingWindowGCRA | None = None
