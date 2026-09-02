@@ -303,3 +303,63 @@ def test_no_raw_exception_text_in_span_event_attributes() -> None:
                                         f"attribute f-strings exception {inner.id}"
                                     )
     assert offenders == [], f"raw exception text in span event attributes: {offenders}"
+
+
+# ── repo guard: log-call exception-text field names ─────────────────
+
+
+def test_log_fields_carrying_exception_text_are_listed_for_scrubbing() -> None:
+    """Repo-wide guard: every log-call keyword whose name conventionally
+    carries exception text must be listed in the obs scrub sets.
+
+    ``_scrub_exception_fields`` (obs/_structlog.py) scrubs only the names in
+    ``EXCEPTION_MESSAGE_FIELDS`` / ``EXCEPTION_TRACEBACK_FIELDS``, so a log
+    site introducing a new ``*error_message`` / ``*error_traceback`` field
+    ships raw exception text to every telemetry backend the JSON channel
+    feeds — exactly how ``job_error_message``/``infra_error_message``/
+    ``job_error_traceback``/``infra_error_traceback`` (the terminal-write
+    log in worker/_handlers.py) leaked the actor's exception unredacted.
+
+    Suffix-scoped so classification fields (``error_class``, ``error_type``,
+    ``job_error_class`` — class names, not exception text) never fire: the
+    suffix family is the shape that conventionally carries rendered
+    exception text.
+    """
+    import ast
+    from pathlib import Path
+
+    from taskq.obs._redact_exc import EXCEPTION_MESSAGE_FIELDS, EXCEPTION_TRACEBACK_FIELDS
+
+    log_methods = {"debug", "info", "warning", "warn", "error", "critical", "exception", "log"}
+    offenders: list[str] = []
+    src = Path(__file__).resolve().parent.parent / "src" / "taskq"
+    for path in sorted(src.rglob("*.py")):
+        if (
+            path.name == "_redact_exc.py"
+        ):  # Why: the module defining the sets; it makes no log calls.
+            continue
+        for node in ast.walk(ast.parse(path.read_text())):
+            if not (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr in log_methods
+            ):
+                continue
+            for kw in node.keywords:
+                if kw.arg is None:  # Why: **kwargs splat — no field name to check.
+                    continue
+                if kw.arg.endswith("error_message") and kw.arg not in EXCEPTION_MESSAGE_FIELDS:
+                    offenders.append(
+                        f"{path.relative_to(src).as_posix()}:{node.lineno}: "
+                        f"log field {kw.arg!r} carries exception text but is not in "
+                        "EXCEPTION_MESSAGE_FIELDS"
+                    )
+                elif (
+                    kw.arg.endswith("error_traceback") and kw.arg not in EXCEPTION_TRACEBACK_FIELDS
+                ):
+                    offenders.append(
+                        f"{path.relative_to(src).as_posix()}:{node.lineno}: "
+                        f"log field {kw.arg!r} carries traceback text but is not in "
+                        "EXCEPTION_TRACEBACK_FIELDS"
+                    )
+    assert offenders == [], f"unlisted exception-text log fields: {offenders}"

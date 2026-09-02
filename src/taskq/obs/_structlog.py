@@ -106,8 +106,10 @@ def _render_exc_info_safe(
 def _scrub_exception_fields(
     logger: object, method: str, event_dict: structlog.types.EventDict
 ) -> structlog.types.EventDict:
-    """Scrub the known exception-bearing field names (``error``,
-    ``error_message``, ``error_traceback``, ``exc``).
+    """Scrub the known exception-bearing field names (the
+    ``EXCEPTION_MESSAGE_FIELDS`` / ``EXCEPTION_TRACEBACK_FIELDS`` sets —
+    ``error``, ``error_message``, ``error_traceback``, ``exc``, and the
+    terminal-write log's ``job_error_*`` / ``infra_error_*`` names).
 
     JSON logs ship to the same telemetry backends as spans, so raw
     ``str(exc)``-shaped field values reopen the surface

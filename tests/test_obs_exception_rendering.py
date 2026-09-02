@@ -190,6 +190,53 @@ def test_known_exception_string_fields_are_scrubbed_in_json_logs() -> None:
     assert "DETAIL" not in parsed["error_traceback"]
 
 
+def test_terminal_write_failure_fields_are_scrubbed_in_json_logs() -> None:
+    """``job_error_message``/``job_error_traceback``/``infra_error_message``/
+    ``infra_error_traceback`` must be scrubbed on the rendered JSON line.
+
+    ``_log_terminal_write_failed`` (worker/_handlers.py) logs exactly these
+    four names: ``str(job_exc)`` is the ACTOR's exception — the payload-leak
+    vector the sanitizer exists for — and ``_format_exc`` applies no
+    scrubbing, so a name missing from the obs scrub sets ships the raw text
+    to every telemetry backend the JSON channel feeds.
+    """
+    obs_mod.setup_logging(log_format="json")
+    canary = "tenant-66-ssn-555000111"
+    message = (
+        'duplicate key value violates unique constraint "jobs_identity_key_key"\n'
+        f"DETAIL:  Key (identity_key)=({canary}) already exists."
+    )
+    raw_traceback = (
+        "Traceback (most recent call last):\n"
+        '  File "job.py", line 1, in run\n'
+        f"asyncpg.exceptions.UniqueViolationError: {message}"
+    )
+
+    with _capture_root_json_stream() as buf:
+        log = obs_mod.get_logger("_test_terminal_write_fields")
+        log.error(
+            "terminal-write-failed",
+            kind="terminal-write-failed",
+            job_error_message=message,
+            job_error_traceback=raw_traceback,
+            infra_error_message=message,
+            infra_error_traceback=raw_traceback,
+        )
+
+    output = buf.getvalue().strip()
+    parsed = json.loads(output)
+    assert canary not in output
+    # Message-style fields keep the diagnostic template, drop the DETAIL line.
+    assert parsed["job_error_message"] == (
+        'duplicate key value violates unique constraint "jobs_identity_key_key"'
+    )
+    assert parsed["infra_error_message"] == parsed["job_error_message"]
+    # Traceback-style fields keep the full traceback structure, scrubbed.
+    assert parsed["job_error_traceback"].startswith("Traceback (most recent call last):")
+    assert "DETAIL" not in parsed["job_error_traceback"]
+    assert "DETAIL" not in parsed["infra_error_traceback"]
+
+
 def test_exception_object_field_renders_scrubbed_not_dropped() -> None:
     """An exception object passed as a field value must render as the scrubbed
     safe message — previously the raw object hit the orjson fallback TypeError

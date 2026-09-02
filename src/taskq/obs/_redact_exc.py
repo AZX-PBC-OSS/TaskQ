@@ -172,16 +172,29 @@ def record_exception_safe(span: "Span", exc: BaseException) -> None:
 
 
 #: Event-dict field names that conventionally carry exception MESSAGE text on
-#: the log channel. This is the complete set used across ``src/taskq``; values
+#: the log channel. Derived from the log sites in ``src/taskq`` that render
+#: exception text into a field (``error=…``, ``error_message=…``, the
+#: terminal-write log's ``job_error_message``/``infra_error_message`` …) —
+#: NOT an automatically exhaustive set: when a new log field is introduced
+#: whose value is rendered exception text (``str(exc)``/``repr(exc)``/
+#: ``traceback.format_exception``), its name must be added here or the JSON
+#: channel ships it unredacted. ``test_log_fields_carrying_exception_text_…``
+#: in tests/test_obs_exception_redaction.py guards the ``*error_message``/
+#: ``*error_traceback`` suffix family against exactly that drift; values
 #: that are classification strings ("deadline_exceeded") pass the scrubbers
 #: unchanged, so scrubbing only bites text that genuinely carries exception
 #: detail.
-EXCEPTION_MESSAGE_FIELDS = frozenset({"error", "error_message", "exc"})
+EXCEPTION_MESSAGE_FIELDS = frozenset(
+    {"error", "error_message", "exc", "job_error_message", "infra_error_message"}
+)
 
 #: Event-dict field names that conventionally carry rendered TRACEBACK text —
 #: scrubbed line-wise like :func:`_safe_stacktrace`, without the message-length
-#: bound, so the traceback stays diagnostic.
-EXCEPTION_TRACEBACK_FIELDS = frozenset({"error_traceback"})
+#: bound, so the traceback stays diagnostic. Same derivation and guard
+#: contract as :data:`EXCEPTION_MESSAGE_FIELDS`.
+EXCEPTION_TRACEBACK_FIELDS = frozenset(
+    {"error_traceback", "job_error_traceback", "infra_error_traceback"}
+)
 
 
 def scrub_exception_field(field: str, value: object) -> object:
