@@ -3,7 +3,7 @@
 import asyncio
 import contextlib
 import inspect
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
@@ -23,6 +23,7 @@ from taskq.context import JobContext
 from taskq.settings import WorkerSettings
 from taskq.testing.clock import FakeClock
 from taskq.worker._consumer import AttemptOutcome
+from taskq.worker._watchdog import LoopLiveness
 from taskq.worker.deps import WorkerDeps
 from taskq.worker.drain import drain_monitor_loop
 from taskq.worker.shutdown import ShutdownPhase
@@ -704,6 +705,104 @@ async def test_drain_monitor_settle_window_zero() -> None:
         )
     assert len(orchestrator_holder) == 1
     assert call_count >= 2  # at least two polls needed
+
+
+# ── Drain monitor liveness registration ────────────────────────────
+#
+# The monitor returns as soon as it has triggered orchestrate_shutdown,
+# but orchestrate_shutdown sets shutdown_event only in its finally —
+# after ALL phases. loop_watchdog_loop keeps sweeping until then, so a
+# lingering "drain_monitor" registration goes stale mid-grace and
+# detector 2 force-exits the worker (os._exit(2)) instead of letting the
+# drain exit code land. The producer loop forgets its registration on
+# exactly this early-exit path (run.py); the monitor must too.
+
+
+def _fake_clock() -> tuple[list[float], Callable[[], float]]:
+    """Controllable monotonic clock for LoopLiveness staleness checks.
+
+    The monitor's own timing (settle window, max_runtime) uses real
+    time.monotonic() and is unaffected; only the liveness registry sees
+    this clock, so the test can advance past a staleness budget without
+    sleeping.
+    """
+    t = [0.0]
+    return t, lambda: t[0]
+
+
+async def test_drain_monitor_forgets_liveness_when_drain_triggers() -> None:
+    """Drained-trigger path: the monitor must forget its liveness
+    registration when it returns after triggering shutdown."""
+    t, clock = _fake_clock()
+    liveness = LoopLiveness(grace_factor=5.0, stale_floor=10.0, clock=clock)
+    deps = _make_mock_deps(active_jobs_count=0)
+    deps.liveness = liveness
+    backend = MagicMock()
+    backend.count_active_jobs = AsyncMock(return_value=0)
+
+    shutdown_event = asyncio.Event()
+    escalate_event = asyncio.Event()
+    orchestrator_holder: list[asyncio.Task[int]] = []
+
+    async with _mock_orchestrate():
+        await drain_monitor_loop(
+            deps,
+            deps.settings,
+            new_uuid(),
+            shutdown_event,
+            escalate_event,
+            orchestrator_holder,
+            backend,
+            idle_settle_window=0.1,
+            idle_poll_interval=0.05,
+            max_runtime=None,
+        )
+        assert len(orchestrator_holder) == 1
+        await orchestrator_holder[0]
+
+    assert "drain_monitor" not in liveness.ages(), (
+        "drain_monitor_loop must forget its liveness registration when it "
+        "returns after triggering — the watchdog still sweeps until "
+        "orchestrate_shutdown's finally sets shutdown_event"
+    )
+    t[0] += 11.0  # past the max(0.05 * 5, 10) = 10s budget the leaked entry trips at
+    assert liveness.stale() == [], "detector 2 would trip on the returned drain monitor"
+
+
+async def test_drain_monitor_forgets_liveness_on_max_runtime_trigger() -> None:
+    """max_runtime-trigger path (exit 4): same forget-on-exit contract."""
+    t, clock = _fake_clock()
+    liveness = LoopLiveness(grace_factor=5.0, stale_floor=10.0, clock=clock)
+    deps = _make_mock_deps(active_jobs_count=1)
+    deps.liveness = liveness
+    backend = MagicMock()
+    backend.count_active_jobs = AsyncMock(return_value=5)
+
+    shutdown_event = asyncio.Event()
+    escalate_event = asyncio.Event()
+    orchestrator_holder: list[asyncio.Task[int]] = []
+
+    async with _mock_orchestrate():
+        await drain_monitor_loop(
+            deps,
+            deps.settings,
+            new_uuid(),
+            shutdown_event,
+            escalate_event,
+            orchestrator_holder,
+            backend,
+            idle_settle_window=10.0,
+            idle_poll_interval=0.05,
+            max_runtime=0.2,
+        )
+        assert len(orchestrator_holder) == 1
+        await orchestrator_holder[0]
+
+    assert "drain_monitor" not in liveness.ages(), (
+        "the max_runtime trigger path must forget the liveness registration too"
+    )
+    t[0] += 11.0
+    assert liveness.stale() == [], "detector 2 would trip on the returned drain monitor"
 
 
 # ── Handler return-value contract tests ────────────────────────────

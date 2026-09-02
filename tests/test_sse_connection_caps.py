@@ -20,14 +20,104 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Iterator
+from datetime import timedelta
 from typing import Any
-from unittest.mock import MagicMock
 from uuid import UUID
 
 import pytest
 from fastapi import HTTPException
 
 from taskq.web import _sse_limit
+
+_JOB_ID = UUID("00000000-0000-0000-0000-000000000001")
+
+# A terminal PG row: the stream serves the snapshot + done and ends on its
+# own, so TestClient can read the whole response without hanging.
+_TERMINAL_ROW: dict[str, Any] = {
+    "status": "succeeded",
+    "progress_seq": 5,
+    "progress_state": {"step": 1},
+}
+
+
+class _SwitchablePool:
+    """asyncpg.Pool duck-type whose fetchrow result can be flipped at runtime.
+
+    Lets one mounted router serve both the missing-job (404) requests and the
+    following valid (200) request that proves the slot came back.
+    """
+
+    def __init__(self) -> None:
+        self.row: dict[str, Any] | None = None
+
+    def acquire(self, *, timeout: float | None = None) -> _AcquireCtx:
+        return _AcquireCtx(self)
+
+
+class _AcquireCtx:
+    def __init__(self, pool: _SwitchablePool) -> None:
+        self._pool = pool
+
+    async def __aenter__(self) -> _PoolConn:
+        return _PoolConn(self._pool)
+
+    async def __aexit__(self, *args: object) -> None:
+        pass
+
+
+class _PoolConn:
+    def __init__(self, pool: _SwitchablePool) -> None:
+        self._pool = pool
+
+    async def fetchrow(self, query: str, *args: object) -> dict[str, Any] | None:
+        return self._pool.row
+
+
+class _StubPubSub:
+    """redis pubsub duck-type; set ``subscribe_error`` to drive the 503 path."""
+
+    def __init__(self) -> None:
+        self.subscribe_error: Exception | None = None
+        self.unsubscribed = False
+        self.closed = False
+
+    async def subscribe(self, channel: str | bytes) -> None:
+        if self.subscribe_error is not None:
+            raise self.subscribe_error
+
+    async def unsubscribe(self, channel: str | bytes) -> None:
+        self.unsubscribed = True
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+class _StubRedis:
+    def __init__(self, pubsub: _StubPubSub) -> None:
+        self._pubsub = pubsub
+
+    def pubsub(self) -> _StubPubSub:
+        return self._pubsub
+
+
+def _progress_client(pool: _SwitchablePool, redis: _StubRedis) -> Any:
+    """Mount the real progress router with a one-connection cap and return a
+    TestClient for it (same app shape as tests/web_progress/test_unit.py)."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from taskq.web.progress import create_router
+
+    router = create_router(
+        pool,
+        redis,
+        schema="taskq",
+        sse_heartbeat_interval=timedelta(milliseconds=50),
+        max_sse_connections=1,
+    )
+    app = FastAPI()
+    app.include_router(router, prefix="/jobs")
+    return TestClient(app, raise_server_exceptions=False)
 
 
 @pytest.fixture(autouse=True)
@@ -111,133 +201,6 @@ async def test_release_after_frees_the_slot_on_client_disconnect() -> None:
     await _sse_limit.acquire_sse_slot("t", 1)
 
 
-# ── Progress stream: the cap applies, and early exits give the slot back ──
-#
-# Minimal duck-types for the two collaborators the stream route touches before
-# it decides to 404. Deliberately local and tiny: the point is to drive the
-# real route, not to model Redis or asyncpg.
-
-
-class _NoRowConn:
-    async def fetchrow(self, query: str, *args: object) -> None:
-        return None
-
-
-class _NoRowAcquire:
-    async def __aenter__(self) -> _NoRowConn:
-        return _NoRowConn()
-
-    async def __aexit__(self, *args: object) -> None:
-        return None
-
-
-class _NoRowPool:
-    """A pool whose job lookup finds nothing, so the route takes its 404 exit."""
-
-    def acquire(self, *, timeout: float | None = None) -> _NoRowAcquire:
-        return _NoRowAcquire()
-
-
-class _InertPubSub:
-    def __init__(self) -> None:
-        self.closed = False
-
-    async def subscribe(self, channel: str | bytes) -> None:
-        return None
-
-    async def unsubscribe(self, channel: str | bytes) -> None:
-        return None
-
-    async def aclose(self) -> None:
-        self.closed = True
-
-
-class _InertRedis:
-    def pubsub(self) -> _InertPubSub:
-        return _InertPubSub()
-
-
-def _progress_stream_endpoint(max_sse_connections: int) -> Any:
-    """The real ``/progress/stream`` endpoint, capped at *max_sse_connections*."""
-    from fastapi.routing import APIRoute
-
-    from taskq.web.progress import create_router
-
-    router = create_router(
-        _NoRowPool(),  # type: ignore[arg-type]  # Why: duck-typed pool; only acquire()/fetchrow() are reached.
-        _InertRedis(),
-        max_sse_connections=max_sse_connections,
-    )
-    for route in router.routes:
-        if isinstance(route, APIRoute) and route.path.endswith("/progress/stream"):
-            return route.endpoint
-    raise AssertionError("progress stream route not found")
-
-
-def _mock_request() -> MagicMock:
-    request = MagicMock()
-    request.headers.get.return_value = None  # no Last-Event-ID header
-    return request
-
-
-async def test_progress_stream_404s_do_not_consume_the_cap() -> None:
-    """A run of requests for missing jobs must not exhaust the connection cap.
-
-    The slot is taken before the job lookup, so every early exit — 404 here —
-    has to give it back. If it does not, the second request for a missing job
-    is rejected with 429 and the endpoint is bricked for everyone without a
-    single stream ever having opened: a one-request denial of service on a
-    cap of one, which is the whole mechanism inverted into the attack.
-    """
-    endpoint = _progress_stream_endpoint(max_sse_connections=1)
-
-    for attempt in range(3):
-        with pytest.raises(HTTPException) as excinfo:
-            await endpoint(
-                job_id=UUID("00000000-0000-0000-0000-000000000001"),
-                request=_mock_request(),
-                last_event_id=None,
-            )
-        assert excinfo.value.status_code == 404, (
-            f"request {attempt} got {excinfo.value.status_code}; a leaked slot "
-            "turns missing-job lookups into a permanent 429"
-        )
-
-
-# ── Admin live job feed: capped, on its own budget ────────────────────────
-
-
-async def test_admin_live_feed_is_refused_once_its_budget_is_spent() -> None:
-    """``/jobs/sse/live`` bypasses admin/sse.py entirely, so its cap has to be
-    applied by the route itself. With the ``admin-jobs-live`` budget spent, a
-    further connection is refused with 429 rather than opening another PG
-    LISTEN connection — and the progress stream, on its own budget, is
-    unaffected."""
-    from taskq.settings import TaskQSettings
-
-    limit = TaskQSettings.load().admin_max_sse_connections
-    for _ in range(limit):
-        await _sse_limit.acquire_sse_slot("admin-jobs-live", limit)
-
-    with pytest.raises(HTTPException) as excinfo:
-        await _sse_limit.acquire_sse_slot("admin-jobs-live", limit)
-    assert excinfo.value.status_code == 429
-
-    # Independent budget: the per-job progress stream still admits.
-    await _sse_limit.acquire_sse_slot("progress-stream", 1)
-
-
-async def test_progress_stream_cap_still_rejects_once_slots_are_genuinely_held() -> None:
-    """The complement: the cap is real. With its one slot held by a live
-    stream, the next request is refused with 429 rather than queued."""
-    _progress_stream_endpoint(max_sse_connections=1)
-    await _sse_limit.acquire_sse_slot("progress-stream", 1)
-
-    with pytest.raises(HTTPException) as excinfo:
-        await _sse_limit.acquire_sse_slot("progress-stream", 1)
-    assert excinfo.value.status_code == 429
-
-
 def test_no_uncapped_sse_endpoint_remains() -> None:
     """Inventory guard over every streaming response in the web package."""
     from pathlib import Path
@@ -253,3 +216,132 @@ def test_no_uncapped_sse_endpoint_remains() -> None:
         if not capped:
             offenders.append(path.relative_to(web).as_posix())
     assert offenders == [], f"uncapped SSE endpoints: {offenders}"
+
+
+# ── Route-level: slot release on every early exit, 429 at the cap ──────────
+#
+# PR #74's headline failure mode: "a run of requests for missing jobs would
+# exhaust the cap without a single stream ever opening." The caps are taken
+# in the route handler but live in the streaming generator, so every early
+# exit between acquire and generator hand-off has to give the slot back.
+# These tests drive the mounted routers through TestClient (stub PG pool and
+# Redis pubsub duck-types, the same seams as tests/web_progress/test_unit.py)
+# so the release is observed as admission behavior, not source text.
+
+
+def test_missing_job_404s_do_not_exhaust_the_cap() -> None:
+    """With max_sse_connections=1, two missing-job requests must each give
+    the slot back (the second would be 429 if the first leaked it) and a
+    following valid stream must still be admitted."""
+    pool = _SwitchablePool()  # row is None → job not found
+    client = _progress_client(pool, _StubRedis(_StubPubSub()))
+
+    first = client.get(f"/jobs/api/job/{_JOB_ID}/progress/stream")
+    assert first.status_code == 404, first.text
+
+    second = client.get(f"/jobs/api/job/{_JOB_ID}/progress/stream")
+    assert second.status_code == 404, (
+        f"a 404 must release its slot: the second missing-job request got "
+        f"{second.status_code} — the cap was exhausted without a single "
+        f"stream ever opening"
+    )
+
+    pool.row = _TERMINAL_ROW
+    admitted = client.get(f"/jobs/api/job/{_JOB_ID}/progress/stream")
+    assert admitted.status_code == 200, admitted.text
+    assert "text/event-stream" in admitted.headers.get("content-type", "")
+
+
+def test_subscribe_failure_503s_do_not_exhaust_the_cap() -> None:
+    """The 503 subscribe-failure early exit runs after the slot is taken; a
+    run of them must not exhaust the cap, and a healthy request afterwards
+    must still be admitted."""
+    pool = _SwitchablePool()
+    pool.row = _TERMINAL_ROW  # PG is fine; the failure is at subscribe time
+    pubsub = _StubPubSub()
+    pubsub.subscribe_error = ConnectionError("broker down")
+    client = _progress_client(pool, _StubRedis(pubsub))
+
+    first = client.get(f"/jobs/api/job/{_JOB_ID}/progress/stream")
+    assert first.status_code == 503, first.text
+    assert first.headers.get("retry-after") == "2"
+
+    second = client.get(f"/jobs/api/job/{_JOB_ID}/progress/stream")
+    assert second.status_code == 503, (
+        f"a 503 subscribe-failure must release its slot: the second request "
+        f"got {second.status_code} — the cap was exhausted without a single "
+        f"stream ever opening"
+    )
+
+    pubsub.subscribe_error = None
+    admitted = client.get(f"/jobs/api/job/{_JOB_ID}/progress/stream")
+    assert admitted.status_code == 200, admitted.text
+    assert "text/event-stream" in admitted.headers.get("content-type", "")
+
+
+async def test_progress_stream_rejects_with_429_at_the_cap() -> None:
+    """A request through the real route must get 429, not queue, when the
+    progress-stream budget is exhausted (one permit held = one open stream)."""
+    pool = _SwitchablePool()
+    pool.row = _TERMINAL_ROW
+    client = _progress_client(pool, _StubRedis(_StubPubSub()))
+
+    held = await _sse_limit.acquire_sse_slot("progress-stream", 1)
+    try:
+        rejected = client.get(f"/jobs/api/job/{_JOB_ID}/progress/stream")
+        assert rejected.status_code == 429, rejected.text
+        assert "progress-stream" in rejected.text
+    finally:
+        held.release()
+
+
+async def test_admin_live_sse_rejects_with_429_at_the_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """/jobs/sse/live never went through admin/sse.py, so its cap must be
+    proven through its own route: with the admin-jobs-live budget exhausted,
+    the request must be rejected with 429.
+
+    Why the request runs on a bounded worker thread: a live-feed request
+    that is (wrongly) admitted never completes against a stub pool — the
+    LISTEN loop reconnects with backoff and streams keepalives forever. An
+    uncapped endpoint, the exact regression this test guards, therefore
+    manifests as "the request opened a stream instead of being rejected";
+    the bound turns that into a fast, explicit failure instead of a hung
+    test."""
+    import threading
+
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from taskq.web.admin import create_router, setup_admin_state
+
+    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
+    monkeypatch.setenv("TASKQ_ADMIN_MAX_SSE_CONNECTIONS", "1")
+
+    bundle = create_router(_SwitchablePool())  # pyright: ignore[reportArgumentType]  # Why: duck-typed pool; the 429 path rejects before any query runs.
+    app = FastAPI()
+    setup_admin_state(app, bundle)
+    app.include_router(bundle.router)
+    client = TestClient(app, raise_server_exceptions=False)
+
+    held = await _sse_limit.acquire_sse_slot("admin-jobs-live", 1)
+    outcome: dict[str, object] = {}
+
+    def _request() -> None:
+        response = client.get("/jobs/sse/live")
+        outcome["status"] = response.status_code
+        outcome["body"] = response.text
+
+    requester = threading.Thread(target=_request, daemon=True)
+    requester.start()
+    try:
+        requester.join(timeout=10.0)
+        assert not requester.is_alive(), (
+            "the /jobs/sse/live request never completed — it opened a "
+            "stream instead of being rejected at the cap"
+        )
+        assert outcome.get("status") == 429, outcome
+        assert "admin-jobs-live" in str(outcome.get("body")), outcome
+    finally:
+        held.release()

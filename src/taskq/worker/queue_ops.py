@@ -121,10 +121,21 @@ async def set_queue_max_concurrent(
 
     Unlike ``actor_config.max_concurrent``, this is read once at worker
     startup, so a change needs a worker restart to take effect.
+
+    ``max_concurrent`` must be ``>= 1`` or ``None`` — the table's CHECK
+    constraint (``max_concurrent IS NULL OR max_concurrent >= 1``)
+    enforces the same, but rejecting here saves the operator from a raw
+    asyncpg ``CheckViolationError`` traceback. ``None`` is the uncapped
+    state; a 0 "emergency drain" belongs to
+    ``actor_config.max_concurrent`` (per-actor), which legitimately
+    allows it.
     """
     _check_schema(schema)
-    if max_concurrent is not None and max_concurrent < 0:
-        msg = f"max_concurrent must be >= 0 or None, got {max_concurrent}"
+    if max_concurrent is not None and max_concurrent < 1:
+        msg = (
+            f"max_concurrent must be >= 1 or None (NULL = uncapped), got {max_concurrent!r}; "
+            "an emergency drain to 0 belongs to actor_config.max_concurrent"
+        )
         raise ValueError(msg)
     row = await conn.fetchrow(
         f'INSERT INTO "{schema}".queues (name, max_concurrent) VALUES ($1, $2) '  # noqa: S608  # Why: schema validated against _IDENT_RE above and double-quoted; values are $n-bound.

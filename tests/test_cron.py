@@ -25,6 +25,7 @@ from pydantic import BaseModel, ValidationError
 
 from taskq.backend._protocol import ScheduleRecord
 from taskq.cron import (
+    DST_STRATEGIES,
     CronScheduleSpec,
     ScheduleHandle,
     _check_gap,
@@ -37,6 +38,18 @@ from taskq.cron import (
     resolve_payload,
 )
 from taskq.scheduler import _CRON_REGISTRY, get_registered_crons, register_cron
+
+
+def test_dst_strategies_matches_the_literal() -> None:
+    """One source of truth for the DST strategy set.
+
+    The set was hand-rolled three times (backend validation, cron loop
+    coercion, admin ops coercion) before this export; a fourth hand-rolled
+    copy would drift against the ``DstStrategy`` Literal the type checker
+    enforces. Derived via ``get_args`` so adding a strategy to the Literal
+    updates the set — and every coercion site — with it.
+    """
+    assert frozenset({"skip", "firstof", "allof"}) == DST_STRATEGIES
 
 
 def _sample_factory() -> dict[str, int]:

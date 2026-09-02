@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 import structlog
 
+from taskq._json import dumps_jsonb_str
 from taskq.backend._protocol import (
     CancelPhase,
     EnqueueArgs,
@@ -102,6 +103,18 @@ async def _enqueue(self: "InMemoryBackend", args: EnqueueArgs) -> JobRow:
                 current_count=current_count,
                 max_pending=args.max_pending,
             )
+
+    # PG binds payload/metadata through jsonb_param → dumps_jsonb_str at
+    # INSERT time — after the preflights above, before any idempotency
+    # conflict resolution — and rejects a NUL there. Mirror that exact
+    # guard (same function, so the same error) here: without it a payload
+    # InMemory accepted raised ValueError on the first real PG enqueue, so
+    # an app validated against InMemory broke in production.  The guard
+    # lives in this mirror, NOT in EnqueueArgs._check_no_nul_text, because
+    # a struct-level check would double-scan the PG hot path, which
+    # already guards at bind time.
+    dumps_jsonb_str(args.payload)
+    dumps_jsonb_str(args.metadata)
 
     if args.idempotency_key is not None:
         # NOTE: InMemoryBackend always simulates the fully-migrated

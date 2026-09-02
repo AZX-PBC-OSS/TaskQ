@@ -1345,14 +1345,20 @@ def queues_set_max_concurrent(
     name: Annotated[str, typer.Argument(help="Queue name.")],
     max_concurrent: Annotated[
         int | None,
-        typer.Option("--max-concurrent", min=0, help="New per-queue leased-slot cap."),
+        typer.Option(
+            "--max-concurrent",
+            min=1,
+            help="New per-queue leased-slot cap (>= 1; pass --clear for uncapped).",
+        ),
     ] = None,
     clear: Annotated[bool, typer.Option("--clear", help="Remove the cap (unlimited).")] = False,
 ) -> None:
     """Set or clear a queue's fleet-wide leased-slot concurrency cap.
 
     Unlike `actor-config set --max-concurrent`, this is read once at worker
-    startup, so it needs a worker restart to take effect.
+    startup, so it needs a worker restart to take effect. There is no 0
+    state: NULL (via --clear) is uncapped, and an emergency drain to 0
+    belongs to `actor-config set --max-concurrent 0`, which is per-actor.
     """
     if clear and max_concurrent is not None:
         typer.echo("pass either --max-concurrent or --clear, not both", err=True)
@@ -1369,9 +1375,13 @@ async def _queues_set_max_concurrent(
 ) -> None:
     conn = await asyncpg.connect(str(settings.pg_dsn))
     try:
-        row = await set_queue_max_concurrent(
-            conn, name, max_concurrent, schema=settings.schema_name
-        )
+        try:
+            row = await set_queue_max_concurrent(
+                conn, name, max_concurrent, schema=settings.schema_name
+            )
+        except ValueError as exc:
+            typer.echo(str(exc), err=True)
+            raise typer.Exit(code=1) from exc
     finally:
         await close_conn_bounded(conn, "queues-set-max-concurrent", CLOSE_TIMEOUT_SECS)
     _print_queue_row(row)

@@ -9,13 +9,11 @@ from datetime import timedelta
 from typing import TYPE_CHECKING, Literal
 from uuid import UUID
 
-from pydantic import BaseModel
-
 from taskq._scope import Scope
-from taskq.backend._protocol import JobId, JobStatus
 
 if TYPE_CHECKING:
-    from taskq.backend._protocol import EnqueueArgs, JobRow
+    from taskq._validation import validate_actor_payload as validate_actor_payload
+    from taskq.backend._protocol import EnqueueArgs, JobId, JobRow, JobStatus
 
 
 class TaskQError(Exception):
@@ -143,33 +141,23 @@ class PayloadValidationError(TaskQError):
         super().__init__(detail)
 
 
-def validate_actor_payload(
-    payload_type: type[BaseModel],
-    raw_payload: dict[str, object],
-    actor_name: str,
-) -> BaseModel:
-    """Validate a raw payload dict from a DB row against an actor's payload type.
+def __getattr__(name: str) -> object:
+    """Lazy runtime re-export of ``validate_actor_payload``.
 
-    Converts ``pydantic.ValidationError`` to :class:`PayloadValidationError`
-    (non-retryable) with operator-facing diagnostics: the actor name,
-    field-level validation errors, and the raw payload dict.
-
-    Used at every dispatch-time validation site to ensure a malformed
-    payload row fails fast with a clear error message instead of being
-    retried forever with a cryptic ``"ValidationError"`` error_class.
+    The implementation lives in :mod:`taskq._validation` (the sanitized
+    variant: ``include_url=False, include_input=False`` and no raw-payload
+    embedding). It cannot be re-exported at module level here because
+    ``taskq._validation`` imports ``PayloadValidationError`` from this
+    module — a module-level ``from taskq._validation import ...`` would be
+    circular and blow up whenever ``taskq._validation`` is imported first.
+    PEP 562 module ``__getattr__`` resolves the name only when requested,
+    by which time both modules are fully initialized.
     """
-    from pydantic import ValidationError
+    if name == "validate_actor_payload":
+        from taskq._validation import validate_actor_payload
 
-    try:
-        return payload_type.model_validate(raw_payload)
-    except ValidationError as exc:
-        errs: list[dict[str, object]] = exc.errors()  # type: ignore[assignment]  # Why: pydantic v2 ErrorDetails is a TypedDict (subtype of dict[str, Any]); assignment to list[dict[str,object]] is safe at runtime but pyright cannot prove covariance
-        raise PayloadValidationError(
-            f"Payload validation failed for actor {actor_name!r}: {exc}\n"
-            f"Raw payload: {raw_payload}",
-            actor=actor_name,
-            validation_errors=errs,
-        ) from exc
+        return validate_actor_payload
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 class ResultTooLarge(TaskQError):
@@ -298,9 +286,9 @@ class IllegalStateTransition(TaskQError):
 
     def __init__(
         self,
-        job_id: JobId,
-        from_status: JobStatus,
-        to_status: JobStatus,
+        job_id: "JobId",
+        from_status: "JobStatus",
+        to_status: "JobStatus",
     ) -> None:
         self.job_id = job_id
         self.from_status = from_status

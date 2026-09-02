@@ -32,12 +32,13 @@ path / node id, so the name is never worker-only); every other file in
 the published package is fully scanned.
 
 The second half of the file guards a different hazard with the same shape:
-``taskq[oidc]`` installs two HTTP client stacks, ``httpx`` and ``httpx2``,
-which are invisible to each other's mocks. A mock that covers only some of
-the stacks in use reads as a mock while part of the traffic leaves the
-machine, or - worse - the suite compensates by substituting one stack for
-the other and then tests a client production never constructs. See the
-section comment there.
+``taskq[oidc]`` ships only ``httpx2`` (nothing under ``src/taskq`` imports
+``httpx``), but the dev GROUP keeps ``httpx`` installed too, so the test
+environment runs two HTTP client stacks that are invisible to each other's
+mocks. A mock that covers only some of the stacks in use reads as a mock
+while part of the traffic leaves the machine, or - worse - the suite
+compensates by substituting one stack for the other and then tests a client
+production never constructs. See the section comment there.
 """
 
 # ── Static guards elsewhere in the suite: triage of record ────────────────
@@ -198,12 +199,15 @@ def test_testing_pkg_no_module_level_schema_constant() -> None:
 
 
 # ── Two-HTTP-stack hygiene ──────────────────────────────────────────────
-# `taskq[oidc]` installs httpx AND httpx2, and one production code path uses
-# both: src/taskq/web/admin/auth/oidc.py fetches discovery and JWKS over
-# httpx2, while authlib's AsyncOAuth2Client performs the token exchange over
-# whichever stack authlib binds to. Stock respx patches httpcore only, so it
-# sees one half. tests/http_mock.py registers a respx mocker targeting every
-# installed httpcore instead; these guards keep the suite pointed at it.
+# The `taskq[oidc]` extra ships ONLY httpx2 — nothing under src/taskq
+# imports httpx — but the dev group installs httpx as well, so the test
+# environment has two httpcore-backed stacks that cannot see each other's
+# mocks: src/taskq/web/admin/auth/oidc.py fetches discovery and JWKS over
+# httpx2, and authlib's AsyncOAuth2Client (pinned >=1.8.0, which prefers
+# httpx2 whenever it is importable) performs the token exchange. Stock
+# respx patches httpcore only, so it sees one half. tests/http_mock.py
+# registers a respx mocker targeting every installed httpcore instead;
+# these guards keep the suite pointed at it.
 #
 # Three earlier guards, added when the OIDC suite still bridged the stacks,
 # are retired here. Each docstring below records which one it replaces and

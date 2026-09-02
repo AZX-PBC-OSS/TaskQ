@@ -22,11 +22,13 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 import pytest
+import structlog.testing
 from pydantic import BaseModel, TypeAdapter
 
 from taskq._ids import new_job_id
 from taskq.actor import actor
 from taskq.backend._protocol import EnqueueArgs, JobFilter, JobSortField, ScheduleRecord
+from taskq.batch import EnqueueItem
 from taskq.client import CancelResult, JobHandle, JobsClient
 from taskq.client._args import build_enqueue_args
 from taskq.cron import ScheduleHandle
@@ -1053,6 +1055,43 @@ class TestBuildEnqueueArgs:
         )
 
         assert args.start_to_close is None
+
+
+# ── Batch streaming log events ─────────────────────────────────────────
+
+
+@actor(name="_streaming_log_actor")
+async def _streaming_log_actor(payload: _DedupPayload) -> None:
+    pass
+
+
+class TestBatchStreamingEventName:
+    """The streaming-completion log event uses the repo-standard
+    kebab-case name (``batch-streaming-enqueued``), matching
+    ``batch-enqueued`` and ``batch-fast-enqueued`` — the snake_case
+    spelling never shipped on main, so no consumer can be depending on
+    it.
+    """
+
+    async def test_kebab_case_event_emitted_snake_case_absent(self) -> None:
+        _backend, client = _make_client()
+
+        items = [
+            EnqueueItem(actor_ref=_streaming_log_actor, payload=_DedupPayload()) for _ in range(2)
+        ]
+
+        with structlog.testing.capture_logs() as logs:
+            handle = await client.enqueue_batch_streaming(items)
+
+        assert handle.size == 2
+        events = {entry["event"] for entry in logs}
+        assert "batch_streaming_enqueued" not in events, (
+            "the snake_case event name must never be emitted"
+        )
+        entry = next(e for e in logs if e["event"] == "batch-streaming-enqueued")
+        assert entry["kind"] == "batch-streaming-enqueued"
+        assert entry["size"] == 2
+        assert entry["batch_id"] == str(handle.batch_id)
 
 
 # ── Schedule CRUD ──────────────────────────────────────────────────────

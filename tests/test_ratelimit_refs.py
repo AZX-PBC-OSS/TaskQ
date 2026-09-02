@@ -305,3 +305,29 @@ class TestKeyedReservationRefTyped:
                 pg_pool=None,
                 settings=None,
             )
+
+    async def test_typed_empty_key_error_does_not_embed_payload(self) -> None:
+        """Reservation-side twin of the key-validation sanitize contract:
+        the key_fn empty/non-str ValueError propagates into persisted
+        error_message (job row / web admin), so it must not embed payload
+        values — including the model_dump of a validated model payload."""
+        from taskq.ratelimit.registry import RateLimitRegistry
+
+        canary = "TOP-SECRET-canary-d4e5f6"
+        ref = KeyedReservationRef.typed(
+            _SessionPayload,
+            base_name="session-cap",
+            key_fn=lambda p: "",
+            slots=3,
+            lease=timedelta(minutes=5),
+        )
+        reg = RateLimitRegistry()
+        with pytest.raises(ValueError, match="an empty key or non-string value") as exc_info:
+            await reg._resolve_reservation_name(  # pyright: ignore[reportPrivateUsage]
+                ref,
+                payload=_SessionPayload(session_id=canary),
+                pg_pool=None,
+                settings=None,
+            )
+
+        assert canary not in str(exc_info.value)

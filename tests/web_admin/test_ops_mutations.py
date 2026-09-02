@@ -186,7 +186,11 @@ def test_schedule_skip_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
     # The skip fetch reads the server clock in the same row
     # (clock_timestamp() AS db_now), so the stub row carries it.
     row = StubRecord(
-        cron_expr="* * * * *", timezone="UTC", next_fire_at=past, db_now=datetime.now(UTC)
+        cron_expr="* * * * *",
+        timezone="UTC",
+        dst_strategy="skip",
+        next_fire_at=past,
+        db_now=datetime.now(UTC),
     )
     conn = _ScriptedConnection(fetchrow_results=[row])
     client = _make_app(_ScriptedPool(conn))
@@ -216,6 +220,73 @@ def test_schedule_skip_redirects_when_cron_not_installed(monkeypatch: pytest.Mon
     resp = client.post(f"/schedules/{sid}/skip", data={"csrf_token": token}, follow_redirects=False)
     assert resp.status_code == 303  # pyright: ignore[reportUnknownMemberType]
     assert "error=" in resp.headers["location"]  # pyright: ignore[reportUnknownMemberType]
+
+
+class _RecordingConn(_ScriptedConnection):
+    """Scripted connection that also records every execute() call."""
+
+    def __init__(self, **kwargs: object) -> None:
+        super().__init__(**kwargs)  # pyright: ignore[reportArgumentType]  # Why: kwargs passthrough to the scripted parent; values are typed by the parent's signature.
+        self.executed: list[tuple[str, tuple[object, ...]]] = []
+
+    async def execute(self, query: str, *args: object) -> str:
+        self.executed.append((query, args))
+        return await super().execute(query, *args)
+
+    async def fetchrow(self, query: str, *args: object) -> StubRecord | None:
+        self.fetched_query = query
+        return await super().fetchrow(query, *args)
+
+
+def test_schedule_skip_uses_the_rows_dst_strategy(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An 'allof' schedule's skip target must be computed with the row's
+    stored dst_strategy — the same defect class the cron loop had
+    (7d7e01c): defaulting to 'skip' whatever the schedule stores makes
+    the admin-computed target diverge from what the cron loop itself
+    computes for allof/firstof at a DST overlap."""
+    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
+    now = datetime.now(UTC)
+    past = now - timedelta(minutes=2)
+    skip_target = now + timedelta(minutes=1)
+    allof_target = now + timedelta(minutes=2)
+
+    compute_calls: list[str] = []
+
+    def _fake_compute_next_fire_after(
+        cron_expr: str, timezone_name: str, after: datetime, dst_strategy: str = "skip"
+    ) -> list[datetime]:
+        compute_calls.append(dst_strategy)
+        if dst_strategy == "allof":
+            return [allof_target, allof_target + timedelta(minutes=5)]
+        return [skip_target]
+
+    monkeypatch.setattr(
+        "taskq.web.admin.ops.compute_next_fire_after", _fake_compute_next_fire_after
+    )
+
+    row = StubRecord(
+        cron_expr="30 1 * * *",
+        timezone="America/New_York",
+        next_fire_at=past,
+        db_now=now,
+        dst_strategy="allof",
+    )
+    conn = _RecordingConn(fetchrow_results=[row])  # pyright: ignore[reportArgumentType]  # Why: kwargs match _ScriptedConnection's keyword parameters.
+    client = _make_app(_ScriptedPool(conn))
+    sid = new_uuid()
+    token = _get_csrf_token(client)
+    resp = client.post(f"/schedules/{sid}/skip", data={"csrf_token": token}, follow_redirects=False)
+
+    assert resp.status_code == 303  # pyright: ignore[reportUnknownMemberType]
+    # The stored strategy was forwarded, not defaulted to 'skip'.
+    assert compute_calls and set(compute_calls) == {"allof"}, compute_calls
+    # The fetch must list the column — a stub row always carries the key,
+    # but only the SELECT makes real Postgres provide it.
+    assert "dst_strategy" in conn.fetched_query, conn.fetched_query
+    # And the written target is the row-strategy computation's result.
+    skip_updates = [args for q, args in conn.executed if "next_fire_at = $2" in q]
+    assert skip_updates, conn.executed
+    assert skip_updates[0][1] == allof_target
 
 
 # ── Schedule run-now ─────────────────────────────────────────────────────
@@ -360,6 +431,24 @@ def test_rate_limit_reset_succeeds_when_enabled(monkeypatch: pytest.MonkeyPatch)
     )
     assert resp.status_code == 303  # pyright: ignore[reportUnknownMemberType]
     assert resp.headers["location"].endswith("/rate-limits")  # pyright: ignore[reportUnknownMemberType]
+
+
+def test_rate_limit_reset_pg_only_bucket_is_not_a_500(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A keyed bucket a worker published to PG renders on the rate-limits
+    page (with its reset button) even in a standalone admin process whose
+    registry is empty — clicking reset on such a row must answer with a
+    clean, explanatory error, not the registry's raw KeyError as a 500."""
+    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
+    monkeypatch.setenv("TASKQ_ADMIN_UI_ALLOW_RATE_LIMIT_RESET", "true")
+    # The registry stays EMPTY — the bucket exists only as a PG row.
+    monkeypatch.setattr(rl_registry, "_rate_limits", {})
+    conn = _ScriptedConnection()
+    client = _make_app(_ScriptedPool(conn))
+    token = _get_csrf_token(client)
+    resp = client.post("/rate-limits/legacy-bucket/reset", data={"csrf_token": token})
+    assert resp.status_code != 500  # pyright: ignore[reportUnknownMemberType]
+    assert resp.status_code == 404  # pyright: ignore[reportUnknownMemberType]
+    assert "not registered in this admin process" in resp.text  # pyright: ignore[reportUnknownMemberType]
 
 
 # ── Rate-limits page ─────────────────────────────────────────────────────
@@ -547,7 +636,11 @@ def test_schedule_skip_400_when_no_future_fire_time(monkeypatch: pytest.MonkeyPa
         "taskq.web.admin.ops.compute_next_fire_after", _fake_compute_next_fire_after
     )
     row = StubRecord(
-        cron_expr="* * * * *", timezone="UTC", next_fire_at=stale, db_now=datetime.now(UTC)
+        cron_expr="* * * * *",
+        timezone="UTC",
+        dst_strategy="skip",
+        next_fire_at=stale,
+        db_now=datetime.now(UTC),
     )
     conn = _ScriptedConnection(fetchrow_results=[row])
     client = _make_app(_ScriptedPool(conn))

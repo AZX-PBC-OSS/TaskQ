@@ -300,15 +300,26 @@ SELECT id::text FROM "{schema}".cron_schedules
  WHERE actor = $1 AND enabled = true
 """.strip()
 
+# The FROM-subquery snapshot pattern (same as backend/_cancel_bulk.py): the
+# subquery captures each row's pre-cancel status — UPDATE ... RETURNING can
+# only see the new value — and the repeated status predicate on the target
+# re-evaluates rows concurrently modified since the snapshot (EPQ-safe).
 _DEREGISTER_CANCEL_PENDING_SQL = """
-UPDATE "{schema}".jobs
+UPDATE "{schema}".jobs AS j
    SET status = 'cancelled',
        finished_at = clock_timestamp(),
        error_class = 'ActorDeregistered',
        error_message = 'Job cancelled by actor deregistration (force=True)'
- WHERE actor = $1
-   AND status IN ('pending', 'scheduled')
-RETURNING id
+  FROM (
+      SELECT id, status AS prev_status
+        FROM "{schema}".jobs
+       WHERE actor = $1
+         AND status IN ('pending', 'scheduled')
+       ORDER BY id
+  ) AS prev
+ WHERE j.id = prev.id
+   AND j.status IN ('pending', 'scheduled')
+RETURNING j.id, prev.prev_status
 """.strip()
 
 _DEREGISTER_DISABLE_SCHEDULES_SQL = """
@@ -322,11 +333,21 @@ DELETE FROM "{schema}".actor_config WHERE actor = $1
 RETURNING queue
 """.strip()
 
+# The jobs guard exists because jobs.actor/jobs.queue are plain text with no
+# FK: jobs enqueued to unregistered actors (an expected state — the CLI warns
+# about them) are invisible to the actor_config-only guard, yet still depend
+# on the queue row's max_concurrent cap and dispatch mode. A missing row
+# means uncapped + strict_fifo, so purging under them silently changes both.
 _DEREGISTER_PURGE_QUEUE_SQL = """
 DELETE FROM "{schema}".queues
  WHERE name = $1
    AND NOT EXISTS (
        SELECT 1 FROM "{schema}".actor_config WHERE queue = $1
+   )
+   AND NOT EXISTS (
+       SELECT 1 FROM "{schema}".jobs
+        WHERE queue = $1
+          AND status = ANY($2::"{schema}".job_status[])
    )
 RETURNING name
 """.strip()
@@ -353,8 +374,12 @@ async def deregister_actor(
       2. Refuse if any enabled cron schedules reference the actor — raises
          :class:`ActorHasEnabledSchedulesError`.
       3. Delete the ``actor_config`` row.
-      4. Optionally purge the orphaned queue (if ``purge_queue=True`` and no
-         other ``actor_config`` row references the same queue).
+      4. Optionally purge the orphaned queue (if ``purge_queue=True``, no
+         other ``actor_config`` row references the same queue, and no
+         non-terminal job in the ``jobs`` table still references it —
+         ``jobs.actor``/``jobs.queue`` are plain text with no FK, so jobs
+         enqueued to unregistered actors are invisible to the
+         actor_config-only guard).
 
     **force=True:**
       1. Refuse if any running jobs reference the actor — raises
@@ -362,7 +387,7 @@ async def deregister_actor(
       2. Cancel pending/scheduled jobs for this actor.
       3. Disable enabled cron schedules for this actor.
       4. Delete the ``actor_config`` row.
-      5. Optionally purge the orphaned queue.
+      5. Optionally purge the orphaned queue (same guards as above).
 
     Terminal job history is never deleted or modified. The entire operation
     runs inside a single ``conn.transaction()`` block. If the actor has no
@@ -379,10 +404,19 @@ async def deregister_actor(
        reset to ``@actor(...)`` defaults. Stop all workers for this actor
        before calling deregister.
 
-       A job dispatched between the running check and the cancel UPDATE
-       (force=True) will be left running with no ``actor_config`` row.
-       When its lock expires, the leader sweep transitions it to a
-       terminal state (crashed/cancelled) — it is NOT re-dispatched.
+        A job dispatched between the running check and the cancel UPDATE
+        (force=True) will be left running with no ``actor_config`` row.
+        When its lock expires, the leader sweep's retry branch returns it
+        to **pending** with a short backoff (only jobs with no attempts
+        remaining — or a cancel request still in flight — transition to a
+        terminal crashed/cancelled state). Because dispatch candidates
+        are drawn from ``actor_config``, that pending job is then
+        stranded: it is never dispatched while the actor stays
+        unregistered, and the leader's stranded-jobs detector warns about
+        it on its interval. If the actor name is ever re-registered
+        (e.g. a redeploy reintroduces it), the stranded job silently
+        dispatches against the new code — cancel or retry it manually if
+        that is not wanted.
 
        A cron schedule that fires between the disable UPDATE and the
        ``actor_config`` DELETE will enqueue a job that can never be
@@ -450,17 +484,26 @@ async def deregister_actor(
             )
             jobs_cancelled = len(cancelled_rows)
             if cancelled_rows:
-                detail = jsonb_param(
-                    {
-                        "from_state": "pending_or_scheduled",
-                        "to_state": "cancelled",
-                        "reason": "actor_deregistered",
-                    }
-                )
                 event_sql = INSERT_EVENT_SQL.format(schema=schema)
                 await conn.executemany(
                     event_sql,
-                    [(row["id"], "state_change", detail) for row in cancelled_rows],
+                    [
+                        (
+                            row["id"],
+                            "state_change",
+                            jsonb_param(
+                                {
+                                    # The row's real prior status, not a
+                                    # 'pending_or_scheduled' placeholder —
+                                    # same contract as _cancel_bulk.py.
+                                    "from_state": str(row["prev_status"]),
+                                    "to_state": "cancelled",
+                                    "reason": "actor_deregistered",
+                                }
+                            ),
+                        )
+                        for row in cancelled_rows
+                    ],
                 )
 
             disable_result = await conn.execute(
@@ -492,6 +535,7 @@ async def deregister_actor(
             purged_name = await conn.fetchval(
                 _DEREGISTER_PURGE_QUEUE_SQL.format(schema=schema),
                 queue_name,
+                list(ACTIVE_STATUSES),
             )
             queue_purged = purged_name is not None
 

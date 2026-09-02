@@ -343,6 +343,47 @@ async def test_deregister_force_writes_job_events_on_cancel(
         assert detail["reason"] == "actor_deregistered"
 
 
+async def test_deregister_force_cancel_events_record_real_prev_status(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_schema: ModulePgSchema,
+) -> None:
+    """Each force-cancel state_change event must carry the job's actual
+    prior status — 'pending' vs 'scheduled' — the way every other cancel
+    path does (backend/_cancel_bulk.py captures prev_status per row), not
+    a synthetic 'pending_or_scheduled' that audit consumers cannot
+    distinguish."""
+    schema = module_pg_schema.schema_name
+    await sync_actor_config(
+        clean_pg_conn,
+        [ActorConfig(actor="prev_evt_actor", max_concurrent=5, queue="default")],
+        schema=schema,
+    )
+    pending_id = await _insert_job(clean_pg_conn, schema, actor="prev_evt_actor", status="pending")
+    scheduled_id = await _insert_job(
+        clean_pg_conn, schema, actor="prev_evt_actor", status="scheduled"
+    )
+
+    await deregister_actor(clean_pg_conn, "prev_evt_actor", force=True, schema=schema)
+
+    import json
+
+    for jid, expected_prev in ((pending_id, "pending"), (scheduled_id, "scheduled")):
+        events = await clean_pg_conn.fetch(
+            f"SELECT kind, detail::text AS detail "  # noqa: S608  # Why: schema validated by _IDENT_RE; jid is a test UUID.
+            f'  FROM "{schema}".job_events '
+            f" WHERE job_id = $1 "
+            f" ORDER BY occurred_at",
+            jid,
+        )
+        state_changes = [e for e in events if e["kind"] == "state_change"]
+        assert len(state_changes) == 1
+        detail = json.loads(state_changes[0]["detail"])
+        assert detail["from_state"] == expected_prev, (
+            f"job {jid} was {expected_prev} before the cancel; event says "
+            f"{detail.get('from_state')!r}"
+        )
+
+
 async def test_deregister_force_refuses_with_running_jobs(
     clean_pg_conn: asyncpg.Connection,
     module_pg_schema: ModulePgSchema,
@@ -485,6 +526,58 @@ async def test_deregister_without_purge_queue_keeps_queue(
 
     assert result.queue_purged is False
     assert await _queue_exists(clean_pg_conn, schema, "kept_queue") is True
+
+
+async def test_deregister_purge_keeps_queue_referenced_by_active_jobs_of_other_actors(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_schema: ModulePgSchema,
+) -> None:
+    """jobs.actor is plain text with no FK, and jobs enqueued to
+    unregistered actors are an EXPECTED state (the CLI warns about them).
+    The purge guard must therefore also look at the jobs table: dropping
+    the queues row while non-terminal jobs still reference the queue
+    silently discards their leased-slot cap and dispatch mode (a missing
+    row defaults to strict_fifo)."""
+    schema = module_pg_schema.schema_name
+    await _insert_queue(clean_pg_conn, schema, "busy_queue")
+    await sync_actor_config(
+        clean_pg_conn,
+        [ActorConfig(actor="owner_actor", max_concurrent=5, queue="busy_queue")],
+        schema=schema,
+    )
+    # An unregistered actor's pending job on the same queue — exactly the
+    # state the purge's actor_config-only guard cannot see.
+    await _insert_job(
+        clean_pg_conn, schema, actor="never_registered", status="pending", queue="busy_queue"
+    )
+
+    result = await deregister_actor(clean_pg_conn, "owner_actor", purge_queue=True, schema=schema)
+
+    assert result.queue_purged is False
+    assert await _queue_exists(clean_pg_conn, schema, "busy_queue") is True
+
+
+async def test_deregister_purge_still_deletes_queue_with_only_terminal_job_references(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_schema: ModulePgSchema,
+) -> None:
+    """Terminal history never blocks the purge — those rows are done with
+    the queue's cap and mode; only non-terminal jobs still depend on them."""
+    schema = module_pg_schema.schema_name
+    await _insert_queue(clean_pg_conn, schema, "done_queue")
+    await sync_actor_config(
+        clean_pg_conn,
+        [ActorConfig(actor="owner_two", max_concurrent=5, queue="done_queue")],
+        schema=schema,
+    )
+    await _insert_job(
+        clean_pg_conn, schema, actor="never_registered", status="succeeded", queue="done_queue"
+    )
+
+    result = await deregister_actor(clean_pg_conn, "owner_two", purge_queue=True, schema=schema)
+
+    assert result.queue_purged is True
+    assert await _queue_exists(clean_pg_conn, schema, "done_queue") is False
 
 
 # ── idempotency ─────────────────────────────────────────────────────────

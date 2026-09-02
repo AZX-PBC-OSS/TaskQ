@@ -214,10 +214,15 @@ class SubJobEnqueuer:
     ) -> list[str] | None:
         """Resolve tags with parent inheritance.
 
-        Returns a list suitable for build_enqueue_args, or None for empty.
-        Deduplication is order-preserving (parent first); the downstream
-        ``_validate_and_dedup_tags`` in ``build_enqueue_args`` also
-        deduplicates, but we do it here so the merge result is clean.
+        ``tags=None`` means "no caller choice": inherit the parent's
+        tags when ``inherit_tags`` is enabled. An explicit empty list is
+        an affirmative "no tags" — inheritance is suppressed, so an
+        actor cannot silently gain the parent's tags by passing ``[]``.
+        Returns a list suitable for build_enqueue_args, or None for
+        empty. Deduplication is order-preserving (parent first); the
+        downstream ``_validate_and_dedup_tags`` in ``build_enqueue_args``
+        also deduplicates, but we do it here so the merge result is
+        clean.
         """
         parent_tags = _parent_tags_var.get() if inherit_tags else ()
 
@@ -230,7 +235,7 @@ class SubJobEnqueuer:
             return tags
 
         if not tags:
-            return list(parent_tags)
+            return []
 
         return list(dict.fromkeys((*parent_tags, *tags)))
 
@@ -302,13 +307,18 @@ class SubJobEnqueuer:
         identifier (e.g. a finalizer job enqueued separately that needs to
         reference the same batch).
 
-        Raises ``ValueError`` when ``items`` exceeds ``MAX_BATCH_SIZE`` — the
-        same cap :meth:`~taskq.client.JobsClient.enqueue_batch` already applies
-        to the identical operation one layer up. The backend binds every item
+        Raises ``ValueError`` when ``items`` is empty or exceeds
+        ``MAX_BATCH_SIZE`` — the same guardrails
+        :meth:`~taskq.client.JobsClient.enqueue_batch` applies to the
+        identical operation one layer up. Without the empty check the
+        no-connection fallback loop would iterate zero items and return
+        ``[]`` silently. The backend binds every item
         as 21 parallel array parameters to a single ``unnest`` INSERT in one
         transaction, so an uncapped batch enqueued from inside a job body is
         unbounded fan-out that bypasses the client-side guardrail.
         """
+        if len(items) == 0:
+            raise ValueError("items must not be empty")
         if len(items) > MAX_BATCH_SIZE:
             raise ValueError(
                 f"items must contain at most {MAX_BATCH_SIZE} entries, got {len(items)}"

@@ -257,7 +257,7 @@ def _make_pg_password_callable(
             # create_pool()/connect() as a connection failure rather than
             # retrying or falling back to an unauthenticated connection.
             logger.error(
-                "pg_credential_refresh_failed",
+                "pg-credential-refresh-failed",
                 role=role,
                 error=str(exc),
                 error_type=type(exc).__name__,

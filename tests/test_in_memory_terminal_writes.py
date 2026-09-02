@@ -2,8 +2,9 @@
 
 Covers job_attempts written inside terminal methods (not by
 external callers), job_events writes, cancel_phase
-preservation on mark_cancelled, cancel-state clearing on retry,
-mark_abandoned cancel_phase=2 guard, write_cancel_request / write_cancel_escalation
+preservation on mark_cancelled, cancel-slate reset on
+transient retry, mark_abandoned cancel_phase=2
+guard, write_cancel_request / write_cancel_escalation
 event rows, and WorkerOwnershipMismatch from mark_failed_or_retry.
 """
 
@@ -15,7 +16,7 @@ import pytest
 
 from taskq._ids import new_job_id, new_uuid
 from taskq.actor_config import ActorConfig
-from taskq.backend._protocol import EnqueueArgs, ErrorInfo, JobId, RetryKind
+from taskq.backend._protocol import CancelPhase, EnqueueArgs, ErrorInfo, JobId, RetryKind
 from taskq.exceptions import WorkerOwnershipMismatch
 from taskq.testing.clock import FakeClock
 from taskq.testing.in_memory import InMemoryBackend
@@ -70,6 +71,18 @@ async def _enqueue_and_dispatch(
 def _set_cancel_phase(backend: InMemoryBackend, job_id: JobId, phase: int) -> None:
     row = backend._jobs[job_id]  # type: ignore[reportPrivateUsage]  # Why: test-only private access
     backend._jobs[job_id] = replace(row, cancel_phase=phase)  # type: ignore[reportPrivateUsage]  # Why: test-only private access
+
+
+def _set_cancel_state(backend: InMemoryBackend, job_id: JobId, phase: CancelPhase) -> None:
+    """Stamp a full in-flight cancel onto the row: phase + requested-at.
+
+    write_cancel_request sets both columns together, so retry-arm tests
+    must exercise the pair, not the phase alone.
+    """
+    row = backend._jobs[job_id]  # type: ignore[reportPrivateUsage]  # Why: test-only private access
+    backend._jobs[job_id] = replace(  # type: ignore[reportPrivateUsage]  # Why: test-only private access
+        row, cancel_phase=phase, cancel_requested_at=_START
+    )
 
 
 # ── terminal write idempotency + single attempt/event ──────────
@@ -754,31 +767,31 @@ class TestWriteCancelEscalationEvents:
         assert row.cancel_phase == 0  # unchanged
 
 
-# ── Branch B: cancel state cleared on transient retry ─────────────────
+# ── Branch B: cancel slate reset on transient retry ────────────────────
 
 
-class TestCancelPhaseClearedOnRetry:
-    """Branch B (transient retry) starts the next attempt with a clean slate.
+class TestCancelSlateResetOnRetry:
+    """Branch B (transient retry) resets the cancel slate: a retry reuses
+    the SAME job row, so an escalated cancel that survived the retry write
+    would hand the next attempt an already-FORCED phase — the cancel
+    controller's fast-advance would then skip cooperative cancel entirely
+    and the attempt could never be cancelled again. Both cancel columns
+    (phase + requested-at) must come back clean, asserted on the returned
+    row and the persisted row (c06ba0e).
 
-    These previously asserted the opposite — that cancel_phase survived the
-    retry — which is what made a job permanently uncancellable: a retry reuses
-    the SAME job row, so the redispatched attempt was born at the phase the
-    failed attempt had reached.  At phase 2 the cancel controller's
-    PG-observation fast-advance jumps the local phase straight to FORCED
-    without ever calling task.cancel(), so nothing can cancel the new attempt
-    and phase-3 abandonment has no live escalation behind it.
-
-    Clearing matches the crash-reclaim sweep (_SWEEP_1_SQL) and isolate_self,
-    which have always reset both columns on their retry arm for exactly this
-    reason: "the next dispatch doesn't immediately re-cancel the retried job".
-    A caller whose cancel lost the race can still cancel the pending/scheduled
-    row, which the cancel path handles directly.
+    These previously asserted the opposite — that the phase survived the
+    retry — the exact behaviour that made a job permanently uncancellable.
+    Clearing matches the crash-reclaim sweep (_SWEEP_1_SQL) and
+    isolate_self, which have always reset both columns on their retry arm
+    for the same reason: "the next dispatch doesn't immediately re-cancel
+    the retried job". A caller whose cancel lost the race can still cancel
+    the pending/scheduled row, which the cancel path handles directly.
     """
 
-    async def test_cancel_phase1_cleared_on_retry(self) -> None:
+    async def test_cancel_phase1_reset_on_retry(self) -> None:
         backend = _make_backend()
         job_id, wid = await _enqueue_and_dispatch(backend, max_attempts=3)
-        _set_cancel_phase(backend, job_id, 1)
+        _set_cancel_state(backend, job_id, CancelPhase.COOPERATIVE)
 
         error_info = ErrorInfo(
             error_class="ValueError",
@@ -792,15 +805,15 @@ class TestCancelPhaseClearedOnRetry:
             retry_delay=timedelta(seconds=10),
         )
         assert result.status == "scheduled"
-        assert result.cancel_phase == 0
+        assert result.cancel_phase == CancelPhase.NONE
         assert result.cancel_requested_at is None
         assert result.locked_by_worker is None
         assert result.lock_expires_at is None
 
-    async def test_cancel_phase2_cleared_on_retry(self) -> None:
+    async def test_cancel_phase2_reset_on_retry(self) -> None:
         backend = _make_backend()
         job_id, wid = await _enqueue_and_dispatch(backend, max_attempts=3)
-        _set_cancel_phase(backend, job_id, 2)
+        _set_cancel_state(backend, job_id, CancelPhase.FORCED)
 
         error_info = ErrorInfo(
             error_class="ValueError",
@@ -814,8 +827,13 @@ class TestCancelPhaseClearedOnRetry:
             retry_delay=timedelta(seconds=10),
         )
         assert result.status == "scheduled"
-        assert result.cancel_phase == 0
+        assert result.cancel_phase == CancelPhase.NONE
         assert result.cancel_requested_at is None
+
+        persisted = await backend.get(job_id)
+        assert persisted is not None
+        assert persisted.cancel_phase == CancelPhase.NONE
+        assert persisted.cancel_requested_at is None
 
 
 # ── progress_seq / progress_state plumb-through ───────────────────────

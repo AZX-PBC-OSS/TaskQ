@@ -1,8 +1,8 @@
-"""Credential- and PII-safe exception text for telemetry spans.
+"""Credential- and PII-safe exception text for telemetry spans and logs.
 
-Spans are shipped to third-party backends (Azure Monitor / Application
-Insights, OTLP collectors, vendor SaaS). Whatever reaches a span attribute
-leaves the trust boundary, so exception text must be scrubbed before it goes
+Spans and JSON log lines leave the trust boundary for whatever telemetry
+backend is configured (Azure Monitor / Application Insights, an OTLP
+collector, a vendor SaaS), so exception text must be scrubbed before it goes
 there -- the same discipline :func:`taskq._dsn.dsn_host` already applies to
 logs, which the span path bypassed entirely.
 
@@ -25,13 +25,22 @@ it.
 """
 
 import re
+import sys
 import traceback
+from types import TracebackType
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from opentelemetry.trace import Span
 
-__all__ = ["record_exception_safe", "safe_exception_message"]
+__all__ = [
+    "EXCEPTION_MESSAGE_FIELDS",
+    "EXCEPTION_TRACEBACK_FIELDS",
+    "record_exception_safe",
+    "safe_exception_message",
+    "safe_exception_parts",
+    "scrub_exception_field",
+]
 
 #: Postgres DETAIL/HINT/CONTEXT lines. Row values live there; the primary
 #: message above them is a static template.
@@ -42,10 +51,47 @@ __all__ = ["record_exception_safe", "safe_exception_message"]
 #: appearing to work on a single-exception test.
 _PG_DETAIL_RE = re.compile(r"^[ \t]*(?:DETAIL|HINT|CONTEXT):.*$", re.MULTILINE)
 
+#: Companion to :data:`_PG_DETAIL_RE` for ``repr()``-flattened text.
+#: ``repr(exc)`` renders the newline before DETAIL/HINT/CONTEXT as the two
+#: literal characters ``\n``, which the line-anchored pattern above cannot
+#: see — and ``error=repr(exc)`` is a majority log idiom. Consumes from the
+#: escaped newline up to (not including) the next escaped newline or the
+#: end of the line; the closing-quote alternative (``['\"]\)?\s*$``) can
+#: only succeed at end-of-line, so it keeps a repr's trailing ``')`` when
+#: present without ever stopping the scrub early and leaving row values
+#: behind. ``MULTILINE`` makes ``$`` match per real line, so a repr line
+#: embedded in a rendered traceback (real newlines around it) is scrubbed
+#: too. Optional escaped ``\r`` covers the CRLF boundary shape.
+_PG_DETAIL_ESCAPED_RE = re.compile(
+    r"(?:\\r)?\\n[ \t]*(?:DETAIL|HINT|CONTEXT):"
+    r".*?(?=(?:\\r)?\\n|['\"]\)?\s*$)",
+    re.MULTILINE,
+)
+
 #: userinfo in a URI. Group 1 is the scheme+user, group 2 the password.
 _URI_CRED_RE = re.compile(r"(\b[a-zA-Z][a-zA-Z0-9+.-]*://[^\s:/@]+):([^\s@]+)@")
 
 _MAX_MESSAGE_CHARS = 512
+
+
+def _scrub_text(text: str) -> str:
+    """Apply the line-wise DETAIL/HINT/CONTEXT and URI-credential scrubbing.
+
+    Both newline forms are covered: real newlines (``str(exc)``) by
+    :data:`_PG_DETAIL_RE`, and the literal ``\\n`` ``repr()`` flattens them
+    into by :data:`_PG_DETAIL_ESCAPED_RE`.
+    """
+    text = _PG_DETAIL_RE.sub("", text)
+    text = _PG_DETAIL_ESCAPED_RE.sub("", text)
+    return _URI_CRED_RE.sub(r"\1:***@", text)
+
+
+def _bound_message(text: str) -> str:
+    """Strip and length-bound scrubbed message text."""
+    text = text.strip()
+    if len(text) > _MAX_MESSAGE_CHARS:
+        text = text[:_MAX_MESSAGE_CHARS] + "...[truncated]"
+    return text
 
 
 def safe_exception_message(exc: BaseException) -> str:
@@ -54,13 +100,7 @@ def safe_exception_message(exc: BaseException) -> str:
     The primary Postgres message is kept: it is a static template naming the
     constraint or relation, which is the part that is actually diagnostic.
     """
-    text = str(exc)
-    text = _PG_DETAIL_RE.sub("", text)
-    text = _URI_CRED_RE.sub(r"\1:***@", text)
-    text = text.strip()
-    if len(text) > _MAX_MESSAGE_CHARS:
-        text = text[:_MAX_MESSAGE_CHARS] + "...[truncated]"
-    return text
+    return _bound_message(_scrub_text(str(exc)))
 
 
 def _safe_stacktrace(exc: BaseException) -> str:
@@ -76,9 +116,66 @@ def _safe_stacktrace(exc: BaseException) -> str:
     row values -- but a secret written as a literal in application code would
     appear. Do not put credentials in source.
     """
-    rendered = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
-    rendered = _PG_DETAIL_RE.sub("", rendered)
-    return _URI_CRED_RE.sub(r"\1:***@", rendered)
+    return _scrub_text("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))
+
+
+#: A validated ``(cls, exc, tb)`` triple ready for ``traceback.format_exception``.
+_ResolvedExcInfo = tuple[type[BaseException], BaseException, TracebackType | None]
+
+#: What structlog event dicts can carry on the ``exc_info`` key. Untrusted
+#: boundary input: the tuple members are ``object`` until validated at runtime,
+#: so the ``_resolve_exc_info`` narrowing checks are load-bearing, not redundant.
+_ExcInfoInput = bool | BaseException | tuple[object, object, object] | None
+
+
+def _resolve_exc_info(value: _ExcInfoInput) -> _ResolvedExcInfo | None:
+    """Resolve structlog-style ``exc_info`` into a real ``(cls, exc, tb)`` triple.
+
+    Mirrors the documented semantics of structlog's ``format_exc_info``: a
+    ``BaseException`` instance, a valid 3-tuple, or any other truthy value
+    resolved against ``sys.exc_info()``. Returns ``None`` when *value* does
+    not represent an exception or no exception is currently being handled.
+    """
+    if isinstance(value, BaseException):
+        return (value.__class__, value, value.__traceback__)
+    if isinstance(value, tuple) and len(value) == 3:
+        cls, exc, tb = value
+        if (
+            isinstance(cls, type)
+            and issubclass(cls, BaseException)
+            and isinstance(exc, BaseException)
+            and (tb is None or isinstance(tb, TracebackType))
+        ):
+            return (cls, exc, tb)
+    if value:
+        live = sys.exc_info()
+        if live == (None, None, None):
+            return None
+        cls, exc, tb = live
+        if cls is None or exc is None:
+            return None
+        return (cls, exc, tb)
+    return None
+
+
+def safe_exception_parts(exc_info: _ExcInfoInput) -> dict[str, str] | None:
+    """Render structlog-style ``exc_info`` into scrubbed ``exception.*`` parts.
+
+    Returns the same attribute names :func:`record_exception_safe` emits on
+    spans (``exception.type`` / ``exception.message`` / ``exception.stacktrace``)
+    so both telemetry channels share one scrubbed shape, or ``None`` when
+    *exc_info* resolves to nothing (structlog's behavior of leaving the event
+    dict without an exception entry).
+    """
+    resolved = _resolve_exc_info(exc_info)
+    if resolved is None:
+        return None
+    _cls, exc, _tb = resolved
+    return {
+        "exception.type": type(exc).__qualname__,
+        "exception.message": safe_exception_message(exc),
+        "exception.stacktrace": _scrub_text("".join(traceback.format_exception(*resolved))),
+    }
 
 
 def record_exception_safe(span: "Span", exc: BaseException) -> None:
@@ -95,3 +192,47 @@ def record_exception_safe(span: "Span", exc: BaseException) -> None:
             "exception.stacktrace": _safe_stacktrace(exc),
         },
     )
+
+
+#: Event-dict field names that conventionally carry exception MESSAGE text on
+#: the log channel. Derived from the log sites in ``src/taskq`` that render
+#: exception text into a field (``error=…``, ``error_message=…``, the
+#: terminal-write log's ``job_error_message``/``infra_error_message`` …) —
+#: NOT an automatically exhaustive set: when a new log field is introduced
+#: whose value is rendered exception text (``str(exc)``/``repr(exc)``/
+#: ``traceback.format_exception``), its name must be added here or the JSON
+#: channel ships it unredacted. ``test_log_fields_carrying_exception_text_…``
+#: in tests/test_obs_exception_redaction.py guards the ``*error_message``/
+#: ``*error_traceback`` suffix family against exactly that drift; values
+#: that are classification strings ("deadline_exceeded") pass the scrubbers
+#: unchanged, so scrubbing only bites text that genuinely carries exception
+#: detail.
+EXCEPTION_MESSAGE_FIELDS = frozenset(
+    {"error", "error_message", "exc", "job_error_message", "infra_error_message"}
+)
+
+#: Event-dict field names that conventionally carry rendered TRACEBACK text —
+#: scrubbed line-wise like :func:`_safe_stacktrace`, without the message-length
+#: bound, so the traceback stays diagnostic. Same derivation and guard
+#: contract as :data:`EXCEPTION_MESSAGE_FIELDS`.
+EXCEPTION_TRACEBACK_FIELDS = frozenset(
+    {"error_traceback", "job_error_traceback", "infra_error_traceback"}
+)
+
+
+def scrub_exception_field(field: str, value: object) -> object:
+    """Scrub a known exception-bearing log-field value; everything else passes through.
+
+    Exception objects render as the scrubbed safe message (they previously
+    reached the orjson fallback and dropped the whole log line). Strings in
+    message-style fields get the message scrub; strings in traceback-style
+    fields get the line-wise stacktrace scrub. Non-string, non-exception
+    values (ints, bools, None) are returned unchanged.
+    """
+    if isinstance(value, BaseException):
+        return safe_exception_message(value)
+    if not isinstance(value, str):
+        return value
+    if field in EXCEPTION_TRACEBACK_FIELDS:
+        return _scrub_text(value)
+    return _bound_message(_scrub_text(value))

@@ -6,7 +6,6 @@ reservation acquire-release integration.
 """
 
 import asyncio
-import contextlib
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
@@ -580,24 +579,25 @@ class _StrictPayload(BaseModel):
     required_field: str
 
 
-async def test_payload_validation_failure_after_acquire_releases_resources() -> None:
+async def test_payload_validation_failure_skips_rate_limit_acquire() -> None:
     """For a direct caller (``validated_payload=None``), the consumer's own
-    ``validate_actor_payload`` call runs AFTER rate-limit acquisition, not
-    before: a plain-name rate limit like ``"tb"`` needs no payload to
-    resolve, so acquisition succeeds regardless of whether the payload later
-    proves invalid. When the JobContext-building validation then raises
-    PayloadValidationError, the already-acquired resource is released in the
-    outer ``finally`` block rather than leaked."""
+    ``validate_actor_payload`` call runs BEFORE rate-limit acquisition: a
+    payload that cannot even validate must not acquire (and non-refundably
+    burn) a rate-limit token. The ``PayloadValidationError`` propagates to
+    the caller — the same escape contract as every other pre-actor failure
+    (acquire-path errors escape too); callers own the terminal write."""
     rl_reg = _StubRateLimitRegistry()
     backend = _FakeBackend()
     clk: Clock = FakeClock(_NOW)
     cfg = default_actor_config()
     job = make_job_row()
+    actor_ran: list[bool] = []
 
     async def never_called_actor(_job: object, _ctx: JobContext[BaseModel]) -> object:
+        actor_ran.append(True)
         raise AssertionError("actor body should not run on validation failure")
 
-    with contextlib.suppress(PayloadValidationError):
+    with pytest.raises(PayloadValidationError):
         await consume_one_job(
             as_backend(backend),
             job,
@@ -611,8 +611,9 @@ async def test_payload_validation_failure_after_acquire_releases_resources() -> 
             reservations=[],
         )
 
-    assert len(rl_reg.acquire_calls) == 1
-    assert len(rl_reg.release_calls) == 1
+    assert actor_ran == []
+    assert rl_reg.acquire_calls == []
+    assert rl_reg.release_calls == []
 
 
 # ── Typed key_fn receives validated model, not raw dict ────────────────
@@ -722,6 +723,14 @@ async def test_consumer_passes_validated_model_to_key_fn() -> None:
     assert received.tenant_id == "acme"
     assert len(reg.release_calls) == 1
 
+    # The consumer itself hands the validated BaseModel to acquire_for_actor
+    # (restored PR #64 semantics) — the registry's isinstance fast path then
+    # applies, and key_fn never sees the raw wire dict.
+    assert len(reg.acquire_calls) == 1
+    acquire_payload = reg.acquire_calls[0]["payload"]
+    assert isinstance(acquire_payload, _ApiPayload)
+    assert acquire_payload.tenant_id == "acme"
+
 
 class _StrictTenantPayload(BaseModel):
     """Payload with a required field and no default — triggers
@@ -732,16 +741,16 @@ class _StrictTenantPayload(BaseModel):
 
 async def test_consumer_validates_payload_and_fails_non_retryable_for_direct_callers() -> None:
     """When ``validated_payload`` is ``None``, the consumer validates the raw
-    dict inside the try block. A ``PayloadValidationError`` is caught by the
-    exception handler, classified as non-retryable, and the job transitions to
-    'failed'. Rate-limit acquire happens before validation (the real registry
-    validates internally via ``_resolve_key_fn_payload``), and release is called
-    during cleanup."""
+    dict BEFORE acquiring rate limits. A ``PayloadValidationError``
+    propagates to the caller (non-retryable per the classifier) — without
+    acquiring any rate-limit token, even for a keyed ref whose own
+    ``payload_type`` would also reject the payload."""
     rl_reg = _StubRateLimitRegistry()
     backend = _FakeBackend()
     clk: Clock = FakeClock(_NOW)
     cfg = default_actor_config()
     job = make_job_row(payload={"wrong_field": "x"})
+    actor_ran: list[bool] = []
 
     ref = KeyedRateLimitRef.typed(
         _StrictTenantPayload,
@@ -752,9 +761,10 @@ async def test_consumer_validates_payload_and_fails_non_retryable_for_direct_cal
     )
 
     async def never_called_actor(_job: object, _ctx: JobContext[BaseModel]) -> object:
+        actor_ran.append(True)
         raise AssertionError("actor body should not run on validation failure")
 
-    with contextlib.suppress(PayloadValidationError):
+    with pytest.raises(PayloadValidationError):
         await consume_one_job(
             as_backend(backend),
             job,
@@ -768,8 +778,9 @@ async def test_consumer_validates_payload_and_fails_non_retryable_for_direct_cal
             reservations=[],
         )
 
-    assert len(rl_reg.acquire_calls) == 1
-    assert len(rl_reg.release_calls) == 1
+    assert actor_ran == []
+    assert rl_reg.acquire_calls == []
+    assert rl_reg.release_calls == []
 
 
 async def test_consumer_validates_dict_and_passes_model_to_key_fn() -> None:
@@ -821,6 +832,76 @@ async def test_consumer_validates_dict_and_passes_model_to_key_fn() -> None:
     assert len(key_fn_received) == 1
     assert isinstance(key_fn_received[0], ApiPayload)
     assert key_fn_received[0].tenant_id == "acme"
+
+
+# ── Cross-model keyed refs honor actor-model defaults ──────────────────
+
+
+class _OrderPayloadWithDefault(BaseModel):
+    """Actor payload model: tenant_id is defaulted — a job row stored
+    without tenant_id still validates, attributing to the default."""
+
+    order_id: str
+    tenant_id: str = "unattributed"
+
+
+class _RefRequiresTenant(BaseModel):
+    """Keyed-ref payload model: tenant_id is REQUIRED — a raw dict without
+    it fails validation (the pre-fix failure mode the consumer must not
+    hit, because the actor model already filled the default)."""
+
+    tenant_id: str
+
+
+async def test_consumer_cross_model_keyed_ref_honors_actor_model_defaults() -> None:
+    """The consumer hands the registry the actor's VALIDATED model, so a
+    keyed ref whose payload_type is a different (stricter) model re-validates
+    the model_dump — which includes the actor model's applied defaults.
+    A job whose raw dict lacks ``tenant_id`` still proceeds under the
+    actor model's default instead of failing non-retryably inside the
+    ref's re-validation of the raw dict."""
+    from taskq.ratelimit import KeyedRateLimitRef, RateLimitRegistry
+
+    ref = KeyedRateLimitRef.typed(
+        _RefRequiresTenant,
+        base_name="cross_per_tenant",
+        key_fn=lambda p: p.tenant_id,
+        capacity=1,
+        refill_per_second=0,
+        backend="memory",
+    )
+    reg = RateLimitRegistry()
+    clk: Clock = FakeClock(_NOW)
+    backend = _FakeBackend()
+
+    job = make_job_row(payload={"order_id": "o1"})
+    seen_tenants: list[str] = []
+
+    async def _run_actor(_job: object, ctx: JobContext[BaseModel]) -> object:
+        payload = ctx.payload
+        assert isinstance(payload, _OrderPayloadWithDefault)
+        seen_tenants.append(payload.tenant_id)
+        return None
+
+    outcome = await consume_one_job(
+        as_backend(backend),
+        job,
+        new_uuid(),
+        run_actor=_run_actor,
+        actor_config=StubActorConfig(retry=RetryPolicy(), non_retryable_exceptions=()),
+        payload_type=_OrderPayloadWithDefault,
+        clock=clk,
+        rate_limit_registry=reg,
+        rate_limits=[ref],
+        reservations=[],
+        validated_payload=None,
+    )
+
+    assert outcome == "succeeded"
+    assert seen_tenants == ["unattributed"]
+    assert len(backend.mark_succeeded_calls) == 1
+    # The keyed bucket materialized under the actor model's DEFAULTED value.
+    assert reg.has_rate_limit("cross_per_tenant:unattributed")
 
 
 async def test_validated_payload_short_circuits_job_payload_validation() -> None:

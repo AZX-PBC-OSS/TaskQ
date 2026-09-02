@@ -5,6 +5,12 @@ cancel-poll loop escalates to phase 2, the PG ``cancel_phase = 2`` write
 always occurs before ``task.cancel()`` in the side-effect log — the PG-first
 invariant from
 
+Escalation may fire more than once per job: the healing arm added with the
+rolled-back phase-2 write fix re-issues the escalation (and therefore
+``task.cancel()``) while PG still reports COOPERATIVE, so the oracle tracks
+the count of completed escalation arms and requires ``task.cancelling()`` to
+match it exactly — one cancel per arm, none from any other path.
+
 Each step tuple carries ``(clock_advance, db_phase, cancel_grace,
 cleanup_grace)``. The hook sees ``db_phase`` as the PG-reported phase on that
 tick; ``clock_advance`` is burned against ``cancel_observed_at`` to simulate
@@ -23,7 +29,7 @@ from contextlib import suppress
 from datetime import UTC, datetime
 
 import structlog
-from hypothesis import given, settings
+from hypothesis import example, given, settings
 from hypothesis import strategies as st
 from pydantic import BaseModel
 
@@ -157,6 +163,7 @@ _steps_strategy = st.lists(_step_strategy, min_size=1, max_size=10)
 # ── PG-first invariant ────────────────────────────────────────────
 
 
+@example(steps=[(0, 1, 1, 1), (1, 0, 1, 1), (0, 1, 1, 1)])
 @given(steps=_steps_strategy)
 @settings(max_examples=200, deadline=None)
 async def test_cancel_phase_ordering_property(
@@ -174,6 +181,12 @@ async def test_cancel_phase_ordering_property(
     - ``INSERT_EVENT_SQL`` sits between the UPDATE and ``task.cancel()``.
     - ``cancel_phase`` only increases monotonically.
     - ``cancel_observed_at`` is set at most once with a finite value.
+    - ``task.cancelling()`` equals the number of completed escalation
+      arms: one ``task.cancel()`` per arm, and no other code path may
+      cancel the task.  Escalation may legitimately fire more than once
+      per job — the rolled-back-write healing arm re-issues it while PG
+      still reads COOPERATIVE — so the count is compared against the
+      arms fired, not against a constant.
     """
     job_id = new_job_id()
     ctx = _make_ctx()
@@ -184,6 +197,7 @@ async def test_cancel_phase_ordering_property(
 
     prev_phase: CancelPhase = CancelPhase.NONE
     observed_at_set_count: int = 0
+    escalations_fired: int = 0
 
     for step_idx, (advance, db_phase, cancel_grace, cleanup_grace) in enumerate(steps):
         active = registry.get(job_id)
@@ -214,6 +228,42 @@ async def test_cancel_phase_ordering_property(
         await controller.run_in_tx(recorder)  # type: ignore[arg-type] # Why: _Recorder is a test stub; asyncpg.Connection[Record] cannot be structurally satisfied without the real driver
         await controller.run_post_tx()
 
+        # Escalation arms are checked before the deregister-break so an
+        # escalation that queues for abandonment on the same tick (local
+        # phase lands on ABANDON_PENDING, not FORCED) is still verified.
+        escalation_sql = CANCEL_ESCALATION_SQL.format(schema=ws.schema_name)
+        insert_sql_prefix = INSERT_EVENT_SQL.format(schema=ws.schema_name).split("(")[0].strip()
+        escalated_this_step = any(escalation_sql in sql for sql, _ in recorder.execute_calls)
+        if escalated_this_step:
+            assert len(recorder.execute_calls) >= 2, (
+                f"Expected escalation UPDATE + INSERT_EVENT_SQL (step {step_idx})"
+            )
+            assert escalation_sql in recorder.execute_calls[0][0], (
+                f"Escalation UPDATE must be at execute_calls[0] (PG-first) at step {step_idx}"
+            )
+            assert insert_sql_prefix in recorder.execute_calls[1][0], (
+                f"INSERT_EVENT_SQL must be at execute_calls[1], "
+                f"between UPDATE and task.cancel() (step {step_idx})"
+            )
+            # UPDATE + INSERT in the log is the signature of the full
+            # phase-2 block having run, so task.cancel() followed it once.
+            escalations_fired += 1
+
+        # The escalation block (cancel.py phase-2) is the ONLY task.cancel()
+        # site, firing once per completed arm — including the healing arm
+        # that re-issues a rolled-back phase-2 write while PG still reads
+        # COOPERATIVE, so more than one arm per job is legitimate.  The task
+        # is never reaped inside the loop (no await here suspends the event
+        # loop; the abandon drain's shield only runs on the tick that
+        # deregisters and breaks), so the counter must match exactly: it
+        # catches both a stray cancel from another path (e.g. fast-advance)
+        # and a double cancel inside a single arm.
+        assert task.cancelling() == escalations_fired, (
+            f"task.cancelling() must equal the number of completed escalation "
+            f"arms ({escalations_fired}) — one task.cancel() per arm, no other "
+            f"cancel path (step {step_idx})"
+        )
+
         active = registry.get(job_id)
         if active is None:
             # Abandoned and deregistered by run_post_tx.
@@ -227,25 +277,6 @@ async def test_cancel_phase_ordering_property(
         assert current_phase >= prev_phase, (
             f"cancel_phase decreased from {prev_phase} to {current_phase} at step {step_idx}"
         )
-
-        if current_phase == CancelPhase.FORCED:
-            escalation_sql = CANCEL_ESCALATION_SQL.format(schema=ws.schema_name)
-            insert_sql_prefix = INSERT_EVENT_SQL.format(schema=ws.schema_name).split("(")[0].strip()
-            escalated_this_step = any(escalation_sql in sql for sql, _ in recorder.execute_calls)
-            if escalated_this_step:
-                assert task.cancelling() == 1, (
-                    f"task.cancelling() must be 1 when escalation fires (step {step_idx})"
-                )
-                assert len(recorder.execute_calls) >= 2, (
-                    f"Expected escalation UPDATE + INSERT_EVENT_SQL (step {step_idx})"
-                )
-                assert escalation_sql in recorder.execute_calls[0][0], (
-                    f"Escalation UPDATE must be at execute_calls[0] (PG-first) at step {step_idx}"
-                )
-                assert insert_sql_prefix in recorder.execute_calls[1][0], (
-                    f"INSERT_EVENT_SQL must be at execute_calls[1], "
-                    f"between UPDATE and task.cancel() (step {step_idx})"
-                )
 
         if active.cancel_observed_at is not None and prev_phase < CancelPhase.COOPERATIVE:
             observed_at_set_count += 1

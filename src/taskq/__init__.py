@@ -10,6 +10,7 @@ Canonical imports:
 
 import importlib.metadata
 
+from taskq._validation import validate_actor_payload
 from taskq.actor import ActorFn, ActorFnWithCtx, ActorHandler, ActorRef, actor
 from taskq.actor_config_ops import ActorConfigRow, DeregisterResult
 from taskq.auth import (
@@ -91,7 +92,6 @@ from taskq.exceptions import (
     SubEnqueueError,
     TaskQError,
     WorkerOwnershipMismatch,
-    validate_actor_payload,
 )
 from taskq.obs import ErrorReporter, NullErrorReporter
 from taskq.progress import ProgressEvent

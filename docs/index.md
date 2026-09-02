@@ -180,12 +180,12 @@ uv add taskq-py
 
 | Extra | Adds | When to use |
 |-------|------|-------------|
-| `taskq-py[redis]` | `redis>=7.4` | Real-time progress fanout via Redis pub/sub, Redis-backed rate limiters |
-| `taskq-py[otel]` | `opentelemetry-sdk`, `opentelemetry-exporter-otlp` | Configuring OTel providers programmatically; in-process test utilities |
-| `taskq-py[fastapi]` | `fastapi`, `jinja2`, `sse-starlette`, `uvicorn` | Admin UI (`taskq ui serve`), SSE progress bridge, Prometheus metrics router |
-| `taskq-py[prometheus]` | `opentelemetry-exporter-prometheus` | Prometheus metric scrapes |
+| `taskq-py[redis]` | `redis>=8.0.1` | Real-time progress fanout via Redis pub/sub, Redis-backed rate limiters |
+| `taskq-py[otel]` | `opentelemetry-sdk`, `opentelemetry-exporter-otlp`, `opentelemetry-instrumentation` | Configuring OTel providers programmatically; in-process test utilities |
+| `taskq-py[fastapi]` | `fastapi`, `humanize`, `jinja2`, `sse-starlette`, `starlette`, `uvicorn` | Admin UI (`taskq ui serve`), SSE progress bridge, Prometheus metrics router |
+| `taskq-py[prometheus]` | `opentelemetry-exporter-prometheus`, `prometheus-client` | Prometheus metric scrapes |
 | `taskq-py[reload]` | `watchfiles` | Autoreload of workers and the admin UI during local development |
-| `taskq-py[oidc]` | `authlib`, `httpx`, `itsdangerous` | OIDC/SSO auth backend for the admin UI; see [SSO / SAML](guides/sso.md) |
+| `taskq-py[oidc]` | `authlib>=1.8`, `httpx2`, `itsdangerous` | OIDC/SSO auth backend for the admin UI; see [SSO / SAML](guides/sso.md). The OIDC path uses `httpx2` as its HTTP client (authlib ≥ 1.8 is httpx2-first); `httpx` is not installed by this extra |
 | `taskq-py[saml]` | `python3-saml`, `itsdangerous` | SAML/SSO auth backend for the admin UI; see [SSO / SAML](guides/sso.md) |
 | `taskq-py[aad]` | `azure-identity`, `aiohttp` | Azure Entra ID managed-identity DB auth; see [Managed Identities](guides/managed-identities.md) |
 | `taskq-py[aws]` | `boto3` | AWS IAM RDS auth for Postgres; see [Managed Identities](guides/managed-identities.md) |

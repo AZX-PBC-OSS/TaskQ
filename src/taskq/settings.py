@@ -17,12 +17,20 @@ import re
 from datetime import timedelta
 from pathlib import Path
 from typing import Self
+from uuid import UUID
 
 from croniter import croniter
 from dotenvmodel import DotEnvConfig, Field, ValidationError, ValidatorContext
 from dotenvmodel.types import PostgresDsn, RedisDsn
 
 from taskq._close import worst_case_teardown_tail
+from taskq._json import check_no_nul_str
+from taskq.backend._protocol import (
+    # Cycle-safe by import direction: nothing in _protocol's own chain
+    # imports taskq.settings, and taskq/__init__ always finishes loading
+    # backend._protocol (via taskq.actor) before anything loads settings.
+    _QUEUE_NAME_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical queue-name charset rather than redefining it
+)
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining it
     RECLAIM_EVENT_VISIBILITY_DELAY,
@@ -156,6 +164,17 @@ def _schema_name_validator(value: str, ctx: ValidatorContext) -> str:
             f"{ctx.field_name} must be a valid SQL identifier "
             f"([A-Za-z_][A-Za-z0-9_]*), got {value!r}"
         )
+    if len(value) > 63:
+        # NAMEDATALEN is 64 including the terminator, so Postgres silently
+        # truncates longer identifiers — while Redis channel templates
+        # interpolate the full string, quietly diverging between stores.
+        # A length cap belongs in this hook, not `max_length=`, because
+        # built-in constraints are skipped under validate=False (see above).
+        # Chars == bytes here: _IDENT_RE already admitted only ASCII.
+        raise ValueError(
+            f"{ctx.field_name} must be at most 63 characters (Postgres "
+            f"NAMEDATALEN truncates longer identifiers), got {len(value)} characters"
+        )
     return value
 
 
@@ -199,9 +218,13 @@ class TaskQSettings(DotEnvConfig):
     )
     environment: str | None = Field(
         default=None,
-        description="TASKQ_ENVIRONMENT. Deployment environment label. "
-        "Values 'dev' and 'development' suppress the unauthenticated-admin "
-        "WARNING; any other value (or None/empty) triggers it.",
+        description="TASKQ_ENVIRONMENT. Deployment environment label. The "
+        "unauthenticated-admin WARNING ('admin-ui-no-auth') fires in EVERY "
+        "environment whenever the admin UI is served without auth_dependency. "
+        "'dev' and 'development' additionally skip the fail-closed "
+        "RuntimeError (the WARNING then notes the absence is the dev "
+        "exemption); any other value (or None/empty) fails closed when "
+        "admin_ui_require_auth is True.",
     )
     admin_max_sse_connections: int = Field(
         default=50,
@@ -466,6 +489,50 @@ def _cron_expr_validator(value: str | None, ctx: ValidatorContext) -> str | None
         return value
     if not croniter.is_valid(value):
         raise ValueError(f"{ctx.field_name} must be a valid cron expression, got {value!r}")
+    return value
+
+
+def _workgroup_instance_validator(value: str, ctx: ValidatorContext) -> str:
+    """UUID-validate ``workgroup_instance`` at load time.
+
+    The worker calls ``UUID(workgroup_instance)`` at registration
+    (worker/run.py); without this hook a malformed value surfaces as a raw
+    ``ValueError`` mid-registration instead of a clean settings-load error.
+    ``None`` (and the empty string, which dotenvmodel coerces to ``None``
+    for ``str | None`` fields) never reaches the hook.
+    """
+    try:
+        UUID(value)
+    except ValueError as exc:
+        raise ValueError(f"{ctx.field_name} must be a valid UUID, got {value!r}") from exc
+    return value
+
+
+def _worker_label_validator(value: str, ctx: ValidatorContext) -> str:
+    """Reject a NUL in ``worker_label`` at load time.
+
+    The label is bound directly as a text parameter in the worker
+    registration INSERT; a NUL reaches Postgres as an opaque asyncpg 22021
+    (``CharacterNotInRepertoireError``) at startup.
+    """
+    check_no_nul_str(value, what=ctx.field_name)
+    return value
+
+
+def _queue_names_validator(value: list[str], ctx: ValidatorContext) -> list[str]:
+    """Validate each ``queues`` item against the canonical queue-name charset.
+
+    Queue names flow into the registration INSERT's ``text[]`` parameter and
+    must satisfy the same rule the backend enforces for enqueue-time queue
+    names (``backend/_protocol.py``'s ``_QUEUE_NAME_RE``). A NUL is outside
+    that charset, so the rule covers it too.
+    """
+    for i, item in enumerate(value):
+        if not _QUEUE_NAME_RE.match(item):
+            raise ValueError(
+                f"{ctx.field_name}[{i}] must be a valid queue name (letters, "
+                f"digits, '_', '.', '-'; first char a letter or '_'), got {item!r}"
+            )
     return value
 
 
@@ -860,12 +927,14 @@ class WorkerSettings(TaskQSettings):
     # -- Queue selection --------------------------------------------------
     queues: list[str] = Field(
         default_factory=lambda: ["default"],
+        validator=_queue_names_validator,
         description="TASKQ_QUEUES. Comma-separated list of queue names "
         "this worker will consume from.",
     )
 
     worker_label: str | None = Field(
         default=None,
+        validator=_worker_label_validator,
         description="TASKQ_WORKER_LABEL. Human-readable label stored in the "
         "workers table for correlation with workgroup supervisors and external "
         "monitoring. When omitted the column is NULL; hostname and pid columns "
@@ -873,6 +942,7 @@ class WorkerSettings(TaskQSettings):
     )
     workgroup_instance: str | None = Field(
         default=None,
+        validator=_workgroup_instance_validator,
         description="TASKQ_WORKGROUP_INSTANCE. UUIDv7 identifying the workgroup "
         "orchestrator that launched this worker. Used for cross-process correlation.",
     )

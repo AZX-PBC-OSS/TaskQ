@@ -227,21 +227,24 @@ async def consume_one_job(
     Returns the job's terminal outcome for span status and metric
     recording by the caller (``dispatch_one_job``).
 
-    ``payload_type`` is the actor's payload model. On the dispatch path
+    ``payload_type`` is the actor's payload model. The typed model is
+    resolved BEFORE rate-limit acquisition: on the dispatch path
     (``dispatch_one_job``), ``validated_payload`` is already set when this
-    function is called, so the typed model exists before rate-limit
-    acquisition. For a direct caller that passes ``validated_payload=None``,
-    this function itself acquires BEFORE validating: ``rate_limit_registry
-    .acquire_for_actor`` gets the raw ``dict[str, object]`` row payload, and
-    for a ``KeyedRateLimitRef``/``KeyedReservationRef`` the registry validates
-    it internally to derive the key. The :class:`JobContext` handed to the
-    actor always carries a typed, validated :class:`pydantic.BaseModel`
-    instance — the fallback ``validate_actor_payload`` call below runs after
-    acquisition, so a :class:`~taskq.exceptions.PayloadValidationError` from
-    an invalid payload surfaces AFTER any already-acquired resources, which
-    are then released in the ``finally`` block. The bound is ``BaseModel``
-    here (the registry is heterogeneous); per-actor ``P`` flows from the call
-    site that selected ``payload_type``.
+    function is called; a direct caller that passes
+    ``validated_payload=None`` gets the fallback
+    ``validate_actor_payload`` call, whose
+    :class:`~taskq.exceptions.PayloadValidationError` propagates to the
+    caller BEFORE any token is consumed — an invalid payload must not
+    acquire (and non-refundably burn) a rate-limit token for an actor body
+    that can never run. ``acquire_for_actor`` then receives the validated
+    ``BaseModel`` (not the raw row dict): a ``KeyedRateLimitRef`` /
+    ``KeyedReservationRef`` whose ``payload_type`` is the actor's model hits
+    the registry's isinstance fast path, while a stricter cross-model ref
+    re-validates the model's dump, which carries the actor model's applied
+    defaults and aliases. The :class:`JobContext` handed to the actor always
+    carries a typed, validated :class:`pydantic.BaseModel` instance. The
+    bound is ``BaseModel`` here (the registry is heterogeneous); per-actor
+    ``P`` flows from the call site that selected ``payload_type``.
 
     ``enqueuer`` is the per-loop SubJobEnqueuer constructed in ``_main``
     after ``loop_scope.bootstrap()``. When provided, the live
@@ -307,6 +310,20 @@ async def consume_one_job(
     )
     _needs_acquire = bool(_rl_limits or _rl_reservations) and rate_limit_registry is not None
 
+    # Resolve the typed model BEFORE rate-limit acquisition (restored PR #64
+    # semantics, reverted by merge 85bda35): an invalid payload must not
+    # acquire — and non-refundably burn — a rate-limit token for an actor
+    # body that can never run. acquire_for_actor then receives the validated
+    # BaseModel, so keyed refs either hit the registry's isinstance fast path
+    # (same model) or re-validate the model's dump, which carries the actor
+    # model's applied defaults/aliases — not the raw row dict. The wrapped
+    # PayloadValidationError propagates to the caller, exactly as it did
+    # from the in-try fallback and as acquire-path errors still do: callers
+    # (dispatch_one_job's outer except, the in-memory runner's catch) own
+    # the terminal write for pre-actor failures.
+    if validated_payload is None:
+        validated_payload = validate_actor_payload(payload_type, job.payload, job.actor)
+
     acquired: list[AcquiredResource] = []
 
     if _needs_acquire and rate_limit_registry is not None:
@@ -316,7 +333,7 @@ async def consume_one_job(
                 reservations=_rl_reservations,
                 job_id=job.id,
                 worker_id=worker_id,
-                payload=job.payload,
+                payload=validated_payload,
                 redis_client=redis_client,
                 pg_pool=worker_pool,
                 clock=clock,
@@ -365,12 +382,6 @@ async def consume_one_job(
     _parent_tags_token = _parent_tags_var.set(tuple(job.tags))
 
     try:
-        validated_payload = (
-            validated_payload
-            if validated_payload is not None
-            else validate_actor_payload(payload_type, job.payload, job.actor)
-        )
-
         live_enqueuer = (
             enqueuer
             if enqueuer is not None

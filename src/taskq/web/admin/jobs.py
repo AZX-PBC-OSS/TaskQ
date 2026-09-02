@@ -25,6 +25,8 @@ from taskq.web.admin._constants import (
     _PAGE_SIZE,  # pyright: ignore[reportPrivateUsage]  # Why: shared constants published by the admin constants module; private prefix scopes them within the admin package.
     _TERMINAL_STATUSES,  # pyright: ignore[reportPrivateUsage]  # Why: shared constants published by the admin constants module; private prefix scopes them within the admin package.
     parse_job_statuses,
+    parse_job_tags,
+    parse_text_filter,
 )
 from taskq.web.admin._factory import (
     get_backend,
@@ -339,15 +341,26 @@ def register(router: APIRouter) -> None:
         if tab not in ("live", "archived"):
             tab = "live"
 
+        # NUL guard before the text binds: each of these reaches a `text`
+        # (or `text::timestamptz`) parameter, which asyncpg rejects with an
+        # opaque 22021 — the same class the client path's JobFilter guards.
+        actor = parse_text_filter(actor, "actor")
+        queue = parse_text_filter(queue, "queue")
+        identity_key = parse_text_filter(identity_key, "identity_key")
+        fairness_key = parse_text_filter(fairness_key, "fairness_key")
+        search = parse_text_filter(search, "search")
+        time_from = parse_text_filter(time_from, "time_from")
+        time_to = parse_text_filter(time_to, "time_to")
+
         default_statuses = sorted(_ALL_STATUSES if tab == "live" else _TERMINAL_STATUSES)
         statuses = (
             parse_job_statuses(status, default=default_statuses) if status else default_statuses
         )
         t_from, t_to, within = _parse_time_range(time_range, time_from, time_to)
 
-        tag_list: list[str] | None = None
-        if tags:
-            tag_list = [t.strip() for t in tags.split(",") if t.strip()]
+        # Shared parser: dedupes, caps the item count and per-item length
+        # (the enqueue-side tag contract), and 400s on abuse.
+        tag_list: list[str] | None = parse_job_tags(tags)
 
         where, params = _build_where(
             statuses,
@@ -484,6 +497,11 @@ def register(router: APIRouter) -> None:
         time_from: str | None = Query(default=None),
         time_to: str | None = Query(default=None),
     ) -> dict[str, Any]:
+        # Same NUL guard as /jobs: the count query binds the same text params.
+        actor = parse_text_filter(actor, "actor")
+        queue = parse_text_filter(queue, "queue")
+        time_from = parse_text_filter(time_from, "time_from")
+        time_to = parse_text_filter(time_to, "time_to")
         statuses = (
             parse_job_statuses(status)
             if status

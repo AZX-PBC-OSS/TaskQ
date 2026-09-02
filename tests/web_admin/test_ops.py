@@ -724,6 +724,13 @@ class _ScriptedConn:
         return self._match(self._fetchrow_map, query, None)  # type: ignore[return-value]
 
     async def fetchval(self, query: str, *args: object) -> object:
+        # Real Postgres answers the admin factory's clock-offset probe with
+        # a timestamp; the generic 0 here made the probe's `db_now - app_now`
+        # raise TypeError whenever the 30 s TTL boundary landed on a request
+        # served by this stub (the package StubConnection answers it the
+        # same way).
+        if "clock_timestamp()" in query:
+            return datetime.now(UTC)
         return 0
 
     async def execute(self, query: str, *args: object) -> str:
@@ -882,10 +889,11 @@ def test_schedule_skip_redirects_on_success(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
     conn = _ScriptedConn(
         fetchrow_map={
-            "cron_expr, timezone, next_fire_at": StubRecord(
+            "cron_expr, timezone, dst_strategy, next_fire_at": StubRecord(
                 {
                     "cron_expr": "* * * * *",
                     "timezone": "UTC",
+                    "dst_strategy": "skip",
                     "next_fire_at": datetime.now(UTC) - timedelta(minutes=30),
                     # The skip fetch reads the server clock in the same row
                     # (clock_timestamp() AS db_now), so the stub row carries it.
@@ -906,7 +914,7 @@ def test_schedule_skip_redirects_on_success(monkeypatch: pytest.MonkeyPatch) -> 
 def test_schedule_skip_returns_404_when_not_found(monkeypatch: pytest.MonkeyPatch) -> None:
     """POST /schedules/{id}/skip returns 404 when the schedule does not exist."""
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
-    conn = _ScriptedConn(fetchrow_map={"cron_expr, timezone, next_fire_at": None})
+    conn = _ScriptedConn(fetchrow_map={"cron_expr, timezone, dst_strategy, next_fire_at": None})
     client = _make_client_with_pool(_ScriptedPool(conn))
     token = _get_csrf_token(client)
     resp = client.post(f"/schedules/{new_uuid()}/skip", data={"csrf_token": token})

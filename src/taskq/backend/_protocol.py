@@ -46,6 +46,7 @@ from taskq._json import check_no_nul_str
 
 __all__ = [
     "BACKEND_PROTOCOL_VERSION",
+    "DST_STRATEGIES",
     "JOB_STATUS_VALUES",
     "AttemptOutcome",
     "AttemptRow",
@@ -172,6 +173,19 @@ type RateLimitBackend = Literal["redis", "postgres", "memory"]
 
 type DstStrategy = Literal["skip", "firstof", "allof"]
 
+#: Runtime membership set of every :data:`DstStrategy` literal value — the
+#: single source of truth the schedule-write validation
+#: (:meth:`ScheduleCreateArgs.__post_init__`) and the row-value coercions
+#: (worker cron loop, admin ops) all consult, so none can drift from the
+#: Literal or from each other. Re-exported via :mod:`taskq.cron` (the cron
+#: public surface those callers already import from).
+#:
+#: Why: annotated as ``frozenset[DstStrategy]`` (not ``frozenset[str]``) —
+#: pyright narrows ``raw in DST_STRATEGIES`` to the Literal union only with
+#: the parameterised element type, which is what lets the coercion sites
+#: assign the checked value without a cast.
+DST_STRATEGIES: Final[frozenset[DstStrategy]] = frozenset(get_args(DstStrategy.__value__))
+
 type BatchStatus = Literal["active", "complete", "aborted"]
 """Lifecycle status of a batch row in the ``batches`` table."""
 
@@ -234,7 +248,10 @@ IdentityKey = NewType("IdentityKey", str)
 """Distinguishes identity keys from idempotency keys at call sites."""
 
 
-_QUEUE_NAME_RE: Final[re.Pattern[str]] = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*$")
+_QUEUE_NAME_RE: Final[re.Pattern[str]] = re.compile(r"\A[A-Za-z_][A-Za-z0-9_.-]*\Z")
+# \A/\Z, not ^/$: Python's `$` also matches immediately before a trailing
+# newline, so "default\n" satisfied ^...$ (see _IDENT_RE's docstring in
+# taskq.constants for the full rationale — same trap, same fix).
 
 
 def _validate_queue_name(v: str) -> str:
@@ -613,6 +630,22 @@ class JobFilter:
                 "use status for specific status(es) or active for the "
                 "terminal/non-terminal meta-filter"
             )
+        # A NUL in a text predicate binds as text on PG (queue/actor/
+        # identity_key) or text[] (tags) and surfaces as a raw asyncpg
+        # CharacterNotInRepertoireError (SQLSTATE 22021) — the same trap
+        # EnqueueArgs._check_no_nul_text guards on the write path.
+        # Rejecting here makes both backends' list_jobs/cancel_where
+        # paths fail identically with a clean ValueError; cancel_where
+        # in particular is a write path (the bulk-cancel feature).
+        if self.queue is not None:
+            check_no_nul_str(self.queue, what="queue")
+        if self.actor is not None:
+            check_no_nul_str(self.actor, what="actor")
+        if self.identity_key is not None:
+            check_no_nul_str(self.identity_key, what="identity_key")
+        if self.tags is not None:
+            for tag in self.tags:
+                check_no_nul_str(tag, what="tag")
 
     def has_predicates(self) -> bool:
         """Return True if at least one filter predicate is set.
@@ -641,8 +674,15 @@ class ScheduleCreateArgs:
 
     Carries every column the caller specifies at schedule creation time.
     ``next_fire_at`` is computed client-side via
-    :func:`~taskq.cron._compute_next_fire_after` — the initial value
-    is an approximation; the leader's tick corrects on first fire.
+    :func:`~taskq.cron.compute_next_fire_after`, seeded from the clock
+    that arbitrates the schedule's due-check: a PG-backed client anchors
+    on the PG server clock (one-row ``SELECT clock_timestamp()`` via
+    ``JobsClient._schedule_seed_now`` — the same clock domain as the
+    server-side due-check), an in-memory client on its injected ``Clock``.
+    The seed is exact, not approximate: the cron loop's normal path
+    recomputes every subsequent fire from the STORED fire time (only a
+    miss beyond ``cron_catch_up_window`` re-anchors on the server clock),
+    so the seed fixes the fire chain's phase for the schedule's life.
     """
 
     actor: str
@@ -661,6 +701,31 @@ class ScheduleCreateArgs:
 
         if not croniter.is_valid(self.cron_expr):
             raise ValueError(f"Invalid cron expression: {self.cron_expr!r}")
+        if self.dst_strategy not in DST_STRATEGIES:
+            raise ValueError(
+                f"Invalid dst_strategy: {self.dst_strategy!r}; "
+                f"valid strategies are {sorted(DST_STRATEGIES)}"
+            )
+        self._check_no_nul_text()
+
+    def _check_no_nul_text(self) -> None:
+        """Reject a NUL (U+0000) in caller-supplied text bound as text.
+
+        Mirrors :meth:`EnqueueArgs._check_no_nul_text`: every text column
+        in the ``create_schedule`` INSERT is caller text, and an unguarded
+        NUL surfaces as asyncpg ``CharacterNotInRepertoireError``
+        (SQLSTATE 22021) instead of a clean ``ValueError``.
+        ``cron_expr`` needs no check here — ``croniter.is_valid`` above
+        already rejects it. ``metadata`` transits jsonb via
+        ``jsonb_param``, which guards it at bind time.
+        """
+        check_no_nul_str(self.actor, what="actor")
+        check_no_nul_str(self.name, what="name")
+        check_no_nul_str(self.timezone, what="timezone")
+        if self.payload_factory is not None:
+            check_no_nul_str(self.payload_factory, what="payload_factory")
+        if self.identity_key is not None:
+            check_no_nul_str(self.identity_key, what="identity_key")
 
 
 @dataclass(frozen=True, slots=True)
@@ -672,7 +737,7 @@ class ScheduleUpdateArgs:
     ``consecutive_failures = 0`` and ``last_fire_error = NULL``.
     When ``cron_expr`` is provided, ``next_fire_at`` must also be
     provided (recomputed by the caller via
-    :func:`~taskq.cron._compute_next_fire_after`).
+    :func:`~taskq.cron.compute_next_fire_after`).
 
     To explicitly clear ``payload_factory`` (set the column to NULL),
     set ``clear_payload_factory=True`` — ``None`` for payload_factory
@@ -692,7 +757,7 @@ class ScheduleUpdateArgs:
         if self.cron_expr is not None and self.next_fire_at is None:
             raise ValueError(
                 "next_fire_at must be provided when cron_expr is changed; "
-                "recompute via _compute_next_fire_after"
+                "recompute via compute_next_fire_after"
             )
         if self.clear_payload_factory and self.payload_factory is not None:
             raise ValueError(
@@ -810,6 +875,18 @@ class BatchCounts:
     abandoned: int
 
 
+_MAX_BATCH_FILTER_LIMIT: Final[int] = 500
+"""Upper bound for :attr:`BatchFilter.limit`.
+
+``list_batches`` renders one per-batch LATERAL job-count join per returned
+row and offers no cursor pagination, so a caller-supplied huge limit runs
+that join across the whole table. Validation-error rather than clamp, per
+repo style (JobFilter's negative-limit check raises too, and a clamp would
+silently return a different page than the caller asked for). 500 is far
+above the listing-surface default of 100 while bounding the worst case.
+"""
+
+
 @dataclass(frozen=True, slots=True)
 class BatchFilter:
     """Filter parameters for Backend.list_batches.
@@ -829,6 +906,13 @@ class BatchFilter:
     def __post_init__(self) -> None:
         if self.limit < 0:
             raise ValueError(f"limit must be >= 0, got {self.limit}")
+        if self.limit > _MAX_BATCH_FILTER_LIMIT:
+            raise ValueError(
+                f"limit must be <= {_MAX_BATCH_FILTER_LIMIT}, got {self.limit}; "
+                f"list_batches runs a per-batch job-count join per returned row "
+                f"and has no cursor pagination, so an unbounded limit scans the "
+                f"whole batches table"
+            )
 
 
 # ── Backend deps protocol ───────────────────────────────────────────────

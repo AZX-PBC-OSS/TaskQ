@@ -20,55 +20,58 @@ Thank you for your interest in contributing to TaskQ! We appreciate your time an
 
 2. **Install dependencies:**
 
-   This project uses `uv` for dependency management. Install development dependencies (including all optional extras) with:
+   This project uses `uv` for dependency management, and the Makefile is the supported entry point. Install the complete development environment (all optional extras plus the `dev` and `e2e` dependency groups) with:
    ```bash
-   uv sync --all-extras --group dev
+   make install
    ```
-
-   This will create a virtual environment and install all necessary dependencies including pytest, pyright, ruff, testcontainers, and hypothesis. The optional extras (`redis`, `fastapi`, `prometheus`, `dev`) are required for the full test suite.
+   which runs `uv sync --locked --all-extras --group dev --group e2e`. `--locked` is deliberate: it refuses to install anything `uv.lock` does not describe, and fails loudly telling you to run `uv lock` if `pyproject.toml` and the lockfile disagree. This creates a virtual environment with pytest, pyright, ruff, testcontainers, hypothesis and every extra the full test suite needs.
 
 ## Running Tests
 
-**IMPORTANT: Always use `uv run` to execute pytest and other development commands.**
+**IMPORTANT: Prefer the make targets, and never use a bare `uv run`.**
 
-Using `uv run` ensures that:
-- Commands run in the correct virtual environment
-- All dependencies are properly resolved
-- You're using the exact versions specified in the project
-- No conflicts with globally installed packages
+The Makefile routes every command through `uv run --no-sync` (`UVRUN` in the Makefile), mirroring the policy CI enforces. A bare `uv run` re-resolves the interpreter and implicitly re-syncs on every invocation — and when it decides the venv is on the wrong interpreter it *removes* that venv and rebuilds it from the default dependency set, silently dropping every extra and non-default group. Something as innocent as `make lint` on a bare `uv run` can wipe the environment. CI and `tests/test_ci_workflow.py` enforce the same discipline, so local runs that bypass it can pass while CI fails.
+
+- `make install` — build the full environment (`uv sync --locked --all-extras --group dev --group e2e`).
+- `make test` — all tests, parallel (integration tests require Docker).
+- `make test-fast` — non-integration tests only, parallel (no Docker needed).
+- `make lint` — `ruff check .` plus `ruff format --check .`
+- `make type-check` — `pyright src/taskq tests`
+
+Every command target above takes an `env` prerequisite that verifies the environment matches before running. If you call `uv` directly, use `uv run --no-sync <command>` — and change the environment only via `make install` (or the same `uv sync --locked ...` arguments), never an unlocked `uv sync`.
 
 ### Test Commands
 
 ```bash
 # Run all tests (integration tests require Docker)
-uv run pytest
+make test
 
 # Run unit tests only (skip integration tests that need Docker)
-uv run pytest -m "not integration"
+make test-fast
 
-# Run tests in parallel
-uv run pytest -n auto
+# Run a specific test file
+uv run --no-sync pytest tests/test_actor.py
 
-# Run specific test file
-uv run pytest tests/test_actor.py
+# Run a specific test class
+uv run --no-sync pytest tests/test_actor.py::TestActorRef
 
-# Run specific test class
-uv run pytest tests/test_actor.py::TestActorRef
+# Run a specific test function
+uv run --no-sync pytest tests/test_batch.py::test_wait_for_batch
 
-# Run specific test function
-uv run pytest tests/test_batch.py::test_wait_for_batch
+# Run tests in parallel beyond make's default
+uv run --no-sync pytest -n auto
 
 # Run with verbose output
-uv run pytest -v
+uv run --no-sync pytest -v
 
 # Run with coverage report
-uv run pytest --cov=taskq --cov-report=html
+uv run --no-sync pytest --cov=taskq --cov-report=html
 
 # Run tests matching a pattern
-uv run pytest -k "test_enqueue"
+uv run --no-sync pytest -k "test_enqueue"
 
 # Run tests with output from print statements
-uv run pytest -s
+uv run --no-sync pytest -s
 ```
 
 ### Integration Tests
@@ -77,13 +80,13 @@ Integration tests are marked with `integration` and require Docker because they 
 
 ```bash
 # Run only integration tests
-uv run pytest -m "integration"
+uv run --no-sync pytest -m "integration"
 
-# Skip integration tests (no Docker required)
-uv run pytest -m "not integration"
+# Skip integration tests (no Docker required) — same selection as make test-fast
+uv run --no-sync pytest -m "not integration"
 ```
 
-If you don't have Docker available, use `uv run pytest -m "not integration"` to run the unit test suite.
+If you don't have Docker available, use `make test-fast` (or `uv run --no-sync pytest -m "not integration"`) to run the unit test suite.
 
 ### Tests Must Not Leave the Machine
 
@@ -96,21 +99,30 @@ Two rules follow from it:
 
 #### The worked example: httpx and httpx2
 
-`taskq[oidc]` installs **both** HTTP stacks, and they cannot see each other's mocks:
+`taskq[oidc]` ships **httpx2** as its HTTP client — nothing under `src/taskq` imports `httpx` — and the dev group keeps `httpx` installed too, so the test environment has both stacks. They cannot see each other's mocks:
 
 - `src/taskq/web/admin/auth/oidc.py` does `import httpx2 as httpx` for the discovery and JWKS fetches.
-- authlib's `AsyncOAuth2Client` subclasses `httpx.AsyncClient` for the token exchange (at the pinned authlib 1.7.x).
-- `respx` patches `httpx`'s transport only. It has no idea `httpx2` exists.
+- authlib's `AsyncOAuth2Client` (pinned `>=1.8.0`, which prefers `httpx2` whenever it is importable) performs the token exchange.
+- `respx` patches `httpcore` only. Out of the box it has no idea `httpx2` exists.
 
-So respx alone mocks half the OIDC flow. `tests/test_sso_oidc.py` closes the gap with the `_bridge_httpx2` fixture, which monkeypatches `httpx2.AsyncClient` to `httpx.AsyncClient` for the duration of the test. Remove that fixture and the discovery call escapes respx entirely, with no error from respx itself.
+So a bare `respx.mock()` intercepts at most half of the OIDC flow, and the rest escapes the mock entirely — with no error from respx itself. This is not hypothetical. In a sibling repo the same shape (authlib 1.8 preferring `httpx2` whenever it is importable, so its OAuth client silently moved off the stack respx patched) sent unit-lane traffic to the real Microsoft Entra endpoint for months while the suite stayed green, because the fake issuer was a routable Microsoft domain and the live error response happened to satisfy the assertion.
 
-This is not hypothetical. In a sibling repo the same shape (authlib 1.8 prefers `httpx2` whenever it is importable, so its OAuth client silently moved off the stack respx patches) sent unit-lane traffic to the real Microsoft Entra endpoint for months while the suite stayed green, because the fake issuer was a routable Microsoft domain and the live error response happened to satisfy the assertion.
+The old workaround — a fixture in `tests/test_sso_oidc.py` monkeypatching `httpx2.AsyncClient` to `httpx.AsyncClient` — is retired and now banned: it made the mocks apply while exercising a client class production never constructs, hiding any httpx2-only difference in timeouts, redirects, TLS verification, proxies or exception types. `tests/http_mock.py` replaces it with `MultiCoreMocker`, a respx `Mocker` subclass whose targets cover every installed httpcore stack (`httpcore` and `httpcore2`), so ONE router with ONE route table mocks both stacks at once — the OIDC callback needs both mocked inside a single test. Route every HTTP mock through its `mock_http()` context manager, and assert which stack issued each request with `stacks_for(url)`:
 
-Three things guard it now: the socket guard blocks the call, `pytest_configure` warns at session start whenever both stacks are importable, and `tests/test_suite_hygiene.py` pins that respx still cannot see `httpx2`, that authlib's client is still on the stack respx patches (this fails on an authlib 1.8 bump, by design), and that the bridge fixture is still there.
+```python
+from tests.http_mock import mock_http, stacks_for
+
+with mock_http() as router:
+    router.get(url).mock(return_value=httpx.Response(200))
+    ...
+    assert stacks_for(url) == {"httpx2"}
+```
+
+Three things guard it now: the socket guard above blocks any call that slips past a mock, `pytest_configure` (root `conftest.py`) warns at session start whenever both stacks are importable, and `tests/test_suite_hygiene.py` keeps the suite pointed at the helper — no test may bridge one stack's client class to the other's, no test may call `respx.mock()` directly, and every installed stack must actually be intercepted (verified by making a real request on each one).
 
 ### Property-Based Tests
 
-TaskQ uses [Hypothesis](https://hypothesis.readthedocs.io/) for property-based testing. These tests generate randomized inputs to find edge cases that hand-written tests might miss. Property-based tests live alongside the standard test suite and run as part of `uv run pytest`.
+TaskQ uses [Hypothesis](https://hypothesis.readthedocs.io/) for property-based testing. These tests generate randomized inputs to find edge cases that hand-written tests might miss. Property-based tests live alongside the standard test suite and run as part of `make test` (or `make test-fast` for the unit tier).
 
 When adding new functionality, consider writing property-based tests for invariants that should hold across a range of inputs (e.g., serialization round-trips, rate limiter correctness under concurrent access).
 
@@ -129,11 +141,14 @@ The project is configured with the following pytest settings (in `pyproject.toml
 The project uses `pyright` for type checking:
 
 ```bash
-# Run type checking
-uv run pyright src/taskq tests
+# Run type checking (same as CI)
+make type-check
+
+# Or directly
+uv run --no-sync pyright src/taskq tests
 
 # Type check specific file
-uv run pyright src/taskq/actor.py
+uv run --no-sync pyright src/taskq/actor.py
 ```
 
 ### Linting and Formatting
@@ -141,17 +156,17 @@ uv run pyright src/taskq/actor.py
 The project uses `ruff` for both linting and formatting:
 
 ```bash
-# Check for linting issues
-uv run ruff check .
+# Check for lint and formatting issues (same as CI)
+make lint
 
 # Auto-fix linting issues
-uv run ruff check --fix .
+make format
 
-# Format code
-uv run ruff format .
-
-# Check formatting without making changes
-uv run ruff format --check .
+# Or directly
+uv run --no-sync ruff check .
+uv run --no-sync ruff check --fix .
+uv run --no-sync ruff format .
+uv run --no-sync ruff format --check .
 ```
 
 ### Running All Quality Checks
@@ -159,17 +174,9 @@ uv run ruff format --check .
 Before submitting a PR, run all quality checks:
 
 ```bash
-# Run tests with coverage
-uv run pytest
-
-# Run type checking
-uv run pyright src/taskq tests
-
-# Run linting
-uv run ruff check .
-
-# Check formatting
-uv run ruff format --check .
+make test          # tests with the parallel runner
+make type-check    # pyright src/taskq tests
+make lint          # ruff check . + ruff format --check .
 ```
 
 ## Making Changes
@@ -197,7 +204,7 @@ uv run ruff format --check .
    - Update existing tests if modifying behavior
    - Ensure tests are clear and well-documented
    - Test edge cases and error conditions
-   - Run tests with `uv run pytest`
+   - Run tests with `make test-fast` (or `make test` with Docker available)
 
 4. **Update documentation:**
    - Update README.md if adding new features
@@ -206,17 +213,10 @@ uv run ruff format --check .
 
 5. **Verify your changes:**
    ```bash
-   # Run all tests
-   uv run pytest
-
-   # Check types
-   uv run pyright src/taskq tests
-
-   # Check linting
-   uv run ruff check .
-
-   # Check formatting
-   uv run ruff format --check .
+   make test        # all tests (Docker for the integration tier)
+   make test-fast   # non-integration tests only
+   make type-check  # pyright src/taskq tests
+   make lint        # ruff check . + ruff format --check .
    ```
 
 ## Authoring Database Migrations
@@ -252,6 +252,7 @@ The usual motivation is lock duration: a plain `CREATE INDEX` holds a lock that 
 Directive parsing rules (implemented by `_uses_transaction` in `src/taskq/migrate.py`):
 
 - **Leading comment block only.** Only blank lines and `--` line comments before the first SQL token are scanned; a directive later in the file is ignored, so a stray mention cannot silently flip a migration's semantics.
+- **`--` line comments only.** A `/* ... */` block comment is not scanned even at the top of the file: a leading `/* taskq:no-transaction */` is ignored by design of the scanner, which stops at the first non-`--` line — the migration runs transactional and no unrecognized-directive warning fires. Write the directive as a `--` line.
 - **Prefix match.** A trailing note after the token is fine and encouraged: `-- taskq:no-transaction — CIC cannot run inside a transaction`.
 - **Case-insensitive**, like SQL itself.
 - **Token-bounded.** A `\b` word boundary stops prefix drift, so `-- taskq:no-transactional` does NOT opt out.
@@ -314,7 +315,7 @@ Migrations with operational impact add named ops-note sections under banner comm
 ### Local Loop
 
 ```bash
-uv run pytest tests/test_migrations.py tests/test_migrations_populated.py tests/test_migrations_unit.py tests/test_migrate_no_transaction.py -q
+uv run --no-sync pytest tests/test_migrations.py tests/test_migrations_populated.py tests/test_migrations_unit.py tests/test_migrate_no_transaction.py -q
 ```
 
 The integration files need Docker, like the rest of the integration suite.
@@ -332,26 +333,25 @@ The integration files need Docker, like the rest of the integration suite.
 
 1. **Ensure all tests pass:**
    ```bash
-   uv run pytest
+   make test
    ```
 
 2. **Ensure type checking passes:**
    ```bash
-   uv run pyright src/taskq tests
+   make type-check
    ```
 
 3. **Ensure code is properly formatted:**
    ```bash
-   uv run ruff format .
-   uv run ruff check --fix .
+   make format
    ```
 
 4. **Verify coverage hasn't decreased:**
    ```bash
-   uv run pytest --cov=taskq --cov-report=term-missing
+   uv run --no-sync pytest -n 4 --cov=taskq --cov-report=term-missing --cov-report=html --cov-fail-under=90
    ```
 
-   Coverage should remain at or above 90%. CI enforces this via a dedicated `coverage` job; local `uv run pytest` does not fail on coverage.
+   Coverage should remain at or above 90%. CI enforces this via a dedicated `coverage` job; local test runs do not fail on coverage.
 
 ### Submitting Your PR
 
@@ -407,7 +407,7 @@ Fixes #123
 When reviewers request changes:
 
 1. Make the requested changes in your branch
-2. Run tests again: `uv run pytest`
+2. Run tests again: `make test-fast` (or `make test` with Docker available)
 3. Push the updates: `git push origin feat/your-feature-name`
 4. Respond to reviewer comments
 
@@ -415,7 +415,7 @@ When reviewers request changes:
 
 ### Virtual Environment
 
-The `uv run` command automatically manages the virtual environment. You don't need to manually activate it.
+The `uv run --no-sync` command (which every make target uses) executes in the project's virtual environment without touching it. You don't need to manually activate it.
 
 If you prefer to activate the environment manually:
 ```bash
@@ -425,7 +425,7 @@ source .venv/bin/activate  # Linux/macOS
 .venv\Scripts\activate  # Windows
 ```
 
-However, we recommend using `uv run` for consistency.
+However, we recommend the make targets (or `uv run --no-sync`) for consistency.
 
 ### Debugging Tests
 
@@ -434,7 +434,7 @@ To debug a specific test with pdb:
 ```bash
 # Add breakpoint() in your test or code
 # Then run with -s to see output
-uv run pytest -s tests/test_actor.py::test_specific_function
+uv run --no-sync pytest -s tests/test_actor.py::test_specific_function
 ```
 
 ### Coverage Reports
@@ -442,7 +442,7 @@ uv run pytest -s tests/test_actor.py::test_specific_function
 After running tests with coverage, view the HTML report:
 
 ```bash
-uv run pytest --cov=taskq --cov-report=html
+uv run --no-sync pytest --cov=taskq --cov-report=html
 # Open htmlcov/index.html in your browser
 ```
 
