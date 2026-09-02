@@ -50,16 +50,22 @@ def test_worker_bootstrap_warns_when_the_setting_is_set() -> None:
     assert "taskq migrate up" in entry["remedy"], "the warning must name the remedy"
 
 
-def test_worker_bootstrap_is_silent_when_the_setting_is_unset() -> None:
-    """The control: no warning for the default, or it becomes noise operators
-    learn to ignore."""
+def test_worker_bootstrap_is_silent_when_the_setting_is_unset_or_false() -> None:
+    """The control: no warning for the default (or an explicit false), or
+    it becomes noise operators learn to ignore. Explicit false is its own
+    case because a parser that treated any SET value as true would warn on
+    a correctly-disabled worker."""
     from taskq.worker._bootstrap import _emit_startup_warnings
 
-    settings = WorkerSettings.load_from_dict({}, validate=False)
-    with structlog.testing.capture_logs() as logs:
-        _emit_startup_warnings(settings)
+    for env in ({}, {"TASKQ_MIGRATE_ON_START": "false"}):
+        settings = WorkerSettings.load_from_dict(env, validate=False)
+        with structlog.testing.capture_logs() as logs:
+            _emit_startup_warnings(settings)
 
-    assert [e for e in logs if e["event"] == "migrate-on-start-ignored-by-worker"] == []
+        assert [e for e in logs if e["event"] == "migrate-on-start-ignored-by-worker"] == [], (
+            f"no migrate-on-start warning may fire for {env or 'the defaults'}: "
+            f"{[e['event'] for e in logs]}"
+        )
 
 
 def test_worker_still_does_not_apply_migrations() -> None:
