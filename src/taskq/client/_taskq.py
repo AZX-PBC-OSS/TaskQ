@@ -48,7 +48,8 @@ if TYPE_CHECKING:
     import asyncpg
     import redis.asyncio as redis_async
 
-    from taskq.connections import ConnFactory
+    from taskq.auth import PgCredentialProvider
+    from taskq.connections import ConnFactory, PoolFactory
 
 from taskq._close import CLOSE_TIMEOUT_SECS, close_conn_bounded, close_pool_bounded
 from taskq.actor import ActorRef
@@ -73,7 +74,12 @@ from taskq.batch_policy import BatchFailurePolicy
 from taskq.client._actors import ActorsClient
 from taskq.client._handle import JobHandle
 from taskq.client._jobs import JobsClient
-from taskq.constants import RECLAIM_EVENT_VISIBILITY_DELAY, progress_channel, wake_channel
+from taskq.constants import (
+    MAX_RESULT_BYTES,
+    RECLAIM_EVENT_VISIBILITY_DELAY,
+    progress_channel,
+    wake_channel,
+)
 from taskq.cron import ScheduleHandle
 from taskq.progress._events import ProgressEvent
 from taskq.types import BulkCancelResult, CancelResult
@@ -131,6 +137,10 @@ class _ClientSettings:
     # mirrors WorkerSettings.dispatcher_command_timeout's default.
     dispatch_oversample: int = 2
     dispatcher_command_timeout: float = 5.0
+    # Mirrors WorkerSettings.result_max_bytes' default: the client never
+    # writes a terminal result, but the backend's storage-boundary guard
+    # reads this off whatever settings object it was handed.
+    result_max_bytes: int = MAX_RESULT_BYTES
 
 
 @dataclass(slots=True)
@@ -155,6 +165,24 @@ class TaskQ:
     pool:
         An already-open ``asyncpg.Pool``. The caller retains ownership;
         ``close()`` will not close it.
+    pool_factory:
+        A zero-arg async factory returning an ``asyncpg.Pool`` - the same
+        :data:`~taskq.connections.PoolFactory` the worker takes via
+        :class:`~taskq.connections.WorkerConnections`. TaskQ invokes it at
+        ``open()`` and **owns** the result (``close()`` closes it), and
+        :meth:`reload_credentials` re-invokes it to rotate the pool in place.
+        This is the client-side equivalent of a ``<role>_pool_factory``:
+        pair it with :func:`taskq.auth.make_pg_pool_factory` for a
+        rotating-credential deployment. Mutually exclusive with ``dsn`` and
+        ``pool``.
+    pg_provider:
+        A :class:`~taskq.auth.PgCredentialProvider`. Sugar for
+        ``pool_factory=make_pg_pool_factory(dsn, pg_provider,
+        min_size=min_pool_size, max_size=max_pool_size)`` - it is exactly
+        that call and nothing more, so the two paths share one mechanism.
+        Requires ``dsn``; use ``pool_factory`` directly when you need the
+        factory's other hooks (``init``, ``server_settings``,
+        ``command_timeout``).
     schema:
         TaskQ schema name. Defaults to ``"taskq"``.
     min_pool_size:
@@ -191,6 +219,8 @@ class TaskQ:
         *,
         dsn: str | None = None,
         pool: "asyncpg.Pool | None" = None,
+        pool_factory: "PoolFactory | None" = None,
+        pg_provider: "PgCredentialProvider | None" = None,
         schema: str = "taskq",
         min_pool_size: int = 1,
         max_pool_size: int = 5,
@@ -201,10 +231,34 @@ class TaskQ:
         poll_timeout: float = 30.0,
         reclaim_event_visibility_delay: timedelta | None = None,
     ) -> None:
-        if dsn is None and pool is None:
-            raise ValueError("TaskQ requires either 'dsn' or 'pool'")
-        if dsn is not None and pool is not None:
-            raise ValueError("TaskQ accepts 'dsn' or 'pool', not both")
+        if pg_provider is not None:
+            if dsn is None:
+                raise ValueError(
+                    "TaskQ 'pg_provider' requires 'dsn' — the provider issues a credential, "
+                    "not a host. Pass 'pool_factory' instead when there is no DSN."
+                )
+            if pool_factory is not None:
+                raise ValueError("TaskQ accepts 'pg_provider' or 'pool_factory', not both")
+            # Why here and not in open(): the factory is the single mechanism
+            # (taskq.auth.make_pg_pool_factory, the same builder
+            # build_worker_connections uses); pg_provider is sugar that
+            # collapses into it, so everything downstream sees one code path.
+            from taskq.auth import make_pg_pool_factory
+
+            pool_factory = make_pg_pool_factory(
+                dsn, pg_provider, min_size=min_pool_size, max_size=max_pool_size
+            )
+            dsn = None
+
+        sources = [
+            name
+            for name, v in (("dsn", dsn), ("pool", pool), ("pool_factory", pool_factory))
+            if v is not None
+        ]
+        if not sources:
+            raise ValueError("TaskQ requires one of 'dsn', 'pool' or 'pool_factory'")
+        if len(sources) > 1:
+            raise ValueError(f"TaskQ accepts one of {sources!r}, not both")
         if redis_url is not None and redis_client is not None:
             raise ValueError("TaskQ accepts 'redis_url' or 'redis_client', not both")
         if redis_url is not None and not redis_url.strip():
@@ -231,9 +285,16 @@ class TaskQ:
         # margin's correctness depends on writer transaction duration, not
         # reader preference.
         self._reclaim_event_visibility_delay = reclaim_event_visibility_delay
+        self._pool_factory = pool_factory
+        # A pool TaskQ built (from a DSN or a factory) is TaskQ's to close; a
+        # caller-supplied one never is. Same ownership rule as
+        # taskq.connections.WorkerConnections.
         self._owns_pool = pool is None
         self._client: JobsClient | None = None
         self._actors_client: ActorsClient | None = None
+        # Held so reload_credentials can swap the pool into the live backend
+        # without reaching through the JobsClient into PostgresBackend._deps.
+        self._deps: _ClientDeps | None = None
 
     # ── Lifecycle ──────────────────────────────────────────────────────────
 
@@ -256,13 +317,16 @@ class TaskQ:
         from taskq.settings import TaskQSettings
 
         if self._pool is None:
-            created = await asyncpg.create_pool(
-                dsn=self._dsn,
-                min_size=self._min_pool_size,
-                max_size=self._max_pool_size,
-            )
-            assert created is not None  # asyncpg returns None only for record_class paths
-            self._pool = created
+            if self._pool_factory is not None:
+                self._pool = await self._pool_factory()
+            else:
+                created = await asyncpg.create_pool(
+                    dsn=self._dsn,
+                    min_size=self._min_pool_size,
+                    max_size=self._max_pool_size,
+                )
+                assert created is not None  # asyncpg returns None only for record_class paths
+                self._pool = created
 
         pool = self._pool
         assert pool is not None
@@ -271,6 +335,7 @@ class TaskQ:
             worker_pool=pool,
             heartbeat_pool=pool,
         )
+        self._deps = deps
         backend = PostgresBackend(
             deps,
             clock=SystemClock(),
@@ -306,11 +371,65 @@ class TaskQ:
             await self._client.close()
             self._client = None
             self._actors_client = None
+            self._deps = None
         if self._owns_pool and self._pool is not None:
             # Why bounded: an enqueue in flight at close time can stall
             # Pool.close() indefinitely against a dead PG.
             await close_pool_bounded(self._pool, "client", CLOSE_TIMEOUT_SECS)
             self._pool = None
+
+    async def reload_credentials(self) -> None:
+        """Rebuild the pool from ``pool_factory`` and swap it in, live.
+
+        The client-side counterpart of
+        :func:`taskq.worker.deps.reload_credentials`, and the supported
+        replacement for reaching into ``_pool`` / ``_client``: it invokes the
+        factory (which fetches a fresh credential), atomically points every
+        subsystem that holds a pool - the backend deps behind
+        ``enqueue``/``get``/``list``/``cancel``, the :attr:`actors` client, and
+        the ``stream()`` LISTEN fallback - at the new pool, then closes the old
+        one with the same bounded drain used at ``close()``.
+
+        Call this on a schedule shorter than your credential's lifetime (an
+        Entra access token is typically ~60 min), or on any signal your issuer
+        gives you. It is not needed for the ordinary token refresh that
+        :func:`taskq.auth.make_pg_pool_factory` already does per physical
+        connection; it is how you drop sessions opened under a revoked
+        credential, and the only way to pick up a **changed username**, which
+        asyncpg resolves once per pool.
+
+        Raises :class:`RuntimeError` if the client is not open, or if the pool
+        is caller-owned (``pool=``) - TaskQ must never close a pool it does not
+        own, so the caller rotates that one itself.
+
+        If the factory fails, the exception propagates and the **current pool
+        is left untouched and serving**: a transient token-endpoint outage
+        must not turn into a client outage.
+        """
+        if self._client is None or self._deps is None:
+            raise RuntimeError("TaskQ is not open — call open() before reload_credentials()")
+        if self._pool_factory is None:
+            raise RuntimeError(
+                "TaskQ.reload_credentials() requires 'pool_factory' (or 'pg_provider'); "
+                "a pool passed as 'pool=' is caller-owned and must be rotated by its owner."
+            )
+
+        old_pool = self._pool
+        # Built before anything is swapped, so a factory failure leaves the
+        # live pool in place — see the docstring.
+        new_pool = await self._pool_factory()
+
+        self._pool = new_pool
+        self._deps.worker_pool = new_pool
+        self._deps.heartbeat_pool = new_pool
+        # Rebuilt rather than mutated: ActorsClient takes its pool at
+        # construction and is a cheap, stateless facade over it.
+        self._actors_client = ActorsClient(new_pool, schema=self._schema)
+
+        if old_pool is not None:
+            # Why bounded: an enqueue in flight on the old pool can stall
+            # Pool.close() indefinitely against a dead PG.
+            await close_pool_bounded(old_pool, "client-reload", CLOSE_TIMEOUT_SECS)
 
     async def __aenter__(self) -> "TaskQ":
         await self.open()

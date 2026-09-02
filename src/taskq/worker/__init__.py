@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from taskq.connections import WorkerConnections
+    from taskq.worker._bootstrap import worker_main, worker_main_async
     from taskq.worker.budget import ConnectionBudget, compute_connection_budget
     from taskq.worker.cancel import ActiveJobRegistry, CancelController, make_cancel_controller
     from taskq.worker.deps import WorkerDeps, open_worker_deps, reload_credentials
@@ -44,6 +45,8 @@ def __getattr__(name: str) -> object:
         "open_worker_deps": lambda: _imp("taskq.worker.deps", "open_worker_deps"),
         "reload_credentials": lambda: _imp("taskq.worker.deps", "reload_credentials"),
         "sync_actor_config": lambda: _imp("taskq.worker.startup", "sync_actor_config"),
+        "worker_main": lambda: _imp("taskq.worker._bootstrap", "worker_main"),
+        "worker_main_async": lambda: _imp("taskq.worker._bootstrap", "worker_main_async"),
     }
     if name in _lazy:
         return _lazy[name]()
@@ -71,4 +74,6 @@ __all__ = [  # pyright: ignore[reportUnsupportedDunderAll]  # Why: __getattr__ l
     "open_worker_deps",
     "reload_credentials",
     "sync_actor_config",
+    "worker_main",
+    "worker_main_async",
 ]

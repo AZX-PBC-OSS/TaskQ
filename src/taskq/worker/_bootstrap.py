@@ -65,7 +65,12 @@ from taskq.worker.notify import notify_listener_loop
 from taskq.worker.shutdown import ShutdownPhase, install_signal_handlers
 from taskq.worker.startup import sync_actor_config
 
-__all__ = ["_emit_sub_enqueue_startup_warnings", "_main", "worker_main"]
+__all__ = [
+    "_emit_sub_enqueue_startup_warnings",
+    "_main",
+    "worker_main",
+    "worker_main_async",
+]
 
 _startup_log: structlog.stdlib.BoundLogger = structlog.get_logger("taskq.worker.run.startup")
 
@@ -1307,10 +1312,16 @@ def worker_main(
     idle_poll_interval: float | None = None,
     idle_max_runtime: float | None = None,
 ) -> int:
-    """Worker process entry point.
+    """Worker process entry point (synchronous).
 
-    Runs ``_main`` under an ``asyncio.Runner`` and returns its int result.
-    Uses ``Runner`` (not ``asyncio.run``) for finer control over teardown.
+    Thin wrapper: runs :func:`worker_main_async` under an ``asyncio.Runner``
+    and returns its int result. Uses ``Runner`` (not ``asyncio.run``) for
+    finer control over teardown.
+
+    Because this function owns the loop, an application that must build
+    loop-bound dependencies (asyncpg pools) before constructing its actors
+    cannot use it - await :func:`worker_main_async` from its own coroutine
+    instead. Both take exactly these parameters.
 
     ``actor_registry`` is a mapping from short name to :class:`ActorRef`
     containing every ``@actor``-decorated handler this worker intends to
@@ -1359,17 +1370,13 @@ def worker_main(
     3 if any jobs failed in drain mode, 4 if ``idle_max_runtime`` was
     exceeded.
     """
-    from taskq.scheduler import get_registered_crons
-
-    schedule_specs = cron_registry if cron_registry is not None else get_registered_crons()
-    setup_logging(level=settings.log_level, log_format=settings.log_format)
     with asyncio.Runner() as runner:
         return runner.run(
-            _main(
+            worker_main_async(
                 settings,
                 actor_registry=actor_registry,
-                _registry=di_registry,
-                _cron_registry=schedule_specs,
+                di_registry=di_registry,
+                cron_registry=cron_registry,
                 connections=connections,
                 rate_limit_registry=rate_limit_registry,
                 until_idle=until_idle,
@@ -1378,3 +1385,68 @@ def worker_main(
                 idle_max_runtime=idle_max_runtime,
             )
         )
+
+
+async def worker_main_async(
+    settings: WorkerSettings,
+    *,
+    actor_registry: Mapping[str, ActorRef[Any, Any]] | None = None,
+    di_registry: ProviderRegistry | None = None,
+    cron_registry: list[CronScheduleSpec] | None = None,
+    connections: WorkerConnections | None = None,
+    rate_limit_registry: RateLimitRegistry | None = None,
+    until_idle: bool = False,
+    idle_settle_window: float | None = None,
+    idle_poll_interval: float | None = None,
+    idle_max_runtime: float | None = None,
+) -> int:
+    """Run a worker to completion on the **caller's** event loop.
+
+    Same parameters, same semantics and same exit codes as
+    :func:`worker_main` - which is now the thin synchronous wrapper that
+    drives this coroutine under its own ``asyncio.Runner``. See
+    :func:`worker_main` for what each parameter means.
+
+    Why this exists as public API: ``worker_main`` owns the loop, and
+    asyncpg pools are **loop-bound**. An application whose actors are
+    closures over its own dependencies has to build those dependencies
+    (pools, HTTP clients) on the loop the worker will run on, *before* the
+    actor registry is constructed - and there is no hook in ``worker_main``
+    to do that. Pre-creating a pool in a throwaway loop and handing it to
+    ``worker_main``'s Runner is not an option: the pool would belong to a
+    dead loop. Awaiting this from inside the caller's own coroutine puts
+    dependency construction, actor construction, and the worker on one
+    loop::
+
+        async def main() -> int:
+            pool = await asyncpg.create_pool(dsn)          # this loop
+            registry = build_actors(pool)                  # closures over it
+            try:
+                return await worker_main_async(settings, actor_registry=registry)
+            finally:
+                await pool.close()
+
+        raise SystemExit(asyncio.run(main()))
+
+    Signal handling, logging setup and cron auto-discovery are identical to
+    :func:`worker_main`; nothing about running here changes the worker's
+    behaviour. The caller owns whatever it built - TaskQ closes only the
+    resources it created itself (see :class:`~taskq.connections.WorkerConnections`
+    for the ownership rule that governs anything passed via ``connections``).
+    """
+    from taskq.scheduler import get_registered_crons
+
+    schedule_specs = cron_registry if cron_registry is not None else get_registered_crons()
+    setup_logging(level=settings.log_level, log_format=settings.log_format)
+    return await _main(
+        settings,
+        actor_registry=actor_registry,
+        _registry=di_registry,
+        _cron_registry=schedule_specs,
+        connections=connections,
+        rate_limit_registry=rate_limit_registry,
+        until_idle=until_idle,
+        idle_settle_window=idle_settle_window,
+        idle_poll_interval=idle_poll_interval,
+        idle_max_runtime=idle_max_runtime,
+    )

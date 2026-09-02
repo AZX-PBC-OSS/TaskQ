@@ -78,6 +78,7 @@ __all__ = [
     "RedisCredentialProvider",
     "build_worker_connections",
     "enrich_pg_dsn",
+    "ensure_sslmode_require",
     "make_dedicated_conn_factory",
     "make_pg_pool_factory",
     "make_redis_client_factory",
@@ -149,13 +150,23 @@ class RedisCredentialProvider(Protocol):
 # --- DSN enrichment ---
 
 
-def _ensure_sslmode_require(dsn: str) -> str:
+def ensure_sslmode_require(dsn: str) -> str:
     """Add ``sslmode=require`` to *dsn* unless an sslmode is already set.
 
     An explicit sslmode is never overridden - in particular stronger
     modes (``verify-ca`` / ``verify-full``) must not be downgraded:
     ``require`` skips certificate verification, which would expose the
     very token this module injects to a MITM.
+
+    Public because anyone assembling a credential-bearing DSN by hand needs
+    exactly this rule and must not re-derive it: a token path that silently
+    connects without TLS puts the credential on the wire. The factory
+    builders in this module apply it for you; reach for it directly only on
+    the DSN paths they do not cover (a raw ``asyncpg.connect``, a migration
+    connection, a DSN handed to another library).
+
+    ``sslmode=disable`` is an explicit choice and is preserved - that is how
+    a test container or a Unix-socket deployment opts out.
     """
     parsed = urlparse(str(dsn))
     query = parse_qs(parsed.query, keep_blank_values=True)
@@ -380,7 +391,7 @@ def make_pg_pool_factory(
         # physical connection.
         credential = await provider.get_pg_credential()
         kwargs: dict[str, Any] = {
-            "dsn": _ensure_sslmode_require(dsn),
+            "dsn": ensure_sslmode_require(dsn),
             "password": _make_pg_password_callable(
                 provider, pinned_username=credential.username, role="pool"
             ),
@@ -458,7 +469,7 @@ def make_dedicated_conn_factory(
         # Fetched once to resolve `user=` and fail fast; see make_pg_pool_factory.
         credential = await provider.get_pg_credential()
         kwargs: dict[str, Any] = {
-            "dsn": _ensure_sslmode_require(dsn),
+            "dsn": ensure_sslmode_require(dsn),
             "password": _make_pg_password_callable(
                 provider, pinned_username=credential.username, role="dedicated_conn"
             ),
@@ -554,6 +565,10 @@ def build_worker_connections(
     *,
     pg_provider: PgCredentialProvider | None = None,
     redis_provider: RedisCredentialProvider | None = None,
+    pg_dsn: str | None = None,
+    pg_dsn_direct: str | None = None,
+    pg_dsn_pooled: str | None = None,
+    redis_url: str | None = None,
 ) -> WorkerConnections:
     """Build the full set of provider-backed factories for one worker.
 
@@ -573,21 +588,47 @@ def build_worker_connections(
     un-rotatable - ``reload_credentials`` skips roles with no factory - so
     this builder deliberately covers all of them or raises.
 
-    Raises ``ValueError`` when no provider is given, or when
-    *redis_provider* is set with no ``redis_url`` configured: a Redis
-    provider that quietly did nothing is the failure mode this wiring
-    exists to remove.
+    Explicit endpoints
+    ------------------
+
+    *pg_dsn* / *pg_dsn_direct* / *pg_dsn_pooled* / *redis_url* override where
+    the factories point, while every pool size and timeout still comes from
+    *settings*. Pass *pg_dsn* to send all five Postgres roles at one server;
+    pass the *_direct* / *_pooled* pair to keep a pgbouncer split. They are
+    mutually exclusive - a call that sets both is ambiguous about which wins.
+
+    Why this exists: an application that already knows where TaskQ's tables
+    live otherwise had to restate that in ``TASKQ_PG_DSN`` purely to reach
+    this builder, duplicating one fact across two config systems (the class
+    of bug where the two copies disagree about the schema). The alternative
+    it reached for instead - one hand-built ``make_pg_pool_factory`` passed
+    to all three pool roles - silently discards the per-role budget this
+    function exists to apply: TaskQ resolves each role separately, so every
+    role gets a full ``pool_max``-sized pool rather than
+    ``dispatcher_pool_size`` / ``heartbeat_pool_size`` / ``worker_pool_size``.
+    Overriding the endpoint keeps the budget.
+
+    Raises ``ValueError`` when no provider is given, when *pg_dsn* is
+    combined with *pg_dsn_direct* / *pg_dsn_pooled*, or when
+    *redis_provider* is set with no Redis URL available from either
+    *redis_url* or ``settings``: a Redis provider that quietly did nothing
+    is the failure mode this wiring exists to remove.
     """
     if pg_provider is None and redis_provider is None:
         raise ValueError(
             "build_worker_connections requires at least one of pg_provider / redis_provider"
         )
+    if pg_dsn is not None and (pg_dsn_direct is not None or pg_dsn_pooled is not None):
+        raise ValueError(
+            "build_worker_connections accepts 'pg_dsn' or the "
+            "'pg_dsn_direct'/'pg_dsn_pooled' pair, not both"
+        )
 
     conns = WorkerConnections()
 
     if pg_provider is not None:
-        direct = str(settings.resolved_pg_dsn_direct)
-        pooled = str(settings.resolved_pg_dsn_pooled)
+        direct = pg_dsn_direct or pg_dsn or str(settings.resolved_pg_dsn_direct)
+        pooled = pg_dsn_pooled or pg_dsn or str(settings.resolved_pg_dsn_pooled)
         lifetime = settings.pool_max_inactive_lifetime
         conns.dispatcher_pool_factory = make_pg_pool_factory(
             direct,
@@ -601,7 +642,7 @@ def build_worker_connections(
             pg_provider,
             max_size=settings.heartbeat_pool_size,
             max_inactive_connection_lifetime=lifetime,
-            command_timeout=2,
+            command_timeout=settings.heartbeat_command_timeout,
         )
         conns.worker_pool_factory = make_pg_pool_factory(
             pooled,
@@ -617,13 +658,14 @@ def build_worker_connections(
         )
 
     if redis_provider is not None:
-        if settings.redis_url is None:
+        resolved_redis = redis_url or (
+            str(settings.redis_url) if settings.redis_url is not None else None
+        )
+        if resolved_redis is None:
             raise ValueError(
                 "a Redis credential provider was configured but no Redis URL is set - "
-                "set TASKQ_REDIS_URL, or drop the Redis provider."
+                "pass redis_url=, set TASKQ_REDIS_URL, or drop the Redis provider."
             )
-        conns.redis_client_factory = make_redis_client_factory(
-            str(settings.redis_url), redis_provider
-        )
+        conns.redis_client_factory = make_redis_client_factory(resolved_redis, redis_provider)
 
     return conns

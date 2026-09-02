@@ -85,7 +85,8 @@ class WorkerConnections:
             ),
             heartbeat_pool_factory=make_pg_pool_factory(
                 settings.pg_dsn_direct, provider,
-                max_size=settings.heartbeat_pool_size, command_timeout=2,
+                max_size=settings.heartbeat_pool_size,
+                command_timeout=settings.heartbeat_command_timeout,
             ),
             worker_pool_factory=make_pg_pool_factory(
                 settings.pg_dsn_pooled, provider, max_size=settings.worker_pool_size,
@@ -104,7 +105,7 @@ class WorkerConnections:
     """Factory for the dispatcher pool. TaskQ-owned."""
 
     heartbeat_pool: asyncpg.Pool | None = None
-    """Heartbeat pool (pg_dsn_direct, command_timeout=2s). Caller-owned."""
+    """Heartbeat pool (pg_dsn_direct, heartbeat_command_timeout). Caller-owned."""
     heartbeat_pool_factory: PoolFactory | None = None
     """Factory for the heartbeat pool. TaskQ-owned. ``command_timeout`` is
     your responsibility when overriding — set it on ``create_pool``."""

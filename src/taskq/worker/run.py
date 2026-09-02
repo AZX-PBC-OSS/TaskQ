@@ -55,7 +55,7 @@ from taskq.exceptions import MissingProvider
 from taskq.obs import bind_job_context, get_logger
 from taskq.retry import OnRetryExhausted, OnSuccess, RetryClassifierHook, RetryPolicy
 from taskq.settings import WorkerSettings
-from taskq.worker._bootstrap import worker_main
+from taskq.worker._bootstrap import worker_main, worker_main_async
 from taskq.worker._transient import TRANSIENT_PG_ERRORS
 from taskq.worker.cancel import make_cancel_controller
 from taskq.worker.deps import WorkerDeps
@@ -70,6 +70,7 @@ __all__ = [  # pyright: ignore[reportUnsupportedDunderAll]  # Why: _main is lazi
     "producer_loop_stub",
     "register_worker",
     "worker_main",
+    "worker_main_async",
 ]
 
 

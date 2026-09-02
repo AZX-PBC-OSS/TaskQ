@@ -80,7 +80,7 @@ Three consequences worth knowing:
 | Worker — notify conn | `WorkerConnections.notify_conn` | `notify_conn_factory` | LISTEN is issued by TaskQ; a dropped conn is rebuilt through the same factory |
 | Worker — leader conn | `WorkerConnections.leader_conn` | `leader_conn_factory` | Advisory-lock conn |
 | Worker — Redis | `WorkerConnections.redis_client` | `redis_client_factory` | |
-| Client — main pool | `TaskQ(pool=...)` ✓ existing | — | |
+| Client — main pool | `TaskQ(pool=...)` (caller-owned) | `TaskQ(pool_factory=...)` or `TaskQ(dsn=..., pg_provider=...)` | TaskQ-owned; rotate with `await tq.reload_credentials()` |
 | Client — Redis | `TaskQ(redis_client=...)` ✓ existing | — | |
 | Client — stream LISTEN conn | `TaskQ(listen_conn=...)` | `TaskQ(pg_conn_factory=...)` | Replaces the DSN-only LISTEN transport |
 | Migrate — locked apply | `apply_pending_locked(conn=...)` | `apply_pending_locked(conn_factory=...)` | `list_applied` / `apply_pending` take an open conn only — no factory |
@@ -124,7 +124,7 @@ from taskq import make_pg_pool_factory, make_dedicated_conn_factory, make_redis_
 # (also importable from taskq.auth)
 
 # Any PgCredentialProvider → PoolFactory / ConnFactory
-pool_factory = make_pg_pool_factory(dsn, provider, max_size=8, command_timeout=2)
+pool_factory = make_pg_pool_factory(dsn, provider, max_size=8, command_timeout=5.0)
 conn_factory = make_dedicated_conn_factory(dsn, provider)
 
 # Any RedisCredentialProvider → RedisFactory
@@ -197,7 +197,7 @@ Equivalent CLI flags exist for one-off runs:
 heartbeat and worker pools, the `notify_conn` LISTEN connection and the
 `leader_conn` advisory-lock connection — plus the Redis client is built
 through your provider, sized and timed out exactly as the DSN path sizes
-them (`TASKQ_DISPATCHER_POOL_SIZE`, `heartbeat command_timeout=2`,
+them (`TASKQ_DISPATCHER_POOL_SIZE`, `TASKQ_HEARTBEAT_COMMAND_TIMEOUT`,
 `TASKQ_POOL_MAX_INACTIVE_LIFETIME`, `dispatcher_command_timeout` on the
 dedicated connections). Because *every* role is factory-backed, SIGHUP and
 `TASKQ_RELOAD_INTERVAL` rotate all of them — a role left on the DSN
@@ -408,7 +408,7 @@ WorkerConnections(
         settings.pg_dsn_direct,
         provider,
         max_size=settings.heartbeat_pool_size,
-        command_timeout=2,
+        command_timeout=settings.heartbeat_command_timeout,
     ),
     worker_pool_factory=make_pg_pool_factory(
         settings.pg_dsn_pooled,
@@ -658,6 +658,50 @@ worker_main(
 Mixing a pre-constructed pool **and** a factory for the same role raises
 `ValueError` at startup — pick one.
 
+### `worker_main_async` — when you must own the loop
+
+`worker_main` drives its own `asyncio.Runner`. If your actors are closures
+over dependencies you have to build first — an `asyncpg.Pool` is **loop-bound**,
+so it must be created on the loop the worker will run on — await
+`worker_main_async` from your own coroutine instead. Same parameters, same
+exit codes; `worker_main` is the thin sync wrapper over it.
+
+```python
+import asyncio, asyncpg
+from taskq.worker import worker_main_async
+
+async def main() -> int:
+    pool = await asyncpg.create_pool(dsn)      # this loop
+    registry = build_actors(pool)              # actors close over it
+    try:
+        return await worker_main_async(settings, actor_registry=registry)
+    finally:
+        await pool.close()                     # yours to close
+
+raise SystemExit(asyncio.run(main()))
+```
+
+### `build_worker_connections` with an explicit DSN
+
+`build_worker_connections(settings, pg_provider=…)` reads its endpoints from
+`TASKQ_PG_DSN`. If your application already knows where TaskQ's tables live,
+pass that in rather than restating it in a second config system:
+
+```python
+connections = build_worker_connections(
+    worker_settings,
+    pg_provider=provider,
+    pg_dsn=my_settings.taskq_pg_dsn,      # or pg_dsn_direct=/pg_dsn_pooled= for a pgbouncer split
+    redis_url=my_settings.taskq_redis_url,
+)
+```
+
+Only the **endpoint** is overridden — every pool size and timeout still comes
+from `WorkerSettings`. That is the point: hand-building one
+`make_pg_pool_factory` and passing it to all three pool roles silently gives
+each role a full `max_size` pool (`5 x pool_max + 3` per replica) instead of
+`dispatcher_pool_size` / `heartbeat_pool_size` / `worker_pool_size`.
+
 You only need this when you have a custom entrypoint. Running the stock
 console script, set `TASKQ_PG_CREDENTIAL_PROVIDER` instead
 ([From the CLI](#from-the-cli-no-custom-entrypoint)); with a custom
@@ -681,6 +725,56 @@ top-level.
 
 ## Client: `TaskQ`
 
+### Rotating credentials on the client
+
+`TaskQ` takes a `pool_factory=` — the same
+[`PoolFactory`](#poolfactory--connfactory--redisfactory-signatures) the worker
+takes per role. TaskQ invokes it at `open()` and **owns** the result, and
+`await tq.reload_credentials()` re-invokes it to swap the pool in place: the
+backend behind `enqueue`/`get`/`list`/`cancel`, the `tq.actors` client and the
+`stream()` LISTEN fallback all move to the new pool, and the old one is closed
+with a bounded drain. Nothing needs to reach into the client's internals, and
+no restart is required when a token expires.
+
+```python
+from taskq import TaskQ
+from taskq.aad import EntraIdProvider
+
+provider = EntraIdProvider()
+
+# Sugar: dsn + provider. Exactly make_pg_pool_factory(dsn, provider,
+# min_size=min_pool_size, max_size=max_pool_size) under the hood.
+tq = TaskQ(dsn=dsn, pg_provider=provider, max_pool_size=5)
+await tq.open()
+
+# ...anywhere: a scheduled task, a signal handler, your issuer's callback.
+await tq.reload_credentials()
+```
+
+Use `pool_factory=` directly when you need the factory's other hooks
+(`init=`, `server_settings=`, `command_timeout=`):
+
+```python
+from taskq import make_pg_pool_factory
+
+tq = TaskQ(pool_factory=make_pg_pool_factory(dsn, provider, max_size=5, init=register_vector))
+```
+
+`dsn=`, `pool=` and `pool_factory=` are mutually exclusive, and `pg_provider=`
+requires `dsn=`. Ownership follows the rule above: a pool TaskQ built (from a
+DSN or a factory) is closed by `tq.close()`; one you passed as `pool=` never
+is — and `reload_credentials()` refuses to rotate it, because rotating means
+closing.
+
+Note that `reload_credentials()` is not needed for ordinary token refresh:
+`make_pg_pool_factory` passes `password=` to asyncpg as a callable, so every
+*new physical connection* already authenticates with a freshly fetched
+credential. Reload is how you drop sessions opened under a **revoked**
+credential, and the only way to pick up a **changed username** (asyncpg
+resolves `user=` once per pool).
+
+### LISTEN transport
+
 `TaskQ` accepts `pool=` and `redis_client=` (caller-owned). Two additions
 close the remaining DSN-only gaps for the LISTEN/NOTIFY transport in
 `stream()`:
@@ -699,6 +793,26 @@ tq = TaskQ(
 
 Without one of Redis / `pg_conn_factory` / `listen_conn`, `tq.stream()`
 raises a documented `RuntimeError` in pool-only mode.
+
+---
+
+## `ensure_sslmode_require`
+
+Every factory in `taskq.auth` applies this before connecting. Call it yourself
+on the DSN paths they do not cover — a raw `asyncpg.connect`, a migration
+connection, a DSN handed to another library:
+
+```python
+from taskq import ensure_sslmode_require
+
+conn = await asyncpg.connect(ensure_sslmode_require(dsn), password=token)
+```
+
+It adds `sslmode=require` **only when no sslmode is set**. An explicit mode is
+never overridden — `verify-ca` / `verify-full` are not downgraded (`require`
+skips certificate verification, which would expose the very token you are
+injecting), and `sslmode=disable` stays disabled, which is how a test container
+or a Unix-socket deployment opts out.
 
 ---
 
