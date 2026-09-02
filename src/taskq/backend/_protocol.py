@@ -680,6 +680,26 @@ class ScheduleCreateArgs:
 
         if not croniter.is_valid(self.cron_expr):
             raise ValueError(f"Invalid cron expression: {self.cron_expr!r}")
+        self._check_no_nul_text()
+
+    def _check_no_nul_text(self) -> None:
+        """Reject a NUL (U+0000) in caller-supplied text bound as text.
+
+        Mirrors :meth:`EnqueueArgs._check_no_nul_text`: every text column
+        in the ``create_schedule`` INSERT is caller text, and an unguarded
+        NUL surfaces as asyncpg ``CharacterNotInRepertoireError``
+        (SQLSTATE 22021) instead of a clean ``ValueError``.
+        ``cron_expr`` needs no check here — ``croniter.is_valid`` above
+        already rejects it. ``metadata`` transits jsonb via
+        ``jsonb_param``, which guards it at bind time.
+        """
+        check_no_nul_str(self.actor, what="actor")
+        check_no_nul_str(self.name, what="name")
+        check_no_nul_str(self.timezone, what="timezone")
+        if self.payload_factory is not None:
+            check_no_nul_str(self.payload_factory, what="payload_factory")
+        if self.identity_key is not None:
+            check_no_nul_str(self.identity_key, what="identity_key")
 
 
 @dataclass(frozen=True, slots=True)

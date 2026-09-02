@@ -28,7 +28,12 @@ from pydantic import BaseModel
 
 from taskq import actor
 from taskq._json import dumps_jsonb_str
-from taskq.backend._protocol import BatchFilter, IdentityKey, JobFilter
+from taskq.backend._protocol import (
+    BatchFilter,
+    IdentityKey,
+    JobFilter,
+    ScheduleCreateArgs,
+)
 from taskq.client._args import build_enqueue_args
 from taskq.testing.clock import FakeClock
 from taskq.testing.in_memory import InMemoryBackend
@@ -257,3 +262,78 @@ def test_batch_filter_limit_boundaries() -> None:
     assert BatchFilter(limit=500).limit == 500
     with pytest.raises(ValueError, match="limit must be <= 500"):
         BatchFilter(limit=501)
+
+
+# ── ScheduleCreateArgs caller text rejects a NUL before the bind ────────
+#
+# ``__post_init__`` validated only ``cron_expr``; ``actor``/``name``/
+# ``timezone``/``payload_factory``/``identity_key`` are caller text bound
+# directly to text columns in the create_schedule INSERT, so a NUL
+# surfaced as an opaque asyncpg 22021 instead of the clean ValueError the
+# enqueue path raises.
+
+
+def test_schedule_create_args_rejects_nul_in_actor() -> None:
+    with pytest.raises(ValueError, match="actor contains a NUL"):
+        ScheduleCreateArgs(
+            actor="a\x00b", cron_expr="*/5 * * * *", timezone="UTC", next_fire_at=_START
+        )
+
+
+def test_schedule_create_args_rejects_nul_in_name() -> None:
+    with pytest.raises(ValueError, match="name contains a NUL"):
+        ScheduleCreateArgs(
+            actor="a", cron_expr="*/5 * * * *", timezone="UTC", next_fire_at=_START, name="a\x00b"
+        )
+
+
+def test_schedule_create_args_rejects_nul_in_timezone() -> None:
+    with pytest.raises(ValueError, match="timezone contains a NUL"):
+        ScheduleCreateArgs(
+            actor="a", cron_expr="*/5 * * * *", timezone="a\x00b", next_fire_at=_START
+        )
+
+
+def test_schedule_create_args_rejects_nul_in_payload_factory() -> None:
+    with pytest.raises(ValueError, match="payload_factory contains a NUL"):
+        ScheduleCreateArgs(
+            actor="a",
+            cron_expr="*/5 * * * *",
+            timezone="UTC",
+            next_fire_at=_START,
+            payload_factory="a\x00b",
+        )
+
+
+def test_schedule_create_args_rejects_nul_in_identity_key() -> None:
+    with pytest.raises(ValueError, match="identity_key contains a NUL"):
+        ScheduleCreateArgs(
+            actor="a",
+            cron_expr="*/5 * * * *",
+            timezone="UTC",
+            next_fire_at=_START,
+            identity_key=IdentityKey("a\x00b"),
+        )
+
+
+def test_schedule_create_args_rejects_nul_in_cron_expr_via_croniter() -> None:
+    """cron_expr needs no dedicated NUL guard: croniter.is_valid already
+    rejects it as an invalid expression."""
+    with pytest.raises(ValueError, match="Invalid cron expression"):
+        ScheduleCreateArgs(
+            actor="a", cron_expr="0\x00 * * * *", timezone="UTC", next_fire_at=_START
+        )
+
+
+def test_schedule_create_args_clean_text_still_constructs() -> None:
+    args = ScheduleCreateArgs(
+        actor="report_actor",
+        name="nightly",
+        cron_expr="*/5 * * * *",
+        timezone="UTC",
+        next_fire_at=_START,
+        identity_key=IdentityKey("tenant-1"),
+        payload_factory="make_report",
+    )
+    assert args.name == "nightly"
+    assert args.payload_factory == "make_report"
