@@ -25,6 +25,7 @@ from taskq.web.admin._constants import (
     _PAGE_SIZE,  # pyright: ignore[reportPrivateUsage]  # Why: shared constants published by the admin constants module; private prefix scopes them within the admin package.
     _TERMINAL_STATUSES,  # pyright: ignore[reportPrivateUsage]  # Why: shared constants published by the admin constants module; private prefix scopes them within the admin package.
     parse_job_statuses,
+    parse_job_tags,
 )
 from taskq.web.admin._factory import (
     get_backend,
@@ -345,9 +346,9 @@ def register(router: APIRouter) -> None:
         )
         t_from, t_to, within = _parse_time_range(time_range, time_from, time_to)
 
-        tag_list: list[str] | None = None
-        if tags:
-            tag_list = [t.strip() for t in tags.split(",") if t.strip()]
+        # Shared parser: dedupes, caps the item count and per-item length
+        # (the enqueue-side tag contract), and 400s on abuse.
+        tag_list: list[str] | None = parse_job_tags(tags)
 
         where, params = _build_where(
             statuses,
