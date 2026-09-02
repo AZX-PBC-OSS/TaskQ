@@ -29,7 +29,14 @@ from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
     wake_channel,
 )
-from taskq.obs import get_logger, get_meter, record_election_attempt
+from taskq.obs import (
+    get_logger,
+    get_meter,
+    record_election_attempt,
+    update_queue_depth_cache,
+    update_reservation_slots_cache,
+    update_stranded_jobs_cache,
+)
 from taskq.ratelimit.registry import RateLimitRegistry
 from taskq.worker._leader_shared import (
     _EK1,
@@ -151,6 +158,22 @@ class MaintenanceLeader:
         # closes below can park for seconds on a dead PG, and this flag
         # backs the leader gauge, /metrics, and the health report.
         self._deps.is_leader.clear()
+        # Why here, and why empty rather than zero: queue depth, reservation
+        # slots and stranded jobs are sampled ONLY by the leader's sweep
+        # loops, so a demoted process that keeps its last sample keeps
+        # exporting numbers it no longer has any authority over - during a
+        # failover, which is exactly when those dashboards are being read.
+        # An observable gauge whose callback yields nothing produces no data
+        # point, so the series goes stale and the new leader's is the only
+        # one answering; exporting a 0 would instead be an active claim that
+        # the queue is empty, silencing depth alerts and corrupting any
+        # cross-pod sum/min. Cleared before the bounded closes below because
+        # those can park for seconds on a dead PG (same reason is_leader is
+        # cleared first); if the election loop re-elects during that
+        # suspension the sweep loops repopulate on their next tick.
+        update_queue_depth_cache({})
+        update_reservation_slots_cache({})
+        update_stranded_jobs_cache({})
         for attr in ("_cron_conn", "_leader_monitor_conn"):
             conn = getattr(self, attr)
             if conn is not None and not conn.is_closed():
