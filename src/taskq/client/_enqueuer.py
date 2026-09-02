@@ -214,10 +214,15 @@ class SubJobEnqueuer:
     ) -> list[str] | None:
         """Resolve tags with parent inheritance.
 
-        Returns a list suitable for build_enqueue_args, or None for empty.
-        Deduplication is order-preserving (parent first); the downstream
-        ``_validate_and_dedup_tags`` in ``build_enqueue_args`` also
-        deduplicates, but we do it here so the merge result is clean.
+        ``tags=None`` means "no caller choice": inherit the parent's
+        tags when ``inherit_tags`` is enabled. An explicit empty list is
+        an affirmative "no tags" — inheritance is suppressed, so an
+        actor cannot silently gain the parent's tags by passing ``[]``.
+        Returns a list suitable for build_enqueue_args, or None for
+        empty. Deduplication is order-preserving (parent first); the
+        downstream ``_validate_and_dedup_tags`` in ``build_enqueue_args``
+        also deduplicates, but we do it here so the merge result is
+        clean.
         """
         parent_tags = _parent_tags_var.get() if inherit_tags else ()
 
@@ -230,7 +235,7 @@ class SubJobEnqueuer:
             return tags
 
         if not tags:
-            return list(parent_tags)
+            return []
 
         return list(dict.fromkeys((*parent_tags, *tags)))
 

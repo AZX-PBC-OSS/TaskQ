@@ -198,13 +198,13 @@ class TestSubJobTagInheritance:
         assert row is not None
         assert row.tags == ("custom-tag",)
 
-    async def test_empty_list_tags_with_inheritance(self) -> None:
-        """tags=[] with inherit_tags=True and parent tags -> inherits parent tags only.
+    async def test_empty_list_tags_suppresses_inheritance(self) -> None:
+        """tags=[] with inherit_tags=True and parent tags -> NO tags.
 
-        An empty list means "no additional tags to add" -- parent tags
-        are still inherited. This is the intuitive behavior: the caller
-        didn't add any new tags, so the sub-job carries what the parent
-        carried.
+        ``None`` (the default) means "no caller choice": inherit the
+        parent's tags. An explicit empty list is an affirmative "no
+        tags" — an actor passing [] to SUPPRESS the parent's tags must
+        not silently inherit them.
         """
         backend = InMemoryBackend(clock=FakeClock(_NOW))
         enqueuer = _make_enqueuer(backend)
@@ -221,7 +221,7 @@ class TestSubJobTagInheritance:
 
         row = await backend.get(handle.job_id)
         assert row is not None
-        assert row.tags == ("run-001", "tenant-acme")
+        assert row.tags == ()
 
 
 class TestSubJobMissingFields:
