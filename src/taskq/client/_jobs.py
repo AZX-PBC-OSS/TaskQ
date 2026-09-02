@@ -906,8 +906,8 @@ class JobsClient:
             all_handles.append(finalizer_handle)
 
         logger.debug(
-            "batch_streaming_enqueued",
-            kind="batch_streaming_enqueued",
+            "batch-streaming-enqueued",
+            kind="batch-streaming-enqueued",
             batch_id=str(resolved_batch_id),
             size=total_count,
         )
