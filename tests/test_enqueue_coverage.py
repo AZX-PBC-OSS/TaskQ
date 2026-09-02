@@ -362,48 +362,56 @@ async def test_enqueue_batch_fast_empty_raises_value_error() -> None:
         await _enqueue_batch_fast(pool, _SQL, _SCHEMA_LABEL, [])
 
 
-# ── _enqueue_batch: NUL in tags rejected before touching the pool ────────
-
-
-async def test_enqueue_batch_rejects_nul_in_tags_before_pool_use() -> None:
-    """``args.tags`` is user-supplied. ``tag_jsons`` transits the wire as
-    ``$21::jsonb[]`` (see ``enqueue_batch``'s jagged-array comment), so a NUL
-    anywhere in a tag hits the same ``jsonb_in`` rejection as any other
-    jsonb write. Passing ``pool=None`` proves the guard fires while the
-    per-row lists are still being built — before the pool is ever
-    acquired."""
-    args = replace(_make_args(), tags=("bad\x00tag",))
-    with pytest.raises(ValueError, match="NUL"):
-        await _enqueue_batch(None, _SQL, _SCHEMA_LABEL, [args])  # type: ignore[arg-type]  # Why: validation must precede pool use
-
-
-# ── _enqueue / _enqueue_with_conn: NUL in tags rejected (single-job path) ──
+# ── NUL rejection is enforced at the EnqueueArgs chokepoint ─────────────
 #
-# Unlike the batch path, single-job ``tags`` binds directly as
-# ``$21::text[]`` -- there is no jsonb transit, so ``dumps_jsonb_str``'s
-# guard does not run here. PostgreSQL rejects a NUL in ``text`` with
-# ``CharacterNotInRepertoireError`` (SQLSTATE 22021), a ``PostgresError``
-# subclass just like jsonb's ``UntranslatableCharacterError`` -- so without
-# a guard it hits the same infra-vs-data-defect misclassification trap.
+# Every enqueue path -- single, batch, the COPY-based fast batch, the atomic
+# batch, and the InMemory mirror -- builds an ``EnqueueArgs`` first, so the
+# guard lives in ``__post_init__`` rather than being repeated per path.
+# That is deliberate: this class of bug recurred four times precisely
+# because each fix stopped at the paths in its own diff.  PostgreSQL
+# rejects a NUL in ``text`` with ``CharacterNotInRepertoireError``
+# (SQLSTATE 22021), a ``PostgresError`` subclass that
+# ``_TERMINAL_WRITE_INFRA_EXCEPTIONS`` misreads as transient infra failure,
+# so an unguarded NUL retries forever instead of failing.
 
 
-async def test_enqueue_rejects_nul_in_tags_before_pool_use() -> None:
-    """``_enqueue`` validates tags before ``pool.acquire()`` -- passing
-    ``pool=None`` proves the guard fires before the pool is ever touched."""
-    clock = FakeClock(_NOW)
-    args = replace(_make_args(), tags=("bad\x00tag",))
+@pytest.mark.parametrize(
+    ("field_name", "value"),
+    [
+        ("actor", "bad\x00actor"),
+        ("queue", "bad\x00queue"),
+        ("idempotency_scope", "bad\x00scope"),
+        ("identity_key", "bad\x00identity"),
+        ("fairness_key", "bad\x00fairness"),
+        ("idempotency_key", "bad\x00idem"),
+        ("trace_id", "bad\x00trace"),
+        ("span_id", "bad\x00span"),
+    ],
+)
+def test_enqueue_args_rejects_nul_in_any_text_field(field_name: str, value: str) -> None:
+    """Every caller-supplied field bound as ``text`` is guarded, not just
+    ``tags`` -- they all reach the same 22021 misclassification trap."""
     with pytest.raises(ValueError, match="NUL"):
-        await _enqueue(None, _SQL, _SCHEMA_LABEL, clock, args)  # type: ignore[arg-type]  # Why: validation must precede pool use
+        replace(_make_args(), **{field_name: value})
 
 
-async def test_enqueue_with_conn_rejects_nul_in_tags_before_query() -> None:
-    """``_enqueue_with_conn`` validates tags before running any query on the
-    caller-owned connection -- passing ``conn=None`` proves the guard fires
-    before the connection is ever used."""
-    clock = FakeClock(_NOW)
-    args = replace(_make_args(), tags=("bad\x00tag",))
+def test_enqueue_args_rejects_nul_in_tags() -> None:
+    """``tags`` binds as ``$N::text[]`` on the single-job path and as
+    ``$N::jsonb[]`` on the batch path; both are rejected at construction."""
     with pytest.raises(ValueError, match="NUL"):
-        await _enqueue_with_conn(None, _SQL, _SCHEMA_LABEL, clock, args)  # type: ignore[arg-type]  # Why: validation must precede conn use
+        replace(_make_args(), tags=("bad\x00tag",))
+
+
+def test_enqueue_paths_are_unreachable_with_a_nul() -> None:
+    """Construction is the only gate the enqueue paths need: an args value
+    carrying a NUL cannot be built, so no path can bind one.  Bypassing
+    ``__post_init__`` (as only a deliberate ``object.__setattr__`` can)
+    is what it takes to get a NUL past the chokepoint -- proof the guard
+    is on the struct, not on any one caller."""
+    args = _make_args()
+    object.__setattr__(args, "tags", ("bad\x00tag",))
+    with pytest.raises(ValueError, match="NUL"):
+        args._check_no_nul_text()  # pyright: ignore[reportPrivateUsage]  # Why: asserting the chokepoint itself, not a public surface.
 
 
 async def test_enqueue_accepts_clean_tags() -> None:

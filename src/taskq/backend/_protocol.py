@@ -42,6 +42,8 @@ else:
 
 from pydantic import AfterValidator, BaseModel, ConfigDict
 
+from taskq._json import check_no_nul_str
+
 __all__ = [
     "BACKEND_PROTOCOL_VERSION",
     "JOB_STATUS_VALUES",
@@ -350,6 +352,43 @@ class EnqueueArgs:
                 "if both are desired, pass only schedule_to_close (datetime) — "
                 "the interval form is the actor-declaration default."
             )
+        self._check_no_nul_text()
+
+    def _check_no_nul_text(self) -> None:
+        """Reject a NUL (U+0000) in any caller-supplied value bound as text.
+
+        Enforced here, at construction, rather than per enqueue path: every
+        path (single, batch, the ``COPY``-based fast batch, the atomic batch,
+        and the InMemory mirror) funnels through this struct, so a new path
+        cannot reintroduce the gap — and each of the previous four
+        occurrences of this class of bug was exactly a path the fix had not
+        reached.  ``payload`` and ``metadata`` need no check here: they
+        transit jsonb via :func:`~taskq.backend._records.jsonb_param`, whose
+        :func:`~taskq._json.dumps_jsonb_str` rejects a NUL anywhere in the
+        structure.
+
+        Postgres rejects a NUL in ``text`` with
+        ``CharacterNotInRepertoireError`` (SQLSTATE 22021), a
+        ``PostgresError`` subclass that
+        ``worker._handlers._TERMINAL_WRITE_INFRA_EXCEPTIONS`` reads as
+        transient infrastructure failure — so an unguarded NUL retries
+        forever instead of failing.  ``ValueError`` here keeps that
+        classification honest.
+        """
+        check_no_nul_str(self.actor, what="actor")
+        check_no_nul_str(self.queue, what="queue")
+        check_no_nul_str(self.idempotency_scope, what="idempotency_scope")
+        for value, what in (
+            (self.identity_key, "identity_key"),
+            (self.fairness_key, "fairness_key"),
+            (self.idempotency_key, "idempotency_key"),
+            (self.trace_id, "trace_id"),
+            (self.span_id, "span_id"),
+        ):
+            if value is not None:
+                check_no_nul_str(value, what=what)
+        for tag in self.tags:
+            check_no_nul_str(tag, what="tag")
 
 
 @dataclass(frozen=True, slots=True)
