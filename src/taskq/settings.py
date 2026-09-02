@@ -164,6 +164,17 @@ def _schema_name_validator(value: str, ctx: ValidatorContext) -> str:
             f"{ctx.field_name} must be a valid SQL identifier "
             f"([A-Za-z_][A-Za-z0-9_]*), got {value!r}"
         )
+    if len(value) > 63:
+        # NAMEDATALEN is 64 including the terminator, so Postgres silently
+        # truncates longer identifiers — while Redis channel templates
+        # interpolate the full string, quietly diverging between stores.
+        # A length cap belongs in this hook, not `max_length=`, because
+        # built-in constraints are skipped under validate=False (see above).
+        # Chars == bytes here: _IDENT_RE already admitted only ASCII.
+        raise ValueError(
+            f"{ctx.field_name} must be at most 63 characters (Postgres "
+            f"NAMEDATALEN truncates longer identifiers), got {len(value)} characters"
+        )
     return value
 
 

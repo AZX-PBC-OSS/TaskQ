@@ -9,7 +9,7 @@ text), and ``queues`` items (the canonical queue-name charset).
 import pytest
 from dotenvmodel import ValidationError
 
-from taskq.settings import WorkerSettings
+from taskq.settings import TaskQSettings, WorkerSettings
 
 _DSN = "postgresql://taskq:taskq@localhost:5432/taskq"
 _UUID7 = "0197e4d1-4d2b-7a3c-8e9f-1a2b3c4d5e6f"
@@ -81,3 +81,20 @@ def test_queues_item_nul_rejected_at_load() -> None:
 def test_queues_valid_names_load() -> None:
     s = _load(TASKQ_QUEUES="default,high_priority,q-1.2")
     assert s.queues == ["default", "high_priority", "q-1.2"]
+
+
+# ── schema_name: PG's 63-byte identifier limit ──────────────────────────
+
+
+def test_schema_name_64_chars_rejected_at_load() -> None:
+    """Postgres silently truncates identifiers at 63 bytes (NAMEDATALEN)
+    while Redis channel templates interpolate the full string, so an
+    over-long schema name quietly diverges between stores. Fail at load
+    time instead."""
+    with pytest.raises(ValidationError, match=r"schema_name.*63"):
+        TaskQSettings.load_from_dict({"TASKQ_SCHEMA_NAME": "a" * 64})
+
+
+def test_schema_name_63_chars_loads() -> None:
+    s = TaskQSettings.load_from_dict({"TASKQ_SCHEMA_NAME": "a" * 63})
+    assert s.schema_name == "a" * 63
