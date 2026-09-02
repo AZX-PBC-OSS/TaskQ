@@ -7,11 +7,16 @@ layer down. The backend binds every item as 21 parallel array parameters to a
 single `unnest` INSERT in one transaction, so the cap is what keeps that
 statement a bounded size.
 
-The rejection must happen BEFORE any connection is resolved: these tests pass
+The rejection must happen BEFORE any connection is resolved: the cap tests pass
 `worker_pool=None` and no loop-scope connection, so anything that reached the
 insert path would raise `RuntimeError("ctx.jobs is only available inside an actor
 body")` instead of the `ValueError` asserted here. That distinction is the point,
 not an accident of the fixture.
+
+The empty-batch test instead passes a dummy `worker_pool`: with the pool present
+the fallback loop runs zero iterations and returns `[]` silently, which is the
+bug being pinned — the `worker_pool=None` guard would mask it with an unrelated
+`RuntimeError`.
 """
 
 from __future__ import annotations
@@ -42,8 +47,12 @@ def _ref() -> ActorRef[_Payload, None]:
     return _a
 
 
-def _enqueuer() -> SubJobEnqueuer:
-    return SubJobEnqueuer(loop_scope_resolved=None, worker_pool=None, backend=None)  # type: ignore[arg-type]  # Why: the cap is checked before the backend is touched, so a real one is not needed.
+def _enqueuer(worker_pool: object | None = None) -> SubJobEnqueuer:
+    return SubJobEnqueuer(  # type: ignore[arg-type]  # Why: the guardrails under test fire before the backend is touched, and a dummy pool is never used for I/O on the empty path, so neither needs to be real.
+        loop_scope_resolved=None,
+        worker_pool=worker_pool,
+        backend=None,
+    )
 
 
 def _items(count: int) -> list[EnqueueItem[Any, Any]]:
@@ -54,6 +63,18 @@ def _items(count: int) -> list[EnqueueItem[Any, Any]]:
 async def test_a_batch_over_the_cap_is_rejected() -> None:
     with pytest.raises(ValueError, match=r"at most 1000 entries, got 1001"):
         await _enqueuer().enqueue_batch(_items(_CAP + 1))
+
+
+async def test_an_empty_batch_is_rejected() -> None:
+    """`enqueue_batch([])` raises ValueError before any connection use.
+
+    `JobsClient.enqueue_batch` rejects an empty batch pre-I/O; the streaming
+    path raises on the first peek. Without this check the sub-job fallback
+    loop (pool present, no connection) iterates zero items and returns `[]`
+    silently — an empty fan-out indistinguishable from success.
+    """
+    with pytest.raises(ValueError, match="items must not be empty"):
+        await _enqueuer(worker_pool=object()).enqueue_batch([])
 
 
 async def test_a_batch_at_the_cap_is_not_rejected_by_the_cap() -> None:
