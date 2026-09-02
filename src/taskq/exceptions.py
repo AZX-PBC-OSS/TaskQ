@@ -161,7 +161,14 @@ def __getattr__(name: str) -> object:
 
 
 class ResultTooLarge(TaskQError):
-    """Terminal result exceeded the 64KB cap."""
+    """Terminal result exceeded ``WorkerSettings.result_max_bytes``.
+
+    Non-retryable: the actor already ran to completion and a re-run returns
+    the same oversized value, so retrying only burns the remaining attempts
+    (re-running the actor's side effects each time) before the job fails
+    anyway. Classified alongside ``PayloadValidationError`` in
+    :meth:`taskq.retry.RetryClassifier.classify`.
+    """
 
 
 class ProgressTooLarge(TaskQError):

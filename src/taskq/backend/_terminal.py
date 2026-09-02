@@ -166,11 +166,12 @@ async def _mark_succeeded_on_conn(
     progress_seq: int = 0,
     progress_state: dict[str, object] | None = None,
     fallback_result_ttl: timedelta | None = None,
+    max_result_bytes: int = MAX_RESULT_BYTES,
 ) -> bool:
     serialized_result = jsonb_param(result)
     result_size = len(serialized_result.encode("utf-8")) if serialized_result is not None else None
-    if result_size is not None and result_size > MAX_RESULT_BYTES:
-        raise ResultTooLarge(f"result size {result_size} bytes exceeds {MAX_RESULT_BYTES} byte cap")
+    if result_size is not None and result_size > max_result_bytes:
+        raise ResultTooLarge(f"result size {result_size} bytes exceeds {max_result_bytes} byte cap")
     rec = await conn.fetchrow(
         sql.mark_succeeded,
         job_id,
@@ -231,6 +232,7 @@ async def _mark_succeeded(
     progress_seq: int = 0,
     progress_state: dict[str, object] | None = None,
     fallback_result_ttl: timedelta | None = None,
+    max_result_bytes: int = MAX_RESULT_BYTES,
 ) -> bool:
     async with pool.acquire() as conn:
         async with conn.transaction():
@@ -243,6 +245,7 @@ async def _mark_succeeded(
                 progress_seq,
                 progress_state,
                 fallback_result_ttl,
+                max_result_bytes,
             )
 
 

@@ -315,6 +315,9 @@ ignore = [
 # Same rationale — schema name validated against _IDENT_RE; all user-supplied
 # values use $N parameter binding.
 "tests/test_idempotency_scope_migrations.py" = ["S608"]
+# Same rationale — schema name validated against _IDENT_RE; all user-supplied
+# values use $N parameter binding.
+"tests/test_idempotency_key_bounds.py" = ["S608"]
 # Same rationale — schema name validated against _IDENT_RE; all
 # user-supplied values use $N parameter binding.
 "tests/test_migrations_populated.py" = ["S608"]

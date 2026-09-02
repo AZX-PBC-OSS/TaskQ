@@ -3,6 +3,7 @@
 import asyncio
 import contextlib
 import signal
+import sys
 import time
 from collections.abc import Coroutine
 from pathlib import Path
@@ -711,19 +712,66 @@ async def test_stream_output_none_stream() -> None:
     await _stream_output(None, "test", "info")
 
 
+def _reader(payload: bytes, limit: int = 64) -> asyncio.StreamReader:
+    stream = asyncio.StreamReader(limit=limit)
+    stream.feed_data(payload)
+    stream.feed_eof()
+    return stream
+
+
 async def test_stream_output_forwards_lines() -> None:
-    class _FakeStream:
-        def __init__(self) -> None:
-            self._lines = [b"line1\n", b"line2\n", b""]
-            self._idx = 0
-
-        async def readline(self) -> bytes:
-            line = self._lines[self._idx]
-            self._idx += 1
-            return line
-
     with patch("taskq.worker.workgroup.logger"):
-        await _stream_output(_FakeStream(), "test", "info")
+        await _stream_output(_reader(b"line1\nline2\n"), "test", "info")
+
+
+async def test_stream_output_survives_an_overlong_line() -> None:
+    """One 1 MiB JSON log line must not kill the child's output forever.
+
+    ``StreamReader.readline()`` raises ValueError past its limit; uncaught,
+    the streaming task dies and every subsequent stdout/stderr line from
+    that child is lost for the process lifetime.
+    """
+    import structlog
+
+    payload = b"x" * 300 + b"\n" + b"after-the-monster\n"
+    with structlog.testing.capture_logs() as captured:
+        await _stream_output(_reader(payload), "noisy", "info")
+
+    lines = [e["line"] for e in captured if e["event"] == "workgroup.child_output"]
+    assert "after-the-monster" in lines, f"stream died after the overlong line: {captured!r}"
+    assert any(e.get("truncated") for e in captured), "truncation was not reported"
+
+
+async def test_stream_output_keeps_reading_a_real_child_after_a_huge_line() -> None:
+    """End-to-end against a real subprocess pipe, not a hand-fed reader."""
+    import structlog
+
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-c",
+        "import sys; print('before'); print('y' * 200_000); print('after'); sys.stdout.flush()",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+        limit=4096,
+    )
+    with structlog.testing.capture_logs() as captured:
+        await _stream_output(proc.stdout, "child", "info")
+    await proc.wait()
+
+    lines = [e["line"] for e in captured if e["event"] == "workgroup.child_output"]
+    assert "before" in lines
+    assert "after" in lines, f"stream stopped after the huge line: {lines!r}"
+
+
+def test_worker_spec_stream_limit_from_toml_and_validated(tmp_path: Path) -> None:
+    base = 'actors = "mod:attr"\n[[workers]]\nname = "w"\nqueues = ["default"]\nstream_limit = {}\n'
+    path = tmp_path / "wg.toml"
+    path.write_text(base.format(65536))
+    assert load_workgroup_config(path).workers[0].stream_limit == 65536
+
+    path.write_text(base.format(0))
+    with pytest.raises(ValueError, match="stream_limit must be > 0"):
+        load_workgroup_config(path)
 
 
 # ── _child_health_check ─────────────────────────────────────────────

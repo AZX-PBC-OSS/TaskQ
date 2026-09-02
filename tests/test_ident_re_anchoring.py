@@ -140,7 +140,7 @@ def test_queue_name_caller_rejects_the_trailing_newline() -> None:
 
 @pytest.mark.parametrize(
     "value",
-    ["tag1", "my-tag", "abc", "a_9-z", "Run-42"],
+    ["tag1", "my-tag", "abc", "a_9-z", "Run-42", "ci", "a"],
 )
 def test_valid_tags_still_accepted(value: str) -> None:
     assert _TAG_RE.match(value)
@@ -155,7 +155,7 @@ def test_valid_tags_still_accepted(value: str) -> None:
         "ta\ng",  # mid-string newline — always rejected by the charset
         "-tag",  # leading hyphen — charset
         "tag-",  # trailing hyphen — charset
-        "ab",  # min length 3
+        "-",  # a bare hyphen has no word character at either end
         "",
     ],
 )

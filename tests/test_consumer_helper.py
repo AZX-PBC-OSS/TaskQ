@@ -39,11 +39,22 @@ from taskq.testing.actor import (
 from taskq.testing.clock import FakeClock
 from taskq.testing.jobs import make_job_row
 from taskq.testing.otel import setup_tracer
+from taskq.testing.settings import make_integration_settings
 from taskq.worker._consumer import consume_one_job
 from taskq.worker.cancel import ActiveJobRegistry
 
 _NOW = datetime(2026, 1, 1, tzinfo=UTC)
 _WORKER_ID = new_uuid()
+
+
+def _settings() -> "WorkerSettings":
+    """A fully defaulted WorkerSettings.
+
+    Why not ``WorkerSettings()``: the bare constructor skips ``post_load``,
+    so every field reads back ``None`` — a documented programming error that
+    happens to work only for the knobs a given test touches.
+    """
+    return make_integration_settings("postgresql://taskq:taskq@127.0.0.1:1/taskq")
 
 
 class _StubRateLimitRegistry:
@@ -433,7 +444,7 @@ async def test_consume_no_start_to_close_anywhere_runs_unbounded() -> None:
         payload_type=EmptyPayload,
         clock=FakeClock(_NOW),
         logger=structlog.get_logger("test"),
-        settings=WorkerSettings(),
+        settings=_settings(),
     )
 
     assert len(backend.mark_succeeded_calls) == 1
@@ -450,7 +461,7 @@ async def test_consume_worker_default_start_to_close_times_out_job_without_own()
     backend = FakeBackend()
     job = make_job_row()
     assert job.start_to_close is None
-    settings = WorkerSettings()
+    settings = _settings()
     settings.default_start_to_close = timedelta(seconds=0.1)
 
     await consume_one_job(
@@ -483,7 +494,7 @@ async def test_consume_job_start_to_close_overrides_worker_default() -> None:
     backend = FakeBackend()
     job = make_job_row()
     job = replace(job, start_to_close=timedelta(seconds=0.1))
-    settings = WorkerSettings()
+    settings = _settings()
     settings.default_start_to_close = timedelta(minutes=10)
 
     await consume_one_job(

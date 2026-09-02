@@ -33,6 +33,9 @@ from taskq.backend._protocol import (
 )
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining it
+    IDEMPOTENCY_KEY_BYTES_CEILING,
+    MAX_IDEMPOTENCY_KEY_BYTES,
+    MAX_RESULT_BYTES,
     RECLAIM_EVENT_VISIBILITY_DELAY,
 )
 
@@ -383,6 +386,22 @@ class TaskQSettings(DotEnvConfig):
         "worker and admin UI.",
     )
 
+    # -- Idempotency ------------------------------------------------------
+    idempotency_key_max_bytes: int = Field(
+        default=MAX_IDEMPOTENCY_KEY_BYTES,
+        ge=1,
+        le=IDEMPOTENCY_KEY_BYTES_CEILING,
+        description="TASKQ_IDEMPOTENCY_KEY_MAX_BYTES. Maximum UTF-8 byte "
+        "length of idempotency_key, and of idempotency_scope, each. Bytes "
+        "rather than characters because the real bound is the composite "
+        "unique index jobs_idempotency_scope_key_uniq: a btree v4 entry "
+        "cannot exceed 2704 bytes, counted encoded. The ceiling keeps "
+        "scope + key + index-tuple overhead under that, so no value here "
+        "can turn a valid enqueue into a raw Postgres 'index row size ... "
+        "exceeds btree version 4 maximum'. Raise it when keys are derived "
+        "from URLs, composite business keys or opaque vendor cursors.",
+    )
+
     @classmethod
     def load(
         cls,
@@ -648,6 +667,18 @@ class WorkerSettings(TaskQSettings):
         description="TASKQ_HEARTBEAT_POOL_SIZE. Max connections for the "
         "heartbeat pool. Bypasses PgBouncer.",
     )
+    heartbeat_command_timeout: float = Field(
+        default=2.0,
+        gt=0.0,
+        description="TASKQ_HEARTBEAT_COMMAND_TIMEOUT (seconds). Per-query "
+        "timeout for the heartbeat pool, deliberately tighter than "
+        "dispatcher_command_timeout: a beat that takes longer than the tick "
+        "cannot keep a lock lease alive, so failing it fast is the point. "
+        "Raise it on a loaded or cross-region Postgres — max_heartbeat_failures "
+        "consecutive timeouts self-terminate the worker, and before this was a "
+        "setting the 2 s literal made that unavoidable. Must be > 0: asyncpg "
+        "reads 0 as 'no timeout', which turns a stalled beat into a hang.",
+    )
     # worker_pool max_size is derived: int(max_concurrency * 1.5)
 
     # -- Timing ----------------------------------------------------------
@@ -830,6 +861,51 @@ class WorkerSettings(TaskQSettings):
         "task names (never locals or payload values). Enabling it also "
         "tightens the socket to owner-only (no group/other access). Unix socket only — "
         "never mounted on the admin UI surface.",
+    )
+    health_host: str = Field(
+        default="0.0.0.0",  # noqa: S104  # Why: a container probe reaches the replica over the pod network, so a loopback bind would be unprobeable. Only ever bound when health_port is explicitly set.
+        description="TASKQ_HEALTH_HOST. Bind address for the optional TCP health "
+        "listener. Only used when health_port is set. Defaults to all interfaces "
+        "because Azure Container Apps and Kubernetes probe the replica over the pod "
+        "network; narrow it to 127.0.0.1 when a local sidecar is the only prober.",
+    )
+    health_port: int | None = Field(
+        default=None,
+        ge=0,
+        le=65535,
+        description="TASKQ_HEALTH_PORT. TCP port for the HTTP health listener serving "
+        "/live and /ready. Unset (the default) means no TCP listener at all — setting a "
+        "port is the opt-in. Required on Azure Container Apps, whose probes support only "
+        "httpGet/tcpSocket and cannot reach a Unix socket (there is no exec probe type). "
+        "The Unix socket keeps working either way. If the port cannot be bound the worker "
+        "fails to start rather than run with probes silently dead. 0 binds an ephemeral "
+        "port (tests only).",
+    )
+    health_request_timeout: float = Field(
+        default=2.0,
+        gt=0.0,
+        description="TASKQ_HEALTH_REQUEST_TIMEOUT. Seconds allowed for a probe to send its "
+        "whole request line and headers before the connection is dropped unanswered. "
+        "Bounds a drip-feed client that would otherwise hold a connection open forever by "
+        "staying just inside a per-line timeout. Keep it at or below the shortest probe "
+        "timeoutSeconds you configure.",
+    )
+    health_max_header_bytes: int = Field(
+        default=16 * 1024,
+        gt=0,
+        description="TASKQ_HEALTH_MAX_HEADER_BYTES. Cap on a probe request's accumulated "
+        "request line plus headers. Pairs with health_request_timeout to bound a peer that "
+        "sends many small lines fast enough to stay inside the deadline. 16 KiB is far "
+        "above any real probe request, which carries a path and a handful of headers.",
+    )
+    health_readiness_check_timeout: float = Field(
+        default=5.0,
+        gt=0.0,
+        description="TASKQ_HEALTH_READINESS_CHECK_TIMEOUT. Seconds each check registered "
+        "via taskq.worker.health.register_readiness_check may take before it counts as a "
+        "readiness failure. Defaults to 5s, matching the Azure Container Apps default "
+        "readiness probe timeoutSeconds, so a wedged check fails the probe rather than "
+        "outliving it.",
     )
 
     # ── In-worker watchdog (hang/deadlock detection) ────────────
@@ -1173,6 +1249,21 @@ class WorkerSettings(TaskQSettings):
         "fanout channel (in addition to the per-job channel). When False, "
         "events are only published to the per-job Redis channel. "
         "Does not affect Postgres flushing.",
+    )
+
+    # -- Job results ------------------------------------------------
+    result_max_bytes: int = Field(
+        default=MAX_RESULT_BYTES,
+        ge=1024,
+        le=1048576,
+        description="TASKQ_RESULT_MAX_BYTES. Maximum serialised byte length of "
+        "a job's terminal result dict. A larger result raises ResultTooLarge, "
+        "which is non-retryable — the actor already ran, so a re-run returns "
+        "the same oversized value. Range: 1 KiB - 1 MiB (the same ceiling as "
+        "progress_data_max_bytes, so the durable payload can be configured as "
+        "large as the transient one); default 64 KiB. Raise it only with the "
+        "row size in mind: unlike progress data, the result is stored for the "
+        "job's result_ttl.",
     )
 
     # -- Cron scheduler --------------------------------------------

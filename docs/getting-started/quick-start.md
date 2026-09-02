@@ -155,7 +155,7 @@ handle = await client.enqueue(
 )
 ```
 
-Tags appear in the admin UI as filterable badges. Tag validation: `^[\w][\w\-]+[\w]$`, min 3 chars, max 255 chars per tag. See [Jobs — Tags](../guides/jobs-clients.md#tags) for details.
+Tags appear in the admin UI as filterable badges. Tag validation: `\A\w(?:[\w\-]*\w)?\Z`, max 255 chars per tag (short tags like `ci` are fine). See [Jobs — Tags](../guides/jobs-clients.md#tags) for details.
 
 See [Actor API](../guides/actors.md) for the full decorator reference: queue assignment, retry policies, concurrency caps, singletons, rate limits, and DI dependencies.
 

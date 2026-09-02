@@ -99,20 +99,20 @@ def _serialize_result(result: object) -> dict[str, object] | None:
     return None
 
 
-def _check_result_size(data: dict[str, object] | None) -> int:
+def _check_result_size(data: dict[str, object] | None, max_bytes: int = MAX_RESULT_BYTES) -> int:
     """Return the serialised byte size of *data*, raising if it exceeds the cap.
 
     Returns ``0`` when *data* is ``None`` (no result to store).  Raises
-    :class:`ResultTooLarge` when the serialised size exceeds
-    :data:`~taskq.constants.MAX_RESULT_BYTES`.
+    :class:`ResultTooLarge` (non-retryable — a re-run returns the same
+    oversized value) when the serialised size exceeds *max_bytes*, which
+    the callers take from ``WorkerSettings.result_max_bytes`` and which
+    defaults to :data:`~taskq.constants.MAX_RESULT_BYTES`.
     """
     if data is None:
         return 0
     result_bytes = len(_json_dumps(data))
-    if result_bytes > MAX_RESULT_BYTES:
-        raise ResultTooLarge(
-            f"result size {result_bytes} bytes exceeds {MAX_RESULT_BYTES} byte cap"
-        )
+    if result_bytes > max_bytes:
+        raise ResultTooLarge(f"result size {result_bytes} bytes exceeds {max_bytes} byte cap")
     return result_bytes
 
 
@@ -722,7 +722,10 @@ async def _consume_transactional(
                 _pbuf = progress_buffers.get(job.id) if progress_buffers is not None else None
                 _pseq, _pstate = _seq_and_state_after_flush_attempt(_pbuf)
                 result_dict = _serialize_result(result)
-                _check_result_size(result_dict)
+                _check_result_size(
+                    result_dict,
+                    settings.result_max_bytes if settings is not None else MAX_RESULT_BYTES,
+                )
                 try:
                     await backend.mark_succeeded_with_conn(
                         loop_conn,
@@ -944,7 +947,10 @@ async def _consume_autonomous(
         _pseq, _pstate = _seq_and_state_after_flush_attempt(_pbuf)
 
     result_dict = _serialize_result(result)
-    _check_result_size(result_dict)
+    _check_result_size(
+        result_dict,
+        _auto_settings.result_max_bytes if _auto_settings is not None else MAX_RESULT_BYTES,
+    )
     try:
         await asyncio.shield(
             backend.mark_succeeded(

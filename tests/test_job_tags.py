@@ -61,6 +61,12 @@ class TestTagValidation:
         """Valid tags match the regex pattern."""
         valid_tags = [
             "abc",
+            "ci",
+            "qa",
+            "v1",
+            "p0",
+            "a",
+            "_",
             "high-priority",
             "tenant_acme",
             "cost-center_marketing",
@@ -74,7 +80,6 @@ class TestTagValidation:
     def test_invalid_tags_fail_regex(self) -> None:
         """Invalid tags are rejected by the regex."""
         invalid_tags = [
-            "ab",  # too short (< 3 chars)
             "-starts-hyphen",
             "ends-hyphen-",
             "has spaces",
@@ -100,7 +105,20 @@ class TestTagValidation:
     def test_invalid_tag_raises(self) -> None:
         """Tags failing regex raise ValueError."""
         with pytest.raises(ValueError, match="invalid tag"):
-            _validate_and_dedup_tags(["ab"])
+            _validate_and_dedup_tags(["-bad"])
+
+    def test_short_tags_are_valid(self) -> None:
+        """One- and two-character tags round-trip unchanged.
+
+        Two-character tags (``ci``, ``qa``, ``v1``) are among the most
+        common tagging conventions and the column is an unbounded ``text[]``.
+        """
+        assert _validate_and_dedup_tags(["ci", "qa", "v1", "a"]) == ("ci", "qa", "v1", "a")
+
+    def test_hyphen_only_tag_rejected(self) -> None:
+        """A bare hyphen has no word character, so it is still rejected."""
+        with pytest.raises(ValueError, match="invalid tag"):
+            _validate_and_dedup_tags(["-"])
 
     def test_duplicate_tags_deduplicated(self) -> None:
         """Duplicate tags are silently deduplicated, preserving first-occurrence order."""
@@ -171,7 +189,7 @@ class TestEnqueueWithTags:
             await client.enqueue(
                 _tag_actor,
                 _TagPayload(value="test"),
-                tags=["ab"],  # too short
+                tags=["-bad"],  # leading hyphen
             )
 
     async def test_enqueue_deduplicates_tags(self) -> None:

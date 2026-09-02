@@ -15,10 +15,6 @@ _ALL_STATUSES: frozenset[str] = _TERMINAL_STATUSES | _ACTIVE_STATUSES
 _PAGE_SIZE: int = 50
 _FETCH_SIZE: int = _PAGE_SIZE + 1
 
-#: The tags filter is a hand-typed comma list; 16 items is generous for
-#: any real overlap query while bounding the text[] bind and the parse.
-_MAX_TAG_FILTER_ITEMS: int = 16
-
 
 def parse_job_statuses(raw: list[str], *, default: list[str] | None = None) -> list[str]:
     """Validate and return the requested status list; raises HTTPException on bad input.
@@ -70,23 +66,19 @@ def parse_job_tags(raw: str | None) -> list[str] | None:
     """Parse the comma-joined ``tags`` filter; raises HTTPException on bad input.
 
     Returns ``None`` when *raw* is empty/absent (no filter). Items are
-    stripped and deduplicated (first-occurrence order), the item count is
-    capped, and each item is capped at the enqueue-side ``_MAX_TAG_LENGTH``
-    — the stored tags can never exceed it, so a longer filter term can
-    never match anything. A NUL in an item is rejected here because the
+    stripped and deduplicated (first-occurrence order) and each item is
+    capped at the enqueue-side ``_MAX_TAG_LENGTH`` — the stored tags can
+    never exceed it, so a longer filter term can never match anything.
+    There is deliberately no cap on the item *count*: the parse is O(n)
+    over a query string the URL length already bounds and the ``text[]``
+    bind is flat, so a cap would only make a legitimate wide overlap
+    query unexpressible. A NUL in an item is rejected here because the
     list is bound as ``text[]`` — the same SQLSTATE-22021 class
     :func:`parse_text_filter` guards for scalar filters.
     """
     if not raw:
         return None
     items = [t.strip() for t in raw.split(",") if t.strip()]
-    if len(items) > _MAX_TAG_FILTER_ITEMS:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"too many tag filters: {len(items)}; at most {_MAX_TAG_FILTER_ITEMS} are accepted"
-            ),
-        )
     for t in items:
         if len(t) > _MAX_TAG_LENGTH:
             raise HTTPException(

@@ -31,7 +31,12 @@ from pydantic import BaseModel
 
 from taskq._ids import new_uuid
 from taskq.actor_config import ActorConfig
-from taskq.backend._cursor import decode_cursor, encode_cursor
+from taskq.backend._cursor import (
+    decode_batch_cursor,
+    decode_cursor,
+    encode_batch_cursor,
+    encode_cursor,
+)
 from taskq.backend._notify import _SubscriberContext
 from taskq.backend._protocol import (
     BACKEND_PROTOCOL_VERSION,
@@ -56,6 +61,7 @@ from taskq.backend._protocol import (
 )
 from taskq.backend.clock import Clock
 from taskq.backend.statemachine import ACTIVE_STATUSES
+from taskq.constants import MAX_RESULT_BYTES
 from taskq.retry import OnRetryExhausted, OnSuccess, RetryClassifierHook, RetryPolicy
 from taskq.testing._batch import (
     _abort_batch,
@@ -149,7 +155,9 @@ __all__ = [
     "InMemoryBackend",
     "PassthroughPayload",
     "StubFn",
+    "decode_batch_cursor",
     "decode_cursor",
+    "encode_batch_cursor",
     "encode_cursor",
     "wait_for_batch",
 ]
@@ -191,8 +199,10 @@ class InMemoryBackend:
         rng: random.Random | None = None,
         *,
         actor_configs: Iterable[ActorConfig] | None = None,
+        result_max_bytes: int = MAX_RESULT_BYTES,
     ) -> None:
         self._clock = clock
+        self._result_max_bytes = result_max_bytes
         self._cancellation_grace = cancellation_grace_period
         self._cleanup_grace = cleanup_grace_period
         self._worker_id: UUID = new_uuid()

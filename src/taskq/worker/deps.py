@@ -366,7 +366,7 @@ async def open_worker_deps(
                     min_size=1,
                     max_size=settings.heartbeat_pool_size,
                     max_inactive_connection_lifetime=_lifetime,
-                    command_timeout=2,
+                    command_timeout=settings.heartbeat_command_timeout,
                 )
                 assert pool is not None
                 return pool
@@ -399,7 +399,7 @@ async def open_worker_deps(
             host=_dsn_host(direct_dsn) if direct_dsn else None,
         )
 
-        # ── heartbeat_pool (pg_dsn_direct, command_timeout=2s) ────────
+        # ── heartbeat_pool (pg_dsn_direct, heartbeat_command_timeout) ──
         heartbeat_pool = await _resolve_pool(
             conns.heartbeat_pool,
             conns.heartbeat_pool_factory,

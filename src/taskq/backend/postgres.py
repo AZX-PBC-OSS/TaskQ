@@ -413,6 +413,7 @@ class PostgresBackend:
             progress_seq,
             progress_state,
             fallback_result_ttl,
+            self._deps.settings.result_max_bytes,
         )
 
     async def mark_succeeded(
@@ -433,6 +434,7 @@ class PostgresBackend:
             progress_seq,
             progress_state,
             fallback_result_ttl,
+            self._deps.settings.result_max_bytes,
         )
 
     async def mark_failed_or_retry(

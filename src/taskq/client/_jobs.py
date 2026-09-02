@@ -50,13 +50,19 @@ from taskq.backend._protocol import (
 from taskq.backend.clock import Clock, SystemClock
 from taskq.batch import MAX_BATCH_SIZE, BatchHandle, BatchSummary, EnqueueItem
 from taskq.batch_policy import BatchFailurePolicy
-from taskq.client._args import build_batch_args, build_enqueue_args, enqueue_span
+from taskq.client._args import (
+    build_batch_args,
+    build_enqueue_args,
+    enqueue_span,
+    validate_idempotency,
+)
 from taskq.client._capacity import (
     DEFAULT_CAPACITY_CACHE_TTL,
     DEFAULT_CAPACITY_READ_TIMEOUT,
     ActorCapacityCache,
 )
 from taskq.client._handle import JobHandle
+from taskq.constants import MAX_IDEMPOTENCY_KEY_BYTES
 from taskq.exceptions import EmptyFilterError, PayloadValidationError, SchemaNotMigratedError
 from taskq.types import BulkCancelResult, CancelResult
 
@@ -98,6 +104,14 @@ class JobsClient:
         self._exit_stack: AsyncExitStack = AsyncExitStack()
         self._warned_unique_for: set[str] = set()
         self._capacity_cache = ActorCapacityCache(backend, ttl=capacity_cache_ttl)
+        # Why resolved here: every enqueue path in this client validates
+        # against one number, and a client built without settings still gets
+        # the shipped default rather than a second literal.
+        self._idempotency_max_bytes: int = (
+            settings.idempotency_key_max_bytes
+            if settings is not None
+            else MAX_IDEMPOTENCY_KEY_BYTES
+        )
 
     @property
     def backend(self) -> Backend:
@@ -289,11 +303,14 @@ class JobsClient:
           in different scopes both succeed, decoupling the dedupe horizon
           from ``prune_retention_*``.
 
-        - Key length is bounded at **256 characters**. Empty keys and
-          whitespace-only keys raise :class:`ValueError` at the client
-          boundary before any backend call. The same **256-character**
-          bound applies to ``idempotency_scope``; an empty scope (``""``)
-          is valid and equivalent to ``None`` (the default/global scope).
+        - Key length is bounded at ``idempotency_key_max_bytes``
+          (``TASKQ_IDEMPOTENCY_KEY_MAX_BYTES``, default 1024 UTF-8 bytes) —
+          the bound is the composite unique index's btree entry size, not a
+          round number. Empty and whitespace-only keys raise
+          :class:`ValueError` at the client boundary before any backend
+          call. The same bound applies to ``idempotency_scope``; an empty
+          scope (``""``) is valid and equivalent to ``None`` (the
+          default/global scope).
 
         - **No time-based (TTL) dedupe window.** ``idempotency_scope``
           decouples the dedupe horizon from ``prune_retention_*`` by
@@ -375,6 +392,7 @@ class JobsClient:
                 heartbeat_timeout=heartbeat_timeout,
                 max_pending=effective_max_pending,
                 tags=tags,
+                idempotency_max_bytes=self._idempotency_max_bytes,
             )
             span.set_attribute("messaging.message.id", str(args.id))
             if ref.unique_for is not None and args.identity_key is None:
@@ -490,21 +508,12 @@ class JobsClient:
         for i, item in enumerate(items):
             ref = item.actor_ref
             validate_actor_payload(ref.payload_type, item.payload, actor=ref.name)
-            if item.idempotency_key is not None:
-                if item.idempotency_key == "":
-                    raise ValueError(f"idempotency_key for item {i} must not be empty")
-                if item.idempotency_key.strip() == "":
-                    raise ValueError(f"idempotency_key for item {i} must not be whitespace-only")
-                if len(item.idempotency_key) > 256:
-                    raise ValueError(
-                        f"idempotency_key for item {i} must be at most 256 characters, "
-                        f"got {len(item.idempotency_key)}"
-                    )
-            if item.idempotency_scope is not None and len(item.idempotency_scope) > 256:
-                raise ValueError(
-                    f"idempotency_scope for item {i} must be at most 256 characters, "
-                    f"got {len(item.idempotency_scope)}"
-                )
+            validate_idempotency(
+                item.idempotency_key,
+                item.idempotency_scope,
+                self._idempotency_max_bytes,
+                where=f" for item {i}",
+            )
 
         # Phase 2: Aggregated max_pending check (one query for the whole batch)
         # Resolve the effective limit per actor (stored value wins over the
@@ -559,6 +568,7 @@ class JobsClient:
                 metadata=dict(finalizer.metadata),
                 start_to_close=finalizer.start_to_close,
                 tags=finalizer.tags,
+                idempotency_max_bytes=self._idempotency_max_bytes,
             )
 
         # Build BatchRow when failure_policy OR finalizer is set (C3:
@@ -743,6 +753,7 @@ class JobsClient:
                 metadata=dict(finalizer.metadata),
                 start_to_close=finalizer.start_to_close,
                 tags=finalizer.tags,
+                idempotency_max_bytes=self._idempotency_max_bytes,
             )
 
         # Build a lazy generator of EnqueueArgs, validating payloads on the fly.
@@ -776,6 +787,7 @@ class JobsClient:
                     metadata=dict(item.metadata),
                     start_to_close=item.start_to_close,
                     tags=item.tags,
+                    idempotency_max_bytes=self._idempotency_max_bytes,
                 )
                 # Stamp batch_id AFTER build_enqueue_args, which strips any
                 # caller-supplied batch_id as a security boundary (H5).

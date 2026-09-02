@@ -12,9 +12,12 @@ from typing import Final
 from uuid import UUID
 
 __all__ = [
+    "BTREE_MAX_ITEM_BYTES",
     "CRON_LOCK_NAME",
     "DEFAULT_RESERVATION_BACKOFF",
     "EVENTS_CHANNEL_FMT",
+    "IDEMPOTENCY_KEY_BYTES_CEILING",
+    "MAX_IDEMPOTENCY_KEY_BYTES",
     "MAX_RESULT_BYTES",
     "PROGRESS_CHANNEL_FMT",
     "PROGRESS_GLOBAL_CHANNEL_FMT",
@@ -102,12 +105,65 @@ must be passed through unchanged.
 """
 
 MAX_RESULT_BYTES: Final[int] = 65536
-"""Maximum serialised byte length of a job's terminal result dict.
+"""Default maximum serialised byte length of a job's terminal result dict.
+
+The effective cap is ``WorkerSettings.result_max_bytes``
+(``TASKQ_RESULT_MAX_BYTES``), which defaults to this value; this constant
+is what the enforcement points fall back to when no settings object is in
+scope (a direct ``Backend`` call, the in-memory backend).
 
 Enforced on both the consumer success path (before ``mark_succeeded``) and
 the backend terminal-write path (inside ``_mark_succeeded_on_conn``) so a
 result that slips past the consumer check is still rejected at the storage
-boundary.
+boundary. Nothing else depends on the value: there is no CHECK constraint
+on ``jobs.result_size_bytes`` and the result is never carried in a Redis
+event payload.
+"""
+
+BTREE_MAX_ITEM_BYTES: Final[int] = 2704
+"""Postgres btree v4 maximum index-entry size, in bytes.
+
+``nbtree``'s ``BTMaxItemSize`` — roughly a third of an 8 KiB page. An INSERT
+whose index entry exceeds it fails with ``index row size N exceeds btree
+version 4 maximum 2704 for index ...``. This is the only real bound on
+``idempotency_key``/``idempotency_scope``: the column is plain ``text`` with
+no length CHECK, but the pair is covered by the composite unique index
+``jobs_idempotency_scope_key_uniq (idempotency_scope, idempotency_key)``.
+"""
+
+MAX_IDEMPOTENCY_KEY_BYTES: Final[int] = 1024
+"""Default cap on the UTF-8 byte length of ``idempotency_key``/``idempotency_scope``.
+
+Bytes, not characters: :data:`BTREE_MAX_ITEM_BYTES` counts encoded bytes, so
+a character cap either under-protects (a 4-bytes-per-character key) or
+needlessly punishes the ASCII keys callers actually derive from URLs,
+composite business keys and vendor continuation cursors.
+
+Arithmetic, measured against a real Postgres (see
+``tests/test_idempotency_key_bounds.py``): the index tuple carries 16 bytes
+of its own — 1352 + 1352 incompressible bytes report ``index row size
+2720`` — so the largest safe symmetric pair is (2704 - 16) / 2 = 1344
+bytes. The 1024 default leaves scope + key at 2064 bytes, well clear.
+
+The check is on the *uncompressed* length deliberately: index tuples are
+PGLZ-compressed, so a repetitive 8 KiB key does insert, but nothing an
+application derives keys from is reliably compressible.
+
+Operator-controlled via ``TaskQSettings.idempotency_key_max_bytes``
+(``TASKQ_IDEMPOTENCY_KEY_MAX_BYTES``), whose ceiling is
+:data:`IDEMPOTENCY_KEY_BYTES_CEILING`. The prior 256-*character* literal
+(duplicated across ``client/_args.py`` and ``client/_jobs.py``) mapped to
+nothing and pushed consumers into hashing their keys to fit.
+"""
+
+IDEMPOTENCY_KEY_BYTES_CEILING: Final[int] = 1300
+"""Largest value ``idempotency_key_max_bytes`` accepts.
+
+2 x 1300 = 2600 bytes of data plus the measured 16-byte index-tuple
+overhead is 2616, under :data:`BTREE_MAX_ITEM_BYTES` with 88 bytes to spare
+(the measured breaking point is 1344 per value). So no setting of this knob
+can turn a valid enqueue into a raw ``index row size ... exceeds btree
+version 4 maximum`` error from Postgres.
 """
 
 CRON_LOCK_NAME: Final[str] = "taskq:cron"

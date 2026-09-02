@@ -22,7 +22,7 @@ import structlog
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator, model_validator
 
 from taskq.backend._protocol import Backend, ErrorInfo, JobId, JobRow, RetryKind
-from taskq.exceptions import PayloadValidationError, WorkerOwnershipMismatch
+from taskq.exceptions import PayloadValidationError, ResultTooLarge, WorkerOwnershipMismatch
 
 __all__ = [
     "ActorConfigLike",
@@ -279,6 +279,14 @@ class RetryClassifier:
         if isinstance(exception, PayloadValidationError):
             return Fail(error_class="PayloadValidationError", retryable=False)
 
+        # Why: the actor already ran to completion — the failure is the size
+        # of the value it returned, which a re-run reproduces exactly. Left
+        # retryable, a single oversized result burns every remaining attempt
+        # (re-running the actor's side effects each time) before landing in
+        # 'failed' anyway.
+        if isinstance(exception, ResultTooLarge):
+            return Fail(error_class="ResultTooLarge", retryable=False)
+
         if isinstance(exception, ValidationError):
             return Fail(error_class="PayloadValidationError", retryable=False)
 
@@ -425,7 +433,12 @@ def decide_after_failure(
     override: RetryOverride | None = None
     if actor_config.retry_classifier is not None and not isinstance(
         exception,
-        (*actor_config.non_retryable_exceptions, PayloadValidationError, ValidationError),
+        (
+            *actor_config.non_retryable_exceptions,
+            PayloadValidationError,
+            ValidationError,
+            ResultTooLarge,
+        ),
     ):
         try:
             override = actor_config.retry_classifier(exception, job_state.attempt)

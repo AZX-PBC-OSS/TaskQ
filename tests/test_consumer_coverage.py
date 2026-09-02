@@ -142,8 +142,7 @@ def _huge_result() -> dict[str, object]:
 
 async def test_autonomous_result_too_large_routes_to_failure() -> None:
     """An actor returning a result > 64 KiB on the autonomous path raises
-    ``ResultTooLarge`` which is handled as a generic failure (not marked
-    succeeded)."""
+    ``ResultTooLarge`` and is not marked succeeded."""
     backend = _TxBackend()
     clk: Clock = FakeClock(_NOW)
     cfg = default_actor_config()
@@ -167,13 +166,98 @@ async def test_autonomous_result_too_large_routes_to_failure() -> None:
     assert len(backend.mark_failed_or_retry_calls) == 1
 
 
+# ── ResultTooLarge is non-retryable ──────────────────────────────────────
+
+
+async def test_result_too_large_does_not_consume_the_retry_budget() -> None:
+    """An oversized result fails terminally on the first attempt.
+
+    The actor's work already succeeded; re-running it produces the same
+    oversized dict, so every remaining attempt is burned deterministically
+    before the job lands in ``failed``. ``ResultTooLarge`` therefore
+    classifies non-retryable: ``retry_delay`` is ``None`` (terminal write)
+    even with attempts to spare.
+    """
+    backend = _TxBackend()
+    clk: Clock = FakeClock(_NOW)
+    cfg = default_actor_config()
+    job = make_job_row(attempt=1, max_attempts=5)
+
+    async def actor(_job: object, _ctx: JobContext[BaseModel]) -> dict[str, object]:
+        return _huge_result()
+
+    result = await consume_one_job(
+        as_backend(backend),
+        job,
+        _WORKER_ID,
+        run_actor=actor,
+        actor_config=cfg,
+        payload_type=EmptyPayload,
+        clock=clk,
+    )
+
+    assert result == "failed"
+    assert len(backend.mark_succeeded_calls) == 0
+    assert len(backend.mark_failed_or_retry_calls) == 1
+    assert backend.mark_failed_or_retry_calls[0]["retry_delay"] is None
+
+
+async def test_raised_result_max_bytes_admits_a_bigger_result() -> None:
+    """The cap is operator-controlled: a result over the 64 KiB default
+    succeeds when ``result_max_bytes`` is raised."""
+    from taskq.settings import WorkerSettings
+
+    backend = _TxBackend()
+    clk: Clock = FakeClock(_NOW)
+    cfg = default_actor_config()
+    job = make_job_row(attempt=1, max_attempts=5)
+    settings = WorkerSettings.load_from_dict(
+        {
+            "TASKQ_PG_DSN": "postgresql://taskq:taskq@localhost:5432/taskq",
+            "TASKQ_RESULT_MAX_BYTES": "262144",
+        }
+    )
+
+    async def actor(_job: object, _ctx: JobContext[BaseModel]) -> dict[str, object]:
+        return _huge_result()
+
+    result = await consume_one_job(
+        as_backend(backend),
+        job,
+        _WORKER_ID,
+        run_actor=actor,
+        actor_config=cfg,
+        payload_type=EmptyPayload,
+        clock=clk,
+        settings=settings,
+    )
+
+    assert result == "succeeded"
+    assert len(backend.mark_failed_or_retry_calls) == 0
+
+
+def test_result_too_large_classifies_non_retryable() -> None:
+    """The classifier itself refuses to retry ResultTooLarge."""
+    from taskq.exceptions import ResultTooLarge
+    from taskq.retry import Fail, RetryClassifier, RetryPolicy
+
+    decision = RetryClassifier.classify(
+        RetryPolicy(max_attempts=5),
+        (),
+        ResultTooLarge("result size 999999 bytes exceeds 65536 byte cap"),
+        attempt=1,
+    )
+    assert isinstance(decision, Fail)
+    assert decision.retryable is False
+
+
 # ── ResultTooLarge: transactional path ───────────────────────────────────
 
 
 async def test_transactional_result_too_large_routes_to_failure() -> None:
     """An actor returning a result > 64 KiB inside a LOOP-scope transaction
-    raises ``ResultTooLarge``; the transaction rolls back and the job is
-    routed to the generic failure handler (not marked succeeded)."""
+    raises ``ResultTooLarge``; the transaction rolls back and the job fails
+    (not marked succeeded)."""
     backend = _TxBackend()
     clk: Clock = FakeClock(_NOW)
     cfg = default_actor_config()

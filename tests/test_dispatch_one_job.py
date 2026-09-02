@@ -70,7 +70,12 @@ class _FakeWorkerDeps:
     def __init__(self) -> None:
         self.active_jobs = ActiveJobRegistry()
         self.worker_pool: asyncpg.Pool | None = None
-        self.settings = WorkerSettings()
+        # Why load_from_dict, not WorkerSettings(): the bare constructor
+        # skips post_load, leaving every field None — including the ones
+        # the consumer reads on the success path (result_max_bytes).
+        self.settings = WorkerSettings.load_from_dict(
+            {"TASKQ_PG_DSN": "postgresql://taskq:taskq@127.0.0.1:1/taskq"}
+        )
         self.settings.worker_group = "default"
         self.redis_client: Any | None = None
         self.progress_buffers: dict[Any, Any] = {}

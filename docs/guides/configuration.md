@@ -98,6 +98,7 @@ Extends `TaskQSettings`. All fields below apply to the worker process only.
 | `TASKQ_DISPATCH_OVERSAMPLE` | `int` | `2` | Multiplier for per-actor candidate gathering in the dispatch SQL. Each LATERAL reads `residual × oversample` candidates. Higher values absorb more identity-key collisions and multi-producer contention. Default 2 (tolerates 50% dupe identities). Set 1 when no `identity_key` is used and single-producer. Range: 1–1000. | Min: 1; Max: 1000 |
 | `TASKQ_DISPATCH_SCOPE_BY_HOME_QUEUE` | `bool` | `false` | When `true`, restrict `per_actor_capacity` to actors whose home queue (`actor_config.queue`) the worker subscribes to. Lowers per-cycle probe count at the cost of not dispatching `enqueue(queue=...)` override jobs whose actor's home queue is not subscribed. Default `false` (override-safe). | — |
 | `TASKQ_HEARTBEAT_POOL_SIZE` | `int` | `4` | Max connections for the heartbeat pool. | Min: 1 |
+| `TASKQ_HEARTBEAT_COMMAND_TIMEOUT` | `float` (seconds) | `2.0` | Per-query timeout for the heartbeat pool — deliberately tighter than `TASKQ_DISPATCHER_COMMAND_TIMEOUT`, since a beat slower than the tick cannot keep a lock lease alive. Raise it on a loaded or cross-region Postgres: `TASKQ_MAX_HEARTBEAT_FAILURES` consecutive timeouts self-terminate the worker. | > 0 |
 | `TASKQ_MAX_CONCURRENCY` | `int` | `8` | Max concurrent jobs per worker process. `worker_pool` size is derived as `int(max_concurrency * 1.5)`. | Min: 1 |
 
 ### Timing and Liveness
@@ -230,16 +231,30 @@ See [rate-limiting.md](rate-limiting.md) for the fallback behaviour.
 
 | Env Var | Type | Default | Description | Constraints |
 |---|---|---|---|---|
-| `TASKQ_HEALTH_ENABLED` | `bool` | `true` | Enable the Unix-socket health server. | — |
+| `TASKQ_HEALTH_ENABLED` | `bool` | `true` | Master switch for the worker health server (both transports). | — |
 | `TASKQ_HEALTH_SOCKET_PATH` | `str` | `/tmp/taskq_health.sock` | Unix socket path for the health server. | — |
+| `TASKQ_HEALTH_PORT` | `int \| None` | unset | TCP port for the HTTP health listener serving `/live` and `/ready`. Unset means **no TCP listener at all** — setting a port is the opt-in. Required on Azure Container Apps, whose probes support only `httpGet`/`tcpSocket` and cannot reach a Unix socket. If the port cannot be bound the worker **fails to start**. `0` binds an ephemeral port (tests only). | 0-65535 |
+| `TASKQ_HEALTH_HOST` | `str` | `0.0.0.0` | Bind address for the TCP listener. Only used when `TASKQ_HEALTH_PORT` is set. Defaults to all interfaces because ACA and Kubernetes probe the replica over the pod network; narrow to `127.0.0.1` when only a local sidecar probes. | — |
 | `TASKQ_HEALTH_PG_PING_TIMEOUT` | `float` (seconds) | `0.2` | Timeout for the readiness PG ping. | Min: 0.0 |
+| `TASKQ_HEALTH_REQUEST_TIMEOUT` | `float` (seconds) | `2.0` | Time a probe gets to send its whole request line and headers before the connection is dropped unanswered. Bounds a drip-feed client that would otherwise hold a connection open by staying just inside a per-line timeout. Keep at or below the shortest probe `timeoutSeconds` you configure. | > 0 |
+| `TASKQ_HEALTH_MAX_HEADER_BYTES` | `int` | `16384` | Cap on a probe request's accumulated request line plus headers. Pairs with `TASKQ_HEALTH_REQUEST_TIMEOUT` to bound a peer sending many small lines fast enough to stay inside the deadline. | > 0 |
+| `TASKQ_HEALTH_READINESS_CHECK_TIMEOUT` | `float` (seconds) | `5.0` | Time each check registered via `taskq.worker.health.register_readiness_check` gets before it counts as a readiness failure. Matches the ACA default readiness probe `timeoutSeconds`. | > 0 |
 | `TASKQ_HEALTH_TASKS_ENABLED` | `bool` | `false` | Expose the `/tasks` asyncio stack-dump endpoint for live debugging of a stuck worker. Off by default; see below. | — |
+
+`TASKQ_HEALTH_ENABLED=false` disables **both** transports — a `TASKQ_HEALTH_PORT`
+set alongside it is not honoured, and probes against that port will fail.
+
+See [deployment.md](deployment.md#health-probes) for working Azure Container
+Apps, Kubernetes and App Service probe configurations, and for registering your
+own readiness checks.
 
 `/tasks` returns every live task's name, coroutine and await site — never
 locals or payload values. It is off by default because that still reveals
 code structure and file paths. Enabling it also tightens the health
-socket to mode `0600` (owner-only). It is served on the Unix socket only
-and is never mounted on the admin UI surface.
+socket to mode `0600` (owner-only). It is served on the Unix socket only —
+the TCP listener answers `/tasks` with `404` even when this setting is on,
+because none of the socket's filesystem permissions apply there — and it is
+never mounted on the admin UI surface.
 
 The same dump is available without enabling the endpoint by sending
 **`SIGUSR2`** to the worker, which writes it to the log. Reach for either
@@ -311,6 +326,26 @@ See [cron.md](cron.md) for cron scheduling details.
 | `TASKQ_PROGRESS_PUBLISH_GLOBAL` | `bool` | `true` | When `true`, progress updates are published to the global fanout channel (e.g. Redis). When `false`, progress updates are only written to Postgres. | — |
 
 See [progress.md](progress.md) for progress tracking details.
+
+### Idempotency
+
+| Env Var | Type | Default | Description | Constraints |
+|---|---|---|---|---|
+| `TASKQ_IDEMPOTENCY_KEY_MAX_BYTES` | `int` | `1024` | Maximum UTF-8 byte length of `idempotency_key`, and of `idempotency_scope`, each. Bytes rather than characters because the real bound is the composite unique index `jobs_idempotency_scope_key_uniq`: a Postgres btree v4 entry cannot exceed 2704 bytes. Raise it when keys are derived from URLs, composite business keys or opaque vendor continuation cursors. | Range: 1–1300 |
+
+The ceiling (1300) keeps scope + key + index-tuple overhead under the btree
+limit, so no value of this setting can turn a valid enqueue into a raw
+`index row size ... exceeds btree version 4 maximum` error from Postgres.
+
+### Job Results
+
+| Env Var | Type | Default | Description | Constraints |
+|---|---|---|---|---|
+| `TASKQ_RESULT_MAX_BYTES` | `int` | `65536` | Maximum serialised byte length of a job's terminal result dict. A larger result raises `ResultTooLarge`, which is **non-retryable** — the actor already ran, so a re-run returns the same oversized value. | Range: 1024–1048576 |
+
+The ceiling matches `TASKQ_PROGRESS_DATA_MAX_BYTES`, so the durable result
+can be configured as large as the transient progress payload. Raise it with
+the row size in mind: the result is stored for the job's `result_ttl`.
 
 ### Job Retention and Archive
 

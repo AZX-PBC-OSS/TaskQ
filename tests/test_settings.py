@@ -1722,3 +1722,28 @@ def test_load_from_dict_invalid_redis_url_scheme_raises_type_coercion_error() ->
     """A ``TASKQ_REDIS_URL`` with a non-Redis scheme fails type coercion."""
     with pytest.raises(TypeCoercionError, match="redis_url"):
         TaskQSettings.load_from_dict({"TASKQ_REDIS_URL": "http://not-redis"})
+
+
+# ── result_max_bytes ────────────────────────────────────────────────────
+
+
+def test_result_max_bytes_default_matches_the_shipped_constant() -> None:
+    from taskq.constants import MAX_RESULT_BYTES
+
+    assert _load().result_max_bytes == MAX_RESULT_BYTES == 65536
+
+
+def test_result_max_bytes_via_dict_and_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert _load(TASKQ_RESULT_MAX_BYTES="262144").result_max_bytes == 262144
+    monkeypatch.setenv("TASKQ_PG_DSN", _DSN)
+    monkeypatch.setenv("TASKQ_RESULT_MAX_BYTES", "1048576")
+    assert WorkerSettings.load().result_max_bytes == 1048576
+
+
+def test_result_max_bytes_ceiling_matches_progress_data_max_bytes() -> None:
+    """Both payload caps top out at 1 MiB: the durable result can be
+    configured as large as the transient progress payload."""
+    with pytest.raises(ConstraintViolationError):
+        _load(TASKQ_RESULT_MAX_BYTES="1048577")
+    with pytest.raises(ConstraintViolationError):
+        _load(TASKQ_RESULT_MAX_BYTES="1023")

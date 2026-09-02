@@ -327,7 +327,7 @@ error, not a crash, but a caller that exceeded the bound will now fail.
 | `SubJobEnqueuer.enqueue_batch(items)` | at least 1 item | `ValueError` |
 | `BatchFilter(limit=...)` | `<= 500` (default 100, `0` still means "no rows") | `ValueError` at construction |
 | Admin `/jobs`, `/jobs/count`, `/history` — `status` | at most 8 values | HTTP 400 |
-| Admin `/jobs` — `tags` | at most 16 items, 255 chars each | HTTP 400 |
+| Admin `/jobs` — `tags` | 255 chars each (no item-count cap) | HTTP 400 |
 
 Notes:
 

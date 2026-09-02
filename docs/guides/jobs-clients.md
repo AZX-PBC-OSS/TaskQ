@@ -160,11 +160,11 @@ Serialises the payload through `ref.payload_type`, enqueues the job, and returns
 | `identity_key` | `IdentityKey \| None` | `None` | Opaque string identifying the logical entity this job belongs to (e.g. `"account:42"`). Required for `unique_for` deduplication to take effect. Also used for fairness scheduling. |
 | `fairness_key` | `str \| None` | `None` | Partitions the dispatch order so no single key monopolises the queue. **Requires the target queue to be in `round_robin` mode** (`taskq queues set-mode <queue> round_robin`); on the default `strict_fifo` the key is stored and ignored. See [workers.md](workers.md#queue-modes). |
 | `idempotency_key` | `IdempotencyKey \| None` | `None` | String preventing duplicate insertion, unique within its `idempotency_scope`. See [Idempotency key](#idempotency_key). |
-| `idempotency_scope` | `str \| None` | `None` | Namespacing scope for `idempotency_key`. `None` or `""` means the global/default scope (preserves prior global-dedupe behavior). An explicit scope (e.g. a run/batch/epoch id) allows the same business key in different scopes to both succeed. ≤ 256 chars. |
+| `idempotency_scope` | `str \| None` | `None` | Namespacing scope for `idempotency_key`. `None` or `""` means the global/default scope (preserves prior global-dedupe behavior). An explicit scope (e.g. a run/batch/epoch id) allows the same business key in different scopes to both succeed. ≤ `idempotency_key_max_bytes` (default 1024 UTF-8 bytes). |
 | `trace_id` | `str \| None` | extracted from OTel span | Trace ID for distributed tracing. Automatically extracted from the active OTel span when one is valid; pass explicitly to override. |
 | `span_id` | `str \| None` | extracted from OTel span | Span ID for distributed tracing. See `trace_id`. |
 | `metadata` | `dict[str, object] \| None` | `{}` | Per-job metadata stored in the `jobs.metadata` JSONB column. Merged with the library-injected `singleton` key when applicable. The caller's dict is never mutated. |
-| `tags` | `list[str] \| None` | `[]` | Per-job tags stored in `jobs.tags text[]`. Must match `^[\w][\w\-]+[\w]$` (3–255 chars). Used for filtering and categorization in queries and the admin UI. See [Tags](#tags). |
+| `tags` | `list[str] \| None` | `[]` | Per-job tags stored in `jobs.tags text[]`. Must match `\A\w(?:[\w\-]*\w)?\Z` (1–255 chars). Used for filtering and categorization in queries and the admin UI. See [Tags](#tags). |
 
 ### Enqueue evaluation order
 
@@ -194,7 +194,7 @@ remaining steps. Later steps only execute when earlier ones did not match or rai
   business key in different scopes to both succeed, decoupling the dedupe
   horizon from `prune_retention_*`. Namespace keys to avoid collisions
   between actors: `"send_receipt:order_123"`, not `"order_123"`.
-- Maximum length: **256 characters**.
+- Maximum length: **1024 UTF-8 bytes** (`TASKQ_IDEMPOTENCY_KEY_MAX_BYTES`, raisable to 1300). The bound is the composite unique index `jobs_idempotency_scope_key_uniq`: a Postgres btree v4 entry cannot exceed 2704 bytes, counted encoded — so the cap is in bytes, not characters.
 - Empty strings and whitespace-only strings raise `ValueError` before any backend call.
 - **No TTL.** `idempotency_scope` decouples the dedupe horizon by *namespace*, not by *time* —
   there is no `idempotency_ttl` parameter. A key within a scope still dedupes **until pruned**,
@@ -326,8 +326,8 @@ EnqueueItem(
     scheduled_at=None,  # datetime | None
     priority=None,
     fairness_key=None,
-    idempotency_key=None,  # str | None, ≤ 256 chars
-    idempotency_scope=None,  # str | None, ≤ 256 chars
+    idempotency_key=None,  # str | None, ≤ 1024 UTF-8 bytes by default
+    idempotency_scope=None,  # str | None, ≤ 1024 UTF-8 bytes by default
     identity_key=None,
     metadata={},
 )
@@ -340,8 +340,8 @@ EnqueueItem(
 | `scheduled_at` | `datetime \| None` | `None` | Deferred execution time. |
 | `priority` | `int \| None` | `None` | Dispatch priority within the queue. |
 | `fairness_key` | `str \| None` | `None` | Fairness grouping key. Only affects dispatch on a `round_robin` queue -- see [workers.md](workers.md#queue-modes). |
-| `idempotency_key` | `IdempotencyKey \| str \| None` | `None` | Per-item idempotency token (≤ 256 chars). |
-| `idempotency_scope` | `str \| None` | `None` | Per-item idempotency scope (≤ 256 chars). `None` or `""` = global/default scope. |
+| `idempotency_key` | `IdempotencyKey \| str \| None` | `None` | Per-item idempotency token (≤ `idempotency_key_max_bytes`, default 1024 UTF-8 bytes). |
+| `idempotency_scope` | `str \| None` | `None` | Per-item idempotency scope (≤ `idempotency_key_max_bytes`, default 1024 UTF-8 bytes). `None` or `""` = global/default scope. |
 | `identity_key` | `IdentityKey \| None` | `None` | Opaque identity string; required for `unique_for` dedup to take effect. |
 | `metadata` | `dict[str, object]` | `{}` | Per-job metadata. Do **not** set `batch_id` here — the library overwrites it. |
 | `tags` | `list[str] \| None` | `None` | Per-job tags. See [Tags](#tags). |
@@ -1375,7 +1375,7 @@ async def send_order_confirmation(client: JobsClient, order_id: str) -> str:
 - The key is unique within its `idempotency_scope` (the default scope `None`/`""`
   preserves the prior global-dedupe behavior). Always namespace it:
   `"actor_name:entity_id"`.
-- Maximum 256 characters. Empty and whitespace-only keys raise `ValueError`.
+- Maximum length: **1024 UTF-8 bytes** (`TASKQ_IDEMPOTENCY_KEY_MAX_BYTES`, raisable to 1300). The bound is the composite unique index `jobs_idempotency_scope_key_uniq`: a Postgres btree v4 entry cannot exceed 2704 bytes, counted encoded — so the cap is in bytes, not characters. Empty and whitespace-only keys raise `ValueError`.
 - A duplicate key returns a handle with `was_existing=True` pointing at the original job.
 - `idempotency_key` does not bypass `max_pending` on the **first** call for a given key. If the
   queue is full when the key is first used, `MaxPendingExceededError` is raised and no row is
@@ -1467,8 +1467,8 @@ await client.enqueue_batch(items)
 
 ### Tag validation
 
-Tags must match `^[\w][\w\-]+[\w]$`:
-- At least 3 characters
+Tags must match `\A\w(?:[\w\-]*\w)?\Z`:
+- At least 1 character
 - Starts and ends with a word character (`[a-zA-Z0-9_]`)
 - Middle can contain word characters or hyphens
 - Maximum 255 characters per tag

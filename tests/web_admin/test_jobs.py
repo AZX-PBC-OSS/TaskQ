@@ -438,7 +438,7 @@ def test_parse_job_statuses_dedupes_a_long_repeated_list_rather_than_rejecting_i
     assert parse_job_statuses(["pending"] * 9) == ["pending"]
 
 
-def test_parse_job_tags_caps_item_count_and_length_and_dedupes() -> None:
+def test_parse_job_tags_length_cap_and_dedupes() -> None:
     from fastapi import HTTPException
 
     from taskq.web.admin._constants import parse_job_tags
@@ -450,9 +450,11 @@ def test_parse_job_tags_caps_item_count_and_length_and_dedupes() -> None:
     # Valid requests unchanged.
     assert parse_job_tags("urgent,batch") == ["urgent", "batch"]
 
-    with pytest.raises(HTTPException) as exc_info:
-        parse_job_tags(",".join(f"tag{i}" for i in range(17)))
-    assert exc_info.value.status_code == 400
+    # No item-count cap: a long overlap filter is a valid query, and the
+    # text[] bind and the O(n) parse cost nothing the URL length does not
+    # already bound.
+    many = [f"tag{i}" for i in range(64)]
+    assert parse_job_tags(",".join(many)) == many
 
     # The enqueue side never stores a tag longer than _MAX_TAG_LENGTH
     # (client/_args.py), so a longer filter term can never match anything.
@@ -471,18 +473,18 @@ def test_jobs_route_accepts_duplicate_statuses(
     assert response.status_code == 200
 
 
-def test_jobs_route_rejects_over_cap_and_oversized_tags(
+def test_jobs_route_rejects_oversized_tags_but_not_many_tags(
     monkeypatch: pytest.MonkeyPatch, make_app: Callable[..., Any]
 ) -> None:
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
     client = make_app()
-    too_many = client.get("/jobs?tags=" + ",".join(f"tag{i}" for i in range(17)))
-    assert too_many.status_code == 400
+    many = client.get("/jobs?tags=" + ",".join(f"tag{i}" for i in range(17)))
+    assert many.status_code == 200
     too_long = client.get("/jobs?tags=" + "x" * 256)
     assert too_long.status_code == 400
 
 
-def test_jobs_route_accepts_duplicate_tags_within_caps(
+def test_jobs_route_accepts_duplicate_tags(
     monkeypatch: pytest.MonkeyPatch, make_app: Callable[..., Any]
 ) -> None:
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")

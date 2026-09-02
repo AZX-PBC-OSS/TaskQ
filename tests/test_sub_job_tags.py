@@ -95,7 +95,7 @@ class TestSubJobExplicitTags:
             await enqueuer.enqueue(
                 _make_actor_ref(),
                 _Payload(),
-                tags=["ab"],
+                tags=["-bad"],
             )
 
     async def test_tags_deduplicated(self) -> None:

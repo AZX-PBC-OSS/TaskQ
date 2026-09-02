@@ -32,18 +32,27 @@ from taskq.backend._protocol import (
     QueueName,
     _validate_queue_name,  # pyright: ignore[reportPrivateUsage]  # Why: the canonical queue-name validator; redefining it here would let the enqueue and actor chokepoints drift.
 )
+from taskq.constants import MAX_IDEMPOTENCY_KEY_BYTES
 from taskq.obs import record_published_message, safe_start_span
 from taskq.retry import time_budget_as_interval
 
 if TYPE_CHECKING:
     from taskq.batch import EnqueueItem
 
-__all__ = ["build_enqueue_args", "enqueue_span"]
+__all__ = ["build_enqueue_args", "enqueue_span", "validate_idempotency"]
 
 logger: structlog.stdlib.BoundLogger = structlog.get_logger(__name__)
 
-_TAG_RE: re.Pattern[str] = re.compile(r"\A[\w][\w\-]+[\w]\Z")
-"""Tag validation regex matching River's pattern: starts/ends with word char, middle allows hyphens, min 3 chars.
+_TAG_RE: re.Pattern[str] = re.compile(r"\A\w(?:[\w\-]*\w)?\Z")
+"""Tag validation regex: word chars and interior hyphens, one char or longer.
+
+A tag starts and ends with a word character (``[A-Za-z0-9_]`` plus
+Unicode letters/digits) and may carry hyphens between them; whitespace,
+punctuation and a leading/trailing hyphen are rejected. The optional
+``(?:...)?`` group is what admits a single-character tag: the previous
+``[\\w][\\w\\-]+[\\w]`` imposed a three-character minimum that rejected
+``ci``, ``qa``, ``v1`` and ``p0`` for no storage reason — the column is an
+unbounded ``text[]`` and ``_MAX_TAG_LENGTH`` is the only real bound.
 
 ``\\A``/``\\Z``, not ``^``/``$``: Python's ``$`` also matches immediately
 before a trailing newline, so ``"tag\\n"`` satisfied ``^...$`` (see
@@ -69,13 +78,57 @@ def _validate_and_dedup_tags(tags: list[str] | None) -> tuple[str, ...]:
             raise ValueError(f"tag exceeds {_MAX_TAG_LENGTH} characters: {tag!r}")
         if not _TAG_RE.match(tag):
             raise ValueError(
-                f"invalid tag {tag!r}: must match pattern \\A[\\w][\\w\\-]+[\\w]\\Z "
-                f"(at least 3 chars, word chars and hyphens only, no leading/trailing hyphens)"
+                f"invalid tag {tag!r}: must match pattern {_TAG_RE.pattern} "
+                f"(word chars and hyphens only, no leading/trailing hyphens)"
             )
         if tag not in seen:
             seen.add(tag)
             result.append(tag)
     return tuple(result)
+
+
+def validate_idempotency(
+    idempotency_key: str | None,
+    idempotency_scope: str | None,
+    max_bytes: int = MAX_IDEMPOTENCY_KEY_BYTES,
+    *,
+    where: str = "",
+) -> None:
+    """Validate an idempotency key/scope pair, raising ValueError on abuse.
+
+    The single definition of the bound: ``build_enqueue_args`` and
+    ``JobsClient.enqueue_batch``'s pre-flight both call this, rather than
+    carrying their own copy of the limit (they did, and it was a 256 in two
+    files with no comment in either).
+
+    *max_bytes* is measured on the UTF-8 encoding, not on ``len(str)``: the
+    pair is covered by the composite unique index
+    ``jobs_idempotency_scope_key_uniq``, and a btree v4 entry is bounded in
+    *bytes* (:data:`~taskq.constants.BTREE_MAX_ITEM_BYTES`). Rejecting here
+    keeps that failure a clean ValueError naming the setting instead of a
+    raw ``index row size ... exceeds btree version 4 maximum`` from an
+    INSERT.
+
+    *where* is an optional " for item 3"-style suffix for batch callers.
+    """
+    if idempotency_key is not None:
+        if idempotency_key == "":
+            raise ValueError(f"idempotency_key{where} must not be empty")
+        if idempotency_key.strip() == "":
+            raise ValueError(f"idempotency_key{where} must not be whitespace-only")
+        key_bytes = len(idempotency_key.encode())
+        if key_bytes > max_bytes:
+            raise ValueError(
+                f"idempotency_key{where} must be at most {max_bytes} UTF-8 bytes "
+                f"(TASKQ_IDEMPOTENCY_KEY_MAX_BYTES), got {key_bytes}"
+            )
+    if idempotency_scope is not None:
+        scope_bytes = len(idempotency_scope.encode())
+        if scope_bytes > max_bytes:
+            raise ValueError(
+                f"idempotency_scope{where} must be at most {max_bytes} UTF-8 bytes "
+                f"(TASKQ_IDEMPOTENCY_KEY_MAX_BYTES), got {scope_bytes}"
+            )
 
 
 def _user_stacklevel() -> int:
@@ -126,6 +179,7 @@ def build_enqueue_args[P: BaseModel, R: BaseModel | None](
     unique_for: timedelta | None = None,
     unique_states: tuple[str, ...] | None = None,
     tags: list[str] | None = None,
+    idempotency_max_bytes: int = MAX_IDEMPOTENCY_KEY_BYTES,
 ) -> EnqueueArgs:
     """Validate inputs and construct :class:`EnqueueArgs`.
 
@@ -138,20 +192,7 @@ def build_enqueue_args[P: BaseModel, R: BaseModel | None](
     ``ref.unique_states``) or per-call overrides. When ``None``,
     the actor-declared values from ``ref`` are used.
     """
-    if idempotency_key is not None:
-        if idempotency_key == "":
-            raise ValueError("idempotency_key must not be empty")
-        if idempotency_key.strip() == "":
-            raise ValueError("idempotency_key must not be whitespace-only")
-        if len(idempotency_key) > 256:
-            raise ValueError(
-                f"idempotency_key must be at most 256 characters, got {len(idempotency_key)}"
-            )
-
-    if idempotency_scope is not None and len(idempotency_scope) > 256:
-        raise ValueError(
-            f"idempotency_scope must be at most 256 characters, got {len(idempotency_scope)}"
-        )
+    validate_idempotency(idempotency_key, idempotency_scope, idempotency_max_bytes)
 
     if start_to_close is not None and start_to_close <= timedelta(0):
         raise ValueError(f"start_to_close must be > 0, got {start_to_close!r}")

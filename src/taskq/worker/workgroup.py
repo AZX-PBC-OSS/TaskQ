@@ -68,6 +68,13 @@ __all__ = [
 
 logger: structlog.stdlib.BoundLogger = get_logger(__name__)
 
+_STREAM_LIMIT: int = 1 << 20
+"""Default per-line buffer for a child's stdout/stderr (1 MiB).
+
+Per-worker override: ``WorkerSpec.stream_limit``. A line longer than this
+is truncated and reported (see :func:`_read_line`), never fatal.
+"""
+
 
 # ── Config model ──────────────────────────────────────────────────────────
 
@@ -117,6 +124,7 @@ class WorkerSpec:
     max_concurrency: int = 8
     worker_group: str = "default"
     force_update_actor_config: bool = False
+    stream_limit: int = _STREAM_LIMIT  # per-line stdout/stderr buffer (bytes)
     health: WorkerHealthConfig = field(default_factory=WorkerHealthConfig)
 
     def cli_args(self) -> list[str]:
@@ -206,6 +214,9 @@ class WorkgroupConfig:
                             defaults.get("force_update_actor_config", False),
                         )
                     ),
+                    stream_limit=int(
+                        w.get("stream_limit", defaults.get("stream_limit", _STREAM_LIMIT))
+                    ),
                     health=health,
                 )
             )
@@ -262,6 +273,8 @@ def _validate_config(cfg: WorkgroupConfig) -> None:
             raise ValueError(
                 f"worker[{w.name!r}].max_concurrency must be > 0, got {w.max_concurrency}"
             )
+        if w.stream_limit <= 0:
+            raise ValueError(f"worker[{w.name!r}].stream_limit must be > 0, got {w.stream_limit}")
         if w.health.enabled:
             if w.health.check_interval <= 0:
                 raise ValueError(
@@ -291,8 +304,6 @@ def _validate_config(cfg: WorkgroupConfig) -> None:
 
 
 # ── Supervisor runtime ────────────────────────────────────────────────────
-
-_STREAM_LIMIT: int = 1 << 20  # 1 MiB buffer for subprocess output lines
 
 
 @dataclass
@@ -460,7 +471,7 @@ async def _spawn_child(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
-        limit=_STREAM_LIMIT,
+        limit=child.spec.stream_limit,
     )
 
     child.stdout_task = asyncio.create_task(
@@ -469,6 +480,41 @@ async def _spawn_child(
     child.stderr_task = asyncio.create_task(
         _stream_output(child.process.stderr, child.spec.name, "warning")
     )
+
+
+async def _read_line(stream: asyncio.StreamReader) -> tuple[bytes, bool]:
+    """Read one line, truncating it if it exceeds the reader's limit.
+
+    Returns ``(line, truncated)``; an empty line means EOF.
+
+    Why not ``stream.readline()``: past the limit it raises ``ValueError``
+    *and* clears the whole buffer on the way out. Uncaught, that kills
+    ``_stream_output`` and with it every subsequent line from that child
+    for the rest of the process's life — one 1 MiB JSON log line or a deep
+    traceback is enough. ``readuntil()`` reports the same condition as
+    ``LimitOverrunError`` while leaving the buffer intact, so the overlong
+    line can be drained deliberately (``consumed`` bytes at a time, up to
+    the newline) and the lines after it still arrive. Losing one line is
+    acceptable; losing the stream is not.
+    """
+    head = b""
+    truncated = False
+    while True:
+        try:
+            line = await stream.readuntil(b"\n")
+        except asyncio.IncompleteReadError as exc:  # EOF without a trailing newline
+            return (head if truncated else exc.partial), truncated
+        except asyncio.LimitOverrunError as exc:
+            chunk = await stream.read(exc.consumed) if exc.consumed > 0 else b""
+            if not truncated:
+                head = chunk
+                truncated = True
+            # read(n>0) returns empty only at EOF, so this is the "child died
+            # mid-line" exit — and it also makes the loop unable to spin.
+            if not chunk:
+                return head, truncated
+        else:
+            return (head if truncated else line), truncated
 
 
 async def _stream_output(
@@ -481,10 +527,15 @@ async def _stream_output(
         return
     log_fn: Any = getattr(logger, level)
     while True:
-        line = await stream.readline()
+        line, truncated = await _read_line(stream)
         if not line:
             break
-        log_fn("workgroup.child_output", worker=name, line=line.decode(errors="replace").rstrip())
+        log_fn(
+            "workgroup.child_output",
+            worker=name,
+            line=line.decode(errors="replace").rstrip(),
+            truncated=truncated,
+        )
 
 
 def _prune_burst(child: _ChildState, cfg: SupervisorConfig) -> bool:

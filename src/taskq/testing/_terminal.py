@@ -21,7 +21,6 @@ from taskq.backend._protocol import (
     JobId,
     JobRow,
 )
-from taskq.constants import MAX_RESULT_BYTES
 from taskq.exceptions import (
     ResultTooLarge,
     WorkerOwnershipMismatch,
@@ -75,9 +74,10 @@ async def _mark_succeeded(
     result_size_bytes: int | None = (
         len(_json_dumps_str(result).encode("utf-8")) if result is not None else None
     )
-    if result_size_bytes is not None and result_size_bytes > MAX_RESULT_BYTES:
+    max_result_bytes = self._result_max_bytes
+    if result_size_bytes is not None and result_size_bytes > max_result_bytes:
         raise ResultTooLarge(
-            f"result size {result_size_bytes} bytes exceeds {MAX_RESULT_BYTES} byte cap"
+            f"result size {result_size_bytes} bytes exceeds {max_result_bytes} byte cap"
         )
     # Mirror the PG COALESCE: stored (operator-owned) result_ttl applied at
     # completion; then the worker-supplied fallback (the @actor literal),
