@@ -18,7 +18,6 @@ import structlog
 
 from taskq._close import CLOSE_TIMEOUT_SECS, close_conn_bounded
 from taskq._dsn import dsn_host
-from taskq._json import dumps_str
 from taskq.backend._sql import (
     INSERT_ATTEMPT_SQL,
     build_heartbeat_sql,
@@ -257,7 +256,6 @@ async def isolate_self(
                         else:
                             crashed += 1
                         await conn.execute(isolate_job_sql, row["id"], worker_id)
-                        metadata: dict[str, object] = {}
                         await conn.execute(
                             insert_attempt_sql,
                             row["id"],
@@ -269,7 +267,7 @@ async def isolate_self(
                             None,
                             None,
                             worker_id,
-                            dumps_str(metadata),
+                            "{}",  # metadata — matches the sweep paths' literal
                         )
                 return pending, crashed, cancelled
 

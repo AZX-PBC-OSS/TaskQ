@@ -447,7 +447,6 @@ class PostgresBackend:
         return await _mark_failed_or_retry(
             self._worker_pool,
             self._sql,
-            self._clock,
             job_id,
             worker_id,
             error_info,
@@ -501,7 +500,6 @@ class PostgresBackend:
         return await _mark_snoozed(
             self._worker_pool,
             self._sql,
-            self._clock,
             job_id,
             worker_id,
             delay,
@@ -524,7 +522,6 @@ class PostgresBackend:
         return await _mark_retry_after(
             self._worker_pool,
             self._sql,
-            self._clock,
             job_id,
             worker_id,
             delay,

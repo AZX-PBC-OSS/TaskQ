@@ -13,18 +13,20 @@ with other ``clock_timestamp()``-derived values in the same row and with
 ``job_events.occurred_at`` (also ``clock_timestamp()``, via
 ``INSERT_EVENT_SQL`` — see ``taskq.constants.RECLAIM_EVENT_VISIBILITY_
 DELAY`` for why that column's co-monotonicity with ``job_events.id``
-matters). Python-side ``duration_ms`` computations use
-``datetime.now(UTC)`` for the same reason — matching ``clock_timestamp()``
-wall-clock semantics, not transaction-start ``now()``.
+matters). ``duration_ms`` is likewise computed against a
+``clock_timestamp()`` returned by the sweep statement itself — never
+against this process's clock, which would offset it by the app/database
+skew even though both ``started_at`` and the attempt row's ``finished_at``
+are database-written.
 """
 
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from uuid import UUID
 
 import structlog
 
 from taskq.backend._protocol import ConnLike, JobId
-from taskq.backend._records import jsonb_param, parse_rowcount
+from taskq.backend._records import compute_duration_ms, jsonb_param, parse_rowcount
 from taskq.backend._sql import INSERT_EVENT_SQL
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
@@ -117,7 +119,8 @@ SET status = CASE
     END
 FROM snap
 WHERE j.id = snap.id
-RETURNING j.id, j.status, j.attempt, j.started_at, snap.locked_by_worker"""
+RETURNING j.id, j.status, j.attempt, j.started_at, snap.locked_by_worker,
+          clock_timestamp() AS now_ts"""
 
 _SWEEP_2_SQL = """\
 WITH snap AS (
@@ -135,7 +138,8 @@ SET status = 'failed'::"{schema}".job_status,
     error_message = 'schedule_to_close reached before next dispatch'
 FROM snap
 WHERE j.id = snap.id
-RETURNING j.id, snap.prev_status, j.attempt, j.started_at, j.actor"""
+RETURNING j.id, snap.prev_status, j.attempt, j.started_at, j.actor,
+          clock_timestamp() AS now_ts"""
 
 _SWEEP_3_SQL = """\
 WITH snap AS (
@@ -255,9 +259,13 @@ async def sweep_expired_locks(
             started_at: datetime | None = rec["started_at"]
             original_worker: UUID | None = rec["locked_by_worker"]
 
-            duration_ms: int | None = None
-            if started_at is not None:
-                duration_ms = int((datetime.now(UTC) - started_at).total_seconds() * 1000)
+            # started_at is database-written and the attempt row's
+            # finished_at is stamped clock_timestamp(); the elapsed span
+            # between them must be measured in that same domain, so "now"
+            # comes back on the sweep's own RETURNING rather than from this
+            # process's clock, which would skew (or negate) the stored
+            # duration_ms.
+            duration_ms = compute_duration_ms(started_at, rec["now_ts"])
 
             await conn.execute(
                 attempt_sql,
@@ -365,9 +373,13 @@ async def sweep_deadline_exceeded(
 
             record_deadline_exceeded_swept(actor=actor)
 
-            duration_ms: int | None = None
-            if started_at is not None:
-                duration_ms = int((datetime.now(UTC) - started_at).total_seconds() * 1000)
+            # started_at is database-written and the attempt row's
+            # finished_at is stamped clock_timestamp(); the elapsed span
+            # between them must be measured in that same domain, so "now"
+            # comes back on the sweep's own RETURNING rather than from this
+            # process's clock, which would skew (or negate) the stored
+            # duration_ms.
+            duration_ms = compute_duration_ms(started_at, rec["now_ts"])
             await conn.execute(
                 attempt_sql,
                 job_id,

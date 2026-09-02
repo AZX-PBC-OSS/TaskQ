@@ -245,7 +245,7 @@ retried AS (
       AND j.locked_by_worker = (SELECT worker_id FROM params)
       AND (j.schedule_to_close IS NULL
            OR clock_timestamp() + (SELECT retry_delay FROM params) <= j.schedule_to_close)
-    RETURNING j.*, 'retried'::text AS outcome_branch
+    RETURNING j.*, 'retried'::text AS outcome_branch, clock_timestamp() AS now_ts
 ),
 deadline_failed AS (
     UPDATE "{s}".jobs j
@@ -267,7 +267,7 @@ deadline_failed AS (
       AND j.schedule_to_close IS NOT NULL
       AND clock_timestamp() + (SELECT retry_delay FROM params) > j.schedule_to_close
       AND NOT EXISTS (SELECT 1 FROM retried)
-    RETURNING j.*, 'deadline_failed'::text AS outcome_branch
+    RETURNING j.*, 'deadline_failed'::text AS outcome_branch, clock_timestamp() AS now_ts
 )
 SELECT * FROM retried UNION ALL SELECT * FROM deadline_failed""",
         mark_cancelled=f"""\
@@ -316,7 +316,7 @@ snoozed AS (
       AND j.locked_by_worker = (SELECT worker_id FROM params)
       AND (j.schedule_to_close IS NULL
            OR clock_timestamp() + (SELECT delay FROM params) <= j.schedule_to_close)
-    RETURNING j.*, 'snoozed'::text AS outcome_branch
+    RETURNING j.*, 'snoozed'::text AS outcome_branch, clock_timestamp() AS now_ts
 ),
 deadline_failed AS (
     UPDATE "{s}".jobs j
@@ -336,7 +336,7 @@ deadline_failed AS (
       AND j.schedule_to_close IS NOT NULL
       AND clock_timestamp() + (SELECT delay FROM params) > j.schedule_to_close
       AND NOT EXISTS (SELECT 1 FROM snoozed)
-    RETURNING j.*, 'failed'::text AS outcome_branch
+    RETURNING j.*, 'failed'::text AS outcome_branch, clock_timestamp() AS now_ts
 )
 SELECT * FROM snoozed UNION ALL SELECT * FROM deadline_failed""",
         mark_retry_after_consume_true=f"""\
@@ -364,7 +364,7 @@ WITH params AS (
            OR clock_timestamp() + (SELECT delay FROM params) <= j.schedule_to_close)
       AND (j.retry_kind = 'indefinite'
            OR j.attempt < j.max_attempts)
-    RETURNING j.*, j.attempt AS running_attempt, 'snoozed'::text AS outcome_branch
+    RETURNING j.*, j.attempt AS running_attempt, 'snoozed'::text AS outcome_branch, clock_timestamp() AS now_ts
 ),
 max_attempts_failed AS (
     UPDATE "{s}".jobs j
@@ -386,7 +386,7 @@ max_attempts_failed AS (
       AND (j.schedule_to_close IS NULL
            OR clock_timestamp() + (SELECT delay FROM params) <= j.schedule_to_close)
       AND NOT EXISTS (SELECT 1 FROM snoozed)
-    RETURNING j.*, j.attempt AS running_attempt, 'max_attempts_failed'::text AS outcome_branch
+    RETURNING j.*, j.attempt AS running_attempt, 'max_attempts_failed'::text AS outcome_branch, clock_timestamp() AS now_ts
 ),
 deadline_failed AS (
     UPDATE "{s}".jobs j
@@ -407,7 +407,7 @@ deadline_failed AS (
       AND clock_timestamp() + (SELECT delay FROM params) > j.schedule_to_close
       AND NOT EXISTS (SELECT 1 FROM snoozed)
       AND NOT EXISTS (SELECT 1 FROM max_attempts_failed)
-    RETURNING j.*, j.attempt AS running_attempt, 'deadline_failed'::text AS outcome_branch
+    RETURNING j.*, j.attempt AS running_attempt, 'deadline_failed'::text AS outcome_branch, clock_timestamp() AS now_ts
 )
 SELECT * FROM snoozed
 UNION ALL SELECT * FROM max_attempts_failed
@@ -436,7 +436,7 @@ snoozed AS (
       AND j.locked_by_worker = (SELECT worker_id FROM params)
       AND (j.schedule_to_close IS NULL
            OR clock_timestamp() + (SELECT delay FROM params) <= j.schedule_to_close)
-    RETURNING j.*, 'snoozed'::text AS outcome_branch
+    RETURNING j.*, 'snoozed'::text AS outcome_branch, clock_timestamp() AS now_ts
 ),
 deadline_failed AS (
     UPDATE "{s}".jobs j
@@ -456,7 +456,7 @@ deadline_failed AS (
       AND j.schedule_to_close IS NOT NULL
       AND clock_timestamp() + (SELECT delay FROM params) > j.schedule_to_close
       AND NOT EXISTS (SELECT 1 FROM snoozed)
-    RETURNING j.*, 'deadline_failed'::text AS outcome_branch
+    RETURNING j.*, 'deadline_failed'::text AS outcome_branch, clock_timestamp() AS now_ts
 )
 SELECT * FROM snoozed UNION ALL SELECT * FROM deadline_failed""",
         # ── Shared INSERT templates ────────────────────────────────

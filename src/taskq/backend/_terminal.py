@@ -29,7 +29,6 @@ from taskq.backend._records import (
     parse_rowcount,
 )
 from taskq.backend._sql_templates import SqlTemplates
-from taskq.backend.clock import Clock
 from taskq.constants import MAX_RESULT_BYTES
 from taskq.exceptions import (
     ResultTooLarge,
@@ -253,7 +252,6 @@ async def _mark_succeeded(
 async def _mark_failed_or_retry(
     pool: "asyncpg.Pool",
     sql: SqlTemplates,
-    clock: Clock,
     job_id: JobId,
     worker_id: UUID,
     error_info: ErrorInfo,
@@ -268,7 +266,6 @@ async def _mark_failed_or_retry(
     return await _mark_retry(
         pool,
         sql,
-        clock,
         job_id,
         worker_id,
         error_info,
@@ -343,7 +340,6 @@ async def _mark_failed(
 async def _mark_retry(
     pool: "asyncpg.Pool",
     sql: SqlTemplates,
-    clock: Clock,
     job_id: JobId,
     worker_id: UUID,
     error_info: ErrorInfo,
@@ -371,8 +367,14 @@ async def _mark_retry(
 
             branch = rec["outcome_branch"]
             row = _job_row_from_record(rec)
+            # The retry branch leaves finished_at NULL (the job lives on),
+            # so the attempt's end is "now" — taken from the same statement
+            # that just wrote the row, never from this process's clock:
+            # started_at is database-written, and mixing domains here makes
+            # the stored duration_ms wrong by the app/DB skew (negative,
+            # under a lagging app clock).
             duration_ms = (
-                compute_duration_ms(row.started_at, clock.now())
+                compute_duration_ms(row.started_at, rec["now_ts"])
                 if row.started_at is not None and branch == "retried"
                 else compute_duration_ms(row.started_at, row.finished_at)
             )
@@ -620,7 +622,6 @@ async def _mark_abandoned(
 async def _mark_snoozed(
     pool: "asyncpg.Pool",
     sql: SqlTemplates,
-    clock: Clock,
     job_id: JobId,
     worker_id: UUID,
     delay: timedelta,
@@ -648,8 +649,10 @@ async def _mark_snoozed(
             attempt: int = rec["attempt"]
             started_at: datetime | None = rec["started_at"]
             finished_at: datetime | None = rec["finished_at"]
+            # Snoozed leaves finished_at NULL — see _mark_failed_or_retry
+            # for why "now" must come off the statement, not clock.now().
             duration_ms = (
-                compute_duration_ms(started_at, clock.now())
+                compute_duration_ms(started_at, rec["now_ts"])
                 if started_at is not None and branch == "snoozed"
                 else compute_duration_ms(started_at, finished_at)
             )
@@ -727,7 +730,6 @@ async def _mark_snoozed(
 async def _mark_retry_after(
     pool: "asyncpg.Pool",
     sql: SqlTemplates,
-    clock: Clock,
     job_id: JobId,
     worker_id: UUID,
     delay: timedelta,
@@ -759,8 +761,10 @@ async def _mark_retry_after(
             attempt_for_record: int = rec["running_attempt"] if consume_budget else attempt
             started_at: datetime | None = rec["started_at"]
             finished_at: datetime | None = rec["finished_at"]
+            # Snoozed leaves finished_at NULL — see _mark_failed_or_retry
+            # for why "now" must come off the statement, not clock.now().
             duration_ms = (
-                compute_duration_ms(started_at, clock.now())
+                compute_duration_ms(started_at, rec["now_ts"])
                 if started_at is not None and branch == "snoozed"
                 else compute_duration_ms(started_at, finished_at)
             )
