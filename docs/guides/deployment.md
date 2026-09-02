@@ -270,11 +270,149 @@ spec:
 
 See [configuration.md](configuration.md#production-example-env) for the full set of `TASKQ_*` environment variables and cross-field validation constraints.
 
-!!! warning "Use exec probes, not httpGet"
-    The worker health server binds a **Unix socket** at
-    `TASKQ_HEALTH_SOCKET_PATH` (default `/tmp/taskq_health.sock`). Kubernetes
-    `httpGet` probes cannot reach Unix sockets. Use `exec` probes with
-    `taskq health live` / `taskq health ready`.
+### Health probes
+
+The worker serves the same two endpoints — `/live` and `/ready` — over two transports:
+
+| Transport | Enabled by | Reachable from |
+| --- | --- | --- |
+| Unix socket at `TASKQ_HEALTH_SOCKET_PATH` (default `/tmp/taskq_health.sock`) | `TASKQ_HEALTH_ENABLED` (on by default) | inside the container: `taskq health live` / `taskq health ready`, so Kubernetes `exec` probes |
+| TCP, `TASKQ_HEALTH_HOST`:`TASKQ_HEALTH_PORT` | setting `TASKQ_HEALTH_PORT` (unset by default) | anything that can reach the container port: `httpGet` and `tcpSocket` probes |
+
+Responses are what orchestrators expect: **200** when healthy, **503** when not, **404** for an
+unknown path. Kubernetes and Azure Container Apps both treat 200-399 as probe success, so a 503
+reliably fails a probe on either.
+
+`/live` answers whether the event loop is responsive — a failing liveness probe means *restart
+me*. `/ready` additionally pings Postgres, checks for stale worker loops, fails during shutdown,
+and runs any checks you registered (see below) — a failing readiness probe means *stop sending me
+work*, not *restart me*.
+
+!!! danger "A configured probe port that cannot bind fails startup"
+    If `TASKQ_HEALTH_PORT` is set and the port cannot be bound, the worker **refuses to start**
+    rather than running with its probes silently dead. That is deliberate: a worker that came up
+    with a dead listener would fail every probe, or — worse, under a `tcpSocket` probe against a
+    port some other process holds — pass every probe while nothing checked it.
+
+#### Azure Container Apps
+
+ACA supports **only `httpGet` and `tcpSocket` probes — there is no `exec` probe type**
+([Health probes in Azure Container Apps][aca-probes], "Restrictions"). A Unix socket is therefore
+unprobeable there, and `taskq health ready` cannot be used as a probe. Set `TASKQ_HEALTH_PORT` and
+probe it over HTTP:
+
+```yaml
+containers:
+  - image: myregistry.azurecr.io/taskq-worker:1.0.0
+    name: worker
+    env:
+      - name: TASKQ_HEALTH_PORT
+        value: "8600"
+    probes:
+      - type: Liveness
+        httpGet:
+          path: /live
+          port: 8600
+        initialDelaySeconds: 5
+        periodSeconds: 10
+        failureThreshold: 3
+      - type: Readiness
+        httpGet:
+          path: /ready
+          port: 8600
+        initialDelaySeconds: 5
+        periodSeconds: 5
+        timeoutSeconds: 5
+        failureThreshold: 48
+      - type: Startup
+        httpGet:
+          path: /live
+          port: 8600
+        initialDelaySeconds: 3
+        periodSeconds: 3
+        failureThreshold: 40
+```
+
+!!! tip "Replacing a TCP↔Unix bridge"
+    Before `TASKQ_HEALTH_PORT` existed, the only way to probe a worker on ACA was to run a second
+    TCP listener alongside it that forwarded each connection to the Unix socket. If you built one,
+    you can now delete it and set `TASKQ_HEALTH_PORT` to the port it used to listen on: the probe
+    config above is unchanged, and the endpoints, status codes and body shape are identical
+    because the bridge was forwarding to this same handler. Drop the bridge module, its
+    `start`/`stop` calls in your worker entrypoint, and its host/port settings; keep the `port` in
+    your infrastructure template pointed at the same number.
+
+Notes drawn from the ACA probe reference:
+
+- The probe port does **not** have to be the ingress target port — a worker with no ingress at all
+  can still expose 8600 purely for probes. Port values must be integers; named ports are not
+  supported.
+- Only one probe of each type per container.
+- If you enable ingress and define no probes, the portal adds default **TCP** probes against the
+  ingress target port. A TCP probe only proves something accepted a connection, so prefer
+  `httpGet` against `/ready` — that is the only variant that reflects Postgres reachability and
+  shutdown state.
+- `TASKQ_HEALTH_HOST` defaults to `0.0.0.0`, which is what the ACA runtime needs to reach the
+  replica. Do not narrow it to `127.0.0.1` unless a sidecar in the same network namespace is the
+  only prober.
+
+#### Kubernetes
+
+Both styles work. `httpGet` is the portable choice and the one to reach for if the same manifest
+must also run on ACA:
+
+```yaml
+          ports:
+            - name: health
+              containerPort: 8600
+          livenessProbe:
+            httpGet:
+              path: /live
+              port: 8600
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8600
+            initialDelaySeconds: 5
+            periodSeconds: 10
+```
+
+with `TASKQ_HEALTH_PORT=8600` in the container env. The `exec` probes shown in the Deployment
+above remain valid on Kubernetes and need no open port; they are the better choice when you would
+rather not expose one.
+
+#### Azure App Service
+
+App Service Health check pings a single path on the app's own HTTP port every minute and treats
+**200-299** as healthy ([Monitor the health of App Service instances][appsvc-health]). It has no
+liveness/readiness split, so point it at `/ready` — the endpoint that reflects dependencies — and
+run the worker's health listener on the port App Service routes to.
+
+#### Registering your own readiness checks
+
+`/ready` covers TaskQ's own dependencies. To add your application's, register a check before
+starting the worker:
+
+```python
+from taskq.worker.health import register_readiness_check
+
+async def search_index_reachable() -> str | None:
+    """Return None when healthy, or a reason string when not."""
+    if not await index.ping():
+        return "search index unreachable"
+    return None
+
+register_readiness_check("search_index", search_index_reachable)
+```
+
+Registered checks run on both transports and on `taskq health ready`. They fail closed: a check
+that raises, or that outruns `TASKQ_HEALTH_READINESS_CHECK_TIMEOUT`, makes the worker unready and
+its reason appears in the `/ready` body.
+
+[aca-probes]: https://learn.microsoft.com/en-us/azure/container-apps/health-probes
+[appsvc-health]: https://learn.microsoft.com/en-us/azure/app-service/monitor-instances-health-check
 
 Add a `PodDisruptionBudget` (`minAvailable: 1`, selector matching `app: taskq-worker`) to prevent voluntary evictions from taking all workers offline during node drains.
 

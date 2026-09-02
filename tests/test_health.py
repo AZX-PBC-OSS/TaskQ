@@ -61,6 +61,11 @@ def _make_deps(**overrides: object) -> WorkerDeps:  # pyright: ignore[reportRetu
         "heartbeat_pool": _StubPool(),
         "settings": SimpleNamespace(
             health_pg_ping_timeout=0.2,
+            health_host="127.0.0.1",
+            health_port=None,
+            health_request_timeout=2.0,
+            health_max_header_bytes=16 * 1024,
+            health_readiness_check_timeout=5.0,
             max_heartbeat_failures=3,
             redis_url=None,
             health_socket_path="",  # tests override via _make_settings
@@ -200,6 +205,11 @@ async def test_compute_health_redis_configured_via_url() -> None:
     deps = _make_deps(
         settings=SimpleNamespace(
             health_pg_ping_timeout=0.2,
+            health_host="127.0.0.1",
+            health_port=None,
+            health_request_timeout=2.0,
+            health_max_header_bytes=16 * 1024,
+            health_readiness_check_timeout=5.0,
             max_heartbeat_failures=3,
             redis_url="redis://localhost/0",
             health_socket_path="",
@@ -289,6 +299,11 @@ async def _http_get(sock_path: str, path: str) -> tuple[int, dict[str, str], str
 def _make_settings(sock_path: str, **overrides: object) -> SimpleNamespace:
     defaults: dict[str, object] = {
         "health_pg_ping_timeout": 0.2,
+        "health_host": "127.0.0.1",
+        "health_port": None,
+        "health_request_timeout": 2.0,
+        "health_max_header_bytes": 16 * 1024,
+        "health_readiness_check_timeout": 5.0,
         "max_heartbeat_failures": 3,
         "redis_url": None,
         "health_socket_path": sock_path,
@@ -552,19 +567,22 @@ async def test_slow_loris_guard() -> None:
     """Slow-loris guard.
 
     Open a Unix connection but never write request headers; assert the
-    server closes the connection within ~1.5 s.
+    server closes the connection within ``health_request_timeout``, the
+    setting that bounds the whole head-read (plus slack for scheduling).
     """
     sock_path = _next_sock_path()
-    deps = _make_deps(
-        settings=_make_settings(sock_path),
-    )
+    settings = _make_settings(sock_path)
+    settings.health_request_timeout = 0.5
+    deps = _make_deps(settings=settings)
 
     server = HealthServer()
     await server.start(deps)
     try:
         reader, writer = await asyncio.open_unix_connection(sock_path)
         try:
-            data = await asyncio.wait_for(reader.read(1024), timeout=1.5)
+            data = await asyncio.wait_for(
+                reader.read(1024), timeout=settings.health_request_timeout + 1.0
+            )
             assert data == b""
         finally:
             writer.close()

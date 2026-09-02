@@ -1,4 +1,17 @@
-"""Worker health endpoints: compute_health, HealthReport."""
+"""Worker health endpoints: compute_health, HealthReport.
+
+Two transports serve the same handler:
+
+* a Unix domain socket (``health_socket_path``), always on with ``health_enabled``, which the
+  ``taskq health live/ready`` CLI and exec-style probes use; and
+* an optional TCP listener (``health_port``), off until a port is set.
+
+The TCP listener exists because Azure Container Apps supports only ``httpGet``/``tcpSocket``
+probes — "``exec`` probes aren't supported"
+(https://learn.microsoft.com/en-us/azure/container-apps/health-probes) — so a Unix socket is
+unreachable to a probe there. Kubernetes and ACA both treat 200-399 as success, so an unready
+worker answers 503.
+"""
 
 import asyncio
 import contextlib
@@ -6,7 +19,9 @@ import errno
 import os
 import socket
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from typing import Literal
 
 import asyncpg
 import structlog
@@ -27,15 +42,68 @@ async def _write_response(
     *,
     body: bytes = b"",
     content_type: bytes = b"application/json",
+    include_body: bool = True,
 ) -> None:
+    """Write one minimal, close-delimited HTTP/1.0 response.
+
+    Deliberately hand-rolled rather than served by FastAPI/uvicorn: the ``web`` extra is optional
+    and a worker must never need it to answer a probe. A probe client needs only the status line,
+    ``Content-Length`` and a clean close.
+
+    ``include_body=False`` serves HEAD: the headers a GET would produce, including the
+    ``Content-Length`` of the body that was *not* sent, per RFC 9110 §9.3.2.
+    """
     writer.write(b"HTTP/1.0 %d " % status + reason + b"\r\n")
     if body:
         writer.write(b"Content-Type: " + content_type + b"\r\n")
-        writer.write(b"Content-Length: %d\r\n\r\n" % len(body))
+    writer.write(b"Content-Length: %d\r\n" % len(body))
+    # Why explicit: nothing here ever serves a second request on a connection, and a probe
+    # client that waits for a keep-alive it will not get burns its own timeoutSeconds.
+    writer.write(b"Connection: close\r\n\r\n")
+    if body and include_body:
         writer.write(body)
-    else:
-        writer.write(b"Content-Length: 0\r\n\r\n")
     await writer.drain()
+
+
+type ReadinessCheck = Callable[[], Awaitable[str | None]]
+"""A consumer-supplied readiness check: return ``None`` when healthy, else a failure reason."""
+
+_readiness_checks: dict[str, ReadinessCheck] = {}
+
+
+def register_readiness_check(name: str, check: ReadinessCheck) -> None:
+    """Register an extra check that ``/ready`` (and ``taskq health ready``) must also pass.
+
+    Why a module-level registry rather than a field on ``WorkerDeps``: the worker bootstrap owns
+    the :class:`HealthServer` instance, so a consumer embedding TaskQ has no handle to attach a
+    check to. Registering by name before ``worker_main`` is the only seam that reaches both
+    transports *and* the CLI, which reads the same :func:`compute_health`.
+
+    A check that raises, or that outruns ``health_readiness_check_timeout``, counts as a
+    failure — readiness fails closed.
+    """
+    _readiness_checks[name] = check
+
+
+def unregister_readiness_check(name: str) -> None:
+    """Remove a check registered by :func:`register_readiness_check`; unknown names are ignored."""
+    _readiness_checks.pop(name, None)
+
+
+async def _run_readiness_checks(per_check_timeout: float) -> list[str]:
+    failures: list[str] = []
+    for name, check in list(_readiness_checks.items()):
+        try:
+            reason = await asyncio.wait_for(check(), timeout=per_check_timeout)
+        except TimeoutError:
+            failures.append(f"{name}: timed out after {per_check_timeout}s")
+        except Exception as exc:  # Why: a consumer check must never take the probe down with it.
+            logger.warning("health-readiness-check-error", check=name, error=str(exc))
+            failures.append(f"{name}: {exc}")
+        else:
+            if reason is not None:
+                failures.append(f"{name}: {reason}")
+    return failures
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,9 +152,11 @@ async def _check_live() -> tuple[bool, str]:
 async def compute_health(deps: WorkerDeps) -> HealthReport:
     """Single shared health function consumed by both transports.
 
-    Reads ``deps``, performs a bounded PG ping, and returns a
-    fully-populated :class:`HealthReport`.  No transport concerns, no
-    caching, no global state.
+    Reads ``deps``, performs a bounded PG ping, runs any checks added via
+    :func:`register_readiness_check`, and returns a fully-populated
+    :class:`HealthReport`.  No transport concerns and no caching — the check
+    registry is the only global, and it is what lets a consumer extend
+    readiness without a handle on the bootstrap-owned server.
     """
     phase: ShutdownPhase = deps.shutdown_phase
     pg_ping_ok_ = True
@@ -148,6 +218,11 @@ async def compute_health(deps: WorkerDeps) -> HealthReport:
     if stale_loops:
         ready = False
         reasons.append(f"stale_loops={','.join(stale_loops)}")
+
+    check_failures = await _run_readiness_checks(deps.settings.health_readiness_check_timeout)
+    if check_failures:
+        ready = False
+        reasons.extend(check_failures)
 
     shutdown_elapsed: float | None = None
     if deps.shutdown_started_at is not None:
@@ -213,16 +288,67 @@ def _unlink_stale_socket(path: str) -> None:
         probe.close()
 
 
-class HealthServer:
-    """Unix-domain-socket HTTP server for K8s health probes."""
+async def _read_request_head(
+    reader: asyncio.StreamReader,
+    *,
+    total_timeout: float,
+    max_bytes: int,
+) -> bytes | None:
+    """Read the request line and drain the headers, bounded in *time* and in *bytes*.
 
-    __slots__ = ("_deps", "_server", "_socket_inode", "_socket_path")
+    Returns the request line, or ``None`` for a malformed, oversized or too-slow request (the
+    caller then closes without answering — there is nothing honest to say).
+
+    Why both bounds, and why not a per-line timeout alone: a peer that sends one *valid* header
+    line just under a per-line timeout never trips it, while holding the connection — and its
+    server task — open indefinitely. The TCP listener is reachable from the pod network in a way
+    the Unix socket is not, so an unauthenticated peer must not be able to exhaust accept
+    capacity or file descriptors that way. ``max_bytes`` covers the mirror case: many tiny lines
+    sent fast enough to stay inside the deadline. Both are settings
+    (``health_request_timeout``, ``health_max_header_bytes``), not fixed constants, because the
+    right values track the orchestrator's own probe ``timeoutSeconds``.
+    """
+    try:
+        async with asyncio.timeout(total_timeout):
+            request_line = await reader.readline()
+            if not request_line:
+                return None
+            seen = len(request_line)
+            while True:
+                if seen > max_bytes:
+                    return None
+                line = await reader.readline()
+                seen += len(line)
+                if line in (b"\r\n", b""):
+                    break
+    except (TimeoutError, ValueError, ConnectionError, OSError):
+        # ValueError: StreamReader.readline() raises it when a single line exceeds the stream
+        # limit — an oversized header by another name.
+        return None
+    return request_line
+
+
+class HealthServer:
+    """HTTP health server for orchestrator probes, over a Unix socket and optionally TCP."""
+
+    __slots__ = ("_deps", "_http_server", "_server", "_socket_inode", "_socket_path")
 
     def __init__(self) -> None:
         self._deps: WorkerDeps | None = None
         self._server: asyncio.Server | None = None
+        self._http_server: asyncio.Server | None = None
         self._socket_path: str | None = None
         self._socket_inode: int | None = None
+
+    @property
+    def bound_port(self) -> int | None:
+        """The TCP port actually listening, or ``None`` when the HTTP listener is disabled.
+
+        Resolves an ephemeral ``health_port=0`` to the port the OS chose.
+        """
+        if self._http_server is None or not self._http_server.sockets:
+            return None
+        return int(self._http_server.sockets[0].getsockname()[1])
 
     async def start(self, deps: WorkerDeps) -> None:
         self._deps = deps
@@ -233,11 +359,15 @@ class HealthServer:
         if deps.settings.health_tasks_enabled:
             old_umask = os.umask(0o077)
             try:
-                self._server = await asyncio.start_unix_server(self._handle, path=self._socket_path)
+                self._server = await asyncio.start_unix_server(
+                    self._handle_unix, path=self._socket_path
+                )
             finally:
                 os.umask(old_umask)
         else:
-            self._server = await asyncio.start_unix_server(self._handle, path=self._socket_path)
+            self._server = await asyncio.start_unix_server(
+                self._handle_unix, path=self._socket_path
+            )
         # Capture the inode we just bound so `stop()` can later verify it
         # still owns this path before unlinking — a slow-shutting-down
         # worker must never delete a *replacement* worker's fresh socket
@@ -246,7 +376,38 @@ class HealthServer:
             self._socket_inode = os.stat(self._socket_path).st_ino
         logger.info("health-server-started", socket_path=self._socket_path)
 
+        await self._start_http(deps)
+
+    async def _start_http(self, deps: WorkerDeps) -> None:
+        """Bind the optional TCP listener, or fail startup trying.
+
+        Off unless ``health_port`` is set: a worker that binds a port nobody asked for is both a
+        surprise and a network surface. Setting the port *is* the opt-in.
+        """
+        port = deps.settings.health_port
+        if port is None:
+            return
+
+        host = deps.settings.health_host
+        try:
+            self._http_server = await asyncio.start_server(self._handle_tcp, host=host, port=port)
+        except OSError as exc:
+            # Why fail the whole startup rather than log and continue: the operator has told an
+            # orchestrator to probe this port. A worker that came up with the listener dead
+            # answers nothing there, so every probe fails — or worse, under a tcpSocket probe on
+            # a port some *other* process holds, they all pass and traffic is routed to a worker
+            # nobody is actually checking. Refusing to start is the only honest outcome.
+            logger.error("health-http-bind-failed", host=host, port=port, error=str(exc))
+            await self.stop()
+            raise
+        logger.info("health-http-server-started", host=host, port=self.bound_port)
+
     async def stop(self) -> None:
+        if self._http_server is not None:
+            self._http_server.close()
+            await self._http_server.wait_closed()
+            self._http_server = None
+
         if self._server is not None:
             self._server.close()
             await self._server.wait_closed()
@@ -267,31 +428,57 @@ class HealthServer:
                     reason="socket inode changed since bind; a replacement worker owns this path now",
                 )
 
-    async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    async def _handle_unix(
+        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
+        await self._handle(reader, writer, transport="unix")
+
+    async def _handle_tcp(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        await self._handle(reader, writer, transport="tcp")
+
+    async def _handle(
+        self,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+        *,
+        transport: Literal["unix", "tcp"],
+    ) -> None:
         t0 = time.perf_counter()
         endpoint = ""
         status_code = 0
+        deps = self._deps
+        assert deps is not None
         try:
-            request_line = await asyncio.wait_for(reader.readline(), timeout=1.0)
-            while True:
-                line = await asyncio.wait_for(reader.readline(), timeout=1.0)
-                if line == b"\r\n" or not line:
-                    break
+            request_line = await _read_request_head(
+                reader,
+                total_timeout=deps.settings.health_request_timeout,
+                max_bytes=deps.settings.health_max_header_bytes,
+            )
+            if request_line is None:
+                return
 
-            method, path, _ = request_line.decode("ascii", errors="replace").split(" ", 2)
+            parts = request_line.decode("ascii", errors="replace").split()
+            if len(parts) < 2:
+                return
+            method, target = parts[0], parts[1]
+            # Probe configs may append a query string; route on the path alone.
+            path = target.split("?", 1)[0]
             endpoint = path
+            body_wanted = method != "HEAD"
 
-            if method != "GET":
+            if method not in ("GET", "HEAD"):
                 await _write_response(writer, 404, b"Not Found")
                 status_code = 404
             elif path == "/live":
-                status_code = await self._handle_live(writer)
+                status_code = await self._handle_live(writer, include_body=body_wanted)
             elif path == "/ready":
-                status_code = await self._handle_ready(writer)
+                status_code = await self._handle_ready(writer, include_body=body_wanted)
             elif path == "/tasks":
-                status_code = await self._handle_tasks(writer)
+                status_code = await self._handle_tasks(
+                    writer, transport=transport, include_body=body_wanted
+                )
             elif path == "/metrics":
-                status_code = await self._handle_metrics(writer)
+                status_code = await self._handle_metrics(writer, include_body=body_wanted)
             else:
                 await _write_response(writer, 404, b"Not Found")
                 status_code = 404
@@ -319,31 +506,45 @@ class HealthServer:
             response_time_ms=elapsed_ms,
         )
 
-    async def _handle_live(self, writer: asyncio.StreamWriter) -> int:
+    async def _handle_live(self, writer: asyncio.StreamWriter, *, include_body: bool = True) -> int:
         ok, _msg = await _check_live()
         if ok:
             body = _json.dumps({"status": "ok"})
-            await _write_response(writer, 200, b"OK", body=body)
+            await _write_response(writer, 200, b"OK", body=body, include_body=include_body)
             return 200
         else:
             body = _json.dumps({"status": "unresponsive"})
-            await _write_response(writer, 503, b"Service Unavailable", body=body)
+            await _write_response(
+                writer, 503, b"Service Unavailable", body=body, include_body=include_body
+            )
             return 503
 
-    async def _handle_ready(self, writer: asyncio.StreamWriter) -> int:
+    async def _handle_ready(
+        self, writer: asyncio.StreamWriter, *, include_body: bool = True
+    ) -> int:
         deps = self._deps
         assert deps is not None
         report = await compute_health(deps)
         body = build_ready_body(report, deps)
         status_code = 200 if report.ready else 503
         reason = b"OK" if status_code == 200 else b"Service Unavailable"
-        await _write_response(writer, status_code, reason, body=body)
+        await _write_response(writer, status_code, reason, body=body, include_body=include_body)
         return status_code
 
-    async def _handle_tasks(self, writer: asyncio.StreamWriter) -> int:
+    async def _handle_tasks(
+        self,
+        writer: asyncio.StreamWriter,
+        *,
+        transport: Literal["unix", "tcp"] = "unix",
+        include_body: bool = True,
+    ) -> int:
         deps = self._deps
         assert deps is not None
-        if not deps.settings.health_tasks_enabled:
+        # Why the transport gate: ``health_tasks_enabled`` documents this dump as Unix-socket
+        # only, and the socket's reachability (filesystem permissions, 0600 when enabled) is
+        # what makes exposing code structure and task names acceptable. The TCP listener has
+        # none of that, so the route simply does not exist there.
+        if transport != "unix" or not deps.settings.health_tasks_enabled:
             # Disabled by default (TASKQ_HEALTH_TASKS_ENABLED): the dump
             # endpoint is privileged, so a disabled state is
             # indistinguishable from a missing route.
@@ -351,10 +552,19 @@ class HealthServer:
             return 404
         records = dump_task_stacks("http-tasks", detector="http")
         body = _json.dumps({"tasks": [rec.as_dict() for rec in records]})
-        await _write_response(writer, 200, b"OK", body=body, content_type=b"application/json")
+        await _write_response(
+            writer,
+            200,
+            b"OK",
+            body=body,
+            content_type=b"application/json",
+            include_body=include_body,
+        )
         return 200
 
-    async def _handle_metrics(self, writer: asyncio.StreamWriter) -> int:
+    async def _handle_metrics(
+        self, writer: asyncio.StreamWriter, *, include_body: bool = True
+    ) -> int:
         deps = self._deps
         assert deps is not None
         active = deps.active_jobs.count()
@@ -379,6 +589,7 @@ class HealthServer:
             b"OK",
             body=body_bytes,
             content_type=b"text/plain; version=0.0.4; charset=utf-8",
+            include_body=include_body,
         )
         return 200
 

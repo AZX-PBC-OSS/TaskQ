@@ -60,6 +60,11 @@ def _make_deps(**overrides: object) -> SimpleNamespace:
             "heartbeat_pool": _StubPool(),
             "settings": SimpleNamespace(
                 health_pg_ping_timeout=0.2,
+                health_host="127.0.0.1",
+                health_port=None,
+                health_request_timeout=2.0,
+                health_max_header_bytes=16 * 1024,
+                health_readiness_check_timeout=5.0,
                 max_heartbeat_failures=3,
                 redis_url=None,
                 health_socket_path="/tmp/taskq_health.sock",  # noqa: S108 # Why: test-only stub; no real file operations touch this path.
