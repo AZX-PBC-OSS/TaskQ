@@ -182,6 +182,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Health/metrics endpoints wired into `taskq ui serve` with fail-closed
     `TASKQ_HEALTH_TOKEN`/`TASKQ_HEALTH_REQUIRE_TOKEN` pattern
   - `OIDCSettings`/`SAMLSettings` as separate DotEnvConfig classes with prefix scoping
+- **`TASKQ_ADMIN_UI_SECURE_COOKIES` (`admin_ui_secure_cookies`, default `True`)** — sets the `Secure` flag on the admin UI's CSRF cookie. The flag was previously derived from `request.url.scheme`, so behind a TLS-terminating edge (Azure Application Gateway, App Service) the app saw plain `http` and silently dropped `Secure` on exactly the deployments that need it — while the session cookie, which already used a configured flag, kept it. Set it to `False` only for local http dev, where a `Secure` cookie is rejected by the browser and the UI stops working. A one-shot `admin-ui-cookie-scheme-mismatch` warning fires when the configured value contradicts the observed scheme; run uvicorn with `--proxy-headers` so `X-Forwarded-Proto` is honoured.
+- **`TASKQ_ADMIN_UI_FRAME_ANCESTORS` (`admin_ui_frame_ancestors`, default `none`)** — who may frame admin pages. Every admin response now carries `Content-Security-Policy: frame-ancestors '<value>'` and the legacy `X-Frame-Options` (`DENY` for `none`, `SAMEORIGIN` for `self`). **Admin pages can no longer be iframed**: a host application that embeds the admin UI in its own dashboard must set `TASKQ_ADMIN_UI_FRAME_ANCESTORS=self` or the frame renders blank. Only `none` and `self` are accepted; anything else fails at settings construction rather than silently emitting no header. CSRF is no defence against UI redress — the framed page is the real, authenticated, same-origin page, so a tricked click carries a valid token.
 
 
 ### Changed
@@ -234,6 +236,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The queue-name, tag, and keyed-key regexes are re-anchored `\A...\Z` instead of `^...$`.** Python's `$` also matches immediately before a trailing newline, so `"default\n"`, `"mytag\n"`, and `"key\n"` all satisfied the old patterns. Such values are now rejected. If any queue name, tag, or keyed rate-limit key in your system has a trailing newline — most plausibly from a shell `$(...)`, a file read, or an unstripped environment variable — it will start raising `ValueError`.
 - **NUL bytes are rejected in caller-supplied text instead of surfacing as a database error.** `JobFilter` (`queue`, `actor`, `identity_key`, `tags`) and `ScheduleCreateArgs` (`actor`, `name`, `timezone`, `payload_factory`, `identity_key`) now raise `ValueError` in `__post_init__`; the admin UI's text filters (`actor`, `queue`, `search`, `identity_key`, `fairness_key`, `tags`) now return a clean 400. Previously these reached Postgres and came back as an opaque asyncpg `22021` — a 500 from the admin routes.
 - **`ScheduleCreateArgs.dst_strategy` is now validated in `__post_init__`** and raises `ValueError` for a value outside the known set, which is newly exported as `taskq.cron.DST_STRATEGIES`. An unrecognized strategy previously constructed fine and took the default branch at cron-tick time.
+- **Breaking: `firstof` and `allof` `dst_strategy` become live for schedules that already exist.** The cron tick's `SELECT` never listed the `dst_strategy` column and `fire_schedule` read it as `row.get("dst_strategy", "skip")`, so the stored value was **always** `skip` in production whatever the schedule said — the branch that enqueues the second job for a DST fall-back overlap was unreachable. The column is now selected and read, so a schedule configured `allof` or `firstof` years ago changes behaviour on upgrade, with no configuration change and nothing raised: on the autumn fall-back night an `allof` schedule enqueues **two** jobs for the repeated local hour where it used to enqueue one. Audit for non-`skip` schedules before rolling out, and make sure their actors are idempotent.
+- **Breaking: `worker_id` is no longer a dimension on six metric instruments.** `taskq.lock.expires_in_seconds`, `taskq.heartbeat.misses`, `taskq.leader.election_attempts`, `taskq.leader.election_failures`, `taskq.cron.lock_contention` and the `taskq.heartbeat.consecutive_failures` gauge now emit a single undimensioned series each. **Dashboards, queries and alert rules that group or filter by `worker_id` on these metrics will break** — they return one series where they used to return one per worker. `worker_id` is a fresh UUID per worker *process*, so every deploy, restart and autoscale event minted new time series without bound; Azure Monitor counts each unique (metric, dimension key, dimension value) seen in 12 hours as an active series, caps a subscription at 50,000 per region, and throttles ingestion for *every* custom metric once the cap is passed, with no backfill of what was dropped. Per-worker attribution is unchanged on the channels where cardinality is free: `worker_id` is bound onto every log line via contextvars, and `taskq.worker_id` is a cron-fire span attribute. The `record_*` helpers still accept their `worker_id` argument — only the dimension is gone. `taskq.cron.consecutive_failures` keeps its `schedule_id` dimension: schedules are a bounded, operator-created set, and `cron_auto_disable_threshold` is evaluated per schedule.
+- **The admin session cookie is now scoped to the admin mount path.** `taskq_session` carried no `path=`, so it defaulted to `/` and the browser attached it to every request to the host application that mounts the admin UI — including routes with no reason to see an admin session. Both SSO backends now set `path` to their `base_path`, and logout clears it on the same path (a delete on a different path clears nothing, which would have left a live session behind). **A stale `path=/` cookie written by a previous version is not replaced by the new one** — the browser keeps both and sends both, and the broader one can shadow the narrower until it expires. Operators upgrading should clear the `taskq_session` cookie, or expect one session lifetime (`session_max_age_seconds`, default 8h) of overlap.
 
 
 ### Fixed
@@ -295,6 +300,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   checked and does not have this shape — it has no Redis path at all.
   Deployments running Redis rate limits with the Postgres fallback enabled
   should expect quota accounting to change (correct itself) after upgrading.
+- `start_to_close` now actually cancels the running actor on the transactional
+  path. `_run_actor_in_tx` wrapped the actor in `asyncio.shield()` *inside* the
+  `wait_for` enforcing the deadline, and a shield keeps the shielded awaitable
+  running when its waiter is cancelled — so the timeout applied to the wait and
+  never to the actor. The attempt was marked timed out and became eligible for
+  retry on another worker while the original body kept executing, running every
+  side effect past the timeout point twice. **An actor that previously ran past
+  its `start_to_close` deadline will now see `CancelledError` at that deadline**,
+  so any cleanup it needs on interruption belongs in a `finally`. The autonomous
+  path already used a bare `wait_for` and is unchanged; the outer
+  `shield(_run_actor_in_tx())`, which decouples *external* cancellation from an
+  in-flight commit, is untouched.
+- Cancel state is cleared on every retry arm, in both backends. A cancel that
+  escalated to `cancel_phase=2` in the same instant the actor raised an ordinary
+  retryable exception survived the retry write: `mark_retry`, `mark_snoozed` and
+  both `mark_retry_after` variants rewrote `status`/`scheduled_at` but left
+  `cancel_phase` and `cancel_requested_at` on the row, and a retry reuses the
+  *same* row. The next attempt was therefore dispatched already at FORCED, so the
+  cancel controller's PG-observation fast-advance jumped straight to FORCED
+  without ever calling `task.cancel()` — the job could never be cancelled again,
+  only abandoned while its coroutine kept running. Terminal arms still keep both
+  columns: they are the audit trail, and `mark_abandoned`'s `cancel_phase=2`
+  guard reads them. `InMemoryBackend`'s three retry arms were copying the old
+  values forward explicitly and are fixed identically, so the backends stay
+  observably equivalent.
 
 
 ### Security
