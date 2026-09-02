@@ -625,10 +625,12 @@ async def clean_e2e_state(request: pytest.FixtureRequest) -> AsyncIterator[None]
     3. FLUSHDB the module's Dragonfly DB — safe only after (1) and (2),
        because the worker holds no in-flight rate-limit/progress state then.
     """
-    # Why: a test that requests no e2e infrastructure (e.g. the marker-wiring
-    # smoke test) must not boot the container stack through this autouse
-    # fixture — skip the reset when its fixture closure is infra-free. Infra
-    # fixtures are fetched lazily so the guard runs before any container work.
+    # Why: a test that requests none of the shared infra fixtures (e.g. the
+    # chaos modules, which own dedicated containers — test_redis_outage.py's
+    # module docstring documents relying on exactly this early yield) must
+    # not boot the shared container stack through this autouse fixture —
+    # skip the reset when its fixture closure is infra-free. Infra fixtures
+    # are fetched lazily so the guard runs before any container work.
     if not {
         "e2e_client",
         "e2e_pg_pool",
