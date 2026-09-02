@@ -14,6 +14,7 @@ either an :class:`~taskq.testing.in_memory.InMemoryBackend` (tests) or a
 :class:`taskq.backend.postgres.PostgresBackend` (production).
 """
 
+import asyncio
 from collections.abc import Generator, Iterable
 from contextlib import AsyncExitStack, contextmanager
 from dataclasses import replace
@@ -50,7 +51,11 @@ from taskq.backend.clock import Clock, SystemClock
 from taskq.batch import MAX_BATCH_SIZE, BatchHandle, BatchSummary, EnqueueItem
 from taskq.batch_policy import BatchFailurePolicy
 from taskq.client._args import build_batch_args, build_enqueue_args, enqueue_span
-from taskq.client._capacity import DEFAULT_CAPACITY_CACHE_TTL, ActorCapacityCache
+from taskq.client._capacity import (
+    DEFAULT_CAPACITY_CACHE_TTL,
+    DEFAULT_CAPACITY_READ_TIMEOUT,
+    ActorCapacityCache,
+)
 from taskq.client._handle import JobHandle
 from taskq.exceptions import EmptyFilterError, PayloadValidationError, SchemaNotMigratedError
 from taskq.types import BulkCancelResult, CancelResult
@@ -1257,14 +1262,36 @@ class JobsClient:
         the worker bootstrap's schedule seeding. Pool-less clients
         (in-memory tests) have no second clock domain and use the
         client's injected Clock — tests wire it to the backend's clock.
+
+        The pool acquire + read is bounded by
+        ``DEFAULT_CAPACITY_READ_TIMEOUT`` — the same discipline as
+        ``ActorCapacityCache._refresh``: asyncpg acquire has no default
+        timeout, so an unbounded acquire wedges every
+        ``create_schedule``/``update_schedule`` on an exhausted pool. On
+        timeout a clear :class:`TimeoutError` is raised; falling back to
+        the client clock here is deliberately NOT an option, because a
+        skewed seed would phase-shift the fire chain for the schedule's
+        life — a wedged pool must surface.
         """
         pool = self._server_clock_pool()
         if pool is None:
             return self._clock.now()
-        async with pool.acquire() as conn:
-            # Why: annotated assignment — clock_timestamp() is non-null in Postgres; mirrors the worker bootstrap's read.
-            seed_now: datetime = await conn.fetchval("SELECT clock_timestamp()")
-        return seed_now
+
+        async def _read_server_now() -> datetime:
+            async with pool.acquire() as conn:
+                # Why: annotated assignment — clock_timestamp() is non-null in Postgres; mirrors the worker bootstrap's read.
+                seed_now: datetime = await conn.fetchval("SELECT clock_timestamp()")
+            return seed_now
+
+        try:
+            return await asyncio.wait_for(_read_server_now(), timeout=DEFAULT_CAPACITY_READ_TIMEOUT)
+        except TimeoutError as exc:
+            raise TimeoutError(
+                f"schedule seed clock read timed out after "
+                f"{DEFAULT_CAPACITY_READ_TIMEOUT}s: the pool is exhausted or "
+                "wedged. Refusing to seed next_fire_at from the client clock — "
+                "that would mix clock domains against the server-side due-check."
+            ) from exc
 
     async def create_schedule[P: BaseModel, R: BaseModel | None](
         self,

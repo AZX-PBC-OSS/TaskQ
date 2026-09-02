@@ -18,6 +18,7 @@ clients) — never to the skewed Python clock.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from typing import ClassVar
 from uuid import UUID
@@ -100,6 +101,25 @@ class _FakePool:
         return _AcquireCtx(self._conn)
 
 
+class _WedgedAcquireCtx:
+    """``async with pool.acquire()`` context whose enter never completes —
+    the shape an exhausted or wedged asyncpg pool presents."""
+
+    async def __aenter__(self) -> object:
+        await asyncio.sleep(3600)
+        raise AssertionError("unreachable")
+
+    async def __aexit__(self, *exc_info: object) -> bool:
+        return False
+
+
+class _WedgedPool:
+    """Pool stand-in whose acquire never yields a connection."""
+
+    def acquire(self) -> _WedgedAcquireCtx:
+        return _WedgedAcquireCtx()
+
+
 class _FakePgBackend:
     """Pool-backed stand-in driving the REAL JobsClient schedule path.
 
@@ -167,6 +187,35 @@ class _FakePgBackend:
 
 def _expected(expr: str, after: datetime) -> datetime:
     return compute_next_fire_after(expr, "UTC", after)[0]
+
+
+async def test_create_schedule_surfaces_bounded_error_when_pool_wedges(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pool whose acquire never completes must surface a CLEAR timeout
+    error within the bound, not hang ``create_schedule`` indefinitely.
+
+    ``_schedule_seed_now`` acquired the pool with a bare ``async with
+    pool.acquire()`` — asyncpg acquire has no default timeout, so a
+    wedged/exhausted pool blocked schedule creation forever. The bound
+    mirrors ``ActorCapacityCache._refresh`` (``wait_for`` around
+    acquisition + read); on timeout the error must be explicit, because
+    silently falling back to the client clock would reintroduce the
+    clock-skew domain mixing the server-clock seed exists to eliminate.
+    """
+    backend = _FakePgBackend(_SERVER_NOW)
+    backend.worker_pool = _WedgedPool()  # pyright: ignore[reportAttributeAccessIssue, reportIncompatibleVariableOverride]  # Why: deliberately wedged pool shape — the connection (and thus the server clock) is never reached.
+    client = JobsClient(backend)  # type: ignore[arg-type]  # Why: see test_create_seeds_next_fire_from_server_clock.
+    # raising=False: the bound arrives with the fix — at HEAD this patch is a
+    # no-op and the hang-guard below is what fails the test.
+    monkeypatch.setattr(jobs_mod, "DEFAULT_CAPACITY_READ_TIMEOUT", 0.05, raising=False)
+
+    with pytest.raises(TimeoutError, match="schedule seed clock read timed out"):
+        # Hang-guard, deliberately above the default bound (2s): without the
+        # bound this await blocks forever and the guard's bare TimeoutError
+        # fails the match — exactly the failure this test exists to catch.
+        # With the bound, the inner wait_for always fires first.
+        await asyncio.wait_for(client.create_schedule("wedged_actor", "*/5 * * * *"), timeout=5.0)
 
 
 async def test_create_seeds_next_fire_from_server_clock(
