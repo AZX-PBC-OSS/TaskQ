@@ -208,7 +208,7 @@ async def _enqueue(self: "InMemoryBackend", args: EnqueueArgs) -> JobRow:
         event.set()
 
     logger.debug(
-        "state_change",
+        "state-change",
         kind="state_change",
         from_state=None,
         to_state=status,

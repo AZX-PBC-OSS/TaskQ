@@ -280,15 +280,51 @@ async def test_dispatch_exception_swallows_infra_failure_all_handlers(
     assert outcome in ("failed", "scheduled")
 
 
-# ── Finding 9: enqueue SQL uses clock_timestamp() consistently ──────────
+# ── Finding 9: every rendered template uses clock_timestamp(), never now() ──
 
 
-def test_enqueue_sql_does_not_mix_now_and_clock_timestamp() -> None:
+def test_no_rendered_sql_template_uses_now() -> None:
+    """No template in ``SqlTemplates`` may call ``now()``.
+
+    ``now()`` is transaction-START time; ``clock_timestamp()`` is statement
+    time.  Several of these templates run as the Nth statement of a
+    transaction the caller opened (the batch templates take a caller-supplied
+    connection; the terminal writes and sweeps run inside multi-statement
+    transactions), so under ``now()`` their predicates and stamps are judged
+    against a stale instant.  See
+    ``test_clock_domain_isolation.test_sweeps_judge_cutoffs_at_statement_time_
+    not_transaction_start`` for the behavioural proof that this is a live
+    difference, not a stylistic one.
+
+    Why a source-text assertion is legitimate here — and must not be
+    "fixed" into a behavioural one: this is an INVENTORY guard over
+    generated SQL, the same category as the CI-workflow tests.  There is no
+    runtime expression to observe; a new template is a new string, and the
+    only way to hold the whole set to the invariant is to read the set.  A
+    behavioural test per template would cost a container round-trip each and
+    still miss the template added tomorrow.
+
+    SQL comments are stripped first: several templates discuss ``now()`` in
+    prose explaining why they do not use it.
+    """
+    import dataclasses
+    import re
+    from typing import cast
+
     from taskq.backend._sql_templates import render
 
     sql = render("taskq")
-    assert "now()" not in sql.enqueue, (
-        "enqueue SQL should use clock_timestamp() exclusively, matching enqueue_with_interval"
+    offenders: list[str] = []
+    for field in dataclasses.fields(sql):
+        value: object = getattr(sql, field.name)
+        # A couple of fields are column-name tuples, not SQL text; they are
+        # checked too so a future template field of either shape is covered.
+        parts = [value] if isinstance(value, str) else list(cast(tuple[str, ...], value))
+        if any("now()" in re.sub(r"--[^\n]*", "", part) for part in parts):
+            offenders.append(field.name)
+    assert offenders == [], (
+        f"templates using transaction-start now() instead of statement-time "
+        f"clock_timestamp(): {offenders}"
     )
 
 

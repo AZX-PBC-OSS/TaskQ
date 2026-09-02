@@ -63,7 +63,7 @@ async def _worker_of(backend: Backend) -> UUID:
     worker_id = new_uuid()
     async with pool.acquire() as conn:  # pyright: ignore[reportUnknownVariableType]  # Why: asyncpg stubs yield PoolConnectionProxy | Unknown
         await conn.execute(
-            f'INSERT INTO "{schema}".workers (id, hostname, pid, queues) VALUES ($1, $2, $3, $4)',  # noqa: S608 # Why: schema identifier from TaskQSettings validated against _IDENT_RE; asyncpg has no parameter binding for identifiers
+            f'INSERT INTO "{schema}".workers (id, hostname, pid, queues) VALUES ($1, $2, $3, $4)',  # noqa: S608 # Why: schema is fixture-derived and _IDENT_RE-validated; every value is $N-bound
             worker_id,
             "test-host",
             12345,
@@ -98,7 +98,7 @@ async def _force_cancel_escalated(backend: Backend, job_id: JobId) -> None:
     pool = backend._worker_pool  # pyright: ignore[reportPrivateUsage]  # Why: same
     async with pool.acquire() as conn:  # pyright: ignore[reportUnknownVariableType]  # Why: asyncpg stubs yield PoolConnectionProxy | Unknown
         await conn.execute(
-            f'UPDATE "{schema}".jobs '  # noqa: S608 # Why: schema identifier from TaskQSettings validated against _IDENT_RE; asyncpg has no parameter binding for identifiers
+            f'UPDATE "{schema}".jobs '  # noqa: S608 # Why: schema is fixture-derived and _IDENT_RE-validated; the job id is $1-bound
             "SET cancel_phase = 2, cancel_requested_at = clock_timestamp() WHERE id = $1",
             job_id,
         )

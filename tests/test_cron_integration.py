@@ -1297,3 +1297,58 @@ async def test_skip_schedule_fires_a_repeated_hour_only_once(pg_dsn: str) -> Non
             )
 
         assert job_count == 1
+
+
+# ── The due-check is statement time, not the tick transaction's start ────
+
+
+@pytest.mark.asyncio
+async def test_cron_due_check_is_statement_time_not_transaction_start(pg_dsn: str) -> None:
+    """A schedule that falls due *while* the tick transaction is open fires.
+
+    ``tick_cron`` contractually requires an already-open transaction (the
+    advisory lock is transaction-scoped), and it is never the first statement
+    in it — the lock and the ``server_now`` read come first, and on a leader
+    handling a catch-up burst the transaction can be open for seconds.  Under
+    the transaction-start ``now()`` the due-check would be pinned to BEGIN, so
+    every schedule that came due after the transaction opened is skipped and
+    only fires a tick later — repeatedly, whenever ticks run back to back.
+
+    The schedule here becomes due 2 s after BEGIN and the tick runs 3 s in:
+    ``clock_timestamp()`` sees it due, ``now()`` does not.
+    """
+    async with _open_cron_single(pg_dsn, f"test_cron_{new_base62()}") as (
+        schema,
+        _stack,
+        deps,
+        backend,
+        worker_id,
+    ):
+        async with deps.dispatcher_pool.acquire() as conn:
+            await _insert_actor_config(conn, schema, "test_actor")
+            await _insert_schedule(
+                conn,
+                schema,
+                "test_actor",
+                next_fire_at=datetime.now(UTC) + timedelta(hours=1),
+            )
+
+        async with deps.dispatcher_pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    f'UPDATE "{schema}".cron_schedules '
+                    "SET next_fire_at = clock_timestamp() + interval '2 seconds'"
+                )
+                await conn.execute("SELECT pg_sleep(3)")
+                await tick_cron(conn, deps.settings, backend, schema, worker_id)
+
+        async with deps.dispatcher_pool.acquire() as conn:
+            job_count: int = await conn.fetchval(
+                f'SELECT count(*) FROM "{schema}".jobs WHERE actor = $1',
+                "test_actor",
+            )
+
+        assert job_count == 1, (
+            "schedule that fell due inside the open tick transaction did not fire — "
+            "the due-check read transaction-start time instead of statement time"
+        )

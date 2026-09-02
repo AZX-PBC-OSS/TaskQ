@@ -23,7 +23,7 @@ from taskq.testing.assertions import (
 from taskq.testing.fixtures import JobsApp
 from taskq.testing.in_memory import InMemoryBackend
 from taskq.testing.jobs import enqueue_and_dispatch_memory
-from taskq.testing.pg import setup_running_job
+from taskq.testing.pg import create_worker, setup_running_job
 
 if TYPE_CHECKING:
     from asyncpg.pool import PoolConnectionProxy
@@ -380,6 +380,84 @@ class TestWrongWorkerIdPG:
         assert exc_info.value.job_id == job_id
         assert exc_info.value.expected == wrong_worker
         assert exc_info.value.actual == worker_id
+
+    @pytest.mark.parametrize(
+        ("arm", "schedule_to_close"),
+        [
+            ("retried", None),
+            ("deadline_failed", datetime(2020, 1, 1, tzinfo=UTC)),
+        ],
+    )
+    async def test_mark_retry_wrong_worker_raises_on_both_arms(
+        self,
+        clean_jobs_app: JobsApp,
+        arm: str,
+        schedule_to_close: datetime | None,
+    ) -> None:
+        """Both ``mark_retry`` arms are fenced on ``locked_by_worker``.
+
+        Why this needs its own test: ``mark_failed_or_retry`` routes on
+        ``retry_delay is None`` alone, so the sibling wrong-worker test above
+        — which passes ``None`` — only ever reaches ``mark_failed``.  Neither
+        arm of the ``mark_retry`` CTE was covered by any wrong-worker test.
+
+        The exposure is a double-execution, not a bookkeeping slip: a worker
+        whose lease expired has had its job reclaimed by sweep 1 and
+        re-dispatched to a *different* worker.  If its late
+        ``mark_failed_or_retry`` were unfenced it would push that live
+        attempt back to pending/scheduled, and the actor would run twice
+        concurrently.  ``retry_delay`` past ``schedule_to_close`` takes the
+        ``deadline_failed`` arm instead, which would clobber the live attempt
+        into a terminal ``failed`` — so both arms are pinned here.
+        """
+        deps = clean_jobs_app.deps
+        backend = clean_jobs_app.backend
+        schema = deps.settings.schema_name
+        wrong_worker = new_uuid()
+
+        async with deps.worker_pool.acquire() as conn:
+            # A registered worker, not a bare UUID: the scenario is a job the
+            # sweep re-dispatched to a real second worker, and only a real
+            # workers row lets an unfenced write land instead of tripping the
+            # job_attempts FK — which would mask the fence failure as an
+            # unrelated database error.
+            await create_worker(conn, schema, wrong_worker)
+            worker_id, job_id = await setup_running_job(
+                conn,
+                schema,
+                attempt=1,
+                max_attempts=3,
+                retry_kind="transient",
+                schedule_to_close=schedule_to_close,
+            )
+            before = await conn.fetchrow(
+                "SELECT status, attempt, scheduled_at, locked_by_worker "
+                f'FROM "{schema}".jobs WHERE id = $1',
+                job_id,
+            )
+
+        error_info = ErrorInfo(
+            error_class="ValueError",
+            error_message="boom",
+            error_traceback=None,
+        )
+        with pytest.raises(WorkerOwnershipMismatch) as exc_info:
+            await backend.mark_failed_or_retry(
+                job_id, wrong_worker, error_info, timedelta(seconds=30)
+            )
+        assert exc_info.value.actual == worker_id
+
+        async with deps.worker_pool.acquire() as conn:
+            after = await conn.fetchrow(
+                "SELECT status, attempt, scheduled_at, locked_by_worker "
+                f'FROM "{schema}".jobs WHERE id = $1',
+                job_id,
+            )
+
+        assert before is not None and after is not None
+        assert dict(after) == dict(before), (
+            f"{arm} arm: a non-owning worker mutated the row it does not hold"
+        )
 
     async def test_mark_failed_or_retry_missing_job_raises_with_none(
         self, clean_jobs_app: JobsApp

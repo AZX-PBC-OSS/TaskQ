@@ -619,7 +619,7 @@ class InMemoryBackend:
             )
             self._append_cancel_request_event(job_id, now, reason)
             logger.debug(
-                "state_change",
+                "state-change",
                 kind="state_change",
                 from_state=prev_status,
                 to_state="cancelled",

@@ -23,7 +23,13 @@ from taskq.actor import actor
 from taskq.backend._protocol import EnqueueArgs, IdentityKey
 from taskq.backend.clock import SystemClock
 from taskq.backend.postgres import PostgresBackend
-from taskq.testing.pg import create_worker, seed_actors
+from taskq.testing.fixtures import JobsApp
+from taskq.testing.pg import (
+    create_pending_job,
+    create_worker,
+    seed_actors,
+    setup_running_job,
+)
 from tests._clock_skew import SkewedClock
 
 _integration = pytest.mark.integration
@@ -814,3 +820,69 @@ async def test_result_ttl_anchored_to_server_clock(pg_dsn: str) -> None:
             )
     finally:
         await stack.aclose()
+
+
+# ── D12: the sweeps judge cut-offs at STATEMENT time, not transaction start ──
+
+
+@_integration
+async def test_sweeps_judge_cutoffs_at_statement_time_not_transaction_start(
+    clean_jobs_app: JobsApp,
+) -> None:
+    """Every sweep predicate must read ``clock_timestamp()``, never ``now()``.
+
+    The sweeps are a public surface: ``PostgresBackend.sweep_*`` take a
+    caller-supplied ``ConnLike`` and open a *nested* transaction on it, so a
+    caller (or an embedder running maintenance alongside its own work) can
+    have the transaction already open and several statements old.  ``now()``
+    is fixed at transaction START, so under it every cut-off below is judged
+    against a stale instant and the rows that fell due *during* the
+    transaction are silently skipped: leases stay unreclaimed, deadlines
+    stay unenforced, and scheduled jobs never promote to pending.
+
+    All three rows are made due 2 s after the transaction opened and the
+    sweeps run 3 s later on that same connection — so ``clock_timestamp()``
+    sees them due and ``now()`` (pinned to BEGIN) does not.  This is the
+    statement-vs-transaction axis; the rest of this module covers the
+    orthogonal server-vs-skewed-app-clock axis, and neither substitutes for
+    the other.
+    """
+    deps = clean_jobs_app.deps
+    schema = deps.settings.schema_name
+
+    async with deps.worker_pool.acquire() as conn, conn.transaction():
+        _worker_id, locked_job = await setup_running_job(conn, schema)
+        deadline_job = await create_pending_job(conn, schema)
+        promote_job = await create_pending_job(conn, schema, status="scheduled")
+        await conn.execute(
+            f'UPDATE "{schema}".jobs '  # noqa: S608  # Why: schema derived from settings validated against _IDENT_RE.
+            "SET lock_expires_at = CASE WHEN id = $1 THEN clock_timestamp() + interval '2 seconds' END, "
+            "    schedule_to_close = CASE WHEN id = $2 THEN clock_timestamp() + interval '2 seconds' END, "
+            "    scheduled_at = CASE WHEN id = $3 THEN clock_timestamp() + interval '2 seconds' "
+            "                        ELSE scheduled_at END "
+            "WHERE id = ANY($4::uuid[])",
+            locked_job,
+            deadline_job,
+            promote_job,
+            [locked_job, deadline_job, promote_job],
+        )
+        await conn.execute("SELECT pg_sleep(3)")
+
+        reclaimed = await PostgresBackend.sweep_expired_locks(conn, _GRACE, _GRACE, schema=schema)
+        deadlined = await PostgresBackend.sweep_deadline_exceeded(conn, schema=schema)
+        promoted = await PostgresBackend.sweep_scheduled_to_pending(conn, schema=schema)
+
+        statuses = {
+            rec["id"]: rec["status"]
+            for rec in await conn.fetch(
+                f'SELECT id, status FROM "{schema}".jobs WHERE id = ANY($1::uuid[])',  # noqa: S608  # Why: schema derived from settings validated against _IDENT_RE.
+                [locked_job, deadline_job, promote_job],
+            )
+        }
+
+    assert reclaimed == 1, "expired lease not reclaimed — sweep 1 judged the lease at txn start"
+    assert deadlined == 1, "passed deadline not failed — sweep 2 judged the deadline at txn start"
+    assert promoted == 1, "due job not promoted — sweep 3 judged scheduled_at at txn start"
+    assert statuses[locked_job] == "pending"
+    assert statuses[deadline_job] == "failed"
+    assert statuses[promote_job] == "pending"

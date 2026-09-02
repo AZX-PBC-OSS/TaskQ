@@ -38,6 +38,7 @@ from taskq.testing.in_memory import InMemoryBackend
 
 _START = datetime(2025, 1, 1, tzinfo=UTC)
 _LOCK_LEASE = timedelta(seconds=60)
+
 _CANCEL_GRACE = timedelta(seconds=30)
 _CLEANUP_GRACE = timedelta(seconds=30)
 
