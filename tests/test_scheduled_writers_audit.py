@@ -17,7 +17,6 @@ to the appropriate audit list below.
 """
 
 import inspect
-import re
 from datetime import UTC, datetime, timedelta
 from typing import Literal
 
@@ -32,6 +31,7 @@ from taskq.backend._protocol import (
     JobId,
     JobRow,
 )
+from taskq.backend.postgres import PostgresBackend
 from taskq.testing.in_memory import InMemoryBackend
 
 # ── Authorised writers ──────────────────────────────────────────
@@ -368,52 +368,55 @@ _AUTHORISED_METHOD_NAMES: frozenset[str] = frozenset(
 )
 
 
-@pytest.mark.skipif(
-    not hasattr(inspect, "getsource"),
-    reason="inspect.getsource unavailable (frozen / -OO build)",
+#: Every ``mark_*`` method on both backends, as reviewed against the
+#: four-authorised-writers contract. The runtime audit above exercises a
+#: hand-written sequence of calls, so it cannot notice a method nobody thought
+#: to add to it — this inventory is what forces that decision.
+_REVIEWED_MARK_METHODS: frozenset[str] = frozenset(
+    {
+        "mark_abandoned",
+        "mark_cancelled",
+        "mark_failed_or_retry",
+        "mark_retry_after",
+        "mark_snoozed",
+        "mark_succeeded",
+        "mark_succeeded_with_conn",
+    }
 )
-def test_fr5_static_audit_no_extra_scheduled_writers() -> None:
-    """Static analysis: mark_* methods outside the four authorised paths
-    must not contain literal ``'scheduled'`` status writes.
 
-    This greps the source of each ``mark_*`` method on both
-    ``InMemoryBackend`` and ``PostgresBackend`` for ``'scheduled'``
-    literals. The enqueue path is excluded (it is not a ``mark_*``
-    method). The four authorised methods (mark_snoozed, mark_retry_after,
-    mark_failed_or_retry) are allowed to contain ``'scheduled'``.
 
-    If a new ``mark_*`` method is added that writes ``'scheduled'``,
-    this test fails and the method must either be added to
-    ``AUTHORISED_SCHEDULED_WRITERS`` or the ``'scheduled'`` write must
-    be removed.
+@pytest.mark.parametrize("cls", [InMemoryBackend, PostgresBackend])
+def test_no_unreviewed_mark_method_exists(cls: type) -> None:
+    """Completeness tripwire for the runtime audit above.
+
+    That audit calls a fixed list of methods; a NEW ``mark_*`` writer would
+    simply not be called, and the contract would quietly gain a fifth path to
+    ``'scheduled'``. This asserts the API surface itself, so adding a method
+    fails here until someone decides whether it writes ``'scheduled'`` and
+    extends the runtime audit accordingly.
+
+    This replaces a grep of each method's source for a ``'scheduled'``
+    literal. That grep could not see a write routed through a constant or an
+    f-string, and it passed happily on a method the runtime audit never
+    called — it was checking spelling where the risk is coverage.
     """
-    from taskq.backend.postgres import PostgresBackend
-
-    backend_classes = [InMemoryBackend, PostgresBackend]
-
-    # Pattern matches string literals containing 'scheduled' — covers
-    # "scheduled", status="scheduled", 'scheduled', etc.
-    _scheduled_literal_re = re.compile(r"""['"]scheduled['"]""")
-
-    violations: list[str] = []
-
-    for cls in backend_classes:
-        for name, method in inspect.getmembers(cls, predicate=inspect.isfunction):
-            if not name.startswith("mark_"):
-                continue
-            if name in _AUTHORISED_METHOD_NAMES:
-                continue
-            try:
-                source = inspect.getsource(method)
-            except (OSError, TypeError):
-                continue
-            for line_no, line in enumerate(source.splitlines(), start=1):
-                if _scheduled_literal_re.search(line):
-                    violations.append(f"{cls.__name__}.{name} line {line_no}: {line.strip()}")
-
-    assert not violations, (
-        "Non-authorised mark_* methods contain 'scheduled' literal writes:\n"
-        + "\n".join(f"  - {v}" for v in violations)
-        + "\n\nIf this is a new authorised writer, update "
-        "AUTHORISED_SCHEDULED_WRITERS and _AUTHORISED_METHOD_NAMES."
+    found = {
+        name
+        for name, _ in inspect.getmembers(cls, predicate=inspect.isfunction)
+        if name.startswith("mark_")
+    }
+    unreviewed = sorted(found - _REVIEWED_MARK_METHODS)
+    assert not unreviewed, (
+        f"{cls.__name__} has mark_* methods not reviewed against the "
+        "four-authorised-writers contract:\n"
+        + "\n".join(f"  - {n}" for n in unreviewed)
+        + "\n\nDecide whether each writes status='scheduled': if it does, it is a "
+        "fifth authorised path and AUTHORISED_SCHEDULED_WRITERS must say so; if "
+        "it does not, add a case to test_fr5_audit_only_four_paths_write_scheduled "
+        "proving it. Then list it in _REVIEWED_MARK_METHODS."
+    )
+    missing = sorted(_REVIEWED_MARK_METHODS - found)
+    assert not missing, (
+        f"_REVIEWED_MARK_METHODS lists methods {cls.__name__} no longer has: "
+        f"{missing}. Remove them so the list keeps naming the real surface."
     )
