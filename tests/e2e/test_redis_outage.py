@@ -31,13 +31,14 @@ Timing budget:
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import AsyncIterator, Iterator
 from typing import TYPE_CHECKING, NamedTuple
-from uuid import uuid4
 
 import pytest
 import pytest_asyncio
 
+from taskq._ids import new_uuid
 from taskq.testing._shared_containers import creator_labels
 from tests.conftest import free_host_port
 
@@ -80,6 +81,15 @@ _RESTART_PROBE_TIMEOUT = 60.0
 _RECOVERY_TIMEOUT = 120.0
 
 
+def _delivered_endpoints(effects: list[asyncpg.Record]) -> set[str]:
+    """The distinct endpoints that were delivered to, from the effect rows.
+
+    Collapsing to a set is deliberate: execution is at-least-once, so the same
+    endpoint may legitimately appear more than once.
+    """
+    return {json.loads(r["detail"])["endpoint_id"] for r in effects}
+
+
 class ChaosDf(NamedTuple):
     """Chaos Dragonfly endpoints and container: host-mapped (test process)
     and in-network (workers) URLs, plus the container for stop/start control."""
@@ -112,7 +122,7 @@ def chaos_df(e2e_network: Network) -> Iterator[ChaosDf]:
     """
     from testcontainers.community.redis import RedisContainer
 
-    alias = f"df-outage-{uuid4().hex[:8]}"
+    alias = f"df-outage-{new_uuid().hex[:8]}"
     container = RedisContainer(image=_DRAGONFLY_IMAGE).with_command("--dbnum 128")
     container.with_kwargs(
         labels=creator_labels()
@@ -150,7 +160,7 @@ async def chaos_schema(
 
     from taskq.migrate import apply_pending_locked
 
-    schema = f"tro_{uuid4().hex[:10]}"
+    schema = f"tro_{new_uuid().hex[:10]}"
     if not _SCHEMA_NAME_RE.fullmatch(schema):
         msg = f"derived chaos schema name {schema!r} is not a valid PG identifier"
         raise RuntimeError(msg)
@@ -391,12 +401,24 @@ async def test_redis_outage_degrades_gracefully(
     # The outage jobs should complete after Dragonfly is back.
     await wait_all(outage_handles, timeout=_RECOVERY_TIMEOUT)
 
-    # Verify all delivered effects landed.
+    # Verify every job delivered, by job rather than by raw count.
+    #
+    # TaskQ executes jobs AT-LEAST-ONCE: an unrenewed lock is reclaimed after
+    # `lock_lease` and the reclaim sweep puts a retryable job back to 'pending'
+    # (_SWEEP_1_SQL), so a worker starved of CPU past its lease runs its job
+    # again. `deliver_webhook` appends an effect row per execution, so a
+    # duplicate execution is a duplicate row -- correct behaviour, not a
+    # defect. An exact-count assertion here asserted exactly-once, which TaskQ
+    # does not promise (see docs/guides/retries.md on `non_retryable` existing
+    # precisely because duplicate execution is possible), and failed under
+    # load. Per-endpoint coverage is what the outage scenario is actually
+    # about, and it is strictly stronger than a count: `len(...) == 3` is also
+    # satisfied by three deliveries of one endpoint and none of the others.
     burst_effects = await fetch_effects(chaos_pool, schema, run_id, kind="delivered")
-    assert len(burst_effects) == 5
+    assert _delivered_endpoints(burst_effects) == {f"ep-{i:02d}" for i in range(5)}
 
     outage_effects = await fetch_effects(chaos_pool, schema, f"{run_id}-outage", kind="delivered")
-    assert len(outage_effects) == 3
+    assert _delivered_endpoints(outage_effects) == {f"out-{i}" for i in range(3)}
 
     # Fresh non-rate-limited job: proves the system is fully functional.
     fresh_handle = await chaos_client.enqueue(
@@ -410,4 +432,4 @@ async def test_redis_outage_degrades_gracefully(
     await fresh_handle.wait(timeout=60)
 
     recovery_effects = await fetch_effects(chaos_pool, schema, f"{run_id}-recovery", kind="send")
-    assert len(recovery_effects) == 1
+    assert recovery_effects, "the post-recovery job must have run at least once"
