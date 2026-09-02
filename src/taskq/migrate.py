@@ -913,7 +913,10 @@ async def migration_advisory_lock(
     ``lock_timeout`` bounds only the WAIT, via Postgres' ``lock_timeout`` GUC
     (which governs advisory-lock acquisition). It is reset to unlimited before
     the body runs, so a long DDL step is never killed midway. ``0`` waits
-    indefinitely, the pre-existing behaviour.
+    indefinitely, the pre-existing behaviour. If the reset fails (a wedged
+    caller-owned connection), the failure is logged as a warning naming the
+    connection and the lock flow proceeds — that connection keeps the wait
+    bound as its session-wide ``lock_timeout`` until it is closed.
 
     Raises :class:`SystemExit` on contention rather than blocking until the
     container platform kills the process.
@@ -935,8 +938,22 @@ async def migration_advisory_lock(
         # Reset before the DDL so a legitimately long migration step is not
         # killed by the wait bound.
         if lock_timeout > 0:
-            with contextlib.suppress(Exception):
+            try:
                 await conn.execute("SET lock_timeout = 0")
+            except Exception as exc:
+                # Why warn, not raise: the lock is held and the migrations
+                # still need to run, so aborting here would trade a stale
+                # GUC for a failed migration run. But the swallowed failure
+                # must be visible — a caller-owned connection keeps the
+                # wait bound as its session-wide lock_timeout, so later
+                # deliberate long lock waits abort at the wait bound.
+                # repr(conn) is the only name an anonymous connection has.
+                logger.warning(
+                    "migration-lock-timeout-reset-failed",
+                    conn=repr(conn),
+                    lock_timeout_ms=int(lock_timeout * 1000),
+                    error=repr(exc),
+                )
     try:
         yield
     finally:

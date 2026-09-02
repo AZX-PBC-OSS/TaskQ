@@ -16,6 +16,7 @@ from typing import Any
 
 import asyncpg
 import pytest
+import structlog.testing
 
 from taskq import migrate as migrate_mod
 from taskq.migrate import Migration
@@ -315,6 +316,61 @@ async def test_guard_rejection_report_is_truthful_about_zero_execution(
     )
     assert "idempotent" not in report, (
         "false: re-running fails identically until the statement is removed"
+    )
+
+
+# ── migration_advisory_lock: reset-failure visibility ────────────────────
+
+
+class _FailLockTimeoutResetConn(_FakeMigrateConn):
+    """_FakeMigrateConn whose ``SET lock_timeout = 0`` reset raises — a
+    caller-owned connection whose session is wedged. Every other SQL
+    (acquire, DDL, unlock) completes normally."""
+
+    def __init__(self, applied: set[str]) -> None:
+        super().__init__(applied)
+        self.reset_attempts = 0
+
+    async def execute(self, sql: str, *args: object) -> str:
+        if sql == "SET lock_timeout = 0":
+            self.reset_attempts += 1
+            raise RuntimeError("synthetic lock_timeout reset failure")
+        return await super().execute(sql, *args)
+
+
+async def test_migration_advisory_lock_warns_when_reset_fails() -> None:
+    """A caller-owned connection whose ``SET lock_timeout`` reset silently
+    fails keeps lock_timeout=120000ms for the rest of the session — later
+    deliberate long lock waits abort at 120s. The reset failure must be
+    visible to the connection's owner: log a warning naming the connection,
+    without raising or invalidating the lock flow (acquire, body, and
+    unlock still complete normally)."""
+    conn = _FailLockTimeoutResetConn(applied=set())
+    body_ran = False
+
+    with structlog.testing.capture_logs() as captured:
+        async with migrate_mod.migration_advisory_lock(  # type: ignore[arg-type]  # Why: _FakeMigrateConn stands in for asyncpg.Connection.
+            conn, lock_timeout=120.0
+        ):
+            body_ran = True
+
+    assert body_ran, "a reset failure must not abort the lock flow"
+    assert conn.reset_attempts == 1
+    executed = " ".join(conn.executed)
+    assert "pg_advisory_lock" in executed
+    assert "pg_advisory_unlock" in executed
+    reset_warnings = [
+        e
+        for e in captured
+        if e.get("log_level") == "warning"
+        and e.get("event") == "migration-lock-timeout-reset-failed"
+    ]
+    assert reset_warnings, (
+        "the swallowed reset failure must be logged: the caller-owned "
+        "connection keeps lock_timeout=120000ms for the rest of its session"
+    )
+    assert repr(conn) in str(reset_warnings[0].get("conn", "")), (
+        "the warning must name the connection so its owner can find it"
     )
 
 
