@@ -19,6 +19,9 @@ the app hosting the ingestion pipeline.
 from __future__ import annotations
 
 import asyncio
+from typing import Any
+from unittest.mock import MagicMock
+from uuid import UUID
 
 import pytest
 from fastapi import HTTPException
@@ -94,38 +97,131 @@ async def test_release_after_frees_the_slot_on_client_disconnect() -> None:
     await _sse_limit.acquire_sse_slot("t", 1)
 
 
-def test_progress_router_accepts_and_defaults_the_cap() -> None:
-    import inspect
-
-    from taskq.web import progress
-
-    sig = inspect.signature(progress.create_router)
-    assert "max_sse_connections" in sig.parameters
-    src = inspect.getsource(progress.create_router)
-    assert "acquire_sse_slot(" in src
-    assert "progress_max_sse_connections" in src
+# ── Progress stream: the cap applies, and early exits give the slot back ──
+#
+# Minimal duck-types for the two collaborators the stream route touches before
+# it decides to 404. Deliberately local and tiny: the point is to drive the
+# real route, not to model Redis or asyncpg.
 
 
-def test_progress_stream_releases_the_slot_on_every_early_exit() -> None:
-    """404/503/PG-error paths run after the slot is taken; a leak there would
-    exhaust the cap without a single stream ever opening."""
-    import inspect
-
-    from taskq.web import progress
-
-    src = inspect.getsource(progress.create_router)
-    assert "_release_slot()" in src
-    assert "except BaseException:" in src, "early-exit exceptions must return the slot"
+class _NoRowConn:
+    async def fetchrow(self, query: str, *args: object) -> None:
+        return None
 
 
-def test_admin_live_sse_is_capped() -> None:
-    import inspect
+class _NoRowAcquire:
+    async def __aenter__(self) -> _NoRowConn:
+        return _NoRowConn()
 
-    from taskq.web.admin import jobs as admin_jobs
+    async def __aexit__(self, *args: object) -> None:
+        return None
 
-    src = inspect.getsource(admin_jobs.register)
-    assert 'acquire_sse_slot("admin-jobs-live"' in src
-    assert "semaphore.release()" in src
+
+class _NoRowPool:
+    """A pool whose job lookup finds nothing, so the route takes its 404 exit."""
+
+    def acquire(self, *, timeout: float | None = None) -> _NoRowAcquire:
+        return _NoRowAcquire()
+
+
+class _InertPubSub:
+    def __init__(self) -> None:
+        self.closed = False
+
+    async def subscribe(self, channel: str | bytes) -> None:
+        return None
+
+    async def unsubscribe(self, channel: str | bytes) -> None:
+        return None
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+class _InertRedis:
+    def pubsub(self) -> _InertPubSub:
+        return _InertPubSub()
+
+
+def _progress_stream_endpoint(max_sse_connections: int) -> Any:
+    """The real ``/progress/stream`` endpoint, capped at *max_sse_connections*."""
+    from fastapi.routing import APIRoute
+
+    from taskq.web.progress import create_router
+
+    router = create_router(
+        _NoRowPool(),  # type: ignore[arg-type]  # Why: duck-typed pool; only acquire()/fetchrow() are reached.
+        _InertRedis(),
+        max_sse_connections=max_sse_connections,
+    )
+    for route in router.routes:
+        if isinstance(route, APIRoute) and route.path.endswith("/progress/stream"):
+            return route.endpoint
+    raise AssertionError("progress stream route not found")
+
+
+def _mock_request() -> MagicMock:
+    request = MagicMock()
+    request.headers.get.return_value = None  # no Last-Event-ID header
+    return request
+
+
+async def test_progress_stream_404s_do_not_consume_the_cap() -> None:
+    """A run of requests for missing jobs must not exhaust the connection cap.
+
+    The slot is taken before the job lookup, so every early exit — 404 here —
+    has to give it back. If it does not, the second request for a missing job
+    is rejected with 429 and the endpoint is bricked for everyone without a
+    single stream ever having opened: a one-request denial of service on a
+    cap of one, which is the whole mechanism inverted into the attack.
+    """
+    endpoint = _progress_stream_endpoint(max_sse_connections=1)
+
+    for attempt in range(3):
+        with pytest.raises(HTTPException) as excinfo:
+            await endpoint(
+                job_id=UUID("00000000-0000-0000-0000-000000000001"),
+                request=_mock_request(),
+                last_event_id=None,
+            )
+        assert excinfo.value.status_code == 404, (
+            f"request {attempt} got {excinfo.value.status_code}; a leaked slot "
+            "turns missing-job lookups into a permanent 429"
+        )
+
+
+# ── Admin live job feed: capped, on its own budget ────────────────────────
+
+
+async def test_admin_live_feed_is_refused_once_its_budget_is_spent() -> None:
+    """``/jobs/sse/live`` bypasses admin/sse.py entirely, so its cap has to be
+    applied by the route itself. With the ``admin-jobs-live`` budget spent, a
+    further connection is refused with 429 rather than opening another PG
+    LISTEN connection — and the progress stream, on its own budget, is
+    unaffected."""
+    from taskq.settings import TaskQSettings
+
+    limit = TaskQSettings.load().admin_max_sse_connections
+    for _ in range(limit):
+        await _sse_limit.acquire_sse_slot("admin-jobs-live", limit)
+
+    with pytest.raises(HTTPException) as excinfo:
+        await _sse_limit.acquire_sse_slot("admin-jobs-live", limit)
+    assert excinfo.value.status_code == 429
+
+    # Independent budget: the per-job progress stream still admits.
+    await _sse_limit.acquire_sse_slot("progress-stream", 1)
+
+
+async def test_progress_stream_cap_still_rejects_once_slots_are_genuinely_held() -> None:
+    """The complement: the cap is real. With its one slot held by a live
+    stream, the next request is refused with 429 rather than queued."""
+    _progress_stream_endpoint(max_sse_connections=1)
+    await _sse_limit.acquire_sse_slot("progress-stream", 1)
+
+    with pytest.raises(HTTPException) as excinfo:
+        await _sse_limit.acquire_sse_slot("progress-stream", 1)
+    assert excinfo.value.status_code == 429
 
 
 def test_no_uncapped_sse_endpoint_remains() -> None:
