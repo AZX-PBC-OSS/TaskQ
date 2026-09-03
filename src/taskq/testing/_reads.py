@@ -5,11 +5,15 @@
 ``self: InMemoryBackend`` as the first parameter.
 
 ``get`` returns a copy of the stored row with the row's mutable fields
-copied (:func:`_read_copy`), so a caller mutating a freshly-read row
-can never corrupt the backend's stored state; the result-TTL view
-composes on top of that copy. ``list_jobs`` neither copies nor sweeps —
-it exposes raw stored rows, matching PostgresBackend's pre-sweep list
-behaviour.
+copied (:func:`_read_copy`), so top-level mutation of a freshly-read
+row can never reach the backend's stored state — nested containers
+inside those dicts remain shared (:func:`_read_copy` documents the
+line). The result-TTL view composes on top of that copy. The other
+seams still alias by design pending #94: ``list_jobs`` neither copies
+nor sweeps — it exposes raw stored rows, matching PostgresBackend's
+pre-sweep list behaviour — and the write paths store and return caller
+dicts by reference, so rows from those seams stay live references to
+storage.
 """
 
 from dataclasses import replace
