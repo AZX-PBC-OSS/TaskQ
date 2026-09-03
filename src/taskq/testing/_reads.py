@@ -4,11 +4,12 @@
 ``get_events`` live here as module-level functions taking
 ``self: InMemoryBackend`` as the first parameter.
 
-``get`` additionally applies the PG result-TTL sweep predicate
-(:data:`taskq.backend._sweeps._SWEEP_RESULT_TTL_SQL`) against the injected
-Clock, so a read past ``result_expires_at`` deterministically reports the
-result as unavailable. ``list_jobs`` does not — it exposes raw stored rows,
-matching PostgresBackend's pre-sweep list behaviour.
+``get`` returns a copy of the stored row with the row's mutable fields
+copied (:func:`_read_copy`), so a caller mutating a freshly-read row
+can never corrupt the backend's stored state; the result-TTL view
+composes on top of that copy. ``list_jobs`` neither copies nor sweeps —
+it exposes raw stored rows, matching PostgresBackend's pre-sweep list
+behaviour.
 """
 
 from dataclasses import replace
@@ -39,7 +40,34 @@ __all__ = [
     "_list_jobs",
     "_poll_reclaim_events",
     "_post_sweep_result_view",
+    "_read_copy",
 ]
+
+
+def _read_copy(row: JobRow) -> JobRow:
+    """Return *row* as an isolated copy for a read result.
+
+    The copy is deliberately shallow — one new dict per mutable field, no
+    deep-copy machinery, which is all a test backend needs: top-level
+    mutation of a read row (``row.result["injected"] = True``) can never
+    reach storage. Nested containers inside those dicts are still
+    shared.
+    """
+    # Why: red-team finding reported during the #92 result-TTL work and
+    # left unfixed there — ``get`` returned the live stored row on every
+    # non-expired read (only the expired branch produced a copy), so a
+    # caller mutating a freshly-read row's dict fields silently
+    # corrupted the backend's stored state, and later reads (and the
+    # runner's internal paths) saw the corruption. ``JobRow`` is frozen,
+    # but its dict-typed fields are shared by reference; one new dict
+    # per mutable field severs that aliasing.
+    return replace(
+        row,
+        payload=dict(row.payload),
+        progress_state=dict(row.progress_state),
+        result=None if row.result is None else dict(row.result),
+        metadata=dict(row.metadata),
+    )
 
 
 def _post_sweep_result_view(row: JobRow, now: datetime) -> JobRow:
@@ -60,7 +88,10 @@ def _post_sweep_result_view(row: JobRow, now: datetime) -> JobRow:
     ``result_expires_at`` are nulled — the stored row is never mutated,
     only the returned copy — so status and every other column (terminal
     ones included) pass through unchanged, and an expired result can
-    neither revive nor alter a terminal state. Downstream code that
+    neither revive nor alter a terminal state. ``get`` feeds this view
+    the already-isolated :func:`_read_copy` product, so the view's own
+    ``replace`` composes on that copy instead of duplicating the copy
+    semantics on the expired branch alone. Downstream code that
     handles :class:`~taskq.exceptions.ResultUnavailable` from
     ``JobHandle.wait`` therefore sees the same failure mode on both
     backends.
@@ -74,7 +105,10 @@ async def _get(self: "InMemoryBackend", job_id: JobId) -> JobRow | None:
     row = self._jobs.get(job_id)
     if row is None:
         return None
-    return _post_sweep_result_view(row, self._clock.now())
+    # Every read returns a copy (see _read_copy); the sweep view composes
+    # on top of it for both branches rather than duplicating its own copy
+    # on the expired branch.
+    return _post_sweep_result_view(_read_copy(row), self._clock.now())
 
 
 async def _list_jobs(self: "InMemoryBackend", filters: JobFilter) -> list[JobRow]:

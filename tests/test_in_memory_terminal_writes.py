@@ -1865,3 +1865,113 @@ class TestGetExpiredResults:
             assert not cancel_wake_event.is_set(), (
                 "an expired read must not ping cancel-wake subscribers"
             )
+
+
+# ── read isolation: every get() returns a copy ─────────────────────────
+
+
+class TestGetReturnsIsolatedRowCopies:
+    """Every ``get`` read returns a copy whose dict-typed fields are
+    copied, so a caller mutating a freshly-read row cannot corrupt the
+    backend's stored state.
+
+    Red-team finding reported during the #92 result-TTL work and
+    deliberately left unfixed there: ``JobRow`` is frozen, but its dict
+    fields (``payload``, ``progress_state``, ``result``, ``metadata``)
+    are shared by reference — and only the expired branch of the read
+    path produced a copy. Every non-expired read handed back the live
+    stored row, so ``row.result["injected"] = True`` silently rewrote
+    storage, and every later read (and the runner's internal paths) saw
+    the corruption.
+    """
+
+    async def _enqueue_and_succeed(
+        self,
+        backend: InMemoryBackend,
+        *,
+        result_ttl: timedelta | None = None,
+    ) -> JobId:
+        """Enqueue a job carrying dict payload/metadata, dispatch it, and
+        succeed it with a dict result and progress_state."""
+        args = EnqueueArgs(
+            id=new_job_id(),
+            actor="read_isolation_actor",
+            queue="default",
+            payload={"payload_key": "v"},
+            max_attempts=3,
+            retry_kind="transient",
+            scheduled_at=_START,
+            result_ttl=result_ttl,
+            metadata={"meta_key": "v"},
+        )
+        await backend.enqueue(args)
+        worker_id = backend._worker_id  # pyright: ignore[reportPrivateUsage]  # Why: test-only private access
+        dispatched = await backend.dispatch_batch(
+            worker_id, ["default"], limit=1, lock_lease=timedelta(seconds=60)
+        )
+        assert len(dispatched) == 1
+        ok = await backend.mark_succeeded(
+            dispatched[0].id,
+            worker_id,
+            result={"ok": True},
+            progress_seq=2,
+            progress_state={"pct": 100},
+        )
+        assert ok is True
+        return dispatched[0].id
+
+    async def test_mutating_non_expired_read_leaves_stored_state_intact(self) -> None:
+        """The defect branch: a fresh (non-expired) read used to hand
+        back the live stored row, so mutating its dict fields rewrote
+        storage — the next read saw the injected keys."""
+        backend = _make_backend()
+        job_id = await self._enqueue_and_succeed(backend)
+
+        read = await backend.get(job_id)
+        assert read is not None
+        assert read.result is not None
+        read.result["injected"] = True
+        read.progress_state["injected"] = True
+        read.metadata["injected"] = True
+        read.payload["injected"] = True
+
+        fresh = await backend.get(job_id)
+        assert fresh is not None
+        assert fresh.result == {"ok": True}
+        assert fresh.progress_state == {"pct": 100}
+        assert fresh.metadata == {"meta_key": "v"}
+        assert fresh.payload == {"payload_key": "v"}
+
+        stored = backend._jobs[job_id]  # pyright: ignore[reportPrivateUsage]  # Why: pin the stored row directly — the public read is the code under test
+        assert stored.result == {"ok": True}
+        assert stored.progress_state == {"pct": 100}
+        assert stored.metadata == {"meta_key": "v"}
+        assert stored.payload == {"payload_key": "v"}
+
+    async def test_expired_read_view_composes_with_the_row_copy(self) -> None:
+        """The expired branch keeps its post-sweep shape (result columns
+        nulled, every other column intact) and its remaining dict fields
+        are copies too — the old ``replace`` view copied only the row
+        shell, leaving ``payload``/``progress_state``/``metadata``
+        aliased to storage."""
+        backend = _make_backend()
+        job_id = await self._enqueue_and_succeed(backend, result_ttl=timedelta(seconds=60))
+
+        backend.advance_clock_to(_START + timedelta(seconds=61))
+        expired = await backend.get(job_id)
+        assert expired is not None
+        assert expired.status == "succeeded"
+        assert expired.result is None
+        assert expired.result_size_bytes is None
+        assert expired.result_expires_at is None
+
+        expired.progress_state["injected"] = True
+        expired.metadata["injected"] = True
+        expired.payload["injected"] = True
+
+        stored = backend._jobs[job_id]  # pyright: ignore[reportPrivateUsage]  # Why: pin the stored row directly — the expired view must never become a write
+        assert stored.result == {"ok": True}
+        assert stored.result_expires_at == _START + timedelta(seconds=60)
+        assert stored.progress_state == {"pct": 100}
+        assert stored.metadata == {"meta_key": "v"}
+        assert stored.payload == {"payload_key": "v"}
