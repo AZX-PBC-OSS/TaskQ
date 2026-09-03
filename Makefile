@@ -1,4 +1,4 @@
-.PHONY: help install env test test-fast test-e2e test-cov lint format type-check clean build css security docs docs-serve
+.PHONY: help install env test test-fast test-e2e clean-e2e test-cov lint format type-check clean build css security docs docs-serve
 
 help:
 	@echo "Available commands:"
@@ -6,6 +6,7 @@ help:
 	@echo "  make test         - Run all tests (parallel)"
 	@echo "  make test-fast    - Run non-integration tests (parallel)"
 	@echo "  make test-e2e      - Run e2e tests (containerized workers; serial)"
+	@echo "  make clean-e2e    - Remove e2e strays (worker images, wheel cache, stale containers)"
 	@echo "  make lint         - Run ruff linter"
 	@echo "  make format       - Format code with ruff"
 	@echo "  make type-check   - Run pyright type checker"
@@ -74,6 +75,18 @@ test-fast: env
 # would ask uv to sync a second time, which is what --no-sync exists to stop.
 test-e2e: env
 	$(UVRUN) pytest --e2e -m e2e tests/e2e
+
+# Manual cleanup of the e2e tier's machine-level strays: worker images the
+# tier built (pid-owned ones whose owner is dead, plus legacy
+# `taskq-e2e-worker:sha-*` tags from before session teardown removed images),
+# the wheel cache (`dist-e2e-wheels/`), dead-owner wheel scratch dirs, and
+# the standard stale-container/network sweep. A normal run's session teardown
+# already removes exactly that run's image; this target exists for crashed
+# runs' leftovers and the pre-teardown backlog. Follows the env discipline
+# like everything else: the script imports the docker SDK, which only the
+# e2e dependency group provides, so it runs through $(UVRUN) after `env`.
+clean-e2e: env
+	$(UVRUN) python scripts/clean_e2e.py
 
 lint: env
 	$(UVRUN) ruff check .

@@ -86,6 +86,21 @@ _SWEEP_1_SQL = """\
 --   cancel was honored.  Jobs with no cancel in-flight still land on
 --   'crashed' as before.  The job_attempts row records outcome='crashed'
 --   either way: that IS what happened to the attempt.
+--
+-- locked_by_worker is snapshotted raw (the last-known holder id, even when
+-- that worker's workers row was already removed by cleanup_stale_workers on
+-- an earlier tick — possible whenever the stale-worker window,
+-- heartbeat_interval * (max_heartbeat_failures + 3), is shorter than the
+-- lease). The job_attempts INSERT resolves it through the holder-CTE idiom
+-- (see _sql.py's INSERT_ATTEMPT_SQL): a present parent records the id, a
+-- deleted one records NULL (mirroring the column's ON DELETE SET NULL), so
+-- the INSERT cannot FK-violate on the dangling id — which would escape the
+-- sweep loop (a constraint violation is deliberately non-transient) and
+-- tear down the leader worker, leaving the orphan unreclaimed with no live
+-- worker to reclaim it. Keeping the join OUT of this statement also keeps
+-- its plan byte-identical to the original: the workers probe happens once
+-- per RECLAIMED row in the rare attempt INSERT, not per candidate scan of
+-- the hot jobs table.
 WITH snap AS (
     SELECT id, locked_by_worker
     FROM "{schema}".jobs
@@ -175,11 +190,23 @@ WHERE result_expires_at < clock_timestamp()
 # Per-sweep attempt INSERT templates (schema baked in via .format at call
 # time after _IDENT_RE validation).  Kept as constants so the SQL surface
 # stays grep-able and free of f-string S608 noise.
+#
+# Sweep 1's template uses the holder-CTE idiom from _sql.py's
+# INSERT_ATTEMPT_SQL (resolve worker_id against workers under FOR KEY
+# SHARE → NULL when the row is gone): the reclaim's crash victim can have
+# its workers row already deleted by an earlier cleanup_stale_workers
+# tick, and the raw snap id would FK-violate here. Sweep 2's template
+# stays plain: its worker_id is NULL by construction (the job was never
+# dispatched, so there is no lock-holder to reference).
 _SWEEP_1_ATTEMPT_SQL = """\
+WITH holder AS (
+    SELECT id FROM "{schema}".workers WHERE id = $9 FOR KEY SHARE
+)
 INSERT INTO "{schema}".job_attempts
 (job_id, attempt, started_at, finished_at, outcome,
  error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
-VALUES ($1, $2, $3, clock_timestamp(), $4, $5, $6, $7, $8, $9, $10::jsonb)"""
+VALUES ($1, $2, $3, clock_timestamp(), $4, $5, $6, $7, $8,
+        (SELECT id FROM holder), $10::jsonb)"""
 
 _SWEEP_2_ATTEMPT_SQL = """\
 INSERT INTO "{schema}".job_attempts
@@ -224,7 +251,16 @@ async def sweep_expired_locks(
     takes no ``now`` argument.
 
     A CTE snapshots ``locked_by_worker`` before the UPDATE clears it, so
-    the ``job_attempts.worker_id`` is populated correctly.
+    the ``job_attempts.worker_id`` is populated correctly. The snapshot
+    keeps the raw last-known holder id; the attempt INSERT resolves it
+    through a ``FOR KEY SHARE`` holder CTE (see ``_sql.py``'s
+    INSERT_ATTEMPT_SQL), so when the crashed worker's row was already
+    removed by an earlier ``cleanup_stale_workers`` tick (possible whenever
+    the stale-worker window, ``heartbeat_interval *
+    (max_heartbeat_failures + 3)``, is shorter than the lease) the attempt
+    records a ``NULL`` worker_id — mirroring the column's ``ON DELETE SET
+    NULL`` semantics — instead of FK-violating on the dangling id, while
+    the job_events detail still carries the last-known holder for audit.
 
     One ``pg_notify`` is fired per sweep call that reclaims at least one
     row (not one per row) so that fleet-wide consumers using

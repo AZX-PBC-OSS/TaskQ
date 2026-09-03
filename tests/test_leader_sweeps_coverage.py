@@ -133,15 +133,19 @@ def _make_deps(
     worker_pool: FakePool | None = None,
     is_leader: bool = False,
     heartbeat_interval: float = 0.5,
+    sweep_interval: float | None = None,
 ) -> WorkerDeps:
-    settings = _worker_settings(
-        HEARTBEAT_INTERVAL=str(heartbeat_interval),
-        LOCK_LEASE="2.0",
-        WATCHDOG_LOOP_LAG_BUDGET="1.2",
-        MAX_HEARTBEAT_FAILURES="3",
-        CANCELLATION_GRACE_PERIOD="0.0",
-        CLEANUP_GRACE_PERIOD="0.0",
-    )
+    overrides: dict[str, str] = {
+        "HEARTBEAT_INTERVAL": str(heartbeat_interval),
+        "LOCK_LEASE": "2.0",
+        "WATCHDOG_LOOP_LAG_BUDGET": "1.2",
+        "MAX_HEARTBEAT_FAILURES": "3",
+        "CANCELLATION_GRACE_PERIOD": "0.0",
+        "CLEANUP_GRACE_PERIOD": "0.0",
+    }
+    if sweep_interval is not None:
+        overrides["SWEEP_INTERVAL"] = str(sweep_interval)
+    settings = _worker_settings(**overrides)
     deps = WorkerDeps(
         settings=settings,
         dispatcher_pool=dispatcher_pool or FakePool(),  # type: ignore[arg-type]  # Why: FakePool drop-in for asyncpg.Pool in unit tests.
@@ -248,6 +252,58 @@ async def test_sweep_loop_not_implemented_warns_only_once() -> None:
     # Each warning fires at most once thanks to the warned flags.
     assert err_calls.count("sweep_expired_locks_unimplemented") <= 1
     assert err_calls.count("sweep_deadline_exceeded_unimplemented") <= 1
+
+
+# ── _sweep_loop: unexpected-error backstop ────────────────────────────────
+
+
+async def test_sweep_loop_backstop_tolerates_then_goes_fatal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Behavioral: a non-transient sweep error (a bug shape — e.g. the
+    constraint-violation class that used to crash the reclaim sweep) is
+    ridden out loudly for a few consecutive iterations, then the loop dies
+    deliberately: never an instant silent leader teardown (which leaves
+    the cluster with no sweeper and orphans 'running' forever), never an
+    infinite silent retry. Pre-fix, the first error escaped straight into
+    MaintenanceLeader.run's TaskGroup and tore down the worker."""
+    import structlog.testing
+
+    from taskq.worker import _transient as transient_mod
+
+    monkeypatch.setattr(transient_mod, "DEFAULT_MAX_CONSECUTIVE_UNEXPECTED", 3)
+
+    calls = 0
+
+    class _BuggySweepBackend:
+        async def reclaim_expired_locks(self, cg: timedelta, ug: timedelta) -> int:
+            nonlocal calls
+            calls += 1
+            raise ValueError("this is a bug, not a PG moment")
+
+        async def deadline_sweep(self) -> int:
+            return 0
+
+    leader = _make_leader(
+        backend=_BuggySweepBackend(),
+        deps=_make_deps(is_leader=True, sweep_interval=0.01),
+    )
+    shutdown = asyncio.Event()
+    task = asyncio.create_task(leader._sweep_loop(shutdown))
+    try:
+        with (
+            structlog.testing.capture_logs() as captured,
+            pytest.raises(ValueError, match="this is a bug"),
+        ):
+            await asyncio.wait_for(task, timeout=15.0)
+    finally:
+        shutdown.set()
+
+    unexpected = [e for e in captured if e.get("event") == "leader-loop-unexpected-error"]
+    assert [e.get("consecutive") for e in unexpected] == [1, 2, 3]
+    # The guard tolerated (cap - 1) failing iterations before re-raising:
+    # pre-fix the loop died on the first, with calls == 1 and no logs.
+    assert calls == 3
 
 
 # ── _sweep_loop: sweep_leaked_reservation_slots block ────────────────────

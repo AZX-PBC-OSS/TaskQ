@@ -669,8 +669,9 @@ async def long_running_job(
     *,
     pool: asyncpg.Pool,
 ) -> None:
-    """Job that outlives the 3 s lock lease so a worker crash mid-run
-    triggers the expired-lock recovery sweep and a clean re-dispatch.
+    """Job that outlives the lock lease (8 s fleet default, 10 s in the
+    pg_restart chaos env) so a worker crash mid-run triggers the
+    expired-lock recovery sweep and a clean re-dispatch.
     """
     await _record_effect(
         pool,

@@ -34,6 +34,14 @@ from taskq._ids import new_uuid
 from taskq.testing._shared_containers import cleanup_stale_testcontainers, creator_labels
 
 from ._assertions import poll_until, wait_for_worker_ready
+from ._image_hygiene import (
+    WHEEL_CACHE_DIR,
+    remove_worker_image,
+    sweep_stale_wheel_cache_entries,
+    sweep_stale_wheel_scratch_dirs,
+    sweep_stale_worker_images,
+    worker_image_target,
+)
 
 if TYPE_CHECKING:
     import asyncpg
@@ -51,7 +59,6 @@ _PG_PASSWORD = "taskq"
 _PG_DB = "taskq"
 _DRAGONFLY_IMAGE = "docker.dragonflydb.io/dragonflydb/dragonfly:v1.39.0"
 _DRAGONFLY_DBNUM = 128
-_WORKER_IMAGE_NAME = "taskq-e2e-worker"
 _IN_NETWORK_PG_DSN = f"postgresql://{_PG_USER}:{_PG_PASSWORD}@pg:5432/{_PG_DB}"
 _IN_NETWORK_DRAGONFLY_URL = "redis://dragonfly:6379"
 
@@ -129,7 +136,7 @@ def e2e_network() -> Iterator[Network]:
     validations never collide), shared by the PG, Dragonfly, and worker
     containers.
 
-    The stale sweep runs here — the first fixture in the session's container
+    The stale sweeps run here — the first fixture in the session's container
     dependency graph — because e2e never starts the shared pair (the only
     other sweep entry point). With Ryuk disabled process-wide (see
     :mod:`taskq.testing._shared_containers`), this is what reaps a CRASHED
@@ -138,10 +145,24 @@ def e2e_network() -> Iterator[Network]:
     safe: their containers' ownership labels and network pid suffixes prove
     liveness to the sweep. Best-effort by design — a Docker hiccup never
     blocks the session.
+
+    The same entry point sweeps this tier's IMAGE-level strays (see
+    :mod:`tests.e2e._image_hygiene`): pid-owned worker images and wheel
+    scratch dirs whose owner pid is dead, and wheel cache files past the
+    24 h age backstop. One ``[TaskQ]`` line records that the pass ran and
+    what it removed — its absence means Docker was unreachable.
     """
     from testcontainers.core.network import Network
 
     cleanup_stale_testcontainers()
+    swept_images = sweep_stale_worker_images()
+    swept_scratch = sweep_stale_wheel_scratch_dirs()
+    swept_wheels = sweep_stale_wheel_cache_entries()
+    print(
+        "[TaskQ] event=e2e-strays-swept "
+        f"worker_images={swept_images} wheel_scratch_dirs={swept_scratch} "
+        f"wheel_cache_entries={swept_wheels}"
+    )
     network = Network()
     network.name = f"taskq-e2e-net-{os.getpid()}"
     with network:
@@ -244,26 +265,43 @@ def e2e_dragonfly(e2e_network: Network) -> Iterator[E2EDragonfly]:
 
 
 def _build_wheel() -> Path:
-    """Build the taskq wheel from current source into a per-process out dir
-    and return the freshest ``taskq_py-*-py3-none-any.whl`` in it. Always
-    rebuilt so the suite tests the current source as a packaged artifact.
+    """Build the taskq wheel from current source and place it at a STABLE,
+    content-addressed path in ``dist-e2e-wheels/<sha16>/`` — always rebuilt,
+    so the suite tests the current source as a packaged artifact.
 
-    The out dir is pid-unique (``dist-e2e-<pid>``, gitignored) so two
-    concurrent e2e sessions never race on a shared ``dist/`` wheel: one
-    process's rebuild could otherwise swap the file under another's image
-    build. The ``e2e_worker_image`` session finalizer removes the dir after
-    the run; it stays gitignored so a crashed session's leftovers never
-    dirty the tree. ``uv build`` also drops a catch-all ``.gitignore`` into
-    it.
+    Why the two-step placement (scratch dir, then atomic move): the
+    containerspec content hash covers the copy layer's ``src`` PATH STRING,
+    not just the file bytes. The previous pid-unique ``dist-e2e-<pid>/``
+    path therefore leaked the pid into that hash — every run minted a NEW
+    image and paid a full pip-install rebuild even with unchanged source,
+    which is what stranded one ~277 MB image per run on the machine. A
+    content-addressed path is stable for identical content (repeat runs
+    reuse the same hash and BuildKit's cached layers) and unique per
+    content, so the placement is also concurrency-safe by construction:
+
+    - ``uv build`` runs in a pid-unique scratch dir, so concurrent builds
+      never race on a shared output file (the original reason the pid dir
+      existed — one process's rebuild could otherwise swap the file under
+      another's image build).
+    - The finished wheel is moved into the shared cache with ``os.replace``
+      — atomic on this filesystem, so a concurrent reader always sees a
+      complete wheel, and identical-content sessions write identical bytes
+      over each other harmlessly while different-content sessions target
+      different cache entries.
+
+    The scratch dir is removed eagerly here; a build that crashes mid-way
+    leaves its dir for the next session's dead-pid sweep
+    (:mod:`tests.e2e._image_hygiene`). The cached wheel entry stays for
+    reuse and is age-swept (24 h) or cleared by ``make clean-e2e``.
     """
     uv_bin = shutil.which("uv")
     if uv_bin is None:
         msg = "uv executable not found on PATH (required to build the worker wheel)"
         raise RuntimeError(msg)
-    out_dir = _REPO_ROOT / f"dist-e2e-{os.getpid()}"
+    scratch_dir = _REPO_ROOT / f"dist-e2e-{os.getpid()}"
     try:
         subprocess.run(  # noqa: S603  # Why: static argv, no shell, binary resolved via shutil.which; inputs are not user-controlled.
-            [uv_bin, "build", "--wheel", "--out-dir", str(out_dir)],
+            [uv_bin, "build", "--wheel", "--out-dir", str(scratch_dir)],
             cwd=_REPO_ROOT,
             check=True,
             capture_output=True,
@@ -273,29 +311,55 @@ def _build_wheel() -> Path:
         msg = f"uv build --wheel failed (exit {exc.returncode}):\n{exc.stderr}"
         raise RuntimeError(msg) from exc
     wheels = sorted(
-        out_dir.glob("taskq_py-*-py3-none-any.whl"),
+        scratch_dir.glob("taskq_py-*-py3-none-any.whl"),
         key=lambda p: p.stat().st_mtime,
     )
     if not wheels:
-        msg = (
-            f"uv build --wheel succeeded but no wheel matched {out_dir}/taskq_py-*-py3-none-any.whl"
-        )
+        msg = f"uv build --wheel succeeded but no wheel matched {scratch_dir}/taskq_py-*-py3-none-any.whl"
         raise RuntimeError(msg)
-    return wheels[-1]
+    scratch_wheel = wheels[-1]
+    digest = hashlib.sha256(scratch_wheel.read_bytes()).hexdigest()[:16]
+    # The digest rides in a content-addressed SUBDIR, not in the filename:
+    # pip validates wheel filenames (distribution-version-py-abi-plat)
+    # against the wheel's own metadata, so the file must keep its canonical
+    # name — which also keeps the image's ``pip install`` instruction
+    # byte-identical across runs, preserving BuildKit layer-cache affinity.
+    stable_dir = WHEEL_CACHE_DIR / digest
+    stable_dir.mkdir(parents=True, exist_ok=True)
+    stable_wheel = stable_dir / scratch_wheel.name
+    os.replace(scratch_wheel, stable_wheel)
+    shutil.rmtree(scratch_dir, ignore_errors=True)
+    return stable_wheel
 
 
 @pytest.fixture(scope="session")
 def e2e_worker_image() -> Iterator[BuiltImage]:
-    """Build the worker image once per session via containerspec.
+    """Build the worker image once per session via containerspec, under a
+    PID-OWNED repository name, and remove it in teardown.
 
     Wheel install validates the shipped artifact (packaging, entry points,
-    dependency metadata). Content-hash caching makes repeat runs ~0s when
-    wheel + actors are unchanged. ``tests/e2e`` is copied LAST so actor
-    edits bust only the cheap final layer.
+    dependency metadata). ``tests/e2e`` is copied LAST so actor edits bust
+    only the cheap final layer. The stable content-addressed wheel path
+    (see ``_build_wheel``) keeps the content hash — and therefore BuildKit's
+    layer cache — stable across runs; the per-session repository name
+    (``taskq-e2e-worker-r<pid>``, see :mod:`tests.e2e._image_hygiene`) only
+    re-tags, so a repeat run re-exports in seconds instead of re-installing.
 
-    Teardown removes this process's ``dist-e2e-<pid>/`` wheel dir so runs
-    don't accumulate one wheel each (F12). Best-effort: an already-removed
-    or unreadable dir never fails the session.
+    Why pid ownership: the image used to be tagged under the shared name
+    ``taskq-e2e-worker:sha-<content hash>`` and was NEVER removed — teardown
+    deleted only the wheel dir, stranding one ~277 MB image per unique
+    source content (in practice one per run). Under a pid-owned name this
+    session's tag is exclusively its own — no concurrent session can be
+    using it, even one with byte-identical source — so teardown can remove
+    exactly this run's image and nothing pre-existing; a crashed run's
+    leftover is reclaimed by the next session's start (dead-pid sweep). The
+    repository still begins with ``taskq-e2e-worker``, so worker containers
+    remain sweep candidates for ``taskq.testing._shared_containers``.
+
+    Teardown removal is best-effort (a Docker hiccup is reported on one
+    ``[TaskQ]`` line, never raised); the leftover then falls to the next
+    session-start sweep. The cached wheel entry is NOT torn down — it is the
+    cross-run build cache.
     """
     from containerspec import DockerTarget, ImageSpec
 
@@ -314,11 +378,11 @@ def e2e_worker_image() -> Iterator[BuiltImage]:
     )
     # Invariant: asyncio.run is only safe here because this sync session
     # fixture is resolved before any event loop exists. No async fixture may
-    # lazily request this fixture via request.getfixturevalue — that would
-    # execute this body inside an already-running loop and raise.
-    built: BuiltImage = asyncio.run(spec.build(DockerTarget(_WORKER_IMAGE_NAME)))
+    # lazily request this fixture via request.getfixturevalue — that
+    # would execute this body inside an already-running loop and raise.
+    built: BuiltImage = asyncio.run(spec.build(DockerTarget(worker_image_target(os.getpid()))))
     yield built
-    shutil.rmtree(wheel.parent, ignore_errors=True)
+    remove_worker_image(built.tag)
 
 
 # ── Module: schema + Dragonfly DB ─────────────────────────────────────────
@@ -395,10 +459,11 @@ async def e2e_schema(
 
     await asyncio.to_thread(_flushdb, f"{e2e_dragonfly.host_url}/{redis_db}")
 
-    # Shortened timing knobs so tests stay fast while preserving the
-    # validated invariants: lock_lease (3.0) >= 4 * heartbeat_interval (2.0);
-    # cancellation (1.0) + cleanup (1.0) grace < min(lock_lease,
-    # termination_grace - 5).
+    # Timing knobs: shortened so tests stay fast while preserving the
+    # validated invariants — lock_lease (8.0) >= 4 * heartbeat_interval
+    # (2.0); cancellation (1.0) + cleanup (1.0) grace < min(lock_lease,
+    # termination_grace - 5) — EXCEPT the lease, widened from 3.0 for
+    # stall margin (see the knob comment below).
     worker_env = {
         "TASKQ_PG_DSN": e2e_pg.network_dsn,
         "TASKQ_REDIS_URL": f"{e2e_dragonfly.network_url}/{redis_db}",
@@ -411,12 +476,28 @@ async def e2e_schema(
         "TASKQ_MIGRATE_ON_START": "false",
         "TASKQ_ENVIRONMENT": "dev",
         "TASKQ_HEARTBEAT_INTERVAL": "0.5",
-        "TASKQ_LOCK_LEASE": "3.0",
+        # 8 s, widened from 3.0 for the same reason test_pg_restart_chaos
+        # widened its own module-local lease to 10 s: the lease IS the
+        # loop-stall budget for in-flight jobs. Every 0.5 s heartbeat tick
+        # re-records lock_expires_at = now + lease for running jobs, and
+        # the leader sweep (2 s interval) reclaims any running job whose
+        # lock expired — so a transient worker-loop stall longer than the
+        # lease (full-tier Docker load) reclaims the LIVE attempt mid-run.
+        # At 3.0 s that burned test_sigkill_crash_recovery to retry
+        # exhaustion in a loaded full-tier run (2026-09-03, passing in
+        # isolation). 8 s matches the lease the watchdog modules already
+        # run (test_loop_blocker / test_shutdown_watchdog, with their own
+        # coherent lag budgets) and gives a loaded-but-healthy loop 2.7x
+        # the old stall budget, while shifting the one lease-sensitive
+        # timeline — crash_recovery's reclaim-after-kill, which waits out
+        # the lease — by only +5 s (its 120 s budget absorbs that with
+        # ~1.6x margin; see its module docstring).
+        "TASKQ_LOCK_LEASE": "8.0",
         # Watchdog off for the default e2e fleet: no e2e test outside
-        # test_loop_blocker / test_shutdown_watchdog exercises a detector,
-        # and the 3s lease leaves no room for a lag budget that is both
-        # inside the lease and above the check interval. Those two tests
-        # re-enable it with their own coherent knobs.
+        # test_loop_blocker / test_shutdown_watchdog exercises a detector.
+        # (The 8 s lease could now host a coherent lag budget — those two
+        # tests prove exactly that — but arming the watchdog fleet-wide
+        # would add an isolation path no default-fleet test asserts on.)
         "TASKQ_WATCHDOG_ENABLED": "false",
         "TASKQ_CANCELLATION_GRACE_PERIOD": "1.0",
         "TASKQ_CLEANUP_GRACE_PERIOD": "1.0",

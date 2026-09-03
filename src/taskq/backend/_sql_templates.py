@@ -484,11 +484,18 @@ deadline_failed AS (
 SELECT * FROM snoozed UNION ALL SELECT * FROM deadline_failed""",
         # ── Shared INSERT templates ────────────────────────────────
         insert_attempt=INSERT_ATTEMPT_SQL.format(schema=s),
+        # Same holder-CTE idiom as INSERT_ATTEMPT_SQL (see _sql.py for the
+        # rationale): resolve worker_id against workers under FOR KEY SHARE
+        # so a deleted worker records NULL instead of FK-violating.
         insert_attempt_explicit=f"""\
+WITH holder AS (
+    SELECT id FROM "{s}".workers WHERE id = $10 FOR KEY SHARE
+)
 INSERT INTO "{s}".job_attempts
 (job_id, attempt, started_at, finished_at, outcome,
  error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb)""",
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9,
+        (SELECT id FROM holder), $11::jsonb)""",
         insert_event=INSERT_EVENT_SQL.format(schema=s),
         insert_events_batch=INSERT_EVENTS_BATCH_SQL.format(schema=s),
         # ── Owner check ────────────────────────────────────────────

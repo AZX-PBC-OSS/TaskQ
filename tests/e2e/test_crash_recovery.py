@@ -5,7 +5,7 @@ kill a worker mid-job with SIGKILL; the surviving worker's leader sweep
 reclaims the expired lock and re-dispatches the job.
 
 The ``long_running_job`` actor (actors.py) sleeps 30 s — far longer than
-the 3 s lock lease — so a SIGKILL mid-run leaves the job in ``running``
+the 8 s lock lease — so a SIGKILL mid-run leaves the job in ``running``
 with an expired lock.  The leader sweep's ``reclaim_expired_locks``
 (``_leader_sweeps.py`` sweep 1) detects the expired lock, records the
 attempt as ``crashed``, and re-pends the job with a 5 s backoff (retry
@@ -13,9 +13,12 @@ policy ``max_attempts=3, base=5 s``).  The surviving worker then
 dispatches and completes the job.
 
 Timing budget (worst case):
-  3 s (lock expiry) + 2 s (sweep interval, TASKQ_SWEEP_INTERVAL=2 in e2e) + 5 s (retry backoff)
-  + 30 s (actor sleep) ≈ 68 s.
-The 120 s ``handle.wait`` timeout accommodates this with margin.
+  8 s (lock expiry) + 2 s (sweep interval, TASKQ_SWEEP_INTERVAL=2 in e2e) + 5 s (retry backoff)
+  + 30 s (actor sleep) ≈ 73 s.
+The lease was widened 3 s → 8 s fleet-wide for loop-stall margin (see the
+conftest's worker_env comment), which moves this test's reclaim ~5 s
+later; the 120 s ``handle.wait`` timeout still accommodates the budget
+with ~1.6x margin.
 
 The autouse ``clean_e2e_state`` fixture is overridden because a worker
 container is intentionally killed mid-test; the conftest's crash check

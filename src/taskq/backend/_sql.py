@@ -22,11 +22,33 @@ __all__ = [
     "parse_rowcount",
 ]
 
+# job_attempts.worker_id FK-references workers(id) ON DELETE SET NULL. That
+# action only protects rows that already exist when the parent is deleted; an
+# INSERT carrying the id of an already-deleted worker still violates the FK.
+# A live worker's row CAN be gone before it writes a terminal attempt:
+# cleanup_stale_workers (another worker's leader sweep) deletes rows whose
+# heartbeat is stale heartbeat_interval * (max_heartbeat_failures + 3) — a
+# blocked-but-alive loop (watchdog off, or a lag budget above that threshold,
+# or isolate_self after enough heartbeat failures) is exactly such a row.
+# The holder CTE resolves the id at insert time under FOR KEY SHARE — the
+# same row lock the FK check itself takes — so one statement cannot be split
+# by a concurrent delete: a present parent records the id, a deleted (or
+# NULL) one records NULL, mirroring the column's ON DELETE SET NULL
+# semantics. Constraint violations are deliberately non-transient (see
+# taskq.worker._transient), so an unmitigated FK hit would tear down the
+# writing loop; every job_attempts INSERT that can carry a worker id uses
+# this idiom (_sql_templates.insert_attempt_explicit, _sweeps.py's
+# _SWEEP_1_ATTEMPT_SQL). _SWEEP_2_ATTEMPT_SQL stays plain: its worker_id is
+# NULL by construction (never dispatched).
 INSERT_ATTEMPT_SQL = """\
+WITH holder AS (
+    SELECT id FROM "{schema}".workers WHERE id = $9 FOR KEY SHARE
+)
 INSERT INTO "{schema}".job_attempts
 (job_id, attempt, started_at, finished_at, outcome,
  error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
-VALUES ($1, $2, $3, clock_timestamp(), $4, $5, $6, $7, $8, $9, $10::jsonb)"""
+VALUES ($1, $2, $3, clock_timestamp(), $4, $5, $6, $7, $8,
+        (SELECT id FROM holder), $10::jsonb)"""
 # Note: finished_at uses server-side clock_timestamp() — this template is used
 # only by PostgresBackend._insert_attempt where the write happens inside the
 # same transaction as the UPDATE, so clock_timestamp() is the actual wall-clock

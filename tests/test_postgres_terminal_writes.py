@@ -13,7 +13,7 @@ import asyncpg
 import pytest
 
 from taskq._ids import new_job_id, new_uuid
-from taskq.backend._protocol import ErrorInfo
+from taskq.backend._protocol import AttemptRow, ErrorInfo
 from taskq.exceptions import WorkerOwnershipMismatch
 from taskq.testing.assertions import (
     assert_has_event,
@@ -328,6 +328,109 @@ class TestJobAttemptsCascadeDelete:
             )
         assert len(attempts_after) == 0
         assert len(events_after) == 0
+
+
+# ── (PG side): worker row deleted before the terminal write ────────
+
+
+class TestWorkerRowDeletedBeforeTerminalWrite:
+    """Terminal writes whose authoring worker's row is already deleted.
+
+    cleanup_stale_workers (a different worker's leader sweep) deletes a
+    row once its heartbeat is stale heartbeat_interval *
+    (max_heartbeat_failures + 3) — a live-but-blocked loop can cross that
+    threshold (watchdog off, or a lag budget above it) and still write its
+    terminal state afterwards. The attempt INSERT must then record a NULL
+    worker_id (mirroring the column's ON DELETE SET NULL) instead of
+    FK-violating: a constraint violation is non-transient, so on the
+    pre-fix code the true outcome was rolled back and the job re-executed
+    or stranding-reclaimed as 'crashed'."""
+
+    async def test_mark_succeeded_after_worker_row_cleanup(self, clean_jobs_app: JobsApp) -> None:
+        deps = clean_jobs_app.deps
+        backend = clean_jobs_app.backend
+        schema = deps.settings.schema_name
+
+        async with deps.worker_pool.acquire() as conn:
+            worker_id, job_id = await setup_running_job(conn, schema)
+            # The stale-worker sweep beat the terminal write to it.
+            await conn.execute(f'DELETE FROM "{schema}".workers WHERE id = $1', worker_id)
+
+        assert await backend.mark_succeeded(job_id, worker_id, {"ok": True}) is True
+
+        async with deps.worker_pool.acquire() as conn:
+            row = await conn.fetchrow(f'SELECT status FROM "{schema}".jobs WHERE id = $1', job_id)
+            attempts = await conn.fetch(
+                f'SELECT * FROM "{schema}".job_attempts WHERE job_id = $1', job_id
+            )
+        assert row is not None
+        assert row["status"] == "succeeded"
+        assert len(attempts) == 1
+        assert attempts[0]["outcome"] == "succeeded"
+        assert attempts[0]["worker_id"] is None
+
+    async def test_mark_failed_or_retry_after_worker_row_cleanup(
+        self, clean_jobs_app: JobsApp
+    ) -> None:
+        deps = clean_jobs_app.deps
+        backend = clean_jobs_app.backend
+        schema = deps.settings.schema_name
+
+        async with deps.worker_pool.acquire() as conn:
+            worker_id, job_id = await setup_running_job(conn, schema, max_attempts=3)
+            await conn.execute(f'DELETE FROM "{schema}".workers WHERE id = $1', worker_id)
+
+        row = await backend.mark_failed_or_retry(
+            job_id,
+            worker_id,
+            ErrorInfo(
+                error_class="ValueError",
+                error_message="transient",
+                error_traceback=None,
+            ),
+            timedelta(seconds=10),
+        )
+        assert row.status == "scheduled"
+
+        async with deps.worker_pool.acquire() as conn:
+            attempts = await conn.fetch(
+                f'SELECT * FROM "{schema}".job_attempts WHERE job_id = $1', job_id
+            )
+        assert len(attempts) == 1
+        assert attempts[0]["outcome"] == "failed"
+        assert attempts[0]["worker_id"] is None
+
+    async def test_write_attempt_after_worker_row_cleanup(self, clean_jobs_app: JobsApp) -> None:
+        deps = clean_jobs_app.deps
+        backend = clean_jobs_app.backend
+        schema = deps.settings.schema_name
+
+        async with deps.worker_pool.acquire() as conn:
+            worker_id, job_id = await setup_running_job(conn, schema)
+            await conn.execute(f'DELETE FROM "{schema}".workers WHERE id = $1', worker_id)
+
+        await backend.write_attempt(
+            AttemptRow(
+                job_id=job_id,
+                attempt=1,
+                started_at=datetime.now(UTC),
+                finished_at=datetime.now(UTC),
+                outcome="crashed",
+                error_class="WorkerCrashed",
+                error_message="simulated",
+                error_traceback=None,
+                duration_ms=10,
+                worker_id=worker_id,
+                metadata={},
+            )
+        )
+
+        async with deps.worker_pool.acquire() as conn:
+            attempts = await conn.fetch(
+                f'SELECT * FROM "{schema}".job_attempts WHERE job_id = $1', job_id
+            )
+        assert len(attempts) == 1
+        assert attempts[0]["worker_id"] is None
 
 
 # ── (PG side): wrong worker_id handling ─────────────────────────

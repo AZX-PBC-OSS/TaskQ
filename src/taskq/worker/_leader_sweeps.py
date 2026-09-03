@@ -54,7 +54,7 @@ from taskq.worker._leader_shared import (
     complete_stale_batches,
     prune_terminal_jobs,
 )
-from taskq.worker._transient import TRANSIENT_PG_ERRORS
+from taskq.worker._transient import TRANSIENT_PG_ERRORS, UnexpectedLoopErrorGuard
 
 __all__ = [
     "_archive_expiry_loop",
@@ -92,167 +92,198 @@ async def _sleep_interruptible(shutdown: asyncio.Event, seconds: float) -> None:
 
 
 async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
+    """Leader sweep loop: sweeps 1/2/4, result TTL, stale workers, batches.
+
+    Unexpected (non-transient) errors are backstopped by
+    :class:`UnexpectedLoopErrorGuard` exactly like the election, watchdog,
+    cron, and scheduled-wake loops: tolerated and logged loudly for a few
+    consecutive iterations, then deliberately fatal — never an instant
+    silent leader teardown (which leaves the cluster with no sweeper and
+    orphans 'running' forever), never an infinite silent retry. Only a
+    fully successful work iteration resets the streak; a transiently
+    failing one must not buy a fault more time.
+    """
     warned_sweep_1 = warned_sweep_2 = False
+    guard = UnexpectedLoopErrorGuard("leader.sweep")
     while not shutdown.is_set():
         ctx.deps.liveness.tick("leader.sweep", period=ctx.deps.settings.sweep_interval)
         if ctx.deps.is_leader.is_set():
-            start = time.monotonic()  # Sweep 1: reclaim_expired_locks
+            iteration_clean = True
             try:
-                # No `now` argument: the sweep's server-side predicates
-                # (clock_timestamp()) are the single arbiter.
-                count_1 = await ctx.backend.reclaim_expired_locks(
-                    timedelta(seconds=ctx.deps.settings.cancellation_grace_period),
-                    timedelta(seconds=ctx.deps.settings.cleanup_grace_period),
-                )
-            except NotImplementedError as exc:
-                if not warned_sweep_1:
-                    _err("sweep_expired_locks_unimplemented", _EK2, ctx.worker_id, exc)
-                    warned_sweep_1 = True
-            except TRANSIENT_PG_ERRORS as exc:
-                # Why: PG loss is transient here, exactly as for the
-                # already-guarded sweeps below. Unguarded, it escapes into
-                # MaintenanceLeader.run's TaskGroup and on into the worker's,
-                # cancelling every sibling WITHOUT setting shutdown_event —
-                # the heartbeat dies before it can reach isolate_self, so no
-                # job is re-pended and the worker cannot exit cleanly.
-                log.warning(
-                    "sweep-expired-locks-failed",
-                    kind="sweep_expired_locks_failed",
-                    worker_id=str(ctx.worker_id),
-                    error=repr(exc),
-                )
-            else:
-                _metric("expired_locks", count_1, start)
-                _dbg("sweep_expired_locks_tick", "sweep_expired_locks_tick", count_1, start)
-            start = time.monotonic()  # Sweep 2: deadline_sweep
-            try:
-                count_2 = await ctx.backend.deadline_sweep()
-            except NotImplementedError as exc:
-                if not warned_sweep_2:
-                    _err("sweep_deadline_exceeded_unimplemented", _EK3, ctx.worker_id, exc)
-                    warned_sweep_2 = True
-            except TRANSIENT_PG_ERRORS as exc:
-                # Same transient-PG rationale as sweep 1 above.
-                log.warning(
-                    "sweep-deadline-exceeded-failed",
-                    kind="sweep_deadline_exceeded_failed",
-                    worker_id=str(ctx.worker_id),
-                    error=repr(exc),
-                )
-            else:
-                _metric("deadline_exceeded", count_2, start)
-                log.debug(
-                    "sweep_deadline_exceeded_tick",
-                    kind="deadline_exceeded_sweep",
-                    count=count_2,
-                    sweep_duration_ms=int((time.monotonic() - start) * 1000),
-                )
-            if hasattr(ctx.backend, "sweep_leaked_reservation_slots"):
-                start = time.monotonic()
+                start = time.monotonic()  # Sweep 1: reclaim_expired_locks
                 try:
-                    async with ctx.deps.dispatcher_pool.acquire(
-                        timeout=ctx.deps.settings.dispatcher_command_timeout
-                    ) as conn:
-                        count_4 = cast(
-                            "int",
-                            await ctx.backend.sweep_leaked_reservation_slots(  # type: ignore[reportAttributeAccessIssue]  # Why: guarded by hasattr; only PostgresBackend implements these maintenance sweeps.
+                    # No `now` argument: the sweep's server-side predicates
+                    # (clock_timestamp()) are the single arbiter.
+                    count_1 = await ctx.backend.reclaim_expired_locks(
+                        timedelta(seconds=ctx.deps.settings.cancellation_grace_period),
+                        timedelta(seconds=ctx.deps.settings.cleanup_grace_period),
+                    )
+                except NotImplementedError as exc:
+                    iteration_clean = False
+                    if not warned_sweep_1:
+                        _err("sweep_expired_locks_unimplemented", _EK2, ctx.worker_id, exc)
+                        warned_sweep_1 = True
+                except TRANSIENT_PG_ERRORS as exc:
+                    # Why: PG loss is transient here, exactly as for the
+                    # already-guarded sweeps below. Unguarded, it escapes into
+                    # MaintenanceLeader.run's TaskGroup and on into the worker's,
+                    # cancelling every sibling WITHOUT setting shutdown_event —
+                    # the heartbeat dies before it can reach isolate_self, so no
+                    # job is re-pended and the worker cannot exit cleanly.
+                    iteration_clean = False
+                    log.warning(
+                        "sweep-expired-locks-failed",
+                        kind="sweep_expired_locks_failed",
+                        worker_id=str(ctx.worker_id),
+                        error=repr(exc),
+                    )
+                else:
+                    _metric("expired_locks", count_1, start)
+                    _dbg("sweep_expired_locks_tick", "sweep_expired_locks_tick", count_1, start)
+                start = time.monotonic()  # Sweep 2: deadline_sweep
+                try:
+                    count_2 = await ctx.backend.deadline_sweep()
+                except NotImplementedError as exc:
+                    iteration_clean = False
+                    if not warned_sweep_2:
+                        _err("sweep_deadline_exceeded_unimplemented", _EK3, ctx.worker_id, exc)
+                        warned_sweep_2 = True
+                except TRANSIENT_PG_ERRORS as exc:
+                    # Same transient-PG rationale as sweep 1 above.
+                    iteration_clean = False
+                    log.warning(
+                        "sweep-deadline-exceeded-failed",
+                        kind="sweep_deadline_exceeded_failed",
+                        worker_id=str(ctx.worker_id),
+                        error=repr(exc),
+                    )
+                else:
+                    _metric("deadline_exceeded", count_2, start)
+                    log.debug(
+                        "sweep_deadline_exceeded_tick",
+                        kind="deadline_exceeded_sweep",
+                        count=count_2,
+                        sweep_duration_ms=int((time.monotonic() - start) * 1000),
+                    )
+                if hasattr(ctx.backend, "sweep_leaked_reservation_slots"):
+                    start = time.monotonic()
+                    try:
+                        async with ctx.deps.dispatcher_pool.acquire(
+                            timeout=ctx.deps.settings.dispatcher_command_timeout
+                        ) as conn:
+                            count_4 = cast(
+                                "int",
+                                await ctx.backend.sweep_leaked_reservation_slots(  # type: ignore[reportAttributeAccessIssue]  # Why: guarded by hasattr; only PostgresBackend implements these maintenance sweeps.
+                                    conn, schema=ctx.deps.settings.schema_name
+                                ),
+                            )
+                        _metric("leaked_slots", count_4, start)
+                        _dbg("sweep_leaked_slots_tick", "sweep_leaked_slots_tick", count_4, start)
+                    except TRANSIENT_PG_ERRORS as exc:
+                        iteration_clean = False
+                        log.warning(
+                            "sweep-leaked-slots-failed",
+                            kind="sweep_leaked_slots_failed",
+                            worker_id=str(ctx.worker_id),
+                            error=repr(exc),
+                        )
+                    start = time.monotonic()
+                    try:
+                        async with ctx.deps.dispatcher_pool.acquire(
+                            timeout=ctx.deps.settings.dispatcher_command_timeout
+                        ) as conn:
+                            count_rt = cast(
+                                "int",
+                                await ctx.backend.sweep_expired_results(  # type: ignore[reportAttributeAccessIssue]  # Why: guarded by hasattr above.
+                                    conn, schema=ctx.deps.settings.schema_name
+                                ),
+                            )
+                        _metric("expired_results", count_rt, start)
+                        _dbg(
+                            "sweep_expired_results_tick",
+                            "sweep_expired_results_tick",
+                            count_rt,
+                            start,
+                        )
+                    except TRANSIENT_PG_ERRORS as exc:
+                        iteration_clean = False
+                        log.warning(
+                            "sweep-expired-results-failed",
+                            kind="sweep_expired_results_failed",
+                            worker_id=str(ctx.worker_id),
+                            error=repr(exc),
+                        )
+                    start = time.monotonic()
+                    try:
+                        async with ctx.deps.dispatcher_pool.acquire(
+                            timeout=ctx.deps.settings.dispatcher_command_timeout
+                        ) as conn:
+                            count_sr = await cleanup_stale_workers(
+                                conn,
+                                worker_id=ctx.worker_id,
+                                staleness=timedelta(
+                                    seconds=ctx.deps.settings.heartbeat_interval
+                                    * (ctx.deps.settings.max_heartbeat_failures + 3)
+                                ),
+                                schema=ctx.deps.settings.schema_name,
+                            )
+                        _metric("stale_workers", count_sr, start)
+                        _dbg(
+                            "cleanup_stale_workers_tick",
+                            "cleanup_stale_workers_tick",
+                            count_sr,
+                            start,
+                        )
+                    except TRANSIENT_PG_ERRORS as exc:
+                        iteration_clean = False
+                        log.warning(
+                            "cleanup-stale-workers-failed",
+                            kind="cleanup_stale_workers_failed",
+                            worker_id=str(ctx.worker_id),
+                            error=repr(exc),
+                        )
+                # Stale-batch completion is a LEADER sweep (docs/guides/workers.md;
+                # docs/architecture.md "``complete_stale_batches`` leader sweep"):
+                # batches whose completion hook was lost (consumer crash between
+                # the terminal write and complete_batch/abort_batch) stay `active`
+                # forever without it — wait_for_batch can snooze indefinitely and
+                # prune_old_batches only deletes completed rows. Deliberately NOT
+                # nested under the keyed-registry conditions below: those are
+                # process-local and, in the default deployment, empty.
+                # hasattr guard: complete_stale_batches needs a real PG connection
+                # (dispatcher_pool). InMemoryBackend does not implement
+                # sweep_leaked_reservation_slots, so this gate keeps the sweep off
+                # the in-memory backend — same pattern as the block above.
+                if hasattr(ctx.backend, "sweep_leaked_reservation_slots"):
+                    start = time.monotonic()
+                    try:
+                        async with ctx.deps.dispatcher_pool.acquire(
+                            timeout=ctx.deps.settings.dispatcher_command_timeout
+                        ) as conn:
+                            stale_count = await complete_stale_batches(
                                 conn, schema=ctx.deps.settings.schema_name
-                            ),
-                        )
-                    _metric("leaked_slots", count_4, start)
-                    _dbg("sweep_leaked_slots_tick", "sweep_leaked_slots_tick", count_4, start)
-                except TRANSIENT_PG_ERRORS as exc:
-                    log.warning(
-                        "sweep-leaked-slots-failed",
-                        kind="sweep_leaked_slots_failed",
-                        worker_id=str(ctx.worker_id),
-                        error=repr(exc),
-                    )
-                start = time.monotonic()
-                try:
-                    async with ctx.deps.dispatcher_pool.acquire(
-                        timeout=ctx.deps.settings.dispatcher_command_timeout
-                    ) as conn:
-                        count_rt = cast(
-                            "int",
-                            await ctx.backend.sweep_expired_results(  # type: ignore[reportAttributeAccessIssue]  # Why: guarded by hasattr above.
-                                conn, schema=ctx.deps.settings.schema_name
-                            ),
-                        )
-                    _metric("expired_results", count_rt, start)
-                    _dbg(
-                        "sweep_expired_results_tick",
-                        "sweep_expired_results_tick",
-                        count_rt,
-                        start,
-                    )
-                except TRANSIENT_PG_ERRORS as exc:
-                    log.warning(
-                        "sweep-expired-results-failed",
-                        kind="sweep_expired_results_failed",
-                        worker_id=str(ctx.worker_id),
-                        error=repr(exc),
-                    )
-                start = time.monotonic()
-                try:
-                    async with ctx.deps.dispatcher_pool.acquire(
-                        timeout=ctx.deps.settings.dispatcher_command_timeout
-                    ) as conn:
-                        count_sr = await cleanup_stale_workers(
-                            conn,
-                            worker_id=ctx.worker_id,
-                            staleness=timedelta(
-                                seconds=ctx.deps.settings.heartbeat_interval
-                                * (ctx.deps.settings.max_heartbeat_failures + 3)
-                            ),
-                            schema=ctx.deps.settings.schema_name,
-                        )
-                    _metric("stale_workers", count_sr, start)
-                    _dbg(
-                        "cleanup_stale_workers_tick",
-                        "cleanup_stale_workers_tick",
-                        count_sr,
-                        start,
-                    )
-                except TRANSIENT_PG_ERRORS as exc:
-                    log.warning(
-                        "cleanup-stale-workers-failed",
-                        kind="cleanup_stale_workers_failed",
-                        worker_id=str(ctx.worker_id),
-                        error=repr(exc),
-                    )
-            # Stale-batch completion is a LEADER sweep (docs/guides/workers.md;
-            # docs/architecture.md "``complete_stale_batches`` leader sweep"):
-            # batches whose completion hook was lost (consumer crash between
-            # the terminal write and complete_batch/abort_batch) stay `active`
-            # forever without it — wait_for_batch can snooze indefinitely and
-            # prune_old_batches only deletes completed rows. Deliberately NOT
-            # nested under the keyed-registry conditions below: those are
-            # process-local and, in the default deployment, empty.
-            # hasattr guard: complete_stale_batches needs a real PG connection
-            # (dispatcher_pool). InMemoryBackend does not implement
-            # sweep_leaked_reservation_slots, so this gate keeps the sweep off
-            # the in-memory backend — same pattern as the block above.
-            if hasattr(ctx.backend, "sweep_leaked_reservation_slots"):
-                start = time.monotonic()
-                try:
-                    async with ctx.deps.dispatcher_pool.acquire(
-                        timeout=ctx.deps.settings.dispatcher_command_timeout
-                    ) as conn:
-                        stale_count = await complete_stale_batches(
-                            conn, schema=ctx.deps.settings.schema_name
-                        )
-                    _metric("stale_batches", stale_count, start)
-                    if stale_count:
-                        log.info("stale-batches-completed", kind="batch", count=stale_count)
-                except (
-                    TimeoutError,
-                    asyncpg.PostgresConnectionError,
-                    asyncpg.InterfaceError,
-                    asyncpg.exceptions.UndefinedTableError,
-                    OSError,
-                ) as exc:
-                    log.warning("stale-batches-sweep-failed", kind="batch", error=repr(exc))
+                            )
+                        _metric("stale_batches", stale_count, start)
+                        if stale_count:
+                            log.info("stale-batches-completed", kind="batch", count=stale_count)
+                    except (
+                        TimeoutError,
+                        asyncpg.PostgresConnectionError,
+                        asyncpg.InterfaceError,
+                        asyncpg.exceptions.UndefinedTableError,
+                        OSError,
+                    ) as exc:
+                        iteration_clean = False
+                        log.warning("stale-batches-sweep-failed", kind="batch", error=repr(exc))
+                if iteration_clean:
+                    guard.ok()
+            except Exception as exc:
+                # Backstop (see _transient.py): a non-transient error here is
+                # a bug, not a PG moment — loud, counted, tolerated briefly,
+                # then deliberately fatal. Pre-fix it escaped straight into
+                # MaintenanceLeader.run's TaskGroup and tore down the whole
+                # worker on the first hit.
+                guard.unexpected(exc)
         # Keyed-primitive eviction is process-local bookkeeping, NOT
         # leader-gated: every worker sweeps its OWN registry each tick (a
         # non-leader's registry would otherwise receive no periodic

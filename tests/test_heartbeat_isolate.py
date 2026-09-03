@@ -189,11 +189,9 @@ async def test_isolate_self_writes_attempt_row_per_job() -> None:
         await isolate_self(deps, worker_id, shutdown)
 
         assert shutdown.is_set()
-        insert_calls = [
-            (sql, args)
-            for sql, args in conn.execute_calls
-            if "INSERT" in sql.upper().split(None, 1)[0]
-        ]
+        # Match on the target table, not the statement's first word: the
+        # attempt INSERT is now a WITH holder ... INSERT ... statement.
+        insert_calls = [(sql, args) for sql, args in conn.execute_calls if "job_attempts" in sql]
         assert len(insert_calls) == 2
 
         for i, (_sql, args) in enumerate(insert_calls):

@@ -19,11 +19,30 @@ without touching shared module state.
 Why the design is deterministic: the test waits for the isolated
 worker's container to reach ``exited`` BEFORE restarting Postgres, so
 the old worker can never heartbeat or sweep again - there is no
-sweep-vs-heartbeat reclaim race. The job's 3 s lock lease expires
-during the outage, but no consumer can observe that until PG returns;
-the replacement worker is then the only possible reclaimer. During the
-outage the test-side pool and TaskQ client are equally blind, so
-outage-phase assertions are limited to Docker container state.
+sweep-vs-heartbeat reclaim race. The job's 10 s lock lease expires
+during the ~22 s outage, but no consumer can observe that until PG
+returns; the replacement worker is then the only possible reclaimer.
+During the outage the test-side pool and TaskQ client are equally
+blind, so outage-phase assertions are limited to Docker container
+state.
+
+Lease margin (why 10 s, wider than the fleet's 8 s): the lease IS the
+loop-stall budget for the in-flight 30 s actor. Every 0.5 s heartbeat
+tick re-records ``lock_expires_at = now + lease`` for running jobs, and
+the leader sweep (2 s interval) reclaims any running job whose lock has
+expired - so a transient worker-loop stall longer than the lease
+(under full-tier Docker load) reclaims the LIVE attempt mid-run and
+adds a spurious ``started`` effect, failing the strict == 2 assertion.
+That is exactly the failure signature of both full-tier runs on
+2026-09-03 (passing in isolation), with the pre-widening 3 s lease
+leaving zero margin. 10 s gives a loaded-but-healthy loop 3.3x that
+zero-margin budget (the fleet's 8 s conveys the same protection at
+2.7x - see the conftest's worker_env comment) while changing nothing
+the test measures: the lease still expires
+inside the ~22 s outage, so the replacement's first sweep reclaims
+attempt 1 exactly as before, and the settings invariants hold
+(lock_lease 10 >= 4 * heartbeat_interval 2; cancellation 1.0 +
+cleanup 1.0 grace < 10).
 
 Timing budget (worst case):
   ~2 s (4 heartbeat failures at the 0.5 s e2e interval; isolate fires on
@@ -268,9 +287,21 @@ def _worker_env(
         "TASKQ_MIGRATE_ON_START": "false",
         "TASKQ_ENVIRONMENT": "dev",
         "TASKQ_HEARTBEAT_INTERVAL": "0.5",
-        "TASKQ_LOCK_LEASE": "3.0",
+        # 10 s, deliberately wider than the fleet's 3.0: this test's purpose
+        # is PG-restart isolation and replacement recovery, not lease
+        # tightness. long_running_job stays in flight for 30 s, and the
+        # lease is renewed only on each 0.5 s heartbeat tick, so the lease
+        # doubles as the loop-stall budget — at 3.0 s any transient stall
+        # (full-tier Docker load) reclaimed the LIVE attempt mid-run and
+        # produced a third ``started`` effect. 10 s keeps the reclaim path
+        # the test asserts on (the lease expires during the ~22 s outage)
+        # while making a mid-run stall-reclaim need a >10 s stall. See the
+        # module docstring's lease-margin arithmetic.
+        "TASKQ_LOCK_LEASE": "10.0",
         # Watchdog off: this test drives heartbeat-failure isolation, not
-        # the detectors; the 3s lease cannot host a coherent lag budget.
+        # the loop-lag detectors. (The 10 s lease could now host a coherent
+        # lag budget, but arming the watchdog would add a second isolation
+        # path the test does not assert on.)
         "TASKQ_WATCHDOG_ENABLED": "false",
         "TASKQ_CANCELLATION_GRACE_PERIOD": "1.0",
         "TASKQ_CLEANUP_GRACE_PERIOD": "1.0",

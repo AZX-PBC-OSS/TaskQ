@@ -542,9 +542,11 @@ def test_two_session_fixtures_over_one_pair_teardown_once(
 
 
 def test_e2e_worker_image_is_a_sweep_candidate() -> None:
-    """The e2e worker image (``taskq-e2e-worker:sha-<content hash>``) matches
-    the sweep prefixes: exited leftovers are swept, labeled ones go by owner
-    liveness (rule 3), and a live owner's are kept."""
+    """The e2e worker image (pid-owned ``taskq-e2e-worker-r<pid>:sha-<hash>``
+    since per-session teardown; the legacy ``taskq-e2e-worker:sha-<hash>``
+    shape used below still matches — the sweep keys on the repository
+    prefix) matches the sweep prefixes: exited leftovers are swept, labeled
+    ones go by owner liveness (rule 3), and a live owner's are kept."""
     image = "taskq-e2e-worker:sha-4f2a91c0b7"
     assert _decide(image=image, running=False) is True
     dead_owner = {

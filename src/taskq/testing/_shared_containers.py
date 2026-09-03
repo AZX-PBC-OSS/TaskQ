@@ -180,8 +180,10 @@ REDIS_DB_POOL_SIZE = 1024
 # a hazard to it (the fixed ``container_name: taskq-*`` guard below is the second line
 # of defense).
 #
-# ``taskq-e2e-worker`` (tagged ``taskq-e2e-worker:sha-<content hash>`` by containerspec)
-# is in by IMAGE PREFIX rather than via a generic ``taskq.test-managed`` label honored
+# ``taskq-e2e-worker`` (tagged ``taskq-e2e-worker-r<pid>:sha-<hash>`` by
+# containerspec — pid-owned repository names, so each session's teardown
+# removes exactly its own image) is in by IMAGE PREFIX rather than via a
+# generic ``taskq.test-managed`` label honored
 # by the sweep: the name is a repo-owned constant, so this one entry makes every e2e
 # worker-container creation site (a dozen across tests/e2e, and any future one) a
 # sweep candidate with no per-site opt-in to forget — the exact labeling omission that

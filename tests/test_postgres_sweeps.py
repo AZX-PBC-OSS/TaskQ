@@ -236,6 +236,60 @@ class TestSweepExpiredLocks:
         assert len(events) == 2
         assert events[0]["kind"] == "state_change"
 
+    async def test_reclaim_after_worker_row_cleanup(self, clean_jobs_app: JobsApp) -> None:
+        """Reclaiming a job whose lock-holding worker's row is already
+        deleted must not raise: the attempt records a NULL worker_id.
+
+        cleanup_stale_workers (same sweep loop, earlier tick) deletes a
+        crashed worker's row once its heartbeat is stale
+        ``heartbeat_interval * (max_heartbeat_failures + 3)`` — with a
+        lease longer than that (any worker killed shortly after a
+        heartbeat), the row is gone before the reclaim tick first sees the
+        expired lease. The job_attempts INSERT must then not FK-violate on
+        the dangling worker_id; NULL mirrors the column's ON DELETE SET
+        NULL semantics for rows written after the parent's death."""
+        deps = clean_jobs_app.deps
+        schema = deps.settings.schema_name
+        worker_id = new_uuid()
+
+        async with deps.worker_pool.acquire() as conn:
+            await create_worker(conn, schema, worker_id)
+            job_id = await create_running_job(
+                conn,
+                schema,
+                worker_id,
+                lock_expires_at=datetime.now(UTC) - timedelta(seconds=10),
+                max_attempts=3,
+                retry_kind="transient",
+            )
+            # The stale-worker cleanup beat the reclaim to it.
+            await conn.execute(f'DELETE FROM "{schema}".workers WHERE id = $1', worker_id)
+
+            count = await PostgresBackend.sweep_expired_locks(
+                conn,
+                _CANCEL_GRACE,
+                _CLEANUP_GRACE,
+                schema=schema,
+            )
+
+        assert count == 1
+
+        async with deps.worker_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f'SELECT status, locked_by_worker FROM "{schema}".jobs WHERE id = $1',
+                job_id,
+            )
+            attempts = await conn.fetch(
+                f'SELECT * FROM "{schema}".job_attempts WHERE job_id = $1', job_id
+            )
+
+        assert row is not None
+        assert row["status"] == "pending"
+        assert row["locked_by_worker"] is None
+        assert len(attempts) == 1
+        assert attempts[0]["outcome"] == "crashed"
+        assert attempts[0]["worker_id"] is None
+
     async def test_cancel_phase_carve_out_not_touched(self, clean_jobs_app: JobsApp) -> None:
         """Running job with cancel_phase=1 and lock slightly past now
         should NOT be swept — the cancel grace extension applies."""
