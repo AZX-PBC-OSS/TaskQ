@@ -343,7 +343,8 @@ async def get_result(job_id: UUID, request: Request) -> Response:
     if handle is None:
         return Response(content="job not found", status_code=404)
 
-    status = await handle.status()
+    # The row get() just fetched — no second backend read for the status.
+    status = handle.row.status
     if status == "succeeded":
         try:
             result = await handle.wait(timeout=2.0)

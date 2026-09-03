@@ -7,6 +7,11 @@ Covers:
   whose job_id matches the first call.
 - JobsClient.list paginates correctly against the in-memory backend.
 - JobsClient.get(<unknown_id>) returns None (not raise).
+- JobHandle.row is the last row the handle observed: seeded at
+  construction, advanced by every successful row fetch through the
+  handle (refresh/status/wait), read-only, and free to read.
+- JobsClient.get_row returns the raw JobRow for an existing job and
+  None for an unknown id (no handle machinery).
 - Singleton actor enqueue injects singleton metadata.
 - Non-singleton actor enqueue leaves metadata untouched.
 - Singleton actor + custom metadata preserves user keys.
@@ -35,7 +40,7 @@ from taskq.constants import MAX_IDEMPOTENCY_KEY_BYTES
 from taskq.cron import ScheduleHandle
 from taskq.testing.clock import FakeClock
 from taskq.testing.in_memory import InMemoryBackend
-from taskq.testing.jobs import make_enqueue_args
+from taskq.testing.jobs import make_enqueue_args, make_job_row
 
 # ── Helpers ────────────────────────────────────────────────────────────
 
@@ -166,7 +171,12 @@ class TestEnqueue:
 
 
 class TestGet:
-    """JobsClient.get returns None for unknown job_id."""
+    """JobsClient.get returns None for unknown job_id.
+
+    The returned handle's ``row`` property is the last row the handle
+    observed: seeded at construction by ``get``'s fetch, advanced by
+    every successful row fetch through the handle, read-only.
+    """
 
     async def test_get_unknown_returns_none(self) -> None:
         _backend, client = _make_client()
@@ -183,6 +193,146 @@ class TestGet:
         found = await client.get(handle.job_id, result_adapter=_RA)
         assert found is not None
         assert found.job_id == handle.job_id
+
+    async def test_get_handle_row_exposes_the_row_get_fetched(self) -> None:
+        """``handle.row`` returns the row ``get`` already fetched: content
+        (actor, payload, status) matches a fresh backend read of the same
+        job, and repeated accesses return the same object (by reference,
+        not a copy per read).
+        """
+        backend, client = _make_client()
+
+        args = make_enqueue_args(payload={"value": 7}, scheduled_at=_START)
+        await backend.enqueue(args)
+
+        handle = await client.get(args.id, result_adapter=_RA)
+        assert handle is not None
+
+        row = handle.row
+        assert row.id == args.id
+        assert row.actor == "test_actor"
+        assert row.queue == "default"
+        assert row.payload == {"value": 7}
+        assert row.status == "pending"
+        assert handle.row is row
+
+        fresh = await backend.get(args.id)
+        assert fresh is not None
+        assert handle.row == fresh
+
+    async def test_handle_row_is_seeded_by_construction_by_identity(self) -> None:
+        """``handle.row`` is, by identity, the row object the handle was
+        constructed with — the read is free (no backend round trip).
+        """
+        backend, client = _make_client()
+
+        args = make_enqueue_args(scheduled_at=_START)
+        row = await backend.enqueue(args)
+        handle = JobHandle(client=client, row=row, result_adapter=_RA, was_existing=False)
+
+        assert handle.row is row
+
+    async def test_handle_row_is_read_only(self) -> None:
+        """``row`` is a property without a setter: assignment raises
+        AttributeError instead of silently shadowing the observed row.
+        """
+        backend, client = _make_client()
+
+        args = make_enqueue_args(scheduled_at=_START)
+        handle = await _enqueue(backend, client, args)
+
+        with pytest.raises(AttributeError):
+            handle.row = make_job_row()  # pyright: ignore[reportAttributeAccessIssue] — Why: deliberately assigning to the read-only property to verify AttributeError at runtime
+
+    async def test_refresh_advances_row_to_the_fetched_row(self) -> None:
+        """``row`` is the last row the handle observed: each refresh()
+        fetch advances it. The fetch pattern is unchanged — refresh still
+        re-reads the backend and returns the fresh row — but the handle's
+        observation now follows, so a long-lived handle's ``row`` can never
+        go stale while its owner keeps refreshing.
+        """
+        backend, client = _make_client()
+
+        args = make_enqueue_args(scheduled_at=_START)
+        handle = await _enqueue(backend, client, args)
+        assert handle.row.status == "pending"
+
+        first = await handle.refresh()
+        assert handle.row is first
+        assert handle.row.status == "pending"
+
+        backend.register_stub("test_actor", lambda payload, ctx: {"ok": True})
+        await backend.run_until_drained()
+
+        second = await handle.refresh()
+        assert second.status == "succeeded"
+        assert handle.row is second
+        assert handle.row is not first
+        assert handle.row.status == "succeeded"
+
+    async def test_status_advances_row(self) -> None:
+        """status() is a row fetch through the handle: it advances ``row``
+        to the row it just read (its return value is the status
+        projection of that same row).
+        """
+        backend, client = _make_client()
+
+        args = make_enqueue_args(scheduled_at=_START)
+        handle = await _enqueue(backend, client, args)
+        assert handle.row.status == "pending"
+
+        backend.register_stub("test_actor", lambda payload, ctx: {"ok": True})
+        await backend.run_until_drained()
+
+        status = await handle.status()
+        assert status == "succeeded"
+        assert handle.row.status == "succeeded"
+
+    async def test_wait_advances_row_to_the_terminal_row(self) -> None:
+        """wait()'s polling loop is a row fetch through the handle: on
+        return, ``row`` is the terminal row wait last observed (and the
+        one the result was extracted from).
+        """
+        backend, client = _make_client()
+
+        args = make_enqueue_args(scheduled_at=_START)
+        handle = await _enqueue(backend, client, args)
+        assert handle.row.status == "pending"
+
+        backend.register_stub("test_actor", lambda payload, ctx: None)
+        await backend.run_until_drained()
+
+        await handle.wait()
+        assert handle.row.status == "succeeded"
+
+
+# ── get_row ────────────────────────────────────────────────────────────
+
+
+class TestGetRow:
+    """JobsClient.get_row returns the raw JobRow without handle machinery."""
+
+    async def test_get_row_existing_returns_row(self) -> None:
+        backend, client = _make_client()
+
+        args = make_enqueue_args(payload={"value": 3}, scheduled_at=_START)
+        await backend.enqueue(args)
+
+        row = await client.get_row(args.id)
+        assert row is not None
+        assert row.id == args.id
+        assert row.actor == "test_actor"
+        assert row.payload == {"value": 3}
+        assert row.status == "pending"
+
+        fresh = await backend.get(args.id)
+        assert fresh is not None
+        assert row == fresh
+
+    async def test_get_row_unknown_returns_none(self) -> None:
+        _backend, client = _make_client()
+
+        assert await client.get_row(new_job_id()) is None
 
 
 # ── list ───────────────────────────────────────────────────────────────

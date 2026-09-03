@@ -6,9 +6,10 @@ type parameter. The single blocking accessor :meth:`wait` returns ``R``
 (never ``R | None``); it raises on missing / failed / timeout.
 
 The handle reads the backend through ``self._backend`` for
-:meth:`wait`; read-back operations (:meth:`status`, :meth:`attempts`)
-require a :class:`JobsClient` and raise :class:`RuntimeError` when the
-handle was constructed without one.
+:meth:`wait`; read-back operations (:meth:`status`, :meth:`refresh`,
+:meth:`attempts`, :meth:`cancel`) require a :class:`JobsClient` and
+raise :class:`RuntimeError` when the handle was constructed without
+one.
 """
 
 import asyncio
@@ -102,14 +103,46 @@ class JobHandle[R: BaseModel | None]:
         """The queue this job was enqueued on."""
         return self._row.queue
 
+    @property
+    def row(self) -> JobRow:
+        """The last :class:`JobRow` this handle observed.
+
+        Seeded at construction with the row the creating call fetched,
+        and advanced by every successful row fetch through the handle —
+        :meth:`refresh`, :meth:`status`, and :meth:`wait`'s polling loop
+        each record the row they just read. Reading the property costs
+        no backend round trip: ``handle = await tq.get(id)`` followed by
+        ``handle.row`` is the single-read pattern for full row state,
+        and a long-lived handle's ``row`` stays current as its owner
+        refreshes or waits.
+
+        The row is returned by reference (it is frozen and backends
+        hand the handle an isolated row); repeated reads between
+        fetches return the same object.
+        """
+        return self._row
+
     # ── Read-back operations ────────────────────────────────────────────
+
+    def _observe(self, row: JobRow) -> None:
+        """Record *row* as the last row this handle observed (:attr:`row`).
+
+        Why a named seam instead of bare ``self._row = row`` at each
+        fetch site: the assignment is a dead store from the fetch
+        method's own perspective, so an un-named one reads as removable.
+        Every successful row fetch through the handle goes through here
+        — that single rule is what ``row``'s last-observed semantics are
+        built on.
+        """
+        self._row = row
 
     async def status(self) -> JobStatus:
         """Return the current status of this job (live read).
 
         Cheap, non-blocking: a single ``backend.get`` and a status
         projection. No polling. Use this when you want to know the
-        state without waiting for a terminal transition.
+        state without waiting for a terminal transition. Advances
+        :attr:`row` to the fetched row.
 
         Raises:
             RuntimeError: this handle was constructed without a
@@ -124,6 +157,7 @@ class JobHandle[R: BaseModel | None]:
         row = await self._client.backend.get(self.job_id)
         if row is None:
             raise KeyError(self.job_id)
+        self._observe(row)
         return row.status
 
     async def refresh(self) -> JobRow:
@@ -133,7 +167,9 @@ class JobHandle[R: BaseModel | None]:
         Useful for callers that want full row state (timestamps,
         attempt counts, error metadata) without going through
         :meth:`wait`. Does not block on terminal state — returns the
-        current row whatever its status.
+        current row whatever its status. Advances :attr:`row` to the
+        fetched row, so after a refresh ``handle.row`` and the return
+        value are the same row.
 
         Raises:
             RuntimeError: this handle was constructed without a
@@ -148,6 +184,7 @@ class JobHandle[R: BaseModel | None]:
         row = await self._client.backend.get(self.job_id)
         if row is None:
             raise KeyError(self.job_id)
+        self._observe(row)
         return row
 
     async def attempts(self) -> list[AttemptRow]:
@@ -189,7 +226,9 @@ class JobHandle[R: BaseModel | None]:
 
         Returns the actor's return value, validated through
         :attr:`result_adapter`. The result type is ``R`` exactly —
-        never ``R | None``. Missing or failed results raise.
+        never ``R | None``. Missing or failed results raise. Advances
+        :attr:`row` to each row the polling loop fetches — on return,
+        the terminal row the result was extracted from.
 
         Raises:
             ResultUnavailable: terminal state reached but no result was
@@ -209,6 +248,7 @@ class JobHandle[R: BaseModel | None]:
             row = await self._backend.get(self.job_id)
             if row is None:
                 raise KeyError(self.job_id)
+            self._observe(row)
             if row.status in TERMINAL_STATUSES:
                 return self._extract_result(row)
 

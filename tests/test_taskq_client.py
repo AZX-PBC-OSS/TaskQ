@@ -1,13 +1,14 @@
 """Integration and unit tests for the :class:`~taskq.client.TaskQ` top-level client.
 
 Covers lifecycle (open/close/context-manager), constructor validation, and all
-public job operations (enqueue, get, list, cancel, stream) against a real
+public job operations (enqueue, get, get_row, list, cancel, stream) against a real
 Postgres backend.
 
 Test plan IDs map to the spec in the task description:
 - Lifecycle: open/close patterns, guard clauses, pool-ownership semantics.
 - Enqueue: JobHandle shape, idempotency, scheduled_at status.
 - Get: hit and miss.
+- Get_row: hit and miss (raw JobRow, no handle machinery).
 - List: queue / status / actor filters.
 - Cancel: pending job and unknown id.
 - Stream: NotImplementedError stub.
@@ -433,6 +434,36 @@ class TestGet:
         await _migrate(pg_dsn)
         async with TaskQ(dsn=pg_dsn, schema=_SCHEMA_LABEL) as tq:
             result = await tq.get(new_job_id(), result_adapter=_RA)
+
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# TestGetRow
+# ---------------------------------------------------------------------------
+
+
+class TestGetRow:
+    """TaskQ.get_row public-behaviour tests — raw JobRow, no handle."""
+
+    async def test_get_row_existing_job_returns_row(self, pg_dsn: str) -> None:
+        """get_row(job_id) returns the raw JobRow for an existing job."""
+        await _migrate(pg_dsn)
+        async with TaskQ(dsn=pg_dsn, schema=_SCHEMA_LABEL) as tq:
+            enqueued = await tq.enqueue(_test_actor, _Payload(value=10))
+            row = await tq.get_row(enqueued.job_id)
+
+        assert row is not None
+        assert isinstance(row, JobRow)
+        assert row.id == enqueued.job_id
+        assert row.actor == "tq_client_test_actor"
+        assert row.payload == {"value": 10}
+
+    async def test_get_row_unknown_id_returns_none(self, pg_dsn: str) -> None:
+        """get_row(unknown_id) returns None — does not raise."""
+        await _migrate(pg_dsn)
+        async with TaskQ(dsn=pg_dsn, schema=_SCHEMA_LABEL) as tq:
+            result = await tq.get_row(new_job_id())
 
         assert result is None
 

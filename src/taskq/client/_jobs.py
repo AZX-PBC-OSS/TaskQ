@@ -42,6 +42,7 @@ from taskq.backend._protocol import (
     JobFilter,
     JobId,
     JobPage,
+    JobRow,
     QueueName,
     ScheduleCreateArgs,
     ScheduleUpdateArgs,
@@ -1117,6 +1118,19 @@ class JobsClient:
             _redis_client=self._redis_client,
             _settings=self._settings,
         )
+
+    async def get_row(self, job_id: JobId) -> JobRow | None:
+        """Look up a job by id and return the raw :class:`JobRow`.
+
+        Mirrors :meth:`get`'s contract — one ``backend.get``, ``None``
+        when the job does not exist — without the handle machinery or
+        result adapter. For callers that never need a
+        :class:`JobHandle`, this is the direct form; for the fresh-read
+        case that does want a handle, prefer ``get`` plus the handle's
+        ``row`` property (still a single round trip).
+        """
+        with self._translate_schema_errors():
+            return await self._backend.get(job_id)
 
     async def list(self, filter: JobFilter) -> JobPage:
         """List jobs matching *filter*, returning a :class:`JobPage`.

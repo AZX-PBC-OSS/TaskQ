@@ -60,15 +60,16 @@ Terminal statuses (`succeeded`, `failed`, `cancelled`, `crashed`, `abandoned`) h
 11. [`BatchSummary`](#batchsummary)
 12. [`JobHandle[R]`](#jobhandler)
 13. [`get()`](#get)
-14. [`cancel()`](#cancel)
-15. [`cancel_where()`](#cancel_where)
-16. [`list()`](#list)
-17. [`SubJobEnqueuer`](#subjobenqueuer)
-18. [Error handling](#error-handling)
-19. [Full enqueue-and-wait example](#full-enqueue-and-wait-example)
-20. [Idempotency example](#idempotency-example)
-21. [Batch enqueue example](#batch-enqueue-example)
-22. [Tags](#tags)
+14. [`get_row()`](#get_row)
+15. [`cancel()`](#cancel)
+16. [`cancel_where()`](#cancel_where)
+17. [`list()`](#list)
+18. [`SubJobEnqueuer`](#subjobenqueuer)
+19. [Error handling](#error-handling)
+20. [Full enqueue-and-wait example](#full-enqueue-and-wait-example)
+21. [Idempotency example](#idempotency-example)
+22. [Batch enqueue example](#batch-enqueue-example)
+23. [Tags](#tags)
 
 ---
 
@@ -788,6 +789,7 @@ handle: JobHandle[OrderResult] = await client.enqueue(process_order, payload)
 | `job_id` | `JobId` (UUID) | The job's unique identifier. |
 | `actor_name` | `str` | The actor this job targets. |
 | `queue` | `str` | The queue the job was enqueued on. |
+| `row` | `JobRow` | The last row this handle observed — seeded at construction by the row `enqueue()`/`get()` fetched, advanced by every row fetch through the handle (`refresh()`, `status()`, `wait()`), and free to read (no backend round trip). Read-only; assignment raises `AttributeError`. |
 | `was_existing` | `bool` | `True` when the handle wraps a deduplicated (existing) job rather than a fresh insert. |
 
 ### Methods
@@ -799,7 +801,8 @@ async def wait(self, *, timeout: float | None = None) -> R: ...
 ```
 
 Polls the backend at 0.5 s intervals until the job reaches a terminal status, then validates the
-stored result through `result_adapter` and returns `R`.
+stored result through `result_adapter` and returns `R`. Each poll advances the handle's `row`
+property to the fetched row — on return, `row` is the terminal row the result was extracted from.
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
@@ -821,8 +824,9 @@ stored result through `result_adapter` and returns `R`.
 async def status(self) -> JobStatus: ...
 ```
 
-Single non-blocking backend read returning the current `JobStatus`. Does not poll. Raises
-`RuntimeError` if the handle was created via `ctx.jobs.enqueue()` (no client available).
+Single non-blocking backend read returning the current `JobStatus`. Does not poll. Advances the
+handle's `row` property to the fetched row. Raises `RuntimeError` if the handle was created via
+`ctx.jobs.enqueue()` (no client available).
 
 #### `refresh()`
 
@@ -832,6 +836,11 @@ async def refresh(self) -> JobRow: ...
 
 Re-reads the full `JobRow` from the backend. Returns the current row regardless of status — does
 not block on terminal state. Raises `RuntimeError` without a client.
+
+The re-read also advances the handle's `row` property: after a `refresh()`, `handle.row` and the
+return value are the same row, so a long-lived handle's `row` stays current as its owner keeps
+refreshing. For a one-shot fresh read, `handle = await client.get(job_id)` then `handle.row` needs
+no second fetch — `get()` already read the row.
 
 #### `attempts()`
 
@@ -920,6 +929,33 @@ handle = await client.get(job_id, result_adapter=process_order.result_adapter)
 from pydantic import TypeAdapter
 
 handle = await client.get(job_id, result_adapter=TypeAdapter(type(None)))
+```
+
+---
+
+## `get_row()`
+
+```python
+async def get_row(self, job_id: JobId) -> JobRow | None: ...
+```
+
+Looks up a job by ID and returns the raw `JobRow` — no `JobHandle`, no result adapter. Mirrors
+`get()`'s contract: a single backend read, `None` when the job does not exist. This is the direct
+form for callers that never need the typed-result machinery:
+
+```python
+row = await client.get_row(job_id)
+if row is not None:
+    print(row.status, row.attempt, row.error_class)
+```
+
+When you *do* want a handle, `get()` plus the handle's `row` property is still one round trip —
+`get()` already fetched the row, and `handle.row` exposes it without re-reading:
+
+```python
+handle = await client.get(job_id)
+if handle is not None:
+    row = handle.row  # the row get() just fetched — no second backend read
 ```
 
 ---

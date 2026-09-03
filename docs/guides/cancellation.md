@@ -190,7 +190,7 @@ else:
     # For running jobs, wait for the worker to finish cancelling
     handle = await client.get(job_id, result_adapter=TypeAdapter(None))
     if handle is not None:
-        final_row = await handle.refresh()
+        final_row = handle.row  # the row get() just fetched — no second backend read
         # final_row.status will be "cancelled" or "abandoned" once the worker finishes
 ```
 

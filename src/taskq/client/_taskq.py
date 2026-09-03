@@ -602,6 +602,15 @@ class TaskQ:
         """Look up a job by id. Returns ``None`` when the job does not exist."""
         return await self._require_open().get(job_id, result_adapter=result_adapter)
 
+    async def get_row(self, job_id: JobId) -> JobRow | None:
+        """Look up a job by id and return the raw ``JobRow`` — no handle.
+
+        Delegates to :meth:`JobsClient.get_row`: one backend read,
+        ``None`` when the job does not exist, mirroring :meth:`get`'s
+        contract without the handle machinery.
+        """
+        return await self._require_open().get_row(job_id)
+
     async def list(self, filter: JobFilter) -> JobPage:
         """List jobs matching *filter*, returning a :class:`JobPage`.
 
