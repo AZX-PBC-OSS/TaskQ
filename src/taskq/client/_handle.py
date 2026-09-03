@@ -110,10 +110,13 @@ class JobHandle[R: BaseModel | None]:
         Seeded at construction with the row the creating call fetched,
         and advanced by every successful row fetch through the handle —
         :meth:`refresh`, :meth:`status`, and :meth:`wait`'s polling loop
-        each record the row they just read. Reading the property costs
-        no backend round trip: ``handle = await tq.get(id)`` followed by
-        ``handle.row`` is the single-read pattern for full row state,
-        and a long-lived handle's ``row`` stays current as its owner
+        each record the row they just read. :meth:`progress_stream`
+        does not advance it — its Redis path fetches no rows, and
+        advancing only on the PG fallback would make the semantics
+        backend-dependent. Reading the property costs no backend round
+        trip: ``handle = await tq.get(id)`` followed by ``handle.row``
+        is the single-read pattern for full row state, and a
+        long-lived handle's ``row`` stays current as its owner
         refreshes or waits.
 
         The row is returned by reference (it is frozen and backends
@@ -132,7 +135,10 @@ class JobHandle[R: BaseModel | None]:
         method's own perspective, so an un-named one reads as removable.
         Every successful row fetch through the handle goes through here
         — that single rule is what ``row``'s last-observed semantics are
-        built on.
+        built on. :meth:`progress_stream`'s internal polls are
+        deliberately outside it: its Redis path fetches no rows, and
+        advancing only on the PG fallback would make ``row``'s
+        semantics backend-dependent.
         """
         self._row = row
 
@@ -290,6 +296,10 @@ class JobHandle[R: BaseModel | None]:
 
         Raises :class:`NotImplementedError` when the in-memory backend is
         detected — the in-memory backend does not support pub/sub.
+
+        Does not advance :attr:`row` — the Redis path fetches no rows,
+        and advancing only on the PG fallback would make the semantics
+        backend-dependent.
 
         Yields events until a ``terminal=True`` event is produced.
         """

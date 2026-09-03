@@ -789,7 +789,7 @@ handle: JobHandle[OrderResult] = await client.enqueue(process_order, payload)
 | `job_id` | `JobId` (UUID) | The job's unique identifier. |
 | `actor_name` | `str` | The actor this job targets. |
 | `queue` | `str` | The queue the job was enqueued on. |
-| `row` | `JobRow` | The last row this handle observed — seeded at construction by the row `enqueue()`/`get()` fetched, advanced by every row fetch through the handle (`refresh()`, `status()`, `wait()`), and free to read (no backend round trip). Read-only; assignment raises `AttributeError`. |
+| `row` | `JobRow` | The last row this handle observed — seeded at construction by the row `enqueue()`/`get()` fetched, advanced by every row fetch through the handle (`refresh()`, `status()`, `wait()`), and free to read (no backend round trip). `progress_stream()` does not advance it — see [`progress_stream()`](#progress_stream). Read-only; assignment raises `AttributeError`. |
 | `was_existing` | `bool` | `True` when the handle wraps a deduplicated (existing) job rather than a fresh insert. |
 
 ### Methods
@@ -870,6 +870,9 @@ Redis pub/sub channel and yields `ProgressEvent` objects in real time. When Redi
 available, falls back to polling Postgres every 500 ms and synthesising events from row diffs.
 
 Yields until a `terminal=True` event is produced (the job reached a terminal status).
+
+`progress_stream()` does not advance the handle's `row` property — its Redis path fetches no
+rows, and advancing only on the PG fallback would make the semantics backend-dependent.
 
 **`ProgressEvent` fields:**
 

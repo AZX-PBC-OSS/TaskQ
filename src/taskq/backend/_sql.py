@@ -49,12 +49,14 @@ INSERT INTO "{schema}".job_attempts
  error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
 VALUES ($1, $2, $3, clock_timestamp(), $4, $5, $6, $7, $8,
         (SELECT id FROM holder), $10::jsonb)"""
-# Note: finished_at uses server-side clock_timestamp() — this template is used
-# only by PostgresBackend._insert_attempt where the write happens inside the
-# same transaction as the UPDATE, so clock_timestamp() is the actual wall-clock
-# time of execution (not transaction start time like now()).
-# PostgresBackend._sql_insert_attempt_explicit (in postgres.py) takes $4 for
-# finished_at when the caller supplies an explicit value (e.g. write_attempt).
+# Note: finished_at uses server-side clock_timestamp() — this template (the
+# sql.insert_attempt field) is consumed only by _terminal.py's _insert_attempt,
+# where the write runs inside the caller's existing transaction on the same
+# connection as the status UPDATE, so clock_timestamp() is the actual
+# wall-clock time of execution (not transaction start time like now()).
+# The explicit-finished_at variant is _sql_templates.insert_attempt_explicit,
+# bound by _terminal.py's _write_attempt (the write_attempt path): it takes
+# $4 for finished_at from the caller instead of stamping clock_timestamp().
 
 INSERT_EVENT_SQL = """\
 INSERT INTO "{schema}".job_events

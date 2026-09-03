@@ -306,6 +306,102 @@ async def test_sweep_loop_backstop_tolerates_then_goes_fatal(
     assert calls == 3
 
 
+class _ScriptedSweepBackend:
+    """Backend whose two base sweeps follow a per-iteration script.
+
+    Each leader iteration consumes one script entry — ``(reclaim_exc,
+    deadline_exc)``, an exception to raise or ``None`` to succeed.
+    ``reclaim_expired_locks`` is the first call of every iteration, so it
+    owns the cursor: when it raises, ``deadline_sweep`` never runs and
+    the entry's deadline half is moot. Iterations past the script's end
+    repeat the last entry, so a trailing clean entry keeps overruns
+    log-free.
+    """
+
+    def __init__(self, script: list[tuple[BaseException | None, BaseException | None]]) -> None:
+        self._script = script
+        self._iter = -1
+        self.reclaim_outcomes: list[str] = []
+
+    def _current(self) -> tuple[BaseException | None, BaseException | None]:
+        idx = min(self._iter, len(self._script) - 1)
+        return self._script[idx]
+
+    async def reclaim_expired_locks(self, cg: timedelta, ug: timedelta) -> int:
+        self._iter += 1
+        exc = self._current()[0]
+        self.reclaim_outcomes.append("ok" if exc is None else type(exc).__name__)
+        if exc is not None:
+            raise exc
+        return 0
+
+    async def deadline_sweep(self) -> int:
+        exc = self._current()[1]
+        if exc is not None:
+            raise exc
+        return 0
+
+
+async def test_sweep_loop_mixed_fault_iteration_does_not_reset_streak() -> None:
+    """Only a fully clean iteration resets the unexpected-error streak.
+
+    An iteration that partially succeeds — reclaim clean while
+    ``deadline_sweep`` transiently fails — must NOT reset the guard's
+    streak: every except clause in the work block clears
+    ``iteration_clean`` precisely so a transient failure cannot buy an
+    unexpected fault more time (a reset would let a persistent bug ride
+    the streak forever at below-cap counts). Pinned by the observable
+    ``consecutive`` sequence: unexpected → mixed → unexpected → clean →
+    unexpected must log ``[1, 2, 1]``. If the mixed iteration reset the
+    streak (an except clause missing its clear), the third log would
+    read 1; if nothing ever reset (``guard.ok()`` unwired), the last
+    would read 3.
+    """
+    import structlog.testing
+
+    backend = _ScriptedSweepBackend(
+        [
+            (ValueError("bug one"), None),  # unexpected → consecutive 1
+            (None, OSError(111, "Connect call failed")),  # mixed: reclaim ok, deadline transient
+            (
+                ValueError("bug two"),
+                None,
+            ),  # unexpected → consecutive 2 (streak survived the mixed iteration)
+            (None, None),  # fully clean → reset
+            (ValueError("bug three"), None),  # unexpected → consecutive 1 (proves the reset)
+            (None, None),  # repeat-safe clean tail for iteration overruns
+        ]
+    )
+    deps = _make_deps(is_leader=True, sweep_interval=0.01)
+    ctx = SweepContext(
+        deps=deps,
+        backend=backend,  # type: ignore[arg-type]  # Why: scripted stand-in satisfying only the called methods.
+        clock=FakeClock(datetime(2025, 1, 1, tzinfo=UTC)),
+        worker_id=new_uuid(),
+    )
+    shutdown = asyncio.Event()
+    with structlog.testing.capture_logs() as captured:
+        task = asyncio.create_task(_leader_sweeps._sweep_loop(ctx, shutdown))
+        unexpected: list[structlog.types.EventDict] = []
+        for _ in range(400):
+            unexpected = [e for e in captured if e.get("event") == "leader-loop-unexpected-error"]
+            if len(unexpected) >= 3:
+                break
+            await asyncio.sleep(0.01)
+        await _stop_loop(task, shutdown, delay=0.0)
+
+    assert [e.get("consecutive") for e in unexpected] == [1, 2, 1], (
+        "the mixed (partially successful, transiently failing) iteration must not "
+        f"reset the streak: got {[e.get('consecutive') for e in unexpected]}"
+    )
+    # The mixed iteration genuinely ran mixed, not accidentally clean:
+    # its reclaim succeeded while its deadline sweep raised transiently.
+    assert backend.reclaim_outcomes[:5] == ["ValueError", "ok", "ValueError", "ok", "ValueError"]
+    assert any(e.get("event") == "sweep-deadline-exceeded-failed" for e in captured), (
+        "the mixed iteration's transient deadline failure must have fired its warning"
+    )
+
+
 # ── _sweep_loop: sweep_leaked_reservation_slots block ────────────────────
 
 

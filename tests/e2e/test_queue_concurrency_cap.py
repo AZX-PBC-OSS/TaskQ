@@ -105,9 +105,29 @@ async def e2e_schema(
         "TASKQ_MIGRATE_ON_START": "false",
         "TASKQ_ENVIRONMENT": "dev",
         "TASKQ_HEARTBEAT_INTERVAL": "0.5",
-        "TASKQ_LOCK_LEASE": "3.0",
-        # Watchdog off: this test drives dispatch caps, not the detectors;
-        # the 3s lease cannot host a coherent lag budget.
+        # 8 s, widened from 3.0 for the same reason the fleet conftest
+        # widened its lease (and pg_restart_chaos its own to 10 s): the
+        # lease IS the loop-stall budget for in-flight jobs. Every 0.5 s
+        # heartbeat tick re-records lock_expires_at = now + lease for
+        # running jobs, and the leader sweep (2 s interval) reclaims any
+        # running job whose lock expired — so a transient worker-loop
+        # stall longer than the lease (full-tier Docker load) reclaims
+        # the LIVE attempt mid-run. Here each capped_worker job sleeps
+        # ~1 s and the five jobs run as 3 waves (~3 s of in-flight
+        # work), and the strict count assertions below (started == 5,
+        # finished == 5) cannot tolerate a mid-run reclaim: a reclaimed
+        # attempt burns a retry and can duplicate or drop effects, which
+        # is the same flake class the fleet widening cured. Nothing the
+        # cap assertions measure depends on lease tightness — max
+        # concurrency and total time are timing-independent of the lease
+        # — so the wider lease costs nothing. The reservation-slot lease
+        # on the ConcurrencyReservation below is a different mechanism
+        # (slots are re-acquired per attempt) and stays at 3 s.
+        "TASKQ_LOCK_LEASE": "8.0",
+        # Watchdog off: this test drives dispatch caps, not the
+        # detectors. (The 8 s lease could host a coherent lag budget —
+        # the watchdog modules run exactly that — but arming it here
+        # would add an isolation path no cap assertion depends on.)
         "TASKQ_WATCHDOG_ENABLED": "false",
         "TASKQ_CANCELLATION_GRACE_PERIOD": "1.0",
         "TASKQ_CLEANUP_GRACE_PERIOD": "1.0",
@@ -160,6 +180,10 @@ async def test_queue_concurrency_cap_limits_parallelism(
     # deleted. ensure_slots is idempotent (ON CONFLICT DO NOTHING), so
     # this is safe even if the rows somehow still exist.
     res_name = queue_concurrency_reservation_name("e2e_capped")
+    # The reservation-slot lease — a different mechanism from the worker
+    # lock lease above: slots are re-acquired per attempt, and a snoozed
+    # job retries within the wake tick, so 3 s is ample and independent
+    # of the lease knob the worker env widened.
     reservation = ConcurrencyReservation(
         name=res_name,
         slots=_CAP,
