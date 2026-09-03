@@ -7,8 +7,9 @@ The ``_main`` coroutine wires the full TaskGroup of long-lived siblings
 
 ``_emit_sub_enqueue_startup_warnings`` checks LOOP-scope connection
 resolution and warns about PgBouncer transaction-mode footguns.
-``_emit_queue_subscription_warnings`` warns when a registered actor
-targets a queue this worker does not consume.
+``_emit_unconsumed_queue_startup_warnings`` warns — once, aggregated —
+when served actors declare queues outside the worker's consumed set,
+or distinctly when the worker consumes no queues at all (issue #90).
 """
 
 import asyncio
@@ -68,8 +69,8 @@ from taskq.worker.shutdown import ShutdownPhase, install_signal_handlers
 from taskq.worker.startup import sync_actor_config
 
 __all__ = [
-    "_emit_queue_subscription_warnings",
     "_emit_sub_enqueue_startup_warnings",
+    "_emit_unconsumed_queue_startup_warnings",
     "_main",
     "worker_main",
     "worker_main_async",
@@ -195,57 +196,80 @@ def _emit_sub_enqueue_startup_warnings(
         )
 
 
-def _emit_queue_subscription_warnings(
+def _emit_unconsumed_queue_startup_warnings(
     settings: WorkerSettings,
     actor_registry: Mapping[str, ActorRef[Any, Any]],
     log: structlog.stdlib.BoundLogger,
 ) -> None:
-    """Warn once at bootstrap when a registered actor targets a queue this
+    """Emit at most one startup warning about served actors on queues this
     worker does not consume.
 
-    Why a warning and not a fatal error: an actor on queue ``"cron"`` fed
-    to a worker whose ``settings.queues`` is ``["default"]`` is a perfectly
-    legitimate split-queue topology — some *other* worker consumes
-    ``"cron"``. But when no worker anywhere subscribes to the queue, every
-    job the actor enqueues sits pending forever with no signal, and
-    enqueue keeps succeeding the whole while. This warning is the only
-    bootstrap-time visibility into that stranding mode: the leader's
-    stranded-jobs check (:attr:`WorkerSettings.stranded_jobs_interval`)
-    fires much later and only for pending jobs whose actor has no
-    ``actor_config`` row at all — an actor that synced a row onto an
-    unconsumed queue stays invisible to it, because dispatch never sees
-    the queue and nothing else inspects the registration.
+    The dispatch CTE unnests ``$1::text[]`` — the worker's own
+    ``settings.queues`` — and claims only jobs whose queue matches
+    (backend/_dispatch_sql.py), so such an actor's jobs enqueue
+    successfully and then sit pending forever — no error, no log,
+    anywhere (issue #90). Decoration-time validation checks queue name
+    format only (actor.py), so this bootstrap pass, where the worker
+    holds both each served actor's declared queue and its own consumed
+    queues, is the first place the mismatch is knowable.
 
-    Payload contract: one warning per bootstrap listing every stranded
-    actor — ``actors`` maps actor name → its declared queue (the
-    ``@actor(queue=...)`` literal, which ``sync_actor_config`` stores as
-    the structural value), ``worker_queues`` carries this worker's
-    subscription so the gap is visible without cross-referencing config,
-    and ``note`` states the only-if-no-other-worker clarification so an
-    operator running a deliberate split-queue fleet knows it may be
-    benign. Workgroup children run ``_main`` with their own per-child
-    registry and queue list, so the check holds per child worker.
-
-    Pure function of (settings, actor_registry): no side effect beyond
-    the log line, extracted from ``_main`` so tests can exercise it
-    directly without standing up a worker.
+    Aggregated, not per-actor: one event whose ``actors`` field maps each
+    affected actor name to its declared queue (the shape documented in
+    docs/guides/workers.md), with the distinct unconsumed queue names in
+    ``queues``. Empty ``settings.queues`` is a different, unambiguous
+    failure — a worker that dispatches nothing — and gets its own single
+    event instead.
     """
-    consumed = set(settings.queues)
-    stranded = {ref.name: ref.queue for ref in actor_registry.values() if ref.queue not in consumed}
-    if not stranded:
+    # Why: warning, never an error — heterogeneous fleets run different
+    # workers consuming different queues while all serving the same actor
+    # registry, and a sibling worker may legitimately consume any given
+    # queue; only "no worker anywhere consumes it" is broken, which this
+    # process cannot know (issue #90). Must never fail or block startup.
+    if not settings.queues:
+        # Why: a distinct event, not the per-actor aggregate — an empty
+        # TASKQ_QUEUES means this worker provably dispatches nothing, so
+        # the aggregate's "another worker may legitimately consume the
+        # queue" caveat is false text here, and per-actor noise would
+        # bury the one line an operator needs. Fires even with an empty
+        # registry: a worker consuming nothing is broken regardless.
+        log.warning(
+            "worker-consumes-no-queues",
+            worker_queues=[],
+            note=(
+                "TASKQ_QUEUES resolved to an empty list, so this worker "
+                "dispatches nothing: every job on every queue stays "
+                "pending. Set TASKQ_QUEUES (or --queues) to the queues it "
+                "should consume."
+            ),
+        )
         return
 
+    consumed = set(settings.queues)
+    offending = [ref for ref in actor_registry.values() if ref.queue not in consumed]
+    if not offending:
+        return
+    # Why: ONE aggregated event per boot, not one per actor — workgroup
+    # deployments have every child import the full actor registry while
+    # consuming its own queue subset, so per-actor warnings would fire
+    # once per actor per child per boot: a warning storm on exactly the
+    # healthy heterogeneous fleets this warning blesses, training
+    # operators to filter it. The per-actor detail survives in the
+    # structured fields so alerting on a specific actor still works:
+    # ``actors`` maps name → declared queue (docs/guides/workers.md's
+    # documented shape — two parallel name/queue lists could not express
+    # who is on which queue), sorted for byte-stable event content.
     log.warning(
         "actors-on-unconsumed-queues",
-        actors=stranded,
+        actors={ref.name: ref.queue for ref in sorted(offending, key=lambda r: r.name)},
+        queues=sorted({ref.queue for ref in offending}),
         worker_queues=list(settings.queues),
         note=(
-            "actors above are registered on queues this worker does not "
-            "consume, so it will never dispatch their jobs. This is only a "
-            "problem if no other worker consumes those queues — otherwise "
-            "jobs for these actors strand as pending forever. Verify with "
-            "`taskq actor-config list` (queue column) that some worker's "
-            "TASKQ_QUEUES / --queues includes each queue listed here."
+            "this worker serves these actors but never dispatches their "
+            "jobs: the dispatch claim matches only the worker's own queues, "
+            "so their jobs sit pending until a worker consuming each "
+            "declared queue appears. Intended when another worker in the "
+            "fleet consumes the queue; if none does, those jobs never run "
+            "— add the queue to some worker's TASKQ_QUEUES / --queues."
         ),
     )
 
@@ -763,13 +787,22 @@ async def _main(
                 actor_registry,
                 _startup_log,
             )
-            _emit_queue_subscription_warnings(settings, actor_registry, _startup_log)
 
         worker_id = await register_worker(deps.dispatcher_pool, settings)
 
         structlog.contextvars.bind_contextvars(worker_id=str(worker_id))
 
         if actor_registry is not None:
+            # Why: in this block, not the earlier actor_registry block
+            # above. Tradeoff: the earlier block needs nothing from the
+            # database — it would warn even when worker registration
+            # fails on a bad DSN or a pool stall — but it runs before
+            # bind_contextvars, so its warnings carry no worker_id
+            # correlation with the workers-table row; this block has the
+            # correlation and still precedes the sync_actor_config
+            # round-trip below, whose drift raise or pool-acquire stall
+            # would swallow a warning placed after it (issue #90).
+            _emit_unconsumed_queue_startup_warnings(settings, actor_registry, _startup_log)
             actor_configs = [
                 ActorConfig(
                     actor=ref.name,

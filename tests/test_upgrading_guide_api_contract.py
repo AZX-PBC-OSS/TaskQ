@@ -132,3 +132,19 @@ def test_state_machine_constants_reexported_from_backend() -> None:
     for name, internal_obj in pairs:
         assert getattr(taskq.backend, name) is internal_obj
         assert name in taskq.backend.__all__
+
+
+def test_top_level_reexports_are_the_backend_objects() -> None:
+    """The guide's top-level note (``from taskq import TERMINAL_STATUSES,
+    JobStatus``) promises the same objects as the ``taskq.backend`` path —
+    identity, not equality, so the two import paths can never diverge."""
+    assert taskq.TERMINAL_STATUSES is taskq.backend.TERMINAL_STATUSES
+    assert taskq.JobStatus is taskq.backend.JobStatus
+
+
+def test_top_level_reexports_are_declared_taskq_exports() -> None:
+    """The top-level path is a declared ``taskq.__all__`` entry — the
+    covered surface the guide's note points at, same rule as the backend
+    path above."""
+    assert "TERMINAL_STATUSES" in taskq.__all__
+    assert "JobStatus" in taskq.__all__

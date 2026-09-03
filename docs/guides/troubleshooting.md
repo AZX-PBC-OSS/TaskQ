@@ -42,7 +42,7 @@ GROUP BY j.actor;
 SELECT id, hostname, pid, last_seen_at FROM {schema}.workers ORDER BY last_seen_at DESC;
 ```
 
-Check worker logs for `dispatch-actor-not-found` or `stranded-jobs-no-actor-config`. For the "wrong queue name" cause, the worker also logs `actors-on-unconsumed-queues` **at bootstrap** when a registered actor targets a queue that worker does not consume — see [workers.md](workers.md#actors-on-unconsumed-queues) for the warning's semantics (it fires even in legitimate split-queue topologies).
+Check worker logs for `dispatch-actor-not-found` or `stranded-jobs-no-actor-config`. For the "wrong queue name" cause, the worker also logs `actors-on-unconsumed-queues` **at bootstrap** when a registered actor targets a queue that worker does not consume — see [workers.md](workers.md#actors-on-unconsumed-queues) for the warning's semantics (it fires even in legitimate split-queue topologies). A worker logging `worker-consumes-no-queues` at bootstrap has an empty `TASKQ_QUEUES` and will never dispatch anything — see [workers.md](workers.md#worker-consumes-no-queues).
 
 ### Fix
 

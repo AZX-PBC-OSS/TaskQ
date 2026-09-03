@@ -230,6 +230,19 @@ from taskq.backend import TERMINAL_STATUSES
 The same one-line switch applies to `ACTIVE_STATUSES`,
 `VALID_TRANSITIONS`, and `assert_valid_transition`.
 
+`TERMINAL_STATUSES` and the `JobStatus` literal alias are additionally
+re-exported from the top-level `taskq` package — the shortest spelling
+for "is this job done" checks and `JobStatus` annotations:
+
+```python
+from taskq import TERMINAL_STATUSES, JobStatus
+```
+
+Both paths are the same objects: `tests/test_public_api_exports.py`
+pins that the top-level `TERMINAL_STATUSES` **is** (identical to, not
+merely equal to) the `taskq.backend` one, so the two import paths can
+never diverge.
+
 ---
 
 ## Breaking API changes

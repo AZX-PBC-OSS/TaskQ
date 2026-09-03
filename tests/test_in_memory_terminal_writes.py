@@ -1782,3 +1782,86 @@ class TestGetExpiredResults:
         clock.advance(timedelta(seconds=61))
         with pytest.raises(ResultUnavailable):
             await handle.wait(timeout=1.0)
+
+    async def test_row_without_ttl_is_never_expired_by_reads(self) -> None:
+        """Ported from the superseded sweep-based suite: a job with no
+        ``result_expires_at`` at all keeps its result on every read,
+        however far the clock advances — the predicate's
+        ``result_expires_at is not None`` half."""
+        clock = FakeClock(_START)
+        backend = InMemoryBackend(clock=clock)
+        job_id = await self._complete_ttl_job(backend, clock, stub_result_ttl=None)
+
+        clock.advance(timedelta(hours=24))
+        row = await backend.get(job_id)
+        assert row is not None
+        assert row.result == {"ok": True}
+        assert row.result_size_bytes is not None
+        assert row.result_expires_at is None
+
+    async def test_none_result_with_passed_ttl_keeps_stale_expiry_on_reads(self) -> None:
+        """Ported from the superseded sweep-based suite: a row whose result
+        is already ``None`` but whose TTL has passed must NOT have its
+        stale ``result_expires_at`` cleared by a read — the predicate's
+        ``result is not None`` half, pinning that expiry alone never
+        matches (PG's ``AND result IS NOT NULL``)."""
+        clock = FakeClock(_START)
+        backend = InMemoryBackend(clock=clock)
+        backend.register_stub(
+            "null_result_read_actor",
+            lambda payload, ctx: None,
+            result_ttl=timedelta(seconds=60),
+        )
+        args = EnqueueArgs(
+            id=new_job_id(),
+            actor="null_result_read_actor",
+            queue="default",
+            payload={},
+            max_attempts=3,
+            retry_kind="transient",
+            scheduled_at=clock.now(),
+        )
+        await backend.enqueue(args)
+        await backend.run_until_drained()
+
+        stored = backend._jobs[args.id]  # pyright: ignore[reportPrivateUsage]  # Why: test-only private access pinning the stored write — the public get() path would apply the read-side view.
+        assert stored.result is None
+        assert stored.result_expires_at == _START + timedelta(seconds=60)
+
+        clock.advance(timedelta(seconds=120))
+        row = await backend.get(args.id)
+        assert row is not None
+        assert row.result is None
+        assert row.result_expires_at == _START + timedelta(seconds=60), (
+            "the stale expiry must survive reads: expiry alone never matches"
+        )
+
+    async def test_expired_read_appends_no_events_and_never_touches_wake(self) -> None:
+        """Red-team F11 pin: an expired read is side-effect-free. The PG
+        sweep is a bare UPDATE — no ``job_events`` row, no NOTIFY — and a
+        read must be stricter still: evaluating the view may never write.
+        ``get`` past expiry appends nothing to the event log and pings
+        neither a wake nor a cancel-wake subscriber, so a read cannot
+        fabricate dispatch work or cancel polling."""
+        clock = FakeClock(_START)
+        backend = InMemoryBackend(clock=clock)
+        job_id = await self._complete_ttl_job(backend, clock)
+        events_before = len(backend._events)  # pyright: ignore[reportPrivateUsage]  # Why: test-only private access — the global event count is the side-effect oracle; per-job get_events would miss another job's row.
+
+        async with (
+            backend.subscribe_wake() as wake_event,
+            backend.subscribe_cancel_wake() as cancel_wake_event,
+        ):
+            clock.advance(timedelta(seconds=61))
+            for _ in range(3):
+                row = await backend.get(job_id)
+                assert row is not None
+                assert row.result is None
+
+            assert len(backend._events) == events_before, (  # pyright: ignore[reportPrivateUsage]  # Why: same oracle as above.
+                "an expired read must not append job_events rows"
+            )
+            assert not wake_event.is_set(), "an expired read must not ping wake subscribers"
+            assert not cancel_wake_event.is_set(), (
+                "an expired read must not ping cancel-wake subscribers"
+            )

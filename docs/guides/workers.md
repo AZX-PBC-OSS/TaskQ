@@ -182,16 +182,26 @@ An actor registered on a queue this worker does not consume is **stranded from t
 This is deliberately a warning, not a fatal error, because a split-queue topology is legitimate: one process consuming `["default"]` while another consumes `["cron"]` is a normal deployment shape. At bootstrap, every worker whose registry contains an actor targeting a queue outside its own subscription logs one warning:
 
 ```
-actors-on-unconsumed-queues  actors={"nightly": "cron", "mailer": "email"}  worker_queues=["default"]
+actors-on-unconsumed-queues  actors={"mailer": "email", "nightly": "cron"}  queues=["cron", "email"]  worker_queues=["default"]
 ```
 
 The `note` field spells out the condition under which it is a real problem: only when no other worker consumes those queues.
 
 How to detect and resolve stranding:
 
-- **At startup**: the `actors-on-unconsumed-queues` warning names every affected actor, its declared queue, and this worker's subscription.
+- **At startup**: the `actors-on-unconsumed-queues` warning names every affected actor, its declared queue, and this worker's subscription, with the distinct unconsumed queue names in the `queues` field.
 - **After the fact**: `taskq actor-config list` shows each registered actor's stored `queue` column — cross-check that every queue appearing there is consumed by *some* worker's `TASKQ_QUEUES` / `--queues`. The admin UI's Jobs page (`taskq ui serve`) shows pending jobs per queue and makes a growing backlog on one queue visible.
 - **Fix**: either add the actor's queue to this worker (`TASKQ_QUEUES=default,cron` / repeat the `--queues` flag), or point the actor at a consumed queue via `@actor(queue=...)` and re-register (see [troubleshooting.md](troubleshooting.md) — "Jobs stuck in `pending`").
+
+### Worker consumes no queues
+
+A second bootstrap warning covers the blunter misconfiguration: `TASKQ_QUEUES` resolving to an **empty list** (typically the variable set to an empty value — unset, it defaults to `["default"]`). The dispatch CTE then matches no queue at all, so this worker never claims a job, on any queue: every job meant for it sits `pending` forever unless another worker consumes the queue — the same silent pile-up as above, but for every queue at once. Unlike the warning above, no fleet legitimately runs a worker that consumes nothing, so there is no split-queue caveat to spell out. It fires once at bootstrap, with or without registered actors:
+
+```
+worker-consumes-no-queues  worker_queues=[]
+```
+
+**Fix:** set `TASKQ_QUEUES` (or pass `--queues` once per queue) to the queues this worker should consume.
 
 ### Queue dispatch modes
 

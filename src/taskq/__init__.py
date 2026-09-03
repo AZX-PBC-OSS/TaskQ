@@ -24,6 +24,13 @@ from taskq.auth import (
     make_pg_pool_factory,
     make_redis_client_factory,
 )
+
+# Why: issue #91 — imported from taskq.backend (the public aggregation module,
+# not the _protocol/statemachine internals) so embedders spell "is this job
+# done" checks and JobStatus annotations (e.g. EnqueueArgs.unique_states)
+# without copying the five statuses into their own constants, which drift
+# silently when a status is added upstream.
+from taskq.backend import TERMINAL_STATUSES, JobStatus
 from taskq.backend._protocol import (
     Backend,
     BatchCounts,
@@ -112,6 +119,7 @@ from taskq.settings import OIDCSettings, SAMLSettings, TaskQSettings, WorkerSett
 from taskq.testing.clock import FakeClock
 
 __all__ = [
+    "TERMINAL_STATUSES",
     "AbortBatchAfter",
     "ActorConfigDriftError",
     "ActorConfigDriftList",
@@ -165,6 +173,7 @@ __all__ = [
     "JobRetryState",
     "JobRow",
     "JobSortField",
+    "JobStatus",
     "JobsClient",
     "MaxPendingExceededError",
     "MissingProvider",

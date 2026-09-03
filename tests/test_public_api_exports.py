@@ -9,11 +9,12 @@ from __future__ import annotations
 
 import dataclasses
 import inspect
-from typing import Protocol
+from typing import Protocol, get_args
 
 import pytest
 
 import taskq
+import taskq.backend
 
 # -- New exports --
 
@@ -23,9 +24,11 @@ _NEW_EXPORTS = [
     "FakeClock",
     "JobPage",
     "JobRow",
+    "JobStatus",
     "OIDCSettings",
     "SAMLSettings",
     "SystemClock",
+    "TERMINAL_STATUSES",
     "TaskQSettings",
     "WorkerSettings",
 ]
@@ -122,6 +125,43 @@ def test_saml_settings_is_class() -> None:
     assert callable(taskq.SAMLSettings.load)
 
 
+def test_terminal_statuses_is_five_status_frozenset() -> None:
+    """``TERMINAL_STATUSES`` is the frozenset of the five terminal statuses."""
+    assert isinstance(taskq.TERMINAL_STATUSES, frozenset)
+    assert (
+        frozenset({"succeeded", "failed", "cancelled", "crashed", "abandoned"})
+        == taskq.TERMINAL_STATUSES
+    )
+
+
+def test_terminal_statuses_is_backend_reexport() -> None:
+    """``taskq.TERMINAL_STATUSES`` IS ``taskq.backend.TERMINAL_STATUSES`` —
+    the same object, not an equal copy. Identity, not ``==``: a hand-copied
+    frozenset that has drifted in lockstep with nothing passes ``==`` and
+    defeats the drift pin — the exact failure mode issue #91 exists to
+    prevent."""
+    assert taskq.TERMINAL_STATUSES is taskq.backend.TERMINAL_STATUSES
+
+
+def test_job_status_is_backend_type_alias() -> None:
+    """``taskq.JobStatus`` is the same alias object as ``taskq.backend.JobStatus``."""
+    assert taskq.JobStatus is taskq.backend.JobStatus
+
+
+def test_job_status_enumerates_eight_statuses() -> None:
+    """``JobStatus``'s Literal carries exactly the eight job statuses."""
+    assert set(get_args(taskq.JobStatus.__value__)) == {
+        "pending",
+        "scheduled",
+        "running",
+        "succeeded",
+        "failed",
+        "cancelled",
+        "crashed",
+        "abandoned",
+    }
+
+
 # -- All __all__ entries are importable --
 
 
@@ -143,9 +183,44 @@ def test_all_exports_match_all_list() -> None:
 
 
 def test_all_is_sorted() -> None:
-    """``taskq.__all__`` is sorted (capitalised entries first, then lowercase)."""
+    """``taskq.__all__`` is sorted isort-style, matching RUF022: SCREAMING_SNAKE
+    constants first, then capitalised names, then the rest — each group held to
+    code-point order.
+
+    Classification strips leading underscores before deciding the group
+    (RUF022 puts ``_``-prefixed names in their stripped core's group —
+    ``_PRIVATE`` sorts with the constants, verified against ruff itself),
+    so a future underscore-prefixed export cannot create a false conflict
+    between this test and the lint.
+
+    Caveat: within groups RUF022 actually uses digit-aware natural sort, which
+    diverges from code-point order for digit-containing names (it orders
+    "Item2" before "Item10" where sorted() demands the opposite); the digit
+    guard below turns any such export into a conscious decision instead of a
+    silent conflict between this test and the lint.
+
+    The first constant (TERMINAL_STATUSES, issue #91) exposed that the old
+    cap-subsequence check and this one are incomparable: it both missed
+    lowercase misplacement and rejected RUF022-legal group orderings (e.g.
+    VALID_TRANSITIONS before AttemptOutcome in taskq.backend.__all__).
+    """
     names = taskq.__all__
-    cap_names = [n for n in names if n[0].isupper()]
-    assert cap_names == sorted(cap_names), (
-        f"Capitalised entries in __all__ are not sorted: {cap_names}"
+
+    def _core(n: str) -> str:
+        return n.lstrip("_")
+
+    constants = [n for n in names if _core(n).isupper()]
+    classes = [n for n in names if not _core(n).isupper() and _core(n)[:1].isupper()]
+    rest = [n for n in names if not _core(n)[:1].isupper()]
+    assert names == constants + classes + rest, (
+        "__all__ must list constants first, then capitalised names, then the rest"
+    )
+    assert constants == sorted(constants), (
+        f"Constant entries in __all__ are not sorted: {constants}"
+    )
+    assert classes == sorted(classes), f"Capitalised entries in __all__ are not sorted: {classes}"
+    assert rest == sorted(rest), f"Remaining entries in __all__ are not sorted: {rest}"
+    assert not any(ch.isdigit() for name in names for ch in name), (
+        "export names contain digits; this test's code-point grouping must be "
+        "updated to RUF022's natural sort"
     )
