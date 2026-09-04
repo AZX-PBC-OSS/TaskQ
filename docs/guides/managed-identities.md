@@ -163,6 +163,30 @@ is recommended where your server presents a verifiable certificate.
 `require` encrypts the connection but does **not** verify the server
 certificate.
 
+**A verifying sslmode needs an explicit `sslrootcert`.** If you set
+`verify-ca` / `verify-full`, add a CA bundle to the DSN as well — e.g.
+`&sslrootcert=/etc/ssl/certs/ca-certificates.crt` — or set `PGSSLROOTCERT`
+in the environment. Neither asyncpg nor libpq falls back to the system
+trust store here: libpq
+[documents](https://www.postgresql.org/docs/current/libpq-ssl.html) that
+"one or more root certificates must be placed in the file
+`~/.postgresql/root.crt` in the user's home directory", and asyncpg
+[states](https://magicstack.github.io/asyncpg/current/api/index.html) that
+"default system root CA certificates won't be loaded when specifying a
+particular sslmode, following the same behavior in libpq". In a container
+whose home directory is empty, a verifying DSN with no `sslrootcert`
+therefore fails while asyncpg is *parsing connection arguments* — before
+any TCP connection is attempted — with:
+
+```
+asyncpg.exceptions._base.ClientConfigurationError: root certificate file "/home/<user>/.postgresql/root.crt" does not exist or cannot be accessed
+```
+
+which does not resemble a certificate-verification failure and is easy to
+misdiagnose. TaskQ deliberately does not inject a CA path for you: choosing
+a trust root is a security decision, and the correct bundle is
+environment-specific (a private CA needs its own PEM).
+
 ## From the CLI (no custom entrypoint)
 
 `taskq worker`, `taskq workgroup start`, `taskq ui serve` and
@@ -815,6 +839,11 @@ never overridden — `verify-ca` / `verify-full` are not downgraded (`require`
 skips certificate verification, which would expose the very token you are
 injecting), and `sslmode=disable` stays disabled, which is how a test container
 or a Unix-socket deployment opts out.
+
+Because an explicit `verify-ca` / `verify-full` is passed straight through to
+asyncpg, it must carry its own `sslrootcert` (or `PGSSLROOTCERT`) — see
+**sslmode** under *Factory builders* above. This helper only ever fills in a
+missing `sslmode`; it does not, and should not, supply a CA bundle.
 
 ---
 

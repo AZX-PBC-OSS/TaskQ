@@ -167,6 +167,18 @@ def ensure_sslmode_require(dsn: str) -> str:
 
     ``sslmode=disable`` is an explicit choice and is preserved - that is how
     a test container or a Unix-socket deployment opts out.
+
+    Because an explicit ``verify-ca``/``verify-full`` is passed through
+    untouched, it reaches asyncpg needing a CA bundle that this helper does
+    not supply: asyncpg and libpq do NOT fall back to the system trust store
+    for a verifying sslmode, they look for ``~/.postgresql/root.crt`` and
+    raise ``ClientConfigurationError`` while *parsing connection arguments*
+    (before any socket is opened) when it is absent - which is the normal
+    case in a container. Such a DSN must carry its own ``sslrootcert=``
+    (or set ``PGSSLROOTCERT``); see the *sslmode* note in
+    ``docs/guides/managed-identities.md``. Deliberately not defaulted here:
+    picking a trust root is a security decision and the correct bundle is
+    environment-specific.
     """
     parsed = urlparse(str(dsn))
     query = parse_qs(parsed.query, keep_blank_values=True)
