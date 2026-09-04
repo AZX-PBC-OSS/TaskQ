@@ -1,10 +1,11 @@
 """Shared test fixtures.
 
 Container topology: ONE Postgres + ONE Dragonfly shared across ALL xdist
-workers of a run (see :mod:`taskq.testing._shared_containers` — the first
-session fixture to take the state-dir file lock starts the pair; every other
-worker reuses it; it comes down when the last LIVE holder — of this run or of
-any concurrent invocation sharing the pair — releases).
+workers of ONE pytest invocation (see :mod:`taskq.testing._shared_containers`
+— the first session fixture to take the invocation's state-dir file lock
+starts the pair; every other worker of the invocation reuses it; it comes
+down when the last LIVE holder of the invocation releases; no other
+invocation, of this repo or any other, can find or reuse it).
 Under the old per-worker-session design a ``-n 4`` run booted four Postgres
 plus four Dragonfly containers, and that contention is what made heavy PG
 tests trip internal timeouts intermittently. Per-worker isolation on the
@@ -36,7 +37,7 @@ import pytest
 import pytest_asyncio
 
 from taskq.settings import OIDCSettings, SAMLSettings, TaskQSettings
-from taskq.testing._shared_containers import shared_service_pair
+from taskq.testing._shared_containers import invocation_state_dir, shared_service_pair
 from taskq.testing.actor import (
     EmptyPayload,
     FakeBackend,
@@ -258,20 +259,19 @@ def _publish_run_isolation_token(  # pyright: ignore[reportUnusedFunction]  # Wh
     The token feeds every hashed per-module/per-test database and schema name
     (``_module_db_name`` here, ``_schema_name_from_test`` /
     ``_schema_name_from_module`` in :mod:`taskq.testing.fixtures`) via
-    :func:`taskq.testing.fixtures.run_isolation_token`. Without it, two
-    concurrent bare-``pytest`` invocations of the same module hashed to the
-    SAME database on the SAME shared pair — serial runs share
-    ``/tmp/pytest-of-<user>`` (the shared-pair state dir) across all
-    invocations and the ``worker-or-"master"`` fallback is
-    invocation-invariant — and each run's ``DROP DATABASE ... WITH (FORCE)``
-    killed the other's live pools mid-test (redteam-reproduced: both runs
-    rc=1 on one ``tq_db_*`` name).
+    :func:`taskq.testing.fixtures.run_isolation_token`, keeping two xdist
+    workers of this invocation from hashing the same module or node id to the
+    same database or schema on the invocation's ONE shared pair.
 
-    Under xdist the worker id is already invocation-unique (each worker's
-    state dir is ``<basetemp>/popen-gwK`` with a per-invocation basetemp), so
-    it IS the token and per-worker names are unchanged. Serial runs use the
-    invocation-unique basetemp dir name (``pytest-N``) — pytest allocates it
-    under a lock, so two overlapping runs can never hold the same one.
+    Invocation-uniqueness of the token is defense-in-depth, not the isolation
+    mechanism: the pair itself is per-invocation
+    (:func:`taskq.testing._shared_containers.invocation_state_dir`), so two
+    invocations' names can never land in one cluster — if that isolation ever
+    regressed, distinct tokens would keep the runs' names from colliding on
+    whatever they ended up sharing. Under xdist the worker id IS the token;
+    serial runs use the invocation-unique basetemp dir name (``pytest-N``) —
+    pytest allocates a fresh numbered dir per invocation, so two overlapping
+    runs can never hold the same one.
     """
     token = os.environ.get("PYTEST_XDIST_WORKER") or tmp_path_factory.getbasetemp().name
     previous = os.environ.get(RUN_TOKEN_ENV_VAR)
@@ -458,17 +458,20 @@ class _PgContainerShim:
 def pg_container(
     tmp_path_factory: pytest.TempPathFactory,
 ) -> Iterator[_PgContainerShim]:
-    """One shared Postgres 18 container for the whole run — every xdist worker.
+    """One shared Postgres 18 container per pytest invocation — every xdist
+    worker of it, and no other invocation of any repo.
 
     Backs onto :func:`taskq.testing._shared_containers.shared_service_pair`
-    (state-dir file lock + cross-run holder registry): the first worker to take
-    the lock boots the tuned container (``max_connections=1000`` serving ALL
-    workers on ONE container, plus checkpoint tuning — see that module for the
-    measured rationale), later workers reuse it, and the last worker to finish
-    removes it. Tests that must STOP/PAUSE/MUTATE a Postgres (chaos, ALTER USER)
-    get their own disposable container instead — never this one.
+    (per-invocation state-dir file lock + holder registry — see
+    :func:`taskq.testing._shared_containers.invocation_state_dir`): the first
+    worker to take the lock boots the tuned container (``max_connections=1000``
+    serving ALL workers of the invocation on ONE container, plus checkpoint
+    tuning — see that module for the measured rationale), later workers reuse
+    it, and the last worker to finish removes it. Tests that must
+    STOP/PAUSE/MUTATE a Postgres (chaos, ALTER USER) get their own disposable
+    container instead — never this one.
     """
-    with shared_service_pair(tmp_path_factory.getbasetemp().parent) as services:
+    with shared_service_pair(invocation_state_dir(tmp_path_factory)) as services:
         delta = _pg_clock_delta(services.pg_dsn)
         if abs(delta) > 0.25:
             print(
@@ -486,9 +489,10 @@ def _module_db_name(request: pytest.FixtureRequest) -> str:
 
     Mirrors the schema-name hashing in ``taskq.testing.fixtures`` (the run
     isolation token from :func:`run_isolation_token` is included so the same
-    module gets distinct databases across parallel xdist workers AND across
-    concurrent serial invocations sharing one container pair), sized well
-    under PostgreSQL's 63-char identifier limit.
+    module gets distinct databases across parallel xdist workers of one
+    invocation — the invocation leg of the token is defense-in-depth, since
+    the pair is per-invocation and other invocations' names live in other
+    clusters), sized well under PostgreSQL's 63-char identifier limit.
     """
     import hashlib
 
@@ -582,16 +586,15 @@ def _pg_clock_delta(base_dsn: str) -> float:
 def pg_dsn(pg_container: _PgContainerShim, request: pytest.FixtureRequest) -> Iterator[str]:
     """Module-scoped database on the shared container; DSN pointing at it.
 
-    Every test module gets its OWN database on the ONE shared container —
-    schema-level isolation in a shared database still shares cluster-wide
-    state (advisory locks, pg_stat_activity, connection pressure), which let
-    modules clobber each other. The database name is hashed with the run
-    isolation token (see ``_publish_run_isolation_token``), so the same
-    module gets distinct databases on parallel xdist workers AND in
-    concurrent serial runs sharing the pair. The database is dropped
-    (FORCE) on module teardown (cheap on the tuned shared cluster — see
-    ``taskq.testing._shared_containers``); a drop-if-exists at setup clears
-    stale state from crashed runs.
+    Every test module gets its OWN database on the invocation's ONE shared
+    container — schema-level isolation in a shared database still shares
+    cluster-wide state (advisory locks, pg_stat_activity, connection
+    pressure), which let modules clobber each other. The database name is
+    hashed with the run isolation token (see ``_publish_run_isolation_token``),
+    so the same module gets distinct databases on parallel xdist workers of
+    one invocation. The database is dropped (FORCE) on module teardown (cheap
+    on the tuned shared cluster — see ``taskq.testing._shared_containers``);
+    a drop-if-exists at setup clears stale state from crashed runs.
     """
     base_dsn = pg_container.get_connection_url()
     db_name = _module_db_name(request)

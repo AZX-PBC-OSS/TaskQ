@@ -248,7 +248,7 @@ use them):
 | `worker_with_running_job` | function | `(worker_id, job_id, conn)` | Pre-created worker + running job on `clean_pg_conn`. |
 | `redis_container` | session | `RedisContainer` | Dragonfly v1.39.0 (Redis-compatible wire protocol), started with `--dbnum 1024 --proactor_threads 2 --maxmemory 512mb`. |
 | `killable_redis_container` | function | `RedisContainer` | Own Dragonfly container per test — for chaos tests that stop/restart Redis. Never stop the session container. |
-| `redis_url` | function | `str` | Per-test URL with a UNIQUE, never-reused logical DB (1–1023) allocated from a monotonic per-process counter. DB 0 is reserved. |
+| `redis_url` | function | `str` | Per-test URL with a UNIQUE, never-reused logical DB (1–1023) allocated from the invocation's file-backed monotonic counter (unique across all xdist workers). DB 0 is reserved. |
 | `module_redis_url` | module | `str` | Unique Redis DB (1–1023) per module. `FLUSHDB` at setup AND on teardown. |
 | `clean_redis_url` | function | `str` | `FLUSHDB` before each test. |
 | `clean_redis_client` | function | `redis.asyncio.Redis` | Fresh async client on the module DB. |
@@ -651,7 +651,9 @@ uv run pytest -m integration
 ### Testcontainers setup
 
 The session-scoped `pg_container` and `redis_container` fixtures boot
-Postgres 18 and Dragonfly (Redis-compatible) once per session:
+Postgres 18 and Dragonfly (Redis-compatible) once per pytest invocation —
+one pair shared by every xdist worker of that invocation, and visible to no
+other invocation (of this repo or any other):
 
 ```python
 import pytest

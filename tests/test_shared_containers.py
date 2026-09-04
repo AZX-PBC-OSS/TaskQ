@@ -1,11 +1,11 @@
 """Unit tests for the shared-container machinery in ``taskq.testing._shared_containers``.
 
-That module exists to keep ONE Postgres + ONE Dragonfly across all xdist workers (a
-``-n 4`` run previously booted four of each, and the contention was the measured cause
-of heavy PG tests tripping pytest-timeout intermittently). Its keep/remove and
-holder-registry decisions are pure file/OS state, so the whole contract is testable
-without Docker: the Docker I/O wrappers around them are exercised by every integration run
-and by the container census.
+That module exists to keep ONE Postgres + ONE Dragonfly across all xdist workers
+of ONE pytest invocation (a ``-n 4`` run previously booted four of each, and the
+contention was the measured cause of heavy PG tests tripping pytest-timeout
+intermittently). Its keep/remove and holder-registry decisions are pure file/OS
+state, so the whole contract is testable without Docker: the Docker I/O wrappers
+around them are exercised by every integration run and by the container census.
 
 The sweep contract pinned here is ported from the proven sibling implementation
 (cennan): a liveness-blind sweep once force-removed a CONCURRENTLY running pytest
@@ -45,7 +45,6 @@ def _decide(
     running: bool = True,
     created: datetime = _NOW - timedelta(hours=1),
     now: datetime = _NOW,
-    held: bool = False,
 ) -> bool:
     return sc.should_sweep_stale_container(
         image=image,
@@ -54,7 +53,6 @@ def _decide(
         running=running,
         created=created,
         now=now,
-        held=held,
     )
 
 
@@ -67,24 +65,9 @@ def _dead_pid() -> int:
     return proc.pid
 
 
-@pytest.fixture(autouse=True)
-def _isolated_holder_registry(  # pyright: ignore[reportUnusedFunction]  # Why: autouse fixture consumed implicitly by the test runner; pyright does not track fixture usage.
-    tmp_path_factory: pytest.TempPathFactory, monkeypatch: MonkeyPatch
-) -> None:
-    """Every test here reads and writes a PRIVATE holder registry.
-
-    The real one is machine-global per user (that is the whole point — a stale sweep
-    must see holders belonging to other invocations), so a unit test writing to it
-    would register phantom holders a concurrently running suite honors, and would read
-    that suite's real ones.
-    """
-    registry = tmp_path_factory.mktemp("holder-registry")
-    monkeypatch.setattr(sc, "holder_registry_dir", lambda: registry)
-
-
-def _holders() -> dict[str, list[int]]:
-    """The isolated registry's contents, dead holders already pruned."""
-    return sc._read_holders(sc.holder_registry_dir() / "holders.json")  # pyright: ignore[reportPrivateUsage]  # Why: the on-disk registry shape is the contract under test.
+def _holders(state_dir: Path) -> dict[str, list[int]]:
+    """One invocation's registry contents, dead holders already pruned."""
+    return sc._read_holders(state_dir / "holders.json")  # pyright: ignore[reportPrivateUsage]  # Why: the on-disk registry shape is the contract under test.
 
 
 # ── Ownership labels ────────────────────────────────────────────────────────
@@ -196,30 +179,6 @@ def test_a_running_unlabeled_container_exactly_at_the_age_limit_is_kept() -> Non
     assert _decide(running=True, created=_NOW - sc.SWEEP_AGE_LIMIT) is False
 
 
-def test_a_container_a_live_process_holds_is_kept_even_with_dead_owner_labels() -> None:
-    """The reuse case the LABELS cannot see: the run that created the pair has exited,
-    another invocation is still using it. Sweeping on the labels alone force-removed a
-    live run's Postgres mid-query — the holder registry is what vetoes that."""
-    assert (
-        _decide(
-            labels={sc.CREATOR_PID_LABEL: str(_dead_pid())},
-            held=True,
-        )
-        is False
-    )
-
-
-def test_an_unlabeled_exited_container_a_live_process_holds_is_kept() -> None:
-    """A held container is in use whatever its labels say about who made it."""
-    assert _decide(running=False, held=True) is False
-
-
-def test_an_ancient_held_container_is_swept_anyway() -> None:
-    """The age backstop outranks the holder registry: both liveness signals are pids,
-    and over days a recycled pid could shield a leftover forever."""
-    assert _decide(held=True, created=_NOW - timedelta(hours=25)) is True
-
-
 def test_a_foreign_repo_label_with_a_live_pid_is_honored() -> None:
     assert _decide(labels={"warden.test.creator-pid": str(os.getpid())}) is False
 
@@ -264,6 +223,40 @@ def test_taskq_test_images_match_the_sweep_prefixes() -> None:
     images, so a crashed run's leftovers are sweepable once their owners die."""
     assert _decide(image=_PG_IMAGE, running=False) is True
     assert _decide(image=_DRAGONFLY_IMAGE, running=False) is True
+
+
+# ── Per-invocation state-dir resolution ─────────────────────────────────────
+
+
+class _BasetempFactory:
+    """Structural ``pytest.TempPathFactory`` stand-in: the resolver only reads
+    ``getbasetemp()``, so unit tests control the basetemp shape directly."""
+
+    def __init__(self, basetemp: Path) -> None:
+        self._basetemp = basetemp
+
+    def getbasetemp(self) -> Path:
+        return self._basetemp
+
+
+def test_a_serial_shaped_basetemp_resolves_to_itself(tmp_path: Path) -> None:
+    """A serial run's basetemp IS the invocation dir (``pytest-N``). Resolving to
+    its parent instead (the old ``basetemp.parent`` computation) landed on
+    ``/tmp/pytest-of-<user>`` — one state dir shared by EVERY serial invocation
+    of the user, which is how two repos ended up reusing each other's pair."""
+    serial = tmp_path / "pytest-41"
+    serial.mkdir()
+    assert sc.invocation_state_dir(_BasetempFactory(serial)) == serial
+
+
+def test_a_worker_shaped_basetemp_resolves_to_the_shared_invocation_dir(tmp_path: Path) -> None:
+    """xdist workers get ``pytest-N/popen-gwK`` one level below the invocation
+    dir; every worker of one invocation must resolve to that same parent."""
+    invocation = tmp_path / "pytest-41"
+    invocation.mkdir()
+    for worker in ("popen-gw0", "popen-gw2", "popen-gw10"):
+        (invocation / worker).mkdir()
+        assert sc.invocation_state_dir(_BasetempFactory(invocation / worker)) == invocation
 
 
 # ── shared_service_pair: lock + refcount + reuse-or-start ───────────────────
@@ -322,10 +315,10 @@ def test_first_acquire_starts_the_pair_and_writes_state(
                 "redis_container_id": "fake-redis-id",
             }
         )
-        assert _holders() == {"fake-pg-id": [os.getpid()], "fake-redis-id": [os.getpid()]}
+        assert _holders(tmp_path) == {"fake-pg-id": [os.getpid()], "fake-redis-id": [os.getpid()]}
         assert (tmp_path / "taskq-test-services.redis-db").read_text() == "0"
     assert len(pair_fakes["start"]) == 1
-    assert _holders() == {}
+    assert _holders(tmp_path) == {}
 
 
 def test_later_acquires_reuse_the_running_pair_without_starting(
@@ -338,15 +331,15 @@ def test_later_acquires_reuse_the_running_pair_without_starting(
     with sc.shared_service_pair(tmp_path):
         with sc.shared_service_pair(tmp_path):
             pass
-        assert _holders()["fake-pg-id"] == [os.getpid()]
+        assert _holders(tmp_path)["fake-pg-id"] == [os.getpid()]
         assert pair_fakes["stop"] == []
         with sc.shared_service_pair(tmp_path):
             pass
         assert len(pair_fakes["start"]) == 1
-        assert _holders()["fake-pg-id"] == [os.getpid()]
+        assert _holders(tmp_path)["fake-pg-id"] == [os.getpid()]
         assert pair_fakes["stop"] == []
     assert len(pair_fakes["start"]) == 1
-    assert _holders() == {}
+    assert _holders(tmp_path) == {}
 
 
 def test_last_release_stops_the_pair_and_unlinks_state(
@@ -354,16 +347,16 @@ def test_last_release_stops_the_pair_and_unlinks_state(
 ) -> None:
     me = os.getpid()
     with sc.shared_service_pair(tmp_path):
-        first = _holders()["fake-pg-id"]
+        first = _holders(tmp_path)["fake-pg-id"]
         with sc.shared_service_pair(tmp_path):
-            second = _holders()["fake-pg-id"]
+            second = _holders(tmp_path)["fake-pg-id"]
         # Inner release: one reference still held, pair must stay up.
         assert (first, second) == ([me], [me, me])
         assert pair_fakes["stop"] == []
         assert (tmp_path / "taskq-test-services.json").exists()
-        assert _holders()["fake-pg-id"] == [me]
+        assert _holders(tmp_path)["fake-pg-id"] == [me]
     # Outer release: no live holder left → pair stopped, state unlinked.
-    assert _holders() == {}
+    assert _holders(tmp_path) == {}
     assert pair_fakes["stop"] == [_fake_services()]
     assert not (tmp_path / "taskq-test-services.json").exists()
 
@@ -371,72 +364,77 @@ def test_last_release_stops_the_pair_and_unlinks_state(
 def test_a_recorded_pair_nobody_holds_and_nobody_owns_is_removed_not_reused(
     tmp_path: Path, monkeypatch: MonkeyPatch, pair_fakes: dict[str, list[object]]
 ) -> None:
-    """The crashed-run case: the state file outlives its run (the holders it left
-    behind are all dead pids, pruned on read) with both labeled pids dead too.
-    Blindly reusing the pair would hand a NEW run containers a concurrent run's sweep
-    would then remove mid-session, so it is stopped and re-created instead."""
+    """The dead-run case, reachable within one invocation when every labeled pid
+    is dead (the creating worker exited AND the xdist controller died — e.g. the
+    controller was killed while a worker still wound down): the holders it left
+    behind are dead pids, pruned on read. Blindly reusing the pair would hand a
+    NEW run containers a concurrent sweep would remove mid-session, so it is
+    stopped and re-created instead."""
     leaked = _fake_services()
     (tmp_path / "taskq-test-services.json").write_text(json.dumps(asdict(leaked)))
-    sc.claim_container_holders((leaked.pg_container_id,), pid=_dead_pid())
+    sc.claim_container_holders((leaked.pg_container_id,), state_dir=tmp_path, pid=_dead_pid())
 
     monkeypatch.setattr(sc, "services_have_live_owner", lambda info: False)
     with sc.shared_service_pair(tmp_path) as services:
         assert services == _fake_services()
-        assert _holders()["fake-pg-id"] == [os.getpid()]
+        assert _holders(tmp_path)["fake-pg-id"] == [os.getpid()]
     assert pair_fakes["stop"] == [leaked, _fake_services()]
     assert len(pair_fakes["start"]) == 1
-    assert _holders() == {}
+    assert _holders(tmp_path) == {}
     assert not (tmp_path / "taskq-test-services.json").exists()
 
 
 def test_a_pair_a_live_process_still_holds_survives_its_creators_exit(
     tmp_path: Path, monkeypatch: MonkeyPatch, pair_fakes: dict[str, list[object]]
 ) -> None:
-    """THE regression: serial invocations share one state dir, so a pair routinely
-    outlives the run that started it — invocation A starts it, long invocation B
-    reuses it, A finishes and both its labeled pids die. Judging "is anyone using
-    this" from the CREATOR's labels alone then read that as a crashed run: the next
-    acquire force-removed the containers B's asyncpg pools were connected to
-    (reproduced with three overlapping invocations: ConnectionDoesNotExistError /
-    ConnectionResetError in B, refcount left at -1). B's holder reference is what
-    keeps the pair alive.
-    """
+    """The sibling-worker case: within one invocation the worker that created
+    the pair can exit before its siblings finish (its two labeled pids — itself
+    and the controller it recorded — both dead in the worst case), while a
+    sibling worker's session fixtures still hold the pair. Judging "is anyone
+    using this" from the CREATOR's labels alone would read that as a crashed
+    run and force-remove containers a live worker's asyncpg pools are connected
+    to. The sibling's holder reference in the invocation's registry is what
+    keeps the pair alive."""
     live = _fake_services()
     (tmp_path / "taskq-test-services.json").write_text(json.dumps(asdict(live)))
-    # A: the creator, now exited — no labeled pid of the pair is alive any more.
+    # The creating worker, now exited — no labeled pid of the pair is alive any more.
     monkeypatch.setattr(sc, "services_have_live_owner", lambda info: False)
-    # B: a different, still-running invocation holding the pair.
-    other = os.getppid()
-    sc.claim_container_holders((live.pg_container_id, live.redis_container_id), pid=other)
+    # A sibling worker, still running, holding the pair.
+    sibling = os.getppid()
+    sc.claim_container_holders(
+        (live.pg_container_id, live.redis_container_id), state_dir=tmp_path, pid=sibling
+    )
 
-    # C: a third invocation acquiring and releasing while B runs.
+    # A third worker of the same invocation acquiring and releasing meanwhile.
     with sc.shared_service_pair(tmp_path) as services:
         assert services == live
     assert pair_fakes["start"] == []
     assert pair_fakes["stop"] == []
     assert (tmp_path / "taskq-test-services.json").exists()
-    assert _holders() == {"fake-pg-id": [other], "fake-redis-id": [other]}
+    assert _holders(tmp_path) == {"fake-pg-id": [sibling], "fake-redis-id": [sibling]}
 
 
-def test_a_killed_invocations_reference_never_wedges_the_pair_up(
+def test_a_killed_workers_reference_never_wedges_the_pair_up(
     tmp_path: Path, pair_fakes: dict[str, list[object]]
 ) -> None:
-    """Crash safety, the other direction: a SIGKILLed pytest leaves a holder entry
-    nobody will ever release. Dead holders are pruned on every read, so the last live
-    holder's release still tears the pair down instead of leaking it until the 24h
-    sweep backstop."""
+    """Crash safety, the other direction: a SIGKILLed xdist worker leaves a
+    holder entry nobody will ever release. Dead holders are pruned on every
+    read, so the last live holder's release still tears the pair down instead
+    of leaking it until the 24h sweep backstop."""
     with sc.shared_service_pair(tmp_path):
-        sc.claim_container_holders(("fake-pg-id", "fake-redis-id"), pid=_dead_pid())
+        sc.claim_container_holders(
+            ("fake-pg-id", "fake-redis-id"), state_dir=tmp_path, pid=_dead_pid()
+        )
     assert pair_fakes["stop"] == [_fake_services()]
-    assert _holders() == {}
+    assert _holders(tmp_path) == {}
 
 
-def test_a_release_never_unlinks_another_invocations_pair_record(
+def test_a_release_never_unlinks_another_workers_pair_record(
     tmp_path: Path, pair_fakes: dict[str, list[object]]
 ) -> None:
     """A late release must not strand a pair started meanwhile: if the state file has
-    already been replaced by another invocation's fresh start, only OUR containers come
-    down — the record stays pointing at theirs."""
+    already been replaced by another worker's fresh start (same invocation, same
+    state dir), only OUR containers come down — the record stays pointing at theirs."""
     replacement = json.dumps(
         asdict(sc.SharedServices(**{**asdict(_fake_services()), "pg_container_id": "other-pg-id"}))
     )
@@ -452,12 +450,11 @@ def test_a_corrupt_holder_registry_is_tolerated(
     """A torn or hand-mangled registry must never break suite startup: it reads as
     "nothing is held", so this acquire becomes the sole reference and teardown still
     removes the pair (worst case a lingered pair the next run's sweep clears)."""
-    (sc.holder_registry_dir()).mkdir(parents=True, exist_ok=True)
-    (sc.holder_registry_dir() / "holders.json").write_text("{not json")
+    (tmp_path / "holders.json").write_text("{not json")
     with sc.shared_service_pair(tmp_path):
-        assert _holders()["fake-pg-id"] == [os.getpid()]
+        assert _holders(tmp_path)["fake-pg-id"] == [os.getpid()]
     assert pair_fakes["stop"] == [_fake_services()]
-    assert _holders() == {}
+    assert _holders(tmp_path) == {}
 
 
 def test_a_corrupt_info_file_starts_fresh(
@@ -482,8 +479,8 @@ def test_redis_db_allocation_is_unique_and_monotonic(tmp_path: Path) -> None:
 
 def test_pair_start_resets_the_redis_db_counter(tmp_path: Path) -> None:
     """The DBs live in the container: a fresh pair means a fresh DB space, so
-    starting one resets the counter (serial ``-n0`` runs share the state dir
-    across runs and would otherwise march toward exhaustion)."""
+    starting one resets the counter (a mid-invocation fresh start would
+    otherwise march toward exhaustion on DBs that no longer exist)."""
     assert sc.next_redis_logical_db(tmp_path) == 1
     (tmp_path / "taskq-test-services.redis-db").write_text("0")
     assert sc.next_redis_logical_db(tmp_path) == 1
@@ -524,7 +521,7 @@ def test_two_session_fixtures_over_one_pair_teardown_once(
     redis_gen = redis_like(_fake_services())
     assert next(pg_gen).startswith("postgresql://")
     assert next(redis_gen) == 6666
-    assert _holders()["fake-pg-id"] == [os.getpid(), os.getpid()]
+    assert _holders(tmp_path)["fake-pg-id"] == [os.getpid(), os.getpid()]
     # Simulate the two session fixtures finalizing in arbitrary order.
     next(pg_gen, None)
     assert pair_fakes["stop"] == []
@@ -546,7 +543,7 @@ def test_e2e_worker_image_is_a_sweep_candidate() -> None:
     since per-session teardown; the legacy ``taskq-e2e-worker:sha-<hash>``
     shape used below still matches — the sweep keys on the repository
     prefix) matches the sweep prefixes: exited leftovers are swept, labeled
-    ones go by owner liveness (rule 3), and a live owner's are kept."""
+    ones go by owner liveness (rule 4), and a live owner's are kept."""
     image = "taskq-e2e-worker:sha-4f2a91c0b7"
     assert _decide(image=image, running=False) is True
     dead_owner = {
@@ -559,7 +556,7 @@ def test_e2e_worker_image_is_a_sweep_candidate() -> None:
 
 
 def test_e2e_worker_image_running_unlabeled_leftover_is_kept_not_deleted_blindly() -> None:
-    """A RUNNING unlabeled worker container (pre-label code) keeps the rule-4
+    """A RUNNING unlabeled worker container (pre-label code) keeps the rule-5
     semantics: left alone until the 24h backstop, never killed on a guess."""
     assert _decide(image="taskq-e2e-worker:sha-4f2a91c0b7", running=True) is False
 
@@ -775,23 +772,83 @@ def test_sweep_leaves_everything_when_nothing_is_stale_but_still_logs(
     assert "event=swept containers=0 networks=0" in capsys.readouterr().out
 
 
-def test_the_sweep_keeps_a_container_a_live_process_holds(monkeypatch: MonkeyPatch) -> None:
-    """End to end over the Docker-I/O wrapper: a leftover whose labeled owners are all
-    dead is swept, UNLESS the cross-run holder registry says a live process still has
-    it — the shape that made a short invocation remove a long one's containers."""
+def test_the_sweep_never_consults_the_holder_registry(monkeypatch: MonkeyPatch) -> None:
+    """Cross-invocation sweep safety is the pid LABELS' job alone: the registry
+    is per-invocation, so a sweep that consulted it could never see another
+    invocation's holders anyway. Any registry access from the sweep is a defect
+    — it would mean sweep decisions again depend on visibility the per-
+    invocation placement no longer guarantees. The registry seams raise if
+    touched while a full sweep (with a sweepable container) runs."""
+
+    def _no_registry(*args: object, **kwargs: object) -> object:
+        raise AssertionError("the sweep must not touch the holder registry")
+
+    monkeypatch.setattr(sc, "_holder_registry", _no_registry)
+    monkeypatch.setattr(sc, "claim_container_holders", _no_registry)
+    monkeypatch.setattr(sc, "release_container_holders", _no_registry)
     dead_labels = {
         sc.CREATOR_PID_LABEL: str(_dead_pid()),
         sc.CONTROLLER_PID_LABEL: str(_dead_pid()),
     }
-    held = _FakeSweepContainer(labels=dead_labels, status="running", container_id="held-id")
-    unheld = _FakeSweepContainer(labels=dead_labels, status="running", container_id="unheld-id")
-    sc.claim_container_holders(("held-id",), pid=os.getppid())
-    monkeypatch.setattr(sc, "_docker_client", lambda: _FakeSweepClient([held, unheld], []))
+    stale = _FakeSweepContainer(labels=dead_labels, status="running")
+    monkeypatch.setattr(sc, "_docker_client", lambda: _FakeSweepClient([stale], []))
 
     sc.cleanup_stale_testcontainers()
 
-    assert held.removed is False
-    assert unheld.removed is True
+    assert stale.removed is True
+
+
+def test_two_invocations_state_dirs_yield_independent_pairs(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """Per-invocation scoping, end to end over the pair machinery: invocation
+    B's state dir sees neither A's recorded pair nor A's holder references, so
+    B boots its OWN pair, and A's teardown cannot touch B's — no invocation can
+    find or reuse another's pair, whatever repo's suite is running next to it."""
+    started: list[sc.SharedServices] = []
+    stopped: list[sc.SharedServices] = []
+
+    def fake_start() -> sc.SharedServices:
+        nth = len(started)
+        info = sc.SharedServices(
+            pg_dsn=f"postgresql://taskq:taskq@127.0.0.1:{5555 + nth}/taskq",
+            pg_container_id=f"pg-id-{nth}",
+            redis_host="127.0.0.1",
+            redis_port=6666 + nth,
+            redis_container_id=f"redis-id-{nth}",
+        )
+        started.append(info)
+        return info
+
+    monkeypatch.setattr(sc, "start_shared_services", fake_start)
+    monkeypatch.setattr(sc, "stop_shared_services", lambda info: stopped.append(info))
+    monkeypatch.setattr(sc, "container_running", lambda container_id: True)
+    monkeypatch.setattr(sc, "services_have_live_owner", lambda info: True)
+
+    dir_a = tmp_path / "pytest-41"
+    dir_b = tmp_path / "pytest-42"
+    dir_a.mkdir()
+    dir_b.mkdir()
+
+    with sc.shared_service_pair(dir_a):
+        # A holds its pair; only A's registry knows about it.
+        assert _holders(dir_a) == {"pg-id-0": [os.getpid()], "redis-id-0": [os.getpid()]}
+        assert _holders(dir_b) == {}
+        with sc.shared_service_pair(dir_b) as services_b:
+            # B found nothing reusable in ITS state dir: its own fresh pair.
+            assert services_b.pg_container_id == "pg-id-1"
+            assert len(started) == 2
+            assert (
+                json.loads((dir_b / "taskq-test-services.json").read_text())["pg_container_id"]
+                == "pg-id-1"
+            )
+        # B's release tears down exactly B's pair; A's record and holders stay.
+        assert [info.pg_container_id for info in stopped] == ["pg-id-1"]
+        assert (dir_a / "taskq-test-services.json").exists()
+        assert not (dir_b / "taskq-test-services.json").exists()
+    assert [info.pg_container_id for info in stopped] == ["pg-id-1", "pg-id-0"]
+    assert _holders(dir_a) == {}
+    assert _holders(dir_b) == {}
 
 
 def test_pair_lifecycle_logs_started_reused_and_stopped(

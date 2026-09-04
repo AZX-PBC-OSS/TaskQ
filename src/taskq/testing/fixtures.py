@@ -45,8 +45,8 @@ part of the contract — ``jobs_app``, ``backend_pair``, ``module_pg_schema``
 EXCLUSIVELY: schema names are stable across runs (hashes of module path /
 node id) and fixture setup is DROP-first, so two concurrent runs sharing a
 cluster drop each other's schemas. TaskQ's own suite defines ``pg_dsn`` in
-``tests/conftest.py`` as a per-module database on a session-scoped,
-cross-xdist-worker SHARED testcontainer (see
+``tests/conftest.py`` as a per-module database on a session-scoped container
+pair shared by the xdist workers of ONE invocation (see
 :mod:`taskq.testing._shared_containers`).
 
 **Event-loop scope.** All async fixtures here use
@@ -65,11 +65,13 @@ out by the monotonic counter, never reused within the process (sharing
 would let one consumer's FLUSHDB wipe another's mid-run state). Exhaustion
 raises ``RuntimeError``.
 
-**Crash cleanup.** The shared Postgres and Dragonfly containers are
-singletons shared across xdist workers and concurrent invocations (tracked by
-live holder pids under a filelock, pid-labelled, with a stale-leftover sweep on
-startup — see
-:mod:`taskq.testing._shared_containers`); Ryuk is disabled for them, so
+**Crash cleanup.** The shared Postgres and Dragonfly containers belong to
+ONE pytest invocation — every xdist worker of it shares them, and no other
+invocation, of this repo or any other, can find or reuse them (per-invocation
+state dir — :func:`taskq.testing._shared_containers.invocation_state_dir`;
+references tracked by live holder pids in a per-invocation registry under a
+filelock, containers pid-labelled, with a stale-leftover sweep on startup —
+see :mod:`taskq.testing._shared_containers`); Ryuk is disabled for them, so
 crash cleanup relies on the pid-ownership sweep rather than the sidecar.
 Because every schema/DB identifier is per-run unique, anything that does
 survive is a resource-only leak — it can never collide with a future run's
@@ -105,6 +107,7 @@ from taskq.testing._shared_containers import (
     DRAGONFLY_IMAGE,
     DRAGONFLY_RESOURCE_FLAGS,
     creator_labels,
+    invocation_state_dir,
     next_redis_logical_db,
     shared_service_pair,
 )
@@ -588,11 +591,11 @@ class RedisContainerLike(Protocol):
 class _RedisContainerShim:
     """Minimal shim matching the interface ``redis_url_for`` needs:
     ``get_container_host_ip`` and ``get_exposed_port``. Wraps the SHARED Dragonfly
-    (one container for the whole run — see
+    (one container per pytest invocation, shared by every xdist worker of it — see
     :mod:`taskq.testing._shared_containers`) so tests that take ``redis_container``
     as a fixture parameter work without starting a per-worker container.
-    ``state_dir`` carries the shared-pair state directory so the logical-DB
-    allocator can draw from the run-wide counter (see ``next_redis_logical_db``).
+    ``state_dir`` carries the invocation's state directory so the logical-DB
+    allocator can draw from the invocation's counter (see ``next_redis_logical_db``).
     """
 
     host: str
@@ -614,19 +617,20 @@ class _RedisContainerShim:
 
 @pytest.fixture(scope="session")
 def redis_container(tmp_path_factory: pytest.TempPathFactory) -> Iterator[_RedisContainerShim]:
-    """One shared Dragonfly (Redis-compatible) container for the whole run — every
-    xdist worker.
+    """One shared Dragonfly (Redis-compatible) container per pytest invocation —
+    every xdist worker of it, and no other invocation of any repo.
 
     Backs onto :func:`taskq.testing._shared_containers.shared_service_pair` (file
-    lock + cross-run holder registry): the first worker to take the lock
-    boots the pair (``--dbnum 1024`` so every consumer — module or test function,
-    across ALL workers — gets its own logical DB; sharing would let one consumer's
-    FLUSHDB wipe another's mid-run state); later workers reuse it; the last worker
-    to finish removes it. The shim exposes ``get_container_host_ip`` /
-    ``get_exposed_port`` so ``redis_url_for(redis_container, db)`` keeps working
-    unchanged.
+    lock + per-invocation holder registry under the invocation's state dir — see
+    :func:`taskq.testing._shared_containers.invocation_state_dir`): the first
+    worker to take the lock boots the pair (``--dbnum 1024`` so every consumer —
+    module or test function, across ALL workers of the invocation — gets its own
+    logical DB; sharing would let one consumer's FLUSHDB wipe another's mid-run
+    state); later workers reuse it; the last worker to finish removes it. The
+    shim exposes ``get_container_host_ip`` / ``get_exposed_port`` so
+    ``redis_url_for(redis_container, db)`` keeps working unchanged.
     """
-    state_dir = tmp_path_factory.getbasetemp().parent
+    state_dir = invocation_state_dir(tmp_path_factory)
     with shared_service_pair(state_dir) as services:
         yield _RedisContainerShim(
             host=services.redis_host, port=services.redis_port, state_dir=state_dir
@@ -670,9 +674,9 @@ def redis_url_for(container: RedisContainerLike, db: int = 0) -> str:
 def redis_url(redis_container: _RedisContainerShim) -> str:
     """Per-test Redis URL with a UNIQUE logical DB — a guaranteed clean slate.
 
-    Each test function gets its own DB (never reused within the run), so no
+    Each test function gets its own DB (never reused within the invocation), so no
     setup/teardown flushing is needed and no two tests can observe each other's
-    keys. DB indices are drawn from the run-wide counter (see
+    keys. DB indices are drawn from the invocation's counter (see
     ``next_redis_logical_db``) so consumers on different xdist workers can never
     collide inside the ONE shared Dragonfly.
     """
@@ -682,8 +686,8 @@ def redis_url(redis_container: _RedisContainerShim) -> str:
 # ── Redis DB counter ──────────────────────────────────────────────────────
 
 # One logical DB per consumer (test module OR test function) across EVERY xdist
-# worker of the run; the shared container runs --dbnum 1024. Allocation and the
-# never-reuse rule live in ``taskq.testing._shared_containers.next_redis_logical_db``
+# worker of the invocation; the shared container runs --dbnum 1024. Allocation and
+# the never-reuse rule live in ``taskq.testing._shared_containers.next_redis_logical_db``
 # (file-backed under the pair's lock — a per-process counter would hand the SAME
 # DB to different workers' consumers on the shared container).
 
@@ -699,24 +703,26 @@ RUN_TOKEN_ENV_VAR = "TASKQ_TEST_RUN_TOKEN"  # noqa: S105 # Why: env-var NAME, no
 
 
 def run_isolation_token() -> str:
-    """The token mixed into every hashed per-module/per-test database, schema,
-    and logical-DB name: the xdist worker id under xdist, the conftest-published
-    per-invocation token in serial runs, ``master`` as a last-resort fallback
-    (direct library use outside this repo's conftest).
+    """The token mixed into every hashed per-module/per-test database and schema
+    name: the xdist worker id under xdist, the conftest-published per-invocation
+    token in serial runs, ``master`` as a last-resort fallback (direct library
+    use outside this repo's conftest).
 
-    Why a token at all: serial bare-``pytest`` runs share
-    ``/tmp/pytest-of-<user>`` — the shared-pair state dir — across ALL
-    invocations, and the old ``worker-or-"master"`` hash input was
-    invocation-invariant, so two overlapping serial runs of the same module
-    hashed to the SAME database on the SAME shared pair and each run's
-    ``DROP DATABASE ... WITH (FORCE)`` killed the other's live pools mid-test
-    (redteam-reproduced: both runs rc=1 with pool-init failures on one
-    ``tq_db_*`` name). Under xdist each worker's state dir is already
-    per-invocation (``<basetemp>/popen-gwK``), so the worker id alone is
-    sufficient there and stays the token — behavior identical to the old
-    inputs. The session conftest derives the serial token once (the
-    invocation-unique basetemp dir name, e.g. ``pytest-41``) and publishes it
-    via :data:`RUN_TOKEN_ENV_VAR` before any naming helper runs.
+    The token's load-bearing job is WITHIN one invocation: the shared pair
+    serves every xdist worker of it, and two workers hashing the same module
+    or node id must not land the same database or schema on that one pair —
+    each worker's ``DROP DATABASE ... WITH (FORCE)`` / ``DROP SCHEMA ... CASCADE``
+    would kill the other's live pools mid-test.
+
+    Invocation-uniqueness of the token (the conftest publishes the
+    invocation-unique basetemp dir name, e.g. ``pytest-41``) and the
+    ``master`` fallback are defense-in-depth, not the isolation mechanism:
+    the pair itself is per-invocation
+    (:func:`taskq.testing._shared_containers.invocation_state_dir`), so two
+    invocations' names can never land in one cluster. If that pair isolation
+    ever regressed, per-invocation tokens would still keep the runs' names
+    distinct on whatever they ended up sharing — mutual clobbering could not
+    silently return.
     """
     token = os.environ.get(RUN_TOKEN_ENV_VAR)
     if token:
@@ -735,8 +741,10 @@ def _schema_name_from_test(request: pytest.FixtureRequest) -> str:
     :func:`_schema_name_from_module`.
 
     The run token (see :func:`run_isolation_token`) prefixes the hash input
-    so two concurrent SERIAL runs of the same node id never collide on one
-    schema in the shared-pair database.
+    so two workers of one invocation hashing the same node id never collide
+    on one schema in the invocation's shared-pair database; the invocation
+    leg of the token is defense-in-depth (the pair is per-invocation, so
+    other invocations' names live in other clusters).
     """
     import hashlib
 
@@ -819,7 +827,7 @@ def module_redis_url(
     """Module-scoped Redis URL with a unique DB per test file.
 
     Assigns a unique Redis DB id (1-1023, never reused, unique across ALL
-    workers of the run — see ``_next_redis_db``) and returns
+    workers of the invocation — see ``_next_redis_db``) and returns
     ``redis://host:port/{db}``. FLUSHDB at setup (clean slate even after a
     crashed run) and again on teardown.
     """
