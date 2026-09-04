@@ -28,17 +28,25 @@ updates:
       interval: weekly
     open-pull-requests-limit: 5
 
-  # examples/Dockerfile pins `python:3.12-slim`; examples/docker-compose.yml
-  # and the root docker-compose.yml pin service images (e.g. postgres:18.4).
-  # The docker ecosystem tracks both Dockerfile and docker-compose.yml image
-  # references, per directory.
-  - package-ecosystem: docker
+  # examples/Dockerfile pins `python:3.12-slim` (tracked by the `docker`
+  # ecosystem); examples/docker-compose.yml and the root docker-compose.yml
+  # pin service images (e.g. postgres:18.4) — those are tracked by the
+  # `docker-compose` ecosystem, not `docker`. `docker` requires a Dockerfile
+  # or Kubernetes manifest and fails with `dependency_file_not_found` on a
+  # compose-only directory, which is what the root is.
+  - package-ecosystem: docker-compose
     directory: /
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
 
   - package-ecosystem: docker
+    directory: /examples
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: docker-compose
     directory: /examples
     schedule:
       interval: weekly
