@@ -1127,6 +1127,13 @@ def _build_sso_bundle(settings: TaskQSettings, base_path: str) -> Any | None:
             sp_x509_cert=saml.sp_x509_cert,
             sp_private_key=saml.sp_private_key,
             session_secret=saml.session_secret,
+            # Must be threaded through explicitly, exactly as the OIDC branch above does:
+            # SAMLAuthConfig carries its own 28800 default, so omitting this silently pinned
+            # every SAML deployment to 8h and made TASKQ_SAML_SESSION_MAX_AGE_SECONDS — a
+            # documented, `ge=60`-validated knob — a no-op. It bounds the itsdangerous
+            # signature max_age (auth/_session.py), i.e. how long a stolen admin cookie stays
+            # valid, so an operator shortening it must actually take effect.
+            session_max_age_seconds=saml.session_max_age_seconds,
             secure_cookie=secure,
             group_attribute=saml.group_attribute,
             allowed_groups=saml.allowed_groups_set,
