@@ -238,4 +238,4 @@ __all__ = [
 try:
     __version__ = importlib.metadata.version("taskq-py")
 except importlib.metadata.PackageNotFoundError:
-    __version__ = "0.2.2"  # x-release-please-version
+    __version__ = "0.3.0"  # x-release-please-version
