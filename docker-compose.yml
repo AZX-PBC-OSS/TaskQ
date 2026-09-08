@@ -30,7 +30,7 @@ services:
       start_period: 5s
 
   redis:
-    image: redis:8.6.3
+    image: redis:8.10.1
     container_name: taskq-redis
     restart: unless-stopped
     command: ["redis-server", "--appendonly", "no", "--save", ""]
