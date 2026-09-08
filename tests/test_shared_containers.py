@@ -23,9 +23,10 @@ from collections.abc import Iterator
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
+import yaml
 
 from taskq.testing import _shared_containers as sc
 
@@ -35,6 +36,29 @@ if TYPE_CHECKING:
 _NOW = datetime(2026, 9, 1, 12, 0, 0, tzinfo=UTC)
 _PG_IMAGE = "postgres:18-alpine"
 _DRAGONFLY_IMAGE = "docker.dragonflydb.io/dragonflydb/dragonfly:v1.39.0"
+_COMPOSE_FILE = Path(__file__).resolve().parents[1] / "docker-compose.yml"
+
+
+def _compose_images() -> list[str]:
+    """Every image the docker-compose dev stack runs, read live from the
+    compose file. The sweep guard below must track THOSE tags — hardcoding
+    them here is what let the postgres 18.4→18.6 and redis 8.6.3→8.10.1 bumps
+    strand the guard on tags nothing runs anymore."""
+    document = cast("dict[str, Any]", yaml.safe_load(_COMPOSE_FILE.read_text(encoding="utf-8")))
+    services = document.get("services") or {}
+    assert isinstance(services, dict), "docker-compose.yml: `services` is not a mapping"
+    images: list[str] = []
+    for name, service in services.items():
+        assert isinstance(service, dict), f"docker-compose.yml: service {name!r} is not a mapping"
+        image = service.get("image")
+        if image is None:
+            continue
+        assert isinstance(image, str), (
+            f"docker-compose.yml: service {name!r} has a non-string image"
+        )
+        images.append(image)
+    assert images, "docker-compose.yml declares no images for the sweep guard to check"
+    return images
 
 
 def _decide(
@@ -210,12 +234,14 @@ def test_the_compose_dev_stack_is_never_swept() -> None:
 
 
 def test_images_outside_the_sweep_prefixes_are_ignored() -> None:
-    """Only TaskQ's own test images are managed. Notably the compose dev stack's
-    ``postgres:18.4`` does not match the exact test-image prefix
-    ``postgres:18-alpine``, so the sweep cannot touch it even by image."""
-    assert _decide(image="redis:8.6.3") is False
-    assert _decide(image="hello-world") is False
-    assert _decide(image="postgres:18.4", running=False) is False
+    """Only TaskQ's own test images are managed: none of the images the
+    compose dev stack runs may match the sweep prefixes, so the sweep cannot
+    touch the dev stack even by image. The images are read live from
+    docker-compose.yml (see ``_compose_images``) so the next Dependabot tag
+    bump cannot silently strand this guard the way 18.4→18.6 did."""
+    for image in _compose_images():
+        assert _decide(image=image, running=False) is False
+    assert _decide(image="hello-world", running=False) is False
 
 
 def test_taskq_test_images_match_the_sweep_prefixes() -> None:
@@ -733,7 +759,7 @@ def test_sweep_removes_stale_containers_and_networks_and_logs_counts(
     live_container = _FakeSweepContainer(
         labels={sc.CREATOR_PID_LABEL: str(os.getpid())}, status="running"
     )
-    foreign_container = _FakeSweepContainer(image="redis:8.6.3", status="running")
+    foreign_container = _FakeSweepContainer(image="redis:8.10.1", status="running")
     stale_network = _FakeSweepNetwork(name=f"taskq-e2e-net-{_dead_pid()}")
     live_network = _FakeSweepNetwork(name=f"taskq-e2e-net-{os.getpid()}")
     foreign_network = _FakeSweepNetwork(name="bridge")

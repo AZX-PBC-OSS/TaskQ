@@ -8,7 +8,7 @@ This guide walks from a fresh install to a running worker dispatching its first 
 
 - Python 3.12 or later
 - `uv` or `pip` for package management
-- Postgres (the bundled Docker Compose uses `postgres:18.4`)
+- Postgres 18 (the bundled Docker Compose pins the `postgres:18` image)
 - Redis (optional — required only for real-time progress fanout and admin UI live updates)
 
 ---

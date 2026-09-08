@@ -8,7 +8,8 @@ and integration testing.
 ## Prerequisites
 
 - **Python 3.12+** (3.13 is also supported)
-- **Postgres** — the bundled Docker Compose uses `postgres:18.4`. Production requires
+- **Postgres** — Postgres 18 (the bundled Docker Compose pins the `postgres:18` image).
+  Production requires
   a direct connection (not PgBouncer in transaction-pooling mode) for advisory locks and
   `LISTEN/NOTIFY`.
 - **Redis** (optional) — required only for real-time progress fanout and admin UI live

@@ -175,10 +175,10 @@ REDIS_DB_POOL_SIZE = 1024
 
 # Only containers running these EXACT images are sweep candidates: the shared pair and
 # TaskQ's disposable chaos containers all use them. Deliberately not a bare
-# ``postgres`` repository prefix — the docker-compose dev stack runs ``postgres:18.4``
-# (same repository, different tag), and a repository-wide prefix would make the sweep
-# a hazard to it (the fixed ``container_name: taskq-*`` guard below is the second line
-# of defense).
+# ``postgres`` repository prefix — the docker-compose dev stack runs versioned
+# ``postgres:18.x`` tags (same repository, different tag), and a repository-wide
+# prefix would make the sweep a hazard to it (the fixed ``container_name: taskq-*``
+# guard below is the second line of defense).
 #
 # ``taskq-e2e-worker`` (tagged ``taskq-e2e-worker-r<pid>:sha-<hash>`` by
 # containerspec — pid-owned repository names, so each session's teardown
