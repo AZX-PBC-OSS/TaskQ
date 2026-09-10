@@ -70,6 +70,88 @@ The `scheduled_to_pending` sweep (Sweep 3) runs every 1 second **on the leader o
 | No leader elected | No worker holds the `taskq:maintenance_leader` advisory lock. |
 | Leader process died | Watchdog released the lock but no other worker has won election. |
 | PgBouncer in transaction mode | `leader_conn` drops the session-scoped advisory lock between transactions. |
+| Sweep times out under a large backlog | A leader **is** healthy, but the sweep cannot finish inside `dispatcher_command_timeout` and retries forever. See the warning below. |
+
+!!! danger "Large `scheduled` backlog + healthy leader = sweep livelock ([#102](https://github.com/AZX-PBC-OSS/TaskQ/issues/102))"
+    The sweep writes one `job_events` row per promoted job in a sequential loop
+    inside a single transaction, bounded by one `dispatcher_command_timeout`
+    deadline (default `5.0s`). Once the due-row count exceeds what that many
+    sequential round-trips fit in the deadline, the sweep **can never commit**:
+    it times out, rolls back, retries, and times out again. Nothing is promoted,
+    and because nothing drains, the backlog grows — the failure is
+    self-reinforcing rather than self-correcting.
+
+    Order-of-magnitude: at ~0.5 ms RTT roughly 10k rows already exceeds a 5s
+    deadline; on managed Postgres at 1–3 ms RTT the cliff arrives several times
+    sooner.
+
+    **Recognising it** — this is the dangerous part, because the fleet looks
+    healthy from the outside. Workers heartbeat normally, dispatch runs cleanly
+    reporting `count: 0`, and no job is in a failed state. The signature is all
+    four of:
+
+    - `scheduled-wake-failed` with `"error":"TimeoutError()"` repeating on the
+      leader about **once a second** — `_scheduled_wake_loop` sleeps `1.0s`
+      between ticks, so a doomed transaction is opened, times out, rolls back
+      and is retried at that cadence
+    - workers heartbeating normally (`last_seen_at` fresh)
+    - dispatch logging `count: 0` — there is genuinely nothing `pending`
+    - the `scheduled` overdue count **flat or growing**, never falling
+
+    The metrics surface will not tell you either: `taskq_active_jobs 0` with
+    `taskq_is_leader 1` is exactly what a healthy idle fleet reads. The overdue
+    `scheduled` count is the only signal that distinguishes the two, so it is
+    the thing worth alerting on.
+
+    ```
+    {"kind":"scheduled_wake_failed","error":"TimeoutError()","logger":"taskq.worker.leader","event":"scheduled-wake-failed"}
+    ```
+
+    Do not look for a `leader-retry` line alongside it: that event belongs to
+    the *election* loop and is logged by a worker that did **not** win the
+    lock, with `next_retry_secs` = `heartbeat_interval`. It is unrelated to
+    sweep failure, and its presence in a fleet with a healthy leader is normal.
+
+    Sweep 2 (`sweep_deadline_exceeded`) fails differently and needs its own
+    alert: it runs in a different loop with no `asyncio.timeout` wrapper — its
+    bound comes from the pool's `command_timeout` — and it logs
+    `sweep_deadline_exceeded_failed`, not `scheduled_wake_failed`. Alerting on
+    only the event in this section's title would miss a mass-expiry cohort
+    hitting the same underlying shape.
+
+    Any workload that accumulates a five-figure `scheduled` cohort can reach
+    this: deferred jobs, retry-heavy actors, a paused-then-resumed fleet, or a
+    concurrency increase that reschedules a large backlog at once.
+
+    **Mitigation** (until #102 lands): drain the cohort in bounded batches so
+    each promotion commits well inside the deadline, rather than raising
+    `dispatcher_command_timeout` — which
+    [cannot be raised far](configuration.md#dispatcher-command-timeout-vs-staleness-budget-watchdog-on)
+    and will fail settings validation and crash-loop the worker.
+
+    ```sql
+    -- Promote a bounded slice, mirroring Sweep 3's own transition.
+    -- Repeat until the overdue count reaches zero.
+    WITH snap AS (
+        SELECT id FROM {schema}.jobs
+        WHERE status = 'scheduled' AND scheduled_at <= clock_timestamp()
+        ORDER BY scheduled_at
+        LIMIT 1000
+        FOR UPDATE SKIP LOCKED
+    )
+    UPDATE {schema}.jobs j SET status = 'pending'::{schema}.job_status
+    FROM snap WHERE j.id = snap.id;
+
+    -- Then wake the producers (default schema shown; the channel is
+    -- taskq_wake_<schema>).
+    SELECT pg_notify('taskq_wake_taskq', '');
+    ```
+
+    `FOR UPDATE SKIP LOCKED` keeps this from contending with the leader's own
+    retrying sweep. Verify the overdue count falls between runs. This skips the
+    per-row `job_events` audit rows the sweep would have written — the state
+    transition itself is complete and correct, but those promotions will not
+    appear in job event history.
 
 ### Diagnosis
 
@@ -483,10 +565,23 @@ Check dispatch latency via OTel or the `/metrics` endpoint (`taskq health metric
 - **Tune pool sizes:** increase `TASKQ_DISPATCHER_POOL_SIZE` and `TASKQ_HEARTBEAT_POOL_SIZE` if `acquire()` timeouts appear. Keep `worker_pool_size` derived.
 - **Tune `max_concurrent`:** run `taskq actor-config set <actor> --max-concurrent N` to match external resource capacity. Takes effect on the next dispatch cycle, no restart.
 - **Switch to `round_robin`:** for multi-tenant queues where one tenant starves others:
-  ```sql
-  UPDATE {schema}.queues SET mode = 'round_robin' WHERE name = 'multi';
+  ```bash
+  taskq queues set-mode multi round_robin
   ```
-  Takes effect on the next worker restart.
+  Takes effect on the next dispatch cycle — no worker restart needed
+  (`_resolve_queue_modes` re-reads the table every batch). In SQL, note the
+  **UPSERT**: queues are implicit — no runtime path inserts a `queues` row (only
+  the admin surface does, and `set-mode` above is itself an upsert), so a plain
+  `UPDATE ... WHERE name = ...` matches zero rows and silently does nothing on a
+  fresh deployment.
+  ```sql
+  INSERT INTO {schema}.queues (name, mode) VALUES ('multi', 'round_robin')
+  ON CONFLICT (name) DO UPDATE SET mode = EXCLUDED.mode, updated_at = clock_timestamp();
+  ```
+  **This is inert on its own.** Cohorts come from `fairness_key`, which is set at
+  enqueue time; with no keys every job lands in one `__null__` cohort and the
+  queue behaves exactly like `strict_fifo`. See
+  [workers.md — Queue dispatch modes](workers.md#queue-dispatch-modes).
 - **Scale horizontally:** add worker processes. `FOR UPDATE SKIP LOCKED` prevents duplicate dispatch. Use unique `--health-socket-path` per worker on the same host.
 - **Offload CPU-bound work:** the worker is asyncio-based — CPU-bound actors block the event loop. Use `run_in_executor()`. Monitor `taskq.dispatch.duration` and `messaging.process.duration` via OTel: rising dispatch duration with flat process duration = DB contention; rising process duration = actor bottleneck.
 
@@ -521,8 +616,62 @@ curl --unix-socket /tmp/taskq_health.sock http://localhost/tasks
 ### Fix
 
 - Read the await-site frames in the dump to find the blocked call; move CPU-bound or blocking work off the event loop with `run_in_executor()`.
-- If trips fire under legitimate load (large GC pauses, host starvation), raise `TASKQ_WATCHDOG_LOOP_LAG_BUDGET`, `TASKQ_WATCHDOG_TICK_GRACE_FACTOR`, or `TASKQ_WATCHDOG_STALE_FLOOR` rather than disabling the watchdog. See [configuration.md](configuration.md#watchdog-hang-and-deadlock-detection).
+- If trips fire under legitimate load (large GC pauses, host starvation), raise `TASKQ_WATCHDOG_LOOP_LAG_BUDGET`, `TASKQ_WATCHDOG_TICK_GRACE_FACTOR`, or `TASKQ_WATCHDOG_STALE_FLOOR` rather than disabling the watchdog. See [configuration.md](configuration.md#watchdog-hang-and-deadlock-detection). Note these interact with `TASKQ_DISPATCHER_COMMAND_TIMEOUT`: *lowering* `TASKQ_WATCHDOG_STALE_FLOOR` or `TASKQ_WATCHDOG_TICK_GRACE_FACTOR` can shrink the staleness budget below the configured timeout and make the worker fail settings validation at startup. See [Dispatcher command timeout vs staleness budget](configuration.md#dispatcher-command-timeout-vs-staleness-budget-watchdog-on).
 - Ensure the supervisor restarts on any non-zero exit; watchdog trips always exit with code 2.
+
+---
+
+## 14. Worker looks healthy in logs but is doing no work
+
+### Symptom
+
+Logs are clean — telemetry emits, no exceptions, and a shutdown (if any) looked orderly — yet no jobs complete. Dashboards built on log volume look normal.
+
+### Cause
+
+**Logs are not a liveness signal.** A worker can emit well-formed telemetry, log a tidy shutdown sequence, and still be dispatching nothing: the process can be alive with its consumer loops parked, isolated after heartbeat loss, holding no leader lock, subscribed to queues nothing publishes to, or capped to zero concurrency. None of those produce an error line.
+
+**The database is the source of truth.** Worker liveness lives in `{schema}.workers.last_seen_at`, and progress lives in job state transitions. Both are observable independently of anything the worker chooses to log.
+
+| Cause | Detail |
+|---|---|
+| Worker not actually registered | No row in `{schema}.workers`, or `last_seen_at` is stale — the process is up but its heartbeat is not. |
+| No state transitions | Workers fresh, but no job has changed state — dispatch is finding nothing eligible (see §1) or capacity is zero. |
+| Capacity pinned to zero | A stored `actor_config.max_concurrent = 0` is drain mode; a queue cap of `0` is rejected, but an actor's is not. |
+| Queue mismatch | `TASKQ_QUEUES` does not include the queue jobs are enqueued on, so this worker is healthy and irrelevant. |
+
+### Diagnosis
+
+Never conclude from logs. Run all three:
+
+```sql
+-- 1. Which workers does the DB believe are alive? stale_for should be
+--    under heartbeat_interval (default 10s).
+SELECT id, hostname, pid, queues, last_seen_at,
+       clock_timestamp() - last_seen_at AS stale_for
+FROM {schema}.workers ORDER BY last_seen_at DESC;
+
+-- 2. Is anything actually progressing? Empty = no work completed,
+--    regardless of what the logs say.
+SELECT status, count(*) FROM {schema}.jobs
+WHERE finished_at > clock_timestamp() - interval '5 minutes'
+GROUP BY status;
+
+-- 3. Is capacity pinned to zero, or unset?
+SELECT actor, queue, max_concurrent, max_pending FROM {schema}.actor_config
+ORDER BY actor;
+```
+
+Re-run query 2 a minute apart: **unchanged counts mean no progress**, whatever the logs show. Cross-check that `workers.queues` overlaps the queues jobs are enqueued on.
+
+### Fix
+
+- **Stale or missing worker rows:** the process is not heartbeating — treat it as down and restart it, then see [Heartbeat failures](#7-heartbeat-failures).
+- **Workers fresh but nothing progressing:** work through [Jobs stuck in `pending`](#1-jobs-stuck-in-pending) and [Jobs stuck in `scheduled`](#2-jobs-stuck-in-scheduled) — including the sweep livelock, whose whole signature is healthy workers plus zero promotion.
+- **`max_concurrent = 0`:** drain mode. `taskq actor-config set <actor> --max-concurrent N` to restore; effective next dispatch cycle.
+- **`max_concurrent` unexpectedly `NULL`:** the decorator literal never reached this deployment — capacity fields are seed-only. See [ActorConfig sync](workers.md#actorconfig-sync).
+- **Queue mismatch:** align `TASKQ_QUEUES` with the queues actually used, and confirm via `workers.queues`.
+- **Alert on the DB, not on logs:** page on `max(clock_timestamp() - last_seen_at)` across `{schema}.workers` and on job-completion throughput. A log-based liveness alert cannot detect this failure mode — it is what let it run unnoticed.
 
 ---
 

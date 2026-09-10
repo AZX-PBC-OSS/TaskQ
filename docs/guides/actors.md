@@ -53,7 +53,7 @@ async def process_order(payload: OrderPayload) -> OrderResult: ...
 | `retry` | `RetryPolicy \| None` | `RetryPolicy()` | Retry policy — see [Retry policy](#retry-policy). `None` resolves to the default `RetryPolicy()`. |
 | `result_ttl` | `timedelta \| None` | `None` | How long the result JSONB is retained after a job succeeds. `None` means retain indefinitely. Only the *seed* value: once a worker has synced this actor once, the stored `actor_config.result_ttl` is authoritative and this literal is ignored — see [ActorConfig sync](workers.md#actorconfig-sync). |
 | `singleton` | `bool` | `False` | Enforce at most one active job of this actor fleet-wide — see [Singleton actors](#singleton-actors). |
-| `max_concurrent` | `int \| None` | `None` | Fleet-wide concurrency cap. `None` = unbounded. `0` = drain mode (no jobs dispatched). May transiently exceed the configured value by up to `(num_active_producers - 1) * max_concurrent` under contention; use a `ConcurrencyReservation` for strict enforcement. Only the *seed* value: once a worker has synced this actor once, the stored `actor_config.max_concurrent` is authoritative and this literal is ignored — tune it live with `taskq actor-config set`, see [ActorConfig sync](workers.md#actorconfig-sync). |
+| `max_concurrent` | `int \| None` | `None` | Fleet-wide concurrency cap, **best-effort — not a hard cap**. `None` = unbounded. `0` = drain mode (no jobs dispatched). May exceed the configured value by up to `(num_active_producers - 1) * max_concurrent`; use a reservation for strict enforcement — see [Choosing a concurrency control](#choosing-a-concurrency-control). Only the *seed* value: once a worker has synced this actor once, the stored `actor_config.max_concurrent` is authoritative and this literal is ignored — tune it live with `taskq actor-config set`, see [ActorConfig sync](workers.md#actorconfig-sync). |
 | `max_pending` | `int \| None` | `None` | Queue-depth backpressure cap — see [`max_pending` backpressure](#max_pending-backpressure). Only the *seed* value: once a worker has synced this actor once, a non-NULL stored `actor_config.max_pending` is authoritative and this literal is ignored — tune it live with `taskq actor-config set`, see [ActorConfig sync](workers.md#actorconfig-sync). |
 | `metadata` | `dict[str, object] \| None` | `{}` | Arbitrary key-value metadata stored in `actor_config.metadata` (JSONB). Must be a plain `dict`; mapping proxies and frozendicts are rejected at decoration time. The key `"singleton"` is reserved by the library. |
 | `unique_for` | `timedelta \| None` | `None` | Deduplication window — see [`unique_for` deduplication](#unique_for-deduplication). |
@@ -68,6 +68,126 @@ async def process_order(payload: OrderPayload) -> OrderResult: ...
 | `on_success` | `OnSuccess \| None` | `None` | Callback invoked when the job succeeds, after the transaction commits. Receives `(job_row, result)`. Mirrors `on_retry_exhausted` with a timeout guard — see [Retries — `on_success` hook](retries.md#on_success-hook). |
 | `on_success_timeout` | `float` | `3.0` | Seconds allowed for `on_success` to complete before it is abandoned. |
 | `priority` | `int` | `0` | Default dispatch priority for jobs enqueued without an explicit `priority=`. Must fit `smallint` range (-32768..32767). |
+
+!!! danger "`max_concurrent`, `max_pending` and `result_ttl` are seed-only — changing the literal does nothing on an existing deployment"
+    These three are **operator-owned once a row exists**. The startup UPSERT omits
+    them from its `DO UPDATE SET` clause, so Postgres leaves the stored value
+    untouched and the decorator literal is read **only** when the
+    `actor_config` row is first created. On any deployment where the actor has
+    booted even once, editing `@actor(max_concurrent=...)` and shipping it is a
+    **no-op** — the code says one thing and dispatch does another, with nothing
+    failing to draw your attention to it.
+
+    The tell is an info-level `actor-config-capacity-override` log line at
+    startup, one per actor whose literal differs from the stored row.
+
+    Check what is actually stored, then set it:
+
+    ```bash
+    taskq actor-config diff          # registered literal vs stored row, per actor
+    taskq actor-config get send_email
+    taskq actor-config set send_email --max-concurrent 4   # takes effect next dispatch cycle
+    ```
+
+    A first deploy seeds whatever the literal says, so this trap only bites on
+    the *second* change — and it bites silently. If you want decorator literals
+    to be authoritative, reconcile them explicitly on boot with
+    `taskq actor-config set` (it is idempotent) rather than assuming the
+    decorator did it. See [ActorConfig sync](workers.md#actorconfig-sync).
+
+    A `NULL` stored `max_concurrent` means **uncapped**, not "fall back to the
+    literal" — so an actor seeded before you added the argument stays uncapped
+    until an operator sets it.
+
+### Choosing a concurrency control
+
+TaskQ limits concurrency at several independent scopes. They are not
+interchangeable, and the strict ones are the leased-slot mechanisms — not the
+`max_concurrent` decorator argument.
+
+| You want to… | Use | Scope | Strict? |
+|---|---|---|---|
+| Protect **one actor** that must not run in parallel (thread-unsafe library, single GPU, non-reentrant native code) | `@actor(reservations=[...])` with a [`ConcurrencyReservation`](rate-limiting.md#concurrencyreservation) | Fleet-wide, per named slot bucket | **Yes** — leased slot rows |
+| Bound a **whole queue** fleet-wide regardless of which actors publish to it | [`taskq queues set-max-concurrent <queue> --max-concurrent N`](rate-limiting.md#queue-level-concurrency-cap) | Fleet-wide, per queue | **Yes** — same leased-slot machinery |
+| Damp **one actor's** share of the fleet without needing an exact bound | `@actor(max_concurrent=N)` / `taskq actor-config set` | Fleet-wide, per actor | **No** — best-effort |
+| Size **one process** (how many jobs a single worker runs at once) | `TASKQ_MAX_CONCURRENCY` | Per worker process | Per-process only |
+
+!!! danger "Only a reservation is strict. `max_concurrent`, `singleton` and `identity_key` are not."
+    `actor_config.max_concurrent` is a **per-round admission damper**. Dispatch
+    reads the `running` count once, before it takes `FOR UPDATE SKIP LOCKED` row
+    locks, and never rechecks it. Concurrent dispatchers each see the same count,
+    each admit up to the residual, and lock *disjoint* rows — so `SKIP LOCKED`
+    does not serialize them and every one of them succeeds. The over-dispatch
+    bound is `(num_producers - 1) * max_concurrent` per round, and those jobs
+    genuinely run: reclaiming stale locks does not undo an over-dispatch.
+
+    **`identity_key` does not fix this.** The dispatch CTE's
+    `running_identities` snapshot is read in the same statement, before the same
+    row locks, so two dispatchers can each see an identity as "not running" and
+    both admit a job for it. It is bounded by roughly the number of concurrent
+    dispatchers per identity per round — **not a hard 1**. `max_concurrent=1`
+    plus an `identity_key` gives you approximately-one-per-identity, which is
+    useful for fairness and useless as a mutex.
+
+    **`singleton=True` is a different guarantee, not a stronger one.** It is
+    enforced at *enqueue* time by a partial unique index, is actor-scoped rather
+    than identity-scoped, and rejects the producer with
+    `SingletonCollisionError` instead of queueing. It bounds how many jobs
+    *exist*, not how many run in parallel on a given resource.
+
+    If two concurrent executions would corrupt data, **none of the above is
+    sufficient** — use a reservation.
+
+#### Worked example: "I need a real mutex"
+
+A thread-unsafe PDF library where two concurrent calls corrupt output. One slot
+means one job at a time, fleet-wide, enforced by a physical row:
+
+```python
+from datetime import timedelta
+
+from taskq import actor
+from taskq.ratelimit import ConcurrencyReservation
+
+
+# slots=1 → a genuine fleet-wide mutex. Acquire is a single
+# read-and-write statement against one slot row, so there is no
+# read-then-decide window for a second dispatcher to slip through.
+@actor(
+    reservations=[
+        ConcurrencyReservation(
+            name="pdf_render",
+            slots=1,
+            lease=timedelta(minutes=5),  # must exceed worst-case runtime
+        )
+    ],
+)
+async def render_pdf(payload: RenderPayload) -> RenderResult:
+    return await do_render(payload)  # guaranteed sole occupancy
+```
+
+Declaring the instance inline needs no separate registration step — the worker
+registers it and pre-allocates its slot rows at bootstrap. See
+[Wiring to Actors](rate-limiting.md#wiring-to-actors); use
+[`sync_slots`](rate-limiting.md#sync_slotsreservations-pool-schemataskq-syncresult)
+when changing `slots` on a running deployment.
+
+Two things to get right:
+
+- **`lease` must exceed the job's worst-case runtime.** The heartbeat loop
+  renews the lease while the job runs, but a job that outlives its lease
+  *without* heartbeating has its slot swept as leaked and a second job can
+  acquire it.
+- **`ReservationUnavailable` is raised when every slot is held.** Jobs are
+  retried rather than run without a slot, so the cap never degrades into
+  best-effort under load.
+
+!!! warning "Do not size a queue for its narrowest actor"
+    A queue cap bounds a *tier*, and cannot tell a `PDFium` call from an HTTP
+    round-trip. Throttling a queue to `1` to protect one thread-unsafe actor
+    also serializes every unrelated actor sharing that queue — a fleet that
+    looks configured and produces almost nothing. Put the limit on the actor
+    that needs it (a reservation), or move that actor to its own queue.
 
 ### Decoration-time validation
 
@@ -377,7 +497,12 @@ async def daily_report(payload: ReportPayload) -> None: ...
 - Singleton enforcement is **actor-scoped**, not identity-scoped. Different `identity_key` values
   for the same singleton actor are still blocked.
 - For per-identity singleton semantics (one active job per user, not per actor), use
-  `max_concurrent=1` with an `identity_key` instead.
+  `max_concurrent=1` with an `identity_key` instead — but note this is
+  **best-effort, not a hard 1**: the dispatcher's `running_identities` snapshot
+  is read before it takes row locks, so concurrent dispatchers can each admit a
+  job for the same identity. Use it for fairness, never as a mutex. For a strict
+  guarantee use a [`ConcurrencyReservation`](#choosing-a-concurrency-control) —
+  a `KeyedReservationRef` gives one strict slot bucket *per key*.
 - The library injects `metadata["singleton"] = True` on every enqueue. Callers must not set
   this key manually — the library unconditionally overwrites it.
 - On collision, [`SingletonCollisionError`](jobs-clients.md#error-handling) is raised.

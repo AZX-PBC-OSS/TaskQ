@@ -165,6 +165,33 @@ The `RetryClassifier` also accepts a `non_retryable_exceptions` tuple. This is p
 
 **Important:** `non_retryable_exceptions`, `retry_classifier`, and `on_retry_exhausted` are properties of `ActorConfigLike` and are exposed through the `@actor` decorator as `non_retryable_exceptions`, `retry_classifier`, `on_retry_exhausted`, and `on_retry_exhausted_timeout` parameters. `retry_classifier` is documented in the next section; `on_retry_exhausted` is covered in [`on_retry_exhausted` hook](#8-on_retry_exhausted-hook).
 
+!!! danger "Do not classify HTTP status codes by `4xx` / `5xx` — 429 is a 4xx"
+    "Client errors are our bug, so never retry them" is the intuitive rule and it
+    is wrong. **`429 Too Many Requests` is a 4xx**, and it is the single most
+    important status to retry: a provider rate-limit response classified as
+    non-retryable permanently fails work that would have succeeded seconds
+    later, and the failure is silent — the job goes to `failed` with a plausible
+    error message and no retry ever happens.
+
+    `408 Request Timeout` is the same trap.
+
+    Classify by *status*, not by *class*:
+
+    | Status | Treat as | Why |
+    |---|---|---|
+    | `429`, `408` | **retryable** — `"indefinite"`, honouring `Retry-After` | Transient; the request is fine, the timing is not |
+    | other `4xx` (`400`, `401`, `403`, `404`, `422`) | **non-retryable** | The request itself is wrong; retrying reproduces it |
+    | `5xx` | **retryable** — `"transient"` with a bounded budget | Server-side, usually recovers |
+
+    A blanket `non_retryable_exceptions=(HttpClientError,)` cannot express this,
+    because the distinction is per *instance*, not per exception *type*. Use a
+    [`retry_classifier`](#5-retry_classifier-hook-per-instance-retry-overrides)
+    hook — the worked example in the next section implements exactly this table.
+
+    The mirrored mistake is as costly: retrying `401`/`404` with a `"transient"`
+    policy burns the whole retry budget on a request that can never succeed, and
+    on an authentication failure can trip the provider's abuse protection.
+
 ---
 
 ## 5. `retry_classifier` hook — per-instance retry overrides

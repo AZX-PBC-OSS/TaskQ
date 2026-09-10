@@ -231,11 +231,40 @@ The change takes effect on the next dispatch cycle -- no worker restart needed
 row default to `strict_fifo`, and nothing in TaskQ creates rows, so a queue is
 `strict_fifo` until you run this command.
 
+!!! danger "`round_robin` alone does nothing — it needs `fairness_key` on the jobs"
+    Setting a queue's mode is only **half** the change. Cohorts are formed by
+    `fairness_key`, and the dispatch CTE partitions on
+    `COALESCE(fairness_key, '__null__')` — so jobs enqueued without one all
+    collapse into a **single** `__null__` cohort. Round-robin across one cohort
+    is exactly priority-then-time order: a `round_robin` queue where nothing
+    sets a `fairness_key` behaves **identically to `strict_fifo`**.
+
+    Nothing warns you. `taskq queues set-mode` succeeds, the queue reports
+    `round_robin`, and the starvation you set out to fix continues unchanged.
+
+    The key is an **enqueue-time** argument — there is no actor-level
+    declaration — so fixing starvation means changing the *producer*, not just
+    the queue:
+
+    ```python
+    # Without fairness_key, set-mode round_robin is inert.
+    await client.enqueue(process_doc, payload, fairness_key=payload.tenant_id)
+    ```
+
+    Verify cohorts actually exist before trusting the mode:
+
+    ```sql
+    SELECT coalesce(fairness_key, '__null__') AS cohort, count(*)
+    FROM {schema}.jobs
+    WHERE queue = 'multi' AND status = 'pending'
+    GROUP BY 1 ORDER BY 2 DESC;
+    ```
+
+    One `__null__` row is the fingerprint of an inert `round_robin` queue.
+
 **`fairness_key` and `round_robin`:** `fairness_key` is an enqueue-time
 argument (`JobsClient.enqueue(..., fairness_key=...)`) — there is no actor-level
-declaration, and the key travels on each job's row. Jobs enqueued without one all
-collapse into the single `__null__` cohort, so a `round_robin` queue on which no job
-sets a `fairness_key` degenerates to plain priority-then-time order. The key only
+declaration, and the key travels on each job's row. The key only
 affects dispatch on a `round_robin` queue; on the default `strict_fifo` it is stored
 and ignored. See [jobs-clients.md](jobs-clients.md) for the `fairness_key` enqueue
 parameter.
@@ -255,6 +284,48 @@ queue differs from the override queue. Default `false` (override-safe).
 ---
 
 ## Concurrency model
+
+TaskQ limits concurrency at **three independent scopes**. They compose — a job
+must satisfy all three — and they are not substitutes for one another. Reaching
+for the wrong one is the most common configuration mistake in production.
+
+| Layer | Knob | Scope | Strict? | Change takes effect |
+|---|---|---|---|---|
+| **Process** | `TASKQ_MAX_CONCURRENCY` | One worker process | Per-process only | Worker restart |
+| **Queue** | `queues.max_concurrent` (`taskq queues set-max-concurrent`) | Fleet-wide, per queue | **Yes** — leased slots | Worker restart (read at startup) |
+| **Actor** | `actor_config.max_concurrent` (`taskq actor-config set`) | Fleet-wide, per actor | **No** — best-effort | Next dispatch cycle |
+| **Resource** | `@actor(reservations=[...])` — [`ConcurrencyReservation`](rate-limiting.md#concurrencyreservation) | Fleet-wide, per named slot bucket | **Yes** — leased slots | Worker restart |
+
+Total fleet concurrency for an actor is bounded by the *lowest* of these that
+applies. Note the process layer multiplies: `TASKQ_MAX_CONCURRENCY=8` across 5
+replicas is up to 40 concurrent jobs before any fleet-wide cap applies.
+
+### Which one do I want?
+
+- **"This one actor must never run in parallel with itself."** — a
+  `ConcurrencyReservation` with `slots=1`, declared via
+  `@actor(reservations=[...])`. This is the only real mutex. See
+  [Choosing a concurrency control](actors.md#choosing-a-concurrency-control).
+- **"This one actor should not hog the fleet."** —
+  `taskq actor-config set <actor> --max-concurrent N`. Best-effort is fine here;
+  you want a damper, not a guarantee.
+- **"At most N jobs from this queue, fleet-wide, whatever publishes to it."** —
+  `taskq queues set-max-concurrent <queue> --max-concurrent N`.
+- **"How much work should one pod do at once?"** — `TASKQ_MAX_CONCURRENCY`,
+  sized against the pod's CPU/memory and pool sizes.
+
+!!! danger "Never size a queue for its narrowest actor"
+    A queue cap bounds a whole tier and cannot distinguish a thread-unsafe
+    native call from an HTTP round-trip. Setting a queue's cap to `1` to protect
+    one unsafe actor serializes **every other actor on that queue** — a fleet
+    that looks correctly configured, reports healthy, and produces almost
+    nothing. The symptom is low throughput with idle workers and a growing
+    `pending` backlog on one queue only.
+
+    Put the constraint where the constraint actually is: a reservation on the
+    offending actor, or move it to its own queue.
+
+### Process-level bound
 
 `max_concurrency` (default `8`, env `TASKQ_MAX_CONCURRENCY`) is the upper bound on simultaneously executing jobs. The `local_queue` maxsize equals `max_concurrency`, so the producer can lock at most that many additional rows beyond those already executing.
 
@@ -528,6 +599,30 @@ At startup, after `register_worker`, the worker calls `sync_actor_config` for ev
   - **`force=True`:** logs `actor-config-drift-overwrite` at ERROR for each drifted field and overwrites the stored value.
 
 The sync uses a transactional SELECT-then-UPSERT to prevent races between concurrent worker startups.
+
+!!! danger "Consequence: on an existing deployment, `@actor(max_concurrent=...)` is dead config"
+    Operator-owned means the decorator literal is read **only** when the row is
+    first created. Editing `max_concurrent`, `max_pending` or `result_ttl` in
+    code and deploying it changes nothing on any deployment where the actor has
+    already booted once — the rollout succeeds, the code review passes, and
+    dispatch keeps using the stored value. A row seeded before the argument
+    existed holds `NULL`, which for `max_concurrent` means **uncapped**, so a
+    "we capped it" change can leave every actor running unbounded.
+
+    Nothing fails. The only signal is an info-level
+    `actor-config-capacity-override` line per diverging actor at startup.
+
+    Reconcile deliberately:
+
+    ```bash
+    taskq actor-config diff                                # what code says vs what is stored
+    taskq actor-config set my_actor --max-concurrent 4     # effective next dispatch cycle
+    ```
+
+    `taskq actor-config set` is idempotent, so a deploy step or boot-time hook
+    that applies your intended capacities is a safe way to make the code the
+    source of truth. Verify with `taskq actor-config list` — an unexpected
+    `max_concurrent = NULL` is the fingerprint of this trap.
 
 **`ActorConfigDriftList` wraps one `ActorConfigDriftError` per drifted *structural* field per actor.** A single startup check can produce multiple `ActorConfigDriftError` instances — one for each combination of actor × structural field that differs.
 

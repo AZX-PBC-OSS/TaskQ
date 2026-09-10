@@ -97,7 +97,7 @@ Extends `TaskQSettings`. All fields below apply to the worker process only.
 | Env Var | Type | Default | Description | Constraints |
 |---|---|---|---|---|
 | `TASKQ_DISPATCHER_POOL_SIZE` | `int` | `4` | Max connections for the dispatcher pool. | Min: 1 |
-| `TASKQ_DISPATCHER_COMMAND_TIMEOUT` | `float` (seconds) | `5.0` | Per-query timeout for the dispatcher pool and the TaskQ-built leader connections (election, cron, monitor), and the single deadline wrapped around each period-1 leader-loop iteration (`scheduled_wake`, cron): a stalled PG errors the iteration instead of hanging the loop past its staleness budget. When the watchdog is enabled, load fails unless `timeout + loop period < max(period × TASKQ_WATCHDOG_TICK_GRACE_FACTOR, TASKQ_WATCHDOG_STALE_FLOOR)` for both the period-1 leader loops and the producer loop, so a timeout-capped iteration can never false-trip the stale-loop detector. (Default was 10.0 before 1.x: equal to the floor, which produced exactly that false trip.) | Min: 1.0; cross-field, see above |
+| `TASKQ_DISPATCHER_COMMAND_TIMEOUT` | `float` (seconds) | `5.0` | Per-query timeout for the dispatcher pool and the TaskQ-built leader connections (election, cron, monitor), and the single deadline wrapped around each period-1 leader-loop iteration (`scheduled_wake`, cron): a stalled PG errors the iteration instead of hanging the loop past its staleness budget. When the watchdog is enabled, load fails unless `timeout + 1.0 < max(1.0 × TASKQ_WATCHDOG_TICK_GRACE_FACTOR, TASKQ_WATCHDOG_STALE_FLOOR)` for the period-1 leader loops (the producer loop is not checked), so a timeout-capped iteration can never false-trip the stale-loop detector. **At defaults this caps the value just under `9.0`** — a larger value fails at settings load and the worker will not start. Raising it requires raising `TASKQ_WATCHDOG_STALE_FLOOR` too; see [Validation Constraints](#validation-constraints). (Default was 10.0 before 1.x: equal to the floor, which produced exactly that false trip.) | Min: 1.0; must be < 9.0 at default watchdog settings; cross-field, see above |
 | `TASKQ_DISPATCH_OVERSAMPLE` | `int` | `2` | Multiplier for per-actor candidate gathering in the dispatch SQL. Each LATERAL reads `residual × oversample` candidates. Higher values absorb more identity-key collisions and multi-producer contention. Default 2 (tolerates 50% dupe identities). Set 1 when no `identity_key` is used and single-producer. Range: 1–1000. | Min: 1; Max: 1000 |
 | `TASKQ_DISPATCH_SCOPE_BY_HOME_QUEUE` | `bool` | `false` | When `true`, restrict `per_actor_capacity` to actors whose home queue (`actor_config.queue`) the worker subscribes to. Lowers per-cycle probe count at the cost of not dispatching `enqueue(queue=...)` override jobs whose actor's home queue is not subscribed. Default `false` (override-safe). | — |
 | `TASKQ_HEARTBEAT_POOL_SIZE` | `int` | `4` | Max connections for the heartbeat pool. | Min: 1 |
@@ -207,9 +207,12 @@ The stale-tick detector interacts with
 `TASKQ_DISPATCHER_COMMAND_TIMEOUT`: a loop's worst-case tick gap is
 `timeout + period`, so the timeout must fit inside
 `max(period × TASKQ_WATCHDOG_TICK_GRACE_FACTOR, TASKQ_WATCHDOG_STALE_FLOOR)`
-for every bounded loop (period-1 leader loops, and the producer at its
-poll cadence). This is enforced at load time when the watchdog is
-enabled; see [Validation Constraints](#validation-constraints).
+for the period-1 leader loops (the producer loop is exempt — its
+multi-statement dispatch batch does not fit the `timeout + period` model).
+This is enforced at load time when the watchdog is enabled, so an
+over-large timeout prevents the worker from starting at all — at default
+watchdog settings the ceiling is just under `9.0`; see
+[Validation Constraints](#validation-constraints).
 
 ### Retry
 
@@ -436,11 +439,28 @@ Error pattern: `watchdog_loop_lag_budget ... must be < lock_lease`
 
 ### Dispatcher command timeout vs staleness budget (watchdog on)
 
-For each PG-bounded loop, i.e. the period-1 leader loops (`leader.scheduled_wake`, `leader.cron`) and the producer (period = `notify_poll_interval` when NOTIFY is enabled, else `poll_interval`):
+Checked for the period-1 leader loops (`leader.scheduled_wake`, `leader.cron`), which are the loops wrapped in a single `asyncio.timeout`. With `period = 1.0`:
 
 ```
-dispatcher_command_timeout + period < max(period × watchdog_tick_grace_factor, watchdog_stale_floor)
+dispatcher_command_timeout + 1.0 < max(1.0 × watchdog_tick_grace_factor, watchdog_stale_floor)
 ```
+
+The producer loop is deliberately **not** checked: `dispatch_batch` is a multi-statement transaction bounded per-statement by the pool's `command_timeout`, so its worst-case tick gap is `k × timeout + period` for `k` statements — a quantity the invariant cannot express at settings-load time.
+
+!!! warning "You cannot raise `dispatcher_command_timeout` far — the usable ceiling is under 9.0s at defaults"
+    With the default `watchdog_tick_grace_factor=5.0` and `watchdog_stale_floor=10.0`, the budget is `max(1.0 × 5.0, 10.0)` = **10.0**, so the timeout must satisfy `timeout + 1.0 < 10.0` — i.e. **strictly less than 9.0** (default `5.0`).
+
+    This is enforced at **settings load**, so an out-of-range value does not degrade gracefully: the worker fails to start and a container restarts into `CrashLoopBackOff`. Setting `TASKQ_DISPATCHER_COMMAND_TIMEOUT=60` as an emergency mitigation for a slow database takes the fleet down rather than making it more patient.
+
+    To raise it meaningfully, **both knobs must move together** — raise the budget first, then the timeout:
+
+    ```bash
+    # Budget becomes max(1.0 × 5.0, 30.0) = 30.0 → timeout may go up to 28.9
+    TASKQ_WATCHDOG_STALE_FLOOR=30.0
+    TASKQ_DISPATCHER_COMMAND_TIMEOUT=20.0
+    ```
+
+    Understand the trade before doing so: the staleness budget is how long a wedged leader loop goes undetected. Raising it to 30s means a genuinely stuck worker is force-exited 30s late, which is the cost of tolerating a slower Postgres. A long dispatcher timeout is rarely the right fix for a slow database — prefer fixing query latency, and see [Performance issues](troubleshooting.md#12-performance-issues).
 
 Rationale: those loops tick once per iteration and sleep one period afterwards, so their worst-case tick gap is `timeout + period`. A gap that can reach the loop's staleness budget makes detector 2 force-exit a healthy worker in the middle of the PG degradation it should ride out (measured with the old 10.0 default against the 10.0 floor: an 11s gap and a trip at age 10.008s). Skipped when `watchdog_enabled=false`, since detector 2 is never spawned then. If the budget side is too small for any legal timeout (`budget <= period + 1.0`), the error is attributed to `watchdog_stale_floor` instead.
 
