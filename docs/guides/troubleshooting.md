@@ -528,6 +528,7 @@ curl --unix-socket /tmp/taskq_health.sock http://localhost/tasks
 
 ## See also
 
+- [ops.md](ops.md) — operations & adoption guide: sizing, timeout policy, fan-out patterns, and the footgun index (the preventive counterpart of this page)
 - [workers.md](workers.md) — worker internals, settings, PgBouncer
 - [cancellation.md](cancellation.md) — cancellation protocol
 - [rate-limiting.md](rate-limiting.md) — rate-limit backends

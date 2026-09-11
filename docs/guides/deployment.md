@@ -19,6 +19,9 @@ TaskQ is an async-native, Postgres-backed background job library for Python 3.12
 - [ ] **Worker supervisor** — systemd unit, Docker container, or Kubernetes Deployment
 - [ ] **Health probes** — `taskq health live` / `taskq health ready` wired to exec probes (not `httpGet` — the worker serves on a Unix socket)
 - [ ] **Shutdown budget** — `termination_grace_period` > `cancellation_grace_period + cleanup_grace_period + 5`
+- [ ] **Job timeouts** — `TASKQ_DEFAULT_START_TO_CLOSE` set as a fleet safety net; every long-running actor declares its own `start_to_close`; every `kind="indefinite"` actor has a `retry.time_budget` (see [ops.md](ops.md#2-timeouts-start_to_close-and-schedule_to_close))
+- [ ] **Connection budget** — fleet connection count computed against Postgres `max_connections` including application pools (see [ops.md](ops.md#4-sizing-workers-and-postgres-connections))
+- [ ] **DLQ routing** — `on_retry_exhausted` / `ErrorReporter` target chosen; there is no built-in dead-letter queue
 - [ ] **Admin UI auth** — `auth_dependency` hook or reverse proxy with auth; `TASKQ_ADMIN_UI_REQUIRE_AUTH` left at default (`true`)
 - [ ] **Admin actions** — `TASKQ_ADMIN_ACTIONS_ENABLED` left at `false` unless operators need cancel/retry/run-now
 - [ ] **OTel exporter** — `OTEL_EXPORTER_OTLP_ENDPOINT` pointed at a collector or OTLP-compatible backend
@@ -81,7 +84,7 @@ TimeoutStopSec=120
     `await loop.run_in_executor(None, blocking_fn, ...)` or assign CPU-bound
     actors to a dedicated worker with low `max_concurrency`.
 
-See [workers.md](workers.md) for the full concurrency model and pool sizing.
+See [workers.md](workers.md) for the full concurrency model and pool sizing, and [ops.md](ops.md#4-sizing-workers-and-postgres-connections) for the worked fleet-sizing worksheet (throughput math and the Postgres connection budget).
 
 ---
 
@@ -626,7 +629,7 @@ See [workers.md — Queue dispatch modes](workers.md#queue-dispatch-modes).
 
     With `max_concurrent=2` and 3 replicas you can see 6 concurrent executions. For a memory- or GPU-bound actor that is an OOMKill, a restart, and a re-dispatch.
 
-    **If you need a strict cap**, use the per-queue leased-slot reservation instead: `taskq queues set-max-concurrent <queue> --max-concurrent N`. Slots are physical rows and each acquire is a single read-and-write statement on one row, so there is no read-then-decide window. See [rate-limiting.md](rate-limiting.md#concurrency-reservations). Note it is read once at worker startup, so changing it needs a worker restart, and it bounds a *queue*, not an actor. `max_pending` (per-actor via `@actor(max_pending=N)`) caps queued `pending` jobs; when exceeded, `enqueue` is rejected and `taskq.backpressure.errors` is incremented. Monitor `taskq.queue.depth` (leader samples every 15s) for backlog and `taskq.backpressure.errors` for sustained producer pressure.
+    **If you need a strict cap**, use the per-queue leased-slot reservation instead: `taskq queues set-max-concurrent <queue> --max-concurrent N`. Slots are physical rows and each acquire is a single read-and-write statement on one row, so there is no read-then-decide window. See [rate-limiting.md](rate-limiting.md#concurrencyreservation). Note it is read once at worker startup, so changing it needs a worker restart, and it bounds a *queue*, not an actor. `max_pending` (per-actor via `@actor(max_pending=N)`) caps queued `pending` jobs; when exceeded, `enqueue` is rejected and `taskq.backpressure.errors` is incremented. Monitor `taskq.queue.depth` (leader samples every 15s) for backlog and `taskq.backpressure.errors` for sustained producer pressure.
 
 ### Connection pool sizing
 
@@ -637,7 +640,7 @@ See [workers.md — Queue dispatch modes](workers.md#queue-dispatch-modes).
 | `worker_pool` | `int(max_concurrency * 1.5)` | `TASKQ_MAX_CONCURRENCY` |
 | `notify_conn` + `leader_conn` | 2 (dedicated) | Fixed |
 
-Total per worker ≈ `dispatcher + heartbeat + worker_pool + 2`. For 10 workers at `max_concurrency=16`: ~10 × 34 = 340 connections. Ensure Postgres `max_connections` accommodates this plus your application's connections.
+Total per worker ≈ `dispatcher + heartbeat + worker_pool + 2`. For 10 workers at `max_concurrency=16`: ~10 × 34 = 340 connections. Ensure Postgres `max_connections` accommodates this plus your application's connections. The full budget formula (idle floors, leader extras, client pods, PgBouncer compression) is in [ops.md — Sizing](ops.md#4-sizing-workers-and-postgres-connections).
 
 ---
 

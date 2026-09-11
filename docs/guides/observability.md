@@ -292,6 +292,17 @@ Counters and histograms in the dispatch and consume paths are recorded
 **outside** their corresponding span bodies. This ensures that a 100% sampled
 span does not inflate metric counts relative to a partially-sampled trace.
 
+### Ready-made alert rules
+
+The repo ships alert rules for the metrics above — import them instead of
+writing from scratch:
+
+- [`src/taskq/contrib/prometheus/rules.yaml`](https://github.com/AZX-PBC-OSS/TaskQ/blob/main/src/taskq/contrib/prometheus/rules.yaml) — 9 rules (queue depth, heartbeat misses, crashed-job rate, abandoned jobs, lock TTL, leader split-brain, dispatch latency, progress failures, disabled cron)
+- `src/taskq/contrib/kubernetes/prometheus_rule.yaml` — the same rules as a PrometheusRule CRD for Kubernetes
+
+The operational "which metric catches which failure mode" table is in
+[ops.md — Observability and alerting](ops.md#8-observability-and-alerting).
+
 ---
 
 ## 4. Structured logging
@@ -711,5 +722,6 @@ custom reporter is installed and failing.
 
 - [actors.md](actors.md) — `@actor` decorator, `JobContext`, `ctx.log`, `ctx.span`
 - [workers.md](workers.md) — worker lifecycle, `WorkerSettings`, pool configuration
+- [ops.md](ops.md) — operations & adoption: which metrics catch which failure mode
 - [../api-reference/testing.md](../api-reference/testing.md) — test fixtures, `setup_tracer`, `setup_meter`
 - [cancellation.md](cancellation.md) — cancel phases, `cancel_phase_change` log events

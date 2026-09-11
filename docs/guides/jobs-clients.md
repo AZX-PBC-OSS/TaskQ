@@ -159,7 +159,7 @@ Serialises the payload through `ref.payload_type`, enqueues the job, and returns
 | `start_to_close` | `timedelta \| None` | `None` | Per-attempt execution timeout measured from when the worker locks the job, enforced via `asyncio.wait_for` around the actor invocation. Distinct from `schedule_to_close` — see [`start_to_close` vs `schedule_to_close`](retries.md#7-start_to_close-vs-schedule_to_close) for the precedence chain and full explanation. |
 | `heartbeat_timeout` | `timedelta \| None` | `None` | Maximum time allowed between heartbeats before the job is considered crashed. |
 | `identity_key` | `IdentityKey \| None` | `None` | Opaque string identifying the logical entity this job belongs to (e.g. `"account:42"`). Required for `unique_for` deduplication to take effect. Also used for fairness scheduling. |
-| `fairness_key` | `str \| None` | `None` | Partitions the dispatch order so no single key monopolises the queue. **Requires the target queue to be in `round_robin` mode** (`taskq queues set-mode <queue> round_robin`); on the default `strict_fifo` the key is stored and ignored. See [workers.md](workers.md#queue-modes). |
+| `fairness_key` | `str \| None` | `None` | Partitions the dispatch order so no single key monopolises the queue. **Requires the target queue to be in `round_robin` mode** (`taskq queues set-mode <queue> round_robin`); on the default `strict_fifo` the key is stored and ignored. See [workers.md](workers.md#queue-dispatch-modes). |
 | `idempotency_key` | `IdempotencyKey \| None` | `None` | String preventing duplicate insertion, unique within its `idempotency_scope`. See [Idempotency key](#idempotency_key). |
 | `idempotency_scope` | `str \| None` | `None` | Namespacing scope for `idempotency_key`. `None` or `""` means the global/default scope (preserves prior global-dedupe behavior). An explicit scope (e.g. a run/batch/epoch id) allows the same business key in different scopes to both succeed. ≤ `idempotency_key_max_bytes` (default 1024 UTF-8 bytes). |
 | `trace_id` | `str \| None` | extracted from OTel span | Trace ID for distributed tracing. Automatically extracted from the active OTel span when one is valid; pass explicitly to override. |
@@ -340,7 +340,7 @@ EnqueueItem(
 | `payload` | `BaseModel` | required | Payload instance; validated against `actor_ref.payload_type` before any INSERT. |
 | `scheduled_at` | `datetime \| None` | `None` | Deferred execution time. |
 | `priority` | `int \| None` | `None` | Dispatch priority within the queue. |
-| `fairness_key` | `str \| None` | `None` | Fairness grouping key. Only affects dispatch on a `round_robin` queue -- see [workers.md](workers.md#queue-modes). |
+| `fairness_key` | `str \| None` | `None` | Fairness grouping key. Only affects dispatch on a `round_robin` queue -- see [workers.md](workers.md#queue-dispatch-modes). |
 | `idempotency_key` | `IdempotencyKey \| str \| None` | `None` | Per-item idempotency token (≤ `idempotency_key_max_bytes`, default 1024 UTF-8 bytes). |
 | `idempotency_scope` | `str \| None` | `None` | Per-item idempotency scope (≤ `idempotency_key_max_bytes`, default 1024 UTF-8 bytes). `None` or `""` = global/default scope. |
 | `identity_key` | `IdentityKey \| None` | `None` | Opaque identity string; required for `unique_for` dedup to take effect. |
@@ -457,6 +457,9 @@ Enqueues jobs via the PG `COPY FROM` protocol for maximum throughput. Returns th
 - **No max_pending check.** The caller is responsible for ensuring actor limits are not exceeded.
 - **No JobHandle instances.** Only the inserted count is returned. Use `batch_id` to query rows post-insert.
 - **All-or-nothing.** The COPY fails entirely on any constraint violation — singleton, unique index, or CHECK constraint.
+
+See [ops.md — Fan-out at scale](ops.md#5-fan-out-at-scale-chunks-cursors-idempotency) for the
+batch-API chooser table and the chunking patterns that avoid these limits.
 
 ### Validation
 
@@ -593,6 +596,16 @@ async def summarize_results(ctx: JobContext, payload: SummarizePayload) -> None:
 flight; the consumer transitions the finalizer to `scheduled` and retries it
 after `snooze_interval` without consuming retry budget. Once all children are
 terminal, it returns `BatchCompletionStatus`.
+
+!!! warning "Size the finalizer's deadline generously"
+    A snooze whose `now + delay` would land past `schedule_to_close` fails the job with
+    `DeadlineExceeded` instead of rescheduling. A finalizer gating on a long-running batch needs
+    either no deadline or a `retry.time_budget` well above the batch's expected duration plus
+    retries.
+
+Pattern guidance — when to use a finalizer vs a cursor chain vs recursive fan-out, and how to
+key chunk jobs for idempotency — is in [ops.md — Fan-out at
+scale](ops.md#5-fan-out-at-scale-chunks-cursors-idempotency).
 
 ---
 
@@ -1185,6 +1198,15 @@ if page.next_cursor:
 
 `SubJobEnqueuer` is accessed as `ctx.jobs` inside an actor body. It is not instantiated directly
 by application code. For actor-side usage see [Actor API — Sub-job enqueuing](actors.md#sub-job-enqueuing).
+
+!!! warning "Transactional sub-enqueue requires a single-slot worker"
+    Sub-enqueues join the actor's transaction only when a LOOP-scope `asyncpg.Connection` is
+    registered in DI — and that one connection is shared by **every** consumer slot, so the
+    transactional path is correct only with `TASKQ_MAX_CONCURRENCY=1`. Without a LOOP-scope
+    connection (the default worker), `ctx.jobs` commits each child immediately through the worker
+    pool (autonomous mode; the startup log warns `sub_enqueue_autonomous_fallback`). See
+    [ops.md — Fan-out at scale](ops.md#5-fan-out-at-scale-chunks-cursors-idempotency) for the
+    consequences for chaining patterns.
 
 ### Handle limitations
 

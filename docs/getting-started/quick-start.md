@@ -300,6 +300,7 @@ See [Admin UI](../guides/admin-ui.md) for the full reference.
 | Actor options: retry policies, concurrency caps, singletons, DI | [Actor API](../guides/actors.md) |
 | Enqueueing, `JobHandle.wait()`, cancellation, unique jobs | [Client API](../guides/jobs-clients.md) |
 | Worker configuration, pools, heartbeat, graceful shutdown | [Worker](../guides/workers.md) |
+| Going to production: timeouts, sizing, fan-out patterns, footguns | [Operations & Adoption](../guides/ops.md) |
 | CLI command reference | [CLI](../guides/cli.md) |
 | Admin UI | [Admin UI](../guides/admin-ui.md) |
 | Testing with `InMemoryBackend` and pytest fixtures | [Development](../api-reference/testing.md) |

@@ -270,6 +270,8 @@ The 1.5 factor provides headroom for terminal writes that occur just after a job
 
 The worker spawns exactly `max_concurrency` consumer loop coroutines. They are cooperatively concurrent — asyncio, not threads. CPU-bound work should be offloaded to a thread pool executor via `asyncio.get_running_loop().run_in_executor`.
 
+For fleet-sizing math (connections per worker against `max_connections`, throughput per process) see [ops.md — Sizing](ops.md#4-sizing-workers-and-postgres-connections).
+
 ---
 
 ## Dispatch sequence
@@ -751,6 +753,7 @@ All variables use the `TASKQ_` prefix. `WorkerSettings` extends `TaskQSettings`;
 | `TASKQ_CANCELLATION_GRACE_PERIOD` | `float` | `30.0` | Seconds for cooperative cancel phase |
 | `TASKQ_CLEANUP_GRACE_PERIOD` | `float` | `10.0` | Seconds for force-cancel cleanup phase |
 | `TASKQ_MAX_RETRY_BACKOFF` | `timedelta` | `PT24H` | Global ceiling on per-attempt retry backoff |
+| `TASKQ_DEFAULT_START_TO_CLOSE` | `timedelta \| None` | `None` | Worker-wide fallback per-attempt execution timeout, applied only when neither the enqueue call nor the actor sets `start_to_close`. `None` = unbounded. See [retries.md — `start_to_close` vs `schedule_to_close`](retries.md#7-start_to_close-vs-schedule_to_close) |
 | `TASKQ_RATE_LIMIT_PG_FALLBACK_ENABLED` | `bool` | `True` | Fall back to Postgres when Redis errors occur during rate limiting |
 | `TASKQ_HEALTH_ENABLED` | `bool` | `True` | Enable the Unix-socket health server |
 | `TASKQ_HEALTH_SOCKET_PATH` | `str` | `/tmp/taskq_health.sock` | Path for the health Unix socket |
