@@ -534,6 +534,7 @@ async def di_consumer_loop(
                 actor_config=actor_config,
                 clock=clock,
                 active_jobs=deps.active_jobs,
+                max_retry_backoff=deps.settings.max_retry_backoff,
                 enqueuer=enqueuer,
             )
             if outcome == "failed":
