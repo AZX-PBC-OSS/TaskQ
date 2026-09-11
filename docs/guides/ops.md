@@ -97,7 +97,7 @@ The two names sound alike and bound different things. Full mechanics:
 | Workload | `start_to_close` | `schedule_to_close` |
 |---|---|---|
 | Webhook / API call | 30–60 s | `RetryPolicy(kind="transient", max_attempts=5)` — no deadline needed |
-| ETL chunk (see [§5](#5-fan-out-at-scale-chunks-cursors-idempotency)) | 5–15 min | unset, or a generous `time_budget` |
+| ETL chunk (see [§5](#5-fan-out-at-scale-chunks-cursors-idempotency)) | 5–15 min | unset, or a generous `time_budget` (requires `kind="indefinite"` — `time_budget` is inert on any other kind) |
 | Poll-until-ready (invoice, export) | short | unset — the actor [`Snooze`](#7-waiting-politely-rate-limits-snooze-retryafter-retry-after) loop owns timing |
 | Batch finalizer | minutes | size generously — see the finalizer warning in [§5](#5-fan-out-at-scale-chunks-cursors-idempotency) |
 
@@ -118,6 +118,9 @@ async def reindex_bucket(payload: Payload) -> None: ...
 - **There is no opt-*out*.** The precedence chain is per-enqueue > `@actor(...)` >
   `TASKQ_DEFAULT_START_TO_CLOSE`. An actor that needs to run longer than the worker default must
   declare its own larger `start_to_close`; declaring `None` falls through to the worker default.
+  Cron fires and admin "run now" currently do not propagate per-actor `start_to_close`
+  (or `schedule_to_close_interval`) — only the fleet-wide `TASKQ_DEFAULT_START_TO_CLOSE`
+  protects those paths.
 - **A timed-out attempt consumes budget.** `attempt` is incremented at dispatch, so a
   `start_to_close` timeout counts against `max_attempts` exactly like a raised exception.
 - **Sync actors are not stopped by `start_to_close`.** `def` actors run via `asyncio.to_thread`;
@@ -129,8 +132,9 @@ async def reindex_bucket(payload: Payload) -> None: ...
   pending jobs are never dispatched, retries/snoozes that would land past the deadline fail with
   `DeadlineExceeded`, and a leader sweep fails expired queued jobs. A running attempt that finishes
   after the deadline still succeeds.
-- **The enqueue-time `heartbeat_timeout` parameter is currently inert.** It is stored and shown in
-  the admin UI, but no code path reads it. All running jobs are leased for the global
+- **The enqueue-time `heartbeat_timeout` parameter is currently inert.** It is stored on the
+  job row (and reaches the job-detail template context) but is not rendered in the admin UI,
+  and no code path reads it. All running jobs are leased for the global
   `TASKQ_LOCK_LEASE` (default 60 s).
 - **The stored `error_message` of a genuine `start_to_close` timeout is the literal string
   `"start_to_close"`** — alert on `error_class == "TimeoutError"` if you want all timeouts, and
@@ -363,7 +367,16 @@ retries are cheap, downstream consumers start as soon as the *first* chunk lands
 drain rate is bounded by your concurrency/rate-limit settings instead of one job's runtime.
 
 ```python
+from datetime import timedelta
+
+from pydantic import BaseModel
+
 from taskq import JobContext, actor
+
+
+class RowPayload(BaseModel):
+    run_id: str
+    row: dict  # whatever `fetch_page` returns per row
 
 
 class SyncPagePayload(BaseModel):
@@ -371,11 +384,21 @@ class SyncPagePayload(BaseModel):
     cursor: int  # your own pagination cursor — TaskQ has none to pass for you
 
 
+async def fetch_page(cursor: int, limit: int) -> tuple[list[dict], int | None]: ...
+
+
 @actor(start_to_close=timedelta(minutes=10))
-async def sync_page(ctx: JobContext[SyncPagePayload], payload: SyncPagePayload) -> None:
+async def sync_page(payload: SyncPagePayload, ctx: JobContext[SyncPagePayload]) -> None:
     rows, next_cursor = await fetch_page(payload.cursor, limit=500)
     for row in rows:
-        await ctx.jobs.enqueue(process_row, RowPayload(run_id=payload.run_id, row=row))
+        await ctx.jobs.enqueue(
+            process_row,
+            RowPayload(run_id=payload.run_id, row=row),
+            # Stable per-row key: without this a parent retry re-enqueues every
+            # child (autonomous sub-enqueues commit immediately and do not roll
+            # back with the parent).
+            idempotency_key=f"row:{payload.run_id}:{row['id']}",
+        )
     if next_cursor is not None:
         # Stable key: re-enqueueing this page after any failure dedups instead of duplicating.
         await ctx.jobs.enqueue(
@@ -389,9 +412,10 @@ Why the pieces matter:
 
 - **The cursor lives in the payload.** TaskQ's `cursor` type is keyset pagination for *read APIs*
   (`client.list(...)`) — there is no built-in job-continuation cursor. Your cursor is your data.
-- **The idempotency key makes re-dispatch safe.** If the parent is retried after enqueuing the
-  next page, the duplicate is dropped and the existing job returned (`was_existing=True`) — the
-  chain cannot fork.
+- **The idempotency keys make re-dispatch safe.** Both the per-row enqueues and the
+  successor page carry stable keys. If the parent is retried after enqueuing children,
+  the duplicates are dropped and the existing jobs returned (`was_existing=True`) — the
+  chain cannot fork and rows are not processed twice.
 - **Transactional vs autonomous sub-enqueue — know which one you are on.** Two modes, decided by
   your DI setup, not by the call:
     - *Autonomous* (the default worker): no LOOP-scope `asyncpg.Connection` is registered, so
@@ -415,21 +439,36 @@ gate completion with a finalizer that snoozes until all children are terminal. F
 actor, pass an explicit `batch_id` and enqueue the finalizer as its own job:
 
 ```python
-from taskq import new_uuid
+from uuid import NAMESPACE_URL, uuid5
+
+from taskq.batch import EnqueueItem
+
 
 items = [
-    EnqueueItem(actor_ref=process_chunk, payload=p, idempotency_key=f"chunk:{run_id}:{p.i}")
+    EnqueueItem(actor_ref=process_chunk, payload=p, idempotency_key=f"chunk:{run_id}:{i}")
     for i, p in enumerate(chunks)
 ]
-batch_id = new_uuid()  # UUIDv7; explicit id is what correlates children and finalizer
+# Deterministic id: a parent retry must reuse the same batch id. `new_uuid()`
+# (UUIDv7) mints a fresh id per attempt, so deduped children keep attempt one's
+# batch id while the finalizer points at an empty batch id — and
+# `wait_for_batch` then returns `is_complete=True` on the wrong id. `uuid5`
+# keeps the id stable across attempts; the finalizer's own idempotency key
+# dedups the second enqueue (`was_existing=True`).
+batch_id = uuid5(NAMESPACE_URL, f"taskq-batch:{run_id}")
 await ctx.jobs.enqueue_batch(items, batch_id=batch_id)
-await ctx.jobs.enqueue(finalize_run, FinalizePayload(batch_id=batch_id, expected=len(items)))
+await ctx.jobs.enqueue(
+    finalize_run,
+    FinalizePayload(batch_id=batch_id, expected=len(items)),
+    idempotency_key=f"finalize:{run_id}",
+)
 ```
 
-!!! note "Always UUIDv7, never `uuid4()`"
+!!! note "Always UUIDv7, never `uuid4()` — except retry-safe in-actor batch ids"
     TaskQ generates every internal id (jobs, workers, batches) as UUIDv7 — time-ordered, so
     B-tree index inserts stay local and ids sort by creation time. Use `new_uuid` (exported from
-    `taskq`) for any id you choose yourself, such as an explicit `batch_id`.
+    `taskq`) for any id you choose yourself, such as an explicit `batch_id` — **unless** the
+    batch is enqueued from inside an actor that may retry, in which case derive the id
+    deterministically from the run (e.g. `uuid5`) as above so every attempt reuses it.
 
 The `finalizer=` parameter exists on the *client's* `enqueue_batch` (`client.enqueue_batch(items,
 finalizer=...)`); the in-actor `SubJobEnqueuer.enqueue_batch` takes only `batch_id`, so enqueue the
@@ -441,8 +480,11 @@ finalizer separately as above. The finalizer's `wait_for_batch(db, batch_id)` ra
 !!! warning "Size the finalizer's budget generously"
     A snooze whose `now + delay` would land past `schedule_to_close` fails the job with
     `DeadlineExceeded` instead of rescheduling. A finalizer that snoozes for hours needs either
-    no deadline or a `retry.time_budget` that comfortably exceeds the expected batch duration
-    (plus retries).
+    no deadline or (on a `kind="indefinite"` actor — `time_budget` is inert on any other kind)
+    a `retry.time_budget` that comfortably exceeds the expected batch duration (plus retries).
+    Note a default-kind (`transient`) finalizer that snoozes has neither a deadline nor an
+    attempt ceiling — snooze bumps `max_attempts` instead of consuming it — so make it
+    `indefinite` with a budget if you want it bounded.
 
 ### Pattern C — app-level run accounting + finalize sweep
 
@@ -495,14 +537,17 @@ See [jobs-clients.md](jobs-clients.md) for the full tradeoff table.
   frees the window while its child chain still runs — a cron cadence faster than the chain will
   overlap runs. Single-flight the *work*, not the root (a running-run guard in your own state, or
   a strict reservation).
-- `metadata.batch_id` and `metadata.singleton` are library-reserved; caller values are stripped.
+- `metadata.batch_id` is library-reserved and stripped from caller-supplied metadata; a
+  caller-supplied `metadata.singleton=True` on an ordinary actor is **not** stripped — it
+  survives onto the row and triggers real single-flight behaviour (enqueue preflight and the
+  `jobs_singleton_uniq` index key on it).
 - For fleet-wide completion *reactions* (rather than a finalizer), the durable-cursor pattern
   `TaskQ.watch_reclaims()` is documented in
   [architecture.md — which component drives each transition](../architecture.md#which-component-drives-each-transition).
 
 **`tags`** are the group-operation tool: `enqueue(..., tags=[f"run-{run_id}"])` then
 `JobFilter(tags=(...))` for status polling and bulk `cancel_where`. Tags must match
-`^[\w][\w-]+\w$` — **no colons** — and invalid tags raise at enqueue, so a bad tag factory fails
+`\A\w(?:[\w\-]*\w)?\Z` — **no colons** — and invalid tags raise at enqueue, so a bad tag factory fails
 every trigger, not just one.
 
 ### Cron and scheduled workloads
@@ -524,8 +569,11 @@ every trigger, not just one.
   on an existing row. Manage live schedules with `client.update_schedule` / `delete_schedule`
   (an empty expression does not disable a previously-registered schedule).
 - **Auto-disable is permanent until re-enabled** — check `taskq.cron.disabled_schedules` and the
-  `cron.auto_disabled` log event; a silently-disabled schedule is an outage with one log line.
+  `cron schedule auto-disabled` log line (`kind="cron_fire"`; `cron.auto_disabled` is only an
+  OTel span event, not a log event); a silently-disabled schedule is an outage with one log line.
 - Give cron actors a `start_to_close` — an unbounded cron actor that hangs holds its queue.
+  Note cron fires currently do not propagate per-actor `start_to_close` (only the fleet-wide
+  `TASKQ_DEFAULT_START_TO_CLOSE` applies), so the safety net above is what protects cron.
 
 ---
 
@@ -553,7 +601,7 @@ Doctrine — put each failure class where it belongs:
 | "Down until Tuesday" (maintenance window) | `Snooze` (no budget consumed) or `kind="indefinite"` + `time_budget` | known-duration waits should not burn attempts |
 
 **Size the retry window to span a routine provider blip.** `RetryPolicy(max_attempts=4,
-base=timedelta(seconds=10))` covers only ~65 s of cumulative delay; an ordinary object-store 5xx
+base=timedelta(seconds=10))` covers only ~70 s of cumulative delay (10 + 20 + 40 jitter-free); an ordinary object-store 5xx
 blip outlasts that, exhaustion is terminal, and (if your `on_retry_exhausted` marks entities
 dead) the entity silently disappears from downstream surfaces. For network-bound actors, prefer
 fewer attempts with a longer `base` over many fast ones.
@@ -615,9 +663,10 @@ waits in Postgres — this is not busy-spinning in the worker.
 ```python
 from taskq.ratelimit import SlidingWindow, TokenBucket, registry
 
-# Downstream allows 50 req/s, fleet-wide:
+# Downstream allows 50 req/s fleet-wide (`capacity` is the burst allowance,
+# `refill_per_second` is the sustained rate):
 registry.register(
-    TokenBucket(name="partner_api", capacity=50, refill_per_second=10.0, backend="redis")
+    TokenBucket(name="partner_api", capacity=50, refill_per_second=50.0, backend="redis")
 )
 
 
@@ -663,7 +712,7 @@ connection errors the limiter falls back to the PG implementation by default
     A `TokenBucket` with `refill_per_second=0` never refills and returns `retry_after=None`, so
     denials fall back to the 5 s default backoff. Without a `schedule_to_close`, such a job
     re-queues every 5 s indefinitely. Either give the bucket a refill rate, or give the actor a
-    deadline.
+    deadline (`retry.time_budget` requires `kind="indefinite"`).
 
 !!! warning "Dev/prod Redis asymmetry"
     A common compose/dev setup sets `TASKQ_REDIS_URL` while production deliberately runs
@@ -760,7 +809,7 @@ production outage the console logs looked clean while the worker was down:
 
 ```sql
 -- Replace {schema} with your TASKQ_SCHEMA_NAME.
-SELECT worker_id, worker_label, last_seen_at,
+SELECT id, worker_label, last_seen_at,
        last_seen_at < clock_timestamp() - interval '60 seconds' AS stale
 FROM {schema}.workers ORDER BY last_seen_at DESC;
 
@@ -787,8 +836,9 @@ SELECT count(*) FROM {schema}.jobs
 WHERE status = 'scheduled' AND scheduled_at <= clock_timestamp();
 ```
 
-Alert on that count and on the `scheduled_wake_failed` / `sweep_deadline_exceeded_failed` log
-events. Prevent it with `max_pending` on high-fan-out actors, retry policies that disperse
+Alert on that count and on the `scheduled-wake-failed` / `sweep-deadline-exceeded-failed`
+log events (`kind="scheduled_wake_failed"` / `kind="sweep_deadline_exceeded_failed"` — alert on
+the `event` name, not the `kind` value, for field-scoped matchers). Prevent it with `max_pending` on high-fan-out actors, retry policies that disperse
 cohorts (longer `base`, higher `jitter` — see [§6](#6-classifying-failures-terminal-retryable-transient)),
 and bounded fan-out per job (chunk sizes in the hundreds, not the tens of thousands).
 
@@ -819,7 +869,7 @@ Concept mapping for teams porting workers:
 | `autoretry_for` | default (all exceptions retry under the policy) | list the *terminal* ones instead: `non_retryable_exceptions` |
 | `rate_limit="100/m"` | `TokenBucket` / `SlidingWindow` on the actor | fleet-wide, Redis- or PG-backed; keyed refs for per-tenant quotas |
 | `countdown=` / `eta=` | `scheduled_at` | timezone-aware; ~1 s promotion precision |
-| `expires=` | `retry.time_budget` → `schedule_to_close` | interval from enqueue, server clock |
+| `expires=` | `retry.time_budget` → `schedule_to_close` (`time_budget` requires `kind="indefinite"`) | interval from enqueue, server clock |
 | `task_id` dedup hacks | `idempotency_key` (+ scope) | DB-enforced; duplicates return the existing job — mind the key-discipline rules in [§5](#5-fan-out-at-scale-chunks-cursors-idempotency) |
 | `chord` | batch `finalizer` + `wait_for_batch`, or app-level run accounting | [§5 Patterns B/C](#5-fan-out-at-scale-chunks-cursors-idempotency) |
 | `chain` / `canvas` | `ctx.jobs.enqueue(...)` from the actor body | transactional on a LOOP-scope conn (single-slot), autonomous otherwise — [§5](#5-fan-out-at-scale-chunks-cursors-idempotency) |
@@ -860,7 +910,7 @@ The condensed "know this before your first incident" list. Each row links to the
 | `start_to_close` expected to kill a sync actor's thread | job marked timed out, side effects continue anyway | sync actors keep running — poll `ctx.should_abort()` ([actors.md](actors.md#sync-actors)) |
 | `heartbeat_timeout` set at enqueue | nothing changes | currently stored but not enforced ([§2](#2-timeouts-start_to_close-and-schedule_to_close)) |
 | Retry window shorter than routine provider blips | terminal exhaustion on an ordinary 5xx | fewer attempts, longer `base` ([§6](#6-classifying-failures-terminal-retryable-transient)) |
-| Snoozing finalizer with a tight `time_budget` | `DeadlineExceeded` mid-batch | size the budget to batch duration + retries ([§5](#5-fan-out-at-scale-chunks-cursors-idempotency)) |
+| Snoozing finalizer with a tight `time_budget` | `DeadlineExceeded` mid-batch | size the budget to batch duration + retries; `time_budget` requires `kind="indefinite"` ([§5](#5-fan-out-at-scale-chunks-cursors-idempotency)) |
 | `max_retry_backoff` raised, long backoffs still capped | retries at 24 h ceiling | the ceiling is `min(policy.cap, TASKQ_MAX_RETRY_BACKOFF)` ([retries.md](retries.md#3-backoff-algorithms)) |
 | Catching failures and returning a result | job `succeeded`, retry machinery never engaged | raise — [§6](#6-classifying-failures-terminal-retryable-transient) |
 | Actor returns normally during a drain-cancel | job records `succeeded`, chain dies on every deploy | drain sets the same cancel event — never return normally on cancel ([§6](#6-classifying-failures-terminal-retryable-transient)) |
@@ -879,7 +929,7 @@ The condensed "know this before your first incident" list. Each row links to the
 | `enqueue_batch_fast` with duplicate keys | whole COPY aborts | pre-dedup or use `enqueue_batch` ([§5](#5-fan-out-at-scale-chunks-cursors-idempotency)) |
 | Streaming/fast batches assumed to enforce `max_pending` | unbounded queue growth | only `enqueue`/`enqueue_batch` enforce it ([§5](#5-fan-out-at-scale-chunks-cursors-idempotency)) |
 | Huge synchronized `scheduled` cohort (mass retry wave) | promotion stalls; health green; throughput zero | disperse cohorts, `max_pending`, scheduled-depth alert — [§8](#watch-large-scheduled-backlogs) |
-| Tag factory emitting colons | every enqueue 500s | tags must match `^[\w][\w-]+\w$` — [§5](#5-fan-out-at-scale-chunks-cursors-idempotency) |
+| Tag factory emitting colons | every enqueue 500s | tags must match `\A\w(?:[\w\-]*\w)?\Z` — [§5](#5-fan-out-at-scale-chunks-cursors-idempotency) |
 
 **Runtime & infrastructure**
 
@@ -931,7 +981,9 @@ mechanics of each item: [deployment.md — Production Checklist](deployment.md#p
 - [ ] **Queue modes**: `round_robin` + `fairness_key` set where tenants share queues; priorities
       assigned to latency-sensitive actors
 - [ ] **Cron**: every schedule registered by this deploy still intended; actors have
-      `start_to_close`; overlap strategy chosen with its trap understood
+      `start_to_close` (note cron fires currently ignore per-actor values — the fleet-wide
+      `TASKQ_DEFAULT_START_TO_CLOSE` is what protects cron); overlap strategy chosen with its
+      trap understood
       ([§5 — Cron](#cron-and-scheduled-workloads))
 - [ ] **Connection budget**: computed for the target fleet size against `max_connections`
       (including app pools, BYO factory fan-out, and rollout doubling); `pgbouncer_recommended`

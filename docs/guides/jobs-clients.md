@@ -157,7 +157,7 @@ Serialises the payload through `ref.payload_type`, enqueues the job, and returns
 | `priority` | `int \| None` | `None` | Dispatch priority. Higher values are dispatched first within the same queue. |
 | `schedule_to_close` | `datetime \| None` | derived from `retry.time_budget` | **Deprecated** (emits `DeprecationWarning`): an absolute datetime crosses clock domains (the app clock that produced it vs the database clock that evaluates it) and can misbehave under skew. Declare `retry.time_budget` on the actor instead — the interval form is anchored to the database clock. When supplied (timezone-aware; naive raises `ValueError`) it overrides the `time_budget`-derived interval. Hard deadline: if the job has not reached a terminal state by this datetime it fails with `DeadlineExceeded`. |
 | `start_to_close` | `timedelta \| None` | `None` | Per-attempt execution timeout measured from when the worker locks the job, enforced via `asyncio.wait_for` around the actor invocation. Distinct from `schedule_to_close` — see [`start_to_close` vs `schedule_to_close`](retries.md#7-start_to_close-vs-schedule_to_close) for the precedence chain and full explanation. |
-| `heartbeat_timeout` | `timedelta \| None` | `None` | Maximum time allowed between heartbeats before the job is considered crashed. |
+| `heartbeat_timeout` | `timedelta \| None` | `None` | Stored on the job row but currently inert — no code path reads it; leases use the global `TASKQ_LOCK_LEASE`. |
 | `identity_key` | `IdentityKey \| None` | `None` | Opaque string identifying the logical entity this job belongs to (e.g. `"account:42"`). Required for `unique_for` deduplication to take effect. Also used for fairness scheduling. |
 | `fairness_key` | `str \| None` | `None` | Partitions the dispatch order so no single key monopolises the queue. **Requires the target queue to be in `round_robin` mode** (`taskq queues set-mode <queue> round_robin`); on the default `strict_fifo` the key is stored and ignored. See [workers.md](workers.md#queue-dispatch-modes). |
 | `idempotency_key` | `IdempotencyKey \| None` | `None` | String preventing duplicate insertion, unique within its `idempotency_scope`. See [Idempotency key](#idempotency_key). |
@@ -581,7 +581,7 @@ import asyncpg
 
 
 @actor(queue="finalizers")
-async def summarize_results(ctx: JobContext, payload: SummarizePayload) -> None:
+async def summarize_results(payload: SummarizePayload, ctx: JobContext) -> None:
     db = ctx.deps.worker_pool  # or acquire from pool
     status = await wait_for_batch(
         db,
@@ -600,8 +600,10 @@ terminal, it returns `BatchCompletionStatus`.
 !!! warning "Size the finalizer's deadline generously"
     A snooze whose `now + delay` would land past `schedule_to_close` fails the job with
     `DeadlineExceeded` instead of rescheduling. A finalizer gating on a long-running batch needs
-    either no deadline or a `retry.time_budget` well above the batch's expected duration plus
-    retries.
+    either no deadline or (on a `kind="indefinite"` actor — `time_budget` is inert on any other
+    kind) a `retry.time_budget` well above the batch's expected duration plus retries. A
+    default-kind (`transient`) finalizer that snoozes has neither a deadline nor an attempt
+    ceiling, since snooze bumps `max_attempts` instead of consuming it.
 
 Pattern guidance — when to use a finalizer vs a cursor chain vs recursive fan-out, and how to
 key chunk jobs for idempotency — is in [ops.md — Fan-out at
@@ -1284,7 +1286,8 @@ set per-item tags explicitly.
 
 `schedule_to_close` and `start_to_close` override the actor's declared defaults for
 this specific sub-job. `heartbeat_timeout` has no actor-level declaration — the
-per-call value is the only source. Note that `schedule_to_close` bounds total
+per-call value is the only source — and it is currently inert (stored, never read;
+leases use the global `TASKQ_LOCK_LEASE`). Note that `schedule_to_close` bounds total
 wall-clock time *including* time snoozed on `wait_for_batch` — finalizer-style
 sub-jobs that snooze for long periods should set it generously or not at all.
 
