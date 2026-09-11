@@ -19,8 +19,7 @@ import asyncpg
 from pydantic import BaseModel, Field
 
 from examples.actors.basic import CounterPayload, counter
-from taskq import JobContext, actor
-from taskq._ids import new_uuid
+from taskq import JobContext, actor, new_uuid
 from taskq.batch import EnqueueItem, wait_for_batch
 
 
