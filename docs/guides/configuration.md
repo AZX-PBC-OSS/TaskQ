@@ -104,6 +104,9 @@ Extends `TaskQSettings`. All fields below apply to the worker process only.
 | `TASKQ_HEARTBEAT_COMMAND_TIMEOUT` | `float` (seconds) | `2.0` | Per-query timeout for the heartbeat pool — deliberately tighter than `TASKQ_DISPATCHER_COMMAND_TIMEOUT`, since a beat slower than the tick cannot keep a lock lease alive. Raise it on a loaded or cross-region Postgres: `TASKQ_MAX_HEARTBEAT_FAILURES` consecutive timeouts self-terminate the worker. | > 0 |
 | `TASKQ_MAX_CONCURRENCY` | `int` | `8` | Max concurrent jobs per worker process. `worker_pool` size is derived as `int(max_concurrency * 1.5)`. | Min: 1 |
 
+For the fleet-level connection budget these pools feed into (per-worker counts, idle floors, the
+PgBouncer recommendation threshold), see [ops.md — Sizing](ops.md#4-sizing-workers-and-postgres-connections).
+
 ### Timing and Liveness
 
 | Env Var | Type | Default | Description | Constraints |

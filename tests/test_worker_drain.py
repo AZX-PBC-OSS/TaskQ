@@ -348,6 +348,85 @@ async def test_di_consumer_loop_no_increment_on_cancelled_as_value() -> None:
     assert deps.drain_failures == 0
 
 
+async def test_di_consumer_loop_forwards_max_retry_backoff() -> None:
+    """di_consumer_loop passes settings.max_retry_backoff to dispatch_one_job.
+
+    Regression pin for the dead-config bug where WorkerSettings.max_retry_backoff
+    was defined and documented but never read (the effective ceiling was always
+    the 24 h constant). Deleting the forwarding kwarg must fail this test.
+    """
+    from datetime import timedelta
+
+    from taskq.worker.run import di_consumer_loop
+
+    captured: dict[str, object] = {}
+
+    async def _fake_dispatch(*args: object, **kwargs: object) -> AttemptOutcome:
+        captured.update(kwargs)
+        return "succeeded"
+
+    fake_clock = FakeClock(start=datetime(2025, 1, 1, tzinfo=UTC))
+    registry = ProviderRegistry()
+    settings = _settings()
+    settings.max_retry_backoff = timedelta(hours=1)
+    registry.register_value(WorkerSettings, Scope.PROCESS, settings)
+    registry.register_value(Clock, Scope.PROCESS, fake_clock)
+    registry.validate()
+
+    process_scope, thread_scope, loop_scope = _make_scopes(registry)
+    await _bootstrap_scopes(registry, process_scope, thread_scope, loop_scope)
+
+    actor_name = "test_drain_max_retry_backoff"
+
+    @actor(name=actor_name)
+    async def _test_actor(payload: BaseModel, ctx: JobContext[BaseModel]) -> None: ...
+
+    job = _make_job_row(actor_name)
+    local_queue: asyncio.Queue[JobRow] = asyncio.Queue()
+    await local_queue.put(job)
+
+    deps = _stub_deps(settings)
+    backend = _backend_stub()
+    shutdown_event = asyncio.Event()
+    dispatch_event = asyncio.Event()
+
+    async def _wrapping_dispatch(*args: object, **kwargs: object) -> object:
+        try:
+            return await _fake_dispatch(*args, **kwargs)
+        finally:
+            dispatch_event.set()
+            shutdown_event.set()
+
+    with patch("taskq.worker.run.dispatch_one_job", side_effect=_wrapping_dispatch):
+        loop_task = asyncio.create_task(
+            di_consumer_loop(
+                deps,
+                local_queue,
+                shutdown_event,
+                backend=backend,
+                worker_id=new_uuid(),
+                registry=registry,
+                process_scope=process_scope,
+                thread_scope=thread_scope,
+                loop_scope=loop_scope,
+                actor_registry={actor_name: _test_actor},
+                enqueuer=SubJobEnqueuer(
+                    loop_scope_resolved=None,
+                    worker_pool=None,
+                    backend=backend,
+                ),
+            )
+        )
+        await asyncio.wait_for(dispatch_event.wait(), timeout=2.0)
+        await asyncio.wait_for(loop_task, timeout=2.0)
+
+    await loop_scope.shutdown()
+    await thread_scope.shutdown()
+    await process_scope.shutdown()
+
+    assert captured.get("max_retry_backoff") == timedelta(hours=1)
+
+
 # ── Drain monitor loop ─────────────────────────────────────────────
 
 

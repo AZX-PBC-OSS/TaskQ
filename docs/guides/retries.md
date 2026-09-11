@@ -33,7 +33,7 @@ When an actor raises an exception, TaskQ evaluates the actor's `RetryPolicy` to 
 
 Retries up to `max_attempts` total attempts. The classifier retries when `attempt < max_attempts` and fails permanently when `attempt >= max_attempts`. Setting `max_attempts=1` means the first failure is terminal — no retries occur.
 
-If a retry is due but `next_scheduled_at >= schedule_to_close`, the job fails immediately with `error_class="DeadlineExceeded"` instead of retrying.
+If a retry is due but the next dispatch would land past `schedule_to_close`, the job fails with `error_class="DeadlineExceeded"` instead of retrying — the deadline is enforced in SQL at the retry write (see [`schedule_to_close` interaction](#6-schedule_to_close-interaction)).
 
 ```python
 from taskq import actor
@@ -48,9 +48,11 @@ async def my_actor(payload: Payload) -> Result: ...
 
 Retries forever — `max_attempts` is ignored entirely. Use for jobs that must eventually succeed (e.g. eventually-consistent sync operations).
 
-The only stopping conditions are:
-- `schedule_to_close` deadline reached (`now >= schedule_to_close`), or
-- backoff would overshoot the deadline (`next_scheduled_at >= schedule_to_close`).
+The only stopping condition is the `schedule_to_close` deadline, enforced in SQL at the retry
+write and by the leader's deadline sweep for queued jobs (see
+[`schedule_to_close` interaction](#6-schedule_to_close-interaction)):
+- a retry whose delay would land past the deadline fails the job, or
+- a queued job past the deadline is failed by the sweep.
 
 Either condition produces `Fail(error_class="DeadlineExceeded")`.
 
@@ -276,9 +278,17 @@ worker-wide ceiling. See [`WorkerSettings.max_retry_backoff`](workers.md) for th
 
 `schedule_to_close` is the absolute deadline for the entire job lifetime — all attempts combined.
 
-The classifier checks this deadline before scheduling any retry:
-- If `next_scheduled_at >= schedule_to_close`, the job fails with `Fail(error_class="DeadlineExceeded", retryable=False)`.
-- If `now >= schedule_to_close` (for `"indefinite"` kind), the job also fails immediately.
+The deadline is not arbitrated by the Python classifier — the retry write itself refuses to
+schedule past it, so the database clock is the single authority:
+- If `clock_timestamp() + retry_delay` would land past `schedule_to_close`, the job fails
+  terminally with `error_class="DeadlineExceeded"` instead of retrying.
+- Queued jobs (`pending`/`scheduled`) past the deadline are failed by the leader's deadline
+  sweep, and expired pending jobs are never dispatched.
+
+The same guards gate `Snooze` and `RetryAfter` reschedules — any "come back later" that would
+land past the deadline fails the job. A **running** attempt is never killed by
+`schedule_to_close`; the deadline only arbitrates future dispatches, so an attempt that finishes
+after the deadline still succeeds.
 
 This applies to all retry kinds, including `"indefinite"`.
 
@@ -310,7 +320,7 @@ worth being precise:
 | **Scope** | The job's entire retry lifecycle, across *all* attempts | A single attempt's execution |
 | **Type** | `datetime` — an absolute deadline | `timedelta` — a duration |
 | **Question it answers** | "When should this job give up entirely?" | "How long can one run of this job take before we give up on *it* and try again (or not)?" |
-| **Enforced by** | The retry classifier, when deciding whether to schedule the next retry (see [above](#6-schedule_to_close-interaction)) | `asyncio.wait_for` wrapped around a single actor invocation, at the consumer level |
+| **Enforced by** | SQL deadline guards on the retry/snooze/retry-after writes, dispatch exclusion of expired jobs, and the leader's deadline sweep (see [above](#6-schedule_to_close-interaction)) | `asyncio.wait_for` wrapped around a single actor invocation, at the consumer level |
 | **What happens when it fires** | The job fails permanently (`error_class="DeadlineExceeded"`) — no further attempts, regardless of `max_attempts` remaining | That one attempt is cancelled and treated as a `TimeoutError` failure, fed through the normal retry classifier. The job does **not** necessarily stop — it may retry (subject to `schedule_to_close` and the retry policy) or fail permanently if attempts/deadline are exhausted |
 
 In short: `schedule_to_close` is a ceiling on the whole job; `start_to_close` is a ceiling on each
@@ -430,7 +440,7 @@ These exceptions are raised inside the actor body to influence scheduling withou
 
 Defined in `taskq.exceptions`. Raises immediately reschedule the job to `now + delay` without evaluating the retry policy. The job transitions to `scheduled` status and the backoff formula is not consulted.
 
-`Snooze` does not consume retry budget at the time it is raised. However, when the job is dispatched again after the snooze period, the `attempt` counter is incremented — so a `transient` actor that repeatedly snoozed will eventually exhaust `max_attempts`.
+`Snooze` never exhausts the retry budget: the reschedule leaves `attempt` unchanged and bumps `max_attempts` by one, so the classifier's `attempt < max_attempts` test holds no matter how many times the job snoozes. (The dispatch that follows a snooze does increment `attempt` — the `max_attempts` bump compensates for it, which is why `metadata.snooze_count` exists for visibility rather than the attempt counter.)
 
 A negative `delay` raises `ValueError` at construction.
 
@@ -452,10 +462,12 @@ async def poll_invoice(payload: Payload) -> Result:
 
 Defined in `taskq.exceptions`. Schedules a retry at `now + delay`, bypassing the normal backoff formula. Use when the actor knows the exact wait time (e.g. a `Retry-After` response header).
 
-- `consume_budget=True` (default): the `max_attempts` counter is decremented as normal.
-- `consume_budget=False`: reschedules without consuming the retry budget — the attempt counter is not incremented.
+- `consume_budget=True` (default): the reschedule is gated by the attempt budget like a normal retry — with `kind="transient"` and no attempts left, the job fails terminally with `error_class="MaxAttemptsExceeded"`.
+- `consume_budget=False`: snooze semantics — the reschedule leaves `attempt` unchanged and bumps `max_attempts` by one, so it can never exhaust the budget.
 
 A negative `delay` raises `ValueError` at construction.
+
+`RetryAfter`'s delay is **not** clamped by `max_retry_backoff` — only `schedule_to_close` gates it. This differs from a `retry_classifier` `RetryOverride(delay=...)`, which *is* clamped (see [§5](#5-retry_classifier-hook-per-instance-retry-overrides)).
 
 ```python
 from datetime import timedelta
@@ -506,8 +518,7 @@ class WebhookResult(BaseModel):
 async def deliver_webhook(payload: WebhookPayload) -> WebhookResult:
     resp = await http_post(payload.url, payload.body)
     if resp.status == 503:
-        # Known maintenance window — snooze without burning retry budget at
-        # this attempt, but note the redispatch will increment attempt.
+        # Known maintenance window — snooze without consuming retry budget.
         raise Snooze(delay=timedelta(minutes=1))
     if resp.status == 429:
         retry_after = int(resp.headers.get("Retry-After", 60))
@@ -542,6 +553,7 @@ Backoff schedule for this policy (jitter=0 for illustration):
 ---
 
 **See also:**
+- [ops.md](ops.md) — operations & adoption guide: timeout policy by workload class, failure-classification doctrine, footguns
 - `actors.md` — full `@actor` decorator reference.
 - `workers.md` — `WorkerSettings.max_retry_backoff`, `WorkerSettings.default_start_to_close`, and other worker-level settings.
 - `jobs-clients.md` — `schedule_to_close`, `start_to_close`, and other enqueue-time options.

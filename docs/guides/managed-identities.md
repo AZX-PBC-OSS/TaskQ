@@ -754,7 +754,7 @@ top-level.
 ### Rotating credentials on the client
 
 `TaskQ` takes a `pool_factory=` — the same
-[`PoolFactory`](#poolfactory--connfactory--redisfactory-signatures) the worker
+[`PoolFactory`](#poolfactory-connfactory-redisfactory-signatures) the worker
 takes per role. TaskQ invokes it at `open()` and **owns** the result, and
 `await tq.reload_credentials()` re-invokes it to swap the pool in place: the
 backend behind `enqueue`/`get`/`list`/`cancel`, the `tq.actors` client and the

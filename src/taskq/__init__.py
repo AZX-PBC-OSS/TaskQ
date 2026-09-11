@@ -10,6 +10,7 @@ Canonical imports:
 
 import importlib.metadata
 
+from taskq._ids import new_uuid
 from taskq._validation import validate_actor_payload
 from taskq.actor import ActorFn, ActorFnWithCtx, ActorHandler, ActorRef, actor
 from taskq.actor_config_ops import ActorConfigRow, DeregisterResult
@@ -230,6 +231,7 @@ __all__ = [
     "make_dedicated_conn_factory",
     "make_pg_pool_factory",
     "make_redis_client_factory",
+    "new_uuid",
     "register_cron",
     "validate_actor_payload",
     "wait_for_batch",

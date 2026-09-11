@@ -40,6 +40,9 @@ def setup_otel() -> None:
     tracing (e.g. enqueue spans), call this before enqueuing.
     """
     from opentelemetry import metrics, trace
+    from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import (
+        OTLPMetricExporter,
+    )
     from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
         OTLPSpanExporter,
     )
@@ -73,7 +76,7 @@ def setup_otel() -> None:
 
     # Metrics (optional — for local dev you can use InMemoryMetricReader)
     metric_reader = PeriodicExportingMetricReader(
-        OTLPSpanExporter(
+        OTLPMetricExporter(
             endpoint=os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317")
         )
     )

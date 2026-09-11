@@ -524,7 +524,7 @@ the blocking job's `schedule_to_close` when available, otherwise `None`.
 
 ## `unique_for` deduplication
 
-`unique_for` deduplicates enqueues for the same `(actor, identity_key)` within a sliding window.
+`unique_for` deduplicates enqueues for the same `(actor, identity_key)` within a sliding window. For how to choose between this, `idempotency_key`, and `singleton` — they are three different tools — see the chooser table in [ops.md — Fan-out at scale](ops.md#5-fan-out-at-scale-chunks-cursors-idempotency).
 
 ```python
 from datetime import timedelta
