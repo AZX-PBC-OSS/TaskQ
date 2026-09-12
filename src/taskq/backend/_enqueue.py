@@ -19,6 +19,7 @@ from taskq.backend._protocol import (
     ConnLike,
     EnqueueArgs,
     JobRow,
+    batch_cap_groups,
 )
 from taskq.backend._records import (
     _job_row_from_record,
@@ -64,6 +65,93 @@ _UNIQUE_FOR_LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))"
 # 01.00.03_01_post_idempotency_scope_drop_old_index.sql. See
 # ScopedIdempotencyMigrationPendingError for the full rationale.
 _LEGACY_IDEMPOTENCY_KEY_CONSTRAINT_NAME = "jobs_idempotency_key_uniq"
+
+
+async def _enforce_batch_max_pending(
+    conn: ConnLike,
+    sql: SqlTemplates,
+    args_list: list[EnqueueArgs],
+) -> None:
+    """Reject a batch whose per-actor aggregate exceeds the effective cap.
+
+    One grouped count query for the whole batch (the same aggregated shape
+    as the client's pre-check): existing pending+scheduled plus this
+    batch's items, M1 ``>`` semantics so a batch filling exactly to the
+    limit is admitted. Runs on the inserting connection, so sequential
+    chunks sharing one transaction observe each other's rows and enforce
+    the true aggregate.
+
+    The cap enforced per actor is the *effective* one: the stored
+    operator override wins over the carried literal (same resolution as
+    the client's pre-check — a whole-table ``actor_config`` snapshot;
+    that table holds one row per actor, so the extra fetch is cheap —
+    and only runs when the batch carries caps at all). Items whose
+    idempotency (scope, key) pair is already stored are discounted:
+    the batch INSERT's ``ON CONFLICT`` arbiter returns the existing row
+    instead of writing, so they consume no capacity — mirroring the
+    single path, where an idempotency hit returns before any cap
+    accounting. (``unique_for`` items are conservatively fully counted:
+    only a preflight HIT bypasses the cap on the single path, and the
+    batch cannot know hits without a per-item preflight that would
+    defeat bulk throughput; a batch mixing unique_for retries near the
+    cap may refuse loudly rather than admit silently.) pgqueuer's
+    capacity-slot indexes (v1.4.0) are the heavyweight version of this
+    guarantee; the count here is exact for the single statement it
+    guards. Concurrent bulk batches on separate connections can still
+    race (count-then-insert without a serializing lock — the
+    single-enqueue path takes one, bulk paths deliberately do not, for
+    throughput); that residual is documented, not silent.
+    """
+    groups = batch_cap_groups(args_list)
+    if not groups:
+        return
+    stored_rows = await conn.fetch(sql.list_actor_max_pending)
+    stored = {str(rec["actor"]): rec["max_pending"] for rec in stored_rows}
+    effective: dict[str, int] = {}
+    for actor, (_, carried) in groups.items():
+        override = stored.get(actor)
+        effective[actor] = int(override) if override is not None else carried
+    recs = await conn.fetch(sql.count_pending_jobs, list(groups))
+    existing = {str(rec["actor"]): int(rec["cnt"]) for rec in recs}
+    # Pairs already stored write no new row (ON CONFLICT returns the
+    # existing one): discount them so a batch of pure retries is not
+    # refused for capacity it will not consume. Scoped to capped actors
+    # with idempotency keys; the fetch is skipped entirely otherwise.
+    keyed = [
+        (args.actor, args.idempotency_scope, str(args.idempotency_key))
+        for args in args_list
+        if args.max_pending is not None and args.idempotency_key is not None
+    ]
+    deduped_counts: dict[str, int] = {}
+    if keyed:
+        seen_in_batch: set[tuple[str, str]] = set()
+        stored_pairs: set[tuple[str, str]] = set()
+        found = await conn.fetch(
+            sql.enqueue_batch_fetch_existing,
+            [scope for _, scope, _ in keyed],
+            [key for _, _, key in keyed],
+        )
+        for rec in found:
+            stored_pairs.add((str(rec["idempotency_scope"]), str(rec["idempotency_key"])))
+        for actor, scope, key in keyed:
+            pair = (scope, key)
+            # Stored pair: dedupes to the existing row. First in-batch
+            # occurrence of a new pair: writes one row. Repeats: dedupe
+            # to the first. Counted per item, not per distinct pair (a
+            # set would collapse repeats and under-discount).
+            if pair in stored_pairs or pair in seen_in_batch:
+                deduped_counts[actor] = deduped_counts.get(actor, 0) + 1
+            seen_in_batch.add(pair)
+    for actor, (batch_count, _carried) in groups.items():
+        cap = effective[actor]
+        have = existing.get(actor, 0)
+        admitted = batch_count - deduped_counts.get(actor, 0)
+        if have + admitted > cap:
+            raise MaxPendingExceededError(
+                actor=actor,
+                current_count=have,
+                max_pending=cap,
+            )
 
 
 class _LegacyIdempotencyKeyConflictError(Exception):
@@ -130,15 +218,34 @@ async def _enqueue_on_conn(
 
     Includes unique_for preflight, singleton preflight, max_pending
     count, INSERT, idempotency-key SELECT on conflict, and pg_notify.
-    Does NOT acquire from ``worker_pool`` and does NOT open a
-    transaction — the caller is responsible for both.
+    Does NOT acquire from ``worker_pool`` — the caller supplies the
+    connection. A transaction is opened here only for capped actors on
+    a transaction-less caller connection (so the count-then-insert
+    serialization holds); otherwise the caller owns transaction scope.
 
     The unique_for single-flight guarantee depends on that transaction: the
     advisory lock below is transaction-scoped, so on a caller-supplied
     connection with no open transaction it is released at statement end and
     the preflight is advisory only. That is the same connection on which the
     caller has already taken responsibility for atomicity.
+
+    Capped actors additionally run inside a transaction owned here when the
+    caller supplied none (see below): the max_pending count-then-insert must
+    be serialized, and a transaction-scoped lock only serializes inside a
+    transaction.
     """
+    if args.max_pending is not None and not conn.is_in_transaction():
+        # Why a transaction here and not just the lock: pg_advisory_xact_lock
+        # releases at transaction end, so on a bare caller connection (every
+        # statement its own transaction) the lock below would release before
+        # the INSERT and overlapping counts would each see room — the
+        # count-then-insert race pgqueuer closed with capacity-slot indexes
+        # (v1.4.0, #761/#774/#777). Wrapping makes the lock span the
+        # count and the INSERT; the recursion terminates because the inner
+        # call observes the open transaction. Callers that already hold a
+        # transaction are untouched.
+        async with conn.transaction():
+            return await _enqueue_on_conn(conn, sql, schema, clock, args)
     if args.unique_for is not None and args.identity_key is not None:
         # Why a lock at all: what follows is a check-then-insert. Under READ
         # COMMITTED two dispatchers enqueuing the same (actor, identity_key)
@@ -220,6 +327,19 @@ async def _enqueue_on_conn(
             )
 
     if args.max_pending is not None:
+        # Serialize the count-then-insert below per actor: under READ
+        # COMMITTED two concurrent enqueues both count before either
+        # commits, both see room, and both insert — overshooting a cap the
+        # operator set as backpressure. Same transaction-scoped advisory
+        # mechanism as unique_for above (safe under PgBouncer transaction
+        # pooling; releases on COMMIT with no unlock to leak), taken in a
+        # fixed order here (unique_for first, this second) so no lock cycle
+        # can form. A hash collision between actors costs needless
+        # serialization, never correctness.
+        await conn.execute(
+            _UNIQUE_FOR_LOCK_SQL,
+            f"taskq:max_pending:{schema}:{args.actor}",
+        )
         count_rec = await conn.fetchval(
             sql.enqueue_max_pending_count,
             args.actor,
@@ -413,9 +533,32 @@ async def _enqueue_batch(
     args_list: list[EnqueueArgs],
     *,
     connection: "asyncpg.Connection | None" = None,
+    enforce_max_pending: bool = True,
 ) -> list[JobRow]:
     if not args_list:
         raise ValueError("args_list must not be empty")
+    if (
+        enforce_max_pending
+        and connection is not None
+        and batch_cap_groups(args_list)
+        and not connection.is_in_transaction()
+    ):
+        # Same race as capped singles: the admission count and the INSERT
+        # must share one transaction or a concurrent writer slips between
+        # them. Pool-acquired connections already wrap below; a
+        # caller-supplied connection without an open transaction gets the
+        # same treatment here (all-or-nothing, matching the pool path).
+        # The recursion terminates: the inner call observes the open
+        # transaction. Uncapped batches skip this entirely.
+        async with connection.transaction():
+            return await _enqueue_batch(
+                pool,
+                sql,
+                schema,
+                args_list,
+                connection=connection,
+                enforce_max_pending=enforce_max_pending,
+            )
 
     ids: list[UUID] = []
     actors: list[str] = []
@@ -480,6 +623,8 @@ async def _enqueue_batch(
         tag_jsons.append(dumps_jsonb_str(list(args.tags)))
 
     async def _enqueue_batch_on_conn(conn: ConnLike) -> list[JobRow]:
+        if enforce_max_pending:
+            await _enforce_batch_max_pending(conn, sql, args_list)
         try:
             returning_recs = await conn.fetch(
                 sql.enqueue_batch,
@@ -619,9 +764,27 @@ async def _enqueue_batch_fast(
     args_list: list[EnqueueArgs],
     *,
     connection: "asyncpg.Connection | None" = None,
+    enforce_max_pending: bool = True,
 ) -> int:
     if not args_list:
         raise ValueError("args_list must not be empty")
+    if (
+        enforce_max_pending
+        and connection is not None
+        and batch_cap_groups(args_list)
+        and not connection.is_in_transaction()
+    ):
+        # Same race as above: the pre-COPY count and the COPY must share
+        # one transaction on a caller-supplied bare connection.
+        async with connection.transaction():
+            return await _enqueue_batch_fast(
+                pool,
+                sql,
+                schema,
+                args_list,
+                connection=connection,
+                enforce_max_pending=enforce_max_pending,
+            )
 
     ids: list[UUID] = []
     scheduled_ats: list[datetime | None] = []
@@ -681,6 +844,8 @@ async def _enqueue_batch_fast(
         )
 
     async def _copy_on_conn(conn: ConnLike) -> int:
+        if enforce_max_pending:
+            await _enforce_batch_max_pending(conn, sql, args_list)
         try:
             result = await conn.copy_records_to_table(
                 "jobs",

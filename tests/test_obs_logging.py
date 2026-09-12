@@ -968,9 +968,20 @@ async def test_cancel_where_notify_failed_event_name_is_kebab(
     from taskq.backend._protocol import BulkCancelResult, JobFilter
     from taskq.backend.clock import Clock
     from taskq.backend.postgres import PostgresBackend
+    from taskq.constants import (
+        DEFAULT_EVENT_WRITER_BATCH_SIZE,
+        DEFAULT_EVENT_WRITER_STATEMENT_TIMEOUT_MS,
+    )
 
     mock_deps = Mock()
     mock_deps.settings.schema_name = "taskq_test"
+    # Declared BackendSettings field, read directly by cancel_where now that
+    # the protocol carries the event-writer knobs: supply it explicitly so
+    # the Mock stands in for a real settings object instead of relying on
+    # Mock auto-attributes (whose child-Mock values no longer pass through
+    # an int() coercion that used to mask them).
+    mock_deps.settings.event_writer_batch_size = DEFAULT_EVENT_WRITER_BATCH_SIZE
+    mock_deps.settings.event_writer_statement_timeout_ms = DEFAULT_EVENT_WRITER_STATEMENT_TIMEOUT_MS
     pool = Mock()
 
     class _NotifyFailsConn:
@@ -999,7 +1010,16 @@ async def test_cancel_where_notify_failed_event_name_is_kebab(
     target = NotifyTarget(job_id=new_uuid(), worker_id=new_uuid())
 
     async def _fake_cancel_where(
-        pool: object, schema: str, sql: object, filter: object, reason: object
+        pool: object,
+        schema: str,
+        sql: object,
+        filter: object,
+        reason: object,
+        # Mirrors the real callable's batch cap and per-batch timeout so the
+        # signature-drift detector sees a faithful double; the fake ignores
+        # both.
+        batch_size: int = DEFAULT_EVENT_WRITER_BATCH_SIZE,
+        statement_timeout_ms: int = DEFAULT_EVENT_WRITER_STATEMENT_TIMEOUT_MS,
     ) -> tuple[BulkCancelResult, list[NotifyTarget]]:
         return result, [target]
 

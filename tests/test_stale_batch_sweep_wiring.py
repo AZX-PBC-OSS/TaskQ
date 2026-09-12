@@ -33,6 +33,7 @@ from typing import Any
 
 from taskq._ids import new_uuid
 from taskq.backend.clock import Clock
+from taskq.constants import DEFAULT_EVENT_WRITER_BATCH_SIZE
 from taskq.ratelimit.registry import RateLimitRegistry
 from taskq.ratelimit.token_bucket import TokenBucket
 from taskq.settings import WorkerSettings
@@ -83,7 +84,9 @@ class _PgShapedBackend:
     async def sweep_leaked_reservation_slots(self, conn: object, *, schema: str) -> int:
         return 0
 
-    async def sweep_expired_results(self, conn: object, *, schema: str) -> int:
+    async def sweep_expired_results(
+        self, conn: object, *, schema: str, batch_size: int = 100
+    ) -> int:
         return 0
 
 
@@ -173,7 +176,12 @@ def _recording_stale_batches() -> Generator[list[dict[str, Any]], None, None]:
 
     calls: list[dict[str, Any]] = []
 
-    async def _fake(conn: object, *, schema: str) -> int:
+    async def _fake(
+        conn: object, *, schema: str, batch_size: int = DEFAULT_EVENT_WRITER_BATCH_SIZE
+    ) -> int:
+        # batch_size: the caller (the sweep loop) passes the configured
+        # event-writer batch cap through to complete_stale_batches; the
+        # recorder ignores it, mirroring the real callable's signature.
         calls.append({"schema": schema})
         return 0
 

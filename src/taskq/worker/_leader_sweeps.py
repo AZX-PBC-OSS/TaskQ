@@ -2,7 +2,8 @@
 
 The sweep loop functions (``_sweep_loop``, ``_prune_loop``,
 ``_archive_expiry_loop``, ``_queue_depth_loop``,
-``_reservation_slots_loop``, ``_stranded_jobs_loop``) live here as
+``_reservation_slots_loop``, ``_stranded_jobs_loop``,
+``_backlog_detection_loop``) live here as
 module-level functions taking a :class:`~taskq.worker._leader_shared.SweepContext`
 as the first parameter — the subset of ``MaintenanceLeader`` state the
 sweeps need, so this module has no dependency on ``leader.py``.
@@ -11,6 +12,7 @@ sweeps need, so this module has no dependency on ``leader.py``.
 import asyncio
 import contextlib
 import time
+from collections.abc import Awaitable, Callable
 from datetime import UTC, date, datetime, timedelta
 from typing import cast
 
@@ -20,9 +22,15 @@ import structlog
 
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
+    schema_lock_name,
 )
 from taskq.obs import (
     get_logger,
+    record_lock_contention,
+    record_sweep_success,
+    record_sweep_timeout,
+    update_jobs_by_status_cache,
+    update_oldest_due_age_cache,
     update_queue_depth_cache,
     update_reservation_slots_cache,
     update_stranded_jobs_cache,
@@ -38,14 +46,13 @@ from taskq.worker._leader_shared import (
     _EK3,
     _QUERY_QUEUE_DEPTH_SQL_TEMPLATE,
     _QUERY_RESERVATION_SLOTS_SQL_TEMPLATE,
-    ARCHIVE_EXPIRY_LOCK_NAME,
-    PRUNE_LOCK_NAME,
     SweepContext,
     _build_retention_per_status,
     _dbg,
     _err,
     _load_actor_retention_overrides,
-    _metric,
+    _metric_duration,
+    _metric_rows,
     _schedule_utc_to_cron,
     _sweep_duration_hist,
     _sweep_rows_counter,
@@ -58,6 +65,7 @@ from taskq.worker._transient import TRANSIENT_PG_ERRORS, UnexpectedLoopErrorGuar
 
 __all__ = [
     "_archive_expiry_loop",
+    "_backlog_detection_loop",
     "_prune_loop",
     "_queue_depth_loop",
     "_reservation_slots_loop",
@@ -91,6 +99,70 @@ async def _sleep_interruptible(shutdown: asyncio.Event, seconds: float) -> None:
         await asyncio.wait_for(shutdown.wait(), timeout=seconds)
 
 
+def _is_deadline_family(exc: BaseException) -> bool:
+    """Whether *exc* is the deadline family (client deadline or server cancel).
+
+    Why ``type(exc) is``, not ``isinstance``: ``TimeoutError`` is an
+    ``OSError`` subclass — ``isinstance`` would also match a raw ``OSError``
+    (socket death), which is a different failure family with different
+    remediation.
+    """
+    return type(exc) is TimeoutError or isinstance(exc, asyncpg.QueryCanceledError)
+
+
+async def _drain_bounded(
+    ctx: SweepContext,
+    shutdown: asyncio.Event,
+    *,
+    sweep_name: str,
+    call: Callable[[], Awaitable[int]],
+    warn_event: str,
+    warn_kind: str,
+) -> bool:
+    """Drain additional committed batches after a non-empty sweep call.
+
+    Every batch commits, so a stopped drain is a pause, not a rollback: the
+    next tick resumes where this one stopped. Up to
+    ``sweep_drain_batches - 1`` further calls (the initial call already
+    ran), each its own committed batch — the backend applies the batch size
+    internally, so the same callable is re-invoked with no extra arguments.
+
+    Returns False when a transient PG error ended the drain early; the
+    caller marks the iteration unclean so the backstop streak is not reset.
+    """
+    for _ in range(ctx.deps.settings.sweep_drain_batches - 1):
+        if shutdown.is_set():
+            break
+        # Ticking between calls keeps detector 2 from ageing the loop out
+        # during a long drain; name and period match the loop's outer tick.
+        ctx.deps.liveness.tick("leader.sweep", period=ctx.deps.settings.sweep_interval)
+        start = time.monotonic()
+        rows: int | None = None
+        try:
+            rows = await call()
+        except TRANSIENT_PG_ERRORS as exc:
+            if _is_deadline_family(exc):
+                record_sweep_timeout(sweep_name)
+            log.warning(
+                warn_event,
+                kind=warn_kind,
+                worker_id=str(ctx.worker_id),
+                error=repr(exc),
+            )
+            return False
+        finally:
+            # Same sample discipline as the parent sweep call: duration
+            # always; rows only when the awaited call returned, so a
+            # timed-out drain call cannot masquerade as an empty one.
+            _metric_duration(sweep_name, start)
+            if rows is not None:
+                _metric_rows(sweep_name, rows)
+                record_sweep_success(sweep_name)
+        if rows == 0:
+            break
+    return True
+
+
 async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
     """Leader sweep loop: sweeps 1/2/4, result TTL, stale workers, batches.
 
@@ -105,19 +177,62 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
     """
     warned_sweep_1 = warned_sweep_2 = False
     guard = UnexpectedLoopErrorGuard("leader.sweep")
+    # Loop-invariant sweep-1 arguments; hoisted so the drain closure below
+    # binds outer names, not per-iteration locals.
+    cancellation_grace = timedelta(seconds=ctx.deps.settings.cancellation_grace_period)
+    cleanup_grace = timedelta(seconds=ctx.deps.settings.cleanup_grace_period)
+    stale_workers_grace = timedelta(
+        seconds=ctx.deps.settings.heartbeat_interval
+        * (ctx.deps.settings.max_heartbeat_failures + 3)
+    )
+
+    async def sweep_1_call() -> int:
+        return await ctx.backend.reclaim_expired_locks(cancellation_grace, cleanup_grace)
+
+    async def sweep_2_call() -> int:
+        return await ctx.backend.deadline_sweep()
+
+    # PG-only sweeps (gated on hasattr at the call site below): each call
+    # acquires its own dispatcher connection so every committed batch of a
+    # drain is independent, and the bound is the operator-tunable
+    # event_writer_batch_size, mirroring the stale-batch sweep's wiring.
+    async def sweep_rt_call() -> int:
+        async with ctx.deps.dispatcher_pool.acquire(
+            timeout=ctx.deps.settings.dispatcher_command_timeout
+        ) as conn:
+            return cast(
+                "int",
+                await ctx.backend.sweep_expired_results(  # type: ignore[reportAttributeAccessIssue]  # Why: guarded by the hasattr gate at the call site; only PostgresBackend implements these maintenance sweeps.
+                    conn,
+                    schema=ctx.deps.settings.schema_name,
+                    batch_size=ctx.deps.settings.event_writer_batch_size,
+                ),
+            )
+
+    async def stale_workers_call() -> int:
+        async with ctx.deps.dispatcher_pool.acquire(
+            timeout=ctx.deps.settings.dispatcher_command_timeout
+        ) as conn:
+            return await cleanup_stale_workers(
+                conn,
+                worker_id=ctx.worker_id,
+                staleness=stale_workers_grace,
+                schema=ctx.deps.settings.schema_name,
+                batch_size=ctx.deps.settings.event_writer_batch_size,
+            )
+
     while not shutdown.is_set():
         ctx.deps.liveness.tick("leader.sweep", period=ctx.deps.settings.sweep_interval)
         if ctx.deps.is_leader.is_set():
             iteration_clean = True
             try:
-                start = time.monotonic()  # Sweep 1: reclaim_expired_locks
+                # Sweep 1: reclaim_expired_locks
+                start = time.monotonic()
+                rows_1: int | None = None
                 try:
                     # No `now` argument: the sweep's server-side predicates
                     # (clock_timestamp()) are the single arbiter.
-                    count_1 = await ctx.backend.reclaim_expired_locks(
-                        timedelta(seconds=ctx.deps.settings.cancellation_grace_period),
-                        timedelta(seconds=ctx.deps.settings.cleanup_grace_period),
-                    )
+                    rows_1 = await sweep_1_call()
                 except NotImplementedError as exc:
                     iteration_clean = False
                     if not warned_sweep_1:
@@ -131,18 +246,47 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                     # the heartbeat dies before it can reach isolate_self, so no
                     # job is re-pended and the worker cannot exit cleanly.
                     iteration_clean = False
+                    if _is_deadline_family(exc):
+                        record_sweep_timeout("expired_locks")
                     log.warning(
                         "sweep-expired-locks-failed",
                         kind="sweep_expired_locks_failed",
                         worker_id=str(ctx.worker_id),
                         error=repr(exc),
                     )
-                else:
-                    _metric("expired_locks", count_1, start)
-                    _dbg("sweep_expired_locks_tick", "sweep_expired_locks_tick", count_1, start)
-                start = time.monotonic()  # Sweep 2: deadline_sweep
+                finally:
+                    # rows_1 is bound only by the awaited call above; the
+                    # deadline that aborts it also aborts the binding, so the
+                    # failure path records duration WITHOUT a row sample (a
+                    # 0-row sample would be indistinguishable from a healthy
+                    # empty sweep).
+                    _metric_duration("expired_locks", start)
+                    if rows_1 is not None:
+                        _metric_rows("expired_locks", rows_1)
+                        record_sweep_success("expired_locks")
+                        _dbg(
+                            "sweep_expired_locks_tick",
+                            "sweep_expired_locks_tick",
+                            rows_1,
+                            start,
+                        )
+                # Every batch commits, so a stopped drain is a pause, not a
+                # rollback.
+                if rows_1 and not await _drain_bounded(
+                    ctx,
+                    shutdown,
+                    sweep_name="expired_locks",
+                    call=sweep_1_call,
+                    warn_event="sweep-expired-locks-failed",
+                    warn_kind="sweep_expired_locks_failed",
+                ):
+                    iteration_clean = False
+
+                # Sweep 2: deadline_sweep
+                start = time.monotonic()
+                rows_2: int | None = None
                 try:
-                    count_2 = await ctx.backend.deadline_sweep()
+                    rows_2 = await sweep_2_call()
                 except NotImplementedError as exc:
                     iteration_clean = False
                     if not warned_sweep_2:
@@ -151,97 +295,157 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                 except TRANSIENT_PG_ERRORS as exc:
                     # Same transient-PG rationale as sweep 1 above.
                     iteration_clean = False
+                    if _is_deadline_family(exc):
+                        record_sweep_timeout("deadline_exceeded")
                     log.warning(
                         "sweep-deadline-exceeded-failed",
                         kind="sweep_deadline_exceeded_failed",
                         worker_id=str(ctx.worker_id),
                         error=repr(exc),
                     )
-                else:
-                    _metric("deadline_exceeded", count_2, start)
-                    log.debug(
-                        "sweep_deadline_exceeded_tick",
-                        kind="deadline_exceeded_sweep",
-                        count=count_2,
-                        sweep_duration_ms=int((time.monotonic() - start) * 1000),
-                    )
+                finally:
+                    # Same rows-bound-by-the-awaited-call discipline as
+                    # sweep 1 above.
+                    _metric_duration("deadline_exceeded", start)
+                    if rows_2 is not None:
+                        _metric_rows("deadline_exceeded", rows_2)
+                        record_sweep_success("deadline_exceeded")
+                        log.debug(
+                            "sweep_deadline_exceeded_tick",
+                            kind="deadline_exceeded_sweep",
+                            count=rows_2,
+                            sweep_duration_ms=int((time.monotonic() - start) * 1000),
+                        )
+                # Every batch commits, so a stopped drain is a pause, not a
+                # rollback.
+                if rows_2 and not await _drain_bounded(
+                    ctx,
+                    shutdown,
+                    sweep_name="deadline_exceeded",
+                    call=sweep_2_call,
+                    warn_event="sweep-deadline-exceeded-failed",
+                    warn_kind="sweep_deadline_exceeded_failed",
+                ):
+                    iteration_clean = False
                 if hasattr(ctx.backend, "sweep_leaked_reservation_slots"):
                     start = time.monotonic()
+                    rows_4: int | None = None
                     try:
                         async with ctx.deps.dispatcher_pool.acquire(
                             timeout=ctx.deps.settings.dispatcher_command_timeout
                         ) as conn:
-                            count_4 = cast(
+                            rows_4 = cast(
                                 "int",
                                 await ctx.backend.sweep_leaked_reservation_slots(  # type: ignore[reportAttributeAccessIssue]  # Why: guarded by hasattr; only PostgresBackend implements these maintenance sweeps.
                                     conn, schema=ctx.deps.settings.schema_name
                                 ),
                             )
-                        _metric("leaked_slots", count_4, start)
-                        _dbg("sweep_leaked_slots_tick", "sweep_leaked_slots_tick", count_4, start)
                     except TRANSIENT_PG_ERRORS as exc:
                         iteration_clean = False
+                        if _is_deadline_family(exc):
+                            record_sweep_timeout("leaked_slots")
                         log.warning(
                             "sweep-leaked-slots-failed",
                             kind="sweep_leaked_slots_failed",
                             worker_id=str(ctx.worker_id),
                             error=repr(exc),
                         )
-                    start = time.monotonic()
-                    try:
-                        async with ctx.deps.dispatcher_pool.acquire(
-                            timeout=ctx.deps.settings.dispatcher_command_timeout
-                        ) as conn:
-                            count_rt = cast(
-                                "int",
-                                await ctx.backend.sweep_expired_results(  # type: ignore[reportAttributeAccessIssue]  # Why: guarded by hasattr above.
-                                    conn, schema=ctx.deps.settings.schema_name
-                                ),
+                    finally:
+                        # rows_4 is bound only by the awaited call above;
+                        # the deadline that aborts it also aborts the
+                        # binding, so the failure path records duration
+                        # WITHOUT a row sample — same discipline as sweeps
+                        # 1/2: a 0-row sample would be indistinguishable
+                        # from a healthy empty sweep, and success-path-only
+                        # instrumentation is the original invisibility.
+                        _metric_duration("leaked_slots", start)
+                        if rows_4 is not None:
+                            _metric_rows("leaked_slots", rows_4)
+                            record_sweep_success("leaked_slots")
+                            _dbg(
+                                "sweep_leaked_slots_tick",
+                                "sweep_leaked_slots_tick",
+                                rows_4,
+                                start,
                             )
-                        _metric("expired_results", count_rt, start)
-                        _dbg(
-                            "sweep_expired_results_tick",
-                            "sweep_expired_results_tick",
-                            count_rt,
-                            start,
-                        )
+                    # Result TTL expiry: one bounded batch per call, drained
+                    # like sweeps 1/2 — every batch commits, so a stopped
+                    # drain is a pause, not a rollback.
+                    start = time.monotonic()
+                    rows_rt: int | None = None
+                    try:
+                        rows_rt = await sweep_rt_call()
                     except TRANSIENT_PG_ERRORS as exc:
                         iteration_clean = False
+                        if _is_deadline_family(exc):
+                            record_sweep_timeout("expired_results")
                         log.warning(
                             "sweep-expired-results-failed",
                             kind="sweep_expired_results_failed",
                             worker_id=str(ctx.worker_id),
                             error=repr(exc),
                         )
-                    start = time.monotonic()
-                    try:
-                        async with ctx.deps.dispatcher_pool.acquire(
-                            timeout=ctx.deps.settings.dispatcher_command_timeout
-                        ) as conn:
-                            count_sr = await cleanup_stale_workers(
-                                conn,
-                                worker_id=ctx.worker_id,
-                                staleness=timedelta(
-                                    seconds=ctx.deps.settings.heartbeat_interval
-                                    * (ctx.deps.settings.max_heartbeat_failures + 3)
-                                ),
-                                schema=ctx.deps.settings.schema_name,
+                    finally:
+                        # Same rows-bound-by-the-awaited-call discipline as
+                        # sweep 1 above: a timed-out sweep records duration
+                        # WITHOUT a row sample.
+                        _metric_duration("expired_results", start)
+                        if rows_rt is not None:
+                            _metric_rows("expired_results", rows_rt)
+                            record_sweep_success("expired_results")
+                            _dbg(
+                                "sweep_expired_results_tick",
+                                "sweep_expired_results_tick",
+                                rows_rt,
+                                start,
                             )
-                        _metric("stale_workers", count_sr, start)
-                        _dbg(
-                            "cleanup_stale_workers_tick",
-                            "cleanup_stale_workers_tick",
-                            count_sr,
-                            start,
-                        )
+                    if rows_rt and not await _drain_bounded(
+                        ctx,
+                        shutdown,
+                        sweep_name="expired_results",
+                        call=sweep_rt_call,
+                        warn_event="sweep-expired-results-failed",
+                        warn_kind="sweep_expired_results_failed",
+                    ):
+                        iteration_clean = False
+                    # Stale-worker cleanup: one bounded batch per call,
+                    # drained the same way. The window bounds workers per
+                    # call, which bounds the DDL ON DELETE fan-out (the
+                    # job_attempts SET NULL rewrites) per transaction.
+                    start = time.monotonic()
+                    rows_sr: int | None = None
+                    try:
+                        rows_sr = await stale_workers_call()
                     except TRANSIENT_PG_ERRORS as exc:
                         iteration_clean = False
+                        if _is_deadline_family(exc):
+                            record_sweep_timeout("stale_workers")
                         log.warning(
                             "cleanup-stale-workers-failed",
                             kind="cleanup_stale_workers_failed",
                             worker_id=str(ctx.worker_id),
                             error=repr(exc),
                         )
+                    finally:
+                        _metric_duration("stale_workers", start)
+                        if rows_sr is not None:
+                            _metric_rows("stale_workers", rows_sr)
+                            record_sweep_success("stale_workers")
+                            _dbg(
+                                "cleanup_stale_workers_tick",
+                                "cleanup_stale_workers_tick",
+                                rows_sr,
+                                start,
+                            )
+                    if rows_sr and not await _drain_bounded(
+                        ctx,
+                        shutdown,
+                        sweep_name="stale_workers",
+                        call=stale_workers_call,
+                        warn_event="cleanup-stale-workers-failed",
+                        warn_kind="cleanup_stale_workers_failed",
+                    ):
+                        iteration_clean = False
                 # Stale-batch completion is a LEADER sweep (docs/guides/workers.md;
                 # docs/architecture.md "``complete_stale_batches`` leader sweep"):
                 # batches whose completion hook was lost (consumer crash between
@@ -256,25 +460,44 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                 # the in-memory backend — same pattern as the block above.
                 if hasattr(ctx.backend, "sweep_leaked_reservation_slots"):
                     start = time.monotonic()
+                    stale_rows: int | None = None
                     try:
                         async with ctx.deps.dispatcher_pool.acquire(
                             timeout=ctx.deps.settings.dispatcher_command_timeout
                         ) as conn:
-                            stale_count = await complete_stale_batches(
-                                conn, schema=ctx.deps.settings.schema_name
+                            stale_rows = await complete_stale_batches(
+                                conn,
+                                schema=ctx.deps.settings.schema_name,
+                                batch_size=ctx.deps.settings.event_writer_batch_size,
                             )
-                        _metric("stale_batches", stale_count, start)
-                        if stale_count:
-                            log.info("stale-batches-completed", kind="batch", count=stale_count)
+                        if stale_rows:
+                            log.info("stale-batches-completed", kind="batch", count=stale_rows)
                     except (
-                        TimeoutError,
-                        asyncpg.PostgresConnectionError,
-                        asyncpg.InterfaceError,
+                        *TRANSIENT_PG_ERRORS,
                         asyncpg.exceptions.UndefinedTableError,
-                        OSError,
                     ) as exc:
+                        # Why the shared transient set (plus this block's
+                        # local UndefinedTableError tolerance for
+                        # pre-migration deployments): the hand-rolled tuple
+                        # here predated the shared set and missed
+                        # QueryCanceledError — a server-side cancel of the
+                        # (now batched) completion statement escaped to the
+                        # unexpected-error backstop as though it were a
+                        # bug, counting toward the deliberately-fatal
+                        # streak.
                         iteration_clean = False
+                        if _is_deadline_family(exc):
+                            record_sweep_timeout("stale_batches")
                         log.warning("stale-batches-sweep-failed", kind="batch", error=repr(exc))
+                    finally:
+                        # Same rows-bound-by-the-awaited-call discipline as
+                        # every sibling sweep above: duration always, rows
+                        # and the success stamp only when the call
+                        # returned.
+                        _metric_duration("stale_batches", start)
+                        if stale_rows is not None:
+                            _metric_rows("stale_batches", stale_rows)
+                            record_sweep_success("stale_batches")
                 if iteration_clean:
                     guard.ok()
             except Exception as exc:
@@ -332,6 +555,7 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
 
 async def _prune_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
     last_pruned_date: date | None = None
+    lock_name = schema_lock_name("prune", ctx.deps.settings.schema_name)
 
     while not shutdown.is_set():
         now_utc = datetime.now(UTC)
@@ -360,13 +584,18 @@ async def _prune_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                 timeout=ctx.deps.settings.dispatcher_command_timeout
             ) as conn:
                 lock_acquired: bool = await conn.fetchval(
-                    "SELECT pg_try_advisory_lock(hashtextextended($1, 0))", PRUNE_LOCK_NAME
+                    "SELECT pg_try_advisory_lock(hashtextextended($1, 0))", lock_name
                 )
                 if not lock_acquired:
+                    # The losing side is the detector: a sustained contention
+                    # rate equal to the attempt rate means this worker never
+                    # prunes at all.
+                    record_lock_contention(lock_name)
                     log.warning(
                         "prune-skipped-advisory-lock-held",
                         kind="prune",
                         worker_id=str(ctx.worker_id),
+                        lock=lock_name,
                     )
                     continue
 
@@ -418,7 +647,7 @@ async def _prune_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                     with contextlib.suppress(*TRANSIENT_PG_ERRORS):
                         await conn.execute(
                             "SELECT pg_advisory_unlock(hashtextextended($1, 0))",
-                            PRUNE_LOCK_NAME,
+                            lock_name,
                         )
         except TRANSIENT_PG_ERRORS as exc:
             log.warning(
@@ -431,6 +660,7 @@ async def _prune_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
 
 async def _archive_expiry_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
     last_expiry_date: date | None = None
+    lock_name = schema_lock_name("archive_expiry", ctx.deps.settings.schema_name)
 
     while not shutdown.is_set():
         now_utc = datetime.now(UTC)
@@ -460,13 +690,18 @@ async def _archive_expiry_loop(ctx: SweepContext, shutdown: asyncio.Event) -> No
             ) as conn:
                 lock_acquired: bool = await conn.fetchval(
                     "SELECT pg_try_advisory_lock(hashtextextended($1, 0))",
-                    ARCHIVE_EXPIRY_LOCK_NAME,
+                    lock_name,
                 )
                 if not lock_acquired:
+                    # The losing side is the detector: a sustained contention
+                    # rate equal to the attempt rate means this worker never
+                    # expires archives at all.
+                    record_lock_contention(lock_name)
                     log.warning(
                         "archive-expiry-skipped-advisory-lock-held",
                         kind="archive_expiry",
                         worker_id=str(ctx.worker_id),
+                        lock=lock_name,
                     )
                     continue
 
@@ -492,7 +727,7 @@ async def _archive_expiry_loop(ctx: SweepContext, shutdown: asyncio.Event) -> No
                     with contextlib.suppress(*TRANSIENT_PG_ERRORS):
                         await conn.execute(
                             "SELECT pg_advisory_unlock(hashtextextended($1, 0))",
-                            ARCHIVE_EXPIRY_LOCK_NAME,
+                            lock_name,
                         )
         except TRANSIENT_PG_ERRORS as exc:
             log.warning(
@@ -535,6 +770,77 @@ async def _queue_depth_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                     worker_id=str(ctx.worker_id),
                     error=repr(exc),
                 )
+        await _sleep_interruptible(shutdown, ctx.deps.settings.queue_depth_interval)
+
+
+_QUERY_JOBS_BY_STATUS_SQL_TEMPLATE = 'SELECT status, count(*) FROM "{schema}".jobs GROUP BY status'
+# statement_timestamp() (STABLE) — not clock_timestamp() (VOLATILE) — for
+# the due bound, the same two-clock split as every sibling sampler: a
+# volatile comparison cannot be a btree index condition, so the bound
+# would degrade jobs_scheduled_wake_idx (partial on status='scheduled',
+# keyed on scheduled_at) from an Index Cond that terminates at the
+# boundary to a post-scan Filter walking the whole scheduled population —
+# per worker, per interval, during the exact promotion-stall incident
+# this gauge exists to expose. The EXTRACT(...) age it feeds is a
+# measured value and stays clock_timestamp().
+_QUERY_OLDEST_DUE_AGE_SQL_TEMPLATE = (
+    "SELECT EXTRACT(EPOCH FROM (clock_timestamp() - MIN(scheduled_at)))::float8 "
+    'FROM "{schema}".jobs '
+    "WHERE status = 'scheduled' AND scheduled_at <= statement_timestamp()"
+)
+
+
+async def _backlog_detection_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
+    """Sample the backlog detectors (jobs-by-status, oldest due age) every
+    ``queue_depth_interval``.
+
+    Why NOT leader-gated, unlike every sibling sampler here: a detector
+    hosted behind the leadership gate emits nothing under the very failure
+    it exists to expose — another schema's worker holding the old-style
+    lock, or any election loss, mutes every leader-gated sampler at once.
+    Every worker samples instead, accepting N times the query cost, and the
+    per-target series are deduplicated by the scrape target.
+    """
+    schema = ctx.deps.settings.schema_name
+    if not _IDENT_RE.match(schema):
+        # Why error, not warning: same permanently-muted-sampler rationale
+        # as _queue_depth_loop above — a silent loss of a safety net, not a
+        # skipped tick.
+        log.error(
+            "backlog-detection-sampler-disabled",
+            kind="backlog_detection_sampler_disabled",
+            schema=schema,
+            reason="schema name failed identifier validation",
+        )
+        return
+    by_status_sql = _QUERY_JOBS_BY_STATUS_SQL_TEMPLATE.format(schema=schema)
+    oldest_due_sql = _QUERY_OLDEST_DUE_AGE_SQL_TEMPLATE.format(schema=schema)
+    while not shutdown.is_set():
+        ctx.deps.liveness.tick(
+            "leader.backlog_detection", period=ctx.deps.settings.queue_depth_interval
+        )
+        try:
+            # One connection for both statements: the two gauges answer one
+            # question (is promotion stalled?) and must not straddle two
+            # snapshots.
+            async with ctx.deps.dispatcher_pool.acquire(
+                timeout=ctx.deps.settings.dispatcher_command_timeout
+            ) as conn:
+                status_rows = await conn.fetch(by_status_sql)
+                oldest_due: float | None = await conn.fetchval(oldest_due_sql)
+            update_jobs_by_status_cache(
+                {str(row["status"]): int(row["count"]) for row in status_rows}
+            )
+            # MIN(scheduled_at) over an empty set is NULL — nothing is due,
+            # which the gauge expresses as 0.0, not as a missing sample.
+            update_oldest_due_age_cache(oldest_due if oldest_due is not None else 0.0)
+        except Exception as exc:
+            log.warning(
+                "backlog-detection-sampling-failed",
+                kind="backlog_detection_sampling_failed",
+                worker_id=str(ctx.worker_id),
+                error=repr(exc),
+            )
         await _sleep_interruptible(shutdown, ctx.deps.settings.queue_depth_interval)
 
 

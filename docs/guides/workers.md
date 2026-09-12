@@ -30,7 +30,7 @@ SELECT pg_notify('taskq_wake_taskq', '');
 
 Replace `taskq_wake_taskq` with `taskq_wake_{schema}` where `{schema}` is the value of `TASKQ_SCHEMA_NAME` (default `taskq`).
 
-**Maintenance leader.** One worker per cluster wins a Postgres advisory lock (`pg_try_advisory_lock`) and becomes the maintenance leader. The leader runs ten cooperative sub-loops inside a single `asyncio.TaskGroup`: `_election_loop`, `_watchdog_loop`, `_scheduled_wake_loop`, `_cron_loop`, `_sweep_loop`, `_prune_loop`, `_archive_expiry_loop`, `_queue_depth_loop`, `_reservation_slots_loop`, and `_stranded_jobs_loop`. Non-leader workers re-attempt election each `heartbeat_interval`.
+**Maintenance leader.** One worker per schema wins a Postgres advisory lock (`pg_try_advisory_lock`) and becomes the maintenance leader. The leader runs eleven cooperative sub-loops inside a single `asyncio.TaskGroup`: `_election_loop`, `_watchdog_loop`, `_scheduled_wake_loop`, `_cron_loop`, `_sweep_loop`, `_prune_loop`, `_archive_expiry_loop`, `_queue_depth_loop`, `_backlog_detection_loop`, `_reservation_slots_loop`, and `_stranded_jobs_loop`. Non-leader workers re-attempt election each `heartbeat_interval`. See [maintenance-sweeps.md](maintenance-sweeps.md) for what the sweep loops do and why their database work is bounded.
 
 **Cancel controller.** Runs inside the heartbeat transaction on each tick. Polls `jobs.cancel_phase` for all jobs owned by this worker. Drives three phases: cooperative observation (set `cancel_event`, record timestamp), forced escalation (write `cancel_phase=2` to Postgres, then `task.cancel()`), and abandonment queuing (hand the job ID to `_pending_abandons` for post-transaction cleanup). Phase-3 terminal writes run in `run_post_tx` after the transaction releases its row locks to avoid deadlock.
 
@@ -484,19 +484,20 @@ If `heartbeat_pool.acquire()` times out, raises a connection error, or `run_in_t
 
 ## Leader election
 
-Every worker competes for the Postgres advisory lock `taskq:maintenance_leader` by calling `pg_try_advisory_lock(hashtextextended($1, 0))` on a dedicated direct connection (`leader_conn`). Only one worker per cluster can hold the lock; it is held for the lifetime of the connection (session-scoped advisory lock).
+Every worker competes for the Postgres advisory lock `taskq:maintenance_leader:<schema>` (built by `taskq.constants.schema_lock_name`, e.g. `taskq:maintenance_leader:taskq` for the default schema) by calling `pg_try_advisory_lock(hashtextextended($1, 0))` on a dedicated direct connection (`leader_conn`). Only one worker per schema can hold the lock; it is held for the lifetime of the connection (session-scoped advisory lock).
 
 Advisory locks are session-scoped and are dropped when the connection is released. This is why `leader_conn` must use `pg_dsn_direct` and cannot route through PgBouncer in transaction mode — transaction-mode pooling releases the underlying session between transactions, which would silently drop the lock.
 
 The elected leader:
 
 - Upserts a row into `maintenance_leader` (worker ID, elected timestamp).
-- Runs the maintenance sweep loop every 30 seconds: `reclaim_expired_locks` (sweep 1), `deadline_sweep` (sweep 2), and, when the backend supports them, `sweep_leaked_reservation_slots` (sweep 4), `sweep_expired_results`, `cleanup_stale_workers`, and `complete_stale_batches` (marks `active` batches with zero non-terminal child jobs as `complete` — the safety net for lost `apply_batch_terminal_outcome` hooks).
-- Runs the scheduled-wake loop every 1 second, transitioning `scheduled` jobs whose `scheduled_at <= clock_timestamp()` back to `pending` and issuing a `pg_notify` wake signal.
-- Runs the **prune loop** (Sweep 5) once daily at `TASKQ_PRUNE_SCHEDULE_UTC` (default `03:00` UTC). Moves terminal jobs from `jobs` to `jobs_archive` after their per-status retention period has elapsed. After job pruning completes, `prune_old_batches` deletes completed batch rows past the same cutoff (see [Batch Subsystem](../architecture.md#batch-subsystem)). Acquires advisory lock `taskq:prune` to prevent concurrent runs across a rolling deploy.
-- Runs the **archive expiry loop** (Sweep 6) once daily at `TASKQ_ARCHIVE_EXPIRY_SCHEDULE_UTC` (default `04:00` UTC, 1 hour after the prune). Hard-deletes rows from `jobs_archive` once their `expire_at` has passed. Acquires advisory lock `taskq:archive_expiry`.
+- Runs the maintenance sweep loop every `TASKQ_SWEEP_INTERVAL` (default 30 s): `reclaim_expired_locks` (sweep 1), `deadline_sweep` (sweep 2), and, when the backend supports them, `sweep_leaked_reservation_slots` (sweep 4), `sweep_expired_results`, `cleanup_stale_workers`, and `complete_stale_batches` (marks `active` batches with zero non-terminal child jobs as `complete` — the safety net for lost `apply_batch_terminal_outcome` hooks). Each event-writing sweep transitions at most one bounded batch per call (`TASKQ_EVENT_WRITER_BATCH_SIZE` rows, its own committed transaction with a server-side `statement_timeout`); a call that returns rows drains up to `TASKQ_SWEEP_DRAIN_BATCHES` batches per tick before leaving the remainder to the next tick — every batch commits, so a stopped drain keeps its progress. See [maintenance-sweeps.md](maintenance-sweeps.md) for the reasoning and the tuning knobs.
+- Runs the scheduled-wake loop every 1 second, promoting due `scheduled` jobs to `pending` (`scheduled_at <= statement_timestamp()` — a STABLE bound so the partial index serves the scan) and issuing a `pg_notify` wake signal. One bounded batch per tick; a larger due backlog drains across the one-second ticks.
+- Runs the cron loop every 1 second on a dedicated connection, firing due schedules under the schema-qualified cron advisory lock (`taskq:cron:<schema>`). One tick fires at most `TASKQ_CRON_TICK_LIMIT` schedules; a catch-up burst drains across successive ticks. Per-schedule failures (payload factory, missing actor) are isolated per schedule; an insert-level failure aborts the whole tick and the next one-second tick retries.
+- Runs the **prune loop** (Sweep 5) once daily at `TASKQ_PRUNE_SCHEDULE_UTC` (default `03:00` UTC). Moves terminal jobs from `jobs` to `jobs_archive` after their per-status retention period has elapsed. After job pruning completes, `prune_old_batches` deletes completed batch rows past the same cutoff (see [Batch Subsystem](../architecture.md#batch-subsystem)). Acquires the schema-qualified advisory lock `taskq:prune:<schema>` to prevent concurrent runs across a rolling deploy.
+- Runs the **archive expiry loop** (Sweep 6) once daily at `TASKQ_ARCHIVE_EXPIRY_SCHEDULE_UTC` (default `04:00` UTC, 1 hour after the prune). Hard-deletes rows from `jobs_archive` once their `expire_at` has passed. Acquires the schema-qualified advisory lock `taskq:archive_expiry:<schema>`.
 - Runs the **stranded-jobs detector** (`_stranded_jobs_loop`) every 60 seconds: warns (does not delete or reassign) when `pending`/`scheduled` jobs exist for an actor with no `actor_config` row — typically because the actor was removed from the registry but jobs referencing it are still enqueued.
-- Samples queue depth and reservation slot counts every 15 seconds for OTel metrics.
+- Samples queue depth and reservation slot counts every 15 seconds for OTel gauges. The **backlog detector** (`_backlog_detection_loop`, jobs-by-status and oldest-due-age gauges) is deliberately not leader-gated: every worker samples it, so the promotion-stall signature stays visible under the exact election failure it exists to expose.
 
 A watchdog coroutine probes `leader_monitor_conn` (a second dedicated direct connection) every 5 seconds. On connection failure, the watchdog clears `is_leader` and closes both leader connections, which releases the advisory lock and allows another worker to win the next election.
 
@@ -536,7 +537,7 @@ Defaults: `cancellation_grace_period=30.0`, `cleanup_grace_period=10.0`, `termin
 
 ## Health server
 
-When `TASKQ_HEALTH_ENABLED=true` (the default), the worker binds a Unix-domain socket at `TASKQ_HEALTH_SOCKET_PATH` (default `/tmp/taskq_health.sock`) and serves three HTTP endpoints over it.
+When `TASKQ_HEALTH_ENABLED=true` (the default), the worker binds a Unix-domain socket at `TASKQ_HEALTH_SOCKET_PATH` (default `/tmp/taskq_health.sock`) and serves HTTP endpoints over it: `/live`, `/ready`, `/metrics`, and the opt-in `/tasks` stack-dump endpoint (see below).
 
 The Unix socket is not reachable via Kubernetes `httpGet` probes. Use `exec` probes:
 
@@ -566,12 +567,29 @@ The `/ready` response body includes:
 ```json
 {
   "ready": true,
+  "live": true,
+  "reasons": [],
   "redis_configured": false,
   "active_jobs": 3,
   "is_leader": true,
+  "maintenance": {
+    "degraded": false,
+    "reasons": ["no sweep has completed yet"]
+  },
+  "loop_tick_ages": {"heartbeat": 0.4, "producer": 0.1},
+  "shutdown_elapsed_seconds": null,
   "shutdown_phase": null
 }
 ```
+
+`maintenance` is this process's view of its own sweep health: `degraded: true`
+when any sweep's last success is more than three `sweep_interval`s old or any
+sweep is running at the reduced batch tier (the batch-size breaker latched).
+It is deliberately **not** part of the 200/503 verdict — degraded means "up,
+but sweeps are unhealthy", an operator signal in the body, not a probe
+failure. `"no sweep has completed yet"` is the informational reason a process
+that has never completed a sweep (fresh, or never leader) reports instead of
+degraded. See [maintenance-sweeps.md](maintenance-sweeps.md#what-degradation-looks-like).
 
 The `/metrics` response body:
 
@@ -658,7 +676,7 @@ Multiple worker processes against the same database are fully supported. Each pr
 
 **Dispatch safety.** The dispatch CTE uses `SELECT ... FOR UPDATE SKIP LOCKED`, so two workers polling simultaneously cannot pick up the same job. Each job row is locked by exactly one worker at a time.
 
-**Single leader.** Only one worker holds the `taskq:maintenance_leader` advisory lock at a time. Other workers retry election on every `heartbeat_interval` tick. If the leader pod dies, the lock is released when the connection closes, and another worker wins the next election.
+**Single leader.** Only one worker holds the `taskq:maintenance_leader:<schema>` advisory lock at a time. Other workers retry election on every `heartbeat_interval` tick. If the leader pod dies, the lock is released when the connection closes, and another worker wins the next election.
 
 **Rolling deploy gotcha.** If old and new worker versions declare different `queue` or `metadata` for the same actor name, new worker pods will fail startup with `ActorConfigDriftList`. Best practice for rolling deploys:
 

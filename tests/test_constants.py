@@ -2,7 +2,7 @@
 
 import pytest
 
-from taskq.constants import CRON_LOCK_NAME, WAKE_CHANNEL_FMT, wake_channel
+from taskq.constants import WAKE_CHANNEL_FMT, schema_lock_name, wake_channel
 
 # ── wake_channel happy-path formatting ───────────────────────────
 
@@ -76,9 +76,38 @@ def test_wake_channel_fmt_value() -> None:
     assert WAKE_CHANNEL_FMT == "taskq_wake_{schema}"
 
 
-# ── CRON_LOCK_NAME constant ──────────────────────────────────────────────
+# ── schema_lock_name: the advisory-lock naming convention ────────────────
+#
+# The unqualified per-purpose constants (CRON_LOCK_NAME,
+# MAINTENANCE_LEADER_LOCK_NAME) were replaced by schema_lock_name: advisory
+# locks live in a per-database namespace, so a bare taskq:{purpose} was
+# shared by every schema in the database and two schemas serialized (or one
+# silently starved the other of leadership). The pin below keeps asserting
+# the convention itself — every advisory lock TaskQ takes is named
+# taskq:{purpose}:{schema} — for each purpose that takes one.
 
 
-def test_cron_lock_name_value() -> None:
-    """CRON_LOCK_NAME is the advisory lock name for cron scheduler."""
-    assert CRON_LOCK_NAME == "taskq:cron"
+def test_schema_lock_name_cron() -> None:
+    """The cron tick lock is schema-qualified: taskq:cron:<schema>."""
+    assert schema_lock_name("cron", "x") == "taskq:cron:x"
+
+
+def test_schema_lock_name_maintenance_leader() -> None:
+    """The maintenance-leader election lock is schema-qualified."""
+    assert schema_lock_name("maintenance_leader", "x") == "taskq:maintenance_leader:x"
+
+
+def test_schema_lock_name_prune() -> None:
+    """The prune sweep lock is schema-qualified."""
+    assert schema_lock_name("prune", "x") == "taskq:prune:x"
+
+
+def test_schema_lock_name_archive_expiry() -> None:
+    """The archive-expiry sweep lock is schema-qualified."""
+    assert schema_lock_name("archive_expiry", "x") == "taskq:archive_expiry:x"
+
+
+def test_schema_lock_name_qualifies_per_schema() -> None:
+    """Two schemas must not share a lock: the property the unqualified
+    constants violated."""
+    assert schema_lock_name("cron", "s1") != schema_lock_name("cron", "s2")

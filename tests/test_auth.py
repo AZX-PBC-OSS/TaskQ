@@ -136,6 +136,28 @@ def test_redis_credential_frozen() -> None:
         cred.password = "new"  # type: ignore[misc]
 
 
+def test_pg_credential_repr_masks_password() -> None:
+    """repr(PgCredential) never embeds the password; username stays visible.
+
+    The carriers are what a provider failure or debugger prints - the default
+    dataclass repr would render the just-fetched token verbatim.
+    """
+    cred = PgCredential(password="pg-token-DO-NOT-PRINT", username="pg-principal")
+    r = repr(cred)
+    assert "pg-token-DO-NOT-PRINT" not in r
+    assert "pg-principal" in r  # a principal name, not a credential
+    assert "PgCredential" in r  # negative control: repr still identifies the class
+
+
+def test_redis_credential_repr_masks_password() -> None:
+    """repr(RedisCredential) never embeds the password; username stays visible."""
+    cred = RedisCredential(username="redis-principal", password="redis-token-DO-NOT-PRINT")
+    r = repr(cred)
+    assert "redis-token-DO-NOT-PRINT" not in r
+    assert "redis-principal" in r
+    assert "RedisCredential" in r
+
+
 # ---- Protocol structural matching ----------------------------------------------------------------------------
 
 

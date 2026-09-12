@@ -307,6 +307,10 @@ class _FakeConn:
     def transaction(self) -> "_FakeConnCtx":
         return _FakeConnCtx(self)
 
+    def is_in_transaction(self) -> bool:
+        """Model a caller-owned connection with an open transaction."""
+        return True
+
 
 class _FakeConnCtx:
     """Async context manager for _FakeConn."""

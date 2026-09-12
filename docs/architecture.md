@@ -460,9 +460,18 @@ have either committed (returned, correctly ordered, in this or an earlier
 poll) or aborted (permanently gone, safe to skip). **This assumes no
 `job_events` writer takes longer than the margin between its INSERT and its
 commit** — true for TaskQ's short, single-round-trip sweep and terminal-write
-transactions, but not something the SQL itself enforces; an abnormally
-long-held writing transaction could still, in principle, exceed the margin
-and reproduce the gap. Consumers must be idempotent (dedupe on `event_id`).
+transactions, and for the batch event-writers (sweeps 1–3, bulk cancel,
+deregistration) it is now an *enforced* property rather than a hope: each
+batch is capped at `event_writer_batch_size` rows and its transaction carries
+a server-side `statement_timeout` at 7/8 of the margin, so a batch that
+cannot fit inside the watermark margin is aborted by the server instead of
+silently blowing it (see
+[Maintenance Sweeps](guides/maintenance-sweeps.md)). The assumption remains
+conditional, not a guarantee the SQL can make on its own — a stalled or
+GC-paused worker holding a transaction open, or a non-batch writer, could
+still in principle exceed the margin and reproduce the gap, which is what the
+`check_reclaim_visibility_delay_risk` detector below watches for. Consumers
+must be idempotent (dedupe on `event_id`).
 Configurable via `WorkerSettings.reclaim_event_visibility_delay` /
 `TASKQ_RECLAIM_EVENT_VISIBILITY_DELAY` (and per-call via
 `poll_reclaim_events(..., visibility_delay=...)`) — raise it under heavy
@@ -559,6 +568,16 @@ large/populated table should still run the equivalent `CREATE INDEX
 CONCURRENTLY` manually during a maintenance window (see the migration file
 for details). Future index migrations on hot tables can adopt the directive
 instead.
+
+Migration `01.00.06_01_pre_cancel_and_cascade_indexes.sql` follows the same
+precedent with the same caveat: its plain transactional `CREATE INDEX`
+statements take a write-blocking lock on `jobs` (the hottest table — enqueue,
+dispatch and heartbeat all write it) and `job_attempts` for the duration of
+each build. It stays transactional deliberately — the `CONCURRENTLY` form
+deadlocks under the runner's own serialized-migrator advisory lock — so apply
+it during a maintenance window (or when `jobs` is small/quiescent, e.g. right
+after a prune sweep) on any deployment where `jobs` is large; the migration
+file's header carries the full derivation.
 
 ---
 
@@ -819,7 +838,9 @@ Source: `src/taskq/worker/leader.py`.
 ### Mechanism
 
 Leader election uses a PostgreSQL session-level advisory lock
-(`pg_try_advisory_lock`) on a well-known name (`taskq:maintenance_leader`). The
+(`pg_try_advisory_lock`) on a schema-qualified name
+(`taskq:maintenance_leader:<schema>`, built by
+`taskq.constants.schema_lock_name`). The
 lock is acquired over `deps.leader_conn` — a dedicated, non-pooled connection.
 
 On each heartbeat tick, each pod calls `pg_try_advisory_lock`:
@@ -831,19 +852,31 @@ the advisory lock is the authoritative source of truth for election.
 
 ### What the leader does
 
-`MaintenanceLeader` runs ten cooperative loops in a `TaskGroup`:
+`MaintenanceLeader` runs eleven cooperative loops in a `TaskGroup`:
 
 1. **Election loop** — acquires and renews the advisory lock.
 2. **Watchdog** — detects stale lock state; refreshes `last_seen_at`.
 3. **Scheduled-wake (Sweep 3)** — promotes `scheduled` → `pending` when
-   `scheduled_at <= clock_timestamp()`. Sends `pg_notify` after promoting to wake consumer loops.
-4. **Cron** — fires cron-scheduled actors at their declared cadence.
+   `scheduled_at <= statement_timestamp()` (a STABLE bound, so
+   `jobs_scheduled_wake_idx` serves it as an index condition). Sends
+   `pg_notify` after promoting to wake consumer loops. One bounded batch per
+   one-second tick (`event_writer_batch_size` rows); a larger due backlog
+   drains across ticks.
+4. **Cron** — fires cron-scheduled actors at their declared cadence, at most
+   `cron_tick_limit` schedules per one-second tick under the schema-qualified
+   cron advisory lock (`taskq:cron:<schema>`, transaction-scoped).
 5. **Sweep (Sweeps 1, 2, 4)** — **leader-only** (gated on `ctx.deps.is_leader`),
-   runs every 30 s: `reclaim_expired_locks` (Sweep 1, uses `FOR UPDATE SKIP LOCKED`),
-   `deadline_sweep` (Sweep 2), and, when the backend supports them,
-   `sweep_leaked_reservation_slots` (Sweep 4), `sweep_expired_results`,
-   `cleanup_stale_workers`, and `complete_stale_batches` (see
-   [Batch Subsystem](#batch-subsystem)).
+   runs every `sweep_interval` (default 30 s): `reclaim_expired_locks`
+   (Sweep 1, uses `FOR UPDATE SKIP LOCKED`), `deadline_sweep` (Sweep 2), and,
+   when the backend supports them, `sweep_leaked_reservation_slots` (Sweep 4),
+   `sweep_expired_results`, `cleanup_stale_workers`, and
+   `complete_stale_batches` (see [Batch Subsystem](#batch-subsystem)). Every
+   event-writing sweep is a bounded batch writer: one call transitions at
+   most `event_writer_batch_size` rows in one short transaction carrying a
+   server-side `statement_timeout`, and a non-empty call drains up to
+   `sweep_drain_batches` batches per tick before leaving the remainder to the
+   next tick (see [Maintenance Sweeps](guides/maintenance-sweeps.md) for the
+   derivation).
 6. **Prune (Sweep 5)** — runs daily (default 03:00 UTC). Moves terminal jobs
    (`succeeded`, `failed`, `cancelled`, `crashed`, `abandoned`) from `jobs` to
    `jobs_archive` once their per-status retention period has elapsed. Batched at
@@ -855,11 +888,18 @@ the advisory lock is the authoritative source of truth for election.
    prune). Hard-deletes rows from `jobs_archive` once their `expire_at` has
    passed. Cascades to `job_attempts_archive`. Controlled by
    `TASKQ_ARCHIVE_EXPIRY_*` settings.
-8. **Queue-depth / reservation sampling** — samples queue counts and reservation
-   slot usage every 15 seconds for OTel gauges.
-9. **Stranded-jobs detector** — runs every 60 s. Warns about pending/scheduled
-   jobs whose actor has no `actor_config` row (e.g. the actor was removed from
-   the registry but jobs remain enqueued).
+8. **Queue-depth sampling** — samples queue counts every 15 seconds for OTel
+   gauges.
+9. **Reservation sampling** — samples reservation-slot usage every 15 seconds
+   for OTel gauges.
+10. **Backlog detection** — samples jobs-by-status and oldest-due-age gauges
+    every `queue_depth_interval`. Deliberately **not** leader-gated, unlike
+    every sibling sampler: a detector hosted behind the leadership gate emits
+    nothing under the very failure (election loss, another schema holding the
+    old-style lock) it exists to expose, so every worker samples.
+11. **Stranded-jobs detector** — runs every 60 s. Warns about pending/scheduled
+    jobs whose actor has no `actor_config` row (e.g. the actor was removed from
+    the registry but jobs remain enqueued).
 
 Failover SLA: leader gap ≤ `heartbeat_interval + 1s` on worker kill.
 

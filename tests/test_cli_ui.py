@@ -881,7 +881,12 @@ def test_ui_serve_health_token_protects_endpoints(monkeypatch: pytest.MonkeyPatc
 
     captured, _ = _capture_app(monkeypatch)
     settings = _dev_settings(monkeypatch)
-    settings.health_token = "secret-health-token"
+    # Assign the native secret type: attribute assignment does not coerce a
+    # raw str (dotenvmodel coerces on load, not on setattr), and the cli's
+    # unwrap expects a SecretStr.
+    from dotenvmodel.types import SecretStr
+
+    settings.health_token = SecretStr("secret-health-token")
 
     _ui_serve(
         pg_dsn="postgresql://u:p@h:5432/db",
@@ -1085,7 +1090,10 @@ def test_ui_serve_fully_opted_out_in_production(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setenv("TASKQ_ADMIN_UI_REQUIRE_AUTH", "false")
     monkeypatch.setenv("TASKQ_HEALTH_REQUIRE_TOKEN", "false")
     settings = TaskQSettings.load()
-    assert settings.health_token == ""
+    # Empty-or-unset, the None-safe shape the cli's own check uses: an unset
+    # env var can load as None and an empty default is SecretStr("") — and a
+    # SecretStr is always truthy, so emptiness must be read through unwrap.
+    assert not settings.health_token or not settings.health_token.get_secret_value()
     assert settings.sso_backend == "none"
 
     _ui_serve(

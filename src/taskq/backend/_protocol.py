@@ -483,6 +483,29 @@ class EnqueueArgs:
             check_no_nul_str(tag, what="tag")
 
 
+def batch_cap_groups(args_list: list[EnqueueArgs]) -> dict[str, tuple[int, int]]:
+    """Group carried ``max_pending`` caps per actor: actor -> (item count, cap).
+
+    Items without a cap are invisible to backpressure. When one batch
+    carries different caps for one actor (mixed direct-backend use — the
+    clients resolve a single effective cap per actor), the strictest wins:
+    admitting up to a looser cap would violate the tighter one. Pure
+    function over the args; lives here (not in the PG bulk path) so the
+    in-memory mirror — which must not import driver-bound modules —
+    enforces the identical grouping.
+    """
+    counts: dict[str, int] = {}
+    caps: dict[str, int] = {}
+    for args in args_list:
+        if args.max_pending is None:
+            continue
+        counts[args.actor] = counts.get(args.actor, 0) + 1
+        cap = args.max_pending
+        if args.actor not in caps or cap < caps[args.actor]:
+            caps[args.actor] = cap
+    return {actor: (counts[actor], caps[actor]) for actor in counts}
+
+
 @dataclass(frozen=True, slots=True)
 class JobRow:
     """Read-model of a ``taskq.jobs`` row.  Every column the dispatch loop,
@@ -604,9 +627,13 @@ class JobFilter:
     :meth:`Backend.cancel_where`.
 
     For ``cancel_where``, the ``limit``, ``cursor``, and ``order_by``
-    fields are ignored — a bulk cancel is not paginated. Use
-    :meth:`has_predicates` to check whether the filter has at least one
-    predicate before passing it to ``cancel_where``.
+    fields are ignored — a bulk cancel is not paginated. It is still not
+    paginated in outcome — every matching row is cancelled — but the
+    write executes as internally bounded committed batches, so a
+    mid-operation failure leaves partial progress rather than rolling
+    back everything (re-running continues; already-cancelled rows are
+    skipped). Use :meth:`has_predicates` to check whether the filter has
+    at least one predicate before passing it to ``cancel_where``.
 
     Heads-up: ``active=True`` is **not** Celery's 'active' — Celery's
     means 'currently executing' (``running`` only), TaskQ's means 'not
@@ -834,6 +861,29 @@ class ScheduleUpdateArgs:
                 "use clear_payload_factory=True to set the column to NULL, "
                 "or payload_factory to assign a new value"
             )
+        self._check_no_nul_text()
+
+    def _check_no_nul_text(self) -> None:
+        """Reject a NUL (U+0000) in caller-supplied text bound as text.
+
+        Mirrors :meth:`ScheduleCreateArgs._check_no_nul_text`: every text
+        field this struct can set is bound directly as a text parameter by
+        ``backend/_schedules.update_schedule``, so an unguarded NUL
+        surfaces as asyncpg ``CharacterNotInRepertoireError`` (SQLSTATE
+        22021) from inside the UPDATE instead of a clean ``ValueError``
+        at the boundary. ``cron_expr`` is guarded here even though the
+        create twin skips it: that exemption rests on
+        ``croniter.is_valid`` running in the create ``__post_init__``,
+        and this struct performs no expression validation of its own.
+        ``metadata`` transits jsonb via ``jsonb_param``, which guards it
+        at bind time.
+        """
+        if self.cron_expr is not None:
+            check_no_nul_str(self.cron_expr, what="cron_expr")
+        if self.payload_factory is not None:
+            check_no_nul_str(self.payload_factory, what="payload_factory")
+        if self.last_fire_error is not None:
+            check_no_nul_str(self.last_fire_error, what="last_fire_error")
 
 
 class ScheduleRecord(BaseModel):
@@ -897,6 +947,53 @@ class ErrorInfo:
     error_class: str
     error_message: str
     error_traceback: str | None
+
+    #: Bounds applied at construction (see ``__post_init__``).
+    ERROR_CLASS_MAX_CHARS: ClassVar[int] = 500
+    ERROR_MESSAGE_MAX_CHARS: ClassVar[int] = 10_000
+    ERROR_TRACEBACK_MAX_CHARS: ClassVar[int] = 100_000
+
+    def __post_init__(self) -> None:
+        """Reject a NUL (U+0000) in any caller-supplied value bound as text.
+
+        Enforced here, at construction, rather than at each write path:
+        the three fields feed the terminal-write UPDATE's ``error_*`` text
+        columns, and every construction site funnels through this struct,
+        so a new site cannot reintroduce the gap. Text DERIVED from an
+        uncontrolled exception is sanitized before construction by
+        ``worker._handlers`` — this guard is what makes an unsanitized
+        value fail loudly instead of silently.
+
+        Postgres rejects a NUL in ``text`` with
+        ``CharacterNotInRepertoireError`` (SQLSTATE 22021), a
+        ``PostgresError`` subclass that the terminal-write infra error
+        classification misreads as transient — so an unguarded value
+        retries forever instead of failing.  ``ValueError`` here keeps
+        that classification honest.
+
+        Oversized values are truncated (not rejected): a failure must
+        still record, just bounded.  Que truncates recorded errors to
+        500/10k chars in SQL with CHECK constraints; the bounds here
+        live at this same construction boundary instead, so every
+        construction site — present and future — inherits them, and the
+        columns stay schemaless for existing rows a CHECK would reject
+        on sight.  A plain slice (no marker): length is the contract
+        the suite pins.
+        """
+        check_no_nul_str(self.error_class, what="error_class")
+        check_no_nul_str(self.error_message, what="error_message")
+        if self.error_traceback is not None:
+            check_no_nul_str(self.error_traceback, what="error_traceback")
+        object.__setattr__(self, "error_class", self.error_class[: ErrorInfo.ERROR_CLASS_MAX_CHARS])
+        object.__setattr__(
+            self, "error_message", self.error_message[: ErrorInfo.ERROR_MESSAGE_MAX_CHARS]
+        )
+        if self.error_traceback is not None:
+            object.__setattr__(
+                self,
+                "error_traceback",
+                self.error_traceback[: ErrorInfo.ERROR_TRACEBACK_MAX_CHARS],
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -998,13 +1095,30 @@ class BatchFilter:
 class BackendSettings(Protocol):
     """Narrow settings protocol for PostgresBackend constructor consumption.
 
-    WorkerSettings and _ClientSettings both satisfy this interface.
+    WorkerSettings and _ClientSettings both satisfy this interface. The
+    event-writer knobs below are declared (not getattr-probed) because the
+    backend's bounded sweep paths read them directly: every settings object
+    that reaches a PostgresBackend must carry them, so the contract is
+    checkable rather than hoped for.
     """
 
     schema_name: str
     dispatch_oversample: int
     dispatcher_command_timeout: float
     result_max_bytes: int
+    # Rows per committed batch for every job_events writer the backend
+    # drives (cancel_where, the bounded sweeps); default
+    # DEFAULT_EVENT_WRITER_BATCH_SIZE.
+    event_writer_batch_size: int
+    # Server-side statement_timeout (ms) for one event-writer batch
+    # transaction; default DEFAULT_EVENT_WRITER_STATEMENT_TIMEOUT_MS.
+    event_writer_statement_timeout_ms: float
+    # Degradation-tier divisor for the sweep batch breaker; default 4.
+    event_writer_reduced_batch_divisor: int
+    # Consecutive sweep-batch cancellations before the breaker latches; default 3.
+    sweep_breaker_failure_threshold: int
+    # Rolling window (seconds) the breaker counts failures within; default 600.0.
+    sweep_breaker_window_secs: float
 
 
 @runtime_checkable
@@ -1087,6 +1201,7 @@ class Backend(Protocol):
         args_list: list[EnqueueArgs],
         *,
         connection: "asyncpg.Connection | None" = None,
+        enforce_max_pending: bool = True,
     ) -> list[JobRow]:
         """Insert multiple jobs in a single batched operation.
 
@@ -1094,6 +1209,15 @@ class Backend(Protocol):
         method — the backend does not re-validate payloads.  The list
         must be non-empty and contain at most 1000 items (enforced by the
         client layer).
+
+        When *enforce_max_pending* is true (the default), items carrying a
+        resolved ``max_pending`` cap are admission-checked as one
+        aggregate — existing pending+scheduled per actor plus this batch —
+        before anything is written; a violation raises
+        :class:`~taskq.exceptions.MaxPendingExceededError` with nothing
+        written.  Pass false only when the caller pre-admitted every item
+        against current capacity (the cron tick's suppression preflight),
+        where a re-check could abort an unrelated batch on a race.
 
         Returns one :class:`JobRow` per item in *args_list*, in the same
         order.  For idempotency-key collisions the existing row is
@@ -1106,6 +1230,7 @@ class Backend(Protocol):
         args_list: list[EnqueueArgs],
         *,
         connection: "asyncpg.Connection | None" = None,
+        enforce_max_pending: bool = True,
     ) -> int:
         """Insert multiple jobs via the COPY FROM protocol for maximum throughput.
 
@@ -1131,6 +1256,11 @@ class Backend(Protocol):
         - A duplicate ``idempotency_key`` — within the batch or already
           stored — violates the unique index and aborts the ENTIRE batch
           (all-or-nothing atomicity; nothing is written).
+        - Items carrying a resolved ``max_pending`` cap are
+          admission-checked as one aggregate before the COPY (same
+          ``existing + batch > limit`` contract as :meth:`enqueue_batch`);
+          disable with ``enforce_max_pending=False`` only for pre-admitted
+          internal callers.
 
         Returns the count of rows written.  On success this is exactly
         ``len(args_list)`` — this path never deduplicates, so the count
@@ -1350,7 +1480,12 @@ class Backend(Protocol):
         Running jobs → cancel_phase=1 (cooperative cancel + NOTIFY).
 
         The filter's ``limit``, ``cursor``, and ``order_by`` fields are
-        ignored — this is a bulk write, not a paginated read.
+        ignored — this is a bulk write, not a paginated read. The write is
+        still not paginated in outcome — every matching row is cancelled —
+        but it executes as internally bounded committed batches, so a
+        mid-operation failure leaves partial progress rather than rolling
+        back everything (re-running continues; already-cancelled rows are
+        skipped).
 
         **Guardrail:** the client layer (:meth:`JobsClient.cancel_where`)
         rejects empty filters (no predicates) with

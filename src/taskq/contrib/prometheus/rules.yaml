@@ -111,3 +111,70 @@ groups:
             consecutive payload_factory failures (§6.6 three-strike rule).
             Inspect cron_schedules.last_fire_error to identify the
             affected schedule(s) and fix the payload_factory.
+
+      - alert: TaskQScheduledBacklogGrowing
+        expr: deriv(taskq_jobs_by_status{status="scheduled"}[15m]) > 0 and taskq_jobs_oldest_due_age_seconds > 300
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "TaskQ scheduled backlog is growing while due jobs wait over 5m"
+          description: >-
+            The scheduled backlog is growing (positive 15m derivative) AND
+            the oldest due job has been waiting more than 5 minutes —
+            promotion from scheduled to pending is stalled. Runbook:
+            docs/guides/runbooks.md#taskqscheduledbackloggrowing.
+
+      - alert: TaskQPromotionStalled
+        expr: time() - taskq_maintenance_leader_sweep_last_success_seconds{sweep_name="scheduled_to_pending"} > 120
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "TaskQ scheduled_to_pending sweep has not completed in 2 minutes"
+          description: >-
+            The scheduled_to_pending sweep has not completed in 2 minutes —
+            it ticks every second, so three missing sweep_intervals is a
+            stall, not slowness. Same signature as the 12,732-job incident.
+            Runbook: docs/guides/runbooks.md#taskqpromotionstalled.
+
+      - alert: TaskQSweepTimeouts
+        expr: rate(taskq_maintenance_leader_sweep_timeouts_total[5m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "TaskQ sweep batches are being aborted by deadlines or server-side cancels"
+          description: >-
+            Sweep batches are being aborted by deadlines or server-side
+            cancels — the database cannot finish bounded batches. Runbook:
+            docs/guides/runbooks.md#taskqsweeptimeouts.
+
+      - alert: TaskQSweepDegraded
+        expr: taskq_maintenance_leader_sweep_batch_size < taskq_maintenance_leader_sweep_batch_size_configured
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "TaskQ sweep is running at the reduced batch tier"
+          description: >-
+            A sweep is reporting a batch size below its worker's configured
+            event_writer_batch_size (TASKQ_EVENT_WRITER_BATCH_SIZE) — the
+            reduced tier, meaning the worker itself is reporting an
+            unhealthy database. The comparison is per-worker configuration:
+            both series are emitted by the same worker under the same
+            sweep_name label. Runbook:
+            docs/guides/runbooks.md#taskqsweepdegraded.
+
+      - alert: TaskQLeaderLockContention
+        expr: rate(taskq_leader_lock_contention_total[10m]) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "TaskQ maintenance-lock acquisitions are being lost to another session"
+          description: >-
+            Maintenance-lock acquisitions are being lost to another session;
+            sustained contention at the attempt rate means a worker never
+            wins the lock (the second-schema lock-loss signature). Runbook:
+            docs/guides/runbooks.md#taskqleaderlockcontention.

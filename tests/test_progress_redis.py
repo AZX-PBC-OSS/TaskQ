@@ -18,7 +18,7 @@ Redis publish call raises after 1st; channel='per_job' label on
 import asyncio
 import json
 from contextlib import AsyncExitStack
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 from typing import Any
 from uuid import UUID
 
@@ -171,7 +171,15 @@ async def _enqueue_and_dispatch(
             priority=0,
             max_attempts=1,
             retry_kind="transient",
-            scheduled_at=datetime.now(UTC),
+            # None = immediate, in the SERVER clock domain. An absolute
+            # datetime.now() races the enqueue SQL's status boundary
+            # (COALESCE($n, clock_timestamp()) > clock_timestamp()) —
+            # with the testcontainer clock a fraction of a millisecond
+            # behind the host, a warm asyncpg statement cache (sub-ms
+            # sample→execute latency, as in the parallel suite) lands the
+            # row 'scheduled', which the dispatch_batch below cannot
+            # claim.
+            scheduled_at=None,
         )
     )
 

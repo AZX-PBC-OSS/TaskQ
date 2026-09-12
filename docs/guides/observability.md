@@ -215,6 +215,7 @@ they represent safety-critical signals.
 | `taskq.cancellation.requested` | — | — | Incremented once per `JobsClient.cancel()` call regardless of outcome. | unconditional |
 | `taskq.cancellation.phase_transitions` | `1` | — | Cancel phase transitions (0→1, 1→2, etc.). | yes |
 | `taskq.backpressure.errors` | — | `actor`, `kind` | Enqueue rejections due to backpressure. `kind` is currently `"max_pending"`. | unconditional |
+| `taskq.backpressure.capacity_refresh_failures` | `1` | `degraded` | Failed refreshes of the enqueue-side `actor_config` capacity cache. `degraded` is `"stale_snapshot"` (a previous snapshot is still being served) or `"no_snapshot"` (the cache never loaded and every enqueue is enforcing the `@actor` literal). | unconditional |
 | `taskq.deadline_exceeded_sweep.jobs_failed` | `1` | `actor` | Jobs failed by the deadline-exceeded sweep. | unconditional |
 | `taskq.heartbeat.misses` | `1` | — | Heartbeat renewal failures. | yes |
 | `taskq.leader.election_attempts` | `1` | — | Leader election attempts. | yes |
@@ -226,6 +227,9 @@ they represent safety-critical signals.
 | `taskq.archived.jobs` | `1` | `status` | Same prune-sweep event, status-only view (no actor dimension). | yes |
 | `taskq.expired_archive.jobs` | `1` | `status` | Jobs hard-deleted from `jobs_archive` by the archive expiry sweep (Sweep 6). | yes |
 | `taskq.maintenance_leader.sweep_rows` | — | `sweep_name` | Rows affected per sweep tick. | yes |
+| `taskq.maintenance_leader.sweep_timeouts` | `1` | `sweep_name` | Sweep calls aborted by a deadline or server-side statement cancel. A non-zero rate means sweeps are being cancelled, not completing slowly. | yes |
+| `taskq.leader.lock_contention` | `1` | `lock` | Advisory-lock acquisitions lost to another session, recorded by the losing side. | yes |
+| `taskq.cron.lock_contention` | `1` | — | Cron ticks that returned without firing because another session held the cron advisory lock. A sustained rate equal to the tick rate means cron is not running anywhere (a partitioned holder never releasing the transaction-scoped lock); a brief low rate is leader-handover overlap. | yes |
 
 ### Histograms
 
@@ -246,6 +250,22 @@ they represent safety-critical signals.
 | `taskq.maintenance_leader.is_leader` | `1` | `worker_id` | `1` on the elected leader pod, `0` on all others. |
 | `taskq.cron.disabled_schedules` | `1` | — | Count of currently disabled cron schedules. |
 | `taskq.heartbeat.consecutive_failures` | — | — | Consecutive heartbeat tick failures for this worker (sample-on-scrape). |
+| `taskq.maintenance_leader.sweep_last_success_seconds` | `s` | `sweep_name` | Unix timestamp of each sweep's last successful call. `time() - this value` is sweep staleness; a value that never moves while the process runs is a stalled sweep. |
+| `taskq.maintenance_leader.sweep_batch_size` | `1` | `sweep_name` | Rows per committed batch each sweep is currently using. A value below `event_writer_batch_size` is the reduced (degraded) tier. |
+| `taskq.maintenance_leader.sweep_batch_size_configured` | `1` | `sweep_name` | The batch size this worker's `event_writer_batch_size` configures for each sweep; emitted at the same call site as `sweep_batch_size` so the sweep-degraded alert compares the two label-matched. |
+| `taskq.jobs.by_status` | `1` | `status` | Jobs per status, sampled by every worker. A growing `scheduled` count next to a flat `pending` count is the promotion-stall signature. |
+| `taskq.jobs.oldest_due_age_seconds` | `s` | — | Seconds since the oldest scheduled job became due for promotion. Grows monotonically while promotion is stalled. |
+| `taskq.jobs.stranded` | `1` | `actor` | Pending/scheduled jobs whose actor has no `actor_config` row and which can therefore never be dispatched, sampled by the leader. An empty reading means recovery. |
+
+### Sweep samples: rows and duration are different populations
+
+`taskq.maintenance_leader.sweep_rows` and
+`taskq.maintenance_leader.sweep_duration_ms` share a call site but not a
+sample population: a timed-out sweep records its duration and bumps
+`taskq.maintenance_leader.sweep_timeouts`, but records no row sample — the
+batch was aborted, so no rows were committed. Read row counts with the
+`sweep_timeouts` counter in hand before drawing conclusions from a missing
+or zero row sample.
 
 ### Up-down counters
 
@@ -256,7 +276,10 @@ they represent safety-critical signals.
 ### Dimension cardinality
 
 No metric carries `worker_id`, `schedule_id`, `job_id` or any other identity
-value as a dimension, and new instruments must not add one.
+value as a dimension, and new instruments must not add one. The
+maintenance-sweep labels (`sweep_name`, `lock`, `status`) are bounded enums
+like `queue` and `actor` — a handful of values fixed by the code, not
+identity values, so they are allowed as dimensions.
 
 Azure Monitor counts every unique combination of metric name, dimension key and
 dimension value published in the last 12 hours as an *active time series*, caps
@@ -723,5 +746,7 @@ custom reporter is installed and failing.
 - [actors.md](actors.md) — `@actor` decorator, `JobContext`, `ctx.log`, `ctx.span`
 - [workers.md](workers.md) — worker lifecycle, `WorkerSettings`, pool configuration
 - [ops.md](ops.md) — operations & adoption: which metrics catch which failure mode
+- [maintenance-sweeps.md](maintenance-sweeps.md) — why the sweep instruments exist and how to read them together
+- [runbooks.md](runbooks.md) — the alerts these metrics feed, with confirm/remediate steps
 - [../api-reference/testing.md](../api-reference/testing.md) — test fixtures, `setup_tracer`, `setup_meter`
 - [cancellation.md](cancellation.md) — cancel phases, `cancel_phase_change` log events

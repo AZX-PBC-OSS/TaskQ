@@ -11,7 +11,7 @@ from dotenvmodel import (
     TypeCoercionError,
     ValidationError,
 )
-from dotenvmodel.types import RedisDsn
+from dotenvmodel.types import RedisDsn, SecretStr
 from hypothesis import given
 from hypothesis import strategies as st
 
@@ -1748,3 +1748,115 @@ def test_result_max_bytes_ceiling_matches_progress_data_max_bytes() -> None:
         _load(TASKQ_RESULT_MAX_BYTES="1048577")
     with pytest.raises(ConstraintViolationError):
         _load(TASKQ_RESULT_MAX_BYTES="1023")
+
+
+# ── secrets are masked in settings reprs (issue #111) ──────────────────
+#
+# A settings repr reaches logs, debuggers, and crash tracebacks. The DSN
+# fields self-redact (dotenvmodel's BaseDsn masks the password in __repr__),
+# but the plain-str credential fields printed verbatim. Masking is
+# display-level only: declared field types stay str / str | None, so every
+# caller reading these fields keeps working.
+
+
+def test_oidc_settings_repr_masks_client_and_session_secrets() -> None:
+    """OIDCSettings repr hides client_secret/session_secret; public fields stay visible."""
+    s = OIDCSettings.load_from_dict(
+        {
+            "TASKQ_OIDC_ISSUER": "https://login.example.com/v2.0",
+            "TASKQ_OIDC_CLIENT_ID": "public-client-id",
+            "TASKQ_OIDC_CLIENT_SECRET": "oidc-client-secret-DO-NOT-PRINT",
+            "TASKQ_OIDC_SESSION_SECRET": "oidc-session-secret-DO-NOT-PRINT",
+        }
+    )
+    r = repr(s)
+    assert "oidc-client-secret-DO-NOT-PRINT" not in r
+    assert "oidc-session-secret-DO-NOT-PRINT" not in r
+    # Negative controls: the repr still works and non-secrets stay visible
+    # (client_id is a public OAuth2 identifier, not a credential).
+    assert "public-client-id" in r
+    assert "https://login.example.com/v2.0" in r
+    # Masked-but-present: the field name survives with dotenvmodel's native
+    # SecretStr mask, proving the field was masked rather than the whole
+    # repr being swallowed.
+    assert "client_secret=SecretStr('**********')" in r
+
+
+def test_saml_settings_repr_masks_private_key_and_session_secret() -> None:
+    """SAMLSettings repr hides sp_private_key/session_secret; public PEMs stay visible."""
+    s = SAMLSettings.load_from_dict(
+        {
+            "TASKQ_SAML_ENTITY_ID": "https://sp.example.com/metadata",
+            "TASKQ_SAML_IDP_X509_CERT": "-----BEGIN CERTIFICATE-----idp-public-----END CERT",
+            "TASKQ_SAML_SP_PRIVATE_KEY": "-----BEGIN PRIVATE KEY-----sp-key-DO-NOT-PRINT",
+            "TASKQ_SAML_SESSION_SECRET": "saml-session-secret-DO-NOT-PRINT",
+        }
+    )
+    r = repr(s)
+    assert "sp-key-DO-NOT-PRINT" not in r
+    assert "saml-session-secret-DO-NOT-PRINT" not in r
+    # idp_x509_cert is the IdP's PUBLIC certificate (it verifies the IdP's
+    # signature; possessing it grants nothing) - deliberately NOT masked.
+    assert "-----BEGIN CERTIFICATE-----idp-public" in r
+    assert "https://sp.example.com/metadata" in r
+    assert "session_secret=SecretStr('**********')" in r
+
+
+def test_taskq_settings_repr_masks_health_token() -> None:
+    """TaskQSettings repr hides health_token (bearer credential for health/metrics routes)."""
+    s = TaskQSettings.load_from_dict(
+        {
+            "TASKQ_ADMIN_URL": "http://admin-control-plane:8001",
+            "TASKQ_HEALTH_TOKEN": "health-bearer-token-DO-NOT-PRINT",
+        }
+    )
+    r = repr(s)
+    assert "health-bearer-token-DO-NOT-PRINT" not in r
+    assert "http://admin-control-plane:8001" in r  # negative control: repr works
+    assert "health_token=SecretStr('**********')" in r
+
+
+def test_worker_settings_repr_masks_health_token() -> None:
+    """WorkerSettings inherits the health_token mask - the worker is the
+    process whose settings most often land in a startup log or traceback."""
+    s = _load(TASKQ_HEALTH_TOKEN="worker-health-token-DO-NOT-PRINT")
+    r = repr(s)
+    assert "worker-health-token-DO-NOT-PRINT" not in r
+    assert "health_token=SecretStr('**********')" in r
+    # The split DSNs were already self-redacting (BaseDsn.__repr__); pinned
+    # so the new masking layers on top of, not instead of, that behaviour.
+    assert "taskq:***@localhost:5432/taskq" in r
+
+
+def test_secret_str_fields_load_from_env_and_unwrap_explicitly() -> None:
+    """The native mechanism round-trips the env: a raw env var loads as a
+    SecretStr (masked in repr), and get_secret_value() is the only way out.
+
+    Pins dotenvmodel's own coercion path — the reason SecretStr fields are
+    used instead of a display-layer mask: the value crosses env → config →
+    repr masked end to end, and unwrapping is an explicit, greppable act.
+    """
+    s = OIDCSettings.load_from_dict(
+        {
+            "TASKQ_OIDC_CLIENT_SECRET": "env-oidc-secret-DO-NOT-PRINT",
+        }
+    )
+    assert isinstance(s.client_secret, SecretStr)
+    assert "env-oidc-secret-DO-NOT-PRINT" not in repr(s)
+    assert s.client_secret.get_secret_value() == "env-oidc-secret-DO-NOT-PRINT"
+    # A non-empty value wraps as a SecretStr; an empty value loads as unset
+    # (None — dotenv's empty-means-not-provided convention), the shape the
+    # cli's None-safe emptiness check exists for.
+    empty = SAMLSettings.load_from_dict({"TASKQ_SAML_SESSION_SECRET": ""})
+    assert empty.session_secret is None
+    unset = SAMLSettings.load_from_dict({})
+    assert unset.session_secret is None
+
+
+def test_settings_repr_dsn_passwords_self_redact() -> None:
+    """DSN fields already mask their password in repr (dotenvmodel BaseDsn) -
+    a pre-existing layer, pinned so it cannot silently regress."""
+    s = _load(TASKQ_PG_DSN="postgresql://user:dsn-pass-DO-NOT-PRINT@host:5432/db")
+    r = repr(s)
+    assert "dsn-pass-DO-NOT-PRINT" not in r
+    assert "user:***@host:5432/db" in r

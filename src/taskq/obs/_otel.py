@@ -7,6 +7,7 @@ are module-level singletons created at import time from the global meter provide
 
 import contextlib
 import importlib.metadata
+import time
 from collections.abc import Generator, Iterable, Sequence
 from typing import Literal
 
@@ -587,7 +588,7 @@ def record_election_attempt(worker_id: str, *, won: bool) -> None:
 
 _cron_consecutive_failures = get_meter().create_up_down_counter(
     "taskq.cron.consecutive_failures",
-    description="Consecutive cron execution failures, labeled by schedule_id.",
+    description="Cron execution failure balance per schedule, via +1 per failure and -count on a successful reset.",
     unit="1",
 )
 
@@ -655,6 +656,256 @@ _disabled_schedules_gauge = get_meter().create_observable_gauge(
     description="Currently disabled schedules.",
     unit="1",
     callbacks=[_observe_disabled_schedules],
+)
+
+
+# ── Maintenance-sweep health ───────────────────────────────────────────
+#
+# A sweep whose instrumentation lives only on the success path is invisible
+# exactly when it fails: the timeout that aborts the sweep also aborts the
+# code that would have recorded it, so a livelocking sweep emits no samples
+# at all — not zero, nothing. The emitters below are called from `finally`
+# blocks and failure branches so a timing-out sweep is recorded as such.
+
+
+def record_sweep_timeout(sweep_name: str) -> None:
+    """Count a sweep call that was cut short by a deadline or server cancel.
+
+    Called on the failure path (``TimeoutError`` / ``QueryCanceledError``),
+    never the success path. Any sustained rate means sweeps are being
+    aborted, not merely slow. Respects ``_otel_enabled`` — no-op when False.
+    """
+    if not _otel_enabled:
+        return
+    _sweep_timeouts.add(1, {"sweep_name": sweep_name})
+
+
+_sweep_timeouts = get_meter().create_counter(
+    "taskq.maintenance_leader.sweep_timeouts",
+    description=(
+        "Sweep calls aborted by a deadline or server-side statement cancel, "
+        "labeled by sweep_name. A non-zero rate means sweeps are being "
+        "cancelled, not completing slowly."
+    ),
+    unit="1",
+)
+
+
+_sweep_success_cache: dict[str, float] = {}
+
+
+def record_sweep_success(sweep_name: str) -> None:
+    """Stamp the wall-clock time of a sweep call's success.
+
+    Feeds the staleness gauge below: ``time() - last_success`` answers "is
+    this sweep still making progress?" independently of row counts, so a
+    sweep that finds zero eligible rows every tick (healthy) is
+    distinguishable from one that never completes (stalled). The row-count
+    counter and the duration histogram share this call site but NOT this
+    sample population: a timed-out sweep records duration and a timeout but
+    no row sample, so rows and duration must be read as different
+    populations, which the sweep_timeouts counter reconciles.
+    """
+    _sweep_success_cache[sweep_name] = time.time()
+
+
+def _observe_sweep_success(options: CallbackOptions) -> Iterable[Observation]:
+    for sweep_name, stamp in _sweep_success_cache.items():
+        yield Observation(stamp, {"sweep_name": sweep_name})
+
+
+get_meter().create_observable_gauge(
+    name="taskq.maintenance_leader.sweep_last_success_seconds",
+    description=(
+        "Unix timestamp of each sweep's last successful call. "
+        "time() - this value is sweep staleness; a value that never moves "
+        "while the process runs is a stalled sweep."
+    ),
+    unit="s",
+    callbacks=[_observe_sweep_success],
+)
+
+
+def record_sweep_batch_size(sweep_name: str, batch_size: int) -> None:
+    """Record the batch size a sweep call actually used.
+
+    The maintenance sweeps degrade to a reduced batch after repeated
+    cancellations; a worker reporting the reduced tier is reporting an
+    unhealthy database and must not be silent about it.
+    Respects ``_otel_enabled`` — no-op when False.
+    """
+    if not _otel_enabled:
+        return
+    update_sweep_batch_size_cache(sweep_name, batch_size)
+
+
+_sweep_batch_size_cache: dict[str, int] = {}
+
+
+def update_sweep_batch_size_cache(sweep_name: str, batch_size: int) -> None:
+    """Replace the recorded batch size for *sweep_name* (cache-push gauge)."""
+    _sweep_batch_size_cache[sweep_name] = batch_size
+
+
+def _observe_sweep_batch_size(options: CallbackOptions) -> Iterable[Observation]:
+    for sweep_name, size in _sweep_batch_size_cache.items():
+        yield Observation(size, {"sweep_name": sweep_name})
+
+
+get_meter().create_observable_gauge(
+    name="taskq.maintenance_leader.sweep_batch_size",
+    description="Rows per committed batch each sweep is currently using.",
+    unit="1",
+    callbacks=[_observe_sweep_batch_size],
+)
+
+
+_sweep_batch_size_configured_cache: dict[str, int] = {}
+
+
+def record_sweep_batch_size_configured(sweep_name: str, configured_size: int) -> None:
+    """Record the batch size this worker is CONFIGURED to use for *sweep_name*.
+
+    Emitted at the same call site as :func:`record_sweep_batch_size` so
+    the two gauges carry the same ``sweep_name`` label set and a
+    gauge-to-gauge comparison is always label-matched. The alert pair
+    (used vs configured) is what makes the sweep-degraded signal track
+    per-worker ``event_writer_batch_size``: a literal threshold is blind
+    on every deployment whose configured size is not the default.
+    Respects ``_otel_enabled`` — no-op when False.
+    """
+    if not _otel_enabled:
+        return
+    _sweep_batch_size_configured_cache[sweep_name] = configured_size
+
+
+def _observe_sweep_batch_size_configured(options: CallbackOptions) -> Iterable[Observation]:
+    for sweep_name, size in _sweep_batch_size_configured_cache.items():
+        yield Observation(size, {"sweep_name": sweep_name})
+
+
+get_meter().create_observable_gauge(
+    name="taskq.maintenance_leader.sweep_batch_size_configured",
+    description=(
+        "Rows per committed batch this worker's event_writer_batch_size "
+        "configures for each sweep; compare against "
+        "taskq_maintenance_leader_sweep_batch_size to detect the reduced tier."
+    ),
+    unit="1",
+    callbacks=[_observe_sweep_batch_size_configured],
+)
+
+
+def clear_sweep_health_caches() -> None:
+    """Drop this process's sweep-success and batch-size stamps.
+
+    Called on leadership demotion (the same authority-release point that
+    clears the queue-depth sampler caches): the stamps are this process's
+    report of the sweeps its LEADER loops ran, and a demoted process
+    exporting frozen stamps reports a degraded maintenance view forever
+    after an ordinary failover, while its frozen
+    ``sweep_last_success_seconds`` series fires the promotion-stalled
+    alert forever even as the new leader promotes fine. Rebound to the
+    empty informational state ("no sweep has completed yet") rather than
+    zeroed: an empty gauge yields no data point, so the series goes stale
+    and the new leader's is the one answering. If the election re-wins
+    during the same demotion suspension, the sweep loops repopulate both
+    caches on their next tick.
+    """
+    global _sweep_success_cache, _sweep_batch_size_cache
+    _sweep_success_cache = {}
+    _sweep_batch_size_cache = {}
+
+
+def record_lock_contention(lock_name: str) -> None:
+    """Count an advisory-lock acquisition lost to another session.
+
+    Recorded by the LOSING side at every maintenance acquisition point
+    (leader election, prune, archive-expiry). Contention is the signal that
+    would have exposed two schemas in one database silently sharing one
+    lock, and a sustained rate equal to the attempt rate means the loser
+    never wins at all. Cron's contention stays on its own dedicated
+    counter (``taskq.cron.lock_contention``).
+    Respects ``_otel_enabled`` — no-op when False.
+    """
+    if not _otel_enabled:
+        return
+    _lock_contention.add(1, {"lock": lock_name})
+
+
+_lock_contention = get_meter().create_counter(
+    "taskq.leader.lock_contention",
+    description=(
+        "Advisory-lock acquisitions lost to another session, labeled by "
+        "lock name. Recorded by the losing side."
+    ),
+    unit="1",
+)
+
+
+# ── Backlog detection ─────────────────────────────────────────────────
+#
+# These gauges are the #102 detectors: a scheduled backlog that stops
+# moving is invisible in a merged pending+scheduled count and in absolute
+# depth thresholds. They are sampled UNCONDITIONALLY (every worker, not
+# leader-gated) on purpose: a detector hosted behind the leadership gate
+# emits nothing under exactly the failure (a second schema's lock) that
+# mutes every leader-gated sampler.
+
+
+def update_jobs_by_status_cache(data: dict[str, int]) -> None:
+    """Replace the per-status job-count cache with fresh data.
+
+    Called by the backlog sampler. Replaces the merged pending+scheduled
+    queue-depth view: a growing `scheduled` count next to a flat `pending`
+    count is the promotion-stall signature, which a single summed number
+    cannot express.
+    """
+    global _jobs_by_status_cache
+    _jobs_by_status_cache = dict(data)
+
+
+def _observe_jobs_by_status(options: CallbackOptions) -> Iterable[Observation]:
+    for status, count in _jobs_by_status_cache.items():
+        yield Observation(count, {"status": status})
+
+
+_jobs_by_status_cache: dict[str, int] = {}
+
+get_meter().create_observable_gauge(
+    name="taskq.jobs.by_status",
+    description="Jobs per status, sampled by every worker.",
+    unit="1",
+    callbacks=[_observe_jobs_by_status],
+)
+
+
+def update_oldest_due_age_cache(age_seconds: float) -> None:
+    """Record the age of the oldest due-but-still-scheduled job.
+
+    0.0 when nothing is due. Monotonic growth of this gauge is the single
+    best promotion-stall detector: it moves under failure regardless of
+    queue depth or throughput, where absolute depth thresholds are
+    environment-specific guesses.
+    """
+    global _oldest_due_age_seconds
+    _oldest_due_age_seconds = age_seconds
+
+
+def _observe_oldest_due_age(options: CallbackOptions) -> Iterable[Observation]:
+    yield Observation(_oldest_due_age_seconds)
+
+
+_oldest_due_age_seconds: float = 0.0
+
+get_meter().create_observable_gauge(
+    name="taskq.jobs.oldest_due_age_seconds",
+    description=(
+        "Seconds since the oldest scheduled job became due for promotion. "
+        "Grows monotonically while promotion is stalled."
+    ),
+    unit="s",
+    callbacks=[_observe_oldest_due_age],
 )
 
 

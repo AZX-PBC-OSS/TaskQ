@@ -10,6 +10,7 @@ pytest.importorskip("fastapi")
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+import taskq.obs._otel as otel_mod
 from taskq.web.health import create_health_router
 from taskq.worker._watchdog import LoopLiveness
 from taskq.worker.health import build_ready_body, compute_health
@@ -17,6 +18,28 @@ from taskq.worker.shutdown import ShutdownPhase
 from tests._import_discipline import imports_guarded_by_try, module_level_imports
 
 pytestmark = pytest.mark.asyncio
+
+
+@pytest.fixture(autouse=True)
+def _pristine_sweep_caches(  # pyright: ignore[reportUnusedFunction] # Why: pytest autouse fixture consumed implicitly by the test runner; pyright does not track fixture usage.
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reset the process-global OTel sweep caches around every test here.
+
+    ``maintenance_health`` (reached via ``build_ready_body``) reads
+    ``taskq.obs._otel``'s module-level cache singletons, so any
+    sweep-recording test that ran earlier in THIS process leaks its
+    success stamps and batch sizes in: a stamp older than
+    ``3 * sweep_interval`` reads as "stalled" and a reduced-tier batch
+    size reads as "degraded". The default-view tests below assert
+    ``maintenance.degraded is False`` and the parity tests compare
+    whole bodies, so they fail only when the full suite schedules sweep
+    tests onto the same xdist worker first — never in a standalone run.
+    Same swap-and-restore pattern as tests/test_sweep_timeout_metrics.py
+    and the seeding in tests/test_health_maintenance_degraded.py.
+    """
+    monkeypatch.setattr(otel_mod, "_sweep_success_cache", {})
+    monkeypatch.setattr(otel_mod, "_sweep_batch_size_cache", {})
 
 
 class _FakeConn:
@@ -69,6 +92,9 @@ def _make_deps(**overrides: object) -> SimpleNamespace:
                 redis_url=None,
                 health_socket_path="/tmp/taskq_health.sock",  # noqa: S108 # Why: test-only stub; no real file operations touch this path.
                 health_tasks_enabled=False,
+                # Maintenance-health fields read by build_ready_body.
+                sweep_interval=30.0,
+                event_writer_batch_size=100,
             ),
             "is_leader": SimpleNamespace(is_set=lambda: False),
             "active_jobs": SimpleNamespace(count=lambda: 2),
@@ -114,11 +140,13 @@ async def test_ready_returns_200_with_fr4_fields() -> None:
 
     assert response.status_code == 200
     body = response.json()  # pyright: ignore[reportUnknownVariableType] # Why: response.json() return type is Any; pyright reports unknown.
-    assert len(body) == 9
+    assert len(body) == 10
     assert "ready" in body
     assert "redis_configured" in body
     assert "active_jobs" in body
     assert "is_leader" in body
+    assert "maintenance" in body
+    assert body["maintenance"]["degraded"] is False
     assert "shutdown_phase" in body
     assert body["shutdown_phase"] is None
     assert body["redis_configured"] is False
@@ -169,8 +197,9 @@ async def test_ready_503_when_pg_ping_fails() -> None:
     assert "redis_configured" in body
     assert "active_jobs" in body
     assert "is_leader" in body
+    assert "maintenance" in body
     assert "shutdown_phase" in body
-    assert len(body) == 9
+    assert len(body) == 10
 
 
 # ── Import discipline ─────────────────────────────────────────────────

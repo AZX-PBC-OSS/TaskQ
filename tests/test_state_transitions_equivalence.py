@@ -143,7 +143,7 @@ async def test_mark_failed_or_retry_already_terminal_equivalence(
         payload={"key": "value"},
         max_attempts=3,
         retry_kind="transient",
-        scheduled_at=datetime.now(UTC),
+        scheduled_at=None,
     )
     pg_row = await pg_backend.enqueue(args)
     dispatched = await pg_backend.dispatch_batch(
@@ -265,7 +265,7 @@ async def _setup_job_pg(
             payload={"key": "value"},
             max_attempts=3,
             retry_kind="transient",
-            scheduled_at=datetime.now(UTC),
+            scheduled_at=None,
             schedule_to_close=schedule_to_close,
         )
         row = await backend.enqueue(args)
@@ -299,7 +299,7 @@ async def _setup_job_pg(
             payload={"key": "value"},
             max_attempts=3,
             retry_kind="transient",
-            scheduled_at=datetime.now(UTC),
+            scheduled_at=None,
             schedule_to_close=snooze_close,
         )
         row = await backend.enqueue(args)
@@ -321,7 +321,7 @@ async def _setup_job_pg(
             payload={"key": "value"},
             max_attempts=max_attempts,
             retry_kind=retry_kind,  # type: ignore[arg-type] # Why: str is known-valid RetryKind value at runtime
-            scheduled_at=datetime.now(UTC),
+            scheduled_at=None,
         )
         row = await backend.enqueue(args)
         dispatched = await backend.dispatch_batch(

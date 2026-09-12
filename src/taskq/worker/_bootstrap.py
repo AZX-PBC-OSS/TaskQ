@@ -6,7 +6,8 @@ The ``_main`` coroutine wires the full TaskGroup of long-lived siblings
 ``asyncio.Runner``.
 
 ``_emit_sub_enqueue_startup_warnings`` checks LOOP-scope connection
-resolution and warns about PgBouncer transaction-mode footguns.
+resolution and warns about the PgBouncer transaction-mode and
+shared-across-consumer-slots connection footguns.
 ``_emit_unconsumed_queue_startup_warnings`` warns — once, aggregated —
 when served actors declare queues outside the worker's consumed set,
 or distinctly when the worker consumes no queues at all (issue #90).
@@ -60,6 +61,7 @@ from taskq.ratelimit.token_bucket import TokenBucket
 from taskq.settings import WorkerSettings
 from taskq.worker._watchdog import LoopLagWatchdog, ShutdownWatchdog, loop_watchdog_loop
 from taskq.worker.cancel import make_cancel_controller
+from taskq.worker.cron_loop import ActorFirePolicy
 from taskq.worker.deps import WorkerDeps, open_worker_deps
 from taskq.worker.health import HealthServer
 from taskq.worker.heartbeat import heartbeat_loop
@@ -153,12 +155,16 @@ def _emit_sub_enqueue_startup_warnings(
 ) -> None:
     """Emit startup warnings for sub-enqueue connection resolution.
 
-    Two checks, mutually exclusive:
+    Three checks:
 
     1. No LOOP-scope ``asyncpg.Connection`` provider registered → warn
        that ``ctx.jobs.enqueue`` will use autonomous commit ().
+       Mutually exclusive with 2 and 3 (early return).
     2. LOOP-scope conn registered but DSNs differ → warn about the
        PgBouncer transaction-mode footgun ().
+    3. LOOP-scope conn registered and ``max_concurrency > 1`` → warn
+       that every consumer slot shares the one connection (issue #116).
+       NOT mutually exclusive with 2 — both can fire on the same boot.
     """
     resolved = loop_scope.resolved_cache()
     has_loop_conn = resolved.get(asyncpg.Connection) is not None
@@ -192,6 +198,32 @@ def _emit_sub_enqueue_startup_warnings(
                 "for workers that use LOOP-scope connections, or "
                 "ensure both DSNs target the same direct PG "
                 "endpoint."
+            ),
+        )
+
+    # Why: warning, never a refusal — single-slot LOOP-connection workers
+    # are a legitimate fleet shape, and the defect is invisible at boot:
+    # nothing about a LOOP-scope registration says "one object", but the
+    # resolver hands that ONE connection to every consumer slot, and
+    # asyncpg permits one operation per connection at a time, so at
+    # max_concurrency > 1 concurrent jobs interleave statements on it and
+    # raise InterfaceError / InternalClientError inside healthy actors —
+    # failures misattributed to the actor (issue #116). Not DSN-gated:
+    # fires alongside the mismatch warning above when both apply.
+    if settings.max_concurrency > 1:
+        log.warning(
+            "loop_scope_conn_shared_across_slots",
+            max_concurrency=settings.max_concurrency,
+            note=(
+                "a LOOP-scope asyncpg.Connection is registered and "
+                "max_concurrency > 1: every consumer slot shares this ONE "
+                "connection, and asyncpg permits one operation per connection "
+                "at a time, so concurrent jobs raise InterfaceError inside "
+                "healthy actors (misattributed to the actor). Transactional "
+                "consume is correct only at max_concurrency=1 — set "
+                "TASKQ_MAX_CONCURRENCY=1 for workers that use LOOP-scope "
+                "connections, or register a pool instead of a single "
+                "connection."
             ),
         )
 
@@ -1052,6 +1084,20 @@ async def _main(
                 shutdown_started_event=deps.producer_stop_event,
                 dump_after_fraction=settings.watchdog_dump_after_fraction,
             )
+            # Cron parity (issue #118): singleton / max_pending reach client
+            # enqueues via the ActorRef stamps in client/_args.py; the cron
+            # tick builds its EnqueueArgs directly, so it needs the flags
+            # here or its fires silently bypass both. Derived once, at the
+            # one site holding the registry; None (no registry) keeps the
+            # tick's no-stamping behavior.
+            actor_fire_policies: Mapping[str, ActorFirePolicy] | None = (
+                {
+                    name: ActorFirePolicy(singleton=ref.singleton, max_pending=ref.max_pending)
+                    for name, ref in actor_registry.items()
+                }
+                if actor_registry is not None
+                else None
+            )
             # A plain ``async with`` plus one finally satisfies both
             # requirements — see that finally for the ordering rationale. A
             # manual __aenter__/__aexit__ pair is NOT needed here and is a
@@ -1106,6 +1152,7 @@ async def _main(
                             backend,
                             clock=_clock,
                             rate_limit_registry=resolved_rl_registry,
+                            actor_policies=actor_fire_policies,
                         ).run(shutdown_event)
                     )
                     _spawn(

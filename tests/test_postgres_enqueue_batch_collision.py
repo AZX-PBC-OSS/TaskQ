@@ -4,8 +4,6 @@ Tests the RETURNING + follow-up SELECT path when idempotency keys collide
 during batch insertion.
 """
 
-from datetime import UTC, datetime
-
 import pytest
 
 from taskq._ids import new_job_id
@@ -33,7 +31,7 @@ def _make_args(
         payload=payload or {"key": "value"},
         max_attempts=3,
         retry_kind="transient",
-        scheduled_at=datetime.now(UTC),
+        scheduled_at=None,
         idempotency_key=IdempotencyKey(idempotency_key) if idempotency_key is not None else None,
     )
 

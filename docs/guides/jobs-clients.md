@@ -179,9 +179,17 @@ remaining steps. Later steps only execute when earlier ones did not match or rai
    configured `unique_states`. On match, returns the existing handle with `was_existing=True` and
    skips all remaining steps.
 3. **Singleton pre-flight** — if `ref.singleton` is `True`, checks for an existing active job for
-   this actor. Raises `SingletonCollisionError` on collision.
+   this actor. Raises `SingletonCollisionError` on collision. Cron fires now carry the same
+   `metadata["singleton"]` stamp and pre-flight — previously the flag was client-enqueue-only
+   (see [Cron Scheduling — singleton and `max_pending` interaction](cron.md#singleton-and-max_pending-interaction)).
 4. **`max_pending` count check** — if `ref.max_pending` is set, counts `pending + scheduled` jobs
-   for this actor. Raises `MaxPendingExceededError` when `count >= max_pending`.
+   for this actor. Raises `MaxPendingExceededError` when `count >= max_pending`. The cap is
+   exact for serial producers and approximate under concurrency: the count and the INSERT are
+   separate statements with no lock between them, so concurrent producers can each pass the
+   check before anyone's insert commits — the overshoot is bounded by the number of racing
+   producers, never unbounded. Crons and single-process producers are exact. An exact cap
+   under concurrency would need a lock on the count path (as `unique_for` takes); if you need
+   that guarantee, tell us.
 5. **`idempotency_key` upsert** — if `idempotency_key` is provided and matches an existing row,
    returns the existing handle with `was_existing=True`.
 6. **Job INSERT** — inserts the new row and returns a handle with `was_existing=False`.
@@ -1031,10 +1039,10 @@ async def cancel_where(
 ) -> BulkCancelResult: ...
 ```
 
-Cancel all jobs matching `filter` in a single set-based operation. Pending/scheduled
-jobs go straight to terminal `cancelled`; running jobs get `cancel_phase=1` (cooperative
-cancel) — the worker's heartbeat observes the phase change and sets the in-process
-`cancel_event` at the next tick.
+Cancel all jobs matching `filter` using set-based SQL, drained in bounded committed
+batches. Pending/scheduled jobs go straight to terminal `cancelled`; running jobs get
+`cancel_phase=1` (cooperative cancel) — the worker's heartbeat observes the phase change
+and sets the in-process `cancel_event` at the next tick.
 
 **Guardrail:** a filter with no predicates (no `queue`, `status`, `actor`,
 `identity_key`, `batch_id`, `tags`, or `active`) is rejected with `EmptyFilterError`
@@ -1044,9 +1052,12 @@ unless `allow_empty_filter=True` is passed. This prevents accidental full-table 
 `active`. The `limit`, `cursor`, and `order_by` fields are ignored — a bulk cancel is
 not paginated.
 
-**Snapshot boundary:** jobs matching the filter that are enqueued *after* the
-statement's snapshot escape this call. Stop producers first, or issue a follow-up call;
-the returned counts make non-convergence detectable.
+**Snapshot boundary:** the drain re-runs its driving statement per batch, each under a
+fresh snapshot, so a matching job enqueued mid-drain is picked up by a later batch. Jobs
+enqueued after the *final* batch's snapshot escape this call. Stop producers first, or
+issue a follow-up call; the returned counts make non-convergence detectable. A
+mid-operation failure leaves the batches that already committed as durable partial
+progress, and a re-run continues where it stopped — already-cancelled rows are skipped.
 
 ```python
 result = await client.cancel_where(
@@ -1071,10 +1082,14 @@ Frozen Pydantic model returned by `cancel_where()`.
 | `cancel_requested_ids` | `list[UUID]` | IDs of running jobs with cancel requested. |
 | `total_affected` | `int` (property) | `cancelled_directly + cancel_requested`. |
 
-For tenant-scale cancels (10^5+ matching rows), partition via filter (e.g.
-`JobFilter(queue=..., tags=...)` to split by queue). A single transaction covering 10^6
-rows would hold locks too long. The counts let the caller verify completeness and issue
-follow-up calls for remaining partitions.
+For tenant-scale cancels (10^5+ matching rows), the drain makes progress batch by
+batch — no single transaction ever holds locks on more than `event_writer_batch_size`
+rows — so a very large match set costs time, not lock-hold. The cancel NOTIFYs to
+running jobs' workers are sent once, after the drain completes, in one batched
+statement. Partitioning via filter (e.g. `JobFilter(queue=..., tags=...)` to split by
+queue) is no longer required for lock safety, but remains useful when you want
+per-partition counts or parallel calls. The counts let the caller verify completeness
+and issue follow-up calls for remaining partitions.
 
 ---
 

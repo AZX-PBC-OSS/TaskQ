@@ -459,7 +459,7 @@ async def test_race_condition_eviction_during_ensure_slots(
         ref,
         payload=_DefaultPayload(session_id="s1"),
         pg_pool=fake_pool,  # type: ignore[arg-type]  # ensure_slots is patched; pool is never used.
-        settings=None,
+        settings=_settings(),  # Why: pool-bearing materialization requires the settings schema source; ensure_slots is patched so the pool is never touched.
     )
 
     assert marked_before_await, (
@@ -517,7 +517,7 @@ async def test_ensure_slots_failure_unwinds_materialization_for_retry(
             ref,
             payload=_DefaultPayload(session_id="s1"),
             pg_pool=fake_pool,  # type: ignore[arg-type]
-            settings=None,
+            settings=_settings(),  # Why: pool-bearing materialization requires the settings schema source; ensure_slots is patched so the pool is never touched.
         )
 
     # The materialization was unwound: nothing registered, nothing tracked.
@@ -529,7 +529,7 @@ async def test_ensure_slots_failure_unwinds_materialization_for_retry(
         ref,
         payload=_DefaultPayload(session_id="s1"),
         pg_pool=fake_pool,  # type: ignore[arg-type]
-        settings=None,
+        settings=_settings(),
     )
     assert name == "session-cap:s1"
     assert ensure_calls == 2

@@ -117,7 +117,7 @@ async def test_tc1_loop_conn_dies_mid_enqueue(
             payload={"name": "parent"},
             max_attempts=3,
             retry_kind="transient",
-            scheduled_at=datetime.now(UTC),
+            scheduled_at=None,
         )
     )
 

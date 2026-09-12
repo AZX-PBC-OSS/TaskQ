@@ -21,7 +21,7 @@ import io
 import json
 import logging
 from contextlib import AsyncExitStack
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 from typing import Any
 from uuid import UUID
 
@@ -167,7 +167,10 @@ async def _enqueue_job(
         payload=payload or {"value": 1},
         max_attempts=3,
         retry_kind="transient",
-        scheduled_at=datetime.now(UTC),
+        # None = immediate: the server stamps and decides status in the
+        # enqueue statement itself — a Python-clock stamp races the
+        # app-to-DB skew and can land the row 'scheduled' under load.
+        scheduled_at=None,
     )
     row = await backend.enqueue(args)
     return row.id

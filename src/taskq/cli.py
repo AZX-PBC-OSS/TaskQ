@@ -578,7 +578,7 @@ async def _up(
     conn: asyncpg.Connection | None = None
     try:
         conn = await _open_migrate_conn(settings, conn_factory)
-        async with migrate_mod.migration_advisory_lock(conn):
+        async with migrate_mod.migration_advisory_lock(conn, schema=settings.schema_name):
             applied = await migrate_mod.apply_pending(
                 conn,
                 schema=settings.schema_name,
@@ -1104,9 +1104,12 @@ def _build_sso_bundle(settings: TaskQSettings, base_path: str) -> Any | None:
         config = OIDCAuthConfig(
             issuer=oidc.issuer,
             client_id=oidc.client_id,
-            client_secret=oidc.client_secret,
+            # Unwrap at the boundary: the settings layer keeps these as
+            # SecretStr so a settings repr can never leak them; the runtime
+            # auth config is the one place they must exist as plain strings.
+            client_secret=oidc.client_secret.get_secret_value(),
             redirect_uri=oidc.redirect_uri,
-            session_secret=oidc.session_secret,
+            session_secret=oidc.session_secret.get_secret_value(),
             session_max_age_seconds=oidc.session_max_age_seconds,
             secure_cookie=secure,
             scope=oidc.scope,
@@ -1125,8 +1128,11 @@ def _build_sso_bundle(settings: TaskQSettings, base_path: str) -> Any | None:
             idp_sso_url=saml.idp_sso_url,
             idp_x509_cert=saml.idp_x509_cert,
             sp_x509_cert=saml.sp_x509_cert,
-            sp_private_key=saml.sp_private_key,
-            session_secret=saml.session_secret,
+            # Unwrap at the boundary (same rationale as the OIDC branch).
+            sp_private_key=(
+                saml.sp_private_key.get_secret_value() if saml.sp_private_key is not None else None
+            ),
+            session_secret=saml.session_secret.get_secret_value(),
             # Must be threaded through explicitly, exactly as the OIDC branch above does:
             # SAMLAuthConfig carries its own 28800 default, so omitting this silently pinned
             # every SAML deployment to 8h and made TASKQ_SAML_SESSION_MAX_AGE_SECONDS — a
@@ -1165,10 +1171,13 @@ def _ui_serve(
     auth_dependency = sso_bundle.dependency if sso_bundle is not None else None
 
     health_deps: list[Any] = []
-    if settings.health_token:
+    # Unwrap for the set-check, None-safe: a SecretStr is ALWAYS truthy (even
+    # the empty default), so `if settings.health_token:` would enable token
+    # auth with an empty token; and an unset field loads as None, not "".
+    if settings.health_token is not None and settings.health_token.get_secret_value():
         from taskq.web.admin.auth import token_auth
 
-        health_deps = [Depends(token_auth(settings.health_token))]
+        health_deps = [Depends(token_auth(settings.health_token.get_secret_value()))]
     elif settings.environment not in {"dev", "development"}:
         if settings.health_require_token:
             raise RuntimeError(

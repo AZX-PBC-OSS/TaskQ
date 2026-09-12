@@ -238,6 +238,12 @@ class TestDeadlockRetry:
             conn.fetchrow = AsyncMock(return_value=None)
 
         conn.executemany = AsyncMock(return_value=None)
+        # The batched event INSERTs and the statement_timeout
+        # capture/restore (current_setting fetch + set_config executes)
+        # run via conn.fetch/conn.execute — bare MagicMock attributes
+        # would not be awaitable.
+        conn.fetch = AsyncMock(return_value=[{"current_setting": "0"}])
+        conn.execute = AsyncMock(return_value="INSERT 0 1")
 
         tx = AsyncMock()
         tx.__aenter__ = AsyncMock(return_value=tx)
@@ -254,6 +260,7 @@ class TestDeadlockRetry:
     @staticmethod
     def _ps_success_row() -> dict[str, object]:
         return {
+            "matched_count": 1,
             "cancelled_directly": 1,
             "cancelled_ids": [new_uuid()],
             "cancelled_prev_statuses": ["pending"],
@@ -262,6 +269,7 @@ class TestDeadlockRetry:
     @staticmethod
     def _running_empty_row() -> dict[str, object]:
         return {
+            "matched_count": 0,
             "cancel_requested": 0,
             "cancel_requested_ids": [],
             "cancel_requested_workers": [],
@@ -271,6 +279,7 @@ class TestDeadlockRetry:
     def _running_success_row() -> dict[str, object]:
         wid = new_uuid()
         return {
+            "matched_count": 1,
             "cancel_requested": 1,
             "cancel_requested_ids": [new_uuid()],
             "cancel_requested_workers": [wid],
@@ -322,27 +331,37 @@ class TestDeadlockRetry:
         assert conn.fetchrow.call_count == 2
 
     async def test_deadlock_during_executemany_retries_correctly(self) -> None:
-        """Deadlock on executemany (after fetchrow succeeds) retries the
-        whole transaction — no phantom IDs from the aborted attempt."""
+        """Deadlock during the event write (after fetchrow succeeds)
+        retries the batch — no phantom IDs from the aborted attempt."""
         ps_row = self._ps_success_row()
         running_row = self._running_empty_row()
-        # Attempt 1: fetchrow → ps_row, executemany → deadlock
-        # Attempt 2: fetchrow → ps_row, executemany → ok, fetchrow → running_row
+        # Attempt 1: fetchrow → ps_row, batched event INSERT → deadlock
+        # Attempt 2: fetchrow → ps_row, event INSERTs → ok, fetchrow → running_row
         pool, conn = self._mock_pool_and_conn(fetch_rows=[ps_row, ps_row, running_row])
 
-        call_count = [0]
+        # The batch transaction also carries statement_timeout capture /
+        # restore executes around the driving fetchrow; the injected
+        # deadlock must land on the batch's EVENT INSERT (after the
+        # fetchrow succeeded and the handler began), not on those, so
+        # gate on the statement's shape rather than its call ordinal.
+        event_inserts = [0]
 
-        async def _flaky_executemany(
+        def _is_event_insert(query: str) -> bool:
+            upper = query.lstrip().upper()
+            return upper.startswith("INSERT INTO") and ".JOB_EVENTS" in upper
+
+        async def _flaky_execute(
             query: str,
-            args: list[tuple[object, ...]],
             *a: object,
             **kw: object,
-        ) -> None:
-            call_count[0] += 1
-            if call_count[0] == 1:
-                raise asyncpg.DeadlockDetectedError()
+        ) -> str:
+            if _is_event_insert(query):
+                event_inserts[0] += 1
+                if event_inserts[0] == 1:
+                    raise asyncpg.DeadlockDetectedError()
+            return "INSERT 0 1"
 
-        conn.executemany = _flaky_executemany
+        conn.execute = _flaky_execute
 
         sql = MagicMock()
         sql.insert_event = "INSERT INTO job_events VALUES ($1, $2, $3, $4)"
@@ -360,6 +379,7 @@ class TestDeadlockRetry:
             fetch_rows=[
                 None,
                 {
+                    "matched_count": 1,
                     "cancel_requested": 1,
                     "cancel_requested_ids": [jid],
                     "cancel_requested_workers": [None],
