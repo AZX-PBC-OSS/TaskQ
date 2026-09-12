@@ -75,6 +75,7 @@ production never constructs. See the section comment there.
 # test_obs_exception_redaction.py, test_pr39_followup_fixes.py,
 # test_drain_old_redis_bounded.py).
 
+import ast
 import hashlib
 import os
 import re
@@ -195,6 +196,123 @@ def test_testing_pkg_no_module_level_schema_constant() -> None:
         "taskq.testing package:\n"
         + "\n".join(f"  - {f}" for f in offenders)
         + "\n\nUse a per-call unique name instead of a module-level constant."
+    )
+
+
+# ── pg_stat_activity database scoping ────────────────────────────────
+#
+# pg_stat_activity is CLUSTER-wide, and the invocation's ONE shared
+# Postgres container hosts every xdist worker's per-module database (see
+# the pg_dsn fixture's docstring): a lock-waiter gate that polls
+# pg_stat_activity without a database scope counts backends it has no
+# relationship with, and a statement-shape LIKE cannot fix that — every
+# bulk-cancel and deregister driving statement in the suite shares the
+# ``matching AS MATERIALIZED`` shape, so another worker's parked drain
+# satisfies the gate as surely as our own. A false positive lands the
+# test's raced COMMIT early: test_rt_cancel_window_race.py's
+# deregistration preflight then saw the claimed row as committed
+# 'running' and refused with ActorHasActiveJobsError (PR #120's CI
+# failure, mechanism reproduced deterministically against a two-database
+# cluster), and test_rt_cancel_deadlock.py's holder would close the
+# deadlock cycle before the drain's event INSERT parked, inverting which
+# transaction's detector arms first. Every pg_stat_activity query in the
+# test tree (and in the published testing package) must therefore scope
+# to the querying connection's own database — ``datname =
+# current_database()`` — the discipline the LISTEN-pid queries in
+# test_stream.py / test_watch_reclaims.py already follow. Product-code
+# queries are not this scan's business: they isolate by relation OID
+# (regclass), which no other database's rows can match.
+
+
+def _pg_stat_activity_string_constants(tree: ast.Module) -> list[str]:
+    """Every non-docstring string value in *tree* that mentions
+    pg_stat_activity. The parser folds implicit concatenation into one
+    constant, so one constant is one query; an f-string folds to the
+    concatenation of its literal chunks, with every chunk consumed by a
+    fold suppressed from the standalone-constant pass (ast.walk yields a
+    JoinedStr before its children, but only if the fold — not the walk —
+    owns the recursion does a nested f-string avoid being re-emitted as
+    a fragment). The scan therefore sees exactly the literal text of
+    every query: a table name or scope predicate smuggled in through an
+    interpolation or a variable is invisible to any static scan, which
+    is the honest limit of a source pin. Docstrings are prose (this
+    file's own included), not queries, and are skipped by node identity.
+    """
+    docstring_constant_ids: set[int] = set()
+    docstring_joined_ids: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            body = node.body
+            if body and isinstance(body[0], ast.Expr):
+                first = body[0].value
+                if isinstance(first, ast.Constant) and isinstance(first.value, str):
+                    docstring_constant_ids.add(id(first))
+                elif isinstance(first, ast.JoinedStr):
+                    docstring_joined_ids.add(id(first))
+
+    consumed: set[int] = set()
+    seen_joined: set[int] = set()
+
+    def _flatten(node: ast.JoinedStr) -> str:
+        seen_joined.add(id(node))
+        parts: list[str] = []
+        for value in node.values:
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                consumed.add(id(value))
+                parts.append(value.value)
+            elif isinstance(value, ast.FormattedValue):
+                inner = value.value
+                if isinstance(inner, ast.JoinedStr):
+                    parts.append(_flatten(inner))
+                elif isinstance(inner, ast.Constant) and isinstance(inner.value, str):
+                    consumed.add(id(inner))
+                    parts.append(inner.value)
+        return "".join(parts)
+
+    joined: list[tuple[int, str]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.JoinedStr) and id(node) not in seen_joined:
+            joined.append((id(node), _flatten(node)))
+
+    queries: list[str] = []
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and id(node) not in docstring_constant_ids
+            and id(node) not in consumed
+            and "pg_stat_activity" in node.value
+        ):
+            queries.append(node.value)
+    queries.extend(
+        text
+        for node_id, text in joined
+        if node_id not in docstring_joined_ids and "pg_stat_activity" in text
+    )
+    return queries
+
+
+def test_pg_stat_activity_queries_are_scoped_to_the_current_database() -> None:
+    """No test may poll pg_stat_activity without a database scope — an
+    unscoped query is satisfied by another xdist worker's parked backend
+    on the shared cluster (see the section comment for the two failure
+    modes that produced)."""
+    files = [p for p in _TESTS_DIR.rglob("*.py") if p != _SELF]
+    files.extend(_TESTING_PKG_DIR.rglob("*.py"))
+    offenders: list[str] = []
+    for path in sorted(files):
+        for query in _pg_stat_activity_string_constants(ast.parse(path.read_text())):
+            if "datname" not in query or "current_database" not in query:
+                offenders.append(
+                    f"{path.relative_to(_TESTS_DIR.parent)}: {query.strip().splitlines()[0]}"
+                )
+    assert not offenders, (
+        "Found pg_stat_activity query(ies) without a datname = current_database() "
+        "scope:\n"
+        + "\n".join(f"  - {f}" for f in offenders)
+        + "\n\npg_stat_activity is cluster-wide and the shared container hosts every "
+        "xdist worker's database, so an unscoped query is satisfied by other "
+        "workers' backends. Scope it to the querying connection's own database."
     )
 
 

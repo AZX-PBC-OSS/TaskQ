@@ -155,14 +155,25 @@ async def _wait_for_lock_waiter(
     *,
     budget: float = 10.0,
 ) -> None:
-    """Block until some OTHER backend is waiting on a lock — proof the
-    drain's event INSERT is parked on the holder's table lock."""
+    """Block until the drain's batch-2 event INSERT is parked on the
+    holder's table lock: an active lock waiter in THIS database whose
+    statement touches ``job_events``.  ``pg_stat_activity`` is
+    cluster-wide and the invocation's one shared container hosts every
+    xdist worker's per-module database, so the database scope is what
+    makes "a backend waits" mean "our drain waits" — an unscoped count
+    is satisfied by any other worker's parked statement, which would let
+    the holder close the cycle before the drain's INSERT parks, invert
+    which transaction's deadlock detector arms first, and abort the
+    holder instead of the drain the retry loop exists to exercise
+    (pinned suite-wide by ``test_suite_hygiene.py``)."""
     deadline = asyncio.get_running_loop().time() + budget
     while asyncio.get_running_loop().time() < deadline:
         waiters: int = await conn.fetchval(
             "SELECT count(*) FROM pg_stat_activity "
-            "WHERE wait_event_type = 'Lock' AND state = 'active' "
-            "AND pid <> pg_backend_pid()"
+            "WHERE datname = current_database() "
+            "AND wait_event_type = 'Lock' AND state = 'active' "
+            "AND pid <> pg_backend_pid() "
+            "AND query LIKE '%job_events%'"
         )
         if waiters:
             return

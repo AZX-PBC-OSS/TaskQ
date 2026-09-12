@@ -21,8 +21,9 @@ dispatch-claim UPDATE before the drain's first driving statement runs.
 The statement's snapshot cannot see the uncommitted claim, so the window
 still admits the claimed row; the UPDATE must lock that row to finish,
 so the statement parks on the claimer's lock — provably between its
-snapshot and its row lock (observed via ``pg_stat_activity``, the same
-discipline as ``test_rt_cancel_deadlock.py``'s
+snapshot and its row lock (observed via a database-scoped
+``pg_stat_activity`` poll, the same discipline as
+``test_rt_cancel_deadlock.py``'s
 ``_wait_for_lock_waiter``).  The claimer's COMMIT then lands the race:
 the parked UPDATE's EPQ re-check sees ``running`` and skips the row, so
 the batch's affected count is one short of its window while a tail of
@@ -110,17 +111,27 @@ async def _wait_for_drain_parked_on_row_lock(
 ) -> None:
     """Block until a driving cancel statement is parked on a row lock.
 
-    The parked backend is identified by ``query LIKE '%matching AS
-    MATERIALIZED%'`` (the driving statements' own shape) so a concurrent
-    test's unrelated lock waiter can never satisfy this gate.  The
-    claimer is ``idle in transaction`` while it holds the row lock, so it
-    cannot be the match.
+    The parked backend must be in THIS database (``datname =
+    current_database()``) and carry the driving statements' own shape
+    (``query LIKE '%matching AS MATERIALIZED%'``).  ``pg_stat_activity``
+    is cluster-wide and the invocation's one shared container hosts every
+    xdist worker's per-module database, so the database scope is what
+    makes the gate mean "our drain parked" — the shape alone never could:
+    every bulk-cancel/deregister driving statement in the suite shares
+    it, and a concurrently parked one in another worker's database
+    satisfied this gate as written, landing the raced COMMIT before
+    ``deregister_actor``'s preflight running-check ran and turning the
+    constructed TOCTOU into an ``ActorHasActiveJobsError`` refusal (the
+    CI failure this scope now excludes; pinned suite-wide by
+    ``test_suite_hygiene.py``).  The claimer is ``idle in transaction``
+    while it holds the row lock, so it cannot be the match.
     """
     deadline = asyncio.get_running_loop().time() + budget
     while asyncio.get_running_loop().time() < deadline:
         parked: int = await conn.fetchval(
             "SELECT count(*) FROM pg_stat_activity "
-            "WHERE wait_event_type = 'Lock' AND state = 'active' "
+            "WHERE datname = current_database() "
+            "AND wait_event_type = 'Lock' AND state = 'active' "
             "AND pid <> pg_backend_pid() "
             "AND query LIKE '%matching AS MATERIALIZED%'"
         )
