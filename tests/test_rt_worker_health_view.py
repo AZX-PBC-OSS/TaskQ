@@ -4,8 +4,9 @@ The degraded view reads the obs layer's module-level success/batch-size
 caches — THIS process's stamps for the sweeps ITS leader loops ran. The
 attacks here: the staleness boundary (three whole intervals, strictly
 greater), the reduced-tier threshold reading the PASSED settings (not a
-constant), the emitter↔reader pairing (``record_sweep_success`` mutates
-the cache in place; the reader must see that), and the demotion path —
+constant), the emitter↔reader pairing (the reader must see
+``record_sweep_success``'s latest stamp through the live cache), and the
+demotion path —
 a demoted process keeps exporting frozen success stamps it no longer has
 authority over, which is both a permanently-degraded health body and a
 permanently-firing promotion-stalled alert from every ex-leader pod.
@@ -140,30 +141,34 @@ def test_batch_size_equal_to_configured_is_not_degraded(
     assert view["reasons"] == []
 
 
-# ── Emitter↔reader pairing: in-place mutation must be visible ────────────
+# ── Emitter↔reader pairing: the latest stamp must reach the reader ──────
 
 
-def test_reader_sees_in_place_success_stamps(monkeypatch: pytest.MonkeyPatch) -> None:
-    """``record_sweep_success`` mutates the cache dict IN PLACE — the
-    reader must observe that mutation. Guards against a refactor that
-    rebinds the reader to a copy taken at import time (the stamps would
-    silently stop reaching the health view and the staleness gauge)."""
+def test_reader_sees_success_stamps(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The reader must observe ``record_sweep_success``'s latest stamp —
+    whatever publication shape the writer uses. Guards against a refactor
+    that rebinds the reader to a copy taken at import time (the stamps
+    would silently stop reaching the health view and the staleness
+    gauge). The writer may rebind the cache (copy-on-write, for the OTel
+    reader thread) — the contract is that the live cache, not a frozen
+    snapshot, is what the reader sees."""
     import time
 
     monkeypatch.setattr(_otel, "_sweep_success_cache", {})
     monkeypatch.setattr(_otel, "_sweep_batch_size_cache", {})
     settings = _settings(TASKQ_SWEEP_INTERVAL="1")
 
-    # The emitter writes through the CURRENT module cache, in place.
+    # The emitter publishes through the CURRENT module cache; ageing the
+    # stamp it just wrote, exactly as elapsed time would.
     _otel.record_sweep_success("scheduled_to_pending")
-    _otel._sweep_success_cache["scheduled_to_pending"] = (  # pyright: ignore[reportPrivateUsage]  # Why: ageing the just-written stamp in place, exactly as elapsed time would.
+    _otel._sweep_success_cache["scheduled_to_pending"] = (  # pyright: ignore[reportPrivateUsage]  # Why: ageing the just-written stamp, exactly as elapsed time would.
         time.time() - 10 * settings.sweep_interval
     )
 
     view = maintenance_health(settings)
 
     assert view["degraded"] is True, (
-        "the health view did not see the emitter's in-place stamp — the "
+        "the health view did not see the emitter's stamp — the "
         "reader and the writer are on different cache objects"
     )
 

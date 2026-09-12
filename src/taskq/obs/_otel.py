@@ -666,6 +666,20 @@ _disabled_schedules_gauge = get_meter().create_observable_gauge(
 # code that would have recorded it, so a livelocking sweep emits no samples
 # at all — not zero, nothing. The emitters below are called from `finally`
 # blocks and failure branches so a timing-out sweep is recorded as such.
+#
+# Publication discipline: the three cache dicts below are read on TWO
+# threads. The event-loop thread publishes stamps via the record_* / update_*
+# functions, and the OTel SDK reader thread iterates them from the
+# observable-gauge callbacks (``_observe_sweep_success`` et al.) — the
+# identical cross-thread shape the ``_active_leaders_lock`` in leader.py
+# guards against ("Unsynchronized iteration raises RuntimeError"). So every
+# writer REBINDS a fresh dict (copy-on-write, like ``_queue_depth_cache``
+# and ``_jobs_by_status_cache`` below) rather than mutating in place: an
+# in-place insert that lands while a reader's iterator is open raises
+# ``RuntimeError: dictionary changed size during iteration`` — and the first
+# success after startup and every post-demotion repopulation are exactly
+# such inserts. A rebind is atomic and leaves the reader's already-open
+# iterator over a frozen object.
 
 
 def record_sweep_timeout(sweep_name: str) -> None:
@@ -697,16 +711,22 @@ _sweep_success_cache: dict[str, float] = {}
 def record_sweep_success(sweep_name: str) -> None:
     """Stamp the wall-clock time of a sweep call's success.
 
-    Feeds the staleness gauge below: ``time() - last_success`` answers "is
-    this sweep still making progress?" independently of row counts, so a
-    sweep that finds zero eligible rows every tick (healthy) is
-    distinguishable from one that never completes (stalled). The row-count
-    counter and the duration histogram share this call site but NOT this
-    sample population: a timed-out sweep records duration and a timeout but
-    no row sample, so rows and duration must be read as different
-    populations, which the sweep_timeouts counter reconciles.
+    Feeds the staleness gauge below and ``maintenance_health``'s stalled
+    view: ``time() - last_success`` answers "is this sweep still making
+    progress?" independently of row counts, so a sweep that finds zero
+    eligible rows every tick (healthy) is distinguishable from one that
+    never completes (stalled). The row-count counter and the duration
+    histogram share this call site but NOT this sample population: a
+    timed-out sweep records duration and a timeout but no row sample, so
+    rows and duration must be read as different populations, which the
+    sweep_timeouts counter reconciles.
+
+    Rebind, never write in place: the cache is iterated on the OTel
+    reader thread while this runs on the event-loop thread (see the
+    section comment above).
     """
-    _sweep_success_cache[sweep_name] = time.time()
+    global _sweep_success_cache
+    _sweep_success_cache = {**_sweep_success_cache, sweep_name: time.time()}
 
 
 def _observe_sweep_success(options: CallbackOptions) -> Iterable[Observation]:
@@ -731,11 +751,13 @@ def record_sweep_batch_size(sweep_name: str, batch_size: int) -> None:
 
     The maintenance sweeps degrade to a reduced batch after repeated
     cancellations; a worker reporting the reduced tier is reporting an
-    unhealthy database and must not be silent about it.
-    Respects ``_otel_enabled`` — no-op when False.
+    unhealthy database and must not be silent about it. Feeds BOTH the
+    batch-size gauge below AND ``maintenance_health``'s reduced-tier view
+    (health.py reads the cache directly) — so it is deliberately NOT gated
+    on ``_otel_enabled``: the health body must keep reporting a latched
+    reduced tier when an operator has exported telemetry off, because that
+    body is the Prometheus-free surface the degraded signal exists for.
     """
-    if not _otel_enabled:
-        return
     update_sweep_batch_size_cache(sweep_name, batch_size)
 
 
@@ -743,8 +765,13 @@ _sweep_batch_size_cache: dict[str, int] = {}
 
 
 def update_sweep_batch_size_cache(sweep_name: str, batch_size: int) -> None:
-    """Replace the recorded batch size for *sweep_name* (cache-push gauge)."""
-    _sweep_batch_size_cache[sweep_name] = batch_size
+    """Replace the recorded batch size for *sweep_name* (cache-push gauge).
+
+    Rebind, never write in place — same cross-thread reader discipline as
+    :func:`record_sweep_success`.
+    """
+    global _sweep_batch_size_cache
+    _sweep_batch_size_cache = {**_sweep_batch_size_cache, sweep_name: batch_size}
 
 
 def _observe_sweep_batch_size(options: CallbackOptions) -> Iterable[Observation]:
@@ -772,11 +799,19 @@ def record_sweep_batch_size_configured(sweep_name: str, configured_size: int) ->
     (used vs configured) is what makes the sweep-degraded signal track
     per-worker ``event_writer_batch_size``: a literal threshold is blind
     on every deployment whose configured size is not the default.
-    Respects ``_otel_enabled`` — no-op when False.
+    Respects ``_otel_enabled`` — no-op when False (its only consumer is
+    the OTel gauge, unlike :func:`record_sweep_batch_size`).
+
+    Rebind, never write in place — same cross-thread reader discipline as
+    :func:`record_sweep_success`.
     """
     if not _otel_enabled:
         return
-    _sweep_batch_size_configured_cache[sweep_name] = configured_size
+    global _sweep_batch_size_configured_cache
+    _sweep_batch_size_configured_cache = {
+        **_sweep_batch_size_configured_cache,
+        sweep_name: configured_size,
+    }
 
 
 def _observe_sweep_batch_size_configured(options: CallbackOptions) -> Iterable[Observation]:

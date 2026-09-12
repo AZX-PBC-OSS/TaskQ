@@ -56,7 +56,7 @@ another. See [workers.md — Queue selection](workers.md#queue-selection) — an
 with a deep `strict_fifo` backlog starves *everything behind it*, which is a
 [priority problem](#starvation-priority-and-fairness), not only a partitioning problem.
 
-**One leader per fleet.** An advisory lock elects one worker to run the maintenance loops: sweeps
+**One leader per schema.** A schema-qualified advisory lock elects one worker to run the maintenance loops: sweeps
 (crash reclaim, deadline enforcement), scheduled-job promotion, cron. If the leader dies, another
 worker takes over at the next election. Nothing needs a dedicated process.
 
@@ -555,11 +555,10 @@ every trigger, not just one.
 - **`scheduled_at` is timezone-aware only** (naive datetimes raise), and promotion runs on the
   leader's ~1 s tick — that's your timing precision.
 - **Cron fires on schedule regardless of the previous fire.** A cron actor slower than its
-  cadence piles up overlapping runs. Overlap suppression options, with their traps:
-    - `singleton=True` on the actor: the still-active previous fire makes the next fire's INSERT
-      raise — and **three consecutive fire failures auto-disable the schedule permanently**
-      (`enabled=false`, `cron_auto_disable_threshold=3`). Only safe when the actor always
-      finishes well inside the cadence and never snoozes (a snoozed job is `scheduled` = active).
+  cadence piles up overlapping runs. Overlap suppression options:
+    - `singleton=True` on the actor: a fire landing while the previous fire is still
+      active is **suppressed, not failed** — no `consecutive_failures` strike, no
+      auto-disable. Safe for actors that routinely outrun their cadence.
     - `identity_key` on the schedule + `unique_for` on the actor: fires inside the window dedup
       silently (no strike). The window must cover the cadence, and it single-flights the *root*
       only (see the dedup rule above).
@@ -794,7 +793,10 @@ Every job emits an `enqueue` PRODUCER span, a `process` CONSUMER span (linked, w
 | Metric / signal | Catches |
 |---|---|
 | `taskq.queue.depth` (by queue — counts `pending` **and** `scheduled`) | backlog growth, starved queues, fan-out storms |
-| scheduled depth specifically (SQL below) | the promotion stall described below |
+| `taskq.jobs.by_status` (by status — `pending` and `scheduled` reported separately) | which side of promotion the backlog sits on |
+| `taskq.jobs.oldest_due_age_seconds` | how long the oldest due `scheduled` job has waited for promotion |
+| `taskq_maintenance_leader_sweep_last_success_seconds` (by sweep) | per-sweep stalls — a sweep that stops completing |
+| `taskq_maintenance_leader_sweep_timeouts_total` (by sweep) | batches aborted by deadlines or server-side cancels |
 | `taskq.jobs.stranded` (gauge) | jobs whose actor has no `actor_config` row — can never dispatch |
 | `taskq.dispatch.duration` | dispatch contention (PgBouncer/pool trouble) |
 | `messaging.process.duration` | actor latency, slow chunks |
@@ -820,15 +822,17 @@ GROUP BY queue, status ORDER BY count(*) DESC;
 
 ### Watch: large scheduled backlogs
 
-A very large set of *due* `scheduled` jobs can stall promotion itself: the leader's
-promotion sweep selects all due rows in one transaction and writes one state-change event row
-per promoted job, under a single `dispatcher_command_timeout` (default 5 s) deadline for the
-whole iteration. If the set is too large to promote inside the deadline, the transaction rolls
-back — and the next tick faces the same (or a larger) set. This is a known livelock class under
-active repair — check the project's GitHub issues for current status. The detection guidance
-below stays valuable regardless, because it catches *any* failure mode that grows the scheduled
-backlog. Symptoms: `scheduled` depth grows, `pending` stays empty, throughput is zero, and
-**health probes stay green** (the failure is transient-classified; the loop is alive). Detect it
+A very large set of *due* `scheduled` jobs drains one bounded batch per one-second
+tick (`TASKQ_EVENT_WRITER_BATCH_SIZE` rows, default 100, each batch its own committed
+transaction with a server-side `statement_timeout`). Promotion always makes progress,
+but a backlog larger than the drain rate still grows — and the fleet still looks
+healthy from the outside while it does (workers heartbeat normally, dispatch reports
+`count: 0`). An earlier design promoted the whole due set in one transaction under a
+single `dispatcher_command_timeout` deadline, which wedged into timeout-rollback-timeout
+past a backlog cliff; the bounded batches replaced it (see
+[maintenance-sweeps.md](maintenance-sweeps.md)). The detection guidance below catches
+*any* failure mode that grows the scheduled backlog. Symptoms: `scheduled` depth grows,
+`pending` stays empty, throughput is zero, and **health probes stay green**. Detect it
 before it bites:
 
 ```sql
@@ -836,9 +840,10 @@ SELECT count(*) FROM {schema}.jobs
 WHERE status = 'scheduled' AND scheduled_at <= clock_timestamp();
 ```
 
-Alert on that count and on the `scheduled-wake-failed` / `sweep-deadline-exceeded-failed`
-log events (`kind="scheduled_wake_failed"` / `kind="sweep_deadline_exceeded_failed"` — alert on
-the `event` name, not the `kind` value, for field-scoped matchers). Prevent it with `max_pending` on high-fan-out actors, retry policies that disperse
+Alert on that count, on `taskq.jobs.oldest_due_age_seconds`, and on the
+`TaskQScheduledBacklogGrowing` / `TaskQPromotionStalled` rules in
+[`src/taskq/contrib/prometheus/rules.yaml`](https://github.com/AZX-PBC-OSS/TaskQ/blob/main/src/taskq/contrib/prometheus/rules.yaml)
+(runbooks: [runbooks.md](runbooks.md)). Prevent it with `max_pending` on high-fan-out actors, retry policies that disperse
 cohorts (longer `base`, higher `jitter` — see [§6](#6-classifying-failures-terminal-retryable-transient)),
 and bounded fan-out per job (chunk sizes in the hundreds, not the tens of thousands).
 
@@ -914,7 +919,7 @@ The condensed "know this before your first incident" list. Each row links to the
 | `max_retry_backoff` raised, long backoffs still capped | retries at 24 h ceiling | the ceiling is `min(policy.cap, TASKQ_MAX_RETRY_BACKOFF)` ([retries.md](retries.md#3-backoff-algorithms)) |
 | Catching failures and returning a result | job `succeeded`, retry machinery never engaged | raise — [§6](#6-classifying-failures-terminal-retryable-transient) |
 | Actor returns normally during a drain-cancel | job records `succeeded`, chain dies on every deploy | drain sets the same cancel event — never return normally on cancel ([§6](#6-classifying-failures-terminal-retryable-transient)) |
-| Cron actor overlap "suppressed" with `singleton=True` | schedule auto-disables after 3 collisions | fires strike out at 3 — see [§5 — Cron](#cron-and-scheduled-workloads) |
+| Cron actor overlap "suppressed" with `singleton=True` | slot skipped, no strike, next due tick re-evaluates | suppression semantics — see [§5 — Cron](#cron-and-scheduled-workloads) |
 
 **Fan-out & dedup**
 

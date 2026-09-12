@@ -450,7 +450,9 @@ while it is off, so an audit of startup logs will find it.
 
 URI credential masking (`postgresql://taskq:***@host`) is **not** covered by
 this toggle and is always applied. There is no debugging case for shipping a
-password to a telemetry backend.
+password to a telemetry backend. The mask also covers the empty-username form
+(`postgresql://:***@host`, which is what a DSN renders when only a password is
+set) and password-family query parameters (`?password=***`).
 
 ### Logging inside an actor
 
