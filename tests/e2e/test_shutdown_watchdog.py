@@ -40,7 +40,7 @@ import pytest
 import pytest_asyncio
 
 from taskq._ids import new_uuid
-from taskq.testing._shared_containers import creator_labels
+from taskq.testing._shared_containers import creator_labels, skip_test_without_docker
 from taskq.worker._watchdog import EXIT_WATCHDOG
 from tests.conftest import free_host_port
 
@@ -92,7 +92,9 @@ class ChaosSchema(NamedTuple):
 
 @pytest.fixture
 def chaos_pg(e2e_network: Network) -> Iterator[ChaosPg]:
-    """Function-scoped chaos PG container."""
+    """Function-scoped chaos PG container. Skips with a reason (never
+    errors) when the Docker daemon is unreachable."""
+    skip_test_without_docker()
     from testcontainers.community.postgres import PostgresContainer
 
     alias = f"pg-sdw-{new_uuid().hex[:8]}"

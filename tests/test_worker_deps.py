@@ -22,7 +22,7 @@ import pytest
 from testcontainers.community.postgres import PostgresContainer
 
 from taskq.constants import wake_channel
-from taskq.testing._shared_containers import creator_labels
+from taskq.testing._shared_containers import creator_labels, skip_test_without_docker
 from taskq.testing.settings import make_integration_settings
 from taskq.worker.deps import open_worker_deps
 
@@ -375,8 +375,10 @@ def disposable_pg_container() -> Iterator[PostgresContainer]:  # pyright: ignore
     container must never be mutated like this — same never-touch-the-shared-
     one rule as ``killable_redis_container``. Labeled with the ownership
     labels so a crashed run's leftover is sweepable (Ryuk is disabled
-    process-wide by the shared-container machinery).
+    process-wide by the shared-container machinery). Skips with a reason
+    (never errors) when the Docker daemon is unreachable.
     """
+    skip_test_without_docker()
     with PostgresContainer(
         image="postgres:18-alpine",
         username="taskq",

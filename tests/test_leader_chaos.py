@@ -45,7 +45,7 @@ from taskq._ids import new_base62, new_uuid
 from taskq.backend.clock import SystemClock
 from taskq.backend.postgres import PostgresBackend
 from taskq.constants import schema_lock_name
-from taskq.testing._shared_containers import creator_labels
+from taskq.testing._shared_containers import creator_labels, skip_test_without_docker
 from taskq.testing.fixtures import _create_worker, _open_pg_backend, _open_two_pg_workers
 from taskq.testing.settings import shorten_chaos_settings
 from taskq.worker.deps import WorkerDeps, open_worker_deps
@@ -314,8 +314,10 @@ async def _off_loop_container(
     Why: docker-py is requests-based — container start (+ readiness wait) and
     stop are blocking HTTP round-trips that can run for seconds; executed on
     the loop they stall it for the whole round-trip, defeating every
-    client-side timeout sharing that loop.
+    client-side timeout sharing that loop. Skips the test with a reason
+    (never errors) when the Docker daemon is unreachable.
     """
+    skip_test_without_docker()
     try:
         started = await asyncio.to_thread(container.start)
     except BaseException:

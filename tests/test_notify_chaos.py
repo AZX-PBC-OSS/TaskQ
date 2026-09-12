@@ -30,7 +30,7 @@ from taskq.backend.clock import SystemClock
 from taskq.backend.postgres import PostgresBackend
 from taskq.constants import wake_channel
 from taskq.settings import WorkerSettings
-from taskq.testing._shared_containers import creator_labels
+from taskq.testing._shared_containers import creator_labels, skip_test_without_docker
 from taskq.testing.fixtures import _create_worker
 from taskq.testing.settings import make_integration_settings
 from taskq.worker.notify import _active_listeners as _active_notify_listeners
@@ -99,8 +99,10 @@ def pg_container_function_scoped() -> Iterator[PostgresContainer]:
     re-derive can retarget. Docker reassigns a Docker-chosen ephemeral
     host port on start, so without an explicit binding that test fails
     with ConnectionRefused whenever the reassignment actually happens
-    (flaky under full-suite Docker load). See ``free_host_port``.
+    (flaky under full-suite Docker load). See ``free_host_port``. Skips
+    with a reason (never errors) when the Docker daemon is unreachable.
     """
+    skip_test_without_docker()
     container = PostgresContainer(
         image="postgres:18-alpine",
         username="taskq",
