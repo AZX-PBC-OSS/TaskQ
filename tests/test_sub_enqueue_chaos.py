@@ -99,7 +99,7 @@ async def _dispatch_job(
 # ── LOOP-scope connection dies mid-enqueue ─────────────────────
 
 
-async def test_tc1_loop_conn_dies_mid_enqueue(
+async def test_tc1_transaction_conn_dies_mid_enqueue(
     jobs_app: JobsApp,
 ) -> None:
     """LOOP-scope connection dies during child INSERT; transaction rolls back; terminal write on fresh conn."""
@@ -157,7 +157,7 @@ async def test_tc1_loop_conn_dies_mid_enqueue(
                 payload_type=_ParentPayload,
                 clock=clk,
                 enqueuer=enqueuer,
-                loop_conn=chaos_conn,
+                transaction_conn=chaos_conn,
             )
 
     async with deps.worker_pool.acquire() as check_conn:

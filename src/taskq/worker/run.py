@@ -59,7 +59,7 @@ from taskq.worker._bootstrap import worker_main, worker_main_async
 from taskq.worker._transient import TRANSIENT_PG_ERRORS
 from taskq.worker.cancel import make_cancel_controller
 from taskq.worker.deps import WorkerDeps
-from taskq.worker.dispatch import dispatch_one_job
+from taskq.worker.dispatch import SlotPoolAcquireError, dispatch_one_job
 
 __all__ = [  # pyright: ignore[reportUnsupportedDunderAll]  # Why: _main is lazily re-exported via __getattr__
     "_main",
@@ -539,6 +539,16 @@ async def di_consumer_loop(
             )
             if outcome == "failed":
                 deps.drain_failures += 1
+        except SlotPoolAcquireError:
+            # Infrastructure, not a job outcome: the job is already
+            # claimed, its lock lease expires, and the reclaim sweep
+            # re-dispatches it. Counting this as a drain failure would
+            # make a Kubernetes Job / CI drain step report job failures
+            # that never happened. The acquire was recorded (counter)
+            # and logged (per-occurrence cause, job id) at the raise
+            # site; nothing to do here but leave the job to lease
+            # reclaim.
+            continue
         except Exception:
             _consumer_log.exception("dispatch-failed", job_id=str(job.id))
             deps.drain_failures += 1

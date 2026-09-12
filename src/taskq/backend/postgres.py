@@ -332,7 +332,7 @@ class PostgresBackend:
         self,
         args_list: list[EnqueueArgs],
         *,
-        connection: "asyncpg.Connection | None" = None,
+        connection: ConnLike | None = None,
         enforce_max_pending: bool = True,
     ) -> list[JobRow]:
         return await _enqueue_batch(
@@ -348,7 +348,7 @@ class PostgresBackend:
         self,
         args_list: list[EnqueueArgs],
         *,
-        connection: "asyncpg.Connection | None" = None,
+        connection: ConnLike | None = None,
         enforce_max_pending: bool = True,
     ) -> int:
         return await _enqueue_batch_fast(

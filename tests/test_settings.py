@@ -650,6 +650,39 @@ def test_environment_inherited_by_worker_settings() -> None:
     assert s.environment == "dev"
 
 
+@pytest.mark.parametrize(
+    ("environment", "expected"),
+    [
+        ("dev", True),
+        ("development", True),
+        ("production", False),
+        ("staging", False),
+        ("", False),
+        (None, False),
+    ],
+)
+def test_is_dev_environment(environment: str | None, expected: bool) -> None:
+    """is_dev_environment is True only for the dev/development labels.
+
+    The dev label is the single carve-out from the fail-closed auth gates
+    (admin UI, health/metrics token, progress router), so the predicate
+    must treat None (the unset default) and every other label — including
+    the empty string — as not dev, keeping those gates closed.
+    """
+    s = TaskQSettings.load_from_dict(
+        {} if environment is None else {"TASKQ_ENVIRONMENT": environment}
+    )
+    assert s.is_dev_environment is expected
+
+
+def test_is_dev_environment_inherited_by_worker_settings() -> None:
+    """WorkerSettings inherits is_dev_environment from TaskQSettings."""
+    s = _load(TASKQ_ENVIRONMENT="dev")
+    assert s.is_dev_environment is True
+    s = _load(TASKQ_ENVIRONMENT="production")
+    assert s.is_dev_environment is False
+
+
 # ── admin_max_sse_connections field (TaskQSettings) ──────────────────────────
 
 

@@ -5,9 +5,11 @@ The ``_main`` coroutine wires the full TaskGroup of long-lived siblings
 ``worker_main`` is the process entry point that runs ``_main`` under an
 ``asyncio.Runner``.
 
-``_emit_sub_enqueue_startup_warnings`` checks LOOP-scope connection
-resolution and warns about the PgBouncer transaction-mode and
-shared-across-consumer-slots connection footguns.
+``_maybe_open_slot_pool`` opens the worker's per-slot transaction pool
+when a LOOP-scope connection is registered and ``max_concurrency > 1``,
+and announces the mode; ``_emit_sub_enqueue_startup_warnings`` checks
+LOOP-scope connection resolution and warns about the PgBouncer
+transaction-mode connection footgun.
 ``_emit_unconsumed_queue_startup_warnings`` warns — once, aggregated —
 when served actors declare queues outside the worker's consumed set,
 or distinctly when the worker consumes no queues at all (issue #90).
@@ -24,17 +26,18 @@ from typing import Any, cast
 import asyncpg
 import structlog
 
-from taskq._close import worst_case_teardown_tail
+from taskq._close import CLOSE_TIMEOUT_SECS, close_pool_bounded, worst_case_teardown_tail
 from taskq._di import ProviderRegistry, Scope
 from taskq._di.scopes import LoopScope, ProcessScope, ThreadScope, make_resolver
 from taskq._dsn import dsn_host as _dsn_host
 from taskq.actor import ActorRef
 from taskq.actor_config import ActorConfig
+from taskq.auth import PgCredentialProvider, make_pg_pool_factory
 from taskq.backend._protocol import Backend, JobRow, ScheduleCreateArgs
 from taskq.backend.clock import Clock, SystemClock
 from taskq.backend.postgres import PostgresBackend
 from taskq.client._enqueuer import SubJobEnqueuer
-from taskq.connections import WorkerConnections
+from taskq.connections import PoolFactory, WorkerConnections
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex for defence-in-depth schema validation at this SQL interpolation site, per architecture.md §8 Invariant 4
 )
@@ -48,6 +51,7 @@ from taskq.obs import (
     set_exception_message_max_chars,
     set_exception_redaction_enabled,
     set_otel_enabled,
+    set_slot_pool_occupancy_source,
     setup_logging,
 )
 from taskq.progress._flush import progress_flush_loop
@@ -74,6 +78,8 @@ __all__ = [
     "_emit_sub_enqueue_startup_warnings",
     "_emit_unconsumed_queue_startup_warnings",
     "_main",
+    "_maybe_open_slot_pool",
+    "_slot_pool_factory",
     "worker_main",
     "worker_main_async",
 ]
@@ -155,16 +161,14 @@ def _emit_sub_enqueue_startup_warnings(
 ) -> None:
     """Emit startup warnings for sub-enqueue connection resolution.
 
-    Three checks:
+    Two checks:
 
     1. No LOOP-scope ``asyncpg.Connection`` provider registered → warn
        that ``ctx.jobs.enqueue`` will use autonomous commit ().
-       Mutually exclusive with 2 and 3 (early return).
+       Mutually exclusive with 2 (early return).
     2. LOOP-scope conn registered but DSNs differ → warn about the
-       PgBouncer transaction-mode footgun ().
-    3. LOOP-scope conn registered and ``max_concurrency > 1`` → warn
-       that every consumer slot shares the one connection (issue #116).
-       NOT mutually exclusive with 2 — both can fire on the same boot.
+       PgBouncer transaction-mode footgun (). Can fire alongside the
+       per-slot mode announcement from :func:`_maybe_open_slot_pool`.
     """
     resolved = loop_scope.resolved_cache()
     has_loop_conn = resolved.get(asyncpg.Connection) is not None
@@ -201,31 +205,178 @@ def _emit_sub_enqueue_startup_warnings(
             ),
         )
 
-    # Why: warning, never a refusal — single-slot LOOP-connection workers
-    # are a legitimate fleet shape, and the defect is invisible at boot:
-    # nothing about a LOOP-scope registration says "one object", but the
-    # resolver hands that ONE connection to every consumer slot, and
-    # asyncpg permits one operation per connection at a time, so at
-    # max_concurrency > 1 concurrent jobs interleave statements on it and
-    # raise InterfaceError / InternalClientError inside healthy actors —
-    # failures misattributed to the actor (issue #116). Not DSN-gated:
-    # fires alongside the mismatch warning above when both apply.
-    if settings.max_concurrency > 1:
+
+def _caller_supplied_pg_pools(conns: WorkerConnections | None) -> bool:
+    """Whether any PG pool role is caller-supplied via WorkerConnections.
+
+    The slot pool does not read WorkerConnections, so a fleet whose
+    credential story lives entirely in its own pool objects needs to
+    know that at startup — this predicate drives that warning. Scoped
+    to the pool roles (not has_any(), which also covers dedicated
+    connections and Redis): notify/leader conns carry no pool-credential
+    story.
+    """
+    if conns is None:
+        return False
+    return (
+        conns.dispatcher_pool is not None
+        or conns.dispatcher_pool_factory is not None
+        or conns.heartbeat_pool is not None
+        or conns.heartbeat_pool_factory is not None
+        or conns.worker_pool is not None
+        or conns.worker_pool_factory is not None
+    )
+
+
+def _slot_pool_factory(
+    settings: WorkerSettings,
+    pg_credential_provider: PgCredentialProvider | None,
+) -> PoolFactory:
+    """Build the factory for the worker's per-slot transaction pool.
+
+    Always TaskQ-built on the direct DSN — a pool routed through
+    transaction-mode pooling would break every transaction boundary,
+    which is what the ``loop_scope_conn_dsn_mismatch`` warning guards.
+    Sized ``max_concurrency + 1`` with ``min_size == max_size`` so the
+    pool is fully warmed at creation: one connection per consumer slot
+    plus one reserved for the readiness probe, and connection
+    establishment (plus, on a managed-identity deployment, a credential
+    fetch) never lands inside the dispatch hot path. The sizing is
+    captured at build time: ``max_concurrency`` is a boot-only setting
+    (no reload path re-reads settings), so a rebuilt pool keeps its
+    boot-time size across credential rotations.
+
+    Provider-backed when *pg_credential_provider* is given — the
+    documented managed-identity path — so every physical connection
+    authenticates with a freshly fetched credential and a SIGHUP
+    rebuild picks up a changed username. DSN-built otherwise, like the
+    role pools when the caller supplies none.
+    """
+    direct = str(settings.resolved_pg_dsn_direct)
+    size = settings.max_concurrency + 1
+    lifetime = settings.pool_max_inactive_lifetime
+    command_timeout = settings.dispatcher_command_timeout
+    if pg_credential_provider is not None:
+        return make_pg_pool_factory(
+            direct,
+            pg_credential_provider,
+            min_size=size,
+            max_size=size,
+            max_inactive_connection_lifetime=lifetime,
+            command_timeout=command_timeout,
+        )
+
+    async def _dsn_slot_pool_factory() -> asyncpg.Pool:
+        pool = await asyncpg.create_pool(
+            dsn=direct,
+            min_size=size,
+            max_size=size,
+            max_inactive_connection_lifetime=lifetime,
+            command_timeout=command_timeout,
+        )
+        assert pool is not None
+        return pool
+
+    return _dsn_slot_pool_factory
+
+
+async def _maybe_open_slot_pool(
+    loop_scope: LoopScope,
+    settings: WorkerSettings,
+    deps: WorkerDeps,
+    *,
+    factory: PoolFactory,
+    pg_credential_provider: PgCredentialProvider | None,
+    caller_supplied_pg_pools: bool,
+    log: structlog.stdlib.BoundLogger,
+) -> bool:
+    """Open the per-slot transaction pool when the per-slot path activates.
+
+    Activation is the sharing precondition the dispatch path would
+    otherwise hit: a resolvable LOOP-scope ``asyncpg.Connection`` AND
+    ``max_concurrency > 1``. On that shape the worker's own
+    transactional writes move to per-slot connections — one transaction
+    per connection, so concurrent slots can never nest savepoints on a
+    shared one — while the registered LOOP-scope connection remains
+    what actors receive by injection. Every other shape (no LOOP-scope
+    connection, or the single-slot ``max_concurrency == 1`` worker)
+    keeps today's behaviour and this function returns ``False``
+    without touching *deps*.
+
+    The open is bounded by ``reload_factory_timeout`` — building a
+    fully-warmed pool means opening every connection (each a credential
+    fetch on a managed-identity deployment), and an unbounded wait here
+    would wedge boot. A worker that cannot open the pool fails to boot,
+    loudly, naming the pool and the DSN host: the alternative is a
+    worker that accepts jobs it cannot transact.
+
+    Also announces the mode (info), because the retired warning string
+    is what runbooks searched for and the mode must stay confirmable
+    from the logs — the mode signal fires exactly when the pool opened,
+    never as a predicate guess.
+    """
+    resolved = loop_scope.resolved_cache()
+    if resolved.get(asyncpg.Connection) is None or settings.max_concurrency <= 1:
+        return False
+
+    host = _dsn_host(settings.resolved_pg_dsn_direct)
+    stack = deps._exit_stack
+    if stack is None:  # pyright: ignore[reportPrivateUsage]  # Why: bootstrap owns deps and its exit-stack lifecycle; _main calls this inside open_worker_deps.
+        raise RuntimeError("slot pool cannot be opened outside of open_worker_deps")
+    try:
+        pool = await asyncio.wait_for(factory(), timeout=settings.reload_factory_timeout)
+    except Exception as exc:
+        raise RuntimeError(
+            f"slot pool failed to open on host {host!r} within "
+            f"{settings.reload_factory_timeout}s (sized "
+            f"{settings.max_concurrency + 1} for {settings.max_concurrency} consumer "
+            "slots plus the readiness probe) — a worker that cannot open its "
+            "transaction connections must not boot. Check the direct DSN and "
+            "credentials."
+        ) from exc
+
+    async def _close_slot_pool(p: asyncpg.Pool = pool) -> None:
+        # Why default-arg binding and module-global reads at call time:
+        # same loop-safety and monkeypatch seams as _resolve_pool's
+        # teardown callback in taskq.worker.deps.
+        await close_pool_bounded(p, "slot", CLOSE_TIMEOUT_SECS)
+
+    stack.push_async_callback(_close_slot_pool)
+    deps.slot_pool = pool
+    deps.slot_pool_factory = factory if pg_credential_provider is not None else None
+    set_slot_pool_occupancy_source(pool)
+    log.info(
+        "transactional_consume_per_slot",
+        kind="transactional_consume_per_slot",
+        max_concurrency=settings.max_concurrency,
+        slot_pool_size=settings.max_concurrency + 1,
+        host=host,
+        note=(
+            "a LOOP-scope asyncpg.Connection is registered and max_concurrency > 1: "
+            "transactional consume runs per-slot on a dedicated direct-DSN pool — "
+            "one connection per consumer slot plus one reserved for the readiness "
+            "probe, fully warmed at boot. TaskQ's own transactional writes (the "
+            "terminal write, transactional sub-enqueues) use these slot connections; "
+            "the registered LOOP-scope connection remains what actors receive by "
+            "injection."
+        ),
+    )
+    if caller_supplied_pg_pools and pg_credential_provider is None:
         log.warning(
-            "loop_scope_conn_shared_across_slots",
-            max_concurrency=settings.max_concurrency,
+            "slot_pool_own_credentials",
+            kind="slot_pool_own_credentials",
+            host=host,
             note=(
-                "a LOOP-scope asyncpg.Connection is registered and "
-                "max_concurrency > 1: every consumer slot shares this ONE "
-                "connection, and asyncpg permits one operation per connection "
-                "at a time, so concurrent jobs raise InterfaceError inside "
-                "healthy actors (misattributed to the actor). Transactional "
-                "consume is correct only at max_concurrency=1 — set "
-                "TASKQ_MAX_CONCURRENCY=1 for workers that use LOOP-scope "
-                "connections, or register a pool instead of a single "
-                "connection."
+                "caller-supplied WorkerConnections pools are in play, but the "
+                "per-slot transaction pool does not read WorkerConnections — it is "
+                "worker-internal and authenticates from the direct DSN (or "
+                "pg_credential_provider, which is not set). A fleet whose credential "
+                "story lives entirely in its own pool factories must pass "
+                "pg_credential_provider to worker_main, or run the transactional "
+                "actor on a max_concurrency=1 worker."
             ),
         )
+    return True
 
 
 def _emit_unconsumed_queue_startup_warnings(
@@ -515,6 +666,7 @@ async def _main(
     _registry: ProviderRegistry | None = None,
     _cron_registry: list[CronScheduleSpec] | None = None,
     connections: WorkerConnections | None = None,
+    pg_credential_provider: PgCredentialProvider | None = None,
     rate_limit_registry: RateLimitRegistry | None = None,
     until_idle: bool = False,
     idle_settle_window: float | None = None,
@@ -528,6 +680,15 @@ async def _main(
     each job in the seed list is pushed onto ``local_queue`` BEFORE the
     TaskGroup starts, so consumer stubs immediately consume them.
     Production callers (``worker_main``) MUST NOT pass this parameter.
+
+    ``pg_credential_provider`` is the resolved Postgres credential
+    provider the worker's internal per-slot transaction pool
+    authenticates with when the per-slot path activates (a LOOP-scope
+    connection registered plus ``max_concurrency > 1``). The role pools
+    take their credentials from ``connections``; the slot pool
+    deliberately does not (it is worker-internal), so this parameter is
+    how the documented managed-identity path reaches it. ``None`` means
+    the slot pool authenticates from the direct DSN.
 
     ``actor_registry`` is a mapping from short name to :class:`ActorRef`
     containing every ``@actor``-decorated handler this worker intends to
@@ -804,6 +965,23 @@ async def _main(
             reclaim_event_visibility_delay=timedelta(
                 seconds=settings.reclaim_event_visibility_delay
             ),
+        )
+
+        # The per-slot transaction pool activates on exactly the shape
+        # that would otherwise share one LOOP-scope connection across
+        # concurrent slots; every other worker shape is untouched. Opened
+        # after loop_scope.bootstrap() — that is the first point the
+        # app-registered LOOP-scope connection is resolvable — and before
+        # the startup warnings so the mode signal and any credential
+        # warning land with the rest of the startup story.
+        await _maybe_open_slot_pool(
+            loop_scope,
+            settings,
+            deps,
+            factory=_slot_pool_factory(settings, pg_credential_provider),
+            pg_credential_provider=pg_credential_provider,
+            caller_supplied_pg_pools=_caller_supplied_pg_pools(connections),
+            log=_startup_log,
         )
 
         enqueuer = SubJobEnqueuer(
@@ -1449,6 +1627,7 @@ def worker_main(
     di_registry: ProviderRegistry | None = None,
     cron_registry: list[CronScheduleSpec] | None = None,
     connections: WorkerConnections | None = None,
+    pg_credential_provider: PgCredentialProvider | None = None,
     rate_limit_registry: RateLimitRegistry | None = None,
     until_idle: bool = False,
     idle_settle_window: float | None = None,
@@ -1469,6 +1648,12 @@ def worker_main(
     ``actor_registry`` is a mapping from short name to :class:`ActorRef`
     containing every ``@actor``-decorated handler this worker intends to
     run. Forwarded to :func:`_main` for the  bootstrap config sync.
+
+    ``pg_credential_provider`` is the resolved Postgres credential
+    provider for the worker-internal per-slot transaction pool (see
+    :func:`_main`). Pass the same provider used to build
+    ``connections`` — the slot pool does not read WorkerConnections.
+    ``None`` authenticates it from the direct DSN.
 
     ``di_registry`` is an optional pre-configured :class:`ProviderRegistry`
     containing application-specific provider registrations (database pools,
@@ -1521,6 +1706,7 @@ def worker_main(
                 di_registry=di_registry,
                 cron_registry=cron_registry,
                 connections=connections,
+                pg_credential_provider=pg_credential_provider,
                 rate_limit_registry=rate_limit_registry,
                 until_idle=until_idle,
                 idle_settle_window=idle_settle_window,
@@ -1537,6 +1723,7 @@ async def worker_main_async(
     di_registry: ProviderRegistry | None = None,
     cron_registry: list[CronScheduleSpec] | None = None,
     connections: WorkerConnections | None = None,
+    pg_credential_provider: PgCredentialProvider | None = None,
     rate_limit_registry: RateLimitRegistry | None = None,
     until_idle: bool = False,
     idle_settle_window: float | None = None,
@@ -1587,6 +1774,7 @@ async def worker_main_async(
         _registry=di_registry,
         _cron_registry=schedule_specs,
         connections=connections,
+        pg_credential_provider=pg_credential_provider,
         rate_limit_registry=rate_limit_registry,
         until_idle=until_idle,
         idle_settle_window=idle_settle_window,

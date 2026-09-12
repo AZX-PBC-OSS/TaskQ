@@ -280,7 +280,7 @@ async def test_transactional_result_too_large_routes_to_failure() -> None:
         payload_type=EmptyPayload,
         clock=clk,
         enqueuer=enqueuer,
-        loop_conn=_FakeConnection(),
+        transaction_conn=_FakeConnection(),
     )
 
     assert result == "failed"
@@ -321,7 +321,7 @@ async def test_transactional_snooze_re_enqueue_failure_routes_to_failure() -> No
         payload_type=EmptyPayload,
         clock=clk,
         enqueuer=enqueuer,
-        loop_conn=_FakeConnection(),
+        transaction_conn=_FakeConnection(),
     )
 
     assert result == "failed"
@@ -363,7 +363,7 @@ async def test_transactional_success_with_sub_enqueue_error_still_succeeds() -> 
         payload_type=EmptyPayload,
         clock=clk,
         enqueuer=enqueuer,
-        loop_conn=_FakeConnection(),
+        transaction_conn=_FakeConnection(),
     )
 
     assert result == "succeeded"
@@ -699,7 +699,7 @@ async def test_transactional_cooperative_cancel_marks_cancelled() -> None:
             payload_type=EmptyPayload,
             clock=clk,
             enqueuer=enqueuer,
-            loop_conn=_FakeConnection(),
+            transaction_conn=_FakeConnection(),
             active_jobs=active_jobs,
         )
 
@@ -758,7 +758,7 @@ async def test_transactional_snooze_savepoint_rollback_failure_is_warned() -> No
         payload_type=EmptyPayload,
         clock=clk,
         enqueuer=enqueuer,
-        loop_conn=_RollbackFailsConn(),
+        transaction_conn=_RollbackFailsConn(),
     )
 
     # Snooze was handled — job scheduled, not failed.
@@ -798,7 +798,7 @@ async def test_transactional_retry_after_re_enqueues_children() -> None:
         payload_type=EmptyPayload,
         clock=clk,
         enqueuer=enqueuer,
-        loop_conn=_FakeConnection(),
+        transaction_conn=_FakeConnection(),
     )
 
     assert result == "scheduled"

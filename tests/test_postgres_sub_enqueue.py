@@ -186,9 +186,9 @@ async def test_ti1_parent_succeeds_child_visible(
     row = await backend.get(parent_job.id)
     assert row is not None
 
-    async with deps.worker_pool.acquire() as loop_conn:
+    async with deps.worker_pool.acquire() as transaction_conn:
         enqueuer = SubJobEnqueuer(
-            loop_scope_resolved={asyncpg.Connection: loop_conn},
+            loop_scope_resolved={asyncpg.Connection: transaction_conn},
             worker_pool=deps.worker_pool,
             backend=backend,
         )
@@ -214,7 +214,7 @@ async def test_ti1_parent_succeeds_child_visible(
                 payload_type=_ParentPayload,
                 clock=clk,
                 enqueuer=enqueuer,
-                loop_conn=loop_conn,
+                transaction_conn=transaction_conn,
             )
 
     async with deps.worker_pool.acquire() as check_conn:
@@ -244,9 +244,9 @@ async def test_ti2_parent_raises_child_not_in_pg(
         await create_worker(conn, schema, worker_id)
         await _dispatch_job(conn, schema, worker_id, parent_job.id)
 
-    async with deps.worker_pool.acquire() as loop_conn:
+    async with deps.worker_pool.acquire() as transaction_conn:
         enqueuer = SubJobEnqueuer(
-            loop_scope_resolved={asyncpg.Connection: loop_conn},
+            loop_scope_resolved={asyncpg.Connection: transaction_conn},
             worker_pool=deps.worker_pool,
             backend=backend,
         )
@@ -272,7 +272,7 @@ async def test_ti2_parent_raises_child_not_in_pg(
                 payload_type=_ParentPayload,
                 clock=clk,
                 enqueuer=enqueuer,
-                loop_conn=loop_conn,
+                transaction_conn=transaction_conn,
             )
 
     async with deps.worker_pool.acquire() as check_conn:
@@ -304,9 +304,9 @@ async def test_ti3_snooze_re_enqueues_child(
         await create_worker(conn, schema, worker_id)
         await _dispatch_job(conn, schema, worker_id, parent_job.id)
 
-    async with deps.worker_pool.acquire() as loop_conn:
+    async with deps.worker_pool.acquire() as transaction_conn:
         enqueuer = SubJobEnqueuer(
-            loop_scope_resolved={asyncpg.Connection: loop_conn},
+            loop_scope_resolved={asyncpg.Connection: transaction_conn},
             worker_pool=deps.worker_pool,
             backend=backend,
         )
@@ -332,7 +332,7 @@ async def test_ti3_snooze_re_enqueues_child(
                 payload_type=_ParentPayload,
                 clock=clk,
                 enqueuer=enqueuer,
-                loop_conn=loop_conn,
+                transaction_conn=transaction_conn,
             )
 
     async with deps.worker_pool.acquire() as check_conn:
@@ -395,7 +395,7 @@ async def test_ti4_autonomous_fallback_child_persists(
             payload_type=_ParentPayload,
             clock=clk,
             enqueuer=enqueuer,
-            loop_conn=None,
+            transaction_conn=None,
         )
 
     async with deps.worker_pool.acquire() as check_conn:
@@ -425,9 +425,12 @@ async def test_ti5_explicit_connection_override_child_persists(
         await create_worker(conn, schema, worker_id)
         await _dispatch_job(conn, schema, worker_id, parent_job.id)
 
-    async with deps.worker_pool.acquire() as loop_conn, deps.worker_pool.acquire() as separate_conn:
+    async with (
+        deps.worker_pool.acquire() as transaction_conn,
+        deps.worker_pool.acquire() as separate_conn,
+    ):
         enqueuer = SubJobEnqueuer(
-            loop_scope_resolved={asyncpg.Connection: loop_conn},
+            loop_scope_resolved={asyncpg.Connection: transaction_conn},
             worker_pool=deps.worker_pool,
             backend=backend,
         )
@@ -457,7 +460,7 @@ async def test_ti5_explicit_connection_override_child_persists(
                 payload_type=_ParentPayload,
                 clock=clk,
                 enqueuer=enqueuer,
-                loop_conn=loop_conn,
+                transaction_conn=transaction_conn,
             )
 
     async with deps.worker_pool.acquire() as check_conn:

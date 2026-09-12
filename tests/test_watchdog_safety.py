@@ -716,6 +716,9 @@ def _health_deps(liveness: LoopLiveness, *, watchdog_enabled: bool) -> WorkerDep
             shutdown_phase=ShutdownPhase.NONE,
             dispatcher_pool=_PingPool(),
             heartbeat_pool=_PingPool(),
+            # The per-slot transaction pool is conditional: None on every
+            # shape these tests exercise, so the readiness ping skips it.
+            slot_pool=None,
             settings=settings,
             is_leader=SimpleNamespace(is_set=lambda: False),
             active_jobs=SimpleNamespace(count=lambda: 0),

@@ -56,6 +56,9 @@ def _make_deps(**overrides: object) -> SimpleNamespace:
         "shutdown_phase": ShutdownPhase.NONE,
         "dispatcher_pool": _StubPool(),
         "heartbeat_pool": _StubPool(),
+        # The per-slot transaction pool is conditional: None on every
+        # shape these tests exercise, so the readiness ping skips it.
+        "slot_pool": None,
         "settings": SimpleNamespace(
             health_pg_ping_timeout=0.2,
             health_host="127.0.0.1",

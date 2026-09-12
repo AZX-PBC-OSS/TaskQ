@@ -127,7 +127,7 @@ class _FakeBackend(FakeBackend):
 async def _run_with_enqueuer(
     run_actor: Callable[[JobRow, JobContext[BaseModel]], Awaitable[object]],
     *,
-    loop_conn: object | None = None,
+    transaction_conn: object | None = None,
     backend: _FakeBackend | None = None,
     enqueuer: SubJobEnqueuer | None = None,
 ) -> tuple[_FakeBackend, SubJobEnqueuer]:
@@ -149,7 +149,7 @@ async def _run_with_enqueuer(
             payload_type=EmptyPayload,
             clock=clk,
             enqueuer=live_enqueuer,
-            loop_conn=loop_conn,
+            transaction_conn=transaction_conn,
         )
     return fb, live_enqueuer
 
@@ -173,7 +173,7 @@ async def test_flush_buffer_on_success() -> None:
 
     fb_result, result_enqueuer = await _run_with_enqueuer(
         actor,
-        loop_conn=_FakeConnection(),
+        transaction_conn=_FakeConnection(),
         backend=fb,
         enqueuer=enqueuer,
     )
@@ -201,7 +201,7 @@ async def test_discard_buffer_on_generic_exception() -> None:
 
     _fb_result, result_enqueuer = await _run_with_enqueuer(
         actor,
-        loop_conn=_FakeConnection(),
+        transaction_conn=_FakeConnection(),
         enqueuer=enqueuer,
     )
     assert result_enqueuer is enqueuer
@@ -226,7 +226,7 @@ async def test_discard_buffer_on_snooze() -> None:
 
     fb_result, result_enqueuer = await _run_with_enqueuer(
         actor,
-        loop_conn=_FakeConnection(),
+        transaction_conn=_FakeConnection(),
         enqueuer=enqueuer,
     )
     assert result_enqueuer is enqueuer
@@ -253,7 +253,7 @@ async def test_discard_buffer_on_retry_after() -> None:
 
     _fb_result, result_enqueuer = await _run_with_enqueuer(
         actor,
-        loop_conn=_FakeConnection(),
+        transaction_conn=_FakeConnection(),
         enqueuer=enqueuer,
     )
     assert result_enqueuer is enqueuer
@@ -279,7 +279,7 @@ async def test_discard_buffer_on_cancelled_error() -> None:
 
     fb_result, result_enqueuer = await _run_with_enqueuer(
         actor,
-        loop_conn=_FakeConnection(),
+        transaction_conn=_FakeConnection(),
         backend=fb,
         enqueuer=enqueuer,
     )
@@ -292,7 +292,7 @@ async def test_discard_buffer_on_cancelled_error() -> None:
 
 
 async def test_autonomous_path_no_buffer_ops() -> None:
-    """When loop_conn is None (autonomous path), the enqueuer's
+    """When transaction_conn is None (autonomous path), the enqueuer's
     flush_buffer and discard_buffer are not called for the success
     path, and mark_succeeded (not mark_succeeded_with_conn) is used."""
     fb = _FakeBackend()
@@ -302,7 +302,7 @@ async def test_autonomous_path_no_buffer_ops() -> None:
 
     fb_result, result_enqueuer = await _run_with_enqueuer(
         actor,
-        loop_conn=None,
+        transaction_conn=None,
         backend=fb,
     )
     assert len(fb_result.mark_succeeded_calls) == 1
@@ -329,7 +329,7 @@ async def test_same_enqueuer_instance_across_contexts() -> None:
             seen_enqueuers.append(ctx.jobs)
         return {"ok": True}
 
-    await _run_with_enqueuer(actor, loop_conn=_FakeConnection(), enqueuer=enqueuer)
+    await _run_with_enqueuer(actor, transaction_conn=_FakeConnection(), enqueuer=enqueuer)
     assert len(seen_enqueuers) == 1
     assert seen_enqueuers[0] is enqueuer
 
@@ -389,7 +389,7 @@ async def test_shielded_success_not_marked_cancelled() -> None:
         _WORKER_ID,
         ctx,
         enqueuer,
-        _FakeConnection(),  # loop_conn
+        _FakeConnection(),  # transaction_conn
         actor,
         default_actor_config(),
         None,
@@ -421,7 +421,7 @@ async def test_discard_buffer_on_reservation_unavailable() -> None:
 
     _fb_result, result_enqueuer = await _run_with_enqueuer(
         actor,
-        loop_conn=_FakeConnection(),
+        transaction_conn=_FakeConnection(),
         enqueuer=enqueuer,
     )
     assert result_enqueuer is enqueuer
@@ -446,7 +446,7 @@ async def test_snooze_preserves_in_actor_child_enqueues() -> None:
 
     fb_result, result_enqueuer = await _run_with_enqueuer(
         actor,
-        loop_conn=_FakeConnection(),
+        transaction_conn=_FakeConnection(),
         enqueuer=enqueuer,
     )
     assert result_enqueuer.pending_count == 0
@@ -473,7 +473,7 @@ async def test_retry_after_preserves_in_actor_child_enqueues() -> None:
 
     fb_result, result_enqueuer = await _run_with_enqueuer(
         actor,
-        loop_conn=_FakeConnection(),
+        transaction_conn=_FakeConnection(),
         enqueuer=enqueuer,
     )
     assert result_enqueuer.pending_count == 0
@@ -499,7 +499,7 @@ async def test_snooze_preserves_multiple_child_enqueues() -> None:
 
     fb_result, result_enqueuer = await _run_with_enqueuer(
         actor,
-        loop_conn=_FakeConnection(),
+        transaction_conn=_FakeConnection(),
         enqueuer=enqueuer,
     )
     assert result_enqueuer.pending_count == 0

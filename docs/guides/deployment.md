@@ -23,6 +23,7 @@ TaskQ is an async-native, Postgres-backed background job library for Python 3.12
 - [ ] **Connection budget** — fleet connection count computed against Postgres `max_connections` including application pools (see [ops.md](ops.md#4-sizing-workers-and-postgres-connections))
 - [ ] **DLQ routing** — `on_retry_exhausted` / `ErrorReporter` target chosen; there is no built-in dead-letter queue
 - [ ] **Admin UI auth** — `auth_dependency` hook or reverse proxy with auth; `TASKQ_ADMIN_UI_REQUIRE_AUTH` left at default (`true`)
+- [ ] **Progress router auth** — `auth_dependency` on `taskq.web.progress.create_router` (the admin UI forwards its own); `TASKQ_PROGRESS_REQUIRE_AUTH` left at default (`true`)
 - [ ] **Admin actions** — `TASKQ_ADMIN_ACTIONS_ENABLED` left at `false` unless operators need cancel/retry/run-now
 - [ ] **OTel exporter** — `OTEL_EXPORTER_OTLP_ENDPOINT` pointed at a collector or OTLP-compatible backend
 - [ ] **Log format** — `TASKQ_LOG_FORMAT=json` for structured log aggregation
@@ -172,6 +173,7 @@ The admin UI (`taskq ui serve`) is a FastAPI + Jinja2 dashboard on `TASKQ_ADMIN_
 | Variable | Default | Description |
 |---|---|---|
 | `TASKQ_ADMIN_UI_REQUIRE_AUTH` | `true` | Raises `RuntimeError` at startup if no `auth_dependency` in non-dev |
+| `TASKQ_PROGRESS_REQUIRE_AUTH` | `true` | Raises `RuntimeError` at startup if the progress router has no `auth_dependency` in non-dev (the admin UI forwards its own `auth_dependency`, so this only bites standalone mounts and fully unauthenticated `taskq ui serve`) |
 | `TASKQ_ADMIN_ACTIONS_ENABLED` | `false` | When `false`, cancel/retry/run-now return `403` |
 | `TASKQ_ADMIN_UI_ALLOW_RATE_LIMIT_RESET` | `false` | Gates the rate-limit reset endpoint |
 | `TASKQ_HEALTH_TOKEN` | _(none)_ | Bearer token for machine-to-machine health/metrics |
@@ -193,7 +195,7 @@ server {
 }
 ```
 
-Set `TASKQ_ADMIN_UI_REQUIRE_AUTH=false` and `TASKQ_HEALTH_REQUIRE_TOKEN=false` to suppress the fail-closed checks when relying on the proxy for auth.
+Set `TASKQ_ADMIN_UI_REQUIRE_AUTH=false`, `TASKQ_PROGRESS_REQUIRE_AUTH=false` and `TASKQ_HEALTH_REQUIRE_TOKEN=false` to suppress the fail-closed checks when relying on the proxy for auth.
 
 Run the admin UI as a **separate process** from the worker — different scaling, exposure, and resource characteristics. See [admin-ui.md](admin-ui.md) for `create_router()` embedding and SSO configuration.
 
@@ -432,9 +434,11 @@ Add a `PodDisruptionBudget` (`minAvailable: 1`, selector matching `app: taskq-wo
     the shipped default does cover it, but a custom value below the worst case
     only warns at startup. Against a dead or hung
     Postgres/Redis — an Azure Cache failover, or a token expiry dropping every
-    connection, i.e. exactly when you are being SIGTERMed — each of the 5
-    sequential bounded closes can take `CLOSE_TIMEOUT_SECS` (5s), plus a 2s
-    progress-publish drain: **27s of tail**.
+    connection, i.e. exactly when you are being SIGTERMed — each of the 6
+    sequential bounded closes (four pools: dispatcher, heartbeat, worker, and
+    the conditional per-slot transaction pool; plus `notify_conn` and the
+    Redis client) can take `CLOSE_TIMEOUT_SECS` (5s), plus a 2s
+    progress-publish drain: **32s of tail**.
 
     Size the pod grace from the whole budget:
 
@@ -442,15 +446,17 @@ Add a `PodDisruptionBudget` (`minAvailable: 1`, selector matching `app: taskq-wo
     terminationGracePeriodSeconds
         >= TASKQ_CANCELLATION_GRACE_PERIOD
          + TASKQ_CLEANUP_GRACE_PERIOD
-         + 27      # 5 bounded closes x 5s + 2s publish drain
+         + 32      # 6 bounded closes x 5s + 2s publish drain
     ```
 
-    At TaskQ's defaults (75 / 30 / 10) the modelled worst case is **67s**, so
+    At TaskQ's defaults (75 / 30 / 10) the modelled worst case is **72s**, so
     `terminationGracePeriodSeconds: 80` is a safe value at defaults — not the
-    `60`-ish the old advice implied. (The default grace itself covers the
-    model; it is 75 rather than 67 so the ~72s sibling-crash path — six
-    sequential closes where the orchestrated leader-conn close never ran —
-    fits inside it too.) The worker logs
+    `60`-ish the old advice implied. (The default grace covers the model with
+    3s to spare — but the ~77s sibling-crash path, seven sequential closes
+    where the orchestrated leader-conn close never ran, including the
+    conditional per-slot pool, now exceeds the default by 2s on per-slot
+    workers. Deployments running the per-slot path with tight crash budgets
+    should raise `TASKQ_TERMINATION_GRACE_PERIOD` accordingly.) The worker logs
     `shutdown-budget-exceeds-termination-grace` at startup, with the computed
     number, whenever the configured budget does not cover it — i.e. for
     custom grace combinations, not for the shipped defaults.
@@ -518,7 +524,7 @@ The admin UI service follows the same pattern with `command: ["taskq", "ui", "se
 !!! warning "stop_grace_period must exceed termination_grace_period"
     Docker's `stop_grace_period` (default 10s) controls how long Compose waits
     between SIGTERM and SIGKILL. Set it above `TASKQ_TERMINATION_GRACE_PERIOD`
-    **plus the ~27s bounded-close tail** (see the terminationGracePeriodSeconds
+    **plus the ~32s bounded-close tail** (see the terminationGracePeriodSeconds
     warning above)
     so the worker can complete its shutdown sequence.
 
@@ -638,9 +644,10 @@ See [workers.md — Queue dispatch modes](workers.md#queue-dispatch-modes).
 | `dispatcher_pool` | 4 | `TASKQ_DISPATCHER_POOL_SIZE` |
 | `heartbeat_pool` | 4 | `TASKQ_HEARTBEAT_POOL_SIZE` |
 | `worker_pool` | `int(max_concurrency * 1.5)` | `TASKQ_MAX_CONCURRENCY` |
+| slot pool (conditional) | `max_concurrency + 1` (direct DSN) | `TASKQ_MAX_CONCURRENCY` |
 | `notify_conn` + `leader_conn` | 2 (dedicated) | Fixed |
 
-Total per worker ≈ `dispatcher + heartbeat + worker_pool + 2`. For 10 workers at `max_concurrency=16`: ~10 × 34 = 340 connections. Ensure Postgres `max_connections` accommodates this plus your application's connections. The full budget formula (idle floors, leader extras, client pods, PgBouncer compression) is in [ops.md — Sizing](ops.md#4-sizing-workers-and-postgres-connections).
+The slot pool exists only when a LOOP-scope `asyncpg.Connection` is registered and `max_concurrency > 1` — the per-slot transaction pool that carries TaskQ's own transactional writes (terminal write, transactional sub-enqueues). Total per worker ≈ `dispatcher + heartbeat + worker_pool + 2`, plus `max_concurrency + 1` direct connections on the per-slot path. For 10 workers at `max_concurrency=16`: ~10 × 34 = 340 connections, or ~10 × 51 = 510 on the per-slot path (each worker adds 17 direct). On that path `TASKQ_MAX_CONCURRENCY` is boot-blocking — the worker opens `max_concurrency + 1` direct connections at startup and fails to boot if it cannot — and a credential-rotation window peaks at `2 × (max_concurrency + 1)` slot connections per worker (old pool draining + new pool warm, bounded by the reload drain timeout), so plan `max_connections` against that peak whenever rotations can coincide across the fleet (a scheduled `TASKQ_RELOAD_INTERVAL` is exactly that), against the steady state only when rotations are staggered. Ensure Postgres `max_connections` accommodates this plus your application's connections. The full budget formula (idle floors, leader extras, client pods, PgBouncer compression) is in [ops.md — Sizing](ops.md#4-sizing-workers-and-postgres-connections).
 
 ---
 
