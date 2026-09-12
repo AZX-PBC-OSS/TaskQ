@@ -465,7 +465,7 @@ A `RuntimeError` with "admin UI requires auth_dependency" means the fail-closed 
 ### Fix
 
 - **Auth (dev):** `TASKQ_ENVIRONMENT=development taskq ui serve`.
-- **Auth (production):** pass an `auth_dependency` to `create_router()`, or set `TASKQ_ADMIN_UI_REQUIRE_AUTH=false` behind a reverse proxy that enforces auth.
+- **Auth (production):** pass an `auth_dependency` to `create_router()`, or set `TASKQ_ADMIN_UI_REQUIRE_AUTH=false` and `TASKQ_PROGRESS_REQUIRE_AUTH=false` behind a reverse proxy that enforces auth.
 - **Redis:** `TASKQ_REDIS_URL=redis://redis:6379/0 taskq ui serve`.
 - **Missing `[fastapi]` extra:** `uv add "taskq-py[fastapi]"`.
 - **Health token:** set `TASKQ_HEALTH_TOKEN` to a strong token, or `TASKQ_HEALTH_REQUIRE_TOKEN=false` if relying on network policy.

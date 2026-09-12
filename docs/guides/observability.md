@@ -218,6 +218,7 @@ they represent safety-critical signals.
 | `taskq.backpressure.capacity_refresh_failures` | `1` | `degraded` | Failed refreshes of the enqueue-side `actor_config` capacity cache. `degraded` is `"stale_snapshot"` (a previous snapshot is still being served) or `"no_snapshot"` (the cache never loaded and every enqueue is enforcing the `@actor` literal). | unconditional |
 | `taskq.deadline_exceeded_sweep.jobs_failed` | `1` | `actor` | Jobs failed by the deadline-exceeded sweep. | unconditional |
 | `taskq.heartbeat.misses` | `1` | — | Heartbeat renewal failures. | yes |
+| `taskq.worker.slot_pool.acquire_failures` | `1` | — | Bounded acquires from the per-slot transaction pool that failed (timeout or connection error) — infrastructure, not a job outcome: the claimed job is left for lock-lease reclaim. The per-occurrence job id and cause stay in the `slot-pool-acquire-failed` log event. | yes |
 | `taskq.leader.election_attempts` | `1` | — | Leader election attempts. | yes |
 | `taskq.leader.election_failures` | `1` | — | Election attempts that did not win the lock. | yes |
 | `taskq.error_reporter.failures` | `1` | `reporter_type` | `ErrorReporter` invocation failures. | yes |
@@ -250,6 +251,7 @@ they represent safety-critical signals.
 | `taskq.maintenance_leader.is_leader` | `1` | `worker_id` | `1` on the elected leader pod, `0` on all others. |
 | `taskq.cron.disabled_schedules` | `1` | — | Count of currently disabled cron schedules. |
 | `taskq.heartbeat.consecutive_failures` | — | — | Consecutive heartbeat tick failures for this worker (sample-on-scrape). |
+| `taskq.worker.slot_pool.connections_in_use` | `1` | — | Connections of the per-slot transaction pool currently held by dispatching jobs (reported only when the worker runs one). A pool pinned at its maximum with zero acquire failures is saturation — visible below the acquire-failure cliff. |
 | `taskq.maintenance_leader.sweep_last_success_seconds` | `s` | `sweep_name` | Unix timestamp of each sweep's last successful call. `time() - this value` is sweep staleness; a value that never moves while the process runs is a stalled sweep. |
 | `taskq.maintenance_leader.sweep_batch_size` | `1` | `sweep_name` | Rows per committed batch each sweep is currently using. A value below `event_writer_batch_size` is the reduced (degraded) tier. |
 | `taskq.maintenance_leader.sweep_batch_size_configured` | `1` | `sweep_name` | The batch size this worker's `event_writer_batch_size` configures for each sweep; emitted at the same call site as `sweep_batch_size` so the sweep-degraded alert compares the two label-matched. |
@@ -392,6 +394,9 @@ propagates to actor or user code.
 | `heartbeat-hook-failure` | warning | `state_change` | `worker_id`, `cause`, `error` | Cancel controller failure inside heartbeat transaction |
 | `heartbeat-tick-unexpected-error` | error | — | `worker_id` | Unexpected exception in heartbeat loop |
 | `dispatch` | info | `dispatch` | `from_state`, `to_state`, `count`, `worker_id`, `queues`, `limit_n` | Each dispatch batch |
+| `slot-pool-acquire-failed` | error | `slot_pool_acquire_failed` | `pool`, `acquire_timeout`, `job_id`, `error_class`, `error_message` | A job's bounded acquire from the per-slot transaction pool failed — the job is left for lock-lease reclaim, not failed |
+| `slot-conn-terminated-transaction-in-flight` | warning | `slot_conn_terminated_transaction_in_flight` | `job_id` | A cancelled slot's connection was still inside its transaction at release time, so it was terminated instead of returned to the pool — the server rolls the transaction back, the job row stays `running`, and lock-lease expiry reclaims it |
+| `slot-pool-release-skipped-pool-closed` | warning | `slot_pool_release_skipped_pool_closed` | `job_id` | The slot pool was closed underneath the job (credential-rotation drain or teardown); the connection is already gone and the job's real outcome is preserved |
 | `consume-rate-limit-denied-noop` | debug | — | `from_state`, `to_state`, `cause` | Reservation denied but no state transition occurred |
 | `prune` | info | `prune` | `status`, `count`, `cutoff_time`, `duration_ms` | Per-status batch result from the prune sweep (Sweep 5) |
 | `archive_expiry` | info | `archive_expiry` | `status`, `count`, `expire_before`, `duration_ms` | Per-status batch result from the archive expiry sweep (Sweep 6) |

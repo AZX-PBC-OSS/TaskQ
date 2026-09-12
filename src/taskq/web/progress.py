@@ -280,7 +280,11 @@ def create_router(
     auth_dependency:
         Optional FastAPI dependency callable; if provided it is injected via
         ``Depends()`` on all routes (same pattern as
-        ``taskq.web.admin.create_router``).
+        ``taskq.web.admin.create_router``). Outside a dev environment
+        (``TASKQ_ENVIRONMENT`` not ``dev``/``development``) the factory
+        raises ``RuntimeError`` when it is omitted, unless
+        ``TASKQ_PROGRESS_REQUIRE_AUTH=false`` suppresses the check; serving
+        without auth always logs a warning.
     sse_heartbeat_interval:
         Cadence for ``': keepalive'`` SSE comments (default 15 s).
     max_sse_connections:
@@ -296,6 +300,39 @@ def create_router(
     if not _IDENT_RE.match(schema):
         raise ValueError(f"invalid schema identifier: {schema!r}")
 
+    settings = TaskQSettings.load()
+
+    if auth_dependency is None:
+        if not settings.is_dev_environment and settings.progress_require_auth:
+            raise RuntimeError(
+                "progress router requires auth_dependency in non-dev environments "
+                "(set TASKQ_PROGRESS_REQUIRE_AUTH=false to disable)"
+            )
+        # Why this warning sits outside the environment test that governs the
+        # RuntimeError above: a dev-labeled process is the only configuration
+        # that actually serves an unauthenticated progress router, so it is
+        # the one that most needs a log line. Keeping the warning inside the
+        # non-dev branch meant the silent case was the dangerous one.
+        suppressed_by = (
+            "TASKQ_ENVIRONMENT is a dev environment, so the fail-closed startup check did not run"
+            if settings.is_dev_environment
+            else "TASKQ_PROGRESS_REQUIRE_AUTH is false, so the fail-closed "
+            "startup check was suppressed"
+        )
+        logger.warning(
+            "progress-router-no-auth",
+            environment=settings.environment,
+            detail=(
+                "the progress router is being served with no authentication: "
+                f"{suppressed_by}. The SSE stream and per-job state endpoints "
+                "are reachable by anyone who can reach this port, and each "
+                "stream holds a Redis pubsub subscription and an asyncio task "
+                "for as long as the client stays connected. Pass "
+                "auth_dependency to create_router, or set TASKQ_ENVIRONMENT "
+                "to the real environment so startup fails closed."
+            ),
+        )
+
     router_kwargs: dict[str, Any] = {"tags": ["progress"]}
     if auth_dependency is not None:
         router_kwargs["dependencies"] = [Depends(auth_dependency)]
@@ -307,7 +344,7 @@ def create_router(
     _pg_pool = pg_pool
     _heartbeat_secs = sse_heartbeat_interval.total_seconds()
     if max_sse_connections is None:
-        max_sse_connections = TaskQSettings.load().progress_max_sse_connections
+        max_sse_connections = settings.progress_max_sse_connections
     _max_sse = max_sse_connections
     _progress_sql = _PROGRESS_SQL.format(schema=_schema)
 

@@ -2,8 +2,9 @@
 
 The asyncpg connection and the ops functions are monkeypatched at the
 ``taskq.cli`` import boundary — these tests pin the CLI's argument
-parsing, validation, error messages, and output shape, not Postgres
-behavior (covered by the integration tier in test_actor_config_ops.py).
+parsing, validation, error messages, output shape, and exit-code
+contract, not Postgres behavior (covered by the integration tier in
+test_actor_config_ops.py).
 """
 
 from collections.abc import Mapping
@@ -206,14 +207,28 @@ def test_list_prints_rows(monkeypatch: pytest.MonkeyPatch) -> None:
 
 # ── diff ─────────────────────────────────────────────────────────────────
 
+# Same capacity values as _ROW but with queue/metadata matching the
+# registry literals: only the capacity fields drift, which is operator-
+# owned and never blocks dispatch or boot.
+_CAPACITY_DRIFT_ROW = ActorConfigRow(
+    actor="diff_actor",
+    max_concurrent=5,
+    max_pending=10,
+    queue="critical",
+    result_ttl=60.0,
+    metadata={},
+    updated_at="2026-01-01 00:00:00+00",
+)
+
 
 def test_diff_shows_literal_stored_and_effective(monkeypatch: pytest.MonkeyPatch) -> None:
     """The operator's debugging view: why is my change (not) taking effect.
 
     Registry literal max_pending=100 vs stored 10 → effective is the
-    stored 10, and the output says so.
+    stored 10, and the output says so. Only capacity drifts here — stored
+    capacity is operator-owned — so the exit code stays 0.
     """
-    _patch_db(monkeypatch)
+    _patch_db(monkeypatch, list_result=[_CAPACITY_DRIFT_ROW])
     result = runner.invoke(app, ["actor-config", "diff", "--actors", _REGISTRY_PATH])
     assert result.exit_code == 0, f"stderr: {result.stderr}"
     assert "diff_actor" in result.output
@@ -226,10 +241,12 @@ def test_diff_flags_structural_drift_as_startup_blocking(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Registry queue=critical vs stored queue=default → the output warns
-    that the next worker startup raises ActorConfigDriftList."""
+    that the next worker startup raises ActorConfigDriftList, and the exit
+    code fails the run: drift the command itself calls startup-blocking
+    must not report success."""
     _patch_db(monkeypatch)
     result = runner.invoke(app, ["actor-config", "diff", "--actors", _REGISTRY_PATH])
-    assert result.exit_code == 0, f"stderr: {result.stderr}"
+    assert result.exit_code != 0
     assert "queue" in result.output
     assert "ActorConfigDriftList" in result.output
 
@@ -241,11 +258,12 @@ def test_diff_marks_actor_without_stored_row(monkeypatch: pytest.MonkeyPatch) ->
     capacity gate builds FROM actor_config (inner join), so with no row
     the actor is never dispatched — effective is 0. max_pending /
     result_ttl enforcement can see the code literal, so those do fall
-    back to it.
+    back to it. Blocking dispatch blocks the run, so the exit is
+    non-zero even though the next worker startup would seed the row.
     """
     _patch_db(monkeypatch, list_result=[])
     result = runner.invoke(app, ["actor-config", "diff", "--actors", _REGISTRY_PATH])
-    assert result.exit_code == 0, f"stderr: {result.stderr}"
+    assert result.exit_code != 0
     assert "no stored row" in result.output
     assert "DOES NOT DISPATCH" in result.output
     assert "max_concurrent  literal=4  effective=0 (no stored row" in result.output
@@ -253,7 +271,12 @@ def test_diff_marks_actor_without_stored_row(monkeypatch: pytest.MonkeyPatch) ->
 
 
 def test_diff_marks_leftover_row_not_in_registry(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A stored row whose actor is no longer registered is shown as leftover."""
+    """A stored row whose actor is no longer registered is shown as leftover.
+
+    The registered actor keeps a structurally matching row so the leftover
+    is the only state in play: a leftover row is inert (it only serves
+    already-queued jobs), so the exit code stays 0.
+    """
     ghost = ActorConfigRow(
         actor="ghost",
         max_concurrent=1,
@@ -263,7 +286,7 @@ def test_diff_marks_leftover_row_not_in_registry(monkeypatch: pytest.MonkeyPatch
         metadata={},
         updated_at="2026-01-01 00:00:00+00",
     )
-    _patch_db(monkeypatch, list_result=[ghost])
+    _patch_db(monkeypatch, list_result=[ghost, _CAPACITY_DRIFT_ROW])
     result = runner.invoke(app, ["actor-config", "diff", "--actors", _REGISTRY_PATH])
     assert result.exit_code == 0, f"stderr: {result.stderr}"
     assert "ghost" in result.output

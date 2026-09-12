@@ -34,7 +34,7 @@ from uuid import UUID
 import asyncpg
 
 from taskq._ids import new_uuid
-from taskq.backend._protocol import EnqueueArgs, JobRow
+from taskq.backend._protocol import ConnLike, EnqueueArgs, JobRow
 from taskq.backend.clock import SystemClock
 from taskq.backend.postgres import PostgresBackend
 from taskq.settings import WorkerSettings
@@ -142,7 +142,7 @@ class GatedEnqueueBackend(PostgresBackend):
         self,
         args_list: list[EnqueueArgs],
         *,
-        connection: asyncpg.Connection | None = None,
+        connection: ConnLike | None = None,
         enforce_max_pending: bool = True,
     ) -> list[JobRow]:
         self.entered.set()
@@ -175,7 +175,7 @@ class JobIdCollisionBackend(PostgresBackend):
         self,
         args_list: list[EnqueueArgs],
         *,
-        connection: asyncpg.Connection | None = None,
+        connection: ConnLike | None = None,
         enforce_max_pending: bool = True,
     ) -> list[JobRow]:
         sabotaged = [replace(args_list[0], id=self._collide_id), *args_list[1:]]

@@ -25,6 +25,7 @@ from taskq.exceptions import (
     ResultTooLarge,
     WorkerOwnershipMismatch,
 )
+from taskq.testing._reads import _read_copy
 
 if TYPE_CHECKING:
     from taskq.testing.in_memory import InMemoryBackend
@@ -71,6 +72,10 @@ async def _mark_succeeded(
         return False
 
     now = self._clock.now()
+    # PG serialises the result into jsonb at write time, so a caller-held
+    # result dict can never reach storage by reference; copy on the way
+    # in to hold the same isolation contract here.
+    stored_result = None if result is None else dict(result)
     result_size_bytes: int | None = (
         len(_json_dumps_str(result).encode("utf-8")) if result is not None else None
     )
@@ -92,7 +97,7 @@ async def _mark_succeeded(
     self._jobs[job_id] = replace(
         row,
         status="succeeded",
-        result=result,
+        result=stored_result,
         result_size_bytes=result_size_bytes,
         result_expires_at=new_result_expires_at,
         finished_at=now,
@@ -208,7 +213,7 @@ async def _mark_failed_or_retry(
                 to_state="failed",
                 job_id=str(job_id),
             )
-            return updated
+            return _read_copy(updated)
 
         retry_status: Literal["scheduled", "pending"] = (
             "scheduled" if retry_delay > timedelta(0) else "pending"
@@ -257,7 +262,7 @@ async def _mark_failed_or_retry(
             to_state="scheduled",
             job_id=str(job_id),
         )
-        return updated
+        return _read_copy(updated)
 
     now = self._clock.now()
     merged_progress = _merge_progress(row.progress_state, progress_state)
@@ -300,7 +305,7 @@ async def _mark_failed_or_retry(
         to_state="failed",
         job_id=str(job_id),
     )
-    return updated
+    return _read_copy(updated)
 
 
 async def _mark_cancelled(
@@ -719,4 +724,9 @@ async def _mark_retry_after(
 
 
 async def _write_attempt(self: "InMemoryBackend", attempt: AttemptRow) -> None:
-    self._attempts.setdefault(attempt.job_id, []).append(attempt)
+    # PG serialises the attempt row at INSERT time, so a caller-held
+    # AttemptRow (and its metadata dict) can never reach storage by
+    # reference; copy on the way in to hold the same isolation contract.
+    self._attempts.setdefault(attempt.job_id, []).append(
+        replace(attempt, metadata=dict(attempt.metadata))
+    )

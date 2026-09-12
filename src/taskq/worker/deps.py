@@ -30,7 +30,7 @@ from taskq._close import (
 from taskq._dsn import dsn_host as _dsn_host
 from taskq.connections import ConnFactory, PoolFactory, RedisFactory, WorkerConnections
 from taskq.constants import wake_channel
-from taskq.obs import get_logger
+from taskq.obs import get_logger, set_slot_pool_occupancy_source
 from taskq.progress._buffer import _ProgressBuffer
 from taskq.settings import WorkerSettings
 from taskq.worker._watchdog import LoopLiveness
@@ -217,6 +217,31 @@ class WorkerDeps:
     worker_pool_factory: PoolFactory | None = None
     """Resolved factory that rebuilds ``worker_pool`` on
     :func:`reload_credentials`. ``None`` when the pool is caller-owned."""
+    slot_pool: asyncpg.Pool | None = None
+    """Worker-internal pool of per-job transaction connections, opened at
+    bootstrap when a LOOP-scope ``asyncpg.Connection`` is registered and
+    ``max_concurrency > 1`` — one connection per consumer slot plus one
+    reserved for the readiness probe, all on the direct DSN so no
+    transaction boundary can be broken by transaction-mode pooling.
+    ``None`` on every other shape (no LOOP-scope connection, or the
+    single-slot ``max_concurrency == 1`` worker, which keeps using the
+    registered connection directly). Always TaskQ-built and TaskQ-owned:
+    deliberately not overridable through
+    :class:`~taskq.connections.WorkerConnections`, unlike the three
+    role pools above."""
+    slot_pool_factory: PoolFactory | None = None
+    """Factory that rebuilds ``slot_pool`` on :func:`reload_credentials`.
+    Set when the pool is provider-backed (rebuildable with a fresh
+    credential); ``None`` when it is DSN-built — static credentials,
+    nothing to rotate, the same rule as the role pools — or when the
+    per-slot path is inactive."""
+    slot_pool_probe_task: asyncio.Task[tuple[bool, str | None]] | None = None
+    """The in-flight (or most recently completed) slot-pool readiness
+    probe, owned by :mod:`taskq.worker.health`'s single-flight ping.
+    State lives here rather than in a module global so one worker's
+    probe can never coalesce another worker's readiness request (two
+    workers can share a process) and never outlive this deps object's
+    event loop."""
     redis_client_factory: RedisFactory | None = None
     """Resolved factory that rebuilds ``redis_client`` on
     :func:`reload_credentials`. ``None`` when the client is caller-owned or
@@ -776,6 +801,7 @@ async def reload_credentials(
             ("dispatcher", "dispatcher_pool", "dispatcher_pool_factory"),
             ("heartbeat", "heartbeat_pool", "heartbeat_pool_factory"),
             ("worker", "worker_pool", "worker_pool_factory"),
+            ("slot", "slot_pool", "slot_pool_factory"),
         ):
             factory: PoolFactory | None = getattr(deps, factory_attr)
             if factory is None:
@@ -805,6 +831,12 @@ async def reload_credentials(
                     error=repr(exc),
                 )
                 failed.append(label)
+
+        # The slot-pool occupancy gauge reads a module-level source that
+        # bootstrap pointed at the boot-time pool; a swap (or a skipped
+        # slot reload) must leave it aimed at whatever pool is current.
+        if deps.slot_pool is not None:
+            set_slot_pool_occupancy_source(deps.slot_pool)
 
         # ── notify_conn ────────────────────────────────────────────
         # Caller-owned notify_conn has no factory — nothing to rotate, so

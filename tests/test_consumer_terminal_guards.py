@@ -127,7 +127,7 @@ def _settings() -> WorkerSettings:
 
 
 async def _run_with_foreign_registry_entry(
-    *, loop_conn: object | None
+    *, transaction_conn: object | None
 ) -> tuple[str, _TxFakeBackend]:
     """Run a job whose own registry entry is gone but siblings remain.
 
@@ -156,7 +156,7 @@ async def _run_with_foreign_registry_entry(
         payload_type=EmptyPayload,
         clock=clock,
         active_jobs=active_jobs,
-        loop_conn=loop_conn,  # pyright: ignore[reportArgumentType]  # Why: the parameter is typed asyncpg.Connection; _TxFakeConnection supplies the transaction()/execute() surface the consumer uses.
+        transaction_conn=transaction_conn,  # pyright: ignore[reportArgumentType]  # Why: the parameter is typed asyncpg.Connection; _TxFakeConnection supplies the transaction()/execute() surface the consumer uses.
     )
     assert active_jobs.get(sibling_id) is not None
     assert active_jobs.get(job.id) is None
@@ -165,7 +165,7 @@ async def _run_with_foreign_registry_entry(
 
 async def test_autonomous_missing_own_entry_still_succeeds() -> None:
     """A populated registry without this job's entry is not a cancellation."""
-    outcome, backend = await _run_with_foreign_registry_entry(loop_conn=None)
+    outcome, backend = await _run_with_foreign_registry_entry(transaction_conn=None)
 
     assert outcome == "succeeded"
     assert len(backend.mark_succeeded_calls) == 1
@@ -174,7 +174,7 @@ async def test_autonomous_missing_own_entry_still_succeeds() -> None:
 
 async def test_transactional_missing_own_entry_still_succeeds() -> None:
     """Same guard, same shape, on the LOOP-scope transactional path."""
-    outcome, backend = await _run_with_foreign_registry_entry(loop_conn=_TxFakeConnection())
+    outcome, backend = await _run_with_foreign_registry_entry(transaction_conn=_TxFakeConnection())
 
     assert outcome == "succeeded"
     assert len(backend.mark_succeeded_calls) == 1
@@ -185,7 +185,7 @@ async def test_transactional_missing_own_entry_still_succeeds() -> None:
 
 
 async def _succeed_with_dirty_buffer(
-    *, loop_conn: object | None
+    *, transaction_conn: object | None
 ) -> tuple[str, _TxFakeBackend, _ProgressBuffer, UUID]:
     backend = _TxFakeBackend()
     clock: Clock = FakeClock(_NOW)
@@ -215,19 +215,21 @@ async def _succeed_with_dirty_buffer(
         actor_config=default_actor_config(),
         payload_type=EmptyPayload,
         clock=clock,
-        loop_conn=loop_conn,  # pyright: ignore[reportArgumentType]  # Why: the parameter is typed asyncpg.Connection; _TxFakeConnection supplies the transaction()/execute() surface the consumer uses.
+        transaction_conn=transaction_conn,  # pyright: ignore[reportArgumentType]  # Why: the parameter is typed asyncpg.Connection; _TxFakeConnection supplies the transaction()/execute() surface the consumer uses.
     )
     return outcome, backend, captured[0], job.id
 
 
-async def _assert_buffer_retired(loop_conn: object | None) -> None:
+async def _assert_buffer_retired(transaction_conn: object | None) -> None:
     """After a success the buffer is clean, so a later flush writes nothing.
 
     ``buf.dirty is False`` alone says only that the flag was assigned; the
     follow-up flush is what distinguishes "flushed once" from "will flush
     again", which is a duplicate progress write against a finished job.
     """
-    outcome, backend, buf, job_id = await _succeed_with_dirty_buffer(loop_conn=loop_conn)
+    outcome, backend, buf, job_id = await _succeed_with_dirty_buffer(
+        transaction_conn=transaction_conn
+    )
 
     assert outcome == "succeeded"
     assert len(backend.mark_succeeded_calls) == 1

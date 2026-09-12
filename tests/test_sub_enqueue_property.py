@@ -279,7 +279,7 @@ async def test_tp1_visibility_invariant(n_children: int, outcome: str) -> None:
             payload_type=_ParentPayload,
             clock=clk,
             enqueuer=enqueuer,
-            loop_conn=fake_conn,
+            transaction_conn=fake_conn,
         )
 
     flushed = len(backend.enqueue_calls)

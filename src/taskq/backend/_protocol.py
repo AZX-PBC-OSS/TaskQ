@@ -1200,7 +1200,7 @@ class Backend(Protocol):
         self,
         args_list: list[EnqueueArgs],
         *,
-        connection: "asyncpg.Connection | None" = None,
+        connection: "ConnLike | None" = None,
         enforce_max_pending: bool = True,
     ) -> list[JobRow]:
         """Insert multiple jobs in a single batched operation.
@@ -1229,7 +1229,7 @@ class Backend(Protocol):
         self,
         args_list: list[EnqueueArgs],
         *,
-        connection: "asyncpg.Connection | None" = None,
+        connection: "ConnLike | None" = None,
         enforce_max_pending: bool = True,
     ) -> int:
         """Insert multiple jobs via the COPY FROM protocol for maximum throughput.
@@ -1279,7 +1279,7 @@ class Backend(Protocol):
 
     async def enqueue_with_conn(
         self,
-        conn: "asyncpg.Connection",
+        conn: "ConnLike",
         args: EnqueueArgs,
     ) -> JobRow:
         """Enqueue a job using the supplied connection.
@@ -1339,7 +1339,7 @@ class Backend(Protocol):
 
     async def mark_succeeded_with_conn(
         self,
-        conn: "asyncpg.Connection",
+        conn: "ConnLike",
         job_id: JobId,
         worker_id: UUID,
         result: dict[str, object] | None,
@@ -1656,35 +1656,35 @@ class Backend(Protocol):
         finalizer_job_id: UUID | None,
         originating_actor: str | None,
         *,
-        connection: "asyncpg.Connection | None" = None,
+        connection: "ConnLike | None" = None,
     ) -> None: ...
 
     async def increment_batch_failures(
         self,
         batch_id: UUID,
         *,
-        connection: "asyncpg.Connection | None" = None,
+        connection: "ConnLike | None" = None,
     ) -> tuple[int, int | None, int]: ...
 
     async def reset_batch_failures(
         self,
         batch_id: UUID,
         *,
-        connection: "asyncpg.Connection | None" = None,
+        connection: "ConnLike | None" = None,
     ) -> int: ...
 
     async def abort_batch(
         self,
         batch_id: UUID,
         *,
-        connection: "asyncpg.Connection | None" = None,
+        connection: "ConnLike | None" = None,
     ) -> int: ...
 
     async def complete_batch(
         self,
         batch_id: UUID,
         *,
-        connection: "asyncpg.Connection | None" = None,
+        connection: "ConnLike | None" = None,
     ) -> None: ...
 
     async def get_batch(
@@ -1701,7 +1701,7 @@ class Backend(Protocol):
         self,
         batch_id: UUID,
         *,
-        connection: "asyncpg.Connection | None" = None,
+        connection: "ConnLike | None" = None,
     ) -> int: ...
 
     async def prune_old_batches(

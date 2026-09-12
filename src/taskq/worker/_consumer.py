@@ -10,6 +10,7 @@ reservation denied, generic) live in :mod:`taskq.worker._handlers`.
 """
 
 import asyncio
+import contextlib
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import timedelta
 from typing import TYPE_CHECKING
@@ -26,6 +27,7 @@ from taskq._validation import validate_actor_payload
 from taskq.backend._protocol import (
     Backend,
     CancelPhase,
+    ConnLike,
     EnqueueArgs,
     JobRow,
 )
@@ -207,7 +209,7 @@ async def consume_one_job(
     max_retry_backoff: timedelta = DEFAULT_MAX_RETRY_BACKOFF,
     active_jobs: ActiveJobRegistry | None = None,
     enqueuer: SubJobEnqueuer | None = None,
-    loop_conn: asyncpg.Connection | None = None,
+    transaction_conn: ConnLike | None = None,
     validated_payload: BaseModel | None = None,
     rate_limit_registry: RateLimitRegistry | None = None,
     rate_limits: Sequence[str | KeyedRateLimitRef | TokenBucket | SlidingWindow] | None = None,
@@ -246,9 +248,11 @@ async def consume_one_job(
     bound is ``BaseModel`` here (the registry is heterogeneous); per-actor
     ``P`` flows from the call site that selected ``payload_type``.
 
-    ``enqueuer`` is the per-loop SubJobEnqueuer constructed in ``_main``
-    after ``loop_scope.bootstrap()``. When provided, the live
-    JobContext uses this enqueuer so sub-enqueues are transactional.
+    ``enqueuer`` is the SubJobEnqueuer the dispatch path selected — the
+    per-job instance bound to the slot transaction connection on the
+    per-slot path, or the per-loop instance ``_main`` constructs after
+    ``loop_scope.bootstrap()``. When provided, the live JobContext uses
+    this enqueuer so sub-enqueues are transactional.
 
     ``error_reporter`` is an optional :class:`~taskq.obs.ErrorReporter`
     invoked when a job reaches a terminal failure state (retry exhausted
@@ -261,10 +265,13 @@ async def consume_one_job(
     The reporter call is wrapped in a try/except — a failing reporter
     never crashes the worker.
 
-    ``loop_conn`` is the resolved LOOP-scope asyncpg.Connection (or
-    None when no LOOP-scope connection provider is registered). When
-    present, the consumer opens a transaction on it for the success
-    path and wraps the entire block in ``asyncio.shield`` per G8.
+    ``transaction_conn`` is the connection the job's transaction runs
+    on — the connection this dispatch acquired from the worker's slot
+    pool on the per-slot path, or the resolved LOOP-scope
+    asyncpg.Connection (None when no LOOP-scope connection provider is
+    registered). When present, the consumer opens a transaction on it
+    for the success path and wraps the entire block in
+    ``asyncio.shield`` per G8.
 
     Rate-limit / reservation acquire-release wrapping ( through
     ): when ``rate_limit_registry`` is provided and the actor
@@ -447,14 +454,14 @@ async def consume_one_job(
                 f"attempt.{job.attempt}",
                 kind=SpanKind.INTERNAL,
             ):
-                if loop_conn is not None:
+                if transaction_conn is not None:
                     tx_outcome = await _consume_transactional(
                         backend,
                         job,
                         worker_id,
                         ctx,
                         live_enqueuer,
-                        loop_conn,
+                        transaction_conn,
                         run_actor,
                         actor_config,
                         timeout,
@@ -506,7 +513,7 @@ async def consume_one_job(
         except asyncio.CancelledError:
             if _completion is _OK:
                 raise
-            if loop_conn is not None:
+            if transaction_conn is not None:
                 live_enqueuer.discard_buffer()
             if active_jobs is not None:
                 entry = active_jobs.get(job.id)
@@ -643,7 +650,7 @@ async def _consume_transactional(
     worker_id: UUID,
     ctx: JobContext[BaseModel],
     enqueuer: SubJobEnqueuer,
-    loop_conn: asyncpg.Connection,
+    transaction_conn: ConnLike,
     run_actor: Callable[[JobRow, JobContext[BaseModel]], Awaitable[object]],
     actor_config: ActorConfigLike,
     timeout: float | None,
@@ -659,10 +666,12 @@ async def _consume_transactional(
     error_reporter: ErrorReporter | None = None,
     fallback_result_ttl: timedelta | None = None,
 ) -> AttemptOutcome:
-    """Transactional success/failure path when a LOOP-scope conn is available.
+    """Transactional success/failure path when a transaction conn is available.
 
-    Opens a transaction, runs the actor inside it, commits on success
-    (shielded), and routes exceptions to the appropriate handler with
+    Opens a transaction on the job's transaction connection (one
+    connection per job on the per-slot path, so concurrent slots never
+    nest), runs the actor inside it, commits on success (shielded), and
+    routes exceptions to the appropriate handler with
     ``discard_buffer()`` called before each terminal write.
 
     Returns the job outcome — ``"succeeded"`` on successful commit,
@@ -681,8 +690,8 @@ async def _consume_transactional(
         _preserved_exc: Snooze | RetryAfter | None = None
         _re_enqueue_list: list[EnqueueArgs] = []
 
-        async with loop_conn.transaction():
-            await loop_conn.execute("SAVEPOINT _tq_actor")
+        async with transaction_conn.transaction():
+            await transaction_conn.execute("SAVEPOINT _tq_actor")
             result: object = None
             try:
                 # Why no shield here: asyncio.shield leaves the shielded
@@ -696,10 +705,10 @@ async def _consume_transactional(
                 # integrity is the OUTER shield's job (`shield(
                 # _run_actor_in_tx())` below): that one decouples EXTERNAL
                 # cancellation from an in-flight commit.  A cancel landing
-                # mid-statement on loop_conn is safe — asyncpg sends a
+                # mid-statement on transaction_conn is safe — asyncpg sends a
                 # CancelRequest, leaves the connection usable and puts the
                 # transaction in a failed state, which the enclosing
-                # `async with loop_conn.transaction()` then rolls back; the
+                # `async with transaction_conn.transaction()` then rolls back; the
                 # timeout's own terminal write goes through the worker pool,
                 # not this connection.
                 result = await asyncio.wait_for(run_actor(job, ctx), timeout=timeout)
@@ -728,7 +737,7 @@ async def _consume_transactional(
                 )
                 try:
                     await backend.mark_succeeded_with_conn(
-                        loop_conn,
+                        transaction_conn,
                         job.id,
                         worker_id,
                         result_dict,
@@ -741,11 +750,11 @@ async def _consume_transactional(
                     raise _TerminalWriteFailed(infra_exc) from infra_exc
                 if _pbuf is not None:
                     _pbuf.dirty = False
-                await loop_conn.execute("RELEASE SAVEPOINT _tq_actor")
+                await transaction_conn.execute("RELEASE SAVEPOINT _tq_actor")
             except (Snooze, RetryAfter) as exc:
                 _preserved_exc = exc
                 try:
-                    await loop_conn.execute("ROLLBACK TO SAVEPOINT _tq_actor")
+                    await transaction_conn.execute("ROLLBACK TO SAVEPOINT _tq_actor")
                 except Exception as exc:
                     log.warning(
                         "savepoint_rollback_failed",
@@ -797,8 +806,28 @@ async def _consume_transactional(
         _tx_result = result
         return _OK
 
+    def _retrieve_detached_outcome(task: asyncio.Task[object]) -> None:
+        # Why: on external cancellation the shield leaves the transaction
+        # task running detached (an in-flight commit must survive the
+        # cancel). Nobody awaits it afterwards, so its eventual outcome
+        # must be retrieved here or asyncio reports "Task exception was
+        # never retrieved" — noise that buries the real signal. The
+        # outcome itself is deliberately discarded: the dispatch path's
+        # connection release terminates a still-open transaction (see
+        # _release_slot_conn), so a detached task's late failure is
+        # expected, and its late success is superseded by the
+        # cancellation handling below. task.exception() raises
+        # CancelledError when the task ended cancelled — the only thing
+        # suppressed here.
+        with contextlib.suppress(asyncio.CancelledError):
+            task.exception()
+
+    # Why an explicit task instead of shielding the coroutine directly:
+    # the handle is needed on the cancellation path to retrieve the
+    # detached outcome (see _retrieve_detached_outcome).
+    tx_task: asyncio.Task[object] = asyncio.create_task(_run_actor_in_tx())
     try:
-        await asyncio.shield(_run_actor_in_tx())
+        await asyncio.shield(tx_task)
         await invoke_on_success(
             actor_config.on_success,
             job,
@@ -826,12 +855,14 @@ async def _consume_transactional(
         # inner task. If the inner task already completed successfully
         # (commit happened), do NOT route to mark_cancelled — that would
         # mark a committed job as cancelled, violating //.
-        if completion is _OK:
-            raise
-        # Why: not-yet-committed — transaction auto-rolled back by
-        # asyncpg's transaction context manager on CancelledError.
-        # Fall through to the outer CancelledError handler which calls
-        # discard_buffer + mark_cancelled + raise.
+        if completion is not _OK:
+            # Not-yet-committed: the detached task still holds the
+            # transaction open (it rolls back when it observes the
+            # cancel, or the connection is terminated underneath it at
+            # release time). Retrieve its eventual outcome and fall
+            # through to the outer CancelledError handler which calls
+            # discard_buffer + mark_cancelled + raise.
+            tx_task.add_done_callback(_retrieve_detached_outcome)
         raise
 
     except (

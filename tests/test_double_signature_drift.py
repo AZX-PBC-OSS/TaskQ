@@ -68,6 +68,10 @@ _NARROWER_BY_DESIGN: Final[dict[tuple[str, str], str]] = {
         "taskq.cli.asyncpg.connect",
     ): "Why: as above — third-party breadth the CLI never uses.",
     (
+        "test_cli_actor_config_diff_exit_code.py",
+        "taskq.cli.asyncpg.connect",
+    ): "Why: as above — third-party breadth the CLI never uses.",
+    (
         "test_cli_actor_deregister.py",
         "taskq.cli.asyncpg.connect",
     ): "Why: as above — third-party breadth the CLI never uses.",

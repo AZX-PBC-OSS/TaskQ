@@ -96,6 +96,7 @@ from taskq.testing._reads import (
     _get_events,
     _list_jobs,
     _poll_reclaim_events,
+    _schedule_read_copy,
 )
 from taskq.testing._runner import (
     PassthroughPayload,
@@ -808,10 +809,13 @@ class InMemoryBackend:
             last_fire_error=None,
             consecutive_failures=0,
             next_fire_at=args.next_fire_at,
-            metadata=args.metadata,
+            # PG serialises metadata into jsonb at INSERT time, so a
+            # caller-held dict can never reach storage by reference; copy
+            # on the way in to hold the same isolation contract here.
+            metadata=dict(args.metadata),
         )
         self._schedules[sid] = record
-        return record
+        return _schedule_read_copy(record)
 
     async def list_schedules(
         self,
@@ -825,7 +829,7 @@ class InMemoryBackend:
                 continue
             if enabled is not None and rec.enabled != enabled:
                 continue
-            results.append(rec)
+            results.append(_schedule_read_copy(rec))
         return results
 
     async def update_schedule(
@@ -852,7 +856,9 @@ class InMemoryBackend:
         elif args.clear_payload_factory:
             updates["payload_factory"] = None
         if args.metadata is not None:
-            updates["metadata"] = args.metadata
+            # Same isolation contract as create_schedule: copy the
+            # caller-held dict on the way in.
+            updates["metadata"] = dict(args.metadata)
         if args.consecutive_failures is not None:
             updates["consecutive_failures"] = args.consecutive_failures
         if args.last_fire_error is not None:
@@ -860,7 +866,7 @@ class InMemoryBackend:
 
         updated = rec.model_copy(update=updates)
         self._schedules[schedule_id] = updated
-        return updated
+        return _schedule_read_copy(updated)
 
     async def delete_schedule(self, schedule_id: UUID) -> None:
         self._schedules.pop(schedule_id, None)

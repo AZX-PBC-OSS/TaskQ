@@ -389,8 +389,9 @@ Connects to the Unix socket and issues `GET /ready`. The health server checks:
 
 1. `shutdown_phase == NONE` (worker is not draining or shutting down)
 2. PG ping succeeds within `TASKQ_HEALTH_PG_PING_TIMEOUT` (default 0.2s)
+3. when the worker runs a per-slot transaction pool, that pool is pinged too (overlapping probes share a single ping)
 
-Both conditions must pass for the response to be `200`. During any shutdown phase, the response is `503` regardless of the PG ping result.
+All conditions must pass for the response to be `200`. During any shutdown phase, the response is `503` regardless of the PG ping result.
 
 **Response body (200):**
 

@@ -9,7 +9,7 @@ import contextlib
 import importlib.metadata
 import time
 from collections.abc import Generator, Iterable, Sequence
-from typing import Literal
+from typing import Literal, Protocol
 
 import structlog
 from opentelemetry import metrics, trace
@@ -428,6 +428,94 @@ def record_heartbeat_miss(worker_id: str) -> None:
         return
     del worker_id  # Why: not a dimension -- see the cardinality note above.
     _heartbeat_misses.add(1)
+
+
+_slot_pool_acquire_failures = get_meter().create_counter(
+    "taskq.worker.slot_pool.acquire_failures",
+    description=(
+        "Bounded acquires from the per-slot transaction pool that failed "
+        "(timeout or connection error). An acquire failure is "
+        "infrastructure, not a job outcome: the claimed job recovers by "
+        "lock-lease expiry. No dimensions -- the pool name is in the "
+        "instrument name and the per-occurrence job id stays in the log "
+        "event."
+    ),
+    unit="1",
+)
+
+
+def record_slot_pool_acquire_failure() -> None:
+    """Bump the worker.slot_pool.acquire_failures counter.
+
+    Called from the exception branch of the bounded per-job acquire in
+    ``taskq.worker.dispatch`` — never the success path, matching
+    ``record_sweep_timeout``'s contract. A rate here is what separates
+    one transient timeout from every transactional job on a worker
+    failing to acquire.
+    Respects ``_otel_enabled`` — no-op when False.
+    """
+    if not _otel_enabled:
+        return
+    _slot_pool_acquire_failures.add(1)
+
+
+class _PoolOccupancySource(Protocol):
+    """Structural slice of asyncpg.Pool the occupancy gauge reads.
+
+    Keeps this observability leaf free of an asyncpg import: the only
+    producers (slot-pool bootstrap and credential reload) pass real
+    pools, which satisfy this shape structurally.
+    """
+
+    def get_size(self) -> int: ...
+
+    def get_idle_size(self) -> int: ...
+
+
+_slot_pool_occupancy_source: _PoolOccupancySource | None = None
+"""The asyncpg pool the occupancy gauge reads — set at slot-pool open
+and refreshed on credential-reload swaps."""
+
+
+def set_slot_pool_occupancy_source(pool: _PoolOccupancySource | None) -> None:
+    """Point the slot-pool occupancy gauge at *pool*.
+
+    Called at slot-pool bootstrap open and whenever a credential reload
+    swaps the pool, so the gauge always reads the live one. ``None``
+    clears the source — the gauge reports nothing, matching the
+    pool-not-open state.
+    """
+
+    global _slot_pool_occupancy_source
+    _slot_pool_occupancy_source = pool
+
+
+def _observe_slot_pool_occupancy(options: CallbackOptions) -> Iterable[Observation]:
+    pool = _slot_pool_occupancy_source
+    if pool is None:
+        return
+    try:
+        # Why defensive: the source can be a pool that teardown has since
+        # closed (the gauge outlives the swap/close notifications); a
+        # collection read must never raise into the SDK's export path.
+        in_use = pool.get_size() - pool.get_idle_size()
+    except Exception:
+        return
+    yield Observation(in_use)
+
+
+_slot_pool_occupancy_gauge = get_meter().create_observable_gauge(
+    name="taskq.worker.slot_pool.connections_in_use",
+    description=(
+        "Connections of the per-slot transaction pool currently held by "
+        "dispatching jobs. A pool pinned at its maximum for hours with "
+        "zero acquire timeouts is healthy saturation, not health - this "
+        "gauge is what makes that degradation visible below the "
+        "acquire-failure cliff."
+    ),
+    unit="1",
+    callbacks=[_observe_slot_pool_occupancy],
+)
 
 
 _queue_depth_cache: dict[str, int] = {}

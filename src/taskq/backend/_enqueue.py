@@ -532,7 +532,7 @@ async def _enqueue_batch(
     schema: str,
     args_list: list[EnqueueArgs],
     *,
-    connection: "asyncpg.Connection | None" = None,
+    connection: "ConnLike | None" = None,
     enforce_max_pending: bool = True,
 ) -> list[JobRow]:
     if not args_list:
@@ -763,7 +763,7 @@ async def _enqueue_batch_fast(
     schema: str,
     args_list: list[EnqueueArgs],
     *,
-    connection: "asyncpg.Connection | None" = None,
+    connection: "ConnLike | None" = None,
     enforce_max_pending: bool = True,
 ) -> int:
     if not args_list:

@@ -224,15 +224,20 @@ def _credential_connections(
     settings: WorkerSettings,
     pg_ref: str | None,
     redis_ref: str | None,
-) -> WorkerConnections | None:
+) -> tuple[WorkerConnections | None, PgCredentialProvider | None]:
     """Build the worker's provider-backed connections, or ``None`` when unset.
 
     ``None`` keeps the DSN path exactly as it was, so the hook is purely
     additive; a misconfiguration on either side exits non-zero at startup
     instead of starting a worker whose SIGHUP rotates nothing.
+
+    Returns the resolved Postgres provider alongside (``None`` when no
+    PG ref is set) — the worker-internal per-slot transaction pool does
+    not read WorkerConnections, so the provider object is handed to the
+    worker separately and must not be resolved twice.
     """
     if pg_ref is None and redis_ref is None:
-        return None
+        return None, None
     pg_provider = (
         _load_pg_credential_provider(pg_ref, option="--pg-credential-provider")
         if pg_ref is not None
@@ -244,12 +249,13 @@ def _credential_connections(
         else None
     )
     try:
-        return build_worker_connections(
+        conns = build_worker_connections(
             settings, pg_provider=pg_provider, redis_provider=redis_provider
         )
     except ValueError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from None
+    return conns, pg_provider
 
 
 def _credential_conn_factory(dsn: str, pg_ref: str | None, *, option: str) -> ConnFactory | None:
@@ -386,7 +392,7 @@ def worker(
     if health_socket_path is not None:
         settings.health_socket_path = health_socket_path
 
-    connections = _credential_connections(
+    connections, pg_provider = _credential_connections(
         settings,
         _resolved_ref(pg_credential_provider, settings.pg_credential_provider),
         _resolved_ref(redis_credential_provider, settings.redis_credential_provider),
@@ -397,6 +403,7 @@ def worker(
             settings,
             actor_registry=registry,
             connections=connections,
+            pg_credential_provider=pg_provider,
             until_idle=until_idle,
             idle_settle_window=idle_settle_window,
             idle_poll_interval=idle_poll_interval,
@@ -900,7 +907,17 @@ def _effective_capacity(field: str, literal: object, row: ActorConfigRow) -> tup
 
 def _print_actor_diff(
     name: str, ref: ActorRef[Any, Any] | None, row: ActorConfigRow | None
-) -> None:
+) -> bool:
+    """Print one actor's diff; return whether its state blocks dispatch or boot.
+
+    Two states block: a queue/metadata structural mismatch (the next worker
+    startup raises ActorConfigDriftList) and a registry actor with no stored
+    row (the dispatch capacity gate reads only actor_config rows, so the
+    actor does not dispatch until a row is seeded). Capacity-only differences
+    never block — stored capacity is operator-owned by design — and neither
+    does a leftover row for an actor that is no longer registered: it only
+    serves already-queued jobs.
+    """
     typer.echo(f"{name}:")
     if row is None:
         # Registry-only actor: nothing has ever seeded a row. Enforcement
@@ -925,14 +942,14 @@ def _print_actor_diff(
             else:
                 typer.echo(f"  {field:<15} literal={literal}  effective={literal} (literal)")
         typer.echo(f"  {'queue':<15} literal={ref.queue}")
-        return
+        return True
     if ref is None:
         typer.echo(
             "  stored row's actor is not in the registry — leftover row; "
             "only already-queued jobs can still reference it"
         )
         _print_actor_config_row(row)
-        return
+        return False
     for field in _CAPACITY_DIFF_FIELDS:
         literal = _literal_for_field(ref, field)
         stored = getattr(row, field)
@@ -940,7 +957,8 @@ def _print_actor_diff(
         typer.echo(
             f"  {field:<15} literal={literal}  stored={stored}  effective={effective} ({source})"
         )
-    if ref.queue != row.queue:
+    queue_mismatch = ref.queue != row.queue
+    if queue_mismatch:
         typer.echo(
             f"  {'queue':<15} literal={ref.queue}  stored={row.queue}  MISMATCH — structural "
             "drift; the next worker startup raises ActorConfigDriftList unless run with "
@@ -948,7 +966,8 @@ def _print_actor_diff(
         )
     else:
         typer.echo(f"  {'queue':<15} {row.queue} (match)")
-    if dict(ref.metadata) != row.metadata:
+    metadata_mismatch = dict(ref.metadata) != row.metadata
+    if metadata_mismatch:
         typer.echo(
             f"  {'metadata':<15} literal={dict(ref.metadata)}  stored={row.metadata}  MISMATCH — "
             "structural drift; the next worker startup raises ActorConfigDriftList unless run "
@@ -956,6 +975,7 @@ def _print_actor_diff(
         )
     else:
         typer.echo(f"  {'metadata':<15} (match)")
+    return queue_mismatch or metadata_mismatch
 
 
 @actor_config_app.command("diff")
@@ -978,6 +998,13 @@ def actor_config_diff(
     runtime — the stored value wins; tune it with `taskq actor-config
     set` — while a queue/metadata mismatch blocks the next worker
     startup with ActorConfigDriftList.
+
+    Exit codes: 0 no blocking drift; 1 at least one actor blocks dispatch
+    or the next worker boot — a registry actor with no stored row (it
+    does not dispatch until one is seeded) or a queue/metadata structural
+    mismatch. Capacity-only differences never affect the exit code:
+    stored capacity is operator-owned by design, so they are reportable
+    drift, not blocking drift.
     """
     registry = _load_actor_registry(actors)
     settings = TaskQSettings.load()
@@ -999,8 +1026,14 @@ async def _actor_config_diff(
     if not names:
         typer.echo("no actors in the registry and no stored actor_config rows")
         return
+    blocking = False
     for name in names:
-        _print_actor_diff(name, registry.get(name), stored_by_actor.get(name))
+        if _print_actor_diff(name, registry.get(name), stored_by_actor.get(name)):
+            blocking = True
+    # The whole report prints before this exit: the output is the diagnosis,
+    # the exit code is the signal a CI gate checks.
+    if blocking:
+        raise typer.Exit(code=1)
 
 
 async def _report_up_failure(conn: asyncpg.Connection | None, schema: str, exc: Exception) -> None:
@@ -1096,7 +1129,7 @@ def _build_sso_bundle(settings: TaskQSettings, base_path: str) -> Any | None:
     the existing unauthenticated/BYO-auth behavior.
     """
     backend = settings.sso_backend.lower()
-    secure = settings.environment not in {"dev", "development"}
+    secure = not settings.is_dev_environment
     if backend == "oidc":
         from taskq.web.admin.auth import OIDCAuthConfig, create_oidc_auth
 
@@ -1178,7 +1211,7 @@ def _ui_serve(
         from taskq.web.admin.auth import token_auth
 
         health_deps = [Depends(token_auth(settings.health_token.get_secret_value()))]
-    elif settings.environment not in {"dev", "development"}:
+    elif not settings.is_dev_environment:
         if settings.health_require_token:
             raise RuntimeError(
                 "health/metrics endpoints require TASKQ_HEALTH_TOKEN in non-dev "

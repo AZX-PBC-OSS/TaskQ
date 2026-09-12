@@ -302,9 +302,16 @@ class TestReturnAnnotations:
     def test_bool_returning_methods(self) -> None:
         import asyncpg
 
+        from taskq.backend._protocol import ConnLike
+
         for name in self.BOOL_METHODS:
             fn = getattr(Backend, name)
-            hints = get_type_hints(fn, globalns={**globals(), "asyncpg": asyncpg})
+            # Why the injected globalns: Backend's conn parameters carry
+            # string annotations over TYPE_CHECKING-only imports, so the
+            # evaluation namespace must supply both names.
+            hints = get_type_hints(
+                fn, globalns={**globals(), "asyncpg": asyncpg, "ConnLike": ConnLike}
+            )
             assert hints.get("return") is bool, (
                 f"{name} return annotation should be bool, got {hints.get('return')}"
             )

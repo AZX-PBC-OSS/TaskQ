@@ -11,12 +11,14 @@ Covers:
   - No payload/ctx double-pass
   - Actor sees live ctx with working cancel_event
   - Interim ctx is not the actor's ctx (regression guard)
+  - Slot-pool acquire failure raises outside the job-outcome accounting
 """
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Generator
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
+from unittest.mock import MagicMock
 
 import asyncpg
 import pytest
@@ -41,7 +43,11 @@ from taskq.testing.actor import FakeBackend, StubActorConfig, as_backend
 from taskq.testing.clock import FakeClock
 from taskq.testing.jobs import make_job_row
 from taskq.worker.cancel import ActiveJobRegistry
-from taskq.worker.dispatch import build_actor_scope, dispatch_one_job
+from taskq.worker.dispatch import (
+    SlotPoolAcquireError,
+    build_actor_scope,
+    dispatch_one_job,
+)
 
 _NOW = datetime(2026, 1, 1, tzinfo=UTC)
 _WORKER_ID = new_uuid()
@@ -70,6 +76,7 @@ class _FakeWorkerDeps:
     def __init__(self) -> None:
         self.active_jobs = ActiveJobRegistry()
         self.worker_pool: asyncpg.Pool | None = None
+        self.slot_pool: asyncpg.Pool | None = None
         # Why load_from_dict, not WorkerSettings(): the bare constructor
         # skips post_load, leaving every field None — including the ones
         # the consumer reads on the success path (result_max_bytes).
@@ -1359,3 +1366,118 @@ async def test_payload_validation_error_carries_structured_attributes() -> None:
     assert exc_info.value.actor == "test_actor"
     assert len(exc_info.value.validation_errors) > 0
     assert exc_info.value.validation_errors[0]["loc"] == ("not_a_valid_field",)
+
+
+# ── Slot-pool acquire failure: infrastructure, not a job outcome ──────
+
+
+class _AcquireFailsPool:
+    """Pool stand-in whose acquire fails like asyncpg's bounded acquire:
+    the context manager's ``__aenter__`` raises from the bounded wait.
+
+    ``error`` is injectable because asyncpg surfaces two distinct
+    failure families there — the wait timing out (builtin TimeoutError)
+    and a fresh connection being refused server-side (coded
+    PostgresError subclasses like InvalidPasswordError that are NOT
+    PostgresConnectionError children). Both are infrastructure, never a
+    job outcome.
+    """
+
+    def __init__(self, error: BaseException) -> None:
+        self.error = error
+
+    def acquire(self, timeout: float | None = None) -> "_FailingAcquireCtx":
+        return _FailingAcquireCtx(self.error)
+
+
+class _FailingAcquireCtx:
+    """Both asyncpg acquire shapes — awaitable and async context manager —
+    failing at the same point the real bounded acquire does."""
+
+    def __init__(self, error: BaseException) -> None:
+        self._error = error
+
+    def __await__(self) -> Generator[None, None, Any]:
+        # Why raise-then-yield: __await__ must return an iterator; the
+        # unreachable yield makes this a generator whose first next()
+        # raises, surfacing the error exactly where the real bounded
+        # acquire surfaces it.
+        raise self._error
+        yield  # pragma: no cover  # Why: generator marker — unreachable by construction.
+
+    async def __aenter__(self) -> Any:
+        raise self._error
+
+    async def __aexit__(self, *_exc: object) -> None:
+        return None
+
+
+@pytest.mark.parametrize(
+    "acquire_error",
+    [
+        TimeoutError(),
+        asyncpg.InvalidPasswordError("password authentication failed"),
+    ],
+    ids=["acquire-wait-timeout", "connect-refused-postgres-error"],
+)
+async def test_slot_pool_acquire_failure_raises_outside_job_outcome_accounting(
+    monkeypatch: pytest.MonkeyPatch,
+    acquire_error: BaseException,
+) -> None:
+    """A bounded acquire that fails raises SlotPoolAcquireError before any
+    span or metric exists — for both failure families asyncpg surfaces
+    at acquire time.
+
+    The acquire is infrastructure: the job is already claimed and
+    recovers by lock-lease expiry, so counting it as a consumed message
+    or a job failure would make a drain step report failures that never
+    happened. The counter fires (from the exception branch) and the log
+    event carries the per-occurrence cause; the consumed-message record
+    must NOT fire.
+    """
+    import taskq.worker.dispatch as dispatch_mod
+
+    record_acquire_failure = MagicMock()
+    record_consumed = MagicMock()
+    monkeypatch.setattr(dispatch_mod, "record_slot_pool_acquire_failure", record_acquire_failure)
+    monkeypatch.setattr(dispatch_mod, "record_consumed_message", record_consumed)
+
+    async with _ScopeStack() as scopes:
+        fake_backend = FakeBackend()
+        fake_deps = _FakeWorkerDeps()
+        fake_deps.slot_pool = _AcquireFailsPool(acquire_error)  # type: ignore[assignment]  # Why: duck-typed pool stand-in for the bounded-acquire failure path.
+        actor_ref = _make_actor_ref(_noop_actor)
+        job = make_job_row(payload={"value": 42})
+
+        with pytest.raises(SlotPoolAcquireError):
+            await dispatch_one_job(
+                backend=as_backend(fake_backend),
+                deps=_as_deps(fake_deps),
+                job=job,
+                worker_id=_WORKER_ID,
+                registry=scopes.registry,
+                process_scope=scopes.process_scope,
+                thread_scope=scopes.thread_scope,
+                loop_scope=scopes.loop_scope,
+                actor_ref=actor_ref,  # type: ignore[arg-type]  # Why: same ActorRef generic-widening pattern as the tests above.
+                actor_config=StubActorConfig(retry=RetryPolicy()),
+                clock=FakeClock(_NOW),
+                active_jobs=fake_deps.active_jobs,
+                enqueuer=SubJobEnqueuer(
+                    backend=as_backend(fake_backend), loop_scope_resolved=None, worker_pool=None
+                ),
+            )
+
+        # The counter fires from the acquire's exception branch...
+        record_acquire_failure.assert_called_once_with()
+        # ...and the job-outcome accounting never runs: no consumed
+        # message, no backend terminal write (the job stays claimed and
+        # lock-lease expiry reclaims it).
+        record_consumed.assert_not_called()
+        assert fake_backend.mark_succeeded_calls == []
+        assert fake_backend.mark_failed_or_retry_calls == []
+        assert fake_backend.mark_snoozed_calls == []
+
+
+async def _noop_actor(payload: _Payload, ctx: JobContext[_Payload]) -> dict[str, object]:
+    return {}
