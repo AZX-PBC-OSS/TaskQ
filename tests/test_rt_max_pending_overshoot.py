@@ -361,9 +361,7 @@ async def test_batch_idempotency_duplicates_do_not_consume_cap(
     first = replace(template, actor=actor_name, id=new_job_id())
     await backend.enqueue_with_conn(clean_pg_conn, first)
 
-    rest = [
-        replace(template, actor=actor_name, id=new_job_id()) for _ in range(4)
-    ]
+    rest = [replace(template, actor=actor_name, id=new_job_id()) for _ in range(4)]
     rows = await backend.enqueue_batch([first, *rest], connection=clean_pg_conn)
 
     assert len(rows) == 5
