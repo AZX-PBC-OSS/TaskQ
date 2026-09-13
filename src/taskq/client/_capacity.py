@@ -205,6 +205,30 @@ class ActorCapacityCache:
         first use, rather than degrading silently through the fail-open
         path (see the module docstring).
         """
+        self._ensure_backend_checked()
+        await self._refresh()
+        return self._resolve(actor, literal, per_call)
+
+    def peek_max_pending(self, actor: str, literal: int | None) -> int | None:
+        """Resolve *actor*'s effective cap from the CURRENT snapshot —
+        no refresh, no I/O, no lock, never raises.
+
+        Why a sync variant: :meth:`JobsClient.enqueue_batch_streaming`'s
+        atomic arm builds its ``EnqueueArgs`` inside a SYNC generator the
+        backend consumes mid-transaction — no ``await`` is possible at
+        yield time. The caller warms the snapshot with ONE
+        :meth:`effective_max_pending` call before the generator starts
+        (the same single refresh-per-call budget every other arm spends),
+        and every actor the stream later introduces resolves from that
+        fresh snapshot here — same values as the async method for the
+        whole stream. A cold or invalidated snapshot resolves to
+        *literal*: the module's documented fail-open fallback, identical
+        to a refresh failure on the async path.
+        """
+        self._ensure_backend_checked()
+        return self._resolve(actor, literal)
+
+    def _ensure_backend_checked(self) -> None:
         # Check at first use (cached) — not per-call, this runs on the hot
         # enqueue path. Why hasattr rather than callable(): test doubles
         # (MagicMock et al.) auto-vivify attributes, often as non-callable
@@ -221,7 +245,13 @@ class ActorCapacityCache:
                     "first use instead. Implement the method or upgrade the backend."
                 )
             self._backend_checked = True
-        await self._refresh()
+
+    def _resolve(
+        self, actor: str, literal: int | None, per_call: int | None = None
+    ) -> int | None:
+        # The module docstring's resolution rule, as one pure function:
+        # stored wins over literal; per_call tightens a stored cap and
+        # supersedes the literal.
         stored = self._rows.get(actor)
         if stored is not None:
             return min(stored, per_call) if per_call is not None else stored

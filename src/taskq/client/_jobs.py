@@ -737,7 +737,9 @@ class JobsClient:
 
         **max_pending:** enforced per chunk with the same per-actor
         partition as :meth:`enqueue_batch` — each chunk's items carry
-        their actors' caps, the backend admits every within-cap actor's
+        their actors' *effective* caps (operator-stored override when
+        set, else the ``@actor(...)`` literal — same resolution as
+        :meth:`enqueue`), the backend admits every within-cap actor's
         items, and an over-cap actor's items are refused.  On the
         caller-connection path sequential chunks share one transaction,
         so per-chunk admission accumulates to the true aggregate.  On
@@ -749,11 +751,11 @@ class JobsClient:
         ``admitted_count`` covering every committed item; items after
         the refusing chunk were never attempted.  Retry only the
         refused items (or rely on ``idempotency_key``s).  The atomic
-        path (``failure_policy``/``finalizer``, no connection) keeps
-        all-or-nothing: a cap violation rolls back the entire single
-        transaction and raises plain
-        :class:`~taskq.exceptions.MaxPendingExceededError` with nothing
-        committed.
+        path (``failure_policy``/``finalizer``, no connection) resolves
+        the same effective caps and keeps all-or-nothing: a cap
+        violation rolls back the entire single transaction and raises
+        plain :class:`~taskq.exceptions.MaxPendingExceededError` with
+        nothing committed.
         """
         if chunk_size < 1 or chunk_size > MAX_BATCH_SIZE:
             raise ValueError(f"chunk_size must be in [1, {MAX_BATCH_SIZE}], got {chunk_size}")
@@ -801,6 +803,17 @@ class JobsClient:
         # batches would get wrong deserialization).
         item_meta: list[tuple[ActorRef[Any, Any], JobId]] = []
 
+        # Effective per-actor caps, memoized as actors appear (same
+        # resolution as :meth:`enqueue` / :meth:`enqueue_batch`): without
+        # it, an operator-stored ``actor_config.max_pending`` on a
+        # literal-less actor never reaches the args, the backend's cap
+        # groups skip the actor entirely, and the override is silently
+        # unenforced. The chunked arm awaits the cache between chunks; the
+        # atomic arm pre-warms the snapshot (see below) and peeks it here,
+        # synchronously, because the backend consumes this generator
+        # mid-transaction where no await is possible.
+        effective_mp: dict[str, int | None] = {}
+
         def _lazy_args(stream: Iterable[EnqueueItem]) -> Iterable[EnqueueArgs]:
             for idx, item in enumerate(stream):
                 ref = item.actor_ref
@@ -813,6 +826,10 @@ class JobsClient:
                         actor=ref.name,
                         validation_errors=errs,
                     ) from exc
+                if ref.name not in effective_mp:
+                    effective_mp[ref.name] = self._capacity_cache.peek_max_pending(
+                        ref.name, ref.max_pending
+                    )
                 args = build_enqueue_args(
                     ref,
                     item.payload,
@@ -826,6 +843,7 @@ class JobsClient:
                     start_to_close=item.start_to_close,
                     tags=item.tags,
                     idempotency_max_bytes=self._idempotency_max_bytes,
+                    max_pending=effective_mp[ref.name],
                 )
                 # Stamp batch_id AFTER build_enqueue_args, which strips any
                 # caller-supplied batch_id as a security boundary (H5).
@@ -873,6 +891,20 @@ class JobsClient:
             # consumed. H4: item_meta is populated as a side effect of the
             # generator being consumed, providing per-item actor_refs and
             # args_ids for handle pairing.
+            #
+            # Warm the capacity snapshot BEFORE the backend's transaction
+            # starts: _lazy_args is a SYNC generator consumed mid-transaction,
+            # so it cannot await a (possibly stale-triggering) refresh at
+            # yield time. One awaited resolution here — for the first item's
+            # actor, whose result the generator also reuses — spends the same
+            # single refresh-per-call budget enqueue_batch spends; every
+            # actor the stream later introduces resolves from that snapshot
+            # via peek_max_pending. A failed refresh fails open to literals,
+            # exactly like every other arm.
+            first_ref = first_item.actor_ref
+            effective_mp[first_ref.name] = await self._capacity_cache.effective_max_pending(
+                first_ref.name, first_ref.max_pending
+            )
             all_rows = await self._backend.enqueue_batch_atomic(
                 _lazy_args(_chain()),
                 batch_id=resolved_batch_id,
@@ -932,8 +964,19 @@ class JobsClient:
                             actor=ref.name,
                             validation_errors=errs_v,
                         ) from exc
+                    # Resolve effective caps for actors NEW to this chunk
+                    # (memoized in effective_mp across chunks — the TTL'd
+                    # cache makes this a lookup after the first), so a
+                    # stored override on a literal-less actor is enforced
+                    # exactly as enqueue_batch enforces it.
+                    if ref.name not in effective_mp:
+                        effective_mp[ref.name] = await self._capacity_cache.effective_max_pending(
+                            ref.name, ref.max_pending
+                        )
                     global_idx += 1
-                chunk_args = build_batch_args(chunk_items, resolved_batch_id)
+                chunk_args = build_batch_args(
+                    chunk_items, resolved_batch_id, max_pending_by_actor=effective_mp
+                )
                 # Why capture the offset BEFORE the backend call: at this
                 # point total_count is exactly the number of items in the
                 # committed prefix (chunks 1..N-1), which is the index base
@@ -1082,7 +1125,9 @@ class JobsClient:
         returns a bare row **count**, not per-job handles — there is no
         way to await, cancel, or otherwise reference an individual job
         from the return value. ``max_pending`` IS enforced, with the same
-        per-actor partition admission as :meth:`enqueue_batch` (see its
+        per-actor partition admission and the same effective-cap
+        resolution (operator-stored override when set, else the
+        ``@actor(...)`` literal) as :meth:`enqueue_batch` (see its
         docstring). Use :meth:`enqueue_batch`
         unless you specifically need COPY-level throughput for a one-shot
         bulk import/backfill and have already accounted for these gaps.
@@ -1137,8 +1182,21 @@ class JobsClient:
             ref = item.actor_ref
             validate_actor_payload(ref.payload_type, item.payload, actor=ref.name)
 
+        # Phase 1.5: Resolve the effective cap per actor — the same
+        # resolution and rationale as enqueue_batch (see the comment
+        # there): a stored operator override on a literal-less actor must
+        # be visible to the backend's cap groups, which skip actors
+        # carrying no cap.
+        effective_mp: dict[str, int | None] = {}
+        for item in items:
+            ref = item.actor_ref
+            if ref.name not in effective_mp:
+                effective_mp[ref.name] = await self._capacity_cache.effective_max_pending(
+                    ref.name, ref.max_pending
+                )
+
         # Phase 2: Build per-item EnqueueArgs
-        args_list = build_batch_args(items, resolved_batch_id)
+        args_list = build_batch_args(items, resolved_batch_id, max_pending_by_actor=effective_mp)
 
         # Phase 3: COPY FROM via backend
         count = await self._backend.enqueue_batch_fast(args_list, connection=connection)
