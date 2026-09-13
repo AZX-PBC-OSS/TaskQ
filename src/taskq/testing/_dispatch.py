@@ -37,11 +37,18 @@ async def _dispatch_batch(
                 running_identities.add((row.actor, row.identity_key))
 
     _has_actor_configs: bool = bool(self._actor_configs_meta)
+    # Why: `row.queue in queues` with NO `not queues` escape — PG builds the
+    # candidate set with ``CROSS JOIN LATERAL unnest((SELECT queues FROM
+    # params))`` (backend/_dispatch_sql.py), and an empty array annihilates
+    # every candidate: ``queues=[]`` means match NOTHING. The old
+    # ``not queues or ...`` read the same input as "no filter" (match ALL),
+    # so the mirror dispatched work a real worker polling the same empty
+    # list never would — the mirror was greener than production.
     candidates = [
         row
         for row in self._jobs.values()
         if row.status == "pending"
-        and (not queues or row.queue in queues)
+        and row.queue in queues
         and row.scheduled_at <= now
         and (row.schedule_to_close is None or row.schedule_to_close > now)
         and (not _has_actor_configs or row.actor in self._actor_configs_meta)
@@ -57,7 +64,16 @@ async def _dispatch_batch(
         if _use_round_robin:
             _fk_groups: dict[str, list[JobRow]] = _dd(list)
             for r in _rows:
-                fk = r.fairness_key if r.fairness_key is not None else f"__null__{r.id}"
+                # Why: ONE shared "__null__" partition for every unkeyed job,
+                # exactly PG's ``PARTITION BY COALESCE(j2.fairness_key,
+                # '__null__')`` (backend/_dispatch_sql.py). The old
+                # per-row synthetic partition (f"__null__{r.id}") ranked
+                # every unkeyed job at fairness_rank 1, so a bounded batch
+                # was consumed entirely by the unkeyed cohort and the keyed
+                # cohorts starved — the exact round-robin starvation the
+                # mode exists to prevent, in the default configuration
+                # (fairness_key is None by default).
+                fk = r.fairness_key if r.fairness_key is not None else "__null__"
                 _fk_groups[fk].append(r)
             _fairness_rank: dict[object, int] = {}
             for _fk_rows in _fk_groups.values():
