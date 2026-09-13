@@ -11,6 +11,8 @@ shared window state is server-domain by construction, so callers on nodes
 with divergent Python clocks are all measured against the same window.
 """
 
+import asyncio
+import time
 from datetime import timedelta
 from typing import TYPE_CHECKING
 from uuid import UUID
@@ -249,17 +251,55 @@ async def _refund_pg_log(
     )
 
 
+#: Non-blocking variant of the per-bucket serialization lock (see
+#: _acquire_pg_log): returns a bool instead of queueing the caller
+#: behind the holder, so the wait budget is owned by this process
+#: instead of Postgres' lock_timeout GUC. Same hashtextextended key
+#: convention as the enqueue path's max_pending lock.
+_SLIDING_WINDOW_TRY_LOCK_SQL = "SELECT pg_try_advisory_xact_lock(hashtextextended($1, 0))"
+
+#: Bounded wait (milliseconds) for the per-bucket log-style advisory
+#: lock. The lock is held across a DELETE + count/INSERT pair (a few
+#: round trips — low single-digit milliseconds on a healthy pool), so
+#: 5 s tolerates a burst of hundreds of queued racers while capping
+#: tail latency instead of letting it scale with the racer count, and a
+#: black-holed holder (dead TCP, no FIN) blocks its bucket for at most
+#: one budget instead of until the server's keepalives reap it. Same
+#: default as the enqueue path's DEFAULT_MAX_PENDING_LOCK_TIMEOUT_MS. A
+#: racer that exhausts the budget gets the limiter's DENIAL outcome —
+#: fail closed, never an admission. ``0`` (or less) waits indefinitely,
+#: matching the ``lock_timeout`` GUC convention used by migrate.py.
+DEFAULT_SLIDING_WINDOW_LOCK_TIMEOUT_MS: float = 5000.0
+
+#: Retry cadence while contended. Exponential from 5 ms capped at
+#: 100 ms: the typical holder finishes in a few milliseconds, so most
+#: racers acquire on the first or second poll, while the cap bounds the
+#: poll traffic a pathological burst can generate (~90 statements over
+#: the full 5 s budget, each a cheap one-value SELECT).
+_SLIDING_WINDOW_LOCK_RETRY_MIN_DELAY_S: float = 0.005
+_SLIDING_WINDOW_LOCK_RETRY_MAX_DELAY_S: float = 0.1
+
+
 async def _acquire_pg_log(
     self: "SlidingWindow",
     pg_pool: "asyncpg.Pool | None",
     settings: "WorkerSettings | None",
     request_id: UUID | None,
+    *,
+    lock_timeout_ms: float = DEFAULT_SLIDING_WINDOW_LOCK_TIMEOUT_MS,
 ) -> RateLimitDecision:
     """Acquire log-style against PG.
 
     Every window predicate and the inserted ``ts`` are ``clock_timestamp()``
     — the PG server clock owns the shared window state, so nodes with
     divergent Python clocks all get measured against the same window.
+
+    The per-bucket advisory lock is acquired with a bounded try-lock poll
+    (default :data:`DEFAULT_SLIDING_WINDOW_LOCK_TIMEOUT_MS`). On budget
+    exhaustion the acquire FAILS CLOSED: it returns the limiter's denial
+    outcome — ``allowed=False`` with a retry hint, never an exception and
+    never an admission — so a racer that could not check the window can
+    never over-admit past the limit.
     """
     if pg_pool is None:
         raise RuntimeError("pg_pool not injected for postgres backend")
@@ -317,11 +357,62 @@ async def _acquire_pg_log(
     # operating on different ``"{schema}".rate_limit_window_entries``
     # tables. Qualifying keeps the lock's scope identical to the table
     # it serializes access to.
-    advisory_lock_sql = "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))"
+    #
+    # Why a bounded TRY-lock poll and not the blocking acquire this used
+    # to take (the same shape as the enqueue path's
+    # _acquire_max_pending_lock): every racer on this lock holds it
+    # across its own DELETE + count/INSERT round trips, so a blocking
+    # acquire makes N concurrent dispatches of a rate-limited actor
+    # queue on one unbounded lock — tail latency linear in the racer
+    # count, and a black-holed holder (dead TCP, no FIN; the server
+    # reaps it only via keepalives) blocks the whole bucket's dispatch
+    # until then. The try-lock returns a bool, leaves the transaction
+    # fully usable after every failed attempt, and keeps the budget
+    # arithmetic in this process. Once acquired, the lock is
+    # transaction-scoped and the delete/count/insert sequence below is
+    # unchanged — the window itself stays EXACT.
+    #
+    # On budget exhaustion the acquire FAILS CLOSED: a racer that could
+    # not check the window must never over-admit, so it returns the
+    # limiter's denial outcome — RateLimitDecision allowed=False with a
+    # retry hint — never an exception, never an admission. A lock-timeout
+    # denial is NOT an empty bucket; operators should read it the same
+    # way as any other denial (backpressure — the dispatch layer snoozes
+    # and re-promotes the job either way), with the distinct
+    # ratelimit-lock-timeout warning below as the signal that the bucket
+    # (or its holder) is contended or sick rather than merely busy. No
+    # counter bump: taskq.backpressure.errors is enqueue-scoped
+    # (actor-keyed); the limiter's denial channel is the
+    # rate-limit-decision log event, which this denial flows through
+    # like any other. retry_after carries one more budget — the holder's
+    # critical section is a few round trips, so if this budget expired
+    # the honest earliest re-check is after another full one.
     lock_key = f"taskq:{schema}:sw:{self._name}"
 
     async with pg_pool.acquire() as conn, conn.transaction():
-        await conn.execute(advisory_lock_sql, lock_key)
+        deadline = None if lock_timeout_ms <= 0 else time.monotonic() + lock_timeout_ms / 1000.0
+        delay = _SLIDING_WINDOW_LOCK_RETRY_MIN_DELAY_S
+        while not await conn.fetchval(_SLIDING_WINDOW_TRY_LOCK_SQL, lock_key):
+            if deadline is not None and time.monotonic() >= deadline:
+                logger.warning(
+                    "ratelimit-lock-timeout",
+                    bucket_name=self._name,
+                    backend="postgres",
+                    lock_timeout_ms=lock_timeout_ms,
+                )
+                result = RateLimitDecision(
+                    allowed=False,
+                    remaining=0.0,
+                    retry_after=timedelta(milliseconds=lock_timeout_ms),
+                    bucket_name=self._name,
+                    backend="postgres",
+                    request_id=str(request_id),
+                )
+                log_decision(result, style=self._style)
+                return result
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, _SLIDING_WINDOW_LOCK_RETRY_MAX_DELAY_S)
+
         await conn.execute(delete_sql, self._name, window_ms)
 
         inserted = await conn.fetchrow(

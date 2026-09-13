@@ -134,6 +134,12 @@ Raises `ValueError` if `limit < 1`, `window <= timedelta(0)`, or `style` is not 
 
 **`"gcra"` (Generic Cell Rate Algorithm):** Stores a single value — the theoretical arrival time (TAT) — in Redis or Postgres. No per-request log. More memory-efficient for high-throughput buckets. Does not support `refund()` (no-op). The `request_id` field is `None` on GCRA decisions.
 
+!!! note "Postgres log-style acquire: bounded lock wait, fail-closed denial"
+
+    The log-style Postgres acquire serialises its per-bucket DELETE/count/INSERT behind a transaction-scoped advisory lock, taken with a **bounded** wait — 5 s by default (`DEFAULT_SLIDING_WINDOW_LOCK_TIMEOUT_MS` in `taskq.ratelimit._sliding_window_pg`; `0` or less waits indefinitely). Under normal contention racers retry the try-lock and are then admitted or denied by the window exactly as before — the window itself is unchanged and exact.
+
+    A racer that exhausts the wait budget — a pathologically contended bucket, or a holder whose connection died without releasing the lock — is **denied, never admitted**: it receives `RateLimitDecision(allowed=False)` with `retry_after` set to one more budget. This is fail-closed: a racer that could not check the window must not admit past the limit. The dispatch layer treats it exactly like a window denial (job snoozed, then re-promoted), so a stuck bucket degrades to backpressure instead of stalling dispatch. A lock-timeout denial is *not* an empty bucket: repeated `ratelimit-lock-timeout` warnings in the worker logs are the signal that the bucket (or its lock holder) is contended or sick rather than merely busy.
+
 ### `acquire(*, redis_client, pg_pool, clock, settings) -> RateLimitDecision`
 
 All four keyword arguments default to `None`. `clock` drives the memory backend only — the store backends run on the store's own clock (Redis `TIME` in the scripts, PG `clock_timestamp()`). This matches `TokenBucket`'s contract: `clock` is required only for `backend="memory"` and raises `RuntimeError` there if not provided.
@@ -470,7 +476,7 @@ For full `FakeClock` walkthroughs, see
 | Backend | Value | Storage | Notes |
 |---|---|---|---|
 | Redis | `"redis"` | Redis sorted set / hash | Fastest. Requires `taskq-py[redis]` extra and `TASKQ_REDIS_URL`. Atomic Lua scripts prevent race conditions. |
-| Postgres | `"postgres"` | `rate_limit_buckets`, `rate_limit_window_entries` | No extra dependencies. Slower; uses `FOR UPDATE` row locks. Also serves as fallback when Redis is unavailable. |
+| Postgres | `"postgres"` | `rate_limit_buckets`, `rate_limit_window_entries` | No extra dependencies. Slower; uses `FOR UPDATE` row locks (token bucket, GCRA) and a bounded per-bucket advisory lock (log-style sliding window — see the note above). Also serves as fallback when Redis is unavailable. |
 | Memory | `"memory"` | Per-process `asyncio.Lock`-guarded data structure | No external dependencies. State is lost on restart and **not shared across worker processes**. Use in tests and single-process development only. |
 
 !!! warning "Redis backend without the `[redis]` extra"
