@@ -122,6 +122,20 @@ class JobContext[P: BaseModel]:
         raised here.
         """
         if data is not None and self._worker_settings is not None:
+            # Load-bearing serialization, not redundant with the publish
+            # path's ``model_dump_json``: this is the only
+            # ``progress_data_max_bytes`` enforcement in the codebase, and it
+            # must raise ``ProgressTooLarge`` synchronously to the actor
+            # BEFORE the oversized dict enters the coalesce buffer (and from
+            # there the durable PG jsonb). ``_publish_progress_event`` is
+            # fire-and-forget — a failure there is logged, never raised — so
+            # the cap cannot move below this call; and pydantic cannot reuse
+            # pre-serialized bytes for the event's ``data`` field (a
+            # ``Json[dict]``-typed field rejects dict construction outright
+            # and would change the wire format; verified against pydantic
+            # 2.13). The double serialization of ``data`` (here + the event
+            # dump) is therefore the price of the synchronous-raise contract;
+            # the flush's re-serialization is a separate (PG) boundary.
             serialised_len = len(dumps(data))
             limit = self._worker_settings.progress_data_max_bytes
             if serialised_len > limit:

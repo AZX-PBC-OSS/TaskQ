@@ -53,6 +53,13 @@ _NARROWER_BY_DESIGN: Final[dict[tuple[str, str], str]] = {
     "records the kwargs it was given and models none of them; the CLI builds every "
     "pool with keyword arguments only.",
     (
+        "test_connections.py",
+        "asyncpg.create_pool",
+    ): "Why: asyncpg.create_pool takes the DSN positionally plus ~25 connection "
+    "kwargs. The double records the kwargs it receives and models none of them; the "
+    "test asserts exactly which statement-cache kwargs the DSN-built slot pool "
+    "forwards, and the factory passes every argument by keyword.",
+    (
         "test_cli_health.py",
         "asyncio.open_unix_connection",
     ): "Why: stdlib `limit` and **kwds are never passed by the CLI; the double takes "
@@ -95,6 +102,13 @@ _NARROWER_BY_DESIGN: Final[dict[tuple[str, str], str]] = {
         "test_shutdown_orchestrator.py",
         "taskq.worker.shutdown.asyncio.sleep",
     ): "Why: as above — a sleep accelerator only ever handed a delay.",
+    (
+        "test_otel_contract.py",
+        "opentelemetry.trace.get_tracer",
+    ): "Why: get_tracer declares attributes, schema_url and tracer_provider beyond "
+    "name + version. The double records the (name, version) pairs the memoization "
+    "test asserts on and forwards the rest as **kwargs; _otel.get_tracer() passes "
+    "only those two positional arguments.",
 }
 
 

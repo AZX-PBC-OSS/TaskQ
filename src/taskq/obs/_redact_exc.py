@@ -160,12 +160,32 @@ def _scrub_text(text: str) -> str:
     ``_redaction_enabled`` guard: the debugging case that wants a row value
     never wants a password, and a DSN reaching a telemetry vendor is a
     credential disclosure regardless of why redaction was relaxed.
+
+    Each regex is behind a substring prefilter stating a NECESSARY condition
+    for that pattern to match at all, derived from the pattern text:
+
+    * ``_PG_DETAIL_RE`` anchors a line on the literal ``DETAIL:`` and
+      ``_PG_DETAIL_ESCAPED_RE`` matches it after an escaped newline — both
+      require ``"DETAIL:"`` in the subject.
+    * ``_URI_CRED_RE`` requires a ``scheme://`` separator.
+    * ``_URI_PARAM_CRED_RE`` requires a password-family parameter name
+      followed by ``=`` — and deliberately NOT ``://``: bare
+      ``host/db?password=…`` text must stay masked, so the guard is on the
+      parameter names, not a scheme.
+
+    Skipping a substitution when its trigger substring is absent cannot
+    change the output (the pattern could not have matched), which collapses
+    the four regex passes to three substring scans for the common
+    error-bearing log field — the cost that matters at error-storm rates.
     """
-    if _redaction_enabled:
+    if _redaction_enabled and "DETAIL:" in text:
         text = _PG_DETAIL_RE.sub("", text)
         text = _PG_DETAIL_ESCAPED_RE.sub("", text)
-    text = _URI_CRED_RE.sub(r"\1:***@", text)
-    return _URI_PARAM_CRED_RE.sub(r"\1***", text)
+    if "://" in text:
+        text = _URI_CRED_RE.sub(r"\1:***@", text)
+    if "password=" in text or "passphrase=" in text or "passwd=" in text or "pwd=" in text:
+        return _URI_PARAM_CRED_RE.sub(r"\1***", text)
+    return text
 
 
 def set_exception_message_max_chars(limit: int) -> None:

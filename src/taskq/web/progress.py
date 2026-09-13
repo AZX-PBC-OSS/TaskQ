@@ -44,11 +44,11 @@ from sse_starlette.sse import EventSourceResponse
 from taskq import _json
 from taskq._close import CLOSE_TIMEOUT_SECS, close_redis_bounded
 from taskq.backend.statemachine import TERMINAL_STATUSES
+from taskq.client._taskq import orjson_response_class
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining it
     progress_channel,
 )
-from taskq.progress._events import ProgressEvent
 from taskq.settings import TaskQSettings
 from taskq.web._sse_limit import acquire_sse_slot
 
@@ -70,6 +70,10 @@ _SSE_SEPARATOR = "\n"
 
 # Returned when Redis is not configured or unreachable at subscribe time.
 _REDIS_503_BODY: dict[str, str] = {"error": "redis_not_configured"}
+
+# JSON responses render through orjson (taskq._json), never stdlib json —
+# byte-identical bodies to starlette's stdlib JSONResponse for these payloads.
+_OrjsonJSONResponse: "type[JSONResponse]" = orjson_response_class()
 
 # SQL for the progress snapshot read (both initial connect and reconnect).
 _PROGRESS_SQL = 'SELECT progress_state, progress_seq, status FROM "{schema}".jobs WHERE id = $1'
@@ -197,7 +201,35 @@ async def _event_generator(
                     if isinstance(raw_data, (bytes, bytearray))
                     else str(raw_data)
                 )
-                event = ProgressEvent.model_validate_json(raw_str)
+                # Performance: the published payload is already exactly
+                # ``ProgressEvent.model_dump_json(exclude_none=True)`` bytes
+                # (progress/_publish.py), and this generator reads only
+                # ``seq`` and ``terminal`` — so a pydantic validate→dump
+                # round-trip per message per client (O(clients x events))
+                # re-derives bytes the channel already carries. Parse the
+                # envelope once with orjson, validate the required keys
+                # cheaply, and emit the raw string verbatim.
+                parsed: object = _json.loads(raw_str)
+                if not isinstance(parsed, dict):
+                    raise ValueError("envelope must be a JSON object")
+                envelope = cast("dict[str, object]", parsed)
+                seq = envelope["seq"]
+                if not isinstance(seq, int) or isinstance(seq, bool):
+                    raise ValueError("seq must be an integer")
+                terminal = envelope.get("terminal", False)
+                if not isinstance(terminal, bool):
+                    raise ValueError("terminal must be a boolean")
+                if envelope.get("kind") not in ("progress", "state_change"):
+                    raise ValueError("kind must be a progress/state_change literal")
+                # ProgressEvent declares these fields with no default, so a
+                # message missing any of them failed full model validation
+                # before; the cheap membership check keeps that drop behaviour.
+                # Their VALUES are not type-checked here: published wire
+                # always satisfies the model, and foreign junk that mimics
+                # the envelope shape is forwarded as inert JSON.
+                for _required in ("job_id", "actor", "ts", "status"):
+                    if _required not in envelope:
+                        raise ValueError(f"missing {_required!r}")
             except Exception:  # Why: malformed/non-ProgressEvent messages on the shared channel must be discarded silently; the channel is not exclusively owned by this library.
                 logger.debug(
                     "sse-redis-malformed-message",
@@ -207,26 +239,25 @@ async def _event_generator(
                 continue
 
             # filter duplicates.
-            if event.seq <= last_emitted_seq:
+            if seq <= last_emitted_seq:
                 continue
 
-            last_emitted_seq = event.seq
-            event_json = event.model_dump_json(exclude_none=True)
+            last_emitted_seq = seq
 
-            if event.terminal:
+            if terminal:
                 # terminal event — emit payload then done, close.
                 yield _make_sse_event(
                     event="terminal",
-                    seq=event.seq,
-                    data=event_json,
+                    seq=seq,
+                    data=raw_str,
                 )
                 yield _make_done_event()
                 return
 
             yield _make_sse_event(
                 event="progress",
-                seq=event.seq,
-                data=event_json,
+                seq=seq,
+                data=raw_str,
             )
 
     finally:
@@ -374,7 +405,7 @@ def create_router(
         HTTP 503 — Redis not configured or unavailable.
         """
         if _redis_client is None:
-            return JSONResponse(  # pyright: ignore[reportReturnType]  # Why: FastAPI accepts any Response subclass here; JSONResponse is returned for the 503 before SSE upgrade.
+            return _OrjsonJSONResponse(  # pyright: ignore[reportReturnType]  # Why: FastAPI accepts any Response subclass here; the JSON response is returned for the 503 before SSE upgrade.
                 status_code=503,
                 content=_REDIS_503_BODY,
                 headers={"Retry-After": "2"},
@@ -445,7 +476,7 @@ def create_router(
             # wedge the 503 path.
             await close_redis_bounded(pubsub, "web-progress", CLOSE_TIMEOUT_SECS)
             release_slot()
-            return JSONResponse(
+            return _OrjsonJSONResponse(
                 status_code=503,
                 content=_REDIS_503_BODY,
                 headers={"Retry-After": "2"},
@@ -542,7 +573,7 @@ def create_router(
             parsed: Any = _json.loads(raw_ps)
             progress_state = cast("dict[str, object]", parsed) if isinstance(parsed, dict) else None
 
-        return JSONResponse(
+        return _OrjsonJSONResponse(
             content={
                 "status": row["status"],
                 "progress_state": progress_state,

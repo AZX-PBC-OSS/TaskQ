@@ -3,9 +3,29 @@
 Provides safe, no-raise wrappers around OTel API calls so that observability
 failures never propagate to user or actor code.  All metric instruments
 are module-level singletons created at import time from the global meter provider.
+
+Label cardinality contract
+--------------------------
+
+Metric dimensions are limited to values that are bounded by construction:
+
+- ``actor``: the set of registered actor names (bounded by the code the
+  user ships), carried as-is.
+- ``sweep_name`` / ``lock`` / ``status`` / ``outcome``: closed enums, carried
+  as-is.
+- ``queue``: caller-supplied per enqueue and only charset-validated -- the
+  one open-ended label on the job-side instruments.  The four job-side
+  emitters (:func:`record_published_message`, :func:`record_dispatch_duration`,
+  :func:`record_consumed_message`, :func:`record_process_duration`) bound it
+  to the first ``_MAX_QUEUE_LABEL_VALUES`` distinct names a process sees;
+  beyond the cap the label collapses to the fixed ``_other_`` value (see the
+  cardinality note above :func:`_bounded_queue`).  Identity-like values
+  (``worker_id``, ``job_id``) are never dimensions at all -- see the
+  cardinality note above ``_lock_expires_in_seconds``.
 """
 
 import contextlib
+import functools
 import importlib.metadata
 import time
 from collections.abc import Generator, Iterable, Sequence
@@ -74,16 +94,40 @@ def set_otel_enabled(enabled: bool) -> None:
     _otel_enabled = enabled
 
 
+@functools.lru_cache(maxsize=1)
 def _version() -> str:
+    """Return the installed ``taskq-py`` version, resolved once per process.
+
+    Why cached: ``importlib.metadata.version`` walks the site-packages
+    metadata on every call (~300µs, benchmarks/ab_otel_hotspots.py), and
+    :func:`get_tracer` runs per span and per enqueue -- the lookup alone
+    was ~700µs of every job's telemetry tax.  The installed version cannot
+    change while the process runs, so a single lookup is exact.
+    """
     try:
         return importlib.metadata.version("taskq-py")
     except importlib.metadata.PackageNotFoundError:
         return "0.0.0"
 
 
+_library_tracer: Tracer | None = None
+"""The tracer :func:`get_tracer` resolves once and hands back (see there)."""
+
+
 def get_tracer() -> Tracer:
-    """Return the library's tracer. Honors any globally-configured provider."""
-    return trace.get_tracer(INSTRUMENTATION_NAME, _version())
+    """Return the library's tracer. Honors any globally-configured provider.
+
+    The tracer object is resolved on first use and memoized.  That is safe
+    across the no-provider → real-provider transition: with no SDK set up,
+    ``trace.get_tracer`` returns a ``ProxyTracer``, which re-checks the
+    global provider on every span start and rebinds to the real one when an
+    SDK registers later -- so memoization never pins the proxy/no-op
+    behavior.
+    """
+    global _library_tracer
+    if _library_tracer is None:
+        _library_tracer = trace.get_tracer(INSTRUMENTATION_NAME, _version())
+    return _library_tracer
 
 
 def get_meter() -> Meter:
@@ -284,9 +328,56 @@ def record_deadline_exceeded_swept(actor: str, count: int = 1) -> None:
         )
 
 
+#: Why the ``queue`` label is capped on the job-side instruments
+#: ------------------------------------------------------------
+#: Unlike ``actor`` (bounded by the registered actor set the user ships),
+#: ``queue`` is caller-supplied per enqueue and only charset-validated
+#: (``backend/_protocol.py``) -- nothing bounds it.  5,000 distinct queue
+#: names minted 100k+ time series and 763ms scrapes in the cardinality
+#: bench, and the failure mode is the Azure Monitor one described in the
+#: ``worker_id`` note below: throttled ingestion across EVERY custom metric
+#: in the subscription, not repairable after the fact.  So the four
+#: job-side emitters admit the first ``_MAX_QUEUE_LABEL_VALUES`` distinct
+#: names a process sees (the ~100-values-per-dimension ceiling Azure's
+#: guidance sets) and collapse everything past the cap onto the fixed
+#: ``_other_`` value.  The cap never evicts: admitted names keep their own
+#: series for the life of the process, so steady-state traffic on real
+#: queues is unaffected and the series count is hard-bounded at cap + 1.
+#: Per-queue attribution is not lost -- the queue name rides on the
+#: enqueue/dispatch/consume span attributes and log lines, where
+#: cardinality is free.
+#:
+#: The admission check runs on the emitting (event-loop) thread only and
+#: is never iterated by the SDK reader thread, so the rebind discipline
+#: below does not apply; the worst a racing thread could do is admit one
+#: name past the cap, which stays bounded.
+
+_MAX_QUEUE_LABEL_VALUES: int = 100
+_QUEUE_LABEL_OVERFLOW: str = "_other_"
+
+_queue_label_values: set[str] = set()
+
+
+def _bounded_queue(queue: str) -> str:
+    """Return *queue*, or the fixed overflow label once the cap is reached.
+
+    See the cardinality note above.
+    """
+    if queue in _queue_label_values:
+        return queue
+    if len(_queue_label_values) >= _MAX_QUEUE_LABEL_VALUES:
+        return _QUEUE_LABEL_OVERFLOW
+    _queue_label_values.add(queue)
+    return queue
+
+
 _published_messages = get_meter().create_counter(
     "messaging.client.published.messages",
-    description="Count of jobs enqueued, labeled by actor and queue.",
+    description=(
+        "Count of jobs enqueued, labeled by actor and queue "
+        "(queue capped at the first _MAX_QUEUE_LABEL_VALUES distinct "
+        "names per process; overflow collapses to '_other_')."
+    ),
     unit="1",
 )
 
@@ -300,12 +391,15 @@ def record_published_message(actor: str, queue: str) -> None:
     """
     if not _otel_enabled:
         return
-    _published_messages.add(1, {"actor": actor, "queue": queue})
+    _published_messages.add(1, {"actor": actor, "queue": _bounded_queue(queue)})
 
 
 _dispatch_duration = get_meter().create_histogram(
     "taskq.dispatch.duration",
-    description="Dispatch query latency (SQL execution only), labeled by queue.",
+    description=(
+        "Dispatch query latency (SQL execution only), labeled by queue "
+        "(capped -- see _bounded_queue)."
+    ),
     unit="s",
 )
 
@@ -318,12 +412,15 @@ def record_dispatch_duration(queue: str, elapsed: float) -> None:
     """
     if not _otel_enabled:
         return
-    _dispatch_duration.record(elapsed, {"queue": queue})
+    _dispatch_duration.record(elapsed, {"queue": _bounded_queue(queue)})
 
 
 _consumed_messages = get_meter().create_counter(
     "messaging.client.consumed.messages",
-    description="Count of jobs consumed, labeled by actor, queue, and outcome.",
+    description=(
+        "Count of jobs consumed, labeled by actor, queue (capped -- see "
+        "_bounded_queue), and outcome."
+    ),
     unit="1",
 )
 
@@ -344,12 +441,14 @@ def record_consumed_message(actor: str, queue: str, *, outcome: ConsumedOutcome)
     """
     if not _otel_enabled:
         return
-    _consumed_messages.add(1, {"actor": actor, "queue": queue, "outcome": outcome})
+    _consumed_messages.add(1, {"actor": actor, "queue": _bounded_queue(queue), "outcome": outcome})
 
 
 _process_duration = get_meter().create_histogram(
     "messaging.process.duration",
-    description="Job execution duration, labeled by actor and queue.",
+    description=(
+        "Job execution duration, labeled by actor and queue (capped -- see _bounded_queue)."
+    ),
     unit="s",
 )
 
@@ -363,7 +462,7 @@ def record_process_duration(actor: str, queue: str, elapsed: float) -> None:
     """
     if not _otel_enabled:
         return
-    _process_duration.record(elapsed, {"actor": actor, "queue": queue})
+    _process_duration.record(elapsed, {"actor": actor, "queue": _bounded_queue(queue)})
 
 
 #: Why identity values are not metric dimensions

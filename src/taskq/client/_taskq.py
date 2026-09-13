@@ -38,15 +38,19 @@ import contextlib
 from collections.abc import AsyncGenerator, AsyncIterator, Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from functools import lru_cache
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 import structlog
 from pydantic import BaseModel, ConfigDict, TypeAdapter
 
+from taskq._json import dumps
+
 if TYPE_CHECKING:
     import asyncpg
     import redis.asyncio as redis_async
+    from starlette.responses import JSONResponse
 
     from taskq.auth import PgCredentialProvider
     from taskq.connections import ConnFactory, PoolFactory
@@ -87,9 +91,73 @@ from taskq.cron import ScheduleHandle
 from taskq.progress._events import ProgressEvent
 from taskq.types import BulkCancelResult, CancelResult
 
-__all__ = ["ActorsClient", "EventRow", "JobEvent", "TaskQ"]
+__all__ = ["ActorsClient", "EventRow", "JobEvent", "TaskQ", "orjson_response_class"]
 
 logger = structlog.get_logger("taskq.client._taskq")
+
+
+@lru_cache(maxsize=1)
+def _orjson_json_response_class() -> "type[JSONResponse]":
+    """Build (once) the orjson-backed :class:`starlette.responses.JSONResponse`.
+
+    Defined inside a factory rather than at module scope because starlette
+    is an *optional* dependency (the ``fastapi`` extra): importing it at
+    module level would make :class:`TaskQ` unusable without the extra, and
+    this module is the core client entry point. :func:`lru_cache` keeps the
+    class a process-wide singleton so ``issubclass``/``isinstance`` checks
+    and FastAPI response-model wiring see one type.
+
+    Why not ``fastapi.responses.ORJSONResponse``: FastAPI is not (and must
+    not become) a dependency of the client module; the subclass below
+    carries the identical contract against starlette alone.
+    """
+    from starlette.responses import JSONResponse
+
+    class OrjsonJSONResponse(JSONResponse):
+        """JSONResponse whose body is rendered by :func:`taskq._json.dumps`.
+
+        Why the override: starlette's ``JSONResponse.render`` calls stdlib
+        ``json.dumps`` internally, which violates the project rule that no
+        taskq module serialises through stdlib ``json`` (module docstring
+        of :mod:`taskq._json`) — and lands the slowest serializer on the
+        response hot path.
+
+        Contract versus the stdlib renderer (pinned by tests):
+        byte-identical bodies and the same ``application/json`` media type
+        for every JSON-representable payload (orjson emits raw UTF-8 like
+        ``ensure_ascii=False`` and compact separators like starlette's
+        ``separators=(",", ":")``); datetimes render as ISO-8601 where
+        stdlib raises ``TypeError``. One deliberate divergence: a
+        non-finite float serialises to ``null`` (orjson semantics) where
+        stdlib's ``allow_nan=False`` would raise — the same trade
+        ``ORJSONResponse`` makes.
+        """
+
+        def render(self, content: object) -> bytes:
+            return dumps(content)
+
+    return OrjsonJSONResponse
+
+
+def orjson_response_class() -> "type[JSONResponse]":
+    """Return the orjson-backed :class:`starlette.responses.JSONResponse`.
+
+    Drop-in replacement for starlette's stdlib-json ``JSONResponse`` (same
+    constructor, same ``application/json`` media type, byte-identical
+    bodies for JSON-representable payloads) — bodies are rendered through
+    :func:`taskq._json.dumps` per the project's never-import-stdlib-json
+    rule. Requires the ``fastapi`` extra (starlette) at call time.
+
+    Usage with :class:`TaskQ` — see the :class:`JobEvent` docstring for the
+    full pattern::
+
+        OrjsonJSONResponse = orjson_response_class()
+
+        @app.get("/tasks/{job_id}")
+        async def read_task(job_id: UUID) -> Response:
+            return OrjsonJSONResponse(await tq.get_state(job_id))
+    """
+    return _orjson_json_response_class()
 
 
 class JobEvent(BaseModel):
@@ -105,10 +173,21 @@ class JobEvent(BaseModel):
 
     Serialises cleanly to JSON via ``model_dump()`` for SSE or WebSocket
     fanout — fields are deliberately flat so the caller can forward the
-    event without transformation::
+    event without transformation. Both transports below route through
+    orjson (:func:`taskq._json.dumps`), never stdlib ``json``::
 
+        # HTTP: drop-in replacement for starlette's stdlib-json JSONResponse
+        OrjsonJSONResponse = orjson_response_class()
+
+        @app.get("/tasks/{job_id}/events")
+        async def events(job_id: UUID) -> Response:
+            event = latest_event(job_id)
+            return OrjsonJSONResponse(event.model_dump())
+
+        # WebSocket: send_json uses stdlib json.dumps internally — send the
+        # pre-rendered orjson text instead:
         async for event in tq.stream(job_id):
-            await websocket.send_json(event.model_dump())
+            await websocket.send_text(event.model_dump_json())
     """
 
     model_config = ConfigDict(frozen=True)
@@ -330,16 +409,32 @@ class TaskQ:
 
         from taskq.backend.clock import SystemClock
         from taskq.backend.postgres import PostgresBackend
+        from taskq.connections import statement_cache_kwargs
         from taskq.settings import TaskQSettings
+
+        # Route the Redis URL through load_from_dict so it is coerced and
+        # validated by the field's declared RedisDsn type (TypeCoercionError
+        # on an invalid scheme) instead of being stored as a raw str. Loaded
+        # before pool creation so the DSN-built pool resolves its
+        # statement-cache kwargs through the same settings instance the
+        # client hands the backend — one settings flow, not two (and
+        # validation failure now fails fast, before a pool is opened).
+        load_data: dict[str, str] = {"TASKQ_SCHEMA_NAME": self._schema}
+        if self._redis_url is not None:
+            load_data["TASKQ_REDIS_URL"] = self._redis_url
+        settings = TaskQSettings.load_from_dict(load_data)
 
         if self._pool is None:
             if self._pool_factory is not None:
                 self._pool = await self._pool_factory()
             else:
+                stmt_kwargs = statement_cache_kwargs(settings)
                 created = await asyncpg.create_pool(
                     dsn=self._dsn,
                     min_size=self._min_pool_size,
                     max_size=self._max_pool_size,
+                    statement_cache_size=stmt_kwargs["statement_cache_size"],
+                    max_cached_statement_lifetime=stmt_kwargs["max_cached_statement_lifetime"],
                 )
                 assert created is not None  # asyncpg returns None only for record_class paths
                 self._pool = created
@@ -363,13 +458,6 @@ class TaskQ:
                 else RECLAIM_EVENT_VISIBILITY_DELAY
             ),
         )
-        # Route the Redis URL through load_from_dict so it is coerced and
-        # validated by the field's declared RedisDsn type (TypeCoercionError
-        # on an invalid scheme) instead of being stored as a raw str.
-        load_data: dict[str, str] = {"TASKQ_SCHEMA_NAME": self._schema}
-        if self._redis_url is not None:
-            load_data["TASKQ_REDIS_URL"] = self._redis_url
-        settings = TaskQSettings.load_from_dict(load_data)
         self._client = JobsClient(backend, settings=settings)
         self._actors_client = ActorsClient(pool, schema=self._schema)
         if self._redis_client is not None:
