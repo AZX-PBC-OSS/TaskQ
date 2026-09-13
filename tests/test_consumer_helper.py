@@ -303,6 +303,13 @@ async def test_consume_shielded_writes_complete_when_task_is_cancelled() -> None
     """shielded write completes even when the consume task is cancelled mid-write."""
 
     write_completed = asyncio.Event()
+    # Why an event at write entry: the cancel must land while the shielded
+    # mark_succeeded is IN FLIGHT. A fixed sleep raced consumer startup
+    # under load — cancelled too early (during setup), the write never
+    # starts and the test fails at the write_completed wait below. The
+    # event is set at the exact point the pin needs: inside the write,
+    # before its designed delay.
+    write_started = asyncio.Event()
 
     class SlowBackend(FakeBackend):
         async def mark_succeeded(
@@ -316,6 +323,7 @@ async def test_consume_shielded_writes_complete_when_task_is_cancelled() -> None
             *,
             result_bytes: bytes | None = None,
         ) -> bool:
+            write_started.set()
             await asyncio.sleep(0.05)
             write_completed.set()
             return await super().mark_succeeded(
@@ -332,7 +340,10 @@ async def test_consume_shielded_writes_complete_when_task_is_cancelled() -> None
         await _run_consume(job, backend, actor)
 
     task = asyncio.create_task(run())
-    await asyncio.sleep(0.01)
+    try:
+        await asyncio.wait_for(write_started.wait(), timeout=5.0)
+    except TimeoutError:
+        pytest.fail("consumer never entered the shielded mark_succeeded write within 5s")
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
@@ -538,7 +549,15 @@ async def test_consume_external_cancel_routes_to_mark_cancelled() -> None:
     mark_failed_or_retry NOT called.
     """
 
+    # Why an event at actor entry: the cancel must land while the actor is
+    # running — the CancelledError handler that routes to mark_cancelled
+    # wraps only the actor run. A fixed sleep raced consumer startup under
+    # load; cancelled during setup, the CancelledError propagates without
+    # mark_cancelled and the oracle below fails.
+    actor_entered = asyncio.Event()
+
     async def actor(_job: JobRow, _ctx: JobContext[BaseModel]) -> object:
+        actor_entered.set()
         while True:  # noqa: ASYNC110 Why: cancellation test — actor loops until externally cancelled; asyncio.Event would require a separate event per test.
             await asyncio.sleep(0)
 
@@ -549,7 +568,10 @@ async def test_consume_external_cancel_routes_to_mark_cancelled() -> None:
         await _run_consume(job, backend, actor)
 
     t = asyncio.create_task(run())
-    await asyncio.sleep(0.01)
+    try:
+        await asyncio.wait_for(actor_entered.wait(), timeout=5.0)
+    except TimeoutError:
+        pytest.fail("consumer never reached the actor within 5s")
     t.cancel()
     with pytest.raises(asyncio.CancelledError):
         await t
@@ -600,8 +622,14 @@ async def test_consume_deregister_in_finally(scenario: str) -> None:
         await _run_consume(job, backend, actor, active_jobs=registry)
 
     elif scenario == "cancel":
+        # Same discipline as test_consume_external_cancel_routes_to_mark_cancelled:
+        # await the actor's entry before cancelling, so the CancelledError
+        # lands inside the actor-run handler (not setup) and the finally
+        # deregistration below is exercised on the cancel path.
+        actor_entered = asyncio.Event()
 
         async def actor(_job: JobRow, _ctx: JobContext[BaseModel]) -> object:
+            actor_entered.set()
             while True:  # noqa: ASYNC110 Why: cancellation test — actor loops until externally cancelled.
                 await asyncio.sleep(0)
 
@@ -611,7 +639,10 @@ async def test_consume_deregister_in_finally(scenario: str) -> None:
             await _run_consume(job, backend, actor, active_jobs=registry)
 
         t = asyncio.create_task(run())
-        await asyncio.sleep(0.01)
+        try:
+            await asyncio.wait_for(actor_entered.wait(), timeout=5.0)
+        except TimeoutError:
+            pytest.fail("consumer never reached the actor within 5s")
         t.cancel()
         with pytest.raises(asyncio.CancelledError):
             await t

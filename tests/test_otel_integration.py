@@ -805,7 +805,10 @@ class TestReservationCancelCronMetrics:
                         break
                     await asyncio.sleep(0.1)
 
-                assert len(phase_dps) >= 1
+                assert len(phase_dps) >= 1, (
+                    "taskq.cancellation.phase_transitions never exported a data point "
+                    "within 5s of the cancel request"
+                )
             finally:
                 blocker.set()
                 dummy_task.cancel()

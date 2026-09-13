@@ -164,11 +164,20 @@ async def test_concurrent_acquires_respect_2_slot_cap_across_multiple_actors() -
 
     tasks = [asyncio.create_task(_acquire_hold_release(i)) for i in range(num_tasks)]
 
-    # Let all tasks attempt acquisition. The in-memory acquire is
-    # synchronous within a single coroutine step, so each task runs
-    # to its first real await (hold_event.wait) or completion (denied)
-    # before the next is scheduled.
-    await asyncio.sleep(0.1)
+    # Bounded wait until every task has ATTEMPTED: each is either denied
+    # (returned, after incrementing denied_count) or holding
+    # (current_concurrency incremented, parked on hold_event.wait). The
+    # old fixed 0.1s sleep raced task startup under load — a task that
+    # attempts only after hold_event.set() acquires with no overlap and
+    # the denied_count assert below fails low.
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + 5.0
+    while denied_count + current_concurrency < num_tasks:
+        assert loop.time() < deadline, (
+            f"not all {num_tasks} tasks attempted acquisition within 5s "
+            f"(denied={denied_count}, holding={current_concurrency})"
+        )
+        await asyncio.sleep(0.01)
 
     # Release the hold so successful acquires can release their slots.
     hold_event.set()

@@ -26,6 +26,7 @@ import pytest
 
 from taskq.backend.clock import Clock
 from taskq.backend.postgres import PostgresBackend
+from taskq.testing.assertions import wait_for, wait_for_condition
 from taskq.worker.notify import (
     _active_listeners,
     _connected_lookup,
@@ -625,7 +626,14 @@ class TestGaugeCallbackRegistryCleanup:
             await notify_listener_loop(deps, backend, shutdown, _WORKER_ID)
 
         task = asyncio.create_task(runner())
-        await asyncio.sleep(0.05)
+        # Bounded poll on the exact observable instead of a timed window:
+        # notify_listener_loop registers the backend in _active_listeners
+        # on its own task, so a fixed 0.05s can race that under load
+        # (flake) or waste time when idle.
+        await wait_for_condition(
+            lambda: _active_listeners == {backend},
+            description="notify_listener_loop never registered the backend in _active_listeners",
+        )
 
         assert _active_listeners == {backend}, "expected backend in active listeners during loop"
 
@@ -1249,7 +1257,13 @@ class TestReconnectFnRegistration:
         shutdown = asyncio.Event()
 
         task = asyncio.create_task(notify_listener_loop(deps, backend, shutdown, _WORKER_ID))
-        await asyncio.sleep(0.05)
+        # Bounded poll on the exact observable instead of a timed window:
+        # the loop assigns deps.notify_reconnect_fn on its own task, so a
+        # fixed 0.05s can race that under load (flake) or waste time idle.
+        await wait_for_condition(
+            lambda: deps.notify_reconnect_fn is not None,
+            description="notify_listener_loop never registered deps.notify_reconnect_fn",
+        )
         assert deps.notify_reconnect_fn is not None
 
         shutdown.set()
@@ -1267,8 +1281,18 @@ class TestReconnectFnRegistration:
         backend = _make_backend()
         shutdown = asyncio.Event()
 
+        # The double signals the point the negative assert needs a window
+        # for: notify_listener_loop makes the register/skip decision
+        # BEFORE its first add_listener call, so once that call lands the
+        # decision point has been reached and passed — no timed window
+        # hoping the loop got that far under load.
+        listener_started = asyncio.Event()
+        deps.notify_conn.add_listener = AsyncMock(
+            side_effect=lambda *a, **kw: listener_started.set()
+        )
+
         task = asyncio.create_task(notify_listener_loop(deps, backend, shutdown, _WORKER_ID))
-        await asyncio.sleep(0.05)
+        await wait_for(listener_started, timeout=5.0)
         assert deps.notify_reconnect_fn is None
 
         shutdown.set()

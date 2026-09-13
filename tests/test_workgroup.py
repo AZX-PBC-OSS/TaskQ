@@ -33,23 +33,47 @@ from taskq.worker.workgroup import (
 
 
 class FakeStreamReader:
-    """Minimal async stream reader for subprocess stdout/stderr."""
+    """Minimal async stream reader for subprocess stdout/stderr.
+
+    Implements ``readuntil`` (the member production ``_read_line``
+    calls), raising the EOF signal immediately so a pump over this fake
+    exits cleanly instead of dying on a missing attribute — a fake that
+    silently violates the reader contract turns every pump into the
+    failure branch and drowns real pump-failure signals in noise.
+    """
 
     async def readline(self) -> bytes:
         await asyncio.sleep(0.01)
         return b""
 
+    async def readuntil(self, separator: bytes = b"\n") -> bytes:
+        raise asyncio.IncompleteReadError(b"", None)
+
 
 class FakeProcess:
-    """Fake subprocess process with controllable returncode."""
+    """Fake subprocess process with controllable returncode.
 
-    def __init__(self, returncode: int | None = None, pid: int = 12345) -> None:
+    ``signalled`` (optional) is set at the exact points a signal is
+    delivered to the child (send_signal/terminate/kill) — the canonical
+    wait surface for tests that need "the supervisor signalled this
+    child" instead of sleeping a fixed interval that races the
+    supervisor's async kill path under load.
+    """
+
+    def __init__(
+        self,
+        returncode: int | None = None,
+        pid: int = 12345,
+        *,
+        signalled: asyncio.Event | None = None,
+    ) -> None:
         self._returncode = returncode
         self.pid = pid
         self.stdout = FakeStreamReader()
         self.stderr = FakeStreamReader()
         self._killed = False
         self._signals: list[int] = []
+        self.signalled = signalled
 
     @property
     def returncode(self) -> int | None:
@@ -60,16 +84,22 @@ class FakeProcess:
 
     def send_signal(self, sig: int) -> None:
         self._signals.append(sig)
+        if self.signalled is not None:
+            self.signalled.set()
         if sig == signal.SIGTERM:
             self._returncode = 0
 
     def terminate(self) -> None:
         self._signals.append(signal.SIGTERM)
         self._returncode = 0
+        if self.signalled is not None:
+            self.signalled.set()
 
     def kill(self) -> None:
         self._killed = True
         self._returncode = -9
+        if self.signalled is not None:
+            self.signalled.set()
 
     async def wait(self) -> int:
         while self._returncode is None:
@@ -215,7 +245,16 @@ async def test_handle_child_exit_increments_backoff() -> None:
 
 @pytest.mark.asyncio
 async def test_run_forever_spawns_and_shuts_down() -> None:
-    """run_forever should spawn children and shut them down on signal."""
+    """run_forever spawns its children and the supervisor task tears down
+    cleanly on cancellation.
+
+    The spawn wait is event-driven: the create_subprocess_exec double
+    signals at the observable's flip point, so the wait resolves exactly
+    when the child exists — a fixed window would race startup under
+    load. Child-exit detection and graceful-shutdown-on-signal coverage
+    lives in test_run_forever_liveness_restarts_crashed_child and
+    test_run_forever_graceful_shutdown_via_signal below.
+    """
     config = WorkgroupConfig(
         actors="myapp.actors:registry",
         supervisor=SupervisorConfig(shutdown_grace=1.0),
@@ -223,8 +262,10 @@ async def test_run_forever_spawns_and_shuts_down() -> None:
     )
 
     fake_proc = FakeProcess(returncode=None)
+    spawned = asyncio.Event()
 
     async def fake_exec(*args: Any, **kwargs: Any) -> FakeProcess:
+        spawned.set()
         return fake_proc
 
     config_path = Path("/tmp/fake_workgroup.toml")
@@ -239,16 +280,27 @@ async def test_run_forever_spawns_and_shuts_down() -> None:
         from taskq.worker.workgroup import run_forever
 
         task = asyncio.create_task(run_forever(config_path))
-        await asyncio.sleep(0.3)
+        try:
+            await asyncio.wait_for(spawned.wait(), timeout=5.0)
+        except TimeoutError:
+            pytest.fail("run_forever did not spawn its child within 5.0s")
 
-        fake_proc._returncode = 0
-        await asyncio.sleep(0.2)
-
+        # Bounded teardown: a supervisor that wedges on cancellation must
+        # fail the test by name, not hang it.
         task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
+        try:
+            await asyncio.wait_for(task, timeout=5.0)
+        except asyncio.CancelledError:
+            pass  # Why: the cancellation the test itself requested — the clean outcome.
+        except TimeoutError:
+            pytest.fail("run_forever did not tear down within 5.0s of cancellation")
 
-    assert fake_proc._signals or fake_proc._killed or fake_proc._returncode is not None
+    # The two pins, stated at the end: the child was spawned, and the
+    # supervisor resolved the cancellation without raising anything.
+    assert spawned.is_set(), "run_forever never spawned its child"
+    assert task.done() and (task.cancelled() or task.exception() is None), (
+        "run_forever did not shut down cleanly on cancellation"
+    )
 
 
 @pytest.mark.asyncio
@@ -272,7 +324,8 @@ async def test_run_forever_health_kill() -> None:
         ],
     )
 
-    fake_proc = FakeProcess(returncode=None)
+    killed = asyncio.Event()
+    fake_proc = FakeProcess(returncode=None, signalled=killed)
 
     async def fake_exec(*args: Any, **kwargs: Any) -> FakeProcess:
         return fake_proc
@@ -293,17 +346,36 @@ async def test_run_forever_health_kill() -> None:
         from taskq.worker.workgroup import run_forever
 
         task = asyncio.create_task(run_forever(config_path))
-        await asyncio.sleep(0.3)
+        # Event-driven wait for the kill: FakeProcess.signalled is set at
+        # the exact point the health loop's _kill_child delivers the
+        # signal — a fixed sleep plus a "mock_health.called" check races
+        # the kill under load (called only proves the check ran, not
+        # that the child was killed).
+        try:
+            await asyncio.wait_for(killed.wait(), timeout=5.0)
+        except TimeoutError:
+            pytest.fail("the health loop did not kill the unhealthy child within 5.0s")
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
 
         assert mock_health.called
+        assert signal.SIGTERM in fake_proc._signals
 
 
 @pytest.mark.asyncio
 async def test_run_forever_except_star_cleanup() -> None:
-    """The except* handler should clean up child state on background task failure."""
+    """The except* handler should clean up child state on background task failure.
+
+    A liveness-monitor failure (patched _handle_child_exit raising) tears
+    down the supervisor's TaskGroup; run_forever must log
+    workgroup-background-task-failed, reset child state, and still
+    complete its graceful shutdown instead of propagating. The failure
+    is injected through _handle_child_exit because a plain child exit
+    is handled by liveness_monitor and never reaches except*.
+    """
+    import structlog
+
     config = WorkgroupConfig(
         actors="myapp.actors:registry",
         supervisor=SupervisorConfig(shutdown_grace=1.0),
@@ -311,28 +383,61 @@ async def test_run_forever_except_star_cleanup() -> None:
     )
 
     fake_proc = FakeProcess(returncode=None)
+    spawned = asyncio.Event()
 
     async def fake_exec(*args: Any, **kwargs: Any) -> FakeProcess:
+        spawned.set()
         return fake_proc
 
-    config_path = Path("/tmp/fake_workgroup_except.toml")
+    exit_processed = asyncio.Event()
+
+    async def exploding_handle_child_exit(
+        child: _ChildState,
+        actors: str,
+        wg_instance: UUID,
+        scfg: SupervisorConfig,
+        shutting_down: asyncio.Event,
+    ) -> float | None:
+        exit_processed.set()
+        raise RuntimeError("simulated liveness-monitor failure")
+
+    config_path = Path("/tmp/fake_except.toml")
 
     with (
         patch("taskq.worker.workgroup.load_workgroup_config", return_value=config),
         patch("asyncio.create_subprocess_exec", side_effect=fake_exec),
         patch("asyncio.get_running_loop") as mock_loop,
+        patch("taskq.worker.workgroup._handle_child_exit", side_effect=exploding_handle_child_exit),
     ):
         mock_loop.return_value.add_signal_handler = MagicMock()
 
         from taskq.worker.workgroup import run_forever
 
-        task = asyncio.create_task(run_forever(config_path))
-        await asyncio.sleep(0.1)
-        fake_proc._returncode = 42
-        await asyncio.sleep(0.2)
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
+        with structlog.testing.capture_logs() as captured:
+            task = asyncio.create_task(run_forever(config_path))
+            try:
+                await asyncio.wait_for(spawned.wait(), timeout=5.0)
+            except TimeoutError:
+                pytest.fail("run_forever did not spawn its child within 5.0s")
+
+            # Child exits — the patched handler turns liveness_monitor's
+            # exit processing into the background failure under test.
+            fake_proc._returncode = 42
+            try:
+                await asyncio.wait_for(exit_processed.wait(), timeout=5.0)
+            except TimeoutError:
+                pytest.fail("the liveness monitor did not process the child exit within 5.0s")
+            try:
+                await asyncio.wait_for(task, timeout=5.0)
+            except TimeoutError:
+                pytest.fail(
+                    "run_forever did not complete its except* cleanup and graceful "
+                    "shutdown within 5.0s"
+                )
+
+        failures = [e for e in captured if e["event"] == "workgroup-background-task-failed"]
+        assert failures, "the background task failure was not logged by the except* handler"
+        assert failures[0]["error"] == "simulated liveness-monitor failure"
 
 
 # ── Config parsing: from_toml / load_workgroup_config ───────────────
@@ -880,7 +985,8 @@ async def test_health_check_last_seen_none() -> None:
 
 @pytest.mark.asyncio
 async def test_run_forever_multiple_children_graceful_shutdown() -> None:
-    """run_forever with multiple children shuts them all down on signal."""
+    """run_forever with multiple children forwards SIGTERM to every child
+    on shutdown and completes without force-kills."""
     config = WorkgroupConfig(
         actors="myapp.actors:registry",
         supervisor=SupervisorConfig(shutdown_grace=1.0),
@@ -888,48 +994,72 @@ async def test_run_forever_multiple_children_graceful_shutdown() -> None:
     )
 
     procs: dict[str, FakeProcess] = {}
+    both_spawned = asyncio.Event()
 
     async def fake_exec(*args: Any, **kwargs: Any) -> FakeProcess:
         # Extract --worker-label from args to assign the right proc
         label = args[args.index("--worker-label") + 1] if "--worker-label" in args else "unknown"
         proc = FakeProcess(returncode=None)
         procs[label] = proc
+        if len(procs) == 2:
+            both_spawned.set()
         return proc
 
     config_path = Path("/tmp/fake_multi.toml")
+    signal_handlers: dict[int, Any] = {}
+    sigterm_registered = asyncio.Event()
+
+    def capture_handler(sig: int, handler: Any) -> None:
+        signal_handlers[sig] = handler
+        if sig == signal.SIGTERM:
+            sigterm_registered.set()
 
     with (
         patch("taskq.worker.workgroup.load_workgroup_config", return_value=config),
         patch("asyncio.create_subprocess_exec", side_effect=fake_exec),
         patch("asyncio.get_running_loop") as mock_loop,
     ):
-        mock_loop.return_value.add_signal_handler = MagicMock()
+        mock_loop.return_value.add_signal_handler = capture_handler
 
         from taskq.worker.workgroup import run_forever
 
         task = asyncio.create_task(run_forever(config_path))
-        await asyncio.sleep(0.3)
+        # Event-driven waits on the spawn double and the handler-capture
+        # double — a fixed window races startup under load (fewer than
+        # both children spawned, handler missing).
+        try:
+            await asyncio.wait_for(both_spawned.wait(), timeout=5.0)
+        except TimeoutError:
+            pytest.fail("run_forever did not spawn both children within 5.0s")
+        assert set(procs) == {"w1", "w2"}
+        try:
+            await asyncio.wait_for(sigterm_registered.wait(), timeout=5.0)
+        except TimeoutError:
+            pytest.fail("run_forever did not register its SIGTERM handler within 5.0s")
 
-        # Both children spawned
-        assert len(procs) == 2
-        assert "w1" in procs
-        assert "w2" in procs
+        # Trigger graceful shutdown. The children are alive (returncode
+        # None), so the supervisor must forward SIGTERM to each — the
+        # forwarded signal is what stops them (FakeProcess sets its
+        # returncode on SIGTERM). No manual returncode poking: setting
+        # it would suppress the very forwarding the final assert
+        # verifies.
+        signal_handlers[signal.SIGTERM]()
+        try:
+            await asyncio.wait_for(task, timeout=3.0)
+        except TimeoutError:
+            pytest.fail("run_forever did not complete graceful shutdown within 3.0s")
 
-        # Trigger graceful shutdown
-        procs["w1"]._returncode = 0
-        procs["w2"]._returncode = 0
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
-
-    # At least one proc got a signal or was killed
-    for proc in procs.values():
-        assert proc._signals or proc._killed or proc._returncode is not None
+    # Every child received SIGTERM during graceful shutdown — the real
+    # "shuts them all down" assertion.
+    for label, proc in procs.items():
+        assert signal.SIGTERM in proc._signals, f"child {label!r} did not receive SIGTERM"
 
 
 @pytest.mark.asyncio
 async def test_run_forever_force_update_warning() -> None:
     """A force_update_actor_config worker emits a warning at startup."""
+    import structlog
+
     config = WorkgroupConfig(
         actors="myapp.actors:registry",
         supervisor=SupervisorConfig(shutdown_grace=1.0),
@@ -943,8 +1073,10 @@ async def test_run_forever_force_update_warning() -> None:
     )
 
     fake_proc = FakeProcess(returncode=None)
+    spawned = asyncio.Event()
 
     async def fake_exec(*args: Any, **kwargs: Any) -> FakeProcess:
+        spawned.set()
         return fake_proc
 
     config_path = Path("/tmp/fake_force.toml")
@@ -958,11 +1090,21 @@ async def test_run_forever_force_update_warning() -> None:
 
         from taskq.worker.workgroup import run_forever
 
-        task = asyncio.create_task(run_forever(config_path))
-        await asyncio.sleep(0.2)
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
+        with structlog.testing.capture_logs() as captured:
+            task = asyncio.create_task(run_forever(config_path))
+            # The warning is emitted before the spawn loop, so the spawn
+            # event implies it has been logged — no fixed sleep racing
+            # startup.
+            try:
+                await asyncio.wait_for(spawned.wait(), timeout=5.0)
+            except TimeoutError:
+                pytest.fail("run_forever did not spawn its child within 5.0s")
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+    warnings = [e for e in captured if e["event"] == "workgroup.force_update_actor_config_enabled"]
+    assert warnings, "the force_update_actor_config warning was not emitted at startup"
 
 
 @pytest.mark.asyncio
@@ -975,10 +1117,12 @@ async def test_run_forever_spawn_failure_continues() -> None:
     )
 
     call_count = 0
+    first_attempt = asyncio.Event()
 
     async def failing_exec(*args: Any, **kwargs: Any) -> FakeProcess:
         nonlocal call_count
         call_count += 1
+        first_attempt.set()
         raise OSError("spawn failed")
 
     config_path = Path("/tmp/fake_spawn_fail.toml")
@@ -993,12 +1137,175 @@ async def test_run_forever_spawn_failure_continues() -> None:
         from taskq.worker.workgroup import run_forever
 
         task = asyncio.create_task(run_forever(config_path))
-        await asyncio.sleep(0.2)
+        # Event-driven wait on the spawn double: fires at the first
+        # attempt — a fixed sleep could observe zero attempts under
+        # startup starvation and fail the completion assert below for a
+        # reason that has nothing to do with the continue-on-failure
+        # behaviour under test.
+        try:
+            await asyncio.wait_for(first_attempt.wait(), timeout=5.0)
+        except TimeoutError:
+            pytest.fail("run_forever did not attempt its first spawn within 5.0s")
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
 
     assert call_count >= 1
+
+
+async def test_spawn_failed_child_is_retried_by_liveness_monitor() -> None:
+    """A child whose initial spawn failed must not stay dead.
+
+    The liveness monitor retries never-spawned children under the same
+    burst/backoff budget as exited ones — the worker's command line
+    failing once (image pull retry, transient exec failure) must not
+    mean the worker is absent until the whole supervisor restarts.
+    """
+    config = WorkgroupConfig(
+        actors="myapp.actors:registry",
+        supervisor=SupervisorConfig(shutdown_grace=1.0, backoff_initial=0.01, backoff_max=0.02),
+        workers=[_make_spec(name="w1")],
+    )
+
+    call_count = 0
+    second_attempt = asyncio.Event()
+
+    async def fail_then_succeed(*args: Any, **kwargs: Any) -> FakeProcess:
+        nonlocal call_count
+        call_count += 1
+        if call_count >= 2:
+            second_attempt.set()
+            return FakeProcess(returncode=0)
+        raise OSError("spawn failed")
+
+    config_path = Path("/tmp/fake_spawn_retry.toml")
+
+    with (
+        patch("taskq.worker.workgroup.load_workgroup_config", return_value=config),
+        patch("asyncio.create_subprocess_exec", side_effect=fail_then_succeed),
+        patch("asyncio.get_running_loop") as mock_loop,
+    ):
+        mock_loop.return_value.add_signal_handler = MagicMock()
+
+        from taskq.worker.workgroup import run_forever
+
+        task = asyncio.create_task(run_forever(config_path))
+        try:
+            await asyncio.wait_for(second_attempt.wait(), timeout=10.0)
+        except TimeoutError:
+            pytest.fail(
+                "the liveness monitor never retried the failed spawn within 10s — "
+                "the worker stays dead until supervisor restart"
+            )
+        finally:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+    assert call_count == 2, f"expected exactly the initial attempt plus one retry, got {call_count}"
+
+
+async def test_spawn_failure_exhausts_burst_budget_and_stops_retrying() -> None:
+    """A permanently broken command line consumes the restart budget.
+
+    Retry-under-budget is the fix's other half: without the burst limit
+    applying to spawn failures, a child that can never start would
+    retry forever at monitor-tick cadence.
+    """
+    import structlog
+
+    config = WorkgroupConfig(
+        actors="myapp.actors:registry",
+        supervisor=SupervisorConfig(
+            shutdown_grace=1.0,
+            backoff_initial=0.01,
+            backoff_max=0.02,
+            burst_limit=3,
+            burst_window=60.0,
+        ),
+        workers=[_make_spec(name="w1")],
+    )
+
+    call_count = 0
+
+    async def always_fail(*args: Any, **kwargs: Any) -> FakeProcess:
+        nonlocal call_count
+        call_count += 1
+        raise OSError("spawn failed")
+
+    config_path = Path("/tmp/fake_spawn_budget.toml")
+
+    with (
+        patch("taskq.worker.workgroup.load_workgroup_config", return_value=config),
+        patch("asyncio.create_subprocess_exec", side_effect=always_fail),
+        patch("asyncio.get_running_loop") as mock_loop,
+        structlog.testing.capture_logs() as captured,
+    ):
+        mock_loop.return_value.add_signal_handler = MagicMock()
+
+        from taskq.worker.workgroup import run_forever
+
+        task = asyncio.create_task(run_forever(config_path))
+        try:
+            # Bounded wait on the budget-exhausted decision itself — the
+            # event that PROVES the monitor stopped scheduling; when it
+            # fires, the last budgeted attempt has already happened.
+            # (time.monotonic, not the loop clock: asyncio.get_running_loop
+            # is patched by this test's run_forever harness.)
+            deadline = time.monotonic() + 15.0
+            while not any(e.get("event") == "workgroup-burst-limit-exceeded" for e in captured):
+                if time.monotonic() > deadline:
+                    pytest.fail(
+                        f"spawn failures never exhausted the burst budget within 15s "
+                        f"(attempts={call_count})"
+                    )
+                await asyncio.sleep(0.01)
+            # Hold the supervisor across further monitor ticks (0.5 s
+            # cadence) so the exactly-once pin below observes repeats,
+            # not just the first refusal: a monitor that re-decides a
+            # given-up child every tick would flood the critical log at
+            # ~2 Hz and keep consuming budget slots forever.
+            await asyncio.sleep(1.2)
+        finally:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+    # Initial attempt + exactly burst_limit budgeted retries.
+    assert call_count == 4, f"expected 1 initial + {3} budgeted attempts, got {call_count}"
+    criticals = [e for e in captured if e.get("event") == "workgroup-burst-limit-exceeded"]
+    assert len(criticals) == 1, (
+        f"budget exhaustion must log the critical exactly once, got {len(criticals)} "
+        f"across further monitor ticks — a per-tick re-decision is a "
+        "critical-log flood"
+    )
+
+
+async def test_stream_pump_failure_is_logged_and_task_completes() -> None:
+    """A failed output pump is loud and clean, not silently lost.
+
+    The pump forwards the child's stdout/stderr — the supervisor's
+    primary diagnostic surface. An unexpected read failure must surface
+    as a warning (the child's output is lost from that point, which an
+    operator must be able to see) and the task must complete without an
+    unretrieved exception.
+    """
+    import structlog
+
+    class _ExplodingReader:
+        async def readuntil(self, separator: bytes) -> bytes:
+            raise RuntimeError("transport exploded")
+
+    with structlog.testing.capture_logs() as captured:
+        pump = asyncio.create_task(_stream_output(_ExplodingReader(), "w1", "warning"))  # type: ignore[arg-type]  # Why: structural StreamReader double — readuntil is the only member _read_line touches.
+        # RED on the pre-fix code: this await raised RuntimeError and the
+        # task's exception was never retrieved anywhere.
+        await asyncio.wait_for(pump, timeout=5.0)
+
+    failures = [e for e in captured if e.get("event") == "workgroup.stream_pump_failed"]
+    assert failures, "the pump failure was silent — no workgroup.stream_pump_failed event"
+    assert failures[0]["worker"] == "w1"
+    assert failures[0]["error_class"] == "RuntimeError"
 
 
 # ── Additional coverage: bad timestamp, kill timeout, graceful shutdown ─
@@ -1059,9 +1366,12 @@ async def test_run_forever_graceful_shutdown_via_signal() -> None:
 
     config_path = Path("/tmp/fake_graceful.toml")
     signal_handlers: dict[int, Any] = {}
+    sigterm_registered = asyncio.Event()
 
     def capture_handler(sig: int, handler: Any) -> None:
         signal_handlers[sig] = handler
+        if sig == signal.SIGTERM:
+            sigterm_registered.set()
 
     with (
         patch("taskq.worker.workgroup.load_workgroup_config", return_value=config),
@@ -1073,18 +1383,32 @@ async def test_run_forever_graceful_shutdown_via_signal() -> None:
         from taskq.worker.workgroup import run_forever
 
         task = asyncio.create_task(run_forever(config_path))
-        await asyncio.sleep(0.2)
+        # Event-driven startup wait — a fixed sleep races handler
+        # registration under load (the SIGTERM() call below would
+        # KeyError).
+        try:
+            await asyncio.wait_for(sigterm_registered.wait(), timeout=5.0)
+        except TimeoutError:
+            pytest.fail("run_forever did not register its SIGTERM handler within 5.0s")
 
         # Trigger the signal handler to set shutting_down
-        assert signal.SIGTERM in signal_handlers
         signal_handlers[signal.SIGTERM]()
 
-        # Let the graceful shutdown proceed
-        fake_proc._returncode = 0
-        await asyncio.wait_for(task, timeout=3.0)
+        # Let the graceful shutdown proceed — with NO manual returncode:
+        # the forwarded SIGTERM is what stops the child, and the final
+        # assert verifies it. (Setting _returncode by hand would
+        # deterministically suppress the SIGTERM forwarding AND make the
+        # final assert vacuous: `returncode is not None` would always be
+        # true because the test had just set it.)
+        try:
+            await asyncio.wait_for(task, timeout=3.0)
+        except TimeoutError:
+            pytest.fail("run_forever did not complete graceful shutdown within 3.0s")
 
     # Process received SIGTERM during graceful shutdown
-    assert signal.SIGTERM in fake_proc._signals or fake_proc._returncode is not None
+    assert signal.SIGTERM in fake_proc._signals, (
+        "the supervisor did not forward SIGTERM to the child"
+    )
 
 
 # ── Bounded health-pool close at supervisor shutdown (#38) ──────────────
@@ -1157,32 +1481,68 @@ def _install_run_forever_patches(
     fake_proc: FakeProcess,
     fake_pool: _FakeHealthPool,
     signal_handlers: dict[int, Any],
-) -> Any:
-    """Wire the standard run_forever stub patches; returns the context manager."""
+) -> tuple[contextlib.ExitStack, asyncio.Event, asyncio.Event]:
+    """Wire the standard run_forever stub patches.
+
+    Returns the exit stack plus the two startup observables:
+    ``sigterm_registered`` fires at the exact point run_forever registers
+    its SIGTERM handler, and ``health_pool_created`` when
+    asyncpg.create_pool returns the fake pool — the points a test about
+    to trigger shutdown must wait for. The fixed 0.2s sleep this
+    replaces raced startup under load: the SIGTERM() call would
+    KeyError on an unregistered handler, and a shutdown before pool
+    creation would skip the close path entirely and fail the pool
+    asserts for the wrong reason.
+    """
 
     async def fake_exec(*args: Any, **kwargs: Any) -> FakeProcess:
         return fake_proc
 
+    sigterm_registered = asyncio.Event()
+    health_pool_created = asyncio.Event()
+
     def capture_handler(sig: int, handler: Any) -> None:
         signal_handlers[sig] = handler
+        if sig == signal.SIGTERM:
+            sigterm_registered.set()
 
-    mock_loop = patch("asyncio.get_running_loop")
+    def _create_pool(*args: object, **kwargs: object) -> _FakeHealthPool:
+        health_pool_created.set()
+        return fake_pool
+
     patches = contextlib.ExitStack()
     patches.enter_context(
         patch("taskq.worker.workgroup.load_workgroup_config", return_value=config)
     )
     patches.enter_context(patch("asyncio.create_subprocess_exec", side_effect=fake_exec))
-    loop_mock = patches.enter_context(mock_loop)
+    loop_mock = patches.enter_context(patch("asyncio.get_running_loop"))
     loop_mock.return_value.add_signal_handler = capture_handler
     pool_mock = patches.enter_context(
         patch("taskq.worker.workgroup.asyncpg.create_pool", new_callable=AsyncMock)
     )
-    pool_mock.return_value = fake_pool
+    pool_mock.side_effect = _create_pool
     health_mock = patches.enter_context(
         patch("taskq.worker.workgroup._child_health_check", new_callable=AsyncMock)
     )
     health_mock.return_value = True
-    return patches
+    return patches, sigterm_registered, health_pool_created
+
+
+async def _wait_for_run_forever_startup(
+    sigterm_registered: asyncio.Event,
+    health_pool_created: asyncio.Event,
+    *,
+    timeout: float = 5.0,  # noqa: ASYNC109  # Why: repo wait_for_* idiom (see taskq.testing.assertions) — a deadline parameter, not an asyncio.timeout scope.
+) -> None:
+    """Bounded, named waits on the two run_forever startup observables."""
+    for event, what in (
+        (sigterm_registered, "register its SIGTERM handler"),
+        (health_pool_created, "create the health-check pool"),
+    ):
+        try:
+            await asyncio.wait_for(event.wait(), timeout=timeout)
+        except TimeoutError:
+            pytest.fail(f"run_forever did not {what} within {timeout}s")
 
 
 @pytest.mark.asyncio
@@ -1199,16 +1559,16 @@ async def test_run_forever_terminates_hung_health_pool_close(
     fake_pool.close_wait.clear()  # close() blocks forever from now on
     signal_handlers: dict[int, Any] = {}
 
-    with _install_run_forever_patches(
+    patches, sigterm_registered, health_pool_created = _install_run_forever_patches(
         _make_health_enabled_config(), fake_proc, fake_pool, signal_handlers
-    ):
+    )
+    with patches:
         from taskq.worker.workgroup import run_forever
 
         task = asyncio.create_task(run_forever(Path("/tmp/fake_wg_bounded_pool.toml")))
-        await asyncio.sleep(0.2)
+        await _wait_for_run_forever_startup(sigterm_registered, health_pool_created)
 
         signal_handlers[signal.SIGTERM]()
-        fake_proc._returncode = 0
         # Why wait_for: pre-fix shutdown awaited pg_pool.close() unbounded,
         # so the RED state would hang forever instead of failing fast.
         await asyncio.wait_for(task, timeout=5)
@@ -1225,16 +1585,16 @@ async def test_run_forever_fast_health_pool_close_not_terminated() -> None:
     fake_pool = _FakeHealthPool()
     signal_handlers: dict[int, Any] = {}
 
-    with _install_run_forever_patches(
+    patches, sigterm_registered, health_pool_created = _install_run_forever_patches(
         _make_health_enabled_config(), fake_proc, fake_pool, signal_handlers
-    ):
+    )
+    with patches:
         from taskq.worker.workgroup import run_forever
 
         task = asyncio.create_task(run_forever(Path("/tmp/fake_wg_fast_pool.toml")))
-        await asyncio.sleep(0.2)
+        await _wait_for_run_forever_startup(sigterm_registered, health_pool_created)
 
         signal_handlers[signal.SIGTERM]()
-        fake_proc._returncode = 0
         await asyncio.wait_for(task, timeout=5)
 
     assert fake_pool.closed is True
@@ -1252,17 +1612,23 @@ async def test_run_forever_liveness_restarts_crashed_child() -> None:
     )
 
     procs: list[FakeProcess] = []
+    restarted = asyncio.Event()
 
     async def fake_exec(*args: Any, **kwargs: Any) -> FakeProcess:
         proc = FakeProcess(returncode=None)
         procs.append(proc)
+        if len(procs) >= 2:
+            restarted.set()
         return proc
 
     config_path = Path("/tmp/fake_restart.toml")
     signal_handlers: dict[int, Any] = {}
+    sigterm_registered = asyncio.Event()
 
     def capture_handler(sig: int, handler: Any) -> None:
         signal_handlers[sig] = handler
+        if sig == signal.SIGTERM:
+            sigterm_registered.set()
 
     with (
         patch("taskq.worker.workgroup.load_workgroup_config", return_value=config),
@@ -1274,26 +1640,36 @@ async def test_run_forever_liveness_restarts_crashed_child() -> None:
         from taskq.worker.workgroup import run_forever
 
         task = asyncio.create_task(run_forever(config_path))
-        await asyncio.sleep(0.2)
+        # run_forever registers handlers AFTER the initial spawn loop, so
+        # this wait also guarantees procs[0] below exists — the fixed
+        # 0.2s sleep it replaced could IndexError under startup
+        # starvation.
+        try:
+            await asyncio.wait_for(sigterm_registered.wait(), timeout=5.0)
+        except TimeoutError:
+            pytest.fail("run_forever did not spawn its child and register handlers within 5.0s")
 
         # First proc crashes
         procs[0]._returncode = 1
-        # Wait for liveness monitor to detect and restart (polls every 0.5s)
-        for _ in range(30):
-            if len(procs) >= 2:
-                break
-            await asyncio.sleep(0.1)
+        # Bounded wait for the liveness monitor (0.5s poll) to detect the
+        # crash and spawn a replacement — the event fires at the
+        # observable's flip (the second fake_exec call), replacing the
+        # 30x0.1s poll loop.
+        try:
+            await asyncio.wait_for(restarted.wait(), timeout=5.0)
+        except TimeoutError:
+            pytest.fail("the liveness monitor did not restart the crashed child within 5.0s")
 
         assert len(procs) >= 2
 
-        # Set all procs to exited so graceful shutdown can complete
-        for proc in procs:
-            if proc._returncode is None:
-                proc._returncode = 0
-
-        # Trigger graceful shutdown
+        # Trigger graceful shutdown. No manual returncode poking: the
+        # replacement is alive, so the supervisor's forwarded SIGTERM is
+        # what stops it (FakeProcess sets returncode on SIGTERM).
         signal_handlers[signal.SIGTERM]()
-        await asyncio.wait_for(task, timeout=3.0)
+        try:
+            await asyncio.wait_for(task, timeout=3.0)
+        except TimeoutError:
+            pytest.fail("run_forever did not complete graceful shutdown within 3.0s")
 
 
 # ── child-exit events carry the workgroup's identity ───────────────────

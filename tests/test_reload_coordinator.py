@@ -21,6 +21,7 @@ from taskq._di.scope import Scope
 from taskq._di.scopes import LoopScope, ProcessScope
 from taskq.connections import WorkerConnections
 from taskq.settings import WorkerSettings
+from taskq.testing.assertions import wait_for
 from taskq.worker._bootstrap import _reload_coordinator_loop
 from taskq.worker.deps import WorkerDeps, open_worker_deps
 from taskq.worker.shutdown import ShutdownPhase
@@ -47,9 +48,17 @@ class _FakePool:
     def __init__(self, name: str = "") -> None:
         self.name = name
         self.closed = False
+        # Why an event alongside the flag: the flag is the assertion
+        # surface; the event is the WAIT surface — the coordinator's
+        # reload closes the OLD pool on a background drain task spawned
+        # strictly AFTER the swap, so awaiting this event is a bounded
+        # wait that cannot observe a half-applied reload (and never a
+        # fixed sleep racing the drain under load).
+        self.closed_event = asyncio.Event()
 
     async def close(self) -> None:
         self.closed = True
+        self.closed_event.set()
 
     async def __aenter__(self) -> _FakePool:
         return self
@@ -131,13 +140,13 @@ async def test_coordinator_reloads_on_event_and_clears_it() -> None:
         task = await _run_coordinator(deps, shutdown)
 
         deps.reload_event.set()
-        for _ in range(100):
-            if (
-                deps.worker_pool is cast(object, new_worker)
-            ):  # Why: pool typed asyncpg.Pool; _FakePool has no type overlap, so plain `is` trips pyright's no-overlap check.
-                break
-            await asyncio.sleep(0.01)
-        assert deps.worker_pool is cast(object, new_worker)
+        # The reload swaps deps.worker_pool and only THEN spawns the old
+        # pool's background drain, so the old pool's closed event is a
+        # bounded wait that cannot resume before the swap has landed.
+        await wait_for(old_worker.closed_event, timeout=5.0)
+        assert (
+            deps.worker_pool is cast(object, new_worker)
+        )  # Why: pool typed asyncpg.Pool; _FakePool has no type overlap, so plain `is` trips pyright's no-overlap check.
         assert not deps.reload_event.is_set()
 
         await _stop(task, shutdown)
@@ -162,16 +171,40 @@ async def test_coordinator_reloads_exactly_once_per_trigger(
     settings = _make_settings()
     async with open_worker_deps(settings, connections=_basic_conns()) as deps:
         shutdown = asyncio.Event()
-        mock_reload = AsyncMock(return_value=([], []))
+        first_reload_started = asyncio.Event()
+        second_reload_started = asyncio.Event()
+        reload_calls = 0
+
+        def _on_reload_call(*_args: object, **_kwargs: object) -> tuple[list[str], list[str]]:
+            # Why a side_effect: the observable is "the coordinator made
+            # its Nth reload_credentials call" — the event fires at the
+            # exact point that flips, so the waits below never race the
+            # coordinator's loop under load. Accepts (and ignores) the
+            # call args mock passes through, and returns the mock's
+            # contract value (reloaded, failed) for the coordinator.
+            nonlocal reload_calls
+            reload_calls += 1
+            if reload_calls == 1:
+                first_reload_started.set()
+            else:
+                second_reload_started.set()
+            return ([], [])
+
+        mock_reload = AsyncMock(return_value=([], []), side_effect=_on_reload_call)
         monkeypatch.setattr("taskq.worker.deps.reload_credentials", mock_reload)
 
         task = await _run_coordinator(deps, shutdown)
         deps.reload_event.set()
-        await asyncio.sleep(0.1)
+        await wait_for(first_reload_started, timeout=5.0)
+        # Exact-once is safe to assert here without further settling: the
+        # event fires inside the coordinator's own step, and a buggy
+        # back-to-back second call would run in that same continuation
+        # (before the coordinator suspends) — i.e. before this test task
+        # can resume.
         assert mock_reload.await_count == 1
 
         deps.request_reload()
-        await asyncio.sleep(0.1)
+        await wait_for(second_reload_started, timeout=5.0)
         assert mock_reload.await_count == 2
 
         await _stop(task, shutdown)
@@ -187,6 +220,7 @@ async def test_coordinator_honors_sighup_arriving_during_failed_reload(
     async with open_worker_deps(settings, connections=_basic_conns()) as deps:
         shutdown = asyncio.Event()
         gate = asyncio.Event()
+        second_call_seen = asyncio.Event()
         calls = 0
 
         async def flaky_reload(_deps: WorkerDeps, **_kw: object) -> tuple[list[str], list[str]]:
@@ -197,6 +231,11 @@ async def test_coordinator_honors_sighup_arriving_during_failed_reload(
                 gate.set()
                 await asyncio.sleep(0.05)
                 raise RuntimeError("simulated reload failure")
+            # Why an event at the point reached: "the coordinator honored
+            # the mid-failure SIGHUP with a follow-up reload" is exactly
+            # "the second call started" — awaiting it is bounded and never
+            # a fixed sleep racing the coordinator under load.
+            second_call_seen.set()
             return ([], [])
 
         monkeypatch.setattr("taskq.worker.deps.reload_credentials", flaky_reload)
@@ -206,10 +245,7 @@ async def test_coordinator_honors_sighup_arriving_during_failed_reload(
         await gate.wait()  # first reload in flight
         deps.reload_event.set()  # operator retry during the failure
 
-        for _ in range(100):
-            if calls >= 2:
-                break
-            await asyncio.sleep(0.01)
+        await wait_for(second_call_seen, timeout=5.0)
         assert calls >= 2
 
         await _stop(task, shutdown)
@@ -249,14 +285,23 @@ async def test_coordinator_interval_triggers_reload_without_signal(
     settings = _make_settings(TASKQ_RELOAD_INTERVAL="0.05")
     async with open_worker_deps(settings, connections=_basic_conns()) as deps:
         shutdown = asyncio.Event()
-        mock_reload = AsyncMock(return_value=([], []))
+        interval_reload_fired = asyncio.Event()
+
+        def _on_reload_call(*_args: object, **_kwargs: object) -> tuple[list[str], list[str]]:
+            # Why a side_effect: "the interval timer fired a reload" is
+            # exactly "reload_credentials was called" — the event fires at
+            # that point, so the wait below never races the timer or the
+            # coordinator's loop under load. Accepts (and ignores) the
+            # call args mock passes through, and returns the mock's
+            # contract value (reloaded, failed) for the coordinator.
+            interval_reload_fired.set()
+            return ([], [])
+
+        mock_reload = AsyncMock(return_value=([], []), side_effect=_on_reload_call)
         monkeypatch.setattr("taskq.worker.deps.reload_credentials", mock_reload)
 
         task = await _run_coordinator(deps, shutdown)
-        for _ in range(100):
-            if mock_reload.await_count >= 1:
-                break
-            await asyncio.sleep(0.01)
+        await wait_for(interval_reload_fired, timeout=5.0)
         mock_reload.assert_awaited()
 
         await _stop(task, shutdown)
@@ -303,10 +348,11 @@ async def test_coordinator_refreshes_di_pool_after_worker_reload() -> None:
         )
 
         deps.reload_event.set()
-        for _ in range(100):
-            if loop_scope.get(asyncpg.Pool) is cast(object, new_worker):
-                break
-            await asyncio.sleep(0.01)
+        # The old pool's background drain is spawned strictly AFTER the
+        # worker-pool swap, and the DI cache refresh happens before the
+        # coordinator suspends again — so the old pool's closed event is a
+        # bounded wait that cannot resume before both have landed.
+        await wait_for(old_worker.closed_event, timeout=5.0)
         assert loop_scope.get(asyncpg.Pool) is cast(object, new_worker)
 
         await _stop(task, shutdown)
@@ -329,13 +375,13 @@ async def test_coordinator_does_not_refresh_di_when_flag_off() -> None:
         )
 
         deps.reload_event.set()
-        for _ in range(100):
-            if (
-                deps.worker_pool is cast(object, new_worker)
-            ):  # Why: pool typed asyncpg.Pool; _FakePool has no type overlap, so plain `is` trips pyright's no-overlap check.
-                break
-            await asyncio.sleep(0.01)
-        assert deps.worker_pool is cast(object, new_worker)
+        # Same witness as the DI-refresh test: the old pool's drain runs
+        # only after the swap, so its closed event is a bounded wait that
+        # cannot resume before the swap has landed.
+        await wait_for(old_worker.closed_event, timeout=5.0)
+        assert (
+            deps.worker_pool is cast(object, new_worker)
+        )  # Why: pool typed asyncpg.Pool; _FakePool has no type overlap, so plain `is` trips pyright's no-overlap check.
         assert loop_scope.get(asyncpg.Pool) is user_pool  # untouched
 
         await _stop(task, shutdown)

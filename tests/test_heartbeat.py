@@ -199,7 +199,8 @@ async def _run_tick(
 def _restore_heartbeat_module_globals() -> Any:  # pyright: ignore[reportUnusedFunction] # Why: autouse pytest fixture — consumed implicitly by the test runner, not by direct call.
     """Snapshot and restore module-level globals on
     ``taskq.worker.heartbeat`` after every test. Tests in this file patch
-    ``isolate_self`` and ``_tick_duration.record`` to observe loop behavior;
+    ``isolate_self``, ``_tick_duration.record`` and
+    ``update_heartbeat_consecutive_failures`` to observe loop behavior;
     without this fixture those patches leak into other test files (notably
     ``tests/test_heartbeat_chaos.py``) and cause flaky cross-file failures.
 
@@ -214,12 +215,14 @@ def _restore_heartbeat_module_globals() -> Any:  # pyright: ignore[reportUnusedF
 
     saved_isolate = hb_mod.isolate_self
     saved_record = hb_mod._tick_duration.record  # type: ignore[reportPrivateUsage]
+    saved_update = hb_mod.update_heartbeat_consecutive_failures
     saved_hb_count = otel_mod._heartbeat_consecutive_failures_count
     try:
         yield
     finally:
         hb_mod.isolate_self = saved_isolate  # type: ignore[method-assign]
         hb_mod._tick_duration.record = saved_record  # type: ignore[method-assign,reportPrivateUsage]
+        hb_mod.update_heartbeat_consecutive_failures = saved_update
         otel_mod._heartbeat_consecutive_failures_count = saved_hb_count
 
 
@@ -233,6 +236,67 @@ async def _patch_tick_duration(record_to: Any) -> None:
     import taskq.worker.heartbeat as hb_mod
 
     hb_mod._tick_duration.record = record_to  # type: ignore[method-assign]
+
+
+async def _wait_for_heartbeat_failures(
+    deps: WorkerDeps,
+    *,
+    at_least: int | None = None,
+    exactly: int | None = None,
+    timeout: float = 5.0,  # noqa: ASYNC109  # Why: repo wait_for_* idiom (see taskq.testing.assertions) — a deadline parameter, not an asyncio.timeout scope.
+) -> None:
+    """Bounded, event-driven wait for the heartbeat loop to drive
+    ``deps.heartbeat_failures`` to a target.
+
+    The wait surface is ``taskq.worker.heartbeat.update_heartbeat_consecutive_failures``
+    — the loop calls it immediately AFTER every counter flip (the
+    in-tx hook-failure increment, the transient-failure increment, and
+    the success-path reset), so signalling from inside the wrapper
+    fires in the same event-loop turn as the flip and the waiting test
+    resumes before the loop can start its NEXT tick. A wait on the
+    exact count therefore can never observe the counter advancing past
+    the target. (The tick-duration histogram hook is NOT usable here:
+    on the transient-failure path it records BEFORE the increment, so
+    it would fire a whole tick late — after isolation.) The
+    ``for _ in range(50)``-style poll loop samples the counter every
+    50 ms and can miss the window under scheduler
+    starvation — letting the counter run past an exact target (breaking
+    the ``== n`` asserts) or even past the isolation threshold, which
+    would run the REAL ``isolate_self`` (a live ``asyncpg.connect`` to
+    a fake DSN) inside a test file that promises "no PG required".
+
+    Must be armed before the tick that reaches the target can complete:
+    call it before starting the loop task, or synchronously after a
+    mid-test pool swap that precedes the next tick (the hook install is
+    synchronous; only the inner wait awaits). Restoration is handled by
+    the ``_restore_heartbeat_module_globals`` autouse fixture, exactly
+    like ``_patch_tick_duration``.
+    """
+    import taskq.worker.heartbeat as hb_mod
+
+    if (at_least is None) == (exactly is None):
+        raise ValueError("specify exactly one of at_least / exactly")
+    reached = asyncio.Event()
+    prev_update = hb_mod.update_heartbeat_consecutive_failures
+
+    def _update_and_signal(worker_id: str, count: int) -> None:
+        prev_update(worker_id, count)
+        if at_least is not None:
+            if deps.heartbeat_failures >= at_least:
+                reached.set()
+        elif deps.heartbeat_failures == exactly:
+            reached.set()
+
+    hb_mod.update_heartbeat_consecutive_failures = _update_and_signal
+
+    target = f"at least {at_least}" if at_least is not None else f"exactly {exactly}"
+    try:
+        await asyncio.wait_for(reached.wait(), timeout=timeout)
+    except TimeoutError:
+        pytest.fail(
+            f"heartbeat loop did not reach {target} consecutive "
+            f"failures within {timeout}s (stuck at {deps.heartbeat_failures})"
+        )
 
 
 # ── Tick advances timestamps in correct order ─────────────────────
@@ -271,10 +335,12 @@ async def test_failure_counter_increments_on_connection_error() -> None:
     deps = _make_deps(heartbeat_pool=pool)
     shutdown = asyncio.Event()
     task = asyncio.create_task(heartbeat_loop(deps, new_uuid(), shutdown))
-    for _ in range(50):
-        if deps.heartbeat_failures >= 2:
-            break
-        await asyncio.sleep(0.05)
+    # Event-driven wait on the exact observable: fires on the tick that
+    # reaches 2 failures, before the loop can run further ticks — which,
+    # under the starvation a poll loop tolerates, could reach the
+    # isolation threshold and run the REAL isolate_self against the
+    # fake DSN.
+    await _wait_for_heartbeat_failures(deps, at_least=2)
     assert deps.heartbeat_failures >= 2
     shutdown.set()
     await task
@@ -292,18 +358,15 @@ async def test_failure_counter_resets_after_success() -> None:
     shutdown = asyncio.Event()
     worker_id = new_uuid()
     task = asyncio.create_task(heartbeat_loop(deps, worker_id, shutdown))
-    for _ in range(50):
-        if deps.heartbeat_failures >= 2:
-            break
-        await asyncio.sleep(0.05)
+    await _wait_for_heartbeat_failures(deps, at_least=2)
     assert deps.heartbeat_failures >= 2
 
     healthy = FakePool()
     deps.heartbeat_pool = healthy  # type: ignore[arg-type]
-    for _ in range(50):
-        if deps.heartbeat_failures == 0:
-            break
-        await asyncio.sleep(0.05)
+    # The swap is synchronous, so the hook is installed before the loop's
+    # next tick can run; the wait fires on that first successful tick —
+    # the exact point the counter resets to 0.
+    await _wait_for_heartbeat_failures(deps, exactly=0)
     assert deps.heartbeat_failures == 0
     shutdown.set()
     await task
@@ -357,10 +420,11 @@ async def test_no_isolation_at_exactly_max_failures() -> None:
     shutdown = asyncio.Event()
     worker_id = new_uuid()
     task = asyncio.create_task(heartbeat_loop(deps, worker_id, shutdown))
-    for _ in range(50):
-        if deps.heartbeat_failures >= 3:
-            break
-        await asyncio.sleep(0.05)
+    # Fires on the tick that reaches exactly 3 — before the loop can run
+    # the fourth (isolation) tick — so the asserts below sample a loop
+    # parked in its inter-tick sleep, not a 0.5s window a starved poll
+    # could overshoot (4th failure → isolation → == 3 assert fails).
+    await _wait_for_heartbeat_failures(deps, at_least=3)
     assert deps.heartbeat_failures == 3
     assert len(isolate_calls) == 0
     shutdown.set()
@@ -390,10 +454,11 @@ async def test_soft_warning_at_half_max_failures() -> None:
 
     with patch.object(hb_mod, "logger", mock_log):
         task = asyncio.create_task(heartbeat_loop(deps, new_uuid(), shutdown))
-        for _ in range(100):
-            if deps.heartbeat_failures >= 3:
-                break
-            await asyncio.sleep(0.05)
+        # Third failure ⇒ the second (soft-warning) tick already
+        # completed — the warning either fired once there or never will.
+        # Shutdown before tick 4 so the real isolate_self (max=4 →
+        # isolate at 5) can never run against this fake DSN.
+        await _wait_for_heartbeat_failures(deps, at_least=3)
         shutdown.set()
         await task
 
@@ -425,10 +490,11 @@ async def test_no_soft_warning_when_threshold_is_zero() -> None:
 
     with patch.object(hb_mod, "logger", mock_log):
         task = asyncio.create_task(heartbeat_loop(deps, new_uuid(), shutdown))
-        for _ in range(100):
-            if deps.heartbeat_failures >= 1:
-                break
-            await asyncio.sleep(0.05)
+        # Fires on the FIRST failure; the shutdown that follows lands
+        # before the second tick, so the real isolate_self (max=1 →
+        # isolate at 2, one mere interval away) can never run against
+        # this fake DSN — the tightest isolation margin in the file.
+        await _wait_for_heartbeat_failures(deps, at_least=1)
         shutdown.set()
         await task
 
@@ -670,10 +736,11 @@ async def test_hook_increments_counter_exactly_once() -> None:
             deps, new_uuid(), shutdown_2, cancel_controller=_ErrorController(ValueError("bad hook"))
         )
     )
-    for _ in range(50):
-        if deps.heartbeat_failures >= 1:
-            break
-        await asyncio.sleep(0.05)
+    # Fires on the hook-failure tick that increments to 1; the asserts
+    # below then sample a parked loop — a fixed-cadence poll could
+    # overshoot to a second hook failure (the == 1 assert fails) under
+    # starvation.
+    await _wait_for_heartbeat_failures(deps, at_least=1)
     shutdown_2.set()
     await task
     assert deps.heartbeat_failures == 1

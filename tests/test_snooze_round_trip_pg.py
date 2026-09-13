@@ -440,7 +440,11 @@ async def test_concurrent_snooze_and_cancel(
         return await backend.mark_cancelled(job_id, worker_id)
 
     snooze_task = asyncio.create_task(run_snooze())
-    await asyncio.sleep(0.001)
+    # Single deterministic yield: lets the snooze task take its first step
+    # (head start for the intended overlap) without an arbitrary 1ms
+    # delay — no assert depends on how far it got, both tasks are awaited
+    # below and either transition may win.
+    await asyncio.sleep(0)
     cancel_task = asyncio.create_task(run_cancel())
 
     results = await asyncio.gather(snooze_task, cancel_task, return_exceptions=True)

@@ -35,6 +35,7 @@ from taskq._ids import new_uuid
 from taskq.backend._protocol import Backend
 from taskq.backend.clock import Clock, SystemClock
 from taskq.settings import WorkerSettings
+from taskq.testing.assertions import wait_for_condition
 from taskq.testing.clock import FakeClock
 from taskq.worker._leader_shared import SweepContext
 from taskq.worker._leader_sweeps import _sweep_loop
@@ -307,19 +308,16 @@ async def test_notify_timeout_after_completed_sweep_is_not_a_sweep_timeout(
     # Pool exhaustion shape: acquire raises TimeoutError, as asyncpg does.
     leader = _wake_leader(backend, dispatcher_pool=_PoolStub(acquire_exc=TimeoutError()))
 
-    rows_recorded = asyncio.Event()
     shutdown = asyncio.Event()
     task = asyncio.create_task(leader._scheduled_wake_loop(shutdown))
     try:
-        for _ in range(400):
-            if (
-                backend.calls.get("scheduled_to_pending")
+        await wait_for_condition(
+            lambda: (
+                bool(backend.calls.get("scheduled_to_pending"))
                 and _rows_value(telemetry_reader, "scheduled_to_pending") == 3
-            ):
-                rows_recorded.set()
-                break
-            await asyncio.sleep(0.01)
-        assert rows_recorded.is_set(), "the wake loop must attempt and record the sweep"
+            ),
+            description="the wake loop must attempt and record the sweep",
+        )
     finally:
         await _stop(task, shutdown)
 
@@ -349,16 +347,13 @@ async def test_wake_loop_connection_loss_records_duration_not_timeout(
     )
     leader = _wake_leader(backend, dispatcher_pool=_PoolStub())
 
-    duration_seen = asyncio.Event()
     shutdown = asyncio.Event()
     task = asyncio.create_task(leader._scheduled_wake_loop(shutdown))
     try:
-        for _ in range(400):
-            if _duration_samples(telemetry_reader, "scheduled_to_pending") >= 1:
-                duration_seen.set()
-                break
-            await asyncio.sleep(0.01)
-        assert duration_seen.is_set(), "a failed sweep recorded no duration sample"
+        await wait_for_condition(
+            lambda: _duration_samples(telemetry_reader, "scheduled_to_pending") >= 1,
+            description="a failed sweep recorded no duration sample",
+        )
     finally:
         await _stop(task, shutdown)
 
@@ -381,16 +376,13 @@ async def test_sweep_loop_reclaim_timeout_records_duration_and_timeout_without_r
     settings.sweep_interval = 0.05  # bypasses the ge=1.0 field constraint by hand
     ctx = _sweep_ctx(backend, dispatcher_pool=_PoolStub(), settings=settings)
 
-    duration_seen = asyncio.Event()
     shutdown = asyncio.Event()
     task = asyncio.create_task(_sweep_loop(ctx, shutdown))
     try:
-        for _ in range(400):
-            if _duration_samples(telemetry_reader, "expired_locks") >= 1:
-                duration_seen.set()
-                break
-            await asyncio.sleep(0.01)
-        assert duration_seen.is_set(), "an aborted sweep-1 call recorded no duration sample"
+        await wait_for_condition(
+            lambda: _duration_samples(telemetry_reader, "expired_locks") >= 1,
+            description="an aborted sweep-1 call recorded no duration sample",
+        )
     finally:
         await _stop(task, shutdown)
 
@@ -412,18 +404,15 @@ async def test_sweep_loop_deadline_timeout_records_duration_and_timeout_without_
     settings.sweep_interval = 0.05  # bypasses the ge=1.0 field constraint by hand
     ctx = _sweep_ctx(backend, dispatcher_pool=_PoolStub(), settings=settings)
 
-    timeout_seen = asyncio.Event()
     shutdown = asyncio.Event()
     task = asyncio.create_task(_sweep_loop(ctx, shutdown))
     try:
-        for _ in range(400):
-            if _timeout_value(telemetry_reader, "deadline_exceeded") >= 1:
-                timeout_seen.set()
-                break
-            await asyncio.sleep(0.01)
-        assert timeout_seen.is_set(), (
-            "the deadline sweep timed out without recording a timeout — the "
-            "failure path is invisible at this call site"
+        await wait_for_condition(
+            lambda: _timeout_value(telemetry_reader, "deadline_exceeded") >= 1,
+            description=(
+                "the deadline sweep timed out without recording a timeout — the "
+                "failure path is invisible at this call site"
+            ),
         )
     finally:
         await _stop(task, shutdown)
@@ -447,18 +436,15 @@ async def test_sweep_loop_expired_results_timeout_records_duration_and_timeout_w
     settings.sweep_interval = 0.05  # bypasses the ge=1.0 field constraint by hand
     ctx = _sweep_ctx(backend, dispatcher_pool=_PoolStub(), settings=settings)
 
-    timeout_seen = asyncio.Event()
     shutdown = asyncio.Event()
     task = asyncio.create_task(_sweep_loop(ctx, shutdown))
     try:
-        for _ in range(400):
-            if _timeout_value(telemetry_reader, "expired_results") >= 1:
-                timeout_seen.set()
-                break
-            await asyncio.sleep(0.01)
-        assert timeout_seen.is_set(), (
-            "the result-TTL sweep timed out without recording a timeout — the "
-            "failure path is invisible at this call site"
+        await wait_for_condition(
+            lambda: _timeout_value(telemetry_reader, "expired_results") >= 1,
+            description=(
+                "the result-TTL sweep timed out without recording a timeout — the "
+                "failure path is invisible at this call site"
+            ),
         )
     finally:
         await _stop(task, shutdown)
@@ -484,18 +470,15 @@ async def test_sweep_loop_stale_workers_timeout_records_duration_and_timeout_wit
     settings.sweep_interval = 0.05  # bypasses the ge=1.0 field constraint by hand
     ctx = _sweep_ctx(backend, dispatcher_pool=_PoolStub(conn=conn), settings=settings)
 
-    timeout_seen = asyncio.Event()
     shutdown = asyncio.Event()
     task = asyncio.create_task(_sweep_loop(ctx, shutdown))
     try:
-        for _ in range(400):
-            if _timeout_value(telemetry_reader, "stale_workers") >= 1:
-                timeout_seen.set()
-                break
-            await asyncio.sleep(0.01)
-        assert timeout_seen.is_set(), (
-            "the stale-worker cleanup timed out without recording a timeout — "
-            "the failure path is invisible at this call site"
+        await wait_for_condition(
+            lambda: _timeout_value(telemetry_reader, "stale_workers") >= 1,
+            description=(
+                "the stale-worker cleanup timed out without recording a timeout — "
+                "the failure path is invisible at this call site"
+            ),
         )
     finally:
         await _stop(task, shutdown)
@@ -519,18 +502,15 @@ async def test_leaked_slots_timeout_records_duration_and_timeout_without_rows(
     settings.sweep_interval = 0.05  # bypasses the ge=1.0 field constraint by hand
     ctx = _sweep_ctx(backend, dispatcher_pool=_PoolStub(), settings=settings)
 
-    duration_seen = asyncio.Event()
     shutdown = asyncio.Event()
     task = asyncio.create_task(_sweep_loop(ctx, shutdown))
     try:
-        for _ in range(400):
-            if _timeout_value(telemetry_reader, "leaked_slots") >= 1:
-                duration_seen.set()
-                break
-            await asyncio.sleep(0.01)
-        assert duration_seen.is_set(), (
-            "the leaked-slots sweep timed out without recording a timeout — the "
-            "failure path is invisible at this call site"
+        await wait_for_condition(
+            lambda: _timeout_value(telemetry_reader, "leaked_slots") >= 1,
+            description=(
+                "the leaked-slots sweep timed out without recording a timeout — the "
+                "failure path is invisible at this call site"
+            ),
         )
     finally:
         await _stop(task, shutdown)
@@ -555,18 +535,15 @@ async def test_stale_batches_timeout_records_duration_and_timeout_without_rows(
     settings.sweep_interval = 0.05  # bypasses the ge=1.0 field constraint by hand
     ctx = _sweep_ctx(backend, dispatcher_pool=_PoolStub(conn=conn), settings=settings)
 
-    timeout_seen = asyncio.Event()
     shutdown = asyncio.Event()
     task = asyncio.create_task(_sweep_loop(ctx, shutdown))
     try:
-        for _ in range(400):
-            if _timeout_value(telemetry_reader, "stale_batches") >= 1:
-                timeout_seen.set()
-                break
-            await asyncio.sleep(0.01)
-        assert timeout_seen.is_set(), (
-            "the stale-batches sweep timed out without recording a timeout — the "
-            "failure path is invisible at this call site"
+        await wait_for_condition(
+            lambda: _timeout_value(telemetry_reader, "stale_batches") >= 1,
+            description=(
+                "the stale-batches sweep timed out without recording a timeout — the "
+                "failure path is invisible at this call site"
+            ),
         )
     finally:
         await _stop(task, shutdown)
@@ -627,11 +604,20 @@ async def test_stale_batches_server_cancel_is_transient_not_a_bug(
     shutdown = asyncio.Event()
     task = asyncio.create_task(_sweep_loop(ctx, shutdown))
     try:
-        for _ in range(600):
-            attempts = sum(1 for sql, _ in conn.fetchval_calls if "batches" in sql)
-            if attempts >= required_attempts or task.done():
-                break
-            await asyncio.sleep(0.01)
+        # Bounded poll on the attempt count (a count over the fake's recorded
+        # calls is the observable; no event exists to wait on). The
+        # task-done arm fails fast if the loop dies instead of retrying.
+        await wait_for_condition(
+            lambda: (
+                sum(1 for sql, _ in conn.fetchval_calls if "batches" in sql) >= required_attempts
+                or task.done()
+            ),
+            description=(
+                "the transiently-cancelled stale-batches sweep must keep being "
+                "re-attempted past the backstop's streak cap"
+            ),
+            timeout=10.0,
+        )
 
         stale_batches_attempts = sum(1 for sql, _ in conn.fetchval_calls if "batches" in sql)
         assert stale_batches_attempts >= required_attempts, (
@@ -713,18 +699,15 @@ async def test_cron_tick_timeout_records_duration_and_timeout_without_rows(
     monkeypatch.setattr("taskq.worker.leader.tick_cron", _timeout_tick)
     leader = _cron_leader()
 
-    timeout_seen = asyncio.Event()
     shutdown = asyncio.Event()
     task = asyncio.create_task(leader._cron_loop(shutdown))
     try:
-        for _ in range(400):
-            if _timeout_value(telemetry_reader, "cron") >= 1:
-                timeout_seen.set()
-                break
-            await asyncio.sleep(0.01)
-        assert timeout_seen.is_set(), (
-            "a deadline-aborted cron tick recorded no timeout — the cron "
-            "failure path is invisible again"
+        await wait_for_condition(
+            lambda: _timeout_value(telemetry_reader, "cron") >= 1,
+            description=(
+                "a deadline-aborted cron tick recorded no timeout — the cron "
+                "failure path is invisible again"
+            ),
         )
     finally:
         await _stop(task, shutdown)
@@ -748,16 +731,13 @@ async def test_cron_tick_success_records_rows_and_duration_without_timeout(
     monkeypatch.setattr("taskq.worker.leader.tick_cron", _two_fire_tick)
     leader = _cron_leader()
 
-    rows_seen = asyncio.Event()
     shutdown = asyncio.Event()
     task = asyncio.create_task(leader._cron_loop(shutdown))
     try:
-        for _ in range(400):
-            if _rows_value(telemetry_reader, "cron") == 2:
-                rows_seen.set()
-                break
-            await asyncio.sleep(0.01)
-        assert rows_seen.is_set(), "a healthy cron tick recorded no row sample"
+        await wait_for_condition(
+            lambda: _rows_value(telemetry_reader, "cron") == 2,
+            description="a healthy cron tick recorded no row sample",
+        )
     finally:
         await _stop(task, shutdown)
 

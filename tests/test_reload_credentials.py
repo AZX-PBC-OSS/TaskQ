@@ -20,6 +20,7 @@ import pytest
 from taskq.connections import WorkerConnections
 from taskq.obs import set_slot_pool_occupancy_source
 from taskq.settings import WorkerSettings
+from taskq.testing.assertions import wait_for
 from taskq.worker.deps import WorkerDeps, open_worker_deps, reload_credentials
 
 
@@ -59,6 +60,12 @@ class _FakePool:
         self.close_calls = 0
         self.close_wait = asyncio.Event()
         self.close_wait.set()  # close() completes instantly by default
+        # Why an event alongside the flag: the flag is the assertion
+        # surface; the event is the WAIT surface — the reload's
+        # background drain closes the pool on its own task, and a test
+        # that needs "closed" can await this instead of sleeping a
+        # fixed interval that races the drain under load.
+        self.closed_event = asyncio.Event()
 
     async def acquire(self, **_kw: object) -> object:
         return MagicMock()
@@ -69,10 +76,12 @@ class _FakePool:
             return  # close-after-terminate is a no-op on a real pool
         await self.close_wait.wait()
         self.closed = True
+        self.closed_event.set()
 
     def terminate(self) -> None:
         self.terminated = True
         self.closed = True
+        self.closed_event.set()
         self.close_wait.set()  # aborts any in-flight close() wait
 
     def is_closing(self) -> bool:
@@ -92,6 +101,12 @@ class _FakeConn:
         self.closed = False
         self.terminated = False
         self.executed: list[str] = []
+        # Why an event alongside the flag: the flag is the assertion
+        # surface; the event is the WAIT surface — the reload's
+        # background drain closes the connection on its own task, and a
+        # test that needs "closed" can await this instead of sleeping a
+        # fixed interval that races the drain under load.
+        self.closed_event = asyncio.Event()
 
     async def execute(self, sql: str, *_args: object) -> str:
         self.executed.append(sql)
@@ -105,10 +120,12 @@ class _FakeConn:
 
     async def close(self) -> None:
         self.closed = True
+        self.closed_event.set()
 
     def terminate(self) -> None:
         self.terminated = True
         self.closed = True
+        self.closed_event.set()
 
     def is_closed(self) -> bool:
         return self.closed
@@ -140,6 +157,25 @@ def _make_conn_factory(fakes: list[_FakeConn]) -> Any:
     return factory
 
 
+async def _wait_until_closed(resource: _FakePool | _FakeConn, *, deadline: float = 5.0) -> None:
+    """Bounded, event-driven wait for the reload's background drain to
+    close *resource* (a pool or a dedicated connection).
+
+    The drain runs on its own task; awaiting the fake's ``closed_event``
+    waits exactly as long as the work needs — never a fixed sleep that
+    races the drain under load — and the bound turns a broken drain
+    into a loud failure instead of a hang. The mechanism is the shared
+    :func:`taskq.testing.assertions.wait_for`; this wrapper only binds
+    the resource's label to the failure message.
+    """
+    label = getattr(resource, "name", None) or type(resource).__name__
+    await wait_for(
+        resource.closed_event,
+        timeout=deadline,
+        description=f"the reload's background drain closing {label!r}",
+    )
+
+
 # ── reload_credentials: pools ──────────────────────────────────────────
 
 
@@ -167,8 +203,11 @@ async def test_reload_swaps_factory_backed_pools() -> None:
         assert deps.dispatcher_pool is new_dispatcher
         assert deps.heartbeat_pool is new_heartbeat
         assert deps.worker_pool is new_worker
-        # Wait for the background drain tasks to close old pools
-        await asyncio.sleep(0.2)
+        # Event-driven waits for the background drain to close the old
+        # pools — bounded, and never a fixed sleep racing the drain.
+        await _wait_until_closed(old_dispatcher)
+        await _wait_until_closed(old_heartbeat)
+        await _wait_until_closed(old_worker)
 
     # Old pools were drained (closed in background)
     assert old_dispatcher.closed
@@ -214,7 +253,12 @@ async def test_reload_swaps_slot_pool_and_preserves_boot_time_sizing() -> None:
 
         assert deps.slot_pool is new_slot
         assert deps.slot_pool_factory is factory
-        await asyncio.sleep(0.2)
+        # Poll the observable instead of sleeping a fixed interval: the
+        # reload's background drain closes the old pool asynchronously,
+        # and a fixed sleep is a flake source under load (too short) and
+        # wasted time when idle. Bounded so a broken drain fails the
+        # test loudly instead of hanging it.
+        await _wait_until_closed(old_slot)
 
     assert old_slot.closed
     # Replacement registered on the exit stack: closed at teardown.
@@ -317,7 +361,8 @@ async def test_reload_continues_past_one_failed_pool_factory() -> None:
         # open_worker_deps teardown (below) will close it, since it's
         # still the live pool.
         assert not old_heartbeat.closed
-        await asyncio.sleep(0.2)
+        await _wait_until_closed(old_dispatcher)
+        await _wait_until_closed(old_worker)
 
     # Reloaded pools' old copies were drained by the reload itself.
     assert old_dispatcher.closed
@@ -352,8 +397,7 @@ async def test_reload_swaps_notify_conn_via_factory() -> None:
         assert deps.notify_conn is new_notify
         # LISTEN was issued on the new connection
         assert any(sql.startswith("LISTEN") for sql in new_notify.executed)
-        # Wait for the background drain task to close the old conn
-        await asyncio.sleep(0.2)
+        await _wait_until_closed(old_notify)
 
     # Old notify conn was drained
     assert old_notify.closed
@@ -381,8 +425,7 @@ async def test_reload_closes_leader_conn_for_watchdog_reopen() -> None:
         await reload_credentials(deps, drain_timeout=0.5)
         # leader_conn is set to None — the watchdog will reopen it
         assert deps.leader_conn is None
-        # Wait for the background drain task to close the old conn
-        await asyncio.sleep(0.2)
+        await _wait_until_closed(old_leader)
 
     # Old leader conn was drained
     assert old_leader.closed
@@ -395,8 +438,9 @@ async def test_reload_swaps_redis_client() -> None:
     """reload_credentials replaces the Redis client via its factory."""
     settings = _make_settings()
 
+    old_redis_aclosed = asyncio.Event()
     old_redis = MagicMock()
-    old_redis.aclose = AsyncMock()
+    old_redis.aclose = AsyncMock(side_effect=lambda: old_redis_aclosed.set())
     new_redis = MagicMock()
     new_redis.aclose = AsyncMock()
     redis_fakes = [old_redis, new_redis]
@@ -420,8 +464,12 @@ async def test_reload_swaps_redis_client() -> None:
         assert deps.redis_client is old_redis
         await reload_credentials(deps, drain_timeout=0.5)
         assert deps.redis_client is new_redis
-        # Wait for the background drain task to close old Redis
-        await asyncio.sleep(0.2)
+        # Event-driven wait for the drain's aclose — bounded, never a
+        # fixed sleep racing it under load.
+        try:
+            await asyncio.wait_for(old_redis_aclosed.wait(), timeout=5.0)
+        except TimeoutError:
+            pytest.fail("the reload's background drain did not aclose the old client")
 
     # Old Redis was drained exactly once (by the reload's background drain)…
     old_redis.aclose.assert_awaited_once()
@@ -518,7 +566,9 @@ async def test_reload_returns_reloaded_and_failed_lists() -> None:
         assert "worker" in reloaded
         assert "heartbeat" in failed
         assert "heartbeat" not in reloaded
-        await asyncio.sleep(0.2)
+        # Let the worker swap's background drain finish before teardown,
+        # event-driven and bounded rather than a fixed sleep.
+        await _wait_until_closed(old_worker)
 
 
 # ── reload_credentials: notify_reconnect_fn ────────────────────────────
@@ -650,11 +700,12 @@ async def test_reload_terminates_pool_when_drain_times_out() -> None:
     async with open_worker_deps(settings, connections=conns) as deps:
         await reload_credentials(deps, drain_timeout=0.05)
         assert deps.dispatcher_pool is new_pool
-        # Give the background drain task time to hit the timeout
-        for _ in range(100):
-            if stuck_pool.terminated:
-                break
-            await asyncio.sleep(0.01)
+        # Event-driven, bounded wait for the background drain to hit the
+        # drain timeout and terminate the stuck pool: the fake's
+        # closed_event is set in terminate() exactly where the observable
+        # flips, so this waits as long as the drain needs — never a fixed
+        # sleep racing it under load.
+        await _wait_until_closed(stuck_pool)
         assert stuck_pool.terminated
 
 
@@ -762,10 +813,12 @@ async def test_reload_factory_timeout_marks_resource_failed() -> None:
         await asyncio.sleep(60)
         raise AssertionError("unreachable")
 
+    old_worker = _FakePool("wk-old")
+
     conns = WorkerConnections(
         dispatcher_pool_factory=_make_pool_factory([_FakePool("dp")]),
         heartbeat_pool_factory=_make_pool_factory([_FakePool("hb")]),
-        worker_pool_factory=_make_pool_factory([_FakePool("wk-old"), _FakePool("wk-new")]),
+        worker_pool_factory=_make_pool_factory([old_worker, _FakePool("wk-new")]),
         notify_conn=_FakeConn(),  # type: ignore[arg-type]
         leader_conn=_FakeConn(),  # type: ignore[arg-type]
     )
@@ -774,7 +827,9 @@ async def test_reload_factory_timeout_marks_resource_failed() -> None:
         reloaded, failed = await reload_credentials(deps, drain_timeout=0.5, factory_timeout=0.05)
         assert "dispatcher" in failed
         assert "worker" in reloaded
-        await asyncio.sleep(0.2)
+        # Let the worker swap's background drain finish before teardown,
+        # event-driven and bounded rather than a fixed sleep.
+        await _wait_until_closed(old_worker)
 
 
 # ── SIGHUP signal handler ──────────────────────────────────────────────
@@ -809,9 +864,15 @@ async def test_sighup_sets_reload_event() -> None:
             backend=MagicMock(),
             orchestrator_holder=[],
         )
-        # Send SIGHUP to self
+        # Send SIGHUP to self. The handler is registered via
+        # loop.add_signal_handler, so it runs as a callback on THIS loop —
+        # awaiting the event it sets is the bounded, event-driven wait (a
+        # fixed sleep here races signal delivery under load).
         os.kill(os.getpid(), _signal.SIGHUP)
-        await asyncio.sleep(0.1)
+        try:
+            await asyncio.wait_for(deps.reload_event.wait(), timeout=5.0)
+        except TimeoutError:
+            pytest.fail("the SIGHUP handler did not set deps.reload_event within 5.0s")
         assert deps.reload_event.is_set()
 
     # Clean up signal handlers

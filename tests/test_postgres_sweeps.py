@@ -1170,14 +1170,26 @@ class TestPollReclaimEvents:
             assert count == 3
 
             # NOTIFY delivery is asynchronous even after the sweep's
-            # commit — give the loop a beat to deliver.
-            await asyncio.sleep(0.3)
+            # commit: a bounded poll on the received list waits exactly as
+            # long as delivery needs — a fixed 0.3s sleep races it
+            # under load (too short → the notification has not arrived
+            # yet → false failure).
+            deadline = asyncio.get_running_loop().time() + 5.0
+            while len(notifications) < 1:
+                assert asyncio.get_running_loop().time() < deadline, (
+                    "the sweep's wake notification was never delivered within 5s"
+                )
+                await asyncio.sleep(0.01)
             assert len(notifications) == 1, (
                 f"expected exactly one wake notification for a 3-row sweep, "
                 f"got {len(notifications)}"
             )
 
-            # A no-op sweep fires nothing.
+            # A no-op sweep fires nothing. Negative assert: kept as a
+            # fixed settled window on purpose — absence cannot be polled
+            # for, and 0.3s (several delivery beats after the commit
+            # above) is the window in which a stray NOTIFY would have
+            # arrived.
             notifications.clear()
             async with deps.worker_pool.acquire() as conn:
                 count = await PostgresBackend.sweep_expired_locks(

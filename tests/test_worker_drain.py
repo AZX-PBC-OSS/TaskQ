@@ -3,6 +3,7 @@
 import asyncio
 import contextlib
 import inspect
+import time
 from collections.abc import AsyncGenerator, Callable
 from datetime import UTC, datetime
 from typing import Any
@@ -593,15 +594,41 @@ async def test_drain_monitor_exit_code_4_on_timeout() -> None:
 
 
 async def test_drain_monitor_resets_settle_on_new_jobs() -> None:
-    """If a new job appears after idle was detected, the settle timer resets."""
+    """A job appearing mid-settle restarts the settle window from scratch.
+
+    Phase schedule by poll index (poll=0.01s, settle=0.2s): poll 1 idle
+    (window opens), polls 2-45 report a job (each must reset the
+    window), polls 46+ idle again. A monitor that forgot the reset
+    still cannot fire while the job is reported (the trigger requires
+    is_idle), so the regression signal is the TRIGGER TIME, asserted
+    after the fact against the last job poll: a resetting monitor
+    cannot trigger before last-job-poll + settle (its window restarts
+    at the first re-idle poll), while a forgetting one fires on the
+    very first re-idle poll — one poll interval later, 20x inside the
+    margin. Index-based phases make the reset itself un-skippable: no
+    scheduler stall can leap the whole job phase the way it could a
+    wall-clock window, and the post-hoc timing assert needs no
+    observation window at all.
+
+    The sleep-based shape is vacuous for this regression on two counts:
+    a mock that never returns to idle after the job keeps is_idle
+    false, so a forgetting monitor can never fire and the distinction
+    this test pins is unobservable; and an observation window shorter
+    than the 0.5s settle window cannot witness the restart it must
+    witness.
+    """
     call_count = 0
+    last_job_poll_at = 0.0
 
     async def mock_count(queues: list[str]) -> int:
-        nonlocal call_count
+        nonlocal call_count, last_job_poll_at
         call_count += 1
-        if call_count <= 2:
-            return 0  # idle
-        return 1  # job appeared
+        if call_count == 1:
+            return 0  # idle: settle window opens
+        if call_count <= 45:
+            last_job_poll_at = time.monotonic()
+            return 1  # job active: every poll must reset the window
+        return 0  # idle again: window must restart from here
 
     deps = _make_mock_deps(active_jobs_count=0)
     backend = MagicMock()
@@ -611,7 +638,25 @@ async def test_drain_monitor_resets_settle_on_new_jobs() -> None:
     escalate_event = asyncio.Event()
     orchestrator_holder: list[asyncio.Task[int]] = []
 
-    async with _mock_orchestrate():
+    trigger_at: list[float] = []
+
+    async def _recording_orchestrate(
+        deps: object,
+        settings: object,
+        worker_id: object,
+        shutdown_event: asyncio.Event,
+        escalate_event: object,
+        *,
+        backend: object,
+    ) -> int:
+        trigger_at.append(time.monotonic())
+        try:
+            await asyncio.sleep(0)  # yield once, like _mock_orchestrate's stub
+        finally:
+            shutdown_event.set()  # mirrors orchestrate_shutdown's finally-block set
+        return 0
+
+    with patch("taskq.worker.drain.orchestrate_shutdown", side_effect=_recording_orchestrate):
         task = asyncio.create_task(
             drain_monitor_loop(
                 deps,
@@ -621,24 +666,59 @@ async def test_drain_monitor_resets_settle_on_new_jobs() -> None:
                 escalate_event,
                 orchestrator_holder,
                 backend,
-                idle_settle_window=0.5,
-                idle_poll_interval=0.05,
+                idle_settle_window=0.2,
+                idle_poll_interval=0.01,
                 max_runtime=None,
             )
         )
-        await asyncio.sleep(0.3)
-        assert len(orchestrator_holder) == 0
-        assert not shutdown_event.is_set()
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
+        # The monitor returns right after triggering, so task completion
+        # implies the trigger — bounded, so a never-triggering regression
+        # fails loudly instead of hanging.
+        try:
+            await asyncio.wait_for(task, timeout=5.0)
+        except TimeoutError:
+            pytest.fail(
+                "the drain monitor did not trigger after the restarted settle window within 5.0s"
+            )
+        assert len(orchestrator_holder) == 1
+        exit_code = await orchestrator_holder[0]
+
+    assert exit_code == 0
+    assert trigger_at, "orchestrate_shutdown was invoked without recording a trigger time"
+    # THE reset assertion: the trigger must postdate the last job poll by
+    # at least the settle window. A monitor that carried the original
+    # idle_since fires on the first re-idle poll — one poll interval
+    # after the last job poll, 20x inside this margin.
+    assert trigger_at[0] - last_job_poll_at >= 0.2, (
+        f"drain triggered {trigger_at[0] - last_job_poll_at:.3f}s after the last job poll — "
+        "the settle window was not reset by the new job"
+    )
 
 
 async def test_drain_monitor_does_not_trigger_when_active_jobs() -> None:
-    """Active jobs on this worker prevent drain even if queue is empty."""
+    """Active jobs on this worker prevent drain even if queue is empty.
+
+    Negative assertion (absence of a trigger), so the window must be
+    real: with settle=0.1 and poll=0.05, a monitor that ignored active
+    jobs would trigger on its THIRD poll, so the test waits — event-
+    driven, through the backend double — for the FIFTH poll (two past
+    the would-be trigger) and only then asserts absence. A fixed 0.3s
+    sleep could observe zero or one polls under scheduler starvation
+    and pass vacuously.
+    """
+    poll_count = 0
+    polled_past_would_be_trigger = asyncio.Event()
+
+    async def mock_count(queues: list[str]) -> int:
+        nonlocal poll_count
+        poll_count += 1
+        if poll_count >= 5:
+            polled_past_would_be_trigger.set()
+        return 0  # queue empty the whole time
+
     deps = _make_mock_deps(active_jobs_count=2)
     backend = MagicMock()
-    backend.count_active_jobs = AsyncMock(return_value=0)
+    backend.count_active_jobs = mock_count
 
     shutdown_event = asyncio.Event()
     escalate_event = asyncio.Event()
@@ -659,7 +739,12 @@ async def test_drain_monitor_does_not_trigger_when_active_jobs() -> None:
                 max_runtime=None,
             )
         )
-        await asyncio.sleep(0.3)
+        try:
+            await asyncio.wait_for(polled_past_would_be_trigger.wait(), timeout=5.0)
+        except TimeoutError:
+            pytest.fail("the drain monitor did not complete 5 polls within 5.0s")
+        # Five polls in — two past the poll a queue-only trigger would
+        # have fired on — and no trigger, no shutdown.
         assert len(orchestrator_holder) == 0
         assert not shutdown_event.is_set()
         task.cancel()
@@ -670,9 +755,22 @@ async def test_drain_monitor_does_not_trigger_when_active_jobs() -> None:
 async def test_drain_monitor_skips_when_orchestration_already_active() -> None:
     """Drain monitor does NOT trigger a second orchestrate_shutdown when
     one is already in progress (H2: double-orchestration guard)."""
+    poll_count = 0
+    polled_past_would_be_trigger = asyncio.Event()
+
+    async def mock_count(queues: list[str]) -> int:
+        nonlocal poll_count
+        poll_count += 1
+        # The would-be trigger attempt is the third poll (settle=0.1
+        # elapses at 0.05s spacing); counting to five proves the attempt
+        # was made and decided if the monitor keeps polling.
+        if poll_count >= 5:
+            polled_past_would_be_trigger.set()
+        return 0
+
     deps = _make_mock_deps(active_jobs_count=0)
     backend = MagicMock()
-    backend.count_active_jobs = AsyncMock(return_value=0)
+    backend.count_active_jobs = mock_count
 
     shutdown_event = asyncio.Event()
     escalate_event = asyncio.Event()
@@ -697,7 +795,22 @@ async def test_drain_monitor_skips_when_orchestration_already_active() -> None:
                 max_runtime=None,
             )
         )
-        await asyncio.sleep(0.3)
+        # The window must cover the trigger attempt. The current contract
+        # returns the monitor right after a SKIPPED trigger, so the task
+        # completing proves it; a variant that kept polling instead is
+        # covered by the poll-count event. Whichever fires first, the
+        # guard decision has been made — no wall-clock sleep needed.
+        poll_wait = asyncio.create_task(polled_past_would_be_trigger.wait())
+        done, _pending = await asyncio.wait({task, poll_wait}, timeout=5.0)
+        poll_wait.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await poll_wait
+        if not done:
+            pytest.fail(
+                "the drain monitor neither returned after its skipped trigger "
+                "nor kept polling within 5.0s"
+            )
+        # No second orchestration was appended on top of the pre-existing one.
         assert len(orchestrator_holder) == 1
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):

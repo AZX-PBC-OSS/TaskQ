@@ -31,7 +31,11 @@ from taskq.settings import WorkerSettings
 from taskq.testing.actor import EmptyPayload, StubActorConfig
 from taskq.testing.settings import make_integration_settings
 from taskq.worker._consumer import consume_one_job
-from taskq.worker.cancel import CancelController, make_cancel_controller
+from taskq.worker.cancel import (  # type: ignore[reportPrivateUsage]  # Why: _ActiveJob is the return type of the public ActiveJobRegistry.get — needed to annotate the wait helper below; test-only private access.
+    CancelController,
+    _ActiveJob,
+    make_cancel_controller,
+)
 from taskq.worker.deps import WorkerDeps, open_worker_deps
 from taskq.worker.heartbeat import heartbeat_loop
 
@@ -159,6 +163,34 @@ async def _poll_until_status(
     row = await backend.get(job_id)
     assert row is not None
     raise TimeoutError(f"status did not reach {statuses} within {timeout}s (current={row.status})")
+
+
+async def _wait_for_cancel_observed(
+    deps: WorkerDeps,
+    job_id: JobId,
+    *,
+    timeout: float = 5.0,  # noqa: ASYNC109 # Why: polling-loop timeout for _wait_for_cancel_observed; not an anyio cancel scope
+) -> _ActiveJob:
+    """Bounded, monotonic-deadline wait until the consumer has registered
+    the job AND its cancel hook has observed the cancel request.
+
+    Replaces a fixed 50x0.02s iteration loop whose only deadline failure
+    was a pair of bare asserts — this names the observable that never
+    flipped and turns the wait into the same idiom as
+    _wait_for_cancel_phase/_poll_until_status.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        active = deps.active_jobs.get(job_id)
+        if active is not None and active.cancel_observed_at is not None:
+            return active
+        await asyncio.sleep(0.02)
+    active = deps.active_jobs.get(job_id)
+    if active is None:
+        state = "active is None (job never registered)"
+    else:
+        state = f"cancel_observed_at={active.cancel_observed_at!r}"
+    raise TimeoutError(f"cancel hook never observed the request within {timeout}s ({state})")
 
 
 async def _read_job_events(backend: "PostgresBackend", job_id: JobId) -> list[dict[str, object]]:
@@ -347,13 +379,9 @@ async def test_force_cancel(pg_dsn: str) -> None:
                 lock_at_phase_1 = row_p1.lock_expires_at
                 assert lock_at_phase_1 is not None
 
-                active = None
-                for _ in range(50):
-                    active = deps.active_jobs.get(job_id)
-                    if active is not None and active.cancel_observed_at is not None:
-                        break
-                    await asyncio.sleep(0.02)
-                assert active is not None
+                # Bounded wait on the registry/hook observables (was a
+                # fixed 50x0.02s loop with bare asserts at its deadline).
+                active = await _wait_for_cancel_observed(deps, job_id)
                 assert active.cancel_observed_at is not None
                 assert isinstance(active.cancel_observed_at, float)
                 assert math.isfinite(active.cancel_observed_at)

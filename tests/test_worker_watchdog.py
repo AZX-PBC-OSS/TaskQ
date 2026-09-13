@@ -223,7 +223,9 @@ def test_loop_lag_watchdog_trips_when_loop_blocked(exit_codes: list[int]) -> Non
     while not exit_codes and time.monotonic() < deadline:
         time.sleep(0.01)
     watchdog.stop()
-    assert exit_codes == [EXIT_WATCHDOG]
+    assert exit_codes == [EXIT_WATCHDOG], (
+        "the loop-lag watchdog thread never force-exited within 5s of crossing the terminal budget"
+    )
 
 
 def test_loop_lag_watchdog_respects_startup_grace(exit_codes: list[int]) -> None:
@@ -343,7 +345,9 @@ def test_loop_lag_warn_fires_once_and_never_exits(
             time.sleep(0.01)
         # Settle through several more polls: a broken latch would re-warn.
         time.sleep(0.1)
-        assert increments == [1]
+        assert increments == [1], (
+            f"expected exactly one tier-1 warn for one stall (got {increments})"
+        )
         assert dumps and all(
             kwargs.get("all_threads") is True and kwargs.get("file") is sys.stderr
             for kwargs in dumps
@@ -354,7 +358,10 @@ def test_loop_lag_warn_fires_once_and_never_exits(
         deadline = time.monotonic() + 5.0
         while not exit_codes and time.monotonic() < deadline:
             time.sleep(0.01)
-        assert exit_codes == [EXIT_WATCHDOG]
+        assert exit_codes == [EXIT_WATCHDOG], (
+            "tier 2 never force-exited within 5s of crossing the terminal budget "
+            "(budget=100.0, lag=101.0)"
+        )
     finally:
         watchdog.stop()
 
@@ -391,7 +398,10 @@ def test_loop_lag_warn_latch_resets_on_beat(
         while len(increments) < 2 and time.monotonic() < deadline:
             time.sleep(0.01)
         time.sleep(0.1)  # settle: exactly two warns, not a stream
-        assert increments == [1, 1]
+        assert increments == [1, 1], (
+            f"expected the latched warn plus exactly one fresh warn after the beat "
+            f"(got {increments})"
+        )
         assert exit_codes == []
     finally:
         watchdog.stop()
@@ -454,7 +464,9 @@ def test_loop_lag_warn_schedules_deferred_task_dump(
         deadline = time.monotonic() + 5.0
         while not loop.scheduled and time.monotonic() < deadline:
             time.sleep(0.01)
-        assert increments == [1]
+        assert increments == [1], (
+            f"the warn tier never fired within 5s of crossing the warn budget (got {increments})"
+        )
         # The loop also receives the watchdog's regular beat callbacks
         # (bound methods); the warn tier's contribution is exactly one
         # deferred dump.
@@ -495,8 +507,13 @@ def test_loop_lag_warn_schedules_deferred_task_dump(
         deadline = time.monotonic() + 5.0
         while not exit_codes and time.monotonic() < deadline:
             time.sleep(0.01)
-        assert len(increments) == 2  # both watchdogs warned exactly once
-        assert exit_codes == [EXIT_WATCHDOG]
+        assert len(increments) == 2, (  # both watchdogs warned exactly once
+            f"expected both watchdogs to warn exactly once (got {increments})"
+        )
+        assert exit_codes == [EXIT_WATCHDOG], (
+            "the closed-loop watchdog never force-exited within 5s of crossing "
+            "both tiers in one poll"
+        )
     finally:
         watchdog2.stop()
 
@@ -518,7 +535,11 @@ async def test_dump_task_stacks_shape(capsys: pytest.CaptureFixture[str]) -> Non
         await asyncio.sleep(60.0)
 
     task = asyncio.create_task(_parked(), name="dump.target")
-    await asyncio.sleep(0.01)
+    # Single deterministic yield: one event-loop pass lets the task run its
+    # first step (scheduled at create_task, before this coroutine's
+    # resumption) so the dump below sees a started task with a real frame —
+    # an arbitrary fixed delay added nothing but a race window.
+    await asyncio.sleep(0)
     records = dump_task_stacks("unit-test", detector="test")
     task.cancel()
     with contextlib.suppress(asyncio.CancelledError):
@@ -774,7 +795,16 @@ async def test_loop_watchdog_populates_tick_age_cache(exit_codes: list[int]) -> 
     liveness.tick("heartbeat", period=0.5)
     shutdown = asyncio.Event()
     task = asyncio.create_task(loop_watchdog_loop(liveness, shutdown, check_interval=0.01))
-    await asyncio.sleep(0.05)
+    # Bounded poll on the observable (the cache the watchdog loop writes
+    # on each check pass) instead of a fixed 0.05s sleep that raced the
+    # first check under load.
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + 5.0
+    while "heartbeat" not in watchdog_mod._tick_age_cache:
+        assert loop.time() < deadline, (
+            "loop_watchdog_loop never populated the tick-age cache within 5s"
+        )
+        await asyncio.sleep(0.01)
     shutdown.set()
     await asyncio.wait_for(task, timeout=2.0)
     assert "heartbeat" in watchdog_mod._tick_age_cache

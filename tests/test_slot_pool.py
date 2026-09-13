@@ -136,15 +136,21 @@ async def test_slot_pool_supplies_concurrency_plus_one_concurrent_acquires(
 
 class _SlowPool:
     """Slot-pool stand-in whose acquire is slow enough for callers to
-    overlap, counting every acquire — the single-flight discriminator."""
+    overlap, counting every acquire — the single-flight discriminator.
+
+    ``acquired`` fires synchronously inside ``acquire()``, so a test can
+    await the START of a probe deterministically (no timing sleeps).
+    """
 
     def __init__(self, *, delay: float = 0.05, error: Exception | None = None) -> None:
         self.delay = delay
         self.error = error
         self.acquire_calls = 0
+        self.acquired = asyncio.Event()
 
     def acquire(self, *, timeout: float | None = None) -> _SlowAcquireCtx:
         self.acquire_calls += 1
+        self.acquired.set()
         return _SlowAcquireCtx(self)
 
 
@@ -256,9 +262,14 @@ async def test_cancelled_waiter_does_not_cancel_the_shared_probe() -> None:
     deps = _deps_with_pool(pool)
 
     waiter_to_cancel = asyncio.create_task(_ping_slot_pool(deps))
-    await asyncio.sleep(0.01)  # let it start the probe
+    # Deterministic sequencing, no timing sleeps: wait for the probe to
+    # have STARTED (the pool fires `acquired` inside acquire()), then
+    # one scheduler yield lets the survivor run to its first await —
+    # by which point it has either joined the in-flight probe or
+    # started a second one, and the count below says which.
+    await pool.acquired.wait()
     survivor = asyncio.create_task(_ping_slot_pool(deps))
-    await asyncio.sleep(0.01)  # let it join the in-flight probe
+    await asyncio.sleep(0)
     waiter_to_cancel.cancel()
     with contextlib.suppress(asyncio.CancelledError):
         await waiter_to_cancel

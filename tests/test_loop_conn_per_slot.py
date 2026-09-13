@@ -175,16 +175,18 @@ async def test_sibling_failure_does_not_roll_back_a_committed_slot(
         ) -> dict[str, object]:
             if payload.role == "fail":
                 # Signal that the actor body is running — i.e. this slot's
-                # transaction is open — then stay inside it long enough
-                # for the sibling slot to finish.
+                # transaction is open — then hold the transaction open
+                # until the test says the sibling slot has finished, and
+                # fail inside it.
                 a_in_transaction.set()
-                await asyncio.sleep(1.5)
+                await b_finished.wait()
                 raise RuntimeError("slot A actor raised")
             handle = await ctx.jobs.enqueue(sub_ref, _SubPayload())
             committed_sub_jobs.append(handle.job_id)
             return {"ok": True}
 
         a_in_transaction = asyncio.Event()
+        b_finished = asyncio.Event()
         actor_ref = _make_actor_ref(slot_actor, name="slot_actor", payload_type=_SlotPayload)
 
         # The per-slot path wiring: bootstrap opens the dedicated pool
@@ -245,10 +247,13 @@ async def test_sibling_failure_does_not_roll_back_a_committed_slot(
                 )
 
             task_a = asyncio.create_task(_dispatch(row_a))
-            # Slot B starts only once A's transaction is open on the shared
-            # connection — the interleaving max_concurrency > 1 produces.
+            # Slot B starts only once A's transaction is open — the
+            # interleaving max_concurrency > 1 produces — and A holds its
+            # transaction open (event-driven, not a timed window) until
+            # B has fully committed, then fails inside it.
             await asyncio.wait_for(a_in_transaction.wait(), timeout=10)
             outcome_b = await _dispatch(row_b)
+            b_finished.set()
             outcome_a = await task_a
 
             assert outcome_b == "succeeded"

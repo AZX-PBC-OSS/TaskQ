@@ -38,6 +38,7 @@ from taskq.client._taskq import (
 )
 from taskq.progress._events import ProgressEvent
 from taskq.settings import TaskQSettings
+from taskq.testing.assertions import wait_for
 from taskq.testing.clock import FakeClock
 from taskq.testing.in_memory import InMemoryBackend
 from taskq.testing.jobs import make_enqueue_args, make_job_row
@@ -416,6 +417,12 @@ class _FakeHungCloseWatchConn:
         self._notify_callbacks: list[tuple[str, Any]] = []
         self._termination_listeners: list[Any] = []
         self.listener_channels: list[str] = []
+        # Why an event alongside the channel list: the list is the
+        # assertion surface; the event is the WAIT surface — the watch
+        # generator registers LISTEN on its own task, and a test that
+        # needs "LISTEN registered" can await this instead of sleeping a
+        # fixed interval that races the generator's startup under load.
+        self.listening = asyncio.Event()
         self.close_calls = 0
         self.close_wait = asyncio.Event()
         if not close_hangs:
@@ -427,6 +434,7 @@ class _FakeHungCloseWatchConn:
             raise asyncpg.InterfaceError("connection is closed")
         self.listener_channels.append(channel)
         self._notify_callbacks.append((channel, callback))
+        self.listening.set()
 
     async def remove_listener(self, channel: str, callback: Any) -> None:
         self._notify_callbacks = [
@@ -560,7 +568,14 @@ async def test_watch_reclaims_failed_reconnect_bounds_hung_new_conn_close(
     with structlog.testing.capture_logs() as captured:
         task = asyncio.create_task(_collect(gen, n=1))
         try:
-            await asyncio.sleep(0.05)  # initial conn opened, LISTEN registered
+            # Event-driven gate instead of a fixed 0.05s sleep: one
+            # deterministic yield runs the generator's first step (the
+            # factory call completes inline, so conns[0] exists), and the
+            # conn fires `listening` exactly at its LISTEN registration —
+            # killing before that point would take a different failure
+            # path than the one under test.
+            await asyncio.sleep(0)
+            await wait_for(conns[0].listening, timeout=5.0)
             assert len(conns) == 1
             conns[0].kill()  # into the owned-conn poll/reconnect fallback
             await asyncio.sleep(0.5)  # several failed reconnect attempts
@@ -617,7 +632,14 @@ async def test_watch_reclaims_reconnect_swap_bounds_hung_old_conn_close(
     with structlog.testing.capture_logs() as captured:
         task = asyncio.create_task(_collect(gen, n=1))
         try:
-            await asyncio.sleep(0.05)  # initial conn opened, LISTEN registered
+            # Event-driven gate instead of a fixed 0.05s sleep: one
+            # deterministic yield runs the generator's first step (the
+            # factory call completes inline, so conns[0] exists), and the
+            # conn fires `listening` exactly at its LISTEN registration —
+            # killing before that point would take a different failure
+            # path than the one under test.
+            await asyncio.sleep(0)
+            await wait_for(conns[0].listening, timeout=5.0)
             assert len(conns) == 1
             conns[0].kill()
             await asyncio.sleep(0.3)  # detection + reconnect + bounded old-conn close

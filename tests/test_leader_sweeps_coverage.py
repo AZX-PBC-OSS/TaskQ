@@ -31,6 +31,7 @@ import structlog
 from taskq._ids import new_uuid
 from taskq.backend.clock import Clock
 from taskq.settings import WorkerSettings
+from taskq.testing.assertions import wait_for, wait_for_condition
 from taskq.testing.clock import FakeClock
 from taskq.testing.in_memory import InMemoryBackend
 from taskq.worker import _leader_sweeps
@@ -176,9 +177,15 @@ def _make_leader(
 
 
 async def _stop_loop(
-    task: asyncio.Task[object], shutdown: asyncio.Event, delay: float = 0.1
+    task: asyncio.Task[object], shutdown: asyncio.Event, delay: float = 0.0
 ) -> None:
-    """Wait briefly, set shutdown, cancel, and suppress CancelledError."""
+    """Optionally wait *delay* seconds, set shutdown, cancel, and suppress
+    CancelledError.
+
+    The default is a single deterministic yield: a nonzero default would
+    be a hope-sleep — every caller that needs the loop to have done work
+    first must wait for that work's own observable instead.
+    """
     await asyncio.sleep(delay)
     shutdown.set()
     task.cancel()
@@ -200,12 +207,22 @@ class _InstantCroniter:
 
 
 class _NotImplBackend:
-    """Backend whose reclaim/deadline sweeps raise NotImplementedError."""
+    """Backend whose reclaim/deadline sweeps raise NotImplementedError.
+
+    Records each attempt so tests can bounded-wait for the sweeps to
+    actually run instead of sleeping and hoping the loop reached them.
+    """
+
+    def __init__(self) -> None:
+        self.reclaim_calls = 0
+        self.deadline_calls = 0
 
     async def reclaim_expired_locks(self, cg: timedelta, ug: timedelta) -> int:
+        self.reclaim_calls += 1
         raise NotImplementedError("reclaim not implemented")
 
     async def deadline_sweep(self) -> int:
+        self.deadline_calls += 1
         raise NotImplementedError("deadline not implemented")
 
 
@@ -216,8 +233,13 @@ async def test_sweep_loop_not_implemented_paths_do_not_crash() -> None:
     leader = _make_leader(backend=backend, deps=_make_deps(is_leader=True))
     shutdown = asyncio.Event()
     task = asyncio.create_task(leader._sweep_loop(shutdown))
-    # Let one iteration run (the sweeps fire immediately when is_leader).
-    await asyncio.sleep(0.05)
+    # Wait for the first iteration's two sweep attempts (each raises; the
+    # loop must survive both) — never a sleep hoping the iteration ran,
+    # which would let the "does not crash" pin pass vacuously.
+    await wait_for_condition(
+        lambda: backend.reclaim_calls >= 1 and backend.deadline_calls >= 1,
+        description="the sweep loop must attempt both unimplemented sweeps",
+    )
     await _stop_loop(task, shutdown, delay=0.0)
     # No exception escaped — the task completed via cancellation, not error.
     assert task.done()
@@ -234,15 +256,22 @@ async def test_sweep_loop_not_implemented_warns_only_once() -> None:
         err_calls.append(ev)
 
     backend = _NotImplBackend()
-    leader = _make_leader(backend=backend, deps=_make_deps(is_leader=True))
+    # Short interval so several iterations actually run — with the default
+    # 30s interval only one iteration fits in any bounded window and the
+    # "only once ACROSS iterations" pin would pass vacuously.
+    leader = _make_leader(backend=backend, deps=_make_deps(is_leader=True, sweep_interval=0.01))
     shutdown = asyncio.Event()
     # Patch the module-level _err to count calls.
     original_err = sweeps_mod._err
     sweeps_mod._err = _spy_err  # type: ignore[method-assign]  # Why: test-only instrumentation.
     try:
         task = asyncio.create_task(leader._sweep_loop(shutdown))
-        # Allow two iterations to fire the warned guard.
-        await asyncio.sleep(0.08)
+        # Wait for at least two iterations of both sweeps, then assert the
+        # warned guard fired at most once per kind across them.
+        await wait_for_condition(
+            lambda: backend.reclaim_calls >= 2 and backend.deadline_calls >= 2,
+            description="the warned guard must hold across multiple sweep iterations",
+        )
         await _stop_loop(task, shutdown, delay=0.0)
     finally:
         sweeps_mod._err = original_err  # type: ignore[method-assign]
@@ -382,14 +411,17 @@ async def test_sweep_loop_mixed_fault_iteration_does_not_reset_streak() -> None:
     shutdown = asyncio.Event()
     with structlog.testing.capture_logs() as captured:
         task = asyncio.create_task(_leader_sweeps._sweep_loop(ctx, shutdown))
-        unexpected: list[structlog.types.EventDict] = []
-        for _ in range(400):
-            unexpected = [e for e in captured if e.get("event") == "leader-loop-unexpected-error"]
-            if len(unexpected) >= 3:
-                break
-            await asyncio.sleep(0.01)
+        # Bounded poll on the captured entries (a capture_logs list is
+        # append-only state — no event exists to wait on).
+        await wait_for_condition(
+            lambda: (
+                sum(1 for e in captured if e.get("event") == "leader-loop-unexpected-error") >= 3
+            ),
+            description="the scripted sweep script must log three unexpected-error events",
+        )
         await _stop_loop(task, shutdown, delay=0.0)
 
+    unexpected = [e for e in captured if e.get("event") == "leader-loop-unexpected-error"]
     assert [e.get("consecutive") for e in unexpected] == [1, 2, 1], (
         "the mixed (partially successful, transiently failing) iteration must not "
         f"reset the streak: got {[e.get('consecutive') for e in unexpected]}"
@@ -459,10 +491,10 @@ async def test_sweep_loop_runs_pg_sweep_block() -> None:
     # Wait for the results sweep's initial call AND its drain-stopping call
     # (the fake reports a non-empty batch, then an empty window), so the
     # call count is read after the drain has deterministically stopped.
-    for _ in range(200):
-        if backend.leaked_calls and len(backend.results_calls) >= 2:
-            break
-        await asyncio.sleep(0.01)
+    await wait_for_condition(
+        lambda: bool(backend.leaked_calls) and len(backend.results_calls) >= 2,
+        description="the PG sweep block must run the leaked-slots sweep and drain the results sweep",
+    )
     await _stop_loop(task, shutdown, delay=0.0)
 
     assert len(backend.leaked_calls) == 1
@@ -490,10 +522,10 @@ async def test_sweep_loop_leaked_slots_error_continues_to_results() -> None:
     leader = _make_leader(backend=backend, deps=_make_deps(dispatcher_pool=pool, is_leader=True))
     shutdown = asyncio.Event()
     task = asyncio.create_task(leader._sweep_loop(shutdown))
-    for _ in range(200):
-        if len(backend.results_calls) >= 2:
-            break
-        await asyncio.sleep(0.01)
+    await wait_for_condition(
+        lambda: len(backend.results_calls) >= 2,
+        description="the results sweep must still run and drain after the leaked-slots error",
+    )
     await _stop_loop(task, shutdown, delay=0.0)
 
     # leaked raised, but results still ran — and drained.
@@ -510,11 +542,10 @@ async def test_sweep_loop_results_error_continues_to_stale_workers() -> None:
     leader = _make_leader(backend=backend, deps=_make_deps(dispatcher_pool=pool, is_leader=True))
     shutdown = asyncio.Event()
     task = asyncio.create_task(leader._sweep_loop(shutdown))
-    for _ in range(200):
-        stale_calls = [sql for sql, _ in conn.execute_calls if "workers" in sql]
-        if stale_calls:
-            break
-        await asyncio.sleep(0.01)
+    await wait_for_condition(
+        lambda: any("workers" in sql for sql, _ in conn.execute_calls),
+        description="cleanup_stale_workers must run after the results error",
+    )
     await _stop_loop(task, shutdown, delay=0.0)
 
     assert len(backend.results_calls) == 1
@@ -556,10 +587,10 @@ async def test_sweep_loop_drains_reclaim_and_deadline_within_one_tick() -> None:
     shutdown = asyncio.Event()
     task = asyncio.create_task(leader._sweep_loop(shutdown))
     try:
-        for _ in range(200):
-            if backend.reclaim_calls >= 2 and backend.deadline_calls >= 2:
-                break
-            await asyncio.sleep(0.01)
+        await wait_for_condition(
+            lambda: backend.reclaim_calls >= 2 and backend.deadline_calls >= 2,
+            description="sweeps 1 and 2 must each drain within one tick",
+        )
     finally:
         await _stop_loop(task, shutdown, delay=0.0)
 
@@ -596,11 +627,10 @@ async def test_sweep_loop_stale_workers_drain_engages_and_respects_the_tick_cap(
     shutdown = asyncio.Event()
     task = asyncio.create_task(leader._sweep_loop(shutdown))
     try:
-        for _ in range(200):
-            stale_calls = [sql for sql, _ in conn.execute_calls if "workers" in sql]
-            if len(stale_calls) >= expected:
-                break
-            await asyncio.sleep(0.01)
+        await wait_for_condition(
+            lambda: len([sql for sql, _ in conn.execute_calls if "workers" in sql]) >= expected,
+            description="the stale-worker drain must reach the per-tick cap",
+        )
     finally:
         await _stop_loop(task, shutdown, delay=0.0)
 
@@ -619,9 +649,15 @@ async def test_sweep_loop_stale_workers_error_is_warned() -> None:
     survives (does not crash the TaskGroup)."""
     backend = _PgSweepBackend()
 
+    # Additive event on the double: set exactly where the failing stale
+    # sweep is entered, so the test waits for the error path instead of
+    # sleeping and hoping the iteration reached it.
+    stale_attempted = asyncio.Event()
+
     class _StaleFailsConn(FakeConn):
         async def execute(self, sql: str, *args: object) -> str:
             if "workers" in sql:
+                stale_attempted.set()
                 raise OSError(104, "Connection reset by peer")
             return await super().execute(sql, *args)
 
@@ -630,8 +666,7 @@ async def test_sweep_loop_stale_workers_error_is_warned() -> None:
     leader = _make_leader(backend=backend, deps=_make_deps(dispatcher_pool=pool, is_leader=True))
     shutdown = asyncio.Event()
     task = asyncio.create_task(leader._sweep_loop(shutdown))
-    # Let the full first iteration complete (including the failing stale sweep).
-    await asyncio.sleep(0.06)
+    await wait_for(stale_attempted)
     await _stop_loop(task, shutdown, delay=0.0)
     # Task is done (via cancellation), not crashed.
     assert task.done()
@@ -658,11 +693,10 @@ async def test_archive_expiry_loop_skips_when_lock_not_acquired(
     )
     shutdown = asyncio.Event()
     task = asyncio.create_task(leader._archive_expiry_loop(shutdown))
-    for _ in range(200):
-        lock_calls = [sql for sql, _ in conn.fetchval_calls if "pg_try_advisory_lock" in sql]
-        if lock_calls:
-            break
-        await asyncio.sleep(0.01)
+    await wait_for_condition(
+        lambda: any("pg_try_advisory_lock" in sql for sql, _ in conn.fetchval_calls),
+        description="the archive expiry loop must attempt its advisory lock",
+    )
     await _stop_loop(task, shutdown, delay=0.0)
 
     lock_calls = [sql for sql, _ in conn.fetchval_calls if "pg_try_advisory_lock" in sql]
@@ -710,10 +744,10 @@ async def test_queue_depth_loop_success_updates_cache() -> None:
     )
     shutdown = asyncio.Event()
     task = asyncio.create_task(leader._queue_depth_loop(shutdown))
-    for _ in range(200):
-        if conn.fetch_calls:
-            break
-        await asyncio.sleep(0.01)
+    await wait_for_condition(
+        lambda: bool(conn.fetch_calls),
+        description="the queue-depth sampler must fetch when leader",
+    )
     await _stop_loop(task, shutdown, delay=0.0)
 
     assert conn.fetch_calls, "queue-depth fetch should run when leader"
@@ -730,7 +764,12 @@ async def test_queue_depth_loop_sampling_failure_is_warned() -> None:
     )
     shutdown = asyncio.Event()
     task = asyncio.create_task(leader._queue_depth_loop(shutdown))
-    await asyncio.sleep(0.06)
+    # Wait for the failing fetch to have been attempted (the fake records
+    # the call before raising) — never a sleep hoping a tick ran.
+    await wait_for_condition(
+        lambda: bool(conn.fetch_calls),
+        description="the queue-depth sampler must attempt its fetch despite the error",
+    )
     await _stop_loop(task, shutdown, delay=0.0)
     # Task ended via cancellation, not via propagated exception.
     assert task.done()
@@ -742,12 +781,10 @@ async def test_queue_depth_loop_invalid_schema_returns_early() -> None:
     leader._deps.settings.schema_name = "bad;schema"  # type: ignore[reportPrivateUsage]  # Why: test mutates the deps the leader was constructed with.
     shutdown = asyncio.Event()
     task = asyncio.create_task(leader._queue_depth_loop(shutdown))
-    await asyncio.sleep(0.05)
-    # The loop returned immediately — task is done and shutdown was never set.
-    assert task.done()
-    shutdown.set()
-    with contextlib.suppress(asyncio.CancelledError):
-        await task
+    # The loop returns before ever entering its while body — awaiting the
+    # task IS the bounded wait for that return (a bare sleep + done-assert
+    # races under load and would pass even if the loop died of an error).
+    await asyncio.wait_for(task, timeout=2.0)
 
 
 async def test_queue_depth_loop_invalid_schema_logs_error_disabled() -> None:
@@ -761,11 +798,8 @@ async def test_queue_depth_loop_invalid_schema_logs_error_disabled() -> None:
     shutdown = asyncio.Event()
     with structlog.testing.capture_logs() as captured:
         task = asyncio.create_task(leader._queue_depth_loop(shutdown))
-        await asyncio.sleep(0.05)
-        assert task.done()
-        shutdown.set()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
+        # Same task-completion wait as the sibling test above.
+        await asyncio.wait_for(task, timeout=2.0)
 
     disabled = [e for e in captured if e["event"] == "queue-depth-sampler-disabled"]
     assert disabled, "invalid schema must log an error-level sampler-disabled event"
@@ -790,10 +824,10 @@ async def test_reservation_slots_loop_success_updates_cache() -> None:
     )
     shutdown = asyncio.Event()
     task = asyncio.create_task(leader._reservation_slots_loop(shutdown))
-    for _ in range(200):
-        if conn.fetch_calls:
-            break
-        await asyncio.sleep(0.01)
+    await wait_for_condition(
+        lambda: bool(conn.fetch_calls),
+        description="the reservation-slots sampler must fetch when leader",
+    )
     await _stop_loop(task, shutdown, delay=0.0)
 
     assert conn.fetch_calls, "reservation-slots fetch should run when leader"
@@ -810,7 +844,12 @@ async def test_reservation_slots_loop_sampling_failure_is_warned() -> None:
     )
     shutdown = asyncio.Event()
     task = asyncio.create_task(leader._reservation_slots_loop(shutdown))
-    await asyncio.sleep(0.06)
+    # Wait for the failing fetch to have been attempted (the fake records
+    # the call before raising) — never a sleep hoping a tick ran.
+    await wait_for_condition(
+        lambda: bool(conn.fetch_calls),
+        description="the reservation-slots sampler must attempt its fetch despite the error",
+    )
     await _stop_loop(task, shutdown, delay=0.0)
     assert task.done()
 
@@ -821,11 +860,8 @@ async def test_reservation_slots_loop_invalid_schema_returns_early() -> None:
     leader._deps.settings.schema_name = "bad;schema"  # type: ignore[reportPrivateUsage]  # Why: test mutates the deps the leader was constructed with.
     shutdown = asyncio.Event()
     task = asyncio.create_task(leader._reservation_slots_loop(shutdown))
-    await asyncio.sleep(0.05)
-    assert task.done()
-    shutdown.set()
-    with contextlib.suppress(asyncio.CancelledError):
-        await task
+    # Awaiting the task IS the bounded wait for its immediate return.
+    await asyncio.wait_for(task, timeout=2.0)
 
 
 async def test_reservation_slots_loop_invalid_schema_logs_error_disabled() -> None:
@@ -837,11 +873,8 @@ async def test_reservation_slots_loop_invalid_schema_logs_error_disabled() -> No
     shutdown = asyncio.Event()
     with structlog.testing.capture_logs() as captured:
         task = asyncio.create_task(leader._reservation_slots_loop(shutdown))
-        await asyncio.sleep(0.05)
-        assert task.done()
-        shutdown.set()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
+        # Same task-completion wait as the sibling test above.
+        await asyncio.wait_for(task, timeout=2.0)
 
     disabled = [e for e in captured if e["event"] == "reservation-slots-sampler-disabled"]
     assert disabled, "invalid schema must log an error-level sampler-disabled event"
@@ -861,11 +894,8 @@ async def test_stranded_jobs_loop_invalid_schema_returns_early() -> None:
     leader._deps.settings.schema_name = "bad;schema"  # type: ignore[reportPrivateUsage]  # Why: test mutates the deps the leader was constructed with.
     shutdown = asyncio.Event()
     task = asyncio.create_task(leader._stranded_jobs_loop(shutdown))
-    await asyncio.sleep(0.05)
-    assert task.done()
-    shutdown.set()
-    with contextlib.suppress(asyncio.CancelledError):
-        await task
+    # Awaiting the task IS the bounded wait for its immediate return.
+    await asyncio.wait_for(task, timeout=2.0)
 
 
 async def test_stranded_jobs_loop_warns_for_pending_without_actor_config() -> None:
@@ -890,10 +920,10 @@ async def test_stranded_jobs_loop_warns_for_pending_without_actor_config() -> No
     try:
         shutdown = asyncio.Event()
         task = asyncio.create_task(leader._stranded_jobs_loop(shutdown))
-        for _ in range(200):
-            if warned_actors:
-                break
-            await asyncio.sleep(0.01)
+        await wait_for_condition(
+            lambda: bool(warned_actors),
+            description="the stranded-jobs detector must warn for a pending actor without actor_config",
+        )
         await _stop_loop(task, shutdown, delay=0.0)
     finally:
         sweeps_mod.log.warning = original_warning  # type: ignore[method-assign]
@@ -912,8 +942,12 @@ async def test_stranded_jobs_loop_fetch_error_continues() -> None:
 
     shutdown = asyncio.Event()
     task = asyncio.create_task(leader._stranded_jobs_loop(shutdown))
-    # Let a couple iterations run (fetch raises → continue → loop survives).
-    await asyncio.sleep(0.05)
+    # Wait for the failing fetch to have been attempted (the fake records
+    # the call before raising) — never a sleep hoping a tick ran.
+    await wait_for_condition(
+        lambda: bool(conn.fetch_calls),
+        description="the stranded-jobs loop must attempt its fetch despite the error",
+    )
     await _stop_loop(task, shutdown, delay=0.0)
     # The task ended via cancellation, not via a propagated fetch exception.
     assert task.done()
@@ -994,12 +1028,22 @@ async def test_loop_interval_sleep_is_shutdown_interruptible(
 
 class _DeadPgSweepsBackend:
     """Backend whose reclaim/deadline sweeps raise transient PG errors
-    (the dead-PG class: DNS/connect failure, not NotImplementedError)."""
+    (the dead-PG class: DNS/connect failure, not NotImplementedError).
+
+    Records each attempt so tests can bounded-wait for the sweeps to
+    actually run instead of sleeping and hoping the loop reached them.
+    """
+
+    def __init__(self) -> None:
+        self.reclaim_calls = 0
+        self.deadline_calls = 0
 
     async def reclaim_expired_locks(self, cg: timedelta, ug: timedelta) -> int:
+        self.reclaim_calls += 1
         raise OSError(111, "Connect call failed")
 
     async def deadline_sweep(self) -> int:
+        self.deadline_calls += 1
         raise OSError(111, "Connect call failed")
 
 
@@ -1015,15 +1059,23 @@ async def test_sweep_loop_survives_transient_pg_errors() -> None:
     """
     deps = _make_deps(is_leader=True)
     deps.settings.sweep_interval = 0.01
+    backend = _DeadPgSweepsBackend()
     ctx = SweepContext(
         deps=deps,
-        backend=_DeadPgSweepsBackend(),  # type: ignore[arg-type]  # Why: stub satisfying only the called methods.
+        backend=backend,  # type: ignore[arg-type]  # Why: stub satisfying only the called methods.
         clock=FakeClock(datetime(2025, 1, 1, tzinfo=UTC)),
         worker_id=new_uuid(),
     )
     shutdown = asyncio.Event()
     task = asyncio.create_task(_leader_sweeps._sweep_loop(ctx, shutdown))
-    await asyncio.sleep(0.1)  # several ticks against the dead backend
+    # Wait for the first iteration's two sweep attempts (each raises;
+    # the loop must survive both) — a fixed window can contain zero
+    # ticks under scheduler starvation, which would let the survival
+    # assert pass without the dead-PG path having run at all.
+    await wait_for_condition(
+        lambda: backend.reclaim_calls >= 1 and backend.deadline_calls >= 1,
+        description="the sweep loop must attempt both sweeps against the dead PG",
+    )
     assert not task.done(), "sweep loop died on a transient PG error"
     await _stop_loop(task, shutdown, delay=0.0)
 
@@ -1079,10 +1131,11 @@ async def _run_stranded_loop_collecting(
     try:
         shutdown = asyncio.Event()
         task = asyncio.create_task(leader._stranded_jobs_loop(shutdown))
-        for _ in range(400):
-            if len(gauge_updates) >= ticks:
-                break
-            await asyncio.sleep(0.01)
+        await wait_for_condition(
+            lambda: len(gauge_updates) >= ticks,
+            description="the stranded-jobs loop must publish the gauge every tick",
+            timeout=10.0,
+        )
         await _stop_loop(task, shutdown, delay=0.0)
     finally:
         sweeps_mod.log.warning = original_warning  # type: ignore[method-assign]
@@ -1149,11 +1202,9 @@ async def test_stranded_jobs_detector_disabled_logs_at_error() -> None:
     try:
         shutdown = asyncio.Event()
         task = asyncio.create_task(leader._stranded_jobs_loop(shutdown))
-        await asyncio.sleep(0.05)
-        assert task.done()
-        shutdown.set()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
+        # Awaiting the task IS the bounded wait for its immediate return
+        # (the disabled detector returns before entering its while body).
+        await asyncio.wait_for(task, timeout=2.0)
     finally:
         sweeps_mod.log.error = original_error  # type: ignore[method-assign]
 
