@@ -1,0 +1,69 @@
+{
+  "scenario": "01_happy_path",
+  "description": "enqueue etl_small (typed payload) \u2192 dispatched to Node runtime \u2192 progress/log events streamed \u2192 result re-validated via Pydantic TypeAdapter \u2192 mark_succeeded with JSONB result",
+  "generated_at": "2026-09-13T00:50:49.479358+00:00",
+  "metrics": {
+    "enqueue_latency_ms": 0.261,
+    "job_status": "succeeded",
+    "attempt": 1,
+    "result_validated": true,
+    "result": {
+      "rows_processed": 1200,
+      "label": "happy-path",
+      "duration_ms": 205
+    },
+    "result_validated_object": {
+      "rows_processed": 1200,
+      "label": "happy-path",
+      "duration_ms": 205
+    },
+    "result_size_bytes": 62,
+    "progress_seq": 5,
+    "progress_state": {
+      "step": 5,
+      "percent": 100
+    },
+    "state_change_events": 2,
+    "attempt_rows": 1,
+    "attempt_outcomes": [
+      "succeeded"
+    ]
+  },
+  "backend_final": [
+    {
+      "job_id": "01a0983e-d338-7152-b432-85d1201b8f0d",
+      "actor": "etl_small",
+      "queue": "etl",
+      "status": "succeeded",
+      "attempt": 1,
+      "max_attempts": 3,
+      "error_class": null,
+      "error_message": null,
+      "result": {
+        "rows_processed": 1200,
+        "label": "happy-path",
+        "duration_ms": 205
+      },
+      "result_size_bytes": 62,
+      "progress_seq": 5,
+      "progress_state": {
+        "step": 5,
+        "percent": 100
+      },
+      "cancel_phase": 0,
+      "scheduled_at": "2026-01-01T00:00:00+00:00",
+      "metadata": {}
+    }
+  ],
+  "worker_trace": [
+    {
+      "kind": "job_succeeded",
+      "t_ms": 1692038164.175,
+      "job_id": "01a0983e-d338-7152-b432-85d1201b8f0d",
+      "actor": "etl_small",
+      "duration_ms": 206.578,
+      "subenqueue_seen": false
+    }
+  ],
+  "runtime_stderr_tail": []
+}

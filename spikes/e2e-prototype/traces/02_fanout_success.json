@@ -1,0 +1,244 @@
+{
+  "scenario": "02_fanout_success",
+  "description": "fanout actor requests 5 sub-enqueues via ctx.subenqueue \u2192 buffer held in Python \u2192 parent succeeded \u2192 flush enqueued exactly 5 \u2192 children drained to succeeded",
+  "generated_at": "2026-09-13T00:50:49.945935+00:00",
+  "metrics": {
+    "parent_status": "succeeded",
+    "subenqueue_buffered_events": [
+      {
+        "kind": "subenqueue_buffered",
+        "t_ms": 1692038258.787,
+        "job_id": "01a0983e-d464-7f40-a615-a1f8463f32c2",
+        "count": 5
+      }
+    ],
+    "flushed": [
+      {
+        "kind": "subenqueue_flushed",
+        "t_ms": 1692038360.385,
+        "job_id": "01a0983e-d464-7f40-a615-a1f8463f32c2",
+        "count": 5
+      }
+    ],
+    "children_enqueued": 5,
+    "children_succeeded": 5,
+    "children_have_parent_tag": true
+  },
+  "backend_final": [
+    {
+      "job_id": "01a0983e-d464-7f40-a615-a1f8463f32c2",
+      "actor": "fanout",
+      "queue": "etl",
+      "status": "succeeded",
+      "attempt": 1,
+      "max_attempts": 3,
+      "error_class": null,
+      "error_message": null,
+      "result": {
+        "requested": 5
+      },
+      "result_size_bytes": 15,
+      "progress_seq": 2,
+      "progress_state": {
+        "step": 2,
+        "percent": 100
+      },
+      "cancel_phase": 0,
+      "scheduled_at": "2026-01-01T00:00:00+00:00",
+      "metadata": {}
+    },
+    {
+      "job_id": "01a0983e-d465-79a1-b206-f3ea17ec9c95",
+      "actor": "etl_small",
+      "queue": "etl",
+      "status": "succeeded",
+      "attempt": 1,
+      "max_attempts": 3,
+      "error_class": null,
+      "error_message": null,
+      "result": {
+        "rows_processed": 100,
+        "label": "child-0",
+        "duration_ms": 206
+      },
+      "result_size_bytes": 58,
+      "progress_seq": 5,
+      "progress_state": {
+        "step": 5,
+        "percent": 100
+      },
+      "cancel_phase": 0,
+      "scheduled_at": "2026-01-01T00:00:00+00:00",
+      "metadata": {
+        "parent_job_id": "01a0983e-d464-7f40-a615-a1f8463f32c2"
+      }
+    },
+    {
+      "job_id": "01a0983e-d465-79a1-b206-f3fe6405c96a",
+      "actor": "etl_small",
+      "queue": "etl",
+      "status": "succeeded",
+      "attempt": 1,
+      "max_attempts": 3,
+      "error_class": null,
+      "error_message": null,
+      "result": {
+        "rows_processed": 101,
+        "label": "child-1",
+        "duration_ms": 205
+      },
+      "result_size_bytes": 58,
+      "progress_seq": 5,
+      "progress_state": {
+        "step": 5,
+        "percent": 100
+      },
+      "cancel_phase": 0,
+      "scheduled_at": "2026-01-01T00:00:00+00:00",
+      "metadata": {
+        "parent_job_id": "01a0983e-d464-7f40-a615-a1f8463f32c2"
+      }
+    },
+    {
+      "job_id": "01a0983e-d465-79a1-b206-f406be2dbffc",
+      "actor": "etl_small",
+      "queue": "etl",
+      "status": "succeeded",
+      "attempt": 1,
+      "max_attempts": 3,
+      "error_class": null,
+      "error_message": null,
+      "result": {
+        "rows_processed": 102,
+        "label": "child-2",
+        "duration_ms": 205
+      },
+      "result_size_bytes": 58,
+      "progress_seq": 5,
+      "progress_state": {
+        "step": 5,
+        "percent": 100
+      },
+      "cancel_phase": 0,
+      "scheduled_at": "2026-01-01T00:00:00+00:00",
+      "metadata": {
+        "parent_job_id": "01a0983e-d464-7f40-a615-a1f8463f32c2"
+      }
+    },
+    {
+      "job_id": "01a0983e-d465-79a1-b206-f417efdc45a4",
+      "actor": "etl_small",
+      "queue": "etl",
+      "status": "succeeded",
+      "attempt": 1,
+      "max_attempts": 3,
+      "error_class": null,
+      "error_message": null,
+      "result": {
+        "rows_processed": 103,
+        "label": "child-3",
+        "duration_ms": 205
+      },
+      "result_size_bytes": 58,
+      "progress_seq": 5,
+      "progress_state": {
+        "step": 5,
+        "percent": 100
+      },
+      "cancel_phase": 0,
+      "scheduled_at": "2026-01-01T00:00:00+00:00",
+      "metadata": {
+        "parent_job_id": "01a0983e-d464-7f40-a615-a1f8463f32c2"
+      }
+    },
+    {
+      "job_id": "01a0983e-d465-79a1-b206-f420b56982dd",
+      "actor": "etl_small",
+      "queue": "etl",
+      "status": "succeeded",
+      "attempt": 1,
+      "max_attempts": 3,
+      "error_class": null,
+      "error_message": null,
+      "result": {
+        "rows_processed": 104,
+        "label": "child-4",
+        "duration_ms": 205
+      },
+      "result_size_bytes": 58,
+      "progress_seq": 5,
+      "progress_state": {
+        "step": 5,
+        "percent": 100
+      },
+      "cancel_phase": 0,
+      "scheduled_at": "2026-01-01T00:00:00+00:00",
+      "metadata": {
+        "parent_job_id": "01a0983e-d464-7f40-a615-a1f8463f32c2"
+      }
+    }
+  ],
+  "worker_trace": [
+    {
+      "kind": "subenqueue_buffered",
+      "t_ms": 1692038258.787,
+      "job_id": "01a0983e-d464-7f40-a615-a1f8463f32c2",
+      "count": 5
+    },
+    {
+      "kind": "job_succeeded",
+      "t_ms": 1692038360.254,
+      "job_id": "01a0983e-d464-7f40-a615-a1f8463f32c2",
+      "actor": "fanout",
+      "duration_ms": 102.743,
+      "subenqueue_seen": true
+    },
+    {
+      "kind": "subenqueue_flushed",
+      "t_ms": 1692038360.385,
+      "job_id": "01a0983e-d464-7f40-a615-a1f8463f32c2",
+      "count": 5
+    },
+    {
+      "kind": "job_succeeded",
+      "t_ms": 1692038615.953,
+      "job_id": "01a0983e-d465-79a1-b206-f3ea17ec9c95",
+      "actor": "etl_small",
+      "duration_ms": 206.409,
+      "subenqueue_seen": false
+    },
+    {
+      "kind": "job_succeeded",
+      "t_ms": 1692038616.253,
+      "job_id": "01a0983e-d465-79a1-b206-f3fe6405c96a",
+      "actor": "etl_small",
+      "duration_ms": 206.678,
+      "subenqueue_seen": false
+    },
+    {
+      "kind": "job_succeeded",
+      "t_ms": 1692038616.307,
+      "job_id": "01a0983e-d465-79a1-b206-f406be2dbffc",
+      "actor": "etl_small",
+      "duration_ms": 206.716,
+      "subenqueue_seen": false
+    },
+    {
+      "kind": "job_succeeded",
+      "t_ms": 1692038616.431,
+      "job_id": "01a0983e-d465-79a1-b206-f417efdc45a4",
+      "actor": "etl_small",
+      "duration_ms": 206.83,
+      "subenqueue_seen": false
+    },
+    {
+      "kind": "job_succeeded",
+      "t_ms": 1692038616.492,
+      "job_id": "01a0983e-d465-79a1-b206-f420b56982dd",
+      "actor": "etl_small",
+      "duration_ms": 206.883,
+      "subenqueue_seen": false
+    }
+  ],
+  "runtime_stderr_tail": []
+}

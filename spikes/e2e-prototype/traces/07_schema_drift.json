@@ -1,0 +1,93 @@
+{
+  "scenario": "07_schema_drift",
+  "description": "runtime manifest carries a drifted payload schema for etl_small (label required + rows upper bound removed) \u2192 canonical-JSON sha256 mismatch vs the pre-registered registry row \u2192 loud schema_drift_detected error, actor quarantined, dispatch refuses its jobs (snooze-and-release)",
+  "generated_at": "2026-09-13T00:50:53.358785+00:00",
+  "metrics": {
+    "startup_quarantined": [
+      "etl_small"
+    ],
+    "drift_report": {
+      "etl_small": [
+        "payload_schema sha256 2820e9975017\u2026 != registered 52fa39616275\u2026"
+      ]
+    },
+    "registered_hash": "52fa396162752946",
+    "manifest_hash": "2820e9975017ed5b",
+    "registered_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "rows": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000
+        },
+        "label": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "rows",
+        "label"
+      ],
+      "additionalProperties": false
+    },
+    "manifest_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "rows": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "label": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "rows",
+        "label"
+      ],
+      "additionalProperties": false
+    },
+    "job_status": "scheduled",
+    "job_executed": false,
+    "quarantined_snooze_events": [
+      {
+        "kind": "quarantined_snoozed",
+        "t_ms": 1692041742.992,
+        "job_id": "01a0983e-e201-79b0-b348-d61980a0e088",
+        "actor": "etl_small"
+      }
+    ]
+  },
+  "backend_final": [
+    {
+      "job_id": "01a0983e-e201-79b0-b348-d61980a0e088",
+      "actor": "etl_small",
+      "queue": "etl",
+      "status": "scheduled",
+      "attempt": 1,
+      "max_attempts": 4,
+      "error_class": null,
+      "error_message": null,
+      "result": null,
+      "result_size_bytes": null,
+      "progress_seq": 0,
+      "progress_state": {},
+      "cancel_phase": 0,
+      "scheduled_at": "2026-01-01T00:00:10+00:00",
+      "metadata": {}
+    }
+  ],
+  "worker_trace": [
+    {
+      "kind": "quarantined_snoozed",
+      "t_ms": 1692041742.992,
+      "job_id": "01a0983e-e201-79b0-b348-d61980a0e088",
+      "actor": "etl_small"
+    }
+  ],
+  "runtime_stderr_tail": []
+}

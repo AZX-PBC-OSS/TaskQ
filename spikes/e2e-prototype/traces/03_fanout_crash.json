@@ -1,0 +1,73 @@
+{
+  "scenario": "03_fanout_crash",
+  "description": "runtime SIGKILLed after subenqueue buffered but before done \u2192 buffer discarded (0 sub-jobs durable) \u2192 parent fail-fast requeued",
+  "generated_at": "2026-09-13T00:50:50.276070+00:00",
+  "metrics": {
+    "parent_status": "pending",
+    "parent_error_class": "WorkerCrashed",
+    "parent_attempt": 1,
+    "sub_jobs_enqueued": 0,
+    "buffer_discarded_events": [
+      {
+        "kind": "subenqueue_discarded",
+        "t_ms": 1692038760.665,
+        "job_id": "01a0983e-d644-7760-b14b-2507e390e8ec",
+        "count": 5
+      }
+    ],
+    "kill_to_requeued_ms": 2.257,
+    "fail_fast_internal_ms": 0.16654189676046371
+  },
+  "backend_final": [
+    {
+      "job_id": "01a0983e-d644-7760-b14b-2507e390e8ec",
+      "actor": "fanout",
+      "queue": "etl",
+      "status": "pending",
+      "attempt": 1,
+      "max_attempts": 3,
+      "error_class": "WorkerCrashed",
+      "error_message": "runtime process died with job in flight (fail-fast)",
+      "result": null,
+      "result_size_bytes": null,
+      "progress_seq": 1,
+      "progress_state": {
+        "step": 1,
+        "percent": 50
+      },
+      "cancel_phase": 0,
+      "scheduled_at": "2026-01-01T00:00:00+00:00",
+      "metadata": {}
+    }
+  ],
+  "worker_trace": [
+    {
+      "kind": "subenqueue_buffered",
+      "t_ms": 1692038739.054,
+      "job_id": "01a0983e-d644-7760-b14b-2507e390e8ec",
+      "count": 5
+    },
+    {
+      "kind": "runtime_died",
+      "t_ms": 1692038760.568,
+      "in_flight": 1
+    },
+    {
+      "kind": "subenqueue_discarded",
+      "t_ms": 1692038760.665,
+      "job_id": "01a0983e-d644-7760-b14b-2507e390e8ec",
+      "count": 5
+    },
+    {
+      "kind": "runtime_died_recovered",
+      "t_ms": 1692038760.669,
+      "requeued": 1,
+      "time_to_requeue_ms": 0.167
+    },
+    {
+      "kind": "dispatch_halted_runtime_dead",
+      "t_ms": 1692038788.796
+    }
+  ],
+  "runtime_stderr_tail": []
+}

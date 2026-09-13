@@ -1,0 +1,61 @@
+{
+  "scenario": "04_cooperative_cancel",
+  "description": "cancel requested mid-run \u2192 worker cancel-poll loop forwards {op:'cancel'} advisory \u2192 spinny observes ctx.cancelled() within a ~100ms chunk, returns early \u2192 runtime classifies run cancelled \u2192 mark_cancelled",
+  "generated_at": "2026-09-13T00:50:50.570696+00:00",
+  "metrics": {
+    "cancel_to_terminal_ms": 185.799,
+    "job_status": "cancelled",
+    "runtime_reported": {
+      "iterations": 8911040,
+      "observed_cancel": true
+    },
+    "cancel_phase_final": 1,
+    "cancel_forwarded_events": [
+      {
+        "kind": "cancel_forwarded",
+        "t_ms": 1692039099.905,
+        "job_id": "01a0983e-d77c-77a3-9e43-bc62a7973be3"
+      }
+    ]
+  },
+  "backend_final": [
+    {
+      "job_id": "01a0983e-d77c-77a3-9e43-bc62a7973be3",
+      "actor": "spinny",
+      "queue": "cpu",
+      "status": "cancelled",
+      "attempt": 1,
+      "max_attempts": 1,
+      "error_class": null,
+      "error_message": null,
+      "result": null,
+      "result_size_bytes": null,
+      "progress_seq": 1,
+      "progress_state": {
+        "step": 0,
+        "percent": 1
+      },
+      "cancel_phase": 1,
+      "scheduled_at": "2026-01-01T00:00:00+00:00",
+      "metadata": {}
+    }
+  ],
+  "worker_trace": [
+    {
+      "kind": "cancel_forwarded",
+      "t_ms": 1692039099.905,
+      "job_id": "01a0983e-d77c-77a3-9e43-bc62a7973be3"
+    },
+    {
+      "kind": "job_cancelled",
+      "t_ms": 1692039250.785,
+      "job_id": "01a0983e-d77c-77a3-9e43-bc62a7973be3",
+      "actor": "spinny",
+      "runtime_result": {
+        "iterations": 8911040,
+        "observed_cancel": true
+      }
+    }
+  ],
+  "runtime_stderr_tail": []
+}

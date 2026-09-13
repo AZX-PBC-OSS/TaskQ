@@ -1,0 +1,129 @@
+{
+  "scenario": "08_mixed_fleet",
+  "description": "one dispatch fleet, two registry entry kinds: native_wordcount (@actor ActorRef, executed in-process) and etl_small (foreign, executed on the Node runtime) both succeed; foreign_elsewhere is registered fleet-wide but not hosted by this runtime \u2192 snooze-and-release 10s, twice",
+  "generated_at": "2026-09-13T00:50:54.282610+00:00",
+  "metrics": {
+    "native_status": "succeeded",
+    "native_result": {
+      "word_count": 4,
+      "upper": "THE QUICK BROWN FOX"
+    },
+    "foreign_status": "succeeded",
+    "foreign_result": {
+      "rows_processed": 42,
+      "label": "foreign",
+      "duration_ms": 205
+    },
+    "not_hosted_first_status": "scheduled",
+    "not_hosted_release_s": 10.0,
+    "not_hosted_second_status": "scheduled",
+    "unknown_actor_snooze_events": [
+      {
+        "kind": "unknown_actor_snoozed",
+        "t_ms": 1692042140.309,
+        "job_id": "01a0983e-e38f-7aa1-b169-024755f90eef",
+        "actor": "foreign_elsewhere"
+      },
+      {
+        "kind": "unknown_actor_snoozed",
+        "t_ms": 1692042698.859,
+        "job_id": "01a0983e-e38f-7aa1-b169-024755f90eef",
+        "actor": "foreign_elsewhere"
+      }
+    ]
+  },
+  "backend_final": [
+    {
+      "job_id": "01a0983e-e38e-7bd3-a417-dd88256c9e2a",
+      "actor": "native_wordcount",
+      "queue": "native",
+      "status": "succeeded",
+      "attempt": 1,
+      "max_attempts": 3,
+      "error_class": null,
+      "error_message": null,
+      "result": {
+        "word_count": 4,
+        "upper": "THE QUICK BROWN FOX"
+      },
+      "result_size_bytes": 46,
+      "progress_seq": 0,
+      "progress_state": {},
+      "cancel_phase": 0,
+      "scheduled_at": "2026-01-01T00:00:00+00:00",
+      "metadata": {}
+    },
+    {
+      "job_id": "01a0983e-e38f-7aa1-b169-023190916522",
+      "actor": "etl_small",
+      "queue": "etl",
+      "status": "succeeded",
+      "attempt": 1,
+      "max_attempts": 3,
+      "error_class": null,
+      "error_message": null,
+      "result": {
+        "rows_processed": 42,
+        "label": "foreign",
+        "duration_ms": 205
+      },
+      "result_size_bytes": 57,
+      "progress_seq": 5,
+      "progress_state": {
+        "step": 5,
+        "percent": 100
+      },
+      "cancel_phase": 0,
+      "scheduled_at": "2026-01-01T00:00:00+00:00",
+      "metadata": {}
+    },
+    {
+      "job_id": "01a0983e-e38f-7aa1-b169-024755f90eef",
+      "actor": "foreign_elsewhere",
+      "queue": "etl",
+      "status": "scheduled",
+      "attempt": 2,
+      "max_attempts": 5,
+      "error_class": null,
+      "error_message": null,
+      "result": null,
+      "result_size_bytes": null,
+      "progress_seq": 0,
+      "progress_state": {},
+      "cancel_phase": 0,
+      "scheduled_at": "2026-01-01T00:00:20.500000+00:00",
+      "metadata": {}
+    }
+  ],
+  "worker_trace": [
+    {
+      "kind": "unknown_actor_snoozed",
+      "t_ms": 1692042140.309,
+      "job_id": "01a0983e-e38f-7aa1-b169-024755f90eef",
+      "actor": "foreign_elsewhere"
+    },
+    {
+      "kind": "job_succeeded",
+      "t_ms": 1692042140.451,
+      "job_id": "01a0983e-e38e-7bd3-a417-dd88256c9e2a",
+      "actor": "native_wordcount",
+      "duration_ms": 0.096,
+      "subenqueue_seen": false
+    },
+    {
+      "kind": "job_succeeded",
+      "t_ms": 1692042346.762,
+      "job_id": "01a0983e-e38f-7aa1-b169-023190916522",
+      "actor": "etl_small",
+      "duration_ms": 206.509,
+      "subenqueue_seen": false
+    },
+    {
+      "kind": "unknown_actor_snoozed",
+      "t_ms": 1692042698.859,
+      "job_id": "01a0983e-e38f-7aa1-b169-024755f90eef",
+      "actor": "foreign_elsewhere"
+    }
+  ],
+  "runtime_stderr_tail": []
+}

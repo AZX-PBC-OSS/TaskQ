@@ -1,0 +1,72 @@
+{
+  "scenario": "05_forced_cancel",
+  "description": "spinny --no-cooperate pins the event loop so the cancel line is never read \u2192 advisory ignored \u2192 2s grace \u2192 cancel-poll escalates (write_cancel_escalation phase 2) \u2192 SIGKILL process group \u2192 fail-fast marks job failed with WorkerCancelled ErrorInfo",
+  "generated_at": "2026-09-13T00:50:52.849768+00:00",
+  "metrics": {
+    "cancel_to_terminal_ms": 2166.281,
+    "job_status": "failed",
+    "error_class": "WorkerCancelled",
+    "error_message": "cooperative cancel ignored by actor; forced via runtime process-group SIGKILL after 2s grace",
+    "cancel_phase_final": 2,
+    "cancel_escalated_events": [
+      {
+        "kind": "cancel_escalated",
+        "t_ms": 1692041431.579,
+        "job_id": "01a0983e-d8a6-7be2-ab5d-f3172b66d346"
+      }
+    ],
+    "signal_to_reaped_ms": 2.8092500288039446
+  },
+  "backend_final": [
+    {
+      "job_id": "01a0983e-d8a6-7be2-ab5d-f3172b66d346",
+      "actor": "spinny",
+      "queue": "cpu",
+      "status": "failed",
+      "attempt": 1,
+      "max_attempts": 1,
+      "error_class": "WorkerCancelled",
+      "error_message": "cooperative cancel ignored by actor; forced via runtime process-group SIGKILL after 2s grace",
+      "result": null,
+      "result_size_bytes": null,
+      "progress_seq": 0,
+      "progress_state": {},
+      "cancel_phase": 2,
+      "scheduled_at": "2026-01-01T00:00:00+00:00",
+      "metadata": {}
+    }
+  ],
+  "worker_trace": [
+    {
+      "kind": "cancel_forwarded",
+      "t_ms": 1692039397.499,
+      "job_id": "01a0983e-d8a6-7be2-ab5d-f3172b66d346"
+    },
+    {
+      "kind": "cancel_escalated",
+      "t_ms": 1692041431.579,
+      "job_id": "01a0983e-d8a6-7be2-ab5d-f3172b66d346"
+    },
+    {
+      "kind": "runtime_died",
+      "t_ms": 1692041434.371,
+      "in_flight": 1
+    },
+    {
+      "kind": "job_failed_forced_cancel",
+      "t_ms": 1692041434.447,
+      "job_id": "01a0983e-d8a6-7be2-ab5d-f3172b66d346"
+    },
+    {
+      "kind": "runtime_died_recovered",
+      "t_ms": 1692041434.452,
+      "requeued": 0,
+      "time_to_requeue_ms": 0.131
+    },
+    {
+      "kind": "dispatch_halted_runtime_dead",
+      "t_ms": 1692041482.671
+    }
+  ],
+  "runtime_stderr_tail": []
+}

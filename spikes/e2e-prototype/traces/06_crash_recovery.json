@@ -1,0 +1,100 @@
+{
+  "scenario": "06_crash_recovery",
+  "description": "runtime SIGKILLed with 3 jobs in flight \u2192 stdout EOF \u2192 fail-fast marks all 3 failed-or-retryable immediately (status pending, WorkerCrashed). Fallback: reclaim_expired_locks sweep measured separately (lock lease 30s, graces 0).",
+  "generated_at": "2026-09-13T00:50:52.967700+00:00",
+  "metrics": {
+    "fail_fast": {
+      "kill_to_requeued_ms": 2.638,
+      "internal_recovery_ms": 0.1790837850421667,
+      "jobs_requeued": 3,
+      "statuses": [
+        "pending",
+        "pending",
+        "pending"
+      ],
+      "error_classes": [
+        "WorkerCrashed",
+        "WorkerCrashed",
+        "WorkerCrashed"
+      ],
+      "attempts": [
+        1,
+        1,
+        1
+      ]
+    },
+    "fallback_reclaim_sweep": {
+      "rows_reclaimed": 3,
+      "sweep_execution_ms": 0.051,
+      "lock_lease_s": 30,
+      "note": "time-to-requeue via sweep-only \u2248 remaining lock lease (\u2264 lock_lease) + sweep poll interval + sweep execution; the sweep's own execution was 0.051 ms for 3 rows. Sweep also requeues at now+5s (extra dispatch delay)."
+    }
+  },
+  "backend_final": [
+    {
+      "job_id": "01a0983e-e18f-7d31-8c85-0efc7cf60b7f",
+      "actor": "etl_small",
+      "queue": "etl",
+      "status": "pending",
+      "attempt": 1,
+      "max_attempts": 3,
+      "error_class": "WorkerCrashed",
+      "error_message": "runtime process died with job in flight (fail-fast)",
+      "result": null,
+      "result_size_bytes": null,
+      "progress_seq": 0,
+      "progress_state": {},
+      "cancel_phase": 0,
+      "scheduled_at": "2026-01-01T00:00:00+00:00",
+      "metadata": {}
+    },
+    {
+      "job_id": "01a0983e-e18f-7d31-8c85-0f0c07fd9a3c",
+      "actor": "etl_small",
+      "queue": "etl",
+      "status": "pending",
+      "attempt": 1,
+      "max_attempts": 3,
+      "error_class": "WorkerCrashed",
+      "error_message": "runtime process died with job in flight (fail-fast)",
+      "result": null,
+      "result_size_bytes": null,
+      "progress_seq": 0,
+      "progress_state": {},
+      "cancel_phase": 0,
+      "scheduled_at": "2026-01-01T00:00:00+00:00",
+      "metadata": {}
+    },
+    {
+      "job_id": "01a0983e-e18f-7d31-8c85-0f1f626b04ad",
+      "actor": "etl_small",
+      "queue": "etl",
+      "status": "pending",
+      "attempt": 1,
+      "max_attempts": 3,
+      "error_class": "WorkerCrashed",
+      "error_message": "runtime process died with job in flight (fail-fast)",
+      "result": null,
+      "result_size_bytes": null,
+      "progress_seq": 0,
+      "progress_state": {},
+      "cancel_phase": 0,
+      "scheduled_at": "2026-01-01T00:00:00+00:00",
+      "metadata": {}
+    }
+  ],
+  "worker_trace": [
+    {
+      "kind": "runtime_died",
+      "t_ms": 1692041652.232,
+      "in_flight": 3
+    },
+    {
+      "kind": "runtime_died_recovered",
+      "t_ms": 1692041652.354,
+      "requeued": 3,
+      "time_to_requeue_ms": 0.179
+    }
+  ],
+  "runtime_stderr_tail": []
+}
