@@ -26,10 +26,12 @@ import asyncpg
 import pytest
 from pydantic import ValidationError
 
-from taskq._ids import new_uuid
-from taskq.backend._protocol import JobId
+from taskq._ids import new_job_id, new_uuid
+from taskq.backend._protocol import EnqueueArgs, JobId
 from taskq.retry import RetryPolicy
+from taskq.testing.clock import FakeClock
 from taskq.testing.fixtures import JobsApp
+from taskq.testing.in_memory import InMemoryBackend
 from taskq.testing.pg import create_running_job, create_worker
 
 pytestmark = pytest.mark.integration
@@ -37,6 +39,10 @@ pytestmark = pytest.mark.integration
 _SMALLINT_MAX = 32767
 
 _DELAY = timedelta(seconds=30)
+
+# The in-memory mirror's clock: any instant strictly after the enqueued
+# scheduled_at makes the job dispatch-eligible without a clock dance.
+_MEM_NOW = datetime(2026, 1, 1, tzinfo=UTC)
 
 
 # ── Enqueue-time validation: mirror the priority smallint guard ──────────
@@ -231,3 +237,97 @@ async def test_snooze_below_ceiling_still_widens_budget(
     row = await _read_row(clean_jobs_app, schema, job_id)
     assert row["max_attempts"] == 4
     assert row["status"] == "scheduled"
+
+
+# ── In-memory mirror parity: both arms saturate, not overflow ──────────
+
+
+async def _in_memory_running_job_at_ceiling(
+    max_attempts: int,
+) -> tuple[InMemoryBackend, JobId, UUID]:
+    """Enqueue + dispatch one running job at *max_attempts* on the
+    in-memory mirror — the same row shape ``_seed`` builds for PG."""
+    backend = InMemoryBackend(clock=FakeClock(_MEM_NOW))
+    args = EnqueueArgs(
+        id=new_job_id(),
+        actor="mem_ceiling_actor",
+        queue="default",
+        payload={},
+        max_attempts=max_attempts,
+        retry_kind="transient",
+        scheduled_at=_MEM_NOW - timedelta(seconds=1),
+    )
+    await backend.enqueue(args)
+    worker_id = new_uuid()
+    dispatched = await backend.dispatch_batch(
+        worker_id, ["default"], 1, timedelta(seconds=60)
+    )
+    assert len(dispatched) == 1
+    return backend, dispatched[0].id, worker_id
+
+
+async def test_in_memory_mark_snoozed_at_ceiling_saturates() -> None:
+    """Mirror parity for increment site 1: the in-memory ``mark_snoozed``
+    must saturate at the same smallint ceiling PG's LEAST() does.
+
+    Python ints do not overflow, so the mirror's failure mode is quieter
+    than PG's 22003: an unbounded ``row.max_attempts + 1`` silently parks
+    the row OUTSIDE the column domain (32768+), where every later
+    comparison against real-PG behaviour disagrees. Parity doctrine: the
+    mirror saturates exactly where production saturates.
+    """
+    backend, job_id, worker_id = await _in_memory_running_job_at_ceiling(_SMALLINT_MAX)
+
+    outcome = await backend.mark_snoozed(
+        job_id,
+        worker_id,
+        _DELAY,
+        outcome="reservation_denied",
+    )
+
+    assert outcome == "scheduled"
+    row = backend._jobs[job_id]  # pyright: ignore[reportPrivateUsage]  # Why: test-only private access; the mirror's rows are the assertion surface.
+    assert row.max_attempts == _SMALLINT_MAX, (
+        f"the mirror widened max_attempts to {row.max_attempts}; it must "
+        "saturate at the same smallint ceiling as PG's LEAST() increment."
+    )
+    assert row.status == "scheduled"
+
+
+async def test_in_memory_mark_retry_after_consume_false_at_ceiling_saturates() -> None:
+    """Mirror parity for increment site 2: the in-memory
+    ``mark_retry_after(consume_budget=False)`` saturates at the ceiling."""
+    backend, job_id, worker_id = await _in_memory_running_job_at_ceiling(_SMALLINT_MAX)
+
+    outcome = await backend.mark_retry_after(
+        job_id,
+        worker_id,
+        _DELAY,
+        consume_budget=False,
+    )
+
+    assert outcome == "scheduled"
+    row = backend._jobs[job_id]  # pyright: ignore[reportPrivateUsage]  # Why: test-only private access; the mirror's rows are the assertion surface.
+    assert row.max_attempts == _SMALLINT_MAX, (
+        f"the mirror widened max_attempts to {row.max_attempts}; it must "
+        "saturate at the same smallint ceiling as PG's LEAST() increment."
+    )
+    assert row.status == "scheduled"
+
+
+async def test_in_memory_snooze_below_ceiling_still_widens_budget() -> None:
+    """Mirror control, the twin of the PG control above: below the ceiling
+    the increment still widens the budget by exactly one."""
+    backend, job_id, worker_id = await _in_memory_running_job_at_ceiling(3)
+
+    outcome = await backend.mark_snoozed(
+        job_id,
+        worker_id,
+        _DELAY,
+        outcome="reservation_denied",
+    )
+
+    assert outcome == "scheduled"
+    row = backend._jobs[job_id]  # pyright: ignore[reportPrivateUsage]  # Why: test-only private access; the mirror's rows are the assertion surface.
+    assert row.max_attempts == 4
+    assert row.status == "scheduled"

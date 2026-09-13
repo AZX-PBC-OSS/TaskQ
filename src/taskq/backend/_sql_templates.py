@@ -25,6 +25,7 @@ from taskq.backend._sql import (
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
 )
+from taskq.retry import MAX_ATTEMPTS_SMALLINT_CEILING
 
 __all__ = ["SqlTemplates", "render"]
 
@@ -464,7 +465,12 @@ SELECT * FROM upd""",
         # leaves j.attempt unchanged.  $7 is the attempt-row outcome
         # ("snoozed", or "reservation_denied"/"rate_limit_denied" when the
         # write records a denied reservation) — the only mark_* variant
-        # whose attempt outcome is caller-chosen.
+        # whose attempt outcome is caller-chosen.  The budget widening
+        # saturates at the smallint ceiling: a job already at 32767 must
+        # still reschedule (LEAST keeps max_attempts + 1 semantics
+        # identical below the boundary) instead of aborting the whole
+        # statement with PG 22003 and leaking a raw DataError out of the
+        # consumer loop while the job keeps its lock held.
         mark_snoozed=f"""\
 WITH params AS (
     SELECT $1::uuid AS job_id,
@@ -484,7 +490,7 @@ snoozed AS (
         last_heartbeat_at = NULL,
         cancel_phase = 0,
         cancel_requested_at = NULL,
-        max_attempts = j.max_attempts + 1,
+        max_attempts = LEAST(j.max_attempts + 1, {MAX_ATTEMPTS_SMALLINT_CEILING}),
         metadata = j.metadata || COALESCE((SELECT metadata_update FROM params), '{{}}'::jsonb),
         progress_seq = (SELECT progress_seq FROM params),
         progress_state = CASE WHEN (SELECT progress_state FROM params) IS NOT NULL THEN COALESCE(j.progress_state, '{{}}'::jsonb) || (SELECT progress_state FROM params) ELSE j.progress_state END
@@ -691,7 +697,10 @@ deadline_evt AS (
 )
 SELECT * FROM snoozed
 UNION ALL SELECT * FROM max_attempts_failed
-UNION ALL SELECT * FROM deadline_failed""",
+ UNION ALL SELECT * FROM deadline_failed""",
+        # The RetryAfter(consume_budget=False) arm carries the same
+        # saturating budget widening as mark_snoozed above — same ceiling,
+        # same rationale (a job at 32767 must reschedule, not abort).
         mark_retry_after_consume_false=f"""\
 WITH params AS (
     SELECT $1::uuid AS job_id,
@@ -710,7 +719,7 @@ snoozed AS (
         last_heartbeat_at = NULL,
         cancel_phase = 0,
         cancel_requested_at = NULL,
-        max_attempts = j.max_attempts + 1,
+        max_attempts = LEAST(j.max_attempts + 1, {MAX_ATTEMPTS_SMALLINT_CEILING}),
         progress_seq = (SELECT progress_seq FROM params),
         progress_state = CASE WHEN (SELECT progress_state FROM params) IS NOT NULL THEN COALESCE(j.progress_state, '{{}}'::jsonb) || (SELECT progress_state FROM params) ELSE j.progress_state END
     WHERE j.id = (SELECT job_id FROM params)

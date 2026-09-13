@@ -36,6 +36,7 @@ from taskq.exceptions import (
     ResultTooLarge,
     WorkerOwnershipMismatch,
 )
+from taskq.retry import MAX_ATTEMPTS_SMALLINT_CEILING
 from taskq.testing._reads import _read_copy
 
 if TYPE_CHECKING:
@@ -601,6 +602,10 @@ async def _mark_snoozed(
         "scheduled" if new_scheduled_at > now else "pending"
     )
     merged_progress = _merge_progress(row.progress_state, progress_state)
+    # Why: saturate at the smallint ceiling — PG's mark_snoozed widens the
+    # budget with LEAST(j.max_attempts + 1, 32767); an unbounded Python
+    # increment would let the mirror's rows cross the column domain the
+    # real backend's rows can never leave (parity doctrine).
     self._jobs[job_id] = replace(
         row,
         status=snooze_status,
@@ -609,7 +614,7 @@ async def _mark_snoozed(
         locked_by_worker=None,
         lock_expires_at=None,
         last_heartbeat_at=None,
-        max_attempts=row.max_attempts + 1,
+        max_attempts=min(row.max_attempts + 1, MAX_ATTEMPTS_SMALLINT_CEILING),
         metadata=new_metadata,
         cancel_phase=CancelPhase.NONE,
         cancel_requested_at=None,
@@ -755,7 +760,14 @@ async def _mark_retry_after(
         return "failed:MaxAttemptsExceeded"
 
     new_attempt = row.attempt
-    new_max_attempts = row.max_attempts if consume_budget else row.max_attempts + 1
+    # Why: saturate at the smallint ceiling, mirroring PG's
+    # mark_retry_after_consume_false LEAST() increment (same parity
+    # rationale as _mark_snoozed above).
+    new_max_attempts = (
+        row.max_attempts
+        if consume_budget
+        else min(row.max_attempts + 1, MAX_ATTEMPTS_SMALLINT_CEILING)
+    )
     retry_status: Literal["scheduled", "pending"] = (
         "scheduled" if new_scheduled_at > now else "pending"
     )
