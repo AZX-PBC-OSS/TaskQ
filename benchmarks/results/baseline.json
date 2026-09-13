@@ -1,0 +1,164 @@
+{
+  "schema": 1,
+  "timestamp": "2026-09-12T23:23:28.225139+00:00",
+  "git_sha": "e89ba7ab02b596ac7bdb1b2b71aae1af40e6e701",
+  "git_dirty": true,
+  "python_version": "3.13.15",
+  "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+  "cpu_brand": "Apple M4 Max",
+  "results": [
+    {
+      "name": "di_solver (2 deps, per-job)",
+      "a_ns": 39612.085,
+      "b_ns": 3829.585,
+      "speedup": 10.343701732694274,
+      "correct": true,
+      "note": "per solve over 200-solve batch [A spread 7%]"
+    },
+    {
+      "name": "di_introspection_only (1 call)",
+      "a_ns": 21774.585,
+      "b_ns": 43.545,
+      "speedup": 500.04788150189455,
+      "correct": true,
+      "note": " [A spread 10%]"
+    },
+    {
+      "name": "jsonb_str[small] A=cur B=bytes",
+      "a_ns": 863.125,
+      "b_ns": 834.795,
+      "speedup": 1.0339364754221096,
+      "correct": true,
+      "note": "B returns bytes (asyncpg contract change?) [A spread 6%]"
+    },
+    {
+      "name": "jsonb_str[small] A=cur B=str-v2",
+      "a_ns": 840.835,
+      "b_ns": 859.79,
+      "speedup": 0.9779539189802162,
+      "correct": true,
+      "note": " [A spread 7%]"
+    },
+    {
+      "name": "jsonb_str[medium] A=cur B=bytes",
+      "a_ns": 4077.915,
+      "b_ns": 3906.25,
+      "speedup": 1.04394624,
+      "correct": true,
+      "note": " [A spread 19%]"
+    },
+    {
+      "name": "jsonb_str[medium] A=cur B=str-v2",
+      "a_ns": 4096.875,
+      "b_ns": 4115.205,
+      "speedup": 0.9955457869049051,
+      "correct": true,
+      "note": " [A spread 11%]"
+    },
+    {
+      "name": "jsonb_str[large] A=cur B=bytes",
+      "a_ns": 71143.75,
+      "b_ns": 68112.5,
+      "speedup": 1.0445035786382824,
+      "correct": true,
+      "note": " [A spread 8%]"
+    },
+    {
+      "name": "jsonb_str[large] A=cur B=str-v2",
+      "a_ns": 70037.5,
+      "b_ns": 71443.75,
+      "speedup": 0.9803166827049252,
+      "correct": true,
+      "note": " [A spread 6%]"
+    },
+    {
+      "name": "jsonb_str[nul_literal] A=cur B=bytes",
+      "a_ns": 20051.25,
+      "b_ns": 11071.045,
+      "speedup": 1.811143392516244,
+      "correct": true,
+      "note": " [A spread 5%]"
+    },
+    {
+      "name": "jsonb_str[nul_literal] A=cur B=str-v2",
+      "a_ns": 20160.0,
+      "b_ns": 11206.045,
+      "speedup": 1.799029006219411,
+      "correct": true,
+      "note": " [A spread 4%]"
+    },
+    {
+      "name": "terminal_write[size check] A B",
+      "a_ns": 4183.96,
+      "b_ns": 4175.625,
+      "speedup": 1.001996108367011,
+      "correct": true,
+      "note": "fused kills re-encode [A spread 6%]"
+    },
+    {
+      "name": "decode_jsonb[small] stdlib vs orjson",
+      "a_ns": 646.582,
+      "b_ns": 191.584,
+      "speedup": 3.374926925004176,
+      "correct": true,
+      "note": " [A spread 31%]"
+    },
+    {
+      "name": "decode_jsonb[medium-50row] stdlib vs orjson",
+      "a_ns": 11079.17,
+      "b_ns": 5058.33,
+      "speedup": 2.1902821682254814,
+      "correct": true,
+      "note": " [A spread 8%]"
+    },
+    {
+      "name": "decode_jsonb[large-16kb] stdlib vs orjson",
+      "a_ns": 72641.25,
+      "b_ns": 23790.41,
+      "speedup": 3.0533836953629634,
+      "correct": true,
+      "note": " [A spread 6%]"
+    },
+    {
+      "name": "encode_json-50row stdlib vs orjson",
+      "a_ns": 18595.0,
+      "b_ns": 4918.54,
+      "speedup": 3.780593428131112,
+      "correct": true,
+      "note": " [A spread 8%]"
+    },
+    {
+      "name": "cron_next_fire[12 combos] A B",
+      "a_ns": 541000.0,
+      "b_ns": 576025.0,
+      "speedup": 0.9391953474241569,
+      "correct": true,
+      "note": "B = cached ZoneInfo only (honest: croniter unparsed) [A spread 9%]"
+    },
+    {
+      "name": "job_row_decode[1000 rows] A B",
+      "a_ns": 5038458.0,
+      "b_ns": 5199208.0,
+      "speedup": 0.9690818293863219,
+      "correct": true,
+      "note": "B = tightened decode (pre-validated) [A spread 5%]"
+    },
+    {
+      "name": "retry_policy_reconstruct A B",
+      "a_ns": 1632.418,
+      "b_ns": 860.334,
+      "speedup": 1.8974235587574129,
+      "correct": true,
+      "note": "B = model_copy, skips re-validation [A spread 9%]"
+    },
+    {
+      "name": "evict_keyed[10000 entries] A B",
+      "a_ns": 73875.0,
+      "b_ns": 250.0,
+      "speedup": 295.5,
+      "correct": true,
+      "note": "A linear scan; B heap-index pop (one-shot) [A spread 29%]"
+    }
+  ],
+  "stall_probes": []
+}

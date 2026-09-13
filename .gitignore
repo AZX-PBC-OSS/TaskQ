@@ -78,3 +78,6 @@ docs/superpowers/
 
 # Vendored upstream sources — reference reading only, never committed
 vendor/
+
+# Cross-version benchmark matrix venvs (benchmarks/run_matrix.sh)
+.bench-matrix/

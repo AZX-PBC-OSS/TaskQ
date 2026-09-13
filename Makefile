@@ -1,4 +1,4 @@
-.PHONY: help install env test test-fast test-e2e clean-e2e test-cov lint format type-check clean build css security docs docs-serve
+.PHONY: help install env test test-fast test-e2e clean-e2e test-cov lint format type-check clean build css security docs docs-serve bench bench-save bench-check bench-profile bench-matrix bench-stall
 
 help:
 	@echo "Available commands:"
@@ -16,6 +16,12 @@ help:
 	@echo "  make security     - Run pip-audit vulnerability scan"
 	@echo "  make docs         - Build docs with mkdocs (--strict)"
 	@echo "  make docs-serve   - Serve docs locally for preview"
+	@echo "  make bench        - Run the A/B benchmark suite (benchmarks/bench_hotspots.py)"
+	@echo "  make bench-save   - Save a benchmark baseline (benchmarks/results/baseline.json)"
+	@echo "  make bench-check  - Regression-gate the current run vs the saved baseline"
+	@echo "  make bench-profile- Profile a single hotspot (default: di; see profile_hotspot.py)"
+	@echo "  make bench-matrix - Run benchmarks across Python 3.12/3.13/3.14 (uv; needs uv)"
+	@echo "  make bench-stall  - Run the event-loop stall probes"
 
 # ---------------------------------------------------------------------------
 # Environment discipline. Mirrors the policy comment at the top of
@@ -130,3 +136,37 @@ docs: env
 
 docs-serve: env
 	$(UVRUN) mkdocs serve
+
+# ---------------------------------------------------------------------------
+# Benchmark toolkit (see benchmarks/README.md for the ops manual).
+#
+# `bench` runs the full A/B suite and drops a gitignored history file in
+# benchmarks/results/. `bench-save` writes the canonical baseline that
+# `bench-check` gates against: a bench regresses only when it is slower by
+# MORE than 1.20x relative AND more than 100 ns/op absolute (medians of
+# interleaved batches; both conditions required so sub-microsecond benches
+# don't flip the gate on timer jitter). `bench-check` exits 1 on regression
+# or correctness mismatch, 2 on missing baseline — wire it into CI after
+# committing a fresh baseline.json.
+bench: env
+	$(UVRUN) python benchmarks/run_bench.py
+
+bench-save: env
+	$(UVRUN) python benchmarks/run_bench.py --save-baseline
+
+bench-check: env
+	$(UVRUN) python benchmarks/run_bench.py --check
+
+# Default hotspot is the DI solve (the dispatch hot path). Pass a different
+# one or an engine with: make bench-profile BENCH_ARGS="jsonb --engine pyinstrument"
+BENCH_ARGS ?=
+bench-profile: env
+	$(UVRUN) python benchmarks/profile_hotspot.py $(BENCH_ARGS)
+
+# Builds its own uv venvs under .bench-matrix/ per version; does NOT go
+# through `env`/$(UVRUN) on purpose — the repo venv is not involved.
+bench-matrix:
+	bash benchmarks/run_matrix.sh
+
+bench-stall: env
+	$(UVRUN) python benchmarks/run_bench.py --stall
