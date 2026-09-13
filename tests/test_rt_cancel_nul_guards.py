@@ -229,11 +229,14 @@ async def test_fire_failure_error_text_is_sanitized_at_construction(
     clean_pg_conn: asyncpg.Connection,
     module_pg_schema: ModulePgSchema,
 ) -> None:
-    """The sanitize happens where the text is derived (``_record_fire_failure``),
-    not at the bind — pinning the construction-site contract the same way
+    """The sanitize happens where the text is derived
+    (``_compute_fire_failure`` — the pure half of the old
+    ``_record_fire_failure``, which split into compute + deferred span
+    marking when strike telemetry became buffered), not at the bind —
+    pinning the construction-site contract the same way
     ``worker/_handlers.py`` pins its ErrorInfo construction sites."""
     from taskq.worker.cron_loop import (
-        _record_fire_failure,  # pyright: ignore[reportPrivateUsage]  # Why: the construction site is the property under test.
+        _compute_fire_failure,  # pyright: ignore[reportPrivateUsage]  # Why: the construction site is the property under test.
     )
 
     schema = module_pg_schema.schema_name
@@ -253,10 +256,7 @@ async def test_fire_failure_error_text_is_sanitized_at_construction(
     )
     assert record is not None
 
-    from opentelemetry import trace
-
-    failure = _record_fire_failure(
-        trace.get_current_span(),  # non-recording outside a span context
+    failure = _compute_fire_failure(
         record,
         ValueError("bad\x00data"),
         settings,
@@ -266,5 +266,5 @@ async def test_fire_failure_error_text_is_sanitized_at_construction(
 
     # The empty-message fallback survives sanitization: a bare
     # TimeoutError() renders to '' and the class name must still land.
-    bare = _record_fire_failure(trace.get_current_span(), record, TimeoutError(), settings)
+    bare = _compute_fire_failure(record, TimeoutError(), settings)
     assert bare.error_text == "TimeoutError"

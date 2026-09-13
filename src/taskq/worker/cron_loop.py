@@ -12,7 +12,7 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
-from typing import Literal
+from typing import Final, Literal
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -122,6 +122,27 @@ class _FireFailure:
 
 
 @dataclass(frozen=True, slots=True)
+class _BufferedFailureTelemetry:
+    """Deferred failure telemetry for one failed-or-struck schedule.
+
+    Carries everything the end-of-tick emission needs to open the
+    per-failure span (PRODUCER kind, the link captured at failure time,
+    schedule/worker attributes), mark it ERROR, attach the
+    ``cron.auto_disabled`` event, and emit the metric delta.  Nothing is
+    exported at failure time: a strike persists only if the tick's
+    failures UPDATE executes AND the caller's transaction commits, so
+    exporting at strike time claims schedule failures (and auto-disables)
+    that a later transient error can still roll back — see the emission
+    section in :func:`tick_cron`.
+    """
+
+    failure: _FireFailure
+    exc: Exception
+    links: list[trace.Link] | None
+    worker_id: UUID
+
+
+@dataclass(frozen=True, slots=True)
 class _SuppressedFire:
     """One planned fire dropped before the enqueue by a policy preflight,
     with its computed ``next_fire_at`` (the suppression UPDATE advances the
@@ -149,43 +170,30 @@ async def resolve_payload(row: asyncpg.Record) -> dict[str, object]:
     return await resolve_cron_payload(pf, row["metadata"])
 
 
-def _record_fire_failure(
-    span: Span,
+def _compute_fire_failure(
     row: asyncpg.Record,
     exc: Exception,
     settings: WorkerSettings,
 ) -> _FireFailure:
-    """Mirror of the pre-batching per-schedule except-branch: mark the span,
-    bump the failure count, decide auto-disable.
+    """The pure half of the per-failure except-branch: bump the failure
+    count, decide auto-disable, sanitize the error text.
 
-    The span status description and the ``cron.auto_disabled`` event carry
-    :func:`safe_exception_message` — span text is exported to third-party
-    telemetry backends, and ``str()`` of a constraint violation quotes row
-    values.  The returned ``error_text`` is NUL-sanitized (see
-    :class:`_FireFailure`) because it is bound as ``text`` by the batched
-    failures UPDATE.
+    No span, no export — the telemetry half (:func:`_mark_failure_span`)
+    runs from the end-of-tick emission only, after every statement of the
+    tick has executed; see :class:`_BufferedFailureTelemetry`.
 
-    Both fall back to the exception's class name when the message is
-    empty: ``str(TimeoutError())`` is ``''`` — exactly what
-    ``resolve_payload``'s ``wait_for`` raises for a payload factory that
-    never returns — and without the fallback a schedule can be failing
-    (and auto-disabled) with an empty reason in the column, the log event
-    and the exported span status.
+    ``error_text`` is NUL-sanitized (see :class:`_FireFailure`) because it
+    is bound as ``text`` by the batched failures UPDATE, and carries the
+    exception's class name as a fallback when the message is empty:
+    ``str(TimeoutError())`` is ``''`` — exactly what ``resolve_payload``'s
+    ``wait_for`` raises for a payload factory that never returns — and
+    without the fallback a schedule can be failing (and auto-disabled)
+    with an empty reason in the column, the log event and the exported
+    span status.
     """
     class_name = type(exc).__name__
-    span_text = safe_exception_message(exc) or class_name
-    span.set_status(StatusCode.ERROR, span_text)
     consecutive: int = (row["consecutive_failures"] or 0) + 1
     auto_disable = consecutive >= settings.cron_auto_disable_threshold
-    if auto_disable:
-        span.add_event(
-            "cron.auto_disabled",
-            {
-                "schedule_name": row["actor"],
-                "last_error": span_text,
-                "failure_count": consecutive,
-            },
-        )
     return _FireFailure(
         schedule_id=row["id"],
         row=row,
@@ -193,6 +201,34 @@ def _record_fire_failure(
         consecutive=consecutive,
         auto_disable=auto_disable,
     )
+
+
+def _mark_failure_span(
+    span: Span,
+    failure: _FireFailure,
+    exc: Exception,
+) -> None:
+    """The telemetry half of the old per-failure except-branch: mark the
+    (already-open) failure span ERROR and attach ``cron.auto_disabled``.
+
+    The span status description and the event carry
+    :func:`safe_exception_message` — span text is exported to third-party
+    telemetry backends, and ``str()`` of a constraint violation quotes row
+    values.  Both fall back to the exception's class name when the message
+    is empty, for the same reason as :func:`_compute_fire_failure`.
+    """
+    class_name = type(exc).__name__
+    span_text = safe_exception_message(exc) or class_name
+    span.set_status(StatusCode.ERROR, span_text)
+    if failure.auto_disable:
+        span.add_event(
+            "cron.auto_disabled",
+            {
+                "schedule_name": failure.row["actor"],
+                "last_error": span_text,
+                "failure_count": failure.consecutive,
+            },
+        )
 
 
 async def _suppress_policy_collisions(
@@ -360,6 +396,15 @@ colliding values.  ``jobs_singleton_uniq`` is keyed on ``(actor)`` and
 colliding actor or the collided job id — the one fact per-plan
 attribution needs without re-inserting anything."""
 
+_ATTRIBUTABLE_CONSTRAINTS: Final[frozenset[str]] = frozenset({"jobs_pkey", "jobs_singleton_uniq"})
+"""The only constraints whose violations per-plan attribution may trust.
+
+The detail regex accepts any ``(cols)=(vals) already exists.`` shape an
+index can produce, but only these two are TaskQ's own.  An operator-added
+non-partial unique index on ``(actor)`` raises the same ``Key
+(actor)=(x)`` detail under a different constraint name; see
+:func:`_attribute_violation`."""
+
 
 def _attribute_violation(
     pending: list[_FireSuccess],
@@ -368,10 +413,11 @@ def _attribute_violation(
     """Map a batched-INSERT unique violation to the plan(s) that caused it.
 
     Returns ``(offenders, survivors)``, or ``None`` when the error cannot
-    be attributed SAFELY — any other exception type, an unparsable or
-    truncated detail line, or a value naming no pending plan.  The caller
-    isolates per plan on ``None`` rather than guessing: striking the wrong
-    schedule is the auto-disable trap this whole path exists to avoid.
+    be attributed SAFELY — any other exception type, a violation of a
+    constraint TaskQ does not own, an unparsable or truncated detail
+    line, or a value naming no pending plan.  The caller isolates per
+    plan on ``None`` rather than guessing: striking the wrong schedule is
+    the auto-disable trap this whole path exists to avoid.
 
     Every attribution is verified against the pending plans before it is
     trusted: an ``id`` value must be a job id some pending plan actually
@@ -383,6 +429,18 @@ def _attribute_violation(
     indexes can be added by an operator) — unattributable, on purpose.
     """
     if not isinstance(exc, UniqueViolationError):
+        return None
+    # Why: gate on the constraint NAME, not just the detail's column list.
+    # Today only jobs_pkey (id) and jobs_singleton_uniq (actor, partial)
+    # can produce the detail shapes parsed below — but an operator-added
+    # non-partial unique index on (actor) raises the same "Key
+    # (actor)=(x) already exists." detail under its own name, and
+    # attributing from the detail alone would strike a singleton-stamped
+    # plan of that actor when the violator was an unstamped row the
+    # operator's index (not TaskQ's) rejected — a wrong strike toward
+    # auto-disable.  A None/unknown constraint name falls back too: only
+    # the two names TaskQ ships are attributable.
+    if exc.constraint_name not in _ATTRIBUTABLE_CONSTRAINTS:
         return None
     match = _DETAIL_KEY_RE.match(exc.detail or "")
     if match is None:
@@ -416,25 +474,35 @@ def _strike_plans(
     plans: list[_FireSuccess],
     exc: Exception,
     failures: list[_FireFailure],
+    telemetry: list[_BufferedFailureTelemetry],
     worker_id: UUID,
     settings: WorkerSettings,
 ) -> None:
     """Convert write-failed plans into per-schedule failures, appended to
-    *failures* — the same span, telemetry and auto-disable handling the
-    planning loop's except-branch applies (see :func:`_record_fire_failure`).
+    *failures*, and buffer their telemetry in *telemetry* for the
+    end-of-tick emission.
+
+    The failure RECORD must exist at strike time — the tick's failures
+    UPDATE binds it — but the span, auto-disable event and metric delta
+    must not be exported here: the strikes only persist if that UPDATE
+    executes AND the caller's transaction commits, and a TRANSIENT error
+    from any later statement of the tick rolls them all back (the
+    emission site in :func:`tick_cron` is the single exporter).
     """
     for plan in plans:
         current_span = trace.get_current_span()
         current_ctx = current_span.get_span_context()
         links = [trace.Link(current_ctx)] if current_ctx.is_valid else None
-        with safe_start_span(
-            "cron fire",
-            kind=SpanKind.PRODUCER,
-            attributes={"cron_schedule_name": plan.actor, "taskq.worker_id": str(worker_id)},
-            links=links,
-            new_root=True,
-        ) as span:
-            failures.append(_record_fire_failure(span, plan.row, exc, settings))
+        failure = _compute_fire_failure(plan.row, exc, settings)
+        failures.append(failure)
+        telemetry.append(
+            _BufferedFailureTelemetry(
+                failure=failure,
+                exc=exc,
+                links=links,
+                worker_id=worker_id,
+            )
+        )
 
 
 async def _enqueue_planned_fires(
@@ -442,6 +510,7 @@ async def _enqueue_planned_fires(
     backend: Backend,
     plans: list[_FireSuccess],
     failures: list[_FireFailure],
+    telemetry: list[_BufferedFailureTelemetry],
     worker_id: UUID,
     settings: WorkerSettings,
 ) -> list[_FireSuccess]:
@@ -516,7 +585,7 @@ async def _enqueue_planned_fires(
             attributed = _attribute_violation(pending, exc)
             if attributed is not None:
                 offenders, survivors = attributed
-                _strike_plans(offenders, exc, failures, worker_id, settings)
+                _strike_plans(offenders, exc, failures, telemetry, worker_id, settings)
                 pending = survivors
             else:
                 for plan in pending:
@@ -531,7 +600,7 @@ async def _enqueue_planned_fires(
                     except TRANSIENT_PG_ERRORS:
                         raise
                     except Exception as plan_exc:
-                        _strike_plans([plan], plan_exc, failures, worker_id, settings)
+                        _strike_plans([plan], plan_exc, failures, telemetry, worker_id, settings)
                 pending = []
     return landed
 
@@ -652,6 +721,10 @@ async def tick_cron(
 
     successes: list[_FireSuccess] = []
     failures: list[_FireFailure] = []
+    # Failure telemetry (spans, auto-disable events, metric deltas) is
+    # buffered here and exported ONLY after every statement of the tick
+    # has executed — see the emission section at the end of this function.
+    failure_telemetry: list[_BufferedFailureTelemetry] = []
 
     for row in rows:
         current_span = trace.get_current_span()
@@ -670,7 +743,23 @@ async def tick_cron(
                     await _plan_fire(row, server_now, settings, actor_configs, actor_policies)
                 )
             except Exception as exc:
-                failures.append(_record_fire_failure(span, row, exc, settings))
+                # Why buffered, not marked on *span*: this failure joins the
+                # strike telemetry in the end-of-tick emission.  The span
+                # above records the planning ATTEMPT and closes UNSET; the
+                # failure claim (ERROR status, auto-disable event) is the
+                # emission span's to make, and only after the tick's SQL has
+                # all executed — a transient error from any later statement
+                # rolls this failure back with the rest of the tick.
+                failure = _compute_fire_failure(row, exc, settings)
+                failures.append(failure)
+                failure_telemetry.append(
+                    _BufferedFailureTelemetry(
+                        failure=failure,
+                        exc=exc,
+                        links=links,
+                        worker_id=worker_id,
+                    )
+                )
 
     # Policy preflight (singleton / max_pending parity with the client
     # enqueue path) — before the batched enqueue, and only when a planned
@@ -691,7 +780,7 @@ async def tick_cron(
 
     if successes:
         successes = await _enqueue_planned_fires(
-            conn, backend, successes, failures, worker_id, settings
+            conn, backend, successes, failures, failure_telemetry, worker_id, settings
         )
 
     if successes:
@@ -724,6 +813,7 @@ async def tick_cron(
             [entry.next_fire_at for entry in suppressed],
         )
 
+    disabled_count_after: int | None = None
     if failures:
         # One statement for both failure flavours.  The CASE, not
         # ``enabled = NOT f.disable``, is load-bearing: a plain NOT would
@@ -757,10 +847,38 @@ async def tick_cron(
             )
 
         if any(failure.auto_disable for failure in failures):
-            disabled_count: int = await conn.fetchval(
+            # SQL phase, deliberately: the count must be read INSIDE this
+            # transaction (it includes the tick's own uncommitted disables).
+            # Only the gauge export is deferred to the emission section
+            # below, with the rest of the strike telemetry.
+            disabled_count_after = await conn.fetchval(
                 f'SELECT COUNT(*) FROM "{schema}".cron_schedules WHERE enabled = false'
             )
-            update_disabled_schedules_count(disabled_count)
+
+    # ── Telemetry emission — after every statement of the tick ────────
+    #
+    # Why: the strikes and auto-disables above persist only if the failures
+    # UPDATE executed AND the caller's transaction commits.  A TRANSIENT
+    # error from any later statement re-raises and the leader retries the
+    # tick with nothing persisted — so failure spans, auto-disable events
+    # and metric deltas are buffered (see _BufferedFailureTelemetry) and
+    # exported only here, where every statement has already executed.
+    # Before the buffering, spans opened (and exported) at strike time
+    # claimed schedule failures and auto-disables a later transient error
+    # rolled back: the trace backend said schedule X auto-disabled while
+    # the DB row said enabled with count 0.
+    #
+    # Residual divergence, stated honestly: a failed COMMIT itself still
+    # diverges.  The buffers are emitted right before returning to the
+    # leader, which then commits — if that COMMIT fails (rare infra), the
+    # leader's retry re-runs the tick, re-striking and re-emitting, so the
+    # trace backend can again show a failure the DB does not keep.  Moving
+    # emission past the commit would require the leader to carry the
+    # buffers across the commit boundary, trading this window for a worse
+    # one (a worker death between commit and emit silently LOSES the
+    # telemetry for strikes that did persist).  Success-path telemetry
+    # (fired logs, published-message counters, failure-count resets) and
+    # suppression telemetry share the same residual for the same reason.
 
     for plan in successes:
         if plan.prev_consecutive > 0:
@@ -775,17 +893,35 @@ async def tick_cron(
         )
         record_published_message(plan.actor, plan.queue)
 
-    for failure in failures:
+    for entry in failure_telemetry:
+        # Same span shape the strike-time export used (PRODUCER kind, the
+        # link captured at failure time, schedule/worker attributes) — only
+        # the emission TIME moved.
+        with safe_start_span(
+            "cron fire",
+            kind=SpanKind.PRODUCER,
+            attributes={
+                "cron_schedule_name": entry.failure.row["actor"],
+                "taskq.worker_id": str(entry.worker_id),
+            },
+            links=entry.links,
+            new_root=True,
+        ) as span:
+            _mark_failure_span(span, entry.failure, entry.exc)
+        failure = entry.failure
         log.error(
             "cron schedule auto-disabled" if failure.auto_disable else "cron fire failed",
             kind="cron_fire",
             actor=failure.row["actor"],
-            worker_id=str(worker_id),
+            worker_id=str(entry.worker_id),
             schedule_id=str(failure.schedule_id),
             consecutive_failures=failure.consecutive,
             error=failure.error_text,
         )
         record_cron_failure(str(failure.schedule_id), 1)
+
+    if disabled_count_after is not None:
+        update_disabled_schedules_count(disabled_count_after)
 
     for entry in suppressed:
         if entry.reason == "singleton_collision":
