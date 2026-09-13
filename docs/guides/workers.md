@@ -285,8 +285,8 @@ queue differs from the override queue. Default `false` (override-safe).
 
 ## Concurrency model
 
-TaskQ limits concurrency at **three independent scopes**. They compose — a job
-must satisfy all three — and they are not substitutes for one another. Reaching
+TaskQ limits concurrency at **four independent scopes**. They compose — a job
+must satisfy all four — and they are not substitutes for one another. Reaching
 for the wrong one is the most common configuration mistake in production.
 
 | Layer | Knob | Scope | Strict? | Change takes effect |
@@ -299,6 +299,39 @@ for the wrong one is the most common configuration mistake in production.
 Total fleet concurrency for an actor is bounded by the *lowest* of these that
 applies. Note the process layer multiplies: `TASKQ_MAX_CONCURRENCY=8` across 5
 replicas is up to 40 concurrent jobs before any fleet-wide cap applies.
+
+### Finding the layer that actually binds
+
+Raising a cap and observing no change means you raised a layer that was not the
+binding one. Because the effective limit is the minimum across four scopes
+configured in four different places, the binding layer is usually the one you
+are not looking at:
+
+| You raised | It had no effect because | Check |
+|---|---|---|
+| `@actor(max_concurrent=...)` in code | Capacity fields are **seed-only** — a stored `actor_config` row wins and the literal is logged at `actor-config-capacity-override` (info level) | `taskq actor-config list` |
+| `actor_config.max_concurrent` via the CLI | The queue cap or a reservation is lower, or the process bound is | the queue's `max_concurrent`; `TASKQ_MAX_CONCURRENCY` per pod |
+| A queue cap | Queue caps are read **at worker startup** | restart the workers |
+| `TASKQ_MAX_CONCURRENCY` in the image | The deployed environment still carries the old value, or a workgroup child overrides it | the container's actual env; the workgroup TOML |
+
+Two mechanisms in that table deserve stating plainly, because both make a code
+change invisible at runtime:
+
+**An image deploy does not update container environment variables.** A changed
+default in code and the value the deployment actually sets are two different
+facts, and nothing reconciles them. A fleet can run for months on a
+`TASKQ_MAX_CONCURRENCY` nobody has looked at since it was first set, while the
+repository's default says something else entirely. Verify concurrency against
+the running container's environment (or the manifest that sets it), never
+against the code.
+
+**A workgroup child's concurrency comes from the TOML, not the environment.**
+The supervisor passes `--max-concurrency` on each child's command line from
+`[[workers]] max_concurrency` (default `8`, with a `[defaults]` fallback), and
+that flag overwrites the setting after the environment is loaded. So
+`TASKQ_MAX_CONCURRENCY` set on a workgroup pod is **ignored by every child** —
+raising it changes nothing at all. Tune workgroup concurrency in the TOML and
+restart the supervisor; see [workgroups.md](workgroups.md#configuration).
 
 ### Which one do I want?
 

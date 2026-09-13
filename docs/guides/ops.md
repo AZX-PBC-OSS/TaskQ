@@ -360,6 +360,11 @@ A "sync everything" job that runs for five hours:
 
 Batch-shaped work must be **chunked**. Three supported shapes:
 
+For recurring passes over a population — the cron-triggered sweep — [sweeps.md](sweeps.md) develops
+Pattern A into a full prescription: why the cron period must not become the throughput ceiling, the
+keyset-vs-`OFFSET` drift mechanism, the cursor-column rule, and the root/successor/per-item
+idempotency split that keeps a self-enqueuing chain alive.
+
 ### Pattern A — cursor chain (recommended default)
 
 Process one page per job; each job enqueues the next page. Progress is durable, per-chunk
@@ -1008,6 +1013,7 @@ mechanics of each item: [deployment.md — Production Checklist](deployment.md#p
 
 ## Related documentation
 
+- [sweeps.md](sweeps.md) — recurring passes: page/fan-out/recurse, keyset cursors, idempotency by role
 - [retries.md](retries.md) — retry policies, `start_to_close` vs `schedule_to_close`, classifier hooks
 - [workers.md](workers.md) — worker internals, concurrency model, `WorkerSettings` reference
 - [jobs-clients.md](jobs-clients.md) — enqueue/batch APIs, idempotency, dedup mechanics
