@@ -3,6 +3,7 @@
 from datetime import UTC, datetime
 from uuid import UUID
 
+import pytest
 from pydantic import BaseModel
 
 from taskq import actor
@@ -10,6 +11,7 @@ from taskq.batch import BatchHandle, EnqueueItem
 from taskq.batch_policy import AbortBatchAfter
 from taskq.client._handle import JobHandle
 from taskq.client._jobs import JobsClient
+from taskq.exceptions import PayloadValidationError
 from taskq.testing.clock import FakeClock
 from taskq.testing.in_memory import InMemoryBackend
 
@@ -24,6 +26,10 @@ class _FinalizerPayload(BaseModel):
     batch_id_str: str = ""
 
 
+class _NulStrPayload(BaseModel):
+    text: str = ""
+
+
 @actor(name="batch_policy_test_actor")
 async def _test_actor(_payload: _Payload) -> None:
     pass
@@ -31,6 +37,11 @@ async def _test_actor(_payload: _Payload) -> None:
 
 @actor(name="batch_finalizer_actor")
 async def _finalizer_actor(_payload: _FinalizerPayload) -> None:
+    pass
+
+
+@actor(name="batch_nul_test_actor")
+async def _nul_str_actor(_payload: _NulStrPayload) -> None:
     pass
 
 
@@ -202,3 +213,35 @@ class TestBatchHandleWithFinalizer:
         assert batch_row.failure_threshold is None
         assert batch_row.finalizer_job_id is not None
         assert batch_row.expected_size == 3
+
+
+class TestNulPayloadAttribution:
+    """A NUL riding in one item's payload (pydantic accepts NUL in str
+    fields, so client-side validation cannot catch it) surfaces through
+    ``JobsClient.enqueue_batch`` as the per-item-annotated
+    ``PayloadValidationError`` — the same annotation contract
+    ``_item_payload_error`` established for pydantic failures — with the
+    whole batch refused atomically."""
+
+    async def test_nul_in_one_item_names_it_through_client(self) -> None:
+        backend = _make_backend()
+        client = _make_client(backend)
+
+        # A str field pydantic happily validates (NUL is a legal codepoint
+        # in a str) — so client-side validation cannot catch it; the
+        # backend serialization layer must.
+        items = [_make_item(i) for i in range(3)]
+        items[1] = EnqueueItem(
+            actor_ref=_nul_str_actor, payload=_NulStrPayload(text="bad\x00value")
+        )
+
+        with pytest.raises(PayloadValidationError) as exc_info:
+            await client.enqueue_batch(items)
+
+        msg = str(exc_info.value)
+        assert "item 1" in msg
+        assert "payload" in msg
+        assert "batch_nul_test_actor" in msg
+        assert exc_info.value.validation_errors[0]["loc"] == ("payload",)
+        # All-or-nothing: the two clean items were not admitted.
+        assert len(backend._jobs) == 0  # type: ignore[reportPrivateUsage]  # Why: test-only admission check

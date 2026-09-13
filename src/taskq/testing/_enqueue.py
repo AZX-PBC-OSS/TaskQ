@@ -16,6 +16,7 @@ from taskq.backend._protocol import (
     JobRow,
     batch_cap_groups,
 )
+from taskq.backend._records import item_jsonb_param, item_tags_jsonb_param
 from taskq.exceptions import (
     MaxPendingExceededError,
     SingletonCollisionError,
@@ -243,6 +244,15 @@ async def _enqueue_batch(
 ) -> list[JobRow]:
     if not args_list:
         raise ValueError("args_list must not be empty")
+    # PG-tier parity for jsonb serialization failures: the PG build loop
+    # serializes every item BEFORE any SQL runs, so a NUL-bearing item
+    # rejects the whole batch with a per-item-annotated
+    # PayloadValidationError and nothing written. Without this preflight
+    # the per-item loop below admitted items 0..k-1 before item k raised
+    # a bare, unattributed ValueError -- diverging from PG on both
+    # attribution and admission. Runs before the cap preflight to match
+    # the PG statement order (build loop precedes the cap count).
+    _check_batch_jsonb(args_list)
     if enforce_max_pending:
         # All-or-nothing parity with the PG bulk tier: one aggregated
         # pre-check (existing + batch per actor) before any insert, so a
@@ -256,6 +266,21 @@ async def _enqueue_batch(
         row = await _enqueue(self, args)
         rows.append(row)
     return rows
+
+
+def _check_batch_jsonb(args_list: list[EnqueueArgs]) -> None:
+    """Serialize every batch item's jsonb-bound values with per-item
+    attribution, mirroring the PG tier's build loop.
+
+    Same helpers, so the same annotated PayloadValidationError (item
+    index, actor, field) and the same NUL_JSONB_ERROR wording; tags
+    included because the PG batch path binds them through jsonb[]
+    (see item_tags_jsonb_param).
+    """
+    for idx, args in enumerate(args_list):
+        item_jsonb_param(args.payload, idx=idx, field="payload", actor=args.actor)
+        item_jsonb_param(args.metadata, idx=idx, field="metadata", actor=args.actor)
+        item_tags_jsonb_param(args.tags, idx=idx, actor=args.actor)
 
 
 async def _check_batch_max_pending(

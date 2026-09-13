@@ -16,7 +16,6 @@ from uuid import UUID
 import structlog
 from asyncpg.exceptions import UniqueViolationError
 
-from taskq._json import dumps_jsonb_str
 from taskq.backend._protocol import (
     ConnLike,
     EnqueueArgs,
@@ -25,6 +24,8 @@ from taskq.backend._protocol import (
 )
 from taskq.backend._records import (
     _job_row_from_record,
+    item_jsonb_param,
+    item_tags_jsonb_param,
     jsonb_param,
 )
 from taskq.backend._sql_templates import SqlTemplates
@@ -808,13 +809,21 @@ async def _enqueue_batch(
     result_ttls: list[timedelta | None] = []
     tag_jsons: list[str] = []
 
-    for args in args_list:
+    # Why annotate per item during the build: this loop serializes every
+    # item BEFORE any SQL runs, so the first NUL-bearing item aborts the
+    # whole batch with nothing written. item_jsonb_param /
+    # item_tags_jsonb_param attach the per-item annotation (index, actor,
+    # field) at that raise — the same contract the client layer's
+    # _item_payload_error gives pydantic failures — instead of the bare
+    # ValueError(NUL_JSONB_ERROR) that named nothing. Admission semantics
+    # are unchanged: still all-or-nothing.
+    for idx, args in enumerate(args_list):
         ids.append(args.id)
         actors.append(args.actor)
         queues.append(args.queue)
         identity_keys.append(str(args.identity_key) if args.identity_key is not None else None)
         fairness_keys.append(args.fairness_key)
-        payloads.append(jsonb_param(args.payload) or "{}")
+        payloads.append(item_jsonb_param(args.payload, idx=idx, field="payload", actor=args.actor))
         payload_schema_vers.append(args.payload_schema_ver)
         priorities.append(args.priority)
         max_attempts_list.append(args.max_attempts)
@@ -829,7 +838,9 @@ async def _enqueue_batch(
         # None means immediate — the server stamps/decides (COALESCE in
         # enqueue_batch); there is no Python pre-decision.
         scheduled_ats.append(args.scheduled_at)
-        metadatas.append(jsonb_param(args.metadata) or "{}")
+        metadatas.append(
+            item_jsonb_param(args.metadata, idx=idx, field="metadata", actor=args.actor)
+        )
         idempotency_keys.append(
             str(args.idempotency_key) if args.idempotency_key is not None else None
         )
@@ -843,9 +854,10 @@ async def _enqueue_batch(
         # comment on jagged-array handling) — each element is parsed by
         # Postgres' jsonb_in before jsonb_array_elements_text unpacks it
         # into the text[] `tags` column, so a NUL here hits the same
-        # jsonb_in rejection as any other jsonb write; dumps_jsonb_str
-        # guards it before the value ever reaches Postgres.
-        tag_jsons.append(dumps_jsonb_str(list(args.tags)))
+        # jsonb_in rejection as any other jsonb write; the item-annotated
+        # dumps_jsonb_str wrapper guards it before the value ever reaches
+        # Postgres.
+        tag_jsons.append(item_tags_jsonb_param(args.tags, idx=idx, actor=args.actor))
 
     async def _enqueue_batch_on_conn(conn: ConnLike) -> list[JobRow]:
         if enforce_max_pending:
@@ -1025,8 +1037,14 @@ async def _enqueue_batch_fast(
     # UPDATE below stamps status/scheduled_at/schedule_to_close/
     # result_expires_at from the server clock inside the same transaction —
     # never from this process's Python clock.
+    # Same per-item annotation as _enqueue_batch's build loop: the COPY
+    # record tuples are serialized here, before any statement is issued,
+    # so a NUL-bearing item rejects the whole batch (nothing written)
+    # with the item index, actor, and field named. Tags bind as text[]
+    # (no jsonb hop on this path) and stay guarded by the EnqueueArgs
+    # construction chokepoint alone.
     records: list[tuple[object, ...]] = []
-    for args in args_list:
+    for idx, args in enumerate(args_list):
         ids.append(args.id)
         scheduled_ats.append(args.scheduled_at)
         stc_intervals.append(args.schedule_to_close_interval)
@@ -1040,7 +1058,7 @@ async def _enqueue_batch_fast(
                 args.queue,
                 str(args.identity_key) if args.identity_key is not None else None,
                 args.fairness_key,
-                jsonb_param(args.payload) or "{}",
+                item_jsonb_param(args.payload, idx=idx, field="payload", actor=args.actor),
                 args.payload_schema_ver,
                 args.priority,
                 0,
@@ -1066,7 +1084,7 @@ async def _enqueue_batch_fast(
                 str(args.idempotency_key) if args.idempotency_key is not None else None,
                 args.trace_id,
                 args.span_id,
-                jsonb_param(args.metadata) or "{}",
+                item_jsonb_param(args.metadata, idx=idx, field="metadata", actor=args.actor),
                 list(args.tags),
             )
         )
