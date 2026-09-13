@@ -29,6 +29,7 @@ from typing import Any
 
 import asyncpg
 import pytest
+import structlog
 from pydantic import BaseModel
 
 from taskq import actor
@@ -38,11 +39,13 @@ from taskq.client._args import build_enqueue_args
 from taskq.client._enqueuer import SubJobEnqueuer
 from taskq.client._jobs import JobsClient
 from taskq.exceptions import (
+    BackpressureError,
     BatchMaxPendingExceededError,
     MaxPendingExceededError,
     PartialBatchError,
 )
 from taskq.testing.clock import FakeClock
+from taskq.testing.fixtures import ModulePgSchema
 from taskq.testing.in_memory import InMemoryBackend
 
 from .test_enqueue_coverage import (
@@ -67,6 +70,11 @@ async def _healthy_ref(_payload: _Payload) -> None:
 
 @actor(name="cap_partition_capped", max_pending=1)
 async def _capped_ref(_payload: _Payload) -> None:
+    pass
+
+
+@actor(name="cap_partition_capped_b", max_pending=1)
+async def _capped_b_ref(_payload: _Payload) -> None:
     pass
 
 
@@ -154,6 +162,91 @@ async def test_backend_enqueue_batch_exact_fill_is_admitted() -> None:
 
     assert len(rows) == 1
     assert _stored_count(backend, _capped_ref.name) == 2
+
+
+async def test_backend_enqueue_batch_multi_refusal_attribution() -> None:
+    """TWO over-cap actors in one mixed batch (every earlier #149 test
+    refuses exactly one): ``refusals`` names BOTH, in group order (first
+    appearance in the caller's list), each with its own per-actor
+    ``refused_indices``, and ``admitted_count`` counts only the healthy
+    actor's items — everything a caller needs to retry several refused
+    groups at once."""
+    backend = _make_backend()
+    await _seed_one_pending(backend, _capped_ref)
+    await _seed_one_pending(backend, _capped_b_ref)
+
+    args_list = [
+        _args(_healthy_ref, 0),
+        _args(_capped_ref, 1),
+        _args(_capped_b_ref, 2),
+        _args(_healthy_ref, 3),
+        _args(_capped_ref, 4),
+        _args(_capped_b_ref, 5),
+        _args(_healthy_ref, 6),
+    ]
+
+    with pytest.raises(BatchMaxPendingExceededError) as exc_info:
+        await backend.enqueue_batch(args_list)
+
+    err = exc_info.value
+    # Group order = first appearance: capped (item 1) before capped_b
+    # (item 2) — the order a caller walking refusals alongside
+    # refused_indices relies on.
+    assert [r.actor for r in err.refusals] == [_capped_ref.name, _capped_b_ref.name]
+    assert err.refused_indices == {
+        _capped_ref.name: [1, 4],
+        _capped_b_ref.name: [2, 5],
+    }
+    assert err.admitted_count == 3
+    assert _stored_count(backend, _healthy_ref.name) == 3
+    assert _stored_count(backend, _capped_ref.name) == 1
+    assert _stored_count(backend, _capped_b_ref.name) == 1
+    # Handler-safety rationale, pinned: the docstring's "deliberately not
+    # a MaxPendingExceededError subclass" is a contract callers depend on
+    # (handlers for that type assume nothing was enqueued) — and the
+    # shared BackpressureError base still catches it for generic handlers.
+    assert not isinstance(err, MaxPendingExceededError)
+    assert isinstance(err, BackpressureError)
+
+
+async def test_backend_enqueue_batch_refusal_includes_would_dedupe_items() -> None:
+    """Whole-group refusal is whole-GROUP: an over-cap actor's items are
+    refused even when one of them would have deduped for free against a
+    stored idempotency pair (the aggregate discount cannot admit PART of
+    a group). The stored dedup row must be untouched, and the would-dedupe
+    item's index must appear in refused_indices — a caller retrying only
+    the refused indices re-sends it, and it dedupes again for free."""
+    backend = _make_backend()
+    seed = build_enqueue_args(
+        _capped_ref,
+        _Payload(value=99),
+        idempotency_key="dedup-key",
+        idempotency_scope="",
+    )
+    seeded = await backend.enqueue(seed)
+    # The seed fills the actor's single cap slot.
+
+    args_list = [
+        build_enqueue_args(
+            _capped_ref,
+            _Payload(value=0),
+            idempotency_key="dedup-key",
+            idempotency_scope="",
+        ),
+        _args(_capped_ref, 1),
+    ]
+
+    with pytest.raises(BatchMaxPendingExceededError) as exc_info:
+        await backend.enqueue_batch(args_list)
+
+    err = exc_info.value
+    # Discount math: existing 1 + admitted (2 items - 1 deduped) = 2 > 1
+    # → the whole group refuses, INCLUDING the would-dedupe item.
+    assert err.refused_indices == {_capped_ref.name: [0, 1]}
+    assert err.admitted_count == 0
+    # The stored dedup row is untouched: nothing new for this actor.
+    assert backend._jobs[seeded.id].id == seeded.id
+    assert _stored_count(backend, _capped_ref.name) == 1
 
 
 async def test_backend_enqueue_batch_discounts_stored_idempotency_pairs() -> None:
@@ -382,3 +475,130 @@ async def test_pg_enqueue_batch_abort_mode_refuses_whole_call() -> None:
     assert exc_info.value.actor == args_list[1].actor
     # Nothing reached the INSERT: the refusal fired at admission time.
     assert not any("RETURNING id, actor" in c[0] for c in conn.fetch_calls)
+
+
+async def test_pg_partition_refusal_logs_and_records_per_refused_actor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A partitioned bulk refusal is a producer-pressure event PER refused
+    actor: one ``max-pending-exceeded`` warning and one
+    ``record_backpressure_error(actor, kind="max_pending")`` call each —
+    parity with the single-enqueue path's log+metric pair. Neither was
+    pinned by the #149 tests; an operator's backpressure dashboards read
+    these, so a silent regression would blank them."""
+    from taskq.backend import _enqueue as enqueue_mod
+
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        enqueue_mod,
+        "record_backpressure_error",
+        lambda actor, *, kind="max_pending": calls.append((actor, kind)),
+    )
+
+    healthy = replace(_args(_healthy_ref, 0), actor="cap_partition_pg_log_healthy")
+    capped_a = replace(_args(_capped_ref, 1), actor="cap_partition_pg_log_capped_a")
+    capped_b = replace(_args(_capped_b_ref, 2), actor="cap_partition_pg_log_capped_b")
+    args_list = [healthy, capped_a, capped_b]
+
+    def _rec(args: Any) -> _Record:
+        return _Record({**_full_record(job_id=args.id), "actor": args.actor})
+
+    conn = _FakeEnqueueConn(
+        fetch_map={
+            # count_pending_jobs: both capped actors hold one row each.
+            "GROUP BY actor": [
+                _Record({"actor": capped_a.actor, "cnt": 1}),
+                _Record({"actor": capped_b.actor, "cnt": 1}),
+            ],
+            # The admitted healthy item's RETURNING + full-row fetch.
+            "RETURNING id, actor": [_rec(healthy)],
+            "id = ANY($1::uuid[])": [_rec(healthy)],
+        }
+    )
+
+    with structlog.testing.capture_logs() as logs:
+        with pytest.raises(BatchMaxPendingExceededError):
+            await _enqueue_batch(
+                None,
+                _SQL,
+                _SCHEMA_LABEL,
+                args_list,
+                connection=conn,  # type: ignore[arg-type]  # Why: fake conn models a caller-owned open transaction
+            )
+
+    # One metric per refused actor, in refusals (group) order.
+    assert calls == [
+        (capped_a.actor, "max_pending"),
+        (capped_b.actor, "max_pending"),
+    ]
+    # One warning per refused actor, carrying the refusal's facts.
+    entries = [e for e in logs if e["event"] == "max-pending-exceeded"]
+    assert [(e["actor"], e["log_level"]) for e in entries] == [
+        (capped_a.actor, "warning"),
+        (capped_b.actor, "warning"),
+    ]
+    assert all(e["current_count"] == 1 and e["max_pending"] == 1 for e in entries)
+
+
+# ── PG integration tier: caller-owned transaction durability ────────────
+
+
+@pytest.mark.integration
+async def test_pg_caller_txn_admitted_items_follow_commit_and_rollback(
+    module_pg_schema: ModulePgSchema,
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_pool: asyncpg.Pool,
+) -> None:
+    """Durability of the admitted items on a caller-owned open
+    transaction is the CALLER's commit/rollback decision: enqueue_batch
+    inserts the within-cap actors' items and raises the typed refusal
+    with the transaction still open and valid. Commit keeps the admitted
+    items; rollback discards them. The in-memory mirror cannot prove
+    durability — only real Postgres can."""
+    from .test_rt_cron_harness import count_jobs, cron_settings, pool_backend
+
+    schema: str = module_pg_schema.schema_name
+    backend = pool_backend(cron_settings(schema), module_pg_pool)
+    client = JobsClient(backend)
+    # One stored pending row fills the capped actor's single slot.
+    await backend.enqueue(_args(_capped_ref, 99))
+
+    mixed = [
+        EnqueueItem(actor_ref=_healthy_ref, payload=_Payload(value=0)),
+        EnqueueItem(actor_ref=_capped_ref, payload=_Payload(value=1)),
+        EnqueueItem(actor_ref=_healthy_ref, payload=_Payload(value=2)),
+    ]
+
+    # Commit scenario: the refusal raises INSIDE the open transaction,
+    # the admitted items are inserted but uncommitted, and commit makes
+    # them durable.
+    tx = clean_pg_conn.transaction()
+    await tx.start()
+    try:
+        with pytest.raises(BatchMaxPendingExceededError) as exc_info:
+            await client.enqueue_batch(mixed, connection=clean_pg_conn)
+    except BaseException:
+        await tx.rollback()
+        raise
+    await tx.commit()
+
+    assert exc_info.value.refused_indices == {_capped_ref.name: [1]}
+    assert exc_info.value.admitted_count == 2
+    assert await count_jobs(clean_pg_conn, schema, _healthy_ref.name) == 2
+    assert await count_jobs(clean_pg_conn, schema, _capped_ref.name) == 1
+
+    # Rollback scenario: the same batch shape inside a second
+    # transaction, rolled back after the refusal — the admitted items
+    # are discarded; the committed scenario's rows and the seed remain.
+    tx = clean_pg_conn.transaction()
+    await tx.start()
+    try:
+        with pytest.raises(BatchMaxPendingExceededError):
+            await client.enqueue_batch(mixed, connection=clean_pg_conn)
+        await tx.rollback()
+    except BaseException:
+        await tx.rollback()
+        raise
+
+    assert await count_jobs(clean_pg_conn, schema, _healthy_ref.name) == 2
+    assert await count_jobs(clean_pg_conn, schema, _capped_ref.name) == 1
