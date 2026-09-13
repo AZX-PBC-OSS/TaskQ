@@ -460,6 +460,7 @@ Do **not** change `get_batch`'s signature. Add a sibling that cannot be ambiguou
 ```python
 type BatchLookup = BatchFound | BatchPruned | BatchNeverExisted
 
+
 async def lookup_batch(self, batch_id: UUID) -> BatchLookup: ...
 ```
 
@@ -660,7 +661,9 @@ supplied and the source confirms.
 provably-advancing cursor — and **refuses** to enqueue when the cursor has not advanced:
 
 ```python
-async def enqueue_next_page(ctx, actor_ref, *, run_id: str, cursor: C, previous: C) -> JobHandle | None:
+async def enqueue_next_page(
+    ctx, actor_ref, *, run_id: str, cursor: C, previous: C
+) -> JobHandle | None:
     """Enqueue the successor page. Returns None (and logs) when `cursor == previous`,
     rather than enqueueing a link that will re-read an unmoved head."""
 ```
