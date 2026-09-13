@@ -186,12 +186,29 @@ def _discover_write_statements() -> dict[str, str]:
     Re-exports (``taskq.backend.postgres`` re-exporting
     ``taskq.backend._sweeps`` constants, etc.) resolve to the same str
     object and are deduplicated by identity.
+
+    Modules whose optional dependencies are missing (``contrib.prometheus``
+    and friends) are skipped rather than failing the walk: CI legs that
+    install every extra run the complete walk, so a module skipped here on
+    a partial-extra leg is still audited there. An import failure is not
+    silently swallowed either — the known-guarded shapes (the extras'
+    documented ImportErrors) are skipped; anything else re-raises.
     """
     found: dict[str, str] = {}
     seen_ids: set[int] = set()
     modules = [taskq]
     for info in pkgutil.walk_packages(taskq.__path__, prefix="taskq."):
-        modules.append(importlib.import_module(info.name))
+        try:
+            modules.append(importlib.import_module(info.name))
+        except ImportError as exc:
+            # Optional-extra guards raise ImportError with install
+            # instructions at import time (contrib.prometheus, aad, vault,
+            # aws, saml). A leg without the extra cannot audit those
+            # modules' constants; the --all-extras legs cover them.
+            known_extras = ("taskq[",)
+            if exc.args and isinstance(exc.args[0], str) and exc.args[0].startswith(known_extras):
+                continue
+            raise
     for mod in modules:
         for name, val in inspect.getmembers(mod, lambda v: isinstance(v, str)):
             if name.startswith("__") or not _WRITE_RE.search(val) or id(val) in seen_ids:
