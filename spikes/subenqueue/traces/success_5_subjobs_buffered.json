@@ -1,0 +1,99 @@
+{
+  "semantics": "buffered",
+  "child_args": [
+    "--subenqueues",
+    "5",
+    "--sleep-ms",
+    "20"
+  ],
+  "child_returncode": 0,
+  "child_done_msg": {
+    "op": "done",
+    "ok": true
+  },
+  "timed_out": false,
+  "subenqueues_received": 5,
+  "subenqueues_flushed_to_backend": 5,
+  "subenqueues_discarded": 0,
+  "ack_errors": [],
+  "parent_terminal_status": "succeeded",
+  "backend_jobs": [
+    {
+      "id": "01a0981a-96f3-76c2-9649-9dd4907bb248",
+      "actor": "spike_parent_actor",
+      "queue": "default",
+      "status": "succeeded",
+      "payload": {
+        "n": 0
+      },
+      "metadata": {},
+      "created_at": "2026-09-13 00:11:14.565968+00:00"
+    },
+    {
+      "id": "01a0981a-972b-79f2-88a4-0bdec0f17a83",
+      "actor": "spike_sub_actor",
+      "queue": "default",
+      "status": "pending",
+      "payload": {
+        "n": 0
+      },
+      "metadata": {
+        "parent_bridge": "buffered"
+      },
+      "created_at": "2026-09-13 00:11:14.694596+00:00"
+    },
+    {
+      "id": "01a0981a-973f-7ff2-8772-b9df5a94a703",
+      "actor": "spike_sub_actor",
+      "queue": "default",
+      "status": "pending",
+      "payload": {
+        "n": 1
+      },
+      "metadata": {
+        "parent_bridge": "buffered"
+      },
+      "created_at": "2026-09-13 00:11:14.694692+00:00"
+    },
+    {
+      "id": "01a0981a-9755-7341-b0af-5988869959ad",
+      "actor": "spike_sub_actor",
+      "queue": "default",
+      "status": "pending",
+      "payload": {
+        "n": 2
+      },
+      "metadata": {
+        "parent_bridge": "buffered"
+      },
+      "created_at": "2026-09-13 00:11:14.694751+00:00"
+    },
+    {
+      "id": "01a0981a-976d-78e0-a05c-4d1a2e623d34",
+      "actor": "spike_sub_actor",
+      "queue": "default",
+      "status": "pending",
+      "payload": {
+        "n": 3
+      },
+      "metadata": {
+        "parent_bridge": "buffered"
+      },
+      "created_at": "2026-09-13 00:11:14.694789+00:00"
+    },
+    {
+      "id": "01a0981a-9783-7001-ac2c-928ef7171823",
+      "actor": "spike_sub_actor",
+      "queue": "default",
+      "status": "pending",
+      "payload": {
+        "n": 4
+      },
+      "metadata": {
+        "parent_bridge": "buffered"
+      },
+      "created_at": "2026-09-13 00:11:14.694823+00:00"
+    }
+  ],
+  "backend_job_count": 6
+}

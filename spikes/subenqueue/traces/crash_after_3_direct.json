@@ -1,0 +1,66 @@
+{
+  "semantics": "direct",
+  "child_args": [
+    "--subenqueues",
+    "5",
+    "--sleep-ms",
+    "20",
+    "--crash-after",
+    "3"
+  ],
+  "child_returncode": 1,
+  "child_done_msg": null,
+  "timed_out": false,
+  "subenqueues_received": 3,
+  "subenqueues_flushed_to_backend": 0,
+  "subenqueues_discarded": 0,
+  "ack_errors": [],
+  "parent_terminal_status": "failed",
+  "backend_jobs": [
+    {
+      "id": "01a0981a-9f7e-7641-b685-83fa53749bca",
+      "actor": "spike_parent_actor",
+      "queue": "default",
+      "status": "failed",
+      "payload": {
+        "n": 0
+      },
+      "metadata": {},
+      "created_at": "2026-09-13 00:11:16.748846+00:00"
+    },
+    {
+      "id": "01a0981a-9fb2-7791-9930-73c4160fd65f",
+      "actor": "spike_sub_actor",
+      "queue": "default",
+      "status": "pending",
+      "payload": {
+        "n": 0
+      },
+      "metadata": {},
+      "created_at": "2026-09-13 00:11:16.786205+00:00"
+    },
+    {
+      "id": "01a0981a-9fca-7e41-b3ab-d2ef2360132b",
+      "actor": "spike_sub_actor",
+      "queue": "default",
+      "status": "pending",
+      "payload": {
+        "n": 1
+      },
+      "metadata": {},
+      "created_at": "2026-09-13 00:11:16.810702+00:00"
+    },
+    {
+      "id": "01a0981a-9fe2-78e3-8f0b-cce4ea20ef41",
+      "actor": "spike_sub_actor",
+      "queue": "default",
+      "status": "pending",
+      "payload": {
+        "n": 2
+      },
+      "metadata": {},
+      "created_at": "2026-09-13 00:11:16.834660+00:00"
+    }
+  ],
+  "backend_job_count": 4
+}

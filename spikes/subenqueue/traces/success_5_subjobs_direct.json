@@ -1,0 +1,89 @@
+{
+  "semantics": "direct",
+  "child_args": [
+    "--subenqueues",
+    "5",
+    "--sleep-ms",
+    "20"
+  ],
+  "child_returncode": 0,
+  "child_done_msg": {
+    "op": "done",
+    "ok": true
+  },
+  "timed_out": false,
+  "subenqueues_received": 5,
+  "subenqueues_flushed_to_backend": 0,
+  "subenqueues_discarded": 0,
+  "ack_errors": [],
+  "parent_terminal_status": "succeeded",
+  "backend_jobs": [
+    {
+      "id": "01a0981a-9da6-7023-b20d-8a19fa17d7dc",
+      "actor": "spike_parent_actor",
+      "queue": "default",
+      "status": "succeeded",
+      "payload": {
+        "n": 0
+      },
+      "metadata": {},
+      "created_at": "2026-09-13 00:11:16.276835+00:00"
+    },
+    {
+      "id": "01a0981a-9de3-7fc1-a754-35bdd93a8649",
+      "actor": "spike_sub_actor",
+      "queue": "default",
+      "status": "pending",
+      "payload": {
+        "n": 0
+      },
+      "metadata": {},
+      "created_at": "2026-09-13 00:11:16.323359+00:00"
+    },
+    {
+      "id": "01a0981a-9df9-7391-8b0a-8d099ef44ef3",
+      "actor": "spike_sub_actor",
+      "queue": "default",
+      "status": "pending",
+      "payload": {
+        "n": 1
+      },
+      "metadata": {},
+      "created_at": "2026-09-13 00:11:16.345894+00:00"
+    },
+    {
+      "id": "01a0981a-9e12-7070-ac0e-7df97a92c182",
+      "actor": "spike_sub_actor",
+      "queue": "default",
+      "status": "pending",
+      "payload": {
+        "n": 2
+      },
+      "metadata": {},
+      "created_at": "2026-09-13 00:11:16.370928+00:00"
+    },
+    {
+      "id": "01a0981a-9e28-74d0-8809-cb2860757541",
+      "actor": "spike_sub_actor",
+      "queue": "default",
+      "status": "pending",
+      "payload": {
+        "n": 3
+      },
+      "metadata": {},
+      "created_at": "2026-09-13 00:11:16.392385+00:00"
+    },
+    {
+      "id": "01a0981a-9e3e-74c1-a35c-01b4b6dd226b",
+      "actor": "spike_sub_actor",
+      "queue": "default",
+      "status": "pending",
+      "payload": {
+        "n": 4
+      },
+      "metadata": {},
+      "created_at": "2026-09-13 00:11:16.414396+00:00"
+    }
+  ],
+  "backend_job_count": 6
+}

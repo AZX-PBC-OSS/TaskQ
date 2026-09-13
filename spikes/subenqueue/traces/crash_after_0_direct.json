@@ -1,0 +1,33 @@
+{
+  "semantics": "direct",
+  "child_args": [
+    "--subenqueues",
+    "5",
+    "--sleep-ms",
+    "20",
+    "--crash-after",
+    "0"
+  ],
+  "child_returncode": 1,
+  "child_done_msg": null,
+  "timed_out": false,
+  "subenqueues_received": 0,
+  "subenqueues_flushed_to_backend": 0,
+  "subenqueues_discarded": 0,
+  "ack_errors": [],
+  "parent_terminal_status": "failed",
+  "backend_jobs": [
+    {
+      "id": "01a0981a-a12c-7b00-8d58-2070b9850cd7",
+      "actor": "spike_parent_actor",
+      "queue": "default",
+      "status": "failed",
+      "payload": {
+        "n": 0
+      },
+      "metadata": {},
+      "created_at": "2026-09-13 00:11:17.178614+00:00"
+    }
+  ],
+  "backend_job_count": 1
+}

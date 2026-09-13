@@ -1,0 +1,126 @@
+[
+  {
+    "scenario": "success_5_subjobs",
+    "semantics": "buffered",
+    "child_returncode": 0,
+    "child_done_msg": {
+      "op": "done",
+      "ok": true
+    },
+    "subenqueues_received": 5,
+    "subjobs_enqueued": 5,
+    "subjob_payloads": [
+      0,
+      1,
+      2,
+      3,
+      4
+    ],
+    "parent_status": "succeeded",
+    "trace": "success_5_subjobs_buffered.json"
+  },
+  {
+    "scenario": "crash_after_3",
+    "semantics": "buffered",
+    "child_returncode": 1,
+    "child_done_msg": null,
+    "subenqueues_received": 3,
+    "subjobs_enqueued": 0,
+    "subjob_payloads": [],
+    "parent_status": "failed",
+    "trace": "crash_after_3_buffered.json"
+  },
+  {
+    "scenario": "crash_after_0",
+    "semantics": "buffered",
+    "child_returncode": 1,
+    "child_done_msg": null,
+    "subenqueues_received": 0,
+    "subjobs_enqueued": 0,
+    "subjob_payloads": [],
+    "parent_status": "failed",
+    "trace": "crash_after_0_buffered.json"
+  },
+  {
+    "scenario": "fail_after_5",
+    "semantics": "buffered",
+    "child_returncode": 0,
+    "child_done_msg": {
+      "op": "done",
+      "ok": false,
+      "error": "ChildFailure: scripted failure"
+    },
+    "subenqueues_received": 5,
+    "subjobs_enqueued": 0,
+    "subjob_payloads": [],
+    "parent_status": "failed",
+    "trace": "fail_after_5_buffered.json"
+  },
+  {
+    "scenario": "success_5_subjobs",
+    "semantics": "direct",
+    "child_returncode": 0,
+    "child_done_msg": {
+      "op": "done",
+      "ok": true
+    },
+    "subenqueues_received": 5,
+    "subjobs_enqueued": 5,
+    "subjob_payloads": [
+      0,
+      1,
+      2,
+      3,
+      4
+    ],
+    "parent_status": "succeeded",
+    "trace": "success_5_subjobs_direct.json"
+  },
+  {
+    "scenario": "crash_after_3",
+    "semantics": "direct",
+    "child_returncode": 1,
+    "child_done_msg": null,
+    "subenqueues_received": 3,
+    "subjobs_enqueued": 3,
+    "subjob_payloads": [
+      0,
+      1,
+      2
+    ],
+    "parent_status": "failed",
+    "trace": "crash_after_3_direct.json"
+  },
+  {
+    "scenario": "crash_after_0",
+    "semantics": "direct",
+    "child_returncode": 1,
+    "child_done_msg": null,
+    "subenqueues_received": 0,
+    "subjobs_enqueued": 0,
+    "subjob_payloads": [],
+    "parent_status": "failed",
+    "trace": "crash_after_0_direct.json"
+  },
+  {
+    "scenario": "fail_after_5",
+    "semantics": "direct",
+    "child_returncode": 0,
+    "child_done_msg": {
+      "op": "done",
+      "ok": false,
+      "error": "ChildFailure: scripted failure"
+    },
+    "subenqueues_received": 5,
+    "subjobs_enqueued": 5,
+    "subjob_payloads": [
+      0,
+      1,
+      2,
+      3,
+      4
+    ],
+    "parent_status": "failed",
+    "trace": "fail_after_5_direct.json"
+  }
+]
