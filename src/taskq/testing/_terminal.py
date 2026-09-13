@@ -99,6 +99,14 @@ async def _mark_succeeded(
     stored_result: dict[str, object] | None
     result_size_bytes: int | None
     if result_bytes is not None:
+        if not result_bytes:
+            # Mirror the PG backend: empty bytes are never valid orjson
+            # output and would bind as '' (invalid jsonb) — raise the same
+            # ValueError here so the testing backend is observable-equivalent.
+            raise ValueError(
+                "result_bytes must be non-empty orjson output (taskq._json.dumps); "
+                "pass result for the dict form or omit both for a NULL result"
+            )
         if _encoded_has_nul(result_bytes):
             raise ValueError(NUL_JSONB_ERROR)
         stored_result = loads(result_bytes)

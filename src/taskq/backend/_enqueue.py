@@ -584,7 +584,7 @@ async def _enqueue_batch(
     tag_jsons: list[str] = []
 
     for args in args_list:
-        ids.append(UUID(bytes=args.id.bytes))
+        ids.append(args.id)
         actors.append(args.actor)
         queues.append(args.queue)
         identity_keys.append(str(args.identity_key) if args.identity_key is not None else None)
@@ -681,7 +681,7 @@ async def _enqueue_batch(
 
         collision_pairs: list[tuple[str, str]] = []
         for args in args_list:
-            if args.idempotency_key is not None and UUID(bytes=args.id.bytes) not in inserted_ids:
+            if args.idempotency_key is not None and args.id not in inserted_ids:
                 collision_pairs.append((args.idempotency_scope, str(args.idempotency_key)))
 
         new_item_ids = list(inserted_ids)
@@ -692,7 +692,10 @@ async def _enqueue_batch(
                 new_item_ids,
             )
             for rec in recs:
-                full_new_recs[UUID(bytes=rec["id"].bytes)] = rec
+                # Why no UUID(bytes=...) reconstruction: asyncpg's uuid codec
+                # already returns stdlib uuid.UUID — same assumption the
+                # inserted_ids set above makes.
+                full_new_recs[rec["id"]] = rec
 
         existing_by_idem: dict[tuple[str, str], object] = {}
         if collision_pairs:
@@ -709,7 +712,7 @@ async def _enqueue_batch(
 
         result: list[JobRow] = []
         for args in args_list:
-            arg_uuid = UUID(bytes=args.id.bytes)
+            arg_uuid = args.id
             if arg_uuid in full_new_recs:
                 result.append(_job_row_from_record(full_new_recs[arg_uuid]))  # type: ignore[arg-type]  # Why: asyncpg Record is duck-typed; _job_row_from_record accepts asyncpg.Record at runtime
             elif (
@@ -799,7 +802,7 @@ async def _enqueue_batch_fast(
     # never from this process's Python clock.
     records: list[tuple[object, ...]] = []
     for args in args_list:
-        ids.append(UUID(bytes=args.id.bytes))
+        ids.append(args.id)
         scheduled_ats.append(args.scheduled_at)
         stc_intervals.append(args.schedule_to_close_interval)
         stc_raws.append(args.schedule_to_close)
@@ -807,7 +810,7 @@ async def _enqueue_batch_fast(
 
         records.append(
             (
-                UUID(bytes=args.id.bytes),
+                args.id,
                 args.actor,
                 args.queue,
                 str(args.identity_key) if args.identity_key is not None else None,

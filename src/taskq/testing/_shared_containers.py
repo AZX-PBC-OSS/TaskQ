@@ -46,7 +46,6 @@ asyncpg/testcontainers/pytest.
 
 from __future__ import annotations
 
-import json
 import os
 import re
 from collections.abc import Generator, Iterable, Mapping
@@ -55,6 +54,9 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Protocol, cast
+
+from taskq._json import dumps_str
+from taskq._json import loads as _json_loads
 
 # Ryuk must not manage the shared containers: testcontainers' reaper removes a
 # container when the *registering* process exits, and the creator worker can
@@ -666,7 +668,7 @@ def _read_holders(path: Path) -> dict[str, list[int]]:
     "nothing is held": the same self-healing tolerance the counters use."""
     raw: object = None
     with suppress(OSError, ValueError):
-        raw = json.loads(path.read_text())
+        raw = _json_loads(path.read_text())
     if not isinstance(raw, dict):
         return {}
     holders: dict[str, list[int]] = {}
@@ -702,7 +704,7 @@ def claim_container_holders(
         already_held = any(container_id in holders for container_id in ids)
         for container_id in ids:
             holders.setdefault(container_id, []).append(holder)
-        _atomic_write_text(path, json.dumps(holders))
+        _atomic_write_text(path, dumps_str(holders))
         return already_held
 
 
@@ -722,7 +724,7 @@ def release_container_holders(
                 remaining.remove(holder)
             if not remaining:
                 holders.pop(container_id, None)
-        _atomic_write_text(path, json.dumps(holders))
+        _atomic_write_text(path, dumps_str(holders))
         return not any(container_id in holders for container_id in ids)
 
 
@@ -730,7 +732,7 @@ def _recorded_pair_is(info_path: Path, info: SharedServices) -> bool:
     """Whether the state file still names *info*'s pair — the guard on unlinking it,
     since another worker's fresh start may already have replaced it."""
     with suppress(OSError, ValueError, TypeError):
-        return SharedServices(**json.loads(info_path.read_text())) == info
+        return SharedServices(**_json_loads(info_path.read_text())) == info
     return False
 
 
@@ -796,7 +798,7 @@ def shared_service_pair(state_dir: Path) -> Generator[SharedServices, None, None
         fresh_start_reason: str | None = None
         if info_path.exists():
             try:
-                candidate = SharedServices(**json.loads(info_path.read_text()))
+                candidate = SharedServices(**_json_loads(info_path.read_text()))
             except (ValueError, TypeError):
                 candidate = None  # corrupt/torn state file: start fresh below
             if candidate is None:
@@ -822,7 +824,7 @@ def shared_service_pair(state_dir: Path) -> Generator[SharedServices, None, None
                     fresh_start_reason = "recorded-pair-unheld"
         if info is None:
             info = start_shared_services()
-            _atomic_write_text(info_path, json.dumps(asdict(info)))
+            _atomic_write_text(info_path, dumps_str(asdict(info)))
             # The Dragonfly's logical DBs die with the container: a fresh pair means a
             # fresh DB space, so the counter starts from zero again (a mid-invocation
             # fresh start would otherwise march toward exhaustion on dead DBs).

@@ -116,6 +116,35 @@ def test_caller_supplied_cron_schedule_id_is_stripped_from_batch_items() -> None
         assert "batch_id" in args.metadata
 
 
+def test_batch_stamp_param_cannot_resurrect_forged_stamps() -> None:
+    """``stamp_batch_id`` sits INSIDE the strip boundary, not after it.
+
+    The batch paths pass the library's batch_id into
+    ``build_enqueue_args`` directly (``stamp_batch_id``) instead of
+    re-constructing args with ``replace`` after the call — one frozen
+    dataclass construction per item instead of two. The pin: the strip
+    must still run first, so a forged ``batch_id`` on item metadata loses
+    to the library's stamp and a forged ``cron_schedule_id`` is still
+    stripped even when stamping is in play.
+    """
+    forged_batch = str(new_uuid())
+    victim_schedule = str(new_uuid())
+    args = build_enqueue_args(
+        _forgery_actor,
+        _DecoyPayload(),
+        metadata={"batch_id": forged_batch, "cron_schedule_id": victim_schedule},
+        stamp_batch_id="real-batch",
+    )
+    assert args.metadata.get("batch_id") == "real-batch", (
+        "the strip must run before the stamp: a caller-supplied batch_id "
+        "must not survive even when the library stamps its own"
+    )
+    assert "cron_schedule_id" not in args.metadata, (
+        "stamping a batch_id must not reopen the cron_schedule_id forgery "
+        f"the strip exists to close (victim schedule {victim_schedule})"
+    )
+
+
 class _PinnedDueConn:
     """Due-bound-pinning wrapper (same shape as the parity-DST drive's).
 

@@ -72,12 +72,23 @@ def dumps(value: Any, /) -> bytes:
 
     Requires ``str`` dict keys: ``OPT_NON_STR_KEYS`` is deliberately not
     set, so a dict with ``int`` (or other non-``str``) keys raises
-    ``TypeError`` instead of being silently coerced to strings. All
-    TaskQ-internal call sites pass caller-supplied ``dict[str, object]``
-    payloads/metadata, which pydantic/validation already coerces to
-    string keys. Dropping the flag is 1.29-1.73x faster on str-keyed
-    input (its only effect there). NUL handling (``dumps_jsonb_str``)
-    and all other behaviour are unchanged.
+    ``TypeError`` instead of being silently coerced to strings. Dropping
+    the flag is 1.29-1.73x faster on str-keyed input (its only effect
+    there).
+
+    This is a contract change for raw (unvalidated) caller dicts —
+    ``jobs.enqueue(metadata={1: ...})``, an actor returning ``{1: ...}``,
+    and ``ctx.progress(data={1: ...})`` (whose size check and PG flush
+    dump the dict directly) previously serialized via silent ``{"1": ...}``
+    coercion and now raise ``TypeError``. Pydantic-validated payloads are
+    unaffected: ``dict[str, ...]`` model fields REJECT non-str keys at
+    validation (they do not coerce), so a payload that reaches
+    :class:`~taskq.backend._protocol.EnqueueArgs` through
+    ``jobs.enqueue`` already has string keys. Non-str keys were always
+    lossy on the wire — JSON objects and PG ``jsonb`` can only carry
+    string keys — so failing fast surfaces at the boundary what used to
+    surface as a silently rewritten key on read-back. NUL handling
+    (``dumps_jsonb_str``) and all other behaviour are unchanged.
     """
     return orjson.dumps(
         value,

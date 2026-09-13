@@ -12,7 +12,7 @@ from uuid import UUID
 import structlog
 from opentelemetry import trace
 
-from taskq._json import dumps_str
+from taskq._json import dumps
 from taskq.obs._redact_exc import (
     EXCEPTION_MESSAGE_FIELDS,
     EXCEPTION_TRACEBACK_FIELDS,
@@ -335,5 +335,8 @@ def redact_payload(payload: object) -> str:
     Raw payload content does not appear in the return value.  Deterministic
     for the same input.
     """
-    serialized = dumps_str(payload).encode()
+    # Why bytes directly, not dumps_str(...).encode(): the hash consumes
+    # bytes, and dumps() already produces them — the str round-trip was a
+    # decode+encode pair per redacted log line.
+    serialized = dumps(payload)
     return hashlib.sha256(serialized).hexdigest()[:16]

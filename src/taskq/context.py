@@ -111,6 +111,11 @@ class JobContext[P: BaseModel]:
         flush ticks are coalesced: only the latest value for each field
         reaches Postgres. ``seq`` is strictly monotone across calls.
 
+        ``data`` must have ``str`` dict keys (nested too): the size check
+        and the PG flush serialize it directly, and a non-``str`` key
+        raises ``TypeError`` (JSON and ``jsonb`` cannot carry non-string
+        keys) where it previously would have been silently coerced.
+
         The Redis publish is genuinely fire-and-forget: it may complete out
         of order relative to other in-flight publishes for the same job.
         Consumers reading the SSE/pub-sub stream already discard any event

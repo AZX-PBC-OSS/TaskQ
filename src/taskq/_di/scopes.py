@@ -24,6 +24,7 @@ from taskq._di.scope import Scope
 from taskq._di.solver import solve_dependencies
 from taskq._di.types import FactoryShape, ProviderEntry, ProviderLifecycle
 from taskq._di.types import ScopeContainer as ScopeContainerProtocol
+from taskq._shield import shield_with_retrieval
 from taskq.context import JobContext
 from taskq.settings import WorkerSettings
 
@@ -485,7 +486,10 @@ async def build_actor_scope(
         # resource leaks it. CancelledError after the shielded
         # aclose finishes is re-raised to honor the outer cancel.
         try:
-            await asyncio.shield(transient_scope.aclose())
+            # shield_with_retrieval, not plain asyncio.shield: a detached
+            # teardown that fails under a double cancel must have its
+            # outcome retrieved and logged, not lost (see taskq._shield).
+            await shield_with_retrieval(transient_scope.aclose())
         except asyncio.CancelledError:
             raise
         finally:

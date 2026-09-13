@@ -42,6 +42,7 @@ from pydantic import BaseModel
 from taskq._di import ProviderRegistry
 from taskq._di.scopes import LoopScope, ProcessScope, ThreadScope
 from taskq._ids import new_uuid
+from taskq._shield import shield_with_retrieval
 from taskq.actor import ActorRef
 from taskq.backend._protocol import Backend, JobRow
 from taskq.backend._records import jsonb_param
@@ -400,16 +401,19 @@ async def consumer_loop_stub(
                         timeout=stub_work_timeout,
                     )
                 except asyncio.CancelledError:
+                    # shield_with_retrieval, not plain asyncio.shield: a second
+                    # cancel landing while this write is detached must not
+                    # strand its outcome unretrieved (see taskq._shield).
                     with contextlib.suppress(asyncio.CancelledError):
-                        await asyncio.shield(backend.mark_cancelled(job.id, worker_id))
+                        await shield_with_retrieval(backend.mark_cancelled(job.id, worker_id))
                     raise
                 except TimeoutError:
                     pass
 
                 if ctx.cancellation_requested:
-                    await asyncio.shield(backend.mark_cancelled(job.id, worker_id))
+                    await shield_with_retrieval(backend.mark_cancelled(job.id, worker_id))
                 else:
-                    await asyncio.shield(backend.mark_succeeded(job.id, worker_id, None))
+                    await shield_with_retrieval(backend.mark_succeeded(job.id, worker_id, None))
                 # fallback_result_ttl is not forwarded here: the stub path has
                 # no actor registry and therefore no @actor(result_ttl=...)
                 # literal to supply. If the stored actor_config.result_ttl is
@@ -422,7 +426,7 @@ async def consumer_loop_stub(
 
             except asyncio.CancelledError:
                 with contextlib.suppress(asyncio.CancelledError):
-                    await asyncio.shield(backend.mark_cancelled(job.id, worker_id))
+                    await shield_with_retrieval(backend.mark_cancelled(job.id, worker_id))
                 raise
 
             except Exception:

@@ -77,6 +77,17 @@ __all__ = ["JobsClient"]
 
 logger: structlog.stdlib.BoundLogger = structlog.get_logger(__name__)
 
+_NONE_RESULT_ADAPTER: TypeAdapter[None] = TypeAdapter(type(None))
+"""Status-only adapter for :meth:`JobsClient.get` when no ``result_adapter`` is supplied.
+
+Why a module singleton: pydantic builds a validator schema on every
+``TypeAdapter(...)`` construction, and ``get(result_adapter=None)`` is the
+shape of status polling (``wait_for_batch`` and health-check loops), so the
+per-call construction was a poll-frequency tax with no per-call variance.
+``TypeAdapter`` is immutable and reusable by design (pydantic documents
+module-level reuse as the intended pattern).
+"""
+
 
 def _item_payload_error(idx: int, actor_name: str, exc: ValidationError) -> PayloadValidationError:
     """Annotate a batch item's payload :class:`~pydantic.ValidationError` with
@@ -811,15 +822,13 @@ class JobsClient:
                         start_to_close=item.start_to_close,
                         tags=item.tags,
                         idempotency_max_bytes=self._idempotency_max_bytes,
+                        # The H5 strip-then-stamp boundary runs inside
+                        # build_enqueue_args: any batch_id on item.metadata
+                        # is stripped before the library's own is stamped.
+                        stamp_batch_id=str(resolved_batch_id),
                     )
                 except ValidationError as exc:
                     raise _item_payload_error(idx, ref.name, exc) from exc
-                # Stamp batch_id AFTER build_enqueue_args, which strips any
-                # caller-supplied batch_id as a security boundary (H5).
-                args = replace(
-                    args,
-                    metadata={**args.metadata, "batch_id": str(resolved_batch_id)},
-                )
                 item_meta.append((ref, args.id))
                 yield args
 
@@ -1135,8 +1144,8 @@ class JobsClient:
         lookups.
         """
         adapter: TypeAdapter[R] = (
-            result_adapter if result_adapter is not None else TypeAdapter(type(None))
-        )  # type: ignore[assignment]  # Why: TypeAdapter(type(None)) returns TypeAdapter[None], which does not narrow to TypeAdapter[R] under pyright; runtime behaviour is correct because None is assignable to the R bound
+            result_adapter if result_adapter is not None else _NONE_RESULT_ADAPTER
+        )  # type: ignore[assignment]  # Why: TypeAdapter[None] does not narrow to TypeAdapter[R] under pyright; runtime behaviour is correct because None is assignable to the R bound
         with self._translate_schema_errors():
             row = await self._backend.get(job_id)
         if row is None:
