@@ -40,6 +40,7 @@ from taskq.constants import (
     DEFAULT_EVENT_RETENTION_PERIOD,
     DEFAULT_EVENT_WRITER_BATCH_SIZE,
     DEFAULT_EVENT_WRITER_STATEMENT_TIMEOUT_MS,
+    DEFAULT_MAX_KEYED_RESERVATIONS,
     DEFAULT_MAX_RETRY_BACKOFF,
     DEFAULT_PRUNE_BATCH_SIZE,
     DEFAULT_PRUNE_RETENTION,
@@ -1026,7 +1027,7 @@ class WorkerSettings(TaskQSettings):
         "errors propagate instead of triggering PG fallback.",
     )
     max_keyed_reservations: int = Field(
-        default=10000,
+        default=DEFAULT_MAX_KEYED_RESERVATIONS,
         ge=1,
         description="TASKQ_MAX_KEYED_RESERVATIONS. Guardrail on the number of "
         "distinct keyed-reservation entries tracked in memory. When the limit "

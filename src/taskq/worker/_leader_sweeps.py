@@ -612,6 +612,36 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                     worker_id=str(ctx.worker_id),
                     error=repr(exc),
                 )
+        # The evictions above drop registry ENTRIES only; the evicted
+        # buckets' reservation_slots rows are deleted by the drain, on
+        # this same non-leader-gated path (the pending set is this
+        # process's own evictions, and the keyed machinery only runs on
+        # workers that dispatch jobs). Nothing pending → no connection
+        # acquired. The pool wait is bounded by the dispatcher command
+        # timeout, the loop's convention for every pool acquire here.
+        # The drain records its own failure/duration/rows metrics and
+        # raises on failure; this guard (same shape as the eviction
+        # blocks above) keeps a transient PG blip from tearing down the
+        # sweep loop — the next tick retries with the pending set intact.
+        if rl.has_pending_reservation_reclaims:
+            try:
+                drained = await rl.drain_pending_reservation_reclaims(
+                    ctx.deps.dispatcher_pool,
+                    acquire_timeout=ctx.deps.settings.dispatcher_command_timeout,
+                )
+                if drained:
+                    log.debug(
+                        "sweep-drained-pending-reservation-reclaims",
+                        kind="drain_pending_reservation_reclaims",
+                        count=drained,
+                    )
+            except Exception as exc:
+                log.warning(
+                    "sweep-drain-pending-reservation-reclaims-failed",
+                    kind="drain_pending_reservation_reclaims_failed",
+                    worker_id=str(ctx.worker_id),
+                    error=repr(exc),
+                )
         await _sleep_interruptible(shutdown, ctx.deps.settings.sweep_interval)
 
 

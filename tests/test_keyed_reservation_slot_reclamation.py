@@ -113,6 +113,8 @@ async def test_evicted_idle_keyed_reservation_slots_are_reclaimed(
         evicted = reg.evict_idle_keyed_reservations(idle_for=timedelta(0))
         assert evicted == 1, "fixture broken: the idle keyed bucket was not evicted"
 
+        await reg.drain_pending_reservation_reclaims(pool)
+
         remaining = await _slot_rows(pool, bucket)
         assert remaining == 0, (
             f"evicting idle keyed bucket {bucket!r} left {remaining} "

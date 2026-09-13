@@ -91,6 +91,16 @@ WHERE bucket_name = $1
   AND (job_id IS NULL OR lease_expires_at < clock_timestamp())
 RETURNING slot_index"""
 
+_RECLAIM_SLICE_DELETE_SQL_TEMPLATE = """\
+DELETE FROM "{schema}".reservation_slots
+WHERE bucket_name = ANY($1)
+  AND (job_id IS NULL OR lease_expires_at < clock_timestamp())
+RETURNING bucket_name, slot_index"""
+
+_RECLAIM_SLICE_EXISTING_SQL_TEMPLATE = """\
+SELECT DISTINCT bucket_name FROM "{schema}".reservation_slots
+WHERE bucket_name = ANY($1)"""
+
 _SYNC_HELD_SQL_TEMPLATE = """\
 SELECT slot_index FROM "{schema}".reservation_slots
 WHERE bucket_name = $1
@@ -457,6 +467,24 @@ class ConcurrencyReservation:
         """Idempotent pre-allocation of slot rows."""
         async with pool.acquire() as conn:
             await conn.execute(self._ensure_sql, self._name, self._slots)
+
+    async def slot_rows_exist(self, pool: "asyncpg.Pool") -> bool:
+        """Whether any ``reservation_slots`` row exists for this bucket.
+
+        The acquire-path heal for keyed reservations uses this to
+        distinguish a bucket whose rows were deleted out from under it
+        (zero rows — re-materialise via :meth:`ensure_slots`) from
+        ordinary contention (rows present, all held — deny). A read-only
+        existence probe: it never writes.
+        """
+        async with pool.acquire() as conn:
+            return (
+                await conn.fetchval(
+                    _SYNC_EXISTING_SQL_TEMPLATE.format(schema=self._schema),
+                    self._name,
+                )
+                is not None
+            )
 
     async def acquire(
         self,

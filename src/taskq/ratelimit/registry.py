@@ -60,11 +60,19 @@ from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
     _KEYED_KEY_RE,  # pyright: ignore[reportPrivateUsage]
     _MAX_KEYED_KEY_LEN,  # pyright: ignore[reportPrivateUsage]
+    DEFAULT_MAX_KEYED_RESERVATIONS,
     DEFAULT_RESERVATION_BACKOFF,
     QUEUE_CONCURRENCY_PREFIX,
 )
 from taskq.exceptions import PayloadValidationError, ReservationUnavailable
-from taskq.obs import record_ratelimit_refund_failure
+from taskq.obs import (
+    record_ratelimit_refund_failure,
+    record_reservation_reclaim_drain_duration,
+    record_reservation_reclaim_drain_failure,
+    record_reservation_reclaim_drain_rows,
+    record_reservation_reclaim_heal_failure,
+    update_keyed_reclaim_pending,
+)
 from taskq.ratelimit.composition import (
     AcquiredResource,
     RateLimitHandle,
@@ -72,7 +80,12 @@ from taskq.ratelimit.composition import (
 )
 from taskq.ratelimit.decision import RateLimitDecision, RateLimitState
 from taskq.ratelimit.refs import KeyedRateLimitRef, KeyedReservationRef
-from taskq.ratelimit.reservation import ConcurrencyReservation
+from taskq.ratelimit.reservation import (
+    _RECLAIM_SLICE_DELETE_SQL_TEMPLATE,  # pyright: ignore[reportPrivateUsage]  # Why: the reclaim drain's statements live beside the slot-row templates they extend
+    _RECLAIM_SLICE_EXISTING_SQL_TEMPLATE,  # pyright: ignore[reportPrivateUsage]
+    ConcurrencyReservation,
+    SlotLease,
+)
 from taskq.ratelimit.sliding_window import SlidingWindow
 from taskq.ratelimit.token_bucket import TokenBucket
 
@@ -126,6 +139,29 @@ became reclaimable, identical to the sweep's documented SLA. The gate
 makes the denied-cap-hit path O(1) amortized while preserving the
 defence-in-depth guarantee that reclaiming idle capacity never depends
 solely on sweep timing.
+"""
+
+_KEYED_RECLAIM_HEAL_WINDOW = timedelta(seconds=60)
+"""Minimum spacing between acquire-path heal attempts for one keyed bucket.
+
+A keyed bucket whose ``reservation_slots`` rows were deleted by a
+sibling worker's pending-reclaim drain keeps denying acquisitions until
+it is re-materialised (the registered-bucket-with-zero-rows trap). The
+heal on the denial path re-materialises it — but a genuinely BUSY bucket
+denies constantly, and probing it on every denial would add one PG round
+trip per denied acquisition on the hottest path. The window bounds that
+cost: at most one heal probe per contended keyed bucket per window per
+worker; denials inside the window pay only an in-process stamp check.
+"""
+
+_DEFAULT_RECLAIM_BATCH_NAMES = 256
+"""Bucket names per pending-reclaim drain statement.
+
+The drain runs on the sweep cadence; each statement's write set is
+bounded by this slice x each bucket's configured slot count, keeping one
+drain tick a constant-size statement against any evicted-key backlog. At
+the default 30 s sweep interval this drains ~8.5k names/min, faster than
+any realistic eviction rate once the backlog is cleared.
 """
 
 
@@ -237,6 +273,20 @@ class RateLimitRegistry:
         # evict_idle_keyed_rate_limits() to bound registry growth under
         # high key cardinality. Never consulted by acquire_for_actor.
         self._keyed_rate_limit_last_used: dict[str, float] = {}
+        # Evicted keyed-reservation bucket names whose reservation_slots
+        # rows are still to be deleted, keyed by the schema those rows
+        # live in. evict_idle_keyed_reservations() records; the sweep
+        # loop's drain_pending_reservation_reclaims() deletes. Bounded:
+        # eviction refuses to record past max_pending_reclaims, and the
+        # drain removes names whose rows are gone or held.
+        self._pending_reservation_reclaims: dict[str, set[str]] = {}
+        # Monotonic time of the last acquire-path heal attempt per keyed
+        # reservation name — gates the existence probe in the
+        # ReservationUnavailable heal to one attempt per
+        # _KEYED_RECLAIM_HEAL_WINDOW per bucket. Rides the keyed
+        # registration's lifecycle: discarded on re-registration, pruned
+        # by the same eviction pass that drops the tracking entry.
+        self._keyed_reservation_heal_attempted: dict[str, float] = {}
         # Monotonic timestamps of the last opportunistic eviction scan on
         # each acquisition path, used to amortize the O(n) scan to at most
         # once per _OPPORTUNISTIC_EVICT_MIN_INTERVAL under sustained cap-hit
@@ -262,6 +312,19 @@ class RateLimitRegistry:
     @property
     def has_keyed_rate_limits(self) -> bool:
         return bool(self._keyed_rate_limit_last_used)
+
+    @property
+    def has_pending_reservation_reclaims(self) -> bool:
+        """Whether any evicted keyed bucket still awaits its row deletion.
+
+        The sweep loop uses this to skip the drain entirely (no
+        connection acquired) when there is nothing to reclaim.
+        """
+        return any(self._pending_reservation_reclaims.values())
+
+    def _pending_reclaim_total(self) -> int:
+        """Total bucket names across schemas awaiting row reclamation."""
+        return sum(len(names) for names in self._pending_reservation_reclaims.values())
 
     def has_reservation(self, name: str) -> bool:
         """O(1) membership test against the live reservations dict.
@@ -654,6 +717,10 @@ class RateLimitRegistry:
                 name=concrete_name, slots=ref.slots, lease=ref.lease, schema=schema
             )
             self.register(new_reservation)
+            # A fresh registration is a fresh lifecycle: any heal-window
+            # stamp from the previous incarnation of this concrete name
+            # (evicted, then re-materialised) must not survive.
+            self._keyed_reservation_heal_attempted.pop(concrete_name, None)
             # Stamp BEFORE the ensure_slots await so that a concurrent
             # evict_idle_keyed_reservations cannot evict the in-flight
             # key; re-stamp after the await in case an aggressive eviction
@@ -921,10 +988,11 @@ class RateLimitRegistry:
                     res_ref, payload, pg_pool=pg_pool, settings=settings
                 )
                 reservation = self._reservations[res_name]
-                slot_index = await reservation.acquire(
-                    job_id,
-                    worker_id,
-                    pg_pool,
+                slot_index = await self._acquire_reservation_slot_with_heal(
+                    reservation,
+                    job_id=job_id,
+                    worker_id=worker_id,
+                    pg_pool=pg_pool,
                 )
                 acquired.append(
                     ReservationHandle(
@@ -1032,6 +1100,104 @@ class RateLimitRegistry:
                     )
                     record_ratelimit_refund_failure(handle.name, backend)
             raise
+
+    async def _acquire_reservation_slot_with_heal(
+        self,
+        reservation: ConcurrencyReservation,
+        *,
+        job_id: "UUID",
+        worker_id: "UUID",
+        pg_pool: "asyncpg.Pool | None",
+    ) -> SlotLease:
+        """Acquire one reservation slot, healing a keyed bucket whose rows vanished.
+
+        Wraps :meth:`ConcurrencyReservation.acquire` for every
+        reservation in the composition. On denial, a KEYED-materialized
+        bucket gets one gated existence probe (see
+        :meth:`_heal_deleted_keyed_reservation_rows`): zero rows — its
+        ``reservation_slots`` rows were deleted out from under a still-
+        registered bucket, the cross-worker trap the reclamation drain
+        creates — re-materialises the rows and retries the acquire
+        exactly once. Every other denial re-raises unchanged: static
+        reservations never reach the probe, and the busy case (rows
+        present, all held) is ordinary contention.
+        """
+        try:
+            return await reservation.acquire(job_id, worker_id, pg_pool)
+        except ReservationUnavailable:
+            if not await self._heal_deleted_keyed_reservation_rows(reservation, pg_pool):
+                raise
+            return await reservation.acquire(job_id, worker_id, pg_pool)
+
+    async def _heal_deleted_keyed_reservation_rows(
+        self,
+        reservation: ConcurrencyReservation,
+        pg_pool: "asyncpg.Pool | None",
+    ) -> bool:
+        """Re-materialise a keyed bucket whose slot rows no longer exist.
+
+        Returns True when the heal re-materialised the rows and the
+        caller should retry the acquire once; False when the denial
+        stands. This method never raises — a heal failure is recorded
+        (loud warning + its own failure counter, an AVAILABILITY signal
+        distinct from the drain's storage counter) and the original
+        ``ReservationUnavailable`` propagates from the caller.
+
+        False (deny) cases, in evaluation order:
+
+        - the bucket is STATIC (untracked) — no keyed lifecycle, no
+          cross-worker row-deletion hazard, and the hot path pays only
+          one dict lookup;
+        - no PG pool — the in-memory backend's acquire already re-ensures
+          its rows on every call;
+        - inside ``_KEYED_RECLAIM_HEAL_WINDOW`` of the last attempt — a
+          genuinely busy bucket denies constantly, and probing it per
+          denial would put a PG round trip on the hottest path; the
+          window bounds it to one probe per bucket per window. The
+          stamp from a BUSY attempt also defers a later zero-rows heal
+          that lands inside the same window — a bounded availability
+          blip (the first denial after the window heals) accepted
+          deliberately: un-stamping on busy would reintroduce the
+          probe-per-denial stampede the window exists to prevent;
+        - the probe found rows — ordinary contention; the window stamp
+          STANDS (this is the cost the window exists to bound);
+        - the probe or ``ensure_slots`` raised — the stamp is rolled
+          back so the next denial retries the heal, the failure is
+          counted, and the denial propagates.
+
+        Steady state: a contended keyed bucket costs at most one probe
+        per window per worker; every denial inside the window pays only
+        the in-process stamp check.
+        """
+        name = reservation.name
+        if name not in self._keyed_reservation_last_used or pg_pool is None:
+            return False
+        now = monotonic()
+        last_attempt = self._keyed_reservation_heal_attempted.get(name)
+        if (
+            last_attempt is not None
+            and now - last_attempt < _KEYED_RECLAIM_HEAL_WINDOW.total_seconds()
+        ):
+            return False
+        self._keyed_reservation_heal_attempted[name] = now
+        try:
+            if await reservation.slot_rows_exist(pg_pool):
+                return False
+            await reservation.ensure_slots(pg_pool)
+        except Exception as exc:
+            self._keyed_reservation_heal_attempted.pop(name, None)
+            record_reservation_reclaim_heal_failure(type(exc).__name__)
+            logger.warning(
+                "keyed-reservation-heal-failed",
+                bucket_name=name,
+                error=repr(exc),
+            )
+            return False
+        logger.info(
+            "keyed-reservation-healed",
+            bucket_name=name,
+        )
+        return True
 
     async def peek(
         self,
@@ -1182,9 +1348,11 @@ class RateLimitRegistry:
         hit. The scan is O(tracked entries); without amortization a
         registry at cap under sustained denials would pay O(n) per denied
         request and reclaim nothing (see
-        ``_OPPORTUNISTIC_EVICT_MIN_INTERVAL``). Idle capacity is still
-        reclaimed within max(sweep cadence, min-interval) of becoming
-        reclaimable — the scan just can't be stampeded.
+        ``_OPPORTUNISTIC_EVICT_MIN_INTERVAL``). Registry ENTRIES are
+        still reclaimed within max(sweep cadence, min-interval) of
+        becoming idle — the scan just can't be stampeded; the evicted
+        buckets' ``reservation_slots`` ROWS are reclaimed separately, on
+        the sweep cadence, by the pending-reclaim drain.
         """
         now = monotonic()
         if (
@@ -1215,18 +1383,28 @@ class RateLimitRegistry:
         event_name: str,
         *,
         preserve: Callable[[_P], bool] | None = None,
-    ) -> int:
+        admit: Callable[[str, _P], bool] | None = None,
+    ) -> list[str]:
         """Evict stale entries from *tracking_dict* and *primitive_dict*.
 
         Removes entries whose ``last_used`` timestamp is older than
         ``monotonic() - idle_for`` from both dicts, logs *event_name*
-        with the evicted count, and returns that count.
+        with the evicted count, and returns the evicted names.
 
         *preserve*, when given, exempts an entry from eviction when the
         predicate returns True for its primitive — the entry keeps its
         tracking timestamp and is re-scanned on the next sweep. Use for
         primitives whose in-instance state eviction would destroy
         irrecoverably (see :meth:`evict_idle_keyed_rate_limits`).
+
+        *admit*, when given, is consulted immediately before an entry is
+        removed: it records the eviction's downstream work and may veto
+        it by returning False — a vetoed entry keeps its primitive, its
+        tracking timestamp, and is re-scanned on the next sweep (the
+        pending-reclaim cap works this way; see
+        :meth:`evict_idle_keyed_reservations`). Both the scan and the
+        pops are synchronous with no await points, so veto, record and
+        remove are atomic within the event loop.
         """
         cutoff = monotonic() - idle_for.total_seconds()
         stale: list[str] = []
@@ -1237,14 +1415,24 @@ class RateLimitRegistry:
             if preserve is not None and prim is not None and preserve(prim):
                 continue
             stale.append(name)
+        evicted: list[str] = []
         for name in stale:
+            prim = primitive_dict.get(name)
+            if prim is not None and admit is not None and not admit(name, prim):
+                continue
             primitive_dict.pop(name, None)
             del tracking_dict[name]
-        if stale:
-            logger.debug(event_name, count=len(stale))
-        return len(stale)
+            evicted.append(name)
+        if evicted:
+            logger.debug(event_name, count=len(evicted))
+        return evicted
 
-    def evict_idle_keyed_reservations(self, idle_for: "timedelta") -> int:
+    def evict_idle_keyed_reservations(
+        self,
+        idle_for: "timedelta",
+        *,
+        max_pending_reclaims: "int | None" = None,
+    ) -> int:
         """Drop registry entries for keyed reservations idle at least ``idle_for``.
 
         Reservations derived from a :class:`KeyedReservationRef` are
@@ -1255,24 +1443,76 @@ class RateLimitRegistry:
         (not leader-gated) with a 1-hour idle threshold; call directly for
         custom eviction windows.
 
-        Only removes the in-memory registry entry and its
-        acquire-recency tracking — it does NOT touch the underlying
-        Postgres ``reservation_slots`` rows for that name; those are
-        already reclaimed independently by the existing lock-expiry sweep.
+        Removes the in-memory registry entry and its acquire-recency
+        tracking, and RECORDS the bucket in the pending-reclaim set so
+        its ``reservation_slots`` rows are deleted by
+        :meth:`drain_pending_reservation_reclaims` on the same sweep
+        cadence. The lock-expiry sweep is an ``UPDATE ... SET job_id =
+        NULL`` — it clears a row's holder but never deletes the row, and
+        ``sync_slots`` iterates only currently-registered reservations,
+        so without the pending-reclaim drain an evicted bucket's rows
+        would be orphaned permanently (steady-state cardinality: slots x
+        every key ever seen, unbounded in the caller-controlled key
+        space). A slot still held by a live lease survives the drain's
+        idle-guarded DELETE and stays pending until its lease expires.
+
+        *max_pending_reclaims* caps the pending-reclaim set (default:
+        :data:`taskq.constants.DEFAULT_MAX_KEYED_RESERVATIONS`). At the
+        cap the eviction is VETOED — the entry stays registered and
+        re-scanned on the next sweep, so no structure grows unbounded
+        and no rows are orphaned by an eviction that could not be
+        recorded. The visible signals are the pending-depth gauge
+        (``taskq.ratelimit.reclaim_pending``) and, if the veto persists
+        up to the registry's own entry cap, the existing
+        ``registry-keyed-reservation-limit-exceeded`` soft-cap warning.
+
         A key that is acquired again after eviction is simply
         re-registered on next use (idempotent — see
-        :meth:`_resolve_reservation_name`), so eviction is always safe to
-        call, including concurrently with in-flight acquisitions for
-        other keys.
+        :meth:`_resolve_reservation_name`), and the drain drops its name
+        from the pending set without deleting anything (a re-activated
+        key owns its rows again), so eviction is always safe to call,
+        including concurrently with in-flight acquisitions for other
+        keys.
 
         Returns the number of entries evicted.
         """
-        return self._evict_idle_keyed(
+        cap = (
+            DEFAULT_MAX_KEYED_RESERVATIONS if max_pending_reclaims is None else max_pending_reclaims
+        )
+        evicted = self._evict_idle_keyed(
             self._keyed_reservation_last_used,
             self._reservations,
             idle_for,
             "registry-evicted-idle-keyed-reservations",
+            admit=lambda name, prim: self._admit_pending_reclaim(name, prim, cap=cap),
         )
+        # The heal stamp rides the registration's lifecycle: an evicted
+        # bucket's window must not survive into a future re-registration
+        # of the same concrete name.
+        for name in evicted:
+            self._keyed_reservation_heal_attempted.pop(name, None)
+        update_keyed_reclaim_pending(self._pending_reclaim_total())
+        return len(evicted)
+
+    def _admit_pending_reclaim(
+        self,
+        name: str,
+        reservation: ConcurrencyReservation,
+        *,
+        cap: int,
+    ) -> bool:
+        """Record one evicted keyed bucket for row reclamation, under the cap.
+
+        Returns True (the caller's eviction proceeds) after recording
+        *name* under *reservation*'s schema — the drain's idle-guarded
+        DELETE is a harmless no-op for a bucket that has no rows. At the
+        cap, returns False: the eviction is vetoed and the entry stays
+        registered (see :meth:`evict_idle_keyed_reservations`).
+        """
+        if self._pending_reclaim_total() >= cap:
+            return False
+        self._pending_reservation_reclaims.setdefault(reservation.schema, set()).add(name)
+        return True
 
     def evict_idle_keyed_rate_limits(self, idle_for: "timedelta") -> int:
         """Drop registry entries for keyed rate limits idle at least ``idle_for``.
@@ -1313,25 +1553,126 @@ class RateLimitRegistry:
 
         Returns the number of entries evicted.
         """
-        return self._evict_idle_keyed(
+        evicted = self._evict_idle_keyed(
             self._keyed_rate_limit_last_used,
             self._rate_limits,
             idle_for,
             "registry-evicted-idle-keyed-rate-limits",
             preserve=_preserves_memory_fixed_quota_state,
         )
+        return len(evicted)
+
+    async def drain_pending_reservation_reclaims(
+        self,
+        pool: "asyncpg.Pool",
+        *,
+        batch_names: int = _DEFAULT_RECLAIM_BATCH_NAMES,
+        acquire_timeout: "float | None" = None,
+    ) -> int:
+        """Delete the ``reservation_slots`` rows of evicted keyed buckets.
+
+        One bounded slice per schema per call — at most *batch_names*
+        pending bucket names, ONE idle-guarded batched DELETE, ONE
+        batched existence probe for the slice. Driven by the per-worker
+        sweep loop on the sweep cadence, immediately after the keyed
+        evictions that feed it; a no-op (no connection acquired) when
+        nothing is pending.
+
+        Semantics — what stays pending and why:
+
+        - A name that re-registered since eviction is dropped from the
+          pending set WITHOUT a statement: a re-activated key owns its
+          rows again.
+        - The DELETE removes only free or lease-expired rows — a slot
+          still held by a live lease survives (the over-admission
+          invariant).
+        - A HELD slot is therefore the ONLY reason a name stays pending
+          after its slice ran: the existence probe names the buckets
+          whose rows survived the DELETE, and those names wait for a
+          later tick — the lease expires, the holder's release or the
+          lock-expiry sweep frees the row, the next drain deletes it. A
+          name with no rows left — fully deleted this tick, or never
+          materialized at all — leaves the pending set.
+
+        Instrumentation, on the failure path as much as the success
+        path: duration in a ``finally`` (a timed-out drain still leaves
+        a duration sample), deleted rows only as RETURNING-confirmed
+        (a timed-out statement cannot masquerade as an empty drain),
+        the drain-failure counter on exception (a STORAGE signal — a
+        failing drain strands rows; the pending-depth gauge shows the
+        backlog forming), and the pending-depth gauge after each drain.
+        Raises on failure — callers guard (the sweep loop warns and
+        continues on the next tick).
+
+        *acquire_timeout* bounds the pool wait, for callers on a loop
+        that must never block indefinitely on an exhausted pool (the
+        sweep loop passes its dispatcher command timeout); the default
+        matches the registry's other pool-bearing methods (unbounded).
+
+        Returns the number of rows deleted.
+        """
+        if not self._pending_reservation_reclaims:
+            return 0
+        start = monotonic()
+        total_deleted = 0
+        try:
+            async with pool.acquire(timeout=acquire_timeout) as conn:
+                for schema in list(self._pending_reservation_reclaims):
+                    if not _IDENT_RE.match(schema):
+                        raise ValueError(f"invalid schema identifier: {schema!r}")
+                    pending = self._pending_reservation_reclaims.get(schema)
+                    if not pending:
+                        self._pending_reservation_reclaims.pop(schema, None)
+                        continue
+                    candidates = sorted(pending)[:batch_names]
+                    slice_names: list[str] = []
+                    for name in candidates:
+                        if name in self._reservations or name in self._keyed_reservation_last_used:
+                            # Re-registered since eviction: the bucket is
+                            # live again and owns its rows — drop the
+                            # pending entry, touch nothing in PG.
+                            pending.discard(name)
+                        else:
+                            slice_names.append(name)
+                    if not slice_names:
+                        continue
+                    deleted_rows = await conn.fetch(
+                        _RECLAIM_SLICE_DELETE_SQL_TEMPLATE.format(schema=schema),
+                        slice_names,
+                    )
+                    total_deleted += len(deleted_rows)
+                    surviving: set[str] = {
+                        row["bucket_name"]
+                        for row in await conn.fetch(
+                            _RECLAIM_SLICE_EXISTING_SQL_TEMPLATE.format(schema=schema),
+                            slice_names,
+                        )
+                    }
+                    pending -= set(slice_names) - surviving
+        except Exception as exc:
+            record_reservation_reclaim_drain_failure(type(exc).__name__)
+            raise
+        finally:
+            record_reservation_reclaim_drain_duration(monotonic() - start)
+            record_reservation_reclaim_drain_rows(total_deleted)
+            update_keyed_reclaim_pending(self._pending_reclaim_total())
+        return total_deleted
 
     def clear(self) -> None:
         """Reset ALL mutable registry state — a test aid, NOT safe while running.
 
-        Clears the four dicts (``_rate_limits``, ``_reservations``,
-        ``_keyed_reservation_last_used``, ``_keyed_rate_limit_last_used``)
+        Clears the six dicts (``_rate_limits``, ``_reservations``,
+        ``_keyed_reservation_last_used``, ``_keyed_rate_limit_last_used``,
+        ``_pending_reservation_reclaims``,
+        ``_keyed_reservation_heal_attempted``)
         AND resets the two opportunistic-eviction scan timestamps
         (``_keyed_reservation_last_eviction_scan`` /
         ``_keyed_rate_limit_last_eviction_scan``) to ``float("-inf")``.
         Omitting the timestamps would leave the opportunistic-eviction
         throttle stamped, silently suppressing scans for up to
-        ``_OPPORTUNISTIC_EVICT_MIN_INTERVAL`` (30 s) in the next test.
+        ``_OPPORTUNISTIC_EVICT_MIN_INTERVAL`` (30 s) in the next test;
+        omitting the pending-reclaim set or the heal stamps would leak
+        one test's evictions into the next.
 
         **Not safe to call while a worker is running** — concurrent
         dispatch / sweep iteration over the dicts would observe
@@ -1346,8 +1687,11 @@ class RateLimitRegistry:
         self._reservations.clear()
         self._keyed_reservation_last_used.clear()
         self._keyed_rate_limit_last_used.clear()
+        self._pending_reservation_reclaims.clear()
+        self._keyed_reservation_heal_attempted.clear()
         self._keyed_reservation_last_eviction_scan = float("-inf")
         self._keyed_rate_limit_last_eviction_scan = float("-inf")
+        update_keyed_reclaim_pending(0)
 
 
 async def _upsert_rate_limit_bucket_row(

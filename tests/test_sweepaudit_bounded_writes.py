@@ -136,12 +136,20 @@ _EXEMPT: dict[str, tuple[str, str]] = {
     #    jobs backlog ──
     "_SWEEP_4_SQL": (
         "lease_expires_at < clock_timestamp()",
-        "reservation_slots cardinality is bounded by configured capacity "
-        "slots; the table does not grow with job volume",
+        "UPDATE clears expired slot leases only; static reservations' row "
+        "count is configured capacity, but KEYED buckets make table "
+        "cardinality distinct-keys x slots (caller-driven) — those rows "
+        "are reclaimed on eviction by the pending-reclaim drain "
+        "(_RECLAIM_SLICE_DELETE_SQL_TEMPLATE), not by this statement",
     ),
     "_SYNC_DELETE_SQL_TEMPLATE": (
         "WHERE bucket_name = $1",
         "one bucket's reservation_slots rows; slot count is configured capacity",
+    ),
+    "_RECLAIM_SLICE_DELETE_SQL_TEMPLATE": (
+        "bucket_name = ANY($1)",
+        "a bounded slice of evicted keyed buckets' idle rows; count "
+        "bounded by slice size x configured slots",
     ),
     "_DEREGISTER_DISABLE_SCHEDULES_SQL": (
         "WHERE actor = $1",

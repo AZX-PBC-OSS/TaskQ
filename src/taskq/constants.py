@@ -18,6 +18,7 @@ __all__ = [
     "DEFAULT_EVENT_RETENTION_PERIOD",
     "DEFAULT_EVENT_WRITER_BATCH_SIZE",
     "DEFAULT_EVENT_WRITER_STATEMENT_TIMEOUT_MS",
+    "DEFAULT_MAX_KEYED_RESERVATIONS",
     "DEFAULT_MAX_RETRY_BACKOFF",
     "DEFAULT_PRUNE_BATCH_SIZE",
     "DEFAULT_PRUNE_RETENTION",
@@ -124,6 +125,20 @@ so a caller that constructs one directly (tests, the in-memory backend)
 gets the same cap as a worker loaded from settings. Named here because
 six call sites had it as an independent literal, where a change to one
 would have silently disagreed with the rest.
+"""
+
+DEFAULT_MAX_KEYED_RESERVATIONS: Final[int] = 10_000
+"""Default ceiling on tracked keyed-reservation entries (and their pending reclaims).
+
+The effective value is ``WorkerSettings.max_keyed_reservations``; this
+constant is that setting's default, and the fallback every
+keyed-reservation bound carries when no settings object is in scope —
+the registry's in-process tracking dict, the pending-reclaim set that
+records evicted keyed buckets awaiting their ``reservation_slots`` row
+deletion, and the heal-stamp dict all sit at or below the tracked-entry
+count, so one ceiling bounds every structure the caller-controlled key
+space can grow. Named here so the settings default and the registry
+fallback cannot drift apart.
 """
 
 DEFAULT_PRUNE_BATCH_SIZE: Final[int] = 10000
