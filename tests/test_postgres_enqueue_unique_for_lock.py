@@ -88,6 +88,7 @@ class _ContendedFakeConn:
         self.success_after = success_after
         self.preflight_rec = preflight_rec
         self.executed_sql: list[str] = []
+        self.fetchrow_sql: list[str] = []
 
     def is_in_transaction(self) -> bool:
         return True
@@ -105,6 +106,7 @@ class _ContendedFakeConn:
         return "OK"
 
     async def fetchrow(self, sql: str, *params: object) -> dict[str, object] | None:
+        self.fetchrow_sql.append(sql)
         if "identity_key = $2" in sql:
             # enqueue_unique_for_preflight — reached only after the lock is held.
             return self.preflight_rec
@@ -197,8 +199,9 @@ class TestUniqueForLockBoundedWaitUnit:
             unique_for_lock_timeout_ms=1000.0,
         )
         assert str(row.id) == str(winner["id"])
-        # The INSERT never ran: only the preflight fetchrow was issued.
-        assert not any("INSERT" in s for s in conn.executed_sql)
+        # The INSERT never ran: the only fetchrow issued was the preflight.
+        assert len(conn.fetchrow_sql) == 1
+        assert "identity_key = $2" in conn.fetchrow_sql[0]
         assert recorded == []
 
     async def test_no_unique_for_takes_no_advisory_lock(self) -> None:
