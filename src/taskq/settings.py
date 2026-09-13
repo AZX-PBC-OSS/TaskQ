@@ -19,7 +19,6 @@ from pathlib import Path
 from typing import Self
 from uuid import UUID
 
-from croniter import croniter
 from dotenvmodel import DotEnvConfig, Field, ValidationError, ValidatorContext
 from dotenvmodel.types import PostgresDsn, RedisDsn, SecretStr
 
@@ -30,6 +29,10 @@ from taskq.backend._protocol import (
     # imports taskq.settings, and taskq/__init__ always finishes loading
     # backend._protocol (via taskq.actor) before anything loads settings.
     _validate_queue_name,  # pyright: ignore[reportPrivateUsage]  # Why: the canonical queue-name validator; the enqueue and actor chokepoints run the same one, so the charset cannot drift between them.
+)
+from taskq.connections import (
+    DEFAULT_MAX_CACHED_STATEMENT_LIFETIME,
+    DEFAULT_STATEMENT_CACHE_SIZE,
 )
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining it
@@ -465,6 +468,42 @@ class TaskQSettings(DotEnvConfig):
         "from URLs, composite business keys or opaque vendor cursors.",
     )
 
+    # -- Postgres statement cache (asyncpg) -------------------------------
+    # Defaults come from taskq.connections's module constants — the same
+    # values every TaskQ-built pool passes explicitly at its construction
+    # site (worker role pools, the per-slot transaction pool, the TaskQ
+    # client pool, the admin UI pool). One source of truth: a tuning change
+    # to a constant moves the settings default with it. taskq.connections
+    # imports nothing from this module at runtime, so the dependency stays
+    # one-directional.
+    statement_cache_size: int = Field(
+        default=DEFAULT_STATEMENT_CACHE_SIZE,
+        ge=0,
+        description="TASKQ_STATEMENT_CACHE_SIZE. Size of the per-connection "
+        "prepared-statement LRU asyncpg keeps on every pool TaskQ builds. "
+        "asyncpg's default of 100 thrashes on TaskQ's read paths — "
+        "list_jobs alone renders 384+ filter-combination SQL variants (a "
+        "measured 90-96% steady-state miss rate, each miss re-paying the "
+        "Parse/Describe round trips; see benchmarks/ab_stmt_cache.py and "
+        "docs/guides/ops.md). 512 covers the variant space with headroom. "
+        "0 disables the statement cache. Applies only to pools TaskQ "
+        "builds: bring-your-own pools (WorkerConnections factories, a "
+        "caller-supplied pool) must pass the same create_pool kwargs "
+        "themselves — TaskQ cannot resize a pool it did not build.",
+    )
+    max_cached_statement_lifetime: int = Field(
+        default=DEFAULT_MAX_CACHED_STATEMENT_LIFETIME,
+        ge=0,
+        description="TASKQ_MAX_CACHED_STATEMENT_LIFETIME (seconds). How long "
+        "a prepared statement may stay in asyncpg's per-connection cache on "
+        "every pool TaskQ builds. asyncpg's default of 300 s re-prepares "
+        "statements on workers that outlive it; 3600 s (1 h) keeps the "
+        "textually-stable write hot loop (dispatch, enqueue, terminal "
+        "updates, sweeps) prepared across ticks without pinning prepared "
+        "plans for the process lifetime. 0 caches statements indefinitely. "
+        "Same TaskQ-built-pools-only scope as statement_cache_size.",
+    )
+
     @classmethod
     def load(
         cls,
@@ -621,6 +660,11 @@ def _hh_mm_validator(value: str, ctx: ValidatorContext) -> str:
 def _cron_expr_validator(value: str | None, ctx: ValidatorContext) -> str | None:
     if value is None or value == "":
         return value
+    # Lazy import: croniter (+ dateutil) costs ~16ms at import time and is
+    # only needed when a cron expression is actually configured, not for
+    # ``import taskq`` (taskq.cron defers it for the same reason).
+    from croniter import croniter
+
     if not croniter.is_valid(value):
         raise ValueError(f"{ctx.field_name} must be a valid cron expression, got {value!r}")
     return value

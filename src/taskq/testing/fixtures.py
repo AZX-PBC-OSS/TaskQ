@@ -860,10 +860,17 @@ async def module_pg_pool(module_pg_schema: ModulePgSchema) -> AsyncIterator[asyn
     """
     import asyncpg
 
+    from taskq.connections import (
+        DEFAULT_MAX_CACHED_STATEMENT_LIFETIME,
+        DEFAULT_STATEMENT_CACHE_SIZE,
+    )
+
     pool = await asyncpg.create_pool(
         module_pg_schema.pg_dsn,
         min_size=1,
         max_size=4,
+        statement_cache_size=DEFAULT_STATEMENT_CACHE_SIZE,
+        max_cached_statement_lifetime=DEFAULT_MAX_CACHED_STATEMENT_LIFETIME,
     )
     try:
         yield pool

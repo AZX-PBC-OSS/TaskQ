@@ -82,12 +82,16 @@ class _TxFakeBackend(FakeBackend):
         conn: object,
         job_id: UUID,
         worker_id: UUID,
-        result: dict[str, object] | None,
+        result: dict[str, object] | None = None,
         progress_seq: int = 0,
         progress_state: dict[str, object] | None = None,
         fallback_result_ttl: object = None,
+        *,
+        result_bytes: bytes | None = None,
     ) -> bool:
-        return await self.mark_succeeded(job_id, worker_id, result, progress_seq)
+        return await self.mark_succeeded(
+            job_id, worker_id, result, progress_seq, result_bytes=result_bytes
+        )
 
 
 class _RecordingPool:

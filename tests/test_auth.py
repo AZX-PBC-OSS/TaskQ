@@ -35,6 +35,10 @@ from taskq.auth import (
     make_pg_pool_factory,
     make_redis_client_factory,
 )
+from taskq.connections import (
+    DEFAULT_MAX_CACHED_STATEMENT_LIFETIME,
+    DEFAULT_STATEMENT_CACHE_SIZE,
+)
 
 
 def _resolve(dsn: str, **kwargs: Any) -> Any:
@@ -312,6 +316,45 @@ async def test_make_pg_pool_factory_with_username_override() -> None:
     assert call_kwargs["user"] == "vault-user"
     assert await _pw(call_kwargs["password"]) == "pw"
     assert "pw" not in call_kwargs["dsn"]
+
+
+async def test_make_pg_pool_factory_forwards_statement_cache_defaults() -> None:
+    """Provider-backed pools get the same statement-cache treatment as the
+    DSN-built ones: the taskq.connections constants reach create_pool
+    without the caller asking (asyncpg's own 100/300 s defaults thrash on
+    TaskQ's read paths)."""
+    provider = _FakePgProvider(password="tok")
+    factory = make_pg_pool_factory("postgresql://user@host:5432/db", provider)
+
+    fake_pool = MagicMock()
+    with patch("asyncpg.create_pool", new=AsyncMock(return_value=fake_pool)) as mock_create:
+        await factory()
+
+    call_kwargs = mock_create.call_args.kwargs
+    assert call_kwargs["statement_cache_size"] == DEFAULT_STATEMENT_CACHE_SIZE
+    assert call_kwargs["max_cached_statement_lifetime"] == DEFAULT_MAX_CACHED_STATEMENT_LIFETIME
+
+
+async def test_make_pg_pool_factory_forwards_statement_cache_overrides() -> None:
+    """Explicit statement-cache kwargs beat the factory defaults — the shape
+    a settings-aware caller (statement_cache_kwargs) forwards, so
+    TASKQ_STATEMENT_CACHE_SIZE / TASKQ_MAX_CACHED_STATEMENT_LIFETIME can
+    reach a provider-backed pool."""
+    provider = _FakePgProvider(password="tok")
+    factory = make_pg_pool_factory(
+        "postgresql://user@host:5432/db",
+        provider,
+        statement_cache_size=0,
+        max_cached_statement_lifetime=7200,
+    )
+
+    fake_pool = MagicMock()
+    with patch("asyncpg.create_pool", new=AsyncMock(return_value=fake_pool)) as mock_create:
+        await factory()
+
+    call_kwargs = mock_create.call_args.kwargs
+    assert call_kwargs["statement_cache_size"] == 0
+    assert call_kwargs["max_cached_statement_lifetime"] == 7200
 
 
 async def test_make_pg_pool_factory_kwargs_beat_stale_userinfo() -> None:

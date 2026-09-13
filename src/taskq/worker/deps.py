@@ -28,7 +28,13 @@ from taskq._close import (
     close_redis_bounded,
 )
 from taskq._dsn import dsn_host as _dsn_host
-from taskq.connections import ConnFactory, PoolFactory, RedisFactory, WorkerConnections
+from taskq.connections import (
+    ConnFactory,
+    PoolFactory,
+    RedisFactory,
+    WorkerConnections,
+    statement_cache_kwargs,
+)
 from taskq.constants import wake_channel
 from taskq.obs import get_logger, set_slot_pool_occupancy_source
 from taskq.progress._buffer import _ProgressBuffer
@@ -367,6 +373,10 @@ async def open_worker_deps(
         # can trace types through ``asyncpg.create_pool`` (a ``**dict`` splat
         # would erase them). ``None`` when the DSN is unused (every role for
         # that DSN is overridden) or when the role itself is overridden.
+        # Statement-cache values resolve through statement_cache_kwargs so
+        # TASKQ_STATEMENT_CACHE_SIZE / TASKQ_MAX_CACHED_STATEMENT_LIFETIME
+        # apply; the pair is still forwarded as explicit kwargs.
+        _stmt_kwargs = statement_cache_kwargs(settings)
         dispatcher_dsn_factory: PoolFactory | None = None
         heartbeat_dsn_factory: PoolFactory | None = None
         worker_dsn_factory: PoolFactory | None = None
@@ -381,6 +391,8 @@ async def open_worker_deps(
                     max_size=settings.dispatcher_pool_size,
                     max_inactive_connection_lifetime=_lifetime,
                     command_timeout=settings.dispatcher_command_timeout,
+                    statement_cache_size=_stmt_kwargs["statement_cache_size"],
+                    max_cached_statement_lifetime=_stmt_kwargs["max_cached_statement_lifetime"],
                 )
                 assert pool is not None
                 return pool
@@ -392,6 +404,8 @@ async def open_worker_deps(
                     max_size=settings.heartbeat_pool_size,
                     max_inactive_connection_lifetime=_lifetime,
                     command_timeout=settings.heartbeat_command_timeout,
+                    statement_cache_size=_stmt_kwargs["statement_cache_size"],
+                    max_cached_statement_lifetime=_stmt_kwargs["max_cached_statement_lifetime"],
                 )
                 assert pool is not None
                 return pool
@@ -408,6 +422,8 @@ async def open_worker_deps(
                     min_size=1,
                     max_size=settings.worker_pool_size,
                     max_inactive_connection_lifetime=_lifetime,
+                    statement_cache_size=_stmt_kwargs["statement_cache_size"],
+                    max_cached_statement_lifetime=_stmt_kwargs["max_cached_statement_lifetime"],
                 )
                 assert pool is not None
                 return pool

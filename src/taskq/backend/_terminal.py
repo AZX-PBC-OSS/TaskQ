@@ -86,6 +86,10 @@ from uuid import UUID
 
 import structlog
 
+# Why: private import — the pre-serialized result path holds bytes, not a
+# dict, so the byte-level scan is the only way to run dumps_jsonb_str's NUL
+# guard without a second serialization. Same package, behavior pinned by test.
+from taskq._json import NUL_JSONB_ERROR, _encoded_has_nul  # pyright: ignore[reportPrivateUsage]
 from taskq.backend._protocol import (
     AttemptOutcome,
     AttemptRow,
@@ -202,11 +206,13 @@ async def _mark_succeeded_on_conn(
     sql: SqlTemplates,
     job_id: JobId,
     worker_id: UUID,
-    result: dict[str, object] | None,
+    result: dict[str, object] | None = None,
     progress_seq: int = 0,
     progress_state: dict[str, object] | None = None,
     fallback_result_ttl: timedelta | None = None,
     max_result_bytes: int = MAX_RESULT_BYTES,
+    *,
+    result_bytes: bytes | None = None,
 ) -> bool:
     """Terminal success write: ONE statement (UPDATE + attempt + event).
 
@@ -214,9 +220,51 @@ async def _mark_succeeded_on_conn(
     transactional paths byte-identical in semantics — see the module
     docstring.  ``None`` here still means the fencing UPDATE matched no
     row (wrong worker, missing job, already moved): nothing was written.
+
+    ``result_bytes`` carries the caller's own orjson encoding of *result*
+    (the worker consumer serializes exactly once and passes the bytes);
+    the dict form serializes here.  The two are mutually exclusive.
     """
-    serialized_result = jsonb_param(result)
-    result_size = len(serialized_result.encode("utf-8")) if serialized_result is not None else None
+    if result is not None and result_bytes is not None:
+        raise ValueError(
+            "result and result_bytes are mutually exclusive; pass the actor's "
+            "result dict (serialized here) or its taskq._json.dumps bytes "
+            "(reused as-is), not both"
+        )
+    serialized_result: str | None
+    result_size: int | None
+    if result_bytes is not None:
+        # Why: the caller (the worker consumer) serialized this exact result
+        # once (orjson, the same options ``dumps_jsonb_str`` uses) — reuse
+        # the bytes instead of dumping a second time and re-encoding the
+        # bound str a third time just to measure result_size_bytes.
+        # len(result_bytes) IS the stored byte length: the bound value is
+        # result_bytes.decode() and asyncpg encodes text parameters back to
+        # the identical utf-8 bytes.  The NUL guard runs on the same bytes
+        # via the byte-level scan (_encoded_has_nul), so the ValueError
+        # still fires for NUL results — same defect, same boundary, same
+        # message as the dict path below.
+        if not result_bytes:
+            # Empty bytes are never valid orjson output (dumps always emits
+            # at least "null"/"{}"); decoded they bind as '' which jsonb
+            # rejects with a PostgresError — a permanent data defect the
+            # terminal-write classification would read as transient infra
+            # failure, stranding the job until the lease sweep reclaims it
+            # into the same write forever.  Same ValueError class the
+            # in-memory/testing mirrors raise for the same input.
+            raise ValueError(
+                "result_bytes must be non-empty orjson output (taskq._json.dumps); "
+                "pass result for the dict form or omit both for a NULL result"
+            )
+        if _encoded_has_nul(result_bytes):
+            raise ValueError(NUL_JSONB_ERROR)
+        serialized_result = result_bytes.decode("utf-8")
+        result_size = len(result_bytes)
+    else:
+        serialized_result = jsonb_param(result)
+        result_size = (
+            len(serialized_result.encode("utf-8")) if serialized_result is not None else None
+        )
     if result_size is not None and result_size > max_result_bytes:
         raise ResultTooLarge(f"result size {result_size} bytes exceeds {max_result_bytes} byte cap")
     rec = await conn.fetchrow(
@@ -248,11 +296,13 @@ async def _mark_succeeded(
     sql: SqlTemplates,
     job_id: JobId,
     worker_id: UUID,
-    result: dict[str, object] | None,
+    result: dict[str, object] | None = None,
     progress_seq: int = 0,
     progress_state: dict[str, object] | None = None,
     fallback_result_ttl: timedelta | None = None,
     max_result_bytes: int = MAX_RESULT_BYTES,
+    *,
+    result_bytes: bytes | None = None,
 ) -> bool:
     # No explicit transaction: the fused statement is atomic by itself (a
     # single SQL statement — CTEs included — either completes entirely or
@@ -273,6 +323,7 @@ async def _mark_succeeded(
             progress_state,
             fallback_result_ttl,
             max_result_bytes,
+            result_bytes=result_bytes,
         )
 
 

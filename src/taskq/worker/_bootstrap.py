@@ -37,7 +37,11 @@ from taskq.backend._protocol import Backend, JobRow, ScheduleCreateArgs
 from taskq.backend.clock import Clock, SystemClock
 from taskq.backend.postgres import PostgresBackend
 from taskq.client._enqueuer import SubJobEnqueuer
-from taskq.connections import PoolFactory, WorkerConnections
+from taskq.connections import (
+    PoolFactory,
+    WorkerConnections,
+    statement_cache_kwargs,
+)
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex for defence-in-depth schema validation at this SQL interpolation site, per architecture.md §8 Invariant 4
 )
@@ -256,6 +260,11 @@ def _slot_pool_factory(
     size = settings.max_concurrency + 1
     lifetime = settings.pool_max_inactive_lifetime
     command_timeout = settings.dispatcher_command_timeout
+    # Both branches pass the same statement-cache pair, resolved from
+    # settings so TASKQ_STATEMENT_CACHE_SIZE / TASKQ_MAX_CACHED_STATEMENT_LIFETIME
+    # apply. Forwarded as explicit kwargs (not splatted) so pyright can trace
+    # types through create_pool / make_pg_pool_factory.
+    stmt_kwargs = statement_cache_kwargs(settings)
     if pg_credential_provider is not None:
         return make_pg_pool_factory(
             direct,
@@ -264,6 +273,8 @@ def _slot_pool_factory(
             max_size=size,
             max_inactive_connection_lifetime=lifetime,
             command_timeout=command_timeout,
+            statement_cache_size=stmt_kwargs["statement_cache_size"],
+            max_cached_statement_lifetime=stmt_kwargs["max_cached_statement_lifetime"],
         )
 
     async def _dsn_slot_pool_factory() -> asyncpg.Pool:
@@ -273,6 +284,8 @@ def _slot_pool_factory(
             max_size=size,
             max_inactive_connection_lifetime=lifetime,
             command_timeout=command_timeout,
+            statement_cache_size=stmt_kwargs["statement_cache_size"],
+            max_cached_statement_lifetime=stmt_kwargs["max_cached_statement_lifetime"],
         )
         assert pool is not None
         return pool

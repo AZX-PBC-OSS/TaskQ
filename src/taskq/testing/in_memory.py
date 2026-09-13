@@ -483,13 +483,22 @@ class InMemoryBackend:
         self,
         job_id: JobId,
         worker_id: UUID,
-        result: dict[str, object] | None,
+        result: dict[str, object] | None = None,
         progress_seq: int = 0,
         progress_state: dict[str, object] | None = None,
         fallback_result_ttl: timedelta | None = None,
+        *,
+        result_bytes: bytes | None = None,
     ) -> bool:
         return await _mark_succeeded(
-            self, job_id, worker_id, result, progress_seq, progress_state, fallback_result_ttl
+            self,
+            job_id,
+            worker_id,
+            result,
+            progress_seq,
+            progress_state,
+            fallback_result_ttl,
+            result_bytes=result_bytes,
         )
 
     async def mark_succeeded_with_conn(
@@ -497,13 +506,23 @@ class InMemoryBackend:
         conn: object,
         job_id: JobId,
         worker_id: UUID,
-        result: dict[str, object] | None,
+        result: dict[str, object] | None = None,
         progress_seq: int = 0,
         progress_state: dict[str, object] | None = None,
         fallback_result_ttl: timedelta | None = None,
+        *,
+        result_bytes: bytes | None = None,
     ) -> bool:
         return await _mark_succeeded_with_conn(
-            self, conn, job_id, worker_id, result, progress_seq, progress_state, fallback_result_ttl
+            self,
+            conn,
+            job_id,
+            worker_id,
+            result,
+            progress_seq,
+            progress_state,
+            fallback_result_ttl,
+            result_bytes=result_bytes,
         )
 
     async def mark_failed_or_retry(

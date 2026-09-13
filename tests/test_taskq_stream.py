@@ -971,3 +971,93 @@ async def test_stream_no_duplicate_initial_snapshot_via_redis() -> None:
     assert events[0].progress_seq == 0
     assert events[1].status == "succeeded"
     assert events[1].terminal is True
+
+
+# ── orjson-backed JSON response class ───────────────────────────────────────
+
+pytest.importorskip("starlette")
+
+import json as _stdlib_json  # noqa: E402  # Why: test-only import — the byte-equality oracle for the response-class contract
+
+from starlette.responses import JSONResponse  # noqa: E402
+
+
+def test_orjson_response_class_is_json_response_subclass() -> None:
+    """orjson_response_class() returns a cached JSONResponse subclass — a
+    drop-in replacement for starlette's stdlib-json JSONResponse in FastAPI
+    routes."""
+    from taskq.client._taskq import orjson_response_class
+
+    cls = orjson_response_class()
+    assert issubclass(cls, JSONResponse)
+    assert cls is orjson_response_class(), "the class must be cached, not rebuilt per call"
+
+
+def test_orjson_response_body_byte_equal_to_stdlib_for_json_safe_payloads() -> None:
+    """For every JSON-representable value the orjson-backed render() is
+    byte-identical to starlette's stdlib-json render() — same body bytes,
+    same application/json content-type — so swapping the class in cannot
+    change what HTTP clients see."""
+    from taskq.client._taskq import orjson_response_class
+
+    payloads: list[object] = [
+        {"k": "héllo ⟨日本⟩ 🎉", "n": None, "b": True, "f": False},
+        {"nested": {"list": [1, 2.5, -0.0, 1e30, "", [], {}]}},
+        {"unicode_key_é": 'value\twith"escapes\\and/chars'},
+        {"empty": {}},
+        [],
+        "top-level string",
+        None,
+    ]
+    cls = orjson_response_class()
+    for content in payloads:
+        ours = cls(content)
+        theirs = JSONResponse(content)
+        assert ours.body == theirs.body, f"body mismatch for {content!r}"
+        assert ours.media_type == "application/json"
+        assert ours.headers["content-type"] == "application/json"
+
+
+def test_orjson_response_body_matches_taskq_json_dumps() -> None:
+    """render() output is exactly taskq._json.dumps output — the project
+    rule that serialization flows through the orjson-backed helper, never
+    stdlib json."""
+    from taskq._json import dumps as taskq_dumps
+    from taskq.client._taskq import orjson_response_class
+
+    cls = orjson_response_class()
+    content = {"job_id": "abc", "progress_state": {"pct": 50}, "terminal": False}
+    assert cls(content).body == taskq_dumps(content)
+    assert isinstance(cls(content).body, bytes)
+
+
+def test_orjson_response_renders_datetime_instead_of_raising() -> None:
+    """Datetimes (a realistic progress_state value) serialize to ISO-8601
+    instead of raising TypeError the way stdlib json.dumps does."""
+    from datetime import UTC, datetime
+
+    from taskq.client._taskq import orjson_response_class
+
+    cls = orjson_response_class()
+    body = cls({"at": datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC)}).body
+    assert body == b'{"at":"2025-01-01T12:00:00Z"}'
+    # And the stdlib baseline really cannot do this — the divergence is the point.
+    with pytest.raises(TypeError):
+        JSONResponse({"at": datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC)})
+
+
+def test_orjson_response_render_routes_through_taskq_json() -> None:
+    """render() must not fall back to stdlib json: its output for a
+    non-ASCII payload equals the taskq._json form (raw UTF-8, compact
+    separators), which is byte-identical to stdlib's ensure_ascii=False
+    form — the contract the byte-equality test above pins."""
+    import taskq.client._taskq as taskq_module
+
+    content: dict[str, object] = {"k": "héllo"}
+    rendered = taskq_module.orjson_response_class().render(
+        None,
+        content,  # type: ignore[arg-type]  # Why: unbound call to exercise render() without __init__'s own render invocation
+    )
+    assert rendered == _stdlib_json.dumps(
+        content, ensure_ascii=False, allow_nan=False, separators=(",", ":")
+    ).encode("utf-8")

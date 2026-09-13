@@ -91,6 +91,11 @@ async def test_slot_pool_factory_is_provider_backed_when_given_provider() -> Non
         max_size=5,
         max_inactive_connection_lifetime=settings.pool_max_inactive_lifetime,
         command_timeout=settings.dispatcher_command_timeout,
+        # Same statement-cache treatment as the DSN-built branch — resolved
+        # from settings (the defaults here), so switching authentication
+        # never switches cache behaviour.
+        statement_cache_size=settings.statement_cache_size,
+        max_cached_statement_lifetime=settings.max_cached_statement_lifetime,
     )
 
 

@@ -379,6 +379,61 @@ factories — a partial override yields a worker that starts, dispatches nothing
 credentials from `pg_credential_provider` or the direct DSN. Full reference:
 [managed-identities.md](managed-identities.md).
 
+### Database performance knobs
+
+Four Postgres-side settings worth deciding deliberately — each closes a measured incident class.
+
+**`jit = off` for the queue role.** During enqueue/dispatch churn the planner's cost model crosses
+`jit_above_cost` (measured at a planner cost of ~4.5M on a busy `jobs` table) and JIT compilation
+made dispatch **45× slower**. Disable it once for the role TaskQ connects as:
+
+```sql
+ALTER ROLE taskq SET jit = off;
+```
+
+or per-pool, with no role-level access, by appending
+`?options=-c%20jit%3Doff` (URL-encoded `-c jit=off`) to the DSN's query string. The repo's
+`docker-compose.yml` carries the equivalent commented block.
+
+**Statement-cache sizing — set for you.** asyncpg caches prepared statements per connection in an
+LRU of `statement_cache_size` entries (asyncpg default: 100, evicted after
+`max_cached_statement_lifetime` seconds: 300). TaskQ's read paths render far more distinct SQL
+texts than 100 — `list_jobs` emits 384+ filter-combination variants, and the admin pages add more —
+so a client or dashboard whose filters vary thrashed the default cache: a measured **90–96 %
+steady-state miss rate**, *slower than disabling the cache entirely* (each miss re-pays the
+Parse/Describe round trips, +10–40 ms/call at managed-PG RTT). Every pool TaskQ builds now passes
+`statement_cache_size=512` and `max_cached_statement_lifetime=3600` — enough for the variant space
+with headroom, and no needless re-prepares on long-running workers. The write hot loop (dispatch,
+enqueue, terminal writes, sweeps) is textually stable and unaffected.
+
+Both knobs are settings, not hard-coded constants: `TASKQ_STATEMENT_CACHE_SIZE` and
+`TASKQ_MAX_CACHED_STATEMENT_LIFETIME` (fields `statement_cache_size` / `max_cached_statement_lifetime`
+on `TaskQSettings`) flow into every pool TaskQ builds. `0` is meaningful on each — the cache
+disabled, or no lifetime cap. These knobs apply **only to pools TaskQ builds**: bring-your-own
+pools (`WorkerConnections` factories, a caller-supplied `pool=`) must set the same two
+`create_pool` kwargs themselves — TaskQ cannot resize a pool it did not build.
+
+**Autovacuum overrides for the hot tables.** `jobs` and `job_events` turn over hard; the default
+`autovacuum_vacuum_scale_factor` (0.2 of the table) lets bloat accumulate until vacuums are rare
+and huge. Per-table overrides, tuned for queue churn:
+
+```sql
+ALTER TABLE {schema}.jobs SET (autovacuum_vacuum_scale_factor = 0.01,
+                               autovacuum_vacuum_insert_scale_factor = 0.05,
+                               autovacuum_vacuum_cost_limit = 2000);
+ALTER TABLE {schema}.job_events SET (autovacuum_vacuum_scale_factor = 0.01,
+                                     autovacuum_vacuum_insert_scale_factor = 0.05,
+                                     autovacuum_vacuum_cost_limit = 2000);
+```
+
+The *insert* scale factor is the one that matters for an append-heavy table: dead-tuple thresholds
+alone may never fire autovacuum (which also refreshes the statistics the planner needs).
+
+**`fillfactor` (70–90): consider, don't copy.** Job rows are written once, then updated in place
+through their status transitions; a lowered `fillfactor` keeps those updates HOT (same page, no
+index churn). Try 80–90 on `jobs` only if profiling shows HOT-chain fragmentation — changing it
+rewrites the table (`VACUUM FULL` / `pg_repack`), so measure before and after.
+
 ---
 
 ## 5. Fan-out at scale: chunks, cursors, idempotency

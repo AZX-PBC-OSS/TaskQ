@@ -12,7 +12,16 @@ from uuid import UUID
 
 import structlog
 
-from taskq._json import dumps_str as _json_dumps_str
+# Why: private import — the pre-serialized result path holds bytes, not a
+# dict, so the byte-level scan is the only way to run dumps_jsonb_str's NUL
+# guard without a second serialization (same justification as
+# backend/_terminal.py, mirrored here so both backends fail identically).
+from taskq._json import (
+    NUL_JSONB_ERROR,
+    _encoded_has_nul,  # pyright: ignore[reportPrivateUsage]
+    loads,
+)
+from taskq._json import dumps as _json_dumps
 from taskq.backend._protocol import (
     AttemptOutcome,
     AttemptRow,
@@ -60,10 +69,12 @@ async def _mark_succeeded(
     self: "InMemoryBackend",
     job_id: JobId,
     worker_id: UUID,
-    result: dict[str, object] | None,
+    result: dict[str, object] | None = None,
     progress_seq: int = 0,
     progress_state: dict[str, object] | None = None,
     fallback_result_ttl: timedelta | None = None,
+    *,
+    result_bytes: bytes | None = None,
 ) -> bool:
     row = self._jobs.get(job_id)
     if row is None:
@@ -71,14 +82,36 @@ async def _mark_succeeded(
     if row.status != "running" or row.locked_by_worker != worker_id:
         return False
 
+    if result is not None and result_bytes is not None:
+        raise ValueError(
+            "result and result_bytes are mutually exclusive; pass the actor's "
+            "result dict (serialized here) or its taskq._json.dumps bytes "
+            "(reused as-is), not both"
+        )
     now = self._clock.now()
-    # PG serialises the result into jsonb at write time, so a caller-held
-    # result dict can never reach storage by reference; copy on the way
-    # in to hold the same isolation contract here.
-    stored_result = None if result is None else dict(result)
-    result_size_bytes: int | None = (
-        len(_json_dumps_str(result).encode("utf-8")) if result is not None else None
-    )
+    # Both result forms normalize to the same observable state as PG: the
+    # stored result never reaches storage by reference (PG serializes into
+    # jsonb at write time) and result_size_bytes is the exact byte length
+    # of what PG would store.  The bytes form — what the worker consumer
+    # passes — reuses the caller's serialization as-is (dict via a decode
+    # round-trip, the same orjson bytes PG would bind); the dict form
+    # serializes exactly once here and keeps a shallow copy.
+    stored_result: dict[str, object] | None
+    result_size_bytes: int | None
+    if result_bytes is not None:
+        if _encoded_has_nul(result_bytes):
+            raise ValueError(NUL_JSONB_ERROR)
+        stored_result = loads(result_bytes)
+        result_size_bytes = len(result_bytes)
+    elif result is not None:
+        data = _json_dumps(result)
+        if _encoded_has_nul(data):
+            raise ValueError(NUL_JSONB_ERROR)
+        stored_result = dict(result)
+        result_size_bytes = len(data)
+    else:
+        stored_result = None
+        result_size_bytes = None
     max_result_bytes = self._result_max_bytes
     if result_size_bytes is not None and result_size_bytes > max_result_bytes:
         raise ResultTooLarge(
@@ -137,13 +170,22 @@ async def _mark_succeeded_with_conn(
     conn: object,
     job_id: JobId,
     worker_id: UUID,
-    result: dict[str, object] | None,
+    result: dict[str, object] | None = None,
     progress_seq: int = 0,
     progress_state: dict[str, object] | None = None,
     fallback_result_ttl: timedelta | None = None,
+    *,
+    result_bytes: bytes | None = None,
 ) -> bool:
     return await _mark_succeeded(
-        self, job_id, worker_id, result, progress_seq, progress_state, fallback_result_ttl
+        self,
+        job_id,
+        worker_id,
+        result,
+        progress_seq,
+        progress_state,
+        fallback_result_ttl,
+        result_bytes=result_bytes,
     )
 
 

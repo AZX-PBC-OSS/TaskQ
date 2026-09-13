@@ -1225,6 +1225,7 @@ def _ui_serve(
         from contextlib import AsyncExitStack
 
         from taskq import _json
+        from taskq.connections import statement_cache_kwargs
         from taskq.worker.health import (
             _check_live,  # pyright: ignore[reportPrivateUsage]  # Why: _check_live is a shared utility consumed by both transports (Unix socket + FastAPI); the underscore signals "internal to the health subsystem" not "private to health.py".
         )
@@ -1243,7 +1244,18 @@ def _ui_serve(
             if pool_factory is not None:
                 pg_pool = await pool_factory()
             else:
-                pg_pool = await asyncpg.create_pool(pg_dsn, min_size=1, max_size=4)
+                # settings (the TaskQSettings this UI was launched with) is
+                # in scope, so the pair resolves through statement_cache_kwargs;
+                # forwarded explicitly so pyright can trace types through
+                # asyncpg.create_pool.
+                stmt_kwargs = statement_cache_kwargs(settings)
+                pg_pool = await asyncpg.create_pool(
+                    pg_dsn,
+                    min_size=1,
+                    max_size=4,
+                    statement_cache_size=stmt_kwargs["statement_cache_size"],
+                    max_cached_statement_lifetime=stmt_kwargs["max_cached_statement_lifetime"],
+                )
             assert pg_pool is not None, "asyncpg.create_pool returned None"
             pool = pg_pool
 
