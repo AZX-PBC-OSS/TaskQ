@@ -354,17 +354,25 @@ def test_queues_within_the_cap_keep_their_real_names(
 # UUID from cron_schedules — as its dimension, the one identity-like label
 # that survived the worker_id campaign.  Schedule rows are runtime-creatable
 # (``create_schedule`` is public client API; every row mints a fresh UUID),
-# so unlike ``actor`` nothing the library ships bounds the value set.  The
-# pin holds the relabeled contract (#157): the dimension is ``actor`` (the
-# registered actor set the user ships) and nothing else.
+# so nothing the library ships bounds that value set.  The relabel (#157)
+# made the dimension ``actor`` — but the actor on THIS instrument is not
+# the registered set every other actor-labeled instrument enjoys: the
+# failure path emits the raw ``cron_schedules.actor`` string, and schedule
+# rows accept ANY string at creation time (validation is deferred to fire
+# time by design), so a dangling, misspelled or tenant-generated name fails
+# every tick's planning loop and would mint one series per distinct string.
+# The pins below hold both halves of the contract: the dimension keys are
+# exactly {actor}, and the value set is bounded at the emitter — the first
+# ``_MAX_ACTOR_LABEL_VALUES`` distinct names keep their series, overflow
+# collapses onto the fixed ``_other_`` value.
 
 _CRON_FIRE_ACTORS: tuple[str, ...] = ("nightly_report", "hourly_cleanup", "minutely_heartbeat")
-#: The actor names the cron loop's two post-write loops pass to
-#: ``record_cron_failure`` — cron_schedules.actor values, each of which
-#: must exist in actor_config, so the value set is the registered actor
-#: set the user ships: the same bound ``actor`` enjoys on every other
-#: instrument (grep-verified: the emitter's only callers are the
-#: ``tick_cron`` post-write loops in worker/cron_loop.py).
+#: Representative actor names for the key-set pin.  On the failure path
+#: the emitter sees the raw schedule-row actor — including dangling
+#: names that never resolve against ``actor_config`` and fail every
+#: tick's planning loop — which is exactly why the emitter-level cap
+#: pinned below exists (grep-verified: the emitter's only callers are
+#: the ``tick_cron`` post-write loops in worker/cron_loop.py).
 
 
 @pytest.fixture
@@ -373,6 +381,9 @@ def cron_reader(monkeypatch: pytest.MonkeyPatch) -> InMemoryMetricReader:
     reader = InMemoryMetricReader()
     meter = MeterProvider(metric_readers=[reader]).get_meter("taskq-cron-cardinality")
     monkeypatch.setattr(otel_mod, "_otel_enabled", True)
+    # The admitted-actor set is process-global admission state; a fresh set
+    # per test keeps one test's actors from widening another's assertion.
+    monkeypatch.setattr(otel_mod, "_cron_actor_label_values", set())
     monkeypatch.setattr(
         otel_mod,
         "_cron_consecutive_failures",
@@ -400,3 +411,70 @@ def test_cron_consecutive_failures_dimensions_are_the_actor_set_only(
     # The up-down balance nets on the one series every schedule of an
     # actor shares: +3 then -1 leaves 2 per actor.
     assert {attrs["actor"]: value for attrs, value in points} == dict.fromkeys(_CRON_FIRE_ACTORS, 2)
+
+
+def test_cron_actor_label_cap_and_overflow_label_are_pinned() -> None:
+    """The cap is the ~100-values-per-dimension ceiling Azure's guidance
+    sets (the same number the queue cap cites), and the overflow label is
+    the fixed ``_other_`` string — both are contract, not implementation
+    detail."""
+    assert otel_mod._MAX_ACTOR_LABEL_VALUES == 100  # pyright: ignore[reportPrivateUsage]  # Why: the pin IS the point of the test.
+    assert otel_mod._ACTOR_LABEL_OVERFLOW == "_other_"  # pyright: ignore[reportPrivateUsage]
+
+
+def test_distinct_actors_beyond_the_cap_do_not_grow_series(
+    cron_reader: InMemoryMetricReader,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With the cap at 3, 32 distinct actor names — the dangling,
+    misspelled or tenant-generated names ``create_schedule`` accepts at
+    creation time — must produce exactly 4 series (3 admitted +
+    ``_other_``): minting actor names past the cap must not mint series,
+    the admitted names keep their real labels, and the dimension keys
+    stay exactly {actor}. Uses a small cap so the admission boundary is
+    exercised surgically; the real value is pinned by
+    :func:`test_cron_actor_label_cap_and_overflow_label_are_pinned`."""
+    monkeypatch.setattr(otel_mod, "_MAX_ACTOR_LABEL_VALUES", 3)  # pyright: ignore[reportPrivateUsage]  # Why: shrink the cap to reach the overflow boundary in a handful of emissions.
+
+    for i in range(32):
+        obs_mod.record_cron_failure(f"dangling_actor_{i}", 1)
+
+    points = _counter_points(cron_reader, "taskq.cron.consecutive_failures")
+    assert len(points) == 4, (
+        f"32 distinct actors minted {len(points)} series; the cap must bound it at 4"
+    )
+    assert {tuple(attrs) for attrs, _ in points} == {("actor",)}
+    assert {attrs["actor"] for attrs, _ in points} == {
+        "dangling_actor_0",
+        "dangling_actor_1",
+        "dangling_actor_2",
+        "_other_",
+    }
+
+
+def test_overflow_actors_aggregate_under_the_fixed_other_label(
+    cron_reader: InMemoryMetricReader,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Overflow emissions are not dropped, only merged: the ``_other_``
+    series carries the summed balance of everything past the cap, so a
+    fleet of dangling schedules still moves a number an operator can
+    see — the diagnosis of WHICH actor then lives on the cron fired /
+    cron fire failed log lines."""
+    monkeypatch.setattr(otel_mod, "_MAX_ACTOR_LABEL_VALUES", 3)  # pyright: ignore[reportPrivateUsage]
+
+    for i in range(12):  # 3 admitted + 9 overflow
+        obs_mod.record_cron_failure(f"dangling_actor_{i}", 1)
+
+    points = _counter_points(cron_reader, "taskq.cron.consecutive_failures")
+    by_actor = {attrs["actor"]: value for attrs, value in points}
+    assert set(by_actor) == {
+        "dangling_actor_0",
+        "dangling_actor_1",
+        "dangling_actor_2",
+        "_other_",
+    }
+    assert by_actor["dangling_actor_0"] == 1
+    assert by_actor["dangling_actor_1"] == 1
+    assert by_actor["dangling_actor_2"] == 1
+    assert by_actor["_other_"] == 9, "overflow samples were dropped instead of merged"

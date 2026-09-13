@@ -333,10 +333,19 @@ the cron loop:
 3. Computes `next_fire_at` as usual and continues.
 
 After a configurable number of consecutive failures, the schedule is auto-disabled. The
-`taskq.cron.consecutive_failures` up-down counter tracks failures per schedule, and the
-`taskq.cron.disabled_schedules` observable gauge tracks the count of disabled schedules.
+`taskq.cron.consecutive_failures` up-down counter tracks the failure balance per actor:
+schedules on one actor share one series, so the balance is the sum over that actor's
+schedules — including any residue from schedules that were disabled, re-enabled or deleted
+(which no later delta removes; the `cron_schedules.consecutive_failures` column and the
+logs are the authoritative per-schedule counts). Per-schedule attribution lives on the
+`cron fired`, `cron fire failed` and `cron schedule auto-disabled` log lines and the
+`taskq.cron_schedule_id` attribute of the `cron fire` span. The
+`taskq.cron.disabled_schedules` observable gauge tracks the count of disabled schedules —
+that gauge, not the balance, is the alert signal.
 
-Calling `handle.enable()` resets `consecutive_failures` to 0 and clears `last_fire_error`.
+Calling `handle.enable()` resets `consecutive_failures` to 0 and clears `last_fire_error`
+(the metric balance is not adjusted — a client process cannot emit a worker-counter
+delta).
 
 ---
 
