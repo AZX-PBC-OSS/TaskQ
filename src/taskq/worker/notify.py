@@ -228,8 +228,12 @@ async def reconnect_notify_conn(
 
     The factory call is bounded by ``settings.reload_factory_timeout`` —
     the same bound the SIGHUP reload path (deps.reload_credentials) and
-    the bootstrap slot-pool open use — so a hung credential provider or
-    TCP connect cannot park the reconnect (and with it
+    the bootstrap slot-pool open use — and each post-factory ``LISTEN``
+    execute is bounded by ``settings.notify_listener_setup_timeout``,
+    the same bound the ``add_listener`` beside it and the initial
+    listener setup use — so neither a hung credential provider/TCP
+    connect nor a rebuilt connection that completes the handshake and
+    then black-holes on LISTEN can park the reconnect (and with it
     ``notify_reconnect_lock``). A timeout is the retry loop's ordinary
     failure path: logged as a reconnect attempt, backoff, retry.
 
@@ -271,7 +275,20 @@ async def reconnect_notify_conn(
         apply_keepalive_to_conn(new_conn, label="notify")
         try:
             for channel, on_notify in channels:
-                await new_conn.execute(f'LISTEN "{channel}"')
+                # Why bounded: a rebuilt conn can complete the factory
+                # handshake and still black-hole on the LISTEN execute —
+                # the same shape #155 fixed for health queries — parking
+                # the reconnect loop (and notify_reconnect_lock) past
+                # every other bound. The SAME
+                # notify_listener_setup_timeout that bounds the
+                # add_listener beside it applies here (not a second
+                # mechanism); exhaustion is the retry loop's ordinary
+                # failure path: logged as a reconnect attempt, backoff,
+                # retry.
+                await asyncio.wait_for(
+                    new_conn.execute(f'LISTEN "{channel}"'),
+                    timeout=float(deps.settings.notify_listener_setup_timeout),
+                )
                 await asyncio.wait_for(
                     new_conn.add_listener(channel, on_notify),  # pyright: ignore[reportArgumentType]  # Why: stubs over-narrow callback type; runtime asyncpg accepts sync callbacks per asyncpg/connection.py:_process_notification
                     timeout=float(deps.settings.notify_listener_setup_timeout),
