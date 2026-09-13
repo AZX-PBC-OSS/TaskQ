@@ -1606,7 +1606,7 @@ to be causally related.
 | `taskq.dispatch.duration` | Histogram | SQL-execution latency for dispatch_batch |
 | `messaging.process.duration` | Histogram | Full actor execution duration |
 | `messaging.client.consumed.messages` | Counter | Count of completed jobs by actor/queue/outcome |
-| `taskq.backpressure.errors` | Counter | `MaxPendingExceededError` count by actor/kind |
+| `taskq.backpressure.errors` | Counter | Enqueue backpressure rejections by actor/kind — `max_pending` (cap reached) and `max_pending_lock_timeout` (serialization-lock wait budget exhausted) |
 | `taskq.deadline_exceeded_sweep.jobs_failed` | Counter | Jobs failed by the deadline sweep |
 | `taskq.cancellation.requested` | Counter | Bumped once per `JobsClient.cancel()` call (regardless of outcome) |
 | `taskq.cancellation.phase_transitions` | Counter | Cancel phase changes |

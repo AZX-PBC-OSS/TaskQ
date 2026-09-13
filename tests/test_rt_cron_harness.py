@@ -26,7 +26,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from collections.abc import Generator
-from dataclasses import replace
 from datetime import datetime, timedelta
 from typing import Any
 from uuid import UUID
@@ -153,23 +152,36 @@ class GatedEnqueueBackend(PostgresBackend):
 
 
 class JobIdCollisionBackend(PostgresBackend):
-    """Backend whose batched enqueue fails with a genuine server-side
-    ``UniqueViolationError`` on the caller's connection.
+    """Backend whose batched enqueue genuinely fails with a server-side
+    ``UniqueViolationError`` (``jobs_pkey``) on the caller's connection.
 
-    The first planned row's id is swapped for one already committed to
-    ``jobs``; the real ``enqueue_batch`` INSERT then runs and violates
-    ``jobs_pkey`` for real — the identity-collision infra failure the
-    tick's enqueue-failure branch exists for, with no asyncpg mocking.
+    Before the FIRST batched INSERT, the first planned arg's job id is
+    committed by a SECOND connection — the client write that won the race
+    to that id in production — then the real ``enqueue_batch`` INSERT runs
+    and genuinely violates ``jobs_pkey`` for real, with no asyncpg
+    mocking.  The violation's detail line therefore names an id the tick's
+    own plan carries (``Key (id)=(…)``), which is exactly what per-plan
+    attribution must match.  Only the first attempt collides: the
+    colliding row exists from then on, but the survivors' own fresh ids
+    never do — a retry of THEIR args lands.
     """
 
-    def __init__(self, settings: WorkerSettings, *, collide_id: UUID) -> None:
+    def __init__(
+        self,
+        settings: WorkerSettings,
+        *,
+        collider_conn: asyncpg.Connection,
+        schema: str,
+    ) -> None:
         super().__init__(
-            _StubBackendDeps(settings),  # type: ignore[arg-type]  # Why: duck-typed BackendDeps; see make_backend.
+            _StubBackendDeps(settings),  # type: ignore[arg-type]  # Why: duck-typed BackendDeps; __init__ reads only settings.schema_name and no pool is acquired on the tick path.
             clock=SystemClock(),
             cancellation_grace_period=_ZERO,
             cleanup_grace_period=_ZERO,
         )
-        self._collide_id = collide_id
+        self._collider_conn = collider_conn
+        self._schema = schema
+        self._committed = False
 
     async def enqueue_batch(
         self,
@@ -178,9 +190,73 @@ class JobIdCollisionBackend(PostgresBackend):
         connection: ConnLike | None = None,
         enforce_max_pending: bool = True,
     ) -> list[JobRow]:
-        sabotaged = [replace(args_list[0], id=self._collide_id), *args_list[1:]]
+        if not self._committed:
+            self._committed = True
+            collide_id = args_list[0].id
+            collide_actor = args_list[0].actor
+            await self._collider_conn.execute(
+                f'INSERT INTO "{self._schema}".jobs '  # noqa: S608  # Why: schema is a test-fixture identifier; values are $-bound.
+                "(id, actor, queue, payload, max_attempts, retry_kind) "
+                "VALUES ($1, $2, 'rt_queue', '{}'::jsonb, 1, 'transient')",
+                collide_id,
+                collide_actor,
+            )
         return await super().enqueue_batch(
-            sabotaged, connection=connection, enforce_max_pending=enforce_max_pending
+            args_list, connection=connection, enforce_max_pending=enforce_max_pending
+        )
+
+
+class SingletonRaceBackend(PostgresBackend):
+    """Commits a singleton blocker on a SECOND connection just before the
+    tick's batched INSERT runs.
+
+    The tick's singleton preflight ran earlier in the tick's own
+    transaction and saw no blocker; this commit lands in the preflight→
+    INSERT window — the client enqueue that wins that race in production —
+    and the batched INSERT, whose statement snapshot under READ COMMITTED
+    DOES see the committed blocker, then genuinely violates
+    ``jobs_singleton_uniq``.  Deterministic: no sleeps, no polling — the
+    injection point IS the window.
+    """
+
+    def __init__(
+        self,
+        settings: WorkerSettings,
+        *,
+        blocker_conn: asyncpg.Connection,
+        schema: str,
+        actor: str,
+    ) -> None:
+        super().__init__(
+            _StubBackendDeps(settings),  # type: ignore[arg-type]  # Why: duck-typed BackendDeps; see make_backend.
+            clock=SystemClock(),
+            cancellation_grace_period=_ZERO,
+            cleanup_grace_period=_ZERO,
+        )
+        self._blocker_conn = blocker_conn
+        self._schema = schema
+        self._actor = actor
+        self._committed = False
+
+    async def enqueue_batch(
+        self,
+        args_list: list[EnqueueArgs],
+        *,
+        connection: ConnLike | None = None,
+        enforce_max_pending: bool = True,
+    ) -> list[JobRow]:
+        if not self._committed:
+            self._committed = True
+            await self._blocker_conn.execute(
+                f'INSERT INTO "{self._schema}".jobs '  # noqa: S608  # Why: schema is a test-fixture identifier; values are $-bound.
+                "(id, actor, queue, payload, max_attempts, retry_kind, metadata) "
+                "VALUES ($1, $2, 'rt_queue', '{}'::jsonb, 1, 'transient', $3::jsonb)",
+                new_uuid(),
+                self._actor,
+                '{"singleton": true}',
+            )
+        return await super().enqueue_batch(
+            args_list, connection=connection, enforce_max_pending=enforce_max_pending
         )
 
 

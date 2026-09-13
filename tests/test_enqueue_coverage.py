@@ -137,6 +137,13 @@ class _FakeEnqueueConn:
         return None
 
     async def fetchval(self, sql: str, *args: object) -> object:
+        # The max_pending try-lock succeeds by default: these tests model an
+        # uncontended enqueue; contention behavior is covered by
+        # test_postgres_enqueue_max_pending_lock.py. Without this, the
+        # bounded-wait budget (5 s default) would expire inside every
+        # capped-path test before the count is ever reached.
+        if "pg_try_advisory_xact_lock" in sql:
+            return True
         for pattern, result in self._fetchval_map.items():
             if pattern in sql:
                 return result

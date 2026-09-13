@@ -183,13 +183,26 @@ remaining steps. Later steps only execute when earlier ones did not match or rai
    `metadata["singleton"]` stamp and pre-flight — previously the flag was client-enqueue-only
    (see [Cron Scheduling — singleton and `max_pending` interaction](cron.md#singleton-and-max_pending-interaction)).
 4. **`max_pending` count check** — if `ref.max_pending` is set, counts `pending + scheduled` jobs
-   for this actor. Raises `MaxPendingExceededError` when `count >= max_pending`. The cap is
-   exact for serial producers and approximate under concurrency: the count and the INSERT are
-   separate statements with no lock between them, so concurrent producers can each pass the
-   check before anyone's insert commits — the overshoot is bounded by the number of racing
-   producers, never unbounded. Crons and single-process producers are exact. An exact cap
-   under concurrency would need a lock on the count path (as `unique_for` takes); if you need
-   that guarantee, tell us.
+   for this actor. Raises `MaxPendingExceededError` when `count >= max_pending`. Single enqueues
+   are **exact under concurrency**: the count and the INSERT are serialized per `(schema, actor)`
+   by a transaction-scoped advisory lock (the same mechanism `unique_for` uses), so concurrent
+   producers cannot slip between the check and the insert. The lock wait is bounded — 5 s by
+   default (`DEFAULT_MAX_PENDING_LOCK_TIMEOUT_MS` in `taskq.backend._enqueue`): a producer that
+   cannot acquire the lock within its budget gets `MaxPendingLockTimeoutError` instead of
+   queueing behind every other racer, so burst tail latency is capped by the budget rather than
+   growing linearly with the number of producers. Treat it exactly like a cap rejection: retry
+   later or shed load (both errors sit in the `BackpressureError` family and both record against
+   the `taskq.backpressure.errors` counter). Bulk paths (`enqueue_batch`,
+   `enqueue_batch_fast`) and cron suppressions deliberately do **not** take the lock: their
+   aggregated pre-insert count is exact for the batch it admits but **approximate under
+   concurrency** — separate bulk connections can still race the count and the insert, and the
+   overshoot is bounded by the number of racing batches (documented, not silent). Crons and
+   single-process producers therefore stay exact in practice.
+
+   Operational note: the lock exists only for capped actors on the single-enqueue path, is keyed
+   `taskq:max_pending:<schema>:<actor>` (hashed via `hashtextextended`), and is transaction-scoped
+   — it shows in `pg_locks` only for the duration of a contended enqueue. Actors without
+   `max_pending` never touch it.
 5. **`idempotency_key` upsert** — if `idempotency_key` is provided and matches an existing row,
    returns the existing handle with `was_existing=True`.
 6. **Job INSERT** — inserts the new row and returns a handle with `was_existing=False`.
@@ -1362,6 +1375,7 @@ All exceptions are in `taskq.exceptions`. Import directly:
 ```python
 from taskq.exceptions import (
     MaxPendingExceededError,
+    MaxPendingLockTimeoutError,
     SingletonCollisionError,
     PayloadValidationError,
     JobFailed,
@@ -1372,6 +1386,7 @@ from taskq.exceptions import (
 | Exception | Raised when |
 |---|---|
 | `MaxPendingExceededError` | `enqueue()` called when `pending + scheduled` count >= `max_pending`. Fields: `actor` (str), `current_count` (int), `max_pending` (int). |
+| `MaxPendingLockTimeoutError` | `enqueue()` on a capped actor could not acquire the per-`(schema, actor)` serialization advisory lock within its budget (default 5 s) — too many concurrent producers, cap check never ran. Same `BackpressureError` family as `MaxPendingExceededError`; same response (retry later or shed load). Fields: `actor` (str), `timeout_ms` (float). |
 | `SingletonCollisionError` | `enqueue()` called for a singleton actor that already has an active job. Fields: `actor` (str), `blocking_job_id` (UUID or None), `retry_after` (timedelta or None). |
 | `PayloadValidationError` | Pydantic validation of the payload fails at enqueue time or at dispatch time. Non-retryable regardless of retry policy. Fields: `actor`, `payload_schema_ver`, `validation_errors`. |
 | `JobFailed` | `JobHandle.wait()` observed a non-success terminal status. Field: `row` (JobRow) with `status`, `error_class`, `error_message`, `error_traceback`. |

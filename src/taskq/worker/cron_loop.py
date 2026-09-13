@@ -8,6 +8,7 @@ writes the enqueues plus the schedule advances as a handful of batched
 statements inside the caller's transaction.
 """
 
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -17,6 +18,7 @@ from zoneinfo import ZoneInfo
 
 import asyncpg
 import structlog
+from asyncpg.exceptions import UniqueViolationError
 from opentelemetry import trace
 from opentelemetry.trace import Span, SpanKind, StatusCode
 
@@ -51,6 +53,7 @@ from taskq.obs import (
 )
 from taskq.obs._redact_exc import safe_exception_message
 from taskq.settings import WorkerSettings
+from taskq.worker._transient import TRANSIENT_PG_ERRORS
 
 log: structlog.stdlib.BoundLogger = get_logger(__name__)
 
@@ -350,6 +353,189 @@ def _max_pending_suppressed(plan: _FireSuccess, current_count: int, cap: int) ->
     )
 
 
+_DETAIL_KEY_RE = re.compile(r"^Key \((?P<cols>[^)]*)\)=\((?P<vals>.*)\) already exists\.$")
+"""Postgres' unique-violation detail line: the index's columns and the
+colliding values.  ``jobs_singleton_uniq`` is keyed on ``(actor)`` and
+``jobs_pkey`` on ``(id)`` (the initial migration), so the values name the
+colliding actor or the collided job id — the one fact per-plan
+attribution needs without re-inserting anything."""
+
+
+def _attribute_violation(
+    pending: list[_FireSuccess],
+    exc: Exception,
+) -> tuple[list[_FireSuccess], list[_FireSuccess]] | None:
+    """Map a batched-INSERT unique violation to the plan(s) that caused it.
+
+    Returns ``(offenders, survivors)``, or ``None`` when the error cannot
+    be attributed SAFELY — any other exception type, an unparsable or
+    truncated detail line, or a value naming no pending plan.  The caller
+    isolates per plan on ``None`` rather than guessing: striking the wrong
+    schedule is the auto-disable trap this whole path exists to avoid.
+
+    Every attribution is verified against the pending plans before it is
+    trusted: an ``id`` value must be a job id some pending plan actually
+    mints, and an ``actor`` value must name a plan whose args carry the
+    ``singleton`` stamp — the partial index covers only stamped rows, so
+    an unstamped plan for the same actor cannot be the violator.  A value
+    that verifies against nothing pending means the detail is not telling
+    us which of OUR rows collided (PG truncates long detail values;
+    indexes can be added by an operator) — unattributable, on purpose.
+    """
+    if not isinstance(exc, UniqueViolationError):
+        return None
+    match = _DETAIL_KEY_RE.match(exc.detail or "")
+    if match is None:
+        return None
+    cols = match.group("cols")
+    value = match.group("vals")
+    if cols == "id":
+        try:
+            collided: UUID = UUID(value)
+        except ValueError:
+            return None
+        offenders = [
+            plan for plan in pending if any(args.id == collided for args in plan.enqueue_args)
+        ]
+    elif cols == "actor":
+        offenders = [
+            plan
+            for plan in pending
+            if plan.actor == value
+            and any(args.metadata.get("singleton") is True for args in plan.enqueue_args)
+        ]
+    else:
+        return None
+    if not offenders:
+        return None
+    struck_ids = {plan.schedule_id for plan in offenders}
+    return offenders, [plan for plan in pending if plan.schedule_id not in struck_ids]
+
+
+def _strike_plans(
+    plans: list[_FireSuccess],
+    exc: Exception,
+    failures: list[_FireFailure],
+    worker_id: UUID,
+    settings: WorkerSettings,
+) -> None:
+    """Convert write-failed plans into per-schedule failures, appended to
+    *failures* — the same span, telemetry and auto-disable handling the
+    planning loop's except-branch applies (see :func:`_record_fire_failure`).
+    """
+    for plan in plans:
+        current_span = trace.get_current_span()
+        current_ctx = current_span.get_span_context()
+        links = [trace.Link(current_ctx)] if current_ctx.is_valid else None
+        with safe_start_span(
+            "cron fire",
+            kind=SpanKind.PRODUCER,
+            attributes={"cron_schedule_name": plan.actor, "taskq.worker_id": str(worker_id)},
+            links=links,
+            new_root=True,
+        ) as span:
+            failures.append(_record_fire_failure(span, plan.row, exc, settings))
+
+
+async def _enqueue_planned_fires(
+    conn: asyncpg.Connection,
+    backend: Backend,
+    plans: list[_FireSuccess],
+    failures: list[_FireFailure],
+    worker_id: UUID,
+    settings: WorkerSettings,
+) -> list[_FireSuccess]:
+    """Enqueue the planned fires and return the plans whose jobs landed.
+
+    The whole batch is ONE ``INSERT ... SELECT`` statement, so Postgres
+    aborts the entire statement when a single row violates a constraint —
+    and a statement error poisons the surrounding transaction (every later
+    statement fails with SQLSTATE 25P02 until rollback).  Both halves of
+    that sentence are what the pre-batching per-row enqueue never had to
+    face, and what this helper's shape contains:
+
+    * The enqueue runs inside a SAVEPOINT (asyncpg's nested
+      ``conn.transaction()`` on the caller's already-open transaction): a
+      failed batch rolls back to the savepoint, leaving the caller's
+      transaction alive and the tick's remaining bookkeeping — the
+      survivors' advance, the suppression UPDATE, the strikes — committable.
+      Without it, the failure UPDATE below the old inline except-branch
+      raised ``InFailedSQLTransactionError`` itself: no strike ever
+      persisted, while the span/metric telemetry still claimed every
+      schedule failed (and the leader's backstop guard counted the
+      non-transient abort toward killing the worker).
+    * A unique violation is attributed from the error itself
+      (:func:`_attribute_violation`): the colliding plan(s) take one
+      strike each and the SURVIVORS retry as a batch.  The preflight is
+      advisory — a client enqueue committing between the preflight SELECT
+      and this INSERT (READ COMMITTED: the INSERT takes a fresh snapshot)
+      is a race the tick lost for that one actor, not a defect of every
+      schedule in the batch.  Each retry strikes at least one plan, so
+      the loop is bounded by the batch size.
+    * Transient PG errors (:data:`TRANSIENT_PG_ERRORS` — statement
+      timeout, connection drop, server shutdown) re-raise without
+      recording a single failure: the caller's transaction rolls back and
+      the leader's transient handling retries the tick.  A strike is a
+      statement about the SCHEDULE's health; PG weather must not write
+      one, however many schedules were in flight.
+    * Any other failure is not attributable from the error alone, so each
+      plan retries in its own savepoint: the plans that individually fail
+      take their own strike with their own exception; the plans that
+      individually succeed land.  This is the fallback for shapes like a
+      check violation or a NUL that escaped to the server — per-plan cost
+      is paid only on the failure path.
+    """
+    pending = list(plans)
+    landed: list[_FireSuccess] = []
+    while pending:
+        batch_args = [args for plan in pending for args in plan.enqueue_args]
+        try:
+            async with conn.transaction():
+                await backend.enqueue_batch(
+                    batch_args,
+                    connection=conn,
+                    # Pre-admitted by _suppress_policy_collisions, which
+                    # trims every plan to the remaining capacity: re-checking
+                    # here would turn a concurrent client enqueue borrowing the
+                    # last slot into a whole-tick abort, striking schedules
+                    # whose only defect is a busy actor (the auto-disable trap
+                    # the preflight exists to prevent). Accepted converse cost:
+                    # a client commit landing between the preflight SELECT and
+                    # this INSERT overshoots the cap by that commit, bounded by
+                    # one tick's kept plans — liveness over strictness, stated.
+                    # That same commit can violate jobs_singleton_uniq — the
+                    # attribution + survivor-retry below is the backstop for
+                    # exactly that window.
+                    enforce_max_pending=False,
+                )
+            landed.extend(pending)
+            pending = []
+        except TRANSIENT_PG_ERRORS:
+            raise
+        except Exception as exc:
+            attributed = _attribute_violation(pending, exc)
+            if attributed is not None:
+                offenders, survivors = attributed
+                _strike_plans(offenders, exc, failures, worker_id, settings)
+                pending = survivors
+            else:
+                for plan in pending:
+                    try:
+                        async with conn.transaction():
+                            await backend.enqueue_batch(
+                                plan.enqueue_args,
+                                connection=conn,
+                                enforce_max_pending=False,
+                            )
+                        landed.append(plan)
+                    except TRANSIENT_PG_ERRORS:
+                        raise
+                    except Exception as plan_exc:
+                        _strike_plans([plan], plan_exc, failures, worker_id, settings)
+                pending = []
+    return landed
+
+
 async def tick_cron(
     conn: asyncpg.Connection,
     settings: WorkerSettings,
@@ -504,47 +690,9 @@ async def tick_cron(
         )
 
     if successes:
-        try:
-            await backend.enqueue_batch(
-                [args for plan in successes for args in plan.enqueue_args],
-                connection=conn,
-                # Pre-admitted by _suppress_policy_collisions above, which
-                # trims every plan to the remaining capacity: re-checking
-                # here would turn a concurrent client enqueue borrowing the
-                # last slot into a whole-tick abort, striking schedules
-                # whose only defect is a busy actor (the auto-disable trap
-                # the preflight exists to prevent). Accepted converse cost:
-                # a client commit landing between the preflight SELECT and
-                # this INSERT overshoots the cap by that commit, bounded by
-                # one tick's kept plans — liveness over strictness, stated.
-                enforce_max_pending=False,
-            )
-        except Exception as exc:
-            # One enqueue statement covers every planned fire, so its failure
-            # fails them all at once.  Convert each planned success into a
-            # per-schedule failure with the same span and metric handling the
-            # planning loop uses, so the auto-disable telemetry survives the
-            # move off the per-row enqueue path.  On a real connection the
-            # failed INSERT has aborted the caller's transaction; the failure
-            # UPDATE below then surfaces that error and the caller's rollback
-            # discards it — the same outcome the per-schedule error branch
-            # produced before batching.
-            unsent, successes = successes, []
-            for plan in unsent:
-                current_span = trace.get_current_span()
-                current_ctx = current_span.get_span_context()
-                links = [trace.Link(current_ctx)] if current_ctx.is_valid else None
-                with safe_start_span(
-                    "cron fire",
-                    kind=SpanKind.PRODUCER,
-                    attributes={
-                        "cron_schedule_name": plan.actor,
-                        "taskq.worker_id": str(worker_id),
-                    },
-                    links=links,
-                    new_root=True,
-                ) as span:
-                    failures.append(_record_fire_failure(span, plan.row, exc, settings))
+        successes = await _enqueue_planned_fires(
+            conn, backend, successes, failures, worker_id, settings
+        )
 
     if successes:
         # One statement advances every fired schedule: server-clock

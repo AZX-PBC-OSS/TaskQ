@@ -118,6 +118,42 @@ class MaxPendingExceededError(BackpressureError):
         super().__init__(actor, pending=current_count, max_pending=max_pending)
 
 
+class MaxPendingLockTimeoutError(BackpressureError):
+    """Raised when the advisory-lock wait bounding a capped actor's exact
+    count-then-insert exceeded its budget.
+
+    Distinct from :class:`MaxPendingExceededError`: the cap was never
+    observed -- this enqueue lost the race to even run the check, waiting
+    behind other producers on the same ``(schema, actor)`` lock until the
+    budget expired. The caller's correct response is the same as for a cap
+    rejection (retry later, or shed load), so this is raised from the same
+    :class:`BackpressureError` family and recorded against the same
+    ``taskq.backpressure.errors`` counter (``kind="max_pending_lock_timeout"``).
+
+    ``timeout_ms`` is the budget that expired. ``pending`` is 0 and
+    ``max_pending`` is ``None`` -- no count was taken.
+
+    Deliberately NOT a subclass of :class:`MaxPendingExceededError`: that
+    class means "the cap is full" and carries the observed count; a lock
+    timeout means "too contended to check" and conflating the two would
+    mislead handlers that react to a full queue (e.g. by logging the
+    count). Catch :class:`BackpressureError` to treat both the same way.
+    """
+
+    def __init__(self, actor: str, timeout_ms: float) -> None:
+        self.timeout_ms = timeout_ms
+        # BackpressureError.__init__ stamps actor/pending/max_pending and a
+        # generic message; args is re-set afterwards so the message names
+        # the actual condition (a bounded-wait loss, not a cap rejection).
+        super().__init__(actor, pending=0, max_pending=None)
+        self.args = (
+            f"backpressure: enqueue for actor {actor!r} could not acquire the "
+            f"max_pending advisory lock within {timeout_ms:g} ms of contention "
+            "(the exact cap check was not reached). Retry later or shed load, "
+            "exactly as for MaxPendingExceededError.",
+        )
+
+
 class PayloadValidationError(TaskQError):
     """Pydantic validation failed at enqueue or dispatch.
 

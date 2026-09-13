@@ -14,14 +14,15 @@ blocker, the transaction and advisory lock are open) while a second real
 connection commits the client singleton job; releasing the gate runs the
 INSERT against the now-committed blocker.
 
-The acceptable outcome — pinned here — is the honest abort shape the
-server-side enqueue-failure domain already documents: the tick RAISES
-(the doomed failure UPDATE surfacing the aborted transaction), NOTHING
-commits (no partial enqueues, no strikes), and the NEXT tick — a fresh
+The acceptable outcome — pinned here — is per-plan attribution inside a
+SAVEPOINT: the tick does NOT abort (the savepoint keeps the transaction
+alive past the statement error), the racing schedule takes exactly ONE
+strike with the real constraint name, and the healthy non-singleton plan
+that shared the batch fires in the SAME tick.  The next tick — a fresh
 transaction whose preflight runs BEFORE its enqueue — sees the committed
-blocker and suppresses cleanly instead of re-aborting: self-healing in
-one second, and the healthy non-singleton plan that shared the aborted
-batch loses one tick, not its fire.
+blocker and suppresses the singleton slot cleanly instead of re-aborting:
+self-healing in one second, the strike kept (suppression is neither
+amnesty nor a second strike), and no other schedule touched.
 """
 
 from __future__ import annotations
@@ -59,16 +60,18 @@ class TestConcurrentSingletonRace:
     """A client singleton INSERT commits between the tick's preflight and
     its batched INSERT."""
 
-    async def test_race_aborts_the_tick_and_the_next_tick_suppresses(
+    async def test_race_strikes_the_racer_fires_the_peer_and_the_next_tick_suppresses(
         self,
         clean_pg_conn: asyncpg.Connection,
         module_pg_schema: ModulePgSchema,
     ) -> None:
-        """The gated race, end to end: the aborted tick raises with nothing
-        committed (the healthy plan in the same batch is rolled back with
-        it, still due — not lost), and the very next tick preflights FIRST,
-        suppresses the singleton slot against the committed client job, and
-        fires the healthy plan it lost."""
+        """The gated race, end to end: the racing schedule takes exactly one
+        strike (attributed from the violation's ``Key (actor)=…`` detail,
+        committed — the savepoint kept the transaction alive), the healthy
+        plan in the same batch fires in the SAME tick, and the very next
+        tick preflights FIRST, suppresses the singleton slot against the
+        committed client job, and keeps the strike (no amnesty, no second
+        strike)."""
         schema = module_pg_schema.schema_name
         settings = cron_settings(schema)
         await seed_actor_config(clean_pg_conn, schema, _SINGLETON_ACTOR)
@@ -138,30 +141,50 @@ class TestConcurrentSingletonRace:
 
         with structlog.testing.capture_logs() as captured:
             gate.set()
-            with pytest.raises(asyncpg.InFailedSQLTransactionError):
-                await task
+            first: int = await task
 
-        # Nothing from the aborted tick survived its rollback: no partial
-        # enqueues (the client job is the only singleton row), no strikes,
-        # both schedules still due exactly as seeded.
-        assert await count_jobs(clean_pg_conn, schema, _SINGLETON_ACTOR) == 1
-        assert await count_jobs(clean_pg_conn, schema, _HEALTHY_ACTOR) == 0
-        for sid, row_before in before.items():
-            row_after = await schedule_row(clean_pg_conn, schema, sid)
-            assert row_after == row_before, (
-                f"schedule {sid} changed under an aborted tick — no strike, no "
-                "advance and no last_fired_at may survive the rollback"
-            )
-        tick_logs = [e["event"] for e in captured]
-        assert "cron fire failed" not in tick_logs, (
-            "per-schedule failure logs ran for writes that were rolled back — the "
-            "aborted tick must not claim failures it could not commit"
+        # The tick did NOT abort: the savepoint kept the transaction alive,
+        # the racing plan was attributed from the violation's detail line,
+        # and the healthy plan fired in this same tick.
+        assert first == 1, (
+            "the healthy plan must fire in the racing tick — one schedule "
+            "losing a singleton race is not a defect of the batch"
         )
+        # The racer's strike committed: consecutive_failures=1 with the real
+        # constraint name, no auto-disable, no last_fired_at (nothing fired),
+        # next_fire_at untouched (the failure path is not a fire).
+        singleton_row = await schedule_row(clean_pg_conn, schema, singleton_schedule_id)
+        assert singleton_row["consecutive_failures"] == 1, (
+            "the racing schedule takes exactly one strike"
+        )
+        assert "jobs_singleton_uniq" in (singleton_row["last_fire_error"] or ""), (
+            f"the strike must carry the real constraint name; got {singleton_row['last_fire_error']!r}"
+        )
+        assert singleton_row["enabled"] is True, "one race loss must not auto-disable"
+        assert singleton_row["last_fired_at"] is None
+        assert singleton_row["next_fire_at"] == before[singleton_schedule_id]["next_fire_at"]
+        assert await count_jobs(clean_pg_conn, schema, _SINGLETON_ACTOR) == 1, (
+            "the colliding cron fire must not be enqueued — the client job won the slot"
+        )
+        assert await count_jobs(clean_pg_conn, schema, _HEALTHY_ACTOR) == 1, (
+            "the healthy plan's fire committed in the racing tick"
+        )
+        tick_logs = [e["event"] for e in captured]
+        failed = [e for e in tick_logs if e == "cron fire failed"]
+        assert len(failed) == 1, (
+            "exactly one per-schedule failure log — the racing plan, whose "
+            "bookkeeping commits because the transaction survived"
+        )
+        assert "cron schedule auto-disabled" not in tick_logs
+        healthy_row = await schedule_row(clean_pg_conn, schema, healthy_schedule_id)
+        assert healthy_row["consecutive_failures"] == 0, "the healthy plan takes no strike"
+        assert healthy_row["last_fired_at"] is not None
 
         # The next tick, in a fresh transaction: the preflight runs BEFORE
         # the enqueue, sees the committed client job, and suppresses the
-        # singleton slot cleanly — the race does not repeat, and the healthy
-        # plan the aborted batch lost fires now.
+        # singleton slot cleanly — the race does not repeat.  The strike
+        # from the racing tick STANDS (suppression is neither amnesty nor a
+        # second strike), and the healthy plan, already fired, is not due.
         with structlog.testing.capture_logs() as captured:
             async with clean_pg_conn.transaction():
                 second = await tick_cron(
@@ -173,10 +196,9 @@ class TestConcurrentSingletonRace:
                     actor_policies=policies,
                 )
 
-        assert second == 1, (
-            "the next tick must suppress the singleton slot and fire the healthy "
-            "plan the aborted batch lost — a re-abort here would mean the tick "
-            "re-enqueued against the blocker instead of re-preflighting first"
+        assert second == 0, (
+            "the next tick must suppress the singleton slot (already struck, "
+            "not fired) and find the healthy plan already fired"
         )
         assert await count_jobs(clean_pg_conn, schema, _HEALTHY_ACTOR) == 1
         assert await count_jobs(clean_pg_conn, schema, _SINGLETON_ACTOR) == 1, (
@@ -189,8 +211,9 @@ class TestConcurrentSingletonRace:
         )
         singleton_row = await schedule_row(clean_pg_conn, schema, singleton_schedule_id)
         assert singleton_row["next_fire_at"] > due, "the suppressed slot advanced"
-        assert singleton_row["consecutive_failures"] == 0, "suppression is not a strike"
+        assert singleton_row["consecutive_failures"] == 1, (
+            "suppression is not amnesty — the racing tick's strike stands"
+        )
         assert singleton_row["last_fired_at"] is None
         healthy_row = await schedule_row(clean_pg_conn, schema, healthy_schedule_id)
-        assert healthy_row["last_fired_at"] is not None
         assert healthy_row["consecutive_failures"] == 0
