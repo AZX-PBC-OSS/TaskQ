@@ -865,8 +865,8 @@ class TestReservationCancelCronMetrics:
 
         stack, _deps, _backend, _client = await _setup_worker(pg_dsn, monkeypatch)
         try:
-            obs_mod.record_cron_failure("schedule_1", delta=1)
-            obs_mod.record_cron_failure("schedule_1", delta=1)
+            obs_mod.record_cron_failure("actor_1", delta=1)
+            obs_mod.record_cron_failure("actor_1", delta=1)
 
             metrics = collect_metrics(reader)
             cron_metric = [m for m in metrics if m.name == "taskq.cron.consecutive_failures"]
@@ -874,14 +874,15 @@ class TestReservationCancelCronMetrics:
             cron_dps = [
                 p for p in cron_metric[0].data.data_points if isinstance(p, NumberDataPoint)
             ]
-            # One series per schedule: the auto-disable threshold is per
-            # schedule, so a sum across schedules cannot tell one schedule
-            # failing N times from N schedules failing once.
+            # One series per actor: the schedule id is identity-like (a
+            # per-row, runtime-minted UUID) and lives on the cron fired /
+            # cron fire failed log lines and the cron-fire span, not on
+            # this metric.
             assert len(cron_dps) == 1
-            assert dict(cron_dps[0].attributes or {}) == {"schedule_id": "schedule_1"}
+            assert dict(cron_dps[0].attributes or {}) == {"actor": "actor_1"}
             assert cron_dps[0].value == 2
 
-            obs_mod.record_cron_failure("schedule_1", delta=-2)
+            obs_mod.record_cron_failure("actor_1", delta=-2)
         finally:
             await stack.aclose()
 

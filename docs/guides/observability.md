@@ -273,7 +273,7 @@ or zero row sample.
 
 | Metric name | Unit | Attributes | Description |
 |---|---|---|---|
-| `taskq.cron.consecutive_failures` | `1` | — | Consecutive cron execution failures, summed across schedules. On success the caller adds a negative delta equal to the current count for that schedule, so a non-zero total means at least one schedule is failing; the `cron fired` and `cron schedule auto-disabled` logs name which. |
+| `taskq.cron.consecutive_failures` | `1` | `actor` | Per-actor summed balance of consecutive cron execution failures: `+1` per failed fire, `-count` on a successful reset. Schedules on one actor share one series, so the balance is the sum over that actor's schedules — **including permanent residue**: an auto-disabled schedule leaves its count behind, re-enabling resets the DB column with no metric delta (the reset runs client-side, in another process), and deleting a schedule strands its count, so a healthy multi-schedule actor can sit permanently non-zero. The authoritative per-schedule counts are the `cron_schedules.consecutive_failures` column and the `cron fired` / `cron fire failed` / `cron schedule auto-disabled` logs (plus the `taskq.cron_schedule_id` attribute on the `cron fire` span); alert on `taskq.cron.disabled_schedules > 0` (the shipped `rules.yaml` alert) rather than on this balance. The `actor` label is capped: the first 100 distinct names a process sees keep their series, later names collapse onto `_other_`. |
 
 ### Dimension cardinality
 
@@ -295,6 +295,17 @@ name still rides on the enqueue/dispatch/consume span attributes and log
 lines, where cardinality is free. `actor` remains user-defined and unbounded
 on those emitters — keep actor names a bounded enum.
 
+The cron counter's `actor` label is the exception, and it is capped the same
+way `queue` is: `create_schedule` accepts any string actor at creation time
+(validation is deferred to fire time by design), and a dangling, misspelled
+or tenant-generated name fails every tick's planning loop — each failure
+emitting the raw string as a label value — so
+`taskq.cron.consecutive_failures` admits only the first 100 distinct actor
+names a process sees and collapses the rest onto `_other_`. Every other
+actor-labeled instrument receives actors that flowed through registration
+(`ActorRef` names on the job side, `actor_config`-resolved names on the cron
+success/suppression paths) and carries them as-is.
+
 Azure Monitor counts every unique combination of metric name, dimension key and
 dimension value published in the last 12 hours as an *active time series*, caps
 a subscription at **50,000** of them per region, allows 10 dimension keys per
@@ -311,7 +322,8 @@ free:
 - **Logs** — `worker_id` is bound via contextvars onto every log line;
   `schedule_id` is on the `cron fired`, `cron schedule auto-disabled` and
   `cron-tick-lock-contended` lines.
-- **Spans** — `taskq.worker_id` is an attribute of the `cron fire` span.
+- **Spans** — `taskq.worker_id` and `taskq.cron_schedule_id` are attributes
+  of the `cron fire` span.
 
 The `record_*` helpers still *accept* `worker_id` / `schedule_id`: they are part
 of the published `taskq.obs` surface and the callers already hold the value.
