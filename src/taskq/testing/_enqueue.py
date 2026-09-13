@@ -5,6 +5,7 @@
 ``self: InMemoryBackend`` as the first parameter.
 """
 
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 import structlog
@@ -18,6 +19,7 @@ from taskq.backend._protocol import (
 )
 from taskq.backend._records import item_jsonb_param, item_tags_jsonb_param
 from taskq.exceptions import (
+    BatchMaxPendingExceededError,
     MaxPendingExceededError,
     SingletonCollisionError,
 )
@@ -253,18 +255,40 @@ async def _enqueue_batch(
     # attribution and admission. Runs before the cap preflight to match
     # the PG statement order (build loop precedes the cap count).
     _check_batch_jsonb(args_list)
+    refusals: list[MaxPendingExceededError] = []
+    refused_indices: dict[str, list[int]] = {}
+    admitted_args = args_list
     if enforce_max_pending:
-        # All-or-nothing parity with the PG bulk tier: one aggregated
-        # pre-check (existing + batch per actor) before any insert, so a
-        # violating batch raises having written nothing — matching what
-        # PostgresBackend.enqueue_batch enforces. Without this the
-        # per-item loop below rejects mid-batch (partial admission),
-        # masking PG behavior in tests that run against this mirror.
-        await _check_batch_max_pending(self, args_list)
+        # Per-actor partition parity with the PG bulk tier: over-cap
+        # actors' items are refused as a group, every other actor's items
+        # are admitted, and the typed refusal raises AFTER the admitted
+        # rows are stored — matching what PostgresBackend.enqueue_batch
+        # enforces (there: after the admitting transaction commits).
+        refusals = await _batch_cap_refusals(self, args_list)
+        if refusals:
+            refused_indices = {
+                r.actor: [i for i, a in enumerate(args_list) if a.actor == r.actor]
+                for r in refusals
+            }
+            refused_names = {r.actor for r in refusals}
+            admitted_args = [a for a in args_list if a.actor not in refused_names]
     rows: list[JobRow] = []
-    for args in args_list:
-        row = await _enqueue(self, args)
+    for args in admitted_args:
+        # Why strip the carried cap here: the aggregate check above is the
+        # batch tier's ONLY admission decision (the PG tier's single
+        # unnest INSERT has no per-item cap logic either). Leaving the cap
+        # on would re-check per item WITHOUT the aggregate's idempotency
+        # discount, refusing pure-retry batches the aggregate just
+        # admitted — a PG/InMemory parity gap the old all-or-nothing
+        # pre-check masked.
+        row = await _enqueue(self, replace(args, max_pending=None))
         rows.append(row)
+    if refusals:
+        raise BatchMaxPendingExceededError(
+            refusals=refusals,
+            refused_indices=refused_indices,
+            admitted_count=len(rows),
+        )
     return rows
 
 
@@ -283,17 +307,19 @@ def _check_batch_jsonb(args_list: list[EnqueueArgs]) -> None:
         item_tags_jsonb_param(args.tags, idx=idx, actor=args.actor)
 
 
-async def _check_batch_max_pending(
+async def _batch_cap_refusals(
     self: "InMemoryBackend",
     args_list: list[EnqueueArgs],
-) -> None:
-    """Aggregated max_pending pre-check shared by the batch mirrors.
+) -> list[MaxPendingExceededError]:
+    """Compute the per-actor cap refusals for a batch without raising.
 
     Same effective-cap rule as the PG tier: a registered operator
     override (``_actor_configs_meta``) wins over the carried literal,
     cleared/unknown falls back to it. Idempotency pairs already stored
     (or repeated in-batch) are discounted — they dedupe instead of
-    writing — mirroring the PG tier's ``ON CONFLICT`` discount.
+    writing — mirroring the PG tier's ``ON CONFLICT`` discount. Returns
+    one :class:`MaxPendingExceededError` per over-cap actor; the caller
+    decides partition-vs-abort (see ``_enqueue_batch``).
     """
     counts = batch_cap_groups(args_list)
     deduped_counts: dict[str, int] = {}
@@ -307,6 +333,7 @@ async def _check_batch_max_pending(
         if pair in self._idempotency_index or pair in seen_in_batch:
             deduped_counts[args.actor] = deduped_counts.get(args.actor, 0) + 1
         seen_in_batch.add(pair)
+    refusals: list[MaxPendingExceededError] = []
     for actor, (batch_count, carried) in counts.items():
         stored = self._actor_configs_meta.get(actor)
         cap = (
@@ -319,11 +346,14 @@ async def _check_batch_max_pending(
         )
         admitted = batch_count - deduped_counts.get(actor, 0)
         if existing + admitted > cap:
-            raise MaxPendingExceededError(
-                actor=actor,
-                current_count=existing,
-                max_pending=cap,
+            refusals.append(
+                MaxPendingExceededError(
+                    actor=actor,
+                    current_count=existing,
+                    max_pending=cap,
+                )
             )
+    return refusals
 
 
 async def _enqueue_batch_fast(
@@ -358,10 +388,28 @@ async def _enqueue_batch_fast(
     # batch raise DuplicateIdempotencyKeyError in memory while PG raised
     # PayloadValidationError.
     _check_batch_jsonb(args_list)
+    refusals: list[MaxPendingExceededError] = []
+    refused_indices: dict[str, list[int]] = {}
+    admitted_args = args_list
     if enforce_max_pending:
-        await _check_batch_max_pending(self, args_list)
+        # Per-actor partition parity with the PG fast tier (see
+        # _enqueue_batch above and PostgresBackend.enqueue_batch_fast):
+        # over-cap actors' items are refused as a whole group, the rest
+        # COPY through, and the typed refusal raises AFTER the admitted
+        # rows are stored.
+        refusals = await _batch_cap_refusals(self, args_list)
+        if refusals:
+            refused_indices = {
+                r.actor: [i for i, a in enumerate(args_list) if a.actor == r.actor]
+                for r in refusals
+            }
+            refused_names = {r.actor for r in refusals}
+            admitted_args = [a for a in args_list if a.actor not in refused_names]
     seen: set[tuple[str, str]] = set()
-    for args in args_list:
+    # Only the ADMITTED items' pairs can violate: the PG COPY contains
+    # only admitted records, so an in-batch or stored duplicate among
+    # refused items never aborts it.
+    for args in admitted_args:
         if args.idempotency_key is None:
             continue
         pair = (args.idempotency_scope, str(args.idempotency_key))
@@ -377,7 +425,19 @@ async def _enqueue_batch_fast(
                 idempotency_scope=pair[0],
             )
         seen.add(pair)
-    # The insert loop re-runs the two preflights inside _enqueue_batch —
-    # pure reads, already passed above, deterministically no-ops here.
-    rows = await _enqueue_batch(self, args_list, enforce_max_pending=enforce_max_pending)
+    # Insert the admitted subset with cap enforcement off: the partition
+    # above is this tier's only admission decision, and re-running the
+    # aggregate inside _enqueue_batch would refuse again (it is not the
+    # no-op it was pre-partition). An empty admitted list skips storage
+    # entirely — the boundary raise below is the whole outcome, matching
+    # the PG fast tier's "no COPY, no fixup, no notify" arm.
+    rows: list[JobRow] = []
+    if admitted_args:
+        rows = await _enqueue_batch(self, admitted_args, enforce_max_pending=False)
+    if refusals:
+        raise BatchMaxPendingExceededError(
+            refusals=refusals,
+            refused_indices=refused_indices,
+            admitted_count=len(rows),
+        )
     return len(rows)

@@ -31,6 +31,7 @@ from taskq.backend._sql_templates import SqlTemplates
 from taskq.backend.clock import Clock
 from taskq.constants import wake_channel
 from taskq.exceptions import (
+    BatchMaxPendingExceededError,
     DuplicateIdempotencyKeyError,
     MaxPendingExceededError,
     MaxPendingLockTimeoutError,
@@ -142,12 +143,12 @@ def _attribute_duplicate_pair(
     return (None, None)
 
 
-async def _enforce_batch_max_pending(
+async def _batch_cap_refusals(
     conn: ConnLike,
     sql: SqlTemplates,
     args_list: list[EnqueueArgs],
-) -> None:
-    """Reject a batch whose per-actor aggregate exceeds the effective cap.
+) -> list[MaxPendingExceededError]:
+    """Compute the per-actor cap refusals for a batch without raising.
 
     One grouped count query for the whole batch (the same aggregated shape
     as the client's pre-check): existing pending+scheduled plus this
@@ -176,10 +177,17 @@ async def _enforce_batch_max_pending(
     race (count-then-insert without a serializing lock — the
     single-enqueue path takes one, bulk paths deliberately do not, for
     throughput); that residual is documented, not silent.
+
+    Returns one :class:`MaxPendingExceededError` per over-cap actor (the
+    same typed refusal the single path raises); an empty list admits the
+    whole batch. Raising is the CALLER's decision: the bulk tier
+    partitions admission per actor (over-cap actors' items refused as a
+    group, everyone else's admitted — see ``_enqueue_batch``), while the
+    atomic chunk arm refuses the whole call before any INSERT.
     """
     groups = batch_cap_groups(args_list)
     if not groups:
-        return
+        return []
     stored_rows = await conn.fetch(sql.list_actor_max_pending)
     stored = {str(rec["actor"]): rec["max_pending"] for rec in stored_rows}
     effective: dict[str, int] = {}
@@ -217,16 +225,30 @@ async def _enforce_batch_max_pending(
             if pair in stored_pairs or pair in seen_in_batch:
                 deduped_counts[actor] = deduped_counts.get(actor, 0) + 1
             seen_in_batch.add(pair)
+    refusals: list[MaxPendingExceededError] = []
     for actor, (batch_count, _carried) in groups.items():
         cap = effective[actor]
         have = existing.get(actor, 0)
         admitted = batch_count - deduped_counts.get(actor, 0)
         if have + admitted > cap:
-            raise MaxPendingExceededError(
+            # Why log + metric here (parity with the single path, which
+            # does both before raising): a partitioned bulk refusal is a
+            # producer-pressure event per refused actor, not per item.
+            logger.warning(
+                "max-pending-exceeded",
                 actor=actor,
                 current_count=have,
                 max_pending=cap,
             )
+            record_backpressure_error(actor, kind="max_pending")
+            refusals.append(
+                MaxPendingExceededError(
+                    actor=actor,
+                    current_count=have,
+                    max_pending=cap,
+                )
+            )
+    return refusals
 
 
 class _LegacyIdempotencyKeyConflictError(Exception):
@@ -771,31 +793,23 @@ async def _enqueue_batch(
     *,
     connection: "ConnLike | None" = None,
     enforce_max_pending: bool = True,
+    refuse_whole_batch_on_cap: bool = False,
 ) -> list[JobRow]:
+    """Insert a batch, partitioning cap admission per actor.
+
+    ``refuse_whole_batch_on_cap`` keeps the legacy all-or-nothing refusal
+    for the :func:`enqueue_batch_atomic` chunk arm (its single shared
+    transaction must stay atomic — a partial admission would betray the
+    atomic contract); every other caller gets the partition: over-cap
+    actors' items are refused as a group, all other actors' items are
+    inserted, and :class:`BatchMaxPendingExceededError` raises at the
+    transaction boundary — AFTER the admitted items commit when this
+    call owns the transaction, immediately after the insert on a
+    caller-owned open transaction (that transaction's commit/rollback
+    decides their durability).
+    """
     if not args_list:
         raise ValueError("args_list must not be empty")
-    if (
-        enforce_max_pending
-        and connection is not None
-        and batch_cap_groups(args_list)
-        and not connection.is_in_transaction()
-    ):
-        # Same race as capped singles: the admission count and the INSERT
-        # must share one transaction or a concurrent writer slips between
-        # them. Pool-acquired connections already wrap below; a
-        # caller-supplied connection without an open transaction gets the
-        # same treatment here (all-or-nothing, matching the pool path).
-        # The recursion terminates: the inner call observes the open
-        # transaction. Uncapped batches skip this entirely.
-        async with connection.transaction():
-            return await _enqueue_batch(
-                pool,
-                sql,
-                schema,
-                args_list,
-                connection=connection,
-                enforce_max_pending=enforce_max_pending,
-            )
 
     ids: list[UUID] = []
     actors: list[str] = []
@@ -827,7 +841,9 @@ async def _enqueue_batch(
     # field) at that raise — the same contract the client layer's
     # _item_payload_error gives pydantic failures — instead of the bare
     # ValueError(NUL_JSONB_ERROR) that named nothing. Admission semantics
-    # are unchanged: still all-or-nothing.
+    # ride the partition below: a defective item rejects the whole call
+    # (all-or-nothing, caller-space index) before the cap check or INSERT
+    # ever runs.
     for idx, args in enumerate(args_list):
         ids.append(args.id)
         actors.append(args.actor)
@@ -870,34 +886,89 @@ async def _enqueue_batch(
         # Postgres.
         tag_jsons.append(item_tags_jsonb_param(args.tags, idx=idx, actor=args.actor))
 
-    async def _enqueue_batch_on_conn(conn: ConnLike) -> list[JobRow]:
+    async def _insert_on_conn(
+        conn: ConnLike,
+    ) -> tuple[list[JobRow], list[MaxPendingExceededError], dict[str, list[int]]]:
+        # Never raises the partition refusal itself: the caller raises at
+        # the transaction boundary so the admitted items commit first
+        # (raising inside would roll them back and re-create the
+        # all-or-nothing behavior the partition exists to remove).
+        refusals: list[MaxPendingExceededError] = []
+        refused_indices: dict[str, list[int]] = {}
+        refused_names: set[str] = set()
+        admitted_args = args_list
         if enforce_max_pending:
-            await _enforce_batch_max_pending(conn, sql, args_list)
+            refusals = await _batch_cap_refusals(conn, sql, args_list)
+            if refusals:
+                if refuse_whole_batch_on_cap:
+                    # The atomic chunk arm: one shared transaction owns
+                    # every chunk, so partial admission would betray its
+                    # all-or-nothing contract. Refuse the WHOLE call at
+                    # admission time — nothing is inserted here, and the
+                    # atomic wrapper's rollback discards earlier chunks
+                    # too. refusals[0] preserves the legacy raise (the
+                    # first violating actor in group order).
+                    raise refusals[0]
+                # Partition: an over-cap actor's items are refused as a
+                # whole group, never partially filled up to the cap (the
+                # single path refuses a capped enqueue outright; a
+                # partial fill would admit an arbitrary prefix of the
+                # caller's items that the caller never chose).
+                refused_indices = {
+                    r.actor: [i for i, a in enumerate(args_list) if a.actor == r.actor]
+                    for r in refusals
+                }
+                refused_names = {r.actor for r in refusals}
+                admitted_args = [a for a in args_list if a.actor not in refused_names]
+        if not admitted_args:
+            # Every item refused: nothing reaches the INSERT. The typed
+            # error still raises at the boundary, so caller-visible state
+            # is exactly "nothing admitted".
+            return [], refusals, refused_indices
+
+        # Why filter the pre-built arrays instead of re-serializing the
+        # admitted subset: the annotated build loop above already
+        # serialized every item BEFORE any SQL (a NUL-bearing item rejects
+        # the whole call with nothing written and the pool never touched —
+        # the pinned NUL -> cap -> insert order), so the partition selects
+        # positions from those arrays rather than paying a second
+        # serialization pass over the admitted subset. Happy path (no
+        # refusals): the filter is skipped entirely and the arrays alias
+        # through unchanged — the partition costs the common case nothing.
+        # Order matches sql.enqueue_batch's binding order exactly (scopes
+        # before keys, stc_raws last).
+        insert_cols: list[list[object]] = [
+            ids,
+            actors,
+            queues,
+            identity_keys,
+            fairness_keys,
+            payloads,
+            payload_schema_vers,
+            priorities,
+            max_attempts_list,
+            retry_kinds,
+            stc_intervals,
+            start_to_closes,
+            heartbeat_timeouts,
+            scheduled_ats,
+            metadatas,
+            idempotency_scopes,
+            idempotency_keys,
+            trace_ids,
+            span_ids,
+            result_ttls,
+            tag_jsons,
+            stc_raws,
+        ]
+        if refusals:
+            keep = [i for i, a in enumerate(args_list) if a.actor not in refused_names]
+            insert_cols = [[col[i] for i in keep] for col in insert_cols]
+
         try:
             returning_recs = await conn.fetch(
                 sql.enqueue_batch,
-                ids,
-                actors,
-                queues,
-                identity_keys,
-                fairness_keys,
-                payloads,
-                payload_schema_vers,
-                priorities,
-                max_attempts_list,
-                retry_kinds,
-                stc_intervals,
-                start_to_closes,
-                heartbeat_timeouts,
-                scheduled_ats,
-                metadatas,
-                idempotency_scopes,
-                idempotency_keys,
-                trace_ids,
-                span_ids,
-                result_ttls,
-                tag_jsons,
-                stc_raws,
+                *insert_cols,
             )
         except UniqueViolationError as exc:
             if exc.constraint_name == _LEGACY_IDEMPOTENCY_KEY_CONSTRAINT_NAME:
@@ -905,15 +976,16 @@ async def _enqueue_batch(
                 # _enqueue_on_conn's matching except-branch and
                 # _LegacyIdempotencyKeyConflictError). Unlike the
                 # single-enqueue path, this INSERT is one statement
-                # covering the whole batch: a single cross-scope collision
-                # against the legacy index aborts the ENTIRE batch, not
-                # just the offending item -- Postgres gives us no cheaper
-                # way to identify which item(s) caused it without
-                # re-inserting one row at a time, which isn't warranted
-                # for a purely transitional migration-window condition.
+                # covering the whole admitted batch: a single cross-scope
+                # collision against the legacy index aborts the ENTIRE
+                # batch, not just the offending item -- Postgres gives us
+                # no cheaper way to identify which item(s) caused it
+                # without re-inserting one row at a time, which isn't
+                # warranted for a purely transitional migration-window
+                # condition.
                 logger.info(
                     "scoped-idempotency-legacy-index-conflict-batch",
-                    batch_size=len(args_list),
+                    batch_size=len(admitted_args),
                 )
                 raise _LegacyIdempotencyKeyConflictError(detail=str(exc), original=exc) from exc
             raise
@@ -928,7 +1000,7 @@ async def _enqueue_batch(
         new_rows_by_id: dict[UUID, object] = {rec["id"]: rec for rec in returning_recs}
 
         collision_pairs: list[tuple[str, str]] = []
-        for args in args_list:
+        for args in admitted_args:
             if args.idempotency_key is not None and args.id not in inserted_ids:
                 collision_pairs.append((args.idempotency_scope, str(args.idempotency_key)))
 
@@ -959,7 +1031,7 @@ async def _enqueue_batch(
                 existing_by_idem[pair] = rec
 
         result: list[JobRow] = []
-        for args in args_list:
+        for args in admitted_args:
             arg_uuid = args.id
             if arg_uuid in full_new_recs:
                 result.append(_job_row_from_record(full_new_recs[arg_uuid]))  # type: ignore[arg-type]  # Why: asyncpg Record is duck-typed; _job_row_from_record accepts asyncpg.Record at runtime
@@ -978,34 +1050,86 @@ async def _enqueue_batch(
                         f"enqueue_batch: no row found for args.id={args.id!r} "
                         f"after INSERT; this is a bug"
                     )
-        return result
+        return result, refusals, refused_indices
+
+    if (
+        enforce_max_pending
+        and connection is not None
+        and batch_cap_groups(args_list)
+        and not connection.is_in_transaction()
+    ):
+        # Same race as capped singles: the admission count and the INSERT
+        # must share one transaction or a concurrent writer slips between
+        # them. Pool-acquired connections already wrap below; a
+        # caller-supplied connection without an open transaction gets the
+        # same treatment here (pool-path parity). The inner call returns
+        # its refusals instead of raising, the wrapper commits the
+        # admitted items, and the typed error raises only AFTER that
+        # commit — raising inside would roll the admitted items back and
+        # re-create the all-or-nothing refusal the partition removed.
+        # Uncapped batches skip this entirely.
+        async with connection.transaction():
+            rows, refusals, refused_indices = await _insert_on_conn(connection)
+        if refusals:
+            raise BatchMaxPendingExceededError(
+                refusals=refusals,
+                refused_indices=refused_indices,
+                admitted_count=len(rows),
+            )
+        return rows
 
     if connection is not None:
         try:
-            return await _enqueue_batch_on_conn(connection)
+            rows, refusals, refused_indices = await _insert_on_conn(connection)
         except _LegacyIdempotencyKeyConflictError as exc:
             # Caller owns the (now aborted) transaction -- cannot retry.
             logger.warning("scoped-idempotency-migration-pending-batch")
             raise exc.to_public() from exc.original or exc
-    try:
+        # Why raise without committing: the caller owns this open
+        # transaction; whether the admitted items persist is that
+        # transaction's commit/rollback decision (documented on
+        # BatchMaxPendingExceededError).
+        if refusals:
+            raise BatchMaxPendingExceededError(
+                refusals=refusals,
+                refused_indices=refused_indices,
+                admitted_count=len(rows),
+            )
+        return rows
+
+    async def _attempt_pool() -> tuple[
+        list[JobRow], list[MaxPendingExceededError], dict[str, list[int]]
+    ]:
         async with pool.acquire() as conn:
             async with conn.transaction():
-                return await _enqueue_batch_on_conn(conn)
+                return await _insert_on_conn(conn)
+
+    try:
+        rows, refusals, refused_indices = await _attempt_pool()
     except _LegacyIdempotencyKeyConflictError as exc:
         public = exc.to_public()
-    # One retry on a fresh transaction (see _enqueue for the rationale).
-    # The first attempt's statement failure aborted its transaction, so
-    # nothing from it persisted and the whole batch re-executes cleanly;
-    # same-pair-raced items now dedupe via the composite arbiter and the
-    # follow-up fetch, while genuine cross-scope reuse violates the legacy
-    # index again and surfaces as the public typed error.
-    try:
-        async with pool.acquire() as conn:
-            async with conn.transaction():
-                return await _enqueue_batch_on_conn(conn)
-    except _LegacyIdempotencyKeyConflictError as exc:
-        logger.warning("scoped-idempotency-migration-pending-batch")
-        raise public from exc.original or exc
+        # One retry on a fresh transaction (see _enqueue for the rationale).
+        # The first attempt's statement failure aborted its transaction, so
+        # nothing from it persisted and the whole batch re-executes cleanly;
+        # same-pair-raced items now dedupe via the composite arbiter and the
+        # follow-up fetch, while genuine cross-scope reuse violates the legacy
+        # index again and surfaces as the public typed error.
+        try:
+            rows, refusals, refused_indices = await _attempt_pool()
+        except _LegacyIdempotencyKeyConflictError as exc:
+            logger.warning("scoped-idempotency-migration-pending-batch")
+            raise public from exc.original or exc
+    # The pool transaction has committed: raise the partition refusal
+    # only after the admitted items are durable. A blind whole-batch
+    # retry from here would duplicate them — the typed error carries the
+    # refused indices precisely so callers retry only those.
+    if refusals:
+        raise BatchMaxPendingExceededError(
+            refusals=refusals,
+            refused_indices=refused_indices,
+            admitted_count=len(rows),
+        )
+    return rows
 
 
 async def _enqueue_batch_fast(
@@ -1017,25 +1141,13 @@ async def _enqueue_batch_fast(
     connection: "ConnLike | None" = None,
     enforce_max_pending: bool = True,
 ) -> int:
+    """COPY a batch, partitioning cap admission per actor (see
+    :func:`_enqueue_batch`). Idempotency violations remain all-or-nothing
+    — COPY has no ON CONFLICT arbiter, so a duplicate key aborts the
+    entire statement; only cap admission partitions.
+    """
     if not args_list:
         raise ValueError("args_list must not be empty")
-    if (
-        enforce_max_pending
-        and connection is not None
-        and batch_cap_groups(args_list)
-        and not connection.is_in_transaction()
-    ):
-        # Same race as above: the pre-COPY count and the COPY must share
-        # one transaction on a caller-supplied bare connection.
-        async with connection.transaction():
-            return await _enqueue_batch_fast(
-                pool,
-                sql,
-                schema,
-                args_list,
-                connection=connection,
-                enforce_max_pending=enforce_max_pending,
-            )
 
     ids: list[UUID] = []
     scheduled_ats: list[datetime | None] = []
@@ -1100,13 +1212,53 @@ async def _enqueue_batch_fast(
             )
         )
 
-    async def _copy_on_conn(conn: ConnLike) -> int:
+    async def _copy_on_conn(
+        conn: ConnLike,
+    ) -> tuple[int, list[MaxPendingExceededError], dict[str, list[int]]]:
+        # Never raises the partition refusal itself: the caller raises at
+        # the transaction boundary so the admitted rows commit first
+        # (see _enqueue_batch's _insert_on_conn for the full rationale).
+        refusals: list[MaxPendingExceededError] = []
+        refused_indices: dict[str, list[int]] = {}
+        refused_names: set[str] = set()
+        admitted_args = args_list
         if enforce_max_pending:
-            await _enforce_batch_max_pending(conn, sql, args_list)
+            refusals = await _batch_cap_refusals(conn, sql, args_list)
+            if refusals:
+                refused_indices = {
+                    r.actor: [i for i, a in enumerate(args_list) if a.actor == r.actor]
+                    for r in refusals
+                }
+                refused_names = {r.actor for r in refusals}
+                admitted_args = [a for a in args_list if a.actor not in refused_names]
+        if not admitted_args:
+            # Every item refused: no COPY, no fixup, no notify. The typed
+            # error raises at the boundary; nothing was written.
+            return 0, refusals, refused_indices
+
+        # Why filter the pre-built records/arrays instead of re-serializing
+        # the admitted subset: same rationale as _enqueue_batch's
+        # insert_cols — the annotated build above already serialized every
+        # item before any SQL (the pinned NUL -> cap -> COPY order), so
+        # the partition selects positions from what is already built; the
+        # happy path aliases through with zero extra work.
+        copy_records = records
+        fixup_cols: list[list[object]] = [
+            ids,
+            scheduled_ats,
+            stc_intervals,
+            stc_raws,
+            result_ttls,
+        ]
+        if refusals:
+            keep = [i for i, a in enumerate(args_list) if a.actor not in refused_names]
+            copy_records = [records[i] for i in keep]
+            fixup_cols = [[col[i] for i in keep] for col in fixup_cols]
+
         try:
             result = await conn.copy_records_to_table(
                 "jobs",
-                records=records,
+                records=copy_records,
                 columns=sql.copy_enqueue_columns,
                 schema_name=schema,
             )
@@ -1128,7 +1280,7 @@ async def _enqueue_batch_fast(
                 # this attempt either way.
                 logger.info(
                     "scoped-idempotency-legacy-index-conflict-batch-fast",
-                    batch_size=len(args_list),
+                    batch_size=len(admitted_args),
                 )
                 raise ScopedIdempotencyMigrationPendingError(detail=str(exc)) from exc
             if exc.constraint_name == _COMPOSITE_IDEMPOTENCY_KEY_CONSTRAINT_NAME:
@@ -1180,20 +1332,56 @@ async def _enqueue_batch_fast(
         count = int(result.split()[-1])
         await conn.execute(
             sql.enqueue_batch_fast_fixup,
-            ids,
-            scheduled_ats,
-            stc_intervals,
-            stc_raws,
-            result_ttls,
+            *fixup_cols,
         )
         await conn.execute(
             sql.enqueue_notify,
             wake_channel(schema),
         )
+        return count, refusals, refused_indices
+
+    def _raise_refusals(
+        refusals: list[MaxPendingExceededError],
+        refused_indices: dict[str, list[int]],
+        admitted_count: int,
+    ) -> None:
+        raise BatchMaxPendingExceededError(
+            refusals=refusals,
+            refused_indices=refused_indices,
+            admitted_count=admitted_count,
+        )
+
+    if (
+        enforce_max_pending
+        and connection is not None
+        and batch_cap_groups(args_list)
+        and not connection.is_in_transaction()
+    ):
+        # Same race as above: the pre-COPY count and the COPY must share
+        # one transaction on a caller-supplied bare connection. The inner
+        # call returns its refusals instead of raising, the wrapper
+        # commits the admitted rows, and the typed error raises only
+        # AFTER that commit (pool-path parity).
+        async with connection.transaction():
+            count, refusals, refused_indices = await _copy_on_conn(connection)
+        if refusals:
+            _raise_refusals(refusals, refused_indices, count)
         return count
 
     if connection is not None:
-        return await _copy_on_conn(connection)
+        count, refusals, refused_indices = await _copy_on_conn(connection)
+        if refusals:
+            # Caller owns this open transaction; its commit/rollback
+            # decides the admitted rows' durability (see the typed
+            # error's docstring).
+            _raise_refusals(refusals, refused_indices, count)
+        return count
+
     async with pool.acquire() as conn:
         async with conn.transaction():
-            return await _copy_on_conn(conn)
+            count, refusals, refused_indices = await _copy_on_conn(conn)
+    # Pool transaction committed: the partition refusal raises only after
+    # the admitted rows are durable.
+    if refusals:
+        _raise_refusals(refusals, refused_indices, count)
+    return count

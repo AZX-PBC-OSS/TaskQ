@@ -414,8 +414,16 @@ dispatched**. If you batch future-scheduled jobs with deadlines, size
 - `len(items) > 1000` raises `ValueError`.
 - **All** payloads are validated before any INSERT. A single validation failure raises
   `PayloadValidationError` and leaves no rows inserted.
-- `max_pending` is checked in one aggregated query across all actors in the batch.
-  Any violation raises `MaxPendingExceededError` before the INSERT.
+- `max_pending` admission is **partitioned per actor**: the backend counts existing
+  `pending + scheduled` per actor in one aggregated query, admits every within-cap
+  actor's items, and refuses an over-cap actor's items as a whole group (never
+  partially filled up to the cap). When any actor is refused, the within-cap actors'
+  items are still enqueued and `BatchMaxPendingExceededError` raises afterwards —
+  it names each refused actor, the refused item indices into `items`, and the
+  admitted count. Retry only the refused items, or give items `idempotency_key`s
+  so a whole-batch retry deduplicates. The atomic path (`failure_policy`/`finalizer`
+  set, no `connection`) keeps all-or-nothing: a cap violation rolls back the entire
+  single transaction and raises plain `MaxPendingExceededError` with nothing committed.
 - Idempotency-key collisions return the existing `JobHandle` with `was_existing=True`,
   same as single-item `enqueue()`.
 
@@ -496,15 +504,15 @@ Enqueues jobs via the PG `COPY FROM` protocol for maximum throughput. Returns th
 | Max batch size | 1,000 | 50,000 |
 | Idempotency key | Yes (ON CONFLICT) | No (duplicate key aborts entire batch) |
 | Return value | `BatchHandle` with `JobHandle` per item | `int` (row count) |
-| `max_pending` check | Yes | No |
-| Partial success | Yes | No (all-or-nothing atomicity) |
+| `max_pending` check | Yes — per-actor partition | Yes — per-actor partition |
+| Partial success | Cap refusals partition per actor (typed error after partial write); idempotency collisions return existing handles | Cap refusals partition per actor (typed error after partial write); COPY is all-or-nothing on constraint violations |
 
 ### Limitations
 
 - **No idempotency-key collision handling.** A duplicate `(idempotency_scope, idempotency_key)` pair — repeated within the batch or already stored — aborts the entire batch with `DuplicateIdempotencyKeyError` (nothing is written; the abort itself is deliberate bulk-import semantics). Callers must pre-deduplicate. One carve-out: during the `01.00.03` pre→post migration window, a key reused across *different* scopes raises `ScopedIdempotencyMigrationPendingError` instead, matching the other enqueue paths.
-- **No max_pending check.** The caller is responsible for ensuring actor limits are not exceeded.
+- **`max_pending` is enforced with the same per-actor partition as `enqueue_batch()`**: within-cap actors' rows are written, an over-cap actor's items are refused, and `BatchMaxPendingExceededError` raises after the COPY commits — retry only the refused items (indices on the error), or rely on idempotency keys.
 - **No JobHandle instances.** Only the inserted count is returned. Use `batch_id` to query rows post-insert.
-- **All-or-nothing.** The COPY fails entirely on any constraint violation — singleton, unique index, or CHECK constraint.
+- **All-or-nothing on constraint violations.** The COPY fails entirely on any constraint violation — singleton, unique index, or CHECK constraint. Only cap admission partitions.
 
 See [ops.md — Fan-out at scale](ops.md#5-fan-out-at-scale-chunks-cursors-idempotency) for the
 batch-API chooser table and the chunking patterns that avoid these limits.
@@ -704,8 +712,22 @@ async def enqueue_from_generator(client: JobsClient, doc_ids: Iterable[str]) -> 
 When `failure_policy` or `finalizer` is set and `connection` is `None`, the
 entire operation is delegated to `Backend.enqueue_batch_atomic` for
 single-transaction atomicity. Otherwise, chunks are inserted via
-`Backend.enqueue_batch` on the caller-owned connection, with the batch row and
-finalizer created as the last statements.
+`Backend.enqueue_batch`: with a caller-supplied connection all chunks share
+that connection's open transaction (one transaction aggregate — the caller
+owns the boundary); with **no connection each chunk is its own pool
+transaction**, so progress commits incrementally, chunk by chunk.
+
+**No-connection failure surface:** when chunk *N* fails (cap refusal,
+payload validation, a driver error), chunks `1..N-1` — plus the refusing
+chunk's within-cap actors, under the per-actor `max_pending` partition —
+are already durably committed, nothing is returned (the `BatchHandle` is
+only constructed after the stream drains), and the call raises. A cap
+refusal raises `BatchMaxPendingExceededError` with stream-global refused
+item indices and an `admitted_count` covering every committed item; items
+after the refusing chunk were never attempted. **A blind retry of the full
+iterable would duplicate the committed prefix** — retry safely by giving
+items `idempotency_key`s (a retry deduplicates against the committed rows)
+or by resuming from the refused items.
 
 ---
 
@@ -1401,6 +1423,7 @@ All exceptions are in `taskq.exceptions`. Import directly:
 
 ```python
 from taskq.exceptions import (
+    BatchMaxPendingExceededError,
     MaxPendingExceededError,
     MaxPendingLockTimeoutError,
     SingletonCollisionError,
@@ -1415,10 +1438,18 @@ from taskq.exceptions import (
 | `MaxPendingExceededError` | `enqueue()` called when `pending + scheduled` count >= `max_pending`. Fields: `actor` (str), `current_count` (int), `max_pending` (int). |
 | `MaxPendingLockTimeoutError` | `enqueue()` on a capped actor could not acquire the per-`(schema, actor)` serialization advisory lock within its budget (default 5 s) — too many concurrent producers, cap check never ran. Same `BackpressureError` family as `MaxPendingExceededError`; same response (retry later or shed load). Fields: `actor` (str), `timeout_ms` (float). |
 | `UniqueForLockTimeoutError` | `enqueue()` with `unique_for` + `identity_key` could not acquire the per-`(schema, actor, identity_key)` single-flight advisory lock within its budget (default 5 s, `DEFAULT_UNIQUE_FOR_LOCK_TIMEOUT_MS`) — the dedup answer for one identity could not be determined in time; nothing was inserted. NOT a `BackpressureError` (no capacity problem) and not counted in `taskq.backpressure.errors`. Response: retry the same enqueue — it typically dedupes against the winner's row (`was_existing=True`). Fields: `actor` (str), `identity_key` (str), `timeout_ms` (float). |
+| `BatchMaxPendingExceededError` | A bulk enqueue (`enqueue_batch()` / `enqueue_batch_fast()` / the chunked arm of `enqueue_batch_streaming()`) partitioned admission per actor and refused some: the within-cap actors' items were inserted first, then this raises. Fields: `refusals` (list of `MaxPendingExceededError`, one per over-cap actor), `refused_indices` (actor -> indices into the caller's items), `admitted_count` (int). Not a `MaxPendingExceededError` subclass — part of the batch is already stored; retry only the refused items or rely on idempotency keys. An `except BackpressureError` handler catches this too and must consult `admitted_count` / `refused_indices` before any whole-batch retry. |
 | `SingletonCollisionError` | `enqueue()` called for a singleton actor that already has an active job. Fields: `actor` (str), `blocking_job_id` (UUID or None), `retry_after` (timedelta or None). |
 | `PayloadValidationError` | Pydantic validation of the payload fails at enqueue time or at dispatch time. Non-retryable regardless of retry policy. Fields: `actor`, `payload_schema_ver`, `validation_errors`. |
 | `JobFailed` | `JobHandle.wait()` observed a non-success terminal status. Field: `row` (JobRow) with `status`, `error_class`, `error_message`, `error_traceback`. |
 | `ResultUnavailable` | `JobHandle.wait()` observed `"succeeded"` but no usable result is stored (TTL expired, `None` returned where `R` is non-`None`). Field: `row` (JobRow). |
+
+**Catching backpressure generically.** `MaxPendingExceededError`, `SingletonCollisionError`, and
+`BatchMaxPendingExceededError` all subclass `BackpressureError`, so `except BackpressureError` is a
+valid catch-all for enqueue-time backpressure — with one hazard: the batch variant raises **after
+the within-cap actors' items are stored**, so a generic handler that retries the whole batch
+duplicates them. Consult `admitted_count` / `refused_indices` before retrying (retry only the
+refused items, or rely on `idempotency_key`s to deduplicate a whole-batch retry).
 
 ```python
 from taskq.exceptions import JobFailed, ResultUnavailable

@@ -26,7 +26,7 @@ from taskq.backend._cancel_bulk import _cancel_where
 from taskq.backend._protocol import ErrorInfo, EventRow, IdentityKey, JobId, JobSortField, JobStatus
 from taskq.backend._reads import _list_jobs
 from taskq.backend.statemachine import ACTIVE_STATUSES, TERMINAL_STATUSES
-from taskq.exceptions import DuplicateIdempotencyKeyError
+from taskq.exceptions import BatchMaxPendingExceededError, DuplicateIdempotencyKeyError
 from taskq.testing.in_memory import InMemoryBackend, encode_cursor
 
 # The harness exercises PG via backend_pair; PG branch must be opt-in.
@@ -360,6 +360,102 @@ async def test_mass_enqueue_sort_order(backend_pair: Backend) -> None:
             assert pris[i] >= pris[i + 1], (
                 f"Actor {actor}: priority {pris[i]} before {pris[i + 1]} violates DESC order"
             )
+
+
+# ── batch cap partition parity (#149) ───────────────────────────
+
+
+async def test_enqueue_batch_partitions_cap_admission_per_actor(backend_pair: Backend) -> None:
+    """A mixed-actor batch where one actor is over its cap: the healthy
+    actors' items are admitted, the capped actor's items are refused with
+    attribution (actor, item indices, counts, admitted count), and the
+    typed refusal raises after the admitted rows are stored — identical
+    caller-visible state on both backends (backend parity doctrine)."""
+    healthy = "cap_part_healthy"
+    capped = "cap_part_capped"
+
+    def _args(actor: str, cap: int | None = None) -> EnqueueArgs:
+        return EnqueueArgs(
+            id=new_job_id(),
+            actor=actor,
+            queue="default",
+            payload={"value": 1},
+            max_attempts=3,
+            retry_kind="transient",
+            scheduled_at=_START,
+            priority=0,
+            max_pending=cap,
+        )
+
+    # Seed: one stored pending row fills the capped actor's single slot.
+    await backend_pair.enqueue(_args(capped, cap=1))
+    args_list = [
+        _args(healthy),
+        _args(capped, cap=1),
+        _args(healthy),
+        _args(capped, cap=1),
+        _args(healthy),
+    ]
+
+    with pytest.raises(BatchMaxPendingExceededError) as exc_info:
+        await backend_pair.enqueue_batch(args_list)
+
+    err = exc_info.value
+    assert [r.actor for r in err.refusals] == [capped]
+    assert err.refusals[0].current_count == 1
+    assert err.refusals[0].max_pending == 1
+    assert err.refused_indices == {capped: [1, 3]}
+    assert err.admitted_count == 3
+
+    # The healthy actor's three items were admitted; the capped actor
+    # gained nothing past its single stored slot.
+    counts = await backend_pair.count_pending_jobs([healthy, capped])
+    assert counts == {healthy: 3, capped: 1}
+
+
+async def test_enqueue_batch_fast_partitions_cap_admission_per_actor(
+    backend_pair: Backend,
+) -> None:
+    """COPY-tier parity with the batch tier's #149 partition: a
+    mixed-actor ``enqueue_batch_fast`` refuses the over-cap actor's items
+    and writes everyone else's — the same refusal shape (per-actor
+    indices, admitted count, stored counts) on BOTH backends. Previously
+    the mixed-actor partition was pinned only on the in-memory mirror,
+    plus a single-actor PG test."""
+    healthy = "cap_fast_healthy"
+    capped = "cap_fast_capped"
+
+    def _args(actor: str, cap: int | None = None) -> EnqueueArgs:
+        return EnqueueArgs(
+            id=new_job_id(),
+            actor=actor,
+            queue="default",
+            payload={"value": 1},
+            max_attempts=3,
+            retry_kind="transient",
+            scheduled_at=_START,
+            priority=0,
+            max_pending=cap,
+        )
+
+    # Seed: one stored pending row fills the capped actor's single slot.
+    await backend_pair.enqueue(_args(capped, cap=1))
+    args_list = [
+        _args(healthy),
+        _args(capped, cap=1),
+        _args(healthy),
+    ]
+
+    with pytest.raises(BatchMaxPendingExceededError) as exc_info:
+        await backend_pair.enqueue_batch_fast(args_list)
+
+    err = exc_info.value
+    assert err.refused_indices == {capped: [1]}
+    assert err.admitted_count == 2
+    # The healthy actor's two items were written by the COPY; the capped
+    # actor gained nothing past its single stored slot.
+    counts = await backend_pair.count_pending_jobs([healthy, capped])
+    assert counts == {healthy: 2, capped: 1}
 
 
 # ── write_attempt / get_attempts round-trip ─────────────────────

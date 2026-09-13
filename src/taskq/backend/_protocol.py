@@ -1222,15 +1222,23 @@ class Backend(Protocol):
         When *enforce_max_pending* is true (the default), items carrying a
         resolved ``max_pending`` cap are admission-checked as one
         aggregate — existing pending+scheduled per actor plus this batch —
-        before anything is written; a violation raises
-        :class:`~taskq.exceptions.MaxPendingExceededError` with nothing
-        written.  Pass false only when the caller pre-admitted every item
-        against current capacity (the cron tick's suppression preflight),
-        where a re-check could abort an unrelated batch on a race.
+        and admission PARTITIONS per actor: an over-cap actor's items are
+        refused as a whole group, every other actor's items are inserted,
+        and :class:`~taskq.exceptions.BatchMaxPendingExceededError` raises
+        at the transaction boundary — after the admitted items commit when
+        this call owns the transaction, immediately after the insert on a
+        caller-supplied connection with an open transaction (that
+        transaction's commit/rollback decides their durability). Pass
+        ``enforce_max_pending=False`` only when the caller pre-admitted
+        every item against current capacity (the cron tick's suppression
+        preflight), where a re-check could abort an unrelated batch on a
+        race.
 
         Returns one :class:`JobRow` per item in *args_list*, in the same
         order.  For idempotency-key collisions the existing row is
         returned; its ``id`` will differ from the requested ``args.id``.
+        On a cap refusal no rows are returned — the typed error carries
+        the refused item indices and the admitted count instead.
         """
         ...
 
@@ -1267,10 +1275,13 @@ class Backend(Protocol):
           (all-or-nothing atomicity; nothing is written), surfacing as
           :class:`~taskq.exceptions.DuplicateIdempotencyKeyError`.
         - Items carrying a resolved ``max_pending`` cap are
-          admission-checked as one aggregate before the COPY (same
-          ``existing + batch > limit`` contract as :meth:`enqueue_batch`);
-          disable with ``enforce_max_pending=False`` only for pre-admitted
-          internal callers.
+          admission-checked as one aggregate before the COPY, with the
+          same per-actor partition as :meth:`enqueue_batch` — within-cap
+          actors' rows are COPY'd, an over-cap actor's items are refused
+          and raise
+          :class:`~taskq.exceptions.BatchMaxPendingExceededError` after
+          the COPY commits; disable with ``enforce_max_pending=False``
+          only for pre-admitted internal callers.
 
         Returns the count of rows written.  On success this is exactly
         ``len(args_list)`` — this path never deduplicates, so the count

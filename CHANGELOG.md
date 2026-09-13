@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed (breaking)
 
+* **`enqueue_batch()` / `enqueue_batch_fast()` (and the chunked arm of `enqueue_batch_streaming()`) now partition `max_pending` admission per actor and raise `BatchMaxPendingExceededError` *after committing the within-cap actors' items*** — previously a single capped actor raised `MaxPendingExceededError` with nothing enqueued (#149). One capped actor no longer aborts everyone's items, but the error type and the partial-admission semantics are breaking for existing handlers:
+
+  * `except MaxPendingExceededError` no longer catches bulk cap refusals: `BatchMaxPendingExceededError` is deliberately **not** its subclass (handlers for that type assume nothing was enqueued; under the new error part of the batch is already stored). Catch it explicitly — it names each refused actor (`refusals`), the refused item indices (`refused_indices`), and how many items were admitted (`admitted_count`).
+  * `except BackpressureError` (the documented catch-all for enqueue-time backpressure) **now catches an error under which part of the batch is stored**: a handler that blindly retries the whole batch duplicates the admitted items. Such handlers must consult `admitted_count` / `refused_indices` first and retry only the refused items, or rely on `idempotency_key`s so a whole-batch retry deduplicates against the admitted rows.
+  * Durability of the admitted items is path-dependent: committed when the call owned its transaction; inserted-but-uncommitted on a caller-supplied connection (that transaction's commit/rollback decides); on the streaming no-connection path a refusal surfaces after a durably committed chunk prefix (the error's indices are stream-global). The atomic path (`failure_policy`/`finalizer` set, no `connection`) keeps the legacy all-or-nothing contract and still raises plain `MaxPendingExceededError` with nothing committed.
+  * The same per-actor partition and effective-cap resolution (operator-stored `actor_config.max_pending` override when set, else the `@actor(...)` literal) now applies uniformly across `enqueue()`, `enqueue_batch()`, `enqueue_batch_fast()`, and both `enqueue_batch_streaming()` arms.
+
 * **`KeyedRateLimitRef` and `KeyedReservationRef`: `payload_type` is now required and `key_fn` receives the validated Pydantic model, not the raw dict.** Every existing keyed-ref declaration must be updated:
 
   ```python

@@ -592,9 +592,9 @@ that a pure finalizer would wait on forever.
 
 | API | Size | Idempotency | Notes |
 |---|---|---|---|
-| `enqueue_batch` | ≤ 1,000 | per-item keys honored; collisions return existing jobs | single transaction; enforces `max_pending` |
-| `enqueue_batch_streaming` | unbounded (chunks of ≤ 1,000) | per-item keys honored | generator input; **does not enforce `max_pending`** |
-| `enqueue_batch_fast` | ≤ 50,000 | **none** — any duplicate key aborts the whole COPY with `DuplicateIdempotencyKeyError` | bulk-import semantics; returns a count only; **no `max_pending`** |
+| `enqueue_batch` | ≤ 1,000 | per-item keys honored; collisions return existing jobs | single transaction; `max_pending` enforced per actor — over-cap actors' items refused (typed `BatchMaxPendingExceededError` naming the actor + item indices), everyone else's admitted |
+| `enqueue_batch_streaming` | unbounded (chunks of ≤ 1,000) | per-item keys honored | generator input; `max_pending` enforced per chunk with the same per-actor partition; with no caller connection each chunk is its own committed transaction — a failure leaves the committed prefix durable (retry via idempotency keys or the error's refused indices) |
+| `enqueue_batch_fast` | ≤ 50,000 | **none** — any duplicate key aborts the whole COPY with `DuplicateIdempotencyKeyError` | bulk-import semantics; returns a count only; `max_pending` enforced per actor (same partition; COPY stays all-or-nothing on constraint violations) |
 
 See [jobs-clients.md](jobs-clients.md) for the full tradeoff table.
 
@@ -1026,7 +1026,7 @@ The condensed "know this before your first incident" list. Each row links to the
 | `unique_for` without `identity_key` | dedup silently off | pass `identity_key` at enqueue — [actors.md](actors.md#unique_for-deduplication) |
 | `unique_for` on a thin root expected to single-flight the chain | overlapping runs despite the window | single-flight the work, not the root ([§5](#5-fan-out-at-scale-chunks-cursors-idempotency)) |
 | `enqueue_batch_fast` with duplicate keys | whole COPY aborts | pre-dedup or use `enqueue_batch` ([§5](#5-fan-out-at-scale-chunks-cursors-idempotency)) |
-| Streaming/fast batches assumed to enforce `max_pending` | unbounded queue growth | only `enqueue`/`enqueue_batch` enforce it ([§5](#5-fan-out-at-scale-chunks-cursors-idempotency)) |
+| Blind retry after `BatchMaxPendingExceededError` | duplicate jobs: the within-cap actors' items were already committed | every enqueue tier enforces `max_pending` per actor; retry only the error's refused item indices, or use `idempotency_key`s ([§5](#5-fan-out-at-scale-chunks-cursors-idempotency)) |
 | Huge synchronized `scheduled` cohort (mass retry wave) | promotion stalls; health green; throughput zero | disperse cohorts, `max_pending`, scheduled-depth alert — [§8](#watch-large-scheduled-backlogs) |
 | Tag factory emitting colons | every enqueue 500s | tags must match `\A\w(?:[\w\-]*\w)?\Z` — [§5](#5-fan-out-at-scale-chunks-cursors-idempotency) |
 
