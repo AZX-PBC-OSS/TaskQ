@@ -221,9 +221,12 @@ class ActorCapacityCache:
         (the same single refresh-per-call budget every other arm spends),
         and every actor the stream later introduces resolves from that
         fresh snapshot here — same values as the async method for the
-        whole stream. A cold or invalidated snapshot resolves to
+        whole stream. A cold cache (never refreshed) resolves to
         *literal*: the module's documented fail-open fallback, identical
-        to a refresh failure on the async path.
+        to a refresh failure on the async path. A snapshot invalidated
+        mid-stream keeps serving its last values until the next async
+        resolution refreshes it — enforcement never LOOSENS mid-stream,
+        it just stays bounded by the last snapshot.
         """
         self._ensure_backend_checked()
         return self._resolve(actor, literal)

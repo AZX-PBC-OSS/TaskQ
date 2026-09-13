@@ -592,15 +592,16 @@ async def test_pg_caller_txn_admitted_items_follow_commit_and_rollback(
     # Rollback scenario: the same batch shape inside a second
     # transaction, rolled back after the refusal — the admitted items
     # are discarded; the committed scenario's rows and the seed remain.
+    # Why try/finally: the rollback IS the scenario, so it must run on
+    # both the pass and fail paths — without double-invocation if the
+    # refusal assertion itself fails.
     tx = clean_pg_conn.transaction()
     await tx.start()
     try:
         with pytest.raises(BatchMaxPendingExceededError):
             await client.enqueue_batch(mixed, connection=clean_pg_conn)
+    finally:
         await tx.rollback()
-    except BaseException:
-        await tx.rollback()
-        raise
 
     assert await count_jobs(clean_pg_conn, schema, _healthy_ref.name) == 2
     assert await count_jobs(clean_pg_conn, schema, _capped_ref.name) == 1
