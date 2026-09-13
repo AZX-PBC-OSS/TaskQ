@@ -15,7 +15,7 @@ Covers:
 """
 
 import asyncio
-from collections.abc import AsyncIterator, Generator
+from collections.abc import AsyncIterator, Coroutine, Generator
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
 from unittest.mock import MagicMock
@@ -1481,3 +1481,334 @@ async def test_slot_pool_acquire_failure_raises_outside_job_outcome_accounting(
 
 async def _noop_actor(payload: _Payload, ctx: JobContext[_Payload]) -> dict[str, object]:
     return {}
+
+
+# ── Slot-pool release: a pool closed mid-dispatch must not replace the outcome ──
+
+
+class _FakeSlotConn:
+    """Connection stand-in for the per-slot path: the transaction context
+    and savepoint statements succeed, and the connection is never inside
+    a transaction at release time (the commit completed)."""
+
+    def __init__(self) -> None:
+        self.terminated = False
+        self.statements: list[str] = []
+
+    def transaction(self) -> "_FakeTransaction":
+        return _FakeTransaction()
+
+    async def execute(self, query: str, *args: object) -> str:
+        self.statements.append(query)
+        return "OK"
+
+    def is_in_transaction(self) -> bool:
+        return False
+
+    def terminate(self) -> None:
+        self.terminated = True
+
+
+class _FakeTransaction:
+    async def __aenter__(self) -> "_FakeTransaction":
+        return self
+
+    async def __aexit__(self, *_exc: object) -> None:
+        return None
+
+
+class _ReleaseFailsPool:
+    """Pool stand-in whose acquire succeeds but whose release raises the
+    way asyncpg's does when a credential-rotation drain closed the pool
+    underneath an in-flight dispatch."""
+
+    def __init__(self) -> None:
+        self.conn = _FakeSlotConn()
+
+    def acquire(self, timeout: float | None = None) -> Coroutine[Any, Any, _FakeSlotConn]:
+        # asyncpg's acquire is a plain awaitable yielding the connection.
+        return self._acquired()
+
+    async def _acquired(self) -> _FakeSlotConn:
+        return self.conn
+
+    async def release(self, conn: object) -> None:
+        raise asyncpg.InterfaceError("cannot call release(): the pool is closed")
+
+
+async def test_slot_pool_release_against_closed_pool_preserves_job_outcome() -> None:
+    """A release against a pool closed mid-dispatch (a credential-rotation
+    drain terminated it underneath) is logged and swallowed — the unwind
+    must never replace the job's real outcome with a release error. The
+    job committed; it reports `succeeded`, and the skipped release is
+    visible in the logs."""
+    import structlog
+
+    async with _ScopeStack() as scopes:
+        fake_backend = FakeBackend()
+        fake_deps = _FakeWorkerDeps()
+        pool = _ReleaseFailsPool()
+        fake_deps.slot_pool = pool  # type: ignore[assignment]  # Why: duck-typed pool stand-in for the release-failure unwind path.
+        actor_ref = _make_actor_ref(_noop_actor)
+        job = make_job_row(payload={"value": 42})
+
+        with structlog.testing.capture_logs() as logs:
+            outcome = await dispatch_one_job(
+                backend=as_backend(fake_backend),
+                deps=_as_deps(fake_deps),
+                job=job,
+                worker_id=_WORKER_ID,
+                registry=scopes.registry,
+                process_scope=scopes.process_scope,
+                thread_scope=scopes.thread_scope,
+                loop_scope=scopes.loop_scope,
+                actor_ref=actor_ref,  # type: ignore[arg-type]  # Why: same ActorRef generic-widening pattern as the tests above.
+                actor_config=StubActorConfig(retry=RetryPolicy()),
+                clock=FakeClock(_NOW),
+                active_jobs=fake_deps.active_jobs,
+                enqueuer=SubJobEnqueuer(
+                    backend=as_backend(fake_backend), loop_scope_resolved=None, worker_pool=None
+                ),
+            )
+
+        assert outcome == "succeeded", (
+            "a failed slot-pool release must not replace the job's committed "
+            f"outcome (outcome is {outcome!r})"
+        )
+        assert len(fake_backend.mark_succeeded_calls) == 1
+        events = [log.get("event") for log in logs]
+        assert "slot-pool-release-skipped-pool-closed" in events
+
+
+# ── Slot-pool release unwind: no failure may escape it ────────────────
+
+
+class _ConnDeadAtReleasePool:
+    """Pool stand-in whose checked-out connection is dead by release time.
+
+    Models the credential-rotation drain / teardown the release path was
+    written for: ``close_pool_bounded``'s close-timeout branch terminates
+    checked-out connections underneath an in-flight dispatch. Per the
+    installed asyncpg source, a connection killed that way has
+    ``_protocol`` nulled by ``Connection._abort`` (connection.py), so
+    ``is_in_transaction()`` raises AttributeError; a proxy detached by the
+    holder's ``_release_on_close`` raises InterfaceError from the
+    ``PoolConnectionProxy`` method wrapper instead. Both surface at the
+    release unwind, from the same call.
+    """
+
+    def __init__(self, is_in_transaction_error: BaseException) -> None:
+        self.conn = _FakeSlotConn()
+        self.release_calls: list[object] = []
+        self._is_in_transaction_error = is_in_transaction_error
+
+    def acquire(self, timeout: float | None = None) -> Coroutine[Any, Any, _FakeSlotConn]:
+        return self._acquired()
+
+    async def _acquired(self) -> _FakeSlotConn:
+        return self.conn
+
+    async def release(self, conn: object) -> None:
+        self.release_calls.append(conn)
+
+
+@pytest.mark.parametrize(
+    "is_in_transaction_error",
+    [
+        AttributeError("'NoneType' object has no attribute 'is_in_transaction'"),
+        asyncpg.InterfaceError(
+            "cannot call Connection.is_in_transaction(): "
+            "connection has been released back to the pool"
+        ),
+    ],
+    ids=["terminated-conn-protocol-gone", "released-proxy"],
+)
+async def test_slot_pool_release_unwind_failure_preserves_job_outcome(
+    is_in_transaction_error: BaseException,
+) -> None:
+    """No failure from the release unwind may replace the job's outcome.
+
+    The closed-pool test pins this for the ``pool.release`` call; the
+    ``is_in_transaction()`` probe that selects the terminate branch is
+    part of the same unwind and runs on a connection the pool may have
+    terminated or released underneath the dispatch. A committed job whose
+    release unwind raises is reported by the drain loop as a dispatch
+    failure — a job failure that never happened.
+    """
+    import structlog
+
+    async with _ScopeStack() as scopes:
+        fake_backend = FakeBackend()
+        fake_deps = _FakeWorkerDeps()
+        pool = _ConnDeadAtReleasePool(is_in_transaction_error)
+        pool.conn.is_in_transaction = (  # type: ignore[method-assign]  # Why: test fake; simulates the connection dying between acquire and release.
+            lambda: (_ for _ in ()).throw(is_in_transaction_error)
+        )
+        fake_deps.slot_pool = pool  # type: ignore[assignment]  # Why: duck-typed pool stand-in, same as the release-failure test above.
+        actor_ref = _make_actor_ref(_noop_actor)
+        job = make_job_row(payload={"value": 42})
+
+        with structlog.testing.capture_logs():
+            outcome = await dispatch_one_job(
+                backend=as_backend(fake_backend),
+                deps=_as_deps(fake_deps),
+                job=job,
+                worker_id=_WORKER_ID,
+                registry=scopes.registry,
+                process_scope=scopes.process_scope,
+                thread_scope=scopes.thread_scope,
+                loop_scope=scopes.loop_scope,
+                actor_ref=actor_ref,  # type: ignore[arg-type]  # Why: same ActorRef generic-widening pattern as the tests above.
+                actor_config=StubActorConfig(retry=RetryPolicy()),
+                clock=FakeClock(_NOW),
+                active_jobs=fake_deps.active_jobs,
+                enqueuer=SubJobEnqueuer(
+                    backend=as_backend(fake_backend), loop_scope_resolved=None, worker_pool=None
+                ),
+            )
+
+        assert outcome == "succeeded", (
+            "a release-unwind failure must not replace the job's committed "
+            f"outcome (outcome is {outcome!r})"
+        )
+        assert len(fake_backend.mark_succeeded_calls) == 1
+
+
+@pytest.mark.parametrize(
+    ("is_in_transaction_error", "expected_event"),
+    [
+        (
+            AttributeError("'NoneType' object has no attribute 'is_in_transaction'"),
+            "slot-pool-release-skipped-conn-dead",
+        ),
+        (
+            asyncpg.InterfaceError(
+                "cannot call Connection.is_in_transaction(): "
+                "connection has been released back to the pool"
+            ),
+            "slot-pool-release-skipped-pool-closed",
+        ),
+    ],
+    ids=["terminated-conn-protocol-gone", "released-proxy"],
+)
+async def test_slot_pool_release_unwind_skip_is_logged_with_its_cause(
+    is_in_transaction_error: BaseException,
+    expected_event: str,
+) -> None:
+    """A release skipped because the connection died underneath the
+    dispatch is named in the logs, per shape, with its cause.
+
+    The outcome-preservation tests pin that the unwind survives these
+    states; this pins that the skip is visible — a degraded outcome the
+    bounded close owns, hidden behind the job's success, would leave an
+    operator nothing to correlate a lost connection with.
+    """
+    import structlog
+
+    async with _ScopeStack() as scopes:
+        fake_backend = FakeBackend()
+        fake_deps = _FakeWorkerDeps()
+        pool = _ConnDeadAtReleasePool(is_in_transaction_error)
+        pool.conn.is_in_transaction = (  # type: ignore[method-assign]  # Why: test fake; simulates the connection dying between acquire and release.
+            lambda: (_ for _ in ()).throw(is_in_transaction_error)
+        )
+        fake_deps.slot_pool = pool  # type: ignore[assignment]  # Why: duck-typed pool stand-in, same as the release-failure test above.
+        actor_ref = _make_actor_ref(_noop_actor)
+        job = make_job_row(payload={"value": 42})
+
+        with structlog.testing.capture_logs() as logs:
+            outcome = await dispatch_one_job(
+                backend=as_backend(fake_backend),
+                deps=_as_deps(fake_deps),
+                job=job,
+                worker_id=_WORKER_ID,
+                registry=scopes.registry,
+                process_scope=scopes.process_scope,
+                thread_scope=scopes.thread_scope,
+                loop_scope=scopes.loop_scope,
+                actor_ref=actor_ref,  # type: ignore[arg-type]  # Why: same ActorRef generic-widening pattern as the tests above.
+                actor_config=StubActorConfig(retry=RetryPolicy()),
+                clock=FakeClock(_NOW),
+                active_jobs=fake_deps.active_jobs,
+                enqueuer=SubJobEnqueuer(
+                    backend=as_backend(fake_backend), loop_scope_resolved=None, worker_pool=None
+                ),
+            )
+
+        assert outcome == "succeeded"
+        matching = [log for log in logs if log.get("event") == expected_event]
+        assert matching, (
+            f"a release skipped because the connection died must be logged "
+            f"({expected_event!r} absent; events seen: "
+            f"{[log.get('event') for log in logs]})"
+        )
+        assert matching[0].get("error_class") == type(is_in_transaction_error).__name__
+        assert matching[0].get("job_id") == str(job.id)
+
+
+class _ReleaseRecordingPool:
+    """Pool stand-in that records every release, for asserting that a
+    connection still inside its transaction is never handed back."""
+
+    def __init__(self) -> None:
+        self.conn = _FakeSlotConn()
+        self.release_calls: list[object] = []
+
+    def acquire(self, timeout: float | None = None) -> Coroutine[Any, Any, _FakeSlotConn]:
+        return self._acquired()
+
+    async def _acquired(self) -> _FakeSlotConn:
+        return self.conn
+
+    async def release(self, conn: object) -> None:
+        self.release_calls.append(conn)
+
+
+async def test_slot_pool_release_terminates_in_flight_transaction_instead_of_releasing() -> None:
+    """A connection still inside its transaction at release time is
+    terminated, never released back to the pool.
+
+    Releasing would hand a mid-transaction connection to a sibling slot —
+    the shared-connection defect class this whole machinery exists to
+    close. The terminated connection rolls back server-side, the job row
+    stays `running`, and lease expiry reclaims it: loud and retryable,
+    never a false success handed to another consumer.
+    """
+    import structlog
+
+    async with _ScopeStack() as scopes:
+        fake_backend = FakeBackend()
+        fake_deps = _FakeWorkerDeps()
+        pool = _ReleaseRecordingPool()
+        pool.conn.is_in_transaction = lambda: True  # type: ignore[method-assign]  # Why: test fake; the transaction is in flight at release time.
+        fake_deps.slot_pool = pool  # type: ignore[assignment]  # Why: duck-typed pool stand-in, same as the release-failure test above.
+        actor_ref = _make_actor_ref(_noop_actor)
+        job = make_job_row(payload={"value": 42})
+
+        with structlog.testing.capture_logs() as logs:
+            outcome = await dispatch_one_job(
+                backend=as_backend(fake_backend),
+                deps=_as_deps(fake_deps),
+                job=job,
+                worker_id=_WORKER_ID,
+                registry=scopes.registry,
+                process_scope=scopes.process_scope,
+                thread_scope=scopes.thread_scope,
+                loop_scope=scopes.loop_scope,
+                actor_ref=actor_ref,  # type: ignore[arg-type]  # Why: same ActorRef generic-widening pattern as the tests above.
+                actor_config=StubActorConfig(retry=RetryPolicy()),
+                clock=FakeClock(_NOW),
+                active_jobs=fake_deps.active_jobs,
+                enqueuer=SubJobEnqueuer(
+                    backend=as_backend(fake_backend), loop_scope_resolved=None, worker_pool=None
+                ),
+            )
+
+        assert outcome == "succeeded"
+        assert pool.release_calls == [], (
+            "a connection still inside its transaction must never be released "
+            "back to the pool — a sibling slot would acquire it mid-transaction"
+        )
+        assert pool.conn.terminated is True
+        events = [log.get("event") for log in logs]
+        assert "slot-conn-terminated-transaction-in-flight" in events

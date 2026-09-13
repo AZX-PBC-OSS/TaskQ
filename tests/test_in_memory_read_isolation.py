@@ -194,6 +194,33 @@ async def test_get_events_rows_do_not_alias_storage() -> None:
     assert all("injected" not in e.detail for e in reread)
 
 
+async def test_poll_reclaim_events_rows_do_not_alias_storage() -> None:
+    """The reclaim-poll seam holds the same contract as ``get_events``:
+    the crash-reclaim watcher (``TaskQ.watch_reclaims``) consumes these
+    rows, and a returned event aliasing ``_events`` would let watcher-side
+    mutation corrupt the stored event log — PG materialises a fresh row
+    per poll."""
+    clock = FakeClock(_START)
+    backend = InMemoryBackend(clock=clock)
+    await backend.enqueue(_args())
+    worker_id = new_uuid()
+    claimed = await backend.dispatch_batch(worker_id, ["default"], 10, timedelta(seconds=60))
+    assert len(claimed) == 1
+
+    # Let the lock expire and reclaim it — the sweep appends the
+    # lock_expired state-change event the poll seam returns.
+    clock.advance(timedelta(seconds=120))
+    reclaimed = await backend.reclaim_expired_locks(timedelta(minutes=5), timedelta(minutes=5))
+    assert reclaimed == 1
+
+    events = await backend.poll_reclaim_events(0)
+    assert events, "expected the lock_expired reclaim event"
+    events[0].detail["injected"] = True
+
+    reread = await backend.poll_reclaim_events(0)
+    assert all("injected" not in e.detail for e in reread)
+
+
 async def test_get_attempts_rows_do_not_alias_storage() -> None:
     """``AttemptRow.metadata`` is a plain dict on a frozen shell; the
     attempts seam must isolate it like every other read."""

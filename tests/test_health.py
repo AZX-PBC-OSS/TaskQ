@@ -258,6 +258,64 @@ async def test_compute_health_pg_connection_error() -> None:
     assert report.ready is False
 
 
+# ── slot pool readiness: a dead slot pool marks the worker unready ──
+
+
+async def test_compute_health_pings_slot_pool_when_present() -> None:
+    """A worker on the per-slot path must have its slot pool pinged.
+
+    The dispatcher ping alone cannot see a dead slot pool, so the ping
+    must actually run when the pool exists — a readiness gate that
+    skipped it would report ready on the strength of a pool the
+    transactional path never uses.
+    """
+    slot_pool = _StubPool()
+    deps = _make_deps(slot_pool=slot_pool, slot_pool_probe_task=None)
+
+    report = await compute_health(deps)
+
+    assert report.ready is True
+    assert report.pg_ping_ok is True
+    assert report.reasons == []
+    assert slot_pool.acquire_calls == 1
+
+
+async def test_compute_health_slot_pool_unexpected_error_fails_closed() -> None:
+    """A ping failure outside the asyncpg family must still fail closed.
+
+    A broken pool raising something the typed handlers don't name must
+    mark the worker unready — never propagate out of readiness and never
+    report ready on the dispatcher pool's strength.
+    """
+    slot_pool = _StubPool(error=RuntimeError("bogus pool"))
+    deps = _make_deps(slot_pool=slot_pool, slot_pool_probe_task=None)
+
+    report = await compute_health(deps)
+
+    assert report.ready is False
+    assert report.pg_ping_ok is False
+    assert "slot_pool_connection_error" in report.reasons
+
+
+async def test_compute_health_dead_slot_pool_marks_unready() -> None:
+    """A dead slot pool marks the worker unready even with a healthy
+    dispatcher pool.
+
+    Every transactional job on such a worker fails to acquire its
+    transaction connection; reporting ready on the dispatcher pool's
+    strength would be the shared-connection misattribution moved to the
+    orchestrator — traffic routed to a worker that cannot transact.
+    """
+    slot_pool = _StubPool(error=asyncpg.InterfaceError("pool is closed"))
+    deps = _make_deps(slot_pool=slot_pool, slot_pool_probe_task=None)
+
+    report = await compute_health(deps)
+
+    assert report.ready is False
+    assert report.pg_ping_ok is False
+    assert "slot_pool_connection_error" in report.reasons
+
+
 # ── heartbeat_pool never called even on PG timeout ──────────────
 
 

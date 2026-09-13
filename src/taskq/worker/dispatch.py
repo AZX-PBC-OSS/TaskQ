@@ -270,25 +270,58 @@ async def dispatch_one_job(
                 # the job row stays `running`, and lock-lease expiry
                 # reclaims and retries it — the same loud, retryable
                 # outcome a rotation-terminate produces, never a false
-                # success. A closed pool (credential-rotation drain or
-                # teardown terminated it underneath) is logged and
-                # swallowed so the unwind cannot replace the job's real
-                # outcome with a release error.
-                if conn.is_in_transaction():  # pyright: ignore[reportAttributeAccessIssue]  # Why: ConnLike is the object-typed runtime alias for Connection | PoolConnectionProxy; both forward is_in_transaction() to the wrapped protocol.
-                    conn.terminate()  # pyright: ignore[reportAttributeAccessIssue]  # Why: same forwarding as is_in_transaction.
-                    logger.warning(
-                        "slot-conn-terminated-transaction-in-flight",
-                        kind="slot_conn_terminated_transaction_in_flight",
-                        job_id=str(job.id),
-                    )
-                    return
+                # success.
+                #
+                # Why the whole body is guarded: this callback runs in
+                # the AsyncExitStack unwind, where an exception it
+                # raises replaces the job's real outcome — a committed
+                # job reported as a dispatch failure. The pool's
+                # bounded close (a credential-rotation drain or worker
+                # teardown) can terminate the connection or release its
+                # proxy underneath the dispatch, and a connection that
+                # dead fails even the transaction probe: asyncpg nulls
+                # a terminated connection's protocol object (the
+                # forwarded probe raises AttributeError), and a proxy
+                # the close released refuses the call (InterfaceError).
+                # Those states are logged with their cause and
+                # swallowed — the bounded close owns a dead
+                # connection's disposal — so the unwind never
+                # manufactures a failure the job did not have.
+                # Anything outside these two families is a programming
+                # error and stays loud.
                 try:
+                    if conn.is_in_transaction():  # pyright: ignore[reportAttributeAccessIssue]  # Why: ConnLike is the object-typed runtime alias for Connection | PoolConnectionProxy; both forward is_in_transaction() to the wrapped protocol.
+                        conn.terminate()  # pyright: ignore[reportAttributeAccessIssue]  # Why: same forwarding as is_in_transaction.
+                        logger.warning(
+                            "slot-conn-terminated-transaction-in-flight",
+                            kind="slot_conn_terminated_transaction_in_flight",
+                            job_id=str(job.id),
+                        )
+                        return
                     await pool.release(conn)  # pyright: ignore[reportArgumentType]  # Why: ConnLike is the object-typed runtime alias; release accepts the proxy this acquire produced.
-                except asyncpg.InterfaceError:
+                except asyncpg.InterfaceError as exc:
+                    # The pool closed underneath the dispatch: release
+                    # is refused, or the close already released the
+                    # proxy back — either way the close owns the
+                    # connection now.
                     logger.warning(
                         "slot-pool-release-skipped-pool-closed",
                         kind="slot_pool_release_skipped_pool_closed",
                         job_id=str(job.id),
+                        error_class=type(exc).__name__,
+                        error_message=str(exc),
+                    )
+                except AttributeError as exc:
+                    # The connection was terminated underneath the
+                    # dispatch: its protocol object is gone, so even
+                    # the probe cannot run. Nothing left to release or
+                    # terminate.
+                    logger.warning(
+                        "slot-pool-release-skipped-conn-dead",
+                        kind="slot_pool_release_skipped_conn_dead",
+                        job_id=str(job.id),
+                        error_class=type(exc).__name__,
+                        error_message=str(exc),
                     )
 
             conn_stack.push_async_callback(_release_slot_conn)

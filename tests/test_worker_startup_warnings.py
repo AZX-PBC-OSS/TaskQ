@@ -14,6 +14,7 @@ never on log message format or field names, which are implementation
 details that change independently of behaviour.
 """
 
+import asyncio
 from contextlib import AsyncExitStack
 from types import SimpleNamespace
 from typing import Any
@@ -47,6 +48,7 @@ def _make_settings(
     pg_dsn_pooled: str | None = None,
     pg_dsn_direct: str | None = None,
     max_concurrency: int | None = None,
+    reload_factory_timeout: float | None = None,
 ) -> WorkerSettings:
     base: dict[str, str] = {
         "TASKQ_PG_DSN": "postgresql://taskq:taskq@localhost:5432/taskq",
@@ -57,6 +59,8 @@ def _make_settings(
         base["TASKQ_PG_DSN_DIRECT"] = pg_dsn_direct
     if max_concurrency is not None:
         base["TASKQ_MAX_CONCURRENCY"] = str(max_concurrency)
+    if reload_factory_timeout is not None:
+        base["TASKQ_RELOAD_FACTORY_TIMEOUT"] = str(reload_factory_timeout)
     return WorkerSettings.load_from_dict(base)
 
 
@@ -136,6 +140,7 @@ async def _maybe_open(
     settings: WorkerSettings,
     *,
     factory_error: Exception | None = None,
+    factory_hangs: bool = False,
     caller_supplied_pg_pools: bool = False,
 ) -> tuple[bool, _EventSpy, SimpleNamespace]:
     """Drive _maybe_open_slot_pool with a stubbed factory and deps.
@@ -151,6 +156,10 @@ async def _maybe_open(
     pool = _FakeSlotPool()
 
     async def factory() -> Any:
+        if factory_hangs:
+            # A pool-factory call that never returns — a wedged credential
+            # fetch is the production shape this stands in for.
+            await asyncio.Event().wait()
         if factory_error is not None:
             raise factory_error
         return pool
@@ -316,6 +325,60 @@ async def test_slot_pool_open_failure_refuses_boot_naming_host() -> None:
         assert "localhost" in str(exc)
     else:
         raise AssertionError("expected the open failure to refuse boot")
+
+
+async def test_slot_pool_open_is_bounded_by_reload_factory_timeout() -> None:
+    """A factory that never returns cannot wedge boot.
+
+    Opening the fully-warmed pool means one connection (and, on a
+    managed-identity deployment, one credential fetch) per consumer
+    slot; an unbounded wait here would hang worker startup forever —
+    the worst failure shape this project ships. The open is bounded by
+    ``reload_factory_timeout`` and the expiry refuses boot, loudly,
+    naming the host. The outer wait_for keeps a regression (the bound
+    removed) a fast test failure rather than a hung suite.
+    """
+    loop_scope = await _make_loop_scope(resolved={asyncpg.Connection: _StubConn()})
+    settings = _make_settings(max_concurrency=4, reload_factory_timeout=0.05)
+
+    try:
+        await asyncio.wait_for(_maybe_open(loop_scope, settings, factory_hangs=True), timeout=10)
+    except RuntimeError as exc:
+        assert "slot pool failed to open" in str(exc)
+        assert "localhost" in str(exc)
+    else:
+        raise AssertionError("a hanging pool factory must refuse boot, not open")
+
+
+async def test_slot_pool_open_outside_deps_lifecycle_fails_loudly() -> None:
+    """Opening the pool without the deps exit stack is a wiring bug, and
+    it must stop the caller immediately — a pool with no registered
+    teardown would leak max_concurrency + 1 connections silently."""
+    from taskq.obs import set_slot_pool_occupancy_source
+
+    loop_scope = await _make_loop_scope(resolved={asyncpg.Connection: _StubConn()})
+    settings = _make_settings(max_concurrency=4)
+
+    async def factory() -> Any:
+        raise AssertionError("the factory must not be called when the lifecycle is missing")
+
+    deps = SimpleNamespace(_exit_stack=None, slot_pool=None, slot_pool_factory=None)
+    try:
+        await _maybe_open_slot_pool(
+            loop_scope,
+            settings,
+            deps,  # type: ignore[arg-type]  # Why: duck-typed WorkerDeps stub, mirroring _maybe_open above.
+            factory=factory,
+            pg_credential_provider=None,
+            caller_supplied_pg_pools=False,
+            log=_EventSpy(),
+        )
+    except RuntimeError as exc:
+        assert "outside of open_worker_deps" in str(exc)
+    else:
+        raise AssertionError("opening outside the deps lifecycle must refuse, not proceed")
+    finally:
+        set_slot_pool_occupancy_source(None)
 
 
 async def test_slot_pool_warns_when_credentials_live_in_caller_pools() -> None:

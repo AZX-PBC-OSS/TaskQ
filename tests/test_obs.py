@@ -306,6 +306,56 @@ def test_slot_pool_occupancy_gauge_reads_held_connections(
         obs_mod.set_slot_pool_occupancy_source(None)
 
 
+def test_slot_pool_occupancy_gauge_tolerates_a_broken_pool_source() -> None:
+    """A source whose accessors raise (a pool teardown closed underneath the
+    module-level source) must produce no observation — a collection read
+    that raises into the SDK's export path breaks every instrument's
+    export, not just this gauge's."""
+    import asyncpg
+
+    class _ClosedPool:
+        def get_size(self) -> int:
+            raise asyncpg.InterfaceError("pool is closed")
+
+        def get_idle_size(self) -> int:
+            return 0
+
+    obs_mod.set_slot_pool_occupancy_source(_ClosedPool())
+    try:
+        # The callback itself is the unit under test (the same object
+        # _patch_instruments registers on the test gauge).
+        assert list(otel_mod._observe_slot_pool_occupancy(None)) == []  # pyright: ignore[reportPrivateUsage, reportArgumentType]  # Why: the callback ignores its options argument; asserting the no-raise/no-observation contract directly is what discriminates the defensive branch.
+    finally:
+        obs_mod.set_slot_pool_occupancy_source(None)
+
+
+def test_slot_pool_occupancy_gauge_is_label_free() -> None:
+    """``taskq.worker.slot_pool.connections_in_use`` carries NO dimensions —
+    a single process-level number. The pool is named in the instrument and
+    there is exactly one per worker process; adding a dimension here (the
+    worker_id temptation especially — a fresh UUID per process on
+    Kubernetes) mints unbounded time series and throttles ingestion for
+    every custom metric in the subscription (see
+    tests/test_obs_metric_cardinality.py)."""
+
+    class _Pool:
+        def get_size(self) -> int:
+            return 9
+
+        def get_idle_size(self) -> int:
+            return 1
+
+    obs_mod.set_slot_pool_occupancy_source(_Pool())
+    try:
+        observations = list(otel_mod._observe_slot_pool_occupancy(None))  # pyright: ignore[reportPrivateUsage, reportArgumentType]  # Why: the callback ignores its options argument (same direct-callback pattern as the broken-source test above).
+    finally:
+        obs_mod.set_slot_pool_occupancy_source(None)
+
+    assert len(observations) == 1
+    assert dict(observations[0].attributes or {}) == {}
+    assert observations[0].value == 8
+
+
 # ── instrument 12: taskq.progress.publish_failures ────────────────────────
 
 

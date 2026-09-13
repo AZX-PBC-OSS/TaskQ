@@ -102,3 +102,87 @@ def test_diff_exits_nonzero_when_registry_actor_has_no_stored_row(
 
     assert "DOES NOT DISPATCH" in result.output
     assert result.exit_code != 0
+
+
+def test_diff_exits_nonzero_on_metadata_only_drift(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Metadata drift alone is structural drift: the next worker startup
+    raises ActorConfigDriftList on it exactly as on a queue mismatch, so
+    the gate must not pass a run whose only divergence is metadata."""
+    metadata_drifted = ActorConfigRow(
+        actor="drift_actor",
+        max_concurrent=None,
+        max_pending=None,
+        queue="new_tier",
+        result_ttl=None,
+        metadata={"team": "ops"},
+        updated_at="2026-01-01 00:00:00+00",
+    )
+    _patch_db(monkeypatch, [metadata_drifted])
+
+    result = runner.invoke(app, ["actor-config", "diff", "--actors", _REGISTRY_PATH])
+
+    assert "MISMATCH" in result.output
+    assert result.exit_code != 0
+
+
+def test_diff_exits_zero_on_capacity_only_drift(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stored capacity override is operator-owned by design — stored wins,
+    startup logs it at info and boots. Reportable drift, not blocking drift:
+    a CI gate that fired on every legitimate operator override would be a
+    failure-that-looks-like-a-failure until it got ignored."""
+    capacity_overridden = ActorConfigRow(
+        actor="drift_actor",
+        max_concurrent=1,
+        max_pending=500,
+        queue="new_tier",
+        result_ttl=3600.0,
+        metadata={},
+        updated_at="2026-01-01 00:00:00+00",
+    )
+    _patch_db(monkeypatch, [capacity_overridden])
+
+    result = runner.invoke(app, ["actor-config", "diff", "--actors", _REGISTRY_PATH])
+
+    # The drift must be visibly reported — exit 0 is only meaningful if
+    # the command actually compared the stored row (otherwise the pass
+    # is vacuous).
+    assert "max_concurrent" in result.output
+    assert "stored=1" in result.output
+    assert "MISMATCH" not in result.output
+    assert result.exit_code == 0
+
+
+def test_diff_exits_zero_for_leftover_stored_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stored row whose actor is no longer registered is stale but inert —
+    it only serves already-queued jobs and blocks neither dispatch nor
+    boot, so it must not fail the gate."""
+    matching = ActorConfigRow(
+        actor="drift_actor",
+        max_concurrent=None,
+        max_pending=None,
+        queue="new_tier",
+        result_ttl=None,
+        metadata={},
+        updated_at="2026-01-01 00:00:00+00",
+    )
+    leftover = ActorConfigRow(
+        actor="ghost_actor",
+        max_concurrent=None,
+        max_pending=None,
+        queue="old_tier",
+        result_ttl=None,
+        metadata={},
+        updated_at="2026-01-01 00:00:00+00",
+    )
+    _patch_db(monkeypatch, [matching, leftover])
+
+    result = runner.invoke(app, ["actor-config", "diff", "--actors", _REGISTRY_PATH])
+
+    assert "leftover row" in result.output
+    assert result.exit_code == 0

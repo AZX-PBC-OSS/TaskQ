@@ -77,6 +77,32 @@ def test_create_router_warns_when_serving_without_auth(
     assert "dev environment" in entries[0]["detail"]
 
 
+def test_create_router_warns_when_check_explicitly_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The opt-out is explicit and loud: TASKQ_PROGRESS_REQUIRE_AUTH=false
+    in a non-dev environment serves the router without auth, but the
+    warning names the flag that suppressed the fail-closed check — an
+    ingress-authenticated deployment stays distinguishable in the logs
+    from a misconfigured one."""
+    import structlog
+
+    monkeypatch.setenv("TASKQ_ENVIRONMENT", "production")
+    monkeypatch.setenv("TASKQ_PROGRESS_REQUIRE_AUTH", "false")
+
+    with structlog.testing.capture_logs() as logs:
+        router = create_router(
+            _StubPool(),  # pyright: ignore[reportArgumentType]  # Why: test duck-type.
+            None,
+            auth_dependency=None,
+        )
+
+    assert router is not None
+    entries = [log for log in logs if log.get("event") == "progress-router-no-auth"]
+    assert len(entries) == 1
+    assert "TASKQ_PROGRESS_REQUIRE_AUTH" in entries[0]["detail"]
+
+
 def test_create_router_with_auth_dependency_succeeds_outside_dev(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
