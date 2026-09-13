@@ -2,8 +2,10 @@
 
 Contains :func:`consume_one_job` that wraps the full exception-handling
 sequence and helpers for the transactional and autonomous paths.  Every
-backend write is wrapped in ``asyncio.shield`` so cancellation during
-shutdown phase 2 cannot strand the row in ``running``.
+backend write is wrapped in ``asyncio.shield`` (via
+:func:`taskq._shield.shield_with_retrieval`, which also retrieves a
+detached inner outcome when a second cancellation lands mid-write) so
+cancellation during shutdown phase 2 cannot strand the row in ``running``.
 
 The individual terminal exception handlers (timeout, snooze, retry_after,
 reservation denied, generic) live in :mod:`taskq.worker._handlers`.
@@ -23,6 +25,7 @@ from opentelemetry.trace import SpanKind
 from pydantic import BaseModel
 
 from taskq._json import dumps as _json_dumps
+from taskq._shield import shield_with_retrieval
 from taskq._validation import validate_actor_payload
 from taskq.backend._protocol import (
     Backend,
@@ -86,36 +89,36 @@ _log: structlog.stdlib.BoundLogger = get_logger(__name__)
 _OK = object()
 
 
-def _serialize_result(result: object) -> dict[str, object] | None:
-    """Serialize an actor return value into a JSON-storable dict.
+def _encode_result(result: object, max_bytes: int = MAX_RESULT_BYTES) -> bytes | None:
+    """Serialize an actor return value to orjson bytes exactly once.
 
     ``BaseModel`` results are dumped via ``model_dump(mode="json")``;
-    ``dict`` results are passed through as-is (the actor contract
-    guarantees ``dict[str, object]``); all other types return ``None``
-    (no result stored).
+    ``dict`` results are dumped as-is (the actor contract guarantees
+    ``dict[str, object]``); all other types return ``None`` (no result
+    stored).  Raises :class:`ResultTooLarge` (non-retryable — a re-run
+    returns the same oversized value) when the serialized size exceeds
+    *max_bytes*, which the callers take from
+    ``WorkerSettings.result_max_bytes`` and which defaults to
+    :data:`~taskq.constants.MAX_RESULT_BYTES`.
+
+    The returned bytes are the result's ONLY serialization: they reach the
+    backend as the ``result_bytes`` terminal-write parameter, which binds
+    them decoded and stores ``len`` as ``result_size_bytes`` without
+    serializing again.  The NUL guard deliberately does not run here — it
+    stays at the terminal write (the single consumption point), so a
+    recording backend observes the exact bytes.
     """
+    storable: object
     if isinstance(result, BaseModel):
-        return result.model_dump(mode="json")
-    if isinstance(result, dict):
-        return result  # pyright: ignore[reportUnknownVariableType]  # Why: run_actor returns Awaitable[object]; isinstance narrows to dict[Unknown, Unknown] which is not assignable to dict[str, object]. At runtime the actor contract guarantees dict[str, object].
-    return None
-
-
-def _check_result_size(data: dict[str, object] | None, max_bytes: int = MAX_RESULT_BYTES) -> int:
-    """Return the serialised byte size of *data*, raising if it exceeds the cap.
-
-    Returns ``0`` when *data* is ``None`` (no result to store).  Raises
-    :class:`ResultTooLarge` (non-retryable — a re-run returns the same
-    oversized value) when the serialised size exceeds *max_bytes*, which
-    the callers take from ``WorkerSettings.result_max_bytes`` and which
-    defaults to :data:`~taskq.constants.MAX_RESULT_BYTES`.
-    """
-    if data is None:
-        return 0
-    result_bytes = len(_json_dumps(data))
-    if result_bytes > max_bytes:
-        raise ResultTooLarge(f"result size {result_bytes} bytes exceeds {max_bytes} byte cap")
-    return result_bytes
+        storable = result.model_dump(mode="json")
+    elif isinstance(result, dict):
+        storable = result  # pyright: ignore[reportUnknownVariableType]  # Why: run_actor returns Awaitable[object]; isinstance narrows to dict[Unknown, Unknown]. At runtime the actor contract guarantees dict[str, object]; the value flows through the object-typed storable and orjson's Any parameter unharmed.
+    else:
+        return None
+    data = _json_dumps(storable)
+    if len(data) > max_bytes:
+        raise ResultTooLarge(f"result size {len(data)} bytes exceeds {max_bytes} byte cap")
+    return data
 
 
 async def _run_terminal_path(  # pyright: ignore[reportUnusedFunction]  # Why: called by _dispatch_exception in _handlers.py via lazy import
@@ -146,7 +149,7 @@ async def _run_terminal_path(  # pyright: ignore[reportUnusedFunction]  # Why: c
     The job row stays ``running`` and is reclaimed via lock-lease expiry.
     """
     if progress_buffers is not None and worker_pool is not None and settings is not None:
-        await asyncio.shield(
+        await shield_with_retrieval(
             _flush_buffer_immediate(
                 worker_pool,
                 settings.schema_name,
@@ -529,7 +532,7 @@ async def consume_one_job(
             )
             _cancel_seq, _cancel_state = _terminal_seq_and_state(_cancel_buf)
             try:
-                await asyncio.shield(
+                await shield_with_retrieval(
                     backend.mark_cancelled(
                         job.id,
                         worker_id,
@@ -603,7 +606,7 @@ async def consume_one_job(
             ):
                 _crash_buf = _progress_buffers.pop(job.id, None)
                 if _crash_buf is not None and _crash_buf.dirty:
-                    await asyncio.shield(
+                    await shield_with_retrieval(
                         _flush_buffer(
                             _effective_pool,
                             _effective_settings.schema_name,
@@ -632,7 +635,7 @@ async def consume_one_job(
         # slot.
         if acquired and rate_limit_registry is not None:
             try:
-                await asyncio.shield(
+                await shield_with_retrieval(
                     rate_limit_registry.release_for_actor(acquired, pg_pool=worker_pool)
                 )
             except Exception as exc:
@@ -730,9 +733,8 @@ async def _consume_transactional(
                     )
                 _pbuf = progress_buffers.get(job.id) if progress_buffers is not None else None
                 _pseq, _pstate = _seq_and_state_after_flush_attempt(_pbuf)
-                result_dict = _serialize_result(result)
-                _check_result_size(
-                    result_dict,
+                result_bytes = _encode_result(
+                    result,
                     settings.result_max_bytes if settings is not None else MAX_RESULT_BYTES,
                 )
                 try:
@@ -740,7 +742,7 @@ async def _consume_transactional(
                         transaction_conn,
                         job.id,
                         worker_id,
-                        result_dict,
+                        result_bytes=result_bytes,
                         progress_seq=_pseq,
                         progress_state=_pstate,
                         fallback_result_ttl=fallback_result_ttl,
@@ -935,7 +937,7 @@ async def _consume_autonomous(
                 progress_buffers.pop(job.id, None) if progress_buffers is not None else None
             )
             _cancel_seq, _cancel_state = _terminal_seq_and_state(_cancel_buf)
-            await asyncio.shield(
+            await shield_with_retrieval(
                 backend.mark_cancelled(
                     job.id,
                     worker_id,
@@ -962,7 +964,7 @@ async def _consume_autonomous(
             return
 
     if progress_buffers is not None and _auto_pool is not None and _auto_settings is not None:
-        await asyncio.shield(
+        await shield_with_retrieval(
             _flush_buffer_immediate(
                 _auto_pool,
                 _auto_settings.schema_name,
@@ -977,17 +979,16 @@ async def _consume_autonomous(
         _pbuf = progress_buffers.get(job.id) if progress_buffers is not None else None
         _pseq, _pstate = _seq_and_state_after_flush_attempt(_pbuf)
 
-    result_dict = _serialize_result(result)
-    _check_result_size(
-        result_dict,
+    result_bytes = _encode_result(
+        result,
         _auto_settings.result_max_bytes if _auto_settings is not None else MAX_RESULT_BYTES,
     )
     try:
-        await asyncio.shield(
+        await shield_with_retrieval(
             backend.mark_succeeded(
                 job.id,
                 worker_id,
-                result_dict,
+                result_bytes=result_bytes,
                 progress_seq=_pseq,
                 progress_state=_pstate,
                 fallback_result_ttl=fallback_result_ttl,
