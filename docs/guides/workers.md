@@ -20,7 +20,7 @@ See [../getting-started/quick-start.md](../getting-started/quick-start.md) for i
 
 **Heartbeat loop.** On every `heartbeat_interval` tick, acquires one connection from `heartbeat_pool`, opens a single transaction, and atomically updates `workers.last_seen_at`, extends `jobs.lock_expires_at` for all running jobs owned by this worker, extends `reservation_slots.lease_expires_at`, and (if this worker is the leader) pings `maintenance_leader.last_seen_at`. After the transaction commits, runs the cancel-controller's `run_post_tx` to drain any phase-3 abandonment queue. Consecutive failures increment `heartbeat_failures`; exceeding `max_heartbeat_failures` triggers `isolate_self`.
 
-**NOTIFY listener.** Holds a dedicated direct connection (`notify_conn`) subscribed to the `taskq_wake_{schema}` channel. When a NOTIFY arrives, the listener calls `event.set()` on all registered producer wake-subscribers, waking any sleeping producer immediately rather than waiting for the next poll tick. A health-check coroutine issues `SELECT 1` every `notify_health_check_interval` seconds and reconnects with bounded exponential backoff on failure.
+**NOTIFY listener.** Holds a dedicated direct connection (`notify_conn`) subscribed to the `taskq_wake_{schema}` channel. When a NOTIFY arrives, the listener calls `event.set()` on all registered producer wake-subscribers, waking any sleeping producer immediately rather than waiting for the next poll tick. A health-check coroutine issues `SELECT 1` every `notify_health_check_interval` seconds and reconnects with jittered bounded exponential backoff (±25% multiplicative jitter around each doubling delay) on failure.
 
 External code (for example a bulk-enqueue script) can wake sleeping workers immediately without going through the normal enqueue path:
 
@@ -878,7 +878,7 @@ All variables use the `TASKQ_` prefix. `WorkerSettings` extends `TaskQSettings`;
 | `TASKQ_NOTIFY_ENABLED` | `bool` | `true` | When `true`, the worker uses LISTEN/NOTIFY for near-zero-latency dispatch wakeups. When `false`, uses poll-only dispatch with `poll_interval`. |
 | `TASKQ_NOTIFY_POLL_INTERVAL` | `float` | `5.0` | Fallback poll cadence when NOTIFY is enabled (rarely reached — NOTIFY handles the common case). Uses `poll_interval` when NOTIFY is disabled. |
 | `TASKQ_NOTIFY_HEALTH_CHECK_INTERVAL` | `float` | `5.0` | How often the NOTIFY listener health-checks its connection |
-| `TASKQ_NOTIFY_RECONNECT_BACKOFF_INITIAL` | `float` | `1.0` | Initial backoff before first NOTIFY reconnect attempt (doubles per attempt, capped at 30s) |
+| `TASKQ_NOTIFY_RECONNECT_BACKOFF_INITIAL` | `float` | `1.0` | Initial backoff before first NOTIFY reconnect attempt (doubles per attempt, capped at 30s; each delay carries ±25% multiplicative jitter so a fleet that loses PG simultaneously does not reconnect in lockstep) |
 | `TASKQ_QUEUES` | `list[str]` | `["default"]` | Queue names this worker consumes; comma-separated |
 | `TASKQ_POOL_MAX_INACTIVE_LIFETIME` | `float` | `300.0` | Seconds before an idle pool connection is closed |
 | `TASKQ_WORKER_LABEL` | `str \| None` | `None` | Human-readable label for this worker, stored in `workers.worker_label` |

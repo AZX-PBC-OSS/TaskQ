@@ -279,9 +279,21 @@ or zero row sample.
 
 No metric carries `worker_id`, `schedule_id`, `job_id` or any other identity
 value as a dimension, and new instruments must not add one. The
-maintenance-sweep labels (`sweep_name`, `lock`, `status`) are bounded enums
-like `queue` and `actor` — a handful of values fixed by the code, not
-identity values, so they are allowed as dimensions.
+maintenance-sweep labels (`sweep_name`, `lock`, `status`) are bounded enums —
+a handful of values fixed by the code, not identity values, so they are
+allowed as dimensions.
+
+The `queue` label on the job-side emitters (`messaging.client.published.messages`,
+`messaging.client.consumed.messages`, `taskq.dispatch.duration`,
+`messaging.process.duration`) is bounded by the code: the first 100 distinct
+queue names a process sees keep their own series, and every later name
+collapses onto the fixed `_other_` value. The cap never evicts, so the series
+count is hard-bounded at 101 per metric regardless of how many queue names the
+deployment mints — unbounded, 5,000 distinct names produced 100k+ time series
+in the cardinality benchmark. Per-queue attribution is not lost: the queue
+name still rides on the enqueue/dispatch/consume span attributes and log
+lines, where cardinality is free. `actor` remains user-defined and unbounded
+on those emitters — keep actor names a bounded enum.
 
 Azure Monitor counts every unique combination of metric name, dimension key and
 dimension value published in the last 12 hours as an *active time series*, caps

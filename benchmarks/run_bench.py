@@ -15,7 +15,7 @@ Every run that executes benches also appends a history file
 ``benchmarks/results/run-<iso-ts>-<shortsha>.json`` (gitignored).
 
 Exit codes for ``--check``: 0 clean, 1 regression or correctness mismatch,
-2 missing baseline.
+2 missing or unusable baseline.
 
 Pure stdlib, cross-platform (macOS/Linux/Windows), Python 3.12+.
 
@@ -230,7 +230,15 @@ def compare(
     threshold: float,
     min_abs_delta_ns: float,
 ) -> tuple[list[dict[str, Any]], bool]:
-    """Merge on bench name; returns (rows, failed). See module docstring for the rule."""
+    """Merge on bench name; returns (rows, failed). See module docstring for the rule.
+
+    Verdicts that never fail the gate: NEW (bench absent from the baseline)
+    and MISSING (bench absent from the current run). NEW is inevitable for a
+    freshly added bench; MISSING keeps ``--only`` subset checks viable. A
+    full run that dropped a bench therefore passes the gate with a MISSING
+    row in the table — the suite itself is code-owned, so that shows up in
+    review rather than in the exit code.
+    """
     base_by_name = {r["name"]: r for r in baseline.get("results", [])}
     rows: list[dict[str, Any]] = []
     failed = False
@@ -248,7 +256,7 @@ def compare(
             rows.append(row)
             continue
         row["baseline_ns"] = base["a_ns"]
-        if base["a_ns"] > 0 and cur["correct"] and base.get("correct", True):
+        if base["a_ns"] > 0 and cur["a_ns"] > 0 and cur["correct"] and base.get("correct", True):
             ratio = cur["a_ns"] / base["a_ns"]
             abs_delta = cur["a_ns"] - base["a_ns"]
             row["delta_pct"] = (ratio - 1) * 100
@@ -397,11 +405,23 @@ def main() -> int:
                 file=sys.stderr,
             )
             return 2
-        baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
-        rows, failed = compare(doc, baseline, args.threshold, args.min_abs_delta)
-        if not args.json:
-            print_check_table(rows, args.threshold, args.min_abs_delta)
-            print(f"baseline: {baseline_path}")
+        try:
+            baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
+            rows, failed = compare(doc, baseline, args.threshold, args.min_abs_delta)
+            if not args.json:
+                # Inside the guard too: a baseline with a non-numeric a_ns on a
+                # MISSING row (name never merged) surfaces as a TypeError in the
+                # table renderer, not in compare.
+                print_check_table(rows, args.threshold, args.min_abs_delta)
+                print(f"baseline: {baseline_path}")
+        except (ValueError, KeyError, TypeError) as exc:
+            # ValueError covers JSONDecodeError (and UnicodeDecodeError): a
+            # corrupt or wrong-shaped baseline cannot be distinguished from
+            # a missing one, so it takes the same exit code instead of an
+            # uncaught traceback whose accidental exit 1 would masquerade
+            # as a regression verdict.
+            print(f"error: baseline unusable: {baseline_path}: {exc}", file=sys.stderr)
+            return 2
         return 1 if failed else 0
 
     return 0

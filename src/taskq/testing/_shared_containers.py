@@ -615,7 +615,11 @@ def _atomic_write_text(path: Path, text: str) -> None:
     truncated state file behind (a torn count/JSON file would otherwise break the next
     run's startup with an unparseable read)."""
     tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(text)
+    # Why an explicit encoding: the orjson writers emit raw UTF-8 (no
+    # ensure_ascii escape), so text is no longer guaranteed pure-ASCII the way
+    # the previous stdlib-json writer's output was — without the pin, a C/POSIX
+    # locale would make the write (and every read_text() below) locale-encoded.
+    tmp.write_text(text, encoding="utf-8")
     os.replace(tmp, path)
 
 
@@ -668,7 +672,7 @@ def _read_holders(path: Path) -> dict[str, list[int]]:
     "nothing is held": the same self-healing tolerance the counters use."""
     raw: object = None
     with suppress(OSError, ValueError):
-        raw = _json_loads(path.read_text())
+        raw = _json_loads(path.read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
         return {}
     holders: dict[str, list[int]] = {}
@@ -732,7 +736,7 @@ def _recorded_pair_is(info_path: Path, info: SharedServices) -> bool:
     """Whether the state file still names *info*'s pair — the guard on unlinking it,
     since another worker's fresh start may already have replaced it."""
     with suppress(OSError, ValueError, TypeError):
-        return SharedServices(**_json_loads(info_path.read_text())) == info
+        return SharedServices(**_json_loads(info_path.read_text(encoding="utf-8"))) == info
     return False
 
 
@@ -798,7 +802,7 @@ def shared_service_pair(state_dir: Path) -> Generator[SharedServices, None, None
         fresh_start_reason: str | None = None
         if info_path.exists():
             try:
-                candidate = SharedServices(**_json_loads(info_path.read_text()))
+                candidate = SharedServices(**_json_loads(info_path.read_text(encoding="utf-8")))
             except (ValueError, TypeError):
                 candidate = None  # corrupt/torn state file: start fresh below
             if candidate is None:
