@@ -516,15 +516,17 @@ async def test_pg_partition_refusal_logs_and_records_per_refused_actor(
         }
     )
 
-    with structlog.testing.capture_logs() as logs:
-        with pytest.raises(BatchMaxPendingExceededError):
-            await _enqueue_batch(
-                None,
-                _SQL,
-                _SCHEMA_LABEL,
-                args_list,
-                connection=conn,  # type: ignore[arg-type]  # Why: fake conn models a caller-owned open transaction
-            )
+    with (
+        structlog.testing.capture_logs() as logs,
+        pytest.raises(BatchMaxPendingExceededError),
+    ):
+        await _enqueue_batch(
+            None,
+            _SQL,
+            _SCHEMA_LABEL,
+            args_list,
+            connection=conn,  # type: ignore[arg-type]  # Why: fake conn models a caller-owned open transaction
+        )
 
     # One metric per refused actor, in refusals (group) order.
     assert calls == [
