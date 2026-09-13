@@ -672,8 +672,22 @@ async def enqueue_from_generator(client: JobsClient, doc_ids: Iterable[str]) -> 
 When `failure_policy` or `finalizer` is set and `connection` is `None`, the
 entire operation is delegated to `Backend.enqueue_batch_atomic` for
 single-transaction atomicity. Otherwise, chunks are inserted via
-`Backend.enqueue_batch` on the caller-owned connection, with the batch row and
-finalizer created as the last statements.
+`Backend.enqueue_batch`: with a caller-supplied connection all chunks share
+that connection's open transaction (one transaction aggregate — the caller
+owns the boundary); with **no connection each chunk is its own pool
+transaction**, so progress commits incrementally, chunk by chunk.
+
+**No-connection failure surface:** when chunk *N* fails (cap refusal,
+payload validation, a driver error), chunks `1..N-1` — plus the refusing
+chunk's within-cap actors, under the per-actor `max_pending` partition —
+are already durably committed, nothing is returned (the `BatchHandle` is
+only constructed after the stream drains), and the call raises. A cap
+refusal raises `BatchMaxPendingExceededError` with stream-global refused
+item indices and an `admitted_count` covering every committed item; items
+after the refusing chunk were never attempted. **A blind retry of the full
+iterable would duplicate the committed prefix** — retry safely by giving
+items `idempotency_key`s (a retry deduplicates against the committed rows)
+or by resuming from the refused items.
 
 ---
 

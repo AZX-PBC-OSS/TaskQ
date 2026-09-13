@@ -63,7 +63,12 @@ from taskq.client._capacity import (
 )
 from taskq.client._handle import JobHandle
 from taskq.constants import DEFAULT_CHUNK_SIZE, MAX_IDEMPOTENCY_KEY_BYTES
-from taskq.exceptions import EmptyFilterError, PayloadValidationError, SchemaNotMigratedError
+from taskq.exceptions import (
+    BatchMaxPendingExceededError,
+    EmptyFilterError,
+    PayloadValidationError,
+    SchemaNotMigratedError,
+)
 from taskq.types import BulkCancelResult, CancelResult
 
 if TYPE_CHECKING:
@@ -705,9 +710,20 @@ class JobsClient:
         ``connection`` is ``None``, the entire operation is delegated to
         :meth:`Backend.enqueue_batch_atomic` for single-transaction
         atomicity.  Otherwise, chunks are inserted via
-        :meth:`Backend.enqueue_batch` on the caller-owned connection,
-        and the batch row + finalizer are created as the last
-        statements.
+        :meth:`Backend.enqueue_batch`: with a caller-supplied connection
+        all chunks share that connection's open transaction (one
+        transaction aggregate — the caller owns the boundary); with NO
+        connection each chunk is its own pool transaction, so progress
+        is committed incrementally, chunk by chunk.
+
+        **No-connection failure surface:** when chunk *N* fails (cap
+        refusal, payload validation, a driver error), chunks 1..*N*-1
+        are already durably committed and nothing is returned — the
+        ``BatchHandle`` is only constructed after the whole stream
+        drains.  A blind retry of the full iterable would duplicate the
+        committed prefix.  Retry safely by giving items
+        ``idempotency_key``s (a retry deduplicates against the committed
+        rows) or by resuming from the point of failure.
 
         **Failure-policy counting limitation (caller-connection path):**
         the batch row is created AFTER all chunk inserts — it must carry
@@ -719,11 +735,25 @@ class JobsClient:
         (no-connection) path is unaffected — its single transaction
         makes the batch row and the child jobs visible together.
 
-        **max_pending:** enforced per chunk — each chunk's items carry
-        the resolved caps and :meth:`Backend.enqueue_batch` admits a
-        chunk only when existing pending+scheduled plus the chunk fits
-        the cap, so sequential chunks sharing one transaction enforce
-        the true aggregate. Same contract as :meth:`enqueue_batch`.
+        **max_pending:** enforced per chunk with the same per-actor
+        partition as :meth:`enqueue_batch` — each chunk's items carry
+        their actors' caps, the backend admits every within-cap actor's
+        items, and an over-cap actor's items are refused.  On the
+        caller-connection path sequential chunks share one transaction,
+        so per-chunk admission accumulates to the true aggregate.  On
+        the no-connection path each chunk counts against the rows the
+        previous committed chunks wrote, which also accumulates to the
+        true aggregate — but the refusal surfaces after the committed
+        prefix: :class:`~taskq.exceptions.BatchMaxPendingExceededError`
+        raises with STREAM-GLOBAL refused item indices and an
+        ``admitted_count`` covering every committed item; items after
+        the refusing chunk were never attempted.  Retry only the
+        refused items (or rely on ``idempotency_key``s).  The atomic
+        path (``failure_policy``/``finalizer``, no connection) keeps
+        all-or-nothing: a cap violation rolls back the entire single
+        transaction and raises plain
+        :class:`~taskq.exceptions.MaxPendingExceededError` with nothing
+        committed.
         """
         if chunk_size < 1 or chunk_size > MAX_BATCH_SIZE:
             raise ValueError(f"chunk_size must be in [1, {MAX_BATCH_SIZE}], got {chunk_size}")
@@ -904,7 +934,30 @@ class JobsClient:
                         ) from exc
                     global_idx += 1
                 chunk_args = build_batch_args(chunk_items, resolved_batch_id)
-                chunk_rows = await self._backend.enqueue_batch(chunk_args, connection=connection)  # type: ignore[call-arg]  # Why: asyncpg.Connection is compatible with the protocol's connection parameter at runtime
+                # Why capture the offset BEFORE the backend call: at this
+                # point total_count is exactly the number of items in the
+                # committed prefix (chunks 1..N-1), which is the index base
+                # a refused item must be shifted by to name its position in
+                # the CALLER's stream rather than its chunk-local position.
+                chunk_offset = total_count
+                try:
+                    chunk_rows = await self._backend.enqueue_batch(
+                        chunk_args, connection=connection
+                    )  # type: ignore[call-arg]  # Why: asyncpg.Connection is compatible with the protocol's connection parameter at runtime
+                except BatchMaxPendingExceededError as exc:
+                    # The backend's partition refusal carries chunk-local
+                    # indices; re-raise with stream-global ones (plus the
+                    # committed prefix folded into admitted_count) so the
+                    # caller can retry exactly the refused items. Items
+                    # after the refusing chunk were never attempted.
+                    raise BatchMaxPendingExceededError(
+                        refusals=exc.refusals,
+                        refused_indices={
+                            actor: [i + chunk_offset for i in indices]
+                            for actor, indices in exc.refused_indices.items()
+                        },
+                        admitted_count=chunk_offset + exc.admitted_count,
+                    ) from exc
                 for i, row in enumerate(chunk_rows):
                     all_handles.append(
                         JobHandle(
