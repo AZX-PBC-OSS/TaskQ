@@ -20,6 +20,7 @@ from taskq.exceptions import (
     MaxPendingExceededError,
     SingletonCollisionError,
 )
+from taskq.testing._reads import _read_copy
 
 if TYPE_CHECKING:
     from taskq.testing.in_memory import InMemoryBackend
@@ -59,7 +60,7 @@ async def _enqueue(self: "InMemoryBackend", args: EnqueueArgs) -> JobRow:
                 existing_job_id=str(existing_row.id),
                 dedup_reason="unique_for",
             )
-            return existing_row
+            return _read_copy(existing_row)
 
     if args.metadata.get("singleton") is True:
         from datetime import timedelta
@@ -143,7 +144,7 @@ async def _enqueue(self: "InMemoryBackend", args: EnqueueArgs) -> JobRow:
                     existing_job_id=str(existing_row.id),
                     dedup_reason="idempotency_key",
                 )
-                return existing_row
+                return _read_copy(existing_row)
 
     now = self._clock.now()
     # None means immediate: stamp from this backend's own (single-domain)
@@ -159,13 +160,19 @@ async def _enqueue(self: "InMemoryBackend", args: EnqueueArgs) -> JobRow:
 
     result_expires_at = now + args.result_ttl if args.result_ttl is not None else None
 
+    # PG serialises payload/metadata into jsonb at INSERT time, so the
+    # stored row can never alias a caller-held dict; copy on the way in
+    # to hold the same isolation contract here.
+    stored_payload = dict(args.payload)
+    stored_metadata = dict(args.metadata)
+
     row = JobRow(
         id=args.id,
         actor=args.actor,
         queue=args.queue,
         identity_key=args.identity_key,
         fairness_key=args.fairness_key,
-        payload=args.payload,
+        payload=stored_payload,
         payload_schema_ver=args.payload_schema_ver,
         status=status,  # type: ignore[arg-type]  # Why: ternary "pending" if ... else "scheduled" is not narrowed to JobStatus by pyright
         priority=args.priority,
@@ -196,7 +203,7 @@ async def _enqueue(self: "InMemoryBackend", args: EnqueueArgs) -> JobRow:
         idempotency_scope=args.idempotency_scope,
         trace_id=args.trace_id,
         span_id=args.span_id,
-        metadata=args.metadata,
+        metadata=stored_metadata,
         tags=args.tags,
     )
 
@@ -217,7 +224,7 @@ async def _enqueue(self: "InMemoryBackend", args: EnqueueArgs) -> JobRow:
         actor=args.actor,
     )
 
-    return row
+    return _read_copy(row)
 
 
 async def _enqueue_with_conn(

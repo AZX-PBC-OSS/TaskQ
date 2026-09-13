@@ -28,6 +28,11 @@ from opentelemetry.sdk.metrics.export import (
     HistogramDataPoint,
     NumberDataPoint,
 )
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+import taskq.obs._otel as otel_mod
 
 # The fields TaskQ actually reads, not the full dataclass. A future release may
 # add fields freely; removing or renaming one of these is what breaks us.
@@ -86,3 +91,75 @@ def test_prometheus_reader_accepts_the_registry_kwarg() -> None:
     from opentelemetry.exporter.prometheus import PrometheusMetricReader
 
     assert "registry" in inspect.signature(PrometheusMetricReader.__init__).parameters
+
+
+# ── The memoized-tracer contract ───────────────────────────────────────
+#
+# ``get_tracer()`` used to call ``importlib.metadata.version`` per span
+# (~320µs, benchmarks/ab_otel_hotspots.py); it now resolves the tracer
+# once per process. The pins below hold the two halves of that design:
+# the memo actually memoizes, and — the part that makes memoization
+# legal — a tracer resolved BEFORE an SDK registers still rebinds to the
+# real one afterwards (the API's ProxyTracer re-checks the global
+# provider on every span start, opentelemetry/trace/__init__.py
+# ``ProxyTracer._tracer``). Memoization must never pin the proxy/no-op
+# behavior into a worker that configures its SDK later.
+
+
+def test_get_tracer_resolves_once_and_memoizes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two ``get_tracer()`` calls hit ``trace.get_tracer`` exactly once and
+    return the same object — the memo is the whole optimization."""
+    monkeypatch.setattr(otel_mod, "_library_tracer", None)  # pyright: ignore[reportPrivateUsage]  # Why: reset the memo so this test observes its own resolution, not one an earlier test warmed.
+
+    import opentelemetry.trace as trace_api
+
+    calls: list[tuple[str, str]] = []
+    real_get_tracer = trace_api.get_tracer
+
+    def counting_get_tracer(name: str, version: str | None = None, **kwargs: object):  # type: ignore[no-untyped-def]
+        calls.append((name, version or ""))
+        return real_get_tracer(name, version, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(trace_api, "get_tracer", counting_get_tracer)
+
+    first = otel_mod.get_tracer()
+    second = otel_mod.get_tracer()
+
+    assert first is second
+    assert calls == [(otel_mod.INSTRUMENTATION_NAME, otel_mod._version())]
+
+
+def test_memoized_tracer_rebinds_after_sdk_registration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The transition contract: a tracer memoized with NO provider yields
+    non-recording spans, and the SAME memoized object yields recording
+    spans once a real provider registers. If memoization ever swaps the
+    ProxyTracer for something that pins the no-op behavior, a worker that
+    configures its SDK after first span goes silently dark — this pin is
+    what makes the memoization safe to keep."""
+    import opentelemetry.trace as trace_api
+
+    # Force the no-provider path for the resolution (and restore whatever
+    # the process had afterwards — never set the global for real).
+    monkeypatch.setattr(trace_api, "_TRACER_PROVIDER", None)  # pyright: ignore[reportPrivateUsage]
+    monkeypatch.setattr(otel_mod, "_library_tracer", None)  # pyright: ignore[reportPrivateUsage]
+
+    tracer = otel_mod.get_tracer()
+    pre = tracer.start_span("pre-registration")
+    assert not pre.is_recording()  # Why: a method on the OTel Span API, not a property.
+    pre.end()
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    monkeypatch.setattr(trace_api, "_TRACER_PROVIDER", provider)  # pyright: ignore[reportPrivateUsage]
+
+    # The SAME memoized object, now backed by the real provider.
+    assert otel_mod.get_tracer() is tracer
+    post = tracer.start_span("post-registration")
+    assert post.is_recording()
+    post.end()
+    assert {s.name for s in exporter.get_finished_spans()} == {"post-registration"}

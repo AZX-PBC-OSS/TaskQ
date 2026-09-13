@@ -397,15 +397,20 @@ def test_first_acquire_starts_the_pair_and_writes_state(
     with sc.shared_service_pair(tmp_path) as services:
         assert services == _fake_services()
         assert (tmp_path / "taskq-test-services.json").exists()
-        assert (tmp_path / "taskq-test-services.json").read_text() == json.dumps(
-            {
-                "pg_dsn": "postgresql://taskq:taskq@127.0.0.1:5555/taskq",
-                "pg_container_id": "fake-pg-id",
-                "redis_host": "127.0.0.1",
-                "redis_port": 6666,
-                "redis_container_id": "fake-redis-id",
-            }
-        )
+        # The state file is written by the module's orjson serializer, so the
+        # pin compares against that writer's output (compact), not stdlib
+        # json's. The contract that matters is "valid JSON that reads back
+        # identical", asserted by the round-trip below.
+        state_payload = {
+            "pg_dsn": "postgresql://taskq:taskq@127.0.0.1:5555/taskq",
+            "pg_container_id": "fake-pg-id",
+            "redis_host": "127.0.0.1",
+            "redis_port": 6666,
+            "redis_container_id": "fake-redis-id",
+        }
+        state_text = (tmp_path / "taskq-test-services.json").read_text()
+        assert state_text == sc.dumps_str(state_payload)
+        assert json.loads(state_text) == state_payload
         assert _holders(tmp_path) == {"fake-pg-id": [os.getpid()], "fake-redis-id": [os.getpid()]}
         assert (tmp_path / "taskq-test-services.redis-db").read_text() == "0"
     assert len(pair_fakes["start"]) == 1

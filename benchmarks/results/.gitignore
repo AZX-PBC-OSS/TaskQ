@@ -1,2 +1,5 @@
+# Everything here is throwaway history or profiling output except
+# the canonical baseline, which is the tracked regression-gate input.
 *
 !.gitignore
+!baseline.json

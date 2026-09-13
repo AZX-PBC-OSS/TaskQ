@@ -220,6 +220,10 @@ def test_warning_no_auth_non_dev_env(monkeypatch: pytest.MonkeyPatch) -> None:
     test_admin_security_fixes.py)."""
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "production")
     monkeypatch.setenv("TASKQ_ADMIN_UI_REQUIRE_AUTH", "false")
+    # The admin factory mounts the progress router with the same absent
+    # auth_dependency, so its fail-closed gate needs the same opt-out for
+    # this unauthenticated-by-ingress shape to start at all.
+    monkeypatch.setenv("TASKQ_PROGRESS_REQUIRE_AUTH", "false")
     pool = _StubPool()
 
     import structlog

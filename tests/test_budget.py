@@ -117,6 +117,34 @@ def test_custom_pool_sizes() -> None:
     assert budget.direct_per_worker_leader == 14
 
 
+# ── Conditional per-slot transaction pool ─────────────────────────────────
+
+
+def test_slot_pool_connections_add_to_the_direct_budget() -> None:
+    """The conditional per-slot pool's connections count as direct.
+
+    A worker that registered a LOOP-scope connection carries
+    max_concurrency + 1 extra direct connections; the budget model must
+    add exactly that, per worker, on both leader and non-leader pods —
+    the arithmetic docs/guides/ops.md publishes its fleet formula from.
+    """
+    s = _settings(TASKQ_MAX_CONCURRENCY="8")
+    without = compute_connection_budget(s, num_worker_pods=1, num_leader_pods=1)
+    with_slot = compute_connection_budget(
+        s,
+        num_worker_pods=1,
+        num_leader_pods=1,
+        slot_pool_connections=9,  # 8 + 1 reserve
+    )
+
+    assert with_slot.direct_per_worker_non_leader == without.direct_per_worker_non_leader + 9
+    assert with_slot.direct_per_worker_leader == without.direct_per_worker_leader + 9
+    # 1 leader pod: total_direct = 1 * (12 + 9)
+    assert with_slot.total_direct == 21
+    # The pooled budget is untouched — the slot pool is direct-only.
+    assert with_slot.pooled_per_worker == without.pooled_per_worker
+
+
 # ── ConnectionBudget is frozen ────────────────────────────────────────────
 
 

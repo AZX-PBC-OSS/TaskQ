@@ -19,7 +19,6 @@ from pathlib import Path
 from typing import Self
 from uuid import UUID
 
-from croniter import croniter
 from dotenvmodel import DotEnvConfig, Field, ValidationError, ValidatorContext
 from dotenvmodel.types import PostgresDsn, RedisDsn, SecretStr
 
@@ -30,6 +29,10 @@ from taskq.backend._protocol import (
     # imports taskq.settings, and taskq/__init__ always finishes loading
     # backend._protocol (via taskq.actor) before anything loads settings.
     _validate_queue_name,  # pyright: ignore[reportPrivateUsage]  # Why: the canonical queue-name validator; the enqueue and actor chokepoints run the same one, so the charset cannot drift between them.
+)
+from taskq.connections import (
+    DEFAULT_MAX_CACHED_STATEMENT_LIFETIME,
+    DEFAULT_STATEMENT_CACHE_SIZE,
 )
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining it
@@ -278,6 +281,15 @@ class TaskQSettings(DotEnvConfig):
         "client stays connected, so an uncapped endpoint is a resource-"
         "exhaustion surface on the app hosting the pipeline.",
     )
+    progress_require_auth: bool = Field(
+        default=True,
+        description="TASKQ_PROGRESS_REQUIRE_AUTH. When True (the default), "
+        "taskq.web.progress.create_router raises RuntimeError if "
+        "auth_dependency is None in a non-dev environment, failing closed. "
+        "Set to False to suppress the error and allow unauthenticated "
+        "per-job progress/state endpoints in non-dev (not recommended - only "
+        "for deployments that authenticate at the ingress).",
+    )
     admin_host: str = Field(
         default="0.0.0.0",  # noqa: S104  # Why: default bind address for the admin UI server; production deployments override via TASKQ_ADMIN_HOST env var.
         description="TASKQ_ADMIN_HOST. Bind address for ``taskq ui serve``.",
@@ -456,6 +468,42 @@ class TaskQSettings(DotEnvConfig):
         "from URLs, composite business keys or opaque vendor cursors.",
     )
 
+    # -- Postgres statement cache (asyncpg) -------------------------------
+    # Defaults come from taskq.connections's module constants — the same
+    # values every TaskQ-built pool passes explicitly at its construction
+    # site (worker role pools, the per-slot transaction pool, the TaskQ
+    # client pool, the admin UI pool). One source of truth: a tuning change
+    # to a constant moves the settings default with it. taskq.connections
+    # imports nothing from this module at runtime, so the dependency stays
+    # one-directional.
+    statement_cache_size: int = Field(
+        default=DEFAULT_STATEMENT_CACHE_SIZE,
+        ge=0,
+        description="TASKQ_STATEMENT_CACHE_SIZE. Size of the per-connection "
+        "prepared-statement LRU asyncpg keeps on every pool TaskQ builds. "
+        "asyncpg's default of 100 thrashes on TaskQ's read paths — "
+        "list_jobs alone renders 384+ filter-combination SQL variants (a "
+        "measured 90-96% steady-state miss rate, each miss re-paying the "
+        "Parse/Describe round trips; see benchmarks/ab_stmt_cache.py and "
+        "docs/guides/ops.md). 512 covers the variant space with headroom. "
+        "0 disables the statement cache. Applies only to pools TaskQ "
+        "builds: bring-your-own pools (WorkerConnections factories, a "
+        "caller-supplied pool) must pass the same create_pool kwargs "
+        "themselves — TaskQ cannot resize a pool it did not build.",
+    )
+    max_cached_statement_lifetime: int = Field(
+        default=DEFAULT_MAX_CACHED_STATEMENT_LIFETIME,
+        ge=0,
+        description="TASKQ_MAX_CACHED_STATEMENT_LIFETIME (seconds). How long "
+        "a prepared statement may stay in asyncpg's per-connection cache on "
+        "every pool TaskQ builds. asyncpg's default of 300 s re-prepares "
+        "statements on workers that outlive it; 3600 s (1 h) keeps the "
+        "textually-stable write hot loop (dispatch, enqueue, terminal "
+        "updates, sweeps) prepared across ticks without pinning prepared "
+        "plans for the process lifetime. 0 caches statements indefinitely. "
+        "Same TaskQ-built-pools-only scope as statement_cache_size.",
+    )
+
     @classmethod
     def load(
         cls,
@@ -533,6 +581,19 @@ class TaskQSettings(DotEnvConfig):
         """
         return SAMLSettings.cached()
 
+    @property
+    def is_dev_environment(self) -> bool:
+        """Whether this process is labeled a development environment.
+
+        The dev label is the single carve-out from the fail-closed auth
+        gates (admin UI, health/metrics token, progress router):
+        ``TASKQ_ENVIRONMENT`` set to ``dev`` or ``development`` lets those
+        surfaces start without auth so local development needs no token
+        machinery. Any other value - including unset - is not dev, so the
+        gates fail closed.
+        """
+        return self.environment in {"dev", "development"}
+
 
 def _parse_groups(raw: str) -> frozenset[str]:
     return frozenset(g.strip() for g in raw.split(",") if g.strip())
@@ -599,6 +660,11 @@ def _hh_mm_validator(value: str, ctx: ValidatorContext) -> str:
 def _cron_expr_validator(value: str | None, ctx: ValidatorContext) -> str | None:
     if value is None or value == "":
         return value
+    # Lazy import: croniter (+ dateutil) costs ~16ms at import time and is
+    # only needed when a cron expression is actually configured, not for
+    # ``import taskq`` (taskq.cron defers it for the same reason).
+    from croniter import croniter
+
     if not croniter.is_valid(value):
         raise ValueError(f"{ctx.field_name} must be a valid cron expression, got {value!r}")
     return value
@@ -740,7 +806,13 @@ class WorkerSettings(TaskQSettings):
         default=8,
         ge=1,
         description="TASKQ_MAX_CONCURRENCY. Upper bound on concurrent jobs. "
-        "worker_pool max_size = int(max_concurrency * 1.5).",
+        "worker_pool max_size = int(max_concurrency * 1.5). When a "
+        "LOOP-scope asyncpg.Connection is registered, this also sizes the "
+        "worker's per-slot transaction pool (max_concurrency + 1 "
+        "connections, fully warmed at boot), so a change requires a "
+        "worker restart and moves the direct-connection budget — see "
+        "docs/guides/deployment.md. Boot-only: no reload path re-reads "
+        "settings.",
     )
     heartbeat_interval: float = Field(
         default=10.0,
@@ -857,10 +929,13 @@ class WorkerSettings(TaskQSettings):
         "it down from the first shutdown signal. Must satisfy "
         "cancellation_grace + cleanup_grace < termination_grace - 5, and "
         "should cover the modelled worst case cancellation_grace + "
-        "cleanup_grace + the ~27s bounded-close teardown tail (see "
+        "cleanup_grace + the ~32s bounded-close teardown tail (see "
         "WorkerSettings.worst_case_shutdown_seconds) — the default does: "
-        "30 + 10 + 27 = 67s, with headroom for the ~72s sibling-crash "
-        "path that model understates. A value below the worst case still "
+        "30 + 10 + 32 = 72s. The ~77s sibling-crash path (seven closes, "
+        "including the conditional per-slot pool) exceeds the default by "
+        "2s on per-slot workers — that path is the documented caveat the "
+        "model understates; raise this setting when per-slot workers need "
+        "a tight crash budget. A value below the worst case still "
         "loads but logs shutdown-budget-exceeds-termination-grace at "
         "startup. Size the pod/container grace "
         "(terminationGracePeriodSeconds / stop_grace_period) from the "
@@ -1168,9 +1243,12 @@ class WorkerSettings(TaskQSettings):
         default=30.0,
         gt=0,
         description="TASKQ_RELOAD_FACTORY_TIMEOUT (seconds). Bounds each "
-        "individual factory call during a credential hot-reload - a hung "
-        "token endpoint is marked failed for that resource instead of "
-        "wedging the reload coordinator (and all future SIGHUPs).",
+        "individual pool-factory call - during a credential hot-reload, "
+        "and at bootstrap when the worker opens its per-slot transaction "
+        "pool (a fully-warmed open means one connection - and on a "
+        "managed-identity deployment one credential fetch - per consumer "
+        "slot). A hung token endpoint is marked failed for that resource "
+        "instead of wedging the reload coordinator or worker boot.",
     )
 
     # -- Queue selection --------------------------------------------------
@@ -1205,7 +1283,8 @@ class WorkerSettings(TaskQSettings):
         "longer than this threshold. Set to 3600.0 to match a typical "
         "SQLAlchemy pool_recycle=3600 setting when running alongside "
         "an SQLAlchemy-based service. Applied to dispatcher_pool, "
-        "heartbeat_pool, and worker_pool.",
+        "heartbeat_pool, worker_pool, and the conditional per-slot "
+        "transaction pool.",
     )
 
     # -- Observability --------------------------------------------

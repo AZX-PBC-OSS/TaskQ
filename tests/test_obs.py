@@ -61,6 +61,17 @@ def _patch_instruments(monkeypatch: pytest.MonkeyPatch, meter: Meter) -> None:
         ),
         ("_progress_publish_failures", lambda: m.create_counter("taskq.progress.publish_failures")),
         ("_ratelimit_refund_failures", lambda: m.create_counter("taskq.ratelimit.refund_failures")),
+        (
+            "_slot_pool_acquire_failures",
+            lambda: m.create_counter("taskq.worker.slot_pool.acquire_failures"),
+        ),
+        (
+            "_slot_pool_occupancy_gauge",
+            lambda: m.create_observable_gauge(
+                "taskq.worker.slot_pool.connections_in_use",
+                callbacks=[otel_mod._observe_slot_pool_occupancy],
+            ),
+        ),
         ("_leader_election_attempts", lambda: m.create_counter("taskq.leader.election_attempts")),
         ("_leader_election_failures", lambda: m.create_counter("taskq.leader.election_failures")),
         (
@@ -248,6 +259,51 @@ def test_reservation_slots_gauge_reads_from_cache(otel_reader: InMemoryMetricRea
     metrics = collect_metrics(otel_reader)
     names = {m.name for m in metrics}
     assert "taskq.reservation.slots_used" in names
+
+
+# ── instrument: taskq.worker.slot_pool.* ──────────────────────────────────
+
+
+def test_record_slot_pool_acquire_failure_fires_on_failure_path(
+    otel_reader: InMemoryMetricReader,
+) -> None:
+    """The acquire-failure counter fires when the record helper is called
+    from the acquire's exception branch, with NO dimensions — the
+    per-occurrence job id lives in the log event, never a metric."""
+    obs_mod.record_slot_pool_acquire_failure()
+
+    assert counter_value(otel_reader, "taskq.worker.slot_pool.acquire_failures") == 1
+    points = counter_data_points(otel_reader, "taskq.worker.slot_pool.acquire_failures")
+    assert all(dict(p.attributes or {}) == {} for p in points)
+
+
+def test_record_slot_pool_acquire_failure_disabled() -> None:
+    otel_mod.set_otel_enabled(False)
+    obs_mod.record_slot_pool_acquire_failure()
+    otel_mod.set_otel_enabled(True)
+
+
+def test_slot_pool_occupancy_gauge_reads_held_connections(
+    otel_reader: InMemoryMetricReader,
+) -> None:
+    """The occupancy gauge reports size minus idle — the in-use count a
+    saturation-pin diagnosis needs (the acquire-failure counter is silent
+    below the cliff)."""
+
+    class _Pool:
+        def get_size(self) -> int:
+            return 9
+
+        def get_idle_size(self) -> int:
+            return 1
+
+    obs_mod.set_slot_pool_occupancy_source(_Pool())
+    try:
+        assert counter_value(otel_reader, "taskq.worker.slot_pool.connections_in_use") == 8
+    finally:
+        # Reset the module source so later tests in this process don't
+        # observe this test's pool.
+        obs_mod.set_slot_pool_occupancy_source(None)
 
 
 # ── instrument 12: taskq.progress.publish_failures ────────────────────────

@@ -408,6 +408,34 @@ def test_history_stats_returns_json(monkeypatch: pytest.MonkeyPatch) -> None:
     assert body == {"actors": []}
 
 
+@pytest.mark.asyncio
+async def test_history_stats_uses_orjson_response_class(stub_pool: _StubPool) -> None:
+    """The stats endpoint renders through taskq._json (orjson), not stdlib json.
+
+    Drives the discovered endpoint directly so the returned Response object
+    can be checked: it must be the shared orjson JSONResponse subclass, with
+    unchanged 200/application-json semantics and a body equal to the orjson
+    render of the payload.
+    """
+    from fastapi.routing import APIRoute
+
+    from taskq.client._taskq import orjson_response_class
+
+    bundle = create_router(stub_pool)  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
+    endpoint = next(
+        route.endpoint
+        for route in bundle.router.routes
+        if isinstance(route, APIRoute) and route.path == "/api/history/stats"
+    )
+
+    resp = await endpoint(pool=stub_pool, schema="taskq")
+
+    assert isinstance(resp, orjson_response_class())
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "application/json"
+    assert resp.body == orjson_response_class()({"actors": []}).body
+
+
 def test_history_stats_returns_actor_rows(monkeypatch: pytest.MonkeyPatch) -> None:
     """GET /api/history/stats returns actor metric rows from the backend."""
     stats_rows = [

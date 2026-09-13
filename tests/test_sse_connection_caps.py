@@ -229,10 +229,13 @@ def test_no_uncapped_sse_endpoint_remains() -> None:
 # so the release is observed as admission behavior, not source text.
 
 
-def test_missing_job_404s_do_not_exhaust_the_cap() -> None:
+def test_missing_job_404s_do_not_exhaust_the_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """With max_sse_connections=1, two missing-job requests must each give
     the slot back (the second would be 429 if the first leaked it) and a
     following valid stream must still be admitted."""
+    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
     pool = _SwitchablePool()  # row is None → job not found
     client = _progress_client(pool, _StubRedis(_StubPubSub()))
 
@@ -252,10 +255,13 @@ def test_missing_job_404s_do_not_exhaust_the_cap() -> None:
     assert "text/event-stream" in admitted.headers.get("content-type", "")
 
 
-def test_subscribe_failure_503s_do_not_exhaust_the_cap() -> None:
+def test_subscribe_failure_503s_do_not_exhaust_the_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The 503 subscribe-failure early exit runs after the slot is taken; a
     run of them must not exhaust the cap, and a healthy request afterwards
     must still be admitted."""
+    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
     pool = _SwitchablePool()
     pool.row = _TERMINAL_ROW  # PG is fine; the failure is at subscribe time
     pubsub = _StubPubSub()
@@ -279,9 +285,12 @@ def test_subscribe_failure_503s_do_not_exhaust_the_cap() -> None:
     assert "text/event-stream" in admitted.headers.get("content-type", "")
 
 
-async def test_progress_stream_rejects_with_429_at_the_cap() -> None:
+async def test_progress_stream_rejects_with_429_at_the_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A request through the real route must get 429, not queue, when the
     progress-stream budget is exhausted (one permit held = one open stream)."""
+    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
     pool = _SwitchablePool()
     pool.row = _TERMINAL_ROW
     client = _progress_client(pool, _StubRedis(_StubPubSub()))

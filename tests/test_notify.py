@@ -421,8 +421,20 @@ class TestChannelNameInterpolation:
 
 
 class TestReconnectBackoff:
-    async def test_backoff_caps_at_30_seconds(self) -> None:
-        """Reconnect backoff caps at 30 s."""
+    async def _run_reconnects(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        failures: int = 6,
+        uniform_value: float | None = None,
+    ) -> list[float]:
+        """Drive _health_check_loop through *failures* failed reconnects
+        followed by a success, returning the reconnect backoff sleeps in
+        order.
+
+        When *uniform_value* is given, random.uniform is pinned to it so
+        the jittered sequence is deterministic.
+        """
         deps = _make_mock_deps()
         backend = _make_backend()
         channels = _make_channels(backend)
@@ -433,13 +445,13 @@ class TestReconnectBackoff:
             side_effect=asyncpg.PostgresConnectionError("simulated failure")
         )
 
-        fail_count = 0
+        fail_left = failures
 
         async def fake_factory() -> Mock:
-            nonlocal fail_count
-            fail_count += 1
-            if fail_count <= 6:
-                raise asyncpg.PostgresConnectionError(f"attempt {fail_count}")
+            nonlocal fail_left
+            if fail_left > 0:
+                fail_left -= 1
+                raise asyncpg.PostgresConnectionError("attempt failed")
             new_conn = _mock_conn()
             new_conn.execute = AsyncMock()
             return new_conn
@@ -455,29 +467,58 @@ class TestReconnectBackoff:
 
         import taskq.worker.notify as notify_mod
 
-        with pytest.MonkeyPatch().context() as monkeypatch:
-            monkeypatch.setattr(notify_mod, "logger", Mock())
-            monkeypatch.setattr(asyncio, "sleep", recording_sleep)
+        monkeypatch.setattr(notify_mod, "logger", Mock())
+        monkeypatch.setattr(asyncio, "sleep", recording_sleep)
+        if uniform_value is not None:
+            monkeypatch.setattr(notify_mod.random, "uniform", lambda a, b: uniform_value)
 
-            async def _runner() -> None:
-                await _health_check_loop(deps, backend, shutdown, channels)
+        async def _runner() -> None:
+            await _health_check_loop(deps, backend, shutdown, channels)
 
-            task = asyncio.create_task(_runner())
-            for _ in range(20):
-                await asyncio.sleep(0)
-            shutdown.set()
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
+        task = asyncio.create_task(_runner())
+        for _ in range(20):
+            await asyncio.sleep(0)
+        shutdown.set()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
 
-            expected = [1.0, 2.0, 4.0, 8.0, 16.0, 30.0]
-            i = 0
-            for d in sleep_delays:
-                if i < len(expected) and abs(d - expected[i]) < 0.001:
-                    i += 1
-            assert i == len(expected), (
-                f"expected backoff sequence {expected} as a subsequence, "
-                f"got delays {sleep_delays}; matched only first {i}"
+        # Keep only the reconnect backoff sleeps: the health-check interval
+        # (0.001) and the zero-sleep scheduling yields sit far below the
+        # smallest jittered backoff (0.75 * the 1.0 s initial).
+        return [d for d in sleep_delays if d >= 0.5]
+
+    async def test_backoff_jitter_is_multiplicative_after_doubling(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """With jitter pinned to its low bound, the sleep sequence is exactly
+        initial * u, then min(initial * 2**n, cap) * u — i.e. the jitter is
+        applied multiplicatively after the exponential doubling, and the
+        doubling itself stays on the pristine (unjittered) base.
+        """
+        delays = await self._run_reconnects(monkeypatch, failures=6, uniform_value=0.75)
+        # Bases at sleep time: 1, 2, 4, 8, 16, then min(32, 30) = 30 (cap).
+        assert delays == [0.75, 1.5, 3.0, 6.0, 12.0, 22.5]
+
+    async def test_backoff_jitter_desynchronizes_lockstep_retries(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """With real randomness the sleeps stay inside ±25% of the
+        deterministic backoff (capped at 30 s → 22.5-37.5 band) and at least
+        one sleep leaves the deterministic sequence — a fleet retrying after
+        a shared PG failure no longer reconnects in lockstep waves.
+        """
+        delays = await self._run_reconnects(monkeypatch, failures=6)
+
+        expected = [1.0, 2.0, 4.0, 8.0, 16.0, 30.0]
+        assert len(delays) == len(expected)
+        eps = 1e-6
+        for i, (d, base) in enumerate(zip(delays, expected, strict=True)):
+            assert 0.75 * base - eps <= d <= 1.25 * base + eps, (
+                f"sleep {i} ({d}) outside ±25% of {base}"
             )
+        assert any(abs(d - base) > 1e-3 for d, base in zip(delays, expected, strict=True)), (
+            f"no jitter observed: {delays} matches the deterministic sequence {expected}"
+        )
 
 
 # ---- Disconnected listener --------------------------------------------------------------------------

@@ -44,11 +44,11 @@ from sse_starlette.sse import EventSourceResponse
 from taskq import _json
 from taskq._close import CLOSE_TIMEOUT_SECS, close_redis_bounded
 from taskq.backend.statemachine import TERMINAL_STATUSES
+from taskq.client._taskq import orjson_response_class
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining it
     progress_channel,
 )
-from taskq.progress._events import ProgressEvent
 from taskq.settings import TaskQSettings
 from taskq.web._sse_limit import acquire_sse_slot
 
@@ -70,6 +70,10 @@ _SSE_SEPARATOR = "\n"
 
 # Returned when Redis is not configured or unreachable at subscribe time.
 _REDIS_503_BODY: dict[str, str] = {"error": "redis_not_configured"}
+
+# JSON responses render through orjson (taskq._json), never stdlib json —
+# byte-identical bodies to starlette's stdlib JSONResponse for these payloads.
+_OrjsonJSONResponse: "type[JSONResponse]" = orjson_response_class()
 
 # SQL for the progress snapshot read (both initial connect and reconnect).
 _PROGRESS_SQL = 'SELECT progress_state, progress_seq, status FROM "{schema}".jobs WHERE id = $1'
@@ -197,7 +201,35 @@ async def _event_generator(
                     if isinstance(raw_data, (bytes, bytearray))
                     else str(raw_data)
                 )
-                event = ProgressEvent.model_validate_json(raw_str)
+                # Performance: the published payload is already exactly
+                # ``ProgressEvent.model_dump_json(exclude_none=True)`` bytes
+                # (progress/_publish.py), and this generator reads only
+                # ``seq`` and ``terminal`` — so a pydantic validate→dump
+                # round-trip per message per client (O(clients x events))
+                # re-derives bytes the channel already carries. Parse the
+                # envelope once with orjson, validate the required keys
+                # cheaply, and emit the raw string verbatim.
+                parsed: object = _json.loads(raw_str)
+                if not isinstance(parsed, dict):
+                    raise ValueError("envelope must be a JSON object")
+                envelope = cast("dict[str, object]", parsed)
+                seq = envelope["seq"]
+                if not isinstance(seq, int) or isinstance(seq, bool):
+                    raise ValueError("seq must be an integer")
+                terminal = envelope.get("terminal", False)
+                if not isinstance(terminal, bool):
+                    raise ValueError("terminal must be a boolean")
+                if envelope.get("kind") not in ("progress", "state_change"):
+                    raise ValueError("kind must be a progress/state_change literal")
+                # ProgressEvent declares these fields with no default, so a
+                # message missing any of them failed full model validation
+                # before; the cheap membership check keeps that drop behaviour.
+                # Their VALUES are not type-checked here: published wire
+                # always satisfies the model, and foreign junk that mimics
+                # the envelope shape is forwarded as inert JSON.
+                for _required in ("job_id", "actor", "ts", "status"):
+                    if _required not in envelope:
+                        raise ValueError(f"missing {_required!r}")
             except Exception:  # Why: malformed/non-ProgressEvent messages on the shared channel must be discarded silently; the channel is not exclusively owned by this library.
                 logger.debug(
                     "sse-redis-malformed-message",
@@ -207,26 +239,25 @@ async def _event_generator(
                 continue
 
             # filter duplicates.
-            if event.seq <= last_emitted_seq:
+            if seq <= last_emitted_seq:
                 continue
 
-            last_emitted_seq = event.seq
-            event_json = event.model_dump_json(exclude_none=True)
+            last_emitted_seq = seq
 
-            if event.terminal:
+            if terminal:
                 # terminal event — emit payload then done, close.
                 yield _make_sse_event(
                     event="terminal",
-                    seq=event.seq,
-                    data=event_json,
+                    seq=seq,
+                    data=raw_str,
                 )
                 yield _make_done_event()
                 return
 
             yield _make_sse_event(
                 event="progress",
-                seq=event.seq,
-                data=event_json,
+                seq=seq,
+                data=raw_str,
             )
 
     finally:
@@ -280,7 +311,11 @@ def create_router(
     auth_dependency:
         Optional FastAPI dependency callable; if provided it is injected via
         ``Depends()`` on all routes (same pattern as
-        ``taskq.web.admin.create_router``).
+        ``taskq.web.admin.create_router``). Outside a dev environment
+        (``TASKQ_ENVIRONMENT`` not ``dev``/``development``) the factory
+        raises ``RuntimeError`` when it is omitted, unless
+        ``TASKQ_PROGRESS_REQUIRE_AUTH=false`` suppresses the check; serving
+        without auth always logs a warning.
     sse_heartbeat_interval:
         Cadence for ``': keepalive'`` SSE comments (default 15 s).
     max_sse_connections:
@@ -296,6 +331,39 @@ def create_router(
     if not _IDENT_RE.match(schema):
         raise ValueError(f"invalid schema identifier: {schema!r}")
 
+    settings = TaskQSettings.load()
+
+    if auth_dependency is None:
+        if not settings.is_dev_environment and settings.progress_require_auth:
+            raise RuntimeError(
+                "progress router requires auth_dependency in non-dev environments "
+                "(set TASKQ_PROGRESS_REQUIRE_AUTH=false to disable)"
+            )
+        # Why this warning sits outside the environment test that governs the
+        # RuntimeError above: a dev-labeled process is the only configuration
+        # that actually serves an unauthenticated progress router, so it is
+        # the one that most needs a log line. Keeping the warning inside the
+        # non-dev branch meant the silent case was the dangerous one.
+        suppressed_by = (
+            "TASKQ_ENVIRONMENT is a dev environment, so the fail-closed startup check did not run"
+            if settings.is_dev_environment
+            else "TASKQ_PROGRESS_REQUIRE_AUTH is false, so the fail-closed "
+            "startup check was suppressed"
+        )
+        logger.warning(
+            "progress-router-no-auth",
+            environment=settings.environment,
+            detail=(
+                "the progress router is being served with no authentication: "
+                f"{suppressed_by}. The SSE stream and per-job state endpoints "
+                "are reachable by anyone who can reach this port, and each "
+                "stream holds a Redis pubsub subscription and an asyncio task "
+                "for as long as the client stays connected. Pass "
+                "auth_dependency to create_router, or set TASKQ_ENVIRONMENT "
+                "to the real environment so startup fails closed."
+            ),
+        )
+
     router_kwargs: dict[str, Any] = {"tags": ["progress"]}
     if auth_dependency is not None:
         router_kwargs["dependencies"] = [Depends(auth_dependency)]
@@ -307,7 +375,7 @@ def create_router(
     _pg_pool = pg_pool
     _heartbeat_secs = sse_heartbeat_interval.total_seconds()
     if max_sse_connections is None:
-        max_sse_connections = TaskQSettings.load().progress_max_sse_connections
+        max_sse_connections = settings.progress_max_sse_connections
     _max_sse = max_sse_connections
     _progress_sql = _PROGRESS_SQL.format(schema=_schema)
 
@@ -337,7 +405,7 @@ def create_router(
         HTTP 503 — Redis not configured or unavailable.
         """
         if _redis_client is None:
-            return JSONResponse(  # pyright: ignore[reportReturnType]  # Why: FastAPI accepts any Response subclass here; JSONResponse is returned for the 503 before SSE upgrade.
+            return _OrjsonJSONResponse(  # pyright: ignore[reportReturnType]  # Why: FastAPI accepts any Response subclass here; the JSON response is returned for the 503 before SSE upgrade.
                 status_code=503,
                 content=_REDIS_503_BODY,
                 headers={"Retry-After": "2"},
@@ -408,7 +476,7 @@ def create_router(
             # wedge the 503 path.
             await close_redis_bounded(pubsub, "web-progress", CLOSE_TIMEOUT_SECS)
             release_slot()
-            return JSONResponse(
+            return _OrjsonJSONResponse(
                 status_code=503,
                 content=_REDIS_503_BODY,
                 headers={"Retry-After": "2"},
@@ -505,7 +573,7 @@ def create_router(
             parsed: Any = _json.loads(raw_ps)
             progress_state = cast("dict[str, object]", parsed) if isinstance(parsed, dict) else None
 
-        return JSONResponse(
+        return _OrjsonJSONResponse(
             content={
                 "status": row["status"],
                 "progress_state": progress_state,

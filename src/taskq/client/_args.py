@@ -13,7 +13,6 @@ import inspect
 import re
 import warnings
 from collections.abc import Generator, Mapping, Sequence
-from dataclasses import replace
 from datetime import datetime, timedelta
 from types import FrameType
 from typing import TYPE_CHECKING, Any
@@ -180,6 +179,7 @@ def build_enqueue_args[P: BaseModel, R: BaseModel | None](
     unique_states: tuple[str, ...] | None = None,
     tags: list[str] | None = None,
     idempotency_max_bytes: int = MAX_IDEMPOTENCY_KEY_BYTES,
+    stamp_batch_id: str | None = None,
 ) -> EnqueueArgs:
     """Validate inputs and construct :class:`EnqueueArgs`.
 
@@ -232,6 +232,14 @@ def build_enqueue_args[P: BaseModel, R: BaseModel | None](
     # is stripped here exactly like batch_id. The tick mints the stamp
     # itself, on args it builds directly — it never crosses this boundary.
     metadata_dict.pop("cron_schedule_id", None)
+    # Library-side batch stamping, INSIDE the boundary: the strip above runs
+    # first regardless, so a caller-supplied batch_id can never survive, and
+    # the only value that lands here is the library's own. Accepting the stamp
+    # as a parameter (instead of the caller re-constructing args via
+    # ``replace`` afterwards) saves a full frozen-dataclass re-construction
+    # plus a metadata dict merge per batch item.
+    if stamp_batch_id is not None:
+        metadata_dict["batch_id"] = stamp_batch_id
     if ref.singleton:
         metadata_dict["singleton"] = True
 
@@ -352,10 +360,11 @@ def build_batch_args(
             start_to_close=item.start_to_close,
             max_pending=item_max_pending,
             tags=item.tags,
+            # The H5 strip-then-stamp boundary runs inside
+            # build_enqueue_args: any batch_id on item.metadata is stripped
+            # before the library's own batch_id is stamped.
+            stamp_batch_id=batch_id_str,
         )
-        # Stamp batch_id AFTER build_enqueue_args, which strips any
-        # caller-supplied batch_id as a security boundary (H5).
-        args = replace(args, metadata={**args.metadata, "batch_id": batch_id_str})
         args_list.append(args)
     return args_list
 

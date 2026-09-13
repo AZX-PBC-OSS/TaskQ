@@ -24,6 +24,7 @@ from taskq.backend._protocol import (
 )
 from taskq.backend.statemachine import TERMINAL_STATUSES
 from taskq.constants import DEFAULT_CHUNK_SIZE
+from taskq.testing._reads import _batch_row_read_copy
 
 if TYPE_CHECKING:
     from taskq.testing.in_memory import InMemoryBackend
@@ -106,7 +107,8 @@ def _create_batch(
 
 
 def _get_batch(backend: "InMemoryBackend", batch_id: UUID) -> BatchRow | None:
-    return backend._batches.get(batch_id)
+    row = backend._batches.get(batch_id)
+    return None if row is None else _batch_row_read_copy(row)
 
 
 def _increment_batch_failures(
@@ -227,7 +229,7 @@ def _list_batches(
 
     candidates = candidates[: filter.limit]
 
-    return [(b, _batch_counts_for(backend, b.id)) for b in candidates]
+    return [(_batch_row_read_copy(b), _batch_counts_for(backend, b.id)) for b in candidates]
 
 
 async def _enqueue_batch_atomic(

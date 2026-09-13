@@ -129,7 +129,7 @@ async def test_fake_backend_mark_succeeded_records_call_and_returns_true() -> No
     worker_id = new_uuid()
     result = await backend.mark_succeeded(job_id, worker_id, {"ok": True})
     assert result is True
-    assert backend.mark_succeeded_calls == [(job_id, worker_id, {"ok": True})]
+    assert backend.mark_succeeded_calls == [(job_id, worker_id, {"ok": True}, None)]
 
 
 async def test_fake_backend_mark_succeeded_with_conn_delegates_to_mark_succeeded() -> None:
@@ -138,7 +138,7 @@ async def test_fake_backend_mark_succeeded_with_conn_delegates_to_mark_succeeded
     worker_id = new_uuid()
     result = await backend.mark_succeeded_with_conn(object(), job_id, worker_id, {"ok": True})
     assert result is True
-    assert backend.mark_succeeded_calls == [(job_id, worker_id, {"ok": True})]
+    assert backend.mark_succeeded_calls == [(job_id, worker_id, {"ok": True}, None)]
 
 
 async def test_fake_backend_mark_failed_or_retry_records_call_and_returns_job_row() -> None:

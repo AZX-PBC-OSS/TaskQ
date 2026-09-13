@@ -266,13 +266,14 @@ sized to at least `max_concurrency` too — that counts against the same `max_co
 
 ### The connection budget
 
-A worker holds **three pools plus dedicated connections**:
+A worker holds **up to four pools plus dedicated connections**:
 
 | Resource | Count (default) | DSN | Notes |
 |---|---|---|---|
 | `dispatcher_pool` | 4 | **direct** | dispatch claims, sweeps, leader loops |
 | `heartbeat_pool` | 4 | **direct** | heartbeat transaction every 10 s |
 | `worker_pool` | `int(max_concurrency * 1.5)` | **pooled** (may traverse PgBouncer) | terminal writes, sub-enqueues, PG-backed rate limits |
+| slot pool (conditional) | `max_concurrency + 1` | **direct** | per-slot transaction pool — only when a LOOP-scope `asyncpg.Connection` is registered **and** `max_concurrency > 1`; TaskQ's own transactional writes, one connection per consumer slot + one for the readiness probe, fully warmed at boot |
 | `notify_conn` | 1 | **direct** | LISTEN (session-scoped — cannot pool) |
 | `leader_conn` | 1 | **direct** | advisory-lock election (every worker) |
 | leader-only monitor + cron | +2 | **direct** | only on the elected leader |
@@ -280,23 +281,27 @@ A worker holds **three pools plus dedicated connections**:
 - Idle floor: pools open with `min_size=1`, so an idle worker holds **5 sessions (7 as leader)**,
   growing under load to the maxima.
 - Default worker (`max_concurrency=8`): 10 direct + 12 pooled = **22 max**; 24 on the leader.
+- Per-slot path (LOOP-scope connection registered, `max_concurrency > 1`): add
+  `max_concurrency + 1` direct — at the default `max_concurrency=8` that is **19 direct +
+  12 pooled = 31 max** (33 on the leader).
 - Per-`TaskQ` client (web/API pod): one pool, ≤ **5** connections.
 - Workgroup supervisor with child health checks: `health_workers + 1` extra.
 
 Fleet formula:
 
 ```
-direct  = M * (dispatcher_pool_size + heartbeat_pool_size + 2) + 2   # +2 = the leader's extras
+direct  = M * (dispatcher_pool_size + heartbeat_pool_size + 2 + slot_pool) + 2   # +2 = the leader's extras
 pooled  = M * int(max_concurrency * 1.5)
 total   = direct + pooled + web_pods * 5 (+ supervisor health pool) + your app's own pools
+# slot_pool: max_concurrency + 1 on the per-slot path, 0 otherwise
 ```
 
 Worked example — 10 workers at `max_concurrency=16`, defaults elsewhere:
 
 ```
-direct = 10 * (4 + 4 + 2) + 2 = 102
+direct = 10 * (4 + 4 + 2) + 2 = 102    # 272 on the per-slot path (+ 10 * 17 slot connections)
 pooled = 10 * 24              = 240
-total  = 342  + your application's own connections
+total  = 342  + your application's own connections    # 512 on the per-slot path
 ```
 
 Check this against Postgres `max_connections` **including the app's pools**, and **including the
@@ -305,13 +310,29 @@ revisions) bring the new pods up before draining the old ones, so your fleet bri
 ~2× steady state. Omitting that term is the single most common way this budget gets
 underestimated.
 
+On the per-slot path there is a second doubling term: a credential rotation (SIGHUP /
+`TASKQ_RELOAD_INTERVAL`) rebuilds the slot pool, and for the drain window the worker briefly
+holds **`2 × (max_concurrency + 1)`** slot-pool connections — the old pool draining plus the
+new pool warm, bounded by the reload drain timeout. Plan `max_connections` against that peak
+whenever rotations can coincide across the fleet (a scheduled `TASKQ_RELOAD_INTERVAL` is
+exactly that); against the steady state only when rotations are staggered.
+
 The worker logs its own budget at startup (`worker-startup-budget`); the same arithmetic is
 `taskq.worker.budget.compute_connection_budget()`, which flags `pgbouncer_recommended` when the
-total exceeds 80 (conservative below the Postgres default `max_connections=100`). **Small SKUs
+total exceeds 80 (conservative below the Postgres default `max_connections=100`). The startup
+line's `direct` count excludes the conditional slot pool — on the per-slot path the
+`transactional_consume_per_slot` startup event states its size (`slot_pool_size`).
+**Small SKUs
 break that assumption**: a 50-connection managed Postgres with ~15 reserved has ~35 usable and
 often cannot run PgBouncer at all — two default workers (44–48 connections) already exceed it.
 On small SKUs, lower `TASKQ_MAX_CONCURRENCY` (the derived `worker_pool` shrinks with it) until
 `M × budget + app pools + rollout doubling` fits.
+
+Changing `TASKQ_MAX_CONCURRENCY` is a **restart-only** operation: SIGHUP does not re-read
+settings, and on the per-slot path the setting sizes the slot pool (`max_concurrency + 1`
+direct connections, fully warmed at boot), so a change moves the direct-connection budget at
+the next startup. On that path it is also boot-blocking — a worker that cannot open the slot
+pool fails to boot, naming the pool and the DSN host.
 
 !!! warning "PgBouncer: pooled DSN only"
     Only `worker_pool` may route through transaction-mode PgBouncer (`TASKQ_PG_DSN_POOLED`).
@@ -325,7 +346,12 @@ On small SKUs, lower `TASKQ_MAX_CONCURRENCY` (the derived `worker_pool` shrinks 
 If you pass your own `PoolFactory` through `WorkerConnections`
 ([managed-identities.md](managed-identities.md)), TaskQ invokes it **once per role** —
 dispatcher, heartbeat, and worker pools become **three distinct full-sized pools**, not one
-shared pool. Size and count accordingly.
+shared pool — and a worker on the per-slot path adds a **fourth, conditional pool**: the
+per-slot transaction pool. That pool deliberately has no `WorkerConnections` slot — it is
+worker-internal, built by TaskQ on the direct DSN — so a fleet whose credentials live in its
+own pool factories must pass `pg_credential_provider` to `worker_main` / `worker_main_async`
+(the worker warns `slot_pool_own_credentials` at boot when caller-supplied pools are in play
+with no provider). Size and count accordingly.
 
 !!! danger "Never hand TaskQ a pool your request handlers already use"
     asyncpg's `Pool.acquire()` has no default timeout. A request that holds one connection from a
@@ -339,9 +365,74 @@ With token-based auth (Entra ID/AAD, IAM, Vault), asyncpg pools keep the passwor
 with: a worker that never rebuilds its pools looks perfectly healthy for the first hour and then
 cannot open a new connection. Size `TASKQ_RELOAD_INTERVAL` inside your token lifetime with margin
 (a common default is 40 minutes against ~60-minute tokens), or `SIGHUP` to force a reload.
+
+A provider-backed slot pool rotates with the rest, keeping its boot-time size
+(`TASKQ_MAX_CONCURRENCY` is boot-only). In-flight jobs get the reload drain timeout to finish;
+past it the old pool terminates — the job's transaction rolls back, the row stays `running`,
+and lock-lease expiry reclaims and retries it: a loud, retryable infrastructure failure, never
+a false success. For the drain window's connection peak see the rotation note in
+[§4](#the-connection-budget).
+
 Cover **all five connection roles** (dispatcher/heartbeat/worker pools, notify, leader) in your
 factories — a partial override yields a worker that starts, dispatches nothing, and never logs
-`leader-elected`. Full reference: [managed-identities.md](managed-identities.md).
+`leader-elected`. The slot pool is not one of them: it is worker-internal and takes its
+credentials from `pg_credential_provider` or the direct DSN. Full reference:
+[managed-identities.md](managed-identities.md).
+
+### Database performance knobs
+
+Four Postgres-side settings worth deciding deliberately — each closes a measured incident class.
+
+**`jit = off` for the queue role.** During enqueue/dispatch churn the planner's cost model crosses
+`jit_above_cost` (measured at a planner cost of ~4.5M on a busy `jobs` table) and JIT compilation
+made dispatch **45× slower**. Disable it once for the role TaskQ connects as:
+
+```sql
+ALTER ROLE taskq SET jit = off;
+```
+
+or per-pool, with no role-level access, by appending
+`?options=-c%20jit%3Doff` (URL-encoded `-c jit=off`) to the DSN's query string. The repo's
+`docker-compose.yml` carries the equivalent commented block.
+
+**Statement-cache sizing — set for you.** asyncpg caches prepared statements per connection in an
+LRU of `statement_cache_size` entries (asyncpg default: 100, evicted after
+`max_cached_statement_lifetime` seconds: 300). TaskQ's read paths render far more distinct SQL
+texts than 100 — `list_jobs` emits 384+ filter-combination variants, and the admin pages add more —
+so a client or dashboard whose filters vary thrashed the default cache: a measured **90–96 %
+steady-state miss rate**, *slower than disabling the cache entirely* (each miss re-pays the
+Parse/Describe round trips, +10–40 ms/call at managed-PG RTT). Every pool TaskQ builds now passes
+`statement_cache_size=512` and `max_cached_statement_lifetime=3600` — enough for the variant space
+with headroom, and no needless re-prepares on long-running workers. The write hot loop (dispatch,
+enqueue, terminal writes, sweeps) is textually stable and unaffected.
+
+Both knobs are settings, not hard-coded constants: `TASKQ_STATEMENT_CACHE_SIZE` and
+`TASKQ_MAX_CACHED_STATEMENT_LIFETIME` (fields `statement_cache_size` / `max_cached_statement_lifetime`
+on `TaskQSettings`) flow into every pool TaskQ builds. `0` is meaningful on each — the cache
+disabled, or no lifetime cap. These knobs apply **only to pools TaskQ builds**: bring-your-own
+pools (`WorkerConnections` factories, a caller-supplied `pool=`) must set the same two
+`create_pool` kwargs themselves — TaskQ cannot resize a pool it did not build.
+
+**Autovacuum overrides for the hot tables.** `jobs` and `job_events` turn over hard; the default
+`autovacuum_vacuum_scale_factor` (0.2 of the table) lets bloat accumulate until vacuums are rare
+and huge. Per-table overrides, tuned for queue churn:
+
+```sql
+ALTER TABLE {schema}.jobs SET (autovacuum_vacuum_scale_factor = 0.01,
+                               autovacuum_vacuum_insert_scale_factor = 0.05,
+                               autovacuum_vacuum_cost_limit = 2000);
+ALTER TABLE {schema}.job_events SET (autovacuum_vacuum_scale_factor = 0.01,
+                                     autovacuum_vacuum_insert_scale_factor = 0.05,
+                                     autovacuum_vacuum_cost_limit = 2000);
+```
+
+The *insert* scale factor is the one that matters for an append-heavy table: dead-tuple thresholds
+alone may never fire autovacuum (which also refreshes the statistics the planner needs).
+
+**`fillfactor` (70–90): consider, don't copy.** Job rows are written once, then updated in place
+through their status transitions; a lowered `fillfactor` keeps those updates HOT (same page, no
+index churn). Try 80–90 on `jobs` only if profiling shows HOT-chain fragmentation — changing it
+rewrites the table (`VACUUM FULL` / `pg_repack`), so measure before and after.
 
 ---
 
@@ -424,11 +515,13 @@ Why the pieces matter:
       `sub_enqueue_autonomous_fallback`. The idempotency keys are your correctness backstop (a
       re-run parent re-enqueues the same children, which dedup).
     - *Transactional*: register a LOOP-scope `asyncpg.Connection` and children join the parent's
-      transaction (rollback on failure). **But the loop connection is shared by every consumer
-      slot — the transactional path is only correct on a single-slot worker
-      (`TASKQ_MAX_CONCURRENCY=1`)**; concurrent jobs on one connection error out. Fleets that
-      need both transactional sub-enqueue *and* throughput run a dedicated one-slot worker for
-      the chaining actor.
+      transaction (rollback on failure). At `max_concurrency > 1` the worker opens a per-slot
+      transaction pool — each job transacts on its own connection — so transactional consume
+      and throughput no longer require separate workers. Keep the chaining actor on a dedicated
+      `TASKQ_MAX_CONCURRENCY=1` worker only when the LOOP-scope connection carries session state
+      (`SET ROLE`, `search_path`, an RLS-driving GUC) that TaskQ's own transactional writes must
+      inherit — on the per-slot path those writes run on the slot connections, not the registered
+      one — or to keep the connection budget minimal (no `max_concurrency + 1` slot pool).
 - For a *self*-continuing poll loop (same job comes back), `raise Snooze(delay)` instead of
   enqueueing a successor — see [§7](#7-waiting-politely-rate-limits-snooze-retryafter-retry-after).
 
@@ -799,6 +892,7 @@ Every job emits an `enqueue` PRODUCER span, a `process` CONSUMER span (linked, w
 | `taskq_maintenance_leader_sweep_timeouts_total` (by sweep) | batches aborted by deadlines or server-side cancels |
 | `taskq.jobs.stranded` (gauge) | jobs whose actor has no `actor_config` row — can never dispatch |
 | `taskq.dispatch.duration` | dispatch contention (PgBouncer/pool trouble) |
+| `taskq.worker.slot_pool.acquire_failures` / `taskq.worker.slot_pool.connections_in_use` | per-slot pool exhaustion and saturation — an acquire failure is infrastructure (the job is left for lock-lease reclaim, not failed); the gauge pinned at the pool maximum with zero acquire failures is saturation, visible below the acquire-failure cliff |
 | `messaging.process.duration` | actor latency, slow chunks |
 | `taskq.lock.expires_in_seconds` | heartbeat trouble before it becomes `crashed` jobs |
 | `taskq.deadline_exceeded_sweep.jobs_failed` | `schedule_to_close` too tight |
@@ -877,7 +971,7 @@ Concept mapping for teams porting workers:
 | `expires=` | `retry.time_budget` → `schedule_to_close` (`time_budget` requires `kind="indefinite"`) | interval from enqueue, server clock |
 | `task_id` dedup hacks | `idempotency_key` (+ scope) | DB-enforced; duplicates return the existing job — mind the key-discipline rules in [§5](#5-fan-out-at-scale-chunks-cursors-idempotency) |
 | `chord` | batch `finalizer` + `wait_for_batch`, or app-level run accounting | [§5 Patterns B/C](#5-fan-out-at-scale-chunks-cursors-idempotency) |
-| `chain` / `canvas` | `ctx.jobs.enqueue(...)` from the actor body | transactional on a LOOP-scope conn (single-slot), autonomous otherwise — [§5](#5-fan-out-at-scale-chunks-cursors-idempotency) |
+| `chain` / `canvas` | `ctx.jobs.enqueue(...)` from the actor body | transactional on a LOOP-scope conn (per-slot connections make it safe at any `max_concurrency`; session-state inheritance still needs a single-slot worker), autonomous otherwise — [§5](#5-fan-out-at-scale-chunks-cursors-idempotency) |
 | `task_routes` | `@actor(queue=...)` + worker `TASKQ_QUEUES` | routing is by queue, not by broker exchange |
 | `priority=` (queue priority) | `@actor(priority=...)` / `enqueue(priority=...)` | higher dispatches first; stamped at enqueue — see [§3](#starvation-priority-and-fairness) |
 | `fair_queues` / per-tenant fairness | `round_robin` mode + `fairness_key` | the mode must be set explicitly — see [§3](#starvation-priority-and-fairness) |
@@ -942,10 +1036,10 @@ The condensed "know this before your first incident" list. Each row links to the
 |---|---|---|
 | Everything through transaction-mode PgBouncer | LISTEN/advisory-lock failures | only `worker_pool` may pool — split the DSNs ([§4](#4-sizing-workers-and-postgres-connections)) |
 | Fleet sized without connection math | `too many connections` under load | per-worker 22 (default), rollout ×2 — the budget formula ([§4](#4-sizing-workers-and-postgres-connections)) |
-| BYO `PoolFactory` counted as one pool | three full-sized pools, budget blown | factory is invoked once per role ([§4](#bring-your-own-pools-change-the-arithmetic)) |
+| BYO `PoolFactory` counted as one pool | three full-sized pools (plus the conditional per-slot pool on that path), budget blown | factory is invoked once per role ([§4](#bring-your-own-pools-change-the-arithmetic)) |
 | TaskQ client handed the request handlers' pool | silent whole-process deadlock at `pool_max` | dedicated small pool — [§4](#bring-your-own-pools-change-the-arithmetic) |
 | Token auth without reload | healthy for an hour, then cannot connect | `TASKQ_RELOAD_INTERVAL` inside token lifetime, all five roles ([§4](#managed-identities-and-token-rotation)) |
-| `terminationGracePeriodSeconds` < shutdown worst case | SIGKILL mid-drain, `crashed` jobs | grace ≥ cancellation + cleanup + ~27 s tail ([deployment.md](deployment.md#health-probes)) |
+| `terminationGracePeriodSeconds` < shutdown worst case | SIGKILL mid-drain, `crashed` jobs | grace ≥ cancellation + cleanup + ~32 s tail ([deployment.md](deployment.md#health-probes)) |
 | One job longer than the shutdown budget | watchdog force-exits; *sibling* in-flight jobs die too | size the grace to your slowest actor, or cap it with `start_to_close` ([§2](#2-timeouts-start_to_close-and-schedule_to_close)) |
 | Drained `refill_per_second=0` bucket, no deadline | job re-queues every 5 s forever | add refill or `schedule_to_close` ([§7](#7-waiting-politely-rate-limits-snooze-retryafter-retry-after)) |
 | Redis in dev, none in prod | worker refuses to start in prod only | decide the limiter backend per environment ([§7](#7-waiting-politely-rate-limits-snooze-retryafter-retry-after)) |
@@ -991,12 +1085,13 @@ mechanics of each item: [deployment.md — Production Checklist](deployment.md#p
       trap understood
       ([§5 — Cron](#cron-and-scheduled-workloads))
 - [ ] **Connection budget**: computed for the target fleet size against `max_connections`
-      (including app pools, BYO factory fan-out, and rollout doubling); `pgbouncer_recommended`
+      (including app pools, BYO factory fan-out, rollout doubling, and the per-slot rotation
+      peak where that path is in use); `pgbouncer_recommended`
       checked
 - [ ] **DSN split**: `TASKQ_PG_DSN_DIRECT` (worker core) vs `TASKQ_PG_DSN_POOLED` (worker_pool)
 - [ ] **Credentials**: reload interval inside token lifetime; all five connection roles covered
 - [ ] **Shutdown budget**: supervisor/`terminationGracePeriodSeconds` ≥
-      `cancellation_grace + cleanup_grace + ~27 s` (default model: 67 s), and ≥ your slowest actor
+      `cancellation_grace + cleanup_grace + ~32 s` (default model: 72 s), and ≥ your slowest actor
 - [ ] **Health probes**: `taskq health live/ready` wired (exec probes; TCP `TASKQ_HEALTH_PORT`
       only where `httpGet` is forced); unique socket path per process
 - [ ] **Redis** provisioned iff using Redis-backed limiters or real-time progress; PG fallback

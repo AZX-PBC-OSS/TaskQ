@@ -68,6 +68,13 @@ fastapi = [
 reload = [
     "watchfiles>=1.2.0",
 ]
+bench = [
+    # Spot-check profilers for the benchmarks/ toolkit (profile_hotspot.py
+    # engines and the gil-sampler fallback). Nothing under src/taskq imports
+    # them; the benchmark runner itself is pure stdlib.
+    "py-spy>=0.4",
+    "pyinstrument>=5",
+]
 otel = [
     # Not imported anywhere under src/taskq; kept optional for operators who
     # export OTLP directly or drive auto-instrumentation via

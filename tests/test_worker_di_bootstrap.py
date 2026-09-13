@@ -123,6 +123,8 @@ def _backend_methods_stub() -> Backend:
             worker_id: object,
             result: object,
             fallback_result_ttl: object = None,
+            *,
+            result_bytes: object = None,
         ) -> bool:
             return True
 
@@ -133,6 +135,8 @@ def _backend_methods_stub() -> Backend:
             worker_id: object,
             result: object,
             fallback_result_ttl: object = None,
+            *,
+            result_bytes: object = None,
         ) -> bool:
             return True
 

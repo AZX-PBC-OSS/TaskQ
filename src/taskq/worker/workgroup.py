@@ -54,6 +54,7 @@ import structlog
 
 from taskq._close import CLOSE_TIMEOUT_SECS, close_pool_bounded
 from taskq._ids import new_uuid
+from taskq.connections import statement_cache_kwargs
 from taskq.constants import (
     _IDENT_RE as _SCHEMA_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining; same pattern as run.py.
 )
@@ -643,14 +644,20 @@ async def run_forever(config_path: Path) -> None:
             if scfg.health_pg_dsn:
                 pg_dsn = scfg.health_pg_dsn
                 pg_schema = scfg.health_pg_schema or "taskq"
+                # No WorkerSettings for an explicit health DSN — the module
+                # constants (statement_cache_kwargs' fallback) apply.
+                stmt_kwargs = statement_cache_kwargs()
             else:
                 settings = WorkerSettings.load()
                 pg_schema = settings.schema_name
                 pg_dsn = str(settings.resolved_pg_dsn_direct)
+                stmt_kwargs = statement_cache_kwargs(settings)
             pg_pool = await asyncpg.create_pool(
                 pg_dsn,
                 min_size=1,
                 max_size=len(health_workers) + 1,
+                statement_cache_size=stmt_kwargs["statement_cache_size"],
+                max_cached_statement_lifetime=stmt_kwargs["max_cached_statement_lifetime"],
             )
             logger.info(
                 "workgroup.health_pool_ready",

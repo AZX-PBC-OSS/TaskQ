@@ -108,6 +108,8 @@ class _FakeBackend(FakeBackend):
         progress_seq: int = 0,
         progress_state: object = None,
         fallback_result_ttl: object = None,
+        *,
+        result_bytes: object = None,
     ) -> bool:
         self.mark_succeeded_calls.append(result)
         return True
@@ -121,6 +123,8 @@ class _FakeBackend(FakeBackend):
         progress_seq: int = 0,
         progress_state: object = None,
         fallback_result_ttl: object = None,
+        *,
+        result_bytes: object = None,
     ) -> bool:
         self.mark_succeeded_with_conn_calls.append(result)
         return True
@@ -279,7 +283,7 @@ async def test_tp1_visibility_invariant(n_children: int, outcome: str) -> None:
             payload_type=_ParentPayload,
             clock=clk,
             enqueuer=enqueuer,
-            loop_conn=fake_conn,
+            transaction_conn=fake_conn,
         )
 
     flushed = len(backend.enqueue_calls)
