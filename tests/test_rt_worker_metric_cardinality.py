@@ -8,7 +8,7 @@ qualified lock names (a fixed purpose enum x the schema), ``status`` over
 the database's status enum — and the oldest-due gauge carries none. The
 pins here assert exactly that: the recorded dimensions are the documented
 enum key and nothing else, so a refactor that sneaks an identity value
-(worker_id, job_id) into any of these instruments fails here.
+(worker_id, job_id, schedule_id) into any of these instruments fails here.
 """
 
 from __future__ import annotations
@@ -346,3 +346,57 @@ def test_queues_within_the_cap_keep_their_real_names(
     for _attr, name in _JOB_SIDE_INSTRUMENTS:
         points = _series_attributes(job_reader, name)
         assert {attrs["queue"] for attrs in points} == {"critical", "default"}
+
+
+# ── The cron consecutive-failures counter's label contract ──────────────
+#
+# ``taskq.cron.consecutive_failures`` carried ``schedule_id`` — a per-row
+# UUID from cron_schedules — as its dimension, the one identity-like label
+# that survived the worker_id campaign.  Schedule rows are runtime-creatable
+# (``create_schedule`` is public client API; every row mints a fresh UUID),
+# so unlike ``actor`` nothing the library ships bounds the value set.  The
+# pin holds the relabeled contract (#157): the dimension is ``actor`` (the
+# registered actor set the user ships) and nothing else.
+
+_CRON_FIRE_ACTORS: tuple[str, ...] = ("nightly_report", "hourly_cleanup", "minutely_heartbeat")
+#: The actor names the cron loop's two post-write loops pass to
+#: ``record_cron_failure`` — cron_schedules.actor values, each of which
+#: must exist in actor_config, so the value set is the registered actor
+#: set the user ships: the same bound ``actor`` enjoys on every other
+#: instrument (grep-verified: the emitter's only callers are the
+#: ``tick_cron`` post-write loops in worker/cron_loop.py).
+
+
+@pytest.fixture
+def cron_reader(monkeypatch: pytest.MonkeyPatch) -> InMemoryMetricReader:
+    """Fresh SDK instrument for the cron consecutive-failures up-down counter, enabled."""
+    reader = InMemoryMetricReader()
+    meter = MeterProvider(metric_readers=[reader]).get_meter("taskq-cron-cardinality")
+    monkeypatch.setattr(otel_mod, "_otel_enabled", True)
+    monkeypatch.setattr(
+        otel_mod,
+        "_cron_consecutive_failures",
+        meter.create_up_down_counter("taskq.cron.consecutive_failures", unit="1"),
+    )
+    return reader
+
+
+def test_cron_consecutive_failures_dimensions_are_the_actor_set_only(
+    cron_reader: InMemoryMetricReader,
+) -> None:
+    """``record_cron_failure`` across the actor set, once as a failure
+    delta and once as a reset delta per actor: one series per actor,
+    dimension keys exactly {actor} — the per-schedule UUID is
+    identity-like (a runtime-minted cron_schedules row id) and must
+    never ride along, so a regression to a ``schedule_id`` label or any
+    second key fails the key-set assertion here."""
+    for actor in _CRON_FIRE_ACTORS:
+        obs_mod.record_cron_failure(actor, 3)
+        obs_mod.record_cron_failure(actor, -1)
+
+    points = _counter_points(cron_reader, "taskq.cron.consecutive_failures")
+    assert {tuple(attrs) for attrs, _ in points} == {("actor",)}
+    assert {attrs["actor"] for attrs, _ in points} == set(_CRON_FIRE_ACTORS)
+    # The up-down balance nets on the one series every schedule of an
+    # actor shares: +3 then -1 leaves 2 per actor.
+    assert {attrs["actor"]: value for attrs, value in points} == dict.fromkeys(_CRON_FIRE_ACTORS, 2)

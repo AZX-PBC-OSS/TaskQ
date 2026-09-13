@@ -10,7 +10,10 @@ Label cardinality contract
 Metric dimensions are limited to values that are bounded by construction:
 
 - ``actor``: the set of registered actor names (bounded by the code the
-  user ships), carried as-is.
+  user ships), carried as-is — including on
+  ``taskq.cron.consecutive_failures``, whose per-schedule attribution
+  lives on log lines and the cron-fire span instead (see the cardinality
+  note above ``_lock_expires_in_seconds``).
 - ``sweep_name`` / ``lock`` / ``status`` / ``outcome``: closed enums, carried
   as-is.
 - ``queue``: caller-supplied per enqueue and only charset-validated -- the
@@ -20,8 +23,8 @@ Metric dimensions are limited to values that are bounded by construction:
   to the first ``_MAX_QUEUE_LABEL_VALUES`` distinct names a process sees;
   beyond the cap the label collapses to the fixed ``_other_`` value (see the
   cardinality note above :func:`_bounded_queue`).  Identity-like values
-  (``worker_id``, ``job_id``) are never dimensions at all -- see the
-  cardinality note above ``_lock_expires_in_seconds``.
+  (``worker_id``, ``job_id``, ``schedule_id``) are never dimensions at all --
+  see the cardinality note above ``_lock_expires_in_seconds``.
 """
 
 import contextlib
@@ -476,15 +479,28 @@ def record_process_duration(actor: str, queue: str, elapsed: float) -> None:
 #: across EVERY custom metric in the subscription, with no backfill of what was
 #: dropped. Not repairable after the fact, so it is not carried at all.
 #:
-#: The signal is not lost: per-worker attribution lives on spans and log lines,
-#: where cardinality is free (``worker_id`` is bound via contextvars onto every
-#: log line; ``taskq.worker_id`` is a cron-fire span attribute).
+#: The signal is not lost: per-worker and per-schedule attribution lives on
+#: spans and log lines, where cardinality is free (``worker_id`` is bound via
+#: contextvars onto every log line; ``taskq.worker_id`` and
+#: ``taskq.cron_schedule_id`` are cron-fire span attributes; ``schedule_id``
+#: is on the ``cron fired`` / ``cron fire failed`` / ``cron schedule
+#: auto-disabled`` log lines).
 #:
-#: ``schedule_id`` is NOT in the same class and stays a dimension on
-#: ``taskq.cron.consecutive_failures``: schedules are a bounded set an operator
-#: creates by hand, not a per-process UUID, and ``cron_auto_disable_threshold``
-#: is evaluated per schedule -- summed across schedules the metric no longer
-#: matches the mechanism it exists to monitor.
+#: ``schedule_id`` was the one identity-like dimension that survived the
+#: ``worker_id`` campaign, on the argument that schedules are a bounded set
+#: an operator creates by hand.  That argument does not hold:
+#: cron_schedules rows are runtime-creatable (``create_schedule`` is public
+#: client API, and the admin UI exposes it), each minting a fresh per-row
+#: UUID, so the value set is unbounded by construction -- nothing the
+#: library ships caps it.  ``taskq.cron.consecutive_failures`` is therefore
+#: labeled by ``actor`` (the registered actor set -- the same bound every
+#: other actor-labeled instrument enjoys), and the alerting purpose
+#: survives the relabel: a schedule stuck failing repeatedly keeps adding
+#: +1 to its actor's balance every tick, so the stuck actor stays visible.
+#: What the summed balance loses -- WHICH schedule -- no shipped consumer
+#: ever read: the alert fires on ``taskq.cron.disabled_schedules`` and
+#: points the operator at ``cron_schedules.last_fire_error``; per-schedule
+#: debugging lives on the log lines and span attributes named above.
 #:
 #: The ``worker_id`` parameters below are kept: they are part of the published
 #: ``taskq.obs`` surface, and dropping them would be a breaking change for a
@@ -775,7 +791,13 @@ def record_election_attempt(worker_id: str, *, won: bool) -> None:
 
 _cron_consecutive_failures = get_meter().create_up_down_counter(
     "taskq.cron.consecutive_failures",
-    description="Cron execution failure balance per schedule, via +1 per failure and -count on a successful reset.",
+    description=(
+        "Cron execution failure balance per actor, via +1 per failure and "
+        "-count on a successful reset. Per-schedule attribution is on the "
+        "cron fired / cron fire failed log lines and the cron-fire span "
+        "attribute taskq.cron_schedule_id, not on this label -- see the "
+        "cardinality note above _lock_expires_in_seconds."
+    ),
     unit="1",
 )
 
@@ -807,18 +829,25 @@ def record_cron_lock_contention(worker_id: str) -> None:
     _cron_lock_contention.add(1)
 
 
-def record_cron_failure(schedule_id: str, delta: int) -> None:
+def record_cron_failure(actor: str, delta: int) -> None:
     """Record a cron failure delta on the UpDownCounter.
 
     On failure, callers add ``+1`` per failure. On success, callers add
     ``-current_count`` for that schedule to reset the counter to zero —
     a simple ``add(-1)`` would leave a non-zero cumulative value if
     there were multiple consecutive failures.
+
+    Labeled by ``actor`` (the registered actor set the user ships):
+    schedules on one actor share a series, and the per-schedule
+    attribution the caller already holds rides on the ``cron fired`` /
+    ``cron fire failed`` log lines and the cron-fire span instead —
+    ``schedule_id`` is a per-row, runtime-minted UUID and identity-like
+    (see the cardinality note above ``_lock_expires_in_seconds``).
     Respects ``_otel_enabled`` — no-op when False.
     """
     if not _otel_enabled:
         return
-    _cron_consecutive_failures.add(delta, {"schedule_id": schedule_id})
+    _cron_consecutive_failures.add(delta, {"actor": actor})
 
 
 _disabled_schedules_count: int = 0

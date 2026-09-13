@@ -4,8 +4,9 @@ C9, at real-PG level (the fake-conn pins in ``tests/test_cron_loop.py``
 cover the SQL shapes; these pin that the calls actually happen around
 committed writes, with the values a real tick produces):
 
-* ``record_cron_failure`` — ``+1`` per failed schedule; ``-prev`` on a
-  success that follows failures (the counter reset, not a bare ``-1``).
+* ``record_cron_failure`` — ``+1`` per failed schedule, recorded under
+  its actor (the metric's bounded dimension); ``-prev`` on a success
+  that follows failures (the counter reset, not a bare ``-1``).
 * ``record_published_message`` — once per fired schedule, with the
   actor and the queue from ``actor_config``.
 * the ``cron fired`` / ``cron fire failed`` / ``cron schedule
@@ -52,7 +53,7 @@ class TestObservabilityOnCommit:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """A schedule with 2 prior failures fires: the tick records
-        ``record_cron_failure(id, -2)`` (the full reset), one
+        ``record_cron_failure(actor, -2)`` (the full reset), one
         ``record_published_message(actor, queue)``, a ``cron fired`` event
         with the worker id, and the DB row shows the reset."""
         schema = module_pg_schema.schema_name
@@ -73,7 +74,7 @@ class TestObservabilityOnCommit:
         monkeypatch.setattr(
             cron_loop,
             "record_cron_failure",
-            lambda sid, delta: cron_failure_calls.append((sid, delta)),
+            lambda actor, delta: cron_failure_calls.append((actor, delta)),
         )
         monkeypatch.setattr(
             cron_loop,
@@ -89,7 +90,7 @@ class TestObservabilityOnCommit:
                 )
 
         assert fired == 1
-        assert cron_failure_calls == [(str(schedule_id), -2)], (
+        assert cron_failure_calls == [(_ACTOR, -2)], (
             "a success after 2 failures must reset the UpDownCounter by the FULL "
             f"previous count; saw {cron_failure_calls}"
         )
@@ -140,7 +141,7 @@ class TestObservabilityOnCommit:
         monkeypatch.setattr(
             cron_loop,
             "record_cron_failure",
-            lambda sid, delta: cron_failure_calls.append((sid, delta)),
+            lambda actor, delta: cron_failure_calls.append((actor, delta)),
         )
         monkeypatch.setattr(
             cron_loop,
@@ -157,14 +158,18 @@ class TestObservabilityOnCommit:
 
         assert fired == 0
         assert cron_failure_calls == [
-            (str(first_id), 1),
-            (str(second_id), 1),
+            (_ACTOR, 1),
+            (_ACTOR, 1),
         ], f"one +1 per failed schedule, in due order; saw {cron_failure_calls}"
         assert published == [], "a failed fire publishes nothing"
 
         failed = [e for e in captured if e["event"] == "cron fire failed"]
         assert len(failed) == 2
         assert {e["worker_id"] for e in failed} == {str(worker_id)}
+        # Per-schedule attribution lives on the log line now, not the
+        # metric: both failures are one actor, and the events name the
+        # exact schedules.
+        assert {e["schedule_id"] for e in failed} == {str(first_id), str(second_id)}
         assert all("nonexistent" in e["error"] for e in failed), (
             "the raw resolution error must reach the log event"
         )
@@ -206,7 +211,7 @@ class TestObservabilityOnCommit:
         monkeypatch.setattr(
             cron_loop,
             "record_cron_failure",
-            lambda sid, delta: cron_failure_calls.append((sid, delta)),
+            lambda actor, delta: cron_failure_calls.append((actor, delta)),
         )
         monkeypatch.setattr(
             cron_loop,
@@ -222,7 +227,7 @@ class TestObservabilityOnCommit:
                 )
 
         assert fired == 2, "the return value must equal the successes, not the batch"
-        assert cron_failure_calls == [(str(bad_id), 1)]
+        assert cron_failure_calls == [(_ACTOR, 1)]
         assert published == [(_ACTOR, _QUEUE), (_ACTOR, _QUEUE)]
         events = [e["event"] for e in captured]
         assert events.count("cron fired") == 2
@@ -231,6 +236,10 @@ class TestObservabilityOnCommit:
             e["worker_id"] == str(worker_id)
             for e in captured
             if e["event"] in ("cron fired", "cron fire failed")
+        )
+        failed = [e for e in captured if e["event"] == "cron fire failed"]
+        assert [e["schedule_id"] for e in failed] == [str(bad_id)], (
+            "the metric lost the per-schedule label; the log event must carry it"
         )
 
 

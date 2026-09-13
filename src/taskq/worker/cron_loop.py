@@ -430,7 +430,13 @@ def _strike_plans(
         with safe_start_span(
             "cron fire",
             kind=SpanKind.PRODUCER,
-            attributes={"cron_schedule_name": plan.actor, "taskq.worker_id": str(worker_id)},
+            attributes={
+                "cron_schedule_name": plan.actor,
+                "taskq.worker_id": str(worker_id),
+                # Why: same per-schedule attribution as the planning-loop
+                # span above -- the metric lost this label on purpose.
+                "taskq.cron_schedule_id": str(plan.schedule_id),
+            },
             links=links,
             new_root=True,
         ) as span:
@@ -661,7 +667,14 @@ async def tick_cron(
         with safe_start_span(
             "cron fire",
             kind=SpanKind.PRODUCER,
-            attributes={"cron_schedule_name": row["actor"], "taskq.worker_id": str(worker_id)},
+            attributes={
+                "cron_schedule_name": row["actor"],
+                "taskq.worker_id": str(worker_id),
+                # Why: per-schedule attribution lives here and on the log
+                # lines, not on the consecutive-failures metric's label --
+                # span cardinality is free (see obs/_otel.py).
+                "taskq.cron_schedule_id": str(row["id"]),
+            },
             links=links,
             new_root=True,
         ) as span:
@@ -764,7 +777,12 @@ async def tick_cron(
 
     for plan in successes:
         if plan.prev_consecutive > 0:
-            record_cron_failure(str(plan.schedule_id), -plan.prev_consecutive)
+            # Why actor, not schedule_id: the metric's dimension is the
+            # registered actor set (bounded by the shipped code); the
+            # schedule id rides the log line below and the cron-fire span.
+            # The delta is this schedule's OWN prior count, so the actor's
+            # balance lands on the sum of its other schedules' counts.
+            record_cron_failure(plan.actor, -plan.prev_consecutive)
         log.info(
             "cron fired",
             kind="cron_fire",
@@ -785,7 +803,10 @@ async def tick_cron(
             consecutive_failures=failure.consecutive,
             error=failure.error_text,
         )
-        record_cron_failure(str(failure.schedule_id), 1)
+        # Why actor: the schedule id stays on this log line and the
+        # cron-fire span, not on the metric (see the cardinality note in
+        # obs/_otel.py).
+        record_cron_failure(failure.row["actor"], 1)
 
     for entry in suppressed:
         if entry.reason == "singleton_collision":

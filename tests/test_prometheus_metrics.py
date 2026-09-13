@@ -192,9 +192,7 @@ def _populate_all_instruments(meter: Any) -> None:
     )
     meter.create_counter("taskq.leader.election_attempts", unit="1").add(1, {"worker_id": "w1"})
     meter.create_counter("taskq.leader.election_failures", unit="1").add(1, {"worker_id": "w1"})
-    meter.create_up_down_counter("taskq.cron.consecutive_failures", unit="1").add(
-        1, {"schedule_id": "s1"}
-    )
+    meter.create_up_down_counter("taskq.cron.consecutive_failures", unit="1").add(1, {"actor": "a"})
     meter.create_observable_gauge(
         "taskq.cron.disabled_schedules", unit="1", callbacks=[lambda _: [Observation(0, {})]]
     )
