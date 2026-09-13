@@ -125,6 +125,31 @@ def _do_login(client: TestClient, base_path: str = "/admin") -> str:
     return _extract_state(resp.headers["location"])
 
 
+@contextmanager
+def _mock_provider_echoing_login_nonce(
+    client: TestClient,
+    *,
+    extra_id_claims: dict[str, Any] | None = None,
+) -> Generator[tuple[str, respx.MockRouter], None, None]:
+    """Log in, then re-mock the provider with an ID token echoing this login's
+    nonce (plus any extra claims); yields ``(state, router)``.
+
+    The callback validates the ID token's nonce claim against the nonce the
+    login minted, so a token response fixed before ``/login`` cannot complete
+    the flow — the nonce is only knowable from the login redirect. Tests that
+    need a *successful* callback mock the token endpoint this way.
+    """
+    with _mock_provider():
+        resp = client.get("/admin/login", follow_redirects=False)
+        assert resp.status_code == 302
+        query = parse_qs(urlparse(resp.headers["location"]).query)
+    state = query["state"][0]
+    nonce = query["nonce"][0]
+    claims = {"nonce": nonce, **(extra_id_claims or {})}
+    with _mock_provider(make_token_response(extra_id_claims=claims)) as router:
+        yield state, router
+
+
 # ── Full login → callback → session → authorized request round trip ───────
 
 
@@ -134,8 +159,7 @@ def test_full_round_trip_default_auth_only() -> None:
     app = _make_app(config)
     client = TestClient(app)
 
-    with _mock_provider():
-        state = _do_login(client)
+    with _mock_provider_echoing_login_nonce(client) as (state, _router):
         resp = client.get(
             "/admin/callback",
             params={"code": "fake-code", "state": state},
@@ -154,8 +178,7 @@ def test_callback_sets_session_cookie() -> None:
     app = _make_app(config)
     client = TestClient(app)
 
-    with _mock_provider():
-        state = _do_login(client)
+    with _mock_provider_echoing_login_nonce(client) as (state, _router):
         resp = client.get(
             "/admin/callback",
             params={"code": "fake-code", "state": state},
@@ -210,8 +233,9 @@ def test_group_claim_user_in_allowed_group_passes() -> None:
     app = _make_app(config)
     client = TestClient(app)
 
-    with _mock_provider(make_token_response(extra_id_claims={"groups": ["admins", "viewers"]})):
-        state = _do_login(client)
+    with _mock_provider_echoing_login_nonce(
+        client, extra_id_claims={"groups": ["admins", "viewers"]}
+    ) as (state, _router):
         client.get(
             "/admin/callback",
             params={"code": "fake-code", "state": state},
@@ -228,8 +252,10 @@ def test_group_claim_user_not_in_allowed_group_401() -> None:
     app = _make_app(config)
     client = TestClient(app)
 
-    with _mock_provider(make_token_response(extra_id_claims={"groups": ["viewers"]})):
-        state = _do_login(client)
+    with _mock_provider_echoing_login_nonce(client, extra_id_claims={"groups": ["viewers"]}) as (
+        state,
+        _router,
+    ):
         client.get(
             "/admin/callback",
             params={"code": "fake-code", "state": state},
@@ -260,8 +286,7 @@ def test_group_resolver_invoked_when_claim_absent() -> None:
     app = _make_app(config)
     client = TestClient(app)
 
-    with _mock_provider(make_token_response(extra_id_claims={})):
-        state = _do_login(client)
+    with _mock_provider_echoing_login_nonce(client) as (state, _router):
         client.get(
             "/admin/callback",
             params={"code": "fake-code", "state": state},
@@ -280,8 +305,7 @@ def test_no_resolver_no_claim_with_allowlist_fails_closed() -> None:
     app = _make_app(config)
     client = TestClient(app)
 
-    with _mock_provider(make_token_response(extra_id_claims={})):
-        state = _do_login(client)
+    with _mock_provider_echoing_login_nonce(client) as (state, _router):
         resp = client.get(
             "/admin/callback",
             params={"code": "fake-code", "state": state},
@@ -347,8 +371,7 @@ def test_oidc_logout_clears_session() -> None:
     app = _make_app(config)
     client = TestClient(app)
 
-    with _mock_provider():
-        state = _do_login(client)
+    with _mock_provider_echoing_login_nonce(client) as (state, _router):
         client.get(
             "/admin/callback",
             params={"code": "fake-code", "state": state},
@@ -367,9 +390,9 @@ def test_oidc_logout_clears_session() -> None:
 
 def _state_cookie_payload(client: TestClient) -> dict[str, str]:
     """Decode this client's ``taskq_oidc_state`` cookie: the signed
-    ``{"state", "cv"}`` record production issues at login (same serializer
-    secret/salt as ``oidc._state_serializer`` — ``cv`` is the PKCE
-    code_verifier)."""
+    ``{"state", "cv", "nonce"}`` record production issues at login (same
+    serializer secret/salt as ``oidc._state_serializer`` — ``cv`` is the PKCE
+    code_verifier, ``nonce`` binds the ID token to this login)."""
     from itsdangerous import URLSafeTimedSerializer
 
     raw = client.cookies["taskq_oidc_state"]
@@ -438,8 +461,7 @@ def test_callback_token_request_carries_pkce_verifier_from_state_cookie() -> Non
     app = _make_app(config)
     client = TestClient(app)
 
-    with _mock_provider() as router:
-        state = _do_login(client)
+    with _mock_provider_echoing_login_nonce(client) as (state, router):
         cookie = _state_cookie_payload(client)
         resp = client.get(
             "/admin/callback",
@@ -567,8 +589,7 @@ def test_discovery_and_jwks_run_on_httpx2() -> None:
     client = TestClient(_make_app(_config()))
     jwks_url = make_discovery(_ISSUER)["jwks_uri"]
 
-    with _mock_provider():
-        state = _do_login(client)
+    with _mock_provider_echoing_login_nonce(client) as (state, _router):
         resp = client.get(
             "/admin/callback",
             params={"code": "fake-code", "state": state},
@@ -577,6 +598,8 @@ def test_discovery_and_jwks_run_on_httpx2() -> None:
         assert resp.status_code == 302
         assert resp.headers["location"] == "/admin"
 
+        # The callback refetches discovery and JWKS on the backend's own
+        # httpx2 client; these stacks are that refetch's, recorded live.
         assert stacks_for(_DISCOVERY_URL) == {"httpx2"}, (
             f"discovery ran on {stacks_for(_DISCOVERY_URL) or 'no stack'}; oidc.py "
             "imports httpx2, so anything else means a fixture substituted the client"
