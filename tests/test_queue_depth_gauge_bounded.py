@@ -121,3 +121,46 @@ def test_queue_depth_gauge_overflow_series_aggregates_depth(
     assert len(overflow_points) == 1, (
         f"expected exactly one '{_OVERFLOW}' series, found {len(overflow_points)}."
     )
+
+
+def test_queue_depth_admission_ranks_by_depth_not_name(
+    gauge_reader: InMemoryMetricReader,
+) -> None:
+    """The partition policy: admission must be depth-ranked.
+
+    The fixture is anti-correlated — deep queues named late in the
+    alphabet, shallow queues named early — so name-sorted, first-seen and
+    depth-ranked partitions all disagree on it. A backing-up queue whose
+    name sorts late must not become invisible on a fleet-wide,
+    leader-only sample: no other process compensates for a partition
+    that hides the deepest queues, and the deepest queues are the ones an
+    operator pages on. Under a name-sorted partition the 20 deepest
+    (``zz-deep-*``) series would be the ones collapsed into
+    ``_other_`` — this test fails against exactly that variant.
+    """
+    deep = {f"zz-deep-{i:02d}": 10 for i in range(30)}
+    shallow = {f"aa-shallow-{i:03d}": 1 for i in range(90)}
+    depths = {**deep, **shallow}
+    assert len(depths) == 120 > _CAP, "fixture must overflow the cap to partition at all"
+    obs_mod.update_queue_depth_cache(depths)
+
+    reported = _depths_by_label(_queue_depth_points(gauge_reader))
+
+    missing_deep = sorted(set(deep) - set(reported))
+    assert not missing_deep, (
+        f"deepest queues lost their own series under the cap: {missing_deep}. "
+        "Admission is not depth-ranked — a name-sorted or first-seen "
+        "partition is hiding the queues an operator most needs to see, on "
+        "the one sample (leader-only, fleet-wide) no other process "
+        "compensates for."
+    )
+    assert reported[_OVERFLOW] == 20, (
+        f"the '{_OVERFLOW}' series must carry the summed depth of the 20 "
+        f"shallow overflow queues, got {reported.get(_OVERFLOW)!r}; "
+        f"full report: {reported!r}"
+    )
+    shallow_admitted = sum(1 for k in reported if k.startswith("aa-shallow-"))
+    assert shallow_admitted == _CAP - len(deep), (
+        f"expected exactly {_CAP - len(deep)} shallow series admitted after "
+        f"the deep ones, got {shallow_admitted}"
+    )

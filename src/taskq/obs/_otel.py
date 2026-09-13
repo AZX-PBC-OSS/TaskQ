@@ -2,7 +2,10 @@
 
 Provides safe, no-raise wrappers around OTel API calls so that observability
 failures never propagate to user or actor code.  All metric instruments
-are module-level singletons created at import time from the global meter provider.
+are module-level singletons created at import time from the global meter provider,
+except the call-time-resolved ones behind :func:`_lazy_counter` /
+:func:`_lazy_histogram` (see there for why the singleton pattern does not
+fit them).
 
 Label cardinality contract
 --------------------------
@@ -43,7 +46,7 @@ from typing import Literal, Protocol
 import structlog
 from opentelemetry import metrics, trace
 from opentelemetry.context import Context
-from opentelemetry.metrics import CallbackOptions, Meter, Observation
+from opentelemetry.metrics import CallbackOptions, Counter, Histogram, Meter, Observation
 from opentelemetry.trace import Span, StatusCode, Tracer
 from opentelemetry.util.types import Attributes
 
@@ -71,14 +74,23 @@ __all__ = [
     "record_heartbeat_miss",
     "record_lock_expires_in_seconds",
     "record_process_duration",
+    "record_progress_flush_failure",
     "record_progress_publish_failure",
     "record_pruned_jobs",
     "record_published_message",
+    "record_ratelimit_denial",
     "record_ratelimit_refund_failure",
+    "record_reservation_denial",
+    "record_reservation_reclaim_drain_duration",
+    "record_reservation_reclaim_drain_failure",
+    "record_reservation_reclaim_drain_rows",
+    "record_reservation_reclaim_heal_failure",
+    "record_sub_enqueue_failure",
     "safe_start_span",
     "set_otel_enabled",
     "update_disabled_schedules_count",
     "update_heartbeat_consecutive_failures",
+    "update_keyed_reclaim_pending",
     "update_queue_depth_cache",
     "update_reservation_slots_cache",
 ]
@@ -676,13 +688,38 @@ def update_queue_depth_cache(data: dict[str, int]) -> None:
 
 
 def _observe_queue_depth(options: CallbackOptions) -> Iterable[Observation]:
-    for queue, depth in _queue_depth_cache.items():
+    # A gauge is observable, not additive, so the counter sites'
+    # per-item label mapping cannot be reused here: every overflow queue
+    # yielding its own `_other_` observation would report one queue's
+    # depth instead of the total. The partition is therefore computed
+    # before yielding: the deepest `_MAX_QUEUE_LABEL_VALUES` queues keep
+    # their own series (ties broken by queue name, for determinism), and
+    # everything shallower collapses onto ONE `_other_` observation
+    # carrying the summed overflow depth, so the reported total always
+    # equals the true total. Depth ranking -- not name order and not
+    # first-seen admission -- keeps the deepest queues, the ones an
+    # operator pages on, individually visible past the cap. Nothing
+    # shared is mutated: `_queue_label_values` stays owned by the
+    # job-side instruments.
+    ranked = sorted(_queue_depth_cache.items(), key=lambda item: (-item[1], item[0]))
+    admitted = ranked[:_MAX_QUEUE_LABEL_VALUES]
+    overflow = ranked[_MAX_QUEUE_LABEL_VALUES:]
+    for queue, depth in admitted:
         yield Observation(depth, {"queue": queue})
+    if overflow:
+        yield Observation(
+            sum(depth for _queue, depth in overflow), {"queue": _QUEUE_LABEL_OVERFLOW}
+        )
 
 
 _queue_depth_gauge = get_meter().create_observable_gauge(
     name="taskq.queue.depth",
-    description="Number of pending/scheduled jobs per queue, sampled by the leader.",
+    description=(
+        "Number of pending/scheduled jobs per queue, sampled by the leader "
+        "(capped: the _MAX_QUEUE_LABEL_VALUES deepest queues keep their own "
+        f"series; shallower queues collapse onto one '{_QUEUE_LABEL_OVERFLOW}' "
+        "series carrying their summed depth)."
+    ),
     unit="1",
     callbacks=[_observe_queue_depth],
 )
@@ -772,6 +809,52 @@ def record_progress_publish_failure(channel: str, error_type: str) -> None:
     _progress_publish_failures.add(1, {"channel": channel, "error_type": error_type})
 
 
+def record_progress_flush_failure(stage: str, error_type: str) -> None:
+    """Bump the progress.flush_failures counter.
+
+    ``stage`` must be ``'per_job'`` (one job's flush UPDATE failed — that
+    job's progress since the last flush is lost) or ``'pool'`` (the flush
+    loop could not obtain a pool at all — every job's progress is lost).
+    The two are materially different incidents and must stay
+    distinguishable in an alert rule, which is also why the flush loop's
+    pool-stage log events carry a different kind than the per-job ones.
+    ``error_type`` is the exception class name.
+    Respects ``_otel_enabled`` — no-op when False.
+    """
+    if not _otel_enabled:
+        return
+    _lazy_counter(
+        "taskq.progress.flush_failures",
+        description=(
+            "Progress flush failures, by stage. Attributes: stage "
+            "('per_job' | 'pool'), error_type (exception class name)."
+        ),
+    ).add(1, {"stage": stage, "error_type": error_type})
+
+
+def record_sub_enqueue_failure(actor: str, count: int) -> None:
+    """Bump the sub_enqueue.failures counter by *count* failed child enqueues.
+
+    Called at the post-commit flush catch site: the parent job has already
+    been reported as succeeded, so every failed child enqueue is a job the
+    caller believes exists but does not. ``actor`` is the parent's actor
+    (bounded by the registered actor set). ``count`` is the number of
+    child enqueues that failed, so one incident with N lost children
+    records N, not 1.
+    Respects ``_otel_enabled`` — no-op when False.
+    """
+    if not _otel_enabled:
+        return
+    _lazy_counter(
+        "taskq.sub_enqueue.failures",
+        description=(
+            "Sub-enqueue flush failures after the parent job committed; "
+            "each counted unit is one child job that was reported as "
+            "enqueued but was not. Attributes: actor (parent job's actor)."
+        ),
+    ).add(count, {"actor": actor})
+
+
 _ratelimit_refund_failures = get_meter().create_counter(
     "taskq.ratelimit.refund_failures",
     description="Rate-limit refund/rollback failures, labeled by bucket and backend.",
@@ -788,6 +871,185 @@ def record_ratelimit_refund_failure(bucket: str, backend: str) -> None:
     if not _otel_enabled:
         return
     _ratelimit_refund_failures.add(1, {"bucket": bucket, "backend": backend})
+
+
+def _lazy_counter(name: str, *, description: str) -> Counter:
+    """Create-or-lookup counter *name* on the CURRENT global meter provider.
+
+    Unlike the module-level singletons in this file, instruments created
+    through this helper are resolved at call time. The singleton pattern
+    freezes whatever meter provider was global at import: an application
+    that configures its SDK after importing taskq (and the meter-isolating
+    test harnesses, which swap ``get_meter`` per test) would never see
+    these counts. The SDK ``Meter`` caches instruments by name, kind,
+    description and unit, so the steady-state cost is a dict lookup, not
+    a fresh instrument per call.
+    """
+    return get_meter().create_counter(name, description=description, unit="1")
+
+
+def _lazy_histogram(name: str, *, description: str, unit: str) -> Histogram:
+    """The histogram sibling of :func:`_lazy_counter` (see there for why)."""
+    return get_meter().create_histogram(name, description=description, unit=unit)
+
+
+def record_ratelimit_denial(backend: str) -> None:
+    """Bump the ratelimit.denials counter.
+
+    Called from the rate-limit decision logger whenever a decision denies
+    admission. ``backend`` is the rate-limit backend enum (bounded). The
+    bucket name is deliberately NOT a dimension: keyed bucket names are
+    caller-derived and unbounded, so a bucket label would reintroduce the
+    cardinality class the queue-label cap exists to prevent.
+    Respects ``_otel_enabled`` — no-op when False.
+    """
+    if not _otel_enabled:
+        return
+    _lazy_counter(
+        "taskq.ratelimit.denials",
+        description=(
+            "Rate-limit decisions that denied admission. Attributes: "
+            "backend (rate-limit backend). Bucket names are not a "
+            "dimension (caller-controlled cardinality)."
+        ),
+    ).add(1, {"backend": backend})
+
+
+def record_reservation_denial(bucket_name: str, source: str) -> None:
+    """Bump the reservation.denials counter.
+
+    Called at the reservation-class denial handler for every
+    ``ReservationUnavailable`` a worker fields. ``source`` is
+    ``'reservation'`` or ``'rate_limit'`` (bounded). ``bucket_name`` is
+    accepted so the call site reads naturally but is deliberately NOT a
+    dimension: keyed bucket names are caller-derived and unbounded, so
+    the label would reintroduce the cardinality class the queue-label cap
+    exists to prevent.
+    Respects ``_otel_enabled`` — no-op when False.
+    """
+    if not _otel_enabled:
+        return
+    del bucket_name  # Why: not a dimension -- see the cardinality note above.
+    _lazy_counter(
+        "taskq.reservation.denials",
+        description=(
+            "Reservation/rate-limit admission denials surfaced to a worker "
+            "handler. Attributes: source ('reservation' | 'rate_limit'). "
+            "Bucket names are not a dimension (caller-controlled "
+            "cardinality)."
+        ),
+    ).add(1, {"source": source})
+
+
+def record_reservation_reclaim_drain_failure(error_type: str) -> None:
+    """Bump the ratelimit.reclaim_drain_failures counter.
+
+    Called when the keyed-reservation slot-row reclaim drain fails. A
+    persistently failing drain strands ``reservation_slots`` rows — a
+    STORAGE signal, and the pending-depth gauge shows the backlog
+    forming. Distinct from heal failures, which are an AVAILABILITY
+    signal; the two must not share a counter.
+    ``error_type`` is the exception class name.
+    Respects ``_otel_enabled`` — no-op when False.
+    """
+    if not _otel_enabled:
+        return
+    _lazy_counter(
+        "taskq.ratelimit.reclaim_drain_failures",
+        description=(
+            "Failures of the keyed-reservation slot-row reclaim drain (a "
+            "failed drain strands reservation_slots rows -- storage). "
+            "Attributes: error_type. Distinct from reclaim_heal_failures "
+            "(availability)."
+        ),
+    ).add(1, {"error_type": error_type})
+
+
+def record_reservation_reclaim_drain_duration(elapsed_seconds: float) -> None:
+    """Record the wall-clock duration of one reclaim drain statement.
+
+    Recorded on success and failure alike (callers pass it from a
+    ``finally``), so a timeout that aborted the drain still leaves a
+    duration sample.
+    Respects ``_otel_enabled`` — no-op when False.
+    """
+    if not _otel_enabled:
+        return
+    _lazy_histogram(
+        "taskq.ratelimit.reclaim_drain_duration",
+        description="Wall-clock duration of one keyed-reservation reclaim drain statement.",
+        unit="s",
+    ).record(elapsed_seconds)
+
+
+def record_reservation_reclaim_drain_rows(rows: int) -> None:
+    """Count ``reservation_slots`` rows deleted by one reclaim drain.
+
+    Respects ``_otel_enabled`` — no-op when False.
+    """
+    if not _otel_enabled:
+        return
+    _lazy_counter(
+        "taskq.ratelimit.reclaim_drain_rows",
+        description="reservation_slots rows deleted by the keyed-reservation reclaim drain.",
+    ).add(rows)
+
+
+def record_reservation_reclaim_heal_failure(error_type: str) -> None:
+    """Bump the ratelimit.reclaim_heal_failures counter.
+
+    Called when the acquire-path re-materialisation heal for a keyed
+    bucket whose slot rows were deleted by a sibling worker's drain
+    fails. A failing heal denies new admissions for that bucket — an
+    AVAILABILITY signal, the opposite of a drain failure (storage); the
+    two must not share a counter.
+    ``error_type`` is the exception class name.
+    Respects ``_otel_enabled`` — no-op when False.
+    """
+    if not _otel_enabled:
+        return
+    _lazy_counter(
+        "taskq.ratelimit.reclaim_heal_failures",
+        description=(
+            "Failures of the acquire-path re-materialisation heal for keyed "
+            "buckets whose slot rows a sibling worker's drain deleted (a "
+            "failed heal denies new admissions -- availability). "
+            "Attributes: error_type. Distinct from reclaim_drain_failures "
+            "(storage)."
+        ),
+    ).add(1, {"error_type": error_type})
+
+
+_keyed_reclaim_pending: int = 0
+
+
+def update_keyed_reclaim_pending(depth: int) -> None:
+    """Replace the pending-reclaim depth (evicted bucket names waiting for
+    the next drain tick).
+
+    A persistently non-zero value alongside a rising drain-failure
+    counter is the visible signature of broken reclamation; the depth is
+    a scalar because bucket names are caller-controlled and must not
+    become label cardinality.
+    """
+    global _keyed_reclaim_pending
+    _keyed_reclaim_pending = depth
+
+
+def _observe_keyed_reclaim_pending(options: CallbackOptions) -> Iterable[Observation]:
+    yield Observation(_keyed_reclaim_pending)
+
+
+_keyed_reclaim_pending_gauge = get_meter().create_observable_gauge(
+    name="taskq.ratelimit.reclaim_pending",
+    description=(
+        "Evicted keyed bucket names waiting for their reservation_slots "
+        "rows to be reclaimed by the next drain tick (scalar: bucket "
+        "names are not a dimension)."
+    ),
+    unit="1",
+    callbacks=[_observe_keyed_reclaim_pending],
+)
 
 
 _leader_election_attempts = get_meter().create_counter(
