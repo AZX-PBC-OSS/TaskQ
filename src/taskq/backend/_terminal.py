@@ -89,7 +89,11 @@ import structlog
 # Why: private import — the pre-serialized result path holds bytes, not a
 # dict, so the byte-level scan is the only way to run dumps_jsonb_str's NUL
 # guard without a second serialization. Same package, behavior pinned by test.
-from taskq._json import NUL_JSONB_ERROR, _encoded_has_nul  # pyright: ignore[reportPrivateUsage]
+from taskq._json import (
+    NUL_JSONB_ERROR,
+    _encoded_has_nul,  # pyright: ignore[reportPrivateUsage]  # Why: byte-level NUL scan for the pre-serialized bytes path — see the comment above.
+    decode_result_bytes,
+)
 from taskq.backend._protocol import (
     AttemptOutcome,
     AttemptRow,
@@ -258,6 +262,11 @@ async def _mark_succeeded_on_conn(
             )
         if _encoded_has_nul(result_bytes):
             raise ValueError(NUL_JSONB_ERROR)
+        # Why parse-and-discard: validation only — the bound value is the
+        # decoded str below. decode_result_bytes carries the rejection
+        # rationale (the transient-infra misclassification its ValueError
+        # prevents) and proves the decode underneath cannot fail.
+        decode_result_bytes(result_bytes)
         serialized_result = result_bytes.decode("utf-8")
         result_size = len(result_bytes)
     else:

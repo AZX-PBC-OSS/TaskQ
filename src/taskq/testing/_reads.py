@@ -18,7 +18,7 @@ view composes on top of that copy.
 from dataclasses import replace
 from datetime import datetime, timedelta
 from functools import cmp_to_key
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 from taskq.backend._cursor import ordering_for
 from taskq.backend._protocol import (
@@ -53,22 +53,47 @@ __all__ = [
 ]
 
 
+def _copy_result_value(value: Any) -> Any:
+    """Copy the stored *result* value, severing the storage alias.
+
+    The ``result`` field is typed ``dict[str, object] | None`` (the actor
+    contract), but a direct ``mark_succeeded(result_bytes=...)`` caller
+    can store any single JSON value, exactly as PG's jsonb column holds
+    it and reads it back (``jsonb_to_dict`` → ``loads`` returns the
+    array/bool/number/string verbatim) — the mirror must read the same
+    bytes back the same way, so this copy cannot assume a dict. Mutable
+    container shapes get one new container (the shallow-copy line the
+    rest of this module takes); JSON scalars are immutable and pass
+    through unchanged.
+    """
+    if isinstance(value, dict):
+        # Why cast: orjson.loads yields JSON objects as dict[str, object]
+        # (JSON object keys are strings by grammar), so the cast states
+        # what the runtime value already is and keeps the copy's type
+        # fully known.
+        return dict(cast("dict[str, object]", value))
+    if isinstance(value, list):
+        return list(cast("list[object]", value))
+    return value
+
+
 def _read_copy(row: JobRow) -> JobRow:
     """Return *row* as an isolated copy for a read result.
 
-    The copy is deliberately shallow — one new dict per mutable field, no
-    deep-copy machinery, which is all a test backend needs: top-level
-    mutation of a read row (``row.result["injected"] = True``) can never
-    reach storage. Nested containers inside those dicts are still
-    shared. ``JobRow`` is frozen, but its dict-typed fields are shared
-    by reference, so one new dict per mutable field severs that
-    aliasing.
+    The copy is deliberately shallow — one new container per mutable
+    field, no deep-copy machinery, which is all a test backend needs:
+    top-level mutation of a read row (``row.result["injected"] = True``)
+    can never reach storage. Nested containers inside those fields are
+    still shared. ``JobRow`` is frozen, but its mutable fields are shared
+    by reference, so one new container per field severs that aliasing;
+    the ``result`` field goes through :func:`_copy_result_value` because
+    its runtime value is not always a dict.
     """
     return replace(
         row,
         payload=dict(row.payload),
         progress_state=dict(row.progress_state),
-        result=None if row.result is None else dict(row.result),
+        result=None if row.result is None else _copy_result_value(row.result),
         metadata=dict(row.metadata),
     )
 

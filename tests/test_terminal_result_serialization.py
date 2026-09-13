@@ -8,17 +8,22 @@ bytes (one NUL scan + one decode) instead of re-serializing a dict and
 re-encoding the bound str just to measure ``result_size_bytes``.
 """
 
+from datetime import UTC, datetime, timedelta
+from uuid import UUID
+
 import pytest
 
 from taskq._ids import new_job_id, new_uuid
 from taskq._json import dumps as _json_dumps
 from taskq._json import dumps_jsonb_str
-from taskq.backend._protocol import JobId
+from taskq.backend._protocol import EnqueueArgs, JobId
 from taskq.backend._records import jsonb_to_dict
 from taskq.backend._sql_templates import render as render_sql
 from taskq.backend._terminal import _mark_succeeded_on_conn
 from taskq.exceptions import ResultTooLarge
+from taskq.testing.clock import FakeClock
 from taskq.testing.fixtures import JobsApp
+from taskq.testing.in_memory import InMemoryBackend
 from taskq.testing.pg import setup_running_job
 
 _SQL = render_sql("taskq")
@@ -212,6 +217,297 @@ async def test_result_bytes_over_cap_still_raises_result_too_large() -> None:
         )
 
 
+# ── In-memory backend — the same contract ────────────────────────────
+#
+# The consumer passes result_bytes on every success, whichever backend is
+# configured, so the testing backend must be observable-equivalent to PG
+# on this path or tests run under it diverge from production. The PG-side
+# guards above each name their in-memory parity obligation; these are them.
+
+_START = datetime(2026, 1, 1, tzinfo=UTC)
+
+
+async def _in_memory_running_job(
+    backend: InMemoryBackend,
+) -> tuple[JobId, UUID]:
+    """Enqueue and claim one job; return (job_id, worker_id) of the
+    running row the terminal write expects."""
+    await backend.enqueue(
+        EnqueueArgs(
+            id=new_job_id(),
+            actor="test_actor",
+            queue="default",
+            payload={"key": "value"},
+            max_attempts=3,
+            retry_kind="transient",
+            scheduled_at=_START,
+            metadata={},
+        )
+    )
+    worker_id = new_uuid()
+    claimed = await backend.dispatch_batch(worker_id, ["default"], 1, timedelta(seconds=60))
+    assert len(claimed) == 1
+    return claimed[0].id, worker_id
+
+
+async def test_in_memory_result_bytes_round_trip_stores_decoded_result_and_exact_size() -> None:
+    """The bytes form reads back exactly as PG: the decoded result dict and
+    the byte length of what PG would store. A testing backend that stored
+    the raw bytes (or re-serialized) would make green tests diverge from
+    production."""
+    backend = InMemoryBackend(clock=FakeClock(_START))
+    job_id, worker_id = await _in_memory_running_job(backend)
+    payload = {"value": 42, "nested": {"a": [1, 2, 3]}}
+    data = _json_dumps(payload)
+
+    ok = await backend.mark_succeeded(job_id, worker_id, result_bytes=data)
+
+    assert ok is True
+    row = await backend.get(job_id)
+    assert row is not None
+    assert row.status == "succeeded"
+    assert row.result == payload
+    assert row.result_size_bytes == len(data)
+
+
+async def test_in_memory_result_and_result_bytes_are_mutually_exclusive() -> None:
+    """Both forms at once is a caller bug — rejected loudly before any
+    state change, same as the PG terminal (the job must stay running)."""
+    backend = InMemoryBackend(clock=FakeClock(_START))
+    job_id, worker_id = await _in_memory_running_job(backend)
+
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        await backend.mark_succeeded(
+            job_id,
+            worker_id,
+            {"ok": True},
+            result_bytes=_json_dumps({"ok": True}),
+        )
+
+    row = await backend.get(job_id)
+    assert row is not None
+    assert row.status == "running"
+
+
+async def test_in_memory_result_bytes_with_nul_raises_value_error() -> None:
+    """Caller-supplied bytes carrying a NUL escape would bind as invalid
+    jsonb on PG — the testing backend rejects them with the same
+    ValueError, at the same boundary."""
+    backend = InMemoryBackend(clock=FakeClock(_START))
+    job_id, worker_id = await _in_memory_running_job(backend)
+
+    with pytest.raises(ValueError, match="NUL"):
+        await backend.mark_succeeded(job_id, worker_id, result_bytes=_json_dumps({"k": "a\x00b"}))
+
+
+async def test_in_memory_plain_dict_result_with_nul_raises_value_error() -> None:
+    """The dict form is NUL-guarded too — PG's jsonb binding rejects the
+    value, so the testing backend must fail identically rather than store
+    a result PG never could."""
+    backend = InMemoryBackend(clock=FakeClock(_START))
+    job_id, worker_id = await _in_memory_running_job(backend)
+
+    with pytest.raises(ValueError, match="NUL"):
+        await backend.mark_succeeded(job_id, worker_id, {"k": "a\x00b"})
+
+
+async def test_in_memory_progress_state_with_nul_raises_value_error() -> None:
+    """PG guards ``progress_state`` at bind time too (``jsonb_param`` →
+    ``dumps_jsonb_str``), so a direct ``mark_succeeded(progress_state=...)``
+    carrying a NUL raises ValueError before the fencing write. The mirror's
+    result NUL guard is pinned above; the progress path must match or a
+    test stores a state PG never could, the exact parity the mirror
+    rewrite exists to hold."""
+    backend = InMemoryBackend(clock=FakeClock(_START))
+    job_id, worker_id = await _in_memory_running_job(backend)
+
+    with pytest.raises(ValueError, match="NUL"):
+        await backend.mark_succeeded(
+            job_id, worker_id, {"done": True}, progress_state={"detail": "bad\x00value"}
+        )
+
+    row = await backend.get(job_id)
+    assert row is not None
+    assert row.status == "running"
+
+
+async def test_in_memory_result_bytes_over_cap_raises_result_too_large() -> None:
+    """The result cap applies to the bytes form at its measured length —
+    the same storage-boundary guard the PG terminal applies."""
+    backend = InMemoryBackend(clock=FakeClock(_START), result_max_bytes=64)
+    job_id, worker_id = await _in_memory_running_job(backend)
+    data = _json_dumps({"blob": "x" * 128})
+    assert len(data) > 64
+
+    with pytest.raises(ResultTooLarge, match="bytes exceeds"):
+        await backend.mark_succeeded(job_id, worker_id, result_bytes=data)
+
+
+async def test_in_memory_result_bytes_exactly_at_cap_is_stored() -> None:
+    """The cap is a strict comparison on both backends: bytes measuring
+    exactly result_max_bytes are stored, size recorded in full. One
+    off-by-one to `>=` here would strand every result at the cap."""
+    backend = InMemoryBackend(clock=FakeClock(_START), result_max_bytes=64)
+    job_id, worker_id = await _in_memory_running_job(backend)
+    data = _json_dumps({"blob": "x" * 53})
+    assert len(data) == 64
+
+    ok = await backend.mark_succeeded(job_id, worker_id, result_bytes=data)
+
+    assert ok is True
+    row = await backend.get(job_id)
+    assert row is not None
+    assert row.status == "succeeded"
+    assert row.result_size_bytes == 64
+
+
+async def test_in_memory_empty_result_bytes_raises_value_error_and_job_stays_running() -> None:
+    """Empty bytes are never valid orjson output. The PG terminal rejects
+    them with a dedicated ValueError whose rationale names this mirror
+    ("same ValueError class the in-memory/testing mirrors raise for the
+    same input") — the mirror must keep that true: a ValueError-family
+    rejection, before any state change, the row still running."""
+    backend = InMemoryBackend(clock=FakeClock(_START))
+    job_id, worker_id = await _in_memory_running_job(backend)
+
+    with pytest.raises(ValueError):
+        await backend.mark_succeeded(job_id, worker_id, result_bytes=b"")
+
+    row = await backend.get(job_id)
+    assert row is not None
+    assert row.status == "running"
+
+
+async def test_in_memory_result_bytes_invalid_json_raises_value_error() -> None:
+    """Bytes that are not valid JSON are rejected with the ValueError
+    family — the reference behavior the PG terminal's guard matches
+    (bound as text and cast server-side, the jsonb rejection would arrive
+    as a PostgresError the terminal-write classification reads as
+    transient infra). The mirror must keep raising here or the two
+    backends diverge on the exception family a caller observes; the
+    message is the shared helper's, so both backends reject with the
+    same words the NUL and empty guards already share."""
+    backend = InMemoryBackend(clock=FakeClock(_START))
+    job_id, worker_id = await _in_memory_running_job(backend)
+
+    with pytest.raises(ValueError, match="valid orjson output"):
+        await backend.mark_succeeded(job_id, worker_id, result_bytes=b"not json")
+
+    row = await backend.get(job_id)
+    assert row is not None
+    assert row.status == "running"
+
+
+async def test_in_memory_non_object_valid_json_result_reads_back_like_pg() -> None:
+    """Any valid JSON the guard accepts must be readable back on the
+    mirror exactly as PG reads it back. PG accepts any valid JSON in the
+    result column and reads it verbatim through ``jsonb_to_dict`` ->
+    ``loads``, so a JSON array stores and reads back as ``[1, 2]``. The
+    mirror's guard accepts the same bytes (they are valid JSON), but its
+    read path assumes a dict and must not crash on the stored value."""
+    backend = InMemoryBackend(clock=FakeClock(_START))
+    job_id, worker_id = await _in_memory_running_job(backend)
+
+    ok = await backend.mark_succeeded(job_id, worker_id, result_bytes=b"[1, 2]")
+
+    assert ok is True
+    row = await backend.get(job_id)
+    assert row is not None
+    assert row.result == [1, 2]
+
+
+async def test_in_memory_result_bytes_invalid_json_rejected_even_when_the_job_is_not_running() -> (
+    None
+):
+    """Content validation, like the mutual-exclusivity check, runs before
+    the state fence — the mirror matches the PG terminal's order (its
+    guards precede the fencing UPDATE). A non-running job must not turn a
+    permanently-unstorable value into a silent False indistinguishable
+    from an innocent fencing mismatch."""
+    backend = InMemoryBackend(clock=FakeClock(_START))
+    job_id, worker_id = await _in_memory_running_job(backend)
+    await backend.mark_succeeded(job_id, worker_id, {"done": True})
+
+    with pytest.raises(ValueError):
+        await backend.mark_succeeded(job_id, worker_id, result_bytes=b"not json")
+
+
+async def test_in_memory_both_result_forms_rejected_even_when_the_job_is_not_running() -> None:
+    """PG validates the two-form misuse at the function top, before any
+    state lookup — a caller passing both forms always gets the loud
+    ValueError. The mirror gates the same check behind the running/lock
+    fence, so the identical misuse on a job that is not running (already
+    terminal, wrong worker, never existed) returns False — the same
+    outcome as an innocent fencing mismatch — and the caller bug hides.
+    Observable-equivalence with PG on this path is the mirror's contract."""
+    backend = InMemoryBackend(clock=FakeClock(_START))
+    job_id, worker_id = await _in_memory_running_job(backend)
+    await backend.mark_succeeded(job_id, worker_id, {"done": True})
+
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        await backend.mark_succeeded(
+            job_id,
+            worker_id,
+            {"again": True},
+            result_bytes=_json_dumps({"again": True}),
+        )
+
+
+async def test_in_memory_over_cap_result_rejected_even_when_the_job_is_not_running() -> None:
+    """The cap check is validation too: the backend contract
+    (docs/architecture.md) is that ALL validation precedes the fencing
+    write, so a permanently-unstorable result raises ResultTooLarge
+    whatever the job's state — never returns the False of an innocent
+    fencing mismatch. The ValueError-family guards are pinned against a
+    non-running job above; this pins the one other exception family,
+    raised from a different site."""
+    backend = InMemoryBackend(clock=FakeClock(_START), result_max_bytes=64)
+    job_id, worker_id = await _in_memory_running_job(backend)
+    await backend.mark_succeeded(job_id, worker_id, {"done": True})
+
+    with pytest.raises(ResultTooLarge):
+        await backend.mark_succeeded(job_id, worker_id, {"blob": "x" * 128})
+
+
+@pytest.mark.parametrize(
+    ("dict_result", "pg_read_back"),
+    [
+        ({"v": float("nan")}, {"v": None}),
+        ({"v": float("inf")}, {"v": None}),
+        (
+            {"v": UUID("12345678-1234-5678-1234-567812345678")},
+            {"v": "12345678-1234-5678-1234-567812345678"},
+        ),
+        ({"v": (1, 2)}, {"v": [1, 2]}),
+    ],
+    ids=["nan-nulls", "inf-nulls", "uuid-stringifies", "tuple-becomes-array"],
+)
+async def test_in_memory_dict_form_result_normalizes_to_pg_observable_state(
+    dict_result: dict[str, object],
+    pg_read_back: dict[str, object],
+) -> None:
+    """The mirror's dict-form write claims to "normalize to the same
+    observable state as PG" — but it stores the caller's Python objects
+    verbatim (``dict(result)``), while PG stores what orjson emitted and
+    reads the JSON back. Every value whose orjson encoding differs from
+    the object diverges on read-back: NaN and Infinity become null, UUIDs
+    become their string form, tuples become arrays. The consumer's bytes
+    form round-trips through JSON on both backends and cannot diverge —
+    this is the dict form's parity hole."""
+    backend = InMemoryBackend(clock=FakeClock(_START))
+    job_id, worker_id = await _in_memory_running_job(backend)
+
+    ok = await backend.mark_succeeded(job_id, worker_id, dict_result)
+    assert ok is True
+
+    row = await backend.get(job_id)
+    assert row is not None
+    assert row.result == pg_read_back, (
+        "the in-memory dict form must read back exactly what PG's jsonb "
+        f"round-trip reads back (expected {pg_read_back!r}, got {row.result!r})"
+    )
+
+
 # ── Integration: the decoded str binds for ::jsonb on real PG ──────────
 
 
@@ -268,3 +564,135 @@ class TestResultBytesAgainstPostgres:
             )
         sizes = {row["id"]: row["result_size_bytes"] for row in rows}
         assert sizes[bytes_job] == sizes[plain_job] == len(_json_dumps(payload))
+
+    async def test_result_bytes_invalid_json_rejected_at_the_boundary(
+        self, clean_jobs_app: JobsApp
+    ) -> None:
+        """Bytes that are not valid JSON must be rejected client-side with
+        the ValueError family — the same classification its sibling guards
+        (empty bytes, NUL) already apply, for the same reason: bound as
+        text and cast server-side, the jsonb rejection arrives as a
+        PostgresError, which the terminal-write classification reads as
+        TRANSIENT INFRASTRUCTURE failure — the job never reaches a terminal
+        state, the lease sweep reclaims it, a re-run produces the same
+        bytes, and the write loops. A permanent data defect must not wear
+        an infra failure's costume; the in-memory mirror raises ValueError
+        for the identical input (see the in-memory section), so this is
+        also the parity seam between the two backends."""
+        deps = clean_jobs_app.deps
+        backend = clean_jobs_app.backend
+        schema = deps.settings.schema_name
+
+        async with deps.worker_pool.acquire() as conn:
+            worker_id, job_id = await setup_running_job(conn, schema)
+
+        with pytest.raises(ValueError):
+            await backend.mark_succeeded(job_id, worker_id, result_bytes=b"not json")
+
+        async with deps.worker_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f'SELECT status FROM "{schema}".jobs WHERE id = $1',  # noqa: S608  # Why: schema is a test-fixture identifier, validated by render() in every caller; every user-supplied value goes through $N parameter binding.
+                job_id,
+            )
+        assert row is not None
+        assert row["status"] == "running"
+
+    async def test_result_bytes_undecodable_utf8_rejected_by_the_parse_guard(
+        self, clean_jobs_app: JobsApp
+    ) -> None:
+        """The JSON-parse guard's claim, pinned on its distinct input
+        family: orjson rejects bytes that are not decodable UTF-8 with the
+        same ValueError family as malformed ASCII, so the boundary's own
+        message ("the bytes are not decodable JSON") carries the cause and
+        the decode below the guard cannot fail. Binary garbage must never
+        reach the server as a text binding — the same transient-infra
+        misclassification the malformed-JSON test above guards."""
+        deps = clean_jobs_app.deps
+        backend = clean_jobs_app.backend
+        schema = deps.settings.schema_name
+
+        async with deps.worker_pool.acquire() as conn:
+            worker_id, job_id = await setup_running_job(conn, schema)
+
+        with pytest.raises(ValueError, match="not decodable JSON"):
+            await backend.mark_succeeded(job_id, worker_id, result_bytes=b"\xff\xfe")
+
+        async with deps.worker_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f'SELECT status FROM "{schema}".jobs WHERE id = $1',  # noqa: S608  # Why: schema is a test-fixture identifier, validated by render() in every caller; every user-supplied value goes through $N parameter binding.
+                job_id,
+            )
+        assert row is not None
+        assert row["status"] == "running"
+
+    async def test_non_object_json_result_round_trips_on_pg(self, clean_jobs_app: JobsApp) -> None:
+        """The mirror's non-object round-trip test asserts parity with a PG
+        behavior it only reads in code — anchor it: a JSON array result
+        stores and reads back verbatim on the reference implementation
+        (``jsonb_to_dict`` -> ``loads`` passes the list through), which is
+        what licenses the mirror to do the same."""
+        deps = clean_jobs_app.deps
+        backend = clean_jobs_app.backend
+        schema = deps.settings.schema_name
+
+        async with deps.worker_pool.acquire() as conn:
+            worker_id, job_id = await setup_running_job(conn, schema)
+
+        ok = await backend.mark_succeeded(job_id, worker_id, result_bytes=b"[1, 2]")
+        assert ok is True
+
+        row = await backend.get(job_id)
+        assert row is not None
+        assert row.result == [1, 2]
+        assert row.result_size_bytes == len(b"[1, 2]")
+
+    async def test_invalid_result_bytes_rejected_before_the_fence_on_a_terminal_job(
+        self, clean_jobs_app: JobsApp
+    ) -> None:
+        """The contract the in-memory mirror's fence-ordering tests pin
+        parity AGAINST: on the reference implementation, invalid
+        ``result_bytes`` on a job that is already terminal raises the
+        ValueError family — never returns the False of an innocent
+        fencing mismatch. Without this anchor, the mirror's ordering
+        tests pin parity with a documented behavior nothing asserts PG
+        itself keeps."""
+        deps = clean_jobs_app.deps
+        backend = clean_jobs_app.backend
+        schema = deps.settings.schema_name
+
+        async with deps.worker_pool.acquire() as conn:
+            worker_id, job_id = await setup_running_job(conn, schema)
+        await backend.mark_succeeded(job_id, worker_id, {"done": True})
+
+        with pytest.raises(ValueError):
+            await backend.mark_succeeded(job_id, worker_id, result_bytes=b"not json")
+
+    async def test_dict_form_result_reads_back_json_round_tripped_on_pg(
+        self, clean_jobs_app: JobsApp
+    ) -> None:
+        """The reference behavior the mirror's dict-form test pins parity
+        against: PG stores what orjson emitted, so a UUID result reads
+        back its string form and a NaN result reads back null — the
+        JSON round-trip is the normalization the in-memory dict form
+        skips."""
+        deps = clean_jobs_app.deps
+        backend = clean_jobs_app.backend
+        schema = deps.settings.schema_name
+
+        async with deps.worker_pool.acquire() as conn:
+            uuid_worker, uuid_job = await setup_running_job(conn, schema)
+        async with deps.worker_pool.acquire() as conn:
+            nan_worker, nan_job = await setup_running_job(conn, schema)
+
+        uuid_value = UUID("12345678-1234-5678-1234-567812345678")
+        assert await backend.mark_succeeded(uuid_job, uuid_worker, {"v": uuid_value}) is True
+        assert await backend.mark_succeeded(nan_job, nan_worker, {"v": float("nan")}) is True
+
+        async with deps.worker_pool.acquire() as conn:
+            rows = await conn.fetch(
+                f'SELECT id, result FROM "{schema}".jobs WHERE id = ANY($1::uuid[])',  # noqa: S608  # Why: schema is a test-fixture identifier, validated by render() in every caller; every user-supplied value goes through $N parameter binding.
+                [uuid_job, nan_job],
+            )
+        results = {str(row["id"]): jsonb_to_dict(row["result"]) for row in rows}
+        assert results[str(uuid_job)] == {"v": "12345678-1234-5678-1234-567812345678"}
+        assert results[str(nan_job)] == {"v": None}

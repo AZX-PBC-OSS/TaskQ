@@ -323,7 +323,18 @@ consumer.  An implementation that ignores it stores a NULL result (and NULL
 `result_size_bytes`) for every consumer-completed job, silently; it must
 bind `result_bytes.decode("utf-8")`, store `result_size_bytes =
 len(result_bytes)`, NUL-guard the bytes exactly as the dict form is
-guarded, and reject a call passing both `result` and `result_bytes`.
+guarded, reject bytes that are not valid JSON with the `ValueError`
+family (bound as text and cast server-side, non-JSON surfaces as a
+`PostgresError` the terminal-write classification reads as transient
+infrastructure — a permanent data defect looping the job through
+reclaim), and reject a call passing both `result` and `result_bytes`.
+Any valid JSON value the guard accepts — an array or scalar, not just
+an object — stores and reads back verbatim, exactly as PG's jsonb
+column holds it: `result`'s `dict[str, object] | None` type describes
+the actor contract, not a runtime guarantee for direct `result_bytes`
+callers, so a read path must not assume a dict. All of this validation
+precedes the fencing write, so a misuse or an unstorable value raises
+loudly whatever the job's state.
 
 Third-party backends should declare the version they implement as
 `BACKEND_PROTOCOL_VERSION: ClassVar[int]` and assert it against the canonical

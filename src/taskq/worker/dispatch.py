@@ -57,30 +57,18 @@ from taskq.worker._handlers import (
     _log_terminal_write_failed,  # pyright: ignore[reportPrivateUsage]  # Why: same rationale as _TERMINAL_WRITE_INFRA_EXCEPTIONS above.
 )
 from taskq.worker.cancel import ActiveJobRegistry
-from taskq.worker.deps import WorkerDeps
+from taskq.worker.deps import POOL_INFRA_EXCEPTIONS, WorkerDeps
 
 if TYPE_CHECKING:
     import redis.asyncio as redis_async
 
 logger: structlog.stdlib.BoundLogger = get_logger(__name__)
 
-_ACQUIRE_INFRA_EXCEPTIONS: tuple[type[BaseException], ...] = (
-    TimeoutError,
-    asyncpg.PostgresError,
-    asyncpg.InterfaceError,
-    asyncpg.InternalClientError,
-    OSError,
-)
-"""What a bounded slot-pool acquire failing for infrastructure reasons
-raises — the same family the health PG ping catches, broadened to the
-``PostgresError`` base: an acquire that must OPEN a fresh connection
-(a holder reconnect after a drop, idle-expiry, or terminate) surfaces
-server-side refusals as coded errors (InvalidPasswordError on a revoked
-static credential, AdminShutdownError, CannotConnectNowError) that are
-not PostgresConnectionError subclasses, and acquire runs no queries —
-any PostgresError there is connect-time infrastructure, never a job
-outcome. Anything else propagates to the consumer loop's generic
-handler."""
+# Why the shared pool-infra family (defined in taskq.worker.deps, the
+# module that owns the pools): the acquire below runs no queries, so any
+# member raised there is connect-time infrastructure, never a job
+# outcome. Anything else propagates to the consumer loop's generic
+# handler.
 
 
 class SlotPoolAcquireError(Exception):
@@ -235,7 +223,7 @@ async def dispatch_one_job(
             acquire_timeout = deps.settings.dispatcher_command_timeout
             try:
                 acquired = await slot_pool.acquire(timeout=acquire_timeout)
-            except _ACQUIRE_INFRA_EXCEPTIONS as exc:
+            except POOL_INFRA_EXCEPTIONS as exc:
                 record_slot_pool_acquire_failure()
                 logger.error(
                     "slot-pool-acquire-failed",

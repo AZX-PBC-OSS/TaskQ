@@ -152,6 +152,32 @@ async def test_mark_succeeded_does_not_store_caller_result_by_reference() -> Non
     assert fresh.result == {"value": 1}
 
 
+async def test_list_result_from_result_bytes_does_not_alias_storage() -> None:
+    """``mark_succeeded(result_bytes=...)`` accepts any single JSON value,
+    so a stored result can be a mutable list, not only a dict. The read
+    isolation contract holds for that shape too: mutating the list a
+    caller got from ``get`` must never reach storage (the archive seam
+    shares the same copy helper, so one site pins the mechanism)."""
+    backend = _make_backend()
+    row = await backend.enqueue(_args())
+    worker_id = new_uuid()
+    claimed = await backend.dispatch_batch(worker_id, ["default"], 10, timedelta(seconds=60))
+    assert len(claimed) == 1
+    await backend.mark_succeeded(row.id, worker_id, result_bytes=b"[1, 2]")
+
+    first = await backend.get(row.id)
+    assert first is not None
+    assert first.result == [1, 2]
+    first.result.append(3)  # type: ignore[union-attr]  # Why: the runtime value is the list the test just stored; the field's dict-typed annotation predates the result_bytes shape.
+
+    reread = await backend.get(row.id)
+    assert reread is not None
+    assert reread.result == [1, 2], (
+        "a caller-held list result reached storage — the read copy must "
+        "sever mutable results of every JSON shape, not only dicts"
+    )
+
+
 async def test_get_archived_row_does_not_alias_storage() -> None:
     clock = FakeClock(_START)
     backend = InMemoryBackend(clock=clock)

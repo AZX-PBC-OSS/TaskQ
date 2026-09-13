@@ -23,7 +23,6 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Literal, TypedDict
 
-import asyncpg
 import structlog
 
 from taskq import _json
@@ -33,7 +32,7 @@ from taskq.obs import (
 )
 from taskq.settings import WorkerSettings
 from taskq.worker._watchdog import dump_task_stacks
-from taskq.worker.deps import WorkerDeps
+from taskq.worker.deps import POOL_INFRA_EXCEPTIONS, WorkerDeps
 from taskq.worker.shutdown import ShutdownPhase
 
 logger: structlog.stdlib.BoundLogger = get_logger(__name__)
@@ -161,12 +160,15 @@ async def _ping_slot_pool_once(deps: WorkerDeps) -> tuple[bool, str | None]:
             await asyncio.wait_for(conn.execute("SELECT 1"), timeout=timeout)
     except TimeoutError:
         return False, "slot_pool_ping_timeout"
-    except (
-        asyncpg.PostgresConnectionError,
-        asyncpg.InterfaceError,
-        asyncpg.TooManyConnectionsError,
-        OSError,
-    ):
+    # Why the shared pool-infra family (taskq.worker.deps): a
+    # fresh-connection acquire — after a rotation drain or terminate —
+    # surfaces revoked or refused credentials as coded server errors
+    # (InvalidPasswordError, AdminShutdownError) that are not
+    # PostgresConnectionError children; reading them as "unexpected"
+    # below would label an infrastructure failure as a programming error
+    # for the 3am reader. TimeoutError stays caught above so it keeps
+    # its own reason.
+    except POOL_INFRA_EXCEPTIONS:
         return False, "slot_pool_connection_error"
     except Exception as exc:
         logger.warning("health-slot-pool-ping-unexpected", error=str(exc))
@@ -223,12 +225,10 @@ async def compute_health(deps: WorkerDeps) -> HealthReport:
     except TimeoutError:
         pg_ping_ok_ = False
         reasons.append("pg_ping_timeout")
-    except (
-        asyncpg.PostgresConnectionError,
-        asyncpg.InterfaceError,
-        asyncpg.TooManyConnectionsError,
-        OSError,
-    ):
+    # Same shared pool-infra family as the slot-pool ping above, for the
+    # same reason: a coded server error on this direct-DSN bounded body
+    # is infrastructure, not a programming error.
+    except POOL_INFRA_EXCEPTIONS:
         pg_ping_ok_ = False
         reasons.append("pg_connection_error")
     except Exception as exc:

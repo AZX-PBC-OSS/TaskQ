@@ -67,6 +67,11 @@ async def test_slot_pool_factory_sizes_warm_pool_on_direct_dsn() -> None:
     assert call_kwargs["max_size"] == 5
     assert call_kwargs["command_timeout"] == settings.dispatcher_command_timeout
     assert call_kwargs["max_inactive_connection_lifetime"] == settings.pool_max_inactive_lifetime
+    # Same statement-cache treatment as the provider-backed branch —
+    # resolved from settings (the defaults here), so the DSN-built pool
+    # never drifts from the pool family's cache behaviour.
+    assert call_kwargs["statement_cache_size"] == settings.statement_cache_size
+    assert call_kwargs["max_cached_statement_lifetime"] == settings.max_cached_statement_lifetime
 
 
 async def test_slot_pool_factory_is_provider_backed_when_given_provider() -> None:

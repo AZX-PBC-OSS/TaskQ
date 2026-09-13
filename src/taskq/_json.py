@@ -21,6 +21,7 @@ import orjson
 __all__ = [
     "NUL_JSONB_ERROR",
     "check_no_nul_str",
+    "decode_result_bytes",
     "dumps",
     "dumps_jsonb_str",
     "dumps_str",
@@ -204,6 +205,31 @@ def loads(data: bytes | bytearray | memoryview | str, /) -> Any:
     ``UUID``, and keeps them as ``str`` when the field is typed ``str``.
     """
     return orjson.loads(data)
+
+
+def decode_result_bytes(data: bytes, /) -> Any:
+    """Decode pre-serialized ``result_bytes`` for storage, rejecting
+    undecodable input with the canonical message.
+
+    Both backends' ``result_bytes`` boundaries call this one helper, so a
+    bad encoding raises a byte-identical ``ValueError`` on either backend
+    — the standard the NUL and empty guards already hold. Bound as text
+    and cast server-side, the same bytes would surface as a
+    ``PostgresError`` the terminal-write classification reads as
+    transient infrastructure, looping the job through reclaim on a
+    permanent data defect; orjson output is always valid JSON, so this
+    fires only for direct Backend-protocol callers. The parse also
+    proves the bytes are decodable utf-8 (orjson rejects undecodable
+    input with the same exception family), so a caller binding
+    ``data.decode("utf-8")`` afterwards cannot fail there.
+    """
+    try:
+        return loads(data)
+    except ValueError as exc:
+        raise ValueError(
+            "result_bytes must be valid orjson output (taskq._json.dumps); "
+            f"the bytes are not decodable JSON ({exc})"
+        ) from exc
 
 
 def structlog_serializer(value: Any, /, **_kwargs: Any) -> str:

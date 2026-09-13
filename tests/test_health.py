@@ -316,6 +316,84 @@ async def test_compute_health_dead_slot_pool_marks_unready() -> None:
     assert "slot_pool_connection_error" in report.reasons
 
 
+async def test_compute_health_coded_server_error_on_slot_ping_is_not_unexpected() -> None:
+    """A revoked credential on the slot ping's fresh-connection acquire
+    is infrastructure, not a programming error.
+
+    ``InvalidPasswordError`` is a coded server error — a ``PostgresError``
+    that is not a ``PostgresConnectionError`` child — exactly what a
+    rotation or terminate produces when the ping must open a fresh
+    connection. It takes the connection-error path (fail-closed outcome
+    unchanged) and never the ``ping-unexpected`` label that reads as a
+    bug report to the 3am operator.
+    """
+    import structlog
+
+    slot_pool = _StubPool(error=asyncpg.InvalidPasswordError("password authentication failed"))
+    deps = _make_deps(slot_pool=slot_pool, slot_pool_probe_task=None)
+
+    with structlog.testing.capture_logs() as logs:
+        report = await compute_health(deps)
+
+    assert report.ready is False
+    assert report.pg_ping_ok is False
+    assert "slot_pool_connection_error" in report.reasons
+    assert all(log.get("event") != "health-slot-pool-ping-unexpected" for log in logs)
+
+
+@pytest.mark.parametrize(
+    "family_error",
+    [
+        asyncpg.InterfaceError("connection has been released back to the pool"),
+        asyncpg.InternalClientError(
+            "PoolConnectionHolder.release() called on a free connection holder"
+        ),
+        OSError("connection reset by peer"),
+    ],
+    ids=["interface-error", "internal-client-error", "os-error"],
+)
+async def test_compute_health_every_pool_infra_family_member_classifies_as_infra(
+    family_error: BaseException,
+) -> None:
+    """The shared family is only as strong as its member list: every
+    member of ``POOL_INFRA_EXCEPTIONS`` must take the connection-error
+    path at the consumer (fail closed, connection-error reason, never the
+    ``ping-unexpected`` label). A member dropped from the tuple — or a
+    site reverting to a hand-rolled family — falls into the
+    unexpected-error branch and fails here, so the single-source family
+    cannot silently shrink."""
+    import structlog
+
+    slot_pool = _StubPool(error=family_error)
+    deps = _make_deps(slot_pool=slot_pool, slot_pool_probe_task=None)
+
+    with structlog.testing.capture_logs() as logs:
+        report = await compute_health(deps)
+
+    assert report.ready is False
+    assert report.pg_ping_ok is False
+    assert "slot_pool_connection_error" in report.reasons
+    assert all(log.get("event") != "health-slot-pool-ping-unexpected" for log in logs)
+
+
+async def test_compute_health_coded_server_error_on_dispatcher_ping_is_not_unexpected() -> None:
+    """The dispatcher ping's acquire fails with the same infrastructure
+    family — a coded server error there is a connection failure, not an
+    unexpected error."""
+    import structlog
+
+    dispatcher = _StubPool(error=asyncpg.AdminShutdownError("server is shutting down"))
+    deps = _make_deps(dispatcher_pool=dispatcher)
+
+    with structlog.testing.capture_logs() as logs:
+        report = await compute_health(deps)
+
+    assert report.ready is False
+    assert report.pg_ping_ok is False
+    assert "pg_connection_error" in report.reasons
+    assert all(log.get("event") != "health-pg-ping-unexpected" for log in logs)
+
+
 # ── heartbeat_pool never called even on PG timeout ──────────────
 
 

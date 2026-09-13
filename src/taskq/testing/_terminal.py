@@ -19,6 +19,8 @@ import structlog
 from taskq._json import (
     NUL_JSONB_ERROR,
     _encoded_has_nul,  # pyright: ignore[reportPrivateUsage]
+    decode_result_bytes,
+    dumps_jsonb_str,
     loads,
 )
 from taskq._json import dumps as _json_dumps
@@ -59,10 +61,22 @@ def _merge_progress(
     current: dict[str, object] | None,
     update: dict[str, object] | None,
 ) -> dict[str, object] | None:
-    """Mirror PG ``COALESCE(progress_state,'{}') || new`` for terminal writes."""
+    """Mirror PG ``COALESCE(progress_state,'{}') || new`` for terminal writes.
+
+    The merge result is round-tripped through the same guarded
+    serialization PG binds (both sides of the jsonb concat are
+    ``dumps_jsonb_str`` output), so values whose encoding differs from
+    the Python object (NaN/Infinity → null, UUID → string, tuple →
+    array) read back exactly as PG reads them, and a NUL in the update
+    raises the same ``ValueError`` PG's bind raises instead of being
+    stored; the round-trip is idempotent for already-stored JSON-native
+    state.
+    """
     if update is not None:
-        return (current or {}) | update
-    return current
+        return loads(dumps_jsonb_str((current or {}) | update))
+    if current is None:
+        return None
+    return loads(dumps_jsonb_str(current))
 
 
 async def _mark_succeeded(
@@ -76,26 +90,28 @@ async def _mark_succeeded(
     *,
     result_bytes: bytes | None = None,
 ) -> bool:
-    row = self._jobs.get(job_id)
-    if row is None:
-        return False
-    if row.status != "running" or row.locked_by_worker != worker_id:
-        return False
-
+    # Caller-input validation precedes the state fence, matching the PG
+    # terminal's order (its guards run before the fencing UPDATE): a
+    # misuse or a permanently-unstorable value raises loudly whatever the
+    # job's state, and only a value PG would accept reaches the fence —
+    # where a missing or mismatched job still returns False, exactly as
+    # PG's fencing UPDATE matching no row returns False.
     if result is not None and result_bytes is not None:
         raise ValueError(
             "result and result_bytes are mutually exclusive; pass the actor's "
             "result dict (serialized here) or its taskq._json.dumps bytes "
             "(reused as-is), not both"
         )
-    now = self._clock.now()
     # Both result forms normalize to the same observable state as PG: the
     # stored result never reaches storage by reference (PG serializes into
     # jsonb at write time) and result_size_bytes is the exact byte length
     # of what PG would store.  The bytes form — what the worker consumer
     # passes — reuses the caller's serialization as-is (dict via a decode
     # round-trip, the same orjson bytes PG would bind); the dict form
-    # serializes exactly once here and keeps a shallow copy.
+    # serializes exactly once here and stores the round-trip of those
+    # same bytes, so values whose orjson encoding differs from the Python
+    # object (NaN/Infinity → null, UUID → string, tuple → array) read
+    # back exactly as PG's jsonb column reads them back.
     stored_result: dict[str, object] | None
     result_size_bytes: int | None
     if result_bytes is not None:
@@ -109,13 +125,13 @@ async def _mark_succeeded(
             )
         if _encoded_has_nul(result_bytes):
             raise ValueError(NUL_JSONB_ERROR)
-        stored_result = loads(result_bytes)
+        stored_result = decode_result_bytes(result_bytes)
         result_size_bytes = len(result_bytes)
     elif result is not None:
         data = _json_dumps(result)
         if _encoded_has_nul(data):
             raise ValueError(NUL_JSONB_ERROR)
-        stored_result = dict(result)
+        stored_result = loads(data)
         result_size_bytes = len(data)
     else:
         stored_result = None
@@ -125,6 +141,13 @@ async def _mark_succeeded(
         raise ResultTooLarge(
             f"result size {result_size_bytes} bytes exceeds {max_result_bytes} byte cap"
         )
+
+    row = self._jobs.get(job_id)
+    if row is None:
+        return False
+    if row.status != "running" or row.locked_by_worker != worker_id:
+        return False
+    now = self._clock.now()
     # Mirror the PG COALESCE: stored (operator-owned) result_ttl applied at
     # completion; then the worker-supplied fallback (the @actor literal),
     # also at completion; then the enqueue-time value.
@@ -563,7 +586,17 @@ async def _mark_snoozed(
         )
         return "failed"
 
-    new_metadata = row.metadata if metadata_update is None else {**row.metadata, **metadata_update}
+    # PG's snooze arm binds metadata_update through jsonb_param (the
+    # NUL-guarded serialization) and merges it server-side
+    # (j.metadata || update), so the update's values read back as PG's
+    # jsonb round-trip reads them — round-trip it here through the same
+    # serialization before the merge; row.metadata is already the
+    # round-trip enqueue stored.
+    new_metadata = (
+        row.metadata
+        if metadata_update is None
+        else {**row.metadata, **loads(dumps_jsonb_str(metadata_update))}
+    )
     snooze_status: Literal["scheduled", "pending"] = (
         "scheduled" if new_scheduled_at > now else "pending"
     )
@@ -774,9 +807,11 @@ async def _mark_retry_after(
 
 
 async def _write_attempt(self: "InMemoryBackend", attempt: AttemptRow) -> None:
-    # PG serialises the attempt row at INSERT time, so a caller-held
-    # AttemptRow (and its metadata dict) can never reach storage by
-    # reference; copy on the way in to hold the same isolation contract.
+    # PG serialises the attempt row at INSERT time (metadata through
+    # dumps_jsonb_str, the same NUL-guarded serialization jsonb_param
+    # binds) and reads it back through loads, so a caller-held AttemptRow
+    # can never reach storage by reference and the stored metadata holds
+    # PG's jsonb read-back values.
     self._attempts.setdefault(attempt.job_id, []).append(
-        replace(attempt, metadata=dict(attempt.metadata))
+        replace(attempt, metadata=loads(dumps_jsonb_str(attempt.metadata)))
     )

@@ -30,6 +30,7 @@ import structlog
 from pydantic import BaseModel
 
 from taskq._ids import new_uuid
+from taskq._json import dumps_jsonb_str, loads
 from taskq.actor_config import ActorConfig
 from taskq.backend._cursor import (
     decode_batch_cursor,
@@ -828,10 +829,12 @@ class InMemoryBackend:
             last_fire_error=None,
             consecutive_failures=0,
             next_fire_at=args.next_fire_at,
-            # PG serialises metadata into jsonb at INSERT time, so a
-            # caller-held dict can never reach storage by reference; copy
-            # on the way in to hold the same isolation contract here.
-            metadata=dict(args.metadata),
+            # PG serialises metadata into jsonb at INSERT time and reads it
+            # back through loads — store the round-trip of the same
+            # serialization, so a caller-held dict can never reach storage
+            # by reference and values whose orjson encoding differs from
+            # the Python object read back exactly as PG reads them.
+            metadata=loads(dumps_jsonb_str(args.metadata)),
         )
         self._schedules[sid] = record
         return _schedule_read_copy(record)
@@ -875,9 +878,10 @@ class InMemoryBackend:
         elif args.clear_payload_factory:
             updates["payload_factory"] = None
         if args.metadata is not None:
-            # Same isolation contract as create_schedule: copy the
-            # caller-held dict on the way in.
-            updates["metadata"] = dict(args.metadata)
+            # Same storage contract as create_schedule: the round-trip of
+            # the same serialization PG binds — no caller reference in
+            # storage, PG's jsonb read-back values.
+            updates["metadata"] = loads(dumps_jsonb_str(args.metadata))
         if args.consecutive_failures is not None:
             updates["consecutive_failures"] = args.consecutive_failures
         if args.last_fire_error is not None:

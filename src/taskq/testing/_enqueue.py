@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 
 import structlog
 
-from taskq._json import dumps_jsonb_str
+from taskq._json import dumps_jsonb_str, loads
 from taskq.backend._protocol import (
     CancelPhase,
     EnqueueArgs,
@@ -114,9 +114,14 @@ async def _enqueue(self: "InMemoryBackend", args: EnqueueArgs) -> JobRow:
     # an app validated against InMemory broke in production.  The guard
     # lives in this mirror, NOT in EnqueueArgs._check_no_nul_text, because
     # a struct-level check would double-scan the PG hot path, which
-    # already guards at bind time.
-    dumps_jsonb_str(args.payload)
-    dumps_jsonb_str(args.metadata)
+    # already guards at bind time.  The guard's serialization is also
+    # what PG stores: the jsonb column holds the orjson text and reads it
+    # back through loads, so the stored values are its round-trip —
+    # values whose encoding differs from the Python object (NaN/Infinity
+    # → null, UUID → string, tuple → array) read back exactly as PG
+    # reads them.
+    stored_payload = loads(dumps_jsonb_str(args.payload))
+    stored_metadata = loads(dumps_jsonb_str(args.metadata))
 
     if args.idempotency_key is not None:
         # NOTE: InMemoryBackend always simulates the fully-migrated
@@ -159,12 +164,6 @@ async def _enqueue(self: "InMemoryBackend", args: EnqueueArgs) -> JobRow:
     )
 
     result_expires_at = now + args.result_ttl if args.result_ttl is not None else None
-
-    # PG serialises payload/metadata into jsonb at INSERT time, so the
-    # stored row can never alias a caller-held dict; copy on the way in
-    # to hold the same isolation contract here.
-    stored_payload = dict(args.payload)
-    stored_metadata = dict(args.metadata)
 
     row = JobRow(
         id=args.id,

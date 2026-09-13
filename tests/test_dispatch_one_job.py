@@ -1746,6 +1746,49 @@ async def test_slot_pool_release_unwind_skip_is_logged_with_its_cause(
         assert matching[0].get("job_id") == str(job.id)
 
 
+async def test_slot_pool_release_unwind_unexpected_error_stays_loud() -> None:
+    """The release guard swallows exactly two failure families (a dead
+    connection's AttributeError, a closed pool's InterfaceError).
+    Anything else is a programming error and must propagate — replacing
+    the committed outcome loudly — rather than being swallowed behind
+    the job's success. A well-meaning widening to ``except Exception``
+    would hide it; this pins the deliberate narrowness.
+    """
+    async with _ScopeStack() as scopes:
+        fake_backend = FakeBackend()
+        fake_deps = _FakeWorkerDeps()
+        pool = _ConnDeadAtReleasePool(ValueError("connection list is corrupted"))
+        pool.conn.is_in_transaction = (  # type: ignore[method-assign]  # Why: test fake; simulates a broken connection object, not an asyncpg failure state.
+            lambda: (_ for _ in ()).throw(ValueError("connection list is corrupted"))
+        )
+        fake_deps.slot_pool = pool  # type: ignore[assignment]  # Why: duck-typed pool stand-in, same as the release-failure tests above.
+        actor_ref = _make_actor_ref(_noop_actor)
+        job = make_job_row(payload={"value": 42})
+
+        with pytest.raises(ValueError, match="connection list is corrupted"):
+            await dispatch_one_job(
+                backend=as_backend(fake_backend),
+                deps=_as_deps(fake_deps),
+                job=job,
+                worker_id=_WORKER_ID,
+                registry=scopes.registry,
+                process_scope=scopes.process_scope,
+                thread_scope=scopes.thread_scope,
+                loop_scope=scopes.loop_scope,
+                actor_ref=actor_ref,  # type: ignore[arg-type]  # Why: same ActorRef generic-widening pattern as the tests above.
+                actor_config=StubActorConfig(retry=RetryPolicy()),
+                clock=FakeClock(_NOW),
+                active_jobs=fake_deps.active_jobs,
+                enqueuer=SubJobEnqueuer(
+                    backend=as_backend(fake_backend), loop_scope_resolved=None, worker_pool=None
+                ),
+            )
+
+        # The job committed before the unwind raised — the loud failure
+        # replaces the reported outcome, never the durable state.
+        assert len(fake_backend.mark_succeeded_calls) == 1
+
+
 class _ReleaseRecordingPool:
     """Pool stand-in that records every release, for asserting that a
     connection still inside its transaction is never handed back."""

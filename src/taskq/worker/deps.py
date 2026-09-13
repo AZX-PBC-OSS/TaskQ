@@ -48,6 +48,7 @@ if TYPE_CHECKING:
     import redis.asyncio as redis_async
 
 __all__ = [
+    "POOL_INFRA_EXCEPTIONS",
     "WorkerDeps",
     "apply_keepalive_to_conn",
     "open_dedicated_conn",
@@ -56,6 +57,29 @@ __all__ = [
 ]
 
 logger: structlog.stdlib.BoundLogger = get_logger(__name__)
+
+POOL_INFRA_EXCEPTIONS: tuple[type[BaseException], ...] = (
+    TimeoutError,
+    asyncpg.PostgresError,
+    asyncpg.InterfaceError,
+    asyncpg.InternalClientError,
+    OSError,
+)
+"""What a bounded pool operation failing for infrastructure reasons
+raises — the shared classification for every direct-DSN acquire site:
+the dispatch slot acquire and both readiness pings. The dispatch acquire
+runs no queries, so any PostgresError there is connect-time
+infrastructure — an acquire that must OPEN a fresh connection (a holder
+reconnect after a drop, idle-expiry, or terminate) surfaces server-side
+refusals as coded errors (InvalidPasswordError on a revoked static
+credential, AdminShutdownError, CannotConnectNowError) that are not
+PostgresConnectionError subclasses, and never a job outcome. The pings
+apply the family to their whole bounded body — the acquire plus a fixed
+literal ``SELECT 1``, a query with no caller input, so any PostgresError
+from it is server-side infrastructure; readiness fails closed for every
+member either way, and the dispatch acquire's own per-occurrence cause
+is logged at its raise site.
+"""
 
 # Hold references to background drain tasks so they are not garbage-collected
 # before completing. Cleared as each task finishes via done-callbacks.
