@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 from uuid import UUID
 
 from taskq.backend._protocol import JobRow, QueueMode
+from taskq.testing._reads import _read_copy
 
 if TYPE_CHECKING:
     from taskq.testing.in_memory import InMemoryBackend
@@ -147,7 +148,7 @@ async def _dispatch_batch(
             now=now,
             worker_id=worker_id,
         )
-        dispatched.append(updated)
+        dispatched.append(_read_copy(updated))
 
     return dispatched
 

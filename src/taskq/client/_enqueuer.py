@@ -1,9 +1,20 @@
 """Sub-job enqueuer — enqueues child jobs from within an actor body.
 
-Uses the LOOP-scope DB connection by default (transactional enqueue).
-Falls back to the worker pool if no LOOP-scope connection is registered.
-One instance per loop — survives across dispatches so the per-100-enqueue
-re-warning fires on the loop-level counter, not per-job.
+Connection resolution, in priority order:
+
+1. An explicit ``connection=`` argument to ``enqueue()`` /
+   ``enqueue_batch()`` — an immediate write on that connection, outside
+   any transaction lifecycle.
+2. A constructor-bound ``transaction_conn`` — the per-job enqueuer the
+   dispatch path constructs around the job's slot transaction
+   connection. Writes join that transaction, and the transactional
+   buffering lifecycle (``flush_buffer`` / ``discard_buffer`` /
+   ``drain_for_re_enqueue``) is active **by construction** — the
+   binding is what activates it, not where the connection came from.
+3. A LOOP-scope ``asyncpg.Connection`` from ``loop_scope_resolved`` —
+   the provenance-based inference the loop-level shared enqueuer uses
+   for the single-slot / autonomous path.
+4. The worker pool — autonomous commit, no transactional semantics.
 
 Parent-tag propagation: the consumer sets the parent job's tags via
 ``set_parent_tags()`` before actor invocation and resets them after
@@ -30,6 +41,7 @@ from taskq._ids import new_job_id
 from taskq.backend._protocol import (
     Backend,
     CancelPhase,
+    ConnLike,
     EnqueueArgs,
     IdempotencyKey,
     IdentityKey,
@@ -91,11 +103,22 @@ def parent_tags(tags: tuple[str, ...]) -> Generator[None, None, None]:
 class SubJobEnqueuer:
     """Enqueue sub-jobs from within an actor body.
 
-    Uses the LOOP-scope DB connection by default (transactional
-    enqueue). Falls back to the worker pool if no LOOP-scope
-    connection is registered. One instance per loop — survives
-    across dispatches so the per-100-enqueue re-warning fires on
-    the loop-level counter, not per-job.
+    Two construction shapes, deliberately distinct:
+
+    * **Loop-level shared** — ``loop_scope_resolved`` set, no
+      ``transaction_conn``. Serves the single-slot path and the
+      autonomous fallback; transactional buffering is inferred from
+      connection provenance (a LOOP-scope connection means "inside the
+      consumer's transaction"). One instance per loop, so the
+      per-100-enqueue re-warning fires on the loop-level counter, not
+      per-job. Never shared across concurrent jobs that each own a
+      transaction — its buffer state is unkeyed.
+    * **Per-job bound** — ``transaction_conn`` set to the job's slot
+      transaction connection (the shape ``dispatch_one_job``
+      constructs whenever the worker runs a dedicated slot pool).
+      Every write joins that one transaction and the buffers are this
+      job's alone, so a sibling slot's flush/discard/drain can never
+      reach them.
     """
 
     def __init__(
@@ -106,6 +129,7 @@ class SubJobEnqueuer:
         *,
         clock: Clock | None = None,
         capacity_cache: ActorCapacityCache | None = None,
+        transaction_conn: ConnLike | None = None,
     ) -> None:
         self._loop_scope_resolved = loop_scope_resolved
         self._worker_pool = worker_pool
@@ -114,9 +138,20 @@ class SubJobEnqueuer:
         self._capacity_cache = (
             capacity_cache if capacity_cache is not None else ActorCapacityCache(backend)
         )
+        self._transaction_conn = transaction_conn
         self._pending_buffer: list[EnqueueArgs] = []
         self._loop_enqueue_args: list[EnqueueArgs] = []
         self._autonomous_enqueue_count: int = 0
+
+    @property
+    def capacity_cache(self) -> ActorCapacityCache:
+        """The TTL-bounded capacity snapshot this enqueuer reads.
+
+        Exposed read-only so a derived enqueuer (the per-job binding the
+        dispatch path constructs) can share the loop-level cache instead
+        of paying its own per-job snapshot refresh.
+        """
+        return self._capacity_cache
 
     async def enqueue[P: BaseModel, R: BaseModel | None](
         self,
@@ -242,37 +277,46 @@ class SubJobEnqueuer:
     def _resolve_connection(
         self,
         connection: asyncpg.Connection | None,
-    ) -> tuple[asyncpg.Connection | None, bool]:
+    ) -> tuple[ConnLike | None, bool]:
+        """Resolve the connection for one write.
+
+        Returns ``(conn, in_transaction)``. ``in_transaction`` is the
+        gate on the transactional buffering lifecycle: True means the
+        write joins a transaction the consumer owns, so the in-memory
+        backend buffers it for flush/discard and the enqueuer tracks it
+        for re-enqueue on snooze/retry. Resolution order: an explicit
+        per-call connection (never transactional — the caller owns its
+        lifecycle), then the constructor-bound ``transaction_conn``
+        (transactional by construction), then LOOP-scope provenance
+        (transactional by inference), then no connection at all.
+        """
         import asyncpg as _asyncpg
 
-        conn = connection
-        from_loop_scope = False
-
-        if conn is not None:
-            pass
-        elif (
+        if connection is not None:
+            return connection, False
+        if self._transaction_conn is not None:
+            return self._transaction_conn, True
+        if (
             self._loop_scope_resolved is not None
             and (loop_conn := self._loop_scope_resolved.get(_asyncpg.Connection)) is not None
         ):
-            conn = cast(_asyncpg.Connection, loop_conn)
-            from_loop_scope = True
-
-        # Why: cast — loop_conn comes from Mapping[type, object]; the DI resolver guarantees it is asyncpg.Connection at runtime
-        return conn, from_loop_scope
+            # Why: cast — loop_conn comes from Mapping[type, object]; the DI resolver guarantees it is asyncpg.Connection at runtime
+            return cast(_asyncpg.Connection, loop_conn), True
+        return None, False
 
     async def _do_enqueue(
         self,
         args: EnqueueArgs,
         connection: asyncpg.Connection | None,
     ) -> JobRow:
-        conn, from_loop_scope = self._resolve_connection(connection)
+        conn, in_transaction = self._resolve_connection(connection)
 
         if conn is not None:
-            if from_loop_scope and self._backend.supports_transactional_simulation:
+            if in_transaction and self._backend.supports_transactional_simulation:
                 self._pending_buffer.append(args)
                 return self._synthesize_row(args)
             row = await self._backend.enqueue_with_conn(conn, args)
-            if from_loop_scope:
+            if in_transaction:
                 self._loop_enqueue_args.append(args)
             return row
 
@@ -326,7 +370,7 @@ class SubJobEnqueuer:
 
         resolved_batch_id = batch_id if batch_id is not None else UUID(bytes=new_job_id().bytes)
 
-        conn, from_loop_scope = self._resolve_connection(connection)
+        conn, in_transaction = self._resolve_connection(connection)
 
         if conn is not None:
             effective_mp: dict[str, int | None] = {}
@@ -340,7 +384,7 @@ class SubJobEnqueuer:
                 items, resolved_batch_id, max_pending_by_actor=effective_mp
             )
 
-            if from_loop_scope and self._backend.supports_transactional_simulation:
+            if in_transaction and self._backend.supports_transactional_simulation:
                 for args in args_list:
                     self._pending_buffer.append(args)
                 return [
@@ -354,8 +398,8 @@ class SubJobEnqueuer:
                     for args, item in zip(args_list, items, strict=True)
                 ]
 
-            rows = await self._backend.enqueue_batch(args_list, connection=conn)  # type: ignore[call-arg]  # Why: asyncpg.Connection is compatible with the protocol's connection parameter at runtime
-            if from_loop_scope:
+            rows = await self._backend.enqueue_batch(args_list, connection=conn)
+            if in_transaction:
                 self._loop_enqueue_args.extend(args_list)
             handles: list[JobHandle[Any]] = []
             for i, row in enumerate(rows):

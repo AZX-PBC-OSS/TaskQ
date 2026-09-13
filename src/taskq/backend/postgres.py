@@ -332,7 +332,7 @@ class PostgresBackend:
         self,
         args_list: list[EnqueueArgs],
         *,
-        connection: "asyncpg.Connection | None" = None,
+        connection: ConnLike | None = None,
         enforce_max_pending: bool = True,
     ) -> list[JobRow]:
         return await _enqueue_batch(
@@ -348,7 +348,7 @@ class PostgresBackend:
         self,
         args_list: list[EnqueueArgs],
         *,
-        connection: "asyncpg.Connection | None" = None,
+        connection: ConnLike | None = None,
         enforce_max_pending: bool = True,
     ) -> int:
         return await _enqueue_batch_fast(
@@ -421,10 +421,12 @@ class PostgresBackend:
         conn: ConnLike,
         job_id: JobId,
         worker_id: UUID,
-        result: dict[str, object] | None,
+        result: dict[str, object] | None = None,
         progress_seq: int = 0,
         progress_state: dict[str, object] | None = None,
         fallback_result_ttl: timedelta | None = None,
+        *,
+        result_bytes: bytes | None = None,
     ) -> bool:
         return await _mark_succeeded_on_conn(
             conn,
@@ -436,16 +438,19 @@ class PostgresBackend:
             progress_state,
             fallback_result_ttl,
             self._deps.settings.result_max_bytes,
+            result_bytes=result_bytes,
         )
 
     async def mark_succeeded(
         self,
         job_id: JobId,
         worker_id: UUID,
-        result: dict[str, object] | None,
+        result: dict[str, object] | None = None,
         progress_seq: int = 0,
         progress_state: dict[str, object] | None = None,
         fallback_result_ttl: timedelta | None = None,
+        *,
+        result_bytes: bytes | None = None,
     ) -> bool:
         return await _mark_succeeded(
             self._worker_pool,
@@ -457,6 +462,7 @@ class PostgresBackend:
             progress_state,
             fallback_result_ttl,
             self._deps.settings.result_max_bytes,
+            result_bytes=result_bytes,
         )
 
     async def mark_failed_or_retry(
@@ -662,15 +668,28 @@ class PostgresBackend:
             if _locked_by_worker is not None:
                 payload = _cancel_notify_payload(job_id, _locked_by_worker)
                 fleet_ch, worker_ch = _cancel_notify_channels(self._schema_name, _locked_by_worker)
-                async with self._worker_pool.acquire() as notify_conn:
-                    await notify_conn.execute(
-                        "SELECT pg_notify($1, $2), pg_notify($3, $4)",
-                        fleet_ch,
-                        payload,
-                        worker_ch,
-                        payload,
+                try:
+                    async with self._worker_pool.acquire() as notify_conn:
+                        await notify_conn.execute(
+                            "SELECT pg_notify($1, $2), pg_notify($3, $4)",
+                            fleet_ch,
+                            payload,
+                            worker_ch,
+                            payload,
+                        )
+                    _cancel_notify_sent_counter.add(1, {"schema": self._schema_name})
+                except Exception:
+                    # The cancel flag is already committed — the transaction
+                    # block above has exited by the time the NOTIFY fires —
+                    # so a NOTIFY failure must not surface to the caller as
+                    # a failed cancel: the request IS recorded. Same
+                    # swallow-and-warn as cancel_where below; the heartbeat
+                    # poll remains authoritative for signal delivery.
+                    logger.warning(
+                        "cancel-request-notify-failed",
+                        job_id=str(job_id),
+                        exc_info=True,
                     )
-                _cancel_notify_sent_counter.add(1, {"schema": self._schema_name})
         return True
 
     async def poll_cancel_flags(

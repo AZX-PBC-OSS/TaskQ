@@ -34,6 +34,7 @@ from taskq.batch import BatchCompletionStatus, apply_batch_terminal_outcome, dec
 from taskq.context import JobContext
 from taskq.exceptions import PayloadValidationError, Snooze
 from taskq.retry import OnRetryExhausted, OnSuccess, RetryClassifierHook, RetryPolicy
+from taskq.testing._reads import _event_read_copy, _read_copy
 
 if TYPE_CHECKING:
     from taskq.testing.in_memory import InMemoryBackend
@@ -317,8 +318,12 @@ def set_queue_mode(backend: "InMemoryBackend", queue_name: str, mode: QueueMode)
 
 
 async def get_events(backend: "InMemoryBackend", job_id: JobId) -> list[EventRow]:
-    """Return events for *job_id* (test-only accessor)."""
-    return [e for e in backend._events if e.job_id == job_id]  # pyright: ignore[reportPrivateUsage]  # Why: test runner helper intentionally accesses private InMemoryBackend state; this module is co-located with the backend and owns this access pattern.
+    """Return events for *job_id* (test-only accessor).
+
+    Isolated copies, like every other read seam — a mutated read result
+    must never reach ``_events`` storage.
+    """
+    return [_event_read_copy(e) for e in backend._events if e.job_id == job_id]  # pyright: ignore[reportPrivateUsage]  # Why: test runner helper intentionally accesses private InMemoryBackend state; this module is co-located with the backend and owns this access pattern.
 
 
 def archive_terminal_jobs(
@@ -429,9 +434,18 @@ async def get_archived(backend: "InMemoryBackend", job_id: JobId) -> _ArchivedJo
     """Return the archived job row for *job_id*, or ``None``.
 
     Supports the admin UI fallback pattern: a job absent from
-    ``_jobs`` but present in ``_archive`` is retrievable.
+    ``_jobs`` but present in ``_archive`` is retrievable. The returned
+    wrapper carries an isolated copy of the row (every read seam
+    severs aliasing), so mutating it cannot corrupt the archive.
     """
-    return backend._archive.get(job_id)  # pyright: ignore[reportPrivateUsage]  # Why: test runner helper intentionally accesses private InMemoryBackend state; this module is co-located with the backend and owns this access pattern.
+    archived = backend._archive.get(job_id)  # pyright: ignore[reportPrivateUsage]  # Why: test runner helper intentionally accesses private InMemoryBackend state; this module is co-located with the backend and owns this access pattern.
+    if archived is None:
+        return None
+    return _ArchivedJobRow(
+        row=_read_copy(archived.row),
+        archived_at=archived.archived_at,
+        expire_at=archived.expire_at,
+    )
 
 
 # ── Cancel polling simulation ──────────────────────────────────────────

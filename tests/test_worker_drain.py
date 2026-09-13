@@ -79,6 +79,8 @@ def _backend_stub() -> Backend:
             worker_id: object,
             result: object,
             fallback_result_ttl: object = None,
+            *,
+            result_bytes: object = None,
         ) -> bool:
             return True
 
@@ -89,6 +91,8 @@ def _backend_stub() -> Backend:
             worker_id: object,
             result: object,
             fallback_result_ttl: object = None,
+            *,
+            result_bytes: object = None,
         ) -> bool:
             return True
 
@@ -328,6 +332,27 @@ async def test_di_consumer_loop_increments_on_exception() -> None:
 
     deps = await _run_one_job_with_fake_dispatch(_fake_dispatch, actor_name="test_drain_fail_exc")
     assert deps.drain_failures == 1
+
+
+async def test_di_consumer_loop_does_not_count_slot_pool_acquire_failures() -> None:
+    """A slot-pool acquire failure is infrastructure, not a job outcome.
+
+    The job is already claimed and recovers by lock-lease expiry, so
+    counting it would make a drain step (Kubernetes Job, CI) report job
+    failures that never happened — the exact misclassification the
+    dedicated exception type exists to route around. The loop continues
+    to the next job; the failure was recorded and logged at the raise
+    site.
+    """
+    from taskq.worker.dispatch import SlotPoolAcquireError
+
+    async def _fake_dispatch(*args: object, **kwargs: object) -> AttemptOutcome:
+        raise SlotPoolAcquireError(acquire_timeout=5.0)
+
+    deps = await _run_one_job_with_fake_dispatch(
+        _fake_dispatch, actor_name="test_drain_fail_acquire"
+    )
+    assert deps.drain_failures == 0
 
 
 async def test_di_consumer_loop_no_increment_on_cancelled_as_value() -> None:

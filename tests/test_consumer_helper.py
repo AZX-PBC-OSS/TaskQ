@@ -19,6 +19,7 @@ from pydantic import BaseModel
 
 import taskq.obs as obs_mod
 from taskq._ids import new_uuid
+from taskq._json import dumps as _json_dumps
 from taskq.backend._protocol import (
     ErrorInfo,
     IdentityKey,
@@ -121,7 +122,8 @@ async def _run_consume(
 
 
 async def test_consume_success_calls_mark_succeeded() -> None:
-    """Baseline: successful actor → mark_succeeded called with result dict."""
+    """Baseline: successful actor → mark_succeeded called with the result's
+    orjson bytes (no dict — the terminal write reuses the encoding)."""
 
     async def actor(_job: JobRow, _ctx: JobContext[BaseModel]) -> dict[str, object]:
         return {"value": 42}
@@ -130,7 +132,12 @@ async def test_consume_success_calls_mark_succeeded() -> None:
     job = make_job_row()
     await _run_consume(job, backend, actor)
     assert len(backend.mark_succeeded_calls) == 1
-    assert backend.mark_succeeded_calls[0] == (job.id, _WORKER_ID, {"value": 42})
+    assert backend.mark_succeeded_calls[0] == (
+        job.id,
+        _WORKER_ID,
+        None,
+        _json_dumps({"value": 42}),
+    )
 
 
 # ── Snooze ────────────────────────────────────────────────────────────────
@@ -302,14 +309,18 @@ async def test_consume_shielded_writes_complete_when_task_is_cancelled() -> None
             self,
             job_id: UUID,
             worker_id: UUID,
-            result: dict[str, object] | None,
+            result: dict[str, object] | None = None,
             progress_seq: int = 0,
             progress_state: dict[str, object] | None = None,
             fallback_result_ttl: object = None,
+            *,
+            result_bytes: bytes | None = None,
         ) -> bool:
             await asyncio.sleep(0.05)
             write_completed.set()
-            return await super().mark_succeeded(job_id, worker_id, result)
+            return await super().mark_succeeded(
+                job_id, worker_id, result, result_bytes=result_bytes
+            )
 
     backend = SlowBackend()
     job = make_job_row()

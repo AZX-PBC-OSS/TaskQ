@@ -42,6 +42,7 @@ from pydantic import BaseModel
 from taskq._di import ProviderRegistry
 from taskq._di.scopes import LoopScope, ProcessScope, ThreadScope
 from taskq._ids import new_uuid
+from taskq._shield import shield_with_retrieval
 from taskq.actor import ActorRef
 from taskq.backend._protocol import Backend, JobRow
 from taskq.backend._records import jsonb_param
@@ -59,7 +60,7 @@ from taskq.worker._bootstrap import worker_main, worker_main_async
 from taskq.worker._transient import TRANSIENT_PG_ERRORS
 from taskq.worker.cancel import make_cancel_controller
 from taskq.worker.deps import WorkerDeps
-from taskq.worker.dispatch import dispatch_one_job
+from taskq.worker.dispatch import SlotPoolAcquireError, dispatch_one_job
 
 __all__ = [  # pyright: ignore[reportUnsupportedDunderAll]  # Why: _main is lazily re-exported via __getattr__
     "_main",
@@ -400,16 +401,19 @@ async def consumer_loop_stub(
                         timeout=stub_work_timeout,
                     )
                 except asyncio.CancelledError:
+                    # shield_with_retrieval, not plain asyncio.shield: a second
+                    # cancel landing while this write is detached must not
+                    # strand its outcome unretrieved (see taskq._shield).
                     with contextlib.suppress(asyncio.CancelledError):
-                        await asyncio.shield(backend.mark_cancelled(job.id, worker_id))
+                        await shield_with_retrieval(backend.mark_cancelled(job.id, worker_id))
                     raise
                 except TimeoutError:
                     pass
 
                 if ctx.cancellation_requested:
-                    await asyncio.shield(backend.mark_cancelled(job.id, worker_id))
+                    await shield_with_retrieval(backend.mark_cancelled(job.id, worker_id))
                 else:
-                    await asyncio.shield(backend.mark_succeeded(job.id, worker_id, None))
+                    await shield_with_retrieval(backend.mark_succeeded(job.id, worker_id, None))
                 # fallback_result_ttl is not forwarded here: the stub path has
                 # no actor registry and therefore no @actor(result_ttl=...)
                 # literal to supply. If the stored actor_config.result_ttl is
@@ -422,7 +426,7 @@ async def consumer_loop_stub(
 
             except asyncio.CancelledError:
                 with contextlib.suppress(asyncio.CancelledError):
-                    await asyncio.shield(backend.mark_cancelled(job.id, worker_id))
+                    await shield_with_retrieval(backend.mark_cancelled(job.id, worker_id))
                 raise
 
             except Exception:
@@ -539,6 +543,16 @@ async def di_consumer_loop(
             )
             if outcome == "failed":
                 deps.drain_failures += 1
+        except SlotPoolAcquireError:
+            # Infrastructure, not a job outcome: the job is already
+            # claimed, its lock lease expires, and the reclaim sweep
+            # re-dispatches it. Counting this as a drain failure would
+            # make a Kubernetes Job / CI drain step report job failures
+            # that never happened. The acquire was recorded (counter)
+            # and logged (per-occurrence cause, job id) at the raise
+            # site; nothing to do here but leave the job to lease
+            # reclaim.
+            continue
         except Exception:
             _consumer_log.exception("dispatch-failed", job_id=str(job.id))
             deps.drain_failures += 1

@@ -40,12 +40,72 @@ if TYPE_CHECKING:
     import asyncpg
     import redis.asyncio as redis_async
 
+    from taskq.settings import TaskQSettings
+
 __all__ = [
+    "DEFAULT_MAX_CACHED_STATEMENT_LIFETIME",
+    "DEFAULT_STATEMENT_CACHE_SIZE",
     "ConnFactory",
     "PoolFactory",
     "RedisFactory",
     "WorkerConnections",
+    "statement_cache_kwargs",
 ]
+
+# ── asyncpg statement-cache defaults ────────────────────────────────────
+#
+# asyncpg caches prepared statements per connection in an LRU capped by
+# ``statement_cache_size`` (asyncpg default: 100 entries) and evicts
+# entries older than ``max_cached_statement_lifetime`` seconds (default:
+# 300). TaskQ's read paths render far more distinct SQL texts than that:
+# ``list_jobs`` emits 384+ filter-combination variants (backend
+# ``_filter_sql.py`` + ``_cursor.py``), and the admin pages add more, so a
+# client or UI whose filters vary crosses the 100-entry cap and thrashes
+# the cache — a measured 90-96% steady-state miss rate, with the eviction
+# churn measuring SLOWER than ``statement_cache_size=0`` (1.27 vs
+# 0.77 ms/call; ``benchmarks/ab_stmt_cache.py``). Every miss re-pays the
+# Parse/Describe round trips: +10-40 ms/call at managed-PG RTT. The write
+# hot loop (dispatch, enqueue, terminal updates, sweeps) is textually
+# stable and unaffected.
+#
+# 512 entries covers the rendered-variant space with headroom; the 1-hour
+# lifetime keeps long-lived prepared statements from being needlessly
+# re-prepared on long-running workers. Every TaskQ-built pool passes both;
+# callers bringing their own pools (``WorkerConnections`` factories) should
+# set the same two ``create_pool`` kwargs.
+DEFAULT_STATEMENT_CACHE_SIZE = 512
+DEFAULT_MAX_CACHED_STATEMENT_LIFETIME = 3600
+
+
+def statement_cache_kwargs(settings: TaskQSettings | None = None) -> dict[str, int]:
+    """The ``create_pool`` kwargs carrying TaskQ's statement-cache tuning.
+
+    Bridges :class:`~taskq.settings.TaskQSettings` to
+    ``asyncpg.create_pool``: pass a loaded settings instance to read the
+    operator-configured values (``TASKQ_STATEMENT_CACHE_SIZE`` /
+    ``TASKQ_MAX_CACHED_STATEMENT_LIFETIME``), or ``None`` for the module
+    constants above. Either way the result is the pair every TaskQ-built
+    pool passes.
+
+    Call sites with a settings instance in scope resolve through this
+    helper and forward the two values as **explicit** ``create_pool``
+    kwargs (``statement_cache_size=kwargs["statement_cache_size"]`` …):
+    pyright strict rejects a ``dict[str, int]`` splat against
+    ``asyncpg.create_pool``'s typed keyword-only parameters, and the
+    explicit forwarding keeps the call site type-traced. Sites without a
+    settings instance (the testing fixtures) pass the constants directly.
+    Returns a fresh dict.
+    """
+    if settings is None:
+        return {
+            "statement_cache_size": DEFAULT_STATEMENT_CACHE_SIZE,
+            "max_cached_statement_lifetime": DEFAULT_MAX_CACHED_STATEMENT_LIFETIME,
+        }
+    return {
+        "statement_cache_size": settings.statement_cache_size,
+        "max_cached_statement_lifetime": settings.max_cached_statement_lifetime,
+    }
+
 
 # ── Factory type aliases (PEP 695) ─────────────────────────────────────
 #

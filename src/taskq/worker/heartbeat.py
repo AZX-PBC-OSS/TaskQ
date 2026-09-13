@@ -18,6 +18,7 @@ import structlog
 
 from taskq._close import CLOSE_TIMEOUT_SECS, close_conn_bounded
 from taskq._dsn import dsn_host
+from taskq._shield import shield_with_retrieval
 from taskq.backend._sql import (
     INSERT_ATTEMPT_SQL,
     build_heartbeat_sql,
@@ -299,9 +300,16 @@ async def isolate_self(
                         )
                 return pending, crashed, cancelled
 
-            jobs_pending_count, jobs_crashed_count, jobs_cancelled_count = await asyncio.shield(
-                _inner()
-            )
+            # shield_with_retrieval, not plain asyncio.shield: on outer
+            # cancel the isolation tx keeps running detached on a conn the
+            # finally below closes — its late failure must be retrieved and
+            # logged, not lost as "Task exception was never retrieved" noise
+            # (see taskq._shield).
+            (
+                jobs_pending_count,
+                jobs_crashed_count,
+                jobs_cancelled_count,
+            ) = await shield_with_retrieval(_inner())
         finally:
             # Why bounded: isolate_self only runs when PG is already
             # suspected dead (heartbeat failures exceeded), so this close is

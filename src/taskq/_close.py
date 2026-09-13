@@ -38,7 +38,21 @@ logger = get_logger(__name__)
 CLOSE_TIMEOUT_SECS: float = 5.0
 
 # Bounded closes that unwind SEQUENTIALLY on the worker's AsyncExitStack:
-# 3 pools (dispatcher, heartbeat, worker) + notify_conn + redis_client.
+# up to 4 pools (dispatcher, heartbeat, worker, and the conditional
+# per-slot transaction pool) + notify_conn + redis_client.
+#
+# The slot pool is conditional (it exists only when a LOOP-scope
+# connection is registered and max_concurrency > 1), but this constant
+# models the WORST case — a deployment's SIGTERM budget must not be
+# silently short one close timeout because its worker happens to run
+# the per-slot path.
+#
+# Scope note: this models the BOOT-time stack. Each credential reload
+# pushes one more bounded close per factory-backed pool onto the same
+# stack, so a worker that has rotated K times unwinds (this count + K)
+# sequential closes — a pre-existing property of the reload
+# registration pattern, shared by the role pools; size crash budgets on
+# rotation-heavy deployments accordingly.
 #
 # The leader connection is deliberately NOT counted. orchestrate_shutdown
 # closes and nulls it before the stack unwinds, so the stack's own
@@ -51,9 +65,9 @@ CLOSE_TIMEOUT_SECS: float = 5.0
 # the worker down (worker/_bootstrap.py's _guarded sets shutdown_event
 # with no orchestrator), the early leader close never ran, so the exit
 # stack's leader guard closes a TaskQ-owned leader conn sequentially
-# too: 6 closes ≈ 32s on that path, not the 27s modelled here. The
+# too: 7 closes ≈ 37s on that path, not the 32s modelled here. The
 # startup warning's number understates the crash path by one close.
-_SEQUENTIAL_BOUNDED_CLOSES: int = 5
+_SEQUENTIAL_BOUNDED_CLOSES: int = 6
 
 # Bound on the trailing progress-publish drain (asyncio.wait timeout in the
 # worker's teardown callback). Additive on top of the closes above.
@@ -73,14 +87,15 @@ def worst_case_teardown_tail(close_timeout: float = CLOSE_TIMEOUT_SECS) -> float
     recovered later by crash reclaim instead of finalizing cleanly.
 
     Only reachable against a genuinely dead or hung Postgres/Redis; every
-    close returns promptly in the normal case.
+    close returns promptly in the normal case. Counts the conditional
+    per-slot pool: the worst case is a worker that has one.
 
     Sibling-crash caveat: on the path where a sibling crash (not an
     orchestrated shutdown) tears the worker down, the orchestrator's
-    early leader-conn close never runs and the exit stack's leader guard
-    closes a TaskQ-owned leader conn sequentially as well — six bounded
-    closes, ~32s at the default bound, understated by the 27s modelled
-    here.
+    early leader-conn close never ran and the exit stack's leader guard
+    closes a TaskQ-owned leader conn sequentially as well — seven
+    bounded closes, ~37s at the default bound, understated by the 32s
+    modelled here.
     """
     return _SEQUENTIAL_BOUNDED_CLOSES * close_timeout + PUBLISH_DRAIN_TIMEOUT_SECS
 

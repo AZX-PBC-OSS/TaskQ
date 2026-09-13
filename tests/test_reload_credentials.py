@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from collections.abc import Iterator
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -17,8 +18,20 @@ import asyncpg
 import pytest
 
 from taskq.connections import WorkerConnections
+from taskq.obs import set_slot_pool_occupancy_source
 from taskq.settings import WorkerSettings
 from taskq.worker.deps import WorkerDeps, open_worker_deps, reload_credentials
+
+
+@pytest.fixture(autouse=True)
+def _clear_slot_pool_gauge_source() -> Iterator[None]:  # pyright: ignore[reportUnusedFunction]  # Why: pytest autouse fixture consumed by the test runner via parameter injection, not by direct call.
+    """reload_credentials re-aims the occupancy gauge at whatever pool is
+    current; this file's _FakePool lacks the gauge accessors, so clear
+    the source after every test to keep later gauge collections in this
+    process clean."""
+    yield
+    set_slot_pool_occupancy_source(None)
+
 
 # ── Test helpers ───────────────────────────────────────────────────────
 
@@ -167,6 +180,78 @@ async def test_reload_swaps_factory_backed_pools() -> None:
     assert new_worker.closed
 
 
+async def test_reload_swaps_slot_pool_and_preserves_boot_time_sizing() -> None:
+    """The per-slot transaction pool joins the rebuild set.
+
+    A provider-backed slot pool is swapped like the role pools (old
+    drained in the background, replacement registered for teardown),
+    and the replacement comes from the SAME factory the boot-time pool
+    came from — the closure captured ``max_concurrency + 1`` at build
+    time, which is what keeps the pool's size stable across rotations
+    (max_concurrency is boot-only; no reload path re-reads settings).
+    """
+    settings = _make_settings()
+    old_slot = _FakePool("old-slot")
+    new_slot = _FakePool("new-slot")
+    factory = _make_pool_factory([old_slot, new_slot])
+
+    conns = WorkerConnections(
+        dispatcher_pool=_FakePool("dispatcher"),  # type: ignore[arg-type]
+        heartbeat_pool=_FakePool("heartbeat"),  # type: ignore[arg-type]
+        worker_pool=_FakePool("worker"),  # type: ignore[arg-type]
+        notify_conn=_FakeConn(),  # type: ignore[arg-type]
+        leader_conn=_FakeConn(),  # type: ignore[arg-type]
+    )
+    async with open_worker_deps(settings, connections=conns) as deps:
+        # The state bootstrap leaves behind on the per-slot path: the
+        # factory was consumed once at boot (that call opened old_slot)
+        # and is stored for rebuilds.
+        deps.slot_pool = await factory()  # type: ignore[assignment]
+        assert deps.slot_pool is old_slot
+        deps.slot_pool_factory = factory  # type: ignore[assignment]
+
+        await reload_credentials(deps, drain_timeout=0.5)
+
+        assert deps.slot_pool is new_slot
+        assert deps.slot_pool_factory is factory
+        await asyncio.sleep(0.2)
+
+    assert old_slot.closed
+    # Replacement registered on the exit stack: closed at teardown.
+    assert new_slot.closed
+
+
+async def test_reload_skips_dsn_built_slot_pool() -> None:
+    """A DSN-built slot pool has no factory — nothing to rotate.
+
+    Same rule as the role pools: the DSN path bakes a static credential,
+    so a rebuild would reopen identical connections for no credential
+    benefit. The pool stays in place across SIGHUP.
+    """
+    settings = _make_settings()
+    dsn_slot = _FakePool("dsn-slot")
+
+    conns = WorkerConnections(
+        dispatcher_pool=_FakePool("dispatcher"),  # type: ignore[arg-type]
+        heartbeat_pool=_FakePool("heartbeat"),  # type: ignore[arg-type]
+        worker_pool=_FakePool("worker"),  # type: ignore[arg-type]
+        notify_conn=_FakeConn(),  # type: ignore[arg-type]
+        leader_conn=_FakeConn(),  # type: ignore[arg-type]
+    )
+    async with open_worker_deps(settings, connections=conns) as deps:
+        deps.slot_pool = dsn_slot  # type: ignore[assignment]
+        # DSN-built: bootstrap stores no factory.
+
+        await reload_credentials(deps, drain_timeout=0.5)
+
+        assert deps.slot_pool is dsn_slot
+
+    # The test created this pool outside any TaskQ-owned lifecycle (the
+    # DSN-built slot pool's real close callback is registered by
+    # bootstrap, which this test bypasses) — nothing may have closed it.
+    assert not dsn_slot.closed
+
+
 async def test_reload_skips_caller_owned_pools() -> None:
     """reload_credentials does not touch caller-owned (concrete) pools."""
     settings = _make_settings()
@@ -211,13 +296,19 @@ async def test_reload_continues_past_one_failed_pool_factory() -> None:
         leader_conn=_FakeConn(),  # type: ignore[arg-type]
     )
     async with open_worker_deps(settings, connections=conns) as deps:
+        # The slot pool joins the rebuild set — a failing SLOT factory
+        # must not abort the role pools either, so it shares the failing
+        # factory here.
+        deps.slot_pool = _FakePool("old-slot")  # type: ignore[assignment]
+        deps.slot_pool_factory = failing_heartbeat_factory  # type: ignore[assignment]
         # Swap in a failing factory only for the reload call, after startup
         # succeeded with the real one — isolates the failure to the reload.
         deps.heartbeat_pool_factory = failing_heartbeat_factory  # type: ignore[assignment]
 
         await reload_credentials(deps, drain_timeout=0.5)
 
-        # dispatcher and worker reloaded fine despite heartbeat's failure
+        # dispatcher and worker reloaded fine despite heartbeat's and
+        # slot's failures
         assert deps.dispatcher_pool is new_dispatcher
         assert deps.worker_pool is new_worker
         # heartbeat kept its old (not-yet-expired) pool — no partial/corrupt state

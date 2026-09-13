@@ -12,10 +12,19 @@ Two channels are subscribed per worker:
     ``{"type": "<event>", ...}``
   - ``taskq_worker_{schema}_{worker_id}``: per-worker targeted events,
     same payload format, no filtering needed
+
+The reconnect backoff carries multiplicative jitter (±25% around the
+doubled delay). Without it, a large worker fleet that loses PG
+simultaneously (failover, container restart) retries in lockstep: every
+worker sleeps identical delays and lands identical simultaneous connect
+waves, re-synchronizing on each doubling and at the 30s cap. The jitter
+desynchronizes those retries the same way the deadlock backoff in
+``taskq.backend._cancel_bulk`` does.
 """
 
 import asyncio
 import contextlib
+import random
 from collections.abc import Callable, Iterable
 from uuid import UUID
 
@@ -379,16 +388,28 @@ async def _health_check_loop(
                         )
                         return
                     attempt += 1
+                    # Multiplicative jitter (±25%) applied AFTER the
+                    # exponential doubling (the pristine base doubles below,
+                    # unpolluted by previous jitter) and BEFORE the sleep, so
+                    # the logged delay is the delay actually slept. Applied
+                    # on every retry including the first: without it a fleet
+                    # that lost PG in the same instant (failover) retries in
+                    # lockstep waves — identical delays re-synchronize every
+                    # attempt, most visibly at the 30s cap where 100 workers
+                    # reconnect as one — exactly the storm the deadlock
+                    # backoff's jitter (taskq.backend._cancel_bulk) prevents
+                    # for batch retries.
+                    slept = delay * random.uniform(0.75, 1.25)  # noqa: S311  # Why: uniform is for reconnect-timing jitter, not cryptography; same non-crypto use as _cancel_bulk's deadlock backoff.
                     logger.warning(
                         "notify-reconnect-attempt",
                         kind="notify_reconnect_attempt",
                         attempt=attempt,
-                        delay=delay,
+                        delay=slept,
                         error=repr(exc),
                         error_type=type(exc).__name__,
                         channels=[ch for ch, _ in channels],
                     )
-                    await asyncio.sleep(delay)
+                    await asyncio.sleep(slept)
                     delay = min(delay * 2, 30.0)
 
 

@@ -1216,12 +1216,21 @@ if page.next_cursor:
 `SubJobEnqueuer` is accessed as `ctx.jobs` inside an actor body. It is not instantiated directly
 by application code. For actor-side usage see [Actor API — Sub-job enqueuing](actors.md#sub-job-enqueuing).
 
-!!! warning "Transactional sub-enqueue requires a single-slot worker"
+!!! warning "Transactional sub-enqueue: session state, not concurrency, is the constraint"
     Sub-enqueues join the actor's transaction only when a LOOP-scope `asyncpg.Connection` is
-    registered in DI — and that one connection is shared by **every** consumer slot, so the
-    transactional path is correct only with `TASKQ_MAX_CONCURRENCY=1`. Without a LOOP-scope
-    connection (the default worker), `ctx.jobs` commits each child immediately through the worker
-    pool (autonomous mode; the startup log warns `sub_enqueue_autonomous_fallback`). See
+    registered in DI. With `max_concurrency > 1` the worker opens a dedicated per-slot
+    transaction pool and each job transacts on its own connection, so the transactional path is
+    correct at any concurrency (the startup event `transactional_consume_per_slot` announces
+    the mode). Two consequences to know: TaskQ's own transactional writes (the terminal write,
+    transactional sub-enqueues) run on the slot connections while actors still receive the
+    registered LOOP-scope connection — if that connection carries session state (`SET ROLE`,
+    `search_path`, an RLS-driving GUC) that TaskQ's writes were expected to inherit, run the
+    transactional actor on a `TASKQ_MAX_CONCURRENCY=1` worker, where the writes keep using the
+    registered connection — and the per-slot pool costs `max_concurrency + 1` direct
+    connections, so the single-slot worker is also the minimal-connection-budget shape. Without
+    a LOOP-scope connection (the default worker), `ctx.jobs` commits each child immediately
+    through the worker pool (autonomous mode; the startup log warns
+    `sub_enqueue_autonomous_fallback`). See
     [ops.md — Fan-out at scale](ops.md#5-fan-out-at-scale-chunks-cursors-idempotency) for the
     consequences for chaining patterns.
 

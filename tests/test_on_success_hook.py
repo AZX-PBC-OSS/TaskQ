@@ -337,7 +337,7 @@ async def test_on_success_hook_timeout_does_not_crash_consumer() -> None:
 
 
 async def test_on_success_fires_on_transactional_success_path() -> None:
-    """on_success fires on the transactional success path (when loop_conn
+    """on_success fires on the transactional success path (when transaction_conn
     is provided)."""
     from collections.abc import AsyncGenerator
     from contextlib import asynccontextmanager
@@ -378,7 +378,7 @@ async def test_on_success_fires_on_transactional_success_path() -> None:
         actor_config=cfg,
         payload_type=EmptyPayload,
         clock=clk,
-        loop_conn=cast("asyncpg.Connection", fake_conn),
+        transaction_conn=cast("asyncpg.Connection", fake_conn),
     )
     assert result == "succeeded"
     assert len(calls) == 1
