@@ -1956,3 +1956,19 @@ async def test_run_forever_black_holed_health_query_does_not_stall_the_loop(
     assert black_hole.conn.hang_cancelled.is_set(), "the bound check never cancelled the hung query"
     for proc in procs:
         assert signal.SIGTERM in proc._signals, "a child never received the forwarded SIGTERM"
+
+
+def test_health_query_timeout_constant_is_the_documented_default() -> None:
+    """Pin the documented default for _HEALTH_QUERY_TIMEOUT_SECS.
+
+    Every #155 behaviour test monkeypatches the constant (raising=False),
+    so none of them would notice a silent default change — 2.0 -> 30.0
+    would pass CI while multiplying the worst-case health-check stall
+    fifteenfold. The docstring documents 2.0 (consistent with the
+    neighboring pool-acquire bound); this pin makes changing it a
+    deliberate, review-visible act instead of a constant edit nobody
+    fails on.
+    """
+    import taskq.worker.workgroup as workgroup_mod
+
+    assert workgroup_mod._HEALTH_QUERY_TIMEOUT_SECS == 2.0
