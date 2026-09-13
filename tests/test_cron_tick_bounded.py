@@ -56,6 +56,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import inspect
+import time
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
@@ -492,7 +493,47 @@ class TestTickIsBounded:
         # in the sibling tests (statement count, UPDATE count); this
         # test's own property is the all-or-nothing rollback/livelock
         # behaviour, which a 0.2 s deadline still exercises.
-        deadline = 0.2
+        # Calibrate the deadline from a measured healthy tick on this
+        # machine, per this test's own stated philosophy (measurement, not
+        # guesswork). A constant deadline flakes in exactly one direction:
+        # on a slow or loaded runner a healthy bounded tick overruns it,
+        # commits nothing, and the test fails on machine timing instead of
+        # the property it pins — this happened in CI at 0.2 s. The
+        # property needs only that the deadline is far above a healthy
+        # tick's duration and far below the per-schedule regression's
+        # (4 + 3N awaited statements is >10x the bounded tick's ~7); 10x
+        # the measured tick satisfies both at any runner speed. The
+        # livelock regression is caught by the assertions below
+        # regardless of where the deadline lands: their failure mode is
+        # ZERO committed fires, which no deadline size produces for a
+        # healthy or batch-committed tick. The schedules were seeded once
+        # above; the calibration tick consumes them, and the reset below
+        # hands the timed tick the same due state again.
+        calibration_start = time.perf_counter()
+        async with clean_pg_conn.transaction():
+            await tick_cron(
+                clean_pg_conn,
+                settings,
+                backend,
+                schema,
+                worker_id,
+            )
+        healthy_s = time.perf_counter() - calibration_start
+
+        # Restore the due state the calibration tick consumed: drop its
+        # fires and clear the fire stamps so the timed tick below faces
+        # the same backlog shape the production regression would.
+        await clean_pg_conn.execute(
+            f'DELETE FROM "{schema}".jobs WHERE actor = $1',  # noqa: S608  # Why: schema is a test-fixture identifier.
+            _CRON_ACTOR,
+        )
+        await clean_pg_conn.execute(
+            f'UPDATE "{schema}".cron_schedules '  # noqa: S608  # Why: schema is a test-fixture identifier.
+            "SET last_fired_at = NULL, next_fire_at = clock_timestamp() "
+            "WHERE enabled = true"
+        )
+
+        deadline = max(0.2, 10 * healthy_s)
 
         with contextlib.suppress(TimeoutError, asyncpg.QueryCanceledError, asyncpg.InterfaceError):
             async with asyncio.timeout(deadline):
