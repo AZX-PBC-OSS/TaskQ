@@ -243,6 +243,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `unique_for` + `identity_key` single enqueue no longer takes an unbounded blocking advisory lock — the preflight-then-insert serialization lock (`taskq:unique_for:<schema>:<actor>:<identity_key>`) is now acquired via `pg_try_advisory_xact_lock` with a bounded retry (5 s default, `DEFAULT_UNIQUE_FOR_LOCK_TIMEOUT_MS`; `0` or less waits indefinitely, matching the `max_pending` lock-budget convention). Same-key racers no longer queue with unbounded tail latency and a black-holed holder can no longer pin every same-key enqueue. Budget exhaustion raises the new typed `UniqueForLockTimeoutError` — deliberately NOT a `BackpressureError` and not recorded against `taskq.backpressure.errors`: the correct outcome of waiting is a dedup return, so the correct response is to retry the same enqueue (which then typically dedupes against the winner's row). The dedup-return-under-contention semantics are unchanged and pinned by the single-flight integration tests.
 - SQL injection in `batch.py` `BatchHandle.status()` and `wait_for_batch()` — `schema` parameter now validated against `_IDENT_RE` before SQL interpolation
 - Fire-and-forget progress publish — `ctx.progress()` no longer blocks the actor on a synchronous Redis round-trip; publishes via background tasks with drain-on-shutdown
 - Stale `[web]` extra references in README and CI — replaced with `[fastapi]`

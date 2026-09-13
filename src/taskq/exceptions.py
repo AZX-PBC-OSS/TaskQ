@@ -154,6 +154,47 @@ class MaxPendingLockTimeoutError(BackpressureError):
         )
 
 
+class UniqueForLockTimeoutError(TaskQError):
+    """Raised when the advisory-lock wait bounding a ``unique_for``
+    enqueue's preflight-then-insert exceeded its budget.
+
+    Distinct from :class:`MaxPendingLockTimeoutError` on purpose. That
+    error is a :class:`BackpressureError`: the caller's own load filled
+    the contention scope (every producer of a capped actor), the cap
+    check never ran, and the correct response is the same as for a cap
+    rejection — retry later or shed load. This error means the DEDUP
+    ANSWER for one ``(schema, actor, identity_key)`` could not be
+    determined in time: the contention scope is a single logical
+    entity's identity (a same-key stampede, or a black-holed holder the
+    server has not yet reaped), nothing about capacity is wrong, and the
+    correct response is to RETRY THE SAME ENQUEUE — by then the winner's
+    row is typically committed and the preflight returns it as a dedup
+    hit, which is the very outcome the wait existed to produce.
+    Deliberately NOT a :class:`BackpressureError` so handlers that react
+    to backpressure by shedding load or logging queue counts cannot
+    misreact, and deliberately NOT recorded against the
+    ``taskq.backpressure.errors`` counter (identity-key contention is
+    not a capacity signal; the ``unique-for-lock-timeout`` log event
+    carries the observability instead).
+
+    ``identity_key`` names the contended entity. ``timeout_ms`` is the
+    budget that expired. No row was inserted: the loser's transaction
+    rolled back before any write.
+    """
+
+    def __init__(self, actor: str, identity_key: str, timeout_ms: float) -> None:
+        self.actor = actor
+        self.identity_key = identity_key
+        self.timeout_ms = timeout_ms
+        super().__init__(
+            f"unique_for enqueue for actor {actor!r} identity_key {identity_key!r} "
+            f"could not acquire the single-flight advisory lock within {timeout_ms:g} ms "
+            "of contention, so the dedup check did not run and nothing was inserted. "
+            "Retry the same enqueue: once the holder's row is visible, the retry "
+            "typically dedupes against it."
+        )
+
+
 class PayloadValidationError(TaskQError):
     """Pydantic validation failed at enqueue or dispatch.
 

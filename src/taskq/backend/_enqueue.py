@@ -35,6 +35,7 @@ from taskq.exceptions import (
     MaxPendingLockTimeoutError,
     ScopedIdempotencyMigrationPendingError,
     SingletonCollisionError,
+    UniqueForLockTimeoutError,
 )
 from taskq.obs import (
     get_logger,
@@ -56,17 +57,15 @@ logger: structlog.stdlib.BoundLogger = get_logger(__name__)
 
 _SINGLETON_CONSTRAINT_NAME = "jobs_singleton_uniq"
 
-#: Serializes the unique_for preflight-then-insert for one
-#: (schema, actor, identity_key). No schema interpolation, so it is not a
-#: SqlTemplates entry; see the call site for why this is a lock and not an
-#: index.
-_UNIQUE_FOR_LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))"
-
-#: Non-blocking variant used for the max_pending serialization lock (see
-#: _acquire_max_pending_lock): returns a bool instead of queueing the caller
-#: behind the holder, so the wait budget is owned by this process instead of
-#: Postgres' lock_timeout GUC. Same hashtextextended key convention.
-_MAX_PENDING_TRY_LOCK_SQL = "SELECT pg_try_advisory_xact_lock(hashtextextended($1, 0))"
+#: Non-blocking advisory-lock acquire shared by the two single-enqueue
+#: serialization sites (max_pending admission, unique_for single-flight;
+#: see _poll_try_advisory_xact_lock): returns a bool instead of queueing
+#: the caller behind the holder, so the wait budget is owned by this
+#: process instead of Postgres' lock_timeout GUC. hashtextextended(name, 0)
+#: follows the convention already used for the prune and archive-expiry
+#: locks; a collision between two different lock keys costs a little
+#: needless serialization and never correctness.
+_ADVISORY_TRY_LOCK_SQL = "SELECT pg_try_advisory_xact_lock(hashtextextended($1, 0))"
 
 #: Bounded wait (milliseconds) for the max_pending advisory lock on the
 #: single-enqueue path. The lock is held across a count query + INSERT (a
@@ -79,14 +78,29 @@ _MAX_PENDING_TRY_LOCK_SQL = "SELECT pg_try_advisory_xact_lock(hashtextextended($
 #: ``lock_timeout`` GUC convention used by migrate.py.
 DEFAULT_MAX_PENDING_LOCK_TIMEOUT_MS: float = 5000.0
 
-#: Retry cadence while contended. Exponential from 5 ms capped at 100 ms:
-#: the typical holder finishes in a few milliseconds (one count + one
-#: INSERT), so most racers acquire on the first or second poll, while the
-#: cap bounds the poll traffic a pathological burst can generate
-#: (~90 statements over the full 5 s budget, each a cheap one-value
-#: SELECT -- bounded, unlike the pre-fix unbounded block).
-_MAX_PENDING_LOCK_RETRY_MIN_DELAY_S: float = 0.005
-_MAX_PENDING_LOCK_RETRY_MAX_DELAY_S: float = 0.1
+#: Bounded wait (milliseconds) for the unique_for single-flight advisory
+#: lock on the single-enqueue path. Why a SEPARATE constant rather than
+#: reusing DEFAULT_MAX_PENDING_LOCK_TIMEOUT_MS: the two budgets bound
+#: different semantics (capacity admission vs identity dedup) and are
+#: tuned by different operators -- an API path that treats
+#: MaxPendingLockTimeoutError as shed-load wants its backpressure wait
+#: short, while a unique_for caller whose correct contention outcome is a
+#: dedup return may want a longer wait before giving up on the answer.
+#: Same 5 s starting point: the holder's critical section is the same
+#: scale (one preflight SELECT + one INSERT), so the burst arithmetic
+#: carries over. ``0`` (or less) waits indefinitely, matching the
+#: ``lock_timeout`` GUC convention shared with the max_pending budget.
+DEFAULT_UNIQUE_FOR_LOCK_TIMEOUT_MS: float = 5000.0
+
+#: Retry cadence while contended, shared by both advisory-lock poll loops.
+#: Exponential from 5 ms capped at 100 ms: the typical holder finishes in a
+#: few milliseconds (a count or preflight SELECT plus an INSERT), so most
+#: racers acquire on the first or second poll, while the cap bounds the
+#: poll traffic a pathological burst can generate (~90 statements over the
+#: full 5 s budget, each a cheap one-value SELECT -- bounded, unlike the
+#: pre-fix unbounded block).
+_ADVISORY_LOCK_RETRY_MIN_DELAY_S: float = 0.005
+_ADVISORY_LOCK_RETRY_MAX_DELAY_S: float = 0.1
 
 # The old single-column idempotency index, still present alongside the new
 # composite one during the rolling-deploy window between
@@ -236,6 +250,47 @@ class _LegacyIdempotencyKeyConflictError(Exception):
         )
 
 
+async def _poll_try_advisory_xact_lock(
+    conn: ConnLike,
+    lock_key: str,
+    *,
+    timeout_ms: float,
+) -> bool:
+    """Bounded poll loop over ``pg_try_advisory_xact_lock`` for *lock_key*.
+
+    Returns True once the lock is acquired, False when *timeout_ms*
+    expires first. Shared by both single-enqueue serialization sites
+    (max_pending admission and unique_for single-flight), which layer
+    their own typed exhaustion error on the False.
+
+    Why a poll loop over ``pg_try_advisory_xact_lock`` and not the
+    blocking ``pg_advisory_xact_lock`` with ``SET LOCAL lock_timeout``: a
+    lock-timeout error aborts the acquiring statement and with it the
+    whole surrounding transaction (any subsequent statement, including
+    the GUC reset, fails with "current transaction is aborted"), and the
+    GUC itself would have to be carefully scoped on BYO-transaction
+    connections to avoid clobbering a caller's own ``SET LOCAL`` or
+    leaking a wait bound onto the caller's following INSERTs. The
+    try-lock returns a bool, leaves the transaction fully usable after
+    every failed attempt, and keeps the budget arithmetic in this
+    process — same exactness (once acquired the lock is transaction-
+    scoped and held across the guarded statements below), strictly fewer
+    failure-mode edges. The cost is poll traffic while contended,
+    bounded by the exponential cadence above.
+
+    ``timeout_ms <= 0`` waits indefinitely (the pre-fix behavior),
+    matching migrate.py's ``lock_timeout`` convention.
+    """
+    deadline = None if timeout_ms <= 0 else time.monotonic() + timeout_ms / 1000.0
+    delay = _ADVISORY_LOCK_RETRY_MIN_DELAY_S
+    while not await conn.fetchval(_ADVISORY_TRY_LOCK_SQL, lock_key):
+        if deadline is not None and time.monotonic() >= deadline:
+            return False
+        await asyncio.sleep(delay)
+        delay = min(delay * 2, _ADVISORY_LOCK_RETRY_MAX_DELAY_S)
+    return True
+
+
 async def _acquire_max_pending_lock(
     conn: ConnLike,
     lock_key: str,
@@ -245,41 +300,59 @@ async def _acquire_max_pending_lock(
 ) -> None:
     """Acquire the capped-actor serialization advisory lock with a bounded wait.
 
-    Why a poll loop over ``pg_try_advisory_xact_lock`` and not the blocking
-    ``pg_advisory_xact_lock`` with ``SET LOCAL lock_timeout``: a lock-timeout
-    error aborts the acquiring statement and with it the whole surrounding
-    transaction (any subsequent statement, including the GUC reset, fails
-    with "current transaction is aborted"), and the GUC itself would have
-    to be carefully scoped on BYO-transaction connections to avoid
-    clobbering a caller's own ``SET LOCAL`` or leaking a wait bound onto
-    the caller's following INSERTs. The try-lock returns a bool, leaves the
-    transaction fully usable after every failed attempt, and keeps the
-    budget arithmetic in this process — same exactness (once acquired the
-    lock is transaction-scoped and held across the count-then-insert
-    below), strictly fewer failure-mode edges. The cost is poll traffic
-    while contended, bounded by the exponential cadence above.
-
-    ``timeout_ms <= 0`` waits indefinitely (the pre-fix behavior), matching
-    migrate.py's ``lock_timeout`` convention.
-
     Raises :class:`MaxPendingLockTimeoutError` when the budget expires —
     the same typed backpressure treatment as a cap rejection, recorded
     against the same ``taskq.backpressure.errors`` counter. A raw driver
     error never surfaces from contention.
     """
-    deadline = None if timeout_ms <= 0 else time.monotonic() + timeout_ms / 1000.0
-    delay = _MAX_PENDING_LOCK_RETRY_MIN_DELAY_S
-    while not await conn.fetchval(_MAX_PENDING_TRY_LOCK_SQL, lock_key):
-        if deadline is not None and time.monotonic() >= deadline:
-            logger.warning(
-                "max-pending-lock-timeout",
-                actor=actor,
-                lock_timeout_ms=timeout_ms,
-            )
-            record_backpressure_error(actor, kind="max_pending_lock_timeout")
-            raise MaxPendingLockTimeoutError(actor=actor, timeout_ms=timeout_ms)
-        await asyncio.sleep(delay)
-        delay = min(delay * 2, _MAX_PENDING_LOCK_RETRY_MAX_DELAY_S)
+    if not await _poll_try_advisory_xact_lock(conn, lock_key, timeout_ms=timeout_ms):
+        logger.warning(
+            "max-pending-lock-timeout",
+            actor=actor,
+            lock_timeout_ms=timeout_ms,
+        )
+        record_backpressure_error(actor, kind="max_pending_lock_timeout")
+        raise MaxPendingLockTimeoutError(actor=actor, timeout_ms=timeout_ms)
+
+
+async def _acquire_unique_for_lock(
+    conn: ConnLike,
+    lock_key: str,
+    *,
+    timeout_ms: float,
+    actor: str,
+    identity_key: str,
+) -> None:
+    """Acquire the unique_for single-flight advisory lock with a bounded wait.
+
+    Why exhaustion raises :class:`UniqueForLockTimeoutError` and NOT a
+    backpressure-flavored error: the contention scope is one logical
+    entity's ``(schema, actor, identity_key)``, not an actor's whole
+    producer population, and the outcome the wait existed to produce is
+    the DEDUP RETURN below (the winner's row handed back to the loser).
+    Exhaustion therefore means "the dedup answer could not be determined
+    in time" — the caller's correct response is to retry the same
+    enqueue, which typically dedupes against the now-visible winner —
+    which no BackpressureError handler expresses (those shed load or
+    log queue counts). Correspondingly NOT recorded against
+    ``taskq.backpressure.errors``: identity-key contention is not a
+    capacity signal, and spiking that counter would trip capacity
+    alerting; the ``unique-for-lock-timeout`` log event carries the
+    observability instead. A raw driver error never surfaces from
+    contention.
+    """
+    if not await _poll_try_advisory_xact_lock(conn, lock_key, timeout_ms=timeout_ms):
+        logger.warning(
+            "unique-for-lock-timeout",
+            actor=actor,
+            identity_key=identity_key,
+            lock_timeout_ms=timeout_ms,
+        )
+        raise UniqueForLockTimeoutError(
+            actor=actor,
+            identity_key=identity_key,
+            timeout_ms=timeout_ms,
+        )
 
 
 async def _enqueue_on_conn(
@@ -290,6 +363,7 @@ async def _enqueue_on_conn(
     args: EnqueueArgs,
     *,
     max_pending_lock_timeout_ms: float = DEFAULT_MAX_PENDING_LOCK_TIMEOUT_MS,
+    unique_for_lock_timeout_ms: float = DEFAULT_UNIQUE_FOR_LOCK_TIMEOUT_MS,
 ) -> JobRow:
     """Core enqueue logic running on *conn*.
 
@@ -322,7 +396,15 @@ async def _enqueue_on_conn(
         # call observes the open transaction. Callers that already hold a
         # transaction are untouched.
         async with conn.transaction():
-            return await _enqueue_on_conn(conn, sql, schema, clock, args)
+            return await _enqueue_on_conn(
+                conn,
+                sql,
+                schema,
+                clock,
+                args,
+                max_pending_lock_timeout_ms=max_pending_lock_timeout_ms,
+                unique_for_lock_timeout_ms=unique_for_lock_timeout_ms,
+            )
     if args.unique_for is not None and args.identity_key is not None:
         # Why a lock at all: what follows is a check-then-insert. Under READ
         # COMMITTED two dispatchers enqueuing the same (actor, identity_key)
@@ -344,6 +426,10 @@ async def _enqueue_on_conn(
         #      cannot vary by actor.
         # A lock, unlike an index, serializes exactly the callers that race
         # and leaves the window and state-set semantics to the preflight.
+        # (Same conclusion as graphile-worker's design by omission: it offers
+        # only a permanent job_key upsert index, no windowed dedup, because a
+        # window cannot be an index predicate; the queues that dedup by index
+        # — graphile-worker, pgqueuer's dedupe_key — dedup forever.)
         #
         # Transaction-scoped, not session-scoped: it releases on COMMIT with
         # no unlock call to leak on an error path, and it is safe under
@@ -352,20 +438,27 @@ async def _enqueue_on_conn(
         # collision between two different identity keys costs a little
         # needless serialization and never correctness.
         #
-        # Why this acquire stays BLOCKING (unlike max_pending below, which
-        # polls a try-lock): contention here means two producers are racing
-        # on the SAME logical entity's identity_key, and the correct outcome
-        # of waiting is the dedup return below -- the preflight SELECT finds
-        # the winner's row and the loser gets it back as deduplicated. A
-        # bounded wait would convert that dedup success into a backpressure
-        # error for a window whose holder does one preflight SELECT and
-        # releases, so the queueing is short and the wait, not a rejection,
-        # is the semantics unique_for callers ask for. Contentious scope is
-        # also far narrower: one (schema, actor, identity_key) triple, not
-        # every producer of an actor.
-        await conn.execute(
-            _UNIQUE_FOR_LOCK_SQL,
+        # Why a BOUNDED wait (the try-lock poll in _acquire_unique_for_lock,
+        # same machinery as max_pending below): the pre-fix blocking acquire
+        # queued same-key racers with unbounded tail latency — N racers
+        # serialized meant the last waited ~N holder critical sections, and a
+        # black-holed holder (a session the server has not yet reaped) pinned
+        # every same-key enqueue until TCP keepalives cleared it. The correct
+        # outcome of waiting is usually the dedup return just below (the
+        # winner's row), and a holder's critical section is one preflight
+        # SELECT + one INSERT, so a bounded budget still delivers that
+        # outcome for any realistic burst; only a pathological holder turns
+        # waiting into loss, and there the caller gets the typed
+        # UniqueForLockTimeoutError with retry-yields-dedup guidance instead
+        # of an unbounded block (see that error for why it is deliberately
+        # not backpressure-flavored). Lock order is fixed (this first,
+        # max_pending second) so no lock cycle can form.
+        await _acquire_unique_for_lock(
+            conn,
             f"taskq:unique_for:{schema}:{args.actor}:{args.identity_key}",
+            timeout_ms=unique_for_lock_timeout_ms,
+            actor=args.actor,
+            identity_key=str(args.identity_key),
         )
         existing_rec = await conn.fetchrow(
             sql.enqueue_unique_for_preflight,
@@ -583,6 +676,7 @@ async def _enqueue_with_conn(
     args: EnqueueArgs,
     *,
     max_pending_lock_timeout_ms: float = DEFAULT_MAX_PENDING_LOCK_TIMEOUT_MS,
+    unique_for_lock_timeout_ms: float = DEFAULT_UNIQUE_FOR_LOCK_TIMEOUT_MS,
 ) -> JobRow:
     try:
         return await _enqueue_on_conn(
@@ -592,6 +686,7 @@ async def _enqueue_with_conn(
             clock,
             args,
             max_pending_lock_timeout_ms=max_pending_lock_timeout_ms,
+            unique_for_lock_timeout_ms=unique_for_lock_timeout_ms,
         )
     except _LegacyIdempotencyKeyConflictError as exc:
         # Caller owns the (now aborted) transaction -- cannot retry here.
@@ -612,6 +707,7 @@ async def _enqueue(
     args: EnqueueArgs,
     *,
     max_pending_lock_timeout_ms: float = DEFAULT_MAX_PENDING_LOCK_TIMEOUT_MS,
+    unique_for_lock_timeout_ms: float = DEFAULT_UNIQUE_FOR_LOCK_TIMEOUT_MS,
 ) -> JobRow:
     try:
         async with pool.acquire() as conn:
@@ -623,6 +719,7 @@ async def _enqueue(
                     clock,
                     args,
                     max_pending_lock_timeout_ms=max_pending_lock_timeout_ms,
+                    unique_for_lock_timeout_ms=unique_for_lock_timeout_ms,
                 )
     except _LegacyIdempotencyKeyConflictError as exc:
         public = exc.to_public()
@@ -642,6 +739,7 @@ async def _enqueue(
                     clock,
                     args,
                     max_pending_lock_timeout_ms=max_pending_lock_timeout_ms,
+                    unique_for_lock_timeout_ms=unique_for_lock_timeout_ms,
                 )
     except _LegacyIdempotencyKeyConflictError as exc:
         logger.warning(

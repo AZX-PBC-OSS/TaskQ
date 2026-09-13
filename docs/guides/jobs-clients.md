@@ -177,7 +177,19 @@ remaining steps. Later steps only execute when earlier ones did not match or rai
 2. **`unique_for` dedup check** — if `identity_key` is provided and the actor has `unique_for`
    set, scans for an existing job with the same `(actor, identity_key)` within the window and the
    configured `unique_states`. On match, returns the existing handle with `was_existing=True` and
-   skips all remaining steps.
+   skips all remaining steps. The check-then-insert is serialized per
+   `(schema, actor, identity_key)` by a transaction-scoped advisory lock (keyed
+   `taskq:unique_for:<schema>:<actor>:<identity_key>`, hashed via `hashtextextended`), so two
+   producers racing on the same logical entity cannot both insert — the loser's preflight finds
+   the winner's row and returns it as the dedup hit. The lock **wait is bounded** — 5 s by
+   default (`DEFAULT_UNIQUE_FOR_LOCK_TIMEOUT_MS` in `taskq.backend._enqueue`): a producer that
+   cannot acquire the lock within its budget gets `UniqueForLockTimeoutError` (nothing inserted;
+   the transaction rolled back) instead of queueing indefinitely behind a same-key stampede or a
+   black-holed holder. That error is deliberately **not** in the `BackpressureError` family and
+   bumps no `taskq.backpressure.errors` counter — nothing about capacity is wrong; the dedup
+   answer for one identity could not be determined in time. The correct response is to **retry
+   the same enqueue**: once the winner's row is visible, the retry typically returns it as a
+   dedup hit (`was_existing=True`).
 3. **Singleton pre-flight** — if `ref.singleton` is `True`, checks for an existing active job for
    this actor. Raises `SingletonCollisionError` on collision. Cron fires now carry the same
    `metadata["singleton"]` stamp and pre-flight — previously the flag was client-enqueue-only
@@ -1387,6 +1399,7 @@ from taskq.exceptions import (
 |---|---|
 | `MaxPendingExceededError` | `enqueue()` called when `pending + scheduled` count >= `max_pending`. Fields: `actor` (str), `current_count` (int), `max_pending` (int). |
 | `MaxPendingLockTimeoutError` | `enqueue()` on a capped actor could not acquire the per-`(schema, actor)` serialization advisory lock within its budget (default 5 s) — too many concurrent producers, cap check never ran. Same `BackpressureError` family as `MaxPendingExceededError`; same response (retry later or shed load). Fields: `actor` (str), `timeout_ms` (float). |
+| `UniqueForLockTimeoutError` | `enqueue()` with `unique_for` + `identity_key` could not acquire the per-`(schema, actor, identity_key)` single-flight advisory lock within its budget (default 5 s, `DEFAULT_UNIQUE_FOR_LOCK_TIMEOUT_MS`) — the dedup answer for one identity could not be determined in time; nothing was inserted. NOT a `BackpressureError` (no capacity problem) and not counted in `taskq.backpressure.errors`. Response: retry the same enqueue — it typically dedupes against the winner's row (`was_existing=True`). Fields: `actor` (str), `identity_key` (str), `timeout_ms` (float). |
 | `SingletonCollisionError` | `enqueue()` called for a singleton actor that already has an active job. Fields: `actor` (str), `blocking_job_id` (UUID or None), `retry_after` (timedelta or None). |
 | `PayloadValidationError` | Pydantic validation of the payload fails at enqueue time or at dispatch time. Non-retryable regardless of retry policy. Fields: `actor`, `payload_schema_ver`, `validation_errors`. |
 | `JobFailed` | `JobHandle.wait()` observed a non-success terminal status. Field: `row` (JobRow) with `status`, `error_class`, `error_message`, `error_traceback`. |
