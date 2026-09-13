@@ -226,6 +226,13 @@ async def reconnect_notify_conn(
     passes this - the old connection is already closed by the time it calls
     in).
 
+    The factory call is bounded by ``settings.reload_factory_timeout`` —
+    the same bound the SIGHUP reload path (deps.reload_credentials) and
+    the bootstrap slot-pool open use — so a hung credential provider or
+    TCP connect cannot park the reconnect (and with it
+    ``notify_reconnect_lock``). A timeout is the retry loop's ordinary
+    failure path: logged as a reconnect attempt, backoff, retry.
+
     A SIGHUP-triggered call can race a concurrent SIGTERM/SIGINT shutdown
     (the shutdown clears ``deps.notify_reconnect_fn`` and removes listeners
     once ``notify_listener_loop`` observes the shutdown event, which may
@@ -246,7 +253,17 @@ async def reconnect_notify_conn(
                 "notify_conn has no factory to reconnect through (caller-owned "
                 "connection) - TaskQ cannot rebuild it automatically."
             )
-        new_conn = await factory()
+        # Why bounded: a hung credential provider or TCP connect parked the
+        # health-check reconnect loop here while holding
+        # notify_reconnect_lock (#156). reload_factory_timeout is the SAME
+        # bound the SIGHUP reload path applies to every factory call
+        # (deps.reload_credentials) — not a second mechanism — and its
+        # exhaustion here behaves like any factory failure: the retry
+        # loop logs the attempt, backs off, and retries.
+        new_conn = await asyncio.wait_for(
+            factory(),
+            timeout=float(deps.settings.reload_factory_timeout),
+        )
         # The DSN path gets TCP keepalive via open_dedicated_conn; a conn
         # rebuilt through the factory must get the same policy - the worker
         # owns this policy, not the user's factory. Safe on fakes (returns
