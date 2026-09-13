@@ -1007,10 +1007,10 @@ class JobsClient:
                 # actor is enforced exactly as enqueue_batch enforces it.
                 for ci in chunk_items:
                     if ci.actor_ref.name not in effective_mp:
-                        effective_mp[ci.actor_ref.name] = (
-                            await self._capacity_cache.effective_max_pending(
-                                ci.actor_ref.name, ci.actor_ref.max_pending
-                            )
+                        effective_mp[
+                            ci.actor_ref.name
+                        ] = await self._capacity_cache.effective_max_pending(
+                            ci.actor_ref.name, ci.actor_ref.max_pending
                         )
                 try:
                     chunk_args = build_batch_args(
@@ -1026,9 +1026,7 @@ class JobsClient:
                         try:
                             ref.payload_type.model_validate(ci.payload)
                         except ValidationError:
-                            raise _item_payload_error(
-                                total_count + offset, ref.name, exc
-                            ) from exc
+                            raise _item_payload_error(total_count + offset, ref.name, exc) from exc
                     raise
                 # Why capture the offset BEFORE the backend call: at this
                 # point total_count is exactly the number of items in the

@@ -28,8 +28,6 @@ owners for the wait bound:
 
 import asyncio
 
-from asyncpg.exceptions import LockNotAvailableError
-
 from taskq.backend._protocol import ConnLike
 
 __all__ = [
@@ -128,6 +126,13 @@ async def acquire_advisory_xact_lock_bounded(
     False is returned. The slack keeps the backstop strictly behind the
     server-side timeout on any healthy network.
     """
+    # Why a function-level import: this module is imported by
+    # taskq.ratelimit._sliding_window_pg, which taskq.testing imports
+    # transitively — that boundary must stay importable without the
+    # asyncpg driver installed. The acquire only ever runs against a real
+    # connection, where asyncpg is guaranteed present.
+    from asyncpg.exceptions import LockNotAvailableError
+
     if await conn.fetchval(_ADVISORY_TRY_LOCK_SQL, lock_key):
         return True
     if timeout_ms <= 0:

@@ -8,7 +8,7 @@ wrappers that delegate.
 """
 
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 import structlog
@@ -937,7 +937,7 @@ async def _enqueue_batch(
         # through unchanged — the partition costs the common case nothing.
         # Order matches sql.enqueue_batch's binding order exactly (scopes
         # before keys, stc_raws last).
-        insert_cols: list[list[object]] = [
+        insert_cols: list[list[Any]] = [
             ids,
             actors,
             queues,
@@ -1243,7 +1243,7 @@ async def _enqueue_batch_fast(
         # the partition selects positions from what is already built; the
         # happy path aliases through with zero extra work.
         copy_records = records
-        fixup_cols: list[list[object]] = [
+        fixup_cols: list[list[Any]] = [
             ids,
             scheduled_ats,
             stc_intervals,
