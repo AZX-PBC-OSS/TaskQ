@@ -178,8 +178,13 @@ class UniqueForLockTimeoutError(TaskQError):
     carries the observability instead).
 
     ``identity_key`` names the contended entity. ``timeout_ms`` is the
-    budget that expired. No row was inserted: the loser's transaction
-    rolled back before any write.
+    budget that expired. This enqueue wrote nothing: on a pool-owned
+    transaction the loser's transaction rolled back before any write; on
+    a caller-owned transaction (``enqueue_with_conn`` /
+    ``TaskQ.with_conn``) the savepoint the bounded acquire used rolled
+    back, the transaction remains usable, and durability of anything the
+    CALLER wrote alongside is the caller's decision, not this error's
+    claim to make.
     """
 
     def __init__(self, actor: str, identity_key: str, timeout_ms: float) -> None:
@@ -693,10 +698,14 @@ class DuplicateIdempotencyKeyError(TaskQError):
 
     ``idempotency_key`` / ``idempotency_scope`` carry the offending pair
     when it could be attributed: the InMemory mirror detects it exactly,
-    and the PG path best-effort parses the violation's detail line
-    (Postgres can truncate long detail values) — both ``None`` when not
-    attributable. ``detail`` carries the postgres detail verbatim when
-    present.
+    and the PG path attributes by MATCHING the violation's detail line
+    against the batch's own candidate pairs — exact whenever the detail's
+    rendering is unambiguous (including comma-bearing scopes), and both
+    ``None`` when it is not (two distinct pairs whose values render to
+    the same detail text, or a localized/truncated detail — Postgres can
+    truncate long detail values). Never a wrong pair: ambiguity degrades
+    to unattributed rather than guessing. ``detail`` carries the postgres
+    detail verbatim when present.
 
     Resolution: pre-deduplicate the items, or use
     :meth:`~taskq.client.JobsClient.enqueue_batch`, which dedupes and

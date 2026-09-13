@@ -345,9 +345,21 @@ async def _enqueue_batch_fast(
     # SAME typed classification the PG COPY path now gives
     # (DuplicateIdempotencyKeyError, not a raw asyncpg violation) — and
     # names the offending pair exactly, since the detecting loop knows
-    # it (the PG path best-effort parses the violation's detail line).
+    # it (the PG path best-effort matches the violation's detail line
+    # against the batch's candidates).
     from taskq.exceptions import DuplicateIdempotencyKeyError
 
+    # Why this check ORDER: PG's fast path surfaces defects build-loop
+    # NUL guard → pre-COPY cap count → COPY duplicate violation, so a
+    # multi-defect batch raises PayloadValidationError (or the cap
+    # refusal) there — the duplicate is never reached. The mirror checks
+    # in the same order so the same batch raises the same typed error on
+    # both backends; checking duplicates first made a NUL+duplicate
+    # batch raise DuplicateIdempotencyKeyError in memory while PG raised
+    # PayloadValidationError.
+    _check_batch_jsonb(args_list)
+    if enforce_max_pending:
+        await _check_batch_max_pending(self, args_list)
     seen: set[tuple[str, str]] = set()
     for args in args_list:
         if args.idempotency_key is None:
@@ -365,5 +377,7 @@ async def _enqueue_batch_fast(
                 idempotency_scope=pair[0],
             )
         seen.add(pair)
+    # The insert loop re-runs the two preflights inside _enqueue_batch —
+    # pure reads, already passed above, deterministically no-ops here.
     rows = await _enqueue_batch(self, args_list, enforce_max_pending=enforce_max_pending)
     return len(rows)

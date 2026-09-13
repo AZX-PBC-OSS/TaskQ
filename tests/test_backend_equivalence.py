@@ -2261,6 +2261,132 @@ async def test_enqueue_batch_fast_count_is_items_written(backend_pair: Backend) 
     assert count == 3
 
 
+async def test_enqueue_batch_fast_multi_defect_batch_raises_payload_validation(
+    backend_pair: Backend,
+) -> None:
+    """D7 parity pin, defect-ordering: a batch carrying BOTH a NUL-bearing
+    payload and a duplicate (scope, key) pair must raise the SAME typed
+    error on both backends — PayloadValidationError, because PG's fast
+    path serializes every item in the build loop (NUL guard) BEFORE the
+    pre-COPY cap count and long before the COPY's duplicate violation.
+    The InMemory mirror used to check duplicates first, so the same batch
+    raised DuplicateIdempotencyKeyError in memory and
+    PayloadValidationError on PG — a multi-defect batch could pass app
+    tests and break on the first real enqueue."""
+    from taskq.exceptions import PayloadValidationError
+
+    key = f"dup-multi-defect-{new_uuid()}"
+    args_list = [
+        # The NUL-bearing item: on PG the build loop's item_jsonb_param
+        # rejects the whole batch before anything is written.
+        EnqueueArgs(
+            id=new_job_id(),
+            actor="actor_a",
+            queue="default",
+            payload={"text": "bad\x00nul"},
+            max_attempts=3,
+            retry_kind="transient",
+            scheduled_at=_START,
+        ),
+        # The duplicate pair: would abort the COPY on PG if the batch ever
+        # reached it — the ordering pin is that it must NOT be reached.
+        EnqueueArgs(
+            id=new_job_id(),
+            actor="actor_a",
+            queue="default",
+            payload={},
+            max_attempts=3,
+            retry_kind="transient",
+            scheduled_at=_START,
+            idempotency_key=key,
+        ),
+        EnqueueArgs(
+            id=new_job_id(),
+            actor="actor_a",
+            queue="default",
+            payload={},
+            max_attempts=3,
+            retry_kind="transient",
+            scheduled_at=_START,
+            idempotency_key=key,
+        ),
+    ]
+
+    with pytest.raises(PayloadValidationError):
+        await backend_pair.enqueue_batch_fast(args_list)
+
+    # All-or-nothing: no row from the batch survived on either backend.
+    rows = await backend_pair.list_jobs(JobFilter(actor="actor_a", limit=100))
+    assert all(r.idempotency_key != key for r in rows), (
+        "the rejected batch must leave no rows behind"
+    )
+
+
+async def test_enqueue_batch_fast_multi_defect_batch_raises_cap_before_duplicate(
+    backend_pair: Backend,
+) -> None:
+    """D7 parity pin, cap-vs-duplicate ordering: a batch whose
+    NON-duplicated items alone exceed the actor's cap must raise
+    MaxPendingExceededError on both backends — PG's fast path runs the
+    pre-COPY cap count before the COPY ever sees the duplicate violation,
+    and the mirror must check in the same order. The duplicate pair is
+    cap-discounted on both tiers (it dedupes, consuming no capacity), so
+    the cap verdict depends only on the fresh items."""
+    from taskq.exceptions import MaxPendingExceededError
+
+    key = f"dup-cap-order-{new_uuid()}"
+    args_list = [
+        # Three fresh items against a cap of 2: the cap verdict is decided
+        # by these, regardless of the duplicate below.
+        *(
+            EnqueueArgs(
+                id=new_job_id(),
+                actor="actor_a",
+                queue="default",
+                payload={"i": i},
+                max_attempts=3,
+                retry_kind="transient",
+                scheduled_at=_START,
+                max_pending=2,
+            )
+            for i in range(3)
+        ),
+        # The duplicate pair: cap-discounted, but would abort the COPY if
+        # the batch reached it — the pin is that the cap refusal comes
+        # first on BOTH backends.
+        EnqueueArgs(
+            id=new_job_id(),
+            actor="actor_a",
+            queue="default",
+            payload={},
+            max_attempts=3,
+            retry_kind="transient",
+            scheduled_at=_START,
+            max_pending=2,
+            idempotency_key=key,
+        ),
+        EnqueueArgs(
+            id=new_job_id(),
+            actor="actor_a",
+            queue="default",
+            payload={},
+            max_attempts=3,
+            retry_kind="transient",
+            scheduled_at=_START,
+            max_pending=2,
+            idempotency_key=key,
+        ),
+    ]
+
+    with pytest.raises(MaxPendingExceededError):
+        await backend_pair.enqueue_batch_fast(args_list)
+
+    rows = await backend_pair.list_jobs(JobFilter(actor="actor_a", limit=100))
+    assert all(r.idempotency_key != key for r in rows), (
+        "the refused batch must leave no rows behind"
+    )
+
+
 # ── keyset pagination under every ordering ─────────────────────────────
 #
 # The assertion that matters is completeness, not shape: page the whole

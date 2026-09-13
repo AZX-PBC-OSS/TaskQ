@@ -16,6 +16,15 @@ three properties:
    after contention, the preflight either returns the winner's row (the
    dedup return the wait was for) or inserts a fresh row.
 
+The acquire is TWO-TIER (``taskq._advisory.acquire_advisory_xact_lock_bounded``,
+shared with the max_pending lock): an uncontended racer takes the fast path
+(one ``pg_try_advisory_xact_lock`` statement), while a contended racer
+falls back to a server-side bounded blocking acquire inside a savepoint
+(``set_config('lock_timeout', ..., true)`` + ``pg_advisory_xact_lock`` +
+restore) so Postgres' lock scheduler hands the lock off at the rate
+holders release it, with a client-side ``asyncio.wait_for`` backstop for
+the network-black-hole case.
+
 The unit tests drive :func:`_enqueue_on_conn` through a fake connection
 that models contention deterministically; the integration tests pin the
 same contract against real Postgres (advisory locks are server state, so
@@ -30,6 +39,7 @@ from datetime import UTC, datetime, timedelta
 
 import asyncpg
 import pytest
+import structlog.testing
 
 import taskq.backend._enqueue as _enqueue_mod
 from taskq.backend._enqueue import _enqueue, _enqueue_on_conn
@@ -66,43 +76,72 @@ def _inserted_record() -> dict[str, object]:
     return asdict(make_job_row(status="pending", actor=_UNIQUE_FOR_ACTOR, identity_key=_IDENTITY))
 
 
+class _NullSavepoint:
+    """async with conn.transaction() stand-in: counts opens, no-ops."""
+
+    async def __aenter__(self) -> "_NullSavepoint":
+        return self
+
+    async def __aexit__(self, *exc: object) -> bool:
+        return False
+
+
 class _ContendedFakeConn:
     """ConnLike stand-in for the unique_for single-enqueue path.
 
-    Models a caller-owned transaction (``is_in_transaction() -> True``).
-    Contention is deterministic: ``pg_try_advisory_xact_lock`` fails until
-    *success_after* calls have been made (``None`` = never), the preflight
-    returns *preflight_rec* (``None`` = miss), and a BLOCKING
-    ``pg_advisory_xact_lock`` (the pre-fix statement shape) surfaces the
-    raw 55P03 so a regression back to the unbounded blocking acquire is
-    loud instead of silently green.
+    Models a caller-owned transaction (``is_in_transaction() -> True``) and
+    the TWO-TIER acquire's statement shapes: the fast-path
+    ``pg_try_advisory_xact_lock`` returns *try_lock_result* (False models a
+    holder owning the lock at that instant); the contended tier's BLOCKING
+    ``pg_advisory_xact_lock`` inside the savepoint raises the raw 55P03
+    (*blocking_times_out*: the server-side ``lock_timeout`` fired) or
+    succeeds (*granted*: the server-side queue handed the lock over once
+    the holder released). ``set_config``/``current_setting`` round trips
+    are recorded so the tests can pin the GUC save/restore shape.
     """
 
     def __init__(
         self,
         *,
-        success_after: int | None = None,
+        try_lock_result: bool = False,
+        blocking_times_out: bool = True,
         preflight_rec: dict[str, object] | None = None,
     ) -> None:
-        self.try_lock_calls = 0
-        self.success_after = success_after
+        self.try_lock_result = try_lock_result
+        self.blocking_times_out = blocking_times_out
         self.preflight_rec = preflight_rec
+        self.try_lock_calls = 0
+        self.blocking_lock_calls = 0
+        self.savepoint_opens = 0
         self.executed_sql: list[str] = []
         self.fetchrow_sql: list[str] = []
+        self.set_config_values: list[str | None] = []
 
     def is_in_transaction(self) -> bool:
         return True
 
+    def transaction(self) -> _NullSavepoint:
+        self.savepoint_opens += 1
+        return _NullSavepoint()
+
     async def fetchval(self, sql: str, *params: object) -> object:
         if "pg_try_advisory_xact_lock" in sql:
             self.try_lock_calls += 1
-            return self.success_after is not None and self.try_lock_calls > self.success_after
+            return self.try_lock_result
+        if "current_setting" in sql:
+            return "0"
         raise AssertionError(f"unexpected fetchval: {sql}")
 
     async def execute(self, sql: str, *params: object) -> str:
         self.executed_sql.append(sql)
+        if "set_config" in sql:
+            self.set_config_values.append(str(params[0]) if params else None)
+            return "OK"
         if "pg_advisory_xact_lock" in sql and "pg_try" not in sql:
-            raise asyncpg.LockNotAvailableError("simulated lock contention")
+            self.blocking_lock_calls += 1
+            if self.blocking_times_out:
+                raise asyncpg.LockNotAvailableError("simulated server lock_timeout")
+            return "OK"
         return "OK"
 
     async def fetchrow(self, sql: str, *params: object) -> dict[str, object] | None:
@@ -135,12 +174,12 @@ class TestUniqueForLockBoundedWaitUnit:
     async def test_lock_timeout_raises_typed_error_within_budget(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A racer that never acquires the lock inside its budget gets the
-        typed unique_for error -- not a raw driver error, and not a
+        """A racer whose server-side lock_timeout fires gets the typed
+        unique_for error -- not a raw driver error, and not a
         BackpressureError (exhaustion is a dedup-outcome unknown, not a
-        capacity signal)."""
+        capacity signal) -- with the two-tier statement shape."""
         recorded = _spy_backpressure(monkeypatch)
-        conn = _ContendedFakeConn(success_after=None)
+        conn = _ContendedFakeConn(try_lock_result=False, blocking_times_out=True)
         args = _unique_for_args()
         start = time.monotonic()
         with pytest.raises(UniqueForLockTimeoutError) as exc_info:
@@ -155,18 +194,55 @@ class TestUniqueForLockBoundedWaitUnit:
         elapsed = time.monotonic() - start
         assert not isinstance(exc_info.value, BackpressureError)
         assert exc_info.value.identity_key == _IDENTITY
+        assert exc_info.value.timeout_ms == 100.0
         assert elapsed < 2.0, f"budget was 100 ms but the wait took {elapsed:.3f}s"
+        # Two-tier shape: one try-lock, then the savepoint tier with the
+        # GUC set to the budget. Only the SET ran — the timeout raised
+        # before any restore, and the savepoint ROLLBACK undoes the set
+        # itself (verified PG savepoint/GUC semantics); the
+        # restore-before-RELEASE belongs to the success path.
+        assert conn.try_lock_calls == 1
+        assert conn.savepoint_opens == 1
+        assert conn.blocking_lock_calls == 1
+        assert conn.set_config_values == ["100ms"]
         # Identity-key contention is not a capacity signal: the backpressure
         # counter must stay untouched.
         assert recorded == []
 
+    async def test_lock_timeout_logs_warning_event_with_budget(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The ``unique-for-lock-timeout`` log event carries the identity
+        and the expired budget — the observability channel for an
+        exhaustion that deliberately bumps no counter."""
+        _spy_backpressure(monkeypatch)
+        conn = _ContendedFakeConn(try_lock_result=False, blocking_times_out=True)
+        with (
+            structlog.testing.capture_logs() as logs,
+            pytest.raises(UniqueForLockTimeoutError),
+        ):
+            await _enqueue_on_conn(
+                conn,  # type: ignore[arg-type]  # Why: duck-typed ConnLike stand-in
+                render("taskq"),
+                "taskq",
+                FakeClock(_START),
+                _unique_for_args(),  # type: ignore[arg-type]  # Why: dataclasses.replace keeps the EnqueueArgs type
+                unique_for_lock_timeout_ms=250.0,
+            )
+        entries = [e for e in logs if e.get("event") == "unique-for-lock-timeout"]
+        assert len(entries) == 1, f"expected exactly one timeout event, got {logs!r}"
+        assert entries[0].get("actor") == _UNIQUE_FOR_ACTOR
+        assert entries[0].get("identity_key") == _IDENTITY
+        assert entries[0].get("lock_timeout_ms") == 250.0
+
     async def test_lock_acquired_after_contention_proceeds_to_insert(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Contended racers RETRY: once the holder releases inside the
-        budget, the enqueue proceeds to a fresh INSERT (preflight miss)."""
+        """Contended racers queue server-side: once the holder releases
+        inside the budget, the blocking acquire is granted and the enqueue
+        proceeds to a fresh INSERT (preflight miss)."""
         recorded = _spy_backpressure(monkeypatch)
-        conn = _ContendedFakeConn(success_after=2)
+        conn = _ContendedFakeConn(try_lock_result=False, blocking_times_out=False)
         args = _unique_for_args()
         row = await _enqueue_on_conn(
             conn,  # type: ignore[arg-type]  # Why: duck-typed ConnLike stand-in
@@ -177,7 +253,10 @@ class TestUniqueForLockBoundedWaitUnit:
             unique_for_lock_timeout_ms=1000.0,
         )
         assert row.actor == _UNIQUE_FOR_ACTOR
-        assert conn.try_lock_calls == 3  # two contended polls, then the acquire
+        assert conn.try_lock_calls == 1
+        assert conn.blocking_lock_calls == 1
+        assert conn.savepoint_opens == 1
+        assert conn.set_config_values == ["1000ms", "0"]
         assert recorded == []
 
     async def test_dedup_return_after_contention_is_preserved(
@@ -188,7 +267,9 @@ class TestUniqueForLockBoundedWaitUnit:
         not a second insert."""
         recorded = _spy_backpressure(monkeypatch)
         winner = _inserted_record()
-        conn = _ContendedFakeConn(success_after=1, preflight_rec=winner)
+        conn = _ContendedFakeConn(
+            try_lock_result=False, blocking_times_out=False, preflight_rec=winner
+        )
         args = _unique_for_args()
         row = await _enqueue_on_conn(
             conn,  # type: ignore[arg-type]  # Why: duck-typed ConnLike stand-in
@@ -204,11 +285,60 @@ class TestUniqueForLockBoundedWaitUnit:
         assert "identity_key = $2" in conn.fetchrow_sql[0]
         assert recorded == []
 
+    async def test_lock_timeout_budget_zero_waits_indefinitely(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``timeout_ms <= 0`` disables the bound (the pre-fix behavior),
+        matching the ``lock_timeout`` GUC convention used by migrate.py: a
+        plain blocking acquire with NO savepoint and NO GUC statements —
+        only an unbounded server-side wait reaches the dedup answer."""
+        recorded = _spy_backpressure(monkeypatch)
+        conn = _ContendedFakeConn(try_lock_result=False, blocking_times_out=False)
+        args = _unique_for_args()
+        async with asyncio.timeout(5.0):
+            row = await _enqueue_on_conn(
+                conn,  # type: ignore[arg-type]  # Why: duck-typed ConnLike stand-in
+                render("taskq"),
+                "taskq",
+                FakeClock(_START),
+                args,  # type: ignore[arg-type]  # Why: dataclasses.replace keeps the EnqueueArgs type
+                unique_for_lock_timeout_ms=0.0,
+            )
+        assert row.actor == _UNIQUE_FOR_ACTOR
+        assert conn.try_lock_calls == 1
+        assert conn.blocking_lock_calls == 1
+        assert conn.savepoint_opens == 0, "indefinite mode must not open a savepoint"
+        assert conn.set_config_values == [], "indefinite mode must not touch the GUC"
+        assert recorded == []
+
+    async def test_fast_path_uncontended_is_single_try_lock_statement(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Happy-path round-trip parity: an uncontended unique_for enqueue
+        issues exactly ONE advisory-lock statement (the try-lock) and never
+        touches the savepoint/GUC machinery."""
+        recorded = _spy_backpressure(monkeypatch)
+        conn = _ContendedFakeConn(try_lock_result=True)
+        row = await _enqueue_on_conn(
+            conn,  # type: ignore[arg-type]  # Why: duck-typed ConnLike stand-in
+            render("taskq"),
+            "taskq",
+            FakeClock(_START),
+            _unique_for_args(),  # type: ignore[arg-type]  # Why: dataclasses.replace keeps the EnqueueArgs type
+            unique_for_lock_timeout_ms=5000.0,
+        )
+        assert row.actor == _UNIQUE_FOR_ACTOR
+        assert conn.try_lock_calls == 1
+        assert conn.blocking_lock_calls == 0
+        assert conn.savepoint_opens == 0
+        assert conn.set_config_values == []
+        assert recorded == []
+
     async def test_no_unique_for_takes_no_advisory_lock(self) -> None:
         """unique_for=None (or identity_key=None) never touches the
         advisory lock — the bounded-wait machinery is scoped to the
         single-flight path only."""
-        conn = _ContendedFakeConn(success_after=None)
+        conn = _ContendedFakeConn(try_lock_result=True)
         args = make_enqueue_args(actor=_UNIQUE_FOR_ACTOR, identity_key=_IDENTITY)
         assert args.unique_for is None
         row = await _enqueue_on_conn(
@@ -220,6 +350,7 @@ class TestUniqueForLockBoundedWaitUnit:
         )
         assert row.actor == _UNIQUE_FOR_ACTOR
         assert conn.try_lock_calls == 0
+        assert conn.blocking_lock_calls == 0
         assert not any("pg_advisory" in s for s in conn.executed_sql)
 
 
@@ -249,9 +380,8 @@ class TestUniqueForLockBoundedWait:
                 start = time.monotonic()
                 with pytest.raises(UniqueForLockTimeoutError) as exc_info:
                     # Nested, not comma-joined: asyncio.timeout is an async
-                    # CM. On the pre-fix code the unbounded block trips the
-                    # 3s deadline and TimeoutError escapes pytest.raises --
-                    # the RED below.
+                    # CM. An unbounded acquire would trip the 3 s deadline
+                    # and TimeoutError would escape pytest.raises.
                     async with asyncio.timeout(3.0):
                         await _enqueue(
                             deps.worker_pool,
@@ -264,7 +394,10 @@ class TestUniqueForLockBoundedWait:
                 elapsed = time.monotonic() - start
             assert not isinstance(exc_info.value, BackpressureError)
             assert exc_info.value.identity_key == _IDENTITY
-            assert elapsed < 3.0, f"budget was 250 ms but the wait took {elapsed:.3f}s"
+            assert exc_info.value.timeout_ms == 250.0
+            # The server-side timeout is precise: ~budget, not the 3 s wall
+            # bound and not instant.
+            assert 0.2 <= elapsed < 3.0, f"budget was 250 ms but the wait took {elapsed:.3f}s"
             # The timed-out racer's transaction rolled back: nothing stored.
             stored = await deps.worker_pool.fetchval(
                 f'SELECT count(*) FROM "{schema}".jobs'  # noqa: S608  # Why: human-readable row-count check, not a SQL query
@@ -276,9 +409,9 @@ class TestUniqueForLockBoundedWait:
     async def test_racer_acquires_after_holder_releases(
         self, clean_jobs_app: JobsApp, module_pg_schema: object
     ) -> None:
-        """A racer polling inside its budget proceeds as soon as the holder
-        releases -- the preflight misses (the holder inserted nothing) and
-        the racer's own INSERT lands."""
+        """A racer queued server-side inside its budget proceeds as soon as
+        the holder releases -- the preflight misses (the holder inserted
+        nothing) and the racer's own INSERT lands."""
         pg_schema: ModulePgSchema = module_pg_schema  # type: ignore[assignment]  # Why: fixture is typed ModulePgSchema; object keeps the test signature loose like test_postgres_enqueue_max_pending_lock
         deps = clean_jobs_app.deps
         schema = deps.settings.schema_name
@@ -299,7 +432,8 @@ class TestUniqueForLockBoundedWait:
                     unique_for_lock_timeout_ms=5000.0,
                 )
             )
-            # Let the racer take at least one contended poll, then release.
+            # Let the racer reach the contended tier (queued server-side),
+            # then release.
             await asyncio.sleep(0.2)
             await holder_tx.commit()
             row = await asyncio.wait_for(racer, timeout=10.0)

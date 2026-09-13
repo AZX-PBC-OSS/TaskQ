@@ -7,9 +7,6 @@
 wrappers that delegate.
 """
 
-import asyncio
-import re
-import time
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 from uuid import UUID
@@ -17,6 +14,7 @@ from uuid import UUID
 import structlog
 from asyncpg.exceptions import UniqueViolationError
 
+from taskq._advisory import acquire_advisory_xact_lock_bounded
 from taskq.backend._protocol import (
     ConnLike,
     EnqueueArgs,
@@ -60,16 +58,6 @@ logger: structlog.stdlib.BoundLogger = get_logger(__name__)
 
 _SINGLETON_CONSTRAINT_NAME = "jobs_singleton_uniq"
 
-#: Non-blocking advisory-lock acquire shared by the two single-enqueue
-#: serialization sites (max_pending admission, unique_for single-flight;
-#: see _poll_try_advisory_xact_lock): returns a bool instead of queueing
-#: the caller behind the holder, so the wait budget is owned by this
-#: process instead of Postgres' lock_timeout GUC. hashtextextended(name, 0)
-#: follows the convention already used for the prune and archive-expiry
-#: locks; a collision between two different lock keys costs a little
-#: needless serialization and never correctness.
-_ADVISORY_TRY_LOCK_SQL = "SELECT pg_try_advisory_xact_lock(hashtextextended($1, 0))"
-
 #: Bounded wait (milliseconds) for the max_pending advisory lock on the
 #: single-enqueue path. The lock is held across a count query + INSERT (a
 #: couple of round trips -- low single-digit milliseconds on a healthy
@@ -95,16 +83,6 @@ DEFAULT_MAX_PENDING_LOCK_TIMEOUT_MS: float = 5000.0
 #: ``lock_timeout`` GUC convention shared with the max_pending budget.
 DEFAULT_UNIQUE_FOR_LOCK_TIMEOUT_MS: float = 5000.0
 
-#: Retry cadence while contended, shared by both advisory-lock poll loops.
-#: Exponential from 5 ms capped at 100 ms: the typical holder finishes in a
-#: few milliseconds (a count or preflight SELECT plus an INSERT), so most
-#: racers acquire on the first or second poll, while the cap bounds the
-#: poll traffic a pathological burst can generate (~90 statements over the
-#: full 5 s budget, each a cheap one-value SELECT -- bounded, unlike the
-#: pre-fix unbounded block).
-_ADVISORY_LOCK_RETRY_MIN_DELAY_S: float = 0.005
-_ADVISORY_LOCK_RETRY_MAX_DELAY_S: float = 0.1
-
 # The old single-column idempotency index, still present alongside the new
 # composite one during the rolling-deploy window between
 # 01.00.03_01_pre_idempotency_scope.sql and
@@ -119,15 +97,49 @@ _LEGACY_IDEMPOTENCY_KEY_CONSTRAINT_NAME = "jobs_idempotency_key_uniq"
 # to the typed DuplicateIdempotencyKeyError in _enqueue_batch_fast.
 _COMPOSITE_IDEMPOTENCY_KEY_CONSTRAINT_NAME = "jobs_idempotency_scope_key_uniq"
 
-# Postgres' unique-violation detail line for the composite index: the
-# colliding (scope, key) values, unquoted. Same convention as
-# cron_loop's _DETAIL_KEY_RE; deliberately conservative -- a scope
-# containing a comma (or a truncated detail) fails the match and the
-# error's attribution fields stay None, which the typed error documents.
-_COMPOSITE_IDEMPOTENCY_DETAIL_RE = re.compile(
-    r"^Key \(idempotency_scope, idempotency_key\)=\((?P<scope>[^,]*), (?P<key>.*)\) "
-    r"already exists\.$"
+# Postgres' unique-violation detail line for the composite index renders
+# the colliding (scope, key) values RAW and unquoted (verified against
+# live PG 18: commas, spaces, quotes, newlines all pass through
+# unescaped), so a scope containing ", " makes the detail positionally
+# AMBIGUOUS -- scope "a, b" key "c" reports
+# "Key (idempotency_scope, idempotency_key)=(a, b, c) already exists.",
+# which a left-to-right split mis-reads as scope "a" key "b, c". The
+# attribution therefore does not parse the detail at all: it renders each
+# of the batch's own (scope, key) candidates into PG's detail format and
+# matches. Exactly one rendering equal to the server's detail names the
+# pair honestly (comma-space scopes included); zero matches (a localized
+# or truncated detail, a non-raw rendering) or more than one (two
+# distinct candidate pairs producing the same detail text) degrade to
+# unattributed-but-typed -- never a wrong pair. The in-memory mirror
+# attributes exactly by construction; PG parity is best-effort with this
+# verified fallback.
+_COMPOSITE_IDEMPOTENCY_DETAIL_TEMPLATE = (
+    "Key (idempotency_scope, idempotency_key)=({scope}, {key}) already exists."
 )
+
+
+def _attribute_duplicate_pair(
+    detail: str | None,
+    candidates: "set[tuple[str, str]]",
+) -> tuple[str | None, str | None]:
+    """Best-effort attribution of a composite-index COPY violation.
+
+    Returns the unique candidate pair whose rendered detail equals the
+    server's *detail*, or (None, None) when no candidate matches or the
+    rendering is ambiguous. Callers pass the batch's own (scope, key)
+    candidate set -- the violating pair is always among the batch's items
+    (an in-batch duplicate or an item raced against a stored row).
+    """
+    if not detail:
+        return (None, None)
+    matches = [
+        (scope, key)
+        for scope, key in candidates
+        if _COMPOSITE_IDEMPOTENCY_DETAIL_TEMPLATE.format(scope=scope, key=key) == detail
+    ]
+    if len(matches) == 1:
+        return matches[0]
+    return (None, None)
 
 
 async def _enforce_batch_max_pending(
@@ -270,47 +282,6 @@ class _LegacyIdempotencyKeyConflictError(Exception):
         )
 
 
-async def _poll_try_advisory_xact_lock(
-    conn: ConnLike,
-    lock_key: str,
-    *,
-    timeout_ms: float,
-) -> bool:
-    """Bounded poll loop over ``pg_try_advisory_xact_lock`` for *lock_key*.
-
-    Returns True once the lock is acquired, False when *timeout_ms*
-    expires first. Shared by both single-enqueue serialization sites
-    (max_pending admission and unique_for single-flight), which layer
-    their own typed exhaustion error on the False.
-
-    Why a poll loop over ``pg_try_advisory_xact_lock`` and not the
-    blocking ``pg_advisory_xact_lock`` with ``SET LOCAL lock_timeout``: a
-    lock-timeout error aborts the acquiring statement and with it the
-    whole surrounding transaction (any subsequent statement, including
-    the GUC reset, fails with "current transaction is aborted"), and the
-    GUC itself would have to be carefully scoped on BYO-transaction
-    connections to avoid clobbering a caller's own ``SET LOCAL`` or
-    leaking a wait bound onto the caller's following INSERTs. The
-    try-lock returns a bool, leaves the transaction fully usable after
-    every failed attempt, and keeps the budget arithmetic in this
-    process — same exactness (once acquired the lock is transaction-
-    scoped and held across the guarded statements below), strictly fewer
-    failure-mode edges. The cost is poll traffic while contended,
-    bounded by the exponential cadence above.
-
-    ``timeout_ms <= 0`` waits indefinitely (the pre-fix behavior),
-    matching migrate.py's ``lock_timeout`` convention.
-    """
-    deadline = None if timeout_ms <= 0 else time.monotonic() + timeout_ms / 1000.0
-    delay = _ADVISORY_LOCK_RETRY_MIN_DELAY_S
-    while not await conn.fetchval(_ADVISORY_TRY_LOCK_SQL, lock_key):
-        if deadline is not None and time.monotonic() >= deadline:
-            return False
-        await asyncio.sleep(delay)
-        delay = min(delay * 2, _ADVISORY_LOCK_RETRY_MAX_DELAY_S)
-    return True
-
-
 async def _acquire_max_pending_lock(
     conn: ConnLike,
     lock_key: str,
@@ -320,12 +291,23 @@ async def _acquire_max_pending_lock(
 ) -> None:
     """Acquire the capped-actor serialization advisory lock with a bounded wait.
 
+    Two-tier via
+    :func:`taskq._advisory.acquire_advisory_xact_lock_bounded`: one
+    try-lock statement when uncontended (identical happy-path round-trip
+    count to the pre-bounded era), a server-side bounded blocking acquire
+    inside a savepoint when contended (Postgres' lock scheduler queues
+    the waiters and hands off at holder-release rate — MEASURED ~25x the
+    contended throughput of a client-side poll loop at 128 same-key
+    racers), and a client-side wait_for backstop for the network black
+    hole. ``timeout_ms <= 0`` waits indefinitely (the migrate.py
+    ``lock_timeout`` convention).
+
     Raises :class:`MaxPendingLockTimeoutError` when the budget expires —
     the same typed backpressure treatment as a cap rejection, recorded
     against the same ``taskq.backpressure.errors`` counter. A raw driver
     error never surfaces from contention.
     """
-    if not await _poll_try_advisory_xact_lock(conn, lock_key, timeout_ms=timeout_ms):
+    if not await acquire_advisory_xact_lock_bounded(conn, lock_key, timeout_ms=timeout_ms):
         logger.warning(
             "max-pending-lock-timeout",
             actor=actor,
@@ -345,6 +327,11 @@ async def _acquire_unique_for_lock(
 ) -> None:
     """Acquire the unique_for single-flight advisory lock with a bounded wait.
 
+    Two-tier via
+    :func:`taskq._advisory.acquire_advisory_xact_lock_bounded` (same
+    machinery as the max_pending lock above — the shared helper's
+    docstring has the measured rationale).
+
     Why exhaustion raises :class:`UniqueForLockTimeoutError` and NOT a
     backpressure-flavored error: the contention scope is one logical
     entity's ``(schema, actor, identity_key)``, not an actor's whole
@@ -361,7 +348,7 @@ async def _acquire_unique_for_lock(
     observability instead. A raw driver error never surfaces from
     contention.
     """
-    if not await _poll_try_advisory_xact_lock(conn, lock_key, timeout_ms=timeout_ms):
+    if not await acquire_advisory_xact_lock_bounded(conn, lock_key, timeout_ms=timeout_ms):
         logger.warning(
             "unique-for-lock-timeout",
             actor=actor,
@@ -458,21 +445,23 @@ async def _enqueue_on_conn(
         # collision between two different identity keys costs a little
         # needless serialization and never correctness.
         #
-        # Why a BOUNDED wait (the try-lock poll in _acquire_unique_for_lock,
-        # same machinery as max_pending below): the pre-fix blocking acquire
-        # queued same-key racers with unbounded tail latency — N racers
-        # serialized meant the last waited ~N holder critical sections, and a
-        # black-holed holder (a session the server has not yet reaped) pinned
-        # every same-key enqueue until TCP keepalives cleared it. The correct
-        # outcome of waiting is usually the dedup return just below (the
-        # winner's row), and a holder's critical section is one preflight
-        # SELECT + one INSERT, so a bounded budget still delivers that
-        # outcome for any realistic burst; only a pathological holder turns
-        # waiting into loss, and there the caller gets the typed
-        # UniqueForLockTimeoutError with retry-yields-dedup guidance instead
-        # of an unbounded block (see that error for why it is deliberately
-        # not backpressure-flavored). Lock order is fixed (this first,
-        # max_pending second) so no lock cycle can form.
+        # Why a BOUNDED wait (the two-tier acquire in
+        # _acquire_unique_for_lock, same machinery as max_pending below):
+        # the pre-fix blocking acquire queued same-key racers with
+        # unbounded tail latency — N racers serialized meant the last
+        # waited ~N holder critical sections, and a black-holed holder (a
+        # session the server has not yet reaped) pinned every same-key
+        # enqueue until TCP keepalives cleared it. The correct outcome of
+        # waiting is usually the dedup return just below (the winner's
+        # row), and a holder's critical section is one preflight SELECT +
+        # one INSERT, so a bounded budget still delivers that outcome for
+        # any realistic burst — the contended tier queues server-side and
+        # drains at holder-release rate, so the bound only bites on a
+        # pathological holder; there the caller gets the typed
+        # UniqueForLockTimeoutError with retry-yields-dedup guidance
+        # instead of an unbounded block (see that error for why it is
+        # deliberately not backpressure-flavored). Lock order is fixed
+        # (this first, max_pending second) so no lock cycle can form.
         await _acquire_unique_for_lock(
             conn,
             f"taskq:unique_for:{schema}:{args.actor}:{args.identity_key}",
@@ -540,15 +529,18 @@ async def _enqueue_on_conn(
         # serialization, never correctness.
         #
         # Why a BOUNDED wait (see _acquire_max_pending_lock for the
-        # try-lock choice): every racer on this lock holds it across its
-        # own count + INSERT round trips, so with the old blocking acquire
-        # N concurrent producers serialized and the last one waited ~N
-        # transactions — tail latency linear in the burst size, unbounded.
-        # Now the wait is capped at *max_pending_lock_timeout_ms* (5 s
-        # default) and an exhausted racer gets the same typed backpressure
-        # treatment as a cap rejection. The cap stays EXACT either way:
-        # once acquired, the lock is held across the count and the INSERT
-        # exactly as before.
+        # two-tier choice): every racer on this lock holds it across its
+        # own count + INSERT round trips, so an unbounded blocking acquire
+        # makes N concurrent producers serialize with the last one
+        # waiting ~N transactions — tail latency linear in the burst
+        # size, unbounded. Now the wait is capped at
+        # *max_pending_lock_timeout_ms* (5 s default) and an exhausted
+        # racer gets the same typed backpressure treatment as a cap
+        # rejection, while the contended tier still queues server-side
+        # (draining at holder-release rate, not at a client poll cadence)
+        # so realistic bursts are admitted rather than shed. The cap
+        # stays EXACT either way: once acquired, the lock is held across
+        # the count and the INSERT exactly as before.
         await _acquire_max_pending_lock(
             conn,
             f"taskq:max_pending:{schema}:{args.actor}",
@@ -1155,17 +1147,24 @@ async def _enqueue_batch_fast(
                 # is this path's own, following pgqueuer's
                 # DuplicateJobError precedent (typed domain error for a
                 # dedup-constraint violation, raised by their in-memory
-                # adapter too). The detail line is parsed best-effort so
-                # the offending pair is named when Postgres reports it;
-                # truncation or a comma-bearing scope degrades to
-                # unattributed-but-typed. During the 01.00.03 rolling
+                # adapter too). The offending pair is attributed by
+                # MATCHING the detail against the batch's own candidates
+                # (see _attribute_duplicate_pair): named exactly when the
+                # rendering is unambiguous -- including comma-bearing
+                # scopes, which a positional parse mis-reads --
+                # and unattributed-but-typed on ambiguity (two distinct
+                # pairs rendering to the same detail text) or on a
+                # localized/truncated detail. During the 01.00.03 rolling
                 # window a same-pair duplicate may instead be reported
                 # against the legacy index, which the branch above
                 # already converts -- that carve-out is pre-existing
                 # documented behavior for this path, unchanged here.
-                match = _COMPOSITE_IDEMPOTENCY_DETAIL_RE.match(exc.detail or "")
-                dup_key = match.group("key") if match is not None else None
-                dup_scope = match.group("scope") if match is not None else None
+                batch_candidates = {
+                    (args.idempotency_scope, str(args.idempotency_key))
+                    for args in args_list
+                    if args.idempotency_key is not None
+                }
+                dup_scope, dup_key = _attribute_duplicate_pair(exc.detail, batch_candidates)
                 logger.info(
                     "batch-fast-duplicate-idempotency-key",
                     batch_size=len(args_list),
