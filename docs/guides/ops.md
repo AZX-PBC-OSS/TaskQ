@@ -594,7 +594,7 @@ that a pure finalizer would wait on forever.
 |---|---|---|---|
 | `enqueue_batch` | ≤ 1,000 | per-item keys honored; collisions return existing jobs | single transaction; enforces `max_pending` |
 | `enqueue_batch_streaming` | unbounded (chunks of ≤ 1,000) | per-item keys honored | generator input; **does not enforce `max_pending`** |
-| `enqueue_batch_fast` | ≤ 50,000 | **none** — any duplicate key aborts the whole COPY | bulk-import semantics; returns a count only; **no `max_pending`** |
+| `enqueue_batch_fast` | ≤ 50,000 | **none** — any duplicate key aborts the whole COPY with `DuplicateIdempotencyKeyError` | bulk-import semantics; returns a count only; **no `max_pending`** |
 
 See [jobs-clients.md](jobs-clients.md) for the full tradeoff table.
 

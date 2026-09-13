@@ -17,7 +17,7 @@ from taskq import actor
 from taskq._ids import new_uuid
 from taskq.batch import EnqueueItem
 from taskq.client._jobs import JobsClient
-from taskq.exceptions import PayloadValidationError
+from taskq.exceptions import DuplicateIdempotencyKeyError, PayloadValidationError
 from taskq.testing.clock import FakeClock
 from taskq.testing.in_memory import InMemoryBackend
 
@@ -240,6 +240,41 @@ class TestTU10StatusIsPending:
         assert count == 1
         for row in backend._jobs.values():  # type: ignore[reportPrivateUsage]
             assert row.status == "pending"
+
+
+class TestTU11DuplicateKeyTypedError:
+    """A duplicate idempotency key aborts the fast batch with the typed
+    DuplicateIdempotencyKeyError — the same classification the PG COPY
+    path gives (protocol parity; previously both surfaced a raw
+    asyncpg.UniqueViolationError)."""
+
+    async def test_intra_batch_duplicate_raises_typed_error(self) -> None:
+        backend = _make_backend()
+        client = _make_client(backend)
+        dup_key = f"dup-unit-{new_uuid()}"
+        items = [
+            EnqueueItem(actor_ref=_test_actor, payload=_Payload(value=1), idempotency_key=dup_key),
+            EnqueueItem(actor_ref=_test_actor, payload=_Payload(value=2), idempotency_key=dup_key),
+        ]
+
+        with pytest.raises(DuplicateIdempotencyKeyError) as exc_info:
+            await client.enqueue_batch_fast(items)
+
+        assert exc_info.value.idempotency_key == dup_key
+        assert len(backend._jobs) == 0  # type: ignore[reportPrivateUsage]  # Why: test-only admission check
+
+    async def test_stored_pair_duplicate_raises_typed_error(self) -> None:
+        backend = _make_backend()
+        client = _make_client(backend)
+        key = f"stored-unit-{new_uuid()}"
+        await client.enqueue_batch_fast(
+            [EnqueueItem(actor_ref=_test_actor, payload=_Payload(value=1), idempotency_key=key)]
+        )
+
+        with pytest.raises(DuplicateIdempotencyKeyError):
+            await client.enqueue_batch_fast(
+                [EnqueueItem(actor_ref=_test_actor, payload=_Payload(value=2), idempotency_key=key)]
+            )
 
 
 # ── Integration tests ─────────────────────────────────────────────────────
@@ -555,7 +590,9 @@ class TestTI7TransactionalBatchFast:
 
 @pytest.mark.integration
 class TestTI8DuplicateIdempotencyKeyFails:
-    """Duplicate idempotency_key aborts the entire COPY batch."""
+    """Duplicate idempotency_key aborts the entire COPY batch with the
+    typed DuplicateIdempotencyKeyError (classification only — the
+    all-or-nothing abort is deliberate; nothing is written)."""
 
     async def test_duplicate_key_fails_entire_batch(self, pg_dsn: str) -> None:
         import asyncpg
@@ -580,14 +617,59 @@ class TestTI8DuplicateIdempotencyKeyFails:
         ]
 
         async with TaskQ(dsn=pg_dsn, schema=schema) as tq:
-            with pytest.raises(asyncpg.UniqueViolationError):
+            with pytest.raises(DuplicateIdempotencyKeyError) as exc_info:
                 await tq.enqueue_batch_fast(items, batch_id=batch_id)
+        assert not isinstance(exc_info.value, asyncpg.UniqueViolationError)
+        assert exc_info.value.idempotency_key == dup_key
 
         # Verify no rows inserted
         conn = await asyncpg.connect(pg_dsn)
         try:
             count = await conn.fetchval(f'SELECT count(*) FROM "{schema}".jobs')  # noqa: S608
             assert count == 0
+        finally:
+            await conn.close()
+
+    async def test_key_raced_against_stored_pair_raises_typed_error(self, pg_dsn: str) -> None:
+        """The raced variant: the pair was already committed by an earlier
+        (non-fast) batch, and the COPY violates the composite arbiter
+        against the stored row — same typed classification, whole COPY
+        aborted, nothing from this batch written."""
+        import asyncpg
+
+        from taskq import TaskQ
+        from taskq.migrate import apply_pending
+
+        schema = "taskq_test_batch_fast_ti8b"
+        conn = await asyncpg.connect(pg_dsn)
+        try:
+            await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+            await apply_pending(conn, schema=schema)
+        finally:
+            await conn.close()
+
+        key = f"raced-key-{new_uuid()}"
+        async with TaskQ(dsn=pg_dsn, schema=schema) as tq:
+            # Commit the pair through the dedup-capable path first.
+            await tq.enqueue_batch(
+                [EnqueueItem(actor_ref=_test_actor, payload=_Payload(value=0), idempotency_key=key)]
+            )
+            with pytest.raises(DuplicateIdempotencyKeyError) as exc_info:
+                await tq.enqueue_batch_fast(
+                    [
+                        EnqueueItem(actor_ref=_test_actor, payload=_Payload(value=1)),
+                        EnqueueItem(
+                            actor_ref=_test_actor, payload=_Payload(value=2), idempotency_key=key
+                        ),
+                    ]
+                )
+        assert not isinstance(exc_info.value, asyncpg.UniqueViolationError)
+
+        conn = await asyncpg.connect(pg_dsn)
+        try:
+            count = await conn.fetchval(f'SELECT count(*) FROM "{schema}".jobs')  # noqa: S608
+            # Only the pre-stored row: the COPY aborted before writing.
+            assert count == 1
         finally:
             await conn.close()
 
@@ -660,7 +742,8 @@ class TestTIScopeRoundTripThroughCopy:
     async def test_same_scope_duplicate_key_aborts_batch(self, pg_dsn: str) -> None:
         """The composite-index analogue of TestTI8: same key AND same
         explicit scope within one COPY batch violates
-        jobs_idempotency_scope_key_uniq and aborts the whole batch."""
+        jobs_idempotency_scope_key_uniq and aborts the whole batch with
+        the typed classification."""
         import asyncpg
 
         from taskq import TaskQ
@@ -691,8 +774,10 @@ class TestTIScopeRoundTripThroughCopy:
         ]
 
         async with TaskQ(dsn=pg_dsn, schema=schema) as tq:
-            with pytest.raises(asyncpg.UniqueViolationError):
+            with pytest.raises(DuplicateIdempotencyKeyError) as exc_info:
                 await tq.enqueue_batch_fast(items)
+        assert not isinstance(exc_info.value, asyncpg.UniqueViolationError)
+        assert exc_info.value.idempotency_scope == "run-A"
 
         conn = await asyncpg.connect(pg_dsn)
         try:

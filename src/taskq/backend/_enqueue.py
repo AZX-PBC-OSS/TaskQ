@@ -8,6 +8,7 @@ wrappers that delegate.
 """
 
 import asyncio
+import re
 import time
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
@@ -32,6 +33,7 @@ from taskq.backend._sql_templates import SqlTemplates
 from taskq.backend.clock import Clock
 from taskq.constants import wake_channel
 from taskq.exceptions import (
+    DuplicateIdempotencyKeyError,
     MaxPendingExceededError,
     MaxPendingLockTimeoutError,
     ScopedIdempotencyMigrationPendingError,
@@ -109,6 +111,23 @@ _ADVISORY_LOCK_RETRY_MAX_DELAY_S: float = 0.1
 # 01.00.03_01_post_idempotency_scope_drop_old_index.sql. See
 # ScopedIdempotencyMigrationPendingError for the full rationale.
 _LEGACY_IDEMPOTENCY_KEY_CONSTRAINT_NAME = "jobs_idempotency_key_uniq"
+
+# The composite (idempotency_scope, idempotency_key) arbiter index. The
+# non-fast paths' ON CONFLICT targets it and dedupes; the COPY path has
+# no arbiter, so a violation reported against it is a same-pair
+# duplicate (in-batch or raced against a stored row) and is classified
+# to the typed DuplicateIdempotencyKeyError in _enqueue_batch_fast.
+_COMPOSITE_IDEMPOTENCY_KEY_CONSTRAINT_NAME = "jobs_idempotency_scope_key_uniq"
+
+# Postgres' unique-violation detail line for the composite index: the
+# colliding (scope, key) values, unquoted. Same convention as
+# cron_loop's _DETAIL_KEY_RE; deliberately conservative -- a scope
+# containing a comma (or a truncated detail) fails the match and the
+# error's attribution fields stay None, which the typed error documents.
+_COMPOSITE_IDEMPOTENCY_DETAIL_RE = re.compile(
+    r"^Key \(idempotency_scope, idempotency_key\)=\((?P<scope>[^,]*), (?P<key>.*)\) "
+    r"already exists\.$"
+)
 
 
 async def _enforce_batch_max_pending(
@@ -1120,6 +1139,44 @@ async def _enqueue_batch_fast(
                     batch_size=len(args_list),
                 )
                 raise ScopedIdempotencyMigrationPendingError(detail=str(exc)) from exc
+            if exc.constraint_name == _COMPOSITE_IDEMPOTENCY_KEY_CONSTRAINT_NAME:
+                # Why classify while keeping the abort: COPY cannot
+                # dedupe, so a same-pair duplicate (in-batch or raced
+                # against a stored row) has no recovery on this path --
+                # the all-or-nothing abort is the documented bulk-import
+                # semantics and stays. But the raw
+                # asyncpg.UniqueViolationError forced callers to
+                # string-match a driver exception to tell "my batch had
+                # a duplicate key" apart from every other unique
+                # violation (pkey, singleton). The non-fast paths never
+                # raise for this condition -- their ON CONFLICT arbiter
+                # dedupes and RETURNS the existing row -- so there was
+                # no typed error to reuse; DuplicateIdempotencyKeyError
+                # is this path's own, following pgqueuer's
+                # DuplicateJobError precedent (typed domain error for a
+                # dedup-constraint violation, raised by their in-memory
+                # adapter too). The detail line is parsed best-effort so
+                # the offending pair is named when Postgres reports it;
+                # truncation or a comma-bearing scope degrades to
+                # unattributed-but-typed. During the 01.00.03 rolling
+                # window a same-pair duplicate may instead be reported
+                # against the legacy index, which the branch above
+                # already converts -- that carve-out is pre-existing
+                # documented behavior for this path, unchanged here.
+                match = _COMPOSITE_IDEMPOTENCY_DETAIL_RE.match(exc.detail or "")
+                dup_key = match.group("key") if match is not None else None
+                dup_scope = match.group("scope") if match is not None else None
+                logger.info(
+                    "batch-fast-duplicate-idempotency-key",
+                    batch_size=len(args_list),
+                    idempotency_key=dup_key,
+                    idempotency_scope=dup_scope,
+                )
+                raise DuplicateIdempotencyKeyError(
+                    idempotency_key=dup_key,
+                    idempotency_scope=dup_scope,
+                    detail=exc.detail,
+                ) from exc
             raise
         count = int(result.split()[-1])
         await conn.execute(

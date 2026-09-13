@@ -1264,7 +1264,8 @@ class Backend(Protocol):
           before it is ever dispatched.
         - A duplicate ``idempotency_key`` — within the batch or already
           stored — violates the unique index and aborts the ENTIRE batch
-          (all-or-nothing atomicity; nothing is written).
+          (all-or-nothing atomicity; nothing is written), surfacing as
+          :class:`~taskq.exceptions.DuplicateIdempotencyKeyError`.
         - Items carrying a resolved ``max_pending`` cap are
           admission-checked as one aggregate before the COPY (same
           ``existing + batch > limit`` contract as :meth:`enqueue_batch`);
@@ -1275,8 +1276,8 @@ class Backend(Protocol):
         ``len(args_list)`` — this path never deduplicates, so the count
         never includes pre-existing rows.  The in-memory mirror implements
         the same contract: duplicates raise
-        ``asyncpg.UniqueViolationError`` before any row is written, and
-        the count is the number of items.
+        :class:`~taskq.exceptions.DuplicateIdempotencyKeyError` before
+        any row is written, and the count is the number of items.
 
         This is a performance-focused variant of :meth:`enqueue_batch`
         (which DOES deduplicate idempotency-key collisions via ``ON

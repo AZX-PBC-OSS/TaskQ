@@ -486,7 +486,7 @@ Enqueues jobs via the PG `COPY FROM` protocol for maximum throughput. Returns th
 
 ### Limitations
 
-- **No idempotency-key collision handling.** A duplicate key raises `asyncpg.UniqueViolationError` and aborts the entire batch. Callers must pre-deduplicate.
+- **No idempotency-key collision handling.** A duplicate `(idempotency_scope, idempotency_key)` pair — repeated within the batch or already stored — aborts the entire batch with `DuplicateIdempotencyKeyError` (nothing is written; the abort itself is deliberate bulk-import semantics). Callers must pre-deduplicate. One carve-out: during the `01.00.03` pre→post migration window, a key reused across *different* scopes raises `ScopedIdempotencyMigrationPendingError` instead, matching the other enqueue paths.
 - **No max_pending check.** The caller is responsible for ensuring actor limits are not exceeded.
 - **No JobHandle instances.** Only the inserted count is returned. Use `batch_id` to query rows post-insert.
 - **All-or-nothing.** The COPY fails entirely on any constraint violation — singleton, unique index, or CHECK constraint.

@@ -337,12 +337,16 @@ async def _enqueue_batch_fast(
         raise ValueError("args_list must not be empty")
     # COPY has no ON CONFLICT arbiter: any duplicate idempotency key —
     # within the batch or already stored — aborts the ENTIRE batch on PG
-    # (raw UniqueViolationError on jobs_idempotency_scope_key_uniq;
-    # nothing is written).  Mirror that here instead of silently
-    # deduplicating item-by-item, which reported a count that included
-    # rows PG would never have written (protocol parity; see
-    # Backend.enqueue_batch_fast's docstring).
-    from asyncpg.exceptions import UniqueViolationError
+    # (a violation of jobs_idempotency_scope_key_uniq; nothing is
+    # written).  Mirror that here instead of silently deduplicating
+    # item-by-item, which reported a count that included rows PG would
+    # never have written (protocol parity; see
+    # Backend.enqueue_batch_fast's docstring). The mirror raises the
+    # SAME typed classification the PG COPY path now gives
+    # (DuplicateIdempotencyKeyError, not a raw asyncpg violation) — and
+    # names the offending pair exactly, since the detecting loop knows
+    # it (the PG path best-effort parses the violation's detail line).
+    from taskq.exceptions import DuplicateIdempotencyKeyError
 
     seen: set[tuple[str, str]] = set()
     for args in args_list:
@@ -350,11 +354,16 @@ async def _enqueue_batch_fast(
             continue
         pair = (args.idempotency_scope, str(args.idempotency_key))
         if pair in seen or pair in self._idempotency_index:
-            exc = UniqueViolationError(
-                "duplicate key value violates unique constraint 'jobs_idempotency_scope_key_uniq'"
+            logger.info(
+                "batch-fast-duplicate-idempotency-key",
+                batch_size=len(args_list),
+                idempotency_key=pair[1],
+                idempotency_scope=pair[0],
             )
-            exc.constraint_name = "jobs_idempotency_scope_key_uniq"
-            raise exc
+            raise DuplicateIdempotencyKeyError(
+                idempotency_key=pair[1],
+                idempotency_scope=pair[0],
+            )
         seen.add(pair)
     rows = await _enqueue_batch(self, args_list, enforce_max_pending=enforce_max_pending)
     return len(rows)

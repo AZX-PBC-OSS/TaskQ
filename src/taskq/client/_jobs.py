@@ -1074,10 +1074,13 @@ class JobsClient:
         **Tradeoffs vs enqueue_batch:**
 
         - **No idempotency-key collision handling.** A duplicate key
-          aborts the entire batch with ``asyncpg.UniqueViolationError``.
-          Callers must pre-deduplicate. One carve-out: during the
-          ``01.00.03`` pre→post migration window, a key reused across
-          *different* scopes raises
+          aborts the entire batch with
+          :class:`~taskq.exceptions.DuplicateIdempotencyKeyError` — a
+          same-``(idempotency_scope, idempotency_key)`` pair, whether
+          repeated within the batch or already stored; nothing is
+          written. Callers must pre-deduplicate. One carve-out: during
+          the ``01.00.03`` pre→post migration window, a key reused
+          across *different* scopes raises
           :class:`~taskq.exceptions.ScopedIdempotencyMigrationPendingError`
           instead, matching the other enqueue paths.
         - **max_pending pre-check.** One aggregated count runs before

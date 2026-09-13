@@ -26,6 +26,7 @@ from taskq.backend._cancel_bulk import _cancel_where
 from taskq.backend._protocol import ErrorInfo, EventRow, IdentityKey, JobId, JobSortField, JobStatus
 from taskq.backend._reads import _list_jobs
 from taskq.backend.statemachine import ACTIVE_STATUSES, TERMINAL_STATUSES
+from taskq.exceptions import DuplicateIdempotencyKeyError
 from taskq.testing.in_memory import InMemoryBackend, encode_cursor
 
 # The harness exercises PG via backend_pair; PG branch must be opt-in.
@@ -2145,13 +2146,12 @@ async def test_enqueue_batch_fast_intra_batch_duplicate_aborts_entire_batch(
 ) -> None:
     """D7 parity pin: COPY has no ON CONFLICT arbiter, so a duplicate
     ``idempotency_key`` WITHIN one batch violates the unique index and
-    aborts the ENTIRE batch — all-or-nothing, nothing written, and PG
-    surfaces it as ``asyncpg.UniqueViolationError``.  Pre-fix the InMemory
-    mirror silently deduplicated item-by-item and returned a count that
-    included rows PG would never have written (count=2 for a batch whose
-    every row PG would have rejected)."""
-    import asyncpg
-
+    aborts the ENTIRE batch — all-or-nothing, nothing written, and both
+    backends surface the typed ``DuplicateIdempotencyKeyError`` (the
+    classification fix; previously a raw ``asyncpg.UniqueViolationError``).
+    Pre-fix the InMemory mirror silently deduplicated item-by-item and
+    returned a count that included rows PG would never have written
+    (count=2 for a batch whose every row PG would have rejected)."""
     key = f"dup-intra-{new_uuid()}"
     args_list = [
         EnqueueArgs(
@@ -2176,7 +2176,7 @@ async def test_enqueue_batch_fast_intra_batch_duplicate_aborts_entire_batch(
         ),
     ]
 
-    with pytest.raises(asyncpg.UniqueViolationError):
+    with pytest.raises(DuplicateIdempotencyKeyError):
         await backend_pair.enqueue_batch_fast(args_list)
 
     # All-or-nothing: no row from the batch survived.
@@ -2191,11 +2191,9 @@ async def test_enqueue_batch_fast_existing_key_aborts_entire_batch(
 ) -> None:
     """D7 parity pin, cross-call shape: a batch-fast item whose
     ``(idempotency_scope, idempotency_key)`` already exists from an earlier
-    write aborts the whole batch on PG (COPY cannot dedupe); the InMemory
-    mirror must agree instead of silently returning the stored row's
-    count."""
-    import asyncpg
-
+    write aborts the whole batch on PG (COPY cannot dedupe) with the typed
+    ``DuplicateIdempotencyKeyError``; the InMemory mirror must agree
+    instead of silently returning the stored row's count."""
     key = f"dup-existing-{new_uuid()}"
     first = EnqueueArgs(
         id=new_job_id(),
@@ -2232,7 +2230,7 @@ async def test_enqueue_batch_fast_existing_key_aborts_entire_batch(
             idempotency_key=key,
         ),
     ]
-    with pytest.raises(asyncpg.UniqueViolationError):
+    with pytest.raises(DuplicateIdempotencyKeyError):
         await backend_pair.enqueue_batch_fast(batch)
 
     # All-or-nothing: the fresh item must NOT have been written either.

@@ -672,6 +672,65 @@ class ScopedIdempotencyMigrationPendingError(TaskQError):
         super().__init__(message)
 
 
+class DuplicateIdempotencyKeyError(TaskQError):
+    """``enqueue_batch_fast`` aborted: an item's
+    ``(idempotency_scope, idempotency_key)`` pair is already enqueued.
+
+    COPY has no ``ON CONFLICT`` arbiter, so a same-pair duplicate —
+    repeated within the batch or raced against a row the composite
+    ``jobs_idempotency_scope_key_uniq`` index already covers — aborts the
+    ENTIRE batch before a single row is written (all-or-nothing; the
+    abort is deliberate bulk-import semantics, unchanged by the
+    classification this error introduced). The non-fast paths never
+    raise for this condition: their ``ON CONFLICT`` arbiter dedupes and
+    RETURNS the existing row, so no pre-existing typed error expressed
+    "this pair is already enqueued" — hence this class, following
+    pgqueuer's ``DuplicateJobError`` precedent (a typed domain error for
+    a deduplication-constraint violation on the enqueue path, raised by
+    their in-memory adapter too). Distinct from
+    :class:`ScopedIdempotencyMigrationPendingError`, which is the
+    rolling-deploy window's cross-scope reuse signal.
+
+    ``idempotency_key`` / ``idempotency_scope`` carry the offending pair
+    when it could be attributed: the InMemory mirror detects it exactly,
+    and the PG path best-effort parses the violation's detail line
+    (Postgres can truncate long detail values) — both ``None`` when not
+    attributable. ``detail`` carries the postgres detail verbatim when
+    present.
+
+    Resolution: pre-deduplicate the items, or use
+    :meth:`~taskq.client.JobsClient.enqueue_batch`, which dedupes and
+    returns the existing rows.
+    """
+
+    def __init__(
+        self,
+        *,
+        idempotency_key: str | None = None,
+        idempotency_scope: str | None = None,
+        detail: str | None = None,
+    ) -> None:
+        self.idempotency_key = idempotency_key
+        self.idempotency_scope = idempotency_scope
+        self.detail = detail
+        message = (
+            "enqueue_batch_fast rejected: an item's (idempotency_scope, "
+            "idempotency_key) pair is already enqueued (duplicate within "
+            "the batch or already stored). COPY has no ON CONFLICT arbiter, "
+            "so the entire batch aborted with nothing written. "
+            "Pre-deduplicate the items or use enqueue_batch, which dedupes "
+            "and returns the existing rows."
+        )
+        if idempotency_key is not None:
+            message += (
+                f" Offending pair: idempotency_scope={idempotency_scope!r}, "
+                f"idempotency_key={idempotency_key!r}."
+            )
+        if detail is not None:
+            message += f" (postgres detail: {detail})"
+        super().__init__(message)
+
+
 class SubEnqueueError(TaskQError):
     """Raised by flush_buffer() when one or more buffered sub-job enqueues fail after parent commit.
 
