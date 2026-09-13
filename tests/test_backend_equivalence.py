@@ -2421,14 +2421,16 @@ async def test_enqueue_batch_fast_multi_defect_batch_raises_payload_validation(
 async def test_enqueue_batch_fast_multi_defect_batch_raises_cap_before_duplicate(
     backend_pair: Backend,
 ) -> None:
-    """D7 parity pin, cap-vs-duplicate ordering: a batch whose
-    NON-duplicated items alone exceed the actor's cap must raise
-    MaxPendingExceededError on both backends — PG's fast path runs the
-    pre-COPY cap count before the COPY ever sees the duplicate violation,
-    and the mirror must check in the same order. The duplicate pair is
-    cap-discounted on both tiers (it dedupes, consuming no capacity), so
-    the cap verdict depends only on the fresh items."""
-    from taskq.exceptions import MaxPendingExceededError
+    """D7 parity pin, cap-vs-duplicate ordering under the per-actor
+    partition: a batch whose sole actor is over cap is refused as a whole
+    group BEFORE the COPY ever sees the duplicate violation — the caller
+    sees BatchMaxPendingExceededError naming the actor and every item
+    index, and the duplicate pair is never reached (it is also
+    cap-discounted on both tiers, consuming no capacity, so the cap
+    verdict depends only on the fresh items). PG's fast path runs the
+    pre-COPY cap partition before the COPY; the mirror checks in the
+    same order."""
+    from taskq.exceptions import BatchMaxPendingExceededError
 
     key = f"dup-cap-order-{new_uuid()}"
     args_list = [
@@ -2474,8 +2476,13 @@ async def test_enqueue_batch_fast_multi_defect_batch_raises_cap_before_duplicate
         ),
     ]
 
-    with pytest.raises(MaxPendingExceededError):
+    with pytest.raises(BatchMaxPendingExceededError) as excinfo:
         await backend_pair.enqueue_batch_fast(args_list)
+
+    err = excinfo.value
+    assert err.admitted_count == 0, "every item belongs to the over-cap actor"
+    assert set(err.refused_indices) == {"actor_a"}
+    assert sorted(err.refused_indices["actor_a"]) == [0, 1, 2, 3, 4]
 
     rows = await backend_pair.list_jobs(JobFilter(actor="actor_a", limit=100))
     assert all(r.idempotency_key != key for r in rows), (
