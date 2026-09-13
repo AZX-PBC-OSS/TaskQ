@@ -1206,11 +1206,13 @@ class WorkerSettings(TaskQSettings):
         default=10.0,
         validator=_positive_finite_float,
         description="TASKQ_NOTIFY_LISTENER_SETUP_TIMEOUT (seconds). Bounds "
-        "each ``add_listener`` call during NOTIFY listener setup and "
-        "reconnect - a half-open PG connection that accepts TCP but stalls "
-        "on the LISTEN handshake would otherwise wedge the notify loop "
-        "forever. On timeout the connection is closed (bounded) and the "
-        "reconnect retry loop is entered (or the initial setup raises).",
+        "each ``LISTEN`` execute and ``add_listener`` call during NOTIFY "
+        "listener setup and reconnect - a half-open PG connection that "
+        "accepts TCP (or completes the reconnect factory handshake) but "
+        "stalls on the LISTEN execute or registration would otherwise "
+        "wedge the notify loop forever. On timeout the connection is "
+        "closed (bounded) and the reconnect retry loop is entered (or "
+        "the initial setup raises).",
     )
     notify_enabled: bool = Field(
         default=True,
@@ -1243,12 +1245,15 @@ class WorkerSettings(TaskQSettings):
         default=30.0,
         gt=0,
         description="TASKQ_RELOAD_FACTORY_TIMEOUT (seconds). Bounds each "
-        "individual pool-factory call - during a credential hot-reload, "
-        "and at bootstrap when the worker opens its per-slot transaction "
-        "pool (a fully-warmed open means one connection - and on a "
-        "managed-identity deployment one credential fetch - per consumer "
-        "slot). A hung token endpoint is marked failed for that resource "
-        "instead of wedging the reload coordinator or worker boot.",
+        "individual factory call - during a credential hot-reload "
+        "(reload_credentials), at bootstrap when the worker opens its "
+        "per-slot transaction pool (a fully-warmed open means one "
+        "connection - and on a managed-identity deployment one "
+        "credential fetch - per consumer slot), and on the notify "
+        "listener's health-check reconnect (reconnect_notify_conn). A "
+        "hung token endpoint is marked failed for that resource - or "
+        "logged as a reconnect attempt and retried - instead of wedging "
+        "the reload coordinator, worker boot, or the reconnect loop.",
     )
 
     # -- Queue selection --------------------------------------------------
