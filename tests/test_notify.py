@@ -63,6 +63,7 @@ def _make_mock_deps(
     health_check_interval: float = 0.001,
     reconnect_backoff_initial: float | None = None,
     listener_setup_timeout: float | None = None,
+    reload_factory_timeout: float | None = None,
 ) -> Mock:
     from taskq.settings import WorkerSettings
 
@@ -75,6 +76,8 @@ def _make_mock_deps(
         settings_dict["notify_reconnect_backoff_initial"] = str(reconnect_backoff_initial)
     if listener_setup_timeout is not None:
         settings_dict["notify_listener_setup_timeout"] = str(listener_setup_timeout)
+    if reload_factory_timeout is not None:
+        settings_dict["reload_factory_timeout"] = str(reload_factory_timeout)
     settings = WorkerSettings.load_from_dict(settings_dict)
     deps = Mock()
     deps.settings = settings
@@ -860,6 +863,315 @@ class TestReconnectWidenedCatch:
         assert any(
             kw.get("error_type") == "_FakeClientAuthenticationError" for kw in warning_kwargs
         ), f"reconnect warning must log type(exc).__name__; got {warning_kwargs}"
+
+
+# ---- Reconnect resilience: a HUNG factory (#156) -----------------------------------------
+#
+# reconnect_notify_conn awaited factory() with no bound, so a hung
+# credential provider or TCP connect parked the health-check retry loop
+# while holding notify_reconnect_lock — poll-based dispatch kept working,
+# but the notify channel stayed down until process restart. The bound is
+# settings.reload_factory_timeout: the SAME setting the SIGHUP reload path
+# (deps.reload_credentials factory_timeout) and the bootstrap slot-pool
+# open already use, so every factory caller agrees on what a hung factory
+# costs; exhaustion is the retry loop's ordinary failure path — logged as
+# a reconnect attempt, backoff, retry — never a crash and never a stall.
+
+
+class TestReconnectFactoryBound:
+    async def test_hung_factory_times_out_and_is_retried(self) -> None:
+        """A factory that never returns is bounded by reload_factory_timeout:
+        the timeout is logged as a reconnect attempt (error_type
+        TimeoutError, like any other factory failure), the connection is
+        NOT swapped, the reconnect lock is released, and the loop stays
+        responsive to shutdown."""
+        deps = _make_mock_deps(reconnect_backoff_initial=0.01, reload_factory_timeout=0.05)
+        backend = _make_backend()
+        channels = _make_channels(backend)
+        shutdown = asyncio.Event()
+
+        old_conn = deps.notify_conn
+        old_conn.execute = AsyncMock(
+            side_effect=asyncpg.PostgresConnectionError("simulated failure")
+        )
+
+        factory_entered = asyncio.Event()
+        never = asyncio.Event()  # never set: the credential provider hangs
+
+        async def hung_factory() -> Mock:
+            factory_entered.set()
+            await never.wait()
+            raise AssertionError("unreachable: the hang gate is never set")
+
+        deps.notify_conn_factory = hung_factory
+
+        import taskq.worker.notify as notify_mod
+
+        with pytest.MonkeyPatch().context() as monkeypatch:
+            logger_mock = Mock()
+            monkeypatch.setattr(notify_mod, "logger", logger_mock)
+
+            task = asyncio.create_task(_health_check_loop(deps, backend, shutdown, channels))
+            try:
+                await wait_for(factory_entered, timeout=2.0, description="factory entered")
+
+                def _timeout_attempt_logged() -> bool:
+                    return any(
+                        c.args[0] == "notify-reconnect-attempt"
+                        and c.kwargs.get("error_type") == "TimeoutError"
+                        for c in logger_mock.warning.call_args_list
+                    )
+
+                # RED pre-fix: the loop is parked inside factory() — no
+                # reconnect attempt is ever logged and this bounded wait
+                # fails by name.
+                await wait_for_condition(
+                    _timeout_attempt_logged,
+                    description="notify-reconnect-attempt logged with error_type=TimeoutError",
+                    timeout=2.0,
+                )
+
+                assert deps.notify_conn is old_conn, (
+                    "an exhausted factory must not swap the connection"
+                )
+                assert not deps.notify_reconnect_lock.locked(), (
+                    "the reconnect lock must be released once the bound fires"
+                )
+
+                # The loop must stay responsive: shutdown set during the
+                # post-timeout cycle ends it on the next while-check — a
+                # loop still parked in factory() would hang here.
+                shutdown.set()
+                await asyncio.wait_for(task, timeout=2.0)
+            finally:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+
+    async def test_hung_factory_then_success_swaps_connection(self) -> None:
+        """A factory that hangs once then succeeds: the timeout does not
+        poison the retry — the second attempt rebuilds through the factory
+        and swaps deps.notify_conn (which also proves the reconnect lock
+        was released; a held lock would deadlock attempt two)."""
+        deps = _make_mock_deps(reconnect_backoff_initial=0.01, reload_factory_timeout=0.05)
+        backend = _make_backend()
+        channels = _make_channels(backend)
+        shutdown = asyncio.Event()
+
+        old_conn = deps.notify_conn
+        old_conn.execute = AsyncMock(
+            side_effect=asyncpg.PostgresConnectionError("simulated failure")
+        )
+
+        new_conn = _mock_conn()
+        new_conn.execute = AsyncMock()
+        factory_calls = 0
+        never = asyncio.Event()  # never set: the first factory call hangs
+
+        async def hang_then_succeed() -> Mock:
+            nonlocal factory_calls
+            factory_calls += 1
+            if factory_calls == 1:
+                await never.wait()
+                raise AssertionError("unreachable: the hang gate is never set")
+            return new_conn
+
+        deps.notify_conn_factory = hang_then_succeed
+
+        import taskq.worker.notify as notify_mod
+
+        with pytest.MonkeyPatch().context() as monkeypatch:
+            monkeypatch.setattr(notify_mod, "logger", Mock())
+
+            task = asyncio.create_task(_health_check_loop(deps, backend, shutdown, channels))
+            try:
+                await wait_for_condition(
+                    lambda: deps.notify_conn is new_conn,
+                    description="deps.notify_conn swapped to the factory-built connection",
+                    timeout=3.0,
+                )
+                assert factory_calls == 2, (
+                    f"expected hang + retry, got {factory_calls} factory calls"
+                )
+                assert new_conn.add_listener.call_count >= 1
+                assert old_conn is not deps.notify_conn
+            finally:
+                shutdown.set()
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+
+
+# ---- Reconnect resilience: a HUNG post-factory LISTEN execute (#156) ---------------------
+#
+# The factory bound alone does not close #156's threat model: a rebuilt
+# connection can complete the factory handshake and then black-hole on
+# the LISTEN execute — exactly the shape #155 fixed for health queries.
+# Pre-fix, that execute was unbounded while the add_listener beside it
+# was bounded, so the reconnect loop parked inside execute() while
+# holding notify_reconnect_lock — poll dispatch kept working, but the
+# notify channel stayed down until process restart. The bound is the
+# SAME settings.notify_listener_setup_timeout the add_listener beside
+# it (and the initial listener setup) already use — not a second
+# mechanism; exhaustion is the retry loop's ordinary failure path —
+# logged as a reconnect attempt, backoff, retry — never a crash and
+# never a stall.
+
+
+class TestReconnectListenBound:
+    async def test_hung_listen_execute_times_out_and_is_retried(self) -> None:
+        """A rebuilt conn that completes the factory handshake but
+        black-holes on the LISTEN execute is bounded by
+        notify_listener_setup_timeout: the timeout is logged as a
+        reconnect attempt (error_type TimeoutError), the connection is
+        NOT swapped, the reconnect lock is released, and the loop stays
+        responsive to shutdown. reload_factory_timeout is generous here,
+        so the bound that fires is provably the LISTEN one."""
+        deps = _make_mock_deps(
+            reconnect_backoff_initial=0.01,
+            reload_factory_timeout=5.0,
+            listener_setup_timeout=0.05,
+        )
+        backend = _make_backend()
+        channels = _make_channels(backend)
+        shutdown = asyncio.Event()
+
+        old_conn = deps.notify_conn
+        old_conn.execute = AsyncMock(
+            side_effect=asyncpg.PostgresConnectionError("simulated failure")
+        )
+
+        new_conn = _mock_conn()
+        listen_entered = asyncio.Event()
+        never = asyncio.Event()  # never set: the rebuilt conn black-holes on LISTEN
+
+        async def hanging_execute(sql: str, *args: object) -> object:
+            if "LISTEN" in sql:
+                listen_entered.set()
+                await never.wait()
+                raise AssertionError("unreachable: the hang gate is never set")
+            return None
+
+        new_conn.execute = hanging_execute
+
+        async def factory() -> Mock:
+            return new_conn
+
+        deps.notify_conn_factory = factory
+
+        import taskq.worker.notify as notify_mod
+
+        with pytest.MonkeyPatch().context() as monkeypatch:
+            logger_mock = Mock()
+            monkeypatch.setattr(notify_mod, "logger", logger_mock)
+
+            task = asyncio.create_task(_health_check_loop(deps, backend, shutdown, channels))
+            try:
+                await wait_for(listen_entered, timeout=2.0, description="LISTEN execute entered")
+
+                def _timeout_attempt_logged() -> bool:
+                    return any(
+                        c.args[0] == "notify-reconnect-attempt"
+                        and c.kwargs.get("error_type") == "TimeoutError"
+                        for c in logger_mock.warning.call_args_list
+                    )
+
+                # RED pre-fix: the loop is parked inside execute(LISTEN) —
+                # no reconnect attempt is ever logged and this bounded
+                # wait fails by name.
+                await wait_for_condition(
+                    _timeout_attempt_logged,
+                    description="notify-reconnect-attempt logged with error_type=TimeoutError",
+                    timeout=2.0,
+                )
+
+                assert deps.notify_conn is old_conn, (
+                    "an exhausted LISTEN bound must not swap the connection"
+                )
+                assert not deps.notify_reconnect_lock.locked(), (
+                    "the reconnect lock must be released once the bound fires"
+                )
+
+                # The loop must stay responsive: shutdown set during the
+                # post-timeout cycle ends it on the next while-check — a
+                # loop still parked in execute() would hang here.
+                shutdown.set()
+                await asyncio.wait_for(task, timeout=2.0)
+            finally:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+
+    async def test_hung_listen_then_success_swaps_connection(self) -> None:
+        """A rebuilt conn that black-holes on LISTEN once then succeeds:
+        the timeout does not poison the retry — the second attempt
+        re-executes LISTEN, registers the callbacks, and swaps
+        deps.notify_conn (which also proves the reconnect lock was
+        released; a held lock would deadlock attempt two)."""
+        deps = _make_mock_deps(
+            reconnect_backoff_initial=0.01,
+            reload_factory_timeout=5.0,
+            listener_setup_timeout=0.05,
+        )
+        backend = _make_backend()
+        channels = _make_channels(backend)
+        shutdown = asyncio.Event()
+
+        old_conn = deps.notify_conn
+        old_conn.execute = AsyncMock(
+            side_effect=asyncpg.PostgresConnectionError("simulated failure")
+        )
+
+        new_conn = _mock_conn()
+        factory_calls = 0
+        listen_hangs = 0
+        never = asyncio.Event()  # never set: the first LISTEN execute hangs
+
+        async def factory() -> Mock:
+            nonlocal factory_calls
+            factory_calls += 1
+            return new_conn
+
+        async def execute(sql: str, *args: object) -> object:
+            nonlocal listen_hangs
+            # Only the FIRST LISTEN execute hangs (the first channel of
+            # the first attempt); every later execute answers.
+            if "LISTEN" in sql and listen_hangs == 0:
+                listen_hangs += 1
+                await never.wait()
+                raise AssertionError("unreachable: the hang gate is never set")
+            return None
+
+        new_conn.execute = execute
+        deps.notify_conn_factory = factory
+
+        import taskq.worker.notify as notify_mod
+
+        with pytest.MonkeyPatch().context() as monkeypatch:
+            monkeypatch.setattr(notify_mod, "logger", Mock())
+
+            task = asyncio.create_task(_health_check_loop(deps, backend, shutdown, channels))
+            try:
+                await wait_for_condition(
+                    lambda: deps.notify_conn is new_conn,
+                    description="deps.notify_conn swapped to the factory-built connection",
+                    timeout=3.0,
+                )
+                assert factory_calls == 2, (
+                    f"expected LISTEN-timeout + retry, got {factory_calls} factory calls"
+                )
+                assert listen_hangs == 1, (
+                    f"exactly one LISTEN execute may hang - the first; got {listen_hangs}"
+                )
+                assert new_conn.add_listener.call_count == len(channels), (
+                    "the successful attempt must register every channel's callback"
+                )
+                assert old_conn is not deps.notify_conn
+            finally:
+                shutdown.set()
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
 
 
 # ---- Caller-owned notify_conn: disable instead of crash --------------------------------

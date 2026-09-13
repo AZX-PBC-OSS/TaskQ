@@ -76,6 +76,30 @@ Per-worker override: ``WorkerSpec.stream_limit``. A line longer than this
 is truncated and reported (see :func:`_read_line`), never fatal.
 """
 
+_HEALTH_QUERY_TIMEOUT_SECS: float = 2.0
+"""Client-side deadline on the health-check query itself (#155).
+
+Why a bound: the pool acquire beside it is already bounded (2.0 s), but
+the query was not — a server that accepts the query and never answers
+parked the health loop inside the child's ``restart_lock``, and because
+the liveness monitor and the shutdown path acquire the same locks
+sequentially, one black-holed query froze restart scheduling for every
+child and wedged the supervisor's SIGTERM forwarding, bounded only by
+TCP keepalives (minutes).
+
+Why client-side rather than a session ``statement_timeout``: the batch
+paths bind theirs with ``SET LOCAL`` inside a transaction
+(taskq.backend._sweeps), a scope an autocommit pool check does not
+have, and capture/restore on a pooled session adds round trips that can
+themselves hang. Why 2.0: consistent with the neighboring pool-acquire
+bound — the query is an indexed LIMIT-1 lookup, so 2.0 s is already
+generous. A timeout is a client-side deadline — transient per
+``taskq.worker._transient`` — so it lands in the existing
+``consecutive_failure_limit`` accounting, which errs on the healthy
+side for exactly the DB-outage case where killing children would be
+wrong.
+"""
+
 
 # ── Config model ──────────────────────────────────────────────────────────
 
@@ -366,12 +390,24 @@ async def _child_health_check(
     Errors on the healthy side for transient DB blips, but after
     ``consecutive_failure_limit`` consecutive query failures the check returns
     False to prevent a persistent DB outage from masking hung workers.
+    The query is bounded by :data:`_HEALTH_QUERY_TIMEOUT_SECS`; a timeout
+    counts as one query failure (a client-side deadline is transient —
+    ``taskq.worker._transient`` — not evidence the child is hung).
     """
     sql = _health_check_sql(schema)
     try:
         async with pg_pool.acquire(timeout=2.0) as conn:
-            row = await conn.fetchrow(
-                sql, wg_instance, child.spec.name, timedelta(seconds=cfg.stale_after)
+            # Why wait_for: the query must carry the deadline the acquire
+            # already has — without it a black-holed server holds the
+            # caller's restart_lock past every other bound in the file
+            # (#155). A timeout lands in the except below like any other
+            # transient DB failure: logged, counted, healthy until the
+            # limit.
+            row = await asyncio.wait_for(
+                conn.fetchrow(
+                    sql, wg_instance, child.spec.name, timedelta(seconds=cfg.stale_after)
+                ),
+                timeout=_HEALTH_QUERY_TIMEOUT_SECS,
             )
     except Exception as exc:
         child.health_failures += 1
