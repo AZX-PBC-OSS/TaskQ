@@ -50,6 +50,7 @@ from taskq.obs import (
     bind_job_context,
     get_logger,
     log_state_change,
+    record_sub_enqueue_failure,
     safe_start_span,
 )
 from taskq.progress._buffer import (
@@ -350,8 +351,12 @@ async def consume_one_job(
                 settings=settings,
             )
         except ReservationUnavailable as e:
+            # The handler owns the outcome tri-state (a snooze, a
+            # deadline failure, a budget-exhaustion failure, or a noop
+            # when the job moved underneath us) — its result is this
+            # dispatch's result, not a hardcoded reschedule.
             if e.source == "reservation":
-                await _handle_reservation_class_denied(
+                return await _handle_reservation_class_denied(
                     backend,
                     job,
                     worker_id,
@@ -363,20 +368,18 @@ async def consume_one_job(
                     outcome="reservation_denied",
                     debug_event="consume-reservation-denied-noop",
                 )
-            else:
-                await _handle_reservation_class_denied(
-                    backend,
-                    job,
-                    worker_id,
-                    e,
-                    consumer_span,
-                    job_log,
-                    actor_config,
-                    awaiting_prefix="rate_limit:",
-                    outcome="rate_limit_denied",
-                    debug_event="consume-rate-limit-denied-noop",
-                )
-            return "scheduled"
+            return await _handle_reservation_class_denied(
+                backend,
+                job,
+                worker_id,
+                e,
+                consumer_span,
+                job_log,
+                actor_config,
+                awaiting_prefix="rate_limit:",
+                outcome="rate_limit_denied",
+                debug_event="consume-rate-limit-denied-noop",
+            )
 
     # ── Buffer registration ────────────────────────────────────────────────
     _effective_pool = deps.worker_pool if deps is not None else worker_pool
@@ -789,6 +792,11 @@ async def _consume_transactional(
         try:
             await enqueuer.flush_buffer()
         except SubEnqueueError as sub_err:
+            # The parent has already been reported as succeeded, so every
+            # failed child enqueue is a job the caller believes exists but
+            # does not — count them before the log line, so the catch can
+            # never lose the signal.
+            record_sub_enqueue_failure(job.actor, len(sub_err.failed_items))
             log.error(
                 "sub_enqueue_flush_failed",
                 kind="sub_enqueue_flush_failed",

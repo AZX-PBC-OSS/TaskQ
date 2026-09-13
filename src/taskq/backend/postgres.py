@@ -530,7 +530,7 @@ class PostgresBackend:
         progress_seq: int = 0,
         progress_state: dict[str, object] | None = None,
         outcome: AttemptOutcome = "snoozed",
-    ) -> Literal["scheduled", "failed", "noop"]:
+    ) -> Literal["scheduled", "failed", "failed:MaxAttemptsExceeded", "noop"]:
         return await _mark_snoozed(
             self._worker_pool,
             self._sql,

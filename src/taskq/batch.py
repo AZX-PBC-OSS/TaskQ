@@ -307,7 +307,7 @@ _logger = structlog.get_logger("taskq.batch")
 async def apply_batch_terminal_outcome(
     backend: Backend,
     job: JobRow,
-    outcome: AttemptOutcome,
+    outcome: AttemptOutcome | Literal["noop"],
     *,
     transaction_conn: "ConnLike | None" = None,
 ) -> None:
@@ -315,7 +315,10 @@ async def apply_batch_terminal_outcome(
 
     Called after every terminal write by the consumer and the in-memory
     runner.  For non-batched jobs (no ``metadata.batch_id``) this returns
-    immediately — zero overhead.
+    immediately — zero overhead.  *outcome* is the dispatch outcome the
+    caller reports: an attempt-row outcome, or the consumer's ``"noop"``
+    (a terminal write that matched nothing — the job was never this
+    dispatch's to move, so no batch counter may budge).
 
     - ``"succeeded"``: resets the consecutive-failure counter.  If no
       jobs remain non-terminal, marks the batch complete.
@@ -326,8 +329,8 @@ async def apply_batch_terminal_outcome(
     - ``"cancelled"`` / ``"crashed"``: counts non-terminal jobs.  If none
       remain, marks the batch complete.
     - ``"snoozed"`` / ``"reservation_denied"`` / ``"rate_limit_denied"`` /
-      ``"scheduled"``: returns immediately — the job is rescheduled, not
-      terminal.
+      ``"scheduled"`` / ``"noop"``: returns immediately — the job is
+      rescheduled (or was never this dispatch's to move), not terminal.
 
     **Best-effort semantics (M7):** the increment/reset/abort/complete
     writes are best-effort.  A crash between the terminal job write and
@@ -346,7 +349,7 @@ async def apply_batch_terminal_outcome(
         return
     batch_id = UUID(str(raw_bid))
 
-    if outcome in ("snoozed", "reservation_denied", "rate_limit_denied", "scheduled"):
+    if outcome in ("snoozed", "reservation_denied", "rate_limit_denied", "scheduled", "noop"):
         return
 
     if outcome == "succeeded":

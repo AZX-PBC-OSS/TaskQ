@@ -577,10 +577,13 @@ async def test_indefinite_snooze_preserves_attempt() -> None:
     assert row.attempt == 2
 
     events = await backend.get_events(args.id)
+    # The snooze's row transition writes no event row; the to_state=
+    # 'scheduled' events come from the enqueue's future-scheduled stamp
+    # only.
     snooze_scheduled_events = [
         e for e in events if e.kind == "state_change" and e.detail.get("to_state") == "scheduled"
     ]
-    assert len(snooze_scheduled_events) == 1
+    assert len(snooze_scheduled_events) == 0
 
 
 # ── RetryAfter(consume_budget=True) with indefinite tier ───────

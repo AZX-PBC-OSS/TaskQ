@@ -137,7 +137,9 @@ class TestFullLifecycle:
         assert row["finished_at"] is not None
 
         state_changes = [e for e in events if e["kind"] == "state_change"]
-        assert len(state_changes) == 5
+        # The snooze's row transition writes no event (a deferral, not an
+        # execution): dispatch, wake promotion, re-dispatch, terminal exit.
+        assert len(state_changes) == 4
 
         transitions: list[tuple[str | None, str | None]] = []
         for e in state_changes:
@@ -145,7 +147,6 @@ class TestFullLifecycle:
             transitions.append((detail.get("from_state"), detail.get("to_state")))
         expected_sequence = [
             ("pending", "running"),
-            ("running", "scheduled"),
             ("scheduled", "pending"),
             ("pending", "running"),
             ("running", "succeeded"),
@@ -428,7 +429,9 @@ class TestPollingLifecycle:
         assert ok is True
 
         expected_transitions = [
-            ("running", "scheduled"),
+            # The snooze's running→scheduled row transition writes no
+            # event; the sequence records the wake promotion and the
+            # terminal exit only.
             ("scheduled", "pending"),
             ("running", "succeeded"),
         ]

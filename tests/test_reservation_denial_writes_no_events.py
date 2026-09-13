@@ -90,6 +90,17 @@ async def _trail_counts(app: JobsApp, schema: str, job_id: JobId) -> tuple[int, 
     return events, attempts, row["max_attempts"], row["status"]
 
 
+async def _counter_pair(app: JobsApp, schema: str, job_id: JobId) -> tuple[int, int]:
+    """(snooze_count, rate_limit_blocked_count) on the job row."""
+    async with app.deps.worker_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            f'SELECT snooze_count, rate_limit_blocked_count FROM "{schema}".jobs WHERE id = $1',
+            job_id,
+        )
+    assert row is not None
+    return row["snooze_count"], row["rate_limit_blocked_count"]
+
+
 async def test_reservation_denial_writes_no_event_or_attempt_rows(
     clean_jobs_app: JobsApp,
 ) -> None:
@@ -131,6 +142,18 @@ async def test_reservation_denial_writes_no_event_or_attempt_rows(
     )
     assert status == "scheduled"
 
+    snoozed, blocked = await _counter_pair(clean_jobs_app, schema, job_id)
+    assert blocked == 1, (
+        f"a reservation denial left rate_limit_blocked_count at {blocked}; the "
+        "denial must be counted on the job row — the coalesced, O(1)-in-denials "
+        "record of how often admission was refused."
+    )
+    assert snoozed == 0, (
+        f"a reservation denial bumped snooze_count to {snoozed}; the counters "
+        "are keyed by outcome — admission denials and plain snoozes are "
+        "materially different signals."
+    )
+
 
 async def test_retry_after_without_budget_writes_no_event_or_attempt_rows(
     clean_jobs_app: JobsApp,
@@ -163,6 +186,16 @@ async def test_retry_after_without_budget_writes_no_event_or_attempt_rows(
         f"to {max_attempts}; the ceiling must not be used as a counter."
     )
     assert status == "scheduled"
+
+    snoozed, blocked = await _counter_pair(clean_jobs_app, schema, job_id)
+    assert snoozed == 1, (
+        f"a non-consuming RetryAfter left snooze_count at {snoozed}; the "
+        "deferral must be counted on the job row."
+    )
+    assert blocked == 0, (
+        f"a plain non-consuming RetryAfter bumped rate_limit_blocked_count "
+        f"to {blocked}; that counter is keyed to admission denials."
+    )
 
 
 async def test_denial_loop_terminates_within_retry_budget(
@@ -257,3 +290,54 @@ async def test_denial_loop_terminates_within_retry_budget(
         "set. A denial loop must be bounded independently of "
         "schedule_to_close."
     )
+
+
+async def test_denial_on_non_retryable_at_budget_fails_max_attempts(
+    clean_jobs_app: JobsApp,
+) -> None:
+    """A ``non_retryable`` job at ``attempt >= max_attempts`` with no
+    ``schedule_to_close`` must reach a terminal exit through the denial
+    path itself: the budget guard on the non-consuming snooze arm is the
+    loop's only bounded exit, so the denial fails the job with
+    ``MaxAttemptsExceeded`` (and writes the terminal attempt+event rows a
+    terminal transition always writes) instead of rescheduling forever.
+    The row counters are the SNOOZE arm's record — the terminal exit's
+    record is its attempt/event rows and error_class, and OTEL counted
+    the denial itself.
+    """
+    schema, job_id, worker_id = await _seed_running(clean_jobs_app, max_attempts=1)
+    async with clean_jobs_app.deps.worker_pool.acquire() as conn:  # type: ignore[union-attr]  # Why: deps is object-typed in the non-TYPE_CHECKING JobsApp shim; WorkerDeps has worker_pool at runtime.
+        await conn.execute(
+            f"UPDATE \"{schema}\".jobs SET retry_kind = 'non_retryable', attempt = 1 WHERE id = $1",
+            job_id,
+        )
+
+    outcome = await clean_jobs_app.backend.mark_snoozed(
+        job_id,
+        worker_id,
+        _DELAY,
+        outcome="reservation_denied",
+    )
+    assert outcome == "failed:MaxAttemptsExceeded"
+
+    events, attempts, max_attempts, status = await _trail_counts(clean_jobs_app, schema, job_id)
+    assert status == "failed"
+    assert max_attempts == 1
+    # Terminal transitions write the machine-readable failure record: one
+    # attempt row and one state_change event — exactly once, at the exit.
+    assert attempts == 1
+    assert events == 1
+
+    async with clean_jobs_app.deps.worker_pool.acquire() as conn:  # type: ignore[union-attr]  # Why: as above.
+        row = await conn.fetchrow(
+            f"SELECT error_class, error_message, snooze_count, rate_limit_blocked_count "
+            f'FROM "{schema}".jobs WHERE id = $1',
+            job_id,
+        )
+    assert row is not None
+    assert row["error_class"] == "MaxAttemptsExceeded"
+    assert row["error_message"] == "retry budget exhausted"
+    # The counters are the snooze arm's record; the terminal arm carries
+    # the failure through the ordinary terminal-row channel instead.
+    assert row["rate_limit_blocked_count"] == 0
+    assert row["snooze_count"] == 0

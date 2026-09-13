@@ -36,7 +36,6 @@ from taskq.exceptions import (
     ResultTooLarge,
     WorkerOwnershipMismatch,
 )
-from taskq.retry import MAX_ATTEMPTS_SMALLINT_CEILING
 from taskq.testing._reads import _read_copy
 
 if TYPE_CHECKING:
@@ -536,7 +535,7 @@ async def _mark_snoozed(
     progress_seq: int = 0,
     progress_state: dict[str, object] | None = None,
     outcome: AttemptOutcome = "snoozed",
-) -> Literal["scheduled", "failed", "noop"]:
+) -> Literal["scheduled", "failed", "failed:MaxAttemptsExceeded", "noop"]:
     row = self._jobs.get(job_id)
     if row is None or row.status != "running" or row.locked_by_worker != worker_id:
         return "noop"
@@ -544,6 +543,13 @@ async def _mark_snoozed(
     now = self._clock.now()
     new_scheduled_at = now + delay
 
+    # Arm order here is deadline → max_attempts → snooze; the fused SQL
+    # checks snoozed → max_attempts → deadline with NOT EXISTS chaining.
+    # The orders are observably equivalent: a past-deadline row matches
+    # the deadline arm under either order (the snooze arm's deadline
+    # guard and the max_attempts arm's schedule_to_close IS NULL both
+    # exclude it first in the SQL), and every other row's arm choice
+    # depends only on its own predicate.
     if row.schedule_to_close is not None and new_scheduled_at > row.schedule_to_close:
         deadline_merged_progress = _merge_progress(row.progress_state, progress_state)
         self._jobs[job_id] = replace(
@@ -587,6 +593,58 @@ async def _mark_snoozed(
         )
         return "failed"
 
+    # The non-consuming budget gate: the exact complement of the snooze
+    # arm's guard — a non-indefinite job at attempt >= max_attempts with
+    # no close deadline has no remaining exit except the terminal one.
+    # A job carrying schedule_to_close reschedules until its deadline
+    # (its own terminal exit); an indefinite job reschedules by policy.
+    if (
+        row.attempt >= row.max_attempts
+        and row.retry_kind != "indefinite"
+        and (row.schedule_to_close is None)
+    ):
+        maxatt_merged_progress = _merge_progress(row.progress_state, progress_state)
+        self._jobs[job_id] = replace(
+            row,
+            status="failed",
+            finished_at=now,
+            error_class="MaxAttemptsExceeded",
+            error_message="retry budget exhausted",
+            error_traceback=None,
+            locked_by_worker=None,
+            lock_expires_at=None,
+            last_heartbeat_at=None,
+            progress_seq=progress_seq,
+            progress_state=maxatt_merged_progress,
+        )
+        self._append_attempt(
+            job_id=job_id,
+            attempt=row.attempt,
+            started_at=row.started_at,
+            now=now,
+            outcome="failed",
+            error_class="MaxAttemptsExceeded",
+            error_message="retry budget exhausted",
+            error_traceback=None,
+            worker_id=worker_id,
+        )
+        self._append_state_change_event(
+            job_id=job_id,
+            from_state="running",
+            to_state="failed",
+            now=now,
+            error_class="MaxAttemptsExceeded",
+            worker_id=worker_id,
+        )
+        logger.debug(
+            "state-change",
+            kind="state_change",
+            from_state="running",
+            to_state="failed",
+            job_id=str(job_id),
+        )
+        return "failed:MaxAttemptsExceeded"
+
     # PG's snooze arm binds metadata_update through jsonb_param (the
     # NUL-guarded serialization) and merges it server-side
     # (j.metadata || update), so the update's values read back as PG's
@@ -602,10 +660,10 @@ async def _mark_snoozed(
         "scheduled" if new_scheduled_at > now else "pending"
     )
     merged_progress = _merge_progress(row.progress_state, progress_state)
-    # Why: saturate at the smallint ceiling — PG's mark_snoozed widens the
-    # budget with LEAST(j.max_attempts + 1, 32767); an unbounded Python
-    # increment would let the mirror's rows cross the column domain the
-    # real backend's rows can never leave (parity doctrine).
+    # A non-terminal snooze/denial writes no attempt/event rows and never
+    # touches max_attempts (the ceiling is a bound, not a counter): the
+    # outcome-keyed counters on the row are its whole durable record,
+    # mirroring the SQL arms' CASE increments.
     self._jobs[job_id] = replace(
         row,
         status=snooze_status,
@@ -614,30 +672,14 @@ async def _mark_snoozed(
         locked_by_worker=None,
         lock_expires_at=None,
         last_heartbeat_at=None,
-        max_attempts=min(row.max_attempts + 1, MAX_ATTEMPTS_SMALLINT_CEILING),
+        snooze_count=row.snooze_count + (1 if outcome == "snoozed" else 0),
+        rate_limit_blocked_count=row.rate_limit_blocked_count
+        + (1 if outcome in ("reservation_denied", "rate_limit_denied") else 0),
         metadata=new_metadata,
         cancel_phase=CancelPhase.NONE,
         cancel_requested_at=None,
         progress_seq=progress_seq,
         progress_state=merged_progress,
-    )
-    self._append_attempt(
-        job_id=job_id,
-        attempt=row.attempt,
-        started_at=row.started_at,
-        now=now,
-        outcome=outcome,
-        error_class=None,
-        error_message=None,
-        error_traceback=None,
-        worker_id=worker_id,
-    )
-    self._append_state_change_event(
-        job_id=job_id,
-        from_state="running",
-        to_state="scheduled",
-        now=now,
-        worker_id=worker_id,
     )
     logger.debug(
         "state-change",
@@ -712,7 +754,27 @@ async def _mark_retry_after(
         )
         return "failed:DeadlineExceeded"
 
-    if consume_budget and row.retry_kind == "transient" and row.attempt >= row.max_attempts:
+    # Arm order here is deadline → max_attempts → snooze; the fused SQL
+    # checks snoozed → max_attempts → deadline with NOT EXISTS chaining.
+    # The orders are observably equivalent for the same reason as
+    # _mark_snoozed above: a past-deadline row reaches the deadline arm
+    # under either order, and every other row's arm choice depends only
+    # on its own predicate.
+    #
+    # The exhaustion arm is enum-complete over retry_kind (any
+    # non-indefinite kind fails at budget — a transient-only predicate
+    # left non_retryable matching no arm).  For consume_budget=True the
+    # arm accepts a job whose reschedule point still fits under its close
+    # deadline (the deadline check above has already returned the
+    # past-deadline rows, so nothing further is needed here); for
+    # consume_budget=False a job CARRYING a close deadline never takes
+    # this arm — the deadline, not the budget, is that job's terminal
+    # exit.
+    if (
+        row.attempt >= row.max_attempts
+        and row.retry_kind != "indefinite"
+        and (consume_budget or row.schedule_to_close is None)
+    ):
         maxatt_merged_progress = _merge_progress(row.progress_state, progress_state)
         self._jobs[job_id] = replace(
             row,
@@ -760,14 +822,10 @@ async def _mark_retry_after(
         return "failed:MaxAttemptsExceeded"
 
     new_attempt = row.attempt
-    # Why: saturate at the smallint ceiling, mirroring PG's
-    # mark_retry_after_consume_false LEAST() increment (same parity
-    # rationale as _mark_snoozed above).
-    new_max_attempts = (
-        row.max_attempts
-        if consume_budget
-        else min(row.max_attempts + 1, MAX_ATTEMPTS_SMALLINT_CEILING)
-    )
+    # A non-consuming RetryAfter is a deferral, not an execution: it
+    # writes no attempt/event rows, never touches max_attempts, and
+    # counts itself on the row's snooze counter.  A consuming one IS a
+    # real execution and keeps writing its rows below.
     retry_status: Literal["scheduled", "pending"] = (
         "scheduled" if new_scheduled_at > now else "pending"
     )
@@ -778,7 +836,7 @@ async def _mark_retry_after(
         scheduled_at=new_scheduled_at,
         finished_at=None,
         attempt=new_attempt,
-        max_attempts=new_max_attempts,
+        snooze_count=row.snooze_count if consume_budget else row.snooze_count + 1,
         locked_by_worker=None,
         lock_expires_at=None,
         last_heartbeat_at=None,
@@ -787,24 +845,25 @@ async def _mark_retry_after(
         progress_seq=progress_seq,
         progress_state=merged_progress,
     )
-    self._append_attempt(
-        job_id=job_id,
-        attempt=row.attempt,
-        started_at=row.started_at,
-        now=now,
-        outcome="snoozed",
-        error_class="RetryAfter",
-        error_message=None,
-        error_traceback=None,
-        worker_id=worker_id,
-    )
-    self._append_state_change_event(
-        job_id=job_id,
-        from_state="running",
-        to_state="scheduled",
-        now=now,
-        worker_id=worker_id,
-    )
+    if consume_budget:
+        self._append_attempt(
+            job_id=job_id,
+            attempt=row.attempt,
+            started_at=row.started_at,
+            now=now,
+            outcome="snoozed",
+            error_class="RetryAfter",
+            error_message=None,
+            error_traceback=None,
+            worker_id=worker_id,
+        )
+        self._append_state_change_event(
+            job_id=job_id,
+            from_state="running",
+            to_state="scheduled",
+            now=now,
+            worker_id=worker_id,
+        )
     logger.debug(
         "state-change",
         kind="state_change",

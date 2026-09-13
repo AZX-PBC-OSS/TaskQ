@@ -65,20 +65,23 @@ async def test_full_snooze_round_trip() -> None:
     assert row.attempt == 2
 
     attempts = await backend.get_attempts(args.id)
-    assert len(attempts) == 2
-    assert attempts[0].outcome == "snoozed"
-    assert attempts[0].attempt == 1
-    assert attempts[1].outcome == "succeeded"
-    assert attempts[1].attempt == 2
+    # The snooze wrote no attempt row (a deferral is not an execution);
+    # the only record is the terminal success at attempt 2.
+    assert len(attempts) == 1
+    assert attempts[0].outcome == "succeeded"
+    assert attempts[0].attempt == 2
 
+    # The snooze's row transition writes no event: the state_change
+    # sequence records dispatches, the wake promotion, and the terminal
+    # exit only.
     transitions = await _extract_state_change_transitions(backend, args.id)
     assert transitions == [
         ("pending", "running"),
-        ("running", "scheduled"),
         ("scheduled", "pending"),
         ("pending", "running"),
         ("running", "succeeded"),
     ]
+    assert row.snooze_count == 1
 
 
 # ── multiple snooze cycles (3x) ─────────────────────────────────
@@ -110,24 +113,20 @@ async def test_multiple_snooze_cycles() -> None:
     assert row.attempt == 4
 
     attempts = await backend.get_attempts(args.id)
-    snoozed = [a for a in attempts if a.outcome == "snoozed"]
-    assert len(snoozed) == 3
-    for a in snoozed:
-        assert a.error_class is None
-
+    # The three snoozes wrote no attempt rows; the coalesced snooze
+    # counter on the row is their record.
     succeeded = [a for a in attempts if a.outcome == "succeeded"]
     assert len(succeeded) == 1
+    assert len(attempts) == 1
+    assert row.snooze_count == 3
 
     transitions = await _extract_state_change_transitions(backend, args.id)
     assert transitions == [
         ("pending", "running"),
-        ("running", "scheduled"),
         ("scheduled", "pending"),
         ("pending", "running"),
-        ("running", "scheduled"),
         ("scheduled", "pending"),
         ("pending", "running"),
-        ("running", "scheduled"),
         ("scheduled", "pending"),
         ("pending", "running"),
         ("running", "succeeded"),
@@ -210,10 +209,12 @@ async def test_indefinite_retry_polling_pattern() -> None:
     assert call_count == 2
     assert row.attempt == 2
 
+    # The snooze's row transition writes no event row (see
+    # test_full_snooze_round_trip); the sequence records dispatches, the
+    # wake promotion, and the terminal exit only.
     transitions = await _extract_state_change_transitions(backend, args.id)
     assert transitions == [
         ("pending", "running"),
-        ("running", "scheduled"),
         ("scheduled", "pending"),
         ("pending", "running"),
         ("running", "succeeded"),
@@ -262,9 +263,11 @@ async def test_cancel_mid_snooze() -> None:
     assert len(dispatched_after) == 0
 
     transitions = await _extract_state_change_transitions(backend, args.id)
+    # The snooze's row transition writes no event row; the sequence
+    # records the dispatch, the cancel path's scheduled→cancelled, and
+    # nothing else.
     assert transitions == [
         ("pending", "running"),
-        ("running", "scheduled"),
         ("scheduled", "cancelled"),
     ]
 

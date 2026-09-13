@@ -327,8 +327,10 @@ class TestReturnAnnotations:
 
         hints = get_type_hints(Backend.mark_snoozed)
         ret = hints.get("return")
-        assert ret is not None and set(get_args(ret)) == {"scheduled", "failed", "noop"}, (
-            f"mark_snoozed should return Literal['scheduled', 'failed', 'noop'], got {ret}"
+        expected = {"scheduled", "failed", "failed:MaxAttemptsExceeded", "noop"}
+        assert ret is not None and set(get_args(ret)) == expected, (
+            f"mark_snoozed should return Literal['scheduled', 'failed', "
+            f"'failed:MaxAttemptsExceeded', 'noop'], got {ret}"
         )
 
     def test_mark_retry_after_returns_tri_state(self) -> None:
@@ -470,7 +472,7 @@ class TestJobRowRoundTrip:
         assert flds["status"].type is JobStatus
 
     def test_field_count(self) -> None:
-        expected = 38  # field list + tags
+        expected = 40  # field list + tags + the two denial/snooze counters
         assert len(fields(JobRow)) == expected
 
     def test_frozen(self) -> None:

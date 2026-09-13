@@ -176,13 +176,16 @@ async def test_terminal_idempotency_memory(terminal_state: str) -> None:
     second_ok = await _apply_second_terminal_write(backend, job_id, worker_id, terminal_state)
     assert second_ok, f"Second terminal write for {terminal_state} was not a no-op"
 
-    # Exactly one attempt row (no double-write)
+    # Exactly the first write's rows survive the second (no double-write):
+    # one attempt row and one state_change event for every real terminal
+    # state; the snooze is a deferral, not an execution — zero rows, its
+    # record is the row's snooze counter.
     attempts_after = await backend.get_attempts(job_id)
-    assert len(attempts_after) == len(attempts_before) == 1, (
-        f"Expected 1 attempt row, got {len(attempts_after)} for {terminal_state}"
+    expected_rows = 0 if terminal_state == "snoozed" else 1
+    assert len(attempts_after) == len(attempts_before) == expected_rows, (
+        f"Expected {expected_rows} attempt row(s), got {len(attempts_after)} for {terminal_state}"
     )
 
-    # One state_change event from the terminal write
     events = await backend.get_events(job_id)
     expected_to = "scheduled" if terminal_state == "snoozed" else terminal_state
     terminal_events = [
@@ -192,8 +195,9 @@ async def test_terminal_idempotency_memory(terminal_state: str) -> None:
         and e.detail.get("from_state") == "running"
         and e.detail.get("to_state") == expected_to
     ]
-    assert len(terminal_events) == 1, (
-        f"Expected 1 state_change event for {terminal_state}, got {len(terminal_events)}"
+    assert len(terminal_events) == expected_rows, (
+        f"Expected {expected_rows} state_change event(s) for {terminal_state}, "
+        f"got {len(terminal_events)}"
     )
 
 

@@ -14,9 +14,10 @@ Attempt-counter semantics, verified against the library (not guessed):
   ``mark_succeeded``/``mark_failed`` leave ``attempt`` untouched
   (``backend/_sql_templates.py``), so a terminal row's ``attempt`` is exactly
   the number of dispatches the job went through.
-- ``mark_snoozed`` deliberately leaves ``attempt`` unchanged and bumps
-  ``max_attempts = j.max_attempts + 1`` — "Snooze does not consume retry
-  budget" (``backend/_sql_templates.py``). The snoozed row lands in
+- ``mark_snoozed`` deliberately leaves ``attempt`` unchanged and never
+  touches ``max_attempts`` — "Snooze does not consume retry budget"; the
+  deferral is counted on the row's ``snooze_count`` instead (the ceiling
+  is a bound, not a counter). The snoozed row lands in
   ``scheduled`` and is re-queued by the leader's ``scheduled_to_pending``
   sweep (~1 s cadence, ``worker/leader.py``).
 - ``non_retryable_exceptions`` classify at the first failure:
@@ -163,9 +164,9 @@ async def test_snooze_requeues_then_succeeds(
 
     The snooze does not consume retry budget: ``mark_snoozed`` leaves
     ``attempt`` unchanged (so the second dispatch increments it to 2) and
-    refunds ``max_attempts`` (+1) in the same UPDATE. The ``synced`` effect's
-    attempt number (2) proves success happened only on the post-snooze
-    dispatch — never on the snoozed one.
+    leaves ``max_attempts`` at its configured value. The ``synced``
+    effect's attempt number (2) proves success happened only on the
+    post-snooze dispatch — never on the snoozed one.
     """
     handle = await e2e_client.enqueue(
         sync_user_profile,
@@ -192,5 +193,5 @@ async def test_snooze_requeues_then_succeeds(
     assert job is not None
     assert job["status"] == "succeeded"
     assert job["attempt"] == 2
-    # Snooze refunded the budget: 3 declared + 1 refund from mark_snoozed.
-    assert job["max_attempts"] == 4
+    # The snooze left the configured ceiling alone: 3 declared, 3 kept.
+    assert job["max_attempts"] == 3

@@ -214,8 +214,9 @@ class TestTerminalWritesUpdateRow:
             )
         row = assert_job_status(row, "scheduled")
         assert row["locked_by_worker"] is None
-        assert len(attempts) == 1
-        assert attempts[0]["outcome"] == "snoozed"
+        # A snooze is a deferral, not an execution: no attempt row; the
+        # seed's pending→running event is the only state_change.
+        assert len(attempts) == 0
         assert_has_event(events, "state_change")
 
 
@@ -758,9 +759,18 @@ class TestMarkSnoozedPreservesAttempt:
                 f'SELECT attempt, outcome FROM "{schema}".job_attempts WHERE job_id = $1',
                 job_id,
             )
-        assert len(attempts) == 1
-        assert attempts[0]["attempt"] == 1
-        assert attempts[0]["outcome"] == "snoozed"
+            row = await conn.fetchrow(
+                f"SELECT attempt, snooze_count, rate_limit_blocked_count "
+                f'FROM "{schema}".jobs WHERE id = $1',
+                job_id,
+            )
+        # The deferral's whole durable record is the row: attempt
+        # unchanged, the snooze counter incremented, no attempt row.
+        assert row is not None
+        assert row["attempt"] == 1
+        assert row["snooze_count"] == 1
+        assert row["rate_limit_blocked_count"] == 0
+        assert len(attempts) == 0
 
 
 # ── mark_snoozed clears last_heartbeat_at ────────────────────────
@@ -854,8 +864,9 @@ class TestMarkSnoozedDeadline:
 
 
 class TestMarkSnoozedReservationDenied:
-    """mark_snoozed with outcome='reservation_denied' writes the
-    correct attempt outcome and metadata annotation."""
+    """mark_snoozed with outcome='reservation_denied' counts the denial on
+    the row and writes the metadata annotation — no attempt row (a denial
+    is admission control, not an execution)."""
 
     async def test_mark_snoozed_outcome_reservation_denied(self, clean_jobs_app: JobsApp) -> None:
         deps = clean_jobs_app.deps
@@ -878,10 +889,15 @@ class TestMarkSnoozedReservationDenied:
             attempts = await conn.fetch(
                 f'SELECT * FROM "{schema}".job_attempts WHERE job_id = $1', job_id
             )
-            row = await conn.fetchrow(f'SELECT metadata FROM "{schema}".jobs WHERE id = $1', job_id)
-        assert len(attempts) == 1
-        assert attempts[0]["outcome"] == "reservation_denied"
+            row = await conn.fetchrow(
+                f"SELECT metadata, rate_limit_blocked_count, snooze_count "
+                f'FROM "{schema}".jobs WHERE id = $1',
+                job_id,
+            )
         assert row is not None
+        assert len(attempts) == 0
+        assert row["rate_limit_blocked_count"] == 1
+        assert row["snooze_count"] == 0
 
         metadata: object = row["metadata"]
         if isinstance(metadata, str):
@@ -915,7 +931,7 @@ class TestMarkSnoozedIdempotent:
             attempts = await conn.fetch(
                 f'SELECT * FROM "{schema}".job_attempts WHERE job_id = $1', job_id
             )
-        assert len(attempts) == 1
+        assert len(attempts) == 0
 
 
 # ── mark_retry_after consume_budget=True increments attempt ──────

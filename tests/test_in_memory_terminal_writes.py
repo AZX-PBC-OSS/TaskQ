@@ -326,13 +326,14 @@ class TestSingleAttemptRowPerTransition:
         job_id, wid = await _enqueue_and_dispatch(backend)
         await backend.mark_snoozed(job_id, wid, timedelta(seconds=30))
 
+        # A snooze is a deferral, not an execution: no attempt row, and
+        # the only event is the dispatch one.
         attempts = await backend.get_attempts(job_id)
-        assert len(attempts) == 1
-        assert attempts[0].outcome == "snoozed"
+        assert len(attempts) == 0
 
         events = await backend.get_events(job_id)
-        assert len(events) == 2
-        assert events[1].kind == "state_change"
+        assert len(events) == 1
+        assert events[0].kind == "state_change"
 
     async def test_write_cancel_request_running_no_attempt_one_event(self) -> None:
         backend = _make_backend()
@@ -413,14 +414,20 @@ class TestMarkSnoozedIdempotencyAndMetadataMerge:
         assert row2.metadata == {"pre": "existing"}
 
     async def test_snoozed_attempt_outcome(self) -> None:
+        """A plain snooze counts itself on the row's snooze counter and
+        writes no attempt row (a deferral is not an execution)."""
         backend = _make_backend()
         job_id, wid = await _enqueue_and_dispatch(backend)
         delay = timedelta(seconds=30)
         await backend.mark_snoozed(job_id, wid, delay)
 
         attempts = await backend.get_attempts(job_id)
-        assert len(attempts) == 1
-        assert attempts[0].outcome == "snoozed"
+        assert len(attempts) == 0
+
+        row = await backend.get(job_id)
+        assert row is not None
+        assert row.snooze_count == 1
+        assert row.rate_limit_blocked_count == 0
 
 
 # ── mark_abandoned idempotency with cancel_phase=2 guard ──────
@@ -1167,9 +1174,12 @@ class TestSnoozeOutcomeParameter:
         assert row is not None
         assert row.metadata.get("awaiting") == "reservation:gpu_pool"
 
+        # No attempt row for a denial; the outcome-keyed counter on the
+        # row is the denial's whole durable record.
         attempts = await backend.get_attempts(job_id)
-        assert len(attempts) == 1
-        assert attempts[0].outcome == "reservation_denied"
+        assert len(attempts) == 0
+        assert row.rate_limit_blocked_count == 1
+        assert row.snooze_count == 0
 
 
 # ── Idempotent noop on second mark_snoozed call ─────────────────────────
@@ -1189,7 +1199,7 @@ class TestSnoozeIdempotentNoop:
         assert result2 == "noop"
 
         attempts = await backend.get_attempts(job_id)
-        assert len(attempts) == 1
+        assert len(attempts) == 0
 
 
 # ── mark_retry_after ───────────────────────────────────────────────────
@@ -1239,8 +1249,9 @@ class TestMarkRetryAfterConsumeTrueIncrements:
 
 
 class TestMarkRetryAfterConsumeFalsePreserves:
-    """consume_budget=False: attempt unchanged, status='scheduled'.
-    Returns "scheduled".
+    """consume_budget=False: attempt unchanged, status='scheduled', no
+    attempt/event rows (a non-consuming deferral is not an execution),
+    snooze_count incremented.  Returns "scheduled".
     """
 
     async def test_in_memory_mark_retry_after_consume_false_preserves(self) -> None:
@@ -1261,11 +1272,14 @@ class TestMarkRetryAfterConsumeFalsePreserves:
         assert row.status == "scheduled"
         assert row.attempt == 1
         assert row.scheduled_at == _START + timedelta(seconds=10)
+        assert row.snooze_count == 1
+        assert row.rate_limit_blocked_count == 0
 
         attempts = await backend.get_attempts(job_id)
-        assert len(attempts) == 1
-        assert attempts[0].outcome == "snoozed"
-        assert attempts[0].error_class == "RetryAfter"
+        assert len(attempts) == 0
+
+        events = await backend.get_events(job_id)
+        assert len(events) == 1  # dispatch-only; the deferral writes no row
 
 
 class TestMarkRetryAfterMaxAttemptsFails:

@@ -362,14 +362,17 @@ class TestClockSkewResilience:
 
 
 class TestSnoozeBudgetInvariant:
-    """Snooze must never consume retry budget — max_attempts grows with
-    each snooze so attempt < max_attempts always holds."""
+    """Snooze must never consume retry budget — the ceiling stays fixed
+    while dispatch consumes it, so the remaining budget shrinks."""
 
-    async def test_snooze_increments_max_attempts_not_attempt(self) -> None:
-        """After N snooze-dispatch cycles, attempt < max_attempts always holds.
+    async def test_snooze_keeps_ceiling_fixed_not_attempt(self) -> None:
+        """After N snooze-dispatch cycles, max_attempts stays at its
+        configured value and the gap to attempt shrinks by one per
+        re-dispatch.
 
-        Snooze preserves attempt (only dispatch increments it) and bumps
-        max_attempts by 1, so the retry budget grows with each snooze.
+        Snooze preserves attempt (only dispatch increments it) and never
+        touches max_attempts — the ceiling is a bound, not a counter;
+        the deferral is counted on the row's snooze_count instead.
         """
         backend = _make_backend()
         worker_id = backend._worker_id
@@ -388,7 +391,7 @@ class TestSnoozeBudgetInvariant:
         expected_attempt = 1
 
         for i in range(10):
-            # Snooze: running → scheduled, max_attempts++, attempt unchanged
+            # Snooze: running → scheduled, max_attempts unchanged, attempt unchanged
             tri = await backend.mark_snoozed(
                 job.id,
                 worker_id,
@@ -399,13 +402,14 @@ class TestSnoozeBudgetInvariant:
 
             row = await backend.get(job.id)
             assert row is not None
-            assert row.max_attempts == 50 + i + 1
+            assert row.max_attempts == 50
             assert row.attempt == expected_attempt, (
                 f"snooze changed attempt: expected {expected_attempt}, got {row.attempt}"
             )
             assert row.attempt < row.max_attempts, (
                 f"budget exhausted: attempt={row.attempt} >= max_attempts={row.max_attempts}"
             )
+            assert row.snooze_count == i + 1
 
             # Re-dispatch: scheduled → running, attempt++
             expected_attempt += 1

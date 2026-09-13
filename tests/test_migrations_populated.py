@@ -212,6 +212,11 @@ def _job_row(
         "span_id": f"{i:016x}" if i % 6 == 0 else None,
         "metadata": metadata,
         "tags": _tags(slice_id, i),
+        # Counter columns (01.00.08_01): deterministic non-zero values so
+        # the seeded rows prove the columns round-trip through COPY, not
+        # just that the DDL accepts them.
+        "snooze_count": i % 5,
+        "rate_limit_blocked_count": i % 3,
     }
 
 

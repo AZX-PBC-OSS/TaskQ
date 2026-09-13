@@ -238,7 +238,19 @@ class TestConcurrentTerminalWrites:
             assert len(events) == 2
             assert events[0]["kind"] == "state_change"
 
-        elif method in ("mark_snoozed", "mark_retry_after"):
+        elif method == "mark_snoozed":
+            # Exactly one snooze landed (status scheduled); it wrote no
+            # rows — a deferral is not an execution — so the loser's
+            # predicate miss and the winner's write agree on zero attempt
+            # rows, and the only event is the dispatch seed.
+            assert row["status"] == "scheduled"
+            assert len(attempts) == 0
+            assert len(events) == 1
+            assert events[0]["kind"] == "state_change"
+
+        elif method == "mark_retry_after":
+            # consume_budget=True: the winner's deferral IS a real
+            # execution — one attempt row, one event of its own.
             assert row["status"] == "scheduled"
             assert len(attempts) == 1
             assert attempts[0]["outcome"] == "snoozed"

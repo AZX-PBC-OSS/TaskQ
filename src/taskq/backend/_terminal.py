@@ -584,7 +584,7 @@ async def _mark_snoozed(
     progress_seq: int = 0,
     progress_state: dict[str, object] | None = None,
     outcome: AttemptOutcome = "snoozed",
-) -> Literal["scheduled", "failed", "noop"]:
+) -> Literal["scheduled", "failed", "failed:MaxAttemptsExceeded", "noop"]:
     branch: str
     async with pool.acquire() as conn:
         rec = await conn.fetchrow(
@@ -601,11 +601,11 @@ async def _mark_snoozed(
             return "noop"
 
         branch = rec["outcome_branch"]
-        # The attempt row (outcome=$7, duration_ms computed from the
-        # winning arm's own timestamps) and the state_change event are
-        # written by the fused statement's per-arm CTEs — see
-        # _sql_templates.mark_snoozed.  Snoozed leaves finished_at NULL;
-        # "now" comes off the statement, never this process's clock.
+        # A non-terminal snooze/denial writes no attempt/event rows and no
+        # timestamps of its own — it increments the outcome-keyed counter
+        # on the row (see _sql_templates.mark_snoozed).  The terminal
+        # max_attempts arm writes its attempt row and state_change event
+        # exactly like every other terminal transition.
 
     if branch == "snoozed":
         log_state_change(
@@ -617,6 +617,17 @@ async def _mark_snoozed(
             attempt=rec["attempt"],
         )
         return "scheduled"
+    if branch == "max_attempts_failed":
+        log_state_change(
+            logger,
+            from_state="running",
+            to_state="failed",
+            job_id=str(job_id),
+            worker_id=str(worker_id),
+            attempt=rec["attempt"],
+            cause="max_attempts",
+        )
+        return "failed:MaxAttemptsExceeded"
     log_state_change(
         logger,
         from_state="running",

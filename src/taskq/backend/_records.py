@@ -179,6 +179,8 @@ def _job_row_from_record(rec: "asyncpg.Record") -> JobRow:
         span_id=rec["span_id"],
         metadata=jsonb_to_dict(rec["metadata"]) or {},
         tags=tuple(rec["tags"]) if rec["tags"] else (),
+        snooze_count=rec["snooze_count"],
+        rate_limit_blocked_count=rec["rate_limit_blocked_count"],
     )
 
 

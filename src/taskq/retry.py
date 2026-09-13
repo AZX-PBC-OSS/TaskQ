@@ -51,24 +51,21 @@ MAX_ATTEMPTS_SMALLINT_CEILING: Final[int] = 32767
 """The ``jobs.max_attempts`` column's smallint domain ceiling.
 
 The column is ``smallint`` (migrations/01.00.00_01_pre_initial.sql), so
-32767 is the largest value any row can hold. The two non-consuming snooze
-arms (``mark_snoozed`` and ``mark_retry_after(consume_budget=False)``)
-widen the budget with ``LEAST(j.max_attempts + 1, this)`` — saturating at
-the ceiling instead of aborting with PG 22003 — and the in-memory backend
-mirrors the saturation with ``min(...)``. Shared here because the SQL
-templates, the in-memory mirror and this module's own validation must not
+32767 is the largest value any row can hold. Shared here because the
+validation below, the in-memory mirror and any future writer must not
 drift on what the ceiling is."""
 
 MAX_ENQUEUABLE_MAX_ATTEMPTS: Final[int] = MAX_ATTEMPTS_SMALLINT_CEILING - 1
 """Largest ``RetryPolicy.max_attempts`` a fresh policy may carry.
 
-One below the column ceiling because the snooze arms add 1: a job enqueued
-at 32767 is born unable to grow its budget even once, so the policy guard
+One below the column ceiling, retained as a defensive margin: a row
+parked at exactly 32767 has no headroom for any future statement that
+needs to add one to a max_attempts-derived value, so the policy guard
 refuses the value the way it refuses values past the column entirely
 (:func:`RetryPolicy._validate_max_attempts`). Rows can still legally
-REACH the ceiling — the saturating increment parks a snoozed 32766-job
-there — which is why :func:`decide_after_failure` clamps row-stored
-values back into this bound before reconstructing a policy."""
+REACH the ceiling — earlier releases' snooze arms parked a snoozed
+32766-job there — which is why :func:`decide_after_failure` clamps
+row-stored values back into this bound before reconstructing a policy."""
 
 
 class RetryPolicy(BaseModel):
@@ -90,17 +87,15 @@ class RetryPolicy(BaseModel):
         if v < 1:
             raise ValueError("max_attempts must be >= 1")
         # Why: max_attempts lands in the smallint jobs.max_attempts column
-        # (migrations/01.00.00_01_pre_initial.sql), and the non-consuming
-        # snooze arms add 1 to it — so a fresh policy must fit the column
-        # WITH headroom for one increment, exactly the way the other
-        # client-accepted smallint (priority) is range-guarded at
-        # client/_args.py and actor.py. Without the ceiling an operator can
-        # persist a value whose every snooze aborts with PG 22003 (or, post
-        # saturation, a budget that can never widen).
+        # (migrations/01.00.00_01_pre_initial.sql), and the policy layer is
+        # the boundary that refuses values the column cannot hold — the
+        # same treatment the other client-accepted smallint (priority)
+        # gets at client/_args.py and actor.py. One of defensive headroom
+        # is retained (see MAX_ENQUEUABLE_MAX_ATTEMPTS).
         if v > MAX_ENQUEUABLE_MAX_ATTEMPTS:
             raise ValueError(
-                f"max_attempts must fit the smallint jobs.max_attempts column with "
-                f"room for one snooze increment (<= {MAX_ENQUEUABLE_MAX_ATTEMPTS}), "
+                f"max_attempts must fit the smallint jobs.max_attempts column "
+                f"with one of defensive headroom (<= {MAX_ENQUEUABLE_MAX_ATTEMPTS}), "
                 f"got {v}"
             )
         return v
@@ -484,16 +479,15 @@ def decide_after_failure(
             kind=job_state.retry_kind,
             # Why: clamp the ROW-stored value into the constructor's domain.
             # The enqueue-time guard refuses max_attempts above
-            # MAX_ENQUEUABLE_MAX_ATTEMPTS for fresh policies, but a committed
-            # row can legally sit at the smallint ceiling: the saturating
-            # snooze arms park a snoozed 32766-job at 32767. Feeding that
-            # row value straight into the fail-loud constructor would crash
-            # the consumer's failure path on a row the system itself wrote;
-            # the clamp's only semantic cost is the single classification
-            # boundary at the very top of the smallint domain (an attempt
-            # exactly one below a ceiling-widened budget retries instead of
-            # failing) — strictly better than turning a legal row state into
-            # a ValidationError.
+            # MAX_ENQUEUABLE_MAX_ATTEMPTS for fresh policies, but committed
+            # rows written by earlier releases can legally sit at the
+            # smallint ceiling: their snooze arms' saturating increment
+            # parked a snoozed 32766-job at 32767. Feeding that row value
+            # straight into the fail-loud constructor would crash the
+            # consumer's failure path on a row the system itself wrote; the
+            # clamp's only semantic cost is the single classification
+            # boundary at the very top of the smallint domain — strictly
+            # better than turning a legal row state into a ValidationError.
             max_attempts=min(job_state.max_attempts, MAX_ENQUEUABLE_MAX_ATTEMPTS),
             backoff=registered.backoff,
             base=registered.base,

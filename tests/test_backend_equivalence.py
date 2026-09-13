@@ -249,6 +249,17 @@ def _assert_state_change_event(
         assert matching[0].detail.get("error_class") == error_class
 
 
+def _assert_no_snooze_event_row(events: list[EventRow]) -> None:
+    """A non-terminal snooze/denial writes no event row: the row's status
+    transition is real, but its durable record is the row's counters —
+    the only state_change events belong to dispatches and terminal exits."""
+    state_changes = [e for e in events if e.kind == "state_change"]
+    assert not any(
+        e.detail.get("from_state") == "running" and e.detail.get("to_state") == "scheduled"
+        for e in state_changes
+    ), "a non-terminal snooze/denial wrote a running→scheduled event row"
+
+
 async def _set_actor_cap(
     backend: Backend,
     *,
@@ -703,11 +714,12 @@ async def test_snooze_cycle_preserves_attempt_round_trip(
     assert dispatched[0].attempt == 2
 
     attempts = await backend_pair.get_attempts(job_id)
-    assert len(attempts) == 1
-    assert attempts[0].outcome == "snoozed"
+    # The snooze wrote no attempt row (a deferral is not an execution);
+    # the only attempt row arrives when the second attempt ends.
+    assert len(attempts) == 0
 
     events = await _get_events(backend_pair, job_id)
-    _assert_state_change_event(events, "running", "scheduled")
+    _assert_no_snooze_event_row(events)
 
 
 async def test_snooze_past_deadline_transitions_to_failed(
@@ -805,11 +817,12 @@ async def test_retry_after_consume_false_preserves_attempt(
     _assert_job_row(row, status="scheduled", attempt=1, last_heartbeat_at_none=True)
 
     attempts = await backend_pair.get_attempts(job_id)
-    assert len(attempts) == 1
-    _assert_attempt_row(attempts, 0, outcome="snoozed", error_class="RetryAfter")
+    # A non-consuming RetryAfter is a deferral, not an execution: no
+    # attempt row, no event row.
+    assert len(attempts) == 0
 
     events = await _get_events(backend_pair, job_id)
-    _assert_state_change_event(events, "running", "scheduled")
+    _assert_no_snooze_event_row(events)
 
 
 async def test_retry_after_exhausts_budget_transitions_to_failed(
@@ -900,11 +913,14 @@ async def test_reservation_unavailable_produces_metadata_annotated_snooze(
     assert row.metadata.get("awaiting") == "reservation:gpu_pool"
 
     attempts = await backend_pair.get_attempts(job_id)
-    assert len(attempts) == 1
-    _assert_attempt_row(attempts, 0, outcome="reservation_denied")
+    # The denial is counted on the row's denial counter; no attempt row,
+    # no event row.
+    assert row.rate_limit_blocked_count == 1
+    assert row.snooze_count == 0
+    assert len(attempts) == 0
 
     events = await _get_events(backend_pair, job_id)
-    _assert_state_change_event(events, "running", "scheduled")
+    _assert_no_snooze_event_row(events)
 
 
 async def test_mark_snoozed_idempotent_returns_noop(backend_pair: Backend) -> None:
@@ -921,7 +937,7 @@ async def test_mark_snoozed_idempotent_returns_noop(backend_pair: Backend) -> No
     assert result2 == "noop"
 
     attempts = await backend_pair.get_attempts(job_id)
-    assert len(attempts) == 1
+    assert len(attempts) == 0
 
 
 async def test_mark_retry_after_idempotent_returns_noop(

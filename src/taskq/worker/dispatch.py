@@ -90,13 +90,15 @@ def _to_consumed_outcome(attempt_outcome: str) -> ConsumedOutcome:
     """Map an AttemptOutcome to the semconv-valid ConsumedOutcome label set.
 
     ``AttemptOutcome`` includes ``"scheduled"`` for snooze/retry/reservation-denial
-    which is not in the instrument 2 valid set ``{succeeded, failed, cancelled,
-    abandoned}``.  From the consumer's perspective the job was released back to
-    the queue without being completed — semantically ``"abandoned"``.
+    and ``"noop"`` for a terminal write that matched nothing (the job moved
+    underneath this worker), neither of which is in the instrument 2 valid set
+    ``{succeeded, failed, cancelled, abandoned}``.  From the consumer's
+    perspective the job was released back to the queue without being
+    completed — semantically ``"abandoned"``.
     """
-    if attempt_outcome == "scheduled":
+    if attempt_outcome in ("scheduled", "noop"):
         return "abandoned"
-    return attempt_outcome  # type: ignore[return-value]  # Why: AttemptOutcome is Literal["succeeded","failed","cancelled","scheduled"]; after the "scheduled" branch the remaining values are exactly the ConsumedOutcome union but pyright cannot narrow across the return-site coercion
+    return attempt_outcome  # type: ignore[return-value]  # Why: AttemptOutcome is Literal["succeeded","failed","cancelled","scheduled","noop"]; after the released-back-to-queue branch the remaining values are exactly the ConsumedOutcome union but pyright cannot narrow across the return-site coercion
 
 
 def _effective_reservations(

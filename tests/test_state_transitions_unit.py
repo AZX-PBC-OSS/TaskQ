@@ -288,12 +288,16 @@ async def test_running_to_scheduled_snooze(
     assert row.scheduled_at == _START + timedelta(seconds=30)
     assert row.attempt == 1
 
+    # The row transition is real but writes no event row: the only
+    # state_change events belong to dispatches and terminal exits.
     events = await memory_jobs.get_events(job_id)
     state_changes = [e for e in events if e.kind == "state_change"]
-    assert any(
+    assert not any(
         e.detail["from_state"] == "running" and e.detail["to_state"] == "scheduled"
         for e in state_changes
     )
+    assert row.snooze_count == 1
+    assert row.rate_limit_blocked_count == 0
 
 
 # ── running → scheduled via mark_retry_after (consume_budget=True) ─
@@ -363,9 +367,12 @@ async def test_running_to_scheduled_reservation_denied(
     assert row.status == "scheduled"
     assert row.metadata.get("awaiting") == "slot"
 
+    # A denial is admission control, not an execution: no attempt row;
+    # the denial counter on the row is its durable record.
     attempts = await memory_jobs.get_attempts(job_id)
-    assert len(attempts) == 1
-    assert attempts[0].outcome == "reservation_denied"
+    assert len(attempts) == 0
+    assert row.rate_limit_blocked_count == 1
+    assert row.snooze_count == 0
 
 
 # ── running → scheduled via mark_failed_or_retry Branch B ───────

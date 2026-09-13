@@ -1,22 +1,20 @@
-"""Red-team pins for the unbounded ``jobs.max_attempts`` snooze increment.
+"""Pins for the ``jobs.max_attempts`` smallint domain and the fixed
+snooze ceiling.
 
 ``jobs.max_attempts`` is ``smallint`` (migrations/01.00.00_01_pre_initial.sql
-:82).  Both snooze arms widen the budget without any ceiling check —
-``mark_snoozed`` (_sql_templates.py:487) and the
-``RetryAfter(consume_budget=False)`` arm ``mark_retry_after_consume_false``
-(:713) each do ``max_attempts = j.max_attempts + 1``.  A job that reaches
-32767 therefore cannot be snoozed at all: PG raises ``22003 smallint out of
-range`` and the whole statement aborts, so a reservation/rate-limit denial or
-a server-provided ``Retry-After`` turns into an unhandled ``DataError`` out
-of the consumer loop instead of a reschedule.
+:82).  ``RetryPolicy.max_attempts`` is typed ``int``, so without an
+explicit guard an operator can persist a value the column cannot hold —
+unlike ``priority``, the other smallint the client accepts, which IS
+range-guarded in two places (client/_args.py:277, actor.py:605).
 
-Nothing upstream prevents a job from being enqueued at that ceiling:
-``RetryPolicy.max_attempts`` is typed ``int`` and validated only ``>= 1``
-(retry.py:63-68), unlike ``priority`` — the other smallint the client accepts
-— which IS range-guarded in two places (client/_args.py:277, actor.py:605).
-
-These tests assert the DESIRABLE behaviour, so they go green once either the
-enqueue-time guard or a saturating/guarded SQL increment lands.
+The enqueue-time guard pins live at the top.  The snooze-arm pins below
+them pin the FIXED-CEILING contract: a snooze/denial at any
+``max_attempts <= 32767`` reschedules the job and leaves ``max_attempts``
+exactly where it was (the ceiling is a bound, not a counter — nothing in
+the non-consuming paths raises it, and the deferral is counted on the
+row's snooze/denial counters instead).  A job already at the ceiling
+still reschedules: with no increment at all there is no overflow to
+guard against, so the crash-free property holds trivially.
 """
 
 from datetime import UTC, datetime, timedelta
@@ -65,31 +63,27 @@ def test_retry_policy_rejects_out_of_smallint_range_max_attempts() -> None:
         "RetryPolicy accepted max_attempts=32768, which does not fit the "
         "smallint jobs.max_attempts column. priority (the other smallint the "
         "client accepts) raises 'must fit smallint range (-32768..32767)' in "
-        "client/_args.py:277 and actor.py:605; max_attempts is validated only "
-        "'>= 1' (retry.py:63-68). The snooze arms then do "
-        "'max_attempts = j.max_attempts + 1' with no ceiling, so such a job "
-        "can never be snoozed."
+        "client/_args.py:277 and actor.py:605; max_attempts must get the "
+        "same boundary guard."
     )
 
 
 def test_retry_policy_rejects_max_attempts_that_cannot_absorb_one_snooze() -> None:
-    """A job enqueued at exactly 32767 is already un-snoozable.
+    """A job enqueued at exactly 32767 has no defensive headroom left.
 
-    The snooze arms add 1 unconditionally, so ``max_attempts == 32767`` is
-    the first value at which ``mark_snoozed`` / ``mark_retry_after(
-    consume_budget=False)`` raise ``22003 smallint out of range``. Either the
-    policy must refuse the value or the SQL must saturate; today neither
-    happens.
+    The policy refuses the top-of-domain value the way it refuses values
+    past the column entirely: a row parked at exactly the ceiling leaves
+    no margin for any future statement that adds one to a
+    max_attempts-derived value (see MAX_ENQUEUABLE_MAX_ATTEMPTS).
     """
     with pytest.raises((ValueError, ValidationError)) as exc_info:
         RetryPolicy(max_attempts=_SMALLINT_MAX)
 
     assert "smallint" in str(exc_info.value).lower(), (
-        "RetryPolicy accepted max_attempts=32767. Every snooze of such a job "
-        "executes 'max_attempts = j.max_attempts + 1' against a smallint "
-        "column and aborts with PG 22003, so a reservation denial, a rate "
-        "limit denial, or a RetryAfter(consume_budget=False) becomes an "
-        "unhandled DataError instead of a reschedule."
+        "RetryPolicy accepted max_attempts=32767. A row at the exact "
+        "smallint ceiling has no headroom for any future +1 against a "
+        "max_attempts-derived value; the policy guard must refuse the "
+        "top-of-domain value, keeping one of margin."
     )
 
 
@@ -127,11 +121,13 @@ async def _read_row(app: JobsApp, schema: str, job_id: JobId) -> asyncpg.Record:
 async def test_mark_snoozed_at_smallint_ceiling_does_not_overflow(
     clean_jobs_app: JobsApp,
 ) -> None:
-    """Increment site 1 — ``mark_snoozed`` (reservation / rate-limit denial).
+    """Increment-free arm 1 — ``mark_snoozed`` (reservation / rate-limit
+    denial).
 
     A reservation-denied snooze on a job already at ``max_attempts = 32767``
-    must reschedule the job (saturating the budget rather than overflowing
-    it), not abort the statement.
+    must reschedule the job and leave the ceiling exactly where it was —
+    there is no increment to overflow, and the ceiling is a bound, not a
+    counter.
     """
     schema, job_id, worker_id = await _seed(clean_jobs_app, max_attempts=_SMALLINT_MAX)
 
@@ -146,12 +142,7 @@ async def test_mark_snoozed_at_smallint_ceiling_does_not_overflow(
         pytest.fail(
             "mark_snoozed raised a raw PG error on a job at the smallint "
             f"ceiling instead of rescheduling it: {exc!r}. "
-            "_sql_templates.py:487 does 'max_attempts = j.max_attempts + 1' "
-            "against the smallint jobs.max_attempts column with no ceiling "
-            "guard, so PG 22003 aborts the whole statement and the "
-            "reservation/rate-limit denial escapes the consumer loop as an "
-            "unhandled DataError. The job stays 'running' with its lock held "
-            "until the lock lease expires."
+            "The job must reschedule with max_attempts untouched."
         )
 
     assert outcome == "scheduled", (
@@ -160,9 +151,10 @@ async def test_mark_snoozed_at_smallint_ceiling_does_not_overflow(
     )
 
     row = await _read_row(clean_jobs_app, schema, job_id)
-    assert row["max_attempts"] <= _SMALLINT_MAX, (
-        f"max_attempts overflowed to {row['max_attempts']}; it must saturate "
-        "at the smallint ceiling."
+    assert row["max_attempts"] == _SMALLINT_MAX, (
+        f"max_attempts moved to {row['max_attempts']}; the snooze arms must "
+        "leave the configured ceiling untouched — it is a bound, not a "
+        "counter."
     )
     assert row["status"] == "scheduled", (
         f"job left in status {row['status']!r} instead of 'scheduled' — the "
@@ -173,13 +165,12 @@ async def test_mark_snoozed_at_smallint_ceiling_does_not_overflow(
 async def test_mark_retry_after_consume_false_at_ceiling_does_not_overflow(
     clean_jobs_app: JobsApp,
 ) -> None:
-    """Increment site 2 — ``RetryAfter(consume_budget=False)``.
+    """Increment-free arm 2 — ``RetryAfter(consume_budget=False)``.
 
     ``mark_retry_after(consume_budget=False)`` routes to
-    ``mark_retry_after_consume_false`` (_sql_templates.py:713), which carries
-    the same unguarded ``max_attempts = j.max_attempts + 1``. An actor that
-    honours a server-provided ``Retry-After`` on a job at the ceiling must
-    reschedule, not blow up.
+    ``mark_retry_after_consume_false``, which carries the same fixed
+    ceiling. An actor that honours a server-provided ``Retry-After`` on a
+    job at the ceiling must reschedule with ``max_attempts`` untouched.
     """
     schema, job_id, worker_id = await _seed(clean_jobs_app, max_attempts=_SMALLINT_MAX)
 
@@ -194,10 +185,7 @@ async def test_mark_retry_after_consume_false_at_ceiling_does_not_overflow(
         pytest.fail(
             "mark_retry_after(consume_budget=False) raised a raw PG error on "
             f"a job at the smallint ceiling: {exc!r}. "
-            "_sql_templates.py:713 does 'max_attempts = j.max_attempts + 1' "
-            "against the smallint jobs.max_attempts column with no ceiling "
-            "guard, so PG 22003 aborts the statement and the RetryAfter "
-            "escapes the consumer loop as an unhandled DataError."
+            "The job must reschedule with max_attempts untouched."
         )
 
     assert outcome == "scheduled", (
@@ -206,9 +194,9 @@ async def test_mark_retry_after_consume_false_at_ceiling_does_not_overflow(
     )
 
     row = await _read_row(clean_jobs_app, schema, job_id)
-    assert row["max_attempts"] <= _SMALLINT_MAX, (
-        f"max_attempts overflowed to {row['max_attempts']}; it must saturate "
-        "at the smallint ceiling."
+    assert row["max_attempts"] == _SMALLINT_MAX, (
+        f"max_attempts moved to {row['max_attempts']}; the non-consuming "
+        "retry must leave the configured ceiling untouched."
     )
     assert row["status"] == "scheduled", (
         f"job left in status {row['status']!r} instead of 'scheduled' — the "
@@ -216,13 +204,16 @@ async def test_mark_retry_after_consume_false_at_ceiling_does_not_overflow(
     )
 
 
-async def test_snooze_below_ceiling_still_widens_budget(
+async def test_snooze_below_ceiling_keeps_ceiling_fixed(
     clean_jobs_app: JobsApp,
 ) -> None:
-    """Control: well below the ceiling, the snooze increment works.
+    """Control: well below the ceiling, the snooze still reschedules.
 
-    Pins that the two failures above are about the smallint boundary, not
-    about the fixture or the snooze contract itself.
+    Pins that the ceiling tests above are about the smallint boundary and
+    the reschedule contract, not about the fixture: the snooze lands
+    ``scheduled`` and ``max_attempts`` stays at its configured value —
+    the ceiling is a bound, not a counter, and the deferral is counted on
+    the row's denial counter instead.
     """
     schema, job_id, worker_id = await _seed(clean_jobs_app, max_attempts=3)
 
@@ -235,11 +226,11 @@ async def test_snooze_below_ceiling_still_widens_budget(
     assert outcome == "scheduled"
 
     row = await _read_row(clean_jobs_app, schema, job_id)
-    assert row["max_attempts"] == 4
+    assert row["max_attempts"] == 3
     assert row["status"] == "scheduled"
 
 
-# ── In-memory mirror parity: both arms saturate, not overflow ──────────
+# ── In-memory mirror parity: both arms keep the ceiling fixed ──────────
 
 
 async def _in_memory_running_job_at_ceiling(
@@ -264,15 +255,16 @@ async def _in_memory_running_job_at_ceiling(
     return backend, dispatched[0].id, worker_id
 
 
-async def test_in_memory_mark_snoozed_at_ceiling_saturates() -> None:
-    """Mirror parity for increment site 1: the in-memory ``mark_snoozed``
-    must saturate at the same smallint ceiling PG's LEAST() does.
+async def test_in_memory_mark_snoozed_at_ceiling_keeps_ceiling_fixed() -> None:
+    """Mirror parity for arm 1: the in-memory ``mark_snoozed`` leaves the
+    ceiling exactly where PG's arm does.
 
-    Python ints do not overflow, so the mirror's failure mode is quieter
-    than PG's 22003: an unbounded ``row.max_attempts + 1`` silently parks
-    the row OUTSIDE the column domain (32768+), where every later
+    Python ints do not overflow, so the mirror's failure mode would be
+    quieter than PG's: an unbounded ``row.max_attempts + 1`` silently
+    parks the row OUTSIDE the column domain (32768+), where every later
     comparison against real-PG behaviour disagrees. Parity doctrine: the
-    mirror saturates exactly where production saturates.
+    mirror keeps the ceiling fixed exactly where production keeps it
+    fixed.
     """
     backend, job_id, worker_id = await _in_memory_running_job_at_ceiling(_SMALLINT_MAX)
 
@@ -286,15 +278,15 @@ async def test_in_memory_mark_snoozed_at_ceiling_saturates() -> None:
     assert outcome == "scheduled"
     row = backend._jobs[job_id]  # pyright: ignore[reportPrivateUsage]  # Why: test-only private access; the mirror's rows are the assertion surface.
     assert row.max_attempts == _SMALLINT_MAX, (
-        f"the mirror widened max_attempts to {row.max_attempts}; it must "
-        "saturate at the same smallint ceiling as PG's LEAST() increment."
+        f"the mirror moved max_attempts to {row.max_attempts}; it must stay "
+        "at the configured ceiling, exactly as PG's arm does."
     )
     assert row.status == "scheduled"
 
 
-async def test_in_memory_mark_retry_after_consume_false_at_ceiling_saturates() -> None:
-    """Mirror parity for increment site 2: the in-memory
-    ``mark_retry_after(consume_budget=False)`` saturates at the ceiling."""
+async def test_in_memory_mark_retry_after_consume_false_at_ceiling_keeps_ceiling_fixed() -> None:
+    """Mirror parity for arm 2: the in-memory
+    ``mark_retry_after(consume_budget=False)`` keeps the ceiling fixed."""
     backend, job_id, worker_id = await _in_memory_running_job_at_ceiling(_SMALLINT_MAX)
 
     outcome = await backend.mark_retry_after(
@@ -307,15 +299,16 @@ async def test_in_memory_mark_retry_after_consume_false_at_ceiling_saturates() -
     assert outcome == "scheduled"
     row = backend._jobs[job_id]  # pyright: ignore[reportPrivateUsage]  # Why: test-only private access; the mirror's rows are the assertion surface.
     assert row.max_attempts == _SMALLINT_MAX, (
-        f"the mirror widened max_attempts to {row.max_attempts}; it must "
-        "saturate at the same smallint ceiling as PG's LEAST() increment."
+        f"the mirror moved max_attempts to {row.max_attempts}; it must stay "
+        "at the configured ceiling, exactly as PG's arm does."
     )
     assert row.status == "scheduled"
 
 
-async def test_in_memory_snooze_below_ceiling_still_widens_budget() -> None:
-    """Mirror control, the twin of the PG control above: below the ceiling
-    the increment still widens the budget by exactly one."""
+async def test_in_memory_snooze_below_ceiling_keeps_ceiling_fixed() -> None:
+    """Mirror control, the twin of the PG control above: below the
+    ceiling the snooze reschedules and leaves the ceiling at its
+    configured value."""
     backend, job_id, worker_id = await _in_memory_running_job_at_ceiling(3)
 
     outcome = await backend.mark_snoozed(
@@ -327,5 +320,5 @@ async def test_in_memory_snooze_below_ceiling_still_widens_budget() -> None:
 
     assert outcome == "scheduled"
     row = backend._jobs[job_id]  # pyright: ignore[reportPrivateUsage]  # Why: test-only private access; the mirror's rows are the assertion surface.
-    assert row.max_attempts == 4
+    assert row.max_attempts == 3
     assert row.status == "scheduled"

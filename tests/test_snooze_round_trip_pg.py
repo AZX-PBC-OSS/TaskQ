@@ -169,9 +169,9 @@ async def test_snooze_round_trip_with_scheduled_wake(
     assert final.attempt == 2
 
     attempts = await backend.get_attempts(job_id)
-    assert len(attempts) == 2
-    snoozed_attempt = next(a for a in attempts if a.outcome == "snoozed")
-    assert snoozed_attempt.attempt == 1
+    # Only the terminal success wrote an attempt row: the snooze was a
+    # deferral, not an execution.
+    assert len(attempts) == 1
     succeeded_attempt = next(a for a in attempts if a.outcome == "succeeded")
     assert succeeded_attempt.attempt == 2
 
@@ -288,14 +288,15 @@ async def test_reservation_denial_metadata_observable(
         )
     assert awaiting == "reservation:gpu_pool"
 
+    # A denial is admission control, not an execution: no attempt row.
     attempts = await backend.get_attempts(job_id)
-    assert len(attempts) == 1
-    assert attempts[0].outcome == "reservation_denied"
-    assert attempts[0].attempt == 1
+    assert len(attempts) == 0
 
     row_after = await backend.get(job_id)
     assert row_after is not None
     assert row_after.status == "scheduled"
+    assert row_after.rate_limit_blocked_count == 1
+    assert row_after.snooze_count == 0
 
     async with deps.worker_pool.acquire() as conn:
         await _advance_scheduled_to_pending(conn, schema, job_id)
@@ -457,11 +458,12 @@ async def test_concurrent_snooze_and_cancel(
 
     attempts = await backend.get_attempts(job_id)
     if final.status == "scheduled":
-        assert any(a.outcome == "snoozed" for a in attempts)
-        assert not any(a.outcome == "cancelled" for a in attempts)
+        # The snooze won: it wrote no attempt row (a deferral is not an
+        # execution) and the cancel lost its race with the running row.
+        assert attempts == []
     else:
-        assert any(a.outcome == "cancelled" for a in attempts)
-        assert not any(a.outcome == "snoozed" for a in attempts)
+        assert len(attempts) == 1
+        assert attempts[0].outcome == "cancelled"
 
 
 # ── snooze back-off then succeed round-trip ──────────────────────────────

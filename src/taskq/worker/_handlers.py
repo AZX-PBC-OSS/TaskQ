@@ -53,7 +53,12 @@ from taskq.exceptions import (
     RetryAfter,
     Snooze,
 )
-from taskq.obs import ErrorReporter, invoke_error_reporter, log_state_change
+from taskq.obs import (
+    ErrorReporter,
+    invoke_error_reporter,
+    log_state_change,
+    record_reservation_denial,
+)
 from taskq.retry import (
     ActorConfigLike,
     JobRetryState,
@@ -74,6 +79,7 @@ type AttemptOutcome = Literal[
     "failed",
     "cancelled",
     "scheduled",
+    "noop",
 ]
 
 __all__ = [
@@ -377,6 +383,42 @@ async def _handle_snooze(
             delay_seconds=s.delay.total_seconds(),
         )
         return "scheduled"
+    elif tri == "failed:MaxAttemptsExceeded":
+        span.add_event(
+            "lifecycle.failed",
+            attributes={
+                "from_state": "running",
+                "to_state": "failed",
+                "error_class": "MaxAttemptsExceeded",
+            },
+        )
+        _log_job_failed(
+            log,
+            job,
+            cause="MaxAttemptsExceeded",
+            error_class="MaxAttemptsExceeded",
+            snooze_count=current_snooze_count,
+        )
+        log_state_change(
+            log,
+            from_state="running",
+            to_state="failed",
+            cause="MaxAttemptsExceeded",
+        )
+        await invoke_on_retry_exhausted(
+            actor_config.on_retry_exhausted,
+            job,
+            RuntimeError("MaxAttemptsExceeded"),
+            actor_config.on_retry_exhausted_timeout,
+            log=log,
+        )
+        await invoke_error_reporter(
+            error_reporter,
+            job,
+            RuntimeError("MaxAttemptsExceeded"),
+            log=log,
+        )
+        return "failed"
     elif tri == "failed":
         span.add_event(
             "lifecycle.failed",
@@ -420,7 +462,7 @@ async def _handle_snooze(
             to_state="noop",
             cause="Snooze",
         )
-        return "scheduled"
+        return "noop"
 
 
 async def _handle_retry_after(
@@ -510,7 +552,7 @@ async def _handle_retry_after(
             to_state="noop",
             cause="RetryAfter",
         )
-        return "scheduled"
+        return "noop"
 
 
 async def _handle_reservation_class_denied(
@@ -529,6 +571,12 @@ async def _handle_reservation_class_denied(
     progress_state: dict[str, object] | None = None,
     error_reporter: ErrorReporter | None = None,
 ) -> AttemptOutcome:
+    # Every denial a worker fields is counted before anything else: the
+    # denial itself is the operational signal (a saturated bucket), and
+    # the outcome of the snooze write below must never be able to lose
+    # it. Labeled by source only — bucket names are caller-derived and
+    # unbounded, so they are not a dimension (see obs/_otel.py).
+    record_reservation_denial(e.bucket_name, e.source)
     tri = await shield_with_retrieval(
         backend.mark_snoozed(
             job.id,
@@ -559,6 +607,44 @@ async def _handle_reservation_class_denied(
             delay_seconds=e.retry_after.total_seconds(),
         )
         return "scheduled"
+    elif tri == "failed:MaxAttemptsExceeded":
+        span.add_event(
+            "lifecycle.failed",
+            attributes={
+                "from_state": "running",
+                "to_state": "failed",
+                "error_class": "MaxAttemptsExceeded",
+                "bucket_name": e.bucket_name,
+            },
+        )
+        _log_job_failed(
+            log,
+            job,
+            cause="MaxAttemptsExceeded",
+            error_class="MaxAttemptsExceeded",
+            bucket_name=e.bucket_name,
+        )
+        log_state_change(
+            log,
+            from_state="running",
+            to_state="failed",
+            cause="MaxAttemptsExceeded",
+            bucket_name=e.bucket_name,
+        )
+        await invoke_on_retry_exhausted(
+            actor_config.on_retry_exhausted,
+            job,
+            RuntimeError("MaxAttemptsExceeded"),
+            actor_config.on_retry_exhausted_timeout,
+            log=log,
+        )
+        await invoke_error_reporter(
+            error_reporter,
+            job,
+            RuntimeError("MaxAttemptsExceeded"),
+            log=log,
+        )
+        return "failed"
     elif tri == "failed":
         span.add_event(
             "lifecycle.failed",
@@ -603,7 +689,7 @@ async def _handle_reservation_class_denied(
             to_state="noop",
             cause="ReservationUnavailable",
         )
-    return "scheduled"
+    return "noop"
 
 
 async def _handle_generic_exception(

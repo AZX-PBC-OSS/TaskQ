@@ -301,7 +301,7 @@ async def test_mark_retry_after_no_consume_snoozed(
 
     async with deps.worker_pool.acquire() as conn:
         row = await conn.fetchrow(
-            f'SELECT status, attempt, max_attempts, error_class FROM "{schema}".jobs WHERE id = $1',
+            f'SELECT status, attempt, max_attempts, snooze_count, rate_limit_blocked_count, error_class FROM "{schema}".jobs WHERE id = $1',
             job_id,
         )
         attempts = await conn.fetch(
@@ -315,24 +315,18 @@ async def test_mark_retry_after_no_consume_snoozed(
     assert row is not None
     assert row["status"] == "scheduled"
     assert row["attempt"] == 1
-    # consume_budget=False extends max_attempts (snooze budget extension)
-    assert row["max_attempts"] == 4
+    # consume_budget=False does not touch the ceiling: the deferral is
+    # counted on the row's snooze counter instead.
+    assert row["max_attempts"] == 3
+    assert row["snooze_count"] == 1
+    assert row["rate_limit_blocked_count"] == 0
     assert row["error_class"] is None
 
-    assert len(attempts) == 1
-    assert attempts[0]["outcome"] == "snoozed"
-    assert attempts[0]["error_class"] == "RetryAfter"
-
-    assert len(events) == 2
-    snooze_event = events[-1]
-    assert snooze_event["kind"] == "state_change"
-    detail = snooze_event["detail"]
-    if isinstance(detail, str):
-        from taskq._json import loads
-
-        detail = loads(detail)
-    assert detail["from_state"] == "running"
-    assert detail["to_state"] == "scheduled"
+    # A non-consuming deferral is not an execution: no attempt row, and
+    # the only event is create_running_job's pending→running seed.
+    assert len(attempts) == 0
+    assert len(events) == 1
+    assert events[0]["kind"] == "state_change"
 
 
 async def test_mark_retry_after_no_consume_deadline_failed(
@@ -507,7 +501,7 @@ async def test_mark_snoozed_snoozed_branch(
 
     async with deps.worker_pool.acquire() as conn:
         row = await conn.fetchrow(
-            f'SELECT status, attempt, max_attempts, error_class, locked_by_worker FROM "{schema}".jobs WHERE id = $1',
+            f'SELECT status, attempt, max_attempts, snooze_count, rate_limit_blocked_count, error_class, locked_by_worker FROM "{schema}".jobs WHERE id = $1',
             job_id,
         )
         attempts = await conn.fetch(
@@ -521,25 +515,17 @@ async def test_mark_snoozed_snoozed_branch(
     assert row is not None
     assert row["status"] == "scheduled"
     assert row["attempt"] == 1  # attempt unchanged by snooze
-    assert row["max_attempts"] == 4  # snooze budget extension: +1
+    assert row["max_attempts"] == 3  # the ceiling is a bound, not a counter
+    assert row["snooze_count"] == 1
+    assert row["rate_limit_blocked_count"] == 0
     assert row["error_class"] is None
     assert row["locked_by_worker"] is None
 
-    assert len(attempts) == 1
-    assert attempts[0]["outcome"] == "snoozed"
-    assert attempts[0]["error_class"] is None
-    assert attempts[0]["worker_id"] == worker_id
-
-    assert len(events) == 2
-    snooze_event = events[-1]
-    assert snooze_event["kind"] == "state_change"
-    detail = snooze_event["detail"]
-    if isinstance(detail, str):
-        from taskq._json import loads
-
-        detail = loads(detail)
-    assert detail["from_state"] == "running"
-    assert detail["to_state"] == "scheduled"
+    # A snooze is a deferral, not an execution: no attempt row, and the
+    # only event is create_running_job's pending→running seed.
+    assert len(attempts) == 0
+    assert len(events) == 1
+    assert events[0]["kind"] == "state_change"
 
 
 async def test_mark_snoozed_deadline_failed_branch(
@@ -665,25 +651,14 @@ async def test_mark_snoozed_job_events_and_attempts_both_branches(
         assert s_row is not None
         assert s_row["status"] == "scheduled"
         assert s_row["attempt"] == 1
-        assert s_row["max_attempts"] == 6  # initial 5 + snooze extension
+        assert s_row["max_attempts"] == 5  # the ceiling is a bound, not a counter
 
-        assert len(s_attempts) == 1
-        assert s_attempts[0]["outcome"] == "snoozed"
-        assert s_attempts[0]["error_class"] is None
-        assert s_attempts[0]["worker_id"] == worker_s
-        assert s_attempts[0]["started_at"] is not None
-        assert s_attempts[0]["duration_ms"] is not None
+        # The snoozed branch writes no rows: no attempt, and the only
+        # event is create_running_job's pending→running seed.
+        assert len(s_attempts) == 0
 
-        assert len(s_events) == 2
-        s_snooze_event = s_events[-1]
-        assert s_snooze_event["kind"] == "state_change"
-        s_detail = s_snooze_event["detail"]
-        if isinstance(s_detail, str):
-            from taskq._json import loads
-
-            s_detail = loads(s_detail)
-        assert s_detail["from_state"] == "running"
-        assert s_detail["to_state"] == "scheduled"
+        assert len(s_events) == 1
+        assert s_events[0]["kind"] == "state_change"
 
         # ── Check deadline_failed branch rows ──
         d_row = await conn.fetchrow(

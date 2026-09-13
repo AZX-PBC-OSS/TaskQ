@@ -561,6 +561,17 @@ class JobRow:
     span_id: str | None
     metadata: dict[str, object]
     tags: tuple[str, ...]
+    snooze_count: int = 0
+    """Coalesced count of non-consuming deferrals (``Snooze`` and
+    ``RetryAfter(consume_budget=False)``) since enqueue — the job-row
+    record of reschedules that consumed no retry budget.  Trailing
+    default: rows materialised before the counters existed read 0.
+    """
+    rate_limit_blocked_count: int = 0
+    """Coalesced count of admission denials (reservation / rate-limit)
+    since enqueue.  Trailing default: rows materialised before the
+    counters existed read 0.
+    """
 
 
 @dataclass(frozen=True, slots=True)
@@ -1458,7 +1469,26 @@ class Backend(Protocol):
         progress_seq: int = 0,
         progress_state: dict[str, object] | None = None,
         outcome: AttemptOutcome = "snoozed",
-    ) -> Literal["scheduled", "failed", "noop"]: ...
+    ) -> Literal["scheduled", "failed", "failed:MaxAttemptsExceeded", "noop"]:
+        """Release a running job back to the queue without consuming retry
+        budget.
+
+        A non-terminal snooze/denial writes NO ``job_attempts`` /
+        ``job_events`` rows — it is admission control or a voluntary
+        deferral, not an execution — and is counted on the job row
+        (``snooze_count``, or ``rate_limit_blocked_count`` when *outcome*
+        is a denial) plus OTEL.  ``max_attempts`` is never raised: the
+        ceiling is a bound, not a counter.
+
+        The retry budget still bounds the loop: a non-``indefinite`` job
+        at ``attempt >= max_attempts`` with no ``schedule_to_close``
+        fails terminally (``"failed:MaxAttemptsExceeded"``) instead of
+        rescheduling forever; a job carrying ``schedule_to_close``
+        reschedules until its deadline (``"failed"``,
+        ``DeadlineExceeded``); an ``indefinite`` job reschedules by
+        explicit policy.
+        """
+        ...
 
     async def mark_retry_after(
         self,
