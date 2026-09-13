@@ -350,7 +350,7 @@ async def test_migration_advisory_lock_warns_when_reset_fails() -> None:
 
     with structlog.testing.capture_logs() as captured:
         async with migrate_mod.migration_advisory_lock(  # type: ignore[arg-type]  # Why: _FakeMigrateConn stands in for asyncpg.Connection.
-            conn, lock_timeout=120.0
+            conn, lock_timeout=120.0, schema="taskq"
         ):
             body_ran = True
 

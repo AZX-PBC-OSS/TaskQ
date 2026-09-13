@@ -431,16 +431,24 @@ class _PgSweepBackend:
             raise self._leaked_exc
         return 5
 
-    async def sweep_expired_results(self, conn: object, *, schema: str) -> int:
-        self.results_calls.append({"schema": schema})
+    async def sweep_expired_results(
+        self, conn: object, *, schema: str, batch_size: int = 100
+    ) -> int:
+        self.results_calls.append({"schema": schema, "batch_size": batch_size})
         if self._results_exc is not None:
             raise self._results_exc
-        return 3
+        # First call reports a non-empty bounded batch so the loop's drain
+        # engages; the next reports an empty window so the drain stops after
+        # exactly one drain call — the shape a real bounded sweep produces
+        # when the remainder fits in one more batch.
+        return 3 if len(self.results_calls) == 1 else 0
 
 
 async def test_sweep_loop_runs_pg_sweep_block() -> None:
     """When the backend has ``sweep_leaked_reservation_slots``, the PG-only
-    sweep block runs leaked-slots, expired-results, and stale-worker sweeps."""
+    sweep block runs leaked-slots, expired-results, and stale-worker sweeps;
+    the results sweep drains (initial bounded call + one drain call that
+    sees an empty window) and carries the configured batch cap."""
     backend = _PgSweepBackend()
     # cleanup_stale_workers parses "DELETE N" from conn.execute.
     conn = FakeConn(execute_result="DELETE 2")
@@ -448,16 +456,25 @@ async def test_sweep_loop_runs_pg_sweep_block() -> None:
     leader = _make_leader(backend=backend, deps=_make_deps(dispatcher_pool=pool, is_leader=True))
     shutdown = asyncio.Event()
     task = asyncio.create_task(leader._sweep_loop(shutdown))
-    # Wait for the first iteration to run the PG sweep block.
+    # Wait for the results sweep's initial call AND its drain-stopping call
+    # (the fake reports a non-empty batch, then an empty window), so the
+    # call count is read after the drain has deterministically stopped.
     for _ in range(200):
-        if backend.leaked_calls and backend.results_calls:
+        if backend.leaked_calls and len(backend.results_calls) >= 2:
             break
         await asyncio.sleep(0.01)
     await _stop_loop(task, shutdown, delay=0.0)
 
     assert len(backend.leaked_calls) == 1
     assert backend.leaked_calls[0]["schema"] == leader._deps.settings.schema_name  # type: ignore[reportPrivateUsage]  # Why: test reads the deps the leader was constructed with.
-    assert len(backend.results_calls) == 1
+    assert len(backend.results_calls) == 2, (
+        "one tick is the initial bounded call plus drain calls until an empty "
+        f"window; got {len(backend.results_calls)}"
+    )
+    assert backend.results_calls[0]["schema"] == leader._deps.settings.schema_name  # type: ignore[reportPrivateUsage]  # Why: see above.
+    assert backend.results_calls[0]["batch_size"] == (  # type: ignore[reportPrivateUsage]  # Why: see above.
+        leader._deps.settings.event_writer_batch_size
+    ), "the leader must pass the configured event-writer batch cap to the results sweep"
     # cleanup_stale_workers executed on the same conn.
     stale_calls = [sql for sql, _ in conn.execute_calls if "workers" in sql]
     assert stale_calls, "cleanup_stale_workers should have run"
@@ -465,7 +482,8 @@ async def test_sweep_loop_runs_pg_sweep_block() -> None:
 
 async def test_sweep_loop_leaked_slots_error_continues_to_results() -> None:
     """A connection error in sweep_leaked_reservation_slots logs a warning
-    and the loop proceeds to sweep_expired_results rather than aborting."""
+    and the loop proceeds to sweep_expired_results (and its drain) rather
+    than aborting."""
     backend = _PgSweepBackend(leaked_exc=asyncpg.PostgresConnectionError("lost"))
     conn = FakeConn(execute_result="DELETE 0")
     pool = FakePool(conn=conn)
@@ -473,14 +491,14 @@ async def test_sweep_loop_leaked_slots_error_continues_to_results() -> None:
     shutdown = asyncio.Event()
     task = asyncio.create_task(leader._sweep_loop(shutdown))
     for _ in range(200):
-        if backend.results_calls:
+        if len(backend.results_calls) >= 2:
             break
         await asyncio.sleep(0.01)
     await _stop_loop(task, shutdown, delay=0.0)
 
-    # leaked raised, but results still ran.
+    # leaked raised, but results still ran — and drained.
     assert len(backend.leaked_calls) == 1
-    assert len(backend.results_calls) == 1
+    assert len(backend.results_calls) == 2
 
 
 async def test_sweep_loop_results_error_continues_to_stale_workers() -> None:
@@ -502,6 +520,98 @@ async def test_sweep_loop_results_error_continues_to_stale_workers() -> None:
     assert len(backend.results_calls) == 1
     stale_calls = [sql for sql, _ in conn.execute_calls if "workers" in sql]
     assert stale_calls, "cleanup_stale_workers should run after results error"
+
+
+async def test_sweep_loop_drains_reclaim_and_deadline_within_one_tick() -> None:
+    """The incident sites' drain wiring: when sweep 1 (expired-locks
+    reclaim) or sweep 2 (deadline) returns a non-empty bounded batch, the
+    loop must call it again WITHIN THE SAME TICK — the shared
+    ``_drain_bounded`` helper is unit-tested, and the results sweep's
+    wiring is loop-tested, but the ``rows_1``/``rows_2`` call sites are
+    the ones the livelock lived on.  A scripted backend returning 3-then-0
+    must be called exactly twice per sweep before the loop sleeps: one
+    call per tick would leave a big backlog draining one batch per
+    ``sweep_interval`` — the slow-motion version of the original stall."""
+
+    class _DrainScriptBackend:
+        def __init__(self) -> None:
+            self.reclaim_calls = 0
+            self.deadline_calls = 0
+
+        async def reclaim_expired_locks(self, cg: timedelta, ug: timedelta) -> int:
+            self.reclaim_calls += 1
+            # First call reports a full batch so the drain engages; the
+            # second reports an empty window so the drain stops there.
+            return 3 if self.reclaim_calls == 1 else 0
+
+        async def deadline_sweep(self) -> int:
+            self.deadline_calls += 1
+            return 2 if self.deadline_calls == 1 else 0
+
+    backend = _DrainScriptBackend()
+    # A long interval so that a second TICK cannot be the source of the
+    # second call: two calls before the interval elapses can only be the
+    # initial bounded call plus the drain.
+    leader = _make_leader(backend=backend, deps=_make_deps(is_leader=True, sweep_interval=60.0))
+    shutdown = asyncio.Event()
+    task = asyncio.create_task(leader._sweep_loop(shutdown))
+    try:
+        for _ in range(200):
+            if backend.reclaim_calls >= 2 and backend.deadline_calls >= 2:
+                break
+            await asyncio.sleep(0.01)
+    finally:
+        await _stop_loop(task, shutdown, delay=0.0)
+
+    assert backend.reclaim_calls == 2, (
+        "sweep 1's non-empty batch must engage the in-tick drain: expected the "
+        "initial call plus one drain call before the loop slept, got "
+        f"{backend.reclaim_calls} — a missing `if rows_1 and ...` wiring drains "
+        "the crash backlog one batch per sweep_interval instead of one tick"
+    )
+    assert backend.deadline_calls == 2, (
+        "sweep 2's non-empty batch must engage the in-tick drain: expected 2 "
+        f"calls, got {backend.deadline_calls}"
+    )
+
+
+async def test_sweep_loop_stale_workers_drain_engages_and_respects_the_tick_cap() -> None:
+    """The fourth drain-wiring call site (``rows_sr`` → ``_drain_bounded``).
+
+    Sweeps 1/2 and the results sweep have loop-level drain tests; the
+    stale-workers site — the one that matters in a whole-fleet crash — did
+    not.  A conn whose every DELETE reports 2 rows keeps the stale set
+    non-empty, so the drain must re-invoke the sweep within the SAME tick
+    and stop at the per-tick cap: exactly ``sweep_drain_batches`` calls
+    (1 initial + 7 drain), never one batch per ``sweep_interval``."""
+    backend = _PgSweepBackend()
+    conn = FakeConn(execute_result="DELETE 2")  # every call reports a non-empty batch
+    pool = FakePool(conn=conn)
+    # Long interval: a second tick cannot be the source of extra calls, so
+    # the call count within the first tick is attributable to the drain alone.
+    leader = _make_leader(
+        backend=backend, deps=_make_deps(dispatcher_pool=pool, is_leader=True, sweep_interval=60.0)
+    )
+    expected = leader._deps.settings.sweep_drain_batches  # type: ignore[reportPrivateUsage]  # Why: the cap under test is the leader's own configured setting.
+    shutdown = asyncio.Event()
+    task = asyncio.create_task(leader._sweep_loop(shutdown))
+    try:
+        for _ in range(200):
+            stale_calls = [sql for sql, _ in conn.execute_calls if "workers" in sql]
+            if len(stale_calls) >= expected:
+                break
+            await asyncio.sleep(0.01)
+    finally:
+        await _stop_loop(task, shutdown, delay=0.0)
+
+    stale_calls = [sql for sql, _ in conn.execute_calls if "workers" in sql]
+    assert len(stale_calls) == expected, (
+        f"a non-empty stale-worker batch must drain within the tick and stop at "
+        f"the cap: expected exactly {expected} calls (1 initial + "
+        f"{expected - 1} drain), got {len(stale_calls)} — fewer means the "
+        "`if rows_sr and ...` wiring is missing; more means the cap is not "
+        "reaching the drain"
+    )
 
 
 async def test_sweep_loop_stale_workers_error_is_warned() -> None:

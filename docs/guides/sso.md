@@ -294,9 +294,12 @@ async def lifespan(app: FastAPI):
     sso_config = OIDCAuthConfig(
         issuer=oidc.issuer,
         client_id=oidc.client_id,
-        client_secret=oidc.client_secret,
+        # Settings secret fields are SecretStr (masked in any repr or error);
+        # unwrap at the boundary where the runtime auth config needs the
+        # plain string.
+        client_secret=oidc.client_secret.get_secret_value(),
         redirect_uri=oidc.redirect_uri,
-        session_secret=oidc.session_secret,
+        session_secret=oidc.session_secret.get_secret_value(),
         group_claim=oidc.group_claim,
         allowed_groups=oidc.allowed_groups_set,
     )

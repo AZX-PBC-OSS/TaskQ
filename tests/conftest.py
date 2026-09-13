@@ -37,7 +37,11 @@ import pytest
 import pytest_asyncio
 
 from taskq.settings import OIDCSettings, SAMLSettings, TaskQSettings
-from taskq.testing._shared_containers import invocation_state_dir, shared_service_pair
+from taskq.testing._shared_containers import (
+    invocation_state_dir,
+    shared_service_pair,
+    skip_test_without_docker,
+)
 from taskq.testing.actor import (
     EmptyPayload,
     FakeBackend,
@@ -307,6 +311,10 @@ class _FakeConn:
     def transaction(self) -> "_FakeConnCtx":
         return _FakeConnCtx(self)
 
+    def is_in_transaction(self) -> bool:
+        """Model a caller-owned connection with an open transaction."""
+        return True
+
 
 class _FakeConnCtx:
     """Async context manager for _FakeConn."""
@@ -469,8 +477,11 @@ def pg_container(
     tuning — see that module for the measured rationale), later workers reuse
     it, and the last worker to finish removes it. Tests that must
     STOP/PAUSE/MUTATE a Postgres (chaos, ALTER USER) get their own disposable
-    container instead — never this one.
+    container instead — never this one. Skips with a reason (never errors)
+    when the Docker daemon is unreachable, so a Docker-less machine runs the
+    non-container tiers instead.
     """
+    skip_test_without_docker()
     with shared_service_pair(invocation_state_dir(tmp_path_factory)) as services:
         delta = _pg_clock_delta(services.pg_dsn)
         if abs(delta) > 0.25:

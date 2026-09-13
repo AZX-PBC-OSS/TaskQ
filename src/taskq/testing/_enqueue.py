@@ -14,6 +14,7 @@ from taskq.backend._protocol import (
     CancelPhase,
     EnqueueArgs,
     JobRow,
+    batch_cap_groups,
 )
 from taskq.exceptions import (
     MaxPendingExceededError,
@@ -232,9 +233,18 @@ async def _enqueue_batch(
     args_list: list[EnqueueArgs],
     *,
     connection: object = None,
+    enforce_max_pending: bool = True,
 ) -> list[JobRow]:
     if not args_list:
         raise ValueError("args_list must not be empty")
+    if enforce_max_pending:
+        # All-or-nothing parity with the PG bulk tier: one aggregated
+        # pre-check (existing + batch per actor) before any insert, so a
+        # violating batch raises having written nothing — matching what
+        # PostgresBackend.enqueue_batch enforces. Without this the
+        # per-item loop below rejects mid-batch (partial admission),
+        # masking PG behavior in tests that run against this mirror.
+        await _check_batch_max_pending(self, args_list)
     rows: list[JobRow] = []
     for args in args_list:
         row = await _enqueue(self, args)
@@ -242,11 +252,55 @@ async def _enqueue_batch(
     return rows
 
 
+async def _check_batch_max_pending(
+    self: "InMemoryBackend",
+    args_list: list[EnqueueArgs],
+) -> None:
+    """Aggregated max_pending pre-check shared by the batch mirrors.
+
+    Same effective-cap rule as the PG tier: a registered operator
+    override (``_actor_configs_meta``) wins over the carried literal,
+    cleared/unknown falls back to it. Idempotency pairs already stored
+    (or repeated in-batch) are discounted — they dedupe instead of
+    writing — mirroring the PG tier's ``ON CONFLICT`` discount.
+    """
+    counts = batch_cap_groups(args_list)
+    deduped_counts: dict[str, int] = {}
+    seen_in_batch: set[tuple[str, str]] = set()
+    for args in args_list:
+        if args.max_pending is None or args.idempotency_key is None:
+            continue
+        pair = (args.idempotency_scope, str(args.idempotency_key))
+        # Counted per item: a set would collapse repeats of one pair
+        # and under-discount.
+        if pair in self._idempotency_index or pair in seen_in_batch:
+            deduped_counts[args.actor] = deduped_counts.get(args.actor, 0) + 1
+        seen_in_batch.add(pair)
+    for actor, (batch_count, carried) in counts.items():
+        stored = self._actor_configs_meta.get(actor)
+        cap = (
+            stored.max_pending if stored is not None and stored.max_pending is not None else carried
+        )
+        existing = sum(
+            1
+            for row in self._jobs.values()
+            if row.actor == actor and row.status in ("pending", "scheduled")
+        )
+        admitted = batch_count - deduped_counts.get(actor, 0)
+        if existing + admitted > cap:
+            raise MaxPendingExceededError(
+                actor=actor,
+                current_count=existing,
+                max_pending=cap,
+            )
+
+
 async def _enqueue_batch_fast(
     self: "InMemoryBackend",
     args_list: list[EnqueueArgs],
     *,
     connection: object = None,
+    enforce_max_pending: bool = True,
 ) -> int:
     if not args_list:
         raise ValueError("args_list must not be empty")
@@ -271,5 +325,5 @@ async def _enqueue_batch_fast(
             exc.constraint_name = "jobs_idempotency_scope_key_uniq"
             raise exc
         seen.add(pair)
-    rows = await _enqueue_batch(self, args_list)
+    rows = await _enqueue_batch(self, args_list, enforce_max_pending=enforce_max_pending)
     return len(rows)

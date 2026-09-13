@@ -115,35 +115,56 @@ async def _fetch_redis_rl_state(
     * Sliding window log: ``taskq:{schema}:sw:{name}``    (ZCARD for count)
     * Sliding window GCRA: ``taskq:{schema}:sw_gcra:{name}`` (GET for TAT)
 
-    Returns ``None`` on any Redis failure so the caller can degrade gracefully.
+    All reads run in ONE Redis pipeline — a single round trip for every
+    bucket. The name set is unbounded by construction (the page unions the
+    in-process registry with every ``rate_limit_buckets`` PG row, and keyed
+    buckets accumulate there forever), so one awaited call per name made
+    the request handler take O(names) sequential round trips on a page the
+    admin UI re-polls — the per-row-round-trip shape.
+
+    Returns ``None`` on any Redis failure so the caller can degrade
+    gracefully. An unknown *kind* raises :class:`ValueError` instead: that
+    is a caller bug (the registry only emits the three kinds), and the
+    degrade-to-None path exists for the transport being down — swallowing
+    the validation failure would convert a loud programming error into a
+    silent whole-page degrade.
     """
     if redis_client is None:
         return None
+    if not names:
+        return {}
+    # The kind check runs while the pipeline is built, OUTSIDE the
+    # degrade-to-None guard: queuing the commands is client-side (the
+    # first Redis call is pipe.execute() inside the guard), so an unknown
+    # kind fails loudly before any round trip.
+    pipe = redis_client.pipeline()
+    for name, kind in names:
+        if kind == "token_bucket":
+            pipe.hgetall(f"taskq:{schema}:rl:tb:{{{name}}}")
+        elif kind == "sliding_window_gcra":
+            pipe.get(f"taskq:{schema}:sw_gcra:{{{name}}}")
+        elif kind == "sliding_window_log":
+            pipe.zcard(f"taskq:{schema}:sw:{{{name}}}")
+        else:
+            raise ValueError(f"unknown rate-limit kind: {kind!r}")
     try:
+        raw_results: list[Any] = await pipe.execute()
+
         result: dict[str, dict[str, str]] = {}
-        for name, kind in names:
-            if kind == "token_bucket":
-                redis_key = f"taskq:{schema}:rl:tb:{{{name}}}"
-                raw = await redis_client.hgetall(redis_key)
-                if raw:
-                    decoded: dict[str, str] = {}
-                    for k, v in raw.items() if isinstance(raw, dict) else raw:  # pyright: ignore[reportUnknownVariableType]  # Why: redis-py hgetall return type is untyped in the stub; isinstance narrowing at runtime ensures correct types.
-                        kk = k.decode() if isinstance(k, bytes) else str(k)  # pyright: ignore[reportUnknownArgumentType]  # Why: redis-py key type is untyped in the stub; isinstance narrowing at runtime ensures correct str conversion.
-                        vv = v.decode() if isinstance(v, bytes) else str(v)  # pyright: ignore[reportUnknownArgumentType]  # Why: redis-py value type is untyped in the stub; isinstance narrowing at runtime ensures correct str conversion.
-                        decoded[kk] = vv
-                    if decoded:
-                        result[name] = decoded
-            elif kind == "sliding_window_gcra":
-                redis_key = f"taskq:{schema}:sw_gcra:{{{name}}}"
-                tat_raw = await redis_client.get(redis_key)
-                if tat_raw is not None:
-                    tat_str = tat_raw.decode() if isinstance(tat_raw, bytes) else str(tat_raw)
-                    result[name] = {"tat": tat_str}
-            elif kind == "sliding_window_log":
-                redis_key = f"taskq:{schema}:sw:{{{name}}}"
-                count = await redis_client.zcard(redis_key)
-                if count is not None and count > 0:
-                    result[name] = {"count": str(count)}
+        for (name, kind), raw in zip(names, raw_results, strict=True):
+            if kind == "token_bucket" and raw:
+                decoded: dict[str, str] = {}
+                for k, v in raw.items() if isinstance(raw, dict) else raw:  # pyright: ignore[reportUnknownVariableType]  # Why: redis-py hgetall return type is untyped in the stub; isinstance narrowing at runtime ensures correct types.
+                    kk = k.decode() if isinstance(k, bytes) else str(k)  # pyright: ignore[reportUnknownArgumentType]  # Why: redis-py key type is untyped in the stub; isinstance narrowing ensures correct str conversion.
+                    vv = v.decode() if isinstance(v, bytes) else str(v)  # pyright: ignore[reportUnknownArgumentType]  # Why: redis-py value type is untyped in the stub; isinstance narrowing at runtime ensures correct str conversion.
+                    decoded[kk] = vv
+                if decoded:
+                    result[name] = decoded
+            elif kind == "sliding_window_gcra" and raw is not None:
+                tat_str = raw.decode() if isinstance(raw, bytes) else str(raw)
+                result[name] = {"tat": tat_str}
+            elif kind == "sliding_window_log" and raw is not None and raw > 0:
+                result[name] = {"count": str(raw)}
         return result
     except Exception:
         logger.debug("redis-rl-fetch-failed", exc_info=True)

@@ -1027,7 +1027,11 @@ async def test_watch_reclaims_survives_listen_connection_kill(pg_dsn: str) -> No
             killed_pids = {int(row["pid"]) for row in listen_pids}
             assert killed_pids, "no LISTEN connection found to kill"
             psql_path = shutil.which("psql")
-            assert psql_path is not None, "psql not found on PATH"
+            if psql_path is None:
+                pytest.skip(
+                    "psql not on PATH — required to terminate the LISTEN backend "
+                    "from the test process (install the PostgreSQL client tools)"
+                )
             for pid in killed_pids:
                 proc = await asyncio.create_subprocess_exec(
                     psql_path,

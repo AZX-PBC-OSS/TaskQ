@@ -601,7 +601,7 @@ Use `TASKQ_LOG_FORMAT=json` (the default) in production. Every log line includes
 
 ### Horizontal scaling
 
-Adding worker processes is the primary scaling lever. Multiple workers against the same database are fully supported — dispatch uses `FOR UPDATE SKIP LOCKED`, so concurrent workers never pick up the same job. Only one worker per cluster holds the maintenance leader advisory lock; if the leader dies, another worker wins the next election. Scale by increasing replica count (`kubectl scale deployment taskq-worker --replicas=10`).
+Adding worker processes is the primary scaling lever. Multiple workers against the same database are fully supported — dispatch uses `FOR UPDATE SKIP LOCKED`, so concurrent workers never pick up the same job. Only one worker per schema holds the maintenance leader advisory lock (the lock name is schema-qualified, so each schema in a shared database elects its own leader); if the leader dies, another worker wins the next election. Scale by increasing replica count (`kubectl scale deployment taskq-worker --replicas=10`).
 
 ### Queue partitioning
 
@@ -629,7 +629,7 @@ See [workers.md — Queue dispatch modes](workers.md#queue-dispatch-modes).
 
     With `max_concurrent=2` and 3 replicas you can see 6 concurrent executions. For a memory- or GPU-bound actor that is an OOMKill, a restart, and a re-dispatch.
 
-    **If you need a strict cap**, use the per-queue leased-slot reservation instead: `taskq queues set-max-concurrent <queue> --max-concurrent N`. Slots are physical rows and each acquire is a single read-and-write statement on one row, so there is no read-then-decide window. See [rate-limiting.md](rate-limiting.md#concurrencyreservation). Note it is read once at worker startup, so changing it needs a worker restart, and it bounds a *queue*, not an actor. `max_pending` (per-actor via `@actor(max_pending=N)`) caps queued `pending` jobs; when exceeded, `enqueue` is rejected and `taskq.backpressure.errors` is incremented. Monitor `taskq.queue.depth` (leader samples every 15s) for backlog and `taskq.backpressure.errors` for sustained producer pressure.
+    **If you need a strict cap**, use the per-queue leased-slot reservation instead: `taskq queues set-max-concurrent <queue> --max-concurrent N`. Slots are physical rows and each acquire is a single read-and-write statement on one row, so there is no read-then-decide window. See [rate-limiting.md](rate-limiting.md#queue-level-concurrency-cap). Note it is read once at worker startup, so changing it needs a worker restart, and it bounds a *queue*, not an actor. `max_pending` (per-actor via `@actor(max_pending=N)`) caps queued `pending` jobs; when exceeded, `enqueue` is rejected and `taskq.backpressure.errors` is incremented. Monitor `taskq.queue.depth` (leader samples every 15s) for backlog and `taskq.backpressure.errors` for sustained producer pressure.
 
 ### Connection pool sizing
 

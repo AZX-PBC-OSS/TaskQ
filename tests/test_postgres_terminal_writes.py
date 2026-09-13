@@ -1424,6 +1424,7 @@ class TestMarkSucceededResultExpiryFallback:
                 None,
                 0,
                 None,
+                "snoozed",
             )
             assert rec is not None
             assert rec["outcome_branch"] == "snoozed"

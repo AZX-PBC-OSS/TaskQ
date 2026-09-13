@@ -2,7 +2,7 @@
 
 Covers all unit tests:
   rules.yaml parses correctly
-  all 18 Prometheus metric names present in scrape output
+  all 24 Prometheus metric names present in scrape output
   metric name mapping correctness (OTel → Prometheus)
   outcome label present, not status
   create_metrics_router adds GET /metrics route
@@ -10,8 +10,9 @@ Covers all unit tests:
   cardinality bounded response time (< 50ms for 100 actors)
   missing [prometheus] extra raises ImportError at import time
   ImportError at import time without extra (alias of)
-  rules.yaml contains exactly 9 alerts
-  every instrument from 18-row table appears in scrape output
+  rules.yaml contains exactly 14 alerts
+  every instrument from the 24-row map appears in scrape output
+  plain rules.yaml and kubernetes PrometheusRule carry identical alerts
 """
 
 from __future__ import annotations
@@ -99,10 +100,33 @@ _NAME_MAP: list[tuple[str, str]] = [
     ("taskq.cron.consecutive_failures", "taskq_cron_consecutive_failures"),
     ("taskq.cron.disabled_schedules", "taskq_cron_disabled_schedules"),
     ("taskq.pruned.jobs", "taskq_pruned_jobs_total"),
+    ("taskq.maintenance_leader.sweep_timeouts", "taskq_maintenance_leader_sweep_timeouts_total"),
+    # Name already ends in the unit word "seconds" — the no-double-suffix rule.
+    (
+        "taskq.maintenance_leader.sweep_last_success_seconds",
+        "taskq_maintenance_leader_sweep_last_success_seconds",
+    ),
+    ("taskq.maintenance_leader.sweep_batch_size", "taskq_maintenance_leader_sweep_batch_size"),
+    (
+        "taskq.maintenance_leader.sweep_batch_size_configured",
+        "taskq_maintenance_leader_sweep_batch_size_configured",
+    ),
+    ("taskq.leader.lock_contention", "taskq_leader_lock_contention_total"),
+    ("taskq.jobs.by_status", "taskq_jobs_by_status"),
+    ("taskq.jobs.oldest_due_age_seconds", "taskq_jobs_oldest_due_age_seconds"),  # ends in unit word
 ]
 
 _RULES_YAML = (
     Path(__file__).parent.parent / "src" / "taskq" / "contrib" / "prometheus" / "rules.yaml"
+)
+
+_K8S_RULES_YAML = (
+    Path(__file__).parent.parent
+    / "src"
+    / "taskq"
+    / "contrib"
+    / "kubernetes"
+    / "prometheus_rule.yaml"
 )
 
 _EXPECTED_ALERT_NAMES = {
@@ -115,11 +139,16 @@ _EXPECTED_ALERT_NAMES = {
     "TaskQDispatchLatencyHigh",
     "TaskQProgressPublishFailures",
     "TaskQCronScheduleDisabled",
+    "TaskQScheduledBacklogGrowing",
+    "TaskQPromotionStalled",
+    "TaskQSweepTimeouts",
+    "TaskQSweepDegraded",
+    "TaskQLeaderLockContention",
 }
 
 
-def _populate_all_18(meter: Any) -> None:
-    """Record one observation for each of the 18 instruments.
+def _populate_all_instruments(meter: Any) -> None:
+    """Record one observation for each instrument in _NAME_MAP.
 
     unit= values must match _otel.py so the bridge emits the correct Prometheus
     name (e.g. unit="s" causes the bridge to append _seconds to histogram names).
@@ -172,19 +201,46 @@ def _populate_all_18(meter: Any) -> None:
     meter.create_counter("taskq.pruned.jobs", unit="1").add(
         1, {"actor": "a", "status": "succeeded"}
     )
+    meter.create_counter("taskq.maintenance_leader.sweep_timeouts", unit="1").add(
+        1, {"sweep_name": "scheduled_to_pending"}
+    )
+    meter.create_observable_gauge(
+        "taskq.maintenance_leader.sweep_last_success_seconds",
+        unit="s",
+        callbacks=[lambda _: [Observation(1.0, {"sweep_name": "scheduled_to_pending"})]],
+    )
+    meter.create_observable_gauge(
+        "taskq.maintenance_leader.sweep_batch_size",
+        unit="1",
+        callbacks=[lambda _: [Observation(100, {"sweep_name": "scheduled_to_pending"})]],
+    )
+    meter.create_observable_gauge(
+        "taskq.maintenance_leader.sweep_batch_size_configured",
+        unit="1",
+        callbacks=[lambda _: [Observation(100, {"sweep_name": "scheduled_to_pending"})]],
+    )
+    meter.create_counter("taskq.leader.lock_contention", unit="1").add(1, {"lock": "maintenance"})
+    meter.create_observable_gauge(
+        "taskq.jobs.by_status",
+        unit="1",
+        callbacks=[lambda _: [Observation(3, {"status": "scheduled"})]],
+    )
+    meter.create_observable_gauge(
+        "taskq.jobs.oldest_due_age_seconds", unit="s", callbacks=[lambda _: [Observation(0.0)]]
+    )
 
 
 # ── rules.yaml parses correctly ────────────────────────────────────
 
 
 def test_rules_yaml_parses_correctly() -> None:
-    """rules.yaml has no YAML errors; single group; 9 rules with required fields."""
+    """rules.yaml has no YAML errors; single group; 14 rules with required fields."""
     assert _RULES_YAML.exists(), f"rules.yaml not found at {_RULES_YAML}"
     data = yaml.safe_load(_RULES_YAML.read_text())
     groups = data["groups"]
     assert len(groups) == 1
     rules = groups[0]["rules"]
-    assert len(rules) == 9
+    assert len(rules) == 14
     for rule in rules:
         assert "alert" in rule
         assert "expr" in rule
@@ -193,15 +249,59 @@ def test_rules_yaml_parses_correctly() -> None:
         assert "summary" in rule.get("annotations", {})
 
 
-# ── rules.yaml has exactly 9 alerts ────────────────────────────────
+# ── rules.yaml has exactly 14 alerts ───────────────────────────────
 
 
-def test_rules_yaml_exactly_9_alerts() -> None:
-    """rules.yaml contains exactly 9 alerts with the names."""
+def test_rules_yaml_exactly_14_alerts() -> None:
+    """rules.yaml contains exactly 14 alerts with the names."""
     data = yaml.safe_load(_RULES_YAML.read_text())
     rules = data["groups"][0]["rules"]
-    assert len(rules) == 9
+    assert len(rules) == 14
     assert {r["alert"] for r in rules} == _EXPECTED_ALERT_NAMES
+
+
+# ── plain rules.yaml and k8s PrometheusRule stay in lockstep ────────
+
+
+def _alerts_from_groups(groups: list[dict[str, Any]]) -> dict[str, tuple[str, str, str]]:
+    """Extract alert name → (expr, for, severity) from one parsed ``groups`` list."""
+    alerts: dict[str, tuple[str, str, str]] = {}
+    for group in groups:
+        for rule in group["rules"]:
+            alerts[rule["alert"]] = (
+                rule["expr"],
+                rule["for"],
+                rule["labels"]["severity"],
+            )
+    return alerts
+
+
+def test_alert_rules_match_across_plain_and_k8s_files() -> None:
+    """The plain rules.yaml and the k8s PrometheusRule carry identical alerts.
+
+    The two files exist so the same rules can be shipped as a plain file or
+    as a PrometheusRule CRD; editing one without the other silently diverges
+    deployments. This pins the alert name SET and each alert's
+    expr/for/severity across both files.
+    """
+    assert _RULES_YAML.exists(), f"rules.yaml not found at {_RULES_YAML}"
+    assert _K8S_RULES_YAML.exists(), f"prometheus_rule.yaml not found at {_K8S_RULES_YAML}"
+    plain = yaml.safe_load(_RULES_YAML.read_text())
+    k8s = yaml.safe_load(_K8S_RULES_YAML.read_text())
+
+    plain_alerts = _alerts_from_groups(plain["groups"])
+    k8s_alerts = _alerts_from_groups(k8s["spec"]["groups"])
+
+    assert set(plain_alerts) == set(k8s_alerts), (
+        f"alert name sets differ between rule files: "
+        f"plain-only={sorted(set(plain_alerts) - set(k8s_alerts))} "
+        f"k8s-only={sorted(set(k8s_alerts) - set(plain_alerts))}"
+    )
+    for name, pinned in plain_alerts.items():
+        assert k8s_alerts[name] == pinned, (
+            f"alert {name!r} differs between rules.yaml and prometheus_rule.yaml: "
+            f"plain={pinned!r} k8s={k8s_alerts[name]!r}"
+        )
 
 
 # ── metric name mapping correctness ────────────────────────────────
@@ -209,18 +309,18 @@ def test_rules_yaml_exactly_9_alerts() -> None:
 
 def test_metric_name_mapping(env: _PromEnv) -> None:
     """Each OTel instrument name maps to the expected Prometheus name."""
-    _populate_all_18(env.meter())
+    _populate_all_instruments(env.meter())
     text = env.scrape()
     for _, prom_name in _NAME_MAP:
         assert prom_name in text, f"Expected Prometheus name {prom_name!r} not found in scrape"
 
 
-# ── all 18 metric names present with TYPE and HELP ─────────
+# ── all metric names present with TYPE and HELP ─────────
 
 
-def test_all_18_metric_names_present(env: _PromEnv) -> None:
-    """All 18 instruments appear with # TYPE and # HELP comments."""
-    _populate_all_18(env.meter())
+def test_all_metric_names_present(env: _PromEnv) -> None:
+    """Every instrument in _NAME_MAP appears with # TYPE and # HELP comments."""
+    _populate_all_instruments(env.meter())
     text = env.scrape()
     for _, prom_name in _NAME_MAP:
         assert f"# TYPE {prom_name}" in text, f"Missing # TYPE for {prom_name}"
@@ -245,7 +345,7 @@ def test_outcome_label_not_status(env: _PromEnv) -> None:
 
 def test_create_metrics_router_adds_metrics_route(env: _PromEnv) -> None:
     """Router exposes GET /jobs/health/metrics; 200; correct Content-Type."""
-    _populate_all_18(env.meter())
+    _populate_all_instruments(env.meter())
     app = FastAPI()
     app.include_router(
         create_metrics_router(None, registry=env.registry),  # type: ignore[arg-type]
@@ -311,7 +411,7 @@ def test_rules_yaml_histogram_bucket_names_match_bridge(env: _PromEnv) -> None:
     _bucket metric name that the bridge actually emits for the instruments."""
     import re
 
-    _populate_all_18(env.meter())
+    _populate_all_instruments(env.meter())
     text = env.scrape()
     # Collect every metric family name that appears as a _bucket series.
     emitted_buckets = {

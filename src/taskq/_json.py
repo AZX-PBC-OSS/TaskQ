@@ -142,6 +142,21 @@ def check_no_nul_str(value: str, /, *, what: str = "value") -> None:
         )
 
 
+def sanitize_nul_str(value: str, /) -> str:
+    """Replace NUL codepoints in *value* with the visible ``\\x00`` escape.
+
+    For text DERIVED from uncontrolled sources — an actor exception's
+    message or formatted traceback — where rejecting (as
+    :func:`check_no_nul_str` does for caller-supplied values) would strand
+    the very work the text describes: the terminal write fails, the job
+    never reaches a terminal state, and the crash-reclaim loop re-dispatches
+    it into the same exception forever. Replacing keeps the write valid and
+    keeps the defect diagnosable: the stored text shows exactly where the
+    NUL was.
+    """
+    return value.replace("\x00", "\\x00")
+
+
 def loads(data: bytes | bytearray | memoryview | str, /) -> Any:
     """Deserialize bytes or text to a Python value.
 

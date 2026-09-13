@@ -1,8 +1,10 @@
-"""Coverage tests for taskq.web.admin._history (history list + stats routes).
+"""Coverage tests for taskq.web.admin.history (history list + stats routes).
 
-``_history.register`` is not auto-discovered (the module name starts with an
-underscore), so these tests attach it explicitly to a router built via
-``create_router`` and exercise the endpoints through a ``TestClient``.
+The module previously shipped as ``_history.py``, whose leading underscore
+kept it off the admin factory's auto-discovery path, so these tests had to
+attach it explicitly. The rename to ``history.py`` (the /history panel
+never being registered on any router) puts it on the auto-discovery path
+``create_router`` already walks, so the routes arrive with the router.
 
 A configurable stub pool/connection lets us drive the cursor-pagination and
 summary branches that the default empty ``StubPool`` cannot reach.
@@ -23,12 +25,9 @@ from fastapi.testclient import TestClient
 
 from taskq._ids import new_uuid
 from taskq.web.admin import create_router, setup_admin_state
-from taskq.web.admin._history import (
+from taskq.web.admin.history import (
     _CURSOR_NULL_SENTINEL,
     _compute_success_rate,
-)
-from taskq.web.admin._history import (
-    register as register_history,
 )
 
 from . import StubRecord, _StubPool
@@ -76,10 +75,9 @@ class _FetchPool:
 
 
 def _build_history_app(pool: object, monkeypatch: pytest.MonkeyPatch) -> TestClient:
-    """Build a TestClient with history routes attached to the admin router."""
+    """Build a TestClient with the admin router (history auto-discovered)."""
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
     bundle = create_router(pool)  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
-    register_history(bundle.router)
     app = FastAPI()
     setup_admin_state(app, bundle)
     app.include_router(bundle.router)
@@ -111,13 +109,12 @@ def _history_job_row(
 # ── Route discovery ─────────────────────────────────────────────────────
 
 
-def test_history_routes_registered_via_register(
+def test_history_routes_registered_via_discovery(
     monkeypatch: pytest.MonkeyPatch, stub_pool: _StubPool
 ) -> None:
-    """register() attaches /history and /api/history/stats to the router."""
+    """create_router auto-discovers history.py and attaches /history + /api/history/stats."""
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
     bundle = create_router(stub_pool)  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
-    register_history(bundle.router)
     route_paths = [getattr(r, "path", None) for r in bundle.router.routes]  # pyright: ignore[reportUnknownVariableType]  # Why: APIRouter.routes is not fully typed.
     assert "/history" in route_paths  # pyright: ignore[reportUnknownMemberType]
     assert "/api/history/stats" in route_paths  # pyright: ignore[reportUnknownMemberType]
@@ -372,7 +369,7 @@ def test_history_total_display_shows_plus_when_over_cap(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Summary count >= _COUNT_CAP renders the '1000+' form."""
-    from taskq.web.admin._history import (
+    from taskq.web.admin.history import (
         _COUNT_CAP,  # pyright: ignore[reportPrivateUsage]  # Why: need cap value to build an over-cap summary.
     )
 

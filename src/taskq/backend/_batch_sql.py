@@ -504,6 +504,11 @@ async def enqueue_batch_atomic(
                     schema,
                     chunk,
                     connection=cast("asyncpg.Connection | None", conn),
+                    # Explicit, not defaulted: these chunks share the atomic
+                    # transaction, so per-chunk admission accumulates to the
+                    # true aggregate — a default flip must not silently
+                    # disarm it.
+                    enforce_max_pending=True,
                 )
                 all_rows.extend(rows)
 

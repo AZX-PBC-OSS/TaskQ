@@ -1,15 +1,16 @@
 """Unit tests for _emit_sub_enqueue_startup_warnings.
 
 Pure-Python tests — no PG required. The helper is a synchronous function
-that reads the LoopScope resolved cache and WorkerSettings DSNs to decide
-which (if any) startup warnings to emit.
+that reads the LoopScope resolved cache and WorkerSettings (DSNs,
+max_concurrency) to decide which (if any) startup warnings to emit.
 
 Covers unit behaviour and negative / edge-case paths.
 
 These tests assert on *which warning path is taken* (autonomous-fallback,
-dsn-mismatch, or none) without asserting on log message format or
-field names — those are implementation details that change independently
-of behaviour.
+dsn-mismatch, shared-across-slots, or none; dsn-mismatch and
+shared-across-slots can fire together) via the warning event name only —
+never on log message format or field names, which are implementation
+details that change independently of behaviour.
 """
 
 import asyncpg
@@ -39,6 +40,7 @@ def _make_settings(
     *,
     pg_dsn_pooled: str | None = None,
     pg_dsn_direct: str | None = None,
+    max_concurrency: int | None = None,
 ) -> WorkerSettings:
     base: dict[str, str] = {
         "TASKQ_PG_DSN": "postgresql://taskq:taskq@localhost:5432/taskq",
@@ -47,6 +49,8 @@ def _make_settings(
         base["TASKQ_PG_DSN_POOLED"] = pg_dsn_pooled
     if pg_dsn_direct is not None:
         base["TASKQ_PG_DSN_DIRECT"] = pg_dsn_direct
+    if max_concurrency is not None:
+        base["TASKQ_MAX_CONCURRENCY"] = str(max_concurrency)
     return WorkerSettings.load_from_dict(base)
 
 
@@ -82,6 +86,16 @@ class _StubConn:
     pass
 
 
+class _EventSpy:
+    """Records each warning() event name — WarningSpy counts calls only."""
+
+    def __init__(self) -> None:
+        self.events: list[str] = []
+
+    def warning(self, event: str, *_args: object, **_kwargs: object) -> None:
+        self.events.append(event)
+
+
 async def test_no_loop_conn_emits_autonomous_fallback_warning() -> None:
     """startup: no LOOP-scope Connection → one warning emitted."""
     loop_scope = await _make_loop_scope()
@@ -100,9 +114,13 @@ async def test_no_loop_conn_emits_autonomous_fallback_warning() -> None:
 async def test_loop_conn_with_dsn_mismatch_emits_warning() -> None:
     """LOOP-scope conn present + DSNs differ → one warning emitted."""
     loop_scope = await _make_loop_scope(resolved={asyncpg.Connection: _StubConn()})
+    # Why: max_concurrency pinned to 1 so ONLY the dsn-mismatch path can
+    # fire — the shared-across-slots check is not DSN-gated and would add
+    # a second warning at the default concurrency (8).
     settings = _make_settings(
         pg_dsn_pooled="postgresql://user:pass@pgbouncer:6432/taskq",
         pg_dsn_direct="postgresql://user:pass@pg-primary:5432/taskq",
+        max_concurrency=1,
     )
     actor_registry = {"alpha": _make_actor_ref(name="alpha")}
     spy = WarningSpy()
@@ -115,7 +133,9 @@ async def test_loop_conn_with_dsn_mismatch_emits_warning() -> None:
 async def test_loop_conn_with_matching_dsns_emits_no_warning() -> None:
     """No warning when LOOP-scope conn is registered and DSNs are equal."""
     loop_scope = await _make_loop_scope(resolved={asyncpg.Connection: _StubConn()})
-    settings = _make_settings()
+    # Why: max_concurrency pinned to 1 to isolate the DSN check — at the
+    # default (8) the shared-across-slots warning correctly fires too.
+    settings = _make_settings(max_concurrency=1)
     actor_registry = {"alpha": _make_actor_ref(name="alpha")}
     spy = WarningSpy()
 
@@ -149,3 +169,57 @@ async def test_empty_actor_registry_still_emits_autonomous_fallback_warning() ->
     _emit_sub_enqueue_startup_warnings(loop_scope, settings, actor_registry, spy)
 
     assert spy.warning_count == 1
+
+
+async def test_loop_conn_max_concurrency_one_emits_no_shared_slots_warning() -> None:
+    """LOOP-scope conn + max_concurrency=1 → shared-across-slots must not fire."""
+    loop_scope = await _make_loop_scope(resolved={asyncpg.Connection: _StubConn()})
+    settings = _make_settings(max_concurrency=1)
+    actor_registry = {"alpha": _make_actor_ref(name="alpha")}
+    spy = _EventSpy()
+
+    _emit_sub_enqueue_startup_warnings(loop_scope, settings, actor_registry, spy)
+
+    assert "loop_scope_conn_shared_across_slots" not in spy.events
+
+
+async def test_loop_conn_max_concurrency_above_one_emits_shared_slots_warning() -> None:
+    """LOOP-scope conn + max_concurrency>1 → every slot shares one connection."""
+    loop_scope = await _make_loop_scope(resolved={asyncpg.Connection: _StubConn()})
+    settings = _make_settings(max_concurrency=4)
+    actor_registry = {"alpha": _make_actor_ref(name="alpha")}
+    spy = _EventSpy()
+
+    _emit_sub_enqueue_startup_warnings(loop_scope, settings, actor_registry, spy)
+
+    assert "loop_scope_conn_shared_across_slots" in spy.events
+
+
+async def test_no_loop_conn_max_concurrency_above_one_no_shared_slots_warning() -> None:
+    """No LOOP-scope conn → autonomous-fallback fires; shared warning must not."""
+    loop_scope = await _make_loop_scope()
+    settings = _make_settings(max_concurrency=4)
+    actor_registry = {"alpha": _make_actor_ref(name="alpha")}
+    spy = _EventSpy()
+
+    _emit_sub_enqueue_startup_warnings(loop_scope, settings, actor_registry, spy)
+
+    assert "loop_scope_conn_shared_across_slots" not in spy.events
+    assert "sub_enqueue_autonomous_fallback" in spy.events
+
+
+async def test_loop_conn_dsn_mismatch_and_max_concurrency_above_one_emits_both() -> None:
+    """Checks 2 and 3 are not mutually exclusive — both warnings fire."""
+    loop_scope = await _make_loop_scope(resolved={asyncpg.Connection: _StubConn()})
+    settings = _make_settings(
+        pg_dsn_pooled="postgresql://user:pass@pgbouncer:6432/taskq",
+        pg_dsn_direct="postgresql://user:pass@pg-primary:5432/taskq",
+        max_concurrency=4,
+    )
+    actor_registry = {"alpha": _make_actor_ref(name="alpha")}
+    spy = _EventSpy()
+
+    _emit_sub_enqueue_startup_warnings(loop_scope, settings, actor_registry, spy)
+
+    assert "loop_scope_conn_dsn_mismatch" in spy.events
+    assert "loop_scope_conn_shared_across_slots" in spy.events

@@ -25,7 +25,7 @@ from taskq._ids import new_base62, new_uuid
 from taskq.backend.postgres import PostgresBackend
 from taskq.exceptions import ReservationUnavailable
 from taskq.ratelimit.reservation import ConcurrencyReservation
-from taskq.testing._shared_containers import creator_labels
+from taskq.testing._shared_containers import creator_labels, skip_test_without_docker
 from taskq.testing.fixtures import ModulePgSchema
 
 pytestmark = pytest.mark.integration
@@ -192,6 +192,7 @@ async def test_connection_loss_mid_acquire(
 
 @pytest.fixture(scope="function")
 def _chaos_pg() -> Iterator[PostgresContainer]:  # pyright: ignore[reportUnusedFunction] # Why: pytest injects this fixture; pyright does not trace decorator-based DI
+    skip_test_without_docker()
     with PostgresContainer(
         image="postgres:18-alpine",
         username="taskq",

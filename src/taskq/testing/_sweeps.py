@@ -7,6 +7,17 @@ the first parameter, following the :mod:`taskq.testing._runner` pattern.
 No caller-supplied ``now``: the backend's injected ``Clock`` is the single
 arbiter — the InMemory mirror of PG's server-side ``clock_timestamp()``
 predicates (parity by construction).
+
+Each twin processes at most ``batch_size`` eligible rows per call,
+mirroring the Postgres sweeps' bounded batch: one call makes a bounded
+amount of progress, repeated calls drain.  The twins walk the corpus in
+dict-iteration order while the Postgres snaps drain oldest-eligible-first
+(their ORDER BY pins) — row ORDER is not a parity property, so the twins
+deliberately do not fake one; the parity contract is the total rows
+drained and the per-row state and audit trail left behind (pinned by
+``tests/test_rt_sweeps_parity.py``).  ``batch_size`` is validated at the
+same boundary and with the same ValueError the Postgres sweeps raise, so
+one input cannot mean three things across the two backends.
 """
 
 from dataclasses import replace
@@ -16,6 +27,10 @@ from typing import TYPE_CHECKING
 import structlog
 
 from taskq.backend._protocol import AttemptRow, CancelPhase
+from taskq.backend._sweeps import (  # pyright: ignore[reportPrivateUsage]  # Why: the twins must enforce the identical boundary contract the Postgres sweeps enforce — one validator, one seam, no drift.
+    _validate_positive,
+)
+from taskq.constants import DEFAULT_EVENT_WRITER_BATCH_SIZE
 from taskq.obs import record_deadline_exceeded_swept
 
 if TYPE_CHECKING:
@@ -30,10 +45,17 @@ __all__ = [
 logger = structlog.get_logger("taskq.testing.in_memory")
 
 
-async def _scheduled_to_pending(self: "InMemoryBackend") -> int:
+async def _scheduled_to_pending(
+    self: "InMemoryBackend",
+    *,
+    batch_size: int = DEFAULT_EVENT_WRITER_BATCH_SIZE,
+) -> int:
+    _validate_positive("batch_size", batch_size)
     now = self._clock.now()
     count = 0
     for job_id, row in list(self._jobs.items()):
+        if count >= batch_size:
+            break
         if row.status == "scheduled" and row.scheduled_at <= now:
             self._jobs[job_id] = replace(row, status="pending")
             self._append_state_change_event(
@@ -56,10 +78,17 @@ async def _scheduled_to_pending(self: "InMemoryBackend") -> int:
     return count
 
 
-async def _deadline_sweep(self: "InMemoryBackend") -> int:
+async def _deadline_sweep(
+    self: "InMemoryBackend",
+    *,
+    batch_size: int = DEFAULT_EVENT_WRITER_BATCH_SIZE,
+) -> int:
+    _validate_positive("batch_size", batch_size)
     now = self._clock.now()
     count = 0
     for job_id, row in list(self._jobs.items()):
+        if count >= batch_size:
+            break
         if (
             row.status in ("pending", "scheduled")
             and row.schedule_to_close is not None
@@ -109,6 +138,8 @@ async def _reclaim_expired_locks(
     self: "InMemoryBackend",
     cancel_grace: timedelta,
     cleanup_grace: timedelta,
+    *,
+    batch_size: int = DEFAULT_EVENT_WRITER_BATCH_SIZE,
 ) -> int:
     # Mirrors PostgresBackend._SWEEP_1_SQL exactly, in both directions:
     # * carve-out — a job with an in-flight cancel request
@@ -121,10 +152,13 @@ async def _reclaim_expired_locks(
     #   slate for the next dispatch); the exhausted branch lands on
     #   'cancelled' when a cancel was in-flight, 'crashed' otherwise,
     #   while the attempt row records outcome='crashed' either way.
+    _validate_positive("batch_size", batch_size)
     now = self._clock.now()
     deep_expiry_margin = cancel_grace + cleanup_grace + timedelta(seconds=60)
     count = 0
     for job_id, row in list(self._jobs.items()):
+        if count >= batch_size:
+            break
         if (
             row.status == "running"
             and row.lock_expires_at is not None
@@ -181,10 +215,16 @@ async def _reclaim_expired_locks(
                 # Exhausted: an in-flight cancel request makes 'cancelled'
                 # the honest terminal label (mirrors _SWEEP_1_SQL's CASE).
                 new_status = "cancelled" if row.cancel_phase != CancelPhase.NONE else "crashed"
+                # locked_by_worker/lock_expires_at are cleared on EVERY
+                # branch by _SWEEP_1_SQL's single SET clause list; the
+                # twin must match or a terminal row keeps pointing at a
+                # dead holder for every locked_by_worker-scoped reader.
                 self._jobs[job_id] = replace(
                     row,
                     status=new_status,
                     finished_at=now,
+                    locked_by_worker=None,
+                    lock_expires_at=None,
                     cancel_phase=CancelPhase.NONE,
                     cancel_requested_at=None,
                 )

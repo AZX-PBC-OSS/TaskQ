@@ -306,14 +306,22 @@ async def _acquire_pg_log(
     # Serialise acquirers per bucket: under READ COMMITTED the DELETE +
     # INSERT ... WHERE count < N pair is not serialised — two concurrent
     # acquires can each count the pre-insert window and both insert,
-    # over-admitting past the limit. A transaction-scoped advisory lock on
-    # the bucket name (the cron loop's idiom) makes the whole
-    # delete/count/insert sequence atomic per bucket; distinct buckets
-    # hash to distinct locks and stay parallel.
+    # over-admitting past the limit. A transaction-scoped advisory lock
+    # makes the whole delete/count/insert sequence atomic per bucket;
+    # distinct buckets hash to distinct locks and stay parallel.
+    #
+    # The key is schema-qualified (same shape as the bucket's Redis key,
+    # ``taskq:{schema}:sw:{name}``): advisory locks are database-scoped,
+    # so a bare bucket name is shared by every schema in the database —
+    # two deployments in one database would serialize on one lock while
+    # operating on different ``"{schema}".rate_limit_window_entries``
+    # tables. Qualifying keeps the lock's scope identical to the table
+    # it serializes access to.
     advisory_lock_sql = "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))"
+    lock_key = f"taskq:{schema}:sw:{self._name}"
 
     async with pg_pool.acquire() as conn, conn.transaction():
-        await conn.execute(advisory_lock_sql, self._name)
+        await conn.execute(advisory_lock_sql, lock_key)
         await conn.execute(delete_sql, self._name, window_ms)
 
         inserted = await conn.fetchrow(

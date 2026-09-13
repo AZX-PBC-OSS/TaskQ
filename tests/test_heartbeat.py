@@ -918,10 +918,16 @@ async def test_isolate_self_sweep1_row_state_identical(
                 now - timedelta(seconds=10),
                 job_id_b,
             )
+            # Third argument is the sweep's batch cap (LIMIT $3), added when
+            # the sweep was bounded; the production default bound is used so
+            # this direct-SQL drive mirrors what the sweep loop executes.
+            from taskq.constants import DEFAULT_EVENT_WRITER_BATCH_SIZE
+
             await conn.execute(
                 _SWEEP_1_SQL.format(schema=schema),
                 timedelta(seconds=30),
                 timedelta(seconds=30),
+                DEFAULT_EVENT_WRITER_BATCH_SIZE,
             )
 
             columns = "status, locked_by_worker, lock_expires_at, scheduled_at, finished_at"

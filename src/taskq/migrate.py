@@ -65,6 +65,7 @@ import structlog
 from taskq._close import CLOSE_TIMEOUT_SECS, close_conn_bounded
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining it.
+    schema_lock_name,
 )
 
 __all__ = [
@@ -77,6 +78,8 @@ __all__ = [
     "discover",
     "list_applied",
     "list_invalid_indexes",
+    "migration_advisory_lock",
+    "migration_lock_name",
     "render",
     "render_apply_failure_lines",
     "split_statements",
@@ -692,7 +695,45 @@ async def _record_applied(conn: asyncpg.Connection, schema: str, migration: Migr
     )
 
 
-_MIGRATION_LOCK_KEY: int = 1_234_567
+def migration_lock_name(schema: str) -> str:
+    """Schema-qualified migration advisory-lock name: ``taskq:migrate:{schema}``.
+
+    Advisory locks live in a per-database namespace, so the pre-qualification
+    fixed bigint key was shared by every schema in the database: two
+    deployments sharing one database serialized their migrations on one
+    lock, and the loser of a *cross-deployment* race — a schema with
+    nothing to migrate — burned its bounded startup wait and SystemExited
+    while an unrelated schema's long DDL ran. Qualifying with the schema
+    gives each schema its own lock; same-schema replicas still serialize
+    (the reason the lock exists — a virgin schema's bare ``CREATE TABLE``
+    races two concurrent appliers).
+
+    Deliberately the same ``taskq:{purpose}:{schema}`` shape as
+    :func:`taskq.constants.schema_lock_name` (built from it). That helper
+    is how every *purpose* lock in the system derives its key — one lock
+    per schema and purpose (maintenance_leader, prune, archive_expiry,
+    cron, migrate). *Keyed* locks, which must distinguish a resource
+    within a schema, embed the schema before their key instead: the
+    sliding-window bucket lock ``taskq:{schema}:sw:{name}`` (mirroring
+    the bucket's Redis key) and the enqueue unique-for lock
+    ``taskq:unique_for:{schema}:{actor}:{identity_key}``. Both
+    conventions qualify with the schema; they differ only in where the
+    distinguishing key segments sit.
+
+    Upgrade discipline: the qualified key replaces the unqualified bigint
+    outright — a mixed old/new fleet holds different keys, so an old and a
+    new replica can apply migrations to the SAME schema concurrently
+    during the deploy window. Adopt by restarting the fleet onto the new
+    release rather than rolling it; the window is the deploy, not the
+    steady state. (Same caveat as the schema-qualified leader locks.)
+    """
+    if not _IDENT_RE.match(schema):
+        raise ValueError(f"invalid schema identifier: {schema!r}")
+    return schema_lock_name("migrate", schema)
+
+
+_MIGRATION_LOCK_SQL = "SELECT pg_advisory_lock(hashtextextended($1, 0))"
+_MIGRATION_UNLOCK_SQL = "SELECT pg_advisory_unlock(hashtextextended($1, 0))"
 
 #: Bound on how long to WAIT for another process's migration lock.
 #:
@@ -899,9 +940,12 @@ def render_apply_failure_lines(d: ApplyFailureDiagnosis, *, startup: bool = Fals
 
 @contextlib.asynccontextmanager
 async def migration_advisory_lock(
-    conn: asyncpg.Connection, lock_timeout: float = DEFAULT_MIGRATION_LOCK_TIMEOUT
+    conn: asyncpg.Connection,
+    lock_timeout: float = DEFAULT_MIGRATION_LOCK_TIMEOUT,
+    *,
+    schema: str,
 ) -> AsyncGenerator[None]:
-    """Hold the migration advisory lock on *conn*, with a bounded wait.
+    """Hold *schema*'s migration advisory lock on *conn*, with a bounded wait.
 
     Extracted so the CLI and :func:`apply_pending_locked` serialize on the SAME
     lock without duplicating the acquire/reset/release protocol. The CLI cannot
@@ -909,6 +953,14 @@ async def migration_advisory_lock(
     can run ``_report_up_failure`` diagnostics on it after a failure, and
     ``apply_pending_locked`` converts failures to ``SystemExit`` before that
     could run.
+
+    The lock key is :func:`migration_lock_name` — schema-qualified, because
+    advisory locks are database-scoped and an unqualified key serializes
+    every schema in the database (see that function's docstring for the
+    cross-deployment failure mode and the mixed-fleet adopt note).
+    ``schema`` is required, not defaulted: a silent default would point at
+    one fixed schema while the caller's settings name another — the same
+    defect class the qualification itself fixes.
 
     ``lock_timeout`` bounds only the WAIT, via Postgres' ``lock_timeout`` GUC
     (which governs advisory-lock acquisition). It is reset to unlimited before
@@ -921,11 +973,12 @@ async def migration_advisory_lock(
     Raises :class:`SystemExit` on contention rather than blocking until the
     container platform kills the process.
     """
+    lock_name = migration_lock_name(schema)
     if lock_timeout > 0:
         # Milliseconds; applies to the advisory-lock acquire below.
         await conn.execute(f"SET lock_timeout = {int(lock_timeout * 1000)}")
     try:
-        await conn.execute("SELECT pg_advisory_lock($1)", _MIGRATION_LOCK_KEY)
+        await conn.execute(_MIGRATION_LOCK_SQL, lock_name)
     except asyncpg.LockNotAvailableError as exc:
         msg = (
             f"could not acquire the migration advisory lock within {lock_timeout}s: "
@@ -961,7 +1014,7 @@ async def migration_advisory_lock(
         # call that never returns; a dead PG wedges the unlock indefinitely.
         with contextlib.suppress(Exception):
             await asyncio.wait_for(
-                conn.execute("SELECT pg_advisory_unlock($1)", _MIGRATION_LOCK_KEY),
+                conn.execute(_MIGRATION_UNLOCK_SQL, lock_name),
                 timeout=CLOSE_TIMEOUT_SECS,
             )
 
@@ -1017,7 +1070,7 @@ async def apply_pending_locked(
         else:
             assert dsn is not None  # guarded by validation above
             c = await asyncpg.connect(dsn)
-        async with migration_advisory_lock(c, lock_timeout):
+        async with migration_advisory_lock(c, lock_timeout, schema=schema):
             applied = await apply_pending(
                 c, schema=schema, phase=phase, target=target, max_steps=max_steps
             )

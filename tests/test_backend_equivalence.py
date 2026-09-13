@@ -561,7 +561,7 @@ async def test_pg_connection_loss_raises_typed_exception(
                 payload={},
                 max_attempts=3,
                 retry_kind="transient",
-                scheduled_at=datetime.now(UTC),
+                scheduled_at=None,
             )
         )
 

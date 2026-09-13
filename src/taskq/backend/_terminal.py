@@ -6,9 +6,81 @@ live here as module-level functions taking explicit
 ``(conn, sql: SqlTemplates, ...)`` or ``(pool, sql: SqlTemplates, ...)``
 parameters.  :class:`~taskq.backend.postgres.PostgresBackend` methods are
 thin wrappers that acquire the appropriate pool and delegate.
+
+One statement per terminal write
+===============================
+
+Each ``mark_*`` write is ONE data-modifying-CTE statement
+(``sql.mark_*`` in ``_sql_templates.py``): the fenced ``jobs`` UPDATE,
+the ``job_attempts`` INSERT, and the ``job_events`` INSERT execute inside
+a single statement instead of three awaited round trips inside one
+transaction.  E2E profiling of the dispatch loop
+(benchmarks/e2e_dispatch.py, 2000-job drain against local compose
+Postgres) measured the three-statement form at ~1.4 ms per job — ~89% of
+dispatch wall-clock and ~10x the terminal UPDATE's own 0.14 ms — with the
+round trips, not the statements' work, dominating.  Fusing them, plus
+dropping the pool path's now-redundant explicit BEGIN/COMMIT (a single
+SQL statement — CTEs included — is atomic by itself, so the transaction
+context manager's two round trips bought nothing the statement doesn't
+already provide; the LOOP-scope ``mark_succeeded_with_conn`` path still
+runs inside the actor's transaction as before), removes four round trips
+per job with NO change to commit semantics: statement failure still
+aborts the write whole, still classifies through
+``_TERMINAL_WRITE_INFRA_EXCEPTIONS``, and still leaves the job
+``running`` for lease-sweep reclaim (at-least-once).
+
+Invariants preserved verbatim from the three-statement form:
+
+* The UPDATE stays the single arbiter: its fencing WHERE (``status =
+  'running' AND locked_by_worker = $2``) decides everything, and an
+  empty ``upd`` CTE makes the INSERT CTEs insert nothing and the final
+  ``SELECT`` return no row — the exact ``rec is None`` /
+  ``WorkerOwnershipMismatch`` / ``False`` contract, without a second
+  read.
+* ``job_attempts.worker_id`` resolves through the holder-CTE idiom
+  (``FOR KEY SHARE`` probe, LEFT-scan semantics via scalar subquery): a
+  present worker row records the id, an already-deleted one records
+  NULL, mirroring the column's ON DELETE SET NULL — never an FK
+  violation (the constraint-violation tear-down risk documented on
+  ``_sql.py``'s INSERT_ATTEMPT_SQL).
+* Every timestamp is database-written (``clock_timestamp()``; the
+  retry/snooze arms' ``now_ts``); ``duration_ms`` is computed in the
+  statement from the same started/finished pair Python used to receive
+  and re-multiply — but server-side, with exact numeric arithmetic
+  instead of Python's float path.  Values can differ from the old
+  Python computation by 1ms on exactly-whole-millisecond boundaries
+  (where the float product drifted just below the integer); the
+  server-side values are strictly more accurate.  ``trunc()`` keeps
+  the same truncation toward zero (a bare ``::int`` cast rounds to
+  nearest).
+* Per-arm arbitration of the two- and three-arm variants
+  (``mark_retry``, ``mark_snoozed``, ``mark_retry_after_*``): each arm
+  chains its own attempt/event CTEs with that arm's outcome, error
+  fields, and detail jsonb, so the ``outcome_branch`` tri-state the
+  Python returns is computed by the same UPDATE predicates as before.
+* Event ``detail`` is built server-side with ``jsonb_build_object``;
+  ``jsonb_strip_nulls`` drops the keys Python conditionally omitted
+  (``error_class`` when absent, ``worker_id`` for NULL holders).  The
+  stored jsonb is key-order-normalized either way, so readers parsing
+  the detail see the identical object.
+
+Deliberately NOT done here (the evaluated alternative): coalescing
+outcomes across jobs into one multi-row flusher.  Completion is the
+job's final act — the consumer ``await``s (under ``asyncio.shield``)
+its terminal write before reporting the outcome, so a returned
+``mark_succeeded`` means the row is durably terminal, and the at-least-
+once window (crash → lease sweep → re-run) is exercised only when the
+write itself fails.  A non-awaited flusher would widen that window to
+every successful job (a crash inside the flush window re-runs already-
+succeeded actors) and reorder ``on_success`` hooks, terminal Redis
+publishes, and progress-buffer bookkeeping that all assume post-commit
+ordering; an awaited flusher adds queueing latency without removing the
+round trips this merge already collapsed.  The CTE fusion captures the
+measured win with zero semantic movement, so the coalescing design was
+rejected rather than shipped behind a setting.
 """
 
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import TYPE_CHECKING, Literal
 from uuid import UUID
 
@@ -24,7 +96,6 @@ from taskq.backend._protocol import (
 )
 from taskq.backend._records import (
     _job_row_from_record,
-    compute_duration_ms,
     jsonb_param,
     parse_rowcount,
 )
@@ -44,12 +115,10 @@ if TYPE_CHECKING:
     import asyncpg
 
 __all__ = [
-    "_insert_attempt",
     "_insert_cancel_request_event",
     "_insert_state_change_event",
     "_mark_abandoned",
     "_mark_cancelled",
-    "_mark_failed",
     "_mark_failed_or_retry",
     "_mark_retry",
     "_mark_retry_after",
@@ -65,35 +134,6 @@ logger: structlog.stdlib.BoundLogger = get_logger(__name__)
 
 
 # ── Shared helpers ─────────────────────────────────────────────────────
-
-
-async def _insert_attempt(
-    conn: ConnLike,
-    sql: SqlTemplates,
-    job_id: JobId,
-    attempt: int,
-    started_at: datetime | None,
-    outcome: str,
-    error_class: str | None,
-    error_message: str | None,
-    error_traceback: str | None,
-    duration_ms: int | None,
-    worker_id: UUID | None,
-) -> None:
-    """INSERT a job_attempts row inside an existing transaction."""
-    await conn.execute(
-        sql.insert_attempt,
-        job_id,
-        attempt,
-        started_at,
-        outcome,
-        error_class,
-        error_message,
-        error_traceback,
-        duration_ms,
-        worker_id,
-        "{}",
-    )
 
 
 async def _insert_state_change_event(
@@ -168,6 +208,13 @@ async def _mark_succeeded_on_conn(
     fallback_result_ttl: timedelta | None = None,
     max_result_bytes: int = MAX_RESULT_BYTES,
 ) -> bool:
+    """Terminal success write: ONE statement (UPDATE + attempt + event).
+
+    The fused ``sql.mark_succeeded`` keeps the pool and LOOP-scope
+    transactional paths byte-identical in semantics — see the module
+    docstring.  ``None`` here still means the fencing UPDATE matched no
+    row (wrong worker, missing job, already moved): nothing was written.
+    """
     serialized_result = jsonb_param(result)
     result_size = len(serialized_result.encode("utf-8")) if serialized_result is not None else None
     if result_size is not None and result_size > max_result_bytes:
@@ -185,40 +232,13 @@ async def _mark_succeeded_on_conn(
     if rec is None:
         return False
 
-    attempt: int = rec["attempt"]
-    started_at: datetime | None = rec["started_at"]
-    finished_at: datetime | None = rec["finished_at"]
-    duration_ms = compute_duration_ms(started_at, finished_at)
-
-    await _insert_attempt(
-        conn,
-        sql,
-        job_id,
-        attempt,
-        started_at,
-        "succeeded",
-        None,
-        None,
-        None,
-        duration_ms,
-        worker_id,
-    )
-    await _insert_state_change_event(
-        conn,
-        sql,
-        job_id,
-        "running",
-        "succeeded",
-        worker_id=worker_id,
-    )
-
     log_state_change(
         logger,
         from_state="running",
         to_state="succeeded",
         job_id=str(job_id),
         worker_id=str(worker_id),
-        attempt=attempt,
+        attempt=rec["attempt"],
     )
     return True
 
@@ -234,19 +254,26 @@ async def _mark_succeeded(
     fallback_result_ttl: timedelta | None = None,
     max_result_bytes: int = MAX_RESULT_BYTES,
 ) -> bool:
+    # No explicit transaction: the fused statement is atomic by itself (a
+    # single SQL statement — CTEs included — either completes entirely or
+    # not at all), and dropping the BEGIN/COMMIT pair removes two of the
+    # four remaining per-job round trips.  It also shortens the fencing
+    # row lock's hold from UPDATE..COMMIT to the statement's own duration.
+    # The LOOP-scope path (_mark_succeeded_on_conn via
+    # mark_succeeded_with_conn) still runs inside the actor's transaction
+    # exactly as before.
     async with pool.acquire() as conn:
-        async with conn.transaction():
-            return await _mark_succeeded_on_conn(
-                conn,
-                sql,
-                job_id,
-                worker_id,
-                result,
-                progress_seq,
-                progress_state,
-                fallback_result_ttl,
-                max_result_bytes,
-            )
+        return await _mark_succeeded_on_conn(
+            conn,
+            sql,
+            job_id,
+            worker_id,
+            result,
+            progress_seq,
+            progress_state,
+            fallback_result_ttl,
+            max_result_bytes,
+        )
 
 
 # ── mark_failed_or_retry ──────────────────────────────────────────────
@@ -287,47 +314,27 @@ async def _mark_failed(
     progress_seq: int,
     progress_state: dict[str, object] | None,
 ) -> JobRow:
+    # No explicit transaction — see _mark_succeeded.  The rare
+    # WorkerOwnershipMismatch diagnostic (_select_owner) runs after the
+    # no-op statement on the same connection: both the fused statement and
+    # the owner read are single-statement implicit transactions, and the
+    # write could not have modified the row when it matched nothing.
     async with pool.acquire() as conn:
-        async with conn.transaction():
-            rec = await conn.fetchrow(
-                sql.mark_failed,
-                job_id,
-                worker_id,
-                error_info.error_class,
-                error_info.error_message,
-                error_info.error_traceback,
-                progress_seq,
-                jsonb_param(progress_state),
-            )
-            if rec is None:
-                actual = await _select_owner(conn, sql, job_id)
-                raise WorkerOwnershipMismatch(job_id, worker_id, actual)
+        rec = await conn.fetchrow(
+            sql.mark_failed,
+            job_id,
+            worker_id,
+            error_info.error_class,
+            error_info.error_message,
+            error_info.error_traceback,
+            progress_seq,
+            jsonb_param(progress_state),
+        )
+        if rec is None:
+            actual = await _select_owner(conn, sql, job_id)
+            raise WorkerOwnershipMismatch(job_id, worker_id, actual)
 
-            row = _job_row_from_record(rec)
-            duration_ms = compute_duration_ms(row.started_at, row.finished_at)
-
-            await _insert_attempt(
-                conn,
-                sql,
-                job_id,
-                row.attempt,
-                row.started_at,
-                "failed",
-                error_info.error_class,
-                error_info.error_message,
-                error_info.error_traceback,
-                duration_ms,
-                worker_id,
-            )
-            await _insert_state_change_event(
-                conn,
-                sql,
-                job_id,
-                "running",
-                "failed",
-                error_class=error_info.error_class,
-                worker_id=worker_id,
-            )
+        row = _job_row_from_record(rec)
 
     log_state_change(
         logger,
@@ -352,86 +359,26 @@ async def _mark_retry(
 ) -> JobRow:
     branch: str
     async with pool.acquire() as conn:
-        async with conn.transaction():
-            rec = await conn.fetchrow(
-                sql.mark_retry,
-                job_id,
-                worker_id,
-                retry_delay,
-                error_info.error_class,
-                error_info.error_message,
-                error_info.error_traceback,
-                progress_seq,
-                jsonb_param(progress_state),
-            )
-            if rec is None:
-                actual = await _select_owner(conn, sql, job_id)
-                raise WorkerOwnershipMismatch(job_id, worker_id, actual)
+        rec = await conn.fetchrow(
+            sql.mark_retry,
+            job_id,
+            worker_id,
+            retry_delay,
+            error_info.error_class,
+            error_info.error_message,
+            error_info.error_traceback,
+            progress_seq,
+            jsonb_param(progress_state),
+        )
+        if rec is None:
+            actual = await _select_owner(conn, sql, job_id)
+            raise WorkerOwnershipMismatch(job_id, worker_id, actual)
 
-            branch = rec["outcome_branch"]
-            row = _job_row_from_record(rec)
-            # The retry branch leaves finished_at NULL (the job lives on),
-            # so the attempt's end is "now" — taken from the same statement
-            # that just wrote the row, never from this process's clock:
-            # started_at is database-written, and mixing domains here makes
-            # the stored duration_ms wrong by the app/DB skew (negative,
-            # under a lagging app clock).
-            duration_ms = (
-                compute_duration_ms(row.started_at, rec["now_ts"])
-                if row.started_at is not None and branch == "retried"
-                else compute_duration_ms(row.started_at, row.finished_at)
-            )
-
-            if branch == "retried":
-                await _insert_attempt(
-                    conn,
-                    sql,
-                    job_id,
-                    row.attempt,
-                    row.started_at,
-                    "failed",
-                    error_info.error_class,
-                    error_info.error_message,
-                    error_info.error_traceback,
-                    duration_ms,
-                    worker_id,
-                )
-                await _insert_state_change_event(
-                    conn,
-                    sql,
-                    job_id,
-                    "running",
-                    "scheduled",
-                    error_class=error_info.error_class,
-                    worker_id=worker_id,
-                )
-            else:
-                # deadline_failed — the SQL deadline guard (the single
-                # arbiter) decided the retry cannot land before
-                # schedule_to_close; the row is terminal.  The attempt/event
-                # rows mirror mark_snoozed's deadline branch.
-                await _insert_attempt(
-                    conn,
-                    sql,
-                    job_id,
-                    row.attempt,
-                    row.started_at,
-                    "failed",
-                    "DeadlineExceeded",
-                    "schedule_to_close reached before next retry dispatch",
-                    None,
-                    duration_ms,
-                    worker_id,
-                )
-                await _insert_state_change_event(
-                    conn,
-                    sql,
-                    job_id,
-                    "running",
-                    "failed",
-                    error_class="DeadlineExceeded",
-                    worker_id=worker_id,
-                )
+        branch = rec["outcome_branch"]
+        row = _job_row_from_record(rec)
+        # The attempt row (duration_ms computed from the winning arm's
+        # own timestamps) and the state_change event are written by the
+        # fused statement's per-arm CTEs — see _sql_templates.mark_retry.
 
     if branch == "retried":
         log_state_change(
@@ -467,43 +414,15 @@ async def _mark_cancelled(
     progress_state: dict[str, object] | None = None,
 ) -> bool:
     async with pool.acquire() as conn:
-        async with conn.transaction():
-            rec = await conn.fetchrow(
-                sql.mark_cancelled,
-                job_id,
-                worker_id,
-                progress_seq,
-                jsonb_param(progress_state),
-            )
-            if rec is None:
-                return False
-
-            attempt: int = rec["attempt"]
-            started_at: datetime | None = rec["started_at"]
-            finished_at: datetime | None = rec["finished_at"]
-            duration_ms = compute_duration_ms(started_at, finished_at)
-
-            await _insert_attempt(
-                conn,
-                sql,
-                job_id,
-                attempt,
-                started_at,
-                "cancelled",
-                None,
-                None,
-                None,
-                duration_ms,
-                worker_id,
-            )
-            await _insert_state_change_event(
-                conn,
-                sql,
-                job_id,
-                "running",
-                "cancelled",
-                worker_id=worker_id,
-            )
+        rec = await conn.fetchrow(
+            sql.mark_cancelled,
+            job_id,
+            worker_id,
+            progress_seq,
+            jsonb_param(progress_state),
+        )
+        if rec is None:
+            return False
 
     log_state_change(
         logger,
@@ -511,7 +430,7 @@ async def _mark_cancelled(
         to_state="cancelled",
         job_id=str(job_id),
         worker_id=str(worker_id),
-        attempt=attempt,
+        attempt=rec["attempt"],
     )
     return True
 
@@ -570,43 +489,16 @@ async def _mark_abandoned(
     progress_state: dict[str, object] | None = None,
 ) -> bool:
     async with pool.acquire() as conn:
-        async with conn.transaction():
-            rec = await conn.fetchrow(
-                sql.mark_abandoned,
-                job_id,
-                progress_seq,
-                jsonb_param(progress_state),
-            )
-            if rec is None:
-                return False
+        rec = await conn.fetchrow(
+            sql.mark_abandoned,
+            job_id,
+            progress_seq,
+            jsonb_param(progress_state),
+        )
+        if rec is None:
+            return False
 
-            attempt: int = rec["attempt"]
-            started_at: datetime | None = rec["started_at"]
-            finished_at: datetime | None = rec["finished_at"]
-            locked_by_worker: UUID | None = rec["locked_by_worker"]
-            duration_ms = compute_duration_ms(started_at, finished_at)
-
-            await _insert_attempt(
-                conn,
-                sql,
-                job_id,
-                attempt,
-                started_at,
-                "cancelled",
-                None,
-                None,
-                None,
-                duration_ms,
-                locked_by_worker,
-            )
-            await _insert_state_change_event(
-                conn,
-                sql,
-                job_id,
-                "running",
-                "abandoned",
-                worker_id=locked_by_worker,
-            )
+        locked_by_worker: UUID | None = rec["locked_by_worker"]
 
     log_state_change(
         logger,
@@ -614,7 +506,7 @@ async def _mark_abandoned(
         to_state="abandoned",
         job_id=str(job_id),
         worker_id=str(locked_by_worker) if locked_by_worker is not None else None,
-        attempt=attempt,
+        attempt=rec["attempt"],
     )
     return True
 
@@ -635,76 +527,25 @@ async def _mark_snoozed(
 ) -> Literal["scheduled", "failed", "noop"]:
     branch: str
     async with pool.acquire() as conn:
-        async with conn.transaction():
-            rec = await conn.fetchrow(
-                sql.mark_snoozed,
-                job_id,
-                worker_id,
-                delay,
-                jsonb_param(metadata_update),
-                progress_seq,
-                jsonb_param(progress_state),
-            )
-            if rec is None:
-                return "noop"
+        rec = await conn.fetchrow(
+            sql.mark_snoozed,
+            job_id,
+            worker_id,
+            delay,
+            jsonb_param(metadata_update),
+            progress_seq,
+            jsonb_param(progress_state),
+            outcome,
+        )
+        if rec is None:
+            return "noop"
 
-            branch = rec["outcome_branch"]
-            attempt: int = rec["attempt"]
-            started_at: datetime | None = rec["started_at"]
-            finished_at: datetime | None = rec["finished_at"]
-            # Snoozed leaves finished_at NULL — see _mark_failed_or_retry
-            # for why "now" must come off the statement, not clock.now().
-            duration_ms = (
-                compute_duration_ms(started_at, rec["now_ts"])
-                if started_at is not None and branch == "snoozed"
-                else compute_duration_ms(started_at, finished_at)
-            )
-
-            if branch == "snoozed":
-                await _insert_attempt(
-                    conn,
-                    sql,
-                    job_id,
-                    attempt,
-                    started_at,
-                    outcome,
-                    None,
-                    None,
-                    None,
-                    duration_ms,
-                    worker_id,
-                )
-                await _insert_state_change_event(
-                    conn,
-                    sql,
-                    job_id,
-                    "running",
-                    "scheduled",
-                    worker_id=worker_id,
-                )
-            else:
-                await _insert_attempt(
-                    conn,
-                    sql,
-                    job_id,
-                    attempt,
-                    started_at,
-                    "failed",
-                    "DeadlineExceeded",
-                    "schedule_to_close reached before next dispatch",
-                    None,
-                    duration_ms,
-                    worker_id,
-                )
-                await _insert_state_change_event(
-                    conn,
-                    sql,
-                    job_id,
-                    "running",
-                    "failed",
-                    error_class="DeadlineExceeded",
-                    worker_id=worker_id,
-                )
+        branch = rec["outcome_branch"]
+        # The attempt row (outcome=$7, duration_ms computed from the
+        # winning arm's own timestamps) and the state_change event are
+        # written by the fused statement's per-arm CTEs — see
+        # _sql_templates.mark_snoozed.  Snoozed leaves finished_at NULL;
+        # "now" comes off the statement, never this process's clock.
 
     if branch == "snoozed":
         log_state_change(
@@ -713,7 +554,7 @@ async def _mark_snoozed(
             to_state="scheduled",
             job_id=str(job_id),
             worker_id=str(worker_id),
-            attempt=attempt,
+            attempt=rec["attempt"],
         )
         return "scheduled"
     log_state_change(
@@ -722,7 +563,7 @@ async def _mark_snoozed(
         to_state="failed",
         job_id=str(job_id),
         worker_id=str(worker_id),
-        attempt=attempt,
+        attempt=rec["attempt"],
     )
     return "failed"
 
@@ -742,104 +583,28 @@ async def _mark_retry_after(
 ) -> Literal["scheduled", "failed:DeadlineExceeded", "failed:MaxAttemptsExceeded", "noop"]:
     branch: str
     async with pool.acquire() as conn:
-        async with conn.transaction():
-            sql_stmt = (
-                sql.mark_retry_after_consume_true
-                if consume_budget
-                else sql.mark_retry_after_consume_false
-            )
-            rec = await conn.fetchrow(
-                sql_stmt,
-                job_id,
-                worker_id,
-                delay,
-                progress_seq,
-                jsonb_param(progress_state),
-            )
-            if rec is None:
-                return "noop"
+        sql_stmt = (
+            sql.mark_retry_after_consume_true
+            if consume_budget
+            else sql.mark_retry_after_consume_false
+        )
+        rec = await conn.fetchrow(
+            sql_stmt,
+            job_id,
+            worker_id,
+            delay,
+            progress_seq,
+            jsonb_param(progress_state),
+        )
+        if rec is None:
+            return "noop"
 
-            branch = rec["outcome_branch"]
-            attempt: int = rec["attempt"]
-            attempt_for_record: int = rec["running_attempt"] if consume_budget else attempt
-            started_at: datetime | None = rec["started_at"]
-            finished_at: datetime | None = rec["finished_at"]
-            # Snoozed leaves finished_at NULL — see _mark_failed_or_retry
-            # for why "now" must come off the statement, not clock.now().
-            duration_ms = (
-                compute_duration_ms(started_at, rec["now_ts"])
-                if started_at is not None and branch == "snoozed"
-                else compute_duration_ms(started_at, finished_at)
-            )
-
-            if branch == "snoozed":
-                await _insert_attempt(
-                    conn,
-                    sql,
-                    job_id,
-                    attempt_for_record,
-                    started_at,
-                    "snoozed",
-                    "RetryAfter",
-                    None,
-                    None,
-                    duration_ms,
-                    worker_id,
-                )
-                await _insert_state_change_event(
-                    conn,
-                    sql,
-                    job_id,
-                    "running",
-                    "scheduled",
-                    worker_id=worker_id,
-                )
-            elif branch == "max_attempts_failed":
-                await _insert_attempt(
-                    conn,
-                    sql,
-                    job_id,
-                    attempt_for_record,
-                    started_at,
-                    "failed",
-                    "MaxAttemptsExceeded",
-                    "retry budget exhausted",
-                    None,
-                    duration_ms,
-                    worker_id,
-                )
-                await _insert_state_change_event(
-                    conn,
-                    sql,
-                    job_id,
-                    "running",
-                    "failed",
-                    error_class="MaxAttemptsExceeded",
-                    worker_id=worker_id,
-                )
-            else:
-                await _insert_attempt(
-                    conn,
-                    sql,
-                    job_id,
-                    attempt_for_record,
-                    started_at,
-                    "failed",
-                    "DeadlineExceeded",
-                    "schedule_to_close reached before next dispatch",
-                    None,
-                    duration_ms,
-                    worker_id,
-                )
-                await _insert_state_change_event(
-                    conn,
-                    sql,
-                    job_id,
-                    "running",
-                    "failed",
-                    error_class="DeadlineExceeded",
-                    worker_id=worker_id,
-                )
+        branch = rec["outcome_branch"]
+        attempt: int = rec["attempt"]
+        # The attempt row and state_change event are written by the
+        # fused statement's per-arm CTEs (attempt outcome/error fields
+        # and the snoozed arms' now_ts-based duration included) — see
+        # _sql_templates.mark_retry_after_consume_*.
 
     if branch == "snoozed":
         log_state_change(

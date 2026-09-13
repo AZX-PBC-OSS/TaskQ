@@ -709,13 +709,11 @@ class JobsClient:
         (no-connection) path is unaffected — its single transaction
         makes the batch row and the child jobs visible together.
 
-        **max_pending:** NOT enforced on this path — unlike
-        :meth:`enqueue_batch`, which runs one aggregated per-actor
-        check before the INSERT, neither the chunked
-        :meth:`Backend.enqueue_batch` inserts nor the atomic delegation
-        consult ``max_pending``. The caller is responsible for ensuring
-        the stream will not exceed actor limits (the same bulk-import
-        semantics :meth:`enqueue_batch_fast` discloses).
+        **max_pending:** enforced per chunk — each chunk's items carry
+        the resolved caps and :meth:`Backend.enqueue_batch` admits a
+        chunk only when existing pending+scheduled plus the chunk fits
+        the cap, so sequential chunks sharing one transaction enforce
+        the true aggregate. Same contract as :meth:`enqueue_batch`.
         """
         if chunk_size < 1 or chunk_size > MAX_BATCH_SIZE:
             raise ValueError(f"chunk_size must be in [1, {MAX_BATCH_SIZE}], got {chunk_size}")
@@ -1015,14 +1013,15 @@ class JobsClient:
         """Enqueue jobs via COPY FROM protocol for maximum throughput.
 
         **WARNING — bulk-import semantics, not general-purpose enqueue:**
-        this method does NOT enforce ``max_pending``, does NOT detect or
+        this method does NOT detect or
         reject idempotency-key collisions (a duplicate key aborts the
         whole batch instead of being treated as "already enqueued"), and
         returns a bare row **count**, not per-job handles — there is no
         way to await, cancel, or otherwise reference an individual job
-        from the return value. Use :meth:`enqueue_batch` unless you
-        specifically need COPY-level throughput for a one-shot bulk
-        import/backfill and have already accounted for these gaps.
+        from the return value. ``max_pending`` IS enforced (one
+        aggregated pre-check before the COPY). Use :meth:`enqueue_batch`
+        unless you specifically need COPY-level throughput for a one-shot
+        bulk import/backfill and have already accounted for these gaps.
 
         Returns the count of inserted rows — no :class:`~taskq.batch.BatchHandle`,
         no per-job :class:`~taskq.client.JobHandle` instances.
@@ -1043,8 +1042,11 @@ class JobsClient:
           *different* scopes raises
           :class:`~taskq.exceptions.ScopedIdempotencyMigrationPendingError`
           instead, matching the other enqueue paths.
-        - **No max_pending check.** The caller is responsible for
-          ensuring the batch won't exceed actor limits.
+        - **max_pending pre-check.** One aggregated count runs before
+          the COPY: existing pending+scheduled per actor plus the batch
+          must fit the cap, else the whole import raises
+          :class:`~taskq.exceptions.MaxPendingExceededError` with nothing
+          written.
         - **No JobHandle instances.** Only the inserted row count is
           returned.  Use ``batch_id`` to query rows post-insert.
         - **All-or-nothing atomicity.** No partial success — the entire

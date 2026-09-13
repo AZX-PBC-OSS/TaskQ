@@ -13,8 +13,9 @@ from uuid import UUID
 
 __all__ = [
     "BTREE_MAX_ITEM_BYTES",
-    "CRON_LOCK_NAME",
     "DEFAULT_CHUNK_SIZE",
+    "DEFAULT_EVENT_WRITER_BATCH_SIZE",
+    "DEFAULT_EVENT_WRITER_STATEMENT_TIMEOUT_MS",
     "DEFAULT_MAX_RETRY_BACKOFF",
     "DEFAULT_PRUNE_BATCH_SIZE",
     "DEFAULT_PRUNE_RETENTION",
@@ -35,6 +36,7 @@ __all__ = [
     "progress_channel",
     "progress_global_channel",
     "quote_ident",
+    "schema_lock_name",
     "wake_channel",
     "worker_channel",
 ]
@@ -131,6 +133,50 @@ all is what keeps a prune off a long-held lock; the size itself is the
 lock-duration / round-trip trade-off.
 """
 
+DEFAULT_EVENT_WRITER_BATCH_SIZE: Final[int] = 100
+"""Default rows per committed batch for every writer of ``job_events`` rows.
+
+Why a bound at all: :data:`RECLAIM_EVENT_VISIBILITY_DELAY` (2 s) conditions
+``poll_reclaim_events``' trailing-watermark guarantee on no ``job_events``
+writer holding its transaction open longer than the margin between INSERT
+and COMMIT, and explicitly names "an abnormally large batch inserted in one
+transaction" as a violation. A batch cap plus a server-side
+``statement_timeout`` (:data:`DEFAULT_EVENT_WRITER_STATEMENT_TIMEOUT_MS`)
+turn that invariant from a hope into an enforced property: the timeout is
+the enforcement, the batch size merely keeps a healthy database off it.
+
+Why 100: the measured cost of a two-statement reclaim batch is ~0.85 ms per
+row, so 100 rows is ~85 ms on loopback and ~300 ms at a 3 ms managed-Postgres
+round trip — a 6x margin under the 2 s watermark at the RTT the derivation
+targets. Loopback extrapolation, not a managed-instance measurement; the
+effective value is operator-tunable via ``WorkerSettings.event_writer_batch_size``
+and the ``statement_timeout`` remains the guard if the constant is wrong for
+a given deployment.
+
+Deliberately NOT :data:`DEFAULT_PRUNE_BATCH_SIZE` (10,000): prune writes no
+``job_events`` rows and iterates aggregate rows, so it is a different risk
+class. Anything that writes one ``job_events`` row per input row — the
+expired-lock, deadline and scheduled-to-pending sweeps, bulk cancel, actor
+deregistration — uses this constant (or the setting that defaults to it).
+
+The reduced degradation tier is a quarter of the effective size
+(``max(1, size // 4)``), computed where the tier is selected: it exists so a
+database that keeps cancelling sweep batches gets smaller bites, not so it
+gets another operator knob.
+"""
+
+DEFAULT_EVENT_WRITER_STATEMENT_TIMEOUT_MS: Final[int] = 1750
+"""Server-side ``statement_timeout`` for one event-writer batch transaction.
+
+7/8 of the 2 s :data:`RECLAIM_EVENT_VISIBILITY_DELAY` default: the batch must
+fit inside the visibility margin, and the server aborts it if it does not —
+arriving as ``QueryCanceledError`` (SQLSTATE 57014), which the sweep loops
+treat as transient. Applied with ``SET LOCAL`` inside the batch transaction
+only: a session-level ``SET`` would outlive the pooled connection's checkout
+and silently cap unrelated borrowers (dispatch, archive) at a timeout they
+never asked for.
+"""
+
 DEFAULT_PRUNE_RETENTION: Final[timedelta] = timedelta(days=30)
 """Fallback retention for a terminal status with no configured period.
 
@@ -223,8 +269,30 @@ can turn a valid enqueue into a raw ``index row size ... exceeds btree
 version 4 maximum`` error from Postgres.
 """
 
-CRON_LOCK_NAME: Final[str] = "taskq:cron"
-"""Advisory lock name for the cron scheduler leader."""
+
+def schema_lock_name(purpose: str, schema: str) -> str:
+    """Schema-qualified advisory-lock name: ``taskq:{purpose}:{schema}``.
+
+    Advisory locks live in a per-database namespace, so a bare
+    ``taskq:{purpose}`` is shared by every schema in the database — two
+    schemas in one database then serialize, or worse: the loser of a
+    leader election never runs its sweeps while dispatch (not leader-gated)
+    keeps flowing, so the fleet reports healthy while scheduled work stops
+    moving. Qualifying with the schema gives each schema its own lock. This
+    is the lock-side twin of the ``taskq_wake_{schema}`` channel naming and
+    follows the same purpose-then-schema ordering as the unique-for lock
+    keys built in the enqueue path.
+
+    Upgrade discipline: the qualified names replace the unqualified ones
+    outright — a mixed old/new fleet holds different names and can both act
+    as leader of the same schema (sweeps stay row-safe under
+    ``FOR UPDATE SKIP LOCKED``; cron gains a double-fire window because its
+    lock is what serialises ticks). Adopt by restarting the fleet onto the
+    new release rather than rolling it; the window is the deploy, not the
+    steady state.
+    """
+    return f"taskq:{purpose}:{schema}"
+
 
 WAKE_CHANNEL_FMT: Final[str] = "taskq_wake_{schema}"
 """Format template for the wake-channel name."""

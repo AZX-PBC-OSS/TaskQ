@@ -96,7 +96,7 @@ async def test_unique_for_window_expiration(
             payload={"value": payload},
             max_attempts=1,
             retry_kind="transient",
-            scheduled_at=datetime.now(UTC),
+            scheduled_at=None,
             identity_key=identity,
             unique_for=unique_for,
             unique_states=("pending", "scheduled", "running"),
@@ -398,7 +398,7 @@ async def test_connection_loss_during_preflight(
                     payload={"value": 1},
                     max_attempts=3,
                     retry_kind="transient",
-                    scheduled_at=datetime.now(UTC),
+                    scheduled_at=None,
                     identity_key=IdentityKey(identity),
                     unique_for=timedelta(minutes=15),
                     unique_states=("pending", "scheduled", "running"),
@@ -453,7 +453,7 @@ async def test_constraint_name_disambiguation(
                     payload={},
                     max_attempts=3,
                     retry_kind="transient",
-                    scheduled_at=datetime.now(UTC),
+                    scheduled_at=None,
                     metadata={"singleton": True},
                 )
             )

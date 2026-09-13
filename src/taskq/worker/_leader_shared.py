@@ -22,6 +22,7 @@ from taskq.backend.clock import Clock
 from taskq.backend.statemachine import TERMINAL_STATUSES
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
+    DEFAULT_EVENT_WRITER_BATCH_SIZE,
     DEFAULT_PRUNE_BATCH_SIZE,
     DEFAULT_PRUNE_RETENTION,
 )
@@ -37,8 +38,6 @@ from taskq.settings import WorkerSettings
 from taskq.worker.deps import WorkerDeps
 
 __all__ = [
-    "ARCHIVE_EXPIRY_LOCK_NAME",
-    "PRUNE_LOCK_NAME",
     "ArchiveExpiryResult",
     "PruneResult",
     "SweepContext",
@@ -50,9 +49,6 @@ __all__ = [
 
 log: structlog.stdlib.BoundLogger = get_logger(__name__)
 _meter = get_meter()
-
-PRUNE_LOCK_NAME: str = "taskq:prune"
-ARCHIVE_EXPIRY_LOCK_NAME: str = "taskq:archive_expiry"
 
 _TERMINAL_NOT_IN = "NOT IN (" + ",".join(f"'{s}'" for s in TERMINAL_STATUSES) + ")"
 
@@ -71,10 +67,17 @@ _sweep_rows_counter = _meter.create_counter(
 )
 
 
-def _metric(name: str, count: int, start: float) -> None:  # pyright: ignore[reportUnusedFunction]  # Why: imported by leader.py and _leader_sweeps.py
-    elapsed = (time.monotonic() - start) * 1000.0
+# Split so a timed-out sweep call can record its duration WITHOUT a row
+# sample: the row count is bound by the awaited call the deadline aborted,
+# and a 0-row sample would be indistinguishable from a healthy empty sweep.
+
+
+def _metric_duration(name: str, start: float) -> None:  # pyright: ignore[reportUnusedFunction]  # Why: imported by leader.py and _leader_sweeps.py
+    _sweep_duration_hist.record((time.monotonic() - start) * 1000.0, {"sweep_name": name})
+
+
+def _metric_rows(name: str, count: int) -> None:  # pyright: ignore[reportUnusedFunction]  # Why: imported by leader.py and _leader_sweeps.py
     _sweep_rows_counter.add(count, {"sweep_name": name})
-    _sweep_duration_hist.record(elapsed, {"sweep_name": name})
 
 
 def _dbg(ev: str, ki: str, co: int, st: float) -> None:  # pyright: ignore[reportUnusedFunction]  # Why: imported by leader.py and _leader_sweeps.py
@@ -154,7 +157,34 @@ async def _load_actor_retention_overrides(  # pyright: ignore[reportUnusedFuncti
     return result
 
 
-_CLEANUP_STALE_WORKERS_SQL = 'DELETE FROM "{schema}".workers WHERE last_seen_at < clock_timestamp() - $1::interval AND id != $2'
+_CLEANUP_STALE_WORKERS_SQL = """\
+-- Bounded batch + MATERIALIZED, same rationale as the bounded sweeps in
+-- taskq.backend._sweeps: LIMIT $3 caps how many workers one call may
+-- delete, and because the DDL ON DELETE clauses fan out per deleted
+-- worker (maintenance_leader cascade, job_attempts SET NULL rewrites),
+-- the window is what bounds the referential rewrite set per
+-- transaction; MATERIALIZED stops the planner from inlining the
+-- LIMIT-ed CTE into the DELETE in a way that could delete more rows
+-- than the LIMIT. No ORDER BY: the workers table is a small membership
+-- table (one row per live worker), so the snap's scan is cheap however
+-- it plans, and every windowed row is deleted by this same statement,
+-- so the stale set shrinks monotonically per committed batch.
+-- statement_timestamp() (STABLE) rather than clock_timestamp() (VOLATILE)
+-- lets workers_last_seen_idx serve the staleness bound as an Index Cond
+-- instead of a post-scan filter — same derivation as the sweep snaps in
+-- taskq.backend._sweeps (see that module's docstring for the measured
+-- plans); harmless here at membership-table scale, uniform with the
+-- sweeps, and it keeps this snap correct-by-shape if workers ever grows.
+WITH stale AS MATERIALIZED (
+    SELECT id
+    FROM "{schema}".workers
+    WHERE last_seen_at < statement_timestamp() - $1::interval
+      AND id != $2
+    LIMIT $3
+)
+DELETE FROM "{schema}".workers w
+USING stale
+WHERE w.id = stale.id"""
 
 
 async def cleanup_stale_workers(
@@ -163,17 +193,25 @@ async def cleanup_stale_workers(
     worker_id: UUID,
     staleness: timedelta,
     schema: str = "taskq",
+    batch_size: int = DEFAULT_EVENT_WRITER_BATCH_SIZE,
 ) -> int:
-    """Delete worker rows whose ``last_seen_at`` exceeds *staleness*.
+    """Delete worker rows whose ``last_seen_at`` exceeds *staleness*, one
+    bounded batch per call.
 
-    The caller's *worker_id* is never deleted. Returns the number of rows
-    removed. Worker-level cascade (``maintenance_leader``, ``job_attempts``)
-    is handled by the DDL ``ON DELETE`` clauses — no extra sweeping needed.
+    One call deletes at most ``batch_size`` workers in one short
+    transaction; repeated calls drain the stale set a batch at a time.
+    The caller's *worker_id* is never deleted. Returns the number of
+    worker rows removed by this call. Worker-level cascade
+    (``maintenance_leader``, ``job_attempts``) is handled by the DDL
+    ``ON DELETE`` clauses — no extra sweeping needed — and the window
+    bounds workers per call, which bounds that per-worker fan-out per
+    transaction: a whole-fleet crash drains in committed batches instead
+    of one transaction rewriting every stale worker's attempt history.
     """
     if not _IDENT_RE.match(schema):
         raise ValueError(f"invalid schema identifier: {schema!r}")
     sql = _CLEANUP_STALE_WORKERS_SQL.format(schema=schema)
-    tag = await conn.execute(sql, staleness, worker_id)
+    tag = await conn.execute(sql, staleness, worker_id, batch_size)
     return int(tag.rsplit(" ", 1)[-1]) if tag else 0
 
 
@@ -234,17 +272,28 @@ _JOB_ATTEMPTS_COLUMNS: tuple[str, ...] = (
 _JOB_ATTEMPTS_COLUMNS_CSV = ", ".join(_JOB_ATTEMPTS_COLUMNS)
 _JOB_ATTEMPTS_COLUMNS_QUALIFIED_CSV = ", ".join(f"ja.{c}" for c in _JOB_ATTEMPTS_COLUMNS)
 
-# The finished_at cutoff is computed by the SERVER clock
-# (clock_timestamp() - $2::interval) — the same clock that wrote
-# finished_at, and the same clock the archived_at/expire_at stamps below
-# use within this same statement — so a skewed worker host cannot silently
-# extend or shorten retention, and the cutoff cannot drift from the stamps
-# it gates within one CTE.
+# Two clocks, one statement. The SELECTION bound is statement_timestamp()
+# (STABLE — the database's wall clock at this statement's start): a
+# VOLATILE clock_timestamp() comparison cannot be a btree index
+# condition, so the candidate scan degrades to a post-scan Filter that
+# walks jobs_finished_at_idx's whole terminal population per batch —
+# measured on a 70k-terminal-row corpus (PG 18, EXPLAIN ANALYZE,
+# BUFFERS): 1,757 buffers / ~11 ms per drained-state call vs 2 buffers /
+# ~0.05 ms when the stable bound is an Index Cond that terminates at the
+# range boundary (pinned, including the server-prepared form a
+# long-lived connection runs past five same-statement executions, by
+# tests/test_index_audit.py). The WRITE side — the archived_at/expire_at
+# stamps below — stays clock_timestamp(): the same clock that wrote
+# finished_at, so a skewed worker host cannot silently extend or shorten
+# retention, and the stamps cannot disagree with the clock domain of the
+# rows they annotate; statement_timestamp() differs from those stamps
+# only by this statement's own execution time (microseconds against a
+# days-scale retention cutoff).
 _ARCHIVE_CTE_SQL = (
     "WITH candidate_ids AS ("
     '  SELECT id FROM "{schema}".jobs'
     '  WHERE status = $1::"{schema}".job_status'
-    "    AND finished_at < clock_timestamp() - $2::interval"
+    "    AND finished_at < statement_timestamp() - $2::interval"
     "  ORDER BY finished_at"
     "  LIMIT $3"
     "), moved AS ("
@@ -270,7 +319,7 @@ _ARCHIVE_CTE_ACTOR_SQL = (
     "WITH candidate_ids AS ("
     '  SELECT id FROM "{schema}".jobs'
     '  WHERE status = $1::"{schema}".job_status'
-    "    AND finished_at < clock_timestamp() - $2::interval"
+    "    AND finished_at < statement_timestamp() - $2::interval"
     "    AND actor = $5"
     "  ORDER BY finished_at"
     "  LIMIT $3"
@@ -296,10 +345,20 @@ _ARCHIVE_CTE_ACTOR_SQL = (
 _DB_NOW_SQL = "SELECT clock_timestamp()"
 
 
+# The expire_at bound is statement_timestamp() (STABLE) for the same
+# index-cond reason as the archive CTEs above: jobs_archive_expire_at_idx
+# serves the bound as an Index Cond instead of a post-scan Filter over
+# the whole archive population (measured on a 30k-row jobs_archive:
+# 2,039 buffers / ~6.7 ms vs 2 buffers / ~0.03 ms in the drained steady
+# state; the server-prepared form a long-lived connection runs past five
+# same-statement executions degrades worst, flipping to a generic plan
+# that walks the entire population under a Filter — pinned, with the
+# eligible-backlog state, by tests/test_index_audit.py). No write side
+# here: the CTE only selects and deletes.
 _EXPIRY_CTE_SQL = (
     "WITH expired AS ("
     '  SELECT id FROM "{schema}".jobs_archive'
-    "  WHERE expire_at < clock_timestamp()"
+    "  WHERE expire_at < statement_timestamp()"
     "  ORDER BY expire_at"
     "  LIMIT $1"
     "), deleted AS ("
@@ -330,11 +389,12 @@ async def prune_terminal_jobs(
     archive_interval = archive_retention
 
     # Anchored to the database clock, not this process's: the archive
-    # predicate is server-side (clock_timestamp() - $2::interval), and the
-    # caller derives `prune_old_batches`' DELETE cutoff from
-    # `max(cutoffs.values())` — so these are NOT display-only, and a Python
-    # `now` here would compare an app-clock instant against DB-written
-    # `completed_at` values, pruning batches early or late by the skew.
+    # predicate is server-side (statement_timestamp() - $2::interval in
+    # _ARCHIVE_CTE_SQL), and the caller derives `prune_old_batches`'
+    # DELETE cutoff from `max(cutoffs.values())` — so these are NOT
+    # display-only, and a Python `now` here would compare an app-clock
+    # instant against DB-written `completed_at` values, pruning batches
+    # early or late by the skew.
     db_now: datetime = await conn.fetchval(_DB_NOW_SQL)
 
     for status in TERMINAL_STATUSES:
@@ -416,9 +476,9 @@ async def archive_expiry_sweep(
     total_deleted = 0
     by_status: dict[str, int] = {}
     # Reported on the result for observability; the DELETE predicate itself
-    # is server-side (`expire_at < clock_timestamp()` in _EXPIRY_CTE_SQL).
-    # Read from the database anyway so the reported instant cannot disagree
-    # with the predicate that actually ran — the sibling cutoffs above were
+    # is server-side (`expire_at < statement_timestamp()` in _EXPIRY_CTE_SQL).
+    # Read from the database anyway so the reported instant stays in the
+    # predicate's own clock domain — the sibling cutoffs above were
     # documented as display-only and then quietly grew a second consumer.
     expire_before: datetime = await conn.fetchval(_DB_NOW_SQL)
     sql = _EXPIRY_CTE_SQL.format(schema=schema)
@@ -448,31 +508,46 @@ async def archive_expiry_sweep(
 
 
 _COMPLETE_STALE_BATCHES_SQL = """\
-UPDATE "{schema}".batches
-SET status = 'complete', completed_at = clock_timestamp()
-WHERE status = 'active'
-  AND NOT EXISTS (
-    SELECT 1 FROM "{schema}".jobs j
-    WHERE j.metadata @> jsonb_build_object('batch_id', batches.id::text)
-      AND j.status {terminal_not_in}
-  )
-RETURNING id"""
+-- MATERIALIZED is load-bearing: without it the planner may inline the
+-- LIMIT-ed CTE into the UPDATE and run it as a nested loop, completing
+-- more batches than the LIMIT; the window-then-update-by-id shape bounds
+-- one call to batch_size rows.
+WITH candidate AS MATERIALIZED (
+    SELECT b.id
+    FROM "{schema}".batches b
+    WHERE b.status = 'active'
+      AND NOT EXISTS (
+        SELECT 1 FROM "{schema}".jobs j
+        WHERE j.metadata @> jsonb_build_object('batch_id', b.id::text)
+          AND j.status {terminal_not_in}
+      )
+    LIMIT $1
+),
+completed AS (
+    UPDATE "{schema}".batches b
+    SET status = 'complete', completed_at = clock_timestamp()
+    FROM candidate c
+    WHERE b.id = c.id AND b.status = 'active'
+    RETURNING b.id
+)
+SELECT count(*)::int FROM completed"""
 
 
 async def complete_stale_batches(
     conn: ConnLike,
     *,
     schema: str = "taskq",
+    batch_size: int = DEFAULT_EVENT_WRITER_BATCH_SIZE,
 ) -> int:
     """Safety net: mark active batches with zero non-terminal jobs as complete.
 
     Covers batches whose completion hook was lost (consumer crash) and
-    intentionally-empty batches (expected_size=0, no jobs at all).
-    Returns the number of batches completed.
+    intentionally-empty batches (expected_size=0, no jobs at all). One call
+    is one bounded batch: at most *batch_size* completions, committed, so
+    the sweep loop drains the remainder one call per tick.
     """
     if not _IDENT_RE.match(schema):
         raise ValueError(f"invalid schema identifier: {schema!r}")
-    rows = await conn.fetch(
-        _COMPLETE_STALE_BATCHES_SQL.format(schema=schema, terminal_not_in=_TERMINAL_NOT_IN)
-    )
-    return len(rows)
+    sql = _COMPLETE_STALE_BATCHES_SQL.format(schema=schema, terminal_not_in=_TERMINAL_NOT_IN)
+    completed: int = await conn.fetchval(sql, batch_size)
+    return completed

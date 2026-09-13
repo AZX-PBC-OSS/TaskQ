@@ -38,8 +38,8 @@ __all__ = [
 # taskq.worker._transient), so an unmitigated FK hit would tear down the
 # writing loop; every job_attempts INSERT that can carry a worker id uses
 # this idiom (_sql_templates.insert_attempt_explicit, _sweeps.py's
-# _SWEEP_1_ATTEMPT_SQL). _SWEEP_2_ATTEMPT_SQL stays plain: its worker_id is
-# NULL by construction (never dispatched).
+# _SWEEP_1_ATTEMPTS_BATCH_SQL). _SWEEP_2_ATTEMPTS_BATCH_SQL stays plain:
+# its worker_id is NULL by construction (never dispatched).
 INSERT_ATTEMPT_SQL = """\
 WITH holder AS (
     SELECT id FROM "{schema}".workers WHERE id = $9 FOR KEY SHARE
@@ -49,14 +49,18 @@ INSERT INTO "{schema}".job_attempts
  error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
 VALUES ($1, $2, $3, clock_timestamp(), $4, $5, $6, $7, $8,
         (SELECT id FROM holder), $10::jsonb)"""
-# Note: finished_at uses server-side clock_timestamp() — this template (the
-# sql.insert_attempt field) is consumed only by _terminal.py's _insert_attempt,
-# where the write runs inside the caller's existing transaction on the same
-# connection as the status UPDATE, so clock_timestamp() is the actual
-# wall-clock time of execution (not transaction start time like now()).
+# Note: finished_at uses server-side clock_timestamp() — this template
+# (INSERT_ATTEMPT_SQL, formatted by worker/heartbeat.py for its
+# isolate-self attempt write) runs on a caller's existing transaction or
+# dedicated connection, where clock_timestamp() is the actual wall-clock
+# time of execution (not transaction start time like now()).
 # The explicit-finished_at variant is _sql_templates.insert_attempt_explicit,
 # bound by _terminal.py's _write_attempt (the write_attempt path): it takes
 # $4 for finished_at from the caller instead of stamping clock_timestamp().
+# The mark_* terminal writes no longer consume this template: they fuse the
+# jobs UPDATE with their attempt/event INSERTs into one statement (see
+# _terminal.py's module docstring), carrying the same holder-CTE idiom
+# inline.
 
 INSERT_EVENT_SQL = """\
 INSERT INTO "{schema}".job_events
@@ -80,6 +84,36 @@ INSERT INTO "{schema}".job_events
 (job_id, occurred_at, kind, detail)
 SELECT t.id, clock_timestamp(), $2, $3::jsonb
 FROM unnest($1::uuid[]) AS t(id)"""
+
+# Batched event INSERT for writers whose rows carry DISTINCT per-row detail.
+#
+# One statement per batch, not one per row: each round trip here is time the
+# batch transaction stays open against RECLAIM_EVENT_VISIBILITY_DELAY (see
+# taskq.constants), and only the (job_id, detail) pairs vary — kind is shared
+# by every row a sweep or bulk write produces.
+#
+# occurred_at carries a microsecond ladder on the row ordinal rather than a
+# bare clock_timestamp(). The watermark contract needs occurred_at
+# non-decreasing in job_events.id order, and the audit contract pins it
+# DISTINCT per row. A bare volatile clock_timestamp() is evaluated per row but
+# cannot deliver the second property inside one statement: the OS clock that
+# backs it resolves to microseconds while per-row evaluation is far cheaper —
+# measured on Postgres 18, ~26 rows evaluate within the same microsecond — so
+# tens of rows collapse onto one stamp and the ordering information the
+# watermark reads is destroyed. The ladder restores it by construction: each
+# row's stamp is its own evaluation instant plus (ordinal - 1) microseconds,
+# strictly increasing, at most (batch_size - 1) microseconds ahead of real
+# time — four-plus orders of magnitude inside the 2 s visibility margin, far
+# below the commit-order skew the margin already absorbs, so it cannot mask a
+# real inversion. Statements remain separated by whole round trips, so
+# different statements' stamps stay disjoint.
+INSERT_EVENTS_DETAIL_BATCH_SQL = """\
+INSERT INTO "{schema}".job_events
+(job_id, occurred_at, kind, detail)
+SELECT e.job_id,
+       clock_timestamp() + (e.ord - 1) * interval '1 microsecond',
+       $3, e.detail
+FROM unnest($1::uuid[], $2::jsonb[]) WITH ORDINALITY AS e(job_id, detail, ord)"""
 
 POLL_CANCEL_FLAGS_SQL = """\
 SELECT id, cancel_phase

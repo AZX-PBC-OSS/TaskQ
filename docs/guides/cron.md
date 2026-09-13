@@ -47,7 +47,7 @@ cron("* * * * * */30", "ticker")
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
-| `expression` | `str` | required | Standard 5-field cron expression (`minute hour day month day_of_week`), validated via `croniter.is_valid()`. An optional 6th field is also supported, appended **after** the standard 5 as a seconds field (e.g. `"* * * * * */30"` fires every 30 seconds) — this is `croniter`'s non-standard extension, not a leading seconds field. For sub-minute intervals, place the step in the 6th field; `*/30` in the first (minute) field fires every second during minutes 0 and 30, not every 30 seconds. |
+| `expression` | `str` | required | Standard 5-field cron expression (`minute hour day month day_of_week`), validated via `croniter.is_valid()`. An optional 6th field is also supported, appended **after** the standard 5 as a seconds field (e.g. `"* * * * * */30"` fires every 30 seconds) — this is `croniter`'s non-standard extension, not a leading seconds field. For sub-minute intervals, place the step in the 6th field; `*/30` in the first (minute) field fires every second during minutes 0 and 30, not every 30 seconds. Calendar rules are croniter's: day-of-month and day-of-week combine with OR (a `0 0 1 * 1` schedule fires on the 1st of the month *and* on Mondays); `L` in the day-of-month field means the last day of the month; a day-of-month with no such day in a month (e.g. the 31st in April, the 29th of February in a non-leap year) is skipped, never clamped. |
 | `actor` | `str` | required | Name of the actor to enqueue. Must match a registered `ActorRef.name`. |
 | `payload_factory` | `str \| None` | `None` | Dotted path to a callable that returns the payload `dict` or `BaseModel`. Async factories are awaited with a 5s timeout. |
 | `static_payload` | `dict[str, object] \| None` | `None` | Fixed payload dict included with every fire. Mutually exclusive with `payload_factory`. |
@@ -120,6 +120,31 @@ When a cron expression fires at a time that falls in a DST gap (spring-forward) 
 | `"allof"` | Same as `skip` | Fire at **both** occurrences (enqueue two jobs) |
 
 For UTC schedules, DST handling is irrelevant and `"skip"` is always used.
+
+### When a fire lands inside a repeated hour
+
+A schedule's `next_fire_at` can end up ON an occurrence of a repeated hour — most commonly
+after a leader outage spanning the fall-back, or a manual edit. The strategies answer this
+consistently with their meaning above:
+
+- `"skip"` and `"firstof"` treat the repeated hour as **one slot at the earlier occurrence**.
+  Firing that occurrence consumes the slot, so the next fire is the following match — nothing
+  is owed.
+- `"allof"` still owes the **later pass**. The tick that fires the last earlier-pass match
+  advances `next_fire_at` to the next occurrence the schedule still owes — for a range with
+  one match that is the fired slot's own later occurrence; for a range with several it is
+  the later pass's first match. Any occurrence that already has a queued job (a tick firing
+  an earlier-pass match pre-schedules the next match's later occurrence) is skipped past,
+  however many are queued in a row, so every occurrence of the repeated range is delivered
+  exactly once — by its pre-scheduled job or by the schedule's own later tick, never both.
+
+Singleton-flagged actors are the sequential case: nothing is ever pre-scheduled for them, so
+the schedule's own ticks deliver the later pass one occurrence at a time, each exactly once.
+
+Before this behaviour was fixed, an `"allof"` schedule whose `next_fire_at` landed on the
+earlier occurrence jumped straight to the following year: the naive wall-clock walk cannot
+distinguish the two occurrences, so the later one was silently lost — reachable after any
+leader outage spanning a fall-back.
 
 ```python
 # Fire at 02:30 every day in a timezone with DST transitions.
@@ -312,6 +337,40 @@ After a configurable number of consecutive failures, the schedule is auto-disabl
 `taskq.cron.disabled_schedules` observable gauge tracks the count of disabled schedules.
 
 Calling `handle.enable()` resets `consecutive_failures` to 0 and clears `last_fire_error`.
+
+---
+
+## Singleton and `max_pending` interaction
+
+Cron fires honor the actor's `singleton` and `max_pending` flags exactly like client
+enqueues: every fire carries the same `metadata["singleton"]` stamp (the partial
+unique index that enforces one active singleton job per actor keys on exactly that
+flag) and the same `max_pending` cap. A schedule whose actor is blocked is
+**suppressed**, not failed:
+
+- A singleton actor with an active job suppresses the slot. Watch for the
+  `singleton-collision` log event with `detection_path="cron_tick_preflight"` — the
+  same event shape the enqueue path emits, with `schedule_id` and `worker_id` added
+  for cron attribution.
+- An actor whose `pending + scheduled` count is at its `max_pending` cap suppresses
+  the slot. Watch for the `max-pending-exceeded` log event and the
+  `taskq.backpressure.errors` counter with `kind="max_pending"` — the same counter
+  the enqueue path records.
+
+A suppressed slot advances `next_fire_at` and nothing else: no `last_fired_at` stamp
+(nothing fired), no `last_fire_error` write, and no `consecutive_failures` change in
+either direction. Suppression says nothing about the schedule's health — the actor is
+merely busy — so it must neither punish nor amnesty. The classification is
+load-bearing: a collision routed into the failure path instead would strike the
+schedule, and three consecutive collisions (the default
+`TASKQ_CRON_AUTO_DISABLE_THRESHOLD`) would permanently auto-disable a healthy, busy
+actor's own schedule. The failure path stays reserved for genuine defects — payload
+factory errors, missing `actor_config` rows, and the like.
+
+Suppression is re-evaluated on every tick and is never sticky: once the blocker goes
+terminal or pending capacity frees up, the next due tick fires normally, and the fire
+itself carries the singleton flag (so it becomes the next blocker — the guarantee is
+held by the schedule's own fires, not by the client alone).
 
 ---
 

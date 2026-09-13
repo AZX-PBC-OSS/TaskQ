@@ -1066,10 +1066,16 @@ class TestTN3EmptyBatchRaisesValueErrorBeforeDB:
             args_list: list[object],
             *,
             connection: object | None = None,
+            enforce_max_pending: bool = True,
         ) -> list[object]:
             nonlocal enqueue_batch_calls
             enqueue_batch_calls += 1
-            return await original_enqueue_batch(backend_self, args_list, connection=connection)  # type: ignore[arg-type]  # Why: wrapper delegates with same args
+            return await original_enqueue_batch(
+                backend_self,
+                args_list,
+                connection=connection,
+                enforce_max_pending=enforce_max_pending,
+            )  # type: ignore[arg-type]  # Why: wrapper delegates with same args
 
         async with TaskQ(dsn=pg_dsn, schema=schema) as tq:
             with patch.object(PostgresBackend, "enqueue_batch", _counting_enqueue_batch):
@@ -1109,10 +1115,16 @@ class TestTN4OversizedBatchRaisesValueErrorBeforeDB:
             args_list: list[object],
             *,
             connection: object | None = None,
+            enforce_max_pending: bool = True,
         ) -> list[object]:
             nonlocal enqueue_batch_calls
             enqueue_batch_calls += 1
-            return await original_enqueue_batch(backend_self, args_list, connection=connection)  # type: ignore[arg-type]  # Why: wrapper delegates with same args
+            return await original_enqueue_batch(
+                backend_self,
+                args_list,
+                connection=connection,
+                enforce_max_pending=enforce_max_pending,
+            )  # type: ignore[arg-type]  # Why: wrapper delegates with same args
 
         items = [_make_item(i) for i in range(1001)]
         async with TaskQ(dsn=pg_dsn, schema=schema) as tq:

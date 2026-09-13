@@ -63,75 +63,99 @@ Jobs remain `scheduled` even though their `scheduled_at` has passed.
 
 ### Cause
 
-The `scheduled_to_pending` sweep (Sweep 3) runs every 1 second **on the leader only**, promoting `scheduled` jobs to `pending` when `scheduled_at <= clock_timestamp()`. If no leader is elected, jobs are never promoted. (`scheduled_at` still in the future is expected, not a bug.)
+The `scheduled_to_pending` sweep (Sweep 3) runs every 1 second **on the leader only**, promoting due `scheduled` jobs to `pending` (`scheduled_at <= statement_timestamp()`). One tick promotes at most one bounded batch (`TASKQ_EVENT_WRITER_BATCH_SIZE` rows, default 100); a larger due backlog drains across the one-second ticks. If no leader is elected, jobs are never promoted. (`scheduled_at` still in the future is expected, not a bug.)
 
 | Cause | Detail |
 |---|---|
-| No leader elected | No worker holds the `taskq:maintenance_leader` advisory lock. |
+| No leader elected | No worker holds the `taskq:maintenance_leader:<schema>` advisory lock. |
 | Leader process died | Watchdog released the lock but no other worker has won election. |
 | PgBouncer in transaction mode | `leader_conn` drops the session-scoped advisory lock between transactions. |
-| Sweep times out under a large backlog | A leader **is** healthy, but the sweep cannot finish inside `dispatcher_command_timeout` and retries forever. See the warning below. |
+| Sweep batches keep timing out | A leader **is** healthy, but the database cannot finish bounded batches inside the batch `statement_timeout` — promotion still progresses batch by batch, but slower than jobs arrive. See the warning below and [TaskQSweepTimeouts](runbooks.md#taskqsweeptimeouts). |
 
-!!! danger "Large `scheduled` backlog + healthy leader = sweep livelock ([#102](https://github.com/AZX-PBC-OSS/TaskQ/issues/102))"
-    The sweep writes one `job_events` row per promoted job in a sequential loop
-    inside a single transaction, bounded by one `dispatcher_command_timeout`
-    deadline (default `5.0s`). Once the due-row count exceeds what that many
-    sequential round-trips fit in the deadline, the sweep **can never commit**:
-    it times out, rolls back, retries, and times out again. Nothing is promoted,
-    and because nothing drains, the backlog grows — the failure is
-    self-reinforcing rather than self-correcting.
+!!! danger "A growing `scheduled` backlog with a healthy leader means promotion is not keeping up"
+    Each one-second tick promotes at most one bounded batch of due jobs
+    (default 100 rows) in its own committed transaction, with a server-side
+    `statement_timeout` (default 1750 ms) as the enforcement — a batch that
+    cannot finish is aborted by the server and retried on the next tick, and a
+    larger backlog drains across ticks. The unbounded-livelock failure this
+    section used to document — one transaction doing one `job_events` round
+    trip per promoted row, rolling back entirely past
+    `dispatcher_command_timeout` and retrying forever while the backlog grew —
+    is gone; see [maintenance-sweeps.md](maintenance-sweeps.md) for the design.
 
-    Order-of-magnitude: at ~0.5 ms RTT roughly 10k rows already exceeds a 5s
-    deadline; on managed Postgres at 1–3 ms RTT the cliff arrives several times
-    sooner.
+    What can still stall promotion, in order of likelihood:
 
-    **Recognising it** — this is the dangerous part, because the fleet looks
-    healthy from the outside. Workers heartbeat normally, dispatch runs cleanly
-    reporting `count: 0`, and no job is in a failed state. The signature is all
-    four of:
+    - **Sustained batch timeouts** — the database cannot finish even bounded
+      batches inside the per-batch `statement_timeout` (a lock pile-up, or
+      plain slowness: I/O, bloat, plan regression). Aborted batches make no
+      progress; if aborts outpace the one-batch-per-second drain, the overdue
+      count grows.
+    - **The reduced tier** — after repeated batch cancellations the
+      batch-size breaker latches to quarter-size batches (25 rows at
+      defaults). Promotion still progresses, just slower; the latch does not
+      clear until the worker restarts.
+    - **No leader / stale leader** — the cause table above.
 
-    - `scheduled-wake-failed` with `"error":"TimeoutError()"` repeating on the
-      leader about **once a second** — `_scheduled_wake_loop` sleeps `1.0s`
-      between ticks, so a doomed transaction is opened, times out, rolls back
-      and is retried at that cadence
+    **Recognising it** — this remains the dangerous part, because the fleet
+    looks healthy from the outside. Workers heartbeat normally, dispatch runs
+    cleanly reporting `count: 0`, and no job is in a failed state. The
+    signature is all four of:
+
+    - `scheduled-wake-failed` repeating on the leader about **once a second**
+      — `_scheduled_wake_loop` sleeps `1.0s` between ticks, so an aborted
+      batch is retried at that cadence. The error is `"TimeoutError()"`
+      (client deadline) or a `QueryCanceledError` (the server-side batch
+      timeout).
+    - `taskq_maintenance_leader_sweep_timeouts_total{sweep_name="scheduled_to_pending"}`
+      rising — the metric counterpart of the log line, and the one the
+      `TaskQSweepTimeouts` alert fires on.
     - workers heartbeating normally (`last_seen_at` fresh)
-    - dispatch logging `count: 0` — there is genuinely nothing `pending`
     - the `scheduled` overdue count **flat or growing**, never falling
+      (`taskq_jobs_by_status{status="scheduled"}` climbing while
+      `{status="pending"}` is flat, `taskq_jobs_oldest_due_age_seconds`
+      climbing — the `TaskQPromotionStalled` and
+      `TaskQScheduledBacklogGrowing` alerts)
 
-    The metrics surface will not tell you either: `taskq_active_jobs 0` with
-    `taskq_is_leader 1` is exactly what a healthy idle fleet reads. The overdue
-    `scheduled` count is the only signal that distinguishes the two, so it is
-    the thing worth alerting on.
-
-    ```
-    {"kind":"scheduled_wake_failed","error":"TimeoutError()","logger":"taskq.worker.leader","event":"scheduled-wake-failed"}
-    ```
+    All four shipped alerts — `TaskQSweepTimeouts`, `TaskQSweepDegraded`,
+    `TaskQPromotionStalled`, `TaskQScheduledBacklogGrowing` — are documented
+    with confirm/remediate steps in [runbooks.md](runbooks.md).
 
     Do not look for a `leader-retry` line alongside it: that event belongs to
     the *election* loop and is logged by a worker that did **not** win the
     lock, with `next_retry_secs` = `heartbeat_interval`. It is unrelated to
     sweep failure, and its presence in a fleet with a healthy leader is normal.
 
-    Sweep 2 (`sweep_deadline_exceeded`) fails differently and needs its own
-    alert: it runs in a different loop with no `asyncio.timeout` wrapper — its
-    bound comes from the pool's `command_timeout` — and it logs
-    `sweep_deadline_exceeded_failed`, not `scheduled_wake_failed`. Alerting on
-    only the event in this section's title would miss a mass-expiry cohort
-    hitting the same underlying shape.
+    Sweep 2 (`sweep_deadline_exceeded`) fails with the same shape and has its
+    own signal: it runs in the 30-second sweep loop (no `asyncio.timeout`
+    wrapper — each batch is bounded by the server-side `statement_timeout`
+    and the pool's `command_timeout` instead) and logs
+    `sweep-deadline-exceeded-failed` with the `sweep_name="deadline_exceeded"`
+    timeout metric. A mass-expiry cohort (many jobs sharing a
+    `schedule_to_close`) hits it the same way a promotion backlog hits sweep
+    3.
 
     Any workload that accumulates a five-figure `scheduled` cohort can reach
     this: deferred jobs, retry-heavy actors, a paused-then-resumed fleet, or a
     concurrency increase that reschedules a large backlog at once.
 
-    **Mitigation** (until #102 lands): drain the cohort in bounded batches so
-    each promotion commits well inside the deadline, rather than raising
-    `dispatcher_command_timeout` — which
+    **Mitigation:** fix the database, not the knobs' direction — identify the
+    wait from the SQL in [TaskQSweepTimeouts](runbooks.md#taskqsweeptimeouts)
+    (lock pile-up: clear the blocker; slowness: bloat/indexes). If the
+    database is genuinely slower than the batch budget, lower
+    `TASKQ_EVENT_WRITER_BATCH_SIZE` (each batch gets smaller; the drain takes
+    more batches) rather than raising
+    `TASKQ_EVENT_WRITER_STATEMENT_TIMEOUT_MS` past the
+    `reclaim_event_visibility_delay` margin. Do **not** raise
+    `dispatcher_command_timeout` — it
     [cannot be raised far](configuration.md#dispatcher-command-timeout-vs-staleness-budget-watchdog-on)
-    and will fail settings validation and crash-loop the worker.
+    and will fail settings validation and crash-loop the worker. Do not scale
+    out: promotion is a leader-side sweep, and extra workers add database
+    load without promoting anything.
 
     ```sql
-    -- Promote a bounded slice, mirroring Sweep 3's own transition.
-    -- Repeat until the overdue count reaches zero.
+    -- Emergency lever only: promote a bounded slice manually while the
+    -- underlying database problem is being fixed. Mirrors Sweep 3's own
+    -- transition. Repeat until the overdue count reaches zero.
     WITH snap AS (
         SELECT id FROM {schema}.jobs
         WHERE status = 'scheduled' AND scheduled_at <= clock_timestamp()
@@ -171,12 +195,25 @@ No rows from the first query = no leader. Check the admin UI at `/admin/leader` 
 
 - **No leader:** ensure at least one worker is running. Failover SLA is `heartbeat_interval + 1s`.
 - **PgBouncer:** set `TASKQ_PG_DSN_DIRECT` to bypass PgBouncer. See [PgBouncer compatibility](workers.md#pgbouncer-compatibility).
-- **Stale leader:** force-release the advisory lock by terminating the backend:
+- **Stale leader:** force-release the advisory lock by terminating the backend. The election lock is schema-qualified (`taskq:maintenance_leader:<schema>`, built by `taskq.constants.schema_lock_name`), so the LIKE pattern below matches the shared prefix and any schema suffix:
 
 ```sql
 SELECT pg_terminate_backend(pid)
 FROM pg_stat_activity
 WHERE query LIKE '%pg_try_advisory_lock%taskq:maintenance_leader%';
+```
+
+For a session whose query text does not carry the name (the worker binds it as a parameter), match the lock itself instead — the key is a single bigint (`classid = 0`), so compare `objid` against the qualified name's hash for your schema:
+
+```sql
+SELECT pg_terminate_backend(pid)
+FROM pg_stat_activity
+WHERE pid IN (
+    SELECT pid FROM pg_locks
+    WHERE locktype = 'advisory' AND classid = 0
+      AND objid = hashtextextended('taskq:maintenance_leader:<your-schema>', 0)
+      AND granted
+);
 ```
 
 !!! warning
@@ -219,7 +256,7 @@ Check container/OS logs for OOM kills or SIGKILL on the worker host.
 
 - **OOM kills:** increase the container memory limit or reduce `TASKQ_MAX_CONCURRENCY`.
 - **Retry crashed jobs:** use the admin UI Retry button (`TASKQ_ADMIN_ACTIONS_ENABLED=true`) or `backend.retry_job()`.
-- **Prevent recurrence:** set `retry_kind="transient"` with appropriate `max_attempts` so the sweep re-pends instead of crashing. The reclaim sweep runs on **every worker** (not just the leader) using `FOR UPDATE SKIP LOCKED`.
+- **Prevent recurrence:** set `retry_kind="transient"` with appropriate `max_attempts` so the sweep re-pends instead of crashing. The reclaim sweep is **leader-only** (it runs in the leader's sweep loop, every `TASKQ_SWEEP_INTERVAL`); its SQL keeps `FOR UPDATE SKIP LOCKED` so it stays row-safe if a sweep is ever run concurrently — e.g. two leaders of the same schema during a rolling deploy across the advisory-lock rename.
 
 ---
 
@@ -667,7 +704,7 @@ Re-run query 2 a minute apart: **unchanged counts mean no progress**, whatever t
 ### Fix
 
 - **Stale or missing worker rows:** the process is not heartbeating — treat it as down and restart it, then see [Heartbeat failures](#7-heartbeat-failures).
-- **Workers fresh but nothing progressing:** work through [Jobs stuck in `pending`](#1-jobs-stuck-in-pending) and [Jobs stuck in `scheduled`](#2-jobs-stuck-in-scheduled) — including the sweep livelock, whose whole signature is healthy workers plus zero promotion.
+- **Workers fresh but nothing progressing:** work through [Jobs stuck in `pending`](#1-jobs-stuck-in-pending) and [Jobs stuck in `scheduled`](#2-jobs-stuck-in-scheduled) — including the promotion stall, whose whole signature is healthy workers plus zero promotion.
 - **`max_concurrent = 0`:** drain mode. `taskq actor-config set <actor> --max-concurrent N` to restore; effective next dispatch cycle.
 - **`max_concurrent` unexpectedly `NULL`:** the decorator literal never reached this deployment — capacity fields are seed-only. See [ActorConfig sync](workers.md#actorconfig-sync).
 - **Queue mismatch:** align `TASKQ_QUEUES` with the queues actually used, and confirm via `workers.queues`.

@@ -18,7 +18,6 @@ from taskq.backend._dispatch_sql import (
 )
 from taskq.backend._sql import (
     CANCEL_ESCALATION_SQL,
-    INSERT_ATTEMPT_SQL,
     INSERT_EVENT_SQL,
     INSERT_EVENTS_BATCH_SQL,
     POLL_CANCEL_FLAGS_SQL,
@@ -101,7 +100,6 @@ class SqlTemplates:
     mark_retry_after_consume_false: str
 
     # ── Shared INSERT templates ────────────────────────────────────
-    insert_attempt: str
     insert_attempt_explicit: str
     insert_event: str
     insert_events_batch: str
@@ -163,7 +161,19 @@ def render(schema: str) -> SqlTemplates:
     s = schema
 
     return SqlTemplates(
-        # ── Terminal-write UPDATE statements ───────────────────────
+        # ── Terminal-write statements ──────────────────────────────
+        # Every mark_* statement below is ONE self-contained
+        # data-modifying-CTE statement: the fenced jobs UPDATE, the
+        # job_attempts INSERT, and the job_events INSERT that previously
+        # ran as three awaited round trips inside one transaction are
+        # fused into a single statement (see _terminal.py's module
+        # docstring for the measured rationale and the preserved
+        # invariants).  The fencing predicate, the clock_timestamp()
+        # time base, the holder-CTE worker_id resolution, the per-arm
+        # outcome_branch arbitration, and the $N parameter positions are
+        # exactly the contracts the three-statement versions had — only
+        # the round trips collapsed.
+        #
         # All terminal writes use clock_timestamp() — not now() — for
         # every timestamp computed in the SET clause. now() is frozen at
         # transaction start; clock_timestamp() is the wall-clock time the
@@ -181,36 +191,92 @@ def render(schema: str) -> SqlTemplates:
         # caller-supplied fallback ($7 — the @actor literal the SQL cannot
         # see, also applied at completion, so a long-queued job does not
         # complete already expired); then the enqueue-time value.
+        #
+        # duration_ms is computed IN the statement from the same
+        # database-written timestamp pair Python used to receive and
+        # multiply back — but server-side, with exact numeric arithmetic
+        # instead of Python's float path: values can differ from the old
+        # Python computation by 1ms on exactly-whole-millisecond
+        # boundaries (where the float product drifted just below the
+        # integer), and the server-side values are the strictly more
+        # accurate ones.  trunc() keeps the same
+        # truncation-toward-zero Python's int() had (a bare ::int cast
+        # rounds to nearest — a silent off-by-one against every
+        # historically stored value), and NULL operands propagate to
+        # NULL exactly like compute_duration_ms's None return.
         mark_succeeded=f"""\
-UPDATE "{s}".jobs
-SET status = 'succeeded',
-    finished_at = clock_timestamp(),
-    locked_by_worker = NULL,
-    lock_expires_at = NULL,
-    result = $3::jsonb,
-    result_size_bytes = $4,
-    result_expires_at = COALESCE(
-        (SELECT clock_timestamp() + result_ttl * interval '1 second' FROM "{s}".actor_config WHERE actor = "{s}".jobs.actor),
-        clock_timestamp() + $7::interval,
-        result_expires_at
-    ),
-    progress_seq = $5,
-    progress_state = CASE WHEN $6::jsonb IS NOT NULL THEN COALESCE(progress_state, '{{}}'::jsonb) || $6::jsonb ELSE progress_state END
-WHERE id = $1 AND status = 'running' AND locked_by_worker = $2
-RETURNING *""",
+WITH upd AS (
+    UPDATE "{s}".jobs
+    SET status = 'succeeded',
+        finished_at = clock_timestamp(),
+        locked_by_worker = NULL,
+        lock_expires_at = NULL,
+        result = $3::jsonb,
+        result_size_bytes = $4,
+        result_expires_at = COALESCE(
+            (SELECT clock_timestamp() + result_ttl * interval '1 second' FROM "{s}".actor_config WHERE actor = "{s}".jobs.actor),
+            clock_timestamp() + $7::interval,
+            result_expires_at
+        ),
+        progress_seq = $5,
+        progress_state = CASE WHEN $6::jsonb IS NOT NULL THEN COALESCE(progress_state, '{{}}'::jsonb) || $6::jsonb ELSE progress_state END
+    WHERE id = $1 AND status = 'running' AND locked_by_worker = $2
+    RETURNING *
+), holder AS (
+    SELECT id FROM "{s}".workers WHERE id = $2 FOR KEY SHARE
+), att AS (
+    INSERT INTO "{s}".job_attempts
+    (job_id, attempt, started_at, finished_at, outcome,
+     error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
+    SELECT upd.id, upd.attempt, upd.started_at, clock_timestamp(), 'succeeded',
+           NULL, NULL, NULL,
+           trunc(EXTRACT(EPOCH FROM (upd.finished_at - upd.started_at)) * 1000)::int,
+           (SELECT id FROM holder), '{{}}'::jsonb
+    FROM upd
+), evt AS (
+    INSERT INTO "{s}".job_events
+    (job_id, occurred_at, kind, detail)
+    SELECT upd.id, clock_timestamp(), 'state_change',
+           jsonb_build_object('from_state', 'running', 'to_state', 'succeeded',
+                              'worker_id', $2::text)
+    FROM upd
+)
+SELECT * FROM upd""",
         mark_failed=f"""\
-UPDATE "{s}".jobs
-SET status = 'failed',
-    finished_at = clock_timestamp(),
-    locked_by_worker = NULL,
-    lock_expires_at = NULL,
-    error_class = $3,
-    error_message = $4,
-    error_traceback = $5,
-    progress_seq = $6,
-    progress_state = CASE WHEN $7::jsonb IS NOT NULL THEN COALESCE(progress_state, '{{}}'::jsonb) || $7::jsonb ELSE progress_state END
-WHERE id = $1 AND status = 'running' AND locked_by_worker = $2
-RETURNING *""",
+WITH upd AS (
+    UPDATE "{s}".jobs
+    SET status = 'failed',
+        finished_at = clock_timestamp(),
+        locked_by_worker = NULL,
+        lock_expires_at = NULL,
+        error_class = $3,
+        error_message = $4,
+        error_traceback = $5,
+        progress_seq = $6,
+        progress_state = CASE WHEN $7::jsonb IS NOT NULL THEN COALESCE(progress_state, '{{}}'::jsonb) || $7::jsonb ELSE progress_state END
+    WHERE id = $1 AND status = 'running' AND locked_by_worker = $2
+    RETURNING *
+), holder AS (
+    SELECT id FROM "{s}".workers WHERE id = $2 FOR KEY SHARE
+), att AS (
+    INSERT INTO "{s}".job_attempts
+    (job_id, attempt, started_at, finished_at, outcome,
+     error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
+    SELECT upd.id, upd.attempt, upd.started_at, clock_timestamp(), 'failed',
+           $3, $4, $5,
+           trunc(EXTRACT(EPOCH FROM (upd.finished_at - upd.started_at)) * 1000)::int,
+           (SELECT id FROM holder), '{{}}'::jsonb
+    FROM upd
+), evt AS (
+    INSERT INTO "{s}".job_events
+    (job_id, occurred_at, kind, detail)
+    SELECT upd.id, clock_timestamp(), 'state_change',
+           jsonb_strip_nulls(jsonb_build_object('from_state', 'running', 'to_state', 'failed',
+                                                'error_class', $3::text,
+                                                'worker_id', $2::text))
+    FROM upd
+)
+SELECT * FROM upd""",
         # mark_retry is a two-CTE single-arbiter statement, structurally
         # mirroring mark_snoozed / mark_retry_after: the delay ($3::interval)
         # is applied by the SERVER clock (scheduled_at = clock_timestamp() +
@@ -285,28 +351,120 @@ deadline_failed AS (
       AND clock_timestamp() + (SELECT retry_delay FROM params) > j.schedule_to_close
       AND NOT EXISTS (SELECT 1 FROM retried)
     RETURNING j.*, 'deadline_failed'::text AS outcome_branch, clock_timestamp() AS now_ts
+),
+holder AS (
+    SELECT id FROM "{s}".workers WHERE id = $2 FOR KEY SHARE
+),
+retried_att AS (
+    INSERT INTO "{s}".job_attempts
+    (job_id, attempt, started_at, finished_at, outcome,
+     error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
+    SELECT r.id, r.attempt, r.started_at, clock_timestamp(), 'failed',
+           $4, $5, $6,
+           -- The retried arm leaves finished_at NULL (the job lives on),
+           -- so the attempt's end is the arm's own now_ts — mirroring the
+           -- Python that read rec["now_ts"] off the same RETURNING.
+           trunc(EXTRACT(EPOCH FROM (r.now_ts - r.started_at)) * 1000)::int,
+           (SELECT id FROM holder), '{{}}'::jsonb
+    FROM retried r
+),
+retried_evt AS (
+    INSERT INTO "{s}".job_events
+    (job_id, occurred_at, kind, detail)
+    SELECT r.id, clock_timestamp(), 'state_change',
+           jsonb_strip_nulls(jsonb_build_object('from_state', 'running', 'to_state', 'scheduled',
+                                                'error_class', $4::text,
+                                                'worker_id', $2::text))
+    FROM retried r
+),
+deadline_att AS (
+    INSERT INTO "{s}".job_attempts
+    (job_id, attempt, started_at, finished_at, outcome,
+     error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
+    SELECT d.id, d.attempt, d.started_at, clock_timestamp(), 'failed',
+           'DeadlineExceeded', 'schedule_to_close reached before next retry dispatch', NULL,
+           -- Terminal arm: duration reads the arm's finished_at, not now_ts.
+           trunc(EXTRACT(EPOCH FROM (d.finished_at - d.started_at)) * 1000)::int,
+           (SELECT id FROM holder), '{{}}'::jsonb
+    FROM deadline_failed d
+),
+deadline_evt AS (
+    INSERT INTO "{s}".job_events
+    (job_id, occurred_at, kind, detail)
+    SELECT d.id, clock_timestamp(), 'state_change',
+           jsonb_build_object('from_state', 'running', 'to_state', 'failed',
+                              'error_class', 'DeadlineExceeded',
+                              'worker_id', $2::text)
+    FROM deadline_failed d
 )
 SELECT * FROM retried UNION ALL SELECT * FROM deadline_failed""",
         mark_cancelled=f"""\
-UPDATE "{s}".jobs
-SET status = 'cancelled',
-    finished_at = clock_timestamp(),
-    locked_by_worker = NULL,
-    lock_expires_at = NULL,
-    progress_seq = $3,
-    progress_state = CASE WHEN $4::jsonb IS NOT NULL THEN COALESCE(progress_state, '{{}}'::jsonb) || $4::jsonb ELSE progress_state END
-WHERE id = $1 AND status = 'running' AND locked_by_worker = $2
-RETURNING *""",
+WITH upd AS (
+    UPDATE "{s}".jobs
+    SET status = 'cancelled',
+        finished_at = clock_timestamp(),
+        locked_by_worker = NULL,
+        lock_expires_at = NULL,
+        progress_seq = $3,
+        progress_state = CASE WHEN $4::jsonb IS NOT NULL THEN COALESCE(progress_state, '{{}}'::jsonb) || $4::jsonb ELSE progress_state END
+    WHERE id = $1 AND status = 'running' AND locked_by_worker = $2
+    RETURNING *
+), holder AS (
+    SELECT id FROM "{s}".workers WHERE id = $2 FOR KEY SHARE
+), att AS (
+    INSERT INTO "{s}".job_attempts
+    (job_id, attempt, started_at, finished_at, outcome,
+     error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
+    SELECT upd.id, upd.attempt, upd.started_at, clock_timestamp(), 'cancelled',
+           NULL, NULL, NULL,
+           trunc(EXTRACT(EPOCH FROM (upd.finished_at - upd.started_at)) * 1000)::int,
+           (SELECT id FROM holder), '{{}}'::jsonb
+    FROM upd
+), evt AS (
+    INSERT INTO "{s}".job_events
+    (job_id, occurred_at, kind, detail)
+    SELECT upd.id, clock_timestamp(), 'state_change',
+           jsonb_build_object('from_state', 'running', 'to_state', 'cancelled',
+                              'worker_id', $2::text)
+    FROM upd
+)
+SELECT * FROM upd""",
         mark_abandoned=f"""\
-UPDATE "{s}".jobs
-SET status = 'abandoned',
-    finished_at = clock_timestamp(),
-    progress_seq = $2,
-    progress_state = CASE WHEN $3::jsonb IS NOT NULL THEN COALESCE(progress_state, '{{}}'::jsonb) || $3::jsonb ELSE progress_state END
-WHERE id = $1 AND status = 'running' AND cancel_phase = 2
-RETURNING *""",
+WITH upd AS (
+    UPDATE "{s}".jobs
+    SET status = 'abandoned',
+        finished_at = clock_timestamp(),
+        progress_seq = $2,
+        progress_state = CASE WHEN $3::jsonb IS NOT NULL THEN COALESCE(progress_state, '{{}}'::jsonb) || $3::jsonb ELSE progress_state END
+    WHERE id = $1 AND status = 'running' AND cancel_phase = 2
+    RETURNING *
+), holder AS (
+    -- The abandoned job's worker id is the row's own (possibly already
+    -- NULL) locked_by_worker, not a parameter: probe THAT id.
+    SELECT id FROM "{s}".workers WHERE id = (SELECT locked_by_worker FROM upd) FOR KEY SHARE
+), att AS (
+    INSERT INTO "{s}".job_attempts
+    (job_id, attempt, started_at, finished_at, outcome,
+     error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
+    SELECT upd.id, upd.attempt, upd.started_at, clock_timestamp(), 'cancelled',
+           NULL, NULL, NULL,
+           trunc(EXTRACT(EPOCH FROM (upd.finished_at - upd.started_at)) * 1000)::int,
+           (SELECT id FROM holder), '{{}}'::jsonb
+    FROM upd
+), evt AS (
+    INSERT INTO "{s}".job_events
+    (job_id, occurred_at, kind, detail)
+    SELECT upd.id, clock_timestamp(), 'state_change',
+           jsonb_strip_nulls(jsonb_build_object('from_state', 'running', 'to_state', 'abandoned',
+                                                'worker_id', upd.locked_by_worker::text))
+    FROM upd
+)
+SELECT * FROM upd""",
         # Snooze does not consume retry budget: the UPDATE deliberately
-        # leaves j.attempt unchanged.
+        # leaves j.attempt unchanged.  $7 is the attempt-row outcome
+        # ("snoozed", or "reservation_denied"/"rate_limit_denied" when the
+        # write records a denied reservation) — the only mark_* variant
+        # whose attempt outcome is caller-chosen.
         mark_snoozed=f"""\
 WITH params AS (
     SELECT $1::uuid AS job_id,
@@ -356,6 +514,48 @@ deadline_failed AS (
       AND clock_timestamp() + (SELECT delay FROM params) > j.schedule_to_close
       AND NOT EXISTS (SELECT 1 FROM snoozed)
     RETURNING j.*, 'failed'::text AS outcome_branch, clock_timestamp() AS now_ts
+),
+holder AS (
+    SELECT id FROM "{s}".workers WHERE id = $2 FOR KEY SHARE
+),
+snoozed_att AS (
+    INSERT INTO "{s}".job_attempts
+    (job_id, attempt, started_at, finished_at, outcome,
+     error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
+    SELECT sn.id, sn.attempt, sn.started_at, clock_timestamp(), $7::text,
+           NULL, NULL, NULL,
+           -- The snoozed arm leaves finished_at NULL: duration ends at the
+           -- arm's now_ts, exactly as the Python read rec["now_ts"].
+           trunc(EXTRACT(EPOCH FROM (sn.now_ts - sn.started_at)) * 1000)::int,
+           (SELECT id FROM holder), '{{}}'::jsonb
+    FROM snoozed sn
+),
+snoozed_evt AS (
+    INSERT INTO "{s}".job_events
+    (job_id, occurred_at, kind, detail)
+    SELECT sn.id, clock_timestamp(), 'state_change',
+           jsonb_build_object('from_state', 'running', 'to_state', 'scheduled',
+                              'worker_id', $2::text)
+    FROM snoozed sn
+),
+deadline_att AS (
+    INSERT INTO "{s}".job_attempts
+    (job_id, attempt, started_at, finished_at, outcome,
+     error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
+    SELECT d.id, d.attempt, d.started_at, clock_timestamp(), 'failed',
+           'DeadlineExceeded', 'schedule_to_close reached before next dispatch', NULL,
+           trunc(EXTRACT(EPOCH FROM (d.finished_at - d.started_at)) * 1000)::int,
+           (SELECT id FROM holder), '{{}}'::jsonb
+    FROM deadline_failed d
+),
+deadline_evt AS (
+    INSERT INTO "{s}".job_events
+    (job_id, occurred_at, kind, detail)
+    SELECT d.id, clock_timestamp(), 'state_change',
+           jsonb_build_object('from_state', 'running', 'to_state', 'failed',
+                              'error_class', 'DeadlineExceeded',
+                              'worker_id', $2::text)
+    FROM deadline_failed d
 )
 SELECT * FROM snoozed UNION ALL SELECT * FROM deadline_failed""",
         mark_retry_after_consume_true=f"""\
@@ -429,6 +629,65 @@ deadline_failed AS (
       AND NOT EXISTS (SELECT 1 FROM snoozed)
       AND NOT EXISTS (SELECT 1 FROM max_attempts_failed)
     RETURNING j.*, j.attempt AS running_attempt, 'deadline_failed'::text AS outcome_branch, clock_timestamp() AS now_ts
+),
+holder AS (
+    SELECT id FROM "{s}".workers WHERE id = $2 FOR KEY SHARE
+),
+snoozed_att AS (
+    INSERT INTO "{s}".job_attempts
+    (job_id, attempt, started_at, finished_at, outcome,
+     error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
+    SELECT sn.id, sn.attempt, sn.started_at, clock_timestamp(), 'snoozed',
+           'RetryAfter', NULL, NULL,
+           trunc(EXTRACT(EPOCH FROM (sn.now_ts - sn.started_at)) * 1000)::int,
+           (SELECT id FROM holder), '{{}}'::jsonb
+    FROM snoozed sn
+),
+snoozed_evt AS (
+    INSERT INTO "{s}".job_events
+    (job_id, occurred_at, kind, detail)
+    SELECT sn.id, clock_timestamp(), 'state_change',
+           jsonb_build_object('from_state', 'running', 'to_state', 'scheduled',
+                              'worker_id', $2::text)
+    FROM snoozed sn
+),
+max_attempts_att AS (
+    INSERT INTO "{s}".job_attempts
+    (job_id, attempt, started_at, finished_at, outcome,
+     error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
+    SELECT m.id, m.attempt, m.started_at, clock_timestamp(), 'failed',
+           'MaxAttemptsExceeded', 'retry budget exhausted', NULL,
+           trunc(EXTRACT(EPOCH FROM (m.finished_at - m.started_at)) * 1000)::int,
+           (SELECT id FROM holder), '{{}}'::jsonb
+    FROM max_attempts_failed m
+),
+max_attempts_evt AS (
+    INSERT INTO "{s}".job_events
+    (job_id, occurred_at, kind, detail)
+    SELECT m.id, clock_timestamp(), 'state_change',
+           jsonb_build_object('from_state', 'running', 'to_state', 'failed',
+                              'error_class', 'MaxAttemptsExceeded',
+                              'worker_id', $2::text)
+    FROM max_attempts_failed m
+),
+deadline_att AS (
+    INSERT INTO "{s}".job_attempts
+    (job_id, attempt, started_at, finished_at, outcome,
+     error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
+    SELECT d.id, d.attempt, d.started_at, clock_timestamp(), 'failed',
+           'DeadlineExceeded', 'schedule_to_close reached before next dispatch', NULL,
+           trunc(EXTRACT(EPOCH FROM (d.finished_at - d.started_at)) * 1000)::int,
+           (SELECT id FROM holder), '{{}}'::jsonb
+    FROM deadline_failed d
+),
+deadline_evt AS (
+    INSERT INTO "{s}".job_events
+    (job_id, occurred_at, kind, detail)
+    SELECT d.id, clock_timestamp(), 'state_change',
+           jsonb_build_object('from_state', 'running', 'to_state', 'failed',
+                              'error_class', 'DeadlineExceeded',
+                              'worker_id', $2::text)
+    FROM deadline_failed d
 )
 SELECT * FROM snoozed
 UNION ALL SELECT * FROM max_attempts_failed
@@ -480,10 +739,49 @@ deadline_failed AS (
       AND clock_timestamp() + (SELECT delay FROM params) > j.schedule_to_close
       AND NOT EXISTS (SELECT 1 FROM snoozed)
     RETURNING j.*, 'deadline_failed'::text AS outcome_branch, clock_timestamp() AS now_ts
+),
+holder AS (
+    SELECT id FROM "{s}".workers WHERE id = $2 FOR KEY SHARE
+),
+snoozed_att AS (
+    INSERT INTO "{s}".job_attempts
+    (job_id, attempt, started_at, finished_at, outcome,
+     error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
+    SELECT sn.id, sn.attempt, sn.started_at, clock_timestamp(), 'snoozed',
+           'RetryAfter', NULL, NULL,
+           trunc(EXTRACT(EPOCH FROM (sn.now_ts - sn.started_at)) * 1000)::int,
+           (SELECT id FROM holder), '{{}}'::jsonb
+    FROM snoozed sn
+),
+snoozed_evt AS (
+    INSERT INTO "{s}".job_events
+    (job_id, occurred_at, kind, detail)
+    SELECT sn.id, clock_timestamp(), 'state_change',
+           jsonb_build_object('from_state', 'running', 'to_state', 'scheduled',
+                              'worker_id', $2::text)
+    FROM snoozed sn
+),
+deadline_att AS (
+    INSERT INTO "{s}".job_attempts
+    (job_id, attempt, started_at, finished_at, outcome,
+     error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
+    SELECT d.id, d.attempt, d.started_at, clock_timestamp(), 'failed',
+           'DeadlineExceeded', 'schedule_to_close reached before next dispatch', NULL,
+           trunc(EXTRACT(EPOCH FROM (d.finished_at - d.started_at)) * 1000)::int,
+           (SELECT id FROM holder), '{{}}'::jsonb
+    FROM deadline_failed d
+),
+deadline_evt AS (
+    INSERT INTO "{s}".job_events
+    (job_id, occurred_at, kind, detail)
+    SELECT d.id, clock_timestamp(), 'state_change',
+           jsonb_build_object('from_state', 'running', 'to_state', 'failed',
+                              'error_class', 'DeadlineExceeded',
+                              'worker_id', $2::text)
+    FROM deadline_failed d
 )
 SELECT * FROM snoozed UNION ALL SELECT * FROM deadline_failed""",
         # ── Shared INSERT templates ────────────────────────────────
-        insert_attempt=INSERT_ATTEMPT_SQL.format(schema=s),
         # Same holder-CTE idiom as INSERT_ATTEMPT_SQL (see _sql.py for the
         # rationale): resolve worker_id against workers under FOR KEY SHARE
         # so a deleted worker records NULL instead of FK-violating.

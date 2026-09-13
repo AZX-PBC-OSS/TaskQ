@@ -93,6 +93,9 @@ def _make_deps(**overrides: object) -> WorkerDeps:  # pyright: ignore[reportRetu
             redis_url=None,
             health_socket_path="",
             health_tasks_enabled=False,
+            # Maintenance-health fields read by build_ready_body.
+            sweep_interval=30.0,
+            event_writer_batch_size=100,
         ),
         "is_leader": SimpleNamespace(is_set=lambda: False),
         "active_jobs": SimpleNamespace(count=lambda: 2),
@@ -208,6 +211,8 @@ async def test_tc2_saturated_pool_returns_timeout() -> None:
             redis_url=None,
             health_socket_path="",
             health_tasks_enabled=False,
+            sweep_interval=30.0,
+            event_writer_batch_size=100,
         ),
     )
 
@@ -242,6 +247,7 @@ _ready_body_keys = [
     "redis_configured",
     "active_jobs",
     "is_leader",
+    "maintenance",
     "loop_tick_ages",
     "shutdown_elapsed_seconds",
     "shutdown_phase",
@@ -269,7 +275,7 @@ async def test_tp1_ready_body_schema_invariant(
     For every generated ``WorkerDeps`` state, constructs a
     ``HealthReport`` directly and calls ``build_ready_body(report, deps)``.
     Then asserts:
-    (a) every body has exactly the 5 keys from
+    (a) every body has exactly the pinned key set from
     (b) ``shutdown_phase`` is ``None`` iff the deps phase is NONE,
         otherwise an int matching ``phase.value``,
     (c) ``ready=True`` iff ``shutdown_phase == NONE AND pg_ping_ok=True``,
@@ -307,6 +313,8 @@ async def test_tp1_ready_body_schema_invariant(
             redis_url=redis_url,
             health_socket_path="",
             health_tasks_enabled=False,
+            sweep_interval=30.0,
+            event_writer_batch_size=100,
         ),
     )
 

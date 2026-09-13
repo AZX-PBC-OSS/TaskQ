@@ -75,3 +75,6 @@ docs/superpowers/
 .worktrees
 # Agent review artifacts
 .reviews/
+
+# Vendored upstream sources — reference reading only, never committed
+vendor/

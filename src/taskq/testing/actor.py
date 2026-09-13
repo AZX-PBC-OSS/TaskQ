@@ -307,6 +307,7 @@ class FakeBackend:
         args_list: list[EnqueueArgs],
         *,
         connection: object = None,
+        enforce_max_pending: bool = True,
     ) -> list[JobRow]:
         raise NotImplementedError
 

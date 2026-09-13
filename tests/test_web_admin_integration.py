@@ -23,6 +23,11 @@ from taskq._ids import new_base62, new_job_id, new_uuid
 from taskq._json import dumps_str
 from taskq.backend.clock import SystemClock
 from taskq.backend.postgres import PostgresBackend
+from taskq.constants import (
+    DEFAULT_EVENT_WRITER_BATCH_SIZE,
+    DEFAULT_EVENT_WRITER_STATEMENT_TIMEOUT_MS,
+    MAX_RESULT_BYTES,
+)
 from taskq.migrate import apply_pending
 from taskq.web.admin import create_router, setup_admin_state
 
@@ -54,8 +59,25 @@ def _dev_environment(monkeypatch: pytest.MonkeyPatch) -> None:  # pyright: ignor
 
 @dataclass
 class _TestBackendSettings:
+    """Satisfies the declared ``BackendSettings`` protocol.
+
+    The admin routes this double feeds never dispatch, write terminal
+    results or run bounded sweeps, but the protocol the backend is typed
+    against declares those knobs — a double that omits them only passes
+    because the tests execution environment disables argument-type
+    reporting, and it breaks loudly the first time a route starts reading
+    one. Defaults mirror ``WorkerSettings``'.
+    """
+
     schema_name: str = _SCHEMA_LABEL
     dispatch_oversample: int = 2
+    dispatcher_command_timeout: float = 5.0
+    result_max_bytes: int = MAX_RESULT_BYTES
+    event_writer_batch_size: int = DEFAULT_EVENT_WRITER_BATCH_SIZE
+    event_writer_statement_timeout_ms: float = DEFAULT_EVENT_WRITER_STATEMENT_TIMEOUT_MS
+    event_writer_reduced_batch_divisor: int = 4
+    sweep_breaker_failure_threshold: int = 3
+    sweep_breaker_window_secs: float = 600.0
 
 
 @dataclass

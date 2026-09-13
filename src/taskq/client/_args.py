@@ -223,6 +223,15 @@ def build_enqueue_args[P: BaseModel, R: BaseModel | None](
     # single-job enqueue from self-asserting membership in a victim batch,
     # which would drive increment/abort hooks on that batch.
     metadata_dict.pop("batch_id", None)
+    # Security boundary, same class: "cron_schedule_id" is the provenance
+    # stamp the cron tick writes on its own fires and pre-scheduled twins —
+    # the DST twin-coverage walk counts a row bearing the planning
+    # schedule's id as that schedule's delivery. A caller-supplied value
+    # would let any on-demand enqueue self-assert membership in a victim
+    # schedule's delivery set and silently skip its owed occurrences, so it
+    # is stripped here exactly like batch_id. The tick mints the stamp
+    # itself, on args it builds directly — it never crosses this boundary.
+    metadata_dict.pop("cron_schedule_id", None)
     if ref.singleton:
         metadata_dict["singleton"] = True
 

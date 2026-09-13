@@ -31,7 +31,11 @@ import pytest
 import pytest_asyncio
 
 from taskq._ids import new_uuid
-from taskq.testing._shared_containers import cleanup_stale_testcontainers, creator_labels
+from taskq.testing._shared_containers import (
+    cleanup_stale_testcontainers,
+    creator_labels,
+    skip_test_without_docker,
+)
 
 from ._assertions import poll_until, wait_for_worker_ready
 from ._image_hygiene import (
@@ -202,8 +206,10 @@ def e2e_pg(e2e_network: Network) -> Iterator[E2EPg]:
     Labeled with the ownership labels: Ryuk is disabled process-wide (see
     :mod:`taskq.testing._shared_containers`), so labeling is what lets a
     future run's sweep remove this container if the session crashes — an
-    unlabeled RUNNING leftover would otherwise be kept for 24h.
+    unlabeled RUNNING leftover would otherwise be kept for 24h. Skips
+    with a reason (never errors) when the Docker daemon is unreachable.
     """
+    skip_test_without_docker()
     from testcontainers.community.postgres import PostgresContainer
 
     container = PostgresContainer(
@@ -238,8 +244,10 @@ def e2e_dragonfly(e2e_network: Network) -> Iterator[E2EDragonfly]:
     module, PING-probed before yielding host and in-network base URLs.
 
     Labeled with the ownership labels for sweepability under disabled Ryuk —
-    see ``e2e_pg``.
+    see ``e2e_pg``. Skips with a reason (never errors) when the Docker
+    daemon is unreachable.
     """
+    skip_test_without_docker()
     from testcontainers.community.redis import RedisContainer
 
     container = RedisContainer(image=_DRAGONFLY_IMAGE).with_command(f"--dbnum {_DRAGONFLY_DBNUM}")
