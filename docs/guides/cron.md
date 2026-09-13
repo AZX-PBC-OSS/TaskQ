@@ -298,6 +298,41 @@ manually update or delete and recreate the schedule.
 
 ---
 
+## Cadence starts work; it does not pace it
+
+A cron cadence is the answer to "how promptly should new work be noticed?" It is not the answer to
+"how fast should the work drain?" Conflating the two is the most common cron design error, and it
+is invisible because the failing configuration reports success on every fire.
+
+The shape to recognise: a fired actor selects a fixed batch, processes or fans it out, notices
+more remains, and returns to wait for the next fire. The batch limit reads like a slice size and
+behaves like a rate limiter — throughput is pinned at `batch_size` per period regardless of how
+much capacity the fleet has. At 500 rows twice a day, a 10,000-row backlog takes ten days, and if
+the population grows faster than 1,000/day it never drains at all. Coverage is also unprovable:
+"stopped at the batch limit" and "reached the end" produce the same successful fire.
+
+The fix is not a bigger batch or a tighter cadence. Make the cron a *starter* and let the work
+continue itself: the fired job enqueues its own successor with an advanced cursor while a full page
+remains, and enqueues nothing when the page is short. Throughput then comes from concurrency and
+rate limits, and the schedule only decides how soon a new backlog is picked up. The full pattern,
+including the cursor and idempotency rules a self-enqueuing chain requires, is
+[sweeps.md](sweeps.md).
+
+Because a chain can then outlive its own cadence, decide overlap deliberately. A cron fire does
+**not** check whether the previous fire is still running, and there is no cron-level overlap
+setting; the suppression options — and the trap that `singleton=True` turns each overlap into a
+fire failure that auto-disables the schedule after
+`TASKQ_CRON_AUTO_DISABLE_THRESHOLD` (default 3) — are set out in
+[ops.md — Cron and scheduled workloads](ops.md#cron-and-scheduled-workloads) and
+[sweeps.md — Single-flight the chain](sweeps.md#single-flight-the-chain).
+
+Some passes genuinely must be cron-paced: one whose next query returns the same rows until its
+children finish cannot chain, because a successor would re-read an unmoved head and starve the
+children it is waiting on. [sweeps.md](sweeps.md#when-a-sweep-legitimately-cannot-chain) gives the
+one-question test that separates that case from the throughput bug above.
+
+---
+
 ## Failure handling
 
 When a schedule's payload factory raises an exception (import error, `TypeError`, timeout),
@@ -327,6 +362,8 @@ operator to run `taskq migrate up`.
 ## See also
 
 - [Actors](actors.md) — `@actor` decorator reference
+- [Sweeps](sweeps.md) — the page/fan-out/recurse pattern for cron-triggered batch work
+- [Operations & Adoption](ops.md#cron-and-scheduled-workloads) — overlap suppression and its traps
 - [Workers](workers.md) — maintenance leader, cron loop, sweep loops
 - [Configuration](configuration.md) — `TASKQ_CRON_CATCH_UP_WINDOW`, `TASKQ_CRON_AUTO_DISABLE_THRESHOLD`, and other settings
 - [Admin UI](admin-ui.md) — schedules page

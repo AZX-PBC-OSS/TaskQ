@@ -482,6 +482,37 @@ async def call_api(payload: Payload) -> Result:
     return parse(resp)
 ```
 
+### A rate limit should not spend the failure budget
+
+`max_attempts` is a budget for *failures* — evidence that this job may be unable to succeed. Being
+told to wait is not that evidence. A provider that answers `429` with `Retry-After: 30` has
+reported that the request is fine and the timing is not, so charging the wait against a budget
+sized for real faults means a burst of throttling exhausts the job's attempts and fails work that
+would have succeeded on the next window.
+
+Three consequences worth designing for:
+
+- **Waiting is not failing.** For a wait whose length the server told you, prefer
+  `RetryAfter(delay, consume_budget=False)` or a `Snooze` — both leave `attempt` untouched. Keep
+  `consume_budget=True` when you want the wait bounded by the attempt ceiling, and size
+  `max_attempts` for the throttling you expect rather than the faults you expect.
+- **Honour the advertised delay as the delay.** A server's `Retry-After` is a coordination signal;
+  replacing it with a computed backoff either hammers the provider early or idles the job long
+  past the window. Read the header and pass it through — `RetryAfter(delay=...)` from the actor
+  body, or `RetryOverride(delay=...)` from a classifier when the policy should be per status code
+  (the classifier path is additionally clamped by `max_retry_backoff`, which is what makes a
+  malformed `Retry-After: 999999999` safe).
+- **Never let TaskQ's own rate limiters charge the budget.** They already do not: a limiter or
+  reservation denial reschedules the job before the actor body runs and consumes no retry budget.
+  See [ops.md §7](ops.md#rate-limit-denial-is-a-snooze-not-a-failure).
+
+The mirrored error costs more, and it is a *classification* mistake rather than a budget one: an
+exception that can never succeed but is classified retryable spends every attempt reproducing
+itself. Forty attempts against a `404`, each with backoff, is a job that occupies the queue for
+hours to arrive at the answer it had immediately. Terminal-vs-retryable is decided per instance,
+not per exception type — that is what [§5](#5-retry_classifier-hook-per-instance-retry-overrides)
+exists for, and the status-code table in [§4](#4-non-retryable-exceptions) is the worked case.
+
 ---
 
 ## 10. Complete example

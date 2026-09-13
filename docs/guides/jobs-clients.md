@@ -245,6 +245,40 @@ runs and scope only new ones.
   inserted), the existing `JobHandle` is returned at step 5 without re-checking `max_pending`.
   Only `unique_for` (step 2) bypasses `max_pending` unconditionally.
 
+### Dedup is status-blind; `unique_for` is not
+
+The two mechanisms differ in one property that decides which of them a given job wants, and the
+difference is not a matter of degree.
+
+**`idempotency_key` has no status predicate.** The insert arbitrates with
+`ON CONFLICT (idempotency_scope, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING` —
+that `WHERE` clause matches the partial unique index, it is not a filter on `status`. A key
+therefore collides against a row in **any** status, `succeeded` and `failed` included, for as long
+as the row exists in `jobs` (see [No TTL](#idempotency_key) above; the horizon is
+`prune_retention_*`). The collision is silent and successful: `DO NOTHING` fires, the follow-up
+SELECT returns the old row, and you get a handle with `was_existing=True` for a job that may have
+finished weeks ago.
+
+**`unique_for` does filter on status** — it matches only `unique_states` (default
+`("pending", "scheduled", "running")`) inside the window — but the preflight runs only when
+**both** `unique_for` and `identity_key` are present. Supply one without the other and dedup is
+silently off, with a once-per-actor warning on `JobsClient.enqueue` and **no warning at all** from
+`SubJobEnqueuer.enqueue`.
+
+That gives each role in a job chain a different correct answer:
+
+| Role | Wants | Why |
+|---|---|---|
+| **A recurring root** (cron fire, trigger) | `unique_for` + `identity_key`; **no** `idempotency_key` | Needs "not while one is live", which is status-scoped. A stable key here dedups onto the first-ever run forever; a fresh key dedups nothing. |
+| **A self-continuation successor** (the same actor enqueuing its next step) | `idempotency_key` **containing the advancing value** (cursor, page, step); **no** `unique_for` | The key must differ from its predecessor's or it collapses onto that `succeeded` row and the chain stops. `unique_for` would dedup it against its own still-`running` parent. |
+| **A per-item child** (one job per row) | `idempotency_key` from the run id plus the item id | Makes a parent retry a no-op per already-enqueued item. |
+
+The failure that follows from getting the middle row wrong has no error and no failed job: the
+enqueue returns a handle, the chain simply never advances. Guard against it by asserting
+`was_existing is False` on a successor enqueue, or by keeping the advancing value in the key by
+construction. The chain-level treatment is in
+[sweeps.md — Idempotency by role](sweeps.md#idempotency-by-role).
+
 ### `unique_for` and `singleton` interaction
 
 `singleton=True` and `unique_for` can coexist on the same actor. They enforce different

@@ -675,8 +675,339 @@ Re-run query 2 a minute apart: **unchanged counts mean no progress**, whatever t
 
 ---
 
+## 15. A job chain stops after one link
+
+### Symptom
+
+A self-enqueuing chain (a paging sweep, a multi-step pipeline) runs its first job and stops. The
+first job is `succeeded`, no job is `failed`, and the successor **does not exist** — not `pending`,
+not `scheduled`, no row at all. The enqueue call returned a `JobHandle` without raising.
+
+### Cause
+
+**`idempotency_key` dedup has no status predicate.** The insert arbitrates on
+`ON CONFLICT (idempotency_scope, idempotency_key) ... DO NOTHING`, which collides against a row in
+*any* status — including the predecessor's own `succeeded` row — for as long as that row survives
+`prune_retention_*` (30 d succeeded/cancelled, 90 d failed/abandoned). On a collision the enqueue
+returns the **existing** handle with `was_existing=True`, so the caller sees success and no job is
+created.
+
+| Cause | Detail |
+|---|---|
+| Successor reuses the predecessor's key | A key like `sweep:{run_id}` is identical on every link. Link 2 collides with link 1's `succeeded` row and vanishes. |
+| Key component that does not advance | A key built on a row's `updated_at` never moves when the job is **cancelled** — the handler never ran — so every re-enqueue for the retention window collides with the cancelled corpse. |
+| Per-parent ordinal in the key | `{run_id}:{index}` where `index` restarts per parent: link 2's item 0 collides with link 1's succeeded item 0. |
+| `unique_for` on the successor actor | The successor dedups against its own still-`running` parent, which is in the default `unique_states`. |
+
+### Diagnosis
+
+Look for the predecessor row the successor collided with — its key is the successor's key:
+
+```sql
+-- 1. Does a terminal row already hold the key the successor would use?
+SELECT id, actor, status, created_at, finished_at, idempotency_scope, idempotency_key
+FROM {schema}.jobs
+WHERE idempotency_key = 'sweep:RUN_ID'          -- the successor's key
+ORDER BY created_at DESC;
+
+-- 2. How many links did the chain actually create?
+SELECT status, count(*), min(created_at), max(created_at)
+FROM {schema}.jobs WHERE actor = 'my_sweep' GROUP BY status;
+
+-- 3. Is the actor declaring unique_for, which would dedup against a running parent?
+SELECT actor, queue, metadata FROM {schema}.actor_config WHERE actor = 'my_sweep';
+```
+
+A single `succeeded` row from query 2 with nothing after it, plus a matching row in query 1, is the
+collision. In application code, `handle.was_existing is True` on a successor enqueue is the same
+finding at the call site.
+
+### Fix
+
+- **Successor reuses the key:** put the advancing value *in* the key —
+  `f"sweep:{run_id}:{next_cursor}"`. A successor's key must differ from every key its predecessors
+  could have had.
+- **Non-advancing component:** never key on a value the handler is responsible for advancing.
+  Cancellation is the case that breaks it, because it is the one terminal status reached without the
+  handler executing. Use the cursor, the link index, or an attempt axis.
+- **Per-parent ordinals:** derive from something globally distinguishing — the item's own id, or the
+  cursor plus the ordinal.
+- **`unique_for` on the successor:** remove it. `unique_for` belongs on the chain's *root*, where
+  "not while one is live" is what you want; see
+  [sweeps.md — Idempotency by role](sweeps.md#idempotency-by-role).
+- **Assert it in code:** treat `was_existing is True` on a successor enqueue as an error rather
+  than a success — it is the only signal this failure produces.
+
+---
+
+## 16. A sweep reports green but nothing moves
+
+### Symptom
+
+Every scheduled pass succeeds, logs are clean, and dashboards show jobs completing — yet the
+backlog does not shrink. Often accompanied by a log line the sweep emits about its own truncation
+(`capped: true`, "more rows remain").
+
+### Cause
+
+| Cause | Detail |
+|---|---|
+| The cadence is the throughput | A fixed-page pass that returns after one page is capped at `page_size` per period forever. At 500/pass twice daily, 10,000 rows take ten days; if arrivals exceed 1,000/day it never drains. |
+| `OFFSET` pagination over a shrinking set | As rows become ineligible, offsets slide onto already-covered rows while rows collapsing backwards are never visited. Measured shape: 14,500 visits over ~9,900 rows with 27% never visited. |
+| Cursor over a column the walk writes | An LRU sweep cursored on `last_synced_at` re-serves rows its own children just stamped — every pass is full, the chain never terminates, throughput is zero. |
+| One bad item aborts the pass | An unhandled exception from one malformed row ends the enumeration for every other row, and the retry meets the same row again. |
+| Chain never started | The successor collided on a status-blind key — see [§15](#15-a-job-chain-stops-after-one-link). |
+
+### Diagnosis
+
+Pass success says nothing here. Measure the population instead:
+
+```sql
+-- 1. Is the eligible population falling? Run twice, minutes apart.
+SELECT count(*) FROM my_eligible_view;
+
+-- 2. How many jobs did the sweep's leaf actor actually complete per hour?
+SELECT date_trunc('hour', finished_at) AS hr, status, count(*)
+FROM {schema}.jobs
+WHERE actor = 'my_leaf' AND finished_at > clock_timestamp() - interval '24 hours'
+GROUP BY hr, status ORDER BY hr DESC;
+
+-- 3. How many links did one run produce? One row per run = a fixed-page sweep.
+SELECT count(*) AS links, min(created_at), max(created_at)
+FROM {schema}.jobs WHERE actor = 'my_sweep_page';
+```
+
+Compare query 2's hourly completion count against `page_size` per period: equality is the
+signature of a cadence-bound sweep. A flat or rising count in query 1 while query 2 shows steady
+throughput means the walk is re-serving covered rows.
+
+### Fix
+
+- **Cadence-bound:** a full page must enqueue its successor immediately, and a short page must
+  enqueue nothing. Treat any "capped" log line that returns as an unfinished implementation —
+  [sweeps.md](sweeps.md#the-cron-period-becomes-the-throughput).
+- **`OFFSET`:** switch to a keyset predicate ordered by a tuple ending in a unique column —
+  [sweeps.md](sweeps.md#why-keyset-not-offset).
+- **Cursor on a written column:** cursor on an immutable key and express freshness in the
+  *selection* predicate, or page a run-scoped snapshot of the eligible ids —
+  [sweeps.md](sweeps.md#the-cursor-column-rule).
+- **One bad item:** wrap each item in `try`/`except` and continue, keeping the successor enqueue
+  *outside* that block so a failed enqueue still raises. Emit a skip counter — a rising skip count
+  is coverage loss a green status hides.
+- **Alert on the population, not the pass:** page on the eligible-population depth and its trend.
+  A pass-success alert cannot detect any cause in this table.
+
+---
+
+## 17. Raising a concurrency cap changed nothing
+
+### Symptom
+
+A concurrency limit was raised — in the `@actor` decorator, via `taskq actor-config set`, on the
+queue, or in `TASKQ_MAX_CONCURRENCY` — and observed throughput is unchanged. No error, no warning,
+and the in-flight count sits at exactly the old ceiling.
+
+### Cause
+
+The effective limit is the **minimum** across four independent scopes
+([workers.md](workers.md#concurrency-model)), so raising a non-binding one has no effect. Each
+layer also has its own reason for ignoring a change:
+
+| Cause | Detail |
+|---|---|
+| Decorator literal, existing row | Capacity fields are **seed-only**: `max_concurrent` / `max_pending` / `result_ttl` populate the `actor_config` row on first registration and are never rewritten. A differing literal logs `actor-config-capacity-override` at **info** level and is otherwise ignored — `--force-update-actor-config` does not help, it only overrides *structural* drift. |
+| Another layer binds lower | A queue cap, a `ConcurrencyReservation`, or the per-process bound is below the value you raised. |
+| Queue cap not restarted | Queue caps are read **once at worker startup**, not per dispatch cycle. |
+| Deployed env differs from code | An image deploy does not update container environment variables, so a changed default in the repo and the value the pod actually sets are two separate facts. |
+| Workgroup child overrides the env | The supervisor passes `--max-concurrency` from the TOML on each child's command line, which overwrites the loaded setting — `TASKQ_MAX_CONCURRENCY` on a workgroup pod is ignored by every child. |
+| Not a concurrency problem | Provider `429`s, a rate limiter, or a reservation are throttling the work; more slots cannot help. |
+
+### Diagnosis
+
+Read the stored values rather than the code, and compare in-flight against each ceiling:
+
+```sql
+-- 1. What the fleet actually enforces per actor (NULL = uncapped).
+SELECT actor, queue, max_concurrent, max_pending FROM {schema}.actor_config ORDER BY actor;
+
+-- 2. The queue-level strict cap.
+SELECT name, mode, max_concurrent FROM {schema}.queues ORDER BY name;
+
+-- 3. In-flight vs the actor ceiling — equality identifies the binding layer.
+SELECT j.actor, count(*) AS in_flight, ac.max_concurrent
+FROM {schema}.jobs j LEFT JOIN {schema}.actor_config ac ON ac.actor = j.actor
+WHERE j.status = 'running' GROUP BY j.actor, ac.max_concurrent ORDER BY in_flight DESC;
+
+-- 4. Are jobs waiting on a limiter rather than a slot?
+SELECT actor, count(*) FROM {schema}.jobs
+WHERE status = 'scheduled' AND metadata ? 'awaiting' GROUP BY actor;
+```
+
+Then check the *running container's* environment for `TASKQ_MAX_CONCURRENCY` — not the repository
+default — and the workgroup TOML if one is in use. Worker logs carry
+`actor-config-capacity-override` at info level when a literal was ignored.
+
+### Fix
+
+- **Seed-only capacity:** tune the stored row — `taskq actor-config set <actor> --max-concurrent N`
+  — which takes effect on the next dispatch cycle with no restart. To make code the source of
+  truth instead, converge the values at boot and accept that a live operator tune reverts on the
+  next deploy ([ops.md](ops.md#capacity-ownership-the-seed-only-trap)).
+- **A stored `NULL`:** for `max_concurrent` that means *uncapped*, not "use the literal" — treat
+  every NULL in query 1 as a decision nobody made.
+- **Queue cap:** restart the workers after changing it.
+- **Env drift:** fix the deployment's environment (or manifest); a code change alone cannot move
+  it. See [workers.md](workers.md#finding-the-layer-that-actually-binds).
+- **Workgroup:** edit `[[workers]] max_concurrency` in the TOML and restart the supervisor.
+- **Throttled, not capped:** a provider rate limit is not a concurrency problem. Raising slots
+  increases denials; adjust the limiter or the provider quota instead
+  ([rate-limiting.md](rate-limiting.md)).
+- **Never lower a queue cap to protect one actor:** it applies to every actor on the queue and
+  starves the rest. Put the constraint on the actor — see the warning in
+  [workers.md](workers.md#concurrency-model).
+
+---
+
+## 18. A cancelled job's work never reprocesses
+
+### Symptom
+
+A job was cancelled (deliberately, by a drain, or by cancel escalation) and the underlying work
+item is never picked up again. Re-triggering it appears to succeed but creates no job. The row
+stays stuck for days while the sweep or trigger that should re-enqueue it reports success on every
+pass.
+
+### Cause
+
+**A cancelled job's row still owns its idempotency key, and the handler never ran.** Dedup is
+status-blind, so the cancelled row absorbs every re-enqueue until it is pruned — 30 days by default
+for `cancelled`. This is worse than the `succeeded` case because the work was never done, so the
+collision is pure work loss.
+
+| Cause | Detail |
+|---|---|
+| Key derived from a value the handler advances | Keying on the row's `updated_at` (or a version the handler bumps) means cancellation leaves the key unchanged forever — the corpse swallows every retrigger. |
+| Fixed business key, no attempt axis | `f"extract:{file_id}"` collides with the cancelled row for the whole retention window. |
+| Re-posting after any terminal status | The same applies to `failed`: a post-fix rerun of a failed batch silently no-ops onto the dead jobs. |
+
+### Diagnosis
+
+```sql
+-- 1. Is a terminal row holding the key the retrigger would use?
+SELECT id, actor, status, created_at, finished_at, attempt, idempotency_key
+FROM {schema}.jobs
+WHERE idempotency_key = 'extract:FILE_ID';
+
+-- 2. Cancelled or failed rows that have never been superseded.
+SELECT actor, status, count(*), min(finished_at) AS oldest
+FROM {schema}.jobs
+WHERE status IN ('cancelled', 'failed', 'crashed')
+GROUP BY actor, status ORDER BY oldest;
+```
+
+A single `cancelled` row in query 1, with no later row for the same key, is the collision. At the
+call site the retrigger returns `was_existing=True`.
+
+### Fix
+
+- **Add an axis that moves on a retrigger:** an attempt or epoch counter you own
+  (`f"extract:{file_id}:{attempt}"`), or an `idempotency_scope` carrying the run
+  (`idempotency_scope=run_id`) so a later run can reprocess the same item without waiting for
+  prune.
+- **Never key on a handler-advanced value:** cancellation is the case that breaks it, because it is
+  the terminal status reached *without* the handler executing.
+- **For a one-off recovery:** cancel is not undoable and the key is not reusable — re-enqueue under
+  a new key (or a new scope). Do not delete rows from `{schema}.jobs` to free a key.
+- **Design rule:** [sweeps.md](sweeps.md#version-components-that-do-not-version) has the general
+  test — can this key component stay the same across two enqueues that must both produce a job?
+
+---
+
+## 19. `job_events` and `job_attempts` grow without bound
+
+### Symptom
+
+The `taskq` schema becomes the largest thing in the database and keeps growing, while
+job throughput is unremarkable. `job_events` runs to millions of rows. `jobs_archive`
+is empty or tiny, so it looks like `prune` has never reclaimed anything.
+
+A production deployment measured 2,074,421 `reservation_denied` attempts against
+168,963 successes — a **12.3:1 ratio** — for 2.5 GB across `job_events` (1,602 MB) and
+`job_attempts` (911 MB): **32% of a 7.85 GB database was denial bookkeeping.**
+
+### Cause
+
+A job denied a `ConcurrencyReservation` slot writes **four durable rows per denial
+cycle** — one `job_attempts` row with `outcome='reservation_denied'` plus three
+`job_events` transitions (`running→scheduled`, `scheduled→pending`, `pending→running`)
+— and then tries again. Measured at ~1,193 bytes per denial.
+
+Two properties make that unbounded rather than self-limiting:
+
+1. **A denial does not consume retry budget.** `mark_snoozed`'s `SET` list contains no
+   `attempt` assignment, and `attempt` is incremented only by the dispatch lease — so
+   both sides of `attempt < max_attempts` advance together and the gap is invariant. The
+   failure gate is unreachable via denials. The only terminal exit is `deadline_failed`,
+   which requires `schedule_to_close`: **a job without `schedule_to_close` can be denied
+   forever.** One production job reached `attempt=1015/1018` over 6h12m before
+   succeeding.
+2. **`prune` cannot reach the rows.** `prune_terminal_jobs` keys on
+   `status = ANY(TERMINAL_STATUSES) AND finished_at < cutoff`. A denial-looping job is
+   never terminal and has `finished_at` reset to `NULL` on every denial, so the FK
+   cascade that removes `job_events` never fires. `job_events` also has no archive table
+   and appears in no expiry CTE — note the asymmetry, since `job_attempts` *is*
+   preserved into `job_attempts_archive`.
+
+There is no setting that suppresses the event trail: the three inserts are
+unconditional and run inside `asyncio.shield`.
+
+### Diagnosis
+
+```sql
+-- Denial-to-success ratio, and which actors are paying it.
+SELECT j.queue, a.outcome, count(*) AS attempts, count(DISTINCT j.actor) AS actors
+FROM taskq.job_attempts a JOIN taskq.jobs j ON j.id = a.job_id
+WHERE a.outcome IN ('reservation_denied', 'succeeded')
+GROUP BY 1, 2 ORDER BY 3 DESC;
+
+-- Attempts per job: ~1.0 is healthy, >2 means churn.
+SELECT j.actor, count(*) AS attempts, count(DISTINCT j.id) AS jobs,
+       round(count(*)::numeric / nullif(count(DISTINCT j.id), 0), 3) AS per_job
+FROM taskq.job_attempts a JOIN taskq.jobs j ON j.id = a.job_id
+GROUP BY 1 HAVING count(*) > 1000 ORDER BY per_job DESC;
+
+-- Is any of it prunable? Rows hanging off a non-terminal job never are.
+SELECT j.status, count(e.*) AS events, pg_size_pretty(sum(pg_column_size(e.*))) AS sz
+FROM taskq.job_events e JOIN taskq.jobs j ON j.id = e.job_id
+GROUP BY 1 ORDER BY 2 DESC;
+```
+
+### Fix
+
+The churn is **oversubscription**, not load. Excess admission pressure is
+`Σ(per-actor max_concurrent) ÷ queue ceiling`; denial rate scales with it. One
+production tier ran 389 actor slots against a ceiling of 20 (**19.4×**) and minted
+~1.06M denials/day. Splitting the socket-bound actors onto their own tier took the same
+fleet to **1.60×** and **6,341 denials/day** — a 167× reduction, 1.27 GB/day to ~8 MB/day.
+
+- **Separate tiers by what a job OCCUPIES**, not by how expensive it feels. An LLM call
+  holds a socket, not a core; putting it on a CPU tier sized for OCR is what creates the
+  excess pressure.
+- **Prefer a blocking limiter to a releasing one for rate limits.** An actor that
+  `await asyncio.sleep()`s *inside* the job holds its slot and **cannot** generate a
+  denial. An actor that releases its slot and re-queues is what mints them. This is the
+  bound that matters — not the size of the ceiling.
+- **Set `schedule_to_close`** on anything that claims a reservation, so a denial loop has
+  a terminal exit at all.
+- **Do not expect retention to reclaim a live loop.** Retention
+  (`TASKQ_PRUNE_RETENTION_SUCCEEDED`, default 30d) only helps once the owning jobs reach
+  a terminal status; rows under a still-looping job have no reachable cleanup path.
+
+---
+
 ## See also
 
+- [sweeps.md](sweeps.md) — the page/fan-out/recurse pattern, cursor rules, and idempotency by role (the preventive counterpart of entries 15, 16 and 18)
 - [ops.md](ops.md) — operations & adoption guide: sizing, timeout policy, fan-out patterns, and the footgun index (the preventive counterpart of this page)
 - [workers.md](workers.md) — worker internals, settings, PgBouncer
 - [cancellation.md](cancellation.md) — cancellation protocol
