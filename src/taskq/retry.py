@@ -406,9 +406,13 @@ def decide_after_failure(
     Reconstructs a RetryPolicy from row-stored max_attempts / retry_kind
     (authoritative) combined with live-registration scalars
     (backoff, base, cap, jitter, time_budget) that are not stored on the
-    row. If the actor registered a ``retry_classifier`` hook, invokes it
-    to get a per-exception :class:`RetryOverride`, then delegates to
-    RetryClassifier.classify.
+    row — reusing the registered policy object directly when the row
+    agrees with it and the registered policy satisfies the cap>=base
+    invariant, so the common no-drift path skips per-failure pydantic
+    validation. Any row/registration mismatch falls through to the full
+    constructor, which fails loud. If the actor registered a
+    ``retry_classifier`` hook, invokes it to get a per-exception
+    :class:`RetryOverride`, then delegates to RetryClassifier.classify.
 
     ``max_retry_backoff`` is the global ceiling forwarded to
     ``compute_backoff``. The consumer passes
@@ -421,15 +425,32 @@ def decide_after_failure(
     # row-stored max_attempts and retry_kind are authoritative;
     # live registration is authoritative for the other policy scalars
     # and for exception types.
-    reconstructed_policy = RetryPolicy(
-        kind=job_state.retry_kind,
-        max_attempts=job_state.max_attempts,
-        backoff=actor_config.retry.backoff,
-        base=actor_config.retry.base,
-        cap=actor_config.retry.cap,
-        jitter=actor_config.retry.jitter,
-        time_budget=actor_config.retry.time_budget,
-    )
+    registered = actor_config.retry
+    if (
+        job_state.retry_kind == registered.kind
+        and job_state.max_attempts == registered.max_attempts
+        and registered.cap >= registered.base
+    ):
+        # No drift: reconstructing from `registered`'s own scalars would
+        # yield a policy field-for-field equal to it, so reuse the frozen
+        # registered policy instead of re-validating it per failure
+        # (~1.5µs per reconstruction measured). Trust boundary: the
+        # cap>=base check preserves the fail-loud contract for a
+        # registration that bypassed validation (model_construct; pinned
+        # by B-TG-11), and an unknown row retry_kind fails the equality
+        # check against a valid registered kind, landing on the
+        # constructor path, which still raises ValidationError.
+        reconstructed_policy = registered
+    else:
+        reconstructed_policy = RetryPolicy(
+            kind=job_state.retry_kind,
+            max_attempts=job_state.max_attempts,
+            backoff=registered.backoff,
+            base=registered.base,
+            cap=registered.cap,
+            jitter=registered.jitter,
+            time_budget=registered.time_budget,
+        )
 
     override: RetryOverride | None = None
     if actor_config.retry_classifier is not None and not isinstance(

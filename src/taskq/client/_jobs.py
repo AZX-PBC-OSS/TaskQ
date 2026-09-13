@@ -24,7 +24,6 @@ from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
 import structlog
-from croniter import croniter
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from taskq._close import CLOSE_TIMEOUT_SECS, close_redis_bounded
@@ -77,6 +76,31 @@ if TYPE_CHECKING:
 __all__ = ["JobsClient"]
 
 logger: structlog.stdlib.BoundLogger = structlog.get_logger(__name__)
+
+
+def _item_payload_error(idx: int, actor_name: str, exc: ValidationError) -> PayloadValidationError:
+    """Annotate a batch item's payload :class:`~pydantic.ValidationError` with
+    its index and actor, as :class:`~taskq.exceptions.PayloadValidationError`.
+
+    Shared by both streaming paths (the lazy generator and the chunked
+    loop): ``build_enqueue_args`` performs the single pydantic-core
+    validation pass per item, and the client layer translates its
+    ``ValidationError`` here instead of running a second, discarded
+    validation per item just to attach context.
+
+    Error details are sanitized via ``include_url=False, include_input=False``
+    — the same contract :func:`taskq._validation.validate_actor_payload`
+    follows — because ``validation_errors`` propagates into the persisted
+    ``error_message`` / web admin via generic exception handling and payload
+    values are attacker-controlled. (The previous inline ``exc.errors()``
+    calls leaked the raw payload input on this path.)
+    """
+    errs: list[dict[str, object]] = exc.errors(include_url=False, include_input=False)  # type: ignore[assignment]  # Why: pydantic v2 ErrorDetails is a TypedDict (subtype of dict[str, Any]); assignment to list[dict[str,object]] is safe at runtime but pyright cannot prove covariance
+    return PayloadValidationError(
+        f"Payload validation failed for item {idx} (actor={actor_name!r}): {exc}",
+        actor=actor_name,
+        validation_errors=errs,
+    )
 
 
 class JobsClient:
@@ -754,7 +778,16 @@ class JobsClient:
                 idempotency_max_bytes=self._idempotency_max_bytes,
             )
 
-        # Build a lazy generator of EnqueueArgs, validating payloads on the fly.
+        # Build a lazy generator of EnqueueArgs. The payload is validated
+        # exactly ONCE per item — inside build_enqueue_args — and a
+        # ValidationError from there is re-annotated with the item's index
+        # and actor here. Why not validate upfront and discard the result
+        # (the previous shape): that ran pydantic-core twice per batch item
+        # on a hot path, and the discarded pass could not be reused because
+        # build_enqueue_args re-validates internally. Note the idempotency/
+        # scheduling checks inside build_enqueue_args now precede payload
+        # validation for a doubly-invalid item — the same precedence a
+        # single enqueue already has.
         # H4: collect per-item (actor_ref, args_id) as a side effect so handles
         # can be paired by index after the backend returns rows. This avoids
         # using a single actor's result_adapter for all handles (mixed-actor
@@ -765,28 +798,22 @@ class JobsClient:
             for idx, item in enumerate(stream):
                 ref = item.actor_ref
                 try:
-                    ref.payload_type.model_validate(item.payload)
+                    args = build_enqueue_args(
+                        ref,
+                        item.payload,
+                        scheduled_at=item.scheduled_at,
+                        priority=item.priority,
+                        fairness_key=item.fairness_key,
+                        identity_key=item.identity_key,
+                        idempotency_key=item.idempotency_key,
+                        idempotency_scope=item.idempotency_scope,
+                        metadata=dict(item.metadata),
+                        start_to_close=item.start_to_close,
+                        tags=item.tags,
+                        idempotency_max_bytes=self._idempotency_max_bytes,
+                    )
                 except ValidationError as exc:
-                    errs: list[dict[str, object]] = exc.errors()  # type: ignore[assignment]  # Why: pydantic v2 ErrorDetails is a TypedDict (subtype of dict[str, Any]); assignment to list[dict[str,object]] is safe at runtime but pyright cannot prove covariance
-                    raise PayloadValidationError(
-                        f"Payload validation failed for item {idx} (actor={ref.name!r}): {exc}",
-                        actor=ref.name,
-                        validation_errors=errs,
-                    ) from exc
-                args = build_enqueue_args(
-                    ref,
-                    item.payload,
-                    scheduled_at=item.scheduled_at,
-                    priority=item.priority,
-                    fairness_key=item.fairness_key,
-                    identity_key=item.identity_key,
-                    idempotency_key=item.idempotency_key,
-                    idempotency_scope=item.idempotency_scope,
-                    metadata=dict(item.metadata),
-                    start_to_close=item.start_to_close,
-                    tags=item.tags,
-                    idempotency_max_bytes=self._idempotency_max_bytes,
-                )
+                    raise _item_payload_error(idx, ref.name, exc) from exc
                 # Stamp batch_id AFTER build_enqueue_args, which strips any
                 # caller-supplied batch_id as a security boundary (H5).
                 args = replace(
@@ -874,26 +901,28 @@ class JobsClient:
                 assert finalizer_args is not None
                 finalizer_row = await self._backend.enqueue_with_conn(connection, finalizer_args)  # type: ignore[arg-type]  # Why: guarded by has_batch_extras; when connection is provided it is runtime-compatible
 
-            # Consume chunks, validating payloads with global index (M6).
+            # Consume chunks. The payload is validated exactly ONCE per item
+            # (inside build_enqueue_args, via build_batch_args) — the previous
+            # per-item pre-validation pass ran pydantic-core twice per item and
+            # its result was discarded. A ValidationError surfacing from
+            # build_batch_args is located back to its chunk offset (error path
+            # only) so the failure keeps the index-annotated PayloadValidationError
+            # contract (M6) without a second validation on the happy path.
             global_idx = 0
             while True:
                 chunk_items = list(islice(stream, chunk_size))
                 if not chunk_items:
                     break
-                for ci in chunk_items:
-                    ref = ci.actor_ref
-                    try:
-                        ref.payload_type.model_validate(ci.payload)
-                    except ValidationError as exc:
-                        errs_v: list[dict[str, object]] = exc.errors()  # type: ignore[assignment]  # Why: pydantic v2 ErrorDetails is a TypedDict; safe at runtime
-                        raise PayloadValidationError(
-                            f"Payload validation failed for item {global_idx} "
-                            f"(actor={ref.name!r}): {exc}",
-                            actor=ref.name,
-                            validation_errors=errs_v,
-                        ) from exc
-                    global_idx += 1
-                chunk_args = build_batch_args(chunk_items, resolved_batch_id)
+                try:
+                    chunk_args = build_batch_args(chunk_items, resolved_batch_id)
+                except ValidationError as exc:
+                    for offset, ci in enumerate(chunk_items):
+                        ref = ci.actor_ref
+                        try:
+                            ref.payload_type.model_validate(ci.payload)
+                        except ValidationError:
+                            raise _item_payload_error(global_idx + offset, ref.name, exc) from exc
+                    raise
                 chunk_rows = await self._backend.enqueue_batch(chunk_args, connection=connection)  # type: ignore[call-arg]  # Why: asyncpg.Connection is compatible with the protocol's connection parameter at runtime
                 for i, row in enumerate(chunk_rows):
                     all_handles.append(
@@ -1362,6 +1391,10 @@ class JobsClient:
                 the earlier wall-clock time in overlaps. ``allof`` fires at
                 both occurrences in overlaps.
         """
+        # Lazy import: croniter (+ dateutil) costs ~16ms at import time and
+        # is only needed on the cron-schedule path, not for ``import taskq``.
+        from croniter import croniter
+
         from taskq.cron import (
             ScheduleHandle,
             compute_next_fire_after,
@@ -1446,6 +1479,10 @@ class JobsClient:
         Clock in-memory) — the stored chain keeps its server-anchored
         phase.
         """
+        # Lazy import: croniter (+ dateutil) costs ~16ms at import time and
+        # is only needed on the cron-schedule path, not for ``import taskq``.
+        from croniter import croniter
+
         from taskq.cron import compute_next_fire_after
 
         if cron_expr is not None and not croniter.is_valid(cron_expr):
