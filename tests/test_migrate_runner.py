@@ -374,6 +374,92 @@ async def test_migration_advisory_lock_warns_when_reset_fails() -> None:
     )
 
 
+# ── migration_advisory_lock: statement_timeout widening ──────────────
+
+
+async def test_migration_advisory_lock_widens_statement_timeout_before_the_apply_phase() -> None:
+    """The apply phase must run with the session statement_timeout widened
+    to unlimited: a caller-supplied session bound (server_settings, a
+    role/database default, a DSN options clause) would abort a long DDL
+    statement — an index build over a large table — mid-statement, and
+    identically on every retry, since the runner re-executes the same
+    migration after a failure. The widening happens once, under the
+    advisory lock, after the acquire and before any apply-phase statement
+    (the same position the lock_timeout reset occupies)."""
+    conn = _FakeMigrateConn(applied=set())
+    body_ran = False
+
+    async with migrate_mod.migration_advisory_lock(  # type: ignore[arg-type]  # Why: _FakeMigrateConn stands in for asyncpg.Connection.
+        conn, lock_timeout=120.0, schema="taskq"
+    ):
+        await conn.execute("SELECT 1 AS apply_phase_marker")
+        body_ran = True
+
+    assert body_ran
+    executed = conn.executed
+    assert "pg_advisory_lock" in " ".join(executed)
+    assert executed.count("SET statement_timeout = 0") == 1, (
+        "the widening must run exactly once for the whole apply phase, not per migration"
+    )
+    assert executed.index("SET statement_timeout = 0") < next(
+        i for i, sql in enumerate(executed) if "apply_phase_marker" in sql
+    ), "the widening must precede the apply phase's first statement"
+
+
+class _FailStatementTimeoutWidenConn(_FakeMigrateConn):
+    """_FakeMigrateConn whose ``SET statement_timeout = 0`` widening raises
+    — a wedged caller-owned connection. Every other SQL (acquire, DDL,
+    unlock) completes normally."""
+
+    def __init__(self, applied: set[str]) -> None:
+        super().__init__(applied)
+        self.widen_attempts = 0
+
+    async def execute(self, sql: str, *args: object) -> str:
+        if sql == "SET statement_timeout = 0":
+            self.widen_attempts += 1
+            raise RuntimeError("synthetic statement_timeout widen failure")
+        return await super().execute(sql, *args)
+
+
+async def test_migration_advisory_lock_warns_when_statement_timeout_widen_fails() -> None:
+    """A caller-owned connection whose ``SET statement_timeout = 0``
+    widening silently fails keeps its session statement_timeout for the
+    rest of the session — a long DDL step on it can still be aborted
+    mid-statement. The widening failure must be visible to the
+    connection's owner: log a warning naming the connection, without
+    raising or invalidating the lock flow (acquire, body, and unlock still
+    complete normally)."""
+    conn = _FailStatementTimeoutWidenConn(applied=set())
+    body_ran = False
+
+    with structlog.testing.capture_logs() as captured:
+        async with migrate_mod.migration_advisory_lock(  # type: ignore[arg-type]  # Why: _FakeMigrateConn stands in for asyncpg.Connection.
+            conn, lock_timeout=120.0, schema="taskq"
+        ):
+            body_ran = True
+
+    assert body_ran, "a widening failure must not abort the lock flow"
+    assert conn.widen_attempts == 1
+    executed = " ".join(conn.executed)
+    assert "pg_advisory_lock" in executed
+    assert "pg_advisory_unlock" in executed
+    widen_warnings = [
+        e
+        for e in captured
+        if e.get("log_level") == "warning"
+        and e.get("event") == "migration-statement-timeout-widen-failed"
+    ]
+    assert widen_warnings, (
+        "the swallowed widening failure must be logged: the caller-owned "
+        "connection keeps its session statement_timeout, so a long DDL step "
+        "on it can still be aborted mid-statement"
+    )
+    assert repr(conn) in str(widen_warnings[0].get("conn", "")), (
+        "the warning must name the connection so its owner can find it"
+    )
+
+
 # ── apply_pending_locked: bounded finally teardown (dead PG) ────────────
 
 

@@ -136,9 +136,11 @@ from taskq.backend._sweeps import (
     _SWEEP_2_SQL,
     _SWEEP_3_SQL,
     _SWEEP_4_SQL,
+    _SWEEP_EVENT_TTL_SQL,
     _SWEEP_RESULT_TTL_SQL,
     SweepBatchSizer,
     sweep_deadline_exceeded,
+    sweep_expired_events,
     sweep_expired_locks,
     sweep_expired_results,
     sweep_leaked_reservation_slots,
@@ -161,6 +163,7 @@ from taskq.backend.clock import Clock
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
     DEFAULT_CHUNK_SIZE,
+    DEFAULT_EVENT_RETENTION_BATCH_SIZE,
     DEFAULT_EVENT_WRITER_BATCH_SIZE,
     DEFAULT_EVENT_WRITER_STATEMENT_TIMEOUT_MS,
     DEFAULT_RECLAIM_POLL_LIMIT,
@@ -184,6 +187,7 @@ __all__ = [
     "_SWEEP_2_SQL",
     "_SWEEP_3_SQL",
     "_SWEEP_4_SQL",
+    "_SWEEP_EVENT_TTL_SQL",
     "_SWEEP_RESULT_TTL_SQL",
     "PostgresBackend",
     "SweepBatchSizer",
@@ -947,6 +951,21 @@ class PostgresBackend:
         batch_size: int = DEFAULT_EVENT_WRITER_BATCH_SIZE,
     ) -> int:
         return await sweep_expired_results(conn, schema=schema, batch_size=batch_size)
+
+    @staticmethod
+    async def sweep_expired_events(
+        conn: ConnLike,
+        *,
+        schema: str,
+        retention: timedelta,
+        batch_size: int = DEFAULT_EVENT_RETENTION_BATCH_SIZE,
+    ) -> int:
+        return await sweep_expired_events(
+            conn,
+            schema=schema,
+            retention=retention,
+            batch_size=batch_size,
+        )
 
     # ── Read ────────────────────────────────────────────────────────────
 

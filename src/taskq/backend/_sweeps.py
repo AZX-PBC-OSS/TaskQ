@@ -114,6 +114,7 @@ from taskq.backend._records import compute_duration_ms, jsonb_param, parse_rowco
 from taskq.backend._sql import INSERT_EVENTS_DETAIL_BATCH_SQL
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
+    DEFAULT_EVENT_RETENTION_BATCH_SIZE,
     DEFAULT_EVENT_WRITER_BATCH_SIZE,
     DEFAULT_EVENT_WRITER_STATEMENT_TIMEOUT_MS,
     wake_channel,
@@ -125,9 +126,12 @@ __all__ = [
     "_SWEEP_2_SQL",
     "_SWEEP_3_SQL",
     "_SWEEP_4_SQL",
+    "_SWEEP_EVENT_TTL_SQL",
     "_SWEEP_RESULT_TTL_SQL",
     "SweepBatchSizer",
+    "prune_job_events",
     "sweep_deadline_exceeded",
+    "sweep_expired_events",
     "sweep_expired_locks",
     "sweep_expired_results",
     "sweep_leaked_reservation_slots",
@@ -372,6 +376,81 @@ SET result = NULL,
 FROM expired
 WHERE j.id = expired.id
   AND j.result IS NOT NULL"""
+
+_SWEEP_EVENT_TTL_SQL = """\
+-- Bounded batch + MATERIALIZED, same rationale as the sweep comments
+-- above: LIMIT $2 caps one call's DELETE; MATERIALIZED stops the planner
+-- from inlining the LIMIT-ed CTE into the DELETE in a way that could
+-- remove more rows than the LIMIT; ORDER BY (occurred_at, id) pins the
+-- window to the retention partial index keyed on exactly those columns
+-- (the ORDER-BY-pins-the-scan rule above), so the drain is deterministic
+-- (oldest-first, stable under tied occurred_at) and the ordered scan
+-- stops at the LIMIT in the backlog case and at the age boundary in the
+-- empty case; no keyset cursor because every windowed row is deleted by
+-- this same statement, so the eligible set shrinks monotonically per
+-- committed batch.
+--
+-- statement_timestamp() (STABLE) instead of clock_timestamp() (VOLATILE)
+-- is what lets the planner use job_events_occurred_at_idx as a range
+-- bound rather than a post-scan filter — same derivation as _SWEEP_1_SQL
+-- and the module docstring's two-clock doctrine.
+--
+-- The carve-out is load-bearing and sits INSIDE the windowing CTE: the
+-- kind='state_change' AND COALESCE(detail->>'reason','')='lock_expired'
+-- slice is the crash-reclaim outbox poll_reclaim_events tails under a
+-- trailing-watermark protocol (see poll_reclaim_events in
+-- _sql_templates.py) — deleting an unconsumed outbox row silently loses
+-- a crashed worker's reclaim forever, so the sweep exempts the slice at
+-- every age. Inside the CTE the LIMIT applies to the already-filtered
+-- deletable-only set; hoisted into the outer DELETE it would let an
+-- outbox-dominated prefix of the oldest rows fill the window batch after
+-- batch while the DELETE matched nothing — a drain that scans LIMIT rows
+-- every call yet never deletes, i.e. under-deletion caused by the
+-- carve-out's own placement.
+--
+-- Why COALESCE and not a bare (detail->>'reason') = 'lock_expired':
+-- detail->>'reason' is NULL for every event whose detail carries no
+-- reason key, so the naive NOT (kind = 'state_change' AND
+-- (detail->>'reason') = 'lock_expired') evaluates to NULL — not TRUE —
+-- for an ordinary state_change row, and WHERE drops it: state_change is
+-- the most common event kind, so the naive form silently exempts nearly
+-- the whole table from retention. COALESCE makes a missing reason
+-- simply not-'lock_expired', which is the deletable set the sweep owes.
+--
+-- The carve-out predicate must stay VERBATIM-identical to the partial
+-- index's WHERE clause in migration 01.00.07_01: partial-index predicate
+-- matching requires the query to repeat the index's predicate, and the
+-- verbatim repeat (same literals, same parentheses) is the proof the
+-- planner matches.
+--
+-- Measured plan shape (PG 18, EXPLAIN (ANALYZE, BUFFERS), retention
+-- literal '30 days', LIMIT 100): the windowing CTE is an Index Only Scan
+-- on job_events_occurred_at_idx with the occurred_at bound as an Index
+-- Cond — 5 buffers per 100-row batch at a 355k-row table, one index
+-- search, stops at the LIMIT, oldest-first. The partial-index predicate
+-- proof eliminates the carve-out from execution entirely: no Filter
+-- line, the predicate never re-evaluated, outbox rows never visited. The
+-- outer DELETE joins by PK probe per windowed row at volume (Nested
+-- Loop, 100 job_events_pkey Index Scans, 400 buffers); a 6.5k-row table
+-- plans that same join as an 88-buffer heap seq scan — a small-table
+-- cost artifact on the DELETE side, not the windowing scan. After
+-- draining every deletable row the same EXPLAIN still plans the Index
+-- Only Scan (0 rows, 21 buffers): the empty steady-state tick stays
+-- index-served. Heap Fetches on the index-only scan track visibility-map
+-- freshness (freshly inserted rows are not yet all-visible); steady-state
+-- autovacuum keeps them near zero.
+WITH expired AS MATERIALIZED (
+    SELECT id
+    FROM "{schema}".job_events
+    WHERE occurred_at < statement_timestamp() - $1::interval
+      AND NOT (kind = 'state_change' AND COALESCE(detail->>'reason', '') = 'lock_expired')
+    ORDER BY occurred_at, id
+    LIMIT $2
+)
+DELETE FROM "{schema}".job_events e
+USING expired
+WHERE e.id = expired.id
+RETURNING e.id"""
 
 # Per-sweep batched attempt INSERT templates (schema baked in via .format
 # at call time after _IDENT_RE validation).  Kept as constants so the SQL
@@ -1047,3 +1126,67 @@ async def sweep_expired_results(
             schema=schema,
         )
     return count
+
+
+async def sweep_expired_events(
+    conn: ConnLike,
+    *,
+    schema: str,
+    retention: timedelta,
+    batch_size: int = DEFAULT_EVENT_RETENTION_BATCH_SIZE,
+) -> int:
+    """Delete ``job_events`` rows older than *retention*, one bounded batch
+    per call, regardless of parent-job status.
+
+    One call deletes at most ``batch_size`` rows in one short statement;
+    repeated calls drain the eligible backlog a committed batch at a time.
+    Events are narration: the durable forensic record for a job is
+    jobs/jobs_archive plus job_attempts/job_attempts_archive, kept for the
+    full prune and archive windows — so this sweep bounds event volume
+    independently of job retention, and reaches the rows the
+    terminality-keyed prune never can (a job that never reaches a terminal
+    status holds its events forever under the cascade-only regime).
+
+    The crash-reclaim outbox slice (``kind='state_change'`` and
+    ``detail->>'reason'='lock_expired'``) is exempt at every age — see
+    ``_SWEEP_EVENT_TTL_SQL``'s comment for why deleting an unconsumed
+    outbox row silently loses a crashed worker's reclaim.
+
+    *retention* must be positive: ``timedelta(0)`` is the SETTING's
+    disable sentinel (``WorkerSettings.event_retention_period``), never a
+    sweep argument — at the function boundary zero would read as "delete
+    every event older than now", the dangerous misreading, so it is
+    rejected here as a caller wiring bug.
+
+    PG uses server-side ``statement_timestamp()`` for the age bound
+    (STABLE, so the retention partial index serves it as an Index Cond —
+    see the module docstring); this function takes no ``now`` argument.
+
+    Returns the count of events deleted by this call.
+    """
+    if not _IDENT_RE.match(schema):
+        raise ValueError(f"invalid schema identifier: {schema!r}")
+    _validate_positive("batch_size", batch_size)
+    if retention <= timedelta(0):
+        raise ValueError(
+            f"retention must be positive, got {retention!r}; timedelta(0) is the "
+            "settings-level disable sentinel, not a sweep argument"
+        )
+
+    sql = _SWEEP_EVENT_TTL_SQL.format(schema=schema)
+    tag = await conn.execute(sql, retention, batch_size)
+    count = parse_rowcount(tag)
+    if count > 0:
+        logger.debug(
+            "sweep_expired_events",
+            kind="sweep_expired_events",
+            count=count,
+            schema=schema,
+        )
+    return count
+
+
+# One sweep, two discovery names: the sweep-family naming
+# (sweep_expired_events) and the leader-shared prune-family naming both
+# reach this function, so the retention seam is discoverable under either.
+prune_job_events = sweep_expired_events

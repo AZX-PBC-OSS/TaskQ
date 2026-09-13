@@ -333,6 +333,200 @@ defaulting `tenant_id="unattributed"` against a ref model requiring
 actor. If you added a redundant default to a ref model to work around this,
 you can now remove it.
 
+### Keyed refs: `payload_type` is required, `key_fn` receives the model
+
+> **Unreleased.** Breaking for every `KeyedRateLimitRef` /
+> `KeyedReservationRef` declaration.
+
+**Old (broken):**
+
+```python
+KeyedRateLimitRef(
+    base_name="api-per-tenant", key_fn=lambda p: p["tenant_id"], capacity=10, refill_per_second=1.0
+)
+```
+
+**New:**
+
+```python
+KeyedRateLimitRef.typed(
+    MyPayload,
+    base_name="api-per-tenant",
+    key_fn=lambda p: p.tenant_id,
+    capacity=10,
+    refill_per_second=1.0,
+)
+```
+
+`payload_type` is now required, and `key_fn` receives the validated Pydantic
+model, not the raw dict. Use `.typed()` for compile-time type checking of
+`key_fn` against the payload model.
+
+**Deploy hazard:** if defaults or validators change a key-deriving field's
+value vs the raw row, new concrete names materialize fresh full-capacity
+buckets alongside old ones (a temporary over-admission window). Drain
+affected queues before deploying payload model changes that affect key
+derivation.
+
+### Dispatch-path malformed payloads fail immediately
+
+> **Unreleased.** Breaking for callers that relied on invalid payloads
+> being retried.
+
+Dispatch-path malformed payloads now fail immediately as
+`PayloadValidationError` (non-retryable) instead of being retried as a
+generic `ValidationError`. In-flight legacy rows with invalid payloads will
+fail on first dispatch instead of exhausting the retry budget.
+
+### `wait_for_batch` defaults to `on_empty="error"`
+
+> **Unreleased.** Breaking for callers that relied on the silent empty
+> return.
+
+Previously, calling `wait_for_batch` on a batch_id with zero jobs and no
+`batches` row returned an empty `BatchCompletionStatus` silently. The
+default is now `on_empty="error"`, which raises `EmptyBatchError`. Pass
+`on_empty="ok"` to preserve the old silent-return behaviour.
+
+### Sub-enqueue failure events carry `error_class`/`error_message`
+
+> **Unreleased.** Breaking for log pipelines.
+
+`sub_enqueue_re_enqueue_error` and `sub_enqueue_flush_error` now carry
+`error_class` + `error_message` instead of the single `message` field,
+matching the `error_class`/`error_message` convention used by every other
+error event (`job_timeout`, `job_exception`, `job_failed`,
+`rate_limit_release_failed`, `savepoint_rollback_failed`,
+`stranded_jobs_query_failed`, and the `failed_details` payload of
+`sub_enqueue_flush_failed`). Log pipelines querying `fields.message` on
+these two events must switch to `error_message`.
+
+### dotenvmodel 1.x: environment-variable precedence flips
+
+> **Unreleased.** Breaking for deployments that rely on `.env` files
+> beating the process environment.
+
+dotenvmodel is bumped to 1.x (`>=1.1.0,<2`), adopting its 1.0 defaults.
+Environment-variable precedence flips: the process environment now beats
+`.env` files by default (previously `.env` values overwrote `os.environ`);
+restore the files-beat-env-vars behaviour with `DOTENV_OVERRIDE=true` or
+`TaskQSettings.load(override=True)`. `load()` no longer mutates
+`os.environ` — read `TASKQ_*` values from the settings instance, not the
+process environment, after a load. `TaskQSettings.load()` now forwards
+dotenvmodel's full parameter surface (`env`, `override`, `env_dir`,
+`read_dotfiles`, `read_environ`, `load_local`). Subclass string-field
+defaults containing `${VAR}` references are interpolated at load time
+(unset references resolve to `""`).
+
+### Time is unified on the database clock
+
+> **Unreleased.** Breaking for `Backend` implementors and for callers
+> passing absolute `schedule_to_close` datetimes.
+
+`EnqueueArgs.scheduled_at` is now nullable: "immediate" enqueue passes
+`None` and the server stamps it (no more client-side `now()` default), and
+`Backend` implementations that require a non-`None` datetime fail loudly.
+The raw `schedule_to_close` datetime form is deprecated in favour of
+`schedule_to_close_interval` (or declaring `retry.time_budget` on the actor
+— absolute datetimes cross clock domains and can misbehave under skew);
+every enqueue arm writes the deadline from one domain (server clock +
+interval). The rate-limit Redis Lua scripts derive `now` from
+`redis.call('TIME')` — the caller-supplied `now` ARGV is removed.
+
+### `firstof`/`allof` DST strategies become live
+
+> **Unreleased.** Breaking for schedules that already exist and declare
+> them.
+
+The cron tick's `SELECT` never listed the `dst_strategy` column and
+`fire_schedule` read it as `row.get("dst_strategy", "skip")`, so the stored
+value was **always** `skip` in production whatever the schedule said — the
+branch that enqueues the second job for a DST fall-back overlap was
+unreachable. The column is now selected and read, so a schedule configured
+`allof` or `firstof` years ago changes behaviour on upgrade, with no
+configuration change and nothing raised: on the autumn fall-back night an
+`allof` schedule enqueues **two** jobs for the repeated local hour where it
+used to enqueue one. Audit for non-`skip` schedules before rolling out,
+and make sure their actors are idempotent.
+
+### `worker_id` is no longer a metric dimension
+
+> **Unreleased.** Breaking for dashboards, queries and alert rules that
+> group or filter by `worker_id`.
+
+`taskq.lock.expires_in_seconds`, `taskq.heartbeat.misses`,
+`taskq.leader.election_attempts`, `taskq.leader.election_failures`,
+`taskq.cron.lock_contention` and the `taskq.heartbeat.consecutive_failures`
+gauge now emit a single undimensioned series each — they return one series
+where they used to return one per worker. `worker_id` is a fresh UUID per
+worker *process*, so every deploy, restart and autoscale event minted new
+time series without bound; Azure Monitor counts each unique (metric,
+dimension key, dimension value) seen in 12 hours as an active series, caps
+a subscription at 50,000 per region, and throttles ingestion for *every*
+custom metric once the cap is passed, with no backfill of what was dropped.
+Per-worker attribution is unchanged on the channels where cardinality is
+free: `worker_id` is bound onto every log line via contextvars, and
+`taskq.worker_id` is a cron-fire span attribute. The `record_*` helpers
+still accept their `worker_id` argument — only the dimension is gone.
+`taskq.cron.consecutive_failures` keeps its `schedule_id` dimension:
+schedules are a bounded, operator-created set, and
+`cron_auto_disable_threshold` is evaluated per schedule.
+
+### `taskq._json.dumps()` requires `str` dict keys
+
+> **Unreleased.** Breaking for raw (unvalidated) dicts with non-`str`
+> keys.
+
+`taskq._json.dumps()` no longer passes `OPT_NON_STR_KEYS` to orjson — dict
+keys that are not `str` (e.g. int keys in job metadata, actor results, or
+progress data) now raise `TypeError` instead of being silently coerced to
+string keys. **Callers must stringify keys before enqueue.**
+
+Pydantic-validated payloads are unaffected: `dict[str, ...]` model fields
+reject non-`str` keys at validation (they do not coerce), so a payload that
+reaches `EnqueueArgs` through `jobs.enqueue` already has string keys.
+Non-`str` keys were always lossy on the wire — JSON objects and PG `jsonb`
+can only carry string keys — so failing fast surfaces at the boundary what
+used to surface as a silently rewritten key on read-back. Dropping the flag
+is also 1.29–1.73x faster on str-keyed input (its only effect there). See
+the `taskq._json.dumps` docstring for the full reasoning.
+
+### `heartbeat_timeout` is refused at the enqueue boundary
+
+> **Unreleased.** Breaking for callers passing `heartbeat_timeout` to any
+> enqueue API.
+
+Passing `heartbeat_timeout` to any enqueue API (`JobsClient.enqueue`, the
+`TaskQ` facade, `SubJobEnqueuer.enqueue()` / `enqueue_batch()`) now raises
+`ValueError` naming the parameter. It was previously accepted and silently
+ignored — job reclamation is governed by the global `TASKQ_LOCK_LEASE`
+setting; no worker or reclaim sweep reads a per-job heartbeat timeout.
+Remove the parameter from call sites, or size `TASKQ_LOCK_LEASE` for the
+reclaim latency you need. The field stays on `EnqueueArgs` and on the
+stored row: write paths that build args directly — cron ticks, the testing
+helpers — never cross this boundary.
+
+### Reservation and rate-limit denials are counters, not event rows
+
+> **Unreleased.** Breaking for anything that consumed per-denial event
+> rows.
+
+Reservation/rate-limit denials no longer persist per-occurrence rows: a
+denial increments the bounded `snooze_count`/`rate_limit_blocked_count`
+counter columns on the job row and emits an OTEL counter; it writes no
+`job_attempts`/`job_events` row and no longer raises `max_attempts`.
+Anything that consumed per-denial event rows (e.g. dashboards over
+`job_events`) must read the counters or OTEL instead.
+
+### Snoozing no longer raises `max_attempts`
+
+> **Unreleased.** Breaking for jobs that previously snoozed forever.
+
+Snoozing no longer raises `max_attempts` (the ceiling is immutable); a
+non-`indefinite` job with no `schedule_to_close` now terminally fails with
+`MaxAttemptsExceeded` when its retry budget is spent rather than snoozing
+forever.
+
 ---
 
 ## Silent behaviour changes
@@ -354,6 +548,14 @@ silently drained will recover, and Redis-side buckets that had been inflated
 will return to their configured capacity. If you had raised a `capacity` to
 compensate for the drift, re-check it against the corrected behaviour rather
 than leaving the compensation in place.
+
+Two further refund defects in the same area are fixed: the in-memory and
+Postgres log-style sliding-window `refund()` was a silent no-op (it now
+properly frees slots), and the Postgres token-bucket `refund()` was likewise
+a no-op (it now properly refunds tokens, capped at capacity, via `FOR
+UPDATE` on `rate_limit_buckets`). Both were released behaviour — a
+release-and-retry cycle never gave the slot back — so fixed-quota buckets
+may again admit work that had been permanently locked out.
 
 ### `@actor(...)` capacity literals no longer win over the stored row
 
@@ -461,6 +663,203 @@ now reflect only what the completed batches did. See
 including why the drain terminates on the window count rather than the
 affected-row count.
 
+### Sub-jobs inherit parent tags by default
+
+> **Unreleased.** Silent for code that did not rely on sub-job tags being
+> empty.
+
+Every `ctx.jobs.enqueue()` call inside an actor body now propagates the
+parent job's tags to the sub-job, making sub-jobs findable by
+`JobFilter(tags=...)` and cancellable by `cancel_where`. Pass
+`inherit_tags=False` per-call to opt out. This is a behaviour change for any
+code that relied on sub-job tags being empty — inherited tags make sub-jobs
+visible to tag-based filters and bulk cancels.
+
+### `WorkerSettings` post-load validation runs on every load path
+
+> **Unreleased.** Silent unless a `reload()` or a `validate=False` load
+> produces values an earlier load would have accepted.
+
+dotenvmodel is bumped 0.3.0 → 0.5.0 and `WorkerSettings` uses dotenvmodel's
+native `post_load()` hook instead of manual `load()`/`load_from_dict()`
+overrides. The base `DotEnvConfig._load_fields` invokes `post_load`
+automatically on every load path — `load()`, `load_from_dict()`, and
+`reload()` — including under `validate=False`, so a `reload()` that produces
+invariant-violating values now fails instead of silently succeeding.
+`log_format` validation also moved from dotenvmodel's `choices=` constraint
+(which `load_from_dict(..., validate=False)` skipped, so an invalid
+`TASKQ_LOG_FORMAT` could previously load silently) to a `validator` hook
+that runs regardless of `validate=`; its error message is now ``log_format
+must be one of ['console', 'json'], got <value>``.
+
+### Every mixed-clock decision is single-arbiter on the store's clock
+
+> **Unreleased.** Silent; behaviour under clock skew changes.
+
+The application process and the database server keep separate clocks that
+can diverge or step (VM pause/resume, NTP drift); every place that mixed the
+two domains in one decision is anchored to the database clock: workgroup
+supervisor freshness is computed server-side (a skewed supervisor host can
+no longer kill healthy children); cron ticks read the server clock inside
+the leader transaction, with the catch-up cutoff and beyond-window
+recompute server-anchored (no fire-loops or silently skipped backlog under
+leader-clock skew); rate limiting runs on the store's clock (PG window
+predicates and GCRA/token-bucket epoch math are server-side; peeks measure
+against the store clock too); prune/archive cutoffs and enqueue-pinned
+result TTLs are stamped server-side; the batch COPY path is server-stamped
+via an in-transaction fixup (`status`, `created_at`, `scheduled_at`,
+`schedule_to_close`, `result_expires_at`), so dedup windows hold under skew.
+
+### The admin session cookie is scoped to the admin mount path
+
+> **Unreleased.** Silent; expect one session lifetime of cookie overlap on
+> upgrade.
+
+`taskq_session` carried no `path=`, so it defaulted to `/` and the browser
+attached it to every request to the host application that mounts the admin
+UI — including routes with no reason to see an admin session. Both SSO
+backends now set `path` to their `base_path`, and logout clears it on the
+same path (a delete on a different path clears nothing, which would have
+left a live session behind). **A stale `path=/` cookie written by a previous
+version is not replaced by the new one** — the browser keeps both and sends
+both, and the broader one can shadow the narrower until it expires.
+Operators upgrading should clear the `taskq_session` cookie, or expect one
+session lifetime (`session_max_age_seconds`, default 8h) of overlap.
+
+### `ctx.progress()` no longer blocks the actor
+
+> **Unreleased.** Silent; removes a synchronous Redis round-trip from the
+> actor body.
+
+Progress publishing was fire-and-forget in name only — `ctx.progress()`
+blocked the actor on a synchronous Redis round-trip. It now publishes via
+background tasks with a drain on shutdown.
+
+### Worker failure diagnostics are no longer swallowed
+
+> **Unreleased.** Silent; log volume and log fields change.
+
+Timeout and generic-exception attempts log `job_timeout` / `job_exception`
+WARNING events carrying `error_class` / `error_message` /
+`error_traceback`; every terminal (non-retryable) failure across all five
+handlers emits exactly one `job_failed` ERROR event (`job_id`, `actor`,
+`attempt`, `cause`, `error_class`, plus handler context such as
+`snooze_count` / `consume_budget` / `bucket_name`) — one alertable event per
+dead job, and per-attempt diagnostics at WARNING so retryable attempts
+produce zero ERROR noise. Tracebacks are formatted from the explicit
+exception object rather than the ambient `sys.exception()`, so handler
+invocations outside an `except` block no longer record `'NoneType: None'`.
+The `terminal-write-failed` event now includes `job_error_traceback` and
+`infra_error_traceback`. Timeout spans (`lifecycle.scheduled` /
+`lifecycle.failed`) now report the concrete exception class instead of
+hardcoded `TimeoutError`, agreeing with the log fields. Snooze / RetryAfter
+/ ReservationUnavailable terminal outcomes and the stranded-jobs leader
+sweep also log their failure details instead of continuing silently.
+
+### `on_retry_exhausted` awaits any Awaitable
+
+> **Unreleased.** Silent; non-coroutine Awaitable callbacks now actually
+> run.
+
+`on_retry_exhausted` now uses `inspect.isawaitable()` instead of
+`inspect.iscoroutine()`, so a callback returning a non-coroutine Awaitable
+(e.g. a `Task` or a custom awaitable) is awaited instead of silently
+skipped.
+
+### `TaskQ(redis_url=...)` is validated at construction
+
+> **Unreleased.** Silent; invalid URLs fail earlier and with a different
+> exception.
+
+The URL routes through `load_from_dict`, so the `RedisDsn` field type
+coerces and validates it — an invalid URL now raises `TypeCoercionError`
+fail-fast at `open()` (previously a late `ValueError` from redis-py), and an
+empty or whitespace-only `redis_url` raises `ValueError` at construction
+instead of silently disabling Redis.
+
+### The `.env`-not-found warning filter is narrowed
+
+> **Unreleased.** Silent; real dotenvmodel warnings are visible again.
+
+The `.env`-not-found warning suppression is narrowed to exactly that one
+warning — a `logging.Filter` matched on message prefix, instead of raising
+the whole `dotenvmodel` logger to ERROR — so real misconfiguration warnings
+(e.g. an invalid `DOTENV_*` value) stay visible.
+
+### `start_to_close` now cancels the running actor
+
+> **Unreleased.** Silent unless an actor runs past its deadline.
+
+`start_to_close` now actually cancels the running actor on the transactional
+path. `_run_actor_in_tx` wrapped the actor in `asyncio.shield()` *inside*
+the `wait_for` enforcing the deadline, and a shield keeps the shielded
+awaitable running when its waiter is cancelled — so the timeout applied to
+the wait and never to the actor. The attempt was marked timed out and became
+eligible for retry on another worker while the original body kept executing,
+running every side effect past the timeout point twice. **An actor that
+previously ran past its `start_to_close` deadline will now see
+`CancelledError` at that deadline**, so any cleanup it needs on interruption
+belongs in a `finally`. The autonomous path already used a bare `wait_for`
+and is unchanged; the outer `shield(_run_actor_in_tx())`, which decouples
+*external* cancellation from an in-flight commit, is untouched.
+
+### Cancel state is cleared on every retry arm
+
+> **Unreleased.** Silent; cancels of jobs that retry mid-cancel now work.
+
+A cancel that escalated to `cancel_phase=2` in the same instant the actor
+raised an ordinary retryable exception survived the retry write: `mark_retry`,
+`mark_snoozed` and both `mark_retry_after` variants rewrote
+`status`/`scheduled_at` but left `cancel_phase` and `cancel_requested_at` on
+the row, and a retry reuses the *same* row. The next attempt was therefore
+dispatched already at FORCED, so the cancel controller's PG-observation
+fast-advance jumped straight to FORCED without ever calling `task.cancel()`
+— the job could never be cancelled again, only abandoned while its
+coroutine kept running. Both backends now clear the cancel columns on every
+retry arm. Terminal arms still keep both columns: they are the audit trail,
+and `mark_abandoned`'s `cancel_phase=2` guard reads them.
+
+### Keyed rate-limit `key_fn` errors no longer embed the payload
+
+> **Unreleased.** Silent; error text changes.
+
+The `RateLimitRegistry` "key_fn returned an empty key" `ValueError`
+interpolated the whole payload (`for payload {payload!r}`); that exception
+propagates into the persisted `error_message` and the web admin through
+generic exception handling, and payload values are attacker-controlled. The
+message now names only the ref, matching the sanitization contract
+`PayloadValidationError` follows in `taskq._validation`.
+
+### Packaging, dependencies, and documentation corrections
+
+> **Unreleased.** Silent; install behaviour changes.
+
+- `humanize` moved from the core install to the `[fastapi]` extra (it was
+  bloating core installs).
+- `starlette` and `prometheus_client` are declared as direct dependencies
+  (they were transitive-reliance).
+- Dependency upper bounds are added to `asyncpg`, `redis`, `pydantic`,
+  `fastapi`, `typer`, `dotenvmodel`, `uuid-utils`, `uvicorn`, `structlog`,
+  `opentelemetry-instrumentation`, `prometheus-client` — a deployment
+  pinning a newer version than a bound now fails to resolve instead of
+  silently drifting.
+- Stale `[web]` extra references in the README and CI were replaced with
+  `[fastapi]`; there is no `[web]` extra.
+- Docs corrected: `configuration.md` claimed `TASKQ_ENVIRONMENT` selects
+  `.env.{env}` files — `ENV` does; `TASKQ_ENVIRONMENT` is a deployment label
+  that gates the unauthenticated-admin warning.
+
+### `job_events` rows past the retention period are deleted
+
+> **Unreleased.** Silent; event history older than the retention window
+> disappears.
+
+`job_events` rows older than `TASKQ_EVENT_RETENTION_PERIOD` (default 7
+days) are now deleted by a leader sweep regardless of parent-job status;
+`timedelta(0)` disables it; the crash-reclaim outbox slice
+(`kind='state_change' AND detail->>'reason'='lock_expired'`) is exempt at
+any setting.
+
 ---
 
 ## Bounded inputs
@@ -474,8 +873,14 @@ error, not a crash, but a caller that exceeded the bound will now fail.
 | `taskq.worker.queue_ops.set_queue_max_concurrent` | `>= 1` or `None` (was `>= 0`) | `ValueError` |
 | `SubJobEnqueuer.enqueue_batch(items)` | at least 1 item | `ValueError` |
 | `BatchFilter(limit=...)` | `<= 500` (default 100, `0` still means "no rows") | `ValueError` at construction |
-| Admin `/jobs`, `/jobs/count`, `/history` — `status` | at most 8 values | HTTP 400 |
+| Admin `/jobs`, `/jobs/count`, `/history` — `status` | values outside the closed status set | HTTP 400 |
 | Admin `/jobs` — `tags` | 255 chars each (no item-count cap) | HTTP 400 |
+| `JobFilter` — `queue`, `actor`, `identity_key`, `tags` | no NUL bytes | `ValueError` in `__post_init__` |
+| `ScheduleCreateArgs` — `actor`, `name`, `timezone`, `payload_factory`, `identity_key` | no NUL bytes | `ValueError` in `__post_init__` |
+| Admin text filters — `actor`, `queue`, `search`, `identity_key`, `fairness_key`, `tags` | no NUL bytes | HTTP 400 |
+| `ScheduleCreateArgs.dst_strategy` | a value in `taskq.cron.DST_STRATEGIES` | `ValueError` in `__post_init__` |
+| `BatchHandle.status()` / `wait_for_batch()` — `schema` | schema-identifier regex | `ValueError` |
+| `taskq.testing.pg` — `schema` | schema-identifier regex | `ValueError` |
 
 Notes:
 
@@ -489,9 +894,24 @@ Notes:
 - **`enqueue_batch([])`.** Previously returned `[]` silently when no connection
   was in play, while `JobsClient.enqueue_batch` already raised. Guard the call
   site if your item list can legitimately be empty.
-- **Admin `status` filter.** Values are now deduplicated in first-occurrence
+- **Admin `status` filter.** Values are deduplicated in first-occurrence
   order, so a request repeating a status still succeeds and returns the same
-  rows — only requests with more than 8 total values are rejected.
+  rows — only requests containing a value outside the closed status set are
+  rejected, and the dedup alone bounds the list to the set's eight members,
+  however long the request is.
+- **NUL bytes.** Previously these reached Postgres and came back as an opaque
+  asyncpg `22021` — a 500 from the admin routes. The values were never
+  storable; the rejection surfaces the fault at the boundary instead.
+- **`dst_strategy`.** An unrecognized strategy previously constructed fine and
+  took the default branch at cron-tick time. The known set is newly exported
+  as `taskq.cron.DST_STRATEGIES`. A schedule that already declares
+  `firstof`/`allof` also changes firing behaviour — see
+  [Breaking API changes](#breaking-api-changes).
+- **SQL interpolation guards.** The `schema` parameter of the batch public API
+  (`BatchHandle.status()`, `wait_for_batch()`) was previously interpolated
+  without validation — a SQL-injection surface; it is now validated against
+  the canonical schema-identifier regex before interpolation, and
+  `taskq.testing.pg` follows the same rule.
 
 ---
 
@@ -530,8 +950,17 @@ If you tune either watchdog knob, move both together and keep the lag budget
 comfortably inside `lock_lease`.
 
 These raise dotenvmodel's `ValidationError` / `MultipleValidationErrors`, not
-`ValueError` — see the dotenvmodel 1.x note in the changelog if you catch
-around `WorkerSettings.load*()`.
+`ValueError`. The cross-field invariants (`lock_lease >= 4 *
+heartbeat_interval`, the grace-budget checks) previously raised `ValueError`,
+so callers that catch `ValueError` around `WorkerSettings.load*()` will no
+longer catch them — catch `DotEnvModelError` (the common base) to cover both
+single and aggregate cases, or `ValidationError` when at most one invariant
+can fire. `ConstraintViolationError` (field validators) was already not a
+`ValueError`; field-level validation (`prune_retention_*`,
+`default_start_to_close`, `log_format`, etc.) already raised it and is
+unaffected. See the dotenvmodel 1.x note under
+[Breaking API changes](#breaking-api-changes) for the dependency-level
+changes.
 
 ---
 
@@ -577,8 +1006,290 @@ jobs enqueued onto it were stranded, since no worker's `queue = ANY($1)` ever
 matched. The new error surfaces a fault that was previously silent.
 
 Separately, queue names are now validated at both the enqueue and the
-`@actor(queue=...)` declaration chokepoints. The `QueueName` annotation is
+actor-declaration chokepoints. The `QueueName` annotation is
 inert at runtime (its `AfterValidator` only fires inside pydantic model
 validation), so a typo'd queue name previously sailed through. It now raises
 at decoration time — **import time in the common case**, so a typo that used
 to strand jobs quietly will now stop your process from starting.
+
+---
+
+## Unreleased features
+
+The features and notes below land with the next release. The canonical
+release notes for every release are generated by release-please from the
+repository's conventional commits — `CHANGELOG.md` is generator-owned, and a
+hand-written block there is invisible to the release-notes pipeline — which
+is why the pending notes live in this guide. At release time the generated
+changelog becomes the authoritative record and these notes age out.
+
+### Jobs and batches
+
+- **`JobsClient.cancel_where(filter, reason)`** — bulk cancel all jobs
+  matching a `JobFilter` in a single set-based operation. Pending/scheduled
+  jobs go straight to terminal `cancelled`; running jobs get cooperative
+  cancel (`cancel_phase=1`). Returns `BulkCancelResult` with counts and
+  affected IDs. Empty filters are rejected with `EmptyFilterError` unless
+  `allow_empty_filter=True` is passed. `BulkCancelResult` and
+  `EmptyFilterError` are exported from the `taskq` top level.
+- **Batch failure policies (`AbortBatchAfter`)** — an opt-in `failure_policy`
+  parameter on `enqueue_batch()` / `enqueue_batch_streaming()` creates a
+  `batches` row and drives abort-on-consecutive-failure semantics via the
+  `apply_batch_terminal_outcome` hook. When the threshold is reached the
+  batch is aborted: pending/scheduled child jobs are cancelled and the batch
+  row is set to `aborted`.
+- **Batch finalizer (transactional enqueue with batch)** — a `finalizer`
+  parameter on `enqueue_batch()` / `enqueue_batch_streaming()` enqueues a
+  finalizer job alongside the batch in the same transaction. The finalizer
+  is NOT stamped with `batch_id` (deadlock prevention); `wait_for_batch`
+  automatically excludes it from counts via the batch row's
+  `finalizer_job_id`.
+- **Batch discovery (`list_batches`, `BatchSummary`)** —
+  `JobsClient.list_batches(BatchFilter)` returns `BatchSummary` objects with
+  live job-count aggregates. `BatchFilter` carries only batch-relevant fields
+  (`queue`, `active`, `batch_id`, `limit`).
+- **`enqueue_batch_streaming` for unbounded iterables** — accepts an
+  `Iterable[EnqueueItem]` (including generators) and inserts in chunks of
+  `chunk_size` (1–1000). All items share the same `batch_id`.
+- **`wait_for_batch` with `expect_at_least`, `on_empty`, `exclude_job_id`** —
+  `expect_at_least` raises `EmptyBatchError` when fewer than the expected
+  number of jobs are present; `on_empty` controls behaviour when zero jobs
+  and no `batches` row exist (`"error"` raises, `"ok"` returns empty
+  status); `exclude_job_id` omits a specific job from counts (defaults to
+  the batch row's `finalizer_job_id`).
+- **Backend protocol batch methods (10 new methods)** —
+  `enqueue_batch_atomic`, `create_batch`, `increment_batch_failures`,
+  `reset_batch_failures`, `abort_batch`, `complete_batch`, `get_batch`,
+  `list_batches`, `count_batch_non_terminal`, `prune_old_batches`.
+- **Batches table migration (01.00.05_01)** — adds the `batches` table with
+  columns for status tracking, failure counters, finalizer linkage, and
+  batch-level metadata.
+
+### Sub-job enqueueing
+
+- **`SubJobEnqueuer.enqueue()` now accepts `tags`, `inherit_tags`,
+  `schedule_to_close`, and `start_to_close` parameters.** Sub-jobs inherit
+  the parent job's tags by default (`inherit_tags=True`); pass
+  `inherit_tags=False` to suppress inheritance for a specific sub-job.
+
+### Managed identities and connections
+
+- **Connection hook points for managed-identity / BYO connections** —
+  `WorkerConnections` dataclass with per-role pre-constructed resources
+  (caller-owned) or zero-arg async factories (TaskQ-owned) for the worker's
+  three PG pools, notify/leader dedicated connections, and Redis client.
+  `worker_main(..., connections=...)` and `open_worker_deps(...,
+  connections=...)` accept it; fields left `None` fall back to DSN
+  construction. `PoolFactory`, `ConnFactory`, `RedisFactory` type aliases
+  are exported from the `taskq` top level.
+- **Vendor-neutral credential provider abstraction (`taskq.auth`)** —
+  `PgCredentialProvider` and `RedisCredentialProvider` async Protocols with
+  reusable `make_pg_pool_factory`, `make_dedicated_conn_factory`,
+  `make_redis_client_factory` builders. Any provider implementing the
+  Protocols gets all factory builders for free. The PG factories pass the
+  credential to asyncpg as `user=` / `password=` keyword arguments (which
+  take precedence over both DSN userinfo and DSN query parameters), so the
+  token never appears in the DSN string; `enrich_pg_dsn` remains as the
+  string-helper variant (writes the credential into DSN userinfo; adds
+  `sslmode=require` only when the DSN has no explicit sslmode —
+  `verify-full` is never downgraded). All four helpers are exported from the
+  `taskq` top level as well as `taskq.auth`.
+- **Per-worker Postgres credential providers in workgroup configs** — a
+  `pg_credential_provider = "module:attr"` key on a `[[workers]]` entry (or
+  the `pg_credential_provider=` field on `WorkerSpec`) is forwarded to that
+  worker's child command line as `--pg-credential-provider`, so two workers
+  in one workgroup can use different providers.
+- **`taskq[aad]` extra** — `taskq.aad` module with Microsoft Entra ID
+  providers (`EntraIdProvider`, `EntraIdPgProvider`, `EntraIdRedisProvider`)
+  backed by `azure.identity.aio` (the extra includes `aiohttp`, required by
+  the async credentials). Providers constructed with `credential=None`
+  lazily create one `DefaultAzureCredential` and reuse it; sync
+  `azure.identity` credentials are supported and offloaded to a thread. See
+  [managed-identities.md](managed-identities.md).
+- **`taskq[aws]` extra** — `taskq.aws` module with `RdsIamProvider` for AWS
+  IAM RDS Postgres authentication, backed by `boto3`.
+- **`taskq[vault]` extra** — `taskq.vault` module with
+  `VaultDynamicDbProvider` for HashiCorp Vault database secrets engine
+  dynamic credentials, backed by `hvac`.
+- **`TaskQ` stream hooks** — `pg_conn_factory` and `listen_conn` parameters
+  for the LISTEN/NOTIFY transport in `TaskQ.stream()`, so pool-only / AAD
+  deployments can stream without a DSN. `stream()` now uses
+  `contextlib.aclosing` to ensure the inner generator's `finally` (conn
+  close) runs promptly on early return.
+- **`migrate.apply_pending_locked` hooks** — `conn` (caller-owned) and
+  `conn_factory` (TaskQ-owned) parameters replace the DSN-only path.
+- **Credential hot-reload (SIGHUP / interval / programmatic)** — hot-swaps
+  every factory-backed PG pool, dedicated connection, and Redis client with
+  freshly-built replacements (each factory fetches a fresh credential).
+  Triggers: SIGHUP; `TASKQ_RELOAD_INTERVAL` (seconds, unset by default) for
+  periodic reloads with no external signal — the only rotation path on
+  Windows; and `WorkerDeps.request_reload()` / `reload_credentials(deps)`
+  for embedders. Each factory call is bounded by
+  `TASKQ_RELOAD_FACTORY_TIMEOUT` (default 30 s). The swap is atomic: the old
+  pool stops serving new acquisitions immediately and is closed in the
+  background with a bounded drain (default 5 s), then terminated — an
+  in-flight actor that outlives the drain sees its next acquire fail and
+  the job retries on the new pool. DI-injected `db: asyncpg.Pool` actors
+  resolve the new pool (LOOP-scope cache refresh) and progress flushing
+  follows the swap. A SIGHUP arriving mid-reload (success or failure)
+  triggers exactly one follow-up reload; reloads are skipped while shutdown
+  is in progress. Each resource reloads independently — one factory failure
+  is logged and does not abort the rest; the `credentials-reloaded` log
+  line's `failed` field reports any resource that didn't rotate.
+  Caller-owned resources are not swapped.
+- **NOTIFY listener resilience** — the reconnect loop rebuilds a dropped
+  LISTEN connection through the user-supplied `notify_conn_factory` (or the
+  DSN closure it was opened with) instead of a stale/absent DSN. A
+  caller-owned `notify_conn` that drops disables the listener (poll-based
+  dispatch fallback) instead of crashing the worker.
+- **Ownership-contract enforcement** — caller-owned pools/connections/Redis
+  clients are never closed by TaskQ (including shutdown paths). A
+  caller-owned `leader_conn` with no `leader_conn_factory` and no
+  `pg_dsn_direct` is a startup `ValueError` (no rebuild path). TaskQ-owned
+  dedicated connections (DSN- or factory-built) get TCP keepalive.
+- `taskq.worker` re-exports `WorkerConnections` and `reload_credentials`
+  (lazy, alongside the existing `WorkerDeps` / `open_worker_deps`).
+
+### Actor and retry hooks
+
+- **`ErrorReporter` Protocol** for vendor-neutral terminal failure routing
+  (Sentry, Datadog, DLQ) with `NullErrorReporter` default and a
+  `taskq.error_reporter.failures` OTel counter. `report()` takes
+  `(job, exception)` — the same argument order as `on_retry_exhausted` —
+  and is guarded by the `error_reporter_timeout` setting (default 3 s).
+- **`retry_classifier` hook on `@actor`** for exception-instance-level
+  retry classification (inspect attributes like HTTP status codes, return
+  `RetryOverride` to refine kind/delay per occurrence). Non-`RetryOverride`
+  returns are caught and logged rather than crashing, and the hook is
+  skipped for `non_retryable_exceptions` and `PayloadValidationError`,
+  matching the documented contract. `RetryOverride` and `RetryClassifierHook`
+  are exported from the `taskq` top level.
+- **`on_success` hook on `@actor`** for success callbacks (mirrors
+  `on_retry_exhausted` with timeout guard).
+- **`start_to_close` per-attempt execution timeout** with precedence chain:
+  per-enqueue > `@actor(start_to_close=...)` > `TASKQ_DEFAULT_START_TO_CLOSE`
+  worker fallback.
+- **`KeyedReservationRef`** for dynamic per-key (session/tenant) concurrency
+  caps computed from job payload at dispatch time.
+- **`max_keyed_reservations` setting** to guard against unbounded keyed
+  reservation growth.
+
+### Cron, queries, and admin
+
+- **`name` and `identity_key` fields on `CronScheduleSpec`** for per-property
+  cron schedules and cron↔on-demand dedup.
+- **`JobSortField` enum and `JobFilter.order_by`** for "latest run by
+  business key" queries.
+- **Admin UI security settings — `admin_actions_enabled` and
+  `admin_ui_require_auth`.** The admin UI fails closed by default in non-dev
+  environments: `admin_ui_require_auth=True` (default) raises `RuntimeError`
+  at startup when no `auth_dependency` is configured, with explicit opt-out
+  `TASKQ_ADMIN_UI_REQUIRE_AUTH=false`; the health endpoints follow the same
+  fail-closed pattern — `health_require_token=True` (default) raises
+  `RuntimeError` in non-dev when `health_token` is empty
+  (`TASKQ_HEALTH_TOKEN` / `TASKQ_HEALTH_REQUIRE_TOKEN=false` to opt out).
+  Destructive admin actions (run-schedule, retry-job, cancel-job) are gated
+  behind `admin_actions_enabled` (default `False`); `POST
+  /schedules/{id}/run` checks the schedule's `enabled` flag and has
+  per-process cooldown rate limiting, and its cron `payload_factory` error
+  redirect uses a generic error code instead of reflecting exception text.
+- **`TASKQ_ADMIN_UI_SECURE_COOKIES` (`admin_ui_secure_cookies`, default
+  `True`)** — sets the `Secure` flag on the admin UI's CSRF cookie. The flag
+  was previously derived from `request.url.scheme`, so behind a
+  TLS-terminating edge (Azure Application Gateway, App Service) the app saw
+  plain `http` and silently dropped `Secure` on exactly the deployments that
+  need it — while the session cookie, which already used a configured flag,
+  kept it. Set it to `False` only for local http dev, where a `Secure` cookie
+  is rejected by the browser and the UI stops working. A one-shot
+  `admin-ui-cookie-scheme-mismatch` warning fires when the configured value
+  contradicts the observed scheme; run uvicorn with `--proxy-headers` so
+  `X-Forwarded-Proto` is honoured.
+- **`TASKQ_ADMIN_UI_FRAME_ANCESTORS` (`admin_ui_frame_ancestors`, default
+  `none`)** — who may frame admin pages. Every admin response now carries
+  `Content-Security-Policy: frame-ancestors '<value>'` and the legacy
+  `X-Frame-Options` (`DENY` for `none`, `SAMEORIGIN` for `self`). **Admin
+  pages can no longer be iframed**: a host application that embeds the admin
+  UI in its own dashboard must set `TASKQ_ADMIN_UI_FRAME_ANCESTORS=self` or
+  the frame renders blank. Only `none` and `self` are accepted; anything
+  else fails at settings construction rather than silently emitting no
+  header. CSRF is no defence against UI redress — the framed page is the
+  real, authenticated, same-origin page, so a tricked click carries a valid
+  token.
+- **SSO / SAML auth for admin UI** — OIDC backend (`taskq[oidc]`): PKCE
+  flow, JWKS validation, signed-cookie sessions; SAML backend
+  (`taskq[saml]`): python3-saml, SP metadata, attribute extraction; shared
+  `AuthBundle`/`IdentityClaims` abstraction (both backends use the same
+  session handling and group/role allowlist); `token_auth()` helper for
+  machine-to-machine bearer-token auth; `TASKQ_SSO_BACKEND=none/oidc/saml`
+  CLI integration for standalone `taskq ui serve`. The `taskq[oidc]` extra
+  no longer installs `httpx`; its `authlib` floor is now `>=1.8.0` (authlib
+  1.8.0's `httpx_client` integration is httpx2-first, the direct OIDC calls
+  use `httpx2`, and nothing under `src/taskq` imports `httpx`).
+  `OIDCSettings`/`SAMLSettings` are separate DotEnvConfig classes with
+  prefix scoping.
+
+### Testing and documentation
+
+- Consolidated testing guide ([testing.md](testing.md)).
+
+### Fixes and internal notes
+
+- `_di/solver.py` debug log now reports the real `cache_hit` value instead
+  of a hardcoded `False`.
+- `worker/_leader_sweeps.py` logs a warning on invalid schema and includes
+  error detail in exception handlers.
+- `worker/notify.py` logs debug on NOTIFY payload parse failures.
+- Test containers are shared singletons: one Postgres and one Dragonfly
+  container per pytest invocation, shared across all xdist workers (filelock
+  refcount, stale-leftover sweep) with per-module database and per-test
+  schema isolation preserved — full suite ~152 s vs the ~226–240 s baseline.
+- Docker/testcontainers calls in tests run off the event loop
+  (`asyncio.to_thread`) — docker-py's blocking HTTP round-trips no longer
+  stall the event loop mid-test.
+- Behavioral timing tests assert in a single clock domain (one statement
+  reads the server clock and the row together), so application/database
+  clock divergence cannot corrupt an assertion; liveness freshness is
+  bounded by the missed-at-most-one-tick contract.
+
+### Bulk enqueues partition `max_pending` admission per actor
+
+> **Unreleased.** Breaking for handlers of bulk cap refusals.
+
+`enqueue_batch()` / `enqueue_batch_fast()` (and the chunked arm of
+`enqueue_batch_streaming()`) now admit the within-cap actors' items and
+refuse only the over-cap actors' items as whole groups, raising
+`BatchMaxPendingExceededError` **after** the admitted items are stored.
+Previously one capped actor aborted the whole call with
+`MaxPendingExceededError` and nothing enqueued.
+
+- `except MaxPendingExceededError` no longer catches bulk cap refusals —
+  the new error is deliberately not its subclass. Catch it explicitly; it
+  names each refused actor (`refusals`), the refused item indices
+  (`refused_indices`), and the admitted count (`admitted_count`).
+- `except BackpressureError` now catches an error under which part of the
+  batch is stored: a handler that blindly retries the whole batch
+  duplicates the admitted items. Consult `admitted_count` /
+  `refused_indices` and retry only the refused items, or rely on
+  `idempotency_key`s.
+- Durability is path-dependent: committed when the call owned its
+  transaction; uncommitted on a caller-supplied open transaction (that
+  transaction decides); on the streaming no-connection path a refusal
+  surfaces after a durably committed chunk prefix (indices are
+  stream-global). The atomic path keeps the legacy all-or-nothing
+  contract and still raises plain `MaxPendingExceededError`.
+
+### `taskq.cron.consecutive_failures` is relabeled and bounded
+
+> **Unreleased.** Breaking for dashboards and alert rules keyed on the
+  old label.
+
+The metric's dimension is now the schedule row's `actor` (bounded to the
+first 100 distinct names a worker process sees; later names collapse
+onto the fixed `_other_` value) instead of the per-schedule UUID.
+Dashboards grouping by `schedule_id` lose their series on upgrade.
+Per-schedule attribution lives on the `cron fired` / `cron fire failed`
+log lines and the `cron fire` span's `taskq.cron_schedule_id` attribute.
+The per-actor balance can carry permanent residue from disabled,
+re-enabled or deleted schedules — `cron_schedules.consecutive_failures`
+and the logs are authoritative; alert on
+`taskq.cron.disabled_schedules > 0` rather than on this balance.

@@ -35,7 +35,9 @@ from taskq.connections import (
     DEFAULT_STATEMENT_CACHE_SIZE,
 )
 from taskq.constants import (
-    _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining it
+    _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
+    DEFAULT_EVENT_RETENTION_BATCH_SIZE,
+    DEFAULT_EVENT_RETENTION_PERIOD,
     DEFAULT_EVENT_WRITER_BATCH_SIZE,
     DEFAULT_EVENT_WRITER_STATEMENT_TIMEOUT_MS,
     DEFAULT_MAX_RETRY_BACKOFF,
@@ -899,6 +901,24 @@ class WorkerSettings(TaskQSettings):
         "the remainder to the next tick. Bounded so one iteration cannot "
         "monopolise the loop; every batch commits, so a stopped drain keeps "
         "its progress.",
+    )
+    event_retention_period: timedelta = Field(
+        default=DEFAULT_EVENT_RETENTION_PERIOD,
+        validator=_non_negative_timedelta,
+        description="TASKQ_EVENT_RETENTION_PERIOD. The age at which "
+        "job_events rows are deleted regardless of parent-job status. "
+        "timedelta(0) DISABLES the sweep — a deliberate inversion of the "
+        "prune family's zero-means-archive-immediately: for a brand-new "
+        "deletion loop the safe misconfiguration is off. The "
+        "crash-reclaim outbox slice (kind='state_change' AND "
+        "detail->>'reason'='lock_expired') is exempt from the sweep at any "
+        "setting. Negative values raise at settings load.",
+    )
+    event_retention_batch_size: int = Field(
+        default=DEFAULT_EVENT_RETENTION_BATCH_SIZE,
+        ge=1,
+        description="TASKQ_EVENT_RETENTION_BATCH_SIZE. job_events rows "
+        "deleted per leader sweep tick, one committed batch.",
     )
     queue_depth_interval: float = Field(
         default=15.0,

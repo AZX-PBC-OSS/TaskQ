@@ -408,6 +408,68 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                         warn_kind="sweep_expired_results_failed",
                     ):
                         iteration_clean = False
+                    # Event retention: ONE committed batch per tick,
+                    # deliberately NOT a _drain_bounded drain. The design
+                    # settles slow-and-constant: at the default 30 s
+                    # sweep_interval and 10 000-row batch that is ~333
+                    # deletions/s against the measured ~200 events/s
+                    # steady insert rate, so a 6.5 M-row backlog (a
+                    # retention reduction from 30 d to 7 d) drains in ~5.4 h
+                    # idle / ~13.6 h loaded — every batch committed, every
+                    # tick short, and the tick's cost stays independent of
+                    # the backlog it is recovering from. hasattr gate like
+                    # the stale-batches block below: only PostgresBackend
+                    # implements these maintenance sweeps. The period gate
+                    # is the settings-level disable sentinel: timedelta(0)
+                    # disables the sweep, and a disabled sweep acquires no
+                    # connection and logs nothing.
+                    if hasattr(
+                        ctx.backend, "sweep_expired_events"
+                    ) and ctx.deps.settings.event_retention_period > timedelta(0):
+                        start = time.monotonic()
+                        rows_er: int | None = None
+                        try:
+                            async with ctx.deps.dispatcher_pool.acquire(
+                                timeout=ctx.deps.settings.dispatcher_command_timeout
+                            ) as conn:
+                                rows_er = cast(
+                                    "int",
+                                    await ctx.backend.sweep_expired_events(  # type: ignore[reportAttributeAccessIssue]  # Why: guarded by the hasattr gate above; only PostgresBackend implements these maintenance sweeps.
+                                        conn,
+                                        schema=ctx.deps.settings.schema_name,
+                                        retention=ctx.deps.settings.event_retention_period,
+                                        batch_size=ctx.deps.settings.event_retention_batch_size,
+                                    ),
+                                )
+                        except TRANSIENT_PG_ERRORS as exc:
+                            # Same transient-PG rationale as the sibling
+                            # sweeps above.
+                            iteration_clean = False
+                            if _is_deadline_family(exc):
+                                record_sweep_timeout("job_events_retention")
+                            log.warning(
+                                "sweep-job-events-retention-failed",
+                                kind="sweep_job_events_retention_failed",
+                                worker_id=str(ctx.worker_id),
+                                error=repr(exc),
+                            )
+                        finally:
+                            # Same rows-bound-by-the-awaited-call discipline
+                            # as sweeps 1/2/rt: a timed-out sweep records
+                            # duration WITHOUT a row sample (a 0-row sample
+                            # would be indistinguishable from a healthy
+                            # empty sweep, and success-path-only
+                            # instrumentation is the original invisibility).
+                            _metric_duration("job_events_retention", start)
+                            if rows_er is not None:
+                                _metric_rows("job_events_retention", rows_er)
+                                record_sweep_success("job_events_retention")
+                                _dbg(
+                                    "job_events_retention_tick",
+                                    "job_events_retention_tick",
+                                    rows_er,
+                                    start,
+                                )
                     # Stale-worker cleanup: one bounded batch per call,
                     # drained the same way. The window bounds workers per
                     # call, which bounds the DDL ON DELETE fan-out (the

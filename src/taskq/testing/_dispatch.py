@@ -58,6 +58,9 @@ async def _dispatch_batch(
     for c in candidates:
         _by_actor[c.actor].append(c)
 
+    # Why: `or []` cannot re-admit an empty queue list here — the candidate
+    # filter above matches NOTHING for `[]`, so no row survives to be
+    # round-robin-ordered; it is only a None guard, never a selection.
     _use_round_robin = any(self._queues.get(q) == "round_robin" for q in (queues or []))
 
     for _rows in _by_actor.values():
@@ -72,7 +75,9 @@ async def _dispatch_batch(
                 # was consumed entirely by the unkeyed cohort and the keyed
                 # cohorts starved — the exact round-robin starvation the
                 # mode exists to prevent, in the default configuration
-                # (fairness_key is None by default).
+                # (fairness_key is None by default). Unkeyed jobs rank
+                # 1, 2, 3… and yield their surplus slots to the keyed
+                # cohorts.
                 fk = r.fairness_key if r.fairness_key is not None else "__null__"
                 _fk_groups[fk].append(r)
             _fairness_rank: dict[object, int] = {}

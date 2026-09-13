@@ -26,6 +26,7 @@ Config format (TOML)::
     queues = ["default"]
     max_concurrency = 8
     poll_interval = 0.5
+    pg_credential_provider = "infra.identity:pg_credentials"
 
     [workers.health]
     enabled = true
@@ -149,6 +150,7 @@ class WorkerSpec:
     max_concurrency: int = 8
     worker_group: str = "default"
     force_update_actor_config: bool = False
+    pg_credential_provider: str | None = None  # module:attr — forwarded to the child CLI
     stream_limit: int = _STREAM_LIMIT  # per-line stdout/stderr buffer (bytes)
     health: WorkerHealthConfig = field(default_factory=WorkerHealthConfig)
 
@@ -162,6 +164,8 @@ class WorkerSpec:
         args.extend(["--worker-group", self.worker_group])
         if self.force_update_actor_config:
             args.append("--force-update-actor-config")
+        if self.pg_credential_provider is not None:
+            args.extend(["--pg-credential-provider", self.pg_credential_provider])
         return args
 
 
@@ -239,6 +243,9 @@ class WorkgroupConfig:
                             defaults.get("force_update_actor_config", False),
                         )
                     ),
+                    pg_credential_provider=_optional_str(
+                        w, "pg_credential_provider", defaults.get("pg_credential_provider")
+                    ),
                     stream_limit=int(
                         w.get("stream_limit", defaults.get("stream_limit", _STREAM_LIMIT))
                     ),
@@ -257,6 +264,14 @@ def _require_list_str(cfg: dict[str, Any], key: str, fallback: list[str]) -> lis
     if not isinstance(val, list) or not all(isinstance(v, str) for v in val):  # type: ignore[arg-type]  # Why: tomllib returns Any; list check above ensures val is iterable.
         raise ValueError(f"{key!r} must be a list of strings, got {val!r}")
     return val  # type: ignore[return-value]  # Why: val is narrowed to list[str] by the isinstance checks above, but pyright cannot propagate the element-type narrowing through all().
+
+
+def _optional_str(cfg: dict[str, Any], key: str, fallback: str | None) -> str | None:
+    """Extract an optional str from config or fallback; validate the type."""
+    val: Any = cfg.get(key, fallback)
+    if val is not None and not isinstance(val, str):
+        raise ValueError(f"{key!r} must be a string, got {val!r}")
+    return val
 
 
 def load_workgroup_config(path: Path) -> WorkgroupConfig:

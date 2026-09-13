@@ -14,6 +14,8 @@ from uuid import UUID
 __all__ = [
     "BTREE_MAX_ITEM_BYTES",
     "DEFAULT_CHUNK_SIZE",
+    "DEFAULT_EVENT_RETENTION_BATCH_SIZE",
+    "DEFAULT_EVENT_RETENTION_PERIOD",
     "DEFAULT_EVENT_WRITER_BATCH_SIZE",
     "DEFAULT_EVENT_WRITER_STATEMENT_TIMEOUT_MS",
     "DEFAULT_MAX_RETRY_BACKOFF",
@@ -185,6 +187,40 @@ per-status fields that override it); the sweep uses this constant when
 ``retention_per_status`` has no entry for a status, so a status added to
 ``TERMINAL_STATUSES`` without a matching setting is retained rather than
 pruned immediately.
+"""
+
+DEFAULT_EVENT_RETENTION_PERIOD: Final[timedelta] = timedelta(days=7)
+"""Default age at which ``job_events`` rows become deletable, regardless of
+parent-job status.
+
+The effective value is ``WorkerSettings.event_retention_period``
+(``timedelta(0)`` there disables the sweep entirely); this constant is the
+setting's default. The crash-reclaim outbox slice
+(``kind='state_change' AND detail->>'reason'='lock_expired'``) is exempt
+from the sweep at every setting.
+
+Why 7 days: events are narration — the durable forensic record for a job
+is jobs/jobs_archive plus job_attempts/job_attempts_archive, kept for the
+30-90 day prune windows and the 365-day archive window — so the event
+window only has to bound event volume, not match job retention. At the
+measured ~2 events/job and 100 jobs/s, 7 days is ~26 GB steady state
+against ~110 GB at 30 days, while staying at or under the shortest
+job-retention window (30 d) so events never outlive the shortest
+observation an operator could reasonably run.
+"""
+
+DEFAULT_EVENT_RETENTION_BATCH_SIZE: Final[int] = 10000
+"""Default ``job_events`` rows deleted per committed batch by the retention
+sweep.
+
+The effective value is ``WorkerSettings.event_retention_batch_size``; the
+sweep function carries it as a signature default for direct callers. The
+bound keeps one sweep call's DELETE a constant-size statement against any
+backlog size. 10_000 matches the prune family's batch rather than the
+100-row event-writer bound: the retention sweep writes no ``job_events``
+rows, so the ``RECLAIM_EVENT_VISIBILITY_DELAY`` INSERT-to-COMMIT margin
+that caps event *writers* does not bind it — the general
+bounded-per-transaction rule does.
 """
 
 DEFAULT_CHUNK_SIZE: Final[int] = 1000

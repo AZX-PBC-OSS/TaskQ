@@ -35,7 +35,7 @@ def test_worker_spec_forwards_credential_provider_to_cli_args() -> None:
         spec = WorkerSpec(
             name="w1",
             queues=["default"],
-            pg_credential_provider="infra.identity:pg_credentials",  # pyright: ignore[reportCallIssue]  # Why: the field does not exist yet — that absence IS the defect this red test pins. The TypeError caught below is the assertion; this call must keep the desired shape so the ignore disappears when the field lands.
+            pg_credential_provider="infra.identity:pg_credentials",
         )
     except TypeError as exc:
         pytest.fail(

@@ -3,8 +3,9 @@ until its in-memory-vs-Postgres *behaviour* is classified.
 
 The class this file guards: a seam where ``InMemoryBackend`` and
 ``PostgresBackend`` return DIFFERENT RESULTS for the same inputs. Not
-different objects — different answers. Three instances are known, and all
-three passed every existing guard:
+different objects — different answers. Three instances were found this
+way, and all three passed every existing guard (all three are now fixed
+and pinned in ``tests/test_in_memory_dispatch_parity.py``):
 
 1. An empty ``queues`` list means "match ALL" in memory
    (``testing/_dispatch.py``: ``not queues or row.queue in queues``) and
@@ -64,22 +65,18 @@ from taskq.testing.in_memory import InMemoryBackend
 #: the file holding its behavioural parity pin.
 _SEMANTIC_SEAMS: dict[str, str] = {
     "dispatch_batch": "tests/test_in_memory_dispatch_parity.py",
+    "cancel_where": "tests/test_in_memory_dispatch_parity.py",
 }
 
 #: Seams that SELECT or ORDER rows and are NOT yet pinned by a parity test.
 #: Every entry is a known gap, not an exemption: the two backends could
-#: answer differently here and nothing would notice. ``cancel_where`` is
-#: listed with its confirmed divergence; the rest are unaudited.
+#: answer differently here and nothing would notice.
 #:
 #: Moving an entry out of here means writing its parity test. Do not move
 #: one into _NO_SEMANTIC_SURFACE without establishing that the seam makes no
 #: selection or ordering decision — that claim is what the registry exists
 #: to force someone to make explicitly.
 _SEMANTIC_SEAMS_UNPINNED: dict[str, str] = {
-    "cancel_where": (
-        "CONFIRMED DIVERGENT: PG returns array_agg(id ORDER BY id); memory "
-        "returns the default priority-first _list_jobs order"
-    ),
     "list_jobs": "filter predicates, cursor ordering, pagination bounds",
     "list_batches": "filter predicates and ordering",
     "list_schedules": "ordering",
@@ -214,16 +211,26 @@ def test_no_seam_is_registered_twice() -> None:
     assert not overlap, "Seam(s) registered in more than one registry: " + ", ".join(overlap)
 
 
-def test_known_divergences_are_recorded_as_gaps_not_exemptions() -> None:
-    """``cancel_where`` stays registered as an unpinned SEMANTIC seam.
+def test_no_confirmed_divergence_lingers_unpinned() -> None:
+    """A CONFIRMED DIVERGENT seam cannot sit in ``_SEMANTIC_SEAMS_UNPINNED``.
 
-    It is confirmed divergent (PG sorts returned ids by UUID, memory by the
-    priority-first default). Recording it as exempt would assert the
-    opposite of what the code does, which is exactly the failure mode that
-    let the sweepaudit registry justify an unbounded statement on a bound
-    that does not hold. The entry leaves here only when a parity test
-    replaces it.
+    The unpinned registry holds unaudited seams — places that MIGHT answer
+    differently, nobody has checked. A divergence someone has confirmed is
+    past prose: it is fixed and pinned, or its parity pin sits red in
+    ``_SEMANTIC_SEAMS`` until the fix lands. Parking it as an unpinned note
+    reads as a TODO nobody owes, and parking it in ``_NO_SEMANTIC_SURFACE``
+    would assert the opposite of what the code does — the failure mode
+    that let the sweepaudit registry justify an unbounded statement on a
+    bound that does not hold.
     """
-    assert "cancel_where" in _SEMANTIC_SEAMS_UNPINNED
-    assert "cancel_where" not in _NO_SEMANTIC_SURFACE
-    assert "CONFIRMED DIVERGENT" in _SEMANTIC_SEAMS_UNPINNED["cancel_where"]
+    lingering = {
+        seam: note
+        for seam, note in _SEMANTIC_SEAMS_UNPINNED.items()
+        if "CONFIRMED DIVERGENT" in note
+    }
+    assert not lingering, (
+        "Confirmed-divergent seam(s) parked unpinned — a confirmed "
+        "divergence owes a behavioural parity test (it may sit red until "
+        "the fix lands), registered in _SEMANTIC_SEAMS:\n  "
+        + "\n  ".join(f"{seam}: {note}" for seam, note in lingering.items())
+    )

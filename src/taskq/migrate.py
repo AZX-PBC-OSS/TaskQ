@@ -970,6 +970,15 @@ async def migration_advisory_lock(
     connection and the lock flow proceeds — that connection keeps the wait
     bound as its session-wide ``lock_timeout`` until it is closed.
 
+    ``statement_timeout`` is widened to unlimited at the same point, once,
+    for the whole apply phase: a session statement_timeout (server_settings
+    on the connection, a role/database default, a DSN options clause) would
+    abort a long DDL statement — an index build over a large table —
+    mid-statement, and identically on every retry, since the runner
+    re-executes the same migration after a failure. Same failure handling:
+    a failed widening is logged as a warning and the apply proceeds; that
+    connection keeps its session ``statement_timeout``.
+
     Raises :class:`SystemExit` on contention rather than blocking until the
     container platform kills the process.
     """
@@ -1007,6 +1016,28 @@ async def migration_advisory_lock(
                     lock_timeout_ms=int(lock_timeout * 1000),
                     error=repr(exc),
                 )
+        # Widen statement_timeout for the whole apply phase, same doctrine
+        # as the lock_timeout reset above: a long DDL step must not be
+        # killed mid-statement. Unconditional because this function never
+        # sets a statement_timeout itself — the bound being widened was
+        # supplied by the session (server_settings, a role/database
+        # default, a DSN options clause), and it would abort a multi-minute
+        # index build identically on every deploy and every retry.
+        try:
+            await conn.execute("SET statement_timeout = 0")
+        except Exception as exc:
+            # Why warn, not raise: the lock is held and the migrations
+            # still need to run, so aborting here would trade a widened
+            # timeout for a failed migration run. But the swallowed failure
+            # must be visible — a caller-owned connection keeps its session
+            # statement_timeout, so a long DDL step on it can still be
+            # aborted mid-statement. repr(conn) is the only name an
+            # anonymous connection has.
+            logger.warning(
+                "migration-statement-timeout-widen-failed",
+                conn=repr(conn),
+                error=repr(exc),
+            )
     try:
         yield
     finally:
@@ -1039,6 +1070,10 @@ async def apply_pending_locked(
     ``lock_timeout`` GUC, which applies to advisory-lock acquisition. It is
     reset to unlimited before the migrations run, so a long DDL step is never
     interrupted midway. Pass ``0`` to wait indefinitely (the old behaviour).
+    The session's ``statement_timeout`` is widened to unlimited for the
+    apply phase for the same reason — a caller-supplied session default
+    must not abort a long DDL statement mid-build (it would fail
+    identically on every retry).
     Losing the race raises :class:`SystemExit` naming the contention, rather
     than hanging until the platform kills the container.
 
