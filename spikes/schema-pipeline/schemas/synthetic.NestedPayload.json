@@ -1,0 +1,45 @@
+{
+  "$defs": {
+    "Address": {
+      "properties": {
+        "street": {
+          "title": "Street",
+          "type": "string"
+        },
+        "city": {
+          "title": "City",
+          "type": "string"
+        },
+        "zip_code": {
+          "pattern": "^\\d{5}$",
+          "title": "Zip Code",
+          "type": "string"
+        }
+      },
+      "required": [
+        "street",
+        "city",
+        "zip_code"
+      ],
+      "title": "Address",
+      "type": "object"
+    }
+  },
+  "properties": {
+    "address": {
+      "$ref": "#/$defs/Address"
+    },
+    "tags": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Tags",
+      "type": "array"
+    }
+  },
+  "required": [
+    "address"
+  ],
+  "title": "NestedPayload",
+  "type": "object"
+}

@@ -1,0 +1,23 @@
+{
+  "properties": {
+    "message_id": {
+      "title": "Message Id",
+      "type": "string"
+    },
+    "recipients": {
+      "title": "Recipients",
+      "type": "integer"
+    },
+    "articles_included": {
+      "title": "Articles Included",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "message_id",
+    "recipients",
+    "articles_included"
+  ],
+  "title": "DigestEmailResult",
+  "type": "object"
+}

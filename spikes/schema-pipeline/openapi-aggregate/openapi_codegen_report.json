@@ -1,0 +1,422 @@
+{
+  "label": "baseline",
+  "codegen_rc": 0,
+  "schemas": {
+    "advanced.DeduplicatedPayload": {
+      "component": "DeduplicatedPayload",
+      "schema_drifts": [
+        "property 'key': NULLABILITY drift (nullable False -> True)"
+      ],
+      "regen_accepts_valid": true,
+      "parity_failures": [
+        {
+          "mutant": "null_violation_key",
+          "original_accepted": false,
+          "regen_accepted": true
+        }
+      ]
+    },
+    "advanced.EmptyPayload": {
+      "component": "EmptyPayload",
+      "schema_drifts": [],
+      "regen_accepts_valid": true,
+      "parity_failures": []
+    },
+    "advanced.SumPayload": {
+      "component": "SumPayload",
+      "schema_drifts": [
+        "property 'values': NULLABILITY drift (nullable False -> True)"
+      ],
+      "regen_accepts_valid": true,
+      "parity_failures": [
+        {
+          "mutant": "null_violation_values",
+          "original_accepted": false,
+          "regen_accepted": true
+        }
+      ]
+    },
+    "advanced.SumResult": {
+      "component": "SumResult",
+      "schema_drifts": [],
+      "regen_accepts_valid": true,
+      "parity_failures": []
+    },
+    "basic.CounterPayload": {
+      "component": "CounterPayload",
+      "schema_drifts": [
+        "property 'n': NULLABILITY drift (nullable False -> True)"
+      ],
+      "regen_accepts_valid": true,
+      "parity_failures": [
+        {
+          "mutant": "null_violation_n",
+          "original_accepted": false,
+          "regen_accepted": true
+        }
+      ]
+    },
+    "basic.DeferredPayload": {
+      "component": "DeferredPayload",
+      "schema_drifts": [
+        "property 'delay_seconds': NULLABILITY drift (nullable False -> True)"
+      ],
+      "regen_accepts_valid": true,
+      "parity_failures": [
+        {
+          "mutant": "null_violation_delay_seconds",
+          "original_accepted": false,
+          "regen_accepted": true
+        }
+      ]
+    },
+    "batch.BatchCounterPayload": {
+      "component": "BatchCounterPayload",
+      "schema_drifts": [
+        "property 'n': NULLABILITY drift (nullable False -> True)",
+        "property 'steps': NULLABILITY drift (nullable False -> True)"
+      ],
+      "regen_accepts_valid": true,
+      "parity_failures": [
+        {
+          "mutant": "null_violation_n",
+          "original_accepted": false,
+          "regen_accepted": true
+        },
+        {
+          "mutant": "null_violation_steps",
+          "original_accepted": false,
+          "regen_accepted": true
+        }
+      ]
+    },
+    "batch.BatchFinalizerPayload": {
+      "component": "BatchFinalizerPayload",
+      "schema_drifts": [],
+      "regen_accepts_valid": true,
+      "parity_failures": []
+    },
+    "chained.FanOutPayload": {
+      "component": "FanOutPayload",
+      "schema_drifts": [
+        "property 'items': NULLABILITY drift (nullable False -> True)"
+      ],
+      "regen_accepts_valid": true,
+      "parity_failures": [
+        {
+          "mutant": "null_violation_items",
+          "original_accepted": false,
+          "regen_accepted": true
+        }
+      ]
+    },
+    "chained.PipelinePayload": {
+      "component": "PipelinePayload",
+      "schema_drifts": [
+        "property 'text': NULLABILITY drift (nullable False -> True)"
+      ],
+      "regen_accepts_valid": true,
+      "parity_failures": [
+        {
+          "mutant": "null_violation_text",
+          "original_accepted": false,
+          "regen_accepted": true
+        }
+      ]
+    },
+    "chained.StepTwoPayload": {
+      "component": "StepTwoPayload",
+      "schema_drifts": [],
+      "regen_accepts_valid": true,
+      "parity_failures": []
+    },
+    "di.DbLookupPayload": {
+      "component": "DbLookupPayload",
+      "schema_drifts": [
+        "property 'item_id': NULLABILITY drift (nullable False -> True)"
+      ],
+      "regen_accepts_valid": true,
+      "parity_failures": [
+        {
+          "mutant": "null_violation_item_id",
+          "original_accepted": false,
+          "regen_accepted": true
+        }
+      ]
+    },
+    "di.FetchPayload": {
+      "component": "FetchPayload",
+      "schema_drifts": [
+        "property 'url': NULLABILITY drift (nullable False -> True)"
+      ],
+      "regen_accepts_valid": true,
+      "parity_failures": [
+        {
+          "mutant": "null_violation_url",
+          "original_accepted": false,
+          "regen_accepted": true
+        }
+      ]
+    },
+    "di.FetchResult": {
+      "component": "FetchResult",
+      "schema_drifts": [],
+      "regen_accepts_valid": true,
+      "parity_failures": []
+    },
+    "failure.FlakyPayload": {
+      "component": "FlakyPayload",
+      "schema_drifts": [
+        "property 'fail_count': NULLABILITY drift (nullable False -> True)"
+      ],
+      "regen_accepts_valid": true,
+      "parity_failures": [
+        {
+          "mutant": "null_violation_fail_count",
+          "original_accepted": false,
+          "regen_accepted": true
+        }
+      ]
+    },
+    "failure.SnoozePayload": {
+      "component": "SnoozePayload",
+      "schema_drifts": [
+        "property 'delay_seconds': NULLABILITY drift (nullable False -> True)",
+        "property 'wake_after_attempt': NULLABILITY drift (nullable False -> True)"
+      ],
+      "regen_accepts_valid": true,
+      "parity_failures": [
+        {
+          "mutant": "null_violation_delay_seconds",
+          "original_accepted": false,
+          "regen_accepted": true
+        },
+        {
+          "mutant": "null_violation_wake_after_attempt",
+          "original_accepted": false,
+          "regen_accepted": true
+        }
+      ]
+    },
+    "progress.FileProcessorPayload": {
+      "component": "FileProcessorPayload",
+      "schema_drifts": [
+        "property 'filename': NULLABILITY drift (nullable False -> True)",
+        "property 'rows': NULLABILITY drift (nullable False -> True)"
+      ],
+      "regen_accepts_valid": true,
+      "parity_failures": [
+        {
+          "mutant": "null_violation_filename",
+          "original_accepted": false,
+          "regen_accepted": true
+        },
+        {
+          "mutant": "null_violation_rows",
+          "original_accepted": false,
+          "regen_accepted": true
+        }
+      ]
+    },
+    "ratelimit.EmptyPayload": {
+      "component": "EmptyPayload",
+      "schema_drifts": [],
+      "regen_accepts_valid": true,
+      "parity_failures": []
+    },
+    "realworld.CsvChunkPayload": {
+      "component": "CsvChunkPayload",
+      "schema_drifts": [],
+      "regen_accepts_valid": true,
+      "parity_failures": []
+    },
+    "realworld.CsvUploadPayload": {
+      "component": "CsvUploadPayload",
+      "schema_drifts": [
+        "property 'chunk_size': NULLABILITY drift (nullable False -> True)",
+        "property 'row_count': NULLABILITY drift (nullable False -> True)"
+      ],
+      "regen_accepts_valid": true,
+      "parity_failures": [
+        {
+          "mutant": "null_violation_row_count",
+          "original_accepted": false,
+          "regen_accepted": true
+        },
+        {
+          "mutant": "null_violation_chunk_size",
+          "original_accepted": false,
+          "regen_accepted": true
+        }
+      ]
+    },
+    "realworld.DigestEmailPayload": {
+      "component": "DigestEmailPayload",
+      "schema_drifts": [
+        "property 'period': NULLABILITY drift (nullable False -> True)"
+      ],
+      "regen_accepts_valid": true,
+      "parity_failures": [
+        {
+          "mutant": "null_violation_period",
+          "original_accepted": false,
+          "regen_accepted": true
+        }
+      ]
+    },
+    "realworld.DigestEmailResult": {
+      "component": "DigestEmailResult",
+      "schema_drifts": [],
+      "regen_accepts_valid": true,
+      "parity_failures": []
+    },
+    "realworld.ThumbnailPayload": {
+      "component": "ThumbnailPayload",
+      "schema_drifts": [
+        "property 'format': NULLABILITY drift (nullable False -> True)",
+        "property 'height': NULLABILITY drift (nullable False -> True)",
+        "property 'width': NULLABILITY drift (nullable False -> True)"
+      ],
+      "regen_accepts_valid": true,
+      "parity_failures": [
+        {
+          "mutant": "null_violation_width",
+          "original_accepted": false,
+          "regen_accepted": true
+        },
+        {
+          "mutant": "null_violation_height",
+          "original_accepted": false,
+          "regen_accepted": true
+        },
+        {
+          "mutant": "null_violation_format",
+          "original_accepted": false,
+          "regen_accepted": true
+        }
+      ]
+    },
+    "realworld.ThumbnailResult": {
+      "component": "ThumbnailResult",
+      "schema_drifts": [],
+      "regen_accepts_valid": true,
+      "parity_failures": []
+    },
+    "sync_demo.WordCountPayload": {
+      "component": "WordCountPayload",
+      "schema_drifts": [
+        "property 'text': NULLABILITY drift (nullable False -> True)"
+      ],
+      "regen_accepts_valid": true,
+      "parity_failures": [
+        {
+          "mutant": "null_violation_text",
+          "original_accepted": false,
+          "regen_accepted": true
+        }
+      ]
+    },
+    "sync_demo.WordCountResult": {
+      "component": "WordCountResult",
+      "schema_drifts": [],
+      "regen_accepts_valid": true,
+      "parity_failures": []
+    },
+    "synthetic.ConstrainedStringPayload": {
+      "component": "ConstrainedStringPayload",
+      "schema_drifts": [
+        "property 'label': NULLABILITY drift (nullable False -> True)"
+      ],
+      "regen_accepts_valid": true,
+      "parity_failures": [
+        {
+          "mutant": "null_violation_label",
+          "original_accepted": false,
+          "regen_accepted": true
+        }
+      ]
+    },
+    "synthetic.DatetimePayload": {
+      "component": "DatetimePayload",
+      "schema_drifts": [
+        "property 'due_date': NULLABILITY drift (nullable False -> True)",
+        "property 'started_at': NULLABILITY drift (nullable False -> True)",
+        "property 'started_at': default '<absent>' -> None"
+      ],
+      "regen_accepts_valid": true,
+      "parity_failures": [
+        {
+          "mutant": "null_violation_started_at",
+          "original_accepted": false,
+          "regen_accepted": true
+        },
+        {
+          "mutant": "null_violation_due_date",
+          "original_accepted": false,
+          "regen_accepted": true
+        }
+      ]
+    },
+    "synthetic.EnumPayload": {
+      "component": "EnumPayload",
+      "schema_drifts": [
+        "property 'priority': NULLABILITY drift (nullable False -> True)"
+      ],
+      "regen_accepts_valid": true,
+      "parity_failures": [
+        {
+          "mutant": "null_violation_priority",
+          "original_accepted": false,
+          "regen_accepted": true
+        }
+      ]
+    },
+    "synthetic.NestedPayload": {
+      "component": "NestedPayload",
+      "schema_drifts": [
+        "property 'tags': NULLABILITY drift (nullable False -> True)",
+        "property 'tags': default '<absent>' -> None"
+      ],
+      "regen_accepts_valid": true,
+      "parity_failures": [
+        {
+          "mutant": "null_violation_tags",
+          "original_accepted": false,
+          "regen_accepted": true
+        }
+      ]
+    },
+    "synthetic.UnionPayload": {
+      "component": "UnionPayload",
+      "schema_drifts": [],
+      "regen_accepts_valid": true,
+      "parity_failures": []
+    },
+    "tags_demo.TaggedPayload": {
+      "component": "TaggedPayload",
+      "schema_drifts": [
+        "property 'label': NULLABILITY drift (nullable False -> True)"
+      ],
+      "regen_accepts_valid": true,
+      "parity_failures": [
+        {
+          "mutant": "null_violation_label",
+          "original_accepted": false,
+          "regen_accepted": true
+        }
+      ]
+    },
+    "tags_demo.TaggedResult": {
+      "component": "TaggedResult",
+      "schema_drifts": [],
+      "regen_accepts_valid": true,
+      "parity_failures": []
+    },
+    "ticker.TickerPayload": {
+      "component": "TickerPayload",
+      "schema_drifts": [],
+      "regen_accepts_valid": true,
+      "parity_failures": []
+    }
+  }
+}

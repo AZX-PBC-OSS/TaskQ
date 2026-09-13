@@ -1,0 +1,26 @@
+{
+  "properties": {
+    "user_id": {
+      "description": "User identifier",
+      "title": "User Id",
+      "type": "string"
+    },
+    "email": {
+      "description": "Recipient email address",
+      "title": "Email",
+      "type": "string"
+    },
+    "period": {
+      "default": "weekly",
+      "description": "Digest period: daily, weekly, monthly",
+      "title": "Period",
+      "type": "string"
+    }
+  },
+  "required": [
+    "user_id",
+    "email"
+  ],
+  "title": "DigestEmailPayload",
+  "type": "object"
+}

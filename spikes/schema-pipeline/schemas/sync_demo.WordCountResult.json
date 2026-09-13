@@ -1,0 +1,30 @@
+{
+  "properties": {
+    "word_count": {
+      "title": "Word Count",
+      "type": "integer"
+    },
+    "char_count": {
+      "title": "Char Count",
+      "type": "integer"
+    },
+    "processed_at": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Processed At"
+    }
+  },
+  "required": [
+    "word_count",
+    "char_count"
+  ],
+  "title": "WordCountResult",
+  "type": "object"
+}

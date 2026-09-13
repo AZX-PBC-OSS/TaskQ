@@ -1,0 +1,13 @@
+{
+  "properties": {
+    "processed": {
+      "title": "Processed",
+      "type": "string"
+    }
+  },
+  "required": [
+    "processed"
+  ],
+  "title": "StepTwoPayload",
+  "type": "object"
+}

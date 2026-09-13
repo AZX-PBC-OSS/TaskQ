@@ -1,0 +1,228 @@
+{
+  "label": "strict-nullable",
+  "codegen_rc": 0,
+  "schemas": {
+    "advanced.DeduplicatedPayload": {
+      "component": "DeduplicatedPayload",
+      "schema_drifts": [],
+      "regen_accepts_valid": true,
+      "parity_failures": []
+    },
+    "advanced.EmptyPayload": {
+      "component": "EmptyPayload",
+      "schema_drifts": [],
+      "regen_accepts_valid": true,
+      "parity_failures": []
+    },
+    "advanced.SumPayload": {
+      "component": "SumPayload",
+      "schema_drifts": [],
+      "regen_accepts_valid": true,
+      "parity_failures": []
+    },
+    "advanced.SumResult": {
+      "component": "SumResult",
+      "schema_drifts": [],
+      "regen_accepts_valid": true,
+      "parity_failures": []
+    },
+    "basic.CounterPayload": {
+      "component": "CounterPayload",
+      "schema_drifts": [],
+      "regen_accepts_valid": true,
+      "parity_failures": []
+    },
+    "basic.DeferredPayload": {
+      "component": "DeferredPayload",
+      "schema_drifts": [],
+      "regen_accepts_valid": true,
+      "parity_failures": []
+    },
+    "batch.BatchCounterPayload": {
+      "component": "BatchCounterPayload",
+      "schema_drifts": [],
+      "regen_accepts_valid": true,
+      "parity_failures": []
+    },
+    "batch.BatchFinalizerPayload": {
+      "component": "BatchFinalizerPayload",
+      "schema_drifts": [],
+      "regen_accepts_valid": true,
+      "parity_failures": []
+    },
+    "chained.FanOutPayload": {
+      "component": "FanOutPayload",
+      "schema_drifts": [],
+      "regen_accepts_valid": true,
+      "parity_failures": []
+    },
+    "chained.PipelinePayload": {
+      "component": "PipelinePayload",
+      "schema_drifts": [],
+      "regen_accepts_valid": true,
+      "parity_failures": []
+    },
+    "chained.StepTwoPayload": {
+      "component": "StepTwoPayload",
+      "schema_drifts": [],
+      "regen_accepts_valid": true,
+      "parity_failures": []
+    },
+    "di.DbLookupPayload": {
+      "component": "DbLookupPayload",
+      "schema_drifts": [],
+      "regen_accepts_valid": true,
+      "parity_failures": []
+    },
+    "di.FetchPayload": {
+      "component": "FetchPayload",
+      "schema_drifts": [],
+      "regen_accepts_valid": true,
+      "parity_failures": []
+    },
+    "di.FetchResult": {
+      "component": "FetchResult",
+      "schema_drifts": [],
+      "regen_accepts_valid": true,
+      "parity_failures": []
+    },
+    "failure.FlakyPayload": {
+      "component": "FlakyPayload",
+      "schema_drifts": [],
+      "regen_accepts_valid": true,
+      "parity_failures": []
+    },
+    "failure.SnoozePayload": {
+      "component": "SnoozePayload",
+      "schema_drifts": [],
+      "regen_accepts_valid": true,
+      "parity_failures": []
+    },
+    "progress.FileProcessorPayload": {
+      "component": "FileProcessorPayload",
+      "schema_drifts": [],
+      "regen_accepts_valid": true,
+      "parity_failures": []
+    },
+    "ratelimit.EmptyPayload": {
+      "component": "EmptyPayload",
+      "schema_drifts": [],
+      "regen_accepts_valid": true,
+      "parity_failures": []
+    },
+    "realworld.CsvChunkPayload": {
+      "component": "CsvChunkPayload",
+      "schema_drifts": [],
+      "regen_accepts_valid": true,
+      "parity_failures": []
+    },
+    "realworld.CsvUploadPayload": {
+      "component": "CsvUploadPayload",
+      "schema_drifts": [],
+      "regen_accepts_valid": true,
+      "parity_failures": []
+    },
+    "realworld.DigestEmailPayload": {
+      "component": "DigestEmailPayload",
+      "schema_drifts": [],
+      "regen_accepts_valid": true,
+      "parity_failures": []
+    },
+    "realworld.DigestEmailResult": {
+      "component": "DigestEmailResult",
+      "schema_drifts": [],
+      "regen_accepts_valid": true,
+      "parity_failures": []
+    },
+    "realworld.ThumbnailPayload": {
+      "component": "ThumbnailPayload",
+      "schema_drifts": [],
+      "regen_accepts_valid": true,
+      "parity_failures": []
+    },
+    "realworld.ThumbnailResult": {
+      "component": "ThumbnailResult",
+      "schema_drifts": [],
+      "regen_accepts_valid": true,
+      "parity_failures": []
+    },
+    "sync_demo.WordCountPayload": {
+      "component": "WordCountPayload",
+      "schema_drifts": [],
+      "regen_accepts_valid": true,
+      "parity_failures": []
+    },
+    "sync_demo.WordCountResult": {
+      "component": "WordCountResult",
+      "schema_drifts": [],
+      "regen_accepts_valid": true,
+      "parity_failures": []
+    },
+    "synthetic.ConstrainedStringPayload": {
+      "component": "ConstrainedStringPayload",
+      "schema_drifts": [],
+      "regen_accepts_valid": true,
+      "parity_failures": []
+    },
+    "synthetic.DatetimePayload": {
+      "component": "DatetimePayload",
+      "schema_drifts": [
+        "property 'started_at': NULLABILITY drift (nullable False -> True)",
+        "property 'started_at': default '<absent>' -> None"
+      ],
+      "regen_accepts_valid": true,
+      "parity_failures": [
+        {
+          "mutant": "null_violation_started_at",
+          "original_accepted": false,
+          "regen_accepted": true
+        }
+      ]
+    },
+    "synthetic.EnumPayload": {
+      "component": "EnumPayload",
+      "schema_drifts": [],
+      "regen_accepts_valid": true,
+      "parity_failures": []
+    },
+    "synthetic.NestedPayload": {
+      "component": "NestedPayload",
+      "schema_drifts": [
+        "property 'tags': NULLABILITY drift (nullable False -> True)",
+        "property 'tags': default '<absent>' -> None"
+      ],
+      "regen_accepts_valid": true,
+      "parity_failures": [
+        {
+          "mutant": "null_violation_tags",
+          "original_accepted": false,
+          "regen_accepted": true
+        }
+      ]
+    },
+    "synthetic.UnionPayload": {
+      "component": "UnionPayload",
+      "schema_drifts": [],
+      "regen_accepts_valid": true,
+      "parity_failures": []
+    },
+    "tags_demo.TaggedPayload": {
+      "component": "TaggedPayload",
+      "schema_drifts": [],
+      "regen_accepts_valid": true,
+      "parity_failures": []
+    },
+    "tags_demo.TaggedResult": {
+      "component": "TaggedResult",
+      "schema_drifts": [],
+      "regen_accepts_valid": true,
+      "parity_failures": []
+    },
+    "ticker.TickerPayload": {
+      "component": "TickerPayload",
+      "schema_drifts": [],
+      "regen_accepts_valid": true,
+      "parity_failures": []
+    }
+  }
+}

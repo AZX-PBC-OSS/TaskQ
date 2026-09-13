@@ -1,0 +1,59 @@
+{
+  "synthetic.EnumPayload": {
+    "generated": "import { z } from \"zod\"\n\nexport const Deref = z.object({ \"priority\": z.enum([\"low\",\"medium\",\"high\"]).optional() })",
+    "mismatches": 0,
+    "detail": {
+      "valid": {
+        "ts_accepts": true,
+        "python_accepts": true,
+        "parity": true
+      },
+      "null_violation_priority": {
+        "ts_accepts": false,
+        "python_accepts": false,
+        "parity": true
+      },
+      "type_flip_priority": {
+        "ts_accepts": false,
+        "python_accepts": false,
+        "parity": true
+      },
+      "enum_violation_priority": {
+        "ts_accepts": false,
+        "python_accepts": false,
+        "parity": true
+      }
+    }
+  },
+  "synthetic.NestedPayload": {
+    "generated": "import { z } from \"zod\"\n\nexport const Deref = z.object({ \"address\": z.object({ \"street\": z.string(), \"city\": z.string(), \"zip_code\": z.string().regex(new RegExp(\"^\\\\d{5}$\")) }), \"tags\": z.array(z.string()).optional() })",
+    "mismatches": 0,
+    "detail": {
+      "valid": {
+        "ts_accepts": true,
+        "python_accepts": true,
+        "parity": true
+      },
+      "null_violation_address": {
+        "ts_accepts": false,
+        "python_accepts": false,
+        "parity": true
+      },
+      "null_violation_tags": {
+        "ts_accepts": false,
+        "python_accepts": false,
+        "parity": true
+      },
+      "missing_required_address": {
+        "ts_accepts": false,
+        "python_accepts": false,
+        "parity": true
+      },
+      "garbage_nested_address": {
+        "ts_accepts": false,
+        "python_accepts": false,
+        "parity": true
+      }
+    }
+  }
+}

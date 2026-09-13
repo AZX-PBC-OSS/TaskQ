@@ -1,0 +1,11 @@
+{
+  "properties": {
+    "n": {
+      "default": 10,
+      "title": "N",
+      "type": "integer"
+    }
+  },
+  "title": "CounterPayload",
+  "type": "object"
+}

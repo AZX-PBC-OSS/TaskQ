@@ -1,0 +1,33 @@
+{
+  "properties": {
+    "output_path": {
+      "title": "Output Path",
+      "type": "string"
+    },
+    "width": {
+      "title": "Width",
+      "type": "integer"
+    },
+    "height": {
+      "title": "Height",
+      "type": "integer"
+    },
+    "format": {
+      "title": "Format",
+      "type": "string"
+    },
+    "source_bytes": {
+      "title": "Source Bytes",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "output_path",
+    "width",
+    "height",
+    "format",
+    "source_bytes"
+  ],
+  "title": "ThumbnailResult",
+  "type": "object"
+}

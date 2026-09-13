@@ -1,0 +1,147 @@
+[
+  {
+    "module": "examples.actors.advanced",
+    "model": "EmptyPayload",
+    "file": "advanced.EmptyPayload.json"
+  },
+  {
+    "module": "examples.actors.advanced",
+    "model": "DeduplicatedPayload",
+    "file": "advanced.DeduplicatedPayload.json"
+  },
+  {
+    "module": "examples.actors.advanced",
+    "model": "SumPayload",
+    "file": "advanced.SumPayload.json"
+  },
+  {
+    "module": "examples.actors.advanced",
+    "model": "SumResult",
+    "file": "advanced.SumResult.json"
+  },
+  {
+    "module": "examples.actors.basic",
+    "model": "CounterPayload",
+    "file": "basic.CounterPayload.json"
+  },
+  {
+    "module": "examples.actors.basic",
+    "model": "DeferredPayload",
+    "file": "basic.DeferredPayload.json"
+  },
+  {
+    "module": "examples.actors.batch",
+    "model": "BatchCounterPayload",
+    "file": "batch.BatchCounterPayload.json"
+  },
+  {
+    "module": "examples.actors.batch",
+    "model": "BatchFinalizerPayload",
+    "file": "batch.BatchFinalizerPayload.json"
+  },
+  {
+    "module": "examples.actors.chained",
+    "model": "PipelinePayload",
+    "file": "chained.PipelinePayload.json"
+  },
+  {
+    "module": "examples.actors.chained",
+    "model": "StepTwoPayload",
+    "file": "chained.StepTwoPayload.json"
+  },
+  {
+    "module": "examples.actors.chained",
+    "model": "FanOutPayload",
+    "file": "chained.FanOutPayload.json"
+  },
+  {
+    "module": "examples.actors.di",
+    "model": "FetchPayload",
+    "file": "di.FetchPayload.json"
+  },
+  {
+    "module": "examples.actors.di",
+    "model": "FetchResult",
+    "file": "di.FetchResult.json"
+  },
+  {
+    "module": "examples.actors.di",
+    "model": "DbLookupPayload",
+    "file": "di.DbLookupPayload.json"
+  },
+  {
+    "module": "examples.actors.failure",
+    "model": "FlakyPayload",
+    "file": "failure.FlakyPayload.json"
+  },
+  {
+    "module": "examples.actors.failure",
+    "model": "SnoozePayload",
+    "file": "failure.SnoozePayload.json"
+  },
+  {
+    "module": "examples.actors.progress",
+    "model": "FileProcessorPayload",
+    "file": "progress.FileProcessorPayload.json"
+  },
+  {
+    "module": "examples.actors.ratelimit",
+    "model": "EmptyPayload",
+    "file": "ratelimit.EmptyPayload.json"
+  },
+  {
+    "module": "examples.actors.realworld",
+    "model": "DigestEmailPayload",
+    "file": "realworld.DigestEmailPayload.json"
+  },
+  {
+    "module": "examples.actors.realworld",
+    "model": "DigestEmailResult",
+    "file": "realworld.DigestEmailResult.json"
+  },
+  {
+    "module": "examples.actors.realworld",
+    "model": "CsvUploadPayload",
+    "file": "realworld.CsvUploadPayload.json"
+  },
+  {
+    "module": "examples.actors.realworld",
+    "model": "CsvChunkPayload",
+    "file": "realworld.CsvChunkPayload.json"
+  },
+  {
+    "module": "examples.actors.realworld",
+    "model": "ThumbnailPayload",
+    "file": "realworld.ThumbnailPayload.json"
+  },
+  {
+    "module": "examples.actors.realworld",
+    "model": "ThumbnailResult",
+    "file": "realworld.ThumbnailResult.json"
+  },
+  {
+    "module": "examples.actors.sync_demo",
+    "model": "WordCountPayload",
+    "file": "sync_demo.WordCountPayload.json"
+  },
+  {
+    "module": "examples.actors.sync_demo",
+    "model": "WordCountResult",
+    "file": "sync_demo.WordCountResult.json"
+  },
+  {
+    "module": "examples.actors.tags_demo",
+    "model": "TaggedPayload",
+    "file": "tags_demo.TaggedPayload.json"
+  },
+  {
+    "module": "examples.actors.tags_demo",
+    "model": "TaggedResult",
+    "file": "tags_demo.TaggedResult.json"
+  },
+  {
+    "module": "examples.actors.ticker",
+    "model": "TickerPayload",
+    "file": "ticker.TickerPayload.json"
+  }
+]

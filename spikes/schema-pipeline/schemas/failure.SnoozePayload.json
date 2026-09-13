@@ -1,0 +1,16 @@
+{
+  "properties": {
+    "delay_seconds": {
+      "default": 10,
+      "title": "Delay Seconds",
+      "type": "integer"
+    },
+    "wake_after_attempt": {
+      "default": 1,
+      "title": "Wake After Attempt",
+      "type": "integer"
+    }
+  },
+  "title": "SnoozePayload",
+  "type": "object"
+}

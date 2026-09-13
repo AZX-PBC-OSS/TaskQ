@@ -1,0 +1,28 @@
+{
+  "properties": {
+    "filename": {
+      "title": "Filename",
+      "type": "string"
+    },
+    "chunk_id": {
+      "title": "Chunk Id",
+      "type": "integer"
+    },
+    "start_row": {
+      "title": "Start Row",
+      "type": "integer"
+    },
+    "end_row": {
+      "title": "End Row",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "filename",
+    "chunk_id",
+    "start_row",
+    "end_row"
+  ],
+  "title": "CsvChunkPayload",
+  "type": "object"
+}

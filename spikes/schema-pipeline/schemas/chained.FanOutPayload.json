@@ -1,0 +1,18 @@
+{
+  "properties": {
+    "items": {
+      "default": [
+        "a",
+        "b",
+        "c"
+      ],
+      "items": {
+        "type": "string"
+      },
+      "title": "Items",
+      "type": "array"
+    }
+  },
+  "title": "FanOutPayload",
+  "type": "object"
+}

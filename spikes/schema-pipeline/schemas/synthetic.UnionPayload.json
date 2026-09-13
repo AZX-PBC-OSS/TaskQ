@@ -1,0 +1,32 @@
+{
+  "properties": {
+    "value": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "string"
+        }
+      ],
+      "title": "Value"
+    },
+    "maybe": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Maybe"
+    }
+  },
+  "required": [
+    "value"
+  ],
+  "title": "UnionPayload",
+  "type": "object"
+}

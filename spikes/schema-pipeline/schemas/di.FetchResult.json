@@ -1,0 +1,18 @@
+{
+  "properties": {
+    "status": {
+      "title": "Status",
+      "type": "integer"
+    },
+    "body": {
+      "title": "Body",
+      "type": "string"
+    }
+  },
+  "required": [
+    "status",
+    "body"
+  ],
+  "title": "FetchResult",
+  "type": "object"
+}

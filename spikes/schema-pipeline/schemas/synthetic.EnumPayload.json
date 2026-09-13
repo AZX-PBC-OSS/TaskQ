@@ -1,0 +1,21 @@
+{
+  "$defs": {
+    "Priority": {
+      "enum": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "title": "Priority",
+      "type": "string"
+    }
+  },
+  "properties": {
+    "priority": {
+      "$ref": "#/$defs/Priority",
+      "default": "medium"
+    }
+  },
+  "title": "EnumPayload",
+  "type": "object"
+}

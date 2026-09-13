@@ -1,0 +1,11 @@
+{
+  "properties": {
+    "values": {
+      "default": "1,2,3",
+      "title": "Values",
+      "type": "string"
+    }
+  },
+  "title": "SumPayload",
+  "type": "object"
+}

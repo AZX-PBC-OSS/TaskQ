@@ -1,0 +1,1413 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "TaskQ actors (spike aggregate)",
+    "version": "0.0.0-spike",
+    "description": "Aggregate actor payload/result schemas for the schema-pipeline spike."
+  },
+  "paths": {
+    "/actors/batch_counter": {
+      "post": {
+        "operationId": "enqueue_batch_counter",
+        "summary": "Enqueues N counter jobs as a single batch, then a finalizer that waits for them.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BatchCounterPayload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Job enqueued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "null"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/actors/batch_finalizer": {
+      "post": {
+        "operationId": "enqueue_batch_finalizer",
+        "summary": "Waits for all children in the batch to complete, then logs the summary.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BatchFinalizerPayload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Job enqueued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "null"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/actors/capped_job": {
+      "post": {
+        "operationId": "enqueue_capped_job",
+        "summary": "Runs for 3s \u2014 at most 2 may run simultaneously fleet-wide (max_concurrent=2).",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmptyPayload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Job enqueued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "null"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/actors/count_words": {
+      "post": {
+        "operationId": "enqueue_count_words",
+        "summary": "Counts words and characters \u2014 runs synchronously via asyncio.to_thread.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WordCountPayload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Job enqueued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WordCountResult"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/actors/counter": {
+      "post": {
+        "operationId": "enqueue_counter",
+        "summary": "Counts from 1 to N, reporting live progress each step.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CounterPayload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Job enqueued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "null"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/actors/db_lookup": {
+      "post": {
+        "operationId": "enqueue_db_lookup",
+        "summary": "Queries the fake DB \u2014 demonstrates TRANSIENT-scope DI (fresh session per job).",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DbLookupPayload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Job enqueued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "null"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/actors/deduplicated": {
+      "post": {
+        "operationId": "enqueue_deduplicated",
+        "summary": "Sleeps 2s \u2014 enqueueing the same identity_key within 1 min returns the existing job.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeduplicatedPayload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Job enqueued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "null"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/actors/deferred": {
+      "post": {
+        "operationId": "enqueue_deferred",
+        "summary": "Sleeps 1s then succeeds \u2014 scheduled_at is set by the trigger app.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeferredPayload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Job enqueued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "null"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/actors/fan_out": {
+      "post": {
+        "operationId": "enqueue_fan_out",
+        "summary": "Enqueues one step_two job per item \u2014 demonstrates ctx.jobs.enqueue_batch().",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FanOutPayload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Job enqueued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "null"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/actors/fetch": {
+      "post": {
+        "operationId": "enqueue_fetch",
+        "summary": "Fetches a URL via injected HTTP client \u2014 demonstrates LOOP-scope DI and result_ttl.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FetchPayload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Job enqueued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FetchResult"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/actors/file_processor": {
+      "post": {
+        "operationId": "enqueue_file_processor",
+        "summary": "Processes a file in four steps, reporting progress at each stage.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FileProcessorPayload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Job enqueued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "null"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/actors/flaky": {
+      "post": {
+        "operationId": "enqueue_flaky",
+        "summary": "Fails on the first N attempts, then succeeds \u2014 demonstrates retry.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FlakyPayload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Job enqueued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "null"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/actors/generate_thumbnail": {
+      "post": {
+        "operationId": "enqueue_generate_thumbnail",
+        "summary": "Generate a thumbnail from an image \u2014 CPU-bound sync actor.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ThumbnailPayload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Job enqueued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ThumbnailResult"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/actors/inmemory_rate_limited": {
+      "post": {
+        "operationId": "enqueue_inmemory_rate_limited",
+        "summary": "Sleeps 1s \u2014 gated by an in-memory sliding window (2 per 10s, per worker).",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmptyPayload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Job enqueued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "null"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/actors/process_csv_chunk": {
+      "post": {
+        "operationId": "enqueue_process_csv_chunk",
+        "summary": "Process a single chunk of CSV rows \u2014 a sub-job dispatched by the ETL pipeline.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CsvChunkPayload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Job enqueued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "null"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/actors/process_csv_upload": {
+      "post": {
+        "operationId": "enqueue_process_csv_upload",
+        "summary": "ETL pipeline: parse \u2192 validate \u2192 transform \u2192 load with progress and fan-out.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CsvUploadPayload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Job enqueued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "null"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/actors/reserved": {
+      "post": {
+        "operationId": "enqueue_reserved",
+        "summary": "Sleeps 3s \u2014 gated by a PG-backed concurrency reservation (2 slots).",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmptyPayload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Job enqueued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "null"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/actors/send_digest_email": {
+      "post": {
+        "operationId": "enqueue_send_digest_email",
+        "summary": "Send a digest email to a user \u2014 retries on transient SMTP failures.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DigestEmailPayload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Job enqueued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DigestEmailResult"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/actors/singleton_job": {
+      "post": {
+        "operationId": "enqueue_singleton_job",
+        "summary": "Runs for 5s \u2014 only one instance may be active fleet-wide (singleton=True).",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmptyPayload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Job enqueued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "null"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/actors/snoozer": {
+      "post": {
+        "operationId": "enqueue_snoozer",
+        "summary": "Snoozes for a configurable delay on the first attempt, then succeeds.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SnoozePayload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Job enqueued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "null"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/actors/step_one": {
+      "post": {
+        "operationId": "enqueue_step_one",
+        "summary": "First stage \u2014 transforms payload and chains step_two via ctx.jobs.enqueue().",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PipelinePayload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Job enqueued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "null"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/actors/step_two": {
+      "post": {
+        "operationId": "enqueue_step_two",
+        "summary": "Second stage of a two-step pipeline \u2014 enqueued by step_one on success.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StepTwoPayload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Job enqueued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "null"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/actors/summer": {
+      "post": {
+        "operationId": "enqueue_summer",
+        "summary": "Sums a comma-separated list of integers and returns the result (stored for 1h).",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SumPayload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Job enqueued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SumResult"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/actors/tagged_lower": {
+      "post": {
+        "operationId": "enqueue_tagged_lower",
+        "summary": "A tagged actor \u2014 enqueue with tags=[\"alpha\", \"lower\"] to find it later.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaggedPayload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Job enqueued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaggedResult"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/actors/tagged_upper": {
+      "post": {
+        "operationId": "enqueue_tagged_upper",
+        "summary": "A tagged actor \u2014 enqueue with tags=[\"alpha\", \"upper\"] and watch progress.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaggedPayload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Job enqueued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "null"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/actors/ticker": {
+      "post": {
+        "operationId": "enqueue_ticker",
+        "summary": "Fires every 30 seconds to demonstrate cron scheduling.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TickerPayload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Job enqueued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "null"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/actors/token_rate_limited": {
+      "post": {
+        "operationId": "enqueue_token_rate_limited",
+        "summary": "Sleeps 1s \u2014 gated by a Redis-backed token bucket (cap 3, refill 1/s).",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmptyPayload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Job enqueued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "null"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/actors/window_rate_limited": {
+      "post": {
+        "operationId": "enqueue_window_rate_limited",
+        "summary": "Sleeps 1s \u2014 gated by a Redis-backed sliding window (3 per 15s).",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmptyPayload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Job enqueued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "null"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "BatchCounterPayload": {
+        "properties": {
+          "n": {
+            "default": 5,
+            "description": "Number of child jobs",
+            "maximum": 1000,
+            "minimum": 1,
+            "title": "N",
+            "type": "integer"
+          },
+          "steps": {
+            "default": 5,
+            "description": "Steps per child",
+            "maximum": 1000,
+            "minimum": 1,
+            "title": "Steps",
+            "type": "integer"
+          }
+        },
+        "title": "BatchCounterPayload",
+        "type": "object"
+      },
+      "BatchFinalizerPayload": {
+        "properties": {
+          "batch_id": {
+            "format": "uuid",
+            "title": "Batch Id",
+            "type": "string"
+          },
+          "expected": {
+            "title": "Expected",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "batch_id",
+          "expected"
+        ],
+        "title": "BatchFinalizerPayload",
+        "type": "object"
+      },
+      "EmptyPayload": {
+        "properties": {},
+        "title": "EmptyPayload",
+        "type": "object"
+      },
+      "WordCountPayload": {
+        "properties": {
+          "text": {
+            "default": "TaskQ makes background jobs simple and reliable",
+            "description": "Text to count words in",
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "title": "WordCountPayload",
+        "type": "object"
+      },
+      "WordCountResult": {
+        "properties": {
+          "word_count": {
+            "title": "Word Count",
+            "type": "integer"
+          },
+          "char_count": {
+            "title": "Char Count",
+            "type": "integer"
+          },
+          "processed_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Processed At"
+          }
+        },
+        "required": [
+          "word_count",
+          "char_count"
+        ],
+        "title": "WordCountResult",
+        "type": "object"
+      },
+      "CounterPayload": {
+        "properties": {
+          "n": {
+            "default": 10,
+            "title": "N",
+            "type": "integer"
+          }
+        },
+        "title": "CounterPayload",
+        "type": "object"
+      },
+      "DbLookupPayload": {
+        "properties": {
+          "item_id": {
+            "default": 1,
+            "title": "Item Id",
+            "type": "integer"
+          }
+        },
+        "title": "DbLookupPayload",
+        "type": "object"
+      },
+      "DeduplicatedPayload": {
+        "properties": {
+          "key": {
+            "default": "default",
+            "title": "Key",
+            "type": "string"
+          }
+        },
+        "title": "DeduplicatedPayload",
+        "type": "object"
+      },
+      "DeferredPayload": {
+        "properties": {
+          "delay_seconds": {
+            "default": 30,
+            "title": "Delay Seconds",
+            "type": "integer"
+          }
+        },
+        "title": "DeferredPayload",
+        "type": "object"
+      },
+      "FanOutPayload": {
+        "properties": {
+          "items": {
+            "default": [
+              "a",
+              "b",
+              "c"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "title": "FanOutPayload",
+        "type": "object"
+      },
+      "FetchPayload": {
+        "properties": {
+          "url": {
+            "default": "https://example.com",
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "title": "FetchPayload",
+        "type": "object"
+      },
+      "FetchResult": {
+        "properties": {
+          "status": {
+            "title": "Status",
+            "type": "integer"
+          },
+          "body": {
+            "title": "Body",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "body"
+        ],
+        "title": "FetchResult",
+        "type": "object"
+      },
+      "FileProcessorPayload": {
+        "properties": {
+          "filename": {
+            "default": "data.csv",
+            "title": "Filename",
+            "type": "string"
+          },
+          "rows": {
+            "default": 1000,
+            "title": "Rows",
+            "type": "integer"
+          }
+        },
+        "title": "FileProcessorPayload",
+        "type": "object"
+      },
+      "FlakyPayload": {
+        "properties": {
+          "fail_count": {
+            "default": 2,
+            "title": "Fail Count",
+            "type": "integer"
+          }
+        },
+        "title": "FlakyPayload",
+        "type": "object"
+      },
+      "ThumbnailPayload": {
+        "properties": {
+          "image_url": {
+            "description": "Source image URL or path",
+            "title": "Image Url",
+            "type": "string"
+          },
+          "width": {
+            "default": 200,
+            "maximum": 2000,
+            "minimum": 1,
+            "title": "Width",
+            "type": "integer"
+          },
+          "height": {
+            "default": 200,
+            "maximum": 2000,
+            "minimum": 1,
+            "title": "Height",
+            "type": "integer"
+          },
+          "format": {
+            "default": "webp",
+            "description": "Output format: webp, jpeg, png",
+            "title": "Format",
+            "type": "string"
+          }
+        },
+        "required": [
+          "image_url"
+        ],
+        "title": "ThumbnailPayload",
+        "type": "object"
+      },
+      "ThumbnailResult": {
+        "properties": {
+          "output_path": {
+            "title": "Output Path",
+            "type": "string"
+          },
+          "width": {
+            "title": "Width",
+            "type": "integer"
+          },
+          "height": {
+            "title": "Height",
+            "type": "integer"
+          },
+          "format": {
+            "title": "Format",
+            "type": "string"
+          },
+          "source_bytes": {
+            "title": "Source Bytes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "output_path",
+          "width",
+          "height",
+          "format",
+          "source_bytes"
+        ],
+        "title": "ThumbnailResult",
+        "type": "object"
+      },
+      "CsvChunkPayload": {
+        "properties": {
+          "filename": {
+            "title": "Filename",
+            "type": "string"
+          },
+          "chunk_id": {
+            "title": "Chunk Id",
+            "type": "integer"
+          },
+          "start_row": {
+            "title": "Start Row",
+            "type": "integer"
+          },
+          "end_row": {
+            "title": "End Row",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "filename",
+          "chunk_id",
+          "start_row",
+          "end_row"
+        ],
+        "title": "CsvChunkPayload",
+        "type": "object"
+      },
+      "CsvUploadPayload": {
+        "properties": {
+          "filename": {
+            "description": "Name of the uploaded CSV file",
+            "title": "Filename",
+            "type": "string"
+          },
+          "row_count": {
+            "default": 1000,
+            "description": "Number of rows to process",
+            "maximum": 100000,
+            "minimum": 1,
+            "title": "Row Count",
+            "type": "integer"
+          },
+          "chunk_size": {
+            "default": 500,
+            "description": "Rows per chunk",
+            "maximum": 5000,
+            "minimum": 100,
+            "title": "Chunk Size",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "filename"
+        ],
+        "title": "CsvUploadPayload",
+        "type": "object"
+      },
+      "DigestEmailPayload": {
+        "properties": {
+          "user_id": {
+            "description": "User identifier",
+            "title": "User Id",
+            "type": "string"
+          },
+          "email": {
+            "description": "Recipient email address",
+            "title": "Email",
+            "type": "string"
+          },
+          "period": {
+            "default": "weekly",
+            "description": "Digest period: daily, weekly, monthly",
+            "title": "Period",
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_id",
+          "email"
+        ],
+        "title": "DigestEmailPayload",
+        "type": "object"
+      },
+      "DigestEmailResult": {
+        "properties": {
+          "message_id": {
+            "title": "Message Id",
+            "type": "string"
+          },
+          "recipients": {
+            "title": "Recipients",
+            "type": "integer"
+          },
+          "articles_included": {
+            "title": "Articles Included",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "message_id",
+          "recipients",
+          "articles_included"
+        ],
+        "title": "DigestEmailResult",
+        "type": "object"
+      },
+      "SnoozePayload": {
+        "properties": {
+          "delay_seconds": {
+            "default": 10,
+            "title": "Delay Seconds",
+            "type": "integer"
+          },
+          "wake_after_attempt": {
+            "default": 1,
+            "title": "Wake After Attempt",
+            "type": "integer"
+          }
+        },
+        "title": "SnoozePayload",
+        "type": "object"
+      },
+      "PipelinePayload": {
+        "properties": {
+          "text": {
+            "default": "hello",
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "title": "PipelinePayload",
+        "type": "object"
+      },
+      "StepTwoPayload": {
+        "properties": {
+          "processed": {
+            "title": "Processed",
+            "type": "string"
+          }
+        },
+        "required": [
+          "processed"
+        ],
+        "title": "StepTwoPayload",
+        "type": "object"
+      },
+      "SumPayload": {
+        "properties": {
+          "values": {
+            "default": "1,2,3",
+            "title": "Values",
+            "type": "string"
+          }
+        },
+        "title": "SumPayload",
+        "type": "object"
+      },
+      "SumResult": {
+        "properties": {
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "total"
+        ],
+        "title": "SumResult",
+        "type": "object"
+      },
+      "TaggedPayload": {
+        "properties": {
+          "label": {
+            "default": "demo",
+            "title": "Label",
+            "type": "string"
+          }
+        },
+        "title": "TaggedPayload",
+        "type": "object"
+      },
+      "TaggedResult": {
+        "properties": {
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "reversed": {
+            "title": "Reversed",
+            "type": "string"
+          }
+        },
+        "required": [
+          "label",
+          "reversed"
+        ],
+        "title": "TaggedResult",
+        "type": "object"
+      },
+      "TickerPayload": {
+        "properties": {},
+        "title": "TickerPayload",
+        "type": "object"
+      },
+      "Priority": {
+        "enum": [
+          "low",
+          "medium",
+          "high"
+        ],
+        "title": "Priority",
+        "type": "string"
+      },
+      "EnumPayload": {
+        "properties": {
+          "priority": {
+            "$ref": "#/components/schemas/Priority",
+            "default": "medium"
+          }
+        },
+        "title": "EnumPayload",
+        "type": "object",
+        "x-synthetic": true
+      },
+      "ConstrainedStringPayload": {
+        "properties": {
+          "slug": {
+            "maxLength": 20,
+            "minLength": 3,
+            "title": "Slug",
+            "type": "string"
+          },
+          "label": {
+            "default": "task",
+            "pattern": "^[a-z]+$",
+            "title": "Label",
+            "type": "string"
+          }
+        },
+        "required": [
+          "slug"
+        ],
+        "title": "ConstrainedStringPayload",
+        "type": "object",
+        "x-synthetic": true
+      },
+      "Address": {
+        "properties": {
+          "street": {
+            "title": "Street",
+            "type": "string"
+          },
+          "city": {
+            "title": "City",
+            "type": "string"
+          },
+          "zip_code": {
+            "pattern": "^\\d{5}$",
+            "title": "Zip Code",
+            "type": "string"
+          }
+        },
+        "required": [
+          "street",
+          "city",
+          "zip_code"
+        ],
+        "title": "Address",
+        "type": "object"
+      },
+      "NestedPayload": {
+        "properties": {
+          "address": {
+            "$ref": "#/components/schemas/Address"
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Tags",
+            "type": "array"
+          }
+        },
+        "required": [
+          "address"
+        ],
+        "title": "NestedPayload",
+        "type": "object",
+        "x-synthetic": true
+      },
+      "UnionPayload": {
+        "properties": {
+          "value": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Value"
+          },
+          "maybe": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Maybe"
+          }
+        },
+        "required": [
+          "value"
+        ],
+        "title": "UnionPayload",
+        "type": "object",
+        "x-synthetic": true
+      },
+      "DatetimePayload": {
+        "properties": {
+          "started_at": {
+            "format": "date-time",
+            "title": "Started At",
+            "type": "string"
+          },
+          "due_date": {
+            "default": "2026-12-31",
+            "format": "date",
+            "title": "Due Date",
+            "type": "string"
+          }
+        },
+        "title": "DatetimePayload",
+        "type": "object",
+        "x-synthetic": true
+      }
+    }
+  }
+}

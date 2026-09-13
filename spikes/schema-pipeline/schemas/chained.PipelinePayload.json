@@ -1,0 +1,11 @@
+{
+  "properties": {
+    "text": {
+      "default": "hello",
+      "title": "Text",
+      "type": "string"
+    }
+  },
+  "title": "PipelinePayload",
+  "type": "object"
+}

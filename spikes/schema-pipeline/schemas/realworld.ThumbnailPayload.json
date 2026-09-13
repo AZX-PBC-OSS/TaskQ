@@ -1,0 +1,34 @@
+{
+  "properties": {
+    "image_url": {
+      "description": "Source image URL or path",
+      "title": "Image Url",
+      "type": "string"
+    },
+    "width": {
+      "default": 200,
+      "maximum": 2000,
+      "minimum": 1,
+      "title": "Width",
+      "type": "integer"
+    },
+    "height": {
+      "default": 200,
+      "maximum": 2000,
+      "minimum": 1,
+      "title": "Height",
+      "type": "integer"
+    },
+    "format": {
+      "default": "webp",
+      "description": "Output format: webp, jpeg, png",
+      "title": "Format",
+      "type": "string"
+    }
+  },
+  "required": [
+    "image_url"
+  ],
+  "title": "ThumbnailPayload",
+  "type": "object"
+}

@@ -1,0 +1,11 @@
+{
+  "properties": {
+    "item_id": {
+      "default": 1,
+      "title": "Item Id",
+      "type": "integer"
+    }
+  },
+  "title": "DbLookupPayload",
+  "type": "object"
+}

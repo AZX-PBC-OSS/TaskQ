@@ -1,0 +1,1062 @@
+{
+  "label": "baseline (default flags)",
+  "codegen_errors": {},
+  "schemas": {
+    "advanced.DeduplicatedPayload": {
+      "slug": "advanced.DeduplicatedPayload",
+      "schema_drifts": [
+        "property 'key': NULLABILITY drift (nullable False -> True)"
+      ],
+      "orig_accepts_valid": true,
+      "regen_accepts_valid": true,
+      "mutants": [
+        {
+          "mutant": "null_violation_key",
+          "original_accepted": false,
+          "regen_accepted": true,
+          "parity": false
+        },
+        {
+          "mutant": "type_flip_key",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        }
+      ],
+      "rejection_parity": false
+    },
+    "advanced.EmptyPayload": {
+      "slug": "advanced.EmptyPayload",
+      "schema_drifts": [],
+      "orig_accepts_valid": true,
+      "regen_accepts_valid": true,
+      "mutants": [],
+      "rejection_parity": true
+    },
+    "advanced.SumPayload": {
+      "slug": "advanced.SumPayload",
+      "schema_drifts": [
+        "property 'values': NULLABILITY drift (nullable False -> True)"
+      ],
+      "orig_accepts_valid": true,
+      "regen_accepts_valid": true,
+      "mutants": [
+        {
+          "mutant": "null_violation_values",
+          "original_accepted": false,
+          "regen_accepted": true,
+          "parity": false
+        },
+        {
+          "mutant": "type_flip_values",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        }
+      ],
+      "rejection_parity": false
+    },
+    "advanced.SumResult": {
+      "slug": "advanced.SumResult",
+      "schema_drifts": [],
+      "orig_accepts_valid": true,
+      "regen_accepts_valid": true,
+      "mutants": [
+        {
+          "mutant": "null_violation_total",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        },
+        {
+          "mutant": "type_flip_total",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        },
+        {
+          "mutant": "missing_required_total",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        }
+      ],
+      "rejection_parity": true
+    },
+    "basic.CounterPayload": {
+      "slug": "basic.CounterPayload",
+      "schema_drifts": [
+        "property 'n': NULLABILITY drift (nullable False -> True)"
+      ],
+      "orig_accepts_valid": true,
+      "regen_accepts_valid": true,
+      "mutants": [
+        {
+          "mutant": "null_violation_n",
+          "original_accepted": false,
+          "regen_accepted": true,
+          "parity": false
+        },
+        {
+          "mutant": "type_flip_n",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        }
+      ],
+      "rejection_parity": false
+    },
+    "basic.DeferredPayload": {
+      "slug": "basic.DeferredPayload",
+      "schema_drifts": [
+        "property 'delay_seconds': NULLABILITY drift (nullable False -> True)"
+      ],
+      "orig_accepts_valid": true,
+      "regen_accepts_valid": true,
+      "mutants": [
+        {
+          "mutant": "null_violation_delay_seconds",
+          "original_accepted": false,
+          "regen_accepted": true,
+          "parity": false
+        },
+        {
+          "mutant": "type_flip_delay_seconds",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        }
+      ],
+      "rejection_parity": false
+    },
+    "batch.BatchCounterPayload": {
+      "slug": "batch.BatchCounterPayload",
+      "schema_drifts": [
+        "property 'n': NULLABILITY drift (nullable False -> True)",
+        "property 'steps': NULLABILITY drift (nullable False -> True)"
+      ],
+      "orig_accepts_valid": true,
+      "regen_accepts_valid": true,
+      "mutants": [
+        {
+          "mutant": "null_violation_n",
+          "original_accepted": false,
+          "regen_accepted": true,
+          "parity": false
+        },
+        {
+          "mutant": "null_violation_steps",
+          "original_accepted": false,
+          "regen_accepted": true,
+          "parity": false
+        },
+        {
+          "mutant": "type_flip_n",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        },
+        {
+          "mutant": "max_violation_n",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        },
+        {
+          "mutant": "min_violation_n",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        }
+      ],
+      "rejection_parity": false
+    },
+    "batch.BatchFinalizerPayload": {
+      "slug": "batch.BatchFinalizerPayload",
+      "schema_drifts": [],
+      "orig_accepts_valid": true,
+      "regen_accepts_valid": true,
+      "mutants": [
+        {
+          "mutant": "null_violation_batch_id",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        },
+        {
+          "mutant": "null_violation_expected",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        },
+        {
+          "mutant": "type_flip_expected",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        },
+        {
+          "mutant": "type_flip_batch_id",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        },
+        {
+          "mutant": "missing_required_batch_id",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        }
+      ],
+      "rejection_parity": true
+    },
+    "chained.FanOutPayload": {
+      "slug": "chained.FanOutPayload",
+      "schema_drifts": [
+        "property 'items': NULLABILITY drift (nullable False -> True)"
+      ],
+      "orig_accepts_valid": true,
+      "regen_accepts_valid": true,
+      "mutants": [
+        {
+          "mutant": "null_violation_items",
+          "original_accepted": false,
+          "regen_accepted": true,
+          "parity": false
+        }
+      ],
+      "rejection_parity": false
+    },
+    "chained.PipelinePayload": {
+      "slug": "chained.PipelinePayload",
+      "schema_drifts": [
+        "property 'text': NULLABILITY drift (nullable False -> True)"
+      ],
+      "orig_accepts_valid": true,
+      "regen_accepts_valid": true,
+      "mutants": [
+        {
+          "mutant": "null_violation_text",
+          "original_accepted": false,
+          "regen_accepted": true,
+          "parity": false
+        },
+        {
+          "mutant": "type_flip_text",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        }
+      ],
+      "rejection_parity": false
+    },
+    "chained.StepTwoPayload": {
+      "slug": "chained.StepTwoPayload",
+      "schema_drifts": [],
+      "orig_accepts_valid": true,
+      "regen_accepts_valid": true,
+      "mutants": [
+        {
+          "mutant": "null_violation_processed",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        },
+        {
+          "mutant": "type_flip_processed",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        },
+        {
+          "mutant": "missing_required_processed",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        }
+      ],
+      "rejection_parity": true
+    },
+    "di.DbLookupPayload": {
+      "slug": "di.DbLookupPayload",
+      "schema_drifts": [
+        "property 'item_id': NULLABILITY drift (nullable False -> True)"
+      ],
+      "orig_accepts_valid": true,
+      "regen_accepts_valid": true,
+      "mutants": [
+        {
+          "mutant": "null_violation_item_id",
+          "original_accepted": false,
+          "regen_accepted": true,
+          "parity": false
+        },
+        {
+          "mutant": "type_flip_item_id",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        }
+      ],
+      "rejection_parity": false
+    },
+    "di.FetchPayload": {
+      "slug": "di.FetchPayload",
+      "schema_drifts": [
+        "property 'url': NULLABILITY drift (nullable False -> True)"
+      ],
+      "orig_accepts_valid": true,
+      "regen_accepts_valid": true,
+      "mutants": [
+        {
+          "mutant": "null_violation_url",
+          "original_accepted": false,
+          "regen_accepted": true,
+          "parity": false
+        },
+        {
+          "mutant": "type_flip_url",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        }
+      ],
+      "rejection_parity": false
+    },
+    "di.FetchResult": {
+      "slug": "di.FetchResult",
+      "schema_drifts": [],
+      "orig_accepts_valid": true,
+      "regen_accepts_valid": true,
+      "mutants": [
+        {
+          "mutant": "null_violation_status",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        },
+        {
+          "mutant": "null_violation_body",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        },
+        {
+          "mutant": "type_flip_status",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        },
+        {
+          "mutant": "type_flip_body",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        },
+        {
+          "mutant": "missing_required_status",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        }
+      ],
+      "rejection_parity": true
+    },
+    "failure.FlakyPayload": {
+      "slug": "failure.FlakyPayload",
+      "schema_drifts": [
+        "property 'fail_count': NULLABILITY drift (nullable False -> True)"
+      ],
+      "orig_accepts_valid": true,
+      "regen_accepts_valid": true,
+      "mutants": [
+        {
+          "mutant": "null_violation_fail_count",
+          "original_accepted": false,
+          "regen_accepted": true,
+          "parity": false
+        },
+        {
+          "mutant": "type_flip_fail_count",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        }
+      ],
+      "rejection_parity": false
+    },
+    "failure.SnoozePayload": {
+      "slug": "failure.SnoozePayload",
+      "schema_drifts": [
+        "property 'delay_seconds': NULLABILITY drift (nullable False -> True)",
+        "property 'wake_after_attempt': NULLABILITY drift (nullable False -> True)"
+      ],
+      "orig_accepts_valid": true,
+      "regen_accepts_valid": true,
+      "mutants": [
+        {
+          "mutant": "null_violation_delay_seconds",
+          "original_accepted": false,
+          "regen_accepted": true,
+          "parity": false
+        },
+        {
+          "mutant": "null_violation_wake_after_attempt",
+          "original_accepted": false,
+          "regen_accepted": true,
+          "parity": false
+        },
+        {
+          "mutant": "type_flip_delay_seconds",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        }
+      ],
+      "rejection_parity": false
+    },
+    "progress.FileProcessorPayload": {
+      "slug": "progress.FileProcessorPayload",
+      "schema_drifts": [
+        "property 'filename': NULLABILITY drift (nullable False -> True)",
+        "property 'rows': NULLABILITY drift (nullable False -> True)"
+      ],
+      "orig_accepts_valid": true,
+      "regen_accepts_valid": true,
+      "mutants": [
+        {
+          "mutant": "null_violation_filename",
+          "original_accepted": false,
+          "regen_accepted": true,
+          "parity": false
+        },
+        {
+          "mutant": "null_violation_rows",
+          "original_accepted": false,
+          "regen_accepted": true,
+          "parity": false
+        },
+        {
+          "mutant": "type_flip_rows",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        },
+        {
+          "mutant": "type_flip_filename",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        }
+      ],
+      "rejection_parity": false
+    },
+    "ratelimit.EmptyPayload": {
+      "slug": "ratelimit.EmptyPayload",
+      "schema_drifts": [],
+      "orig_accepts_valid": true,
+      "regen_accepts_valid": true,
+      "mutants": [],
+      "rejection_parity": true
+    },
+    "realworld.CsvChunkPayload": {
+      "slug": "realworld.CsvChunkPayload",
+      "schema_drifts": [],
+      "orig_accepts_valid": true,
+      "regen_accepts_valid": true,
+      "mutants": [
+        {
+          "mutant": "null_violation_filename",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        },
+        {
+          "mutant": "null_violation_chunk_id",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        },
+        {
+          "mutant": "null_violation_start_row",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        },
+        {
+          "mutant": "null_violation_end_row",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        },
+        {
+          "mutant": "type_flip_chunk_id",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        },
+        {
+          "mutant": "type_flip_filename",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        },
+        {
+          "mutant": "missing_required_filename",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        }
+      ],
+      "rejection_parity": true
+    },
+    "realworld.CsvUploadPayload": {
+      "slug": "realworld.CsvUploadPayload",
+      "schema_drifts": [
+        "property 'chunk_size': NULLABILITY drift (nullable False -> True)",
+        "property 'row_count': NULLABILITY drift (nullable False -> True)"
+      ],
+      "orig_accepts_valid": true,
+      "regen_accepts_valid": true,
+      "mutants": [
+        {
+          "mutant": "null_violation_filename",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        },
+        {
+          "mutant": "null_violation_row_count",
+          "original_accepted": false,
+          "regen_accepted": true,
+          "parity": false
+        },
+        {
+          "mutant": "null_violation_chunk_size",
+          "original_accepted": false,
+          "regen_accepted": true,
+          "parity": false
+        },
+        {
+          "mutant": "type_flip_row_count",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        },
+        {
+          "mutant": "type_flip_filename",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        },
+        {
+          "mutant": "max_violation_row_count",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        },
+        {
+          "mutant": "min_violation_row_count",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        },
+        {
+          "mutant": "missing_required_filename",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        }
+      ],
+      "rejection_parity": false
+    },
+    "realworld.DigestEmailPayload": {
+      "slug": "realworld.DigestEmailPayload",
+      "schema_drifts": [
+        "property 'period': NULLABILITY drift (nullable False -> True)"
+      ],
+      "orig_accepts_valid": true,
+      "regen_accepts_valid": true,
+      "mutants": [
+        {
+          "mutant": "null_violation_user_id",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        },
+        {
+          "mutant": "null_violation_email",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        },
+        {
+          "mutant": "null_violation_period",
+          "original_accepted": false,
+          "regen_accepted": true,
+          "parity": false
+        },
+        {
+          "mutant": "type_flip_user_id",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        },
+        {
+          "mutant": "missing_required_user_id",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        }
+      ],
+      "rejection_parity": false
+    },
+    "realworld.DigestEmailResult": {
+      "slug": "realworld.DigestEmailResult",
+      "schema_drifts": [],
+      "orig_accepts_valid": true,
+      "regen_accepts_valid": true,
+      "mutants": [
+        {
+          "mutant": "null_violation_message_id",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        },
+        {
+          "mutant": "null_violation_recipients",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        },
+        {
+          "mutant": "null_violation_articles_included",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        },
+        {
+          "mutant": "type_flip_recipients",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        },
+        {
+          "mutant": "type_flip_message_id",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        },
+        {
+          "mutant": "missing_required_message_id",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        }
+      ],
+      "rejection_parity": true
+    },
+    "realworld.ThumbnailPayload": {
+      "slug": "realworld.ThumbnailPayload",
+      "schema_drifts": [
+        "property 'format': NULLABILITY drift (nullable False -> True)",
+        "property 'height': NULLABILITY drift (nullable False -> True)",
+        "property 'width': NULLABILITY drift (nullable False -> True)"
+      ],
+      "orig_accepts_valid": true,
+      "regen_accepts_valid": true,
+      "mutants": [
+        {
+          "mutant": "null_violation_image_url",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        },
+        {
+          "mutant": "null_violation_width",
+          "original_accepted": false,
+          "regen_accepted": true,
+          "parity": false
+        },
+        {
+          "mutant": "null_violation_height",
+          "original_accepted": false,
+          "regen_accepted": true,
+          "parity": false
+        },
+        {
+          "mutant": "null_violation_format",
+          "original_accepted": false,
+          "regen_accepted": true,
+          "parity": false
+        },
+        {
+          "mutant": "type_flip_width",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        },
+        {
+          "mutant": "type_flip_image_url",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        },
+        {
+          "mutant": "max_violation_width",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        },
+        {
+          "mutant": "min_violation_width",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        },
+        {
+          "mutant": "missing_required_image_url",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        }
+      ],
+      "rejection_parity": false
+    },
+    "realworld.ThumbnailResult": {
+      "slug": "realworld.ThumbnailResult",
+      "schema_drifts": [],
+      "orig_accepts_valid": true,
+      "regen_accepts_valid": true,
+      "mutants": [
+        {
+          "mutant": "null_violation_output_path",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        },
+        {
+          "mutant": "null_violation_width",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        },
+        {
+          "mutant": "null_violation_height",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        },
+        {
+          "mutant": "null_violation_format",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        },
+        {
+          "mutant": "null_violation_source_bytes",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        },
+        {
+          "mutant": "type_flip_width",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        },
+        {
+          "mutant": "type_flip_output_path",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        },
+        {
+          "mutant": "missing_required_output_path",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        }
+      ],
+      "rejection_parity": true
+    },
+    "sync_demo.WordCountPayload": {
+      "slug": "sync_demo.WordCountPayload",
+      "schema_drifts": [
+        "property 'text': NULLABILITY drift (nullable False -> True)"
+      ],
+      "orig_accepts_valid": true,
+      "regen_accepts_valid": true,
+      "mutants": [
+        {
+          "mutant": "null_violation_text",
+          "original_accepted": false,
+          "regen_accepted": true,
+          "parity": false
+        },
+        {
+          "mutant": "type_flip_text",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        }
+      ],
+      "rejection_parity": false
+    },
+    "sync_demo.WordCountResult": {
+      "slug": "sync_demo.WordCountResult",
+      "schema_drifts": [],
+      "orig_accepts_valid": true,
+      "regen_accepts_valid": true,
+      "mutants": [
+        {
+          "mutant": "null_violation_word_count",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        },
+        {
+          "mutant": "null_violation_char_count",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        },
+        {
+          "mutant": "type_flip_word_count",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        },
+        {
+          "mutant": "type_flip_processed_at",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        },
+        {
+          "mutant": "missing_required_word_count",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        }
+      ],
+      "rejection_parity": true
+    },
+    "synthetic.ConstrainedStringPayload": {
+      "slug": "synthetic.ConstrainedStringPayload",
+      "schema_drifts": [
+        "property 'label': NULLABILITY drift (nullable False -> True)"
+      ],
+      "orig_accepts_valid": true,
+      "regen_accepts_valid": true,
+      "mutants": [
+        {
+          "mutant": "null_violation_slug",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        },
+        {
+          "mutant": "null_violation_label",
+          "original_accepted": false,
+          "regen_accepted": true,
+          "parity": false
+        },
+        {
+          "mutant": "type_flip_slug",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        },
+        {
+          "mutant": "missing_required_slug",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        }
+      ],
+      "rejection_parity": false
+    },
+    "synthetic.DatetimePayload": {
+      "slug": "synthetic.DatetimePayload",
+      "schema_drifts": [
+        "property 'due_date': NULLABILITY drift (nullable False -> True)",
+        "property 'started_at': NULLABILITY drift (nullable False -> True)",
+        "property 'started_at': default '<absent>' -> None"
+      ],
+      "orig_accepts_valid": true,
+      "regen_accepts_valid": true,
+      "mutants": [
+        {
+          "mutant": "null_violation_started_at",
+          "original_accepted": false,
+          "regen_accepted": true,
+          "parity": false
+        },
+        {
+          "mutant": "null_violation_due_date",
+          "original_accepted": false,
+          "regen_accepted": true,
+          "parity": false
+        },
+        {
+          "mutant": "type_flip_started_at",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        }
+      ],
+      "rejection_parity": false
+    },
+    "synthetic.EnumPayload": {
+      "slug": "synthetic.EnumPayload",
+      "schema_drifts": [
+        "property 'priority': NULLABILITY drift (nullable False -> True)"
+      ],
+      "orig_accepts_valid": true,
+      "regen_accepts_valid": true,
+      "mutants": [
+        {
+          "mutant": "null_violation_priority",
+          "original_accepted": false,
+          "regen_accepted": true,
+          "parity": false
+        },
+        {
+          "mutant": "type_flip_priority",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        },
+        {
+          "mutant": "enum_violation_priority",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        }
+      ],
+      "rejection_parity": false
+    },
+    "synthetic.NestedPayload": {
+      "slug": "synthetic.NestedPayload",
+      "schema_drifts": [
+        "property 'tags': NULLABILITY drift (nullable False -> True)",
+        "property 'tags': default '<absent>' -> None"
+      ],
+      "orig_accepts_valid": true,
+      "regen_accepts_valid": true,
+      "mutants": [
+        {
+          "mutant": "null_violation_address",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        },
+        {
+          "mutant": "null_violation_tags",
+          "original_accepted": false,
+          "regen_accepted": true,
+          "parity": false
+        },
+        {
+          "mutant": "missing_required_address",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        },
+        {
+          "mutant": "garbage_nested_address",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        }
+      ],
+      "rejection_parity": false
+    },
+    "synthetic.UnionPayload": {
+      "slug": "synthetic.UnionPayload",
+      "schema_drifts": [],
+      "orig_accepts_valid": true,
+      "regen_accepts_valid": true,
+      "mutants": [
+        {
+          "mutant": "null_violation_value",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        },
+        {
+          "mutant": "missing_required_value",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        }
+      ],
+      "rejection_parity": true
+    },
+    "tags_demo.TaggedPayload": {
+      "slug": "tags_demo.TaggedPayload",
+      "schema_drifts": [
+        "property 'label': NULLABILITY drift (nullable False -> True)"
+      ],
+      "orig_accepts_valid": true,
+      "regen_accepts_valid": true,
+      "mutants": [
+        {
+          "mutant": "null_violation_label",
+          "original_accepted": false,
+          "regen_accepted": true,
+          "parity": false
+        },
+        {
+          "mutant": "type_flip_label",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        }
+      ],
+      "rejection_parity": false
+    },
+    "tags_demo.TaggedResult": {
+      "slug": "tags_demo.TaggedResult",
+      "schema_drifts": [],
+      "orig_accepts_valid": true,
+      "regen_accepts_valid": true,
+      "mutants": [
+        {
+          "mutant": "null_violation_label",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        },
+        {
+          "mutant": "null_violation_reversed",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        },
+        {
+          "mutant": "type_flip_label",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        },
+        {
+          "mutant": "missing_required_label",
+          "original_accepted": false,
+          "regen_accepted": false,
+          "parity": true
+        }
+      ],
+      "rejection_parity": true
+    },
+    "ticker.TickerPayload": {
+      "slug": "ticker.TickerPayload",
+      "schema_drifts": [],
+      "orig_accepts_valid": true,
+      "regen_accepts_valid": true,
+      "mutants": [],
+      "rejection_parity": true
+    }
+  }
+}

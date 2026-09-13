@@ -1,0 +1,11 @@
+{
+  "properties": {
+    "delay_seconds": {
+      "default": 30,
+      "title": "Delay Seconds",
+      "type": "integer"
+    }
+  },
+  "title": "DeferredPayload",
+  "type": "object"
+}

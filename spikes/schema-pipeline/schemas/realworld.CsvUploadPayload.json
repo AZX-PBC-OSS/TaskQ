@@ -1,0 +1,30 @@
+{
+  "properties": {
+    "filename": {
+      "description": "Name of the uploaded CSV file",
+      "title": "Filename",
+      "type": "string"
+    },
+    "row_count": {
+      "default": 1000,
+      "description": "Number of rows to process",
+      "maximum": 100000,
+      "minimum": 1,
+      "title": "Row Count",
+      "type": "integer"
+    },
+    "chunk_size": {
+      "default": 500,
+      "description": "Rows per chunk",
+      "maximum": 5000,
+      "minimum": 100,
+      "title": "Chunk Size",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "filename"
+  ],
+  "title": "CsvUploadPayload",
+  "type": "object"
+}

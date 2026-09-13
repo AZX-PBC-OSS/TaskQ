@@ -1,0 +1,11 @@
+{
+  "properties": {
+    "key": {
+      "default": "default",
+      "title": "Key",
+      "type": "string"
+    }
+  },
+  "title": "DeduplicatedPayload",
+  "type": "object"
+}

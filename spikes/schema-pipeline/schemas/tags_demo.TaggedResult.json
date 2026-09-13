@@ -1,0 +1,18 @@
+{
+  "properties": {
+    "label": {
+      "title": "Label",
+      "type": "string"
+    },
+    "reversed": {
+      "title": "Reversed",
+      "type": "string"
+    }
+  },
+  "required": [
+    "label",
+    "reversed"
+  ],
+  "title": "TaggedResult",
+  "type": "object"
+}

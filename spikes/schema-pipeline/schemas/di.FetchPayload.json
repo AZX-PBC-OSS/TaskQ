@@ -1,0 +1,11 @@
+{
+  "properties": {
+    "url": {
+      "default": "https://example.com",
+      "title": "Url",
+      "type": "string"
+    }
+  },
+  "title": "FetchPayload",
+  "type": "object"
+}

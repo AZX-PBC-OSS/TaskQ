@@ -1,0 +1,1831 @@
+{
+  "advanced.DeduplicatedPayload": {
+    "schema": {
+      "properties": {
+        "key": {
+          "default": "default",
+          "title": "Key",
+          "type": "string"
+        }
+      },
+      "title": "DeduplicatedPayload",
+      "type": "object"
+    },
+    "valid": {
+      "key": "LNlbhQBm"
+    },
+    "original_accepts_valid": true,
+    "invalid": {
+      "null_violation_key": {
+        "fixture": {
+          "key": null
+        },
+        "original_accepts": false
+      },
+      "type_flip_key": {
+        "fixture": {
+          "key": {
+            "__invalid__": "object-where-string"
+          }
+        },
+        "original_accepts": false
+      }
+    }
+  },
+  "advanced.EmptyPayload": {
+    "schema": {
+      "properties": {},
+      "title": "EmptyPayload",
+      "type": "object"
+    },
+    "valid": {},
+    "original_accepts_valid": true,
+    "invalid": {}
+  },
+  "advanced.SumPayload": {
+    "schema": {
+      "properties": {
+        "values": {
+          "default": "1,2,3",
+          "title": "Values",
+          "type": "string"
+        }
+      },
+      "title": "SumPayload",
+      "type": "object"
+    },
+    "valid": {
+      "values": "LNlbhQBm"
+    },
+    "original_accepts_valid": true,
+    "invalid": {
+      "null_violation_values": {
+        "fixture": {
+          "values": null
+        },
+        "original_accepts": false
+      },
+      "type_flip_values": {
+        "fixture": {
+          "values": {
+            "__invalid__": "object-where-string"
+          }
+        },
+        "original_accepts": false
+      }
+    }
+  },
+  "advanced.SumResult": {
+    "schema": {
+      "properties": {
+        "total": {
+          "title": "Total",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "total"
+      ],
+      "title": "SumResult",
+      "type": "object"
+    },
+    "valid": {
+      "total": 7
+    },
+    "original_accepts_valid": true,
+    "invalid": {
+      "null_violation_total": {
+        "fixture": {
+          "total": null
+        },
+        "original_accepts": false
+      },
+      "type_flip_total": {
+        "fixture": {
+          "total": "not-a-number"
+        },
+        "original_accepts": false
+      },
+      "missing_required_total": {
+        "fixture": {},
+        "original_accepts": false
+      }
+    }
+  },
+  "basic.CounterPayload": {
+    "schema": {
+      "properties": {
+        "n": {
+          "default": 10,
+          "title": "N",
+          "type": "integer"
+        }
+      },
+      "title": "CounterPayload",
+      "type": "object"
+    },
+    "valid": {
+      "n": 7
+    },
+    "original_accepts_valid": true,
+    "invalid": {
+      "null_violation_n": {
+        "fixture": {
+          "n": null
+        },
+        "original_accepts": false
+      },
+      "type_flip_n": {
+        "fixture": {
+          "n": "not-a-number"
+        },
+        "original_accepts": false
+      }
+    }
+  },
+  "basic.DeferredPayload": {
+    "schema": {
+      "properties": {
+        "delay_seconds": {
+          "default": 30,
+          "title": "Delay Seconds",
+          "type": "integer"
+        }
+      },
+      "title": "DeferredPayload",
+      "type": "object"
+    },
+    "valid": {
+      "delay_seconds": 7
+    },
+    "original_accepts_valid": true,
+    "invalid": {
+      "null_violation_delay_seconds": {
+        "fixture": {
+          "delay_seconds": null
+        },
+        "original_accepts": false
+      },
+      "type_flip_delay_seconds": {
+        "fixture": {
+          "delay_seconds": "not-a-number"
+        },
+        "original_accepts": false
+      }
+    }
+  },
+  "batch.BatchCounterPayload": {
+    "schema": {
+      "properties": {
+        "n": {
+          "default": 5,
+          "description": "Number of child jobs",
+          "maximum": 1000,
+          "minimum": 1,
+          "title": "N",
+          "type": "integer"
+        },
+        "steps": {
+          "default": 5,
+          "description": "Steps per child",
+          "maximum": 1000,
+          "minimum": 1,
+          "title": "Steps",
+          "type": "integer"
+        }
+      },
+      "title": "BatchCounterPayload",
+      "type": "object"
+    },
+    "valid": {
+      "n": 958,
+      "steps": 619
+    },
+    "original_accepts_valid": true,
+    "invalid": {
+      "null_violation_n": {
+        "fixture": {
+          "n": null,
+          "steps": 619
+        },
+        "original_accepts": false
+      },
+      "null_violation_steps": {
+        "fixture": {
+          "n": 958,
+          "steps": null
+        },
+        "original_accepts": false
+      },
+      "type_flip_n": {
+        "fixture": {
+          "n": "not-a-number",
+          "steps": 619
+        },
+        "original_accepts": false
+      },
+      "max_violation_n": {
+        "fixture": {
+          "n": 1001,
+          "steps": 619
+        },
+        "original_accepts": false
+      },
+      "min_violation_n": {
+        "fixture": {
+          "n": 0,
+          "steps": 619
+        },
+        "original_accepts": false
+      }
+    }
+  },
+  "batch.BatchFinalizerPayload": {
+    "schema": {
+      "properties": {
+        "batch_id": {
+          "format": "uuid",
+          "title": "Batch Id",
+          "type": "string"
+        },
+        "expected": {
+          "title": "Expected",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "batch_id",
+        "expected"
+      ],
+      "title": "BatchFinalizerPayload",
+      "type": "object"
+    },
+    "valid": {
+      "batch_id": "0198f36a-1c7d-7000-8000-3b3a9c1e2d4f",
+      "expected": 7
+    },
+    "original_accepts_valid": true,
+    "invalid": {
+      "null_violation_batch_id": {
+        "fixture": {
+          "batch_id": null,
+          "expected": 7
+        },
+        "original_accepts": false
+      },
+      "null_violation_expected": {
+        "fixture": {
+          "batch_id": "0198f36a-1c7d-7000-8000-3b3a9c1e2d4f",
+          "expected": null
+        },
+        "original_accepts": false
+      },
+      "type_flip_expected": {
+        "fixture": {
+          "batch_id": "0198f36a-1c7d-7000-8000-3b3a9c1e2d4f",
+          "expected": "not-a-number"
+        },
+        "original_accepts": false
+      },
+      "type_flip_batch_id": {
+        "fixture": {
+          "batch_id": {
+            "__invalid__": "object-where-string"
+          },
+          "expected": 7
+        },
+        "original_accepts": false
+      },
+      "missing_required_batch_id": {
+        "fixture": {
+          "expected": 7
+        },
+        "original_accepts": false
+      }
+    }
+  },
+  "chained.FanOutPayload": {
+    "schema": {
+      "properties": {
+        "items": {
+          "default": [
+            "a",
+            "b",
+            "c"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "title": "Items",
+          "type": "array"
+        }
+      },
+      "title": "FanOutPayload",
+      "type": "object"
+    },
+    "valid": {
+      "items": [
+        "LNlbhQBm"
+      ]
+    },
+    "original_accepts_valid": true,
+    "invalid": {
+      "null_violation_items": {
+        "fixture": {
+          "items": null
+        },
+        "original_accepts": false
+      }
+    }
+  },
+  "chained.PipelinePayload": {
+    "schema": {
+      "properties": {
+        "text": {
+          "default": "hello",
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "title": "PipelinePayload",
+      "type": "object"
+    },
+    "valid": {
+      "text": "LNlbhQBm"
+    },
+    "original_accepts_valid": true,
+    "invalid": {
+      "null_violation_text": {
+        "fixture": {
+          "text": null
+        },
+        "original_accepts": false
+      },
+      "type_flip_text": {
+        "fixture": {
+          "text": {
+            "__invalid__": "object-where-string"
+          }
+        },
+        "original_accepts": false
+      }
+    }
+  },
+  "chained.StepTwoPayload": {
+    "schema": {
+      "properties": {
+        "processed": {
+          "title": "Processed",
+          "type": "string"
+        }
+      },
+      "required": [
+        "processed"
+      ],
+      "title": "StepTwoPayload",
+      "type": "object"
+    },
+    "valid": {
+      "processed": "LNlbhQBm"
+    },
+    "original_accepts_valid": true,
+    "invalid": {
+      "null_violation_processed": {
+        "fixture": {
+          "processed": null
+        },
+        "original_accepts": false
+      },
+      "type_flip_processed": {
+        "fixture": {
+          "processed": {
+            "__invalid__": "object-where-string"
+          }
+        },
+        "original_accepts": false
+      },
+      "missing_required_processed": {
+        "fixture": {},
+        "original_accepts": false
+      }
+    }
+  },
+  "di.DbLookupPayload": {
+    "schema": {
+      "properties": {
+        "item_id": {
+          "default": 1,
+          "title": "Item Id",
+          "type": "integer"
+        }
+      },
+      "title": "DbLookupPayload",
+      "type": "object"
+    },
+    "valid": {
+      "item_id": 7
+    },
+    "original_accepts_valid": true,
+    "invalid": {
+      "null_violation_item_id": {
+        "fixture": {
+          "item_id": null
+        },
+        "original_accepts": false
+      },
+      "type_flip_item_id": {
+        "fixture": {
+          "item_id": "not-a-number"
+        },
+        "original_accepts": false
+      }
+    }
+  },
+  "di.FetchPayload": {
+    "schema": {
+      "properties": {
+        "url": {
+          "default": "https://example.com",
+          "title": "Url",
+          "type": "string"
+        }
+      },
+      "title": "FetchPayload",
+      "type": "object"
+    },
+    "valid": {
+      "url": "LNlbhQBm"
+    },
+    "original_accepts_valid": true,
+    "invalid": {
+      "null_violation_url": {
+        "fixture": {
+          "url": null
+        },
+        "original_accepts": false
+      },
+      "type_flip_url": {
+        "fixture": {
+          "url": {
+            "__invalid__": "object-where-string"
+          }
+        },
+        "original_accepts": false
+      }
+    }
+  },
+  "di.FetchResult": {
+    "schema": {
+      "properties": {
+        "status": {
+          "title": "Status",
+          "type": "integer"
+        },
+        "body": {
+          "title": "Body",
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "body"
+      ],
+      "title": "FetchResult",
+      "type": "object"
+    },
+    "valid": {
+      "status": 7,
+      "body": "LNlbhQBm"
+    },
+    "original_accepts_valid": true,
+    "invalid": {
+      "null_violation_status": {
+        "fixture": {
+          "status": null,
+          "body": "LNlbhQBm"
+        },
+        "original_accepts": false
+      },
+      "null_violation_body": {
+        "fixture": {
+          "status": 7,
+          "body": null
+        },
+        "original_accepts": false
+      },
+      "type_flip_status": {
+        "fixture": {
+          "status": "not-a-number",
+          "body": "LNlbhQBm"
+        },
+        "original_accepts": false
+      },
+      "type_flip_body": {
+        "fixture": {
+          "status": 7,
+          "body": {
+            "__invalid__": "object-where-string"
+          }
+        },
+        "original_accepts": false
+      },
+      "missing_required_status": {
+        "fixture": {
+          "body": "LNlbhQBm"
+        },
+        "original_accepts": false
+      }
+    }
+  },
+  "failure.FlakyPayload": {
+    "schema": {
+      "properties": {
+        "fail_count": {
+          "default": 2,
+          "title": "Fail Count",
+          "type": "integer"
+        }
+      },
+      "title": "FlakyPayload",
+      "type": "object"
+    },
+    "valid": {
+      "fail_count": 7
+    },
+    "original_accepts_valid": true,
+    "invalid": {
+      "null_violation_fail_count": {
+        "fixture": {
+          "fail_count": null
+        },
+        "original_accepts": false
+      },
+      "type_flip_fail_count": {
+        "fixture": {
+          "fail_count": "not-a-number"
+        },
+        "original_accepts": false
+      }
+    }
+  },
+  "failure.SnoozePayload": {
+    "schema": {
+      "properties": {
+        "delay_seconds": {
+          "default": 10,
+          "title": "Delay Seconds",
+          "type": "integer"
+        },
+        "wake_after_attempt": {
+          "default": 1,
+          "title": "Wake After Attempt",
+          "type": "integer"
+        }
+      },
+      "title": "SnoozePayload",
+      "type": "object"
+    },
+    "valid": {
+      "delay_seconds": 7,
+      "wake_after_attempt": 7
+    },
+    "original_accepts_valid": true,
+    "invalid": {
+      "null_violation_delay_seconds": {
+        "fixture": {
+          "delay_seconds": null,
+          "wake_after_attempt": 7
+        },
+        "original_accepts": false
+      },
+      "null_violation_wake_after_attempt": {
+        "fixture": {
+          "delay_seconds": 7,
+          "wake_after_attempt": null
+        },
+        "original_accepts": false
+      },
+      "type_flip_delay_seconds": {
+        "fixture": {
+          "delay_seconds": "not-a-number",
+          "wake_after_attempt": 7
+        },
+        "original_accepts": false
+      }
+    }
+  },
+  "progress.FileProcessorPayload": {
+    "schema": {
+      "properties": {
+        "filename": {
+          "default": "data.csv",
+          "title": "Filename",
+          "type": "string"
+        },
+        "rows": {
+          "default": 1000,
+          "title": "Rows",
+          "type": "integer"
+        }
+      },
+      "title": "FileProcessorPayload",
+      "type": "object"
+    },
+    "valid": {
+      "filename": "LNlbhQBm",
+      "rows": 7
+    },
+    "original_accepts_valid": true,
+    "invalid": {
+      "null_violation_filename": {
+        "fixture": {
+          "filename": null,
+          "rows": 7
+        },
+        "original_accepts": false
+      },
+      "null_violation_rows": {
+        "fixture": {
+          "filename": "LNlbhQBm",
+          "rows": null
+        },
+        "original_accepts": false
+      },
+      "type_flip_rows": {
+        "fixture": {
+          "filename": "LNlbhQBm",
+          "rows": "not-a-number"
+        },
+        "original_accepts": false
+      },
+      "type_flip_filename": {
+        "fixture": {
+          "filename": {
+            "__invalid__": "object-where-string"
+          },
+          "rows": 7
+        },
+        "original_accepts": false
+      }
+    }
+  },
+  "ratelimit.EmptyPayload": {
+    "schema": {
+      "properties": {},
+      "title": "EmptyPayload",
+      "type": "object"
+    },
+    "valid": {},
+    "original_accepts_valid": true,
+    "invalid": {}
+  },
+  "realworld.CsvChunkPayload": {
+    "schema": {
+      "properties": {
+        "filename": {
+          "title": "Filename",
+          "type": "string"
+        },
+        "chunk_id": {
+          "title": "Chunk Id",
+          "type": "integer"
+        },
+        "start_row": {
+          "title": "Start Row",
+          "type": "integer"
+        },
+        "end_row": {
+          "title": "End Row",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "filename",
+        "chunk_id",
+        "start_row",
+        "end_row"
+      ],
+      "title": "CsvChunkPayload",
+      "type": "object"
+    },
+    "valid": {
+      "filename": "LNlbhQBm",
+      "chunk_id": 7,
+      "start_row": 7,
+      "end_row": 7
+    },
+    "original_accepts_valid": true,
+    "invalid": {
+      "null_violation_filename": {
+        "fixture": {
+          "filename": null,
+          "chunk_id": 7,
+          "start_row": 7,
+          "end_row": 7
+        },
+        "original_accepts": false
+      },
+      "null_violation_chunk_id": {
+        "fixture": {
+          "filename": "LNlbhQBm",
+          "chunk_id": null,
+          "start_row": 7,
+          "end_row": 7
+        },
+        "original_accepts": false
+      },
+      "null_violation_start_row": {
+        "fixture": {
+          "filename": "LNlbhQBm",
+          "chunk_id": 7,
+          "start_row": null,
+          "end_row": 7
+        },
+        "original_accepts": false
+      },
+      "null_violation_end_row": {
+        "fixture": {
+          "filename": "LNlbhQBm",
+          "chunk_id": 7,
+          "start_row": 7,
+          "end_row": null
+        },
+        "original_accepts": false
+      },
+      "type_flip_chunk_id": {
+        "fixture": {
+          "filename": "LNlbhQBm",
+          "chunk_id": "not-a-number",
+          "start_row": 7,
+          "end_row": 7
+        },
+        "original_accepts": false
+      },
+      "type_flip_filename": {
+        "fixture": {
+          "filename": {
+            "__invalid__": "object-where-string"
+          },
+          "chunk_id": 7,
+          "start_row": 7,
+          "end_row": 7
+        },
+        "original_accepts": false
+      },
+      "missing_required_filename": {
+        "fixture": {
+          "chunk_id": 7,
+          "start_row": 7,
+          "end_row": 7
+        },
+        "original_accepts": false
+      }
+    }
+  },
+  "realworld.CsvUploadPayload": {
+    "schema": {
+      "properties": {
+        "filename": {
+          "description": "Name of the uploaded CSV file",
+          "title": "Filename",
+          "type": "string"
+        },
+        "row_count": {
+          "default": 1000,
+          "description": "Number of rows to process",
+          "maximum": 100000,
+          "minimum": 1,
+          "title": "Row Count",
+          "type": "integer"
+        },
+        "chunk_size": {
+          "default": 500,
+          "description": "Rows per chunk",
+          "maximum": 5000,
+          "minimum": 100,
+          "title": "Chunk Size",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "filename"
+      ],
+      "title": "CsvUploadPayload",
+      "type": "object"
+    },
+    "valid": {
+      "filename": "LNlbhQBm",
+      "row_count": 29713,
+      "chunk_size": 4740
+    },
+    "original_accepts_valid": true,
+    "invalid": {
+      "null_violation_filename": {
+        "fixture": {
+          "filename": null,
+          "row_count": 29713,
+          "chunk_size": 4740
+        },
+        "original_accepts": false
+      },
+      "null_violation_row_count": {
+        "fixture": {
+          "filename": "LNlbhQBm",
+          "row_count": null,
+          "chunk_size": 4740
+        },
+        "original_accepts": false
+      },
+      "null_violation_chunk_size": {
+        "fixture": {
+          "filename": "LNlbhQBm",
+          "row_count": 29713,
+          "chunk_size": null
+        },
+        "original_accepts": false
+      },
+      "type_flip_row_count": {
+        "fixture": {
+          "filename": "LNlbhQBm",
+          "row_count": "not-a-number",
+          "chunk_size": 4740
+        },
+        "original_accepts": false
+      },
+      "type_flip_filename": {
+        "fixture": {
+          "filename": {
+            "__invalid__": "object-where-string"
+          },
+          "row_count": 29713,
+          "chunk_size": 4740
+        },
+        "original_accepts": false
+      },
+      "max_violation_row_count": {
+        "fixture": {
+          "filename": "LNlbhQBm",
+          "row_count": 100001,
+          "chunk_size": 4740
+        },
+        "original_accepts": false
+      },
+      "min_violation_row_count": {
+        "fixture": {
+          "filename": "LNlbhQBm",
+          "row_count": 0,
+          "chunk_size": 4740
+        },
+        "original_accepts": false
+      },
+      "missing_required_filename": {
+        "fixture": {
+          "row_count": 29713,
+          "chunk_size": 4740
+        },
+        "original_accepts": false
+      }
+    }
+  },
+  "realworld.DigestEmailPayload": {
+    "schema": {
+      "properties": {
+        "user_id": {
+          "description": "User identifier",
+          "title": "User Id",
+          "type": "string"
+        },
+        "email": {
+          "description": "Recipient email address",
+          "title": "Email",
+          "type": "string"
+        },
+        "period": {
+          "default": "weekly",
+          "description": "Digest period: daily, weekly, monthly",
+          "title": "Period",
+          "type": "string"
+        }
+      },
+      "required": [
+        "user_id",
+        "email"
+      ],
+      "title": "DigestEmailPayload",
+      "type": "object"
+    },
+    "valid": {
+      "user_id": "LNlbhQBm",
+      "email": "tXEABOVv",
+      "period": "PkWBOBtR"
+    },
+    "original_accepts_valid": true,
+    "invalid": {
+      "null_violation_user_id": {
+        "fixture": {
+          "user_id": null,
+          "email": "tXEABOVv",
+          "period": "PkWBOBtR"
+        },
+        "original_accepts": false
+      },
+      "null_violation_email": {
+        "fixture": {
+          "user_id": "LNlbhQBm",
+          "email": null,
+          "period": "PkWBOBtR"
+        },
+        "original_accepts": false
+      },
+      "null_violation_period": {
+        "fixture": {
+          "user_id": "LNlbhQBm",
+          "email": "tXEABOVv",
+          "period": null
+        },
+        "original_accepts": false
+      },
+      "type_flip_user_id": {
+        "fixture": {
+          "user_id": {
+            "__invalid__": "object-where-string"
+          },
+          "email": "tXEABOVv",
+          "period": "PkWBOBtR"
+        },
+        "original_accepts": false
+      },
+      "missing_required_user_id": {
+        "fixture": {
+          "email": "tXEABOVv",
+          "period": "PkWBOBtR"
+        },
+        "original_accepts": false
+      }
+    }
+  },
+  "realworld.DigestEmailResult": {
+    "schema": {
+      "properties": {
+        "message_id": {
+          "title": "Message Id",
+          "type": "string"
+        },
+        "recipients": {
+          "title": "Recipients",
+          "type": "integer"
+        },
+        "articles_included": {
+          "title": "Articles Included",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "message_id",
+        "recipients",
+        "articles_included"
+      ],
+      "title": "DigestEmailResult",
+      "type": "object"
+    },
+    "valid": {
+      "message_id": "LNlbhQBm",
+      "recipients": 7,
+      "articles_included": 7
+    },
+    "original_accepts_valid": true,
+    "invalid": {
+      "null_violation_message_id": {
+        "fixture": {
+          "message_id": null,
+          "recipients": 7,
+          "articles_included": 7
+        },
+        "original_accepts": false
+      },
+      "null_violation_recipients": {
+        "fixture": {
+          "message_id": "LNlbhQBm",
+          "recipients": null,
+          "articles_included": 7
+        },
+        "original_accepts": false
+      },
+      "null_violation_articles_included": {
+        "fixture": {
+          "message_id": "LNlbhQBm",
+          "recipients": 7,
+          "articles_included": null
+        },
+        "original_accepts": false
+      },
+      "type_flip_recipients": {
+        "fixture": {
+          "message_id": "LNlbhQBm",
+          "recipients": "not-a-number",
+          "articles_included": 7
+        },
+        "original_accepts": false
+      },
+      "type_flip_message_id": {
+        "fixture": {
+          "message_id": {
+            "__invalid__": "object-where-string"
+          },
+          "recipients": 7,
+          "articles_included": 7
+        },
+        "original_accepts": false
+      },
+      "missing_required_message_id": {
+        "fixture": {
+          "recipients": 7,
+          "articles_included": 7
+        },
+        "original_accepts": false
+      }
+    }
+  },
+  "realworld.ThumbnailPayload": {
+    "schema": {
+      "properties": {
+        "image_url": {
+          "description": "Source image URL or path",
+          "title": "Image Url",
+          "type": "string"
+        },
+        "width": {
+          "default": 200,
+          "maximum": 2000,
+          "minimum": 1,
+          "title": "Width",
+          "type": "integer"
+        },
+        "height": {
+          "default": 200,
+          "maximum": 2000,
+          "minimum": 1,
+          "title": "Height",
+          "type": "integer"
+        },
+        "format": {
+          "default": "webp",
+          "description": "Output format: webp, jpeg, png",
+          "title": "Format",
+          "type": "string"
+        }
+      },
+      "required": [
+        "image_url"
+      ],
+      "title": "ThumbnailPayload",
+      "type": "object"
+    },
+    "valid": {
+      "image_url": "LNlbhQBm",
+      "width": 594,
+      "height": 1894,
+      "format": "ABOVvPkW"
+    },
+    "original_accepts_valid": true,
+    "invalid": {
+      "null_violation_image_url": {
+        "fixture": {
+          "image_url": null,
+          "width": 594,
+          "height": 1894,
+          "format": "ABOVvPkW"
+        },
+        "original_accepts": false
+      },
+      "null_violation_width": {
+        "fixture": {
+          "image_url": "LNlbhQBm",
+          "width": null,
+          "height": 1894,
+          "format": "ABOVvPkW"
+        },
+        "original_accepts": false
+      },
+      "null_violation_height": {
+        "fixture": {
+          "image_url": "LNlbhQBm",
+          "width": 594,
+          "height": null,
+          "format": "ABOVvPkW"
+        },
+        "original_accepts": false
+      },
+      "null_violation_format": {
+        "fixture": {
+          "image_url": "LNlbhQBm",
+          "width": 594,
+          "height": 1894,
+          "format": null
+        },
+        "original_accepts": false
+      },
+      "type_flip_width": {
+        "fixture": {
+          "image_url": "LNlbhQBm",
+          "width": "not-a-number",
+          "height": 1894,
+          "format": "ABOVvPkW"
+        },
+        "original_accepts": false
+      },
+      "type_flip_image_url": {
+        "fixture": {
+          "image_url": {
+            "__invalid__": "object-where-string"
+          },
+          "width": 594,
+          "height": 1894,
+          "format": "ABOVvPkW"
+        },
+        "original_accepts": false
+      },
+      "max_violation_width": {
+        "fixture": {
+          "image_url": "LNlbhQBm",
+          "width": 2001,
+          "height": 1894,
+          "format": "ABOVvPkW"
+        },
+        "original_accepts": false
+      },
+      "min_violation_width": {
+        "fixture": {
+          "image_url": "LNlbhQBm",
+          "width": 0,
+          "height": 1894,
+          "format": "ABOVvPkW"
+        },
+        "original_accepts": false
+      },
+      "missing_required_image_url": {
+        "fixture": {
+          "width": 594,
+          "height": 1894,
+          "format": "ABOVvPkW"
+        },
+        "original_accepts": false
+      }
+    }
+  },
+  "realworld.ThumbnailResult": {
+    "schema": {
+      "properties": {
+        "output_path": {
+          "title": "Output Path",
+          "type": "string"
+        },
+        "width": {
+          "title": "Width",
+          "type": "integer"
+        },
+        "height": {
+          "title": "Height",
+          "type": "integer"
+        },
+        "format": {
+          "title": "Format",
+          "type": "string"
+        },
+        "source_bytes": {
+          "title": "Source Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "output_path",
+        "width",
+        "height",
+        "format",
+        "source_bytes"
+      ],
+      "title": "ThumbnailResult",
+      "type": "object"
+    },
+    "valid": {
+      "output_path": "LNlbhQBm",
+      "width": 7,
+      "height": 7,
+      "format": "tXEABOVv",
+      "source_bytes": 7
+    },
+    "original_accepts_valid": true,
+    "invalid": {
+      "null_violation_output_path": {
+        "fixture": {
+          "output_path": null,
+          "width": 7,
+          "height": 7,
+          "format": "tXEABOVv",
+          "source_bytes": 7
+        },
+        "original_accepts": false
+      },
+      "null_violation_width": {
+        "fixture": {
+          "output_path": "LNlbhQBm",
+          "width": null,
+          "height": 7,
+          "format": "tXEABOVv",
+          "source_bytes": 7
+        },
+        "original_accepts": false
+      },
+      "null_violation_height": {
+        "fixture": {
+          "output_path": "LNlbhQBm",
+          "width": 7,
+          "height": null,
+          "format": "tXEABOVv",
+          "source_bytes": 7
+        },
+        "original_accepts": false
+      },
+      "null_violation_format": {
+        "fixture": {
+          "output_path": "LNlbhQBm",
+          "width": 7,
+          "height": 7,
+          "format": null,
+          "source_bytes": 7
+        },
+        "original_accepts": false
+      },
+      "null_violation_source_bytes": {
+        "fixture": {
+          "output_path": "LNlbhQBm",
+          "width": 7,
+          "height": 7,
+          "format": "tXEABOVv",
+          "source_bytes": null
+        },
+        "original_accepts": false
+      },
+      "type_flip_width": {
+        "fixture": {
+          "output_path": "LNlbhQBm",
+          "width": "not-a-number",
+          "height": 7,
+          "format": "tXEABOVv",
+          "source_bytes": 7
+        },
+        "original_accepts": false
+      },
+      "type_flip_output_path": {
+        "fixture": {
+          "output_path": {
+            "__invalid__": "object-where-string"
+          },
+          "width": 7,
+          "height": 7,
+          "format": "tXEABOVv",
+          "source_bytes": 7
+        },
+        "original_accepts": false
+      },
+      "missing_required_output_path": {
+        "fixture": {
+          "width": 7,
+          "height": 7,
+          "format": "tXEABOVv",
+          "source_bytes": 7
+        },
+        "original_accepts": false
+      }
+    }
+  },
+  "sync_demo.WordCountPayload": {
+    "schema": {
+      "properties": {
+        "text": {
+          "default": "TaskQ makes background jobs simple and reliable",
+          "description": "Text to count words in",
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "title": "WordCountPayload",
+      "type": "object"
+    },
+    "valid": {
+      "text": "LNlbhQBm"
+    },
+    "original_accepts_valid": true,
+    "invalid": {
+      "null_violation_text": {
+        "fixture": {
+          "text": null
+        },
+        "original_accepts": false
+      },
+      "type_flip_text": {
+        "fixture": {
+          "text": {
+            "__invalid__": "object-where-string"
+          }
+        },
+        "original_accepts": false
+      }
+    }
+  },
+  "sync_demo.WordCountResult": {
+    "schema": {
+      "properties": {
+        "word_count": {
+          "title": "Word Count",
+          "type": "integer"
+        },
+        "char_count": {
+          "title": "Char Count",
+          "type": "integer"
+        },
+        "processed_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Processed At"
+        }
+      },
+      "required": [
+        "word_count",
+        "char_count"
+      ],
+      "title": "WordCountResult",
+      "type": "object"
+    },
+    "valid": {
+      "word_count": 7,
+      "char_count": 7,
+      "processed_at": "LNlbhQBm"
+    },
+    "original_accepts_valid": true,
+    "invalid": {
+      "null_violation_word_count": {
+        "fixture": {
+          "word_count": null,
+          "char_count": 7,
+          "processed_at": "LNlbhQBm"
+        },
+        "original_accepts": false
+      },
+      "null_violation_char_count": {
+        "fixture": {
+          "word_count": 7,
+          "char_count": null,
+          "processed_at": "LNlbhQBm"
+        },
+        "original_accepts": false
+      },
+      "type_flip_word_count": {
+        "fixture": {
+          "word_count": "not-a-number",
+          "char_count": 7,
+          "processed_at": "LNlbhQBm"
+        },
+        "original_accepts": false
+      },
+      "type_flip_processed_at": {
+        "fixture": {
+          "word_count": 7,
+          "char_count": 7,
+          "processed_at": {
+            "__invalid__": "object-where-string"
+          }
+        },
+        "original_accepts": false
+      },
+      "missing_required_word_count": {
+        "fixture": {
+          "char_count": 7,
+          "processed_at": "LNlbhQBm"
+        },
+        "original_accepts": false
+      }
+    }
+  },
+  "synthetic.ConstrainedStringPayload": {
+    "schema": {
+      "properties": {
+        "slug": {
+          "maxLength": 20,
+          "minLength": 3,
+          "title": "Slug",
+          "type": "string"
+        },
+        "label": {
+          "default": "task",
+          "pattern": "^[a-z]+$",
+          "title": "Label",
+          "type": "string"
+        }
+      },
+      "required": [
+        "slug"
+      ],
+      "title": "ConstrainedStringPayload",
+      "type": "object"
+    },
+    "valid": {
+      "slug": "LNlbhQBm",
+      "label": "abcde"
+    },
+    "original_accepts_valid": true,
+    "invalid": {
+      "null_violation_slug": {
+        "fixture": {
+          "slug": null,
+          "label": "abcde"
+        },
+        "original_accepts": false
+      },
+      "null_violation_label": {
+        "fixture": {
+          "slug": "LNlbhQBm",
+          "label": null
+        },
+        "original_accepts": false
+      },
+      "type_flip_slug": {
+        "fixture": {
+          "slug": {
+            "__invalid__": "object-where-string"
+          },
+          "label": "abcde"
+        },
+        "original_accepts": false
+      },
+      "missing_required_slug": {
+        "fixture": {
+          "label": "abcde"
+        },
+        "original_accepts": false
+      }
+    }
+  },
+  "synthetic.DatetimePayload": {
+    "schema": {
+      "properties": {
+        "started_at": {
+          "format": "date-time",
+          "title": "Started At",
+          "type": "string"
+        },
+        "due_date": {
+          "default": "2026-12-31",
+          "format": "date",
+          "title": "Due Date",
+          "type": "string"
+        }
+      },
+      "title": "DatetimePayload",
+      "type": "object"
+    },
+    "valid": {
+      "started_at": "2026-09-12T10:00:00Z",
+      "due_date": "2026-09-12"
+    },
+    "original_accepts_valid": true,
+    "invalid": {
+      "null_violation_started_at": {
+        "fixture": {
+          "started_at": null,
+          "due_date": "2026-09-12"
+        },
+        "original_accepts": false
+      },
+      "null_violation_due_date": {
+        "fixture": {
+          "started_at": "2026-09-12T10:00:00Z",
+          "due_date": null
+        },
+        "original_accepts": false
+      },
+      "type_flip_started_at": {
+        "fixture": {
+          "started_at": {
+            "__invalid__": "object-where-string"
+          },
+          "due_date": "2026-09-12"
+        },
+        "original_accepts": false
+      }
+    }
+  },
+  "synthetic.EnumPayload": {
+    "schema": {
+      "$defs": {
+        "Priority": {
+          "enum": [
+            "low",
+            "medium",
+            "high"
+          ],
+          "title": "Priority",
+          "type": "string"
+        }
+      },
+      "properties": {
+        "priority": {
+          "$ref": "#/$defs/Priority",
+          "default": "medium"
+        }
+      },
+      "title": "EnumPayload",
+      "type": "object"
+    },
+    "valid": {
+      "priority": "low"
+    },
+    "original_accepts_valid": true,
+    "invalid": {
+      "null_violation_priority": {
+        "fixture": {
+          "priority": null
+        },
+        "original_accepts": false
+      },
+      "type_flip_priority": {
+        "fixture": {
+          "priority": {
+            "__invalid__": "object-where-string"
+          }
+        },
+        "original_accepts": false
+      },
+      "enum_violation_priority": {
+        "fixture": {
+          "priority": "__not_in_enum__"
+        },
+        "original_accepts": false
+      }
+    }
+  },
+  "synthetic.NestedPayload": {
+    "schema": {
+      "$defs": {
+        "Address": {
+          "properties": {
+            "street": {
+              "title": "Street",
+              "type": "string"
+            },
+            "city": {
+              "title": "City",
+              "type": "string"
+            },
+            "zip_code": {
+              "pattern": "^\\d{5}$",
+              "title": "Zip Code",
+              "type": "string"
+            }
+          },
+          "required": [
+            "street",
+            "city",
+            "zip_code"
+          ],
+          "title": "Address",
+          "type": "object"
+        }
+      },
+      "properties": {
+        "address": {
+          "$ref": "#/$defs/Address"
+        },
+        "tags": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Tags",
+          "type": "array"
+        }
+      },
+      "required": [
+        "address"
+      ],
+      "title": "NestedPayload",
+      "type": "object"
+    },
+    "valid": {
+      "address": {
+        "street": "LNlbhQBm",
+        "city": "tXEABOVv",
+        "zip_code": "12345"
+      },
+      "tags": [
+        "beGqozQX"
+      ]
+    },
+    "original_accepts_valid": true,
+    "invalid": {
+      "null_violation_address": {
+        "fixture": {
+          "address": null,
+          "tags": [
+            "beGqozQX"
+          ]
+        },
+        "original_accepts": false
+      },
+      "null_violation_tags": {
+        "fixture": {
+          "address": {
+            "street": "LNlbhQBm",
+            "city": "tXEABOVv",
+            "zip_code": "12345"
+          },
+          "tags": null
+        },
+        "original_accepts": false
+      },
+      "missing_required_address": {
+        "fixture": {
+          "tags": [
+            "beGqozQX"
+          ]
+        },
+        "original_accepts": false
+      },
+      "garbage_nested_address": {
+        "fixture": {
+          "address": {
+            "__garbage__": [
+              "not",
+              "the",
+              "right",
+              "shape"
+            ]
+          },
+          "tags": [
+            "beGqozQX"
+          ]
+        },
+        "original_accepts": false
+      }
+    }
+  },
+  "synthetic.UnionPayload": {
+    "schema": {
+      "properties": {
+        "value": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "title": "Value"
+        },
+        "maybe": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Maybe"
+        }
+      },
+      "required": [
+        "value"
+      ],
+      "title": "UnionPayload",
+      "type": "object"
+    },
+    "valid": {
+      "value": 7,
+      "maybe": 7.5
+    },
+    "original_accepts_valid": true,
+    "invalid": {
+      "null_violation_value": {
+        "fixture": {
+          "value": null,
+          "maybe": 7.5
+        },
+        "original_accepts": false
+      },
+      "missing_required_value": {
+        "fixture": {
+          "maybe": 7.5
+        },
+        "original_accepts": false
+      }
+    }
+  },
+  "tags_demo.TaggedPayload": {
+    "schema": {
+      "properties": {
+        "label": {
+          "default": "demo",
+          "title": "Label",
+          "type": "string"
+        }
+      },
+      "title": "TaggedPayload",
+      "type": "object"
+    },
+    "valid": {
+      "label": "LNlbhQBm"
+    },
+    "original_accepts_valid": true,
+    "invalid": {
+      "null_violation_label": {
+        "fixture": {
+          "label": null
+        },
+        "original_accepts": false
+      },
+      "type_flip_label": {
+        "fixture": {
+          "label": {
+            "__invalid__": "object-where-string"
+          }
+        },
+        "original_accepts": false
+      }
+    }
+  },
+  "tags_demo.TaggedResult": {
+    "schema": {
+      "properties": {
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "reversed": {
+          "title": "Reversed",
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "reversed"
+      ],
+      "title": "TaggedResult",
+      "type": "object"
+    },
+    "valid": {
+      "label": "LNlbhQBm",
+      "reversed": "tXEABOVv"
+    },
+    "original_accepts_valid": true,
+    "invalid": {
+      "null_violation_label": {
+        "fixture": {
+          "label": null,
+          "reversed": "tXEABOVv"
+        },
+        "original_accepts": false
+      },
+      "null_violation_reversed": {
+        "fixture": {
+          "label": "LNlbhQBm",
+          "reversed": null
+        },
+        "original_accepts": false
+      },
+      "type_flip_label": {
+        "fixture": {
+          "label": {
+            "__invalid__": "object-where-string"
+          },
+          "reversed": "tXEABOVv"
+        },
+        "original_accepts": false
+      },
+      "missing_required_label": {
+        "fixture": {
+          "reversed": "tXEABOVv"
+        },
+        "original_accepts": false
+      }
+    }
+  },
+  "ticker.TickerPayload": {
+    "schema": {
+      "properties": {},
+      "title": "TickerPayload",
+      "type": "object"
+    },
+    "valid": {},
+    "original_accepts_valid": true,
+    "invalid": {}
+  }
+}

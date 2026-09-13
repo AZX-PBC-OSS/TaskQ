@@ -1,0 +1,13 @@
+{
+  "properties": {
+    "total": {
+      "title": "Total",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "total"
+  ],
+  "title": "SumResult",
+  "type": "object"
+}

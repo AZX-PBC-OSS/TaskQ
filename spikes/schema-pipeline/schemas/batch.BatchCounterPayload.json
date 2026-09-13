@@ -1,0 +1,22 @@
+{
+  "properties": {
+    "n": {
+      "default": 5,
+      "description": "Number of child jobs",
+      "maximum": 1000,
+      "minimum": 1,
+      "title": "N",
+      "type": "integer"
+    },
+    "steps": {
+      "default": 5,
+      "description": "Steps per child",
+      "maximum": 1000,
+      "minimum": 1,
+      "title": "Steps",
+      "type": "integer"
+    }
+  },
+  "title": "BatchCounterPayload",
+  "type": "object"
+}

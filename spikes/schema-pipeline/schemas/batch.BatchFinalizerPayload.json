@@ -1,0 +1,19 @@
+{
+  "properties": {
+    "batch_id": {
+      "format": "uuid",
+      "title": "Batch Id",
+      "type": "string"
+    },
+    "expected": {
+      "title": "Expected",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "batch_id",
+    "expected"
+  ],
+  "title": "BatchFinalizerPayload",
+  "type": "object"
+}

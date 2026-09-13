@@ -1,0 +1,12 @@
+{
+  "properties": {
+    "text": {
+      "default": "TaskQ makes background jobs simple and reliable",
+      "description": "Text to count words in",
+      "title": "Text",
+      "type": "string"
+    }
+  },
+  "title": "WordCountPayload",
+  "type": "object"
+}

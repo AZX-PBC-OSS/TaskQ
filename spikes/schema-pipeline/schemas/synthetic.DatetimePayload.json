@@ -1,0 +1,17 @@
+{
+  "properties": {
+    "started_at": {
+      "format": "date-time",
+      "title": "Started At",
+      "type": "string"
+    },
+    "due_date": {
+      "default": "2026-12-31",
+      "format": "date",
+      "title": "Due Date",
+      "type": "string"
+    }
+  },
+  "title": "DatetimePayload",
+  "type": "object"
+}

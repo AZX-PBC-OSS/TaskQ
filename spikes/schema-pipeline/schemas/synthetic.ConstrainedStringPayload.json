@@ -1,0 +1,21 @@
+{
+  "properties": {
+    "slug": {
+      "maxLength": 20,
+      "minLength": 3,
+      "title": "Slug",
+      "type": "string"
+    },
+    "label": {
+      "default": "task",
+      "pattern": "^[a-z]+$",
+      "title": "Label",
+      "type": "string"
+    }
+  },
+  "required": [
+    "slug"
+  ],
+  "title": "ConstrainedStringPayload",
+  "type": "object"
+}

@@ -1,0 +1,145 @@
+# Python roundtrip report — baseline (default flags)
+
+13/34 schemas fully conformant.
+
+
+- **advanced.DeduplicatedPayload**: DRIFT
+  - property 'key': NULLABILITY drift (nullable False -> True)
+  - acceptance parity FAIL on null_violation_key: original rejects, regen accepts
+- **advanced.EmptyPayload**: OK
+- **advanced.SumPayload**: DRIFT
+  - property 'values': NULLABILITY drift (nullable False -> True)
+  - acceptance parity FAIL on null_violation_values: original rejects, regen accepts
+- **advanced.SumResult**: OK
+- **basic.CounterPayload**: DRIFT
+  - property 'n': NULLABILITY drift (nullable False -> True)
+  - acceptance parity FAIL on null_violation_n: original rejects, regen accepts
+- **basic.DeferredPayload**: DRIFT
+  - property 'delay_seconds': NULLABILITY drift (nullable False -> True)
+  - acceptance parity FAIL on null_violation_delay_seconds: original rejects, regen accepts
+- **batch.BatchCounterPayload**: DRIFT
+  - property 'n': NULLABILITY drift (nullable False -> True)
+  - property 'steps': NULLABILITY drift (nullable False -> True)
+  - acceptance parity FAIL on null_violation_n: original rejects, regen accepts
+  - acceptance parity FAIL on null_violation_steps: original rejects, regen accepts
+- **batch.BatchFinalizerPayload**: OK
+- **chained.FanOutPayload**: DRIFT
+  - property 'items': NULLABILITY drift (nullable False -> True)
+  - acceptance parity FAIL on null_violation_items: original rejects, regen accepts
+- **chained.PipelinePayload**: DRIFT
+  - property 'text': NULLABILITY drift (nullable False -> True)
+  - acceptance parity FAIL on null_violation_text: original rejects, regen accepts
+- **chained.StepTwoPayload**: OK
+- **di.DbLookupPayload**: DRIFT
+  - property 'item_id': NULLABILITY drift (nullable False -> True)
+  - acceptance parity FAIL on null_violation_item_id: original rejects, regen accepts
+- **di.FetchPayload**: DRIFT
+  - property 'url': NULLABILITY drift (nullable False -> True)
+  - acceptance parity FAIL on null_violation_url: original rejects, regen accepts
+- **di.FetchResult**: OK
+- **failure.FlakyPayload**: DRIFT
+  - property 'fail_count': NULLABILITY drift (nullable False -> True)
+  - acceptance parity FAIL on null_violation_fail_count: original rejects, regen accepts
+- **failure.SnoozePayload**: DRIFT
+  - property 'delay_seconds': NULLABILITY drift (nullable False -> True)
+  - property 'wake_after_attempt': NULLABILITY drift (nullable False -> True)
+  - acceptance parity FAIL on null_violation_delay_seconds: original rejects, regen accepts
+  - acceptance parity FAIL on null_violation_wake_after_attempt: original rejects, regen accepts
+- **progress.FileProcessorPayload**: DRIFT
+  - property 'filename': NULLABILITY drift (nullable False -> True)
+  - property 'rows': NULLABILITY drift (nullable False -> True)
+  - acceptance parity FAIL on null_violation_filename: original rejects, regen accepts
+  - acceptance parity FAIL on null_violation_rows: original rejects, regen accepts
+- **ratelimit.EmptyPayload**: OK
+- **realworld.CsvChunkPayload**: OK
+- **realworld.CsvUploadPayload**: DRIFT
+  - property 'chunk_size': NULLABILITY drift (nullable False -> True)
+  - property 'row_count': NULLABILITY drift (nullable False -> True)
+  - acceptance parity FAIL on null_violation_row_count: original rejects, regen accepts
+  - acceptance parity FAIL on null_violation_chunk_size: original rejects, regen accepts
+- **realworld.DigestEmailPayload**: DRIFT
+  - property 'period': NULLABILITY drift (nullable False -> True)
+  - acceptance parity FAIL on null_violation_period: original rejects, regen accepts
+- **realworld.DigestEmailResult**: OK
+- **realworld.ThumbnailPayload**: DRIFT
+  - property 'format': NULLABILITY drift (nullable False -> True)
+  - property 'height': NULLABILITY drift (nullable False -> True)
+  - property 'width': NULLABILITY drift (nullable False -> True)
+  - acceptance parity FAIL on null_violation_width: original rejects, regen accepts
+  - acceptance parity FAIL on null_violation_height: original rejects, regen accepts
+  - acceptance parity FAIL on null_violation_format: original rejects, regen accepts
+- **realworld.ThumbnailResult**: OK
+- **sync_demo.WordCountPayload**: DRIFT
+  - property 'text': NULLABILITY drift (nullable False -> True)
+  - acceptance parity FAIL on null_violation_text: original rejects, regen accepts
+- **sync_demo.WordCountResult**: OK
+- **synthetic.ConstrainedStringPayload**: DRIFT
+  - property 'label': NULLABILITY drift (nullable False -> True)
+  - acceptance parity FAIL on null_violation_label: original rejects, regen accepts
+- **synthetic.DatetimePayload**: DRIFT
+  - property 'due_date': NULLABILITY drift (nullable False -> True)
+  - property 'started_at': NULLABILITY drift (nullable False -> True)
+  - property 'started_at': default '<absent>' -> None
+  - acceptance parity FAIL on null_violation_started_at: original rejects, regen accepts
+  - acceptance parity FAIL on null_violation_due_date: original rejects, regen accepts
+- **synthetic.EnumPayload**: DRIFT
+  - property 'priority': NULLABILITY drift (nullable False -> True)
+  - acceptance parity FAIL on null_violation_priority: original rejects, regen accepts
+- **synthetic.NestedPayload**: DRIFT
+  - property 'tags': NULLABILITY drift (nullable False -> True)
+  - property 'tags': default '<absent>' -> None
+  - acceptance parity FAIL on null_violation_tags: original rejects, regen accepts
+- **synthetic.UnionPayload**: OK
+- **tags_demo.TaggedPayload**: DRIFT
+  - property 'label': NULLABILITY drift (nullable False -> True)
+  - acceptance parity FAIL on null_violation_label: original rejects, regen accepts
+- **tags_demo.TaggedResult**: OK
+- **ticker.TickerPayload**: OK
+
+---
+
+# Python roundtrip report — --strict-nullable
+
+32/34 schemas fully conformant.
+
+
+- **advanced.DeduplicatedPayload**: OK
+- **advanced.EmptyPayload**: OK
+- **advanced.SumPayload**: OK
+- **advanced.SumResult**: OK
+- **basic.CounterPayload**: OK
+- **basic.DeferredPayload**: OK
+- **batch.BatchCounterPayload**: OK
+- **batch.BatchFinalizerPayload**: OK
+- **chained.FanOutPayload**: OK
+- **chained.PipelinePayload**: OK
+- **chained.StepTwoPayload**: OK
+- **di.DbLookupPayload**: OK
+- **di.FetchPayload**: OK
+- **di.FetchResult**: OK
+- **failure.FlakyPayload**: OK
+- **failure.SnoozePayload**: OK
+- **progress.FileProcessorPayload**: OK
+- **ratelimit.EmptyPayload**: OK
+- **realworld.CsvChunkPayload**: OK
+- **realworld.CsvUploadPayload**: OK
+- **realworld.DigestEmailPayload**: OK
+- **realworld.DigestEmailResult**: OK
+- **realworld.ThumbnailPayload**: OK
+- **realworld.ThumbnailResult**: OK
+- **sync_demo.WordCountPayload**: OK
+- **sync_demo.WordCountResult**: OK
+- **synthetic.ConstrainedStringPayload**: OK
+- **synthetic.DatetimePayload**: DRIFT
+  - property 'started_at': NULLABILITY drift (nullable False -> True)
+  - property 'started_at': default '<absent>' -> None
+  - acceptance parity FAIL on null_violation_started_at: original rejects, regen accepts
+- **synthetic.EnumPayload**: OK
+- **synthetic.NestedPayload**: DRIFT
+  - property 'tags': NULLABILITY drift (nullable False -> True)
+  - property 'tags': default '<absent>' -> None
+  - acceptance parity FAIL on null_violation_tags: original rejects, regen accepts
+- **synthetic.UnionPayload**: OK
+- **tags_demo.TaggedPayload**: OK
+- **tags_demo.TaggedResult**: OK
+- **ticker.TickerPayload**: OK

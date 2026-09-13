@@ -1,0 +1,241 @@
+{
+  "zodVersion": "v4",
+  "schemas": {
+    "batch.BatchCounterPayload": {
+      "valid_fixture": {
+        "ts_accepts": true,
+        "python_accepts": true,
+        "parity": true
+      },
+      "invalid": {
+        "null_violation_n": {
+          "ts_accepts": false,
+          "python_accepts": false,
+          "parity": true
+        },
+        "null_violation_steps": {
+          "ts_accepts": false,
+          "python_accepts": false,
+          "parity": true
+        },
+        "type_flip_n": {
+          "ts_accepts": false,
+          "python_accepts": false,
+          "parity": true
+        },
+        "max_violation_n": {
+          "ts_accepts": false,
+          "python_accepts": false,
+          "parity": true
+        },
+        "min_violation_n": {
+          "ts_accepts": false,
+          "python_accepts": false,
+          "parity": true
+        }
+      }
+    },
+    "sync_demo.WordCountResult": {
+      "valid_fixture": {
+        "ts_accepts": true,
+        "python_accepts": true,
+        "parity": true
+      },
+      "invalid": {
+        "null_violation_word_count": {
+          "ts_accepts": false,
+          "python_accepts": false,
+          "parity": true
+        },
+        "null_violation_char_count": {
+          "ts_accepts": false,
+          "python_accepts": false,
+          "parity": true
+        },
+        "type_flip_word_count": {
+          "ts_accepts": false,
+          "python_accepts": false,
+          "parity": true
+        },
+        "type_flip_processed_at": {
+          "ts_accepts": false,
+          "python_accepts": false,
+          "parity": true
+        },
+        "missing_required_word_count": {
+          "ts_accepts": false,
+          "python_accepts": false,
+          "parity": true
+        }
+      }
+    },
+    "synthetic.NestedPayload": {
+      "valid_fixture": {
+        "ts_accepts": true,
+        "python_accepts": true,
+        "parity": true
+      },
+      "invalid": {
+        "null_violation_address": {
+          "ts_accepts": true,
+          "python_accepts": false,
+          "parity": false
+        },
+        "null_violation_tags": {
+          "ts_accepts": false,
+          "python_accepts": false,
+          "parity": true
+        },
+        "missing_required_address": {
+          "ts_accepts": false,
+          "python_accepts": false,
+          "parity": true
+        },
+        "garbage_nested_address": {
+          "ts_accepts": true,
+          "python_accepts": false,
+          "parity": false
+        }
+      }
+    },
+    "synthetic.DatetimePayload": {
+      "valid_fixture": {
+        "ts_accepts": true,
+        "python_accepts": true,
+        "parity": true
+      },
+      "invalid": {
+        "null_violation_started_at": {
+          "ts_accepts": false,
+          "python_accepts": false,
+          "parity": true
+        },
+        "null_violation_due_date": {
+          "ts_accepts": false,
+          "python_accepts": false,
+          "parity": true
+        },
+        "type_flip_started_at": {
+          "ts_accepts": false,
+          "python_accepts": false,
+          "parity": true
+        }
+      }
+    },
+    "synthetic.ConstrainedStringPayload": {
+      "valid_fixture": {
+        "ts_accepts": true,
+        "python_accepts": true,
+        "parity": true
+      },
+      "invalid": {
+        "null_violation_slug": {
+          "ts_accepts": false,
+          "python_accepts": false,
+          "parity": true
+        },
+        "null_violation_label": {
+          "ts_accepts": false,
+          "python_accepts": false,
+          "parity": true
+        },
+        "type_flip_slug": {
+          "ts_accepts": false,
+          "python_accepts": false,
+          "parity": true
+        },
+        "missing_required_slug": {
+          "ts_accepts": false,
+          "python_accepts": false,
+          "parity": true
+        }
+      }
+    },
+    "batch.BatchFinalizerPayload": {
+      "valid_fixture": {
+        "ts_accepts": true,
+        "python_accepts": true,
+        "parity": true
+      },
+      "invalid": {
+        "null_violation_batch_id": {
+          "ts_accepts": false,
+          "python_accepts": false,
+          "parity": true
+        },
+        "null_violation_expected": {
+          "ts_accepts": false,
+          "python_accepts": false,
+          "parity": true
+        },
+        "type_flip_expected": {
+          "ts_accepts": false,
+          "python_accepts": false,
+          "parity": true
+        },
+        "type_flip_batch_id": {
+          "ts_accepts": false,
+          "python_accepts": false,
+          "parity": true
+        },
+        "missing_required_batch_id": {
+          "ts_accepts": false,
+          "python_accepts": false,
+          "parity": true
+        }
+      }
+    },
+    "synthetic.UnionPayload": {
+      "valid_fixture": {
+        "ts_accepts": true,
+        "python_accepts": true,
+        "parity": true
+      },
+      "invalid": {
+        "null_violation_value": {
+          "ts_accepts": false,
+          "python_accepts": false,
+          "parity": true
+        },
+        "missing_required_value": {
+          "ts_accepts": false,
+          "python_accepts": false,
+          "parity": true
+        }
+      }
+    },
+    "synthetic.EnumPayload": {
+      "valid_fixture": {
+        "ts_accepts": true,
+        "python_accepts": true,
+        "parity": true
+      },
+      "invalid": {
+        "null_violation_priority": {
+          "ts_accepts": true,
+          "python_accepts": false,
+          "parity": false
+        },
+        "type_flip_priority": {
+          "ts_accepts": true,
+          "python_accepts": false,
+          "parity": false
+        },
+        "enum_violation_priority": {
+          "ts_accepts": true,
+          "python_accepts": false,
+          "parity": false
+        }
+      }
+    },
+    "advanced.EmptyPayload": {
+      "valid_fixture": {
+        "ts_accepts": true,
+        "python_accepts": true,
+        "parity": true
+      },
+      "invalid": {}
+    }
+  },
+  "total_acceptance_mismatches": 5
+}

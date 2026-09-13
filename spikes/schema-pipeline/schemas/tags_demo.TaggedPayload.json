@@ -1,0 +1,11 @@
+{
+  "properties": {
+    "label": {
+      "default": "demo",
+      "title": "Label",
+      "type": "string"
+    }
+  },
+  "title": "TaggedPayload",
+  "type": "object"
+}

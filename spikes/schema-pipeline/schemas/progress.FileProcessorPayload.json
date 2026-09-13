@@ -1,0 +1,16 @@
+{
+  "properties": {
+    "filename": {
+      "default": "data.csv",
+      "title": "Filename",
+      "type": "string"
+    },
+    "rows": {
+      "default": 1000,
+      "title": "Rows",
+      "type": "integer"
+    }
+  },
+  "title": "FileProcessorPayload",
+  "type": "object"
+}

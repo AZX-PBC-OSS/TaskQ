@@ -1,0 +1,11 @@
+{
+  "properties": {
+    "fail_count": {
+      "default": 2,
+      "title": "Fail Count",
+      "type": "integer"
+    }
+  },
+  "title": "FlakyPayload",
+  "type": "object"
+}
