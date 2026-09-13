@@ -11,6 +11,7 @@ from taskq._json import dumps_jsonb_str
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: canonical identifier regex; copying would drift the validation pattern.
 )
+from taskq.obs import record_progress_flush_failure
 from taskq.progress._buffer import _ProgressBuffer
 from taskq.worker._watchdog import LoopLiveness
 
@@ -59,11 +60,18 @@ async def _flush_buffer(
     except Exception as exc:
         if isinstance(exc, asyncio.CancelledError):
             raise
+        # A failed flush UPDATE loses only this job's progress delta; the
+        # pool-stage handler in progress_flush_loop loses every job's —
+        # hence the distinct kinds and stage labels.
         _log.error(
             "progress-flush-error",
             job_id=str(job_id),
             error=str(exc),
             kind="progress_flush_error",
+        )
+        record_progress_flush_failure(
+            stage="per_job",
+            error_type=type(exc).__name__,
         )
         return
 
@@ -143,9 +151,17 @@ async def progress_flush_loop(
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
+                # A pool-stage failure — the worker cannot obtain a pool at
+                # all — loses every job's progress delta, not just the one
+                # job named here; hence the distinct kind and stage label
+                # from the per-job flush handler.
                 _log.error(
-                    "progress-flush-error",
+                    "progress-flush-pool-error",
                     job_id=str(job_id),
                     error=str(exc),
-                    kind="progress_flush_error",
+                    kind="progress_flush_pool_error",
+                )
+                record_progress_flush_failure(
+                    stage="pool",
+                    error_type=type(exc).__name__,
                 )
