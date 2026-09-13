@@ -26,6 +26,7 @@ from taskq.constants import DEFAULT_MAX_RETRY_BACKOFF
 from taskq.exceptions import PayloadValidationError, ResultTooLarge, WorkerOwnershipMismatch
 
 __all__ = [
+    "MAX_ATTEMPTS_SMALLINT_CEILING",
     "ActorConfigLike",
     "Fail",
     "JobRetryState",
@@ -38,7 +39,6 @@ __all__ = [
     "RetryKind",
     "RetryOverride",
     "RetryPolicy",
-    "MAX_ATTEMPTS_SMALLINT_CEILING",
     "compute_backoff",
     "decide_after_failure",
     "invoke_on_retry_exhausted",

@@ -259,9 +259,7 @@ async def _in_memory_running_job_at_ceiling(
     )
     await backend.enqueue(args)
     worker_id = new_uuid()
-    dispatched = await backend.dispatch_batch(
-        worker_id, ["default"], 1, timedelta(seconds=60)
-    )
+    dispatched = await backend.dispatch_batch(worker_id, ["default"], 1, timedelta(seconds=60))
     assert len(dispatched) == 1
     return backend, dispatched[0].id, worker_id
 
