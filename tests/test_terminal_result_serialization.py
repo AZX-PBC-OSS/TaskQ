@@ -76,10 +76,11 @@ async def test_result_bytes_binds_decoded_str_and_exact_size() -> None:
 async def test_result_bytes_does_not_serialize_again(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Zero ``taskq._json.dumps`` calls for the RESULT inside the terminal
-    write when it arrives pre-serialized.  The state-change event's detail
-    dict still serializes (unrelated jsonb column) — exactly one dumps call
-    total, and it is not the result payload."""
+    """Zero ``taskq._json.dumps`` calls inside the terminal write when the
+    result arrives pre-serialized.  The fused statement builds the event
+    detail server-side (jsonb_build_object), so nothing on this path
+    serializes client-side: the result bytes are reused, and a NULL
+    progress_state contributes no serialization either."""
     counter = _CountingDumps()
     monkeypatch.setattr("taskq._json.dumps", counter)
     payload = {"ok": True}
@@ -88,7 +89,7 @@ async def test_result_bytes_does_not_serialize_again(
 
     await _mark_succeeded_on_conn(conn, _SQL, JobId(new_job_id()), new_uuid(), result_bytes=data)
 
-    assert len(counter.calls) == 1
+    assert len(counter.calls) == 0
     assert all(call is not payload for call in counter.calls)
 
 
@@ -188,9 +189,9 @@ async def test_none_result_stores_null(
     ok = await _mark_succeeded_on_conn(conn, _SQL, JobId(new_job_id()), new_uuid(), None)
 
     assert ok is True
-    # The only dumps call is the state-change event's detail dict — the
-    # None result contributed nothing.
-    assert len(counter.calls) == 1
+    # None result: no result serialization, and the fused statement builds
+    # the event detail server-side, so zero client-side dumps calls total.
+    assert len(counter.calls) == 0
     assert conn.fetchrow_args is not None
     assert conn.fetchrow_args[3] is None
     assert conn.fetchrow_args[4] is None

@@ -902,7 +902,7 @@ unchanged.
 | `step` | `int \| None` | Incremental step counter (e.g. items processed). |
 | `percent` | `float \| None` | Completion percentage in `[0.0, 100.0]`. |
 | `detail` | `str \| None` | Human-readable status message. |
-| `data` | `dict[str, object] \| None` | Arbitrary structured data. Must serialise to JSON. |
+| `data` | `dict[str, object] \| None` | Arbitrary structured data. Must serialise to JSON with string dict keys (a non-`str` key raises `TypeError`). |
 
 **Coalescing.** Multiple `ctx.progress()` calls between periodic flush ticks are coalesced:
 only the latest value for each field is written to Postgres. Real-time Redis events are still
