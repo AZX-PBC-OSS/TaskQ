@@ -906,9 +906,10 @@ async def tick_cron(
         record_published_message(plan.actor, plan.queue)
 
     for entry in failure_telemetry:
-        # Same span shape the strike-time export used (PRODUCER kind, the
-        # link captured at failure time, schedule/worker attributes) — only
-        # the emission TIME moved.
+        # Span shape matches the pre-buffering strike-time export (PRODUCER
+        # kind, the link captured at failure time, the
+        # cron_schedule_name / worker_id / cron_schedule_id attributes) —
+        # only the emission TIME moved.
         with safe_start_span(
             "cron fire",
             kind=SpanKind.PRODUCER,
