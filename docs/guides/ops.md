@@ -132,10 +132,10 @@ async def reindex_bucket(payload: Payload) -> None: ...
   pending jobs are never dispatched, retries/snoozes that would land past the deadline fail with
   `DeadlineExceeded`, and a leader sweep fails expired queued jobs. A running attempt that finishes
   after the deadline still succeeds.
-- **The enqueue-time `heartbeat_timeout` parameter is currently inert.** It is stored on the
-  job row (and reaches the job-detail template context) but is not rendered in the admin UI,
-  and no code path reads it. All running jobs are leased for the global
-  `TASKQ_LOCK_LEASE` (default 60 s).
+- **The enqueue-time `heartbeat_timeout` parameter is refused.** Passing it raises
+  `ValueError` — per-job heartbeat enforcement is not implemented, and the parameter was
+  previously accepted and silently ignored. Remove it from call sites: a running job is
+  reclaimed only when its lease — the global `TASKQ_LOCK_LEASE` (default 60 s) — expires.
 - **The stored `error_message` of a genuine `start_to_close` timeout is the literal string
   `"start_to_close"`** — alert on `error_class == "TimeoutError"` if you want all timeouts, and
   remember an actor raising its own `TimeoutError` is indistinguishable by class.
@@ -1007,7 +1007,7 @@ The condensed "know this before your first incident" list. Each row links to the
 | No `start_to_close` anywhere; an actor hangs | slot held forever | set `TASKQ_DEFAULT_START_TO_CLOSE` + per-actor overrides ([§2](#2-timeouts-start_to_close-and-schedule_to_close)) |
 | Expecting `schedule_to_close` to kill a running attempt | long attempt survives past deadline | it only gates *future* dispatches ([§2](#2-timeouts-start_to_close-and-schedule_to_close)) |
 | `start_to_close` expected to kill a sync actor's thread | job marked timed out, side effects continue anyway | sync actors keep running — poll `ctx.should_abort()` ([actors.md](actors.md#sync-actors)) |
-| `heartbeat_timeout` set at enqueue | nothing changes | currently stored but not enforced ([§2](#2-timeouts-start_to_close-and-schedule_to_close)) |
+| `heartbeat_timeout` set at enqueue | `ValueError` at the enqueue call | the parameter is refused — reclamation is governed by `TASKQ_LOCK_LEASE` ([§2](#2-timeouts-start_to_close-and-schedule_to_close)) |
 | Retry window shorter than routine provider blips | terminal exhaustion on an ordinary 5xx | fewer attempts, longer `base` ([§6](#6-classifying-failures-terminal-retryable-transient)) |
 | Snoozing finalizer with a tight `time_budget` | `DeadlineExceeded` mid-batch | size the budget to batch duration + retries; `time_budget` requires `kind="indefinite"` ([§5](#5-fan-out-at-scale-chunks-cursors-idempotency)) |
 | `max_retry_backoff` raised, long backoffs still capped | retries at 24 h ceiling | the ceiling is `min(policy.cap, TASKQ_MAX_RETRY_BACKOFF)` ([retries.md](retries.md#3-backoff-algorithms)) |

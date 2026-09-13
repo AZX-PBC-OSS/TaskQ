@@ -197,6 +197,21 @@ def build_enqueue_args[P: BaseModel, R: BaseModel | None](
     if start_to_close is not None and start_to_close <= timedelta(0):
         raise ValueError(f"start_to_close must be > 0, got {start_to_close!r}")
 
+    # The field stays on EnqueueArgs and on the stored row (write paths
+    # that build args directly — cron ticks, the testing helpers — never
+    # cross this boundary); the refusal lives here because this validator
+    # is the choke point every caller-facing enqueue — JobsClient, the
+    # TaskQ facade, SubJobEnqueuer — funnels through.
+    if heartbeat_timeout is not None:
+        raise ValueError(
+            "heartbeat_timeout is not implemented: no worker or reclaim sweep "
+            "reads a per-job heartbeat timeout, so the value was previously "
+            "accepted and silently ignored. A running job is reclaimed only "
+            "when its lock lease expires — the global TASKQ_LOCK_LEASE "
+            "setting. Remove the parameter, or size TASKQ_LOCK_LEASE for the "
+            "reclaim latency you need."
+        )
+
     if scheduled_at is not None and scheduled_at.tzinfo is None:
         raise ValueError(
             f"scheduled_at must be timezone-aware (e.g. datetime.now(UTC)); "

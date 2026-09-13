@@ -258,18 +258,22 @@ class TestSubJobMissingFields:
         assert row.start_to_close == timedelta(minutes=30)
 
     async def test_heartbeat_timeout(self) -> None:
-        """heartbeat_timeout is accepted and stored on the row."""
+        """heartbeat_timeout is refused: it is not enforced, so accepting
+        it would silently discard the caller's per-job promise."""
         backend = InMemoryBackend(clock=FakeClock(_NOW))
         enqueuer = _make_enqueuer(backend)
 
-        handle = await enqueuer.enqueue(
-            _make_actor_ref(),
-            _Payload(),
-            heartbeat_timeout=timedelta(seconds=10),
-        )
+        with pytest.raises(ValueError, match="heartbeat_timeout"):
+            await enqueuer.enqueue(
+                _make_actor_ref(),
+                _Payload(),
+                heartbeat_timeout=timedelta(seconds=10),
+            )
+
+        handle = await enqueuer.enqueue(_make_actor_ref(), _Payload())
         row = await backend.get(handle.job_id)
         assert row is not None
-        assert row.heartbeat_timeout == timedelta(seconds=10)
+        assert row.heartbeat_timeout is None
 
 
 class TestContextVarIsolation:

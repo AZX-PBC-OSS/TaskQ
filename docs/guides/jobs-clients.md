@@ -157,7 +157,7 @@ Serialises the payload through `ref.payload_type`, enqueues the job, and returns
 | `priority` | `int \| None` | `None` | Dispatch priority. Higher values are dispatched first within the same queue. |
 | `schedule_to_close` | `datetime \| None` | derived from `retry.time_budget` | **Deprecated** (emits `DeprecationWarning`): an absolute datetime crosses clock domains (the app clock that produced it vs the database clock that evaluates it) and can misbehave under skew. Declare `retry.time_budget` on the actor instead — the interval form is anchored to the database clock. When supplied (timezone-aware; naive raises `ValueError`) it overrides the `time_budget`-derived interval. Hard deadline: if the job has not reached a terminal state by this datetime it fails with `DeadlineExceeded`. |
 | `start_to_close` | `timedelta \| None` | `None` | Per-attempt execution timeout measured from when the worker locks the job, enforced via `asyncio.wait_for` around the actor invocation. Distinct from `schedule_to_close` — see [`start_to_close` vs `schedule_to_close`](retries.md#7-start_to_close-vs-schedule_to_close) for the precedence chain and full explanation. |
-| `heartbeat_timeout` | `timedelta \| None` | `None` | Stored on the job row but currently inert — no code path reads it; leases use the global `TASKQ_LOCK_LEASE`. |
+| `heartbeat_timeout` | `timedelta \| None` | `None` | **Refused**: a non-`None` value raises `ValueError` — per-job heartbeat enforcement is not implemented (the parameter was previously accepted and silently ignored), and a running job is reclaimed only when the global `TASKQ_LOCK_LEASE` expires. Remove it from call sites. |
 | `identity_key` | `IdentityKey \| None` | `None` | Opaque string identifying the logical entity this job belongs to (e.g. `"account:42"`). Required for `unique_for` deduplication to take effect. Also used for fairness scheduling. |
 | `fairness_key` | `str \| None` | `None` | Partitions the dispatch order so no single key monopolises the queue. **Requires the target queue to be in `round_robin` mode** (`taskq queues set-mode <queue> round_robin`); on the default `strict_fifo` the key is stored and ignored. See [workers.md](workers.md#queue-dispatch-modes). |
 | `idempotency_key` | `IdempotencyKey \| None` | `None` | String preventing duplicate insertion, unique within its `idempotency_scope`. See [Idempotency key](#idempotency_key). |
@@ -1371,9 +1371,9 @@ set per-item tags explicitly.
 #### `schedule_to_close` / `start_to_close` / `heartbeat_timeout`
 
 `schedule_to_close` and `start_to_close` override the actor's declared defaults for
-this specific sub-job. `heartbeat_timeout` has no actor-level declaration — the
-per-call value is the only source — and it is currently inert (stored, never read;
-leases use the global `TASKQ_LOCK_LEASE`). Note that `schedule_to_close` bounds total
+this specific sub-job. `heartbeat_timeout` has no actor-level declaration and is
+**refused**: passing it raises `ValueError` — it is not enforced, and reclamation is
+governed by the global `TASKQ_LOCK_LEASE`. Note that `schedule_to_close` bounds total
 wall-clock time *including* time snoozed on `wait_for_batch` — finalizer-style
 sub-jobs that snooze for long periods should set it generously or not at all.
 
