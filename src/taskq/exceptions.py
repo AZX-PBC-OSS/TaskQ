@@ -165,6 +165,15 @@ class BatchMaxPendingExceededError(BackpressureError):
     duplicate the admitted items. Catch this type explicitly and retry
     only the refused indices, or give items ``idempotency_key``s so a
     whole-batch retry deduplicates against the admitted rows.
+
+    The same hazard reaches handlers written against the shared base:
+    ``except BackpressureError`` catches this error too, and the
+    base's contract ("the caller decides whether to retry, fail, or
+    wait") predates partial admission. A generic backpressure handler
+    that retries the whole batch MUST first consult
+    ``admitted_count`` / ``refused_indices`` — retry only the refused
+    items, or rely on ``idempotency_key``s — otherwise it duplicates
+    the admitted items on every retry.
     """
 
     def __init__(

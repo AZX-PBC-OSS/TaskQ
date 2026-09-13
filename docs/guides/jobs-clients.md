@@ -1386,11 +1386,18 @@ from taskq.exceptions import (
 | Exception | Raised when |
 |---|---|
 | `MaxPendingExceededError` | `enqueue()` called when `pending + scheduled` count >= `max_pending`. Fields: `actor` (str), `current_count` (int), `max_pending` (int). |
-| `BatchMaxPendingExceededError` | A bulk enqueue (`enqueue_batch()` / `enqueue_batch_fast()` / the chunked arm of `enqueue_batch_streaming()`) partitioned admission per actor and refused some: the within-cap actors' items were inserted first, then this raises. Fields: `refusals` (list of `MaxPendingExceededError`, one per over-cap actor), `refused_indices` (actor -> indices into the caller's items), `admitted_count` (int). Not a `MaxPendingExceededError` subclass — part of the batch is already stored; retry only the refused items or rely on idempotency keys. |
+| `BatchMaxPendingExceededError` | A bulk enqueue (`enqueue_batch()` / `enqueue_batch_fast()` / the chunked arm of `enqueue_batch_streaming()`) partitioned admission per actor and refused some: the within-cap actors' items were inserted first, then this raises. Fields: `refusals` (list of `MaxPendingExceededError`, one per over-cap actor), `refused_indices` (actor -> indices into the caller's items), `admitted_count` (int). Not a `MaxPendingExceededError` subclass — part of the batch is already stored; retry only the refused items or rely on idempotency keys. An `except BackpressureError` handler catches this too and must consult `admitted_count` / `refused_indices` before any whole-batch retry. |
 | `SingletonCollisionError` | `enqueue()` called for a singleton actor that already has an active job. Fields: `actor` (str), `blocking_job_id` (UUID or None), `retry_after` (timedelta or None). |
 | `PayloadValidationError` | Pydantic validation of the payload fails at enqueue time or at dispatch time. Non-retryable regardless of retry policy. Fields: `actor`, `payload_schema_ver`, `validation_errors`. |
 | `JobFailed` | `JobHandle.wait()` observed a non-success terminal status. Field: `row` (JobRow) with `status`, `error_class`, `error_message`, `error_traceback`. |
 | `ResultUnavailable` | `JobHandle.wait()` observed `"succeeded"` but no usable result is stored (TTL expired, `None` returned where `R` is non-`None`). Field: `row` (JobRow). |
+
+**Catching backpressure generically.** `MaxPendingExceededError`, `SingletonCollisionError`, and
+`BatchMaxPendingExceededError` all subclass `BackpressureError`, so `except BackpressureError` is a
+valid catch-all for enqueue-time backpressure — with one hazard: the batch variant raises **after
+the within-cap actors' items are stored**, so a generic handler that retries the whole batch
+duplicates them. Consult `admitted_count` / `refused_indices` before retrying (retry only the
+refused items, or rely on `idempotency_key`s to deduplicate a whole-batch retry).
 
 ```python
 from taskq.exceptions import JobFailed, ResultUnavailable
