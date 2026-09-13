@@ -246,9 +246,7 @@ class ActorCapacityCache:
                 )
             self._backend_checked = True
 
-    def _resolve(
-        self, actor: str, literal: int | None, per_call: int | None = None
-    ) -> int | None:
+    def _resolve(self, actor: str, literal: int | None, per_call: int | None = None) -> int | None:
         # The module docstring's resolution rule, as one pure function:
         # stored wins over literal; per_call tightens a stored cap and
         # supersedes the literal.
