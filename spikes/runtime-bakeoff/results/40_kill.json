@@ -1,0 +1,96 @@
+{
+  "node-ts-native": {
+    "config": "node-ts-native",
+    "cmd": [
+      "node",
+      "runtime.ts"
+    ],
+    "sigkill_exit_status": -9,
+    "sigkill_time_to_reap": {
+      "n": 20,
+      "p50_ms": 1.8787,
+      "p95_ms": 2.6506,
+      "p99_ms": 2.9508,
+      "min_ms": 1.5628,
+      "max_ms": 3.0259,
+      "mean_ms": 2.0197
+    },
+    "sigterm_while_blocked_on_stdin": {
+      "trials": 10,
+      "all_exited": true,
+      "statuses": [
+        "-15"
+      ]
+    },
+    "stdin_eof": {
+      "trials": 5,
+      "all_exited": true,
+      "statuses": [
+        "0"
+      ]
+    }
+  },
+  "bun-ts": {
+    "config": "bun-ts",
+    "cmd": [
+      "bun",
+      "runtime.ts"
+    ],
+    "sigkill_exit_status": -9,
+    "sigkill_time_to_reap": {
+      "n": 20,
+      "p50_ms": 1.2484,
+      "p95_ms": 1.3552,
+      "p99_ms": 1.4241,
+      "min_ms": 1.089,
+      "max_ms": 1.4413,
+      "mean_ms": 1.2436
+    },
+    "sigterm_while_blocked_on_stdin": {
+      "trials": 10,
+      "all_exited": true,
+      "statuses": [
+        "-15"
+      ]
+    },
+    "stdin_eof": {
+      "trials": 5,
+      "all_exited": true,
+      "statuses": [
+        "0"
+      ]
+    }
+  },
+  "deno-ts": {
+    "config": "deno-ts",
+    "cmd": [
+      "deno",
+      "run",
+      "runtime.ts"
+    ],
+    "sigkill_exit_status": -9,
+    "sigkill_time_to_reap": {
+      "n": 20,
+      "p50_ms": 1.476,
+      "p95_ms": 1.7315,
+      "p99_ms": 2.1895,
+      "min_ms": 1.281,
+      "max_ms": 2.304,
+      "mean_ms": 1.5183
+    },
+    "sigterm_while_blocked_on_stdin": {
+      "trials": 10,
+      "all_exited": true,
+      "statuses": [
+        "-15"
+      ]
+    },
+    "stdin_eof": {
+      "trials": 5,
+      "all_exited": true,
+      "statuses": [
+        "0"
+      ]
+    }
+  }
+}

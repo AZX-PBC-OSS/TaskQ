@@ -1,0 +1,188 @@
+{
+  "node-js": {
+    "config": "node-js",
+    "cmd": [
+      "node",
+      "runtime.js"
+    ],
+    "trials": 200,
+    "spawn_to_ready": {
+      "n": 200,
+      "p50_ms": 31.1733,
+      "p95_ms": 35.5108,
+      "p99_ms": 39.4559,
+      "min_ms": 26.8506,
+      "max_ms": 40.2968,
+      "mean_ms": 31.187
+    },
+    "spawn_to_first_rtt": {
+      "n": 200,
+      "p50_ms": 31.6098,
+      "p95_ms": 36.0138,
+      "p99_ms": 40.0529,
+      "min_ms": 27.2284,
+      "max_ms": 40.7778,
+      "mean_ms": 31.6562
+    }
+  },
+  "bun-js": {
+    "config": "bun-js",
+    "cmd": [
+      "bun",
+      "runtime.js"
+    ],
+    "trials": 200,
+    "spawn_to_ready": {
+      "n": 200,
+      "p50_ms": 24.1514,
+      "p95_ms": 26.8198,
+      "p99_ms": 30.7657,
+      "min_ms": 20.47,
+      "max_ms": 40.6181,
+      "mean_ms": 24.2982
+    },
+    "spawn_to_first_rtt": {
+      "n": 200,
+      "p50_ms": 26.0815,
+      "p95_ms": 28.8305,
+      "p99_ms": 33.8518,
+      "min_ms": 22.2853,
+      "max_ms": 42.8356,
+      "mean_ms": 26.2754
+    }
+  },
+  "deno-js": {
+    "config": "deno-js",
+    "cmd": [
+      "deno",
+      "run",
+      "runtime.js"
+    ],
+    "trials": 200,
+    "spawn_to_ready": {
+      "n": 200,
+      "p50_ms": 26.8034,
+      "p95_ms": 30.3934,
+      "p99_ms": 32.5189,
+      "min_ms": 23.7203,
+      "max_ms": 37.6079,
+      "mean_ms": 26.9616
+    },
+    "spawn_to_first_rtt": {
+      "n": 200,
+      "p50_ms": 27.4489,
+      "p95_ms": 31.1615,
+      "p99_ms": 33.124,
+      "min_ms": 24.5015,
+      "max_ms": 38.2656,
+      "mean_ms": 27.5876
+    }
+  },
+  "node-ts-native": {
+    "config": "node-ts-native",
+    "cmd": [
+      "node",
+      "runtime.ts"
+    ],
+    "trials": 200,
+    "spawn_to_ready": {
+      "n": 200,
+      "p50_ms": 56.8878,
+      "p95_ms": 62.3449,
+      "p99_ms": 64.8634,
+      "min_ms": 50.3225,
+      "max_ms": 66.0291,
+      "mean_ms": 57.2216
+    },
+    "spawn_to_first_rtt": {
+      "n": 200,
+      "p50_ms": 57.5009,
+      "p95_ms": 63.3079,
+      "p99_ms": 65.37,
+      "min_ms": 50.8172,
+      "max_ms": 66.5565,
+      "mean_ms": 57.7347
+    }
+  },
+  "node-ts-tsx": {
+    "config": "node-ts-tsx",
+    "cmd": [
+      "node",
+      "--import",
+      "tsx",
+      "runtime.ts"
+    ],
+    "trials": 200,
+    "spawn_to_ready": {
+      "n": 200,
+      "p50_ms": 56.3966,
+      "p95_ms": 63.3008,
+      "p99_ms": 67.3655,
+      "min_ms": 49.6568,
+      "max_ms": 69.7005,
+      "mean_ms": 56.6634
+    },
+    "spawn_to_first_rtt": {
+      "n": 200,
+      "p50_ms": 57.2538,
+      "p95_ms": 64.5569,
+      "p99_ms": 68.2798,
+      "min_ms": 50.4834,
+      "max_ms": 74.5595,
+      "mean_ms": 57.5792
+    }
+  },
+  "bun-ts": {
+    "config": "bun-ts",
+    "cmd": [
+      "bun",
+      "runtime.ts"
+    ],
+    "trials": 200,
+    "spawn_to_ready": {
+      "n": 200,
+      "p50_ms": 23.7217,
+      "p95_ms": 27.6424,
+      "p99_ms": 31.7164,
+      "min_ms": 20.3316,
+      "max_ms": 34.5138,
+      "mean_ms": 23.9585
+    },
+    "spawn_to_first_rtt": {
+      "n": 200,
+      "p50_ms": 25.656,
+      "p95_ms": 29.4818,
+      "p99_ms": 35.3854,
+      "min_ms": 22.2847,
+      "max_ms": 36.4763,
+      "mean_ms": 25.9612
+    }
+  },
+  "deno-ts": {
+    "config": "deno-ts",
+    "cmd": [
+      "deno",
+      "run",
+      "runtime.ts"
+    ],
+    "trials": 200,
+    "spawn_to_ready": {
+      "n": 200,
+      "p50_ms": 27.2842,
+      "p95_ms": 30.6689,
+      "p99_ms": 32.8789,
+      "min_ms": 23.7528,
+      "max_ms": 33.5234,
+      "mean_ms": 27.2055
+    },
+    "spawn_to_first_rtt": {
+      "n": 200,
+      "p50_ms": 27.8563,
+      "p95_ms": 31.899,
+      "p99_ms": 33.5083,
+      "min_ms": 24.3448,
+      "max_ms": 34.088,
+      "mean_ms": 27.8423
+    }
+  }
+}

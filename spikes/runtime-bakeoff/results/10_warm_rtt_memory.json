@@ -1,0 +1,146 @@
+{
+  "node-js": {
+    "config": "node-js",
+    "cmd": [
+      "node",
+      "runtime.js"
+    ],
+    "rtt": {
+      "n": 200,
+      "p50_ms": 0.072,
+      "p95_ms": 0.2006,
+      "p99_ms": 0.2856,
+      "min_ms": 0.0612,
+      "max_ms": 0.2997,
+      "mean_ms": 0.0886
+    },
+    "jobs_per_sec": 11280.9,
+    "idle_rss_kb": 51920,
+    "post_1000_jobs_rss_kb": 57104,
+    "max_rss_kb_during_1000": 57104
+  },
+  "bun-js": {
+    "config": "bun-js",
+    "cmd": [
+      "bun",
+      "runtime.js"
+    ],
+    "rtt": {
+      "n": 200,
+      "p50_ms": 0.0734,
+      "p95_ms": 0.1346,
+      "p99_ms": 0.328,
+      "min_ms": 0.0597,
+      "max_ms": 0.528,
+      "mean_ms": 0.086
+    },
+    "jobs_per_sec": 11633.6,
+    "idle_rss_kb": 35872,
+    "post_1000_jobs_rss_kb": 61200,
+    "max_rss_kb_during_1000": 61184
+  },
+  "deno-js": {
+    "config": "deno-js",
+    "cmd": [
+      "deno",
+      "run",
+      "runtime.js"
+    ],
+    "rtt": {
+      "n": 200,
+      "p50_ms": 0.0889,
+      "p95_ms": 0.1634,
+      "p99_ms": 0.3064,
+      "min_ms": 0.0705,
+      "max_ms": 0.3887,
+      "mean_ms": 0.1016
+    },
+    "jobs_per_sec": 9842.9,
+    "idle_rss_kb": 34048,
+    "post_1000_jobs_rss_kb": 49248,
+    "max_rss_kb_during_1000": 49248
+  },
+  "node-ts-native": {
+    "config": "node-ts-native",
+    "cmd": [
+      "node",
+      "runtime.ts"
+    ],
+    "rtt": {
+      "n": 200,
+      "p50_ms": 0.0717,
+      "p95_ms": 0.1221,
+      "p99_ms": 0.2405,
+      "min_ms": 0.0598,
+      "max_ms": 0.2619,
+      "mean_ms": 0.0809
+    },
+    "jobs_per_sec": 12363.6,
+    "idle_rss_kb": 76288,
+    "post_1000_jobs_rss_kb": 80272,
+    "max_rss_kb_during_1000": 80272
+  },
+  "node-ts-tsx": {
+    "config": "node-ts-tsx",
+    "cmd": [
+      "node",
+      "--import",
+      "tsx",
+      "runtime.ts"
+    ],
+    "rtt": {
+      "n": 200,
+      "p50_ms": 0.077,
+      "p95_ms": 0.1274,
+      "p99_ms": 0.199,
+      "min_ms": 0.0611,
+      "max_ms": 0.2739,
+      "mean_ms": 0.0832
+    },
+    "jobs_per_sec": 12017.8,
+    "idle_rss_kb": 62816,
+    "post_1000_jobs_rss_kb": 66224,
+    "max_rss_kb_during_1000": 66224
+  },
+  "bun-ts": {
+    "config": "bun-ts",
+    "cmd": [
+      "bun",
+      "runtime.ts"
+    ],
+    "rtt": {
+      "n": 200,
+      "p50_ms": 0.0734,
+      "p95_ms": 0.1311,
+      "p99_ms": 0.3012,
+      "min_ms": 0.0597,
+      "max_ms": 0.364,
+      "mean_ms": 0.0844
+    },
+    "jobs_per_sec": 11845.9,
+    "idle_rss_kb": 35056,
+    "post_1000_jobs_rss_kb": 61216,
+    "max_rss_kb_during_1000": 61216
+  },
+  "deno-ts": {
+    "config": "deno-ts",
+    "cmd": [
+      "deno",
+      "run",
+      "runtime.ts"
+    ],
+    "rtt": {
+      "n": 200,
+      "p50_ms": 0.0785,
+      "p95_ms": 0.1441,
+      "p99_ms": 0.3083,
+      "min_ms": 0.066,
+      "max_ms": 0.401,
+      "mean_ms": 0.0905
+    },
+    "jobs_per_sec": 11047.7,
+    "idle_rss_kb": 34112,
+    "post_1000_jobs_rss_kb": 50048,
+    "max_rss_kb_during_1000": 50048
+  }
+}

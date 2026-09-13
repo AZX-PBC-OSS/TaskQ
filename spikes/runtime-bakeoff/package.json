@@ -1,0 +1,8 @@
+{
+  "name": "taskq-runtime-bakeoff",
+  "private": true,
+  "type": "module",
+  "devDependencies": {
+    "tsx": "^4.20.0"
+  }
+}

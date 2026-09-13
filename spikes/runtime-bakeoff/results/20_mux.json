@@ -1,0 +1,112 @@
+{
+  "node-ts-native 1x20": {
+    "config": "node-ts-native",
+    "cmd": [
+      "node",
+      "runtime.ts"
+    ],
+    "variant": "1 process(es) x 20 concurrent",
+    "sleep_ms": 50,
+    "job_wall_time": {
+      "n": 200,
+      "p50_ms": 50.8018,
+      "p95_ms": 51.4252,
+      "p99_ms": 51.4378,
+      "min_ms": 50.3846,
+      "max_ms": 51.4596,
+      "mean_ms": 50.8709
+    }
+  },
+  "node-ts-native 4x5": {
+    "config": "node-ts-native",
+    "cmd": [
+      "node",
+      "runtime.ts"
+    ],
+    "variant": "4 process(es) x 5 concurrent",
+    "sleep_ms": 50,
+    "job_wall_time": {
+      "n": 200,
+      "p50_ms": 50.6724,
+      "p95_ms": 51.492,
+      "p99_ms": 52.1462,
+      "min_ms": 49.3512,
+      "max_ms": 52.1665,
+      "mean_ms": 50.807
+    }
+  },
+  "bun-ts 1x20": {
+    "config": "bun-ts",
+    "cmd": [
+      "bun",
+      "runtime.ts"
+    ],
+    "variant": "1 process(es) x 20 concurrent",
+    "sleep_ms": 50,
+    "job_wall_time": {
+      "n": 200,
+      "p50_ms": 51.1952,
+      "p95_ms": 53.3714,
+      "p99_ms": 53.3843,
+      "min_ms": 50.7068,
+      "max_ms": 53.387,
+      "mean_ms": 51.3917
+    }
+  },
+  "bun-ts 4x5": {
+    "config": "bun-ts",
+    "cmd": [
+      "bun",
+      "runtime.ts"
+    ],
+    "variant": "4 process(es) x 5 concurrent",
+    "sleep_ms": 50,
+    "job_wall_time": {
+      "n": 200,
+      "p50_ms": 51.3324,
+      "p95_ms": 52.5621,
+      "p99_ms": 53.1245,
+      "min_ms": 50.5495,
+      "max_ms": 53.1389,
+      "mean_ms": 51.3125
+    }
+  },
+  "deno-ts 1x20": {
+    "config": "deno-ts",
+    "cmd": [
+      "deno",
+      "run",
+      "runtime.ts"
+    ],
+    "variant": "1 process(es) x 20 concurrent",
+    "sleep_ms": 50,
+    "job_wall_time": {
+      "n": 200,
+      "p50_ms": 51.7693,
+      "p95_ms": 52.8537,
+      "p99_ms": 52.863,
+      "min_ms": 50.578,
+      "max_ms": 52.8641,
+      "mean_ms": 51.679
+    }
+  },
+  "deno-ts 4x5": {
+    "config": "deno-ts",
+    "cmd": [
+      "deno",
+      "run",
+      "runtime.ts"
+    ],
+    "variant": "4 process(es) x 5 concurrent",
+    "sleep_ms": 50,
+    "job_wall_time": {
+      "n": 200,
+      "p50_ms": 51.8368,
+      "p95_ms": 53.1718,
+      "p99_ms": 53.3016,
+      "min_ms": 50.658,
+      "max_ms": 53.3456,
+      "mean_ms": 51.8668
+    }
+  }
+}

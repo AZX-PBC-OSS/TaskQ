@@ -1,0 +1,72 @@
+{
+  "node --permission": {
+    "report": {
+      "stdio": "ok",
+      "fsRead": "denied: ERR_ACCESS_DENIED",
+      "fsWrite": "denied: ERR_ACCESS_DENIED",
+      "net": "denied: fetch failed",
+      "childProcess": "denied: Access to this API has been restricted. Use --allow-child-pr"
+    },
+    "stderr": ""
+  },
+  "node --permission +fs-grants": {
+    "report": {
+      "stdio": "ok",
+      "fsRead": "denied: ERR_ACCESS_DENIED",
+      "fsWrite": "ok",
+      "net": "denied: fetch failed",
+      "childProcess": "denied: Access to this API has been restricted. Use --allow-child-pr"
+    },
+    "stderr": ""
+  },
+  "node --permission +net-grant": {
+    "report": {
+      "stdio": "ok",
+      "fsRead": "denied: ERR_ACCESS_DENIED",
+      "fsWrite": "denied: ERR_ACCESS_DENIED",
+      "net": "ok:200",
+      "childProcess": "denied: Access to this API has been restricted. Use --allow-child-pr"
+    },
+    "stderr": "(node:5327) ExperimentalWarning: The flag --allow-net is under experimental phase.\n(Use `node --trace-warnings ...` to show where the warning was created)"
+  },
+  "deno (no flags)": {
+    "report": {
+      "stdio": "ok",
+      "fsRead": "denied: NotCapable",
+      "fsWrite": "denied: NotCapable",
+      "net": "denied: Requires net access to \"127.0.0.1:64211\", run again with the",
+      "childProcess": "denied: Requires env access, run again with the --allow-env flag"
+    },
+    "stderr": ""
+  },
+  "deno +net+fs grants": {
+    "report": {
+      "stdio": "ok",
+      "fsRead": "denied: NotCapable",
+      "fsWrite": "ok",
+      "net": "ok:200",
+      "childProcess": "denied: Requires env access, run again with the --allow-env flag"
+    },
+    "stderr": ""
+  },
+  "bun (no flags)": {
+    "report": {
+      "stdio": "ok",
+      "fsRead": "ok",
+      "fsWrite": "ok",
+      "net": "ok:200",
+      "childProcess": "ok"
+    },
+    "stderr": ""
+  },
+  "bun --smol": {
+    "report": {
+      "stdio": "ok",
+      "fsRead": "ok",
+      "fsWrite": "ok",
+      "net": "ok:200",
+      "childProcess": "ok"
+    },
+    "stderr": ""
+  }
+}
