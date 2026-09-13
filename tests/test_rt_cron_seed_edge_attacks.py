@@ -91,7 +91,7 @@ async def test_factory_own_timeout_reason_survives_the_rewrite(
     names itself. When the factory fails with its own reason, replacing
     that reason with a hang claim misdiagnoses the schedule row: the
     test pins the reason surviving in `str(exc)`, which is what
-    `_record_fire_failure` stamps into `error_text` / `last_fire_error`.
+    `_compute_fire_failure` stamps into `error_text` / `last_fire_error`.
     """
 
     async def _exhausted_factory() -> dict[str, object]:
