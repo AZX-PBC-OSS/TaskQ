@@ -42,11 +42,11 @@ not reach the end, logs that fact, and returns.
 ```python
 @actor(name="screen_candidates", queue="cron")
 async def screen_candidates(payload: EmptyPayload, ctx: JobContext[EmptyPayload]) -> None:
-    rows = await fetch_eligible(limit=250)          # a fixed page
+    rows = await fetch_eligible(limit=250)  # a fixed page
     for row in rows:
         await ctx.jobs.enqueue(screen_one, OnePayload(id=row.id))
     if len(rows) == 250:
-        logger.info("screen-capped", capped=True)   # and then nothing happens
+        logger.info("screen-capped", capped=True)  # and then nothing happens
 ```
 
 Nothing here raises, no metric turns red, and the log line even tells you the truth. But the
@@ -106,7 +106,7 @@ MAX_LINKS = 1_000  # runaway ceiling, not the terminator — see below
 class SweepPayload(BaseModel):
     run_id: str
     cursor: str | None = None  # keyset cursor: last (created_at, id) seen
-    link: int = 0              # how many pages deep this chain is
+    link: int = 0  # how many pages deep this chain is
 
 
 class ItemPayload(BaseModel):
