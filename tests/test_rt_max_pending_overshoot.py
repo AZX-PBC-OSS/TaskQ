@@ -8,22 +8,27 @@ transaction-scoped advisory lock, and unlike singleton, which has the
 catch (upstream precedent: pgqueuer v1.4.0 fixed count-then-insert
 overshoot with capacity-slot partial unique indexes).
 
-Every batch tier below must refuse an oversized aggregate loudly
-(``MaxPendingExceededError``, nothing admitted) rather than admit it
-silently:
+Every batch tier below must refuse an over-cap actor loudly rather than
+admit it silently. Since #149 the refusal is PARTITIONED per actor: the
+over-cap actor's items are refused as a group (nothing over cap is ever
+admitted — the pinned invariant below), every other actor's items are
+admitted, and ``BatchMaxPendingExceededError`` raises after the admitted
+rows are durable:
 
 1. ``PostgresBackend.enqueue_batch`` admission-checks the carried
-   per-item caps as one aggregate before writing.
+   per-item caps as one aggregate, partitions per actor, and inserts
+   only the within-cap actors' items.
 2. ``enqueue_batch_streaming`` chunks, ``enqueue_batch_fast`` COPY,
    and ``SubJobEnqueuer.enqueue_batch(connection=...)`` all funnel
-   through that tier and inherit the refusal.
+   through that tier and inherit the partition (the sub-enqueuer
+   converts it to its house ``PartialBatchError``).
 3. Concurrent single enqueues serialize per capped actor on a
    transaction-scoped advisory lock, so overlapping counts cannot
    each see room.
 
 The one clean path is pinned at unit tier: ``JobsClient.enqueue_batch``
-runs an aggregated ``existing + batch_count > limit`` check before the
-INSERT and rejects an oversized batch outright.
+delegates admission wholly to the backend tier, which refuses an
+over-cap single-actor batch with nothing admitted.
 """
 
 from __future__ import annotations
@@ -42,7 +47,11 @@ from taskq.batch import EnqueueItem
 from taskq.client._args import build_batch_args, build_enqueue_args
 from taskq.client._enqueuer import SubJobEnqueuer
 from taskq.client._jobs import JobsClient
-from taskq.exceptions import MaxPendingExceededError
+from taskq.exceptions import (
+    BatchMaxPendingExceededError,
+    MaxPendingExceededError,
+    PartialBatchError,
+)
 from taskq.testing.clock import FakeClock
 from taskq.testing.fixtures import ModulePgSchema
 from taskq.testing.in_memory import InMemoryBackend
@@ -87,15 +96,16 @@ async def test_backend_enqueue_batch_ignores_per_item_max_pending(
     module_pg_schema: ModulePgSchema,
     clean_pg_conn: asyncpg.Connection,
 ) -> None:
-    """``PostgresBackend.enqueue_batch`` admits a batch whose aggregate exceeds
-    the cap even though every item carries the resolved ``max_pending``.
+    """``PostgresBackend.enqueue_batch`` refuses a single-actor batch whose
+    aggregate exceeds the cap even though every item carries the resolved
+    ``max_pending``.
 
     The client resolves the effective (operator-owned) cap per actor and
     stamps it onto each item via ``build_batch_args(max_pending_by_actor=...)``;
-    the batch tier admission-checks the aggregate before writing anything:
-    an oversized batch raises ``MaxPendingExceededError`` with zero rows
-    admitted (all-or-nothing, same contract as the single-enqueue path).
-    Deterministic: one call, no timing.
+    the batch tier admission-checks the aggregate and partitions per actor:
+    every item here belongs to the one over-cap actor, so the partition
+    admits nothing and raises ``BatchMaxPendingExceededError`` with zero
+    rows admitted. Deterministic: one call, no timing.
     """
     schema = module_pg_schema.schema_name
     backend = make_backend(cron_settings(schema))
@@ -114,11 +124,14 @@ async def test_backend_enqueue_batch_ignores_per_item_max_pending(
         "setup: every item must carry the resolved cap for this to attack the batch tier"
     )
 
-    with pytest.raises(MaxPendingExceededError):
+    with pytest.raises(BatchMaxPendingExceededError) as exc_info:
         await backend.enqueue_batch(args_list, connection=clean_pg_conn)
 
+    assert exc_info.value.admitted_count == 0
+    assert exc_info.value.refused_indices == {actor_name: [0, 1, 2, 3, 4]}
     assert await count_jobs(clean_pg_conn, schema, actor_name) == 0, (
-        "a refused batch must admit nothing: partial admission would be silent over-cap delivery"
+        "a refused actor must admit nothing past its cap: partial admission "
+        "of the CAPPED actor would be silent over-cap delivery"
     )
 
 
@@ -130,23 +143,25 @@ async def test_streaming_enqueue_batch_bypasses_max_pending(
     module_pg_schema: ModulePgSchema,
     clean_pg_conn: asyncpg.Connection,
 ) -> None:
-    """``JobsClient.enqueue_batch_streaming`` admits N > cap jobs with no error.
+    """``JobsClient.enqueue_batch_streaming`` refuses N > cap jobs for the
+    capped actor.
 
-    Unlike ``enqueue_batch`` (aggregated pre-check), the streaming path
-    discloses "max_pending NOT enforced" — this test proves the disclosure
-    wrong if enforcement lands, or the bypass if it does not. The cap on
-    the actor is real (``@actor(max_pending=2)``); an oversized stream
-    must raise ``MaxPendingExceededError`` admitting nothing.
+    The chunked path enforces per chunk through the backend tier: a
+    stream of only the capped actor's items has every chunk refused (each
+    chunk's aggregate exceeds the cap), so the stream admits nothing and
+    the typed batch refusal raises naming the actor. The cap on the
+    actor is real (``@actor(max_pending=2)``).
     """
     schema = module_pg_schema.schema_name
     backend = make_backend(cron_settings(schema))
     client = JobsClient(backend)
 
-    with pytest.raises(MaxPendingExceededError):
+    with pytest.raises(BatchMaxPendingExceededError):
         await client.enqueue_batch_streaming(iter(_items(_capped)), connection=clean_pg_conn)
 
     assert await count_jobs(clean_pg_conn, schema, _capped.name) == 0, (
-        "a refused stream must admit nothing: partial admission would be silent over-cap delivery"
+        "a refused actor must admit nothing past its cap: partial admission "
+        "of the CAPPED actor would be silent over-cap delivery"
     )
 
 
@@ -158,22 +173,24 @@ async def test_batch_fast_bypasses_max_pending(
     module_pg_schema: ModulePgSchema,
     clean_pg_conn: asyncpg.Connection,
 ) -> None:
-    """``JobsClient.enqueue_batch_fast`` must refuse N > cap jobs with no error.
+    """``JobsClient.enqueue_batch_fast`` refuses N > cap jobs for the capped actor.
 
-    Same unchecked tier as the streaming path (COPY has no preflight at
-    all); the actor's ``max_pending=2`` literal is carried onto the args by
-    ``build_batch_args`` and the pre-COPY aggregate check must refuse the
-    batch admitting nothing.
+    Same partitioned tier as the streaming path (the COPY runs after the
+    aggregated admission check); the actor's ``max_pending=2`` literal is
+    carried onto the args by ``build_batch_args``, every item belongs to
+    the over-cap actor, and the pre-COPY check refuses the whole import —
+    the COPY never runs, nothing is written.
     """
     schema = module_pg_schema.schema_name
     backend = make_backend(cron_settings(schema))
     client = JobsClient(backend)
 
-    with pytest.raises(MaxPendingExceededError):
+    with pytest.raises(BatchMaxPendingExceededError):
         await client.enqueue_batch_fast(_items(_capped), connection=clean_pg_conn)
 
     assert await count_jobs(clean_pg_conn, schema, _capped.name) == 0, (
-        "a refused COPY must admit nothing: partial admission would be silent over-cap delivery"
+        "a refused actor must admit nothing past its cap: partial admission "
+        "of the CAPPED actor would be silent over-cap delivery"
     )
 
 
@@ -185,24 +202,30 @@ async def test_sub_enqueuer_conn_batch_bypasses_max_pending(
     module_pg_schema: ModulePgSchema,
     clean_pg_conn: asyncpg.Connection,
 ) -> None:
-    """``SubJobEnqueuer.enqueue_batch(connection=...)`` must refuse N > cap jobs.
+    """``SubJobEnqueuer.enqueue_batch(connection=...)`` refuses N > cap jobs.
 
-    This path resolves the effective cap per actor but — unlike
-    ``JobsClient.enqueue_batch`` — runs NO aggregated
-    ``existing + batch_count > limit`` check before delegating to
-    ``backend.enqueue_batch``. The backend tier admission-checks the
-    carried caps itself, so the oversized batch raises
-    ``MaxPendingExceededError`` admitting nothing.
+    This path resolves the effective cap per actor and delegates to the
+    backend tier's partitioned admission. The over-cap actor's items are
+    refused after the within-cap actors' items are inserted, and the
+    sub-enqueuer converts the refusal to its house ``PartialBatchError``
+    — the same type its autonomous fallback raises — with one
+    ``MaxPendingExceededError`` per failed item index. Here every item is
+    the capped actor's, so nothing is admitted.
     """
     schema = module_pg_schema.schema_name
     backend = make_backend(cron_settings(schema))
     enqueuer = SubJobEnqueuer(None, None, backend)
 
-    with pytest.raises(MaxPendingExceededError):
+    with pytest.raises(PartialBatchError) as exc_info:
         await enqueuer.enqueue_batch(_items(_capped), connection=clean_pg_conn)
 
+    assert exc_info.value.succeeded_count == 0
+    assert [i for i, _ in exc_info.value.failed_items] == [0, 1, 2, 3, 4]
+    for _, item_exc in exc_info.value.failed_items:
+        assert isinstance(item_exc, MaxPendingExceededError)
     assert await count_jobs(clean_pg_conn, schema, _capped.name) == 0, (
-        "a refused batch must admit nothing: partial admission would be silent over-cap delivery"
+        "a refused actor must admit nothing past its cap: partial admission "
+        "of the CAPPED actor would be silent over-cap delivery"
     )
 
 
@@ -372,16 +395,19 @@ async def test_batch_idempotency_duplicates_do_not_consume_cap(
 
 
 async def test_regular_enqueue_batch_rejects_oversized_aggregate() -> None:
-    """PIN (passes): ``JobsClient.enqueue_batch`` rejects a batch whose
-    aggregate exceeds the cap via its aggregated pre-check.
+    """PIN (passes): ``JobsClient.enqueue_batch`` refuses a batch whose
+    aggregate exceeds the cap.
 
-    Documents the boundary of the finding: the non-streaming client batch
-    path counts once (``existing + batch_count > limit``) and raises
-    ``MaxPendingExceededError`` before the INSERT, so attacks 1-4 are gaps
-    in the OTHER batch paths, not in this one.
+    Documents the boundary of the finding: admission lives wholly in the
+    backend tier (the client-side aggregated pre-check was removed with
+    #149 — it aborted the whole call for one capped actor), which counts
+    once per batch, discounts idempotency pairs, and partitions per
+    actor. A single-actor over-cap batch is refused whole with nothing
+    admitted; the mixed-actor partition (healthy actors admitted) is
+    pinned in tests/test_batch_cap_partition.py.
     """
     backend = InMemoryBackend(clock=FakeClock(_START))
     client = JobsClient(backend)
 
-    with pytest.raises(MaxPendingExceededError):
+    with pytest.raises(BatchMaxPendingExceededError):
         await client.enqueue_batch(_items(_capped))

@@ -41,7 +41,11 @@ from taskq.batch import MAX_BATCH_SIZE, EnqueueItem
 from taskq.client._args import build_batch_args, build_enqueue_args, enqueue_span
 from taskq.client._capacity import ActorCapacityCache
 from taskq.client._handle import JobHandle
-from taskq.exceptions import PartialBatchError, SubEnqueueError
+from taskq.exceptions import (
+    BatchMaxPendingExceededError,
+    PartialBatchError,
+    SubEnqueueError,
+)
 
 if TYPE_CHECKING:
     import asyncpg
@@ -316,6 +320,17 @@ class SubJobEnqueuer:
         as 21 parallel array parameters to a single ``unnest`` INSERT in one
         transaction, so an uncapped batch enqueued from inside a job body is
         unbounded fan-out that bypasses the client-side guardrail.
+
+        ``max_pending``: the connection arm gets the backend's per-actor
+        partition admission — over-cap actors' items are refused after
+        the within-cap actors' items are inserted — and converts the
+        refusal to :class:`~taskq.exceptions.PartialBatchError` so this
+        method speaks one error contract across all connection modes
+        (the no-connection fallback already raises it per item). On a
+        LOOP-scope connection the inserted items ride the parent's
+        transaction: catching the error inside the actor body and
+        returning normally commits them; letting it propagate rolls
+        everything back.
         """
         if len(items) == 0:
             raise ValueError("items must not be empty")
@@ -354,7 +369,37 @@ class SubJobEnqueuer:
                     for args, item in zip(args_list, items, strict=True)
                 ]
 
-            rows = await self._backend.enqueue_batch(args_list, connection=conn)  # type: ignore[call-arg]  # Why: asyncpg.Connection is compatible with the protocol's connection parameter at runtime
+            try:
+                rows = await self._backend.enqueue_batch(args_list, connection=conn)  # type: ignore[call-arg]  # Why: asyncpg.Connection is compatible with the protocol's connection parameter at runtime
+            except BatchMaxPendingExceededError as exc:
+                # Why convert here: the backend's per-actor partition
+                # admission refuses the over-cap actors' items AFTER the
+                # within-cap actors' items are inserted, and this method's
+                # no-connection fallback already surfaces per-item
+                # failures as PartialBatchError (succeeded count + failed
+                # indices + per-failure exceptions). The connection arm
+                # must speak the same error contract or actor code would
+                # need connection-mode-dependent handling for the same
+                # operation.
+                refusal_by_actor = {r.actor: r for r in exc.refusals}
+                failed_items: list[tuple[int, Exception]] = [
+                    (i, refusal_by_actor[item.actor_ref.name])
+                    for i, item in enumerate(items)
+                    if item.actor_ref.name in refusal_by_actor
+                ]
+                if from_loop_scope:
+                    # Track only the admitted items: the refused ones were
+                    # never inserted on this connection, so a rollback
+                    # re-enqueue (drain_for_re_enqueue) must not carry them
+                    # as if they had been.
+                    self._loop_enqueue_args.extend(
+                        a for a in args_list if a.actor not in refusal_by_actor
+                    )
+                raise PartialBatchError(
+                    succeeded_count=exc.admitted_count,
+                    failed_items=failed_items,
+                    total=len(items),
+                ) from exc
             if from_loop_scope:
                 self._loop_enqueue_args.extend(args_list)
             handles: list[JobHandle[Any]] = []

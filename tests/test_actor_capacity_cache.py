@@ -38,7 +38,11 @@ from taskq.batch import EnqueueItem
 from taskq.client._capacity import ActorCapacityCache
 from taskq.client._enqueuer import SubJobEnqueuer
 from taskq.client._jobs import JobsClient
-from taskq.exceptions import MaxPendingExceededError, PartialBatchError
+from taskq.exceptions import (
+    BatchMaxPendingExceededError,
+    MaxPendingExceededError,
+    PartialBatchError,
+)
 from taskq.testing.clock import FakeClock
 from taskq.testing.in_memory import InMemoryBackend
 
@@ -504,27 +508,31 @@ async def test_refresh_failure_is_retried_no_more_often_than_ttl() -> None:
 
 
 async def test_enqueue_batch_honors_stored_limit() -> None:
-    """The aggregated batch check uses the same resolution: stored 2 with
-    no literal → a batch of 3 raises before inserting anything."""
+    """The backend's per-actor admission uses the same resolution: stored 2
+    with no literal → a single-actor batch of 3 is refused whole (every
+    item belongs to the over-cap actor, so the partition admits nothing)
+    and raises the typed batch refusal."""
     backend = _make_backend()
     backend.register_actor_config(actor="cap_batch", max_pending=2)
     client = JobsClient(backend)
     ref = _uncapped("cap_batch")
 
     items = [EnqueueItem(actor_ref=ref, payload=_Payload(value=i)) for i in range(3)]
-    with pytest.raises(MaxPendingExceededError):
+    with pytest.raises(BatchMaxPendingExceededError) as exc_info:
         await client.enqueue_batch(items)
+    assert exc_info.value.admitted_count == 0
 
 
 async def test_enqueue_batch_stored_null_uses_literal() -> None:
-    """Batch path, cleared override: literal 2 still bounds the batch."""
+    """Batch path, cleared override: literal 2 still bounds the batch — the
+    whole single-actor batch is refused with the typed batch error."""
     backend = _make_backend()
     backend.register_actor_config(actor="cap_batch_null")
     client = JobsClient(backend)
     ref = _literal_capped("cap_batch_null", 2)
 
     items = [EnqueueItem(actor_ref=ref, payload=_Payload(value=i)) for i in range(3)]
-    with pytest.raises(MaxPendingExceededError):
+    with pytest.raises(BatchMaxPendingExceededError):
         await client.enqueue_batch(items)
 
 

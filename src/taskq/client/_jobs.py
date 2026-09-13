@@ -479,12 +479,34 @@ class JobsClient:
 
         **max_pending:**
 
-        One aggregated ``SELECT actor, count(*) … WHERE actor = ANY($1)
-        GROUP BY actor`` is issued for the entire batch.  Per-actor
+        Admission is partitioned per actor.  The backend issues one
+        aggregated ``SELECT actor, count(*) … WHERE actor = ANY($1)
+        GROUP BY actor`` for the entire batch, resolves per-actor
         effective limits (operator-owned stored value when set, else the
-        ``@actor(...)`` literal — same resolution as :meth:`enqueue`)
-        are checked before the INSERT; any violation raises
-        :class:`~taskq.exceptions.MaxPendingExceededError`.
+        ``@actor(...)`` literal — same resolution as :meth:`enqueue`),
+        and admits every within-cap actor's items; an over-cap actor's
+        items are refused as a whole group (never partially filled up to
+        the cap).  When any actor is refused, the within-cap actors'
+        items are still enqueued and
+        :class:`~taskq.exceptions.BatchMaxPendingExceededError` raises
+        afterwards — it names each refused actor, the refused item
+        indices into ``items``, and the admitted count, so a retry can
+        target only the refused items (or rely on ``idempotency_key``s
+        to deduplicate a whole-batch retry).  The exception is
+        deliberately not a :class:`~taskq.exceptions.MaxPendingExceededError`
+        subclass: handlers for that type assume nothing was enqueued,
+        and under this error part of the batch is already stored.
+
+        When ``failure_policy`` or ``finalizer`` is set and
+        ``connection`` is ``None`` (the atomic path), a cap violation
+        keeps the all-or-nothing contract instead: the whole single
+        transaction rolls back and plain
+        :class:`~taskq.exceptions.MaxPendingExceededError` raises with
+        nothing committed.
+
+        On a caller-supplied connection with an open transaction, the
+        admitted items are inserted but their durability follows that
+        transaction's commit/rollback.
 
         **idempotency_key collisions:**
 
@@ -515,9 +537,17 @@ class JobsClient:
                 where=f" for item {i}",
             )
 
-        # Phase 2: Aggregated max_pending check (one query for the whole batch)
-        # Resolve the effective limit per actor (stored value wins over the
-        # @actor literal — same resolution as enqueue), then count.
+        # Resolve the effective cap per actor (stored operator value when
+        # set, else the ``@actor(...)`` literal — same resolution as
+        # :meth:`enqueue`) so the per-item args carry it into the backend,
+        # whose admission check is the single enforcement point: it counts
+        # live (not through this client's TTL cache), discounts idempotency
+        # pairs that will dedupe instead of writing, and partitions
+        # admission per actor. The old client-side aggregated pre-check
+        # raised here for the WHOLE call — one capped actor aborted
+        # everyone's items (#149) — and its count was strictly less
+        # informed than the backend's, so it was removed rather than
+        # duplicated.
         effective_mp: dict[str, int | None] = {}
         for item in items:
             ref = item.actor_ref
@@ -525,29 +555,9 @@ class JobsClient:
                 effective_mp[ref.name] = await self._capacity_cache.effective_max_pending(
                     ref.name, ref.max_pending
                 )
-        actors_with_limit = {name: mp for name, mp in effective_mp.items() if mp is not None}
 
-        if actors_with_limit:
-            # One aggregated query for all actors that declare max_pending.
-            existing_counts = await self._backend.count_pending_jobs(list(actors_with_limit.keys()))
-            for actor_name, limit in actors_with_limit.items():
-                batch_count = sum(1 for it in items if it.actor_ref.name == actor_name)
-                existing_pending_count = existing_counts.get(actor_name, 0)
-                # M1: use > (not >=) so a batch that fills the queue exactly
-                # to the limit is admitted, matching single-enqueue semantics
-                # where current_count >= max_pending rejects (i.e. +1 > limit).
-                if existing_pending_count + batch_count > limit:
-                    from taskq.exceptions import MaxPendingExceededError
-
-                    raise MaxPendingExceededError(
-                        actor=actor_name,
-                        current_count=existing_pending_count,
-                        max_pending=limit,
-                    )
-
-        # Phase 3: Build per-item EnqueueArgs — carrying the resolved
-        # limits so a per-item backend check enforces the same value the
-        # aggregated check just admitted.
+        # Build per-item EnqueueArgs carrying the resolved limits for the
+        # backend's per-actor admission check.
         args_list = build_batch_args(items, resolved_batch_id, max_pending_by_actor=effective_mp)
 
         queue = items[0].actor_ref.queue
@@ -1018,13 +1028,14 @@ class JobsClient:
         whole batch instead of being treated as "already enqueued"), and
         returns a bare row **count**, not per-job handles — there is no
         way to await, cancel, or otherwise reference an individual job
-        from the return value. ``max_pending`` IS enforced (one
-        aggregated pre-check before the COPY). Use :meth:`enqueue_batch`
+        from the return value. ``max_pending`` IS enforced, with the same
+        per-actor partition admission as :meth:`enqueue_batch` (see its
+        docstring). Use :meth:`enqueue_batch`
         unless you specifically need COPY-level throughput for a one-shot
         bulk import/backfill and have already accounted for these gaps.
 
         Returns the count of inserted rows — no :class:`~taskq.batch.BatchHandle`,
-        no per-job :class:`~taskq.client.JobHandle` instances.
+        no :class:`~taskq.client.JobHandle` instances.
 
         **Validation rules:**
 
@@ -1042,15 +1053,18 @@ class JobsClient:
           *different* scopes raises
           :class:`~taskq.exceptions.ScopedIdempotencyMigrationPendingError`
           instead, matching the other enqueue paths.
-        - **max_pending pre-check.** One aggregated count runs before
-          the COPY: existing pending+scheduled per actor plus the batch
-          must fit the cap, else the whole import raises
-          :class:`~taskq.exceptions.MaxPendingExceededError` with nothing
-          written.
+        - **max_pending partition admission.** One aggregated count runs
+          before the COPY: within-cap actors' rows are written, and an
+          over-cap actor's items are refused — the COPY of the admitted
+          rows commits first, then
+          :class:`~taskq.exceptions.BatchMaxPendingExceededError` raises
+          naming the refused actors and item indices (retry only those,
+          or rely on idempotency keys).
         - **No JobHandle instances.** Only the inserted row count is
           returned.  Use ``batch_id`` to query rows post-insert.
-        - **All-or-nothing atomicity.** No partial success — the entire
-          COPY fails on any constraint violation.
+        - **All-or-nothing on constraint violations.** The entire COPY
+          fails on any constraint violation (duplicate keys, singleton,
+          CHECK) — only cap admission partitions.
 
         Use for bulk import / backfill with 1K-50K rows where throughput
         matters more than idempotency guarantees.

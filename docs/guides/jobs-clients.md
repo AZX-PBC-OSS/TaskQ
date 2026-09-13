@@ -374,8 +374,16 @@ dispatched**. If you batch future-scheduled jobs with deadlines, size
 - `len(items) > 1000` raises `ValueError`.
 - **All** payloads are validated before any INSERT. A single validation failure raises
   `PayloadValidationError` and leaves no rows inserted.
-- `max_pending` is checked in one aggregated query across all actors in the batch.
-  Any violation raises `MaxPendingExceededError` before the INSERT.
+- `max_pending` admission is **partitioned per actor**: the backend counts existing
+  `pending + scheduled` per actor in one aggregated query, admits every within-cap
+  actor's items, and refuses an over-cap actor's items as a whole group (never
+  partially filled up to the cap). When any actor is refused, the within-cap actors'
+  items are still enqueued and `BatchMaxPendingExceededError` raises afterwards —
+  it names each refused actor, the refused item indices into `items`, and the
+  admitted count. Retry only the refused items, or give items `idempotency_key`s
+  so a whole-batch retry deduplicates. The atomic path (`failure_policy`/`finalizer`
+  set, no `connection`) keeps all-or-nothing: a cap violation rolls back the entire
+  single transaction and raises plain `MaxPendingExceededError` with nothing committed.
 - Idempotency-key collisions return the existing `JobHandle` with `was_existing=True`,
   same as single-item `enqueue()`.
 
@@ -456,15 +464,15 @@ Enqueues jobs via the PG `COPY FROM` protocol for maximum throughput. Returns th
 | Max batch size | 1,000 | 50,000 |
 | Idempotency key | Yes (ON CONFLICT) | No (duplicate key aborts entire batch) |
 | Return value | `BatchHandle` with `JobHandle` per item | `int` (row count) |
-| `max_pending` check | Yes | No |
-| Partial success | Yes | No (all-or-nothing atomicity) |
+| `max_pending` check | Yes — per-actor partition | Yes — per-actor partition |
+| Partial success | Cap refusals partition per actor (typed error after partial write); idempotency collisions return existing handles | Cap refusals partition per actor (typed error after partial write); COPY is all-or-nothing on constraint violations |
 
 ### Limitations
 
 - **No idempotency-key collision handling.** A duplicate key raises `asyncpg.UniqueViolationError` and aborts the entire batch. Callers must pre-deduplicate.
-- **No max_pending check.** The caller is responsible for ensuring actor limits are not exceeded.
+- **`max_pending` is enforced with the same per-actor partition as `enqueue_batch()`**: within-cap actors' rows are written, an over-cap actor's items are refused, and `BatchMaxPendingExceededError` raises after the COPY commits — retry only the refused items (indices on the error), or rely on idempotency keys.
 - **No JobHandle instances.** Only the inserted count is returned. Use `batch_id` to query rows post-insert.
-- **All-or-nothing.** The COPY fails entirely on any constraint violation — singleton, unique index, or CHECK constraint.
+- **All-or-nothing on constraint violations.** The COPY fails entirely on any constraint violation — singleton, unique index, or CHECK constraint. Only cap admission partitions.
 
 See [ops.md — Fan-out at scale](ops.md#5-fan-out-at-scale-chunks-cursors-idempotency) for the
 batch-API chooser table and the chunking patterns that avoid these limits.
@@ -1352,6 +1360,7 @@ All exceptions are in `taskq.exceptions`. Import directly:
 
 ```python
 from taskq.exceptions import (
+    BatchMaxPendingExceededError,
     MaxPendingExceededError,
     SingletonCollisionError,
     PayloadValidationError,
@@ -1363,6 +1372,7 @@ from taskq.exceptions import (
 | Exception | Raised when |
 |---|---|
 | `MaxPendingExceededError` | `enqueue()` called when `pending + scheduled` count >= `max_pending`. Fields: `actor` (str), `current_count` (int), `max_pending` (int). |
+| `BatchMaxPendingExceededError` | A bulk enqueue (`enqueue_batch()` / `enqueue_batch_fast()` / the chunked arm of `enqueue_batch_streaming()`) partitioned admission per actor and refused some: the within-cap actors' items were inserted first, then this raises. Fields: `refusals` (list of `MaxPendingExceededError`, one per over-cap actor), `refused_indices` (actor -> indices into the caller's items), `admitted_count` (int). Not a `MaxPendingExceededError` subclass — part of the batch is already stored; retry only the refused items or rely on idempotency keys. |
 | `SingletonCollisionError` | `enqueue()` called for a singleton actor that already has an active job. Fields: `actor` (str), `blocking_job_id` (UUID or None), `retry_after` (timedelta or None). |
 | `PayloadValidationError` | Pydantic validation of the payload fails at enqueue time or at dispatch time. Non-retryable regardless of retry policy. Fields: `actor`, `payload_schema_ver`, `validation_errors`. |
 | `JobFailed` | `JobHandle.wait()` observed a non-success terminal status. Field: `row` (JobRow) with `status`, `error_class`, `error_message`, `error_traceback`. |
