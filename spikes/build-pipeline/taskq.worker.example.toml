@@ -1,0 +1,80 @@
+# TaskQ TS-runtime worker configuration (spike sketch).
+#
+# Worker-side surface for the TypeScript actor runtime: the Python worker
+# spawns warm Node processes that speak the NDJSON stdio protocol. This file
+# is what `taskq worker --config taskq.worker.toml` would consume. Every field
+# also has an environment-variable override (TASKQ_* prefix, uppercase, with
+# the TOML path flattened with `_`), mirroring src/taskq/settings.py — the
+# pydantic sketch in settings_sketch.py validates this file and documents the
+# env name per field.
+
+# ----------------------------------------------------------------------------
+# Runtime entrypoint — HOW the worker spawns the TS runtime process.
+# Dev:  command = "npx", args = ["tsx", "watch", "runtime.ts"]
+# Prod: command = "node", args = ["dist/runtime.bundle.mjs"]
+#       (or a single bun-compiled executable: command = "./dist/runtime-bun")
+# ----------------------------------------------------------------------------
+[runtime]
+# TASKQ_RUNTIME_COMMAND. Executable the worker spawns. Must be on PATH or an
+# absolute path. No default — the worker refuses to start a TS pool without
+# an explicit entrypoint (fail closed: a silently missing runtime would
+# otherwise surface as a hang on the first dispatch).
+command = "node"
+
+# TASKQ_RUNTIME_ARGS (JSON list, or comma-separated from env). Full argv after
+# the command. The runtime must print __TASKQ_READY__ on stdout and speak
+# NDJSON frames on stdio (protocol 1).
+args = ["dist/runtime.bundle.mjs"]
+
+# TASKQ_RUNTIME_CWD. Working directory for the spawn. Relative entrypoint
+# paths resolve against this.
+cwd = "."
+
+# TASKQ_RUNTIME_PROTOCOL. Expected protocol version. The worker checks the
+# runtime's boot frame and aborts on mismatch — it must never dispatch jobs
+# into a runtime speaking an older envelope.
+protocol = 1
+
+# TASKQ_RUNTIME_BOOT_TIMEOUT (seconds, float). Spawn -> __TASKQ_READY__
+# budget. Measured cold-start p95 for a bundled runtime is ~53ms on an M-series
+# laptop; 10s leaves headroom for slow disks / first-run AV scans without
+# masking a wedged runtime for long. On timeout the worker exits non-zero.
+boot_timeout = 10.0
+
+# ----------------------------------------------------------------------------
+# Per-queue runtime pools — WHICH queues run in their own process pool.
+# One pool = one set of warm runtime processes. Queues not listed run in the
+# pool named "default" if it exists; a queue with no pool is a config error
+# (the worker refuses to start rather than dropping jobs silently).
+# ----------------------------------------------------------------------------
+[[runtime.pools]]
+
+# Pool name; appears in worker logs, metrics labels and the admin UI.
+name = "ts-main"
+
+# Queues served by this pool. Each queue may belong to at most one pool —
+# overlap across pools is a validation error (dispatch would otherwise need
+# an arbitration rule this sketch does not model).
+queues = ["default", "emails", "media"]
+
+# TASKQ_RUNTIME_MAX_POOL_SIZE. Upper bound on live runtime processes in this
+# pool. Should be >= the max_concurrency of every actor homed here (the
+# runtime enforces per-actor maxConcurrent internally, so pool size bounds
+# process count, not job parallelism).
+max_pool_size = 8
+
+# TASKQ_RUNTIME_IDLE_EXIT_TIMEOUT (seconds, float). How long a runtime
+# process with zero in-flight jobs is kept warm before the worker reaps it.
+# This is the memory/cost lever: warm processes make dispatch latency
+# O(NDJSON write) (~sub-ms) but hold resident memory; 0 disables reaping
+# (processes live for the worker's lifetime — the right choice when the
+# artifact's cold start is cheap, e.g. 35-50ms bundled, and memory is not).
+idle_exit_timeout = 60.0
+
+# Optional second pool: a slow, batchy queue isolated from latency-sensitive
+# work. Same fields; shown here to demonstrate multi-pool config.
+# [[runtime.pools]]
+# name = "reports"
+# queues = ["reports"]
+# max_pool_size = 2
+# idle_exit_timeout = 300.0

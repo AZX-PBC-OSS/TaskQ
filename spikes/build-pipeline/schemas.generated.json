@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "SendWelcomeEmailPayload": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "pattern": "^(?:[A-Za-z0-9_'+\\-]+\\.)*[A-Za-z0-9_'+\\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
+        },
+        "locale": {
+          "default": "en",
+          "type": "string",
+          "enum": [
+            "en",
+            "de",
+            "fr"
+          ]
+        }
+      },
+      "required": [
+        "userId",
+        "email"
+      ]
+    },
+    "SendWelcomeEmailResult": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "messageId": {
+          "type": "string"
+        },
+        "acceptedAt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "messageId",
+        "acceptedAt"
+      ],
+      "additionalProperties": false
+    },
+    "ResizeImagePayload": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "objectKey": {
+          "type": "string",
+          "minLength": 1
+        },
+        "width": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 8192
+        },
+        "format": {
+          "type": "string",
+          "enum": [
+            "webp",
+            "avif",
+            "jpeg"
+          ]
+        }
+      },
+      "required": [
+        "objectKey",
+        "width",
+        "format"
+      ]
+    },
+    "ResizeImageResult": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "objectKey": {
+          "type": "string"
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        "width": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "objectKey",
+        "bytes",
+        "width"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

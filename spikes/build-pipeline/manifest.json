@@ -1,0 +1,127 @@
+{
+  "protocol": 1,
+  "runtime": {
+    "node": "v25.8.1",
+    "pid": 38170,
+    "entrypoint": "/Users/rich/source/TaskQ/.worktrees/spike-build-pipeline/spikes/build-pipeline/runtime.ts"
+  },
+  "actors": [
+    {
+      "name": "send-welcome-email",
+      "queue": "emails",
+      "retry": {
+        "maxAttempts": 5,
+        "delay": 2
+      },
+      "maxConcurrent": 4,
+      "payloadJsonSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "userId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "email": {
+            "type": "string",
+            "format": "email",
+            "pattern": "^(?:[A-Za-z0-9_'+\\-]+\\.)*[A-Za-z0-9_'+\\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
+          },
+          "locale": {
+            "default": "en",
+            "type": "string",
+            "enum": [
+              "en",
+              "de",
+              "fr"
+            ]
+          }
+        },
+        "required": [
+          "userId",
+          "email"
+        ]
+      },
+      "resultJsonSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "messageId": {
+            "type": "string"
+          },
+          "acceptedAt": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "messageId",
+          "acceptedAt"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "resize-image",
+      "queue": "media",
+      "retry": {
+        "maxAttempts": 3,
+        "delay": 5
+      },
+      "maxConcurrent": 2,
+      "payloadJsonSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "objectKey": {
+            "type": "string",
+            "minLength": 1
+          },
+          "width": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 8192
+          },
+          "format": {
+            "type": "string",
+            "enum": [
+              "webp",
+              "avif",
+              "jpeg"
+            ]
+          }
+        },
+        "required": [
+          "objectKey",
+          "width",
+          "format"
+        ]
+      },
+      "resultJsonSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "objectKey": {
+            "type": "string"
+          },
+          "bytes": {
+            "type": "integer",
+            "minimum": -9007199254740991,
+            "maximum": 9007199254740991
+          },
+          "width": {
+            "type": "integer",
+            "minimum": -9007199254740991,
+            "maximum": 9007199254740991
+          }
+        },
+        "required": [
+          "objectKey",
+          "bytes",
+          "width"
+        ],
+        "additionalProperties": false
+      }
+    }
+  ]
+}

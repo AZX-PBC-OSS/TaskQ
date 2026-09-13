@@ -1,0 +1,23 @@
+{
+  "name": "taskq-spike-build-pipeline",
+  "private": true,
+  "type": "module",
+  "description": "Spike: TS actor authoring -> dev loop (tsx watch / node native TS) -> prod artifact (esbuild / bun compile) -> manifest -> pydantic codegen.",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "dev": "node dev.mjs",
+    "bundle": "node bundle.mjs",
+    "bench": "node bench.mjs",
+    "runtime": "node runtime.ts",
+    "dump-manifest": "TASKQ_DUMP_MANIFEST=1 node runtime.ts"
+  },
+  "dependencies": {
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "@types/node": "^25.0.0",
+    "esbuild": "^0.25.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0"
+  }
+}
