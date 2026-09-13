@@ -49,14 +49,18 @@ INSERT INTO "{schema}".job_attempts
  error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
 VALUES ($1, $2, $3, clock_timestamp(), $4, $5, $6, $7, $8,
         (SELECT id FROM holder), $10::jsonb)"""
-# Note: finished_at uses server-side clock_timestamp() — this template (the
-# sql.insert_attempt field) is consumed only by _terminal.py's _insert_attempt,
-# where the write runs inside the caller's existing transaction on the same
-# connection as the status UPDATE, so clock_timestamp() is the actual
-# wall-clock time of execution (not transaction start time like now()).
+# Note: finished_at uses server-side clock_timestamp() — this template
+# (INSERT_ATTEMPT_SQL, formatted by worker/heartbeat.py for its
+# isolate-self attempt write) runs on a caller's existing transaction or
+# dedicated connection, where clock_timestamp() is the actual wall-clock
+# time of execution (not transaction start time like now()).
 # The explicit-finished_at variant is _sql_templates.insert_attempt_explicit,
 # bound by _terminal.py's _write_attempt (the write_attempt path): it takes
 # $4 for finished_at from the caller instead of stamping clock_timestamp().
+# The mark_* terminal writes no longer consume this template: they fuse the
+# jobs UPDATE with their attempt/event INSERTs into one statement (see
+# _terminal.py's module docstring), carrying the same holder-CTE idiom
+# inline.
 
 INSERT_EVENT_SQL = """\
 INSERT INTO "{schema}".job_events

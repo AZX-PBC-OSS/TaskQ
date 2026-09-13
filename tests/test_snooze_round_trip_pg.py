@@ -20,7 +20,7 @@ import pytest
 from pydantic import BaseModel
 
 from taskq._ids import new_job_id, new_uuid
-from taskq.backend._protocol import EnqueueArgs, JobId, JobRow
+from taskq.backend._protocol import EnqueueArgs, JobRow
 from taskq.backend.clock import SystemClock
 from taskq.context import JobContext
 from taskq.exceptions import ReservationUnavailable, RetryAfter, Snooze
@@ -349,28 +349,24 @@ async def test_shield_on_snooze_write(
     assert row is not None
 
     cancel_window = asyncio.Event()
-    from taskq.backend import _terminal as _terminal_mod
 
-    original_insert = _terminal_mod._insert_attempt
+    # Why patched at the backend seam, not inside _terminal.py: the
+    # mark_* terminal writes are now ONE fused statement (UPDATE + attempt
+    # + event in a single data-modifying-CTE statement — see
+    # _terminal.py's module docstring), so there is no longer a Python
+    # seam BETWEEN the job UPDATE and the attempt INSERT to inject a
+    # cancellation window into.  The property under test is unchanged —
+    # the shield around the (whole) snooze write lets it complete under
+    # cancellation — so the window now opens in front of the whole write.
+    original_snooze = backend.mark_snoozed
 
-    async def _delayed_insert(
-        conn: _Conn,
-        sql: object,
-        jid: JobId,
-        att: int,
-        started: datetime | None,
-        outcome: str,
-        ec: str | None,
-        em: str | None,
-        et: str | None,
-        dur: int | None,
-        wid: UUID | None,
-    ) -> None:
+    async def _delayed_snooze(*args: object, **kwargs: object) -> object:
         cancel_window.set()
         await asyncio.sleep(0.1)
-        await original_insert(conn, sql, jid, att, started, outcome, ec, em, et, dur, wid)
+        result = await original_snooze(*args, **kwargs)  # type: ignore[arg-type]
+        return result
 
-    _terminal_mod._insert_attempt = _delayed_insert  # type: ignore[assignment]  # Why: monkeypatching to inject cancellation window
+    backend.mark_snoozed = _delayed_snooze  # type: ignore[method-assign]  # Why: test-only seam injection on the test's own backend instance.
 
     async def snooze_actor(_job: JobRow, _ctx: JobContext[BaseModel]) -> object:
         raise Snooze(timedelta(seconds=5))
@@ -399,7 +395,7 @@ async def test_shield_on_snooze_write(
     assert final is not None
     assert final.status == "scheduled"
 
-    _terminal_mod._insert_attempt = original_insert  # type: ignore[assignment]  # Why: restoring after monkeypatch
+    backend.mark_snoozed = original_snooze  # type: ignore[method-assign]  # Why: restoring after test-only seam injection
 
 
 # ── Concurrent snooze and cancel ────────────────────────────────
