@@ -29,6 +29,7 @@ from taskq.backend._records import (
 )
 from taskq.backend._sql_templates import SqlTemplates
 from taskq.backend.clock import Clock
+from taskq.backend.statemachine import TERMINAL_STATUSES
 from taskq.constants import wake_channel
 from taskq.exceptions import (
     BatchMaxPendingExceededError,
@@ -508,6 +509,7 @@ async def _enqueue_on_conn(
                 queue=row.queue,
                 identity_key=row.identity_key,
                 idempotency_key=None,
+                status=row.status,
                 existing_job_id=str(row.id),
                 dedup_reason="unique_for",
             )
@@ -686,18 +688,26 @@ async def _enqueue_on_conn(
             idempotency_key=row.idempotency_key,
         )
     else:
-        logger.info(
-            "enqueue_deduplicated",
-            kind="enqueue_deduplicated",
-            job_id=str(row.id),
-            actor=row.actor,
-            queue=row.queue,
-            identity_key=row.identity_key,
-            idempotency_key=row.idempotency_key,
-            idempotency_scope=row.idempotency_scope,
-            existing_job_id=str(row.id),
-            dedup_reason="idempotency_key",
-        )
+        fields: dict[str, object] = {
+            "kind": "enqueue_deduplicated",
+            "job_id": str(row.id),
+            "actor": row.actor,
+            "queue": row.queue,
+            "identity_key": row.identity_key,
+            "idempotency_key": row.idempotency_key,
+            "idempotency_scope": row.idempotency_scope,
+            "status": row.status,
+            "existing_job_id": str(row.id),
+            "dedup_reason": "idempotency_key",
+        }
+        # A terminal target never runs the work again — the key stays
+        # pinned to a dead job until it ages out of retention — so the
+        # hit is louder than the live-job case, which is normal
+        # single-flight operation.
+        if row.status in TERMINAL_STATUSES:
+            logger.warning("enqueue_deduplicated", **fields)
+        else:
+            logger.info("enqueue_deduplicated", **fields)
 
     return row
 

@@ -139,26 +139,50 @@ def _load_actor_registry(actors: str) -> Mapping[str, ActorRef[Any, Any]]:
     """Resolve a ``module:attr`` reference to an actor registry.
 
     Accepts either ``Mapping[str, ActorRef]`` or an iterable of
-    ``ActorRef`` (keyed by name). On any failure prints the reason to
-    stderr and raises ``typer.Exit(code=1)`` — shared by ``worker`` and
-    ``actor-config diff``.
+    ``ActorRef`` (keyed by name). An iterable is materialized once,
+    before the validation pass reads it: a one-shot iterator consumed
+    by validation cannot then be rebuilt into the registry it proved it
+    held. An empty registry is refused rather than returned — every
+    downstream consumer checks ``is not None`` and cannot distinguish
+    ``{}`` from a populated mapping, so a worker handed an empty
+    registry boots and dispatches nothing. On any failure prints the
+    reason to stderr and raises ``typer.Exit(code=1)`` — shared by
+    ``worker`` and ``actor-config diff``.
     """
     raw = _import_ref(actors, example="myapp.actors:registry")
 
+    registry: Mapping[str, ActorRef[Any, Any]]
     if isinstance(raw, Mapping):
-        return cast(Mapping[str, ActorRef[Any, Any]], raw)
-    if (
-        not isinstance(raw, (str, bytes))
-        and hasattr(raw, "__iter__")
-        and all(isinstance(r, ActorRef) for r in raw)  # type: ignore[arg-type]  # Why: raw is object; pyright cannot verify iterability for the isinstance call.
-    ):
-        return {r.name: r for r in raw}  # type: ignore[union-attr]  # Why: the isinstance check ensures raw is Iterable[ActorRef]; pyright cannot narrow across the all() predicate inside elif.
-    typer.echo(
-        "expected Mapping[str, ActorRef] or Iterable[ActorRef] at "
-        f"{actors}; got {type(raw).__name__}",
-        err=True,
-    )
-    raise typer.Exit(code=1)
+        registry = cast(Mapping[str, ActorRef[Any, Any]], raw)
+    elif not isinstance(raw, (str, bytes)) and hasattr(raw, "__iter__"):
+        # Unvalidated until the isinstance guard below passes, so the
+        # element type is Any here — annotating ActorRef would make the
+        # guard look dead to the type checker.
+        items: list[Any] = list(raw)
+        if not all(isinstance(r, ActorRef) for r in items):
+            typer.echo(
+                "expected Mapping[str, ActorRef] or Iterable[ActorRef] at "
+                f"{actors}; got {type(raw).__name__}",
+                err=True,
+            )
+            raise typer.Exit(code=1)
+        registry = {r.name: r for r in items}
+    else:
+        typer.echo(
+            "expected Mapping[str, ActorRef] or Iterable[ActorRef] at "
+            f"{actors}; got {type(raw).__name__}",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    if not registry:
+        typer.echo(
+            f"actor registry at {actors} is empty — a worker with no actors "
+            "dispatches nothing; refusing to boot",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    return registry
 
 
 _PROVIDER_EXAMPLE: Final[str] = "myapp.auth:make_provider"
