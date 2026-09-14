@@ -288,7 +288,11 @@ _backpressure_errors = get_meter().create_counter(
     description=(
         "Synchronous backpressure signals raised at enqueue. "
         "Attributes: actor (registered actor name, bounded cardinality), "
-        "kind ('max_pending' | future variants)."
+        "kind ('max_pending' | 'max_pending_lock_timeout' | "
+        "'unique_for_lock_timeout' | 'idempotency_lock_timeout'). The "
+        "lock-timeout kinds count identity-serialization refusals beside "
+        "their typed errors — never a capacity signal, so an alert keyed "
+        "on the capacity kinds is not tripped by them."
     ),
 )
 
@@ -298,7 +302,10 @@ def record_backpressure_error(actor: str, *, kind: str = "max_pending") -> None:
 
     Unconditional (not gated by ``_otel_enabled``): backpressure errors are
     safety-critical signals that must be counted even when OTel is disabled,
-    so operators always have visibility into enqueue rejections.
+    so operators always have visibility into enqueue rejections. ``kind``
+    is the bounded enum named on the counter: the two capacity kinds, and
+    the two identity-serialization lock-timeout kinds that count their
+    refusals beside the typed errors' warning logs.
     """
     try:
         _backpressure_errors.add(1, {"actor": actor, "kind": kind})
@@ -987,6 +994,34 @@ def record_ratelimit_denial(backend: str) -> None:
             "dimension (caller-controlled cardinality)."
         ),
     ).add(1, {"backend": backend})
+
+
+def record_enqueue_dedup(dedup_reason: str) -> None:
+    """Bump the enqueue.dedups counter.
+
+    Called from the shared dedup-report helper
+    (``backend/_enqueue.py::_log_enqueue_dedup``) at every dedup hit, on
+    both backends — the log lines are per-hit observability, and the
+    per-hit terminal-target WARNING arm is budget-bounded at batch
+    scale, so the RATE a stampede produces has no log channel left to
+    ride on; this counter is that rate. ``dedup_reason`` is the bounded
+    enum of reasons a hit can occur (``unique_for`` |
+    ``idempotency_key``) — the same value the helper logs, never a
+    caller-controlled string.
+    Respects ``_otel_enabled`` — no-op when False.
+    """
+    if not _otel_enabled:
+        return
+    _lazy_counter(
+        "taskq.enqueue.dedups",
+        description=(
+            "Enqueue dedup hits (an enqueue returned an existing row instead "
+            "of writing one). Attributes: dedup_reason ('unique_for' | "
+            "'idempotency_key'). The per-hit log lines are budget-bounded at "
+            "batch scale; this counter is the rate signal that survives the "
+            "bound."
+        ),
+    ).add(1, {"dedup_reason": dedup_reason})
 
 
 def record_ratelimit_acquire_dependency_failure(error_type: str) -> None:

@@ -22,6 +22,7 @@ from taskq._ids import new_uuid
 from taskq.backend.clock import Clock
 from taskq.ratelimit.registry import RateLimitRegistry
 from taskq.ratelimit.reservation import ConcurrencyReservation
+from taskq.ratelimit.token_bucket import TokenBucket
 from taskq.settings import WorkerSettings
 from taskq.testing.clock import FakeClock
 from taskq.worker._leader_shared import SweepContext
@@ -91,6 +92,15 @@ def _seed_idle_keyed_entry(reg: RateLimitRegistry) -> None:
     """Simulate a keyed-materialized reservation idle for 2 hours."""
     reg.register(ConcurrencyReservation(name="sess:k1", slots=1, lease=timedelta(minutes=5)))
     reg._keyed_reservation_last_used["sess:k1"] = monotonic() - 7200.0  # pyright: ignore[reportPrivateUsage]  # Why: seeding an idle keyed entry for eviction
+
+
+def _seed_idle_keyed_rate_limit_entry(reg: RateLimitRegistry, schema: str) -> None:
+    """Simulate a keyed-materialized rate limit idle for 2 hours whose
+    publish landed (schema captured) — the shape whose eviction must
+    record a pending reclaim under the settings-derived cap."""
+    reg.register(TokenBucket(name="krl:k1", capacity=5, refill_per_second=0.5, backend="memory"))
+    reg._keyed_rate_limit_last_used["krl:k1"] = monotonic() - 7200.0  # pyright: ignore[reportPrivateUsage]  # Why: seeding an idle keyed entry for eviction
+    reg._keyed_rate_limit_row_schemas["krl:k1"] = schema  # pyright: ignore[reportPrivateUsage]  # Why: seeding the publish-schema capture the eviction records from
 
 
 def _ctx(deps: WorkerDeps, reg: RateLimitRegistry) -> SweepContext:
@@ -227,3 +237,50 @@ async def test_sweep_loop_survives_drain_failure_and_retries_next_tick(
     assert own.has_pending_reservation_reclaims, (
         "a failed drain must keep its backlog for the retry"
     )
+
+
+async def test_sweep_loop_records_rate_limit_reclaims_under_settings_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The rate-limit eviction records its pending reclaims under the
+    settings-derived cap — the same bound the reservation twin on the
+    same tick applies, and the same bound the rate-limit opportunistic
+    eviction already applies.
+
+    A deliberately small ``max_keyed_rate_limits`` caps the tracked
+    entries; a sweep-site eviction that passes no cap records pendings
+    under the constant fallback (10 000), so under a persistently failing
+    drain the pending set can grow two orders of magnitude past the
+    operator's ceiling while the tracked entries it mirrors stay capped —
+    the exact defect the reservation side's own comment describes."""
+    own = RateLimitRegistry()
+    deps = _deps()
+    _seed_idle_keyed_rate_limit_entry(own, deps.settings.schema_name)
+    ctx = _ctx(deps, own)
+
+    evict_calls: list[dict[str, object]] = []
+    real_evict = own.evict_idle_keyed_rate_limits
+
+    def _spy_evict(*, idle_for: timedelta, max_pending_reclaims: int | None = None) -> int:
+        evict_calls.append({"idle_for": idle_for, "max_pending_reclaims": max_pending_reclaims})
+        return real_evict(idle_for=idle_for, max_pending_reclaims=max_pending_reclaims)
+
+    monkeypatch.setattr(own, "evict_idle_keyed_rate_limits", _spy_evict)
+
+    await _run_loop_until(
+        ctx, lambda: bool(evict_calls) and not own.has_pending_reservation_reclaims
+    )
+
+    assert evict_calls, (
+        "the tick must evict the idle keyed rate-limit entry — the eviction is the drain's feed"
+    )
+    assert evict_calls[0]["max_pending_reclaims"] == ctx.deps.settings.max_keyed_rate_limits, (
+        "the sweep must record rate-limit pending reclaims under the "
+        "settings-derived cap (WorkerSettings.max_keyed_rate_limits), not the "
+        "constant fallback — the reservation twin on the same tick and the "
+        "rate-limit opportunistic eviction both pass the settings-derived cap, "
+        "and the same rationale binds here: with a deliberately small setting "
+        "the pending set would otherwise grow to the constant's 10 000 while "
+        "the tracked entries are capped far lower"
+    )
+    assert not own.has_pending_reservation_reclaims, "the tick's drain must empty the pending set"

@@ -596,6 +596,18 @@ SELECT * FROM upd""",
         #                        deadline;
         #   deadline_failed     — the reschedule point passes
         #                        schedule_to_close.
+        # $9 (denial_reason) splits the denial rows across those arms:
+        # 'capacity' (a saturation denial — the store answered "full")
+        # keeps the bounded budget-consuming loop above; 'unavailable'
+        # (the store could not answer — infra backpressure about a job
+        # whose actor never ran) takes the NON-CONSUMING shape of the
+        # 'snoozed' arm — the claim's attempt increment is refunded and
+        # the max_attempts arm is unreachable, so a sustained outage
+        # keeps the job retryable with its original budget intact. The
+        # refund revisits attempt numbers, which is collision-safe here
+        # for the same reason the 'snoozed' arm's refund is: a
+        # non-terminal snooze/denial writes no job_attempts rows, so no
+        # writer ever lands on the revisited keys.
         # A non-terminal snooze/denial writes NO job_attempts/job_events
         # rows — it is admission control, not an execution; the outcome
         # counters on the row and OTEL carry it.  Terminal arms write
@@ -618,10 +630,10 @@ SELECT * FROM upd""",
         # the loser's fence re-check finds status no longer 'running', so
         # exactly one writer per (job, N) can ever commit.  The collision
         # was attempted in a test and is unconstructible within a job's
-        # single attempt-number epoch (the retry_job admin action resets
-        # attempt to 0 and can revisit numbers from a spent epoch — a
-        # pre-existing hazard shared by EVERY attempt-row writer, not
-        # this arm).
+        # single attempt-number epoch, and the one cross-epoch revisitor
+        # is gone: retry_job keeps attempt monotonic (it raises the
+        # max_attempts ceiling instead of resetting the counter — see the
+        # retry_job template's comment).
         mark_snoozed=f"""\
 WITH params AS (
     SELECT $1::uuid AS job_id,
@@ -655,7 +667,11 @@ snoozed AS (
         last_heartbeat_at = NULL,
         cancel_phase = 0,
         cancel_requested_at = NULL,
-        attempt = CASE WHEN $7::text = 'snoozed' THEN GREATEST(j.attempt - 1, 0) ELSE j.attempt END,
+        -- 'unavailable' rides the 'snoozed' refund: the store's failure
+        -- to answer is not an execution, so the claim's attempt
+        -- increment is returned exactly as an actor-requested deferral
+        -- returns it.
+        attempt = CASE WHEN $7::text = 'snoozed' OR $9::text = 'unavailable' THEN GREATEST(j.attempt - 1, 0) ELSE j.attempt END,
         snooze_count = CASE WHEN $7::text = 'snoozed' THEN j.snooze_count + 1 ELSE j.snooze_count END,
         rate_limit_blocked_count = CASE WHEN $7::text IN ('reservation_denied', 'rate_limit_denied') THEN j.rate_limit_blocked_count + 1 ELSE j.rate_limit_blocked_count END,
         metadata = j.metadata || COALESCE((SELECT metadata_update FROM params), '{{}}'::jsonb),
@@ -668,6 +684,7 @@ snoozed AS (
       AND (j.schedule_to_close IS NULL
            OR clock_timestamp() + (SELECT effective_delay FROM params) <= j.schedule_to_close)
       AND ($7::text = 'snoozed'
+           OR $9::text = 'unavailable'
            OR j.retry_kind = 'indefinite'
            OR j.attempt < j.max_attempts
            OR j.schedule_to_close IS NOT NULL)
@@ -690,6 +707,10 @@ max_attempts_failed AS (
       AND j.locked_by_worker = (SELECT worker_id FROM params)
       AND j.attempt = (SELECT attempt FROM params)
       AND $7::text IN ('reservation_denied', 'rate_limit_denied')
+      -- An infra denial can never terminalise: the store's failure to
+      -- answer says nothing about the job, and MaxAttemptsExceeded
+      -- asserts the actor ran and failed max_attempts times.
+      AND $9::text <> 'unavailable'
       AND j.retry_kind <> 'indefinite'
       AND j.attempt >= j.max_attempts
       AND j.schedule_to_close IS NULL
@@ -1242,6 +1263,30 @@ WHERE l.relation = '"{s}".job_events'::regclass
         # whole table at most once per TTL window per process.
         list_actor_max_pending=f'SELECT actor, max_pending FROM "{s}".actor_config',
         # ── Admin operations ───────────────────────────────────────
+        # Monotonic attempt, per the vendored admin-retry precedent:
+        # Oban's retry_job leaves the counter at its spent value and
+        # raises the ceiling (GREATEST(max_attempts, attempt + 1),
+        # vendor/oban/lib/oban/engines/basic.ex:366-372); River's
+        # JobRetry likewise never touches attempt and bumps max_attempts
+        # only when the budget is exhausted (CASE WHEN attempt =
+        # max_attempts, vendor/river/riverdriver/riverpgxv5/internal/
+        # dbsqlc/river_job.sql:514-516). A reset to 0 made the
+        # re-dispatch revisit the spent epoch's numbers, and the next
+        # attempt-row INSERT collided on job_attempts_pkey (job_id,
+        # attempt) — a data defect the terminal-write infra family
+        # misclassified as transient, stranding the row running with
+        # every reclaim cycle dying on the same spent key. attempt is
+        # therefore NOT assigned here: the re-run climbs (the dispatch
+        # claim's attempt + 1) and every subsequent attempt-row write
+        # lands on a fresh key. The ceiling raise opens the budget gates
+        # (the reclaim sweep's re-pend branch, the terminal arms) for at
+        # least one fresh execution, while a mid-budget re-run keeps its
+        # remaining budget (GREATEST is a no-op there); the LEAST cap is
+        # the smallint max_attempts discipline — and when the cap binds
+        # (attempt already at 32767) the gate cannot open, so the retry
+        # is refused and the row stays terminal instead of re-pending a
+        # row whose next claim would overflow the smallint attempt
+        # column and poison the whole claim batch.
         # The reopened CTE is the batch-status reconciliation for the
         # completed-batch membership lie: retry_job re-pends a failed/
         # crashed/cancelled member with no batch awareness, and every
@@ -1266,7 +1311,7 @@ WHERE l.relation = '"{s}".job_events'::regclass
 WITH retried AS (
     UPDATE "{s}".jobs
     SET status = 'pending',
-        attempt = 0,
+        max_attempts = LEAST(GREATEST(max_attempts, attempt + 1), 32767),
         cancel_phase = 0,
         cancel_requested_at = NULL,
         error_class = NULL,
@@ -1277,7 +1322,14 @@ WITH retried AS (
         result = NULL,
         result_size_bytes = NULL,
         result_expires_at = NULL
-    WHERE id = $1 AND status IN ('failed', 'crashed', 'cancelled')
+    WHERE id = $1
+      AND status IN ('failed', 'crashed', 'cancelled')
+      -- The retry must leave the row budget-eligible: the raised ceiling
+      -- has to exceed the spent attempt. It always does except at the
+      -- smallint bound (attempt = 32767), where raising is impossible —
+      -- refuse there rather than re-pend an unclaimable-without-overflow
+      -- row.
+      AND LEAST(GREATEST(max_attempts, attempt + 1), 32767) > attempt
     RETURNING id, metadata->>'batch_id' AS batch_id
 ),
 reopened AS (

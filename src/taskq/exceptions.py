@@ -347,6 +347,15 @@ class PayloadValidationError(TaskQError):
     At dispatch: causes the job to transition to 'failed' with
     error_class='PayloadValidationError'. Non-retryable in both cases
     regardless of the actor's retry policy.
+
+    ``item_index`` is the failing item's position in the CALLER's
+    coordinate space (the batch list / the streaming caller's stream)
+    whenever the raise site knows one — batch per-item guards and their
+    remapping boundaries populate it, so a handler or retry tool reads
+    the position as a field instead of parsing the message. ``None``
+    is the no-coordinate case: single-item enqueue, dispatch-time
+    validation, non-itemized configuration errors. The message embeds
+    the same index for humans; the field is the machine-readable copy.
     """
 
     def __init__(
@@ -356,10 +365,12 @@ class PayloadValidationError(TaskQError):
         actor: str | None = None,
         payload_schema_ver: str | None = None,
         validation_errors: list[dict[str, object]] | None = None,
+        item_index: int | None = None,
     ) -> None:
         self.actor = actor
         self.payload_schema_ver = payload_schema_ver
         self.validation_errors: list[dict[str, object]] = validation_errors or []
+        self.item_index = item_index
         super().__init__(detail)
 
 

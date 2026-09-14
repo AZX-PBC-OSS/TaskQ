@@ -530,7 +530,29 @@ async def open_worker_deps(
             resolved_notify_factory = None
         elif conns.notify_conn_factory is not None:
             resolved_notify_factory = conns.notify_conn_factory
-            notify_conn = await resolved_notify_factory()
+            # Why bounded: this open runs before any watchdog is armed, so
+            # an unbounded factory call wedges worker startup with nothing
+            # to detect or recover it. reload_factory_timeout is the SAME
+            # bound the reload path and the notify reconnect loop apply to
+            # every factory call — not a second mechanism. The DSN path
+            # below needs none of this: open_dedicated_conn applies
+            # asyncpg's own connect timeout.
+            try:
+                notify_conn = await asyncio.wait_for(
+                    resolved_notify_factory(),
+                    timeout=float(settings.reload_factory_timeout),
+                )
+            except TimeoutError as exc:
+                # Bootstrap is fatal: a worker that cannot establish its
+                # notify connection must refuse to start, naming the bound
+                # and the credential source that never returned.
+                raise TimeoutError(
+                    f"notify connection factory did not return within "
+                    f"{settings.reload_factory_timeout}s during worker bootstrap "
+                    "— a worker that cannot establish its notify connection must "
+                    "not boot. Check the credential provider behind "
+                    "WorkerConnections.notify_conn_factory."
+                ) from exc
             apply_keepalive_to_conn(notify_conn, label="notify")
         else:
             assert direct_dsn is not None  # guarded by _needs_pg_dsn
@@ -567,9 +589,27 @@ async def open_worker_deps(
 
             stack.push_async_callback(_close_notify_conn)
 
-        # Issue LISTEN so the connection is in subscription state
+        # Issue LISTEN so the connection is in subscription state. Why
+        # bounded: the open runs before any watchdog is armed, and a
+        # connection — factory-built, DSN-built, or caller-owned — can
+        # complete its handshake and still black-hole on the execute.
+        # notify_listener_setup_timeout is the SAME bound the notify
+        # listener applies to every LISTEN during setup and reconnect —
+        # not a second mechanism.
         channel = wake_channel(settings.schema_name)
-        await notify_conn.execute(f'LISTEN "{channel}"')
+        try:
+            await asyncio.wait_for(
+                notify_conn.execute(f'LISTEN "{channel}"'),
+                timeout=float(settings.notify_listener_setup_timeout),
+            )
+        except TimeoutError as exc:
+            raise TimeoutError(
+                f'notify LISTEN "{channel}" did not complete within '
+                f"{settings.notify_listener_setup_timeout}s during worker "
+                "bootstrap — a worker whose notify connection cannot enter "
+                "subscription state must not boot. Check the notify connection "
+                "and notify_listener_setup_timeout."
+            ) from exc
         logger.info("notify-listen-issued", channel=channel, owns_notify=owns_notify)
 
         # ── leader_conn (pg_dsn_direct, TCP keepalive) ─────────────────

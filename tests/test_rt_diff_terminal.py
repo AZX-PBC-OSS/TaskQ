@@ -353,6 +353,19 @@ async def _retry_job_gates(side: DiffSide) -> None:
     await side.dispatch("w1", ["default"], limit=1)
     await side.mark_failed_or_retry("failed", "w1", retry_delay_s=None)
     side.record("retry_failed", await side.retry_job("failed"))
+    # A failed row carrying a still-pending cancel request: the re-run
+    # opens a fresh epoch, so the whole cancel trail must go with the
+    # spent one — PG's SET clause clears cancel_requested_at alongside
+    # cancel_phase (the audit columns the TERMINAL writes deliberately
+    # keep become the inherited state a re-pend must not carry).
+    await side.plant(
+        "failed-cancel",
+        status="failed",
+        cancel_phase=1,
+        started_ago_s=30.0,
+        lock_expired_ago_s=None,
+    )
+    side.record("retry_failed_cancel", await side.retry_job("failed-cancel"))
     # An abandoned row (terminal) is NOT retryable. Planted directly: the
     # escalation path's event-detail divergence is pinned separately in
     # tests/test_rt_diff_cancel.py.
@@ -371,12 +384,17 @@ async def _retry_job_gates(side: DiffSide) -> None:
 
 
 async def test_diff_retry_job_status_gates(pg_dsn: str) -> None:
-    """retry_job revives failed/crashed/cancelled rows only — resetting
-    attempt, errors, and result — and refuses abandoned and non-terminal rows."""
+    """retry_job revives failed/crashed/cancelled rows only — keeping
+    attempt monotonic, raising the ceiling, clearing errors, result, and
+    the cancel trail — and refuses abandoned and non-terminal rows."""
     mem, pg = await run_differential(_retry_job_gates, pg_dsn=pg_dsn)
     assert_mirror(
-        "retry_job admits only failed/crashed/cancelled rows, resetting "
-        "attempt to 0, clearing errors and result, and rescheduling at now; "
+        "retry_job admits only failed/crashed/cancelled rows, keeping "
+        "attempt at its spent value (monotonic — the admin-retry "
+        "precedent) and raising max_attempts to GREATEST(max_attempts, "
+        "attempt + 1) so the budget gates open, clearing errors, result, "
+        "and the whole cancel trail (cancel_phase AND cancel_requested_at "
+        "— the re-run is a fresh epoch), and rescheduling at now; "
         "abandoned and non-terminal rows refuse — identically on both "
         "backends",
         mem,
@@ -384,9 +402,26 @@ async def test_diff_retry_job_status_gates(pg_dsn: str) -> None:
     )
     assert pg["records"] == {
         "retry_failed": True,
+        "retry_failed_cancel": True,
         "retry_abandoned": False,
         "retry_pending": False,
     }
     assert pg["jobs"]["failed"]["status"] == "pending"
-    assert pg["jobs"]["failed"]["attempt"] == 0
+    assert pg["jobs"]["failed"]["attempt"] == 1, (
+        "MONOTONIC-ATTEMPT CONTRACT: retry_job must never reset the "
+        "attempt counter — a reset revisits the spent epoch's attempt "
+        "numbers and the next attempt-row write collides on "
+        "job_attempts_pkey (pinned in tests/test_retry_job_attempt_epoch_pk.py)."
+    )
+    assert pg["jobs"]["failed"]["max_attempts"] == 2, (
+        "CEILING-RAISE CONTRACT: retry_job must raise max_attempts to "
+        "GREATEST(max_attempts, attempt + 1) so the budget gates open for "
+        "the re-run."
+    )
     assert pg["jobs"]["failed"]["error_class"] is None
+    assert pg["jobs"]["failed-cancel"]["cancel_phase"] == 0
+    assert pg["jobs"]["failed-cancel"]["cancel_requested_at"] is None, (
+        "FRESH-EPOCH CONTRACT: PG's retry_job SET clause clears "
+        "cancel_requested_at alongside cancel_phase — a re-run must not "
+        "inherit the spent epoch's cancel trail."
+    )

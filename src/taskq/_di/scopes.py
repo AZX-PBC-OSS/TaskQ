@@ -379,7 +379,65 @@ class LoopScope(ScopeContainer):
         return await super().get_or_create(type_, entry)
 
     def get(self, type_: type) -> object | None:
-        return self._cache.get(type_)
+        return self._cache.get(type)
+
+
+class LoopScopeSlotView:
+    """Per-actor-invocation view of the LOOP scope for one consumer slot.
+
+    The worker's per-slot path acquires a dedicated connection per job (a
+    LOOP-scope ``asyncpg.Connection`` registered plus ``max_concurrency >
+    1``); the transaction that wraps the actor runs on that connection.
+    This view shadows the LOOP-shared cache for exactly the types its
+    mapping carries, for exactly one ``build_actor_scope`` body, so the
+    actor — and every nested LOOP-scoped resolution its dependencies
+    trigger through the same scope-containers map — resolves the slot's
+    instance instead of the one object registered at ``Scope.LOOP``.
+    Without the shadow, every concurrent slot's actor received the SAME
+    registered connection and interleaved operations on it: asyncpg
+    permits one operation per connection, so healthy actors raised
+    ``InterfaceError`` (misattributed to the actor, retry budget burned),
+    and the actor's own writes sat outside its slot's transaction
+    (issue #116 — the same one-session-per-transaction rule every
+    vendored prior art holds: procrastinate runs each job with its own
+    connector state, river runs one JobExecutor per active job, oban
+    wraps each job-stage query in its own transaction).
+
+    The view is a pure read-through: it never caches, never invokes a
+    factory, and never registers a teardown — a mapped instance's
+    lifecycle belongs to the wiring that supplied it (the dispatch
+    acquire/release exit stack that owns the slot connection). Every type
+    NOT in the mapping resolves through the real LOOP container
+    unchanged, and nothing outside this actor invocation can observe the
+    shadow: the LOOP cache itself is never touched.
+
+    Mapped values must be live instances; ``None`` is not a meaningful
+    mapping (it is treated as absent, exactly like the LOOP cache's own
+    miss shape).
+    """
+
+    def __init__(self, inner: LoopScope, slot_values: Mapping[type, object]) -> None:
+        self._inner = inner
+        self._slot_values = slot_values
+        self._last_cache_hit = False
+
+    async def get_or_create[T](self, type_: type[T], entry: ProviderEntry[T]) -> T:
+        value = self._slot_values.get(type_)
+        if value is not None:
+            self._last_cache_hit = True
+            return cast("T", value)  # pyright: ignore[reportReturnType]  # Why: the DI erasure boundary — the mapping's value is the live instance the caller's wiring owns for type_ (dispatch maps the slot connection under asyncpg.Connection); the same value-shape trust ScopeContainer's cache-hit branch applies.
+        self._last_cache_hit = False
+        return await self._inner.get_or_create(type_, entry)
+
+    @property
+    def last_cache_hit(self) -> bool:
+        """Whether the most recent ``get_or_create`` served a mapped or cached value."""
+        return self._last_cache_hit
+
+    async def aclose(self) -> None:
+        # The view owns no resources; the LOOP container's lifecycle is
+        # unchanged by one actor invocation having looked through it.
+        await self._inner.aclose()
 
 
 @dataclass(frozen=True, slots=True)
@@ -409,6 +467,7 @@ async def build_actor_scope(
     actor_func: Callable[..., Awaitable[object]],
     actor_name: str,
     passthrough_kwargs: dict[str, object],
+    loop_slot_values: Mapping[type, object] | None = None,
 ) -> AsyncGenerator[ResolvedActorScope, None]:
     """Per-invocation actor scope: opens TRANSIENT stack, resolves DI kwargs.
 
@@ -421,6 +480,17 @@ async def build_actor_scope(
     per-job and supplies them as passthrough; the registry's graph walk
     is configured to skip these parameter names, so they are never
     resolved from providers.
+
+    loop_slot_values maps LOOP-registered types to the instances THIS
+    consumer slot owns for this one actor invocation (the dispatch path
+    maps ``asyncpg.Connection`` to the job's slot connection). Each
+    mapped type resolves to the slot's instance — through a
+    :class:`LoopScopeSlotView` that shadows the LOOP cache for this
+    invocation only, actor parameters and nested LOOP-scoped
+    dependencies alike — so a LOOP-registered connection never reaches
+    two concurrent slots' actors (issue #116). ``None``/empty keeps the
+    plain LOOP container: the single-slot worker, whose transaction
+    connection IS the registered connection.
     """
     scope_containers: dict[Scope, ScopeContainerProtocol] = {}
 
@@ -436,10 +506,20 @@ async def build_actor_scope(
 
     transient_scope = ScopeContainer(scope=Scope.TRANSIENT, resolver=_resolver)
 
+    # Why a per-invocation view instead of mutating the LOOP cache: the
+    # LOOP cache is shared by every concurrent slot — a swap would race
+    # sibling dispatches and leak the slot's connection to later jobs.
+    # The view is visible only to the solves that run inside THIS
+    # build_actor_scope body, which is exactly the audience the slot's
+    # connection is safe for.
+    loop_container: LoopScope | LoopScopeSlotView = loop_scope
+    if loop_slot_values:
+        loop_container = LoopScopeSlotView(loop_scope, loop_slot_values)
+
     scope_containers = {
         Scope.PROCESS: process_scope,
         Scope.THREAD: thread_scope,
-        Scope.LOOP: loop_scope,
+        Scope.LOOP: loop_container,
         Scope.TRANSIENT: transient_scope,
     }
 

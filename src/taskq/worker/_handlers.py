@@ -46,6 +46,9 @@ from taskq.backend._protocol import (
     JobRow,
 )
 from taskq.backend._protocol import (
+    DenialReason as BackendDenialReason,
+)
+from taskq.backend._protocol import (
     SnoozeOutcome as BackendSnoozeOutcome,
 )
 from taskq.exceptions import (
@@ -577,6 +580,7 @@ async def _handle_reservation_class_denied(
     progress_seq: int = 0,
     progress_state: dict[str, object] | None = None,
     error_reporter: ErrorReporter | None = None,
+    denial_reason: BackendDenialReason = "capacity",
 ) -> AttemptOutcome:
     # Every denial a worker fields is counted before anything else: the
     # denial itself is the operational signal (a saturated bucket), and
@@ -604,6 +608,7 @@ async def _handle_reservation_class_denied(
             progress_seq=progress_seq,
             progress_state=progress_state,
             attempt=job.attempt,
+            denial_reason=denial_reason,
         )
     )
     if tri == "scheduled":

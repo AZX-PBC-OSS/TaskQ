@@ -74,12 +74,17 @@ def _nul_item_payload_error(*, idx: int, field: str, actor: str) -> PayloadValid
     ``taskq.client._jobs`` (item index + actor in the message; sanitized
     error entries with no ``input``/``url`` keys) so a batch caller sees
     one consistent annotation contract whether the defect was caught by
-    pydantic or by the jsonb serialization guard.
+    pydantic or by the jsonb serialization guard. ``item_index`` carries
+    the same position as a field: ``idx`` is already in the CALLER's
+    coordinate space at every call site (the bulk build loops add their
+    ``index_base`` before calling the guards below), so the field needs
+    no second shift anywhere.
     """
     return PayloadValidationError(
         f"Payload validation failed for item {idx} (actor={actor!r}): {field} {NUL_JSONB_ERROR}",
         actor=actor,
         validation_errors=[{"type": "value_error", "loc": (field,), "msg": NUL_JSONB_ERROR}],
+        item_index=idx,
     )
 
 

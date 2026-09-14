@@ -84,7 +84,19 @@ async def ensure_redis_script(
     register: Callable[[], "AsyncScript"],
     lock: asyncio.Lock,
 ) -> "AsyncScript":
-    """Lazily register a Lua script exactly once using double-checked locking."""
+    """Lazily register a Lua script exactly once per client, using
+    double-checked locking.
+
+    A registered ``AsyncScript`` is bound to the client instance it was
+    registered on, and a client is replaceable (the worker reload path
+    rebuilds ``deps.redis_client``; a loop restart re-resolves the DI
+    value).  The cache the caller's *get*/*set* closures manage MUST
+    therefore be keyed by client identity: *get* returns the cached
+    script only when it was registered on the client in use now, and
+    *set* records that binding.  A cache keyed on nothing reuses a dead
+    client's script against a live client forever, so a store that
+    healed through a client swap never heals.
+    """
     existing = get()
     if existing is not None:
         return existing

@@ -77,9 +77,27 @@ class ActorFirePolicy:
 
 @dataclass(frozen=True, slots=True)
 class _ActorConfig:
+    """The actor_config columns the tick reads for one actor.  ``max_pending``
+    is the OPERATOR-stored cap — NULL stored means no stored override, so the
+    registry literal stands (the seed-resolution rule); a non-NULL stored
+    value is authoritative over it, exactly as it is for every client
+    enqueue arm (``client/_capacity.py``)."""
+
     queue: str
     max_attempts: int
     retry_kind: str
+    max_pending: int | None
+
+
+def _resolve_max_pending(stored: int | None, literal: int | None) -> int | None:
+    """The capacity resolution rule as one pure function: a non-NULL
+    operator-stored ``actor_config.max_pending`` wins over the registry
+    literal — tightening or loosening it — while a NULL stored value
+    leaves the literal as the cap and neither means no cap.  The same rule
+    the client path's ``ActorCapacityCache`` applies to every client
+    enqueue, applied here so the tick's admission control answers the
+    same question with the same precedence."""
+    return stored if stored is not None else literal
 
 
 @dataclass(frozen=True, slots=True)
@@ -236,6 +254,7 @@ async def _suppress_policy_collisions(
     schema: str,
     successes: list[_FireSuccess],
     actor_policies: Mapping[str, ActorFirePolicy],
+    actor_configs: Mapping[str, _ActorConfig],
 ) -> tuple[list[_FireSuccess], list[_SuppressedFire]]:
     """Split the planned fires into those the batch may enqueue and those a
     singleton / max_pending preflight suppresses.
@@ -269,6 +288,16 @@ async def _suppress_policy_collisions(
     future-dated occurrence deferred to its own instant via the plan's
     ``next_fire_at`` — delivered later at capacity, never silently
     dropped and never past the cap.
+
+    Each capped actor's effective cap is RESOLVED here, not taken from
+    the policy map alone: a non-NULL operator-stored
+    ``actor_config.max_pending`` (carried by *actor_configs*, from the
+    ac-rows SELECT the tick already runs) is authoritative over the
+    registry literal the policy map carries — it can tighten a declared
+    literal or cap an actor declared without one, including the stored-0
+    emergency drain — while a NULL stored value leaves the literal
+    standing and neither means uncapped, exactly as today.  The singleton
+    flag stays registry-only: it is not a stored actor_config field.
     """
     singleton_actors: list[str] = sorted(
         {
@@ -298,9 +327,16 @@ async def _suppress_policy_collisions(
 
     capped: dict[str, int] = {}
     for plan in successes:
+        if plan.actor in blocking:
+            continue
         policy = actor_policies.get(plan.actor)
-        if policy is not None and policy.max_pending is not None and plan.actor not in blocking:
-            capped[plan.actor] = policy.max_pending
+        ac = actor_configs.get(plan.actor)
+        resolved = _resolve_max_pending(
+            ac.max_pending if ac is not None else None,
+            policy.max_pending if policy is not None else None,
+        )
+        if resolved is not None:
+            capped[plan.actor] = resolved
     pending_counts: dict[str, int] = {}
     if capped:
         count_rows: list[asyncpg.Record] = await conn.fetch(
@@ -643,7 +679,12 @@ async def tick_cron(
     client enqueue would get, and a fire blocked by an active singleton
     job or a full pending cap is SUPPRESSED: dropped from the batch,
     ``next_fire_at`` advanced, neither a fire nor a failure (suppressed
-    slots are absent from the return count).
+    slots are absent from the return count).  The ``max_pending`` cap is
+    resolved per actor against the operator-stored ``actor_config`` row
+    the tick already reads — a non-NULL stored value is authoritative
+    over the registry literal, the client path's own rule — so a stored
+    cap (including the stored-0 emergency drain) bounds the tick exactly
+    like the same literal cap.
     """
     if not _IDENT_RE.match(schema):
         raise ValueError(f"invalid schema identifier: {schema!r}")
@@ -706,7 +747,8 @@ async def tick_cron(
     # raised before batching.
     actors: list[str] = sorted({str(row["actor"]) for row in rows})
     ac_rows: list[asyncpg.Record] = await conn.fetch(
-        f'SELECT actor, queue, max_attempts, retry_kind FROM "{schema}".actor_config '
+        f"SELECT actor, queue, max_attempts, retry_kind, max_pending "
+        f'FROM "{schema}".actor_config '
         f"WHERE actor = ANY($1::text[])",
         actors,
     )
@@ -715,6 +757,7 @@ async def tick_cron(
             queue=ac_row["queue"],
             max_attempts=ac_row["max_attempts"],
             retry_kind=ac_row["retry_kind"],
+            max_pending=ac_row["max_pending"],
         )
         for ac_row in ac_rows
     }
@@ -782,7 +825,7 @@ async def tick_cron(
     successes = await _skip_already_delivered_overlap_twins(conn, schema, successes, actor_policies)
     if actor_policies and successes:
         successes, suppressed = await _suppress_policy_collisions(
-            conn, schema, successes, actor_policies
+            conn, schema, successes, actor_policies, actor_configs
         )
 
     if successes:
@@ -1091,7 +1134,11 @@ async def _plan_fire(
 
     *actor_policies* stamps the planned args with the actor's singleton /
     ``max_pending`` flags exactly the way the client enqueue path stamps
-    its own (``client/_args.py``); ``None`` stamps nothing.
+    its own (``client/_args.py``); ``None`` stamps nothing.  The
+    ``max_pending`` stamp is the stored-over-literal RESOLUTION against
+    the actor's ``actor_config`` row (the client path passes its
+    capacity-cache-resolved value, not the raw literal), so the args
+    carry the same effective cap a client enqueue's would.
     """
     catch_up_cutoff = server_now - settings.cron_catch_up_window
     fire_at: datetime = row["next_fire_at"]
@@ -1121,7 +1168,10 @@ async def _plan_fire(
         actor_policies.get(actor) if actor_policies is not None else None
     )
     # Parity stamps: the client path sets metadata["singleton"] from the
-    # ActorRef and passes ref.max_pending; without them the
+    # ActorRef and passes its capacity-cache-RESOLVED max_pending (a
+    # non-NULL stored actor_config value over the ref literal); the tick
+    # resolves the same rule from its own ac-rows read, so a cron fire's
+    # args never carry a stale literal.  Without them the
     # jobs_singleton_uniq partial index (keyed on the flag) never covers a
     # cron fire and no cap applies.  "cron_schedule_id" is provenance: the
     # twin-coverage walk scopes delivered instants to the schedule that
@@ -1130,7 +1180,10 @@ async def _plan_fire(
     stamped_metadata: dict[str, object] = {"cron_schedule_id": str(row["id"])}
     if policy is not None and policy.singleton:
         stamped_metadata["singleton"] = True
-    stamped_max_pending: int | None = policy.max_pending if policy is not None else None
+    stamped_max_pending: int | None = _resolve_max_pending(
+        ac.max_pending,
+        policy.max_pending if policy is not None else None,
+    )
 
     identity_key_raw: object = row["identity_key"]
     schedule_identity_key: IdentityKey | None = (

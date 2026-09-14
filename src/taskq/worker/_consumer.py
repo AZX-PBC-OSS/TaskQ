@@ -470,6 +470,14 @@ async def consume_one_job(
             # WARNING is window-gated — a sustained outage denies every
             # rate-limited dispatch, and a warning per denial is a log
             # flood, not a signal.
+            #
+            # Non-consuming: the denial is infra backpressure about a
+            # job whose actor never ran, so it rides mark_snoozed's
+            # 'unavailable' arm (attempt refunded, no terminal arm) —
+            # never the budget-consuming bounded loop a saturation
+            # denial deliberately takes. The reason is passed here,
+            # explicitly: the store's unavailability is proven only at
+            # this synthesis site, never inferred downstream.
             error_type = type(exc).__name__
             record_ratelimit_acquire_dependency_failure(error_type)
             now = monotonic()
@@ -514,6 +522,7 @@ async def consume_one_job(
                     "outcome": "rate_limit_denied",
                     "debug_event": "consume-rate-limit-dependency-failure-noop",
                     "error_reporter": error_reporter,
+                    "denial_reason": "unavailable",
                 },
                 status="scheduled",
                 terminal=False,

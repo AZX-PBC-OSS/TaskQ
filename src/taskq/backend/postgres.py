@@ -70,6 +70,9 @@ from taskq.backend._dispatch import (
     _dispatch_batch as _dispatch,
 )
 from taskq.backend._enqueue import (
+    DEFAULT_IDEMPOTENCY_LOCK_TIMEOUT_MS,
+    DEFAULT_MAX_PENDING_LOCK_TIMEOUT_MS,
+    DEFAULT_UNIQUE_FOR_LOCK_TIMEOUT_MS,
     _enqueue,
     _enqueue_batch,
     _enqueue_batch_fast,
@@ -86,6 +89,7 @@ from taskq.backend._protocol import (
     BulkCancelResult,
     CancelFlag,
     ConnLike,
+    DenialReason,
     EnqueueArgs,
     ErrorInfo,
     EventRow,
@@ -331,15 +335,59 @@ class PostgresBackend:
 
     supports_transactional_simulation: ClassVar[bool] = False
 
+    def _enqueue_lock_budgets(self) -> tuple[float, float, float]:
+        """The three single-enqueue advisory-lock wait budgets, read off the
+        deps' settings object at the enqueue use sites (the
+        ``dispatch_oversample`` plumbing pattern: WorkerSettings field ->
+        BackendSettings protocol -> backend reads ``self._deps.settings``
+        where the lock wait runs).
+
+        Why a defensive ``getattr`` with the module-constant fallback rather
+        than the direct read every other BackendSettings knob takes: the
+        TaskQ client's settings object (``taskq.client._ClientSettings``)
+        is constructed in client space and predates these fields — a direct
+        read would AttributeError every client-built backend's enqueue. The
+        fallback is the same 5 s constant the module functions defaulted to
+        before the knob existed, so an undeclared settings object behaves
+        exactly as it did yesterday, and the moment it declares the field
+        the operator's value flows through.
+        """
+        settings = self._deps.settings
+        return (
+            getattr(settings, "max_pending_lock_timeout_ms", DEFAULT_MAX_PENDING_LOCK_TIMEOUT_MS),
+            getattr(settings, "unique_for_lock_timeout_ms", DEFAULT_UNIQUE_FOR_LOCK_TIMEOUT_MS),
+            getattr(settings, "idempotency_lock_timeout_ms", DEFAULT_IDEMPOTENCY_LOCK_TIMEOUT_MS),
+        )
+
     async def enqueue_with_conn(
         self,
         conn: ConnLike,
         args: EnqueueArgs,
     ) -> JobRow:
-        return await _enqueue_with_conn(conn, self._sql, self._schema_name, self._clock, args)
+        max_pending_ms, unique_for_ms, idempotency_ms = self._enqueue_lock_budgets()
+        return await _enqueue_with_conn(
+            conn,
+            self._sql,
+            self._schema_name,
+            self._clock,
+            args,
+            max_pending_lock_timeout_ms=max_pending_ms,
+            unique_for_lock_timeout_ms=unique_for_ms,
+            idempotency_lock_timeout_ms=idempotency_ms,
+        )
 
     async def enqueue(self, args: EnqueueArgs) -> JobRow:
-        return await _enqueue(self._worker_pool, self._sql, self._schema_name, self._clock, args)
+        max_pending_ms, unique_for_ms, idempotency_ms = self._enqueue_lock_budgets()
+        return await _enqueue(
+            self._worker_pool,
+            self._sql,
+            self._schema_name,
+            self._clock,
+            args,
+            max_pending_lock_timeout_ms=max_pending_ms,
+            unique_for_lock_timeout_ms=unique_for_ms,
+            idempotency_lock_timeout_ms=idempotency_ms,
+        )
 
     async def enqueue_batch(
         self,
@@ -590,6 +638,7 @@ class PostgresBackend:
         progress_state: dict[str, object] | None = None,
         outcome: SnoozeOutcome = "snoozed",
         attempt: int | None = None,
+        denial_reason: DenialReason = "capacity",
     ) -> Literal["scheduled", "failed", "failed:MaxAttemptsExceeded", "noop"]:
         return await _mark_snoozed(
             self._worker_pool,
@@ -602,6 +651,7 @@ class PostgresBackend:
             progress_state=progress_state,
             outcome=outcome,
             attempt=attempt,
+            denial_reason=denial_reason,
             acquire_timeout=self._deps.settings.dispatcher_command_timeout,
         )
 

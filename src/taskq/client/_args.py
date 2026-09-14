@@ -38,9 +38,64 @@ from taskq.retry import time_budget_as_interval
 if TYPE_CHECKING:
     from taskq.batch import EnqueueItem
 
-__all__ = ["build_enqueue_args", "enqueue_span", "validate_idempotency"]
+__all__ = [
+    "UniqueForNoIdentityWarner",
+    "build_enqueue_args",
+    "enqueue_span",
+    "validate_idempotency",
+]
 
 logger: structlog.stdlib.BoundLogger = structlog.get_logger(__name__)
+
+
+class UniqueForNoIdentityWarner:
+    """Warn-once tracker for ``unique_for`` enqueues that omit ``identity_key``.
+
+    The adjudicated contract for the pairing hole: ``unique_for`` without
+    ``identity_key`` is a documented no-op (the backend's single-flight
+    gate requires both) that WARNs and enqueues a fresh job — never
+    raises — a contract codified in docs/guides/actors.md and
+    docs/guides/ops.md's footgun table and pinned by
+    tests/test_actor_warnings.py. What the contract forbids is SILENCE: a
+    caller asking for single-flight must be told the knob enforced
+    nothing.
+
+    One instance per enqueue surface (per JobsClient, per
+    SubJobEnqueuer): the warning fires once per actor per surface — the
+    shape the JobsClient actor-declared path has always had. The state
+    is per-instance, never module-global: a process-wide set would
+    couple test isolation to execution order and cross-client state.
+
+    Why this module: both caller-facing single-enqueue seams
+    (JobsClient.enqueue and SubJobEnqueuer.enqueue — the only surface
+    that takes a per-call ``unique_for``) already import this, the
+    argument-assembly choke point they share; the tracker is the warning
+    half of that same boundary. When ``@actor`` gains an identity
+    callable parameter, the actor-declared warning can move to
+    ``_build_ref`` alongside the actor-config-* family — the log event
+    name stays the same.
+    """
+
+    def __init__(self) -> None:
+        self._warned_actors: set[str] = set()
+
+    def maybe_warn(self, *, actor: str, queue: str, unique_for: timedelta) -> None:
+        """Emit the warn-once event for this actor, or stay quiet when it
+        already fired. ``unique_for`` must be non-None — the call site's
+        condition guarantees it."""
+        if actor in self._warned_actors:
+            return
+        self._warned_actors.add(actor)
+        logger.warning(
+            "actor_config_unique_for_ignored",
+            kind="actor_config_unique_for_ignored",
+            actor=actor,
+            queue=queue,
+            unique_for_seconds=unique_for.total_seconds(),
+            reason="unique_for is set but identity_key was not provided at enqueue; "
+            "unique_for is a no-op without an identity_key",
+        )
+
 
 _TAG_RE: re.Pattern[str] = re.compile(r"\A\w(?:[\w\-]*\w)?\Z")
 """Tag validation regex: word chars and interior hyphens, one char or longer.

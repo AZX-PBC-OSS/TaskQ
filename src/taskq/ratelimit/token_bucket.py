@@ -289,7 +289,9 @@ class TokenBucket:
         "_mem_bucket",
         "_name",
         "_redis_refund_script",
+        "_redis_refund_script_client",
         "_redis_script",
+        "_redis_script_client",
         "_refill",
         "_script_lock",
         "_ttl",
@@ -320,7 +322,9 @@ class TokenBucket:
             self._mem_bucket = _InMemoryBucket(name, capacity, refill_per_second)
 
         self._redis_script: AsyncScript | None = None
+        self._redis_script_client: redis_async.Redis | None = None
         self._redis_refund_script: AsyncScript | None = None
+        self._redis_refund_script_client: redis_async.Redis | None = None
         self._script_lock: asyncio.Lock = asyncio.Lock()
 
     @property
@@ -642,9 +646,18 @@ class TokenBucket:
         await script(keys=[key], args=argv)  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]  # Why: redis-py AsyncScript.__call__ has no return-type annotation; refund return value is not consumed
 
     async def _ensure_refund_script(self, redis_client: "redis_async.Redis") -> "AsyncScript":
+        def get() -> "AsyncScript | None":
+            if self._redis_refund_script_client is not redis_client:
+                return None
+            return self._redis_refund_script
+
+        def bind(script: "AsyncScript") -> None:
+            self._redis_refund_script_client = redis_client
+            self._redis_refund_script = script
+
         return await ensure_redis_script(
-            lambda: self._redis_refund_script,
-            lambda s: setattr(self, "_redis_refund_script", s),
+            get,
+            bind,
             lambda: redis_client.register_script(REFUND_SCRIPT),
             self._script_lock,
         )
@@ -827,9 +840,18 @@ class TokenBucket:
         return result
 
     async def _ensure_script(self, redis_client: "redis_async.Redis") -> "AsyncScript":
+        def get() -> "AsyncScript | None":
+            if self._redis_script_client is not redis_client:
+                return None
+            return self._redis_script
+
+        def bind(script: "AsyncScript") -> None:
+            self._redis_script_client = redis_client
+            self._redis_script = script
+
         return await ensure_redis_script(
-            lambda: self._redis_script,
-            lambda s: setattr(self, "_redis_script", s),
+            get,
+            bind,
             lambda: redis_client.register_script(TOKEN_BUCKET_SCRIPT),
             self._script_lock,
         )

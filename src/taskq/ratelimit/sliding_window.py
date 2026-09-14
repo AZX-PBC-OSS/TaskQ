@@ -341,8 +341,11 @@ class SlidingWindow:
         "_mem_log",
         "_name",
         "_redis_gcra_refund_script",
+        "_redis_gcra_refund_script_client",
         "_redis_gcra_script",
+        "_redis_gcra_script_client",
         "_redis_log_script",
+        "_redis_log_script_client",
         "_script_lock",
         "_style",
         "_ttl",
@@ -388,8 +391,11 @@ class SlidingWindow:
                 self._mem_gcra = _InMemorySlidingWindowGCRA(name, limit, window_ms)
 
         self._redis_log_script: AsyncScript | None = None
+        self._redis_log_script_client: redis_async.Redis | None = None
         self._redis_gcra_script: AsyncScript | None = None
+        self._redis_gcra_script_client: redis_async.Redis | None = None
         self._redis_gcra_refund_script: AsyncScript | None = None
+        self._redis_gcra_refund_script_client: redis_async.Redis | None = None
         self._script_lock: asyncio.Lock = asyncio.Lock()
 
     @property

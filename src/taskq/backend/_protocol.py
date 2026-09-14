@@ -61,6 +61,7 @@ __all__ = [
     "BulkCancelResult",
     "CancelFlag",
     "CancelPhase",
+    "DenialReason",
     "DstStrategy",
     "EnqueueArgs",
     "ErrorInfo",
@@ -85,6 +86,7 @@ __all__ = [
     "parse_batch_status",
     "parse_cancel_phase",
     "parse_retry_kind",
+    "validate_denial_reason",
     "validate_snooze_outcome",
 ]
 
@@ -238,6 +240,58 @@ def validate_snooze_outcome(outcome: str) -> None:
             f"mark_snoozed outcome must be one of {sorted(SNOOZE_OUTCOME_VALUES)}; "
             f"got {outcome!r} — the snooze arms key on exactly these deferral "
             "outcomes; an execution outcome has no arm here"
+        )
+
+
+type DenialReason = Literal["capacity", "unavailable"]
+"""Why a denial-class snooze write (:meth:`Backend.mark_snoozed` with a
+denial *outcome*) was denied.
+
+``capacity`` is a real saturation denial — the limiter's store answered
+and the answer was "full".  The denial is legitimate backpressure about
+a job the system chose not to run yet, and the bounded,
+budget-consuming denial loop is the deliberate contract (an operator
+scaling a bucket on denials is the intended response).
+
+``unavailable`` is the limiter's store failing to answer at all (Redis
+unreachable, the PG fallback dead or unwired) — infrastructure
+backpressure about a job whose actor never executed.  It is
+non-consuming: the claim's attempt increment is refunded exactly the
+way an actor-requested ``snoozed`` deferral refunds it, and no
+terminal arm may fire — a job whose only fault is its limiter's store
+being down never lands in a terminal exit, and when the store returns
+its original retry budget is still there to spend.
+
+Only the consumer's store-failure synthesis site passes ``unavailable``
+(explicitly, never inferred from a bucket name); every other caller
+rides the ``capacity`` default.
+"""
+
+DENIAL_REASON_VALUES: Final[frozenset[DenialReason]] = frozenset(get_args(DenialReason.__value__))
+"""Runtime membership set of every :data:`DenialReason` literal value.
+
+Derived from the :data:`DenialReason` Literal itself so the guard's
+legal set can never drift from the type — the same single-source
+pattern as :data:`SNOOZE_OUTCOME_VALUES`.
+"""
+
+
+def validate_denial_reason(reason: str) -> None:
+    """Reject a denial reason :meth:`Backend.mark_snoozed` has no arm for.
+
+    Raises :class:`ValueError` naming the legal set and the rejected
+    value.  Called by both backends' ``mark_snoozed`` beside
+    :func:`validate_snooze_outcome`, before any state is touched: PG
+    cannot reject an unknown bind value inside the statement, so the
+    Python boundary owns the check, and an illegal reason must not
+    silently degrade to one arm's semantics.
+    """
+    if reason not in DENIAL_REASON_VALUES:
+        raise ValueError(
+            f"mark_snoozed denial_reason must be one of {sorted(DENIAL_REASON_VALUES)}; "
+            f"got {reason!r} — 'capacity' is a saturation denial (budget-consuming, "
+            "the bounded loop), 'unavailable' is the store failing to answer "
+            "(non-consuming, never terminal)"
         )
 
 
@@ -1206,6 +1260,18 @@ class BackendSettings(Protocol):
     sweep_breaker_failure_threshold: int
     # Rolling window (seconds) the breaker counts failures within; default 600.0.
     sweep_breaker_window_secs: float
+    # Bounded wait (milliseconds) for the max_pending advisory lock on the
+    # single-enqueue path; default DEFAULT_MAX_PENDING_LOCK_TIMEOUT_MS (5 s).
+    # Read by the PostgresBackend enqueue wrappers at the lock use sites.
+    max_pending_lock_timeout_ms: float
+    # Bounded wait (milliseconds) for the unique_for single-flight advisory
+    # lock on the single-enqueue path; default
+    # DEFAULT_UNIQUE_FOR_LOCK_TIMEOUT_MS (5 s).
+    unique_for_lock_timeout_ms: float
+    # Bounded wait (milliseconds) for the idempotency token INSERT's
+    # speculative-lock conflict on the single-enqueue path; default
+    # DEFAULT_IDEMPOTENCY_LOCK_TIMEOUT_MS (5 s).
+    idempotency_lock_timeout_ms: float
 
 
 @runtime_checkable
@@ -1568,6 +1634,7 @@ class Backend(Protocol):
         progress_state: dict[str, object] | None = None,
         outcome: SnoozeOutcome = "snoozed",
         attempt: int | None = None,
+        denial_reason: DenialReason = "capacity",
     ) -> Literal["scheduled", "failed", "failed:MaxAttemptsExceeded", "noop"]:
         """Release a running job back to the queue without consuming retry
         budget.
@@ -1591,13 +1658,24 @@ class Backend(Protocol):
         deferral reschedules at least that far out, so a zero delay
         cannot park the job at the head of the dispatch order.
 
-        The retry budget still bounds the loop: a non-``indefinite`` job
-        at ``attempt >= max_attempts`` with no ``schedule_to_close``
-        fails terminally (``"failed:MaxAttemptsExceeded"``) instead of
-        rescheduling forever; a job carrying ``schedule_to_close``
-        reschedules until its deadline (``"failed"``,
-        ``DeadlineExceeded``); an ``indefinite`` job reschedules by
-        explicit policy.
+        *denial_reason* discriminates the two causes of a denial-class
+        outcome (:data:`DenialReason`) and binds the non-consuming arm:
+        ``"capacity"`` (the default) is a real saturation denial — the
+        store answered "full" — and the retry budget still bounds the
+        loop below.  ``"unavailable"`` is the store failing to answer —
+        infrastructure backpressure about a job whose actor never ran —
+        so the claim's attempt increment is refunded (exactly the way
+        the ``snoozed`` arm refunds it) and no terminal arm can fire:
+        the job stays retryable across a sustained outage and keeps its
+        original budget when the store returns.
+
+        The retry budget still bounds the loop for ``"capacity"``
+        denials: a non-``indefinite`` job at ``attempt >= max_attempts``
+        with no ``schedule_to_close`` fails terminally
+        (``"failed:MaxAttemptsExceeded"``) instead of rescheduling
+        forever; a job carrying ``schedule_to_close`` reschedules until
+        its deadline (``"failed"``, ``DeadlineExceeded``); an
+        ``indefinite`` job reschedules by explicit policy.
         """
         ...
 
@@ -1689,10 +1767,21 @@ class Backend(Protocol):
 
     # ── Admin operations ──────────────────────────────────────────────
     async def retry_job(self, job_id: JobId) -> bool:
-        """Reset a terminal job (failed/crashed/cancelled) to pending.
+        """Re-run a terminal job (failed/crashed/cancelled) by re-pending it.
+
+        The attempt counter is NOT reset — the vendored admin-retry
+        precedent (Oban's ``retry_job``, River's ``JobRetry``) never
+        touches it — so a re-run job climbs to fresh attempt numbers and
+        no ``job_attempts`` write can collide on a spent epoch's primary
+        key.  ``max_attempts`` rises to ``GREATEST(max_attempts,
+        attempt + 1)`` (capped at the smallint bound), which opens the
+        budget gates for at least one fresh execution while a
+        mid-budget re-run keeps its remaining budget.
 
         Returns ``True`` if the job was retried, ``False`` if it was not
-        in a retryable state.
+        in a retryable state — or the smallint-bound ceiling cannot rise
+        past the spent attempt, in which case the row stays terminal
+        rather than re-pending a job whose next claim would overflow.
         """
         ...
 

@@ -50,7 +50,12 @@ from taskq.backend._protocol import (
 )
 from taskq.backend.clock import Clock, SystemClock
 from taskq.batch import MAX_BATCH_SIZE, EnqueueItem
-from taskq.client._args import build_batch_args, build_enqueue_args, enqueue_span
+from taskq.client._args import (
+    UniqueForNoIdentityWarner,
+    build_batch_args,
+    build_enqueue_args,
+    enqueue_span,
+)
 from taskq.client._capacity import ActorCapacityCache
 from taskq.client._handle import JobHandle
 from taskq.exceptions import (
@@ -146,6 +151,7 @@ class SubJobEnqueuer:
         self._pending_buffer: list[EnqueueArgs] = []
         self._loop_enqueue_args: list[EnqueueArgs] = []
         self._autonomous_enqueue_count: int = 0
+        self._unique_for_warner = UniqueForNoIdentityWarner()
 
     @property
     def capacity_cache(self) -> ActorCapacityCache:
@@ -237,6 +243,14 @@ class SubJobEnqueuer:
                     metadata={**args.metadata, "batch_id": _batch_id},
                 )
             span.set_attribute("messaging.message.id", str(args.id))
+            # The per-call seam's coherence check — the same warn-once
+            # contract JobsClient.enqueue applies to the actor-declared
+            # form; this is the only caller-facing surface that accepts a
+            # per-call unique_for, and it was fully silent.
+            if args.unique_for is not None and args.identity_key is None:
+                self._unique_for_warner.maybe_warn(
+                    actor=actor_ref.name, queue=actor_ref.queue, unique_for=args.unique_for
+                )
             row = await self._do_enqueue(args, connection)
         return JobHandle(
             row=row,

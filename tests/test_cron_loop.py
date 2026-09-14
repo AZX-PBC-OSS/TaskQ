@@ -164,6 +164,7 @@ def _make_actor_config_row(
     queue: str = "default",
     max_attempts: int = 3,
     retry_kind: str = "transient",
+    max_pending: int | None = None,
 ) -> _FakeCronRecord:
     """One row of the batched ``actor_config`` ``ANY($1)`` SELECT result."""
     return _FakeCronRecord(
@@ -172,6 +173,7 @@ def _make_actor_config_row(
             "queue": queue,
             "max_attempts": max_attempts,
             "retry_kind": retry_kind,
+            "max_pending": max_pending,
         }
     )
 
