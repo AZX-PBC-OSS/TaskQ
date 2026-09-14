@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from uuid import UUID
 
 import structlog
+from opentelemetry.trace import Span
 from pydantic import BaseModel
 
 from taskq.backend._protocol import JobId
@@ -51,6 +52,9 @@ class JobContext[P: BaseModel]:
     jobs: SubJobEnqueuer
     log: structlog.stdlib.BoundLogger
     snooze_count: int = 0
+    # The fixture path is uninstrumented, so `span` holds the documented
+    # OTel-disabled value production actors see when no tracer is active.
+    span: Span | None = None
     deps: dict[str, object] | None = field(default=None)
     abort_requested: threading.Event = field(default_factory=threading.Event)
 

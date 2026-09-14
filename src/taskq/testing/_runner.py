@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Literal
 from uuid import UUID
 
 import structlog
+from opentelemetry.trace import Span
 from pydantic import BaseModel
 
 from taskq.actor_config import ActorConfig
@@ -69,17 +70,27 @@ class _StubContext:
 
     The full ``JobContext`` arrives later; here, stubs receive a duck-typed
     object with the fields they read: ``job_id``, ``attempt``,
-    ``snooze_count``, ``payload``, ``cancel_event``, and
+    ``snooze_count``, ``payload``, ``cancel_event``, ``span``, and
     ``cancellation_requested``.  Aligned with the production
     ``taskq.context.JobContext`` shape at the duck-typed
-    ``cancel_event`` / ``cancellation_requested`` level and at the
-    deferral-cycle contract: ``snooze_count`` carries the row's count of
+    ``cancel_event`` / ``cancellation_requested`` level, at the
+    deferral-cycle contract (``snooze_count`` carries the row's count of
     completed non-consuming deferrals at dispatch time, so an actor
     keyed off it behaves identically under the test runner and the PG
-    worker.
+    worker), and at the trace-correlation contract (``span`` is the
+    documented OTel-disabled ``None`` — the in-memory runner is
+    uninstrumented, so actors reading ``ctx.span`` observe exactly what
+    a production worker without a tracer hands them).
     """
 
-    __slots__ = ("attempt", "cancel_event", "job_id", "payload", "snooze_count")
+    __slots__ = (
+        "attempt",
+        "cancel_event",
+        "job_id",
+        "payload",
+        "snooze_count",
+        "span",
+    )
 
     def __init__(
         self,
@@ -94,6 +105,7 @@ class _StubContext:
         self.payload = payload
         self.cancel_event = cancel_event
         self.snooze_count = snooze_count
+        self.span: Span | None = None
 
     @property
     def cancellation_requested(self) -> bool:
