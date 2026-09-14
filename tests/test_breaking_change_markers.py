@@ -74,7 +74,7 @@ def _base_ref() -> str:
     named instead of exit 128 from the log itself).
     """
     for candidate in ("main", "origin/main"):
-        resolved = subprocess.run(
+        resolved = subprocess.run(  # noqa: S603  # Why: fixed literal argv shape — git from PATH, as elsewhere in this suite; the candidate strings are this file's own constants, no shell.
             ["git", "rev-parse", "--verify", "--quiet", candidate],  # noqa: S607  # Why: git resolved from PATH, as elsewhere in this suite; fixed literal argv, no shell.
             capture_output=True,
             text=True,
@@ -91,7 +91,7 @@ def _base_ref() -> str:
 
 def _breaking_markers_on_branch() -> list[str]:
     """Subjects of ``<base>..HEAD`` commits carrying a breaking marker."""
-    log = subprocess.run(
+    log = subprocess.run(  # noqa: S603  # Why: fixed literal argv shape — the range's base is _base_ref()'s own resolved ref, git from PATH, no shell.
         ["git", "log", "--format=%H%n%B%n---END---", f"{_base_ref()}..HEAD"],  # noqa: S607  # Why: git resolved from PATH, as elsewhere in this suite; fixed literal argv, no shell.
         capture_output=True,
         text=True,
