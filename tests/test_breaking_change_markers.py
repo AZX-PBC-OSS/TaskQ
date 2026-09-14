@@ -64,10 +64,35 @@ def _non_generated_sections() -> list[str]:
     return foreign
 
 
+def _base_ref() -> str:
+    """The branch's base ref, as resolvable in THIS environment.
+
+    A local checkout has ``main`` on refs/heads; a CI PR checkout is a
+    detached head whose only base ref is the remote-tracking
+    ``origin/main`` (git DWIM-resolves a bare ``main`` to it, but only
+    when it exists — resolving explicitly keeps the failure loud and
+    named instead of exit 128 from the log itself).
+    """
+    for candidate in ("main", "origin/main"):
+        resolved = subprocess.run(
+            ["git", "rev-parse", "--verify", "--quiet", candidate],  # noqa: S607  # Why: git resolved from PATH, as elsewhere in this suite; fixed literal argv, no shell.
+            capture_output=True,
+            text=True,
+            cwd=_REPO_ROOT,
+        )
+        if resolved.returncode == 0:
+            return candidate
+    raise RuntimeError(
+        "no base ref resolvable (tried main, origin/main) — the "
+        "breaking-change guard needs the branch's history against its "
+        "base; a checkout without one cannot answer it"
+    )
+
+
 def _breaking_markers_on_branch() -> list[str]:
-    """Subjects of ``main..HEAD`` commits carrying a breaking marker."""
+    """Subjects of ``<base>..HEAD`` commits carrying a breaking marker."""
     log = subprocess.run(
-        ["git", "log", "--format=%H%n%B%n---END---", "main..HEAD"],  # noqa: S607  # Why: git resolved from PATH, as elsewhere in this suite; fixed literal argv, no shell.
+        ["git", "log", "--format=%H%n%B%n---END---", f"{_base_ref()}..HEAD"],  # noqa: S607  # Why: git resolved from PATH, as elsewhere in this suite; fixed literal argv, no shell.
         capture_output=True,
         text=True,
         cwd=_REPO_ROOT,

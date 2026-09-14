@@ -114,7 +114,13 @@ jobs:
             "--extra saml --extra fastapi",
           ]
     steps:
+      # fetch-depth 0: same reason as the coverage job — history-sensitive
+      # guards (tests/test_breaking_change_markers.py) walk the branch's
+      # commits against the base ref, which a shallow PR checkout does not
+      # provide.
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       # The shared action exports UV_PYTHON for the whole job. The previous
       # shape passed `--python ${{ matrix.python-version }}` to the sync and
@@ -150,7 +156,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
+      # fetch-depth 0: the breaking-change marker guard reads the branch's
+      # own commits against the base (git log <base>..HEAD). A shallow PR
+      # checkout provides neither the base ref nor the stack's history, so
+      # the guard crashes on git exit 128 instead of running.
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - uses: ./.github/actions/setup-uv-env
 
