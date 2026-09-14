@@ -15,18 +15,25 @@
   ``_StubContext`` from its field walk (declared minimal subset), so
   the runner half is behaviour-pinned here instead.
 
-* The documented method surface — ``await ctx.progress(...)`` and
-  ``ctx.check_cancelled()`` (``docs/guides/progress.md`` teaches
-  progress reporting as a headline actor feature, with a no-Redis PG
-  fallback, so it is core, not optional). Both are currently absent
-  from the runner's stub context and the testing mirror (tracked on
-  issue #172's thread); the pin below is strict-xfail per the repo's
-  executably-tracked-defect convention so the gap cannot sit silent in
-  the suite while the narrower ``span`` field carries the convention's
-  protection. Any actor that reports progress is untestable through
-  the harness today and fails with a self-misattributing
-  ``AttributeError`` — the pin makes that failure the suite's own
-  signal instead of the adopter's surprise.
+* The documented method surface — ``await ctx.progress(...)``,
+  ``ctx.check_cancelled()``, and ``ctx.should_abort()``
+  (``docs/guides/progress.md`` teaches progress reporting as a headline
+  actor feature, with a no-Redis PG fallback, so it is core, not
+  optional; ``should_abort`` is the documented cooperative-cancellation
+  check sync actors poll). Production carries all four actor-facing
+  members (``cancellation_requested``, ``check_cancelled``,
+  ``should_abort``, ``progress`` — ``src/taskq/context.py:82-103``);
+  the runner's stub context has only ``cancellation_requested``, and
+  the testing mirror has ``cancellation_requested`` and
+  ``should_abort`` but neither ``progress`` nor ``check_cancelled``
+  (tracked on issue #172's thread); the pin below is strict-xfail per
+  the repo's executably-tracked-defect convention so the gap cannot sit
+  silent in the suite while the narrower ``span`` field carries the
+  convention's protection. Any actor that reports progress or polls
+  cooperative cancellation is untestable through the harness today and
+  fails with a self-misattributing ``AttributeError`` — the pin makes
+  that failure the suite's own signal instead of the adopter's
+  surprise.
 """
 
 from datetime import UTC, datetime
@@ -82,22 +89,25 @@ async def test_stub_context_span_read_matches_the_documented_disabled_value() ->
 
 @pytest.mark.xfail(
     strict=True,
-    reason="issue #172's method surface: the runner's stub context and the "
-    "testing mirror carry neither progress() nor check_cancelled() — the "
-    "documented progress API is untestable through the harness, failing "
-    "with a self-misattributing AttributeError; fixed when the harness "
-    "context carries the surface (progress observably recorded) or fails "
-    "it with a designed, self-attributing unsupported-feature error — "
-    "then remove this marker",
+    reason="issue #172's method surface: the runner's stub context carries "
+    "none of the documented actor-facing methods except "
+    "cancellation_requested (progress, check_cancelled, should_abort), and "
+    "the testing mirror carries neither progress nor check_cancelled — "
+    "actors reporting progress or polling cooperative cancellation are "
+    "untestable through the harness, failing with a self-misattributing "
+    "AttributeError; fixed when the harness contexts carry the surface "
+    "(progress observably recorded) or fail it with a designed, "
+    "self-attributing unsupported-feature error — then remove this marker",
 )
 async def test_documented_method_surface_is_exercisable_through_the_runner() -> None:
-    """An actor calling the documented ``await ctx.progress(...)`` and
-    ``ctx.check_cancelled()`` through ``run_until_drained`` gets either a
-    working surface (the report lands observably; the job succeeds) or a
-    designed, self-attributing unsupported-feature failure. It must never
-    get the current shape — a bare ``AttributeError`` the actor misreads
-    as its own bug. Both resolutions are legitimate; the absence is
-    neither, and that is what this pin holds out."""
+    """An actor calling the documented ``await ctx.progress(...)``,
+    ``ctx.check_cancelled()``, and ``ctx.should_abort()`` through
+    ``run_until_drained`` gets either a working surface (the report
+    lands observably; the job succeeds) or a designed, self-attributing
+    unsupported-feature failure. It must never get the current shape —
+    a bare ``AttributeError`` the actor misreads as its own bug. Both
+    resolutions are legitimate; the absence is neither, and that is
+    what this pin holds out."""
     clock = FakeClock(start=_START)
     backend = InMemoryBackend(clock=clock)
     gaps: list[str] = []
@@ -111,6 +121,10 @@ async def test_documented_method_surface_is_exercisable_through_the_runner() -> 
             ctx.check_cancelled()  # type: ignore[attr-defined]  # Why: stub ctx is duck-typed; same disjunction contract as progress above.
         except AttributeError:
             gaps.append("check_cancelled")
+        try:
+            ctx.should_abort()  # type: ignore[attr-defined]  # Why: stub ctx is duck-typed; the sync-actor cooperative-cancellation check is part of the same documented surface.
+        except AttributeError:
+            gaps.append("should_abort")
         return {"ok": True}
 
     backend.register_stub("reporter", reporter)
