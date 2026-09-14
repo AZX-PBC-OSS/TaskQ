@@ -11,6 +11,8 @@ Covers dispatch_batch, run_until_drained, and related dispatch behaviour:
 - dispatch queue filtering
 - enqueue initial-status bifurcation
 - clock advance during dispatch
+- running-row lease invariant (the store stamps a lease on every
+  lease-less running write, the twin of the dispatch CTE's stamp)
 - isinstance(InMemoryBackend, Backend) returns True
 """
 
@@ -19,6 +21,7 @@ Covers dispatch_batch, run_until_drained, and related dispatch behaviour:
 # inherently have unknown parameter types.  Private access to _jobs and
 # _worker_id is for test-only inspection.
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -26,7 +29,7 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 from pydantic import BaseModel
 
-from taskq._ids import new_job_id
+from taskq._ids import new_job_id, new_uuid
 from taskq.backend import Backend, EnqueueArgs
 from taskq.backend._protocol import IdentityKey, JobId, RetryKind
 from taskq.exceptions import ReservationUnavailable, Snooze
@@ -565,8 +568,10 @@ class TestPayloadValidationFailureRouting:
 
 async def test_run_until_drained_handles_reservation_unavailable() -> None:
     """ReservationUnavailable raised by stub produces a scheduled row
-    with metadata['awaiting'] == 'reservation:<bucket>' and an attempt
-    row with outcome='reservation_denied'.
+    with metadata['awaiting'] == 'reservation:<bucket>', the
+    rate_limit_blocked_count counter incremented on the row, and NO
+    attempt row for the denial (a denial is admission control, not an
+    execution — the only attempt row is the eventual success).
     """
     clock = FakeClock(_START)
     backend = _make_backend(clock)
@@ -589,10 +594,14 @@ async def test_run_until_drained_handles_reservation_unavailable() -> None:
     row = await backend.get(args.id)
     assert row is not None
     assert row.metadata.get("awaiting") == "reservation:gpu_pool"
+    assert row.rate_limit_blocked_count == 1
+    assert row.snooze_count == 0
 
     attempts = await backend.get_attempts(args.id)
     reservation_attempts = [a for a in attempts if a.outcome == "reservation_denied"]
-    assert len(reservation_attempts) == 1
+    assert reservation_attempts == []
+    # The re-dispatched execution succeeded and wrote its one row.
+    assert [a.outcome for a in attempts] == ["succeeded"]
 
 
 # ── Single-actor cap ─────────────────────────────────────────────
@@ -921,6 +930,83 @@ async def test_dispatch_batch_respects_schedule_to_close_interval() -> None:
 
     dispatched = await backend.dispatch_batch(backend._worker_id, ["default"], 10, _GRACE)
     assert dispatched == []
+
+
+# ── running-row lease invariant ────────────────────────────────
+
+
+class TestRunningRowLeaseInvariant:
+    async def test_running_row_written_without_a_lease_gets_one_stamped(self) -> None:
+        """The store stamps a lease on every running-row write that lacks
+        one — the twin of the dispatch CTE's unconditional
+        ``lock_expires_at = clock_timestamp() + lock_lease``
+        (backend/_dispatch_sql.py), stamped from the injected clock.
+
+        A running row with a NULL lease is unrepresentable through PG's
+        writers, so the twin's store must not hold one either: the reclaim
+        sweep's NULL-blind guard (the twin of PG's NULL-false
+        ``lock_expires_at < bound``) can never select it, and no other
+        exit reaches a dead holder's row — the stamped lease is what makes
+        it reclaimable once the clock passes it.
+        """
+        clock = FakeClock(_START)
+        backend = _make_backend(clock)
+        args = _enqueue_args(actor="test_actor")
+        row = await backend.enqueue(args)
+        # The corpus-seeding pattern: a running row planted straight into
+        # the store, bypassing dispatch.
+        backend._jobs[args.id] = replace(
+            row,
+            status="running",
+            attempt=1,
+            started_at=_START,
+            locked_by_worker=new_uuid(),
+            lock_expires_at=None,
+        )
+
+        stored = await backend.get(args.id)
+        assert stored is not None
+        assert stored.status == "running"
+        assert stored.lock_expires_at is not None, (
+            "a running row must never sit in the twin's store without a "
+            "lease — PG's dispatch CTE stamps one on every claim, and the "
+            "reclaim sweep's NULL guard leaves a lease-less running row "
+            "with no reachable exit"
+        )
+        assert stored.lock_expires_at > _START, (
+            "the stamped lease must run from the injected clock's now, not "
+            "from a wall clock and not from the past — an already-expired "
+            "stamp would make the row instantly reclaimable"
+        )
+
+        # The stamped lease is the exit the lease-less shape lacked: once
+        # the injected clock passes it, the reclaim sweep reaches the row.
+        clock.advance(timedelta(days=365))
+        reclaimed = await backend.reclaim_expired_locks(_GRACE, _GRACE)
+        assert reclaimed == 1
+        final = await backend.get(args.id)
+        assert final is not None
+        assert final.status != "running"
+
+    async def test_dispatched_rows_keep_their_own_lease(self) -> None:
+        """Dispatch already stamps its caller-supplied lease; the store's
+        invariant stamp must not overwrite it (dispatch_batch's lease is
+        the dispatcher's configured lease, not the store's default).
+        """
+        clock = FakeClock(_START)
+        backend = _make_backend(clock)
+        backend.register_stub("test_actor", lambda payload, ctx: {"ok": True})
+        args = _enqueue_args(actor="test_actor")
+        await backend.enqueue(args)
+
+        lease = timedelta(seconds=17)
+        dispatched = await backend.dispatch_batch(backend._worker_id, ["default"], 1, lease)
+        assert len(dispatched) == 1
+
+        row = await backend.get(args.id)
+        assert row is not None
+        assert row.status == "running"
+        assert row.lock_expires_at == _START + lease
 
 
 # ── SubJobEnqueuer wiring regression test ──────────────────────────────

@@ -41,6 +41,13 @@ _log: structlog.stdlib.BoundLogger = get_logger(__name__)
 #:   learned this one the hard way.
 #: - ``CannotConnectNowError``: 57P03, server in crash recovery or still
 #:   starting. Same OperatorInterventionError family.
+#: - ``ReadOnlySQLTransactionError``: 25006, read_only_sql_transaction —
+#:   a PG failover's read-only window on the surviving primary. Pure
+#:   reads keep succeeding (the watchdog's and election loop's ``SELECT
+#:   1`` probes) while every leader write fails, so this classification
+#:   is the only thing keeping the worker alive through the window; the
+#:   condition resolves when the failover completes, exactly like 57P03
+#:   resolves when recovery finishes.
 #: - ``TooManyConnectionsError``: 53300, server saturated; a later tick
 #:   can succeed.
 #: - ``DeadlockDetectedError`` / ``SerializationError``: 40P01/40001, the
@@ -67,6 +74,7 @@ TRANSIENT_PG_ERRORS: tuple[type[BaseException], ...] = (
     asyncpg.QueryCanceledError,
     asyncpg.AdminShutdownError,
     asyncpg.CannotConnectNowError,
+    asyncpg.ReadOnlySQLTransactionError,
     asyncpg.TooManyConnectionsError,
     asyncpg.DeadlockDetectedError,
     asyncpg.SerializationError,

@@ -40,6 +40,9 @@ async def test_count_active_jobs_running() -> None:
     from datetime import timedelta
 
     backend = InMemoryBackend(FakeClock(_CLOCK_START))
+    # Register the actor so dispatch_batch finds it (mirrors PG's
+    # actor_config requirement — candidates come FROM the registry).
+    backend.register_actor_config(actor="test_actor")
     await backend.enqueue(make_enqueue_args(queue="default", scheduled_at=_CLOCK_START))
     await backend.dispatch_batch(
         backend._worker_id, ["default"], limit=1, lock_lease=timedelta(seconds=60)
@@ -61,11 +64,14 @@ async def test_count_active_jobs_terminal_excluded() -> None:
     from datetime import timedelta
 
     backend = InMemoryBackend(FakeClock(_CLOCK_START))
+    # Register the actor so dispatch_batch finds it (mirrors PG's
+    # actor_config requirement — candidates come FROM the registry).
+    backend.register_actor_config(actor="test_actor")
     await backend.enqueue(make_enqueue_args(queue="default", scheduled_at=_CLOCK_START))
     dispatched = await backend.dispatch_batch(
         backend._worker_id, ["default"], limit=1, lock_lease=timedelta(seconds=60)
     )
-    await backend.mark_succeeded(dispatched[0].id, backend._worker_id, None)
+    await backend.mark_succeeded(dispatched[0].id, backend._worker_id, None, attempt=1)
     assert await backend.count_active_jobs(["default"]) == 0
 
 

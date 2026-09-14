@@ -326,3 +326,62 @@ class TestNoCollisions:
             assert res.id == args.id, f"item {i}"
             assert res.actor == "actor_a"
             assert res.payload == {"idx": i}
+
+
+# ── Batch dedup observability (sibling of the single-enqueue contract) ─────
+
+
+class TestBatchDedupIsObservable:
+    """The batch result assembly logs the same ``enqueue_deduplicated``
+    contract as the single-enqueue path — status on every hit, warning
+    when the target is terminal — so a caller cannot learn about a
+    silently deduped batch item only by diffing result ids."""
+
+    async def test_batch_dedup_onto_live_job_is_info_with_status(
+        self, clean_jobs_app: JobsApp
+    ) -> None:
+        import structlog
+
+        backend = clean_jobs_app.backend
+        pre = _make_args(actor="actor_a", idempotency_key=_IDEMP_KEY_1)
+        (await backend.enqueue_batch([pre]))[0]
+
+        with structlog.testing.capture_logs() as captured:
+            await backend.enqueue_batch([_make_args(actor="actor_z", idempotency_key=_IDEMP_KEY_1)])
+
+        hits = [e for e in captured if e.get("event") == "enqueue_deduplicated"]
+        assert len(hits) == 1, f"batch dedup emitted no log line; captured={captured}"
+        line = hits[0]
+        assert line.get("log_level") == "info"
+        assert line.get("status") == "pending"
+        assert line.get("dedup_reason") == "idempotency_key"
+
+    async def test_batch_dedup_onto_terminal_job_warns_with_status(
+        self, clean_jobs_app: JobsApp
+    ) -> None:
+        import structlog
+
+        deps = clean_jobs_app.deps
+        backend = clean_jobs_app.backend
+        schema: str = deps.settings.schema_name
+        pre = _make_args(actor="actor_a", idempotency_key=_IDEMP_KEY_2)
+        pre_row = (await backend.enqueue_batch([pre]))[0]
+
+        async with deps.worker_pool.acquire() as conn:  # type: ignore[union-attr]  # Why: deps is object-typed in the JobsApp shim, as elsewhere in the suite.
+            await conn.execute(
+                f'UPDATE "{schema}".jobs '  # noqa: S608  # Why: schema is the fixture's validated identifier; the id is $-bound.
+                "SET status = 'failed', finished_at = now() WHERE id = $1",
+                pre_row.id,
+            )
+
+        with structlog.testing.capture_logs() as captured:
+            await backend.enqueue_batch([_make_args(actor="actor_z", idempotency_key=_IDEMP_KEY_2)])
+
+        hits = [e for e in captured if e.get("event") == "enqueue_deduplicated"]
+        assert len(hits) == 1, f"batch dedup emitted no log line; captured={captured}"
+        line = hits[0]
+        assert line.get("log_level") == "warning", (
+            "a batch item deduped onto a TERMINAL job must warn, exactly as the "
+            f"single-enqueue path does; got {line!r}"
+        )
+        assert line.get("status") == "failed"

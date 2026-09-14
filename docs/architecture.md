@@ -618,8 +618,12 @@ two dispatch SQL variants selected per-queue at dispatch time:
 ### Queue modes
 
 Each queue has a `mode` column in the `queues` table: `strict_fifo` (default) or
-`round_robin`. The dispatch batch method queries the `queues` table via
-`_resolve_queue_modes()` to select the SQL variant — one indexed query per batch.
+`round_robin`. The dispatch batch method selects the SQL variant via
+`_resolve_queue_modes()`, served from a per-worker TTL cache (5 s): a cache hit
+adds no query to the batch's transaction, the miss path runs the one indexed
+`queues` read and refills the cache, and `taskq queues set-mode` invalidates the
+caches of the process it runs in — so a mode flip reaches every worker within
+the TTL.
 Queues absent from the table default to `strict_fifo`.
 
 | Mode | Ordering | Use case |

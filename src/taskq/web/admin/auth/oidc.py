@@ -96,11 +96,11 @@ def _state_serializer(secret: str) -> Any:
 
 
 def _issue_state_cookie(
-    response: Response, secret: str, state: str, code_verifier: str, *, secure: bool
+    response: Response, secret: str, state: str, code_verifier: str, nonce: str, *, secure: bool
 ) -> None:
     response.set_cookie(
         _STATE_COOKIE_NAME,
-        str(_state_serializer(secret).dumps({"state": state, "cv": code_verifier})),
+        str(_state_serializer(secret).dumps({"state": state, "cv": code_verifier, "nonce": nonce})),
         max_age=_STATE_MAX_AGE,
         httponly=True,
         secure=secure,
@@ -119,9 +119,15 @@ def _read_state_cookie(cookie: str, secret: str) -> dict[str, str] | None:
         return None
     state = payload.get("state")
     cv = payload.get("cv")
+    nonce = payload.get("nonce")
     if not isinstance(state, str) or not isinstance(cv, str):
         return None
-    return {"state": state, "cv": cv}
+    # The nonce must be a non-empty string: an absent or empty one leaves the
+    # ID token unbound to this browser, which is the one thing the callback
+    # must never accept.
+    if not isinstance(nonce, str) or not nonce:
+        return None
+    return {"state": state, "cv": cv, "nonce": nonce}
 
 
 def _clear_state_cookie(response: Response, secure: bool) -> None:
@@ -171,6 +177,7 @@ def create_oidc_auth(config: OIDCAuthConfig, *, base_path: str = "") -> AuthBund
 
             code_verifier = secrets.token_urlsafe(48)
             state = secrets.token_urlsafe(32)
+            nonce = secrets.token_urlsafe(32)
             async with httpx.AsyncClient(timeout=10.0) as http:
                 meta = (await http.get(f"{config.issuer}/.well-known/openid-configuration")).json()
             async with AsyncOAuth2Client(  # pyright: ignore[reportGeneralTypeIssues]  # Why: authlib ships no stubs; AsyncOAuth2Client subclasses httpx2.AsyncClient but pyright cannot see __aenter__/__aexit__ across the untyped MRO.
@@ -183,10 +190,20 @@ def create_oidc_auth(config: OIDCAuthConfig, *, base_path: str = "") -> AuthBund
                     meta["authorization_endpoint"],
                     state=state,
                     code_verifier=code_verifier,
+                    nonce=nonce,
                 )
             response = RedirectResponse(url=auth_url, status_code=302)
+            # state + PKCE bind the authorization code to this browser; the
+            # nonce binds the ID token — the credential the session is minted
+            # from — so it rides the same signed cookie the callback compares
+            # the ID token's nonce claim against.
             _issue_state_cookie(
-                response, config.session_secret, state, code_verifier, secure=config.secure_cookie
+                response,
+                config.session_secret,
+                state,
+                code_verifier,
+                nonce,
+                secure=config.secure_cookie,
             )
             return response
         except Exception:
@@ -206,6 +223,7 @@ def create_oidc_auth(config: OIDCAuthConfig, *, base_path: str = "") -> AuthBund
                 raise ValueError("invalid state cookie")
             expected_state = state_data["state"]
             code_verifier = state_data["cv"]
+            nonce = state_data["nonce"]
 
             query_state = request.query_params.get("state")
             if not query_state or not hmac.compare_digest(query_state, expected_state):
@@ -249,7 +267,10 @@ def create_oidc_auth(config: OIDCAuthConfig, *, base_path: str = "") -> AuthBund
                 token_obj.claims,
                 token_obj.header,
                 options=options,
-                params={"client_id": config.client_id},
+                # The nonce param is what arms authlib's ID-token nonce check:
+                # the token must carry this login's nonce or validation fails,
+                # so an ID token minted for any other flow cannot mint a session.
+                params={"client_id": config.client_id, "nonce": nonce},
             )
             claims_obj.validate()
             id_claims: dict[str, object] = dict(claims_obj)

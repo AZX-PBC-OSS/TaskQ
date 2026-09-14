@@ -237,18 +237,22 @@ def test_diff_shows_literal_stored_and_effective(monkeypatch: pytest.MonkeyPatch
     assert "effective=10" in result.output
 
 
-def test_diff_flags_structural_drift_as_startup_blocking(
+def test_diff_flags_queue_mismatch_as_assignment_drift(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Registry queue=critical vs stored queue=default → the output warns
-    that the next worker startup raises ActorConfigDriftList, and the exit
-    code fails the run: drift the command itself calls startup-blocking
-    must not report success."""
+    """Registry queue=critical vs stored queue=default → the output names
+    the assignment drift and its remedy (`actor-config move-queue`), and
+    the exit code fails the run: boot adopts the stored queue, but the
+    cron leader's fires follow it while producers enqueue by their own
+    literal, so the two routing halves disagree until the move or the
+    deploy completes — drift the command itself calls gate-failing must
+    not report success."""
     _patch_db(monkeypatch)
     result = runner.invoke(app, ["actor-config", "diff", "--actors", _REGISTRY_PATH])
     assert result.exit_code != 0
     assert "queue" in result.output
-    assert "ActorConfigDriftList" in result.output
+    assert "MISMATCH" in result.output
+    assert "move-queue" in result.output
 
 
 def test_diff_marks_actor_without_stored_row(monkeypatch: pytest.MonkeyPatch) -> None:

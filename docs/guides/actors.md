@@ -540,11 +540,15 @@ async def sync_account(payload: SyncPayload) -> None: ...
 **Semantics:**
 
 - `unique_for` only has effect when `identity_key` is also provided at enqueue time. If
-  `identity_key` is omitted, `unique_for` is a **silent no-op** — the library logs a warning with
-  event name `actor_config_unique_for_ignored` and creates a fresh job every time. This is a common
+  `identity_key` is omitted, `unique_for` is a **silent no-op** — the library logs a warn-once
+  `actor_config_unique_for_ignored` (on every enqueue surface: an actor-declared `unique_for`
+  through `JobsClient`/`TaskQ`, and a per-call `unique_for` through `SubJobEnqueuer`) and creates
+  a fresh job every time. This is a common
   footgun: configure `unique_for` on the actor but forget to pass `identity_key` at the call site.
-- Deduplication is **best-effort** — concurrent enqueues for the same `(actor, identity_key)` may
-  both insert. The dispatch CTE's `running_identities` filter ensures only one runs.
+- Deduplication is **single-flight** — a transaction-scoped advisory lock serializes the
+  preflight-then-insert per `(actor, identity_key)` on pool and bare-caller connections alike,
+  so concurrent enqueues dedupe against the winner's row rather than both inserting; the
+  dispatch CTE's `running_identities` filter remains as the backstop for cross-window races.
 - When a dedup match is found, `JobHandle.was_existing` is `True` and the handle wraps the
   existing job row.
 - `unique_states` controls which statuses count as "active" for the window check. Terminal states
@@ -820,9 +824,12 @@ See the `SubJobEnqueuer` reference in [Client API — SubJobEnqueuer](jobs-clien
 
 Sub-job enqueues join the parent job's transaction by default. On a `TASKQ_MAX_CONCURRENCY=1`
 worker that transaction runs on the registered **LOOP-scope `asyncpg.Connection`**; at higher
-concurrency the worker opens a dedicated per-slot transaction pool and each job transacts on
-its own slot connection (actors still receive the registered connection by injection). Either
-way, sub-job INSERTs are part of the parent's database transaction:
+concurrency the worker opens a dedicated per-slot transaction pool, each job transacts on its
+own slot connection, and the actor receives that same slot connection by injection — so the
+actor's own database writes join the job's transaction too, and two concurrent slots' actors
+can never interleave operations on one connection (asyncpg permits one operation per
+connection at a time). Either way, sub-job INSERTs are part of the parent's database
+transaction:
 
 - If the parent actor **succeeds**, the transaction commits and the sub-jobs become visible.
 - If the parent actor **raises an exception** (and will be retried or failed), the transaction
@@ -845,17 +852,22 @@ an exception. The worker emits a `sub_enqueue_autonomous_fallback` warning to st
 100 autonomous enqueues to alert you that transactional guarantees are not in effect.
 
 To ensure the transactional path is active, register an `asyncpg.Connection` at `Scope.LOOP`
-in the DI registry (see [Dependency Injection](dependency-injection.md)).
+in the DI registry (see [Dependency Injection](dependency-injection.md)). Registering an
+`asyncpg.Pool` at `Scope.LOOP` instead does **not** activate it: the transactional path keys
+on `Connection`, so a Pool-only registration keeps the autonomous fallback in force —
+transactional consume is silently disabled, not enabled.
 
-!!! warning "Transactional sub-enqueue: session state, not concurrency, is the constraint"
-    At `max_concurrency > 1` each job transacts on its own per-slot connection, so the
-    transactional path is correct at any concurrency — but TaskQ's own transactional writes
-    (the terminal write, transactional sub-enqueues) run on the slot connections, not the
-    registered LOOP-scope connection. If that connection carries session state (`SET ROLE`,
-    `search_path`, an RLS-driving GUC) that TaskQ's writes were expected to inherit, run the
-    transactional actor on a `TASKQ_MAX_CONCURRENCY=1` worker, where the writes keep using the
-    registered connection — also the minimal-connection-budget shape (no `max_concurrency + 1`
-    slot pool). See [Jobs & Clients — SubJobEnqueuer](jobs-clients.md#subjobenqueuer).
+!!! warning "Transactional consume: session state, not concurrency, is the constraint"
+    At `max_concurrency > 1` each job — actor writes, terminal write, and transactional
+    sub-enqueues alike — transacts on its own per-slot connection, so the transactional path
+    is correct at any concurrency. The registered LOOP-scope connection is that mode's
+    activation signal; the slot connections are fresh direct-DSN connections that never
+    carried its session state. If your writes depend on session state (`SET ROLE`,
+    `search_path`, an RLS-driving GUC) set up on the registered connection, run the
+    transactional actor on a `TASKQ_MAX_CONCURRENCY=1` worker, where the transaction — and
+    the actor's injected connection — keep using the registered connection; that is also the
+    minimal-connection-budget shape (no `max_concurrency + 1` slot pool). See
+    [Jobs & Clients — SubJobEnqueuer](jobs-clients.md#subjobenqueuer).
 
 ### Handle limitations
 

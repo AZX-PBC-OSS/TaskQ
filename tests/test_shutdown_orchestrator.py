@@ -1123,6 +1123,9 @@ def test_grace_budget_accepted(
             "TASKQ_LOCK_LEASE": str(lock_l),
             "TASKQ_HEARTBEAT_INTERVAL": str(hb_int),
             "TASKQ_WATCHDOG_LOOP_LAG_BUDGET": str(lock_l / 2),
+            # Half the derived budget so the warn-vs-budget invariant
+            # stays quiet wherever the draw lands.
+            "TASKQ_WATCHDOG_LOOP_LAG_WARN_BUDGET": str(lock_l / 4),
         }
     )
     assert settings.cancellation_grace_period == cancel_g

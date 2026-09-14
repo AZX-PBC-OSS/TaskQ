@@ -73,6 +73,8 @@ def _default_record() -> dict[str, Any]:
         "span_id": None,
         "metadata": "{}",
         "tags": [],
+        "snooze_count": 0,
+        "rate_limit_blocked_count": 0,
     }
 
 

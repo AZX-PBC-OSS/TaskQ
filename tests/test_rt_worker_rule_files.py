@@ -33,6 +33,30 @@ _NEW_ALERTS = (
     "TaskQLeaderLockContention",
 )
 
+#: The alerts the observability burn added on top — the denial/outage
+#: family (rate-limit store dependency, cron lock contention, the
+#: zombie-running lease gauge) — under the same runbook and emitted-series
+#: discipline.
+_OUTAGE_ALERTS = (
+    "TaskQRateLimitDependencyOutage",
+    "TaskQCronLockContention",
+    "TaskQRunningLeaseExpired",
+)
+
+#: The outage family's severities: the first two are degradation signals
+#: (work deferred, not lost — warning, like the sweep family); a SUSTAINED
+#: non-zero zombie-running count means reclaim is not draining while
+#: health probes stay green — that one is the 3am page.
+_OUTAGE_SEVERITIES = {
+    "TaskQRateLimitDependencyOutage": "warning",
+    "TaskQCronLockContention": "warning",
+    "TaskQRunningLeaseExpired": "critical",
+}
+
+#: Every runbook-carrying alert, for the checks that apply to both
+#: generations alike.
+_ALL_RUNBOOKED_ALERTS = _NEW_ALERTS + _OUTAGE_ALERTS
+
 
 def _rules_from(path: Path) -> list[dict[str, Any]]:
     data = yaml.safe_load(path.read_text(encoding="utf-8"))
@@ -56,9 +80,9 @@ def _runbook_anchors(md_path: Path) -> set[str]:
 
 
 def test_new_alert_annotations_point_at_existing_runbook_anchors() -> None:
-    """Every runbook link in the new alerts' annotations must resolve to
-    a real heading anchor in docs/guides/runbooks.md — in BOTH rule
-    files. And every new alert must CARRY a runbook link: an annotation
+    """Every runbook link in the runbooked alerts' annotations must resolve
+    to a real heading anchor in docs/guides/runbooks.md — in BOTH rule
+    files. And every such alert must CARRY a runbook link: an annotation
     that lost its link entirely would otherwise pass vacuously."""
     assert _RUNBOOKS_MD.exists(), f"runbooks.md not found at {_RUNBOOKS_MD}"
     anchors = _runbook_anchors(_RUNBOOKS_MD)
@@ -66,7 +90,7 @@ def test_new_alert_annotations_point_at_existing_runbook_anchors() -> None:
     for rules_path in (_RULES_YAML, _K8S_RULES_YAML):
         rules = _rules_from(rules_path)
         for rule in rules:
-            if rule.get("alert") not in _NEW_ALERTS:
+            if rule.get("alert") not in _ALL_RUNBOOKED_ALERTS:
                 continue
             annotations = rule.get("annotations", {})
             text = " ".join(str(v) for v in annotations.values())
@@ -85,7 +109,7 @@ def test_new_alert_annotations_point_at_existing_runbook_anchors() -> None:
 
 
 def test_new_alert_exprs_reference_series_the_bridge_emits() -> None:
-    """Every taskq_* series name in the new alerts' exprs must be a
+    """Every taskq_* series name in the runbooked alerts' exprs must be a
     Prometheus name the bridge actually emits (per the authoritative
     _NAME_MAP the scrape tests verify). A typo'd series name is not a
     Prometheus error — the alert just silently never fires."""
@@ -96,7 +120,7 @@ def test_new_alert_exprs_reference_series_the_bridge_emits() -> None:
     for rules_path in (_RULES_YAML, _K8S_RULES_YAML):
         rules = _rules_from(rules_path)
         for rule in rules:
-            if rule.get("alert") not in _NEW_ALERTS:
+            if rule.get("alert") not in _ALL_RUNBOOKED_ALERTS:
                 continue
             expr = str(rule["expr"])
             referenced = set(re.findall(r"\btaskq_[a-z0-9_]+", expr))
@@ -154,6 +178,55 @@ def test_both_rule_files_carry_the_five_new_alerts() -> None:
                 "two rule files have drifted"
             )
             assert by_name[alert]["labels"]["severity"] == "warning"
+
+
+def test_both_rule_files_carry_the_outage_alerts_at_their_severities() -> None:
+    """The observability-burn alerts live in BOTH rule files at their own
+    severities: the denial-family degradation signals at warning, the
+    sustained zombie-running count at critical (work claimed and stuck
+    while health probes stay green — the 3am page)."""
+    for rules_path in (_RULES_YAML, _K8S_RULES_YAML):
+        rules = _rules_from(rules_path)
+        by_name = {r["alert"]: r for r in rules}
+        for alert, severity in _OUTAGE_SEVERITIES.items():
+            assert alert in by_name, (
+                f"{rules_path.name} is missing the alert {alert!r} — under a "
+                "Redis outage every rate-limited dispatch snoozes silently "
+                "and nothing fires"
+            )
+            assert by_name[alert]["labels"]["severity"] == severity, (
+                f"{rules_path.name}: {alert!r} must be {severity!r}"
+            )
+
+
+def test_dimensionless_series_annotations_carry_no_label_references() -> None:
+    """Alerts on series the bridge emits with NO dimensions must not
+    reference ``$labels.<dim>`` in their annotations: the rendered alert
+    summary would show an empty worker — a 3am page that names nobody.
+
+    taskq.heartbeat.misses and taskq.lock.expires_in_seconds are
+    dimensionless by the cardinality rule (obs/_otel.py's worker_id
+    note); their summaries must read without a label crutch.
+    """
+    dimensionless = {
+        "taskq_heartbeat_misses_total",
+        "taskq_lock_expires_in_seconds",
+    }
+    for rules_path in (_RULES_YAML, _K8S_RULES_YAML):
+        rules = _rules_from(rules_path)
+        for rule in rules:
+            expr = str(rule["expr"])
+            referenced = set(re.findall(r"\btaskq_[a-z0-9_]+", expr))
+            if not referenced & dimensionless:
+                continue
+            annotations = rule.get("annotations", {})
+            text = " ".join(str(v) for v in annotations.values())
+            offenders = sorted(set(re.findall(r"\$labels\.[a-z_]+", text)))
+            assert not offenders, (
+                f"{rules_path.name}: alert {rule['alert']!r} fires on a "
+                f"dimensionless series but its annotations reference "
+                f"{offenders} — the rendered summary carries an empty value"
+            )
 
 
 @pytest.mark.parametrize("rules_path", [_RULES_YAML, _K8S_RULES_YAML])

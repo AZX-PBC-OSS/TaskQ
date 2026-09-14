@@ -22,8 +22,13 @@ import structlog
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator, model_validator
 
 from taskq.backend._protocol import Backend, ErrorInfo, JobId, JobRow, RetryKind
-from taskq.constants import DEFAULT_MAX_RETRY_BACKOFF
-from taskq.exceptions import PayloadValidationError, ResultTooLarge, WorkerOwnershipMismatch
+from taskq.constants import DEFAULT_MAX_RETRY_BACKOFF, MIN_DEFERRAL_INTERVAL
+from taskq.exceptions import (
+    PayloadValidationError,
+    ResultTooLarge,
+    UnencodableValue,
+    WorkerOwnershipMismatch,
+)
 
 __all__ = [
     "MAX_ATTEMPTS_SMALLINT_CEILING",
@@ -39,6 +44,7 @@ __all__ = [
     "RetryKind",
     "RetryOverride",
     "RetryPolicy",
+    "apply_jitter",
     "compute_backoff",
     "decide_after_failure",
     "invoke_on_retry_exhausted",
@@ -51,24 +57,21 @@ MAX_ATTEMPTS_SMALLINT_CEILING: Final[int] = 32767
 """The ``jobs.max_attempts`` column's smallint domain ceiling.
 
 The column is ``smallint`` (migrations/01.00.00_01_pre_initial.sql), so
-32767 is the largest value any row can hold. The two non-consuming snooze
-arms (``mark_snoozed`` and ``mark_retry_after(consume_budget=False)``)
-widen the budget with ``LEAST(j.max_attempts + 1, this)`` — saturating at
-the ceiling instead of aborting with PG 22003 — and the in-memory backend
-mirrors the saturation with ``min(...)``. Shared here because the SQL
-templates, the in-memory mirror and this module's own validation must not
+32767 is the largest value any row can hold. Shared here because the
+validation below, the in-memory mirror and any future writer must not
 drift on what the ceiling is."""
 
 MAX_ENQUEUABLE_MAX_ATTEMPTS: Final[int] = MAX_ATTEMPTS_SMALLINT_CEILING - 1
 """Largest ``RetryPolicy.max_attempts`` a fresh policy may carry.
 
-One below the column ceiling because the snooze arms add 1: a job enqueued
-at 32767 is born unable to grow its budget even once, so the policy guard
+One below the column ceiling, retained as a defensive margin: a row
+parked at exactly 32767 has no headroom for any future statement that
+needs to add one to a max_attempts-derived value, so the policy guard
 refuses the value the way it refuses values past the column entirely
 (:func:`RetryPolicy._validate_max_attempts`). Rows can still legally
-REACH the ceiling — the saturating increment parks a snoozed 32766-job
-there — which is why :func:`decide_after_failure` clamps row-stored
-values back into this bound before reconstructing a policy."""
+REACH the ceiling — earlier releases' snooze arms parked a snoozed
+32766-job there — which is why :func:`decide_after_failure` clamps
+row-stored values back into this bound before reconstructing a policy."""
 
 
 class RetryPolicy(BaseModel):
@@ -90,17 +93,15 @@ class RetryPolicy(BaseModel):
         if v < 1:
             raise ValueError("max_attempts must be >= 1")
         # Why: max_attempts lands in the smallint jobs.max_attempts column
-        # (migrations/01.00.00_01_pre_initial.sql), and the non-consuming
-        # snooze arms add 1 to it — so a fresh policy must fit the column
-        # WITH headroom for one increment, exactly the way the other
-        # client-accepted smallint (priority) is range-guarded at
-        # client/_args.py and actor.py. Without the ceiling an operator can
-        # persist a value whose every snooze aborts with PG 22003 (or, post
-        # saturation, a budget that can never widen).
+        # (migrations/01.00.00_01_pre_initial.sql), and the policy layer is
+        # the boundary that refuses values the column cannot hold — the
+        # same treatment the other client-accepted smallint (priority)
+        # gets at client/_args.py and actor.py. One of defensive headroom
+        # is retained (see MAX_ENQUEUABLE_MAX_ATTEMPTS).
         if v > MAX_ENQUEUABLE_MAX_ATTEMPTS:
             raise ValueError(
-                f"max_attempts must fit the smallint jobs.max_attempts column with "
-                f"room for one snooze increment (<= {MAX_ENQUEUABLE_MAX_ATTEMPTS}), "
+                f"max_attempts must fit the smallint jobs.max_attempts column "
+                f"with one of defensive headroom (<= {MAX_ENQUEUABLE_MAX_ATTEMPTS}), "
                 f"got {v}"
             )
         return v
@@ -125,8 +126,14 @@ class Retry(BaseModel):
     The delay — not a computed timestamp — is the decision payload: the
     backend derives ``scheduled_at = now() + retry_delay`` and the
     scheduled/pending status from its own clock (single arbiter, immune to
-    app↔DB clock skew).  ``retry_delay=0`` means "retry immediately"
-    (lands pending).
+    app↔DB clock skew).  The delay never falls below
+    :data:`~taskq.constants.MIN_DEFERRAL_INTERVAL` — the requeue-rate
+    floor the deferral arms already apply at their writes — so a
+    degenerate curve (``base=timedelta(0)``, where ``0 * 2**k == 0`` at
+    every rung) or a zero ``Retry-After`` override cannot turn the
+    failure cycle into a claim/run/fail round trip monopolising a worker
+    slot with no period and, for an ``indefinite`` kind, no attempt
+    ceiling.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -180,6 +187,41 @@ _production_rng = random.Random(secrets.randbits(128))  # noqa: S311  Why: rando
 _MAX_BACKOFF_EXPONENT: Final[int] = 1023
 
 
+def _jittered_seconds(raw_s: float, jitter: float, source: random.Random) -> float:
+    """The one implementation of the multiplicative-symmetric jitter
+    multiplication — every delay this package spreads shares it.
+
+    ``raw * source.uniform(1 - jitter, 1 + jitter)``, floored at zero.
+    """
+    return max(0.0, raw_s * source.uniform(1.0 - jitter, 1.0 + jitter))
+
+
+def apply_jitter(
+    delay: timedelta,
+    jitter: float,
+    rng: random.Random | None = None,
+) -> timedelta:
+    """Spread an externally supplied advisory delay with *jitter*.
+
+    Same formula as :func:`compute_backoff` (see it for why
+    multiplicative-symmetric, not Full Jitter), for delays whose raw value
+    comes from outside the policy's own backoff curve — an admission
+    denial's ``retry_after``. Every fielder of the same raw hint in one
+    round would otherwise re-attempt in lockstep (same token deficit, same
+    lease horizon), so the hint is spread across the band exactly as
+    failure backoff is; the knob stays the policy's own ``jitter``, so
+    ``jitter=0.0`` (``uniform(1, 1)``) is the identity and deterministic
+    suites stay deterministic.
+
+    The result is advisory timing only: any downstream floor (the snooze
+    arm's ``MIN_DEFERRAL_INTERVAL``) still applies to the returned value.
+    """
+    if not (0.0 <= jitter <= 1.0):
+        raise ValueError(f"jitter must be in [0.0, 1.0], got {jitter}")
+    source = rng if rng is not None else _production_rng
+    return timedelta(seconds=_jittered_seconds(delay.total_seconds(), jitter, source))
+
+
 def compute_backoff(
     policy: RetryPolicy,
     attempt: int,
@@ -222,8 +264,7 @@ def compute_backoff(
     else:
         raw = base_s
 
-    delay = raw * source.uniform(1 - policy.jitter, 1 + policy.jitter)
-    delay = max(0.0, min(cap_s, delay))
+    delay = min(cap_s, _jittered_seconds(raw, policy.jitter, source))
     return timedelta(seconds=delay)
 
 
@@ -300,7 +341,18 @@ class RetryClassifier:
             if override_delay is not None
             else compute_backoff(policy, attempt, max_retry_backoff=max_retry_backoff)
         )
-        return Retry(retry_delay=delay)
+        # The monopolisation floor the deferral arms apply at their writes
+        # (mark_snoozed / the non-consuming retry-after arm, via
+        # MIN_DEFERRAL_INTERVAL): a failure-retry delay below it requeues
+        # the job at the head of dispatch order — one claim/run/fail round
+        # trip per cycle holding a worker slot — and an ``indefinite``
+        # policy has no attempt ceiling to bound the cycle count. A
+        # zero/near-zero ``base`` (or a zero Retry-After override)
+        # degenerates the curve to exactly that, so the decision itself
+        # never carries a sub-floor delay; the write arms floor again as
+        # their own defense-in-depth, the same two-layer shape the
+        # deferral family ships.
+        return Retry(retry_delay=max(delay, MIN_DEFERRAL_INTERVAL))
 
     @staticmethod
     def classify(
@@ -325,6 +377,15 @@ class RetryClassifier:
         # 'failed' anyway.
         if isinstance(exception, ResultTooLarge):
             return Fail(error_class="ResultTooLarge", retryable=False)
+
+        # Why the same contract for the encoding half: the actor already
+        # ran to completion — the value it returned is one no UTF-8 JSON
+        # encoding accepts (a lone surrogate, a non-str dict key), and a
+        # re-run reproduces it exactly. Left retryable, a single
+        # unencodable result burns every remaining attempt re-running the
+        # actor's side effects before landing in 'failed' anyway.
+        if isinstance(exception, UnencodableValue):
+            return Fail(error_class="UnencodableValue", retryable=False)
 
         if isinstance(exception, ValidationError):
             return Fail(error_class="PayloadValidationError", retryable=False)
@@ -484,16 +545,15 @@ def decide_after_failure(
             kind=job_state.retry_kind,
             # Why: clamp the ROW-stored value into the constructor's domain.
             # The enqueue-time guard refuses max_attempts above
-            # MAX_ENQUEUABLE_MAX_ATTEMPTS for fresh policies, but a committed
-            # row can legally sit at the smallint ceiling: the saturating
-            # snooze arms park a snoozed 32766-job at 32767. Feeding that
-            # row value straight into the fail-loud constructor would crash
-            # the consumer's failure path on a row the system itself wrote;
-            # the clamp's only semantic cost is the single classification
-            # boundary at the very top of the smallint domain (an attempt
-            # exactly one below a ceiling-widened budget retries instead of
-            # failing) — strictly better than turning a legal row state into
-            # a ValidationError.
+            # MAX_ENQUEUABLE_MAX_ATTEMPTS for fresh policies, but committed
+            # rows written by earlier releases can legally sit at the
+            # smallint ceiling: their snooze arms' saturating increment
+            # parked a snoozed 32766-job at 32767. Feeding that row value
+            # straight into the fail-loud constructor would crash the
+            # consumer's failure path on a row the system itself wrote; the
+            # clamp's only semantic cost is the single classification
+            # boundary at the very top of the smallint domain — strictly
+            # better than turning a legal row state into a ValidationError.
             max_attempts=min(job_state.max_attempts, MAX_ENQUEUABLE_MAX_ATTEMPTS),
             backoff=registered.backoff,
             base=registered.base,
@@ -665,11 +725,15 @@ async def safe_mark_failed_or_retry(
     progress_state: dict[str, object] | None = None,
     *,
     log: structlog.stdlib.BoundLogger | None = None,
+    attempt: int | None = None,
 ) -> JobRow | None:
     """Wrap mark_failed_or_retry, catching WorkerOwnershipMismatch .
 
     Returns the persisted JobRow on success, or None on ownership mismatch
-    (signals the caller to skip the on_retry_exhausted hook).
+    (signals the caller to skip the on_retry_exhausted hook). *attempt* is
+    the attempt-identity epoch threaded from the handler's job-row
+    snapshot — see ``Backend.mark_failed_or_retry``; a fenced-out epoch
+    surfaces here as the same None a worker-fence miss produces.
     """
     logger: structlog.stdlib.BoundLogger = (
         log if log is not None else structlog.get_logger("taskq.retry")
@@ -682,6 +746,7 @@ async def safe_mark_failed_or_retry(
             retry_delay=retry_delay,
             progress_seq=progress_seq,
             progress_state=progress_state,
+            attempt=attempt,
         )
     except WorkerOwnershipMismatch as exc:
         logger.warning(

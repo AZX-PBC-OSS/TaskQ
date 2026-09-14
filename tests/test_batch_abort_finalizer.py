@@ -217,13 +217,15 @@ class TestClockSkewResilience:
         )
         backend._jobs[job.id] = job
 
-        # Snooze the job (simulates wait_for_batch raising Snooze)
+        # Snooze the job (simulates wait_for_batch raising Snooze — the
+        # handler writes no metadata_update; the row's snooze_count
+        # column is the deferral's record)
         snooze = Snooze(timedelta(seconds=2))
         tri = await backend.mark_snoozed(
             job.id,
             worker_id,
             snooze.delay,
-            metadata_update={"snooze_count": 1},
+            attempt=1,
         )
 
         assert tri == "scheduled", f"mark_snoozed returned {tri!r}, expected 'scheduled'"
@@ -362,14 +364,18 @@ class TestClockSkewResilience:
 
 
 class TestSnoozeBudgetInvariant:
-    """Snooze must never consume retry budget — max_attempts grows with
-    each snooze so attempt < max_attempts always holds."""
+    """Snooze must never consume retry budget — the ceiling stays fixed
+    while the refund returns every claim's increment, so the attempt
+    oscillates and never walks toward the ceiling."""
 
-    async def test_snooze_increments_max_attempts_not_attempt(self) -> None:
-        """After N snooze-dispatch cycles, attempt < max_attempts always holds.
-
-        Snooze preserves attempt (only dispatch increments it) and bumps
-        max_attempts by 1, so the retry budget grows with each snooze.
+    async def test_snooze_keeps_ceiling_fixed_not_attempt(self) -> None:
+        """After N snooze-dispatch cycles, max_attempts stays at its
+        configured value and the attempt returns to its post-dispatch
+        value every cycle: each snooze refunds the claim's increment
+        (attempt - 1, floored at 0) and each re-dispatch re-claims it,
+        so a snooze cycle never shrinks the remaining budget — the
+        deferral is unbounded and budget-free, counted on the row's
+        snooze_count.
         """
         backend = _make_backend()
         worker_id = backend._worker_id
@@ -385,33 +391,30 @@ class TestSnoozeBudgetInvariant:
         backend._jobs[job.id] = job
 
         snooze = Snooze(timedelta(seconds=2))
-        expected_attempt = 1
 
         for i in range(10):
-            # Snooze: running → scheduled, max_attempts++, attempt unchanged
-            tri = await backend.mark_snoozed(
-                job.id,
-                worker_id,
-                snooze.delay,
-                metadata_update={"snooze_count": i + 1},
-            )
+            # Snooze: running → scheduled, max_attempts unchanged, the
+            # claim's increment refunded (1 → 0).
+            tri = await backend.mark_snoozed(job.id, worker_id, snooze.delay, attempt=1)
             assert tri == "scheduled", f"snooze {i + 1} returned {tri!r}"
 
             row = await backend.get(job.id)
             assert row is not None
-            assert row.max_attempts == 50 + i + 1
-            assert row.attempt == expected_attempt, (
-                f"snooze changed attempt: expected {expected_attempt}, got {row.attempt}"
+            assert row.max_attempts == 50
+            assert row.attempt == 0, (
+                f"snooze broke the refund contract: expected 0, got {row.attempt}"
             )
             assert row.attempt < row.max_attempts, (
                 f"budget exhausted: attempt={row.attempt} >= max_attempts={row.max_attempts}"
             )
+            assert row.snooze_count == i + 1
 
-            # Re-dispatch: scheduled → running, attempt++
-            expected_attempt += 1
+            # Re-dispatch: scheduled → running, the claim re-increments
+            # the refunded base (0 → 1) — exactly as the dispatch CTE
+            # does on the real path.
             backend._jobs[job.id] = replace(
                 row,
                 status="running",
-                attempt=expected_attempt,
+                attempt=1,
                 locked_by_worker=worker_id,
             )

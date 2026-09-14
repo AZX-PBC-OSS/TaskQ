@@ -16,8 +16,9 @@ duplicated a third time:
   which lives in `admin/jobs.py` and bypassed `admin/sse.py` entirely, so its
   `admin_max_sse_connections` cap never applied to it.
 
-The semaphore is keyed and process-local. Multiple worker processes each get
-their own budget, which is the same semantics the admin endpoint already had.
+The semaphore is keyed by endpoint family and limit, and is process-local.
+Multiple worker processes each get their own budget, which is the same
+semantics the admin endpoint already had.
 """
 
 import asyncio
@@ -27,7 +28,7 @@ from fastapi import HTTPException
 
 __all__ = ["acquire_sse_slot", "release_after"]
 
-_SEMAPHORES: dict[str, asyncio.Semaphore] = {}
+_SEMAPHORES: dict[tuple[str, int], asyncio.Semaphore] = {}
 
 #: Non-blocking acquire. A waiting client would hold the request open while
 #: queueing for a slot, which is the resource exhaustion being prevented.
@@ -35,9 +36,16 @@ _ACQUIRE_TIMEOUT: float = 0.001
 
 
 def _semaphore(key: str, limit: int) -> asyncio.Semaphore:
-    if key not in _SEMAPHORES:
-        _SEMAPHORES[key] = asyncio.Semaphore(limit)
-    return _SEMAPHORES[key]
+    # The limit is part of the key because one process can mount the same
+    # family at several limits (the test suite does; a misconfigured process
+    # could), and a later mount must enforce the limit it was given — keying
+    # by family alone made the first mount's limit silently govern every
+    # later one. Mounts that agree on the limit still share one budget,
+    # which is the cross-router sharing the family key exists to provide.
+    scoped = (key, limit)
+    if scoped not in _SEMAPHORES:
+        _SEMAPHORES[scoped] = asyncio.Semaphore(limit)
+    return _SEMAPHORES[scoped]
 
 
 async def acquire_sse_slot(key: str, limit: int) -> asyncio.Semaphore:

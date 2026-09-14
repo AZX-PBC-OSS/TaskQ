@@ -235,7 +235,7 @@ class TestCancelTrackingCleanup:
         # pending job transitions to cancelled). For a running job,
         # we can mark it cancelled directly.
         wid = backend._worker_id
-        await backend.mark_cancelled(job_id, wid)
+        await backend.mark_cancelled(job_id, wid, attempt=1)
 
         # tick_cancel_polling should clean up the tracking dicts
         await backend.tick_cancel_polling()

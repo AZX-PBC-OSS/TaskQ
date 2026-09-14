@@ -31,6 +31,10 @@ async def _enqueue_and_dispatch(
     schedule_to_close: datetime | None = None,
     scheduled_at: datetime = _START,
 ) -> tuple[JobId, UUID]:
+    # Register the actor so dispatch_batch finds it (mirrors PG's
+    # actor_config requirement — candidates come FROM the registry).
+    if "test_actor" not in backend._actor_configs_meta:  # type: ignore[reportPrivateUsage]  # Why: test-only private access; the established fixture pattern.
+        backend.register_actor_config(actor="test_actor")
     args = make_enqueue_args(
         payload={"key": "value"},
         max_attempts=max_attempts,
@@ -109,7 +113,7 @@ async def test_running_to_succeeded(memory_jobs: InMemoryBackend) -> None:
     """running → succeeded via mark_succeeded."""
     job_id, worker_id = await _enqueue_and_dispatch(memory_jobs)
 
-    result = await memory_jobs.mark_succeeded(job_id, worker_id, result={"value": 42})
+    result = await memory_jobs.mark_succeeded(job_id, worker_id, result={"value": 42}, attempt=1)
     assert result is True
 
     row = await memory_jobs.get(job_id)
@@ -147,6 +151,7 @@ async def test_running_to_failed_retry_exhausted(
         worker_id,
         ErrorInfo(error_class="ValueError", error_message="boom", error_traceback=None),
         retry_delay=None,
+        attempt=1,
     )
     assert updated.status == "failed"
     assert updated.error_class == "ValueError"
@@ -181,6 +186,7 @@ async def test_running_to_failed_non_retryable(
         worker_id,
         ErrorInfo(error_class="TypeError", error_message="non-retryable", error_traceback=None),
         retry_delay=None,
+        attempt=1,
     )
     assert updated.status == "failed"
     assert updated.error_class == "TypeError"
@@ -202,7 +208,9 @@ async def test_running_to_failed_snooze_deadline(
     deadline = _START + timedelta(seconds=10)
     job_id, worker_id = await _enqueue_and_dispatch(memory_jobs, schedule_to_close=deadline)
 
-    result = await memory_jobs.mark_snoozed(job_id, worker_id, delay=timedelta(seconds=20))
+    result = await memory_jobs.mark_snoozed(
+        job_id, worker_id, delay=timedelta(seconds=20), attempt=1
+    )
     assert result == "failed"
 
     row = await memory_jobs.get(job_id)
@@ -227,7 +235,9 @@ async def test_running_to_failed_retry_after_deadline(
     deadline = _START + timedelta(seconds=10)
     job_id, worker_id = await _enqueue_and_dispatch(memory_jobs, schedule_to_close=deadline)
 
-    result = await memory_jobs.mark_retry_after(job_id, worker_id, delay=timedelta(seconds=20))
+    result = await memory_jobs.mark_retry_after(
+        job_id, worker_id, delay=timedelta(seconds=20), attempt=1
+    )
     assert result == "failed:DeadlineExceeded"
 
     row = await memory_jobs.get(job_id)
@@ -254,7 +264,7 @@ async def test_running_to_failed_max_attempts(
     )
 
     result = await memory_jobs.mark_retry_after(
-        job_id, worker_id, delay=timedelta(seconds=5), consume_budget=True
+        job_id, worker_id, delay=timedelta(seconds=5), consume_budget=True, attempt=1
     )
     assert result == "failed:MaxAttemptsExceeded"
 
@@ -276,24 +286,34 @@ async def test_running_to_failed_max_attempts(
 async def test_running_to_scheduled_snooze(
     memory_jobs: InMemoryBackend,
 ) -> None:
-    """running → scheduled via mark_snoozed (Snooze)."""
+    """running → scheduled via mark_snoozed (Snooze): the deferral refunds
+    the claim's attempt increment, so the row returns to its pre-claim
+    attempt value."""
     job_id, worker_id = await _enqueue_and_dispatch(memory_jobs)
 
-    result = await memory_jobs.mark_snoozed(job_id, worker_id, delay=timedelta(seconds=30))
+    result = await memory_jobs.mark_snoozed(
+        job_id, worker_id, delay=timedelta(seconds=30), attempt=1
+    )
     assert result == "scheduled"
 
     row = await memory_jobs.get(job_id)
     assert row is not None
     assert row.status == "scheduled"
     assert row.scheduled_at == _START + timedelta(seconds=30)
-    assert row.attempt == 1
+    # The refund: a running row dispatched at attempt 1 goes back to its
+    # pre-claim 0 — the snooze is budget-free and unbounded.
+    assert row.attempt == 0
 
+    # The row transition is real but writes no event row: the only
+    # state_change events belong to dispatches and terminal exits.
     events = await memory_jobs.get_events(job_id)
     state_changes = [e for e in events if e.kind == "state_change"]
-    assert any(
+    assert not any(
         e.detail["from_state"] == "running" and e.detail["to_state"] == "scheduled"
         for e in state_changes
     )
+    assert row.snooze_count == 1
+    assert row.rate_limit_blocked_count == 0
 
 
 # ── running → scheduled via mark_retry_after (consume_budget=True) ─
@@ -308,7 +328,7 @@ async def test_running_to_scheduled_retry_after_consume(
     pre_attempt = (await memory_jobs.get(job_id)).attempt  # type: ignore[union-attr] # Why: just dispatched, row exists
 
     result = await memory_jobs.mark_retry_after(
-        job_id, worker_id, delay=timedelta(seconds=5), consume_budget=True
+        job_id, worker_id, delay=timedelta(seconds=5), consume_budget=True, attempt=1
     )
     assert result == "scheduled"
 
@@ -325,19 +345,25 @@ async def test_running_to_scheduled_retry_after_consume(
 async def test_running_to_scheduled_retry_after_no_consume(
     memory_jobs: InMemoryBackend,
 ) -> None:
-    """running → scheduled via mark_retry_after (consume_budget=False)."""
+    """running → scheduled via mark_retry_after (consume_budget=False): a
+    non-consuming RetryAfter is a deferral — it refunds the claim's
+    attempt increment exactly like a Snooze."""
     job_id, worker_id = await _enqueue_and_dispatch(memory_jobs)
     pre_attempt = (await memory_jobs.get(job_id)).attempt  # type: ignore[union-attr] # Why: just dispatched, row exists
 
     result = await memory_jobs.mark_retry_after(
-        job_id, worker_id, delay=timedelta(seconds=5), consume_budget=False
+        job_id, worker_id, delay=timedelta(seconds=5), consume_budget=False, attempt=1
     )
     assert result == "scheduled"
 
     row = await memory_jobs.get(job_id)
     assert row is not None
     assert row.status == "scheduled"
-    assert row.attempt == pre_attempt
+    # The refund returns the pre-claim value (attempt - 1, floored at 0).
+    assert row.attempt == pre_attempt - 1
+    # The consume-false deferral is counted on the same row column a
+    # Snooze uses — one counter for all non-consuming deferrals.
+    assert row.snooze_count == 1
 
 
 # ── running → scheduled via mark_snoozed(outcome='reservation_denied') ─
@@ -355,6 +381,7 @@ async def test_running_to_scheduled_reservation_denied(
         delay=timedelta(seconds=5),
         outcome="reservation_denied",
         metadata_update={"awaiting": "slot"},
+        attempt=1,
     )
     assert result == "scheduled"
 
@@ -363,9 +390,12 @@ async def test_running_to_scheduled_reservation_denied(
     assert row.status == "scheduled"
     assert row.metadata.get("awaiting") == "slot"
 
+    # A denial is admission control, not an execution: no attempt row;
+    # the denial counter on the row is its durable record.
     attempts = await memory_jobs.get_attempts(job_id)
-    assert len(attempts) == 1
-    assert attempts[0].outcome == "reservation_denied"
+    assert len(attempts) == 0
+    assert row.rate_limit_blocked_count == 1
+    assert row.snooze_count == 0
 
 
 # ── running → scheduled via mark_failed_or_retry Branch B ───────
@@ -389,6 +419,7 @@ async def test_running_to_scheduled_transient_retry(
         # The decision is a delay — the backend's own clock (FakeClock at
         # _START) derives scheduled_at = now + 30s == next_at.
         retry_delay=next_at - _START,
+        attempt=1,
     )
     assert updated.status == "scheduled"
     assert updated.scheduled_at == next_at
@@ -491,7 +522,7 @@ async def test_running_to_cancelled_cooperative(
     assert row is not None
     assert row.cancel_phase == CancelPhase.COOPERATIVE
 
-    ok = await memory_jobs.mark_cancelled(job_id, worker_id)
+    ok = await memory_jobs.mark_cancelled(job_id, worker_id, attempt=1)
     assert ok is True
 
     row = await memory_jobs.get(job_id)
@@ -517,7 +548,7 @@ async def test_running_to_cancelled_forced(
     assert row is not None
     assert row.cancel_phase == CancelPhase.FORCED
 
-    ok = await memory_jobs.mark_cancelled(job_id, worker_id)
+    ok = await memory_jobs.mark_cancelled(job_id, worker_id, attempt=1)
     assert ok is True
 
     row = await memory_jobs.get(job_id)

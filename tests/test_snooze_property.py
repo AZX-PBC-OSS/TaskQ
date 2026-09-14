@@ -3,7 +3,9 @@
 For any ``(delay >= 0, schedule_to_close)`` pair, the snooze outcome is
 deterministic: *failed* iff ``schedule_to_close`` is set and the new
 ``scheduled_at`` would exceed it, *scheduled* otherwise. Additionally,
-``attempt`` is unchanged across a snooze + re-dispatch round-trip.
+a snooze + re-dispatch round-trip returns the attempt to its pre-snooze
+value: the deferral refunds the claim's increment and the re-dispatch
+re-claims it.
 
 Runs on the in-memory backend only (hypothesis controls backend
 lifecycle; PG requires testcontainers and cannot be reset between
@@ -50,14 +52,19 @@ async def test_snooze_deterministic_outcome_and_attempt_round_trip(
     deadline_offset: float | None,
 ) -> None:
     """for any (delay, schedule_to_close) pair, the snooze outcome
-    is deterministic and attempt is preserved across a snooze + re-dispatch
-    round-trip.
+    is deterministic and a snooze + re-dispatch round-trip returns the
+    attempt to its pre-snooze value (the refund restores the claim's
+    base; the re-dispatch re-claims exactly one increment).
 
     *delay_seconds* is the snooze delay (>= 0). *deadline_offset* is the
     offset (in seconds) from ``_START`` for ``schedule_to_close``, or
     ``None`` for no deadline.
     """
     backend = InMemoryBackend(clock=FakeClock(_START))
+    # Dispatch candidates come FROM the actor_config registry on both
+    # backends (PG's per_actor_capacity CTE) — the worker registers the
+    # actor it runs, so the twin's registry must carry it too.
+    backend.register_actor_config(actor="test_actor")
     delay = timedelta(seconds=delay_seconds)
     schedule_to_close: datetime | None = (
         None if deadline_offset is None else _START + timedelta(seconds=deadline_offset)
@@ -105,7 +112,10 @@ async def test_snooze_deterministic_outcome_and_attempt_round_trip(
     assert row is not None
     assert row.attempt == 1
 
-    result = await backend.mark_snoozed(job_id, wid, delay)
+    # attempt= the row's current epoch — the worker presents job.attempt
+    # from its in-hand row (worker/_consumer.py); the fence refuses a
+    # caller that cannot prove which attempt it terminates.
+    result = await backend.mark_snoozed(job_id, wid, delay, attempt=row.attempt)
 
     new_scheduled_at = _START + delay
     deadline_exceeded = schedule_to_close is not None and new_scheduled_at > schedule_to_close
@@ -122,6 +132,8 @@ async def test_snooze_deterministic_outcome_and_attempt_round_trip(
         row = await backend.get(job_id)
         assert row is not None
         assert row.status == "scheduled"
+        # The refund: the claim's increment (0 → 1) is returned.
+        assert row.attempt == 0
 
         # Round-trip: advance clock past scheduled_at, promote, dispatch again
         backend.advance_clock_to(new_scheduled_at + timedelta(seconds=1))
@@ -137,6 +149,6 @@ async def test_snooze_deterministic_outcome_and_attempt_round_trip(
 
         row = await backend.get(job_id)
         assert row is not None
-        assert row.attempt == 2, (
-            f"round-trip attempt invariant violated: expected 2, got {row.attempt}"
+        assert row.attempt == 1, (
+            f"round-trip attempt invariant violated: expected 1, got {row.attempt}"
         )

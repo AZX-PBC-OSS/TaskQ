@@ -12,11 +12,11 @@ from pydantic import BaseModel
 from taskq._ids import new_job_id, new_uuid
 from taskq.backend._protocol import (
     BACKEND_PROTOCOL_VERSION,
-    AttemptOutcome,
     AttemptRow,
     Backend,
     CancelFlag,
     CancelPhase,
+    DenialReason,
     EnqueueArgs,
     ErrorInfo,
     EventRow,
@@ -24,6 +24,7 @@ from taskq.backend._protocol import (
     JobRow,
     ScheduleCreateArgs,
     ScheduleUpdateArgs,
+    SnoozeOutcome,
 )
 from taskq.retry import OnRetryExhausted, OnSuccess, RetryClassifierHook, RetryPolicy
 
@@ -110,7 +111,9 @@ class FakeBackend:
     def __init__(
         self,
         *,
-        mark_snoozed_return: Literal["scheduled", "failed", "noop"] = "scheduled",
+        mark_snoozed_return: Literal[
+            "scheduled", "failed", "failed:MaxAttemptsExceeded", "noop"
+        ] = "scheduled",
         mark_retry_after_return: Literal[
             "scheduled", "failed:DeadlineExceeded", "failed:MaxAttemptsExceeded", "noop"
         ] = "scheduled",
@@ -122,7 +125,9 @@ class FakeBackend:
         self.mark_snoozed_calls: list[dict[str, object]] = []
         self.mark_retry_after_calls: list[dict[str, object]] = []
         self.mark_failed_or_retry_calls: list[dict[str, object]] = []
-        self._mark_snoozed_return: Literal["scheduled", "failed", "noop"] = mark_snoozed_return
+        self._mark_snoozed_return: Literal[
+            "scheduled", "failed", "failed:MaxAttemptsExceeded", "noop"
+        ] = mark_snoozed_return
         self._mark_retry_after_return: Literal[
             "scheduled", "failed:DeadlineExceeded", "failed:MaxAttemptsExceeded", "noop"
         ] = mark_retry_after_return
@@ -154,6 +159,7 @@ class FakeBackend:
         fallback_result_ttl: timedelta | None = None,
         *,
         result_bytes: bytes | None = None,
+        attempt: int | None = None,
     ) -> bool:
         self.mark_succeeded_calls.append((job_id, worker_id, result, result_bytes))
         return True
@@ -169,6 +175,7 @@ class FakeBackend:
         fallback_result_ttl: timedelta | None = None,
         *,
         result_bytes: bytes | None = None,
+        attempt: int | None = None,
     ) -> bool:
         return await self.mark_succeeded(
             job_id,
@@ -178,6 +185,7 @@ class FakeBackend:
             progress_state,
             fallback_result_ttl,
             result_bytes=result_bytes,
+            attempt=attempt,
         )
 
     async def mark_failed_or_retry(
@@ -188,6 +196,8 @@ class FakeBackend:
         retry_delay: timedelta | None,
         progress_seq: int = 0,
         progress_state: dict[str, object] | None = None,
+        *,
+        attempt: int | None = None,
     ) -> JobRow:
         self.mark_failed_or_retry_calls.append(
             {
@@ -205,6 +215,8 @@ class FakeBackend:
         worker_id: UUID,
         progress_seq: int = 0,
         progress_state: dict[str, object] | None = None,
+        *,
+        attempt: int | None = None,
     ) -> bool:
         self.mark_cancelled_calls.append(
             {
@@ -238,8 +250,10 @@ class FakeBackend:
         metadata_update: dict[str, object] | None = None,
         progress_seq: int = 0,
         progress_state: dict[str, object] | None = None,
-        outcome: AttemptOutcome = "snoozed",
-    ) -> Literal["scheduled", "failed", "noop"]:
+        outcome: SnoozeOutcome = "snoozed",
+        attempt: int | None = None,
+        denial_reason: DenialReason = "capacity",
+    ) -> Literal["scheduled", "failed", "failed:MaxAttemptsExceeded", "noop"]:
         self.mark_snoozed_calls.append(
             {
                 "job_id": job_id,
@@ -249,6 +263,7 @@ class FakeBackend:
                 "progress_seq": progress_seq,
                 "progress_state": progress_state,
                 "outcome": outcome,
+                "denial_reason": denial_reason,
             }
         )
         return self._mark_snoozed_return
@@ -262,6 +277,7 @@ class FakeBackend:
         consume_budget: bool = True,
         progress_seq: int = 0,
         progress_state: dict[str, object] | None = None,
+        attempt: int | None = None,
     ) -> Literal["scheduled", "failed:DeadlineExceeded", "failed:MaxAttemptsExceeded", "noop"]:
         self.mark_retry_after_calls.append(
             {

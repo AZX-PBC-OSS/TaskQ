@@ -10,14 +10,22 @@ from either of them.
 
 import re
 import time
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from uuid import UUID
 
+import asyncpg
 import structlog
 
 from taskq.backend._protocol import Backend, ConnLike
 from taskq.backend._sql_templates import COPY_FROM_COLUMNS
+from taskq.backend._sweeps import (
+    SweepBatchSizer,
+    _apply_batch_statement_timeout,  # pyright: ignore[reportPrivateUsage]  # Why: the prune family runs its batches through the same SET LOCAL batch-timeout machinery the backend sweeps use; importing the helpers (rather than redefining them) is what keeps the two from drifting.
+    _restore_statement_timeout,  # pyright: ignore[reportPrivateUsage]  # Why: same helpers, same reason.
+    _validate_positive,  # pyright: ignore[reportPrivateUsage]  # Why: the single typed boundary for sweep bounds; a second validator here would drift from the backend's.
+)
 from taskq.backend.clock import Clock
 from taskq.backend.statemachine import TERMINAL_STATUSES
 from taskq.constants import (
@@ -25,6 +33,7 @@ from taskq.constants import (
     DEFAULT_EVENT_WRITER_BATCH_SIZE,
     DEFAULT_PRUNE_BATCH_SIZE,
     DEFAULT_PRUNE_RETENTION,
+    DEFAULT_PRUNE_STATEMENT_TIMEOUT_MS,
 )
 from taskq.obs import (
     get_logger,
@@ -32,6 +41,8 @@ from taskq.obs import (
     record_archived_jobs,
     record_expired_archive_jobs,
     record_pruned_jobs,
+    record_sweep_batch_size,
+    record_sweep_batch_size_configured,
 )
 from taskq.ratelimit.registry import RateLimitRegistry
 from taskq.settings import WorkerSettings
@@ -289,8 +300,16 @@ _JOB_ATTEMPTS_COLUMNS_QUALIFIED_CSV = ", ".join(f"ja.{c}" for c in _JOB_ATTEMPTS
 # rows they annotate; statement_timestamp() differs from those stamps
 # only by this statement's own execution time (microseconds against a
 # days-scale retention cutoff).
+#
+# MATERIALIZED on candidate_ids (and on the sibling windows below) is
+# load-bearing with the same rationale every windowed sweep in
+# backend/_sweeps.py documents: the planner may inline a LIMIT-ed CTE
+# into the data-modifying statement that joins it and move more rows
+# than the LIMIT (the LIMIT then bounds only the CTE's inlined
+# appearances, not the archived-and-deleted result), so the keyword
+# fences the window and pins that one batch is bounded by its LIMIT.
 _ARCHIVE_CTE_SQL = (
-    "WITH candidate_ids AS ("
+    "WITH candidate_ids AS MATERIALIZED ("
     '  SELECT id FROM "{schema}".jobs'
     '  WHERE status = $1::"{schema}".job_status'
     "    AND finished_at < statement_timestamp() - $2::interval"
@@ -315,8 +334,10 @@ _ARCHIVE_CTE_SQL = (
     "  FROM deleted GROUP BY actor, status"
 )
 
+# Same windowing contract as _ARCHIVE_CTE_SQL above, including the
+# MATERIALIZED fence on the LIMIT-ed candidate window.
 _ARCHIVE_CTE_ACTOR_SQL = (
-    "WITH candidate_ids AS ("
+    "WITH candidate_ids AS MATERIALIZED ("
     '  SELECT id FROM "{schema}".jobs'
     '  WHERE status = $1::"{schema}".job_status'
     "    AND finished_at < statement_timestamp() - $2::interval"
@@ -354,9 +375,11 @@ _DB_NOW_SQL = "SELECT clock_timestamp()"
 # same-statement executions degrades worst, flipping to a generic plan
 # that walks the entire population under a Filter — pinned, with the
 # eligible-backlog state, by tests/test_index_audit.py). No write side
-# here: the CTE only selects and deletes.
+# here: the CTE only selects and deletes. The MATERIALIZED fence on the
+# LIMIT-ed window is the same load-bearing anti-inlining pin as every
+# sibling sweep's.
 _EXPIRY_CTE_SQL = (
-    "WITH expired AS ("
+    "WITH expired AS MATERIALIZED ("
     '  SELECT id FROM "{schema}".jobs_archive'
     "  WHERE expire_at < statement_timestamp()"
     "  ORDER BY expire_at"
@@ -369,6 +392,63 @@ _EXPIRY_CTE_SQL = (
 )
 
 
+def _effective_prune_batch_size(batch_size: int, sizer: SweepBatchSizer | None) -> int:
+    """The tier one batch uses: the breaker's when draining breaker-wrapped,
+    the explicit bound for direct (sizer-less) calls."""
+    return sizer.effective_size() if sizer is not None else batch_size
+
+
+def _record_prune_batch_size(sweep_name: str, size: int, sizer: SweepBatchSizer | None) -> None:
+    """Record the used and configured batch-size gauges for one
+    prune-family batch — the same label pair ``_run_bounded_sweep`` emits
+    for the backend sweeps, so the gauge-to-gauge sweep-degraded alert
+    covers the prune family too."""
+    record_sweep_batch_size(sweep_name, size)
+    record_sweep_batch_size_configured(
+        sweep_name, sizer.default_size if sizer is not None else size
+    )
+
+
+async def _run_prune_batch(
+    conn: ConnLike,
+    sql: str,
+    *args: object,
+    statement_timeout_ms: int,
+    sizer: SweepBatchSizer | None,
+) -> Sequence[asyncpg.Record]:
+    """Run one prune-family batch statement under the shared batch machinery.
+
+    The batch runs inside one short transaction with a server-side
+    ``statement_timeout`` bound via ``SET LOCAL`` semantics (captured and
+    restored on the success path; the savepoint rollback restores it on
+    the error path) — the same wrapper every bounded backend sweep in
+    :mod:`taskq.backend._sweeps` applies, so the prune family gets the
+    identical guarantee: one committed, server-bounded statement per
+    batch, whatever the backlog behind it. A deadline-family abort
+    (``QueryCanceledError`` from the server-side timeout,
+    ``TimeoutError`` from a client-side one) counts against *sizer* when
+    given and re-raises: the caller's failure path retries later at the
+    latched reduced tier, and every batch this call already committed
+    stays committed — a stopped drain is a pause, not a rollback.
+    """
+    async with conn.transaction():
+        prev_timeout = await _apply_batch_statement_timeout(conn, statement_timeout_ms)
+        try:
+            rows = await conn.fetch(sql, *args)
+        except (asyncpg.QueryCanceledError, TimeoutError):
+            if sizer is not None:
+                sizer.on_timeout()
+            raise
+        # Success path only: restore the caller's timeout inside the
+        # still-open transaction (a savepoint RELEASE would otherwise
+        # keep the batch's bound); on error the savepoint rollback has
+        # already restored it.
+        await _restore_statement_timeout(conn, prev_timeout)
+    if sizer is not None:
+        sizer.on_success()
+    return rows
+
+
 async def prune_terminal_jobs(
     conn: ConnLike,
     *,
@@ -377,9 +457,37 @@ async def prune_terminal_jobs(
     batch_size: int = DEFAULT_PRUNE_BATCH_SIZE,
     schema: str = "taskq",
     actor_overrides: dict[str, timedelta] | None = None,
+    drain_gate: Callable[[], bool] | None = None,
+    statement_timeout_ms: int = DEFAULT_PRUNE_STATEMENT_TIMEOUT_MS,
+    sizer: SweepBatchSizer | None = None,
 ) -> PruneResult:
+    """Archive-and-delete terminal jobs past their retention, one bounded,
+    self-committing batch at a time.
+
+    Each batch is one ``_ARCHIVE_CTE_SQL`` statement (jobs →
+    jobs_archive, job_attempts → job_attempts_archive, jobs DELETE,
+    inside one statement), committed before the next batch runs. The
+    batch runs under a server-side ``statement_timeout`` (the
+    :data:`~taskq.constants.DEFAULT_PRUNE_STATEMENT_TIMEOUT_MS`
+    derivation), and when *sizer* is given its latched tier — not
+    *batch_size* — sizes every window, so a database that keeps aborting
+    batches is retried at a reduced tier instead of the same one.
+
+    *drain_gate* is called before every batch; a ``False`` return stops
+    the drain (committed batches stay committed; the remainder waits for
+    the next attempt). The prune loop passes a gate that returns False on
+    shutdown and ticks detector-2 liveness between batches.
+
+    The archive predicate's clock is the database's own
+    (``statement_timestamp()`` in the CTE), and the reported cutoffs are
+    anchored to a database-side ``clock_timestamp()`` read — see the
+    "Anchored to the database clock" comment in the body below.
+    """
     if not _IDENT_RE.match(schema):
         raise ValueError(f"invalid schema identifier: {schema!r}")
+    _validate_positive("statement_timeout_ms", statement_timeout_ms)
+    if sizer is None:
+        _validate_positive("batch_size", batch_size)
     start = time.monotonic()
     total_deleted = 0
     total_archived = 0
@@ -403,7 +511,20 @@ async def prune_terminal_jobs(
         sql = _ARCHIVE_CTE_SQL.format(schema=schema)
 
         while True:
-            rows = await conn.fetch(sql, status, retention, batch_size, archive_interval)
+            if drain_gate is not None and not drain_gate():
+                break
+            size = _effective_prune_batch_size(batch_size, sizer)
+            _record_prune_batch_size("prune", size, sizer)
+            rows = await _run_prune_batch(
+                conn,
+                sql,
+                status,
+                retention,
+                size,
+                archive_interval,
+                statement_timeout_ms=statement_timeout_ms,
+                sizer=sizer,
+            )
             if not rows:
                 break
             batch_total = 0
@@ -418,7 +539,7 @@ async def prune_terminal_jobs(
                 record_archived_jobs(row_status, cnt)
             total_deleted += batch_total
             total_archived += batch_total
-            if batch_total < batch_size:
+            if batch_total < size:
                 break
 
     if actor_overrides:
@@ -428,13 +549,20 @@ async def prune_terminal_jobs(
                 if actor_retention >= retention_per_status.get(status, DEFAULT_PRUNE_RETENTION):
                     continue
                 while True:
-                    rows = await conn.fetch(
+                    if drain_gate is not None and not drain_gate():
+                        break
+                    size = _effective_prune_batch_size(batch_size, sizer)
+                    _record_prune_batch_size("prune", size, sizer)
+                    rows = await _run_prune_batch(
+                        conn,
                         sql,
                         status,
                         actor_retention,
-                        batch_size,
+                        size,
                         archive_interval,
                         actor_name,
+                        statement_timeout_ms=statement_timeout_ms,
+                        sizer=sizer,
                     )
                     if not rows:
                         break
@@ -450,7 +578,7 @@ async def prune_terminal_jobs(
                         record_archived_jobs(r_status, cnt)
                     total_deleted += batch_total
                     total_archived += batch_total
-                    if batch_total < batch_size:
+                    if batch_total < size:
                         break
 
     duration_ms = int((time.monotonic() - start) * 1000)
@@ -469,9 +597,27 @@ async def archive_expiry_sweep(
     *,
     batch_size: int = DEFAULT_PRUNE_BATCH_SIZE,
     schema: str = "taskq",
+    drain_gate: Callable[[], bool] | None = None,
+    statement_timeout_ms: int = DEFAULT_PRUNE_STATEMENT_TIMEOUT_MS,
+    sizer: SweepBatchSizer | None = None,
 ) -> ArchiveExpiryResult:
+    """Hard-delete expired ``jobs_archive`` rows, one bounded,
+    self-committing batch at a time.
+
+    Each batch is one ``_EXPIRY_CTE_SQL`` statement, committed before the
+    next runs, under the same server-side ``statement_timeout`` and
+    breaker semantics as :func:`prune_terminal_jobs` — see that
+    function's docstring and
+    :data:`~taskq.constants.DEFAULT_PRUNE_STATEMENT_TIMEOUT_MS` for the
+    timeout/breaker contract. *drain_gate* is called before every batch;
+    a ``False`` return stops the drain with the batches already
+    committed.
+    """
     if not _IDENT_RE.match(schema):
         raise ValueError(f"invalid schema identifier: {schema!r}")
+    _validate_positive("statement_timeout_ms", statement_timeout_ms)
+    if sizer is None:
+        _validate_positive("batch_size", batch_size)
     start = time.monotonic()
     total_deleted = 0
     by_status: dict[str, int] = {}
@@ -484,7 +630,17 @@ async def archive_expiry_sweep(
     sql = _EXPIRY_CTE_SQL.format(schema=schema)
 
     while True:
-        rows = await conn.fetch(sql, batch_size)
+        if drain_gate is not None and not drain_gate():
+            break
+        size = _effective_prune_batch_size(batch_size, sizer)
+        _record_prune_batch_size("archive_expiry", size, sizer)
+        rows = await _run_prune_batch(
+            conn,
+            sql,
+            size,
+            statement_timeout_ms=statement_timeout_ms,
+            sizer=sizer,
+        )
         if not rows:
             break
         batch_total = 0
@@ -495,7 +651,7 @@ async def archive_expiry_sweep(
             by_status[row_status] = by_status.get(row_status, 0) + cnt
             record_expired_archive_jobs(row_status, cnt)
         total_deleted += batch_total
-        if batch_total < batch_size:
+        if batch_total < size:
             break
 
     duration_ms = int((time.monotonic() - start) * 1000)

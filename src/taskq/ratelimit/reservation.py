@@ -1,10 +1,23 @@
 """Concurrency reservation primitive using pre-allocated slot rows.
 
 PG-only — no Redis fast path. Slot rows live in ``taskq.reservation_slots``;
-acquisition uses ``FOR UPDATE SKIP LOCKED`` in a CTE (verbatim from ).
-The heartbeat loop (``src/taskq/worker/heartbeat.py``) already extends
-``reservation_slots.lease_expires_at`` in the same transaction as job locks;
-this module does not modify the heartbeat.
+acquisition uses a ``FOR UPDATE SKIP LOCKED`` CTE that, on the denial
+branch, reports the earliest held lease's expiry as the retry hint in the
+same statement. The heartbeat loop (``src/taskq/worker/heartbeat.py``)
+already extends ``reservation_slots.lease_expires_at`` in the same
+transaction as job locks; this module does not modify the heartbeat.
+
+Every row-writing statement here (ensure_slots, acquire, release) also
+stamps the fleet-reclaim bookkeeping on ``reservation_slots``: the
+``keyed`` mark (set at materialisation by
+:class:`ConcurrencyReservation`'s ``keyed`` flag) and the
+``last_used_at`` staleness stamp, refreshed by the very UPDATE/INSERT
+that already touches the row — the solid_queue Semaphore shape. The
+maintenance leader's ``sweep_idle_keyed_rows`` deletes keyed rows
+unused past the operator horizon, closing the residual where a keyed
+bucket's rows orphan when the worker that materialised them dies (the
+in-process registry bookkeeping that would otherwise name them dies
+with the process).
 
 The in-memory backend (``_InMemorySlotTable``) is the unit-test substitute for
 PG and mirrors the slot-row model as a ``dict[str, dict[int, _SlotState]]``
@@ -25,6 +38,7 @@ from taskq.backend.clock import Clock
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
     DEFAULT_RESERVATION_BACKOFF,
+    RESERVATION_RETRY_HINT_MARGIN,
 )
 from taskq.exceptions import ReservationUnavailable
 
@@ -34,10 +48,34 @@ if TYPE_CHECKING:
 logger = structlog.get_logger("taskq.ratelimit.reservation")
 
 _ENSURE_SLOTS_SQL_TEMPLATE = """\
-INSERT INTO "{schema}".reservation_slots (bucket_name, slot_index)
-SELECT $1, generate_series(0, $2 - 1)
-ON CONFLICT (bucket_name, slot_index) DO NOTHING"""
+INSERT INTO "{schema}".reservation_slots (bucket_name, slot_index, keyed, last_used_at)
+SELECT $1, generate_series(0, $2 - 1), $3, clock_timestamp()
+ON CONFLICT (bucket_name, slot_index) DO UPDATE SET keyed = EXCLUDED.keyed"""
 
+# One statement, one row, both outcomes. The acquire branch is the
+# original CTE untouched except for the last_used_at stamp. The denial
+# branch rides the same round trip:
+# ``earliest_held`` is an aggregate (exactly one row even over zero
+# matches), so the LEFT JOIN yields one row whose acquired fields are
+# NULL when nothing was acquired — the Python side reads the hint off
+# that row instead of issuing a second statement.
+#
+# The hint is computed server-side (``clock_timestamp()``, the same
+# clock the leases are stamped with and the free-slot predicate reads)
+# so app↔DB clock skew cannot stretch or shrink it. It is NULL when no
+# live-held row exists — every row free but row-locked by a peer acquire
+# (the SKIP LOCKED case), or the anomalous held-without-lease state —
+# and the caller substitutes the flat constant. GREATEST clamps the
+# microsecond skew between the WHERE's and the SELECT's own
+# ``clock_timestamp()`` evaluations inside this one statement.
+#
+# The last_used_at stamp rides the acquired arm's UPDATE — the
+# solid_queue Semaphore shape (attempt_decrement refreshes expires_at
+# inside the very UPDATE that takes the slot): the row the acquire
+# touches is the row whose staleness must reset, with no dedicated
+# stamping round trip. Only the acquired row is stamped; the fleet
+# reclaim sweep groups by bucket and decides on max(last_used_at), so
+# one fresh slot row keeps the whole bucket live.
 _ACQUIRE_SQL_TEMPLATE = """\
 WITH free_slot AS (
     SELECT slot_index FROM "{schema}".reservation_slots
@@ -46,21 +84,43 @@ WITH free_slot AS (
     ORDER BY slot_index
     LIMIT 1
     FOR UPDATE SKIP LOCKED
+),
+acquired AS (
+    UPDATE "{schema}".reservation_slots
+    SET job_id            = $2,
+        held_by_worker_id = $3,
+        acquired_at       = clock_timestamp(),
+        lease_expires_at  = clock_timestamp() + $4 * INTERVAL '1 second',
+        last_used_at      = clock_timestamp()
+    WHERE (bucket_name, slot_index) IN (SELECT $1, slot_index FROM free_slot)
+    RETURNING slot_index, acquired_at
+),
+earliest_held AS (
+    SELECT min(lease_expires_at) AS earliest_expires_at
+    FROM "{schema}".reservation_slots
+    WHERE bucket_name = $1
+      AND job_id IS NOT NULL
+      AND lease_expires_at >= clock_timestamp()
 )
-UPDATE "{schema}".reservation_slots
-SET job_id            = $2,
-    held_by_worker_id = $3,
-    acquired_at       = clock_timestamp(),
-    lease_expires_at  = clock_timestamp() + $4 * INTERVAL '1 second'
-WHERE (bucket_name, slot_index) IN (SELECT $1, slot_index FROM free_slot)
-RETURNING slot_index, acquired_at"""
+SELECT a.slot_index,
+       a.acquired_at,
+       CASE
+           WHEN h.earliest_expires_at IS NULL THEN NULL
+           ELSE GREATEST(EXTRACT(EPOCH FROM (h.earliest_expires_at - clock_timestamp())), 0)
+       END::float8 AS retry_after_seconds
+FROM earliest_held h LEFT JOIN acquired a ON true"""
 
+# The last_used_at stamp rides the release exactly as it rides the
+# acquire: the row the release frees is the row whose staleness must
+# reset (a just-released bucket is mid-workflow, not idle), and the
+# UPDATE already touches it.
 _RELEASE_SQL_TEMPLATE = """\
 UPDATE "{schema}".reservation_slots
 SET job_id            = NULL,
     held_by_worker_id = NULL,
     acquired_at       = NULL,
-    lease_expires_at  = NULL
+    lease_expires_at  = NULL,
+    last_used_at      = clock_timestamp()
 WHERE bucket_name       = $1
   AND slot_index        = $2
   AND held_by_worker_id = $3"""
@@ -90,6 +150,16 @@ WHERE bucket_name = $1
   AND slot_index = ANY($2)
   AND (job_id IS NULL OR lease_expires_at < clock_timestamp())
 RETURNING slot_index"""
+
+_RECLAIM_SLICE_DELETE_SQL_TEMPLATE = """\
+DELETE FROM "{schema}".reservation_slots
+WHERE bucket_name = ANY($1)
+  AND (job_id IS NULL OR lease_expires_at < clock_timestamp())
+RETURNING bucket_name, slot_index"""
+
+_RECLAIM_SLICE_EXISTING_SQL_TEMPLATE = """\
+SELECT DISTINCT bucket_name FROM "{schema}".reservation_slots
+WHERE bucket_name = ANY($1)"""
 
 _SYNC_HELD_SQL_TEMPLATE = """\
 SELECT slot_index FROM "{schema}".reservation_slots
@@ -215,7 +285,31 @@ class _InMemorySlotTable:
                     )
                     return SlotLease(i, now)
 
-            raise ReservationUnavailable(bucket_name, DEFAULT_RESERVATION_BACKOFF)
+            # Every slot is held with a live lease: the honest re-attempt
+            # time is the earliest expiry — the capacity that can actually
+            # free — plus the safety margin, mirroring the PG arm's
+            # denial-branch hint. A slot whose job_id is set but whose
+            # lease is NULL (no production path stamps this) or past (an
+            # expired lease is acquirable above, so it never reaches the
+            # denial) contributes no expiry; with none at all the flat
+            # constant is the fallback, as it is on PG for the SKIP
+            # LOCKED case. The live filter guarantees expiry >= now, so
+            # no clamp is needed here — the PG statement's GREATEST
+            # covers the microsecond skew between its own two
+            # clock_timestamp() reads, which a single clock read has none
+            # of.
+            live_expiries = [
+                slot.lease_expires_at
+                for slot in bucket.values()
+                if slot.job_id is not None
+                and slot.lease_expires_at is not None
+                and slot.lease_expires_at >= now
+            ]
+            if live_expiries:
+                retry_after = min(live_expiries) - now + RESERVATION_RETRY_HINT_MARGIN
+            else:
+                retry_after = DEFAULT_RESERVATION_BACKOFF
+            raise ReservationUnavailable(bucket_name, retry_after)
 
     def release(
         self,
@@ -357,11 +451,24 @@ class ConcurrencyReservation:
 
     Raises :class:`ValueError` if ``slots < 1`` or ``lease <= 0``.
     Raises :class:`ReservationUnavailable` when no slot is available.
+
+    ``keyed`` (default ``False``) marks a reservation materialised from a
+    :class:`~taskq.ratelimit.refs.KeyedReservationRef`: its slot rows
+    carry the fleet-reclaimable ``keyed`` flag and a ``last_used_at``
+    stamp (refreshed by this class's acquire/release/ensure statements),
+    so the maintenance leader's ``sweep_idle_keyed_rows`` can reclaim
+    them after the OWNING PROCESS dies — the in-process registry
+    bookkeeping that would otherwise name them dies with it. A
+    statically declared reservation keeps the default: its rows are
+    never fleet-reclaimable (there is no keyed lifecycle, no acquire-path
+    heal, and no re-materialisation — a sweep that deleted them would
+    leave a permanently denying limiter).
     """
 
     __slots__ = (
         "_acquire_sql",
         "_ensure_sql",
+        "_keyed",
         "_lease",
         "_lock_lease",
         "_name",
@@ -381,6 +488,7 @@ class ConcurrencyReservation:
         *,
         clock: Clock | None = None,
         schema: str = "taskq",
+        keyed: bool = False,
     ) -> None:
         if slots < 1:
             raise ValueError(f"slots must be >= 1, got {slots}")
@@ -399,6 +507,7 @@ class ConcurrencyReservation:
         self._lease = lease_td
         self._lock_lease = lock_lease
         self._schema = schema
+        self._keyed = keyed
 
         if lock_lease is not None and lease_td < lock_lease:
             logger.warning(
@@ -431,6 +540,17 @@ class ConcurrencyReservation:
         return self._schema
 
     @property
+    def keyed(self) -> bool:
+        """Whether this reservation was keyed-materialised.
+
+        Carried on the instance so the row-writing statements can stamp
+        the fleet-reclaimable mark without every call site re-deriving
+        it — the constructor is the single point that knows the
+        reservation's lifecycle origin.
+        """
+        return self._keyed
+
+    @property
     def name(self) -> str:
         return self._name
 
@@ -454,9 +574,38 @@ class ConcurrencyReservation:
         return self._table
 
     async def ensure_slots(self, pool: "asyncpg.Pool") -> None:
-        """Idempotent pre-allocation of slot rows."""
+        """Idempotent pre-allocation of slot rows.
+
+        Inserts the bucket's full slot row set with this reservation's
+        fleet-reclaimable mark and a fresh ``last_used_at``; the conflict
+        arm flips ONLY the ``keyed`` mark (never the holder/lease
+        columns — held state is untouched), so re-ensuring stays
+        idempotent while the mark always reflects the CURRENT owner:
+        a keyed materialisation (or its heal) claiming a name re-marks
+        its rows fleet-reclaimable, and a later static declaration of
+        the same name (the bootstrap's startup ensure) marks them
+        never-sweep again.
+        """
         async with pool.acquire() as conn:
-            await conn.execute(self._ensure_sql, self._name, self._slots)
+            await conn.execute(self._ensure_sql, self._name, self._slots, self._keyed)
+
+    async def slot_rows_exist(self, pool: "asyncpg.Pool") -> bool:
+        """Whether any ``reservation_slots`` row exists for this bucket.
+
+        The acquire-path heal for keyed reservations uses this to
+        distinguish a bucket whose rows were deleted out from under it
+        (zero rows — re-materialise via :meth:`ensure_slots`) from
+        ordinary contention (rows present, all held — deny). A read-only
+        existence probe: it never writes.
+        """
+        async with pool.acquire() as conn:
+            return (
+                await conn.fetchval(
+                    _SYNC_EXISTING_SQL_TEMPLATE.format(schema=self._schema),
+                    self._name,
+                )
+                is not None
+            )
 
     async def acquire(
         self,
@@ -508,12 +657,24 @@ class ConcurrencyReservation:
                 self._lease.total_seconds(),
             )
 
-        if row is None:
+        if row is None or row["slot_index"] is None:
+            # Denial branch of the acquire statement: the acquired fields
+            # are NULL and the hint column carries the earliest held
+            # lease's remaining seconds (NULL when no live-held row was
+            # readable). The margin is added client-side so both arms —
+            # this and the in-memory twin — share one definition of it.
+            hint_seconds = row["retry_after_seconds"] if row is not None else None
+            retry_after = (
+                timedelta(seconds=float(hint_seconds)) + RESERVATION_RETRY_HINT_MARGIN
+                if hint_seconds is not None
+                else DEFAULT_RESERVATION_BACKOFF
+            )
             logger.info(
                 "reservation-unavailable",
                 bucket_name=self._name,
+                retry_after_seconds=retry_after.total_seconds(),
             )
-            raise ReservationUnavailable(self._name, DEFAULT_RESERVATION_BACKOFF)
+            raise ReservationUnavailable(self._name, retry_after)
 
         slot_lease = SlotLease(row["slot_index"], row["acquired_at"])
         logger.debug(

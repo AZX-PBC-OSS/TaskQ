@@ -119,8 +119,8 @@ async def test_copy_enqueue_columns_are_copy_from_minus_server_stamped(
     pg_conn: asyncpg.Connection, settings: TaskQSettings
 ) -> None:
     """COPY_ENQUEUE_COLUMNS (the enqueue COPY path) is COPY_FROM_COLUMNS
-    minus exactly the clock-domain-sensitive columns the post-COPY fixup
-    UPDATE stamps server-side.  Every omitted column must be safe to omit
+    minus exactly the columns the post-COPY fixup UPDATE stamps server-side
+    or a DDL default covers.  Every omitted column must be safe to omit
     from COPY: nullable or carrying a DDL default — a NOT NULL column
     without a default would make the COPY insert fail outright.  Order is
     positional (the record tuples are built by hand), so it must be a
@@ -129,7 +129,15 @@ async def test_copy_enqueue_columns_are_copy_from_minus_server_stamped(
 
     await migrate_mod.apply_pending(pg_conn, schema=settings.schema_name)
 
-    omitted = {"status", "created_at", "scheduled_at", "schedule_to_close", "result_expires_at"}
+    omitted = {
+        "status",
+        "created_at",
+        "scheduled_at",
+        "schedule_to_close",
+        "result_expires_at",
+        "snooze_count",
+        "rate_limit_blocked_count",
+    }
     assert set(COPY_ENQUEUE_COLUMNS) == set(COPY_FROM_COLUMNS) - omitted
     assert list(COPY_ENQUEUE_COLUMNS) == [c for c in COPY_FROM_COLUMNS if c not in omitted]
 

@@ -1122,6 +1122,7 @@ async def test_handle_snooze_returns_failed_on_deadline_exceeded() -> None:
 
     import structlog
 
+    from taskq.backend._protocol import JobRow
     from taskq.exceptions import Snooze
     from taskq.retry import RetryPolicy
     from taskq.testing.actor import StubActorConfig
@@ -1133,6 +1134,12 @@ async def test_handle_snooze_returns_failed_on_deadline_exceeded() -> None:
 
         async def mark_snoozed(self, *args: object, **kwargs: object) -> str:
             return "failed"
+
+        # The terminal arm re-reads the row it hands the exhausted hook;
+        # a stub with no stored row reports "not found" and the handler
+        # falls back to the dispatch-time row.
+        async def get(self, job_id: UUID) -> JobRow | None:
+            return None
 
     job = make_job_row(attempt=3, max_attempts=3, retry_kind="indefinite")
     cfg = StubActorConfig(retry=RetryPolicy(kind="indefinite", jitter=0.0))
@@ -1199,6 +1206,7 @@ async def test_handle_retry_after_returns_failed_on_deadline_exceeded() -> None:
 
     import structlog
 
+    from taskq.backend._protocol import JobRow
     from taskq.exceptions import RetryAfter
     from taskq.retry import RetryPolicy
     from taskq.testing.actor import StubActorConfig
@@ -1210,6 +1218,12 @@ async def test_handle_retry_after_returns_failed_on_deadline_exceeded() -> None:
 
         async def mark_retry_after(self, *args: object, **kwargs: object) -> str:
             return "failed:DeadlineExceeded"
+
+        # The terminal arm re-reads the row it hands the exhausted hook;
+        # a stub with no stored row reports "not found" and the handler
+        # falls back to the dispatch-time row.
+        async def get(self, job_id: UUID) -> JobRow | None:
+            return None
 
     job = make_job_row(attempt=3, max_attempts=3)
     cfg = StubActorConfig(retry=RetryPolicy(kind="transient", max_attempts=3, jitter=0.0))

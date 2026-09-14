@@ -6,6 +6,7 @@ is absent; a clear :class:`ImportError` with install instructions is raised
 when :func:`create_saml_auth` is called without the extra.
 """
 
+import time
 from typing import Any
 
 import structlog
@@ -27,6 +28,11 @@ __all__ = [
 ]
 
 logger = structlog.get_logger("taskq.web.admin.auth.saml")
+
+_REQUEST_COOKIE_NAME: str = "taskq_saml_request"
+_REQUEST_MAX_AGE: int = 300
+_REPLAY_CACHE_MAX_ENTRIES: int = 10_000
+_REPLAY_FALLBACK_TTL_SECONDS: int = 3600
 
 
 class SAMLAuthConfig(BaseModel):
@@ -104,6 +110,83 @@ def _error_redirect(base_path: str) -> RedirectResponse:
     return RedirectResponse(url=f"{base_path}?error=authentication+failed", status_code=302)
 
 
+def _request_serializer(secret: str) -> Any:
+    from itsdangerous import URLSafeTimedSerializer
+
+    return URLSafeTimedSerializer(secret, salt="taskq-saml-request")
+
+
+def _issue_request_cookie(
+    response: Response, secret: str, request_id: str, *, secure: bool
+) -> None:
+    response.set_cookie(
+        _REQUEST_COOKIE_NAME,
+        str(_request_serializer(secret).dumps({"request_id": request_id})),
+        max_age=_REQUEST_MAX_AGE,
+        httponly=True,
+        secure=secure,
+        samesite="lax",
+    )
+
+
+def _read_request_cookie(cookie: str, secret: str) -> str | None:
+    from itsdangerous import BadSignature, SignatureExpired
+
+    try:
+        payload = _request_serializer(secret).loads(cookie, max_age=_REQUEST_MAX_AGE)
+    except (BadSignature, SignatureExpired):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    request_id = payload.get("request_id")
+    if not isinstance(request_id, str) or not request_id:
+        return None
+    return request_id
+
+
+def _clear_request_cookie(response: Response, secure: bool) -> None:
+    response.delete_cookie(_REQUEST_COOKIE_NAME, httponly=True, secure=secure, samesite="lax")
+
+
+class _AssertionReplayCache:
+    """Process-local record of consumed assertion IDs, one instance per bundle.
+
+    A SAML assertion is single-use: once one has minted a session, a second
+    presentation of the same ID is a replay. The record lives in this process
+    only — a multi-process deployment runs one cache per process, so a replay
+    routed to a sibling process is not caught here; the InResponseTo binding
+    (every accepted assertion must answer this browser's own AuthnRequest) is
+    the check that does not depend on process locality. Entries expire with
+    their assertion's NotOnOrAfter — past that window the assertion is already
+    rejected on its timestamps, so pruning its ID loses nothing — and the
+    cache is capped, evicting the soonest-to-expire entry, so it can never
+    grow without bound.
+    """
+
+    def __init__(self) -> None:
+        self._expiry_by_assertion_id: dict[str, float] = {}
+
+    def consume(self, assertion_id: str, not_on_or_after: float | None, *, now: float) -> None:
+        """Record an assertion ID as consumed; a second consume of the same ID raises."""
+        self._prune_expired(now)
+        if assertion_id in self._expiry_by_assertion_id:
+            raise ValueError("SAML assertion replayed")
+        expiry = (
+            not_on_or_after if not_on_or_after is not None else now + _REPLAY_FALLBACK_TTL_SECONDS
+        )
+        if len(self._expiry_by_assertion_id) >= _REPLAY_CACHE_MAX_ENTRIES:
+            soonest = min(
+                self._expiry_by_assertion_id, key=self._expiry_by_assertion_id.__getitem__
+            )
+            del self._expiry_by_assertion_id[soonest]
+        self._expiry_by_assertion_id[assertion_id] = expiry
+
+    def _prune_expired(self, now: float) -> None:
+        expired = [aid for aid, expiry in self._expiry_by_assertion_id.items() if expiry <= now]
+        for assertion_id in expired:
+            del self._expiry_by_assertion_id[assertion_id]
+
+
 def create_saml_auth(config: SAMLAuthConfig, *, base_path: str = "") -> AuthBundle:
     """Build a SAML :class:`AuthBundle` (login/callback/metadata/logout + dependency)."""
     try:
@@ -126,6 +209,7 @@ def create_saml_auth(config: SAMLAuthConfig, *, base_path: str = "") -> AuthBund
     )
     login_path = f"{base_path}/login"
     settings_dict = _build_settings(config)
+    replay_cache = _AssertionReplayCache()
     router = APIRouter(tags=["sso-saml"])
 
     @router.get("/login")
@@ -133,7 +217,18 @@ def create_saml_auth(config: SAMLAuthConfig, *, base_path: str = "") -> AuthBund
         try:
             auth = OneLogin_Saml2_Auth(_request_data(request), settings_dict)
             sso_url = auth.login(return_to=base_path or "/")
-            return RedirectResponse(url=sso_url, status_code=302)
+            request_id = auth.get_last_request_id()
+            if not isinstance(request_id, str) or not request_id:
+                raise ValueError("AuthnRequest has no ID")
+            response = RedirectResponse(url=sso_url, status_code=302)
+            # The callback accepts only an assertion answering the AuthnRequest
+            # this login minted; the ID travels to the browser in a signed
+            # cookie because the ACS POST returns through the browser, not
+            # through this process.
+            _issue_request_cookie(
+                response, config.session_secret, request_id, secure=config.secure_cookie
+            )
+            return response
         except Exception:
             logger.exception("saml-login-error")
             return _error_redirect(base_path)
@@ -147,17 +242,47 @@ def create_saml_auth(config: SAMLAuthConfig, *, base_path: str = "") -> AuthBund
     @router.post("/callback")
     async def callback(request: Request) -> Response:  # pyright: ignore[reportUnusedFunction]  # Why: registered via FastAPI decorator.
         try:
+            # The ACS endpoint answers this browser's own AuthnRequest and
+            # nothing else: the cookie gate below refuses POSTs with no
+            # pending request before any signature work, and the
+            # InResponseTo equality check after signature validation binds
+            # the accepted response to the request /login issued.
+            request_cookie = request.cookies.get(_REQUEST_COOKIE_NAME)
+            if not request_cookie:
+                raise ValueError("no pending SAML AuthnRequest for this browser")
+            request_id = _read_request_cookie(request_cookie, config.session_secret)
+            if request_id is None:
+                raise ValueError("invalid SAML AuthnRequest cookie")
+
             form = await request.form()
             post_data: dict[str, str] = {}
             for key, value in form.multi_items():
                 if isinstance(value, str):
                     post_data[key] = value
             auth = OneLogin_Saml2_Auth(_request_data(request, post_data=post_data), settings_dict)
-            auth.process_response()
+            auth.process_response(request_id=request_id)
             if auth.get_errors():
                 raise ValueError(auth.get_last_error_reason() or "SAML response validation failed")
             if not auth.is_authenticated():
                 raise ValueError("not authenticated")
+
+            # python3-saml compares InResponseTo only when the response
+            # carries one, so an IdP-initiated response (no InResponseTo)
+            # would pass process_response unanswered to any AuthnRequest;
+            # only this equality check refuses that shape.
+            in_response_to = auth.get_last_response_in_response_to()
+            if in_response_to != request_id:
+                raise ValueError("SAML response does not answer this browser's AuthnRequest")
+
+            # An assertion whose InResponseTo is absent (or otherwise valid but
+            # captured) can be re-POSTed while its window is live; only a
+            # consumed-ID record refuses the second presentation.
+            assertion_id = auth.get_last_assertion_id()
+            if not isinstance(assertion_id, str) or not assertion_id:
+                raise ValueError("SAML response carries no assertion ID")
+            replay_cache.consume(
+                assertion_id, auth.get_last_assertion_not_on_or_after(), now=time.time()
+            )
 
             nameid = auth.get_nameid()
             if not isinstance(nameid, str) or not nameid:
@@ -198,10 +323,15 @@ def create_saml_auth(config: SAMLAuthConfig, *, base_path: str = "") -> AuthBund
             )
             response = RedirectResponse(url=base_path or "/", status_code=302)
             session_manager.set_session_cookie(response, identity)
+            # The AuthnRequest ID is single-use: drop it whether the callback
+            # succeeded or failed, so a second POST must begin a new login.
+            _clear_request_cookie(response, config.secure_cookie)
             return response
         except Exception:
             logger.exception("saml-callback-error")
-            return _error_redirect(base_path)
+            resp = _error_redirect(base_path)
+            _clear_request_cookie(resp, config.secure_cookie)
+            return resp
 
     @router.get("/logout")
     async def logout() -> Response:  # pyright: ignore[reportUnusedFunction]  # Why: registered via FastAPI decorator.

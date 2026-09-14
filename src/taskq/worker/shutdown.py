@@ -85,13 +85,29 @@ class ShutdownPhase(IntEnum):
 
 
 async def drain_local_queue_to_pending(deps: "WorkerDeps", worker_id: UUID) -> int:
-    """Re-pend every job this worker locked but never started.
+    """Re-pend every job this worker claimed but never started.
 
     Issues a single bounded-timeout UPDATE that clears the lock on rows
-    where ``locked_by_worker = $worker_id AND status = 'running' AND
-    started_at IS NULL``.  On pool exhaustion or connection error the
-    helper logs a warning and returns 0 so the recovery sweep acts as
-    the backstop rather than a deadlocked shutdown.
+    where ``locked_by_worker = $worker_id AND status = 'running'``,
+    excluding the jobs with live consumers (``deps.active_jobs``):
+    CANCELLING owns those, and re-pending one would unlock a row
+    another worker can claim while its consumer still executes it. On
+    pool exhaustion or connection error the helper logs a warning and
+    returns 0 so the recovery sweep acts as the backstop rather than a
+    deadlocked shutdown.
+
+    Why no ``started_at IS NULL`` conjunct: the dispatch claim CTE
+    stamps ``started_at = clock_timestamp()`` AT CLAIM
+    (backend/_dispatch_sql.py), so every local_queue row is running +
+    locked + ``started_at IS NOT NULL`` — an ``IS NULL`` predicate
+    matched nothing and stranded the whole claimed-but-unstarted
+    backlog until lock-lease expiry. The DB row carries no
+    "a consumer took it" mark, so the only honest discriminator for
+    "never started" is this process's own active-jobs registry; the
+    claim-to-register window (a job taken off local_queue but not yet
+    in ``active_jobs``) is invisible to every shutdown arm — CANCELLING
+    iterates the same registry — and stays outside this predicate's
+    guarantee.
 
     Returns:
         Number of rows updated, or 0 on timeout / connection error.
@@ -100,20 +116,32 @@ async def drain_local_queue_to_pending(deps: "WorkerDeps", worker_id: UUID) -> i
     if not _IDENT_RE.match(schema):
         raise ValueError(f"invalid schema identifier: {schema!r}")
 
+    # Why the explicit list[UUID] annotation: JobId is NewType(UUID), so
+    # the bare comprehension infers list[JobId], and list invariance
+    # would refuse the uuid[] bind parameter's declared type below.
+    active_ids: list[UUID] = [active.job_id for active in deps.active_jobs.all()]
     sql = (
         f"UPDATE \"{schema}\".jobs SET status='pending', locked_by_worker=NULL, "  # noqa: S608  # Why: schema validated against _IDENT_RE before interpolation; asyncpg has no parameter binding for identifiers (same rationale as migrate.py).
         f"lock_expires_at=NULL "
-        f"WHERE locked_by_worker=$1 AND status='running' AND started_at IS NULL"
+        f"WHERE locked_by_worker=$1 AND status='running'"
     )
+    # The exclusion clause is only bound when there is something to
+    # exclude: an empty registry (the common drained-worker case) keeps
+    # the single-parameter statement shape the helper has always issued.
+    params: list[UUID | list[UUID]] = [worker_id]
+    if active_ids:
+        sql += " AND id <> ALL($2::uuid[])"
+        params.append(active_ids)
 
     try:
         async with deps.dispatcher_pool.acquire(timeout=2.0) as conn:
-            tag = await conn.execute(sql, worker_id)
+            tag = await conn.execute(sql, *params)
             rowcount = parse_rowcount(tag)
             _log.info(
                 "drain-local-queue-completed",
                 worker_id=worker_id,
                 rows_re_pended=rowcount,
+                active_jobs_excluded=len(active_ids),
             )
             return rowcount
     except TRANSIENT_PG_ERRORS as exc:

@@ -7,6 +7,7 @@
 
 from dataclasses import replace
 from typing import TYPE_CHECKING
+from uuid import UUID
 
 import structlog
 
@@ -23,6 +24,7 @@ from taskq.exceptions import (
     MaxPendingExceededError,
     SingletonCollisionError,
 )
+from taskq.obs import record_backpressure_error
 from taskq.testing._reads import _read_copy
 
 if TYPE_CHECKING:
@@ -39,6 +41,13 @@ logger = structlog.get_logger("taskq.testing.in_memory")
 
 
 async def _enqueue(self: "InMemoryBackend", args: EnqueueArgs) -> JobRow:
+    # Why a function-level import: the shared dedup-log helper lives with
+    # the PG enqueue path (taskq.backend._enqueue), whose module scope
+    # imports the asyncpg driver; the testing package's import surface
+    # stays driver-free at import time (the taskq._advisory convention),
+    # and this call path only ever runs where the driver is installed.
+    from taskq.backend._enqueue import _log_enqueue_dedup
+
     if args.unique_for is not None and args.identity_key is not None:
         now = self._clock.now()
         cutoff = now - args.unique_for
@@ -52,17 +61,13 @@ async def _enqueue(self: "InMemoryBackend", args: EnqueueArgs) -> JobRow:
         ]
         if candidates:
             existing_row = max(candidates, key=lambda r: r.created_at)
-            logger.info(
-                "job_enqueue_deduplicated",
-                kind="job_enqueue_deduplicated",
-                job_id=str(existing_row.id),
-                actor=existing_row.actor,
-                queue=existing_row.queue,
-                identity_key=existing_row.identity_key,
-                idempotency_key=None,
-                existing_job_id=str(existing_row.id),
-                dedup_reason="unique_for",
-            )
+            # Same shared helper as the idempotency seam below and as the
+            # PG path: one field set, one terminal-target escalation, and
+            # per-site truth in dedup_reason alone. The default
+            # unique_states never match a terminal row, but a
+            # caller-configured set can — and a dead target must be as
+            # loud here as it is on the sibling arm.
+            _log_enqueue_dedup(existing_row, dedup_reason="unique_for")
             return _read_copy(existing_row)
 
     if args.metadata.get("singleton") is True:
@@ -141,17 +146,7 @@ async def _enqueue(self: "InMemoryBackend", args: EnqueueArgs) -> JobRow:
         if existing_id is not None:
             existing_row = self._jobs.get(existing_id)
             if existing_row is not None:
-                logger.info(
-                    "job_enqueue_deduplicated",
-                    kind="job_enqueue_deduplicated",
-                    job_id=str(existing_row.id),
-                    actor=existing_row.actor,
-                    queue=existing_row.queue,
-                    identity_key=existing_row.identity_key,
-                    idempotency_key=existing_row.idempotency_key,
-                    existing_job_id=str(existing_row.id),
-                    dedup_reason="idempotency_key",
-                )
+                _log_enqueue_dedup(existing_row, dedup_reason="idempotency_key")
                 return _read_copy(existing_row)
 
     now = self._clock.now()
@@ -208,6 +203,24 @@ async def _enqueue(self: "InMemoryBackend", args: EnqueueArgs) -> JobRow:
         metadata=stored_metadata,
         tags=args.tags,
     )
+
+    if args.id in self._jobs:
+        # Why a function-level import: the driver-free import-surface
+        # convention (see the _log_enqueue_dedup import above); this path
+        # only ever runs where the driver is installed.
+        from asyncpg.exceptions import UniqueViolationError
+
+        # PG's enqueue INSERT has no ON CONFLICT arbiter for the primary
+        # key (only the singleton and legacy-idempotency constraints are
+        # typed conversions — backend/_enqueue.py), so an INSERT carrying
+        # an existing job id propagates the RAW UniqueViolationError from
+        # jobs_pkey. The twin refuses identically — never silently
+        # overwriting a live row, which certified code that would corrupt
+        # on PG.
+        raise UniqueViolationError(
+            f'duplicate key value violates unique constraint "jobs_pkey" '
+            f"(job id {args.id} already stored)"
+        )
 
     self._jobs[args.id] = row
 
@@ -272,17 +285,64 @@ async def _enqueue_batch(
             }
             refused_names = {r.actor for r in refusals}
             admitted_args = [a for a in args_list if a.actor not in refused_names]
+    # PG-tier atomicity for job-id collisions (#166): the PG bulk tier is
+    # one unnest INSERT in one transaction with no ON CONFLICT arbiter
+    # for the primary key, so a duplicate id — against a stored row or
+    # another item in this batch — aborts the ENTIRE call with nothing
+    # admitted. Pre-validate the whole ADMITTED subset (refused actors'
+    # items never reach the PG INSERT either) before the loop below
+    # stores its first row, so the same batch raises the same
+    # UniqueViolationError with the same empty stored-row state on both
+    # backends. The per-item loop previously discovered the collision at
+    # the poisoned item's index and left the good prefix stored —
+    # certifying code that leaves phantom rows behind on PG.
+    _check_batch_job_ids(self, admitted_args)
+    # Why a function-level import: the dedup WARNING budget lives with
+    # the PG enqueue path (taskq.backend._enqueue), whose module scope
+    # imports the asyncpg driver; the testing package's import surface
+    # stays driver-free at import time (the same convention as
+    # _log_enqueue_dedup above), and this call path only ever runs where
+    # the driver is installed.
+    from taskq.backend._enqueue import (
+        _dedup_warn_budget,
+        _DedupWarnBudget,
+        _log_enqueue_dedup_warn_summary,
+    )
+
     rows: list[JobRow] = []
-    for args in admitted_args:
-        # Why strip the carried cap here: the aggregate check above is the
-        # batch tier's ONLY admission decision (the PG tier's single
-        # unnest INSERT has no per-item cap logic either). Leaving the cap
-        # on would re-check per item WITHOUT the aggregate's idempotency
-        # discount, refusing pure-retry batches the aggregate just
-        # admitted — a PG/InMemory parity gap the old all-or-nothing
-        # pre-check masked.
-        row = await _enqueue(self, replace(args, max_pending=None))
-        rows.append(row)
+    # The per-call dedup WARNING budget (#140), mirroring the PG bulk
+    # tier's result-assembly scope: this loop is where the mirror logs
+    # its batch dedup hits (inside _enqueue, via the shared helper), so a
+    # budget scoped here IS the call's budget. Reset in the finally so no
+    # leak escapes into the caller's context; the summary rides the same
+    # finally so the failure path still reports suppressed hits.
+    dedup_budget = _DedupWarnBudget()
+    dedup_budget_token = _dedup_warn_budget.set(dedup_budget)
+    try:
+        for args in admitted_args:
+            # Why strip the carried cap AND unique_for here: the aggregate
+            # check above is the batch tier's ONLY admission decision (the PG
+            # tier's single unnest INSERT has no per-item cap logic either).
+            # Leaving the cap on would re-check per item WITHOUT the
+            # aggregate's idempotency discount, refusing pure-retry batches
+            # the aggregate just admitted. unique_for is stripped for the
+            # same parity reason: the PG batch tiers (the unnest INSERT and
+            # the COPY) never run the unique_for preflight — a bulk statement
+            # cannot take a per-identity advisory lock without per-item round
+            # trips that defeat bulk throughput, so every batch item writes
+            # and unique_for items are conservatively fully counted toward
+            # the cap instead. A mirror that deduped here would certify dedup
+            # production never performs. Whether the batch tier SHOULD honor
+            # unique_for is a pending owner decision (River enforces batch
+            # uniqueness with a partial unique index + ON CONFLICT,
+            # vendor/river/riverpgxv5/internal/dbsqlc/river_job.sql);
+            # this restores parity with current production behavior, it does
+            # not adjudicate it.
+            row = await _enqueue(self, replace(args, max_pending=None, unique_for=None))
+            rows.append(row)
+    finally:
+        _dedup_warn_budget.reset(dedup_budget_token)
+        _log_enqueue_dedup_warn_summary(dedup_budget, dedup_reason="idempotency_key")
     if refusals:
         raise BatchMaxPendingExceededError(
             refusals=refusals,
@@ -292,19 +352,50 @@ async def _enqueue_batch(
     return rows
 
 
-def _check_batch_jsonb(args_list: list[EnqueueArgs]) -> None:
+def _check_batch_job_ids(self: "InMemoryBackend", admitted_args: list[EnqueueArgs]) -> None:
+    """Reject the whole batch BEFORE any insert when an admitted item's
+    job id collides — with a stored row or another item in this batch.
+
+    Same typed error as the single-enqueue path's stored-id collision
+    (the raw ``UniqueViolationError`` PG's jobs_pkey raises, no arbiter
+    conversion), raised with NOTHING from the batch admitted — the PG
+    bulk tier's whole-call atomicity, mirrored. In-batch duplicates
+    violate the same constraint in the same single statement on PG.
+    """
+    from asyncpg.exceptions import UniqueViolationError
+
+    seen: set[UUID] = set()
+    for args in admitted_args:
+        if args.id in self._jobs:
+            raise UniqueViolationError(
+                f'duplicate key value violates unique constraint "jobs_pkey" '
+                f"(job id {args.id} already stored)"
+            )
+        if args.id in seen:
+            raise UniqueViolationError(
+                f'duplicate key value violates unique constraint "jobs_pkey" '
+                f"(job id {args.id} appears twice in this batch)"
+            )
+        seen.add(args.id)
+
+
+def _check_batch_jsonb(args_list: list[EnqueueArgs], *, index_base: int = 0) -> None:
     """Serialize every batch item's jsonb-bound values with per-item
     attribution, mirroring the PG tier's build loop.
 
     Same helpers, so the same annotated PayloadValidationError (item
     index, actor, field) and the same NUL_JSONB_ERROR wording; tags
     included because the PG batch path binds them through jsonb[]
-    (see item_tags_jsonb_param).
+    (see item_tags_jsonb_param). ``index_base`` is the position of
+    ``args_list[0]`` in the caller's coordinate space — the PG build
+    loop adds the same shift via its ``index_base`` parameter, and the
+    mirror's atomic chunk loop passes the consumed prefix so both
+    backends annotate at identical STREAM-GLOBAL indices.
     """
     for idx, args in enumerate(args_list):
-        item_jsonb_param(args.payload, idx=idx, field="payload", actor=args.actor)
-        item_jsonb_param(args.metadata, idx=idx, field="metadata", actor=args.actor)
-        item_tags_jsonb_param(args.tags, idx=idx, actor=args.actor)
+        item_jsonb_param(args.payload, idx=index_base + idx, field="payload", actor=args.actor)
+        item_jsonb_param(args.metadata, idx=index_base + idx, field="metadata", actor=args.actor)
+        item_tags_jsonb_param(args.tags, idx=index_base + idx, actor=args.actor)
 
 
 async def _batch_cap_refusals(
@@ -346,6 +437,21 @@ async def _batch_cap_refusals(
         )
         admitted = batch_count - deduped_counts.get(actor, 0)
         if existing + admitted > cap:
+            # Why log + metric here (parity with the PG tier's
+            # _batch_cap_refusals, which does both before appending, and
+            # through it with the single path): a partitioned bulk
+            # refusal is a producer-pressure event per refused actor, not
+            # per item. The mirror refused silently until #166 — an
+            # operator's backpressure dashboards read this warning and
+            # this counter, so an app validated against InMemory shipped
+            # with blank dashboards in production.
+            logger.warning(
+                "max-pending-exceeded",
+                actor=actor,
+                current_count=existing,
+                max_pending=cap,
+            )
+            record_backpressure_error(actor, kind="max_pending")
             refusals.append(
                 MaxPendingExceededError(
                     actor=actor,

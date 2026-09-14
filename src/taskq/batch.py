@@ -19,7 +19,7 @@ Provides:
 import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Any, Literal, assert_never
+from typing import TYPE_CHECKING, Any, Final, Literal, assert_never
 from uuid import UUID
 
 import structlog
@@ -75,6 +75,22 @@ MIN_SNOOZE_INTERVAL: timedelta = timedelta(seconds=1)
 
 Caller-supplied ``snooze_interval`` values below this are clamped and a
 warning is logged.
+"""
+
+_POOL_ACQUIRE_TIMEOUT_S: Final[float] = 2.0
+"""Bound for the pool acquire on every :func:`wait_for_batch` poll.
+
+asyncpg's ``Pool.acquire`` has no default timeout, so an unbounded
+acquire parks the poll — the first one and every snooze-loop iteration
+after it — for as long as the pool stays exhausted. This is the same
+bound and rationale as the project's other caller-facing pool waits
+(``pg_pool.acquire(timeout=2.0)`` in the workgroup health check,
+``DEFAULT_CAPACITY_READ_TIMEOUT`` around JobsClient's schedule-seed
+read): a wait on something outside the process is bounded, and
+exceeding the bound is reported as a :class:`TimeoutError` instead of
+wedging the caller. Only the acquire is bounded — the poll's statement
+runs on the caller's own pool, whose statement/command timeouts remain
+that pool's contract.
 """
 
 
@@ -288,17 +304,59 @@ def decide_batch_status(
 # interpolated into a FILTER expression that supplies its own "NOT IN (".
 _TERMINAL_NOT_IN_SQL = ",".join(f"'{s}'" for s in TERMINAL_STATUSES)
 
+# One statement per poll for wait_for_batch: the member counts and the
+# batches row travel together (Faktory's BATCH STATUS shape) instead of a
+# row fetch followed by a counts fetch — two sequential round trips of
+# pure latency for the finalizer loop. The counts subquery has no GROUP
+# BY and therefore always yields exactly one row; the batches row joins
+# by primary key on that row, so a batch with no row (enqueue_batch_fast
+# members carry batch_id metadata only) still reports its counts, and a
+# row with no members still reports its fields — the expected_size the
+# empty-batch decision reads. A joined-away row would surface as all-NULL
+# batch fields, which the reader turns into batch_row=None.
+_WFB_SELECT = (
+    "SELECT c.total, c.succeeded, c.failed, c.cancelled, c.crashed,"
+    " c.abandoned, c.in_flight,"
+    " b.id, b.queue, b.status, b.expected_size, b.consecutive_failures,"
+    " b.failure_threshold, b.finalizer_job_id, b.originating_actor,"
+    " b.created_at, b.completed_at, b.metadata"
+)
+_WFB_COUNTS = (
+    " SELECT count(*) AS total,"
+    " count(*) FILTER (WHERE j.status = 'succeeded') AS succeeded,"
+    " count(*) FILTER (WHERE j.status = 'failed') AS failed,"
+    " count(*) FILTER (WHERE j.status = 'cancelled') AS cancelled,"
+    " count(*) FILTER (WHERE j.status = 'crashed') AS crashed,"
+    " count(*) FILTER (WHERE j.status = 'abandoned') AS abandoned,"
+    " count(*) FILTER (WHERE j.status NOT IN ({terminal_status_list})) AS in_flight"
+    ' FROM "{schema}".jobs j'
+)
+_WFB_BATCH_ROW_JOIN = ' LEFT JOIN "{schema}".batches b ON b.id = $2'
+
+# Finalizer auto-exclusion: the batches row joins inside the counts CTE
+# so the exclusion resolves from the row itself — a NULL
+# finalizer_job_id (or no row at all) excludes nothing.
 _WAIT_FOR_BATCH_SQL = (
-    "SELECT"
-    " count(*) AS total,"
-    " count(*) FILTER (WHERE status = 'succeeded') AS succeeded,"
-    " count(*) FILTER (WHERE status = 'failed') AS failed,"
-    " count(*) FILTER (WHERE status = 'cancelled') AS cancelled,"
-    " count(*) FILTER (WHERE status = 'crashed') AS crashed,"
-    " count(*) FILTER (WHERE status = 'abandoned') AS abandoned,"
-    " count(*) FILTER (WHERE status NOT IN (" + _TERMINAL_NOT_IN_SQL + ")) AS in_flight"
-    ' FROM "{schema}".jobs'
-    " WHERE metadata @> $1::jsonb"
+    _WFB_SELECT
+    + " FROM ("
+    + _WFB_COUNTS
+    + ' LEFT JOIN "{schema}".batches fb ON fb.id = $2'
+    + " WHERE j.metadata @> $1::jsonb"
+    + " AND (fb.finalizer_job_id IS NULL OR j.id <> fb.finalizer_job_id)"
+    + " ) c"
+    + _WFB_BATCH_ROW_JOIN
+)
+
+# Caller-supplied exclude_job_id replaces the finalizer exclusion — one
+# excluded id either way, the same contract the loop has always held.
+_WAIT_FOR_BATCH_EXCLUDED_SQL = (
+    _WFB_SELECT
+    + " FROM ("
+    + _WFB_COUNTS
+    + " WHERE j.metadata @> $1::jsonb"
+    + " AND j.id <> $3"
+    + " ) c"
+    + _WFB_BATCH_ROW_JOIN
 )
 
 _logger = structlog.get_logger("taskq.batch")
@@ -307,7 +365,7 @@ _logger = structlog.get_logger("taskq.batch")
 async def apply_batch_terminal_outcome(
     backend: Backend,
     job: JobRow,
-    outcome: AttemptOutcome,
+    outcome: AttemptOutcome | Literal["noop"],
     *,
     transaction_conn: "ConnLike | None" = None,
 ) -> None:
@@ -315,19 +373,31 @@ async def apply_batch_terminal_outcome(
 
     Called after every terminal write by the consumer and the in-memory
     runner.  For non-batched jobs (no ``metadata.batch_id``) this returns
-    immediately — zero overhead.
+    immediately — zero overhead.  *outcome* is the dispatch outcome the
+    caller reports: an attempt-row outcome, or the consumer's ``"noop"``
+    (a terminal write that matched nothing — the job was never this
+    dispatch's to move, so no batch counter may budge).
 
-    - ``"succeeded"``: resets the consecutive-failure counter.  If no
-      jobs remain non-terminal, marks the batch complete.
+    - ``"succeeded"``: resets the consecutive-failure counter and
+      attempts completion.
     - ``"failed"``: increments the consecutive-failure counter.  If the
-      threshold is reached, aborts the batch and logs ``batch-aborted``.
-      If not aborted and no jobs remain non-terminal, marks the batch
-      complete.
-    - ``"cancelled"`` / ``"crashed"``: counts non-terminal jobs.  If none
-      remain, marks the batch complete.
+      threshold is reached, aborts the batch and logs ``batch-aborted``
+      — abort wins, so no completion attempt runs on that path.  If the
+      threshold is not reached, attempts completion.
+    - ``"cancelled"`` / ``"crashed"``: attempts completion.
     - ``"snoozed"`` / ``"reservation_denied"`` / ``"rate_limit_denied"`` /
-      ``"scheduled"``: returns immediately — the job is rescheduled, not
-      terminal.
+      ``"scheduled"`` / ``"noop"``: returns immediately — the job is
+      rescheduled (or was never this dispatch's to move), not terminal.
+
+    Completion is self-arbitrating: every terminal outcome issues the
+    ``complete_batch`` attempt, and that statement's ``NOT EXISTS``
+    guard decides against the live member set in its own snapshot.  The
+    increment/reset count is advisory only — under READ COMMITTED two
+    members terminating concurrently can each read the other as
+    non-terminal, so a hook that gated the attempt on that count could
+    leave a fully-terminal batch for the leader sweep; the optimistic
+    attempt after the last terminal write is the one that lands, and a
+    premature one is a no-op.
 
     **Best-effort semantics (M7):** the increment/reset/abort/complete
     writes are best-effort.  A crash between the terminal job write and
@@ -346,17 +416,21 @@ async def apply_batch_terminal_outcome(
         return
     batch_id = UUID(str(raw_bid))
 
-    if outcome in ("snoozed", "reservation_denied", "rate_limit_denied", "scheduled"):
+    if outcome in ("snoozed", "reservation_denied", "rate_limit_denied", "scheduled", "noop"):
         return
 
     if outcome == "succeeded":
-        remaining = await backend.reset_batch_failures(batch_id, connection=transaction_conn)
-        if remaining == 0:
-            await backend.complete_batch(batch_id, connection=transaction_conn)
+        await backend.reset_batch_failures(batch_id, connection=transaction_conn)
+        # The reset's remaining count is that statement's snapshot, not
+        # the completion decision — see the docstring's self-arbitrating
+        # paragraph. complete_batch re-checks membership in its own
+        # statement, so the optimistic attempt can delay but never
+        # complete prematurely.
+        await backend.complete_batch(batch_id, connection=transaction_conn)
         return
 
     if outcome == "failed":
-        count, threshold, remaining = await backend.increment_batch_failures(
+        count, threshold, _remaining = await backend.increment_batch_failures(
             batch_id, connection=transaction_conn
         )
         if threshold is not None and count >= threshold:
@@ -368,16 +442,17 @@ async def apply_batch_terminal_outcome(
                 threshold=threshold,
                 job_id=str(job.id),
             )
-        elif remaining == 0:
-            await backend.complete_batch(batch_id, connection=transaction_conn)
+            # Abort wins over complete: the completion attempt is the
+            # fall-through below this return, so an aborted batch is
+            # never also completed from this hook call.
+            return
+        await backend.complete_batch(batch_id, connection=transaction_conn)
         return
 
     # outcome is "cancelled" or "crashed" — the only remaining
     # terminal outcomes in AttemptOutcome that are not handled above.
     if outcome in ("cancelled", "crashed"):
-        remaining = await backend.count_batch_non_terminal(batch_id, connection=transaction_conn)
-        if remaining == 0:
-            await backend.complete_batch(batch_id, connection=transaction_conn)
+        await backend.complete_batch(batch_id, connection=transaction_conn)
         return
 
     assert_never(outcome)
@@ -397,7 +472,9 @@ async def wait_for_batch(
     """Convenience helper for the fan-out-then-finalize pattern.
 
     Queries batch children by batch_id using the GIN-indexed
-    ``WHERE metadata @> $1::jsonb`` predicate.
+    ``WHERE metadata @> $1::jsonb`` predicate. Each poll is one
+    round trip: the member counts and the ``batches`` row travel in a
+    single statement.
 
     Inside an actor (snooze_via_exception=True, the default):
       - If any children are in-flight, raises Snooze(snooze_interval).
@@ -410,6 +487,11 @@ async def wait_for_batch(
         children are terminal, then returns BatchCompletionStatus.
       - Use this form from scripts and integration tests where no consumer
         is present to translate a Snooze into a rescheduled job.
+      - Each poll's pool acquire is bounded by
+        :data:`_POOL_ACQUIRE_TIMEOUT_S`: a pool that cannot yield a
+        connection within the bound surfaces as a :class:`TimeoutError`
+        (the project's report idiom for an exhausted pool) rather than
+        parking the wait forever.
 
     ``expect_at_least`` raises :class:`~taskq.exceptions.EmptyBatchError`
     when fewer than the expected number of jobs are present and none are
@@ -443,41 +525,33 @@ async def wait_for_batch(
 
     containment = dumps_str({"batch_id": str(batch_id)})
 
-    _batch_row_sql = (
-        f"SELECT id, queue, status, expected_size, consecutive_failures, "  # noqa: S608  # Why: schema validated against _IDENT_RE immediately above.
-        f"failure_threshold, finalizer_job_id, originating_actor, "
-        f"created_at, completed_at, metadata "
-        f'FROM "{schema}".batches WHERE id = $1'
-    )
-
-    async def _fetch_batch_row(
-        conn: "asyncpg.Connection",
-    ) -> BatchRow | None:
-        try:
-            rec = await conn.fetchrow(_batch_row_sql, batch_id)
-        except _asyncpg.exceptions.UndefinedTableError:
-            return None
-        if rec is None:
-            return None
-        return _batch_row_from_record(rec)
-
     async def _fetch_and_decide(
         conn: "asyncpg.Connection",
     ) -> BatchCompletionStatus:
-        batch_row = await _fetch_batch_row(conn)
-
-        exclusion_id = exclude_job_id
-        if exclusion_id is None and batch_row is not None:
-            exclusion_id = batch_row.finalizer_job_id
-
-        if exclusion_id is not None:
-            sql = _WAIT_FOR_BATCH_SQL.format(schema=schema) + " AND id <> $2"
-            row = await conn.fetchrow(sql, containment, exclusion_id)
+        # One round trip per poll: counts and the batches row arrive in
+        # one statement (see the _WAIT_FOR_BATCH_* templates). The
+        # aggregate always yields exactly one row; None is the degraded
+        # or faked-connection path.
+        if exclude_job_id is not None:
+            row = await conn.fetchrow(
+                _WAIT_FOR_BATCH_EXCLUDED_SQL.format(
+                    schema=schema, terminal_status_list=_TERMINAL_NOT_IN_SQL
+                ),
+                containment,
+                batch_id,
+                exclude_job_id,
+            )
         else:
-            sql = _WAIT_FOR_BATCH_SQL.format(schema=schema)
-            row = await conn.fetchrow(sql, containment)
+            row = await conn.fetchrow(
+                _WAIT_FOR_BATCH_SQL.format(
+                    schema=schema, terminal_status_list=_TERMINAL_NOT_IN_SQL
+                ),
+                containment,
+                batch_id,
+            )
 
         if row is None:
+            batch_row = None
             status = BatchCompletionStatus(
                 total=0,
                 pending=0,
@@ -488,6 +562,9 @@ async def wait_for_batch(
                 abandoned=0,
             )
         else:
+            # The batches row joined by primary key: all-NULL fields mean
+            # no row exists (batch_id-only metadata, or a pruned row).
+            batch_row = None if row["id"] is None else _batch_row_from_record(row)
             status = BatchCompletionStatus(
                 total=int(row["total"]),
                 pending=int(row["in_flight"]),
@@ -519,7 +596,12 @@ async def wait_for_batch(
 
     async def _fetch() -> BatchCompletionStatus:
         if isinstance(db, _asyncpg.Pool):
-            async with db.acquire() as conn:  # type: ignore[reportArgumentType]  # Why: Pool.acquire() returns PoolConnectionProxy; pyright stubs model it as incompatible with Connection but it is runtime-compatible
+            # Bounded acquire (see _POOL_ACQUIRE_TIMEOUT_S): on an
+            # exhausted pool the wait surfaces as a TimeoutError to the
+            # caller instead of parking this poll — and every
+            # snooze-loop iteration after it — forever. The workgroup
+            # health check bounds the identical shape the same way.
+            async with db.acquire(timeout=_POOL_ACQUIRE_TIMEOUT_S) as conn:  # type: ignore[reportArgumentType]  # Why: Pool.acquire() returns PoolConnectionProxy; pyright stubs model it as incompatible with Connection but it is runtime-compatible
                 return await _fetch_and_decide(conn)  # type: ignore[reportArgumentType]  # Why: PoolConnectionProxy is a runtime-compatible Connection proxy; pyright stubs model it as incompatible
         return await _fetch_and_decide(db)
 

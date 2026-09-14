@@ -205,6 +205,7 @@ class ActorRunnerCallable(Protocol):
         backend: InMemoryBackend,
         job_id: JobId | UUID | None = ...,
         attempt: int = ...,
+        snooze_count: int = ...,
         cancel_event: asyncio.Event | None = ...,
         actor: str = ...,
         queue: str = ...,
@@ -251,6 +252,7 @@ def actor_runner() -> ActorRunnerCallable:
         backend: InMemoryBackend,
         job_id: JobId | UUID | None = None,
         attempt: int = 1,
+        snooze_count: int = 0,
         cancel_event: asyncio.Event | None = None,
         actor: str = "test_actor",
         queue: str = "default",
@@ -277,6 +279,7 @@ def actor_runner() -> ActorRunnerCallable:
             actor=actor,
             queue=queue,
             attempt=attempt,
+            snooze_count=snooze_count,
             payload=ctx_payload,
             cancel_event=evt,
             worker_id=backend._worker_id,  # type: ignore[reportPrivateUsage]  # Why: fixture is an owned helper; _worker_id is private to InMemoryBackend but readable here for JobContext construction

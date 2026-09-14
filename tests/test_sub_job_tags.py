@@ -258,7 +258,11 @@ class TestSubJobMissingFields:
         assert row.start_to_close == timedelta(minutes=30)
 
     async def test_heartbeat_timeout(self) -> None:
-        """heartbeat_timeout is accepted and stored on the row."""
+        """heartbeat_timeout is accepted and stored on the row, exactly
+        like its sibling per-job deadline knobs: the leader's reclaim
+        sweep enforces it (a holder silent past it is crash-reclaimed
+        while the global lease is still valid), so dropping it here
+        would silently revert the sub-job to lease-only reclamation."""
         backend = InMemoryBackend(clock=FakeClock(_NOW))
         enqueuer = _make_enqueuer(backend)
 
@@ -270,6 +274,11 @@ class TestSubJobMissingFields:
         row = await backend.get(handle.job_id)
         assert row is not None
         assert row.heartbeat_timeout == timedelta(seconds=10)
+
+        handle = await enqueuer.enqueue(_make_actor_ref(), _Payload())
+        row = await backend.get(handle.job_id)
+        assert row is not None
+        assert row.heartbeat_timeout is None
 
 
 class TestContextVarIsolation:

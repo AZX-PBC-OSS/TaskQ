@@ -7,14 +7,22 @@
 wrappers that delegate.
 """
 
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 from uuid import UUID
 
 import structlog
-from asyncpg.exceptions import UniqueViolationError
+from asyncpg.exceptions import LockNotAvailableError, UniqueViolationError
 
-from taskq._advisory import acquire_advisory_xact_lock_bounded
+from taskq._advisory import (
+    _LOCK_TIMEOUT_READ_SQL,  # pyright: ignore[reportPrivateUsage]  # Why: the one implementation of the lock_timeout GUC statements, shared with the advisory/sweep machinery — a local copy would drift from the discipline it mirrors.
+    _LOCK_TIMEOUT_SET_SQL,  # pyright: ignore[reportPrivateUsage]  # Why: same — the shared set_config statement.
+    acquire_advisory_xact_lock_bounded,
+)
 from taskq.backend._protocol import (
     ConnLike,
     EnqueueArgs,
@@ -29,10 +37,15 @@ from taskq.backend._records import (
 )
 from taskq.backend._sql_templates import SqlTemplates
 from taskq.backend.clock import Clock
-from taskq.constants import wake_channel
+from taskq.backend.statemachine import TERMINAL_STATUSES
+from taskq.constants import (
+    _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: the canonical identifier regex, shared with every schema-qualified SQL site — a local copy would drift.
+    wake_channel,
+)
 from taskq.exceptions import (
     BatchMaxPendingExceededError,
     DuplicateIdempotencyKeyError,
+    IdempotencyKeyLockTimeoutError,
     MaxPendingExceededError,
     MaxPendingLockTimeoutError,
     ScopedIdempotencyMigrationPendingError,
@@ -42,6 +55,7 @@ from taskq.exceptions import (
 from taskq.obs import (
     get_logger,
     record_backpressure_error,
+    record_enqueue_dedup,
 )
 
 if TYPE_CHECKING:
@@ -84,6 +98,21 @@ DEFAULT_MAX_PENDING_LOCK_TIMEOUT_MS: float = 5000.0
 #: ``lock_timeout`` GUC convention shared with the max_pending budget.
 DEFAULT_UNIQUE_FOR_LOCK_TIMEOUT_MS: float = 5000.0
 
+#: Bounded wait (milliseconds) for the idempotency token INSERT's
+#: speculative-lock conflict — another transaction's UNCOMMITTED row with
+#: the same ``(idempotency_scope, idempotency_key)`` pair. On a
+#: transactional consumer the holder IS the actor's own open transaction
+#: (``default_start_to_close`` = None means unbounded), so this wait is
+#: the one enqueue block that can legitimately last minutes; the budget
+#: bounds the VICTIM, not the holder, and exhaustion means "the dedup
+#: answer could not be determined in time" — the typed
+#: :class:`IdempotencyKeyLockTimeoutError` with retry-yields-dedup
+#: guidance, the same treatment :data:`DEFAULT_UNIQUE_FOR_LOCK_TIMEOUT_MS`
+#: gives its identical situation. Same 5 s starting point as the sibling
+#: budgets for one-branch symmetry. ``0`` (or less) waits indefinitely,
+#: the ``lock_timeout`` GUC convention shared with the other two.
+DEFAULT_IDEMPOTENCY_LOCK_TIMEOUT_MS: Final[float] = 5000.0
+
 # The old single-column idempotency index, still present alongside the new
 # composite one during the rolling-deploy window between
 # 01.00.03_01_pre_idempotency_scope.sql and
@@ -117,6 +146,161 @@ _COMPOSITE_IDEMPOTENCY_KEY_CONSTRAINT_NAME = "jobs_idempotency_scope_key_uniq"
 _COMPOSITE_IDEMPOTENCY_DETAIL_TEMPLATE = (
     "Key (idempotency_scope, idempotency_key)=({scope}, {key}) already exists."
 )
+
+
+@asynccontextmanager
+async def _optional_savepoint(conn: ConnLike, *, enabled: bool) -> AsyncGenerator[None, None]:
+    """Enter a transaction scope on *conn* when *enabled*, else a no-op scope.
+
+    Nested inside an open transaction asyncpg opens a SAVEPOINT; on a
+    bare connection it opens a real short transaction. Either way an
+    exception raised inside rolls the scope back before propagating, so
+    a statement error can be converted to a typed error WITHOUT aborting
+    the surrounding scope — the caller-owned-transaction discipline the
+    bounded advisory acquire (``taskq._advisory``) and the token-bucket
+    lock read already follow.
+
+    Why a flag-gated context manager instead of an ``if`` at the call
+    site: the guarded statement stays a single literal call — the
+    twenty-plus-parameter enqueue INSERT must not exist as two copies
+    that can drift — while each arm opts in explicitly, keeping the
+    arms that need no savepoint on their zero-extra-round-trip path.
+    """
+    if enabled:
+        async with conn.transaction():
+            yield
+    else:
+        yield
+
+
+_DEDUP_WARN_PER_HIT_LIMIT: Final[int] = 3
+"""Per-call ceiling on per-hit terminal-target dedup WARNINGs before the
+aggregate summary takes over (``_DedupWarnBudget``). The bound the
+batch-scale contract demands is small: a re-submitted 1000-item batch
+against 500 terminal targets must not emit 500 WARNINGs from one call
+(#140). Three per-hit lines plus the one summary line stays at four —
+under the pinned bound of five with headroom, and still three full
+per-hit samples (actor, key, status) for an operator triaging which
+identities are pinned to dead jobs."""
+
+
+@dataclass
+class _DedupWarnBudget:
+    """Per-call state bounding the terminal-target WARNING arm of
+    :func:`_log_enqueue_dedup` at batch scale.
+
+    Why per-CALL aggregation rather than the dependency-failure
+    window-gate's time window (``worker/_consumer.py``, the precedent this
+    follows for the flood shape itself): the small-scale per-hit contract
+    must survive rapid successive calls — a time window keyed per process
+    would silently suppress the second small terminal-target batch logged
+    within it, and a window keyed per identity is unbounded in the batch
+    dimension the flood lives in. A call-local budget is deterministic,
+    needs no clock, and a :class:`contextvars.ContextVar` keeps concurrent
+    batch calls isolated per task.
+    """
+
+    terminal_hits: int = 0
+    warned_hits: int = 0
+
+    def charge_warning(self) -> bool:
+        """Count one terminal-target hit; True while a per-hit WARNING slot remains."""
+        self.terminal_hits += 1
+        if self.warned_hits < _DEDUP_WARN_PER_HIT_LIMIT:
+            self.warned_hits += 1
+            return True
+        return False
+
+    @property
+    def suppressed_hits(self) -> int:
+        """Terminal-target hits whose per-hit WARNING the budget suppressed."""
+        return self.terminal_hits - self.warned_hits
+
+
+_dedup_warn_budget: ContextVar[_DedupWarnBudget | None] = ContextVar(
+    "taskq_enqueue_dedup_warn_budget", default=None
+)
+"""The dedup WARNING budget of the CURRENT enqueue-batch call, if any.
+
+Set by the batch tiers around their result assembly (both backends); the
+single-enqueue paths never set it — a single enqueue is one hit by
+construction, no flood is possible, and the per-hit escalation contract
+holds there unchanged."""
+
+
+def _log_enqueue_dedup(row: JobRow, *, dedup_reason: str) -> None:
+    """Report one enqueue dedup hit — the log line plus the dedup counter.
+
+    A terminal target never runs the work again — the identity stays
+    pinned to a dead job until it ages out of retention (an idempotency
+    key until pruned; a unique_for window whose ``unique_states`` fold a
+    terminal state in, for the window's remainder) — so the hit is
+    louder than the live-job case, which is normal single-flight
+    operation. Shared by every dedup site — the idempotency arm and the
+    unique_for arm of the single-enqueue path, the batch result
+    assembly, and the InMemory mirror — so the sites cannot drift apart
+    in fields or volume; the per-site truth is ``dedup_reason`` alone.
+
+    The ``taskq.enqueue.dedups`` counter rides the same shared seam for
+    the same reason: every hit counts once on both backends, at every
+    scale, regardless of the log arm the hit took — and the batch-scale
+    WARNING budget below cannot mute the rate signal with the lines.
+
+    At batch scale the terminal-target WARNING arm is bounded per call
+    (#140): when the current call carries a ``_DedupWarnBudget`` (the
+    batch tiers set one), the first ``_DEDUP_WARN_PER_HIT_LIMIT``
+    terminal hits warn per-hit exactly as before and the rest are
+    counted for the call's ONE summary WARNING
+    (:func:`_log_enqueue_dedup_warn_summary`) — a per-item WARNING flood
+    is channel noise an operator mutes, destroying the signal the
+    WARNING exists to raise. The INFO arm (every live-target hit,
+    carrying status) is untouched at every scale.
+    """
+    record_enqueue_dedup(dedup_reason)
+    fields: dict[str, object] = {
+        "kind": "enqueue_deduplicated",
+        "job_id": str(row.id),
+        "actor": row.actor,
+        "queue": row.queue,
+        "identity_key": row.identity_key,
+        "idempotency_key": row.idempotency_key,
+        "idempotency_scope": row.idempotency_scope,
+        "status": row.status,
+        "existing_job_id": str(row.id),
+        "dedup_reason": dedup_reason,
+    }
+    if row.status in TERMINAL_STATUSES:
+        budget = _dedup_warn_budget.get()
+        if budget is None or budget.charge_warning():
+            logger.warning("enqueue_deduplicated", **fields)
+        # Else: the hit is counted for the call's summary WARNING; its
+        # per-hit line is the flood the budget exists to bound.
+    else:
+        logger.info("enqueue_deduplicated", **fields)
+
+
+def _log_enqueue_dedup_warn_summary(budget: _DedupWarnBudget, *, dedup_reason: str) -> None:
+    """Emit the ONE aggregate WARNING for the terminal-target dedup hits a
+    call suppressed — the flood's total, named once.
+
+    No-op when the budget suppressed nothing (small batches keep pure
+    per-hit WARNINGs, indistinguishable from the pre-bound contract).
+    Emitted on the failure path too (the caller's ``finally``): the
+    suppressed hits already happened, and a summary that only fires on
+    success is a failure that looks like a success.
+    """
+    suppressed = budget.suppressed_hits
+    if suppressed <= 0:
+        return
+    logger.warning(
+        "enqueue_deduplicated",
+        kind="enqueue_deduplicated",
+        dedup_reason=dedup_reason,
+        aggregate="terminal_dedup",
+        terminal_hits=budget.terminal_hits,
+        warned_hits=budget.warned_hits,
+        suppressed_hits=suppressed,
+    )
 
 
 def _attribute_duplicate_pair(
@@ -274,9 +458,10 @@ class _LegacyIdempotencyKeyConflictError(Exception):
     a fresh transaction: cause 2 then dedupes via the composite arbiter,
     cause 1 violates the legacy index again and is converted to the public
     typed error. Callers on a borrowed connection (enqueue_with_conn /
-    enqueue_batch(connection=...)) cannot retry -- their transaction is
-    already aborted -- so they convert immediately, preserving this
-    release's documented behavior for that path.
+    enqueue_batch(connection=...)) cannot retry -- a retry needs a fresh
+    transaction and the caller owns this connection's scope -- so they
+    convert immediately, preserving this release's documented behavior for
+    that path.
     """
 
     def __init__(
@@ -363,12 +548,14 @@ async def _acquire_unique_for_lock(
     in time" — the caller's correct response is to retry the same
     enqueue, which typically dedupes against the now-visible winner —
     which no BackpressureError handler expresses (those shed load or
-    log queue counts). Correspondingly NOT recorded against
-    ``taskq.backpressure.errors``: identity-key contention is not a
-    capacity signal, and spiking that counter would trip capacity
-    alerting; the ``unique-for-lock-timeout`` log event carries the
-    observability instead. A raw driver error never surfaces from
-    contention.
+    log queue counts). The refusal is still COUNTED on
+    ``taskq.backpressure.errors`` under its own bounded kind
+    (``unique_for_lock_timeout``), beside the warning log: a typed
+    refusal only a log reader can see is invisible at 3am, and the
+    ``kind`` label keeps identity contention off the capacity kinds
+    (``max_pending`` / ``max_pending_lock_timeout``) so an alert keyed
+    on those is not tripped by it. A raw driver error never surfaces
+    from contention.
     """
     if not await acquire_advisory_xact_lock_bounded(conn, lock_key, timeout_ms=timeout_ms):
         logger.warning(
@@ -377,6 +564,7 @@ async def _acquire_unique_for_lock(
             identity_key=identity_key,
             lock_timeout_ms=timeout_ms,
         )
+        record_backpressure_error(actor, kind="unique_for_lock_timeout")
         raise UniqueForLockTimeoutError(
             actor=actor,
             identity_key=identity_key,
@@ -393,37 +581,43 @@ async def _enqueue_on_conn(
     *,
     max_pending_lock_timeout_ms: float = DEFAULT_MAX_PENDING_LOCK_TIMEOUT_MS,
     unique_for_lock_timeout_ms: float = DEFAULT_UNIQUE_FOR_LOCK_TIMEOUT_MS,
+    idempotency_lock_timeout_ms: float = DEFAULT_IDEMPOTENCY_LOCK_TIMEOUT_MS,
 ) -> JobRow:
     """Core enqueue logic running on *conn*.
 
     Includes unique_for preflight, singleton preflight, max_pending
-    count, INSERT, idempotency-key SELECT on conflict, and pg_notify.
-    Does NOT acquire from ``worker_pool`` — the caller supplies the
-    connection. A transaction is opened here only for capped actors on
-    a transaction-less caller connection (so the count-then-insert
-    serialization holds); otherwise the caller owns transaction scope.
-
-    The unique_for single-flight guarantee depends on that transaction: the
-    advisory lock below is transaction-scoped, so on a caller-supplied
-    connection with no open transaction it is released at statement end and
-    the preflight is advisory only. That is the same connection on which the
-    caller has already taken responsibility for atomicity.
-
-    Capped actors additionally run inside a transaction owned here when the
-    caller supplied none (see below): the max_pending count-then-insert must
-    be serialized, and a transaction-scoped lock only serializes inside a
-    transaction.
+    count, INSERT (savepoint-isolated on the singleton arm and the
+    bounded idempotency arm — see the collision catches below),
+    idempotency-key SELECT on conflict, and pg_notify. Does NOT acquire
+    from ``worker_pool`` — the caller supplies the connection. A
+    transaction is opened here when the caller-supplied connection
+    carries none and the enqueue needs transaction-scoped serialization:
+    a capped actor's count-then-insert, and the unique_for
+    check-then-insert. A caller who already holds a transaction owns the
+    scope — the advisory locks then span that caller's transaction, so
+    single-flight and cap exactness hold until its commit/rollback.
     """
-    if args.max_pending is not None and not conn.is_in_transaction():
+    unique_for_single_flight = args.unique_for is not None and args.identity_key is not None
+    if (args.max_pending is not None or unique_for_single_flight) and not conn.is_in_transaction():
         # Why a transaction here and not just the lock: pg_advisory_xact_lock
         # releases at transaction end, so on a bare caller connection (every
         # statement its own transaction) the lock below would release before
-        # the INSERT and overlapping counts would each see room — the
+        # the statement it exists to guard. For max_pending that is the
         # count-then-insert race pgqueuer closed with capacity-slot indexes
-        # (v1.4.0, #761/#774/#777). Wrapping makes the lock span the
-        # count and the INSERT; the recursion terminates because the inner
-        # call observes the open transaction. Callers that already hold a
-        # transaction are untouched.
+        # (v1.4.0, #761/#774/#777) — overlapping counts each see room. For
+        # unique_for it is the same defect on the identity preflight: two
+        # dispatchers both run the preflight before either commits, both see
+        # nothing, and both insert (measured: 100 concurrent enqueues
+        # produced 6 rows). Oban runs its unique insert inside a transaction
+        # (vendor/oban/lib/oban/engines/basic.ex) and GoodJob wraps its
+        # concurrency check in requires_new
+        # (vendor/good_job/lib/good_job/active_job_extensions/concurrency.rb)
+        # — the standard shape for a check-then-insert guarantee. Wrapping
+        # makes the lock span the preflight/count and the INSERT; the
+        # recursion terminates because the inner call observes the open
+        # transaction. Callers that already hold a transaction are
+        # untouched: the lock then spans THEIR transaction instead, so the
+        # guarantee holds until their commit.
         async with conn.transaction():
             return await _enqueue_on_conn(
                 conn,
@@ -433,6 +627,7 @@ async def _enqueue_on_conn(
                 args,
                 max_pending_lock_timeout_ms=max_pending_lock_timeout_ms,
                 unique_for_lock_timeout_ms=unique_for_lock_timeout_ms,
+                idempotency_lock_timeout_ms=idempotency_lock_timeout_ms,
             )
     if args.unique_for is not None and args.identity_key is not None:
         # Why a lock at all: what follows is a check-then-insert. Under READ
@@ -500,20 +695,19 @@ async def _enqueue_on_conn(
         )
         if existing_rec is not None:
             row = _job_row_from_record(existing_rec)
-            logger.info(
-                "enqueue_deduplicated",
-                kind="enqueue_deduplicated",
-                job_id=str(row.id),
-                actor=row.actor,
-                queue=row.queue,
-                identity_key=row.identity_key,
-                idempotency_key=None,
-                existing_job_id=str(row.id),
-                dedup_reason="unique_for",
-            )
+            # Same shared helper as the idempotency seam. The DEFAULT
+            # unique_states exclude terminal states, but the set is
+            # caller-configurable (@actor(unique_states=...)), and a
+            # window that folds a terminal state in can hand a weeks-old
+            # dead row back as a successful enqueue — the case the helper
+            # warns on. The full field set (idempotency_scope included)
+            # and the terminal-status escalation both come with the
+            # helper; the per-site truth is the dedup_reason alone.
+            _log_enqueue_dedup(row, dedup_reason="unique_for")
             return row
 
-    if args.metadata.get("singleton") is True:
+    singleton_enqueue = args.metadata.get("singleton") is True
+    if singleton_enqueue:
         preflight_rec = await conn.fetchrow(sql.singleton_preflight, args.actor)
         if preflight_rec is not None:
             blocking_id: UUID = preflight_rec["id"]
@@ -594,31 +788,110 @@ async def _enqueue_on_conn(
     scheduled_at_param: datetime | None = args.scheduled_at
 
     try:
-        rec = await conn.fetchrow(
-            sql.enqueue,
-            args.id,
-            args.actor,
-            args.queue,
-            args.identity_key,
-            args.fairness_key,
-            jsonb_param(args.payload),
-            args.payload_schema_ver,
-            args.priority,
-            args.max_attempts,
-            args.retry_kind,
-            args.schedule_to_close_interval,
-            args.start_to_close,
-            args.heartbeat_timeout,
-            scheduled_at_param,
-            args.idempotency_scope,
-            args.idempotency_key,
-            args.trace_id,
-            args.span_id,
-            jsonb_param(args.metadata),
-            args.result_ttl,
-            list(args.tags),
-            args.schedule_to_close,
+        # Why the singleton INSERT runs inside a savepoint, and why the
+        # bounded idempotency arm joins it: a savepoint-isolated arm is
+        # for INSERTs whose DOCUMENTED failure mode is a typed
+        # catch-and-continue refusal — the singleton's
+        # SingletonCollisionError on jobs_singleton_uniq, and (below) the
+        # idempotency token's IdempotencyKeyLockTimeoutError on a bounded
+        # speculative-lock wait. The raw error is a STATEMENT error either
+        # way (UniqueViolationError aborts the surrounding transaction;
+        # 55P03 LockNotAvailableError does the same), and the typed
+        # conversion does not undo that, so the refusal would leave the
+        # caller's transaction dead on this detection path but alive on
+        # the preflight paths. The savepoint rollback restores the scope
+        # before the conversion raises; on the pool-owned wrapper the
+        # savepoint nests inside it. Every other enqueue keeps the bare
+        # INSERT: their violation outcomes are raw or migration-window
+        # errors, not refusals a caller catches and continues from.
+        idempotency_bounded_wait = (
+            args.idempotency_key is not None and idempotency_lock_timeout_ms > 0
         )
+        async with _optional_savepoint(conn, enabled=singleton_enqueue or idempotency_bounded_wait):
+            # Bound upfront (not only in the branch) so the restore below
+            # is provably bound on every path it runs.
+            prior_lock_timeout: str | None = None
+            if idempotency_bounded_wait:
+                # Bounded speculative-token wait — the RED contract of
+                # tests/test_rt_locks_actor_tx_enqueue_serialization.py:
+                # the ON CONFLICT (idempotency_scope, idempotency_key) DO
+                # NOTHING arbiter blocks on another transaction's
+                # UNCOMMITTED same-pair row (Postgres must wait for its
+                # uniqueness verdict), and on a transactional consumer
+                # the holder is the actor's own OPEN transaction —
+                # unbounded by default (default_start_to_close=None) —
+                # so the bare INSERT serialized every other producer of
+                # that pair for the actor's whole runtime. The GUC
+                # discipline is taskq._advisory's, not the limiter's SET
+                # LOCAL: this transaction's caller (the actor) keeps
+                # using it after the INSERT, so the prior lock_timeout is
+                # read, set for exactly this savepoint's span, and
+                # restored BEFORE the savepoint's RELEASE — SET LOCAL
+                # persists through RELEASE, so skipping the restore
+                # would leak the wait bound onto every later statement
+                # of the caller's transaction (and clobber a
+                # caller-set bound). On the timeout paths no restore is
+                # needed: the savepoint ROLLBACK below undoes the set.
+                # No client-side backstop: the pool conns carry
+                # command_timeout, which owns the network-black-hole
+                # regime; the GUC owns the lock-wait regime.
+                prior_lock_timeout = await conn.fetchval(_LOCK_TIMEOUT_READ_SQL)
+                await conn.execute(_LOCK_TIMEOUT_SET_SQL, f"{round(idempotency_lock_timeout_ms)}ms")
+            rec = await conn.fetchrow(
+                sql.enqueue,
+                args.id,
+                args.actor,
+                args.queue,
+                args.identity_key,
+                args.fairness_key,
+                jsonb_param(args.payload),
+                args.payload_schema_ver,
+                args.priority,
+                args.max_attempts,
+                args.retry_kind,
+                args.schedule_to_close_interval,
+                args.start_to_close,
+                args.heartbeat_timeout,
+                scheduled_at_param,
+                args.idempotency_scope,
+                args.idempotency_key,
+                args.trace_id,
+                args.span_id,
+                jsonb_param(args.metadata),
+                args.result_ttl,
+                list(args.tags),
+                args.schedule_to_close,
+            )
+            if idempotency_bounded_wait:
+                # Restore before the savepoint's RELEASE — see above. The
+                # None arm is unreachable (the read ran under the same
+                # flag); str() tolerates it for the type checker anyway.
+                await conn.execute(_LOCK_TIMEOUT_SET_SQL, str(prior_lock_timeout))
+    except LockNotAvailableError as exc:
+        # The speculative-token wait outlived its budget: the dedup
+        # answer could not be determined in time. The savepoint above has
+        # already rolled back (restoring the caller's transaction to a
+        # usable state and undoing the GUC), nothing was inserted, and
+        # the typed refusal carries the retry-yields-dedup guidance —
+        # UniqueForLockTimeoutError's treatment for its identical
+        # situation. Counted on ``taskq.backpressure.errors`` under its
+        # own bounded kind (``idempotency_lock_timeout``), beside the
+        # warning log: same asymmetry fix as the unique_for arm, and the
+        # kind label keeps one pair's contention off the capacity kinds.
+        logger.warning(
+            "idempotency-lock-timeout",
+            actor=args.actor,
+            idempotency_key=str(args.idempotency_key),
+            idempotency_scope=args.idempotency_scope,
+            lock_timeout_ms=idempotency_lock_timeout_ms,
+        )
+        record_backpressure_error(args.actor, kind="idempotency_lock_timeout")
+        raise IdempotencyKeyLockTimeoutError(
+            actor=args.actor,
+            idempotency_key=str(args.idempotency_key),
+            timeout_ms=idempotency_lock_timeout_ms,
+            idempotency_scope=args.idempotency_scope,
+        ) from exc
     except UniqueViolationError as exc:
         if exc.constraint_name == _SINGLETON_CONSTRAINT_NAME:
             logger.info(
@@ -686,18 +959,7 @@ async def _enqueue_on_conn(
             idempotency_key=row.idempotency_key,
         )
     else:
-        logger.info(
-            "enqueue_deduplicated",
-            kind="enqueue_deduplicated",
-            job_id=str(row.id),
-            actor=row.actor,
-            queue=row.queue,
-            identity_key=row.identity_key,
-            idempotency_key=row.idempotency_key,
-            idempotency_scope=row.idempotency_scope,
-            existing_job_id=str(row.id),
-            dedup_reason="idempotency_key",
-        )
+        _log_enqueue_dedup(row, dedup_reason="idempotency_key")
 
     return row
 
@@ -711,6 +973,7 @@ async def _enqueue_with_conn(
     *,
     max_pending_lock_timeout_ms: float = DEFAULT_MAX_PENDING_LOCK_TIMEOUT_MS,
     unique_for_lock_timeout_ms: float = DEFAULT_UNIQUE_FOR_LOCK_TIMEOUT_MS,
+    idempotency_lock_timeout_ms: float = DEFAULT_IDEMPOTENCY_LOCK_TIMEOUT_MS,
 ) -> JobRow:
     try:
         return await _enqueue_on_conn(
@@ -721,9 +984,11 @@ async def _enqueue_with_conn(
             args,
             max_pending_lock_timeout_ms=max_pending_lock_timeout_ms,
             unique_for_lock_timeout_ms=unique_for_lock_timeout_ms,
+            idempotency_lock_timeout_ms=idempotency_lock_timeout_ms,
         )
     except _LegacyIdempotencyKeyConflictError as exc:
-        # Caller owns the (now aborted) transaction -- cannot retry here.
+        # Caller owns the transaction scope -- a retry needs a fresh one,
+        # which this wrapper cannot open on the caller's connection.
         logger.warning(
             "scoped-idempotency-migration-pending",
             actor=exc.actor,
@@ -742,6 +1007,7 @@ async def _enqueue(
     *,
     max_pending_lock_timeout_ms: float = DEFAULT_MAX_PENDING_LOCK_TIMEOUT_MS,
     unique_for_lock_timeout_ms: float = DEFAULT_UNIQUE_FOR_LOCK_TIMEOUT_MS,
+    idempotency_lock_timeout_ms: float = DEFAULT_IDEMPOTENCY_LOCK_TIMEOUT_MS,
 ) -> JobRow:
     try:
         async with pool.acquire() as conn:
@@ -754,6 +1020,7 @@ async def _enqueue(
                     args,
                     max_pending_lock_timeout_ms=max_pending_lock_timeout_ms,
                     unique_for_lock_timeout_ms=unique_for_lock_timeout_ms,
+                    idempotency_lock_timeout_ms=idempotency_lock_timeout_ms,
                 )
     except _LegacyIdempotencyKeyConflictError as exc:
         public = exc.to_public()
@@ -774,6 +1041,7 @@ async def _enqueue(
                     args,
                     max_pending_lock_timeout_ms=max_pending_lock_timeout_ms,
                     unique_for_lock_timeout_ms=unique_for_lock_timeout_ms,
+                    idempotency_lock_timeout_ms=idempotency_lock_timeout_ms,
                 )
     except _LegacyIdempotencyKeyConflictError as exc:
         logger.warning(
@@ -785,6 +1053,59 @@ async def _enqueue(
         raise public from exc.original or exc
 
 
+def _membership_batch_ids(args_list: list[EnqueueArgs]) -> list[UUID]:
+    """Distinct batch ids whose membership this enqueue writes.
+
+    ``metadata.batch_id`` is the library-injected membership stamp (the
+    client surface's ``build_batch_args`` / streaming stamping — callers
+    must not set it themselves); a member INSERT is a batch-membership
+    write even though it touches only the jobs table, which is exactly
+    why the completion race needs the explicit lock below. A junk value
+    raises here, at the enqueue boundary, rather than surviving to
+    explode the terminal hook's own ``UUID(str(...))`` parse
+    (batch.py's apply_batch_terminal_outcome) after the row is already
+    committed.
+    """
+    ids: dict[str, UUID] = {}
+    for args in args_list:
+        raw = args.metadata.get("batch_id")
+        if raw is None:
+            continue
+        ids[str(raw)] = UUID(str(raw))
+    return list(ids.values())
+
+
+async def _lock_batch_membership(conn: ConnLike, schema: str, batch_ids: list[UUID]) -> None:
+    """Hold the batches-row membership lock for *batch_ids* on *conn*.
+
+    The lock is the append side of the complete-vs-append race: a member
+    append transaction holds the batches row FOR UPDATE from before its
+    member INSERTs until its commit, and ``complete_batch``'s membership
+    CTE takes the same row FOR UPDATE NOWAIT — the conflict is the only
+    thing that can make a READ COMMITTED completion guard aware of an
+    uncommitted member INSERT it cannot see, so the completer delays (see
+    ``_COMPLETE_BATCH_SQL``'s comment in _batch_sql.py). Rows that do not
+    exist yet (the atomic path inserts members before create_batch, and
+    the bulk-import paths never create one) lock nothing — a batch that
+    does not exist cannot be completed, so there is no race to close.
+
+    Blocking (no NOWAIT) is deliberate on this side: appenders serialize
+    per batch, each hold bounded by its own short chunk transaction, and
+    the deadlock detector covers the one exotic inversion (an appender
+    waiting on a member's idempotency arbiter while that member's hook
+    waits on this lock) by cancelling one side. The statement is
+    function-local rather than a module-level constant because the
+    bounded-writes audit's own scope rule keeps keyed,
+    bounded-by-construction SQL at its call site: the predicate names an
+    ANY-array of this chunk's own batch ids, so the row count cannot grow
+    with the jobs backlog.
+    """
+    if not _IDENT_RE.match(schema):
+        raise ValueError(f"invalid schema identifier: {schema!r}")
+    lock_sql = f'SELECT id FROM "{schema}".batches WHERE id = ANY($1::uuid[]) FOR UPDATE'
+    await conn.execute(lock_sql, batch_ids)
+
+
 async def _enqueue_batch(
     pool: "asyncpg.Pool",
     sql: SqlTemplates,
@@ -794,6 +1115,7 @@ async def _enqueue_batch(
     connection: "ConnLike | None" = None,
     enforce_max_pending: bool = True,
     refuse_whole_batch_on_cap: bool = False,
+    index_base: int = 0,
 ) -> list[JobRow]:
     """Insert a batch, partitioning cap admission per actor.
 
@@ -807,6 +1129,17 @@ async def _enqueue_batch(
     call owns the transaction, immediately after the insert on a
     caller-owned open transaction (that transaction's commit/rollback
     decides their durability).
+
+    ``index_base`` is the position of ``args_list[0]`` in the CALLER's
+    coordinate space. The default ``0`` is every existing caller (the
+    whole list IS the call); the atomic chunk arm passes the consumed
+    prefix so a chunk's per-item annotations (the jsonb NUL guard below)
+    name STREAM-GLOBAL indices — a chunk-local index from inside the
+    backend is unfixable at the client layer, which cannot know the
+    backend's chunk base. The cap partition's ``refused_indices`` stay
+    per-call deliberately: the only ``index_base != 0`` caller also sets
+    ``refuse_whole_batch_on_cap`` and surfaces the index-free
+    :class:`MaxPendingExceededError`, so there is no partition to shift.
     """
     if not args_list:
         raise ValueError("args_list must not be empty")
@@ -843,14 +1176,20 @@ async def _enqueue_batch(
     # ValueError(NUL_JSONB_ERROR) that named nothing. Admission semantics
     # ride the partition below: a defective item rejects the whole call
     # (all-or-nothing, caller-space index) before the cap check or INSERT
-    # ever runs.
+    # ever runs. The index is index_base + the loop position so a chunk
+    # of a larger stream annotates at the STREAM-GLOBAL position; the
+    # annotation (message and PayloadValidationError.item_index) is the
+    # one coordinate the caller can act on, and the caller cannot
+    # reconstruct the chunk base from outside the backend.
     for idx, args in enumerate(args_list):
         ids.append(args.id)
         actors.append(args.actor)
         queues.append(args.queue)
         identity_keys.append(str(args.identity_key) if args.identity_key is not None else None)
         fairness_keys.append(args.fairness_key)
-        payloads.append(item_jsonb_param(args.payload, idx=idx, field="payload", actor=args.actor))
+        payloads.append(
+            item_jsonb_param(args.payload, idx=index_base + idx, field="payload", actor=args.actor)
+        )
         payload_schema_vers.append(args.payload_schema_ver)
         priorities.append(args.priority)
         max_attempts_list.append(args.max_attempts)
@@ -866,7 +1205,9 @@ async def _enqueue_batch(
         # enqueue_batch); there is no Python pre-decision.
         scheduled_ats.append(args.scheduled_at)
         metadatas.append(
-            item_jsonb_param(args.metadata, idx=idx, field="metadata", actor=args.actor)
+            item_jsonb_param(
+                args.metadata, idx=index_base + idx, field="metadata", actor=args.actor
+            )
         )
         idempotency_keys.append(
             str(args.idempotency_key) if args.idempotency_key is not None else None
@@ -884,7 +1225,7 @@ async def _enqueue_batch(
         # jsonb_in rejection as any other jsonb write; the item-annotated
         # dumps_jsonb_str wrapper guards it before the value ever reaches
         # Postgres.
-        tag_jsons.append(item_tags_jsonb_param(args.tags, idx=idx, actor=args.actor))
+        tag_jsons.append(item_tags_jsonb_param(args.tags, idx=index_base + idx, actor=args.actor))
 
     async def _insert_on_conn(
         conn: ConnLike,
@@ -893,6 +1234,17 @@ async def _enqueue_batch(
         # the transaction boundary so the admitted items commit first
         # (raising inside would roll them back and re-create the
         # all-or-nothing behavior the partition exists to remove).
+        # The membership lock runs FIRST, before the cap preflight and
+        # the INSERT, so the whole arbitrate-then-insert span is covered
+        # by one hold of the batches-row lock (see
+        # _lock_batch_membership). Every caller of this closure runs
+        # inside a transaction that also owns the INSERT: the caller's
+        # own, the wrapper below, or the pool path's — a bare autocommit
+        # connection only reaches here when the chunk carries no batch
+        # membership, in which case there is no lock to hold.
+        membership_ids = _membership_batch_ids(args_list)
+        if membership_ids:
+            await _lock_batch_membership(conn, schema, membership_ids)
         refusals: list[MaxPendingExceededError] = []
         refused_indices: dict[str, list[int]] = {}
         refused_names: set[str] = set()
@@ -1030,33 +1382,57 @@ async def _enqueue_batch(
                 pair = (rec["idempotency_scope"], str(rec["idempotency_key"]))
                 existing_by_idem[pair] = rec
 
-        result: list[JobRow] = []
-        for args in admitted_args:
-            arg_uuid = args.id
-            if arg_uuid in full_new_recs:
-                result.append(_job_row_from_record(full_new_recs[arg_uuid]))  # type: ignore[arg-type]  # Why: asyncpg Record is duck-typed; _job_row_from_record accepts asyncpg.Record at runtime
-            elif (
-                args.idempotency_key is not None
-                and (args.idempotency_scope, str(args.idempotency_key)) in existing_by_idem
-            ):
-                rec = existing_by_idem[(args.idempotency_scope, str(args.idempotency_key))]
-                result.append(_job_row_from_record(rec))  # type: ignore[arg-type]  # Why: asyncpg Record is duck-typed; _job_row_from_record accepts asyncpg.Record at runtime
-            else:
-                partial = new_rows_by_id.get(arg_uuid)
-                if partial is not None:
-                    result.append(_job_row_from_record(partial))  # type: ignore[arg-type]  # Why: asyncpg Record is duck-typed; _job_row_from_record accepts asyncpg.Record at runtime
+        # The per-call dedup WARNING budget (#140): the loop below is the
+        # only site this closure logs dedup hits, and exactly one of the
+        # caller arms' assemblies runs to completion per call (a legacy
+        # retry re-raises at the INSERT before reaching here), so a budget
+        # scoped to the assembly IS the call's budget. Reset in the
+        # finally so no leak escapes the closure into the caller's
+        # context; the summary rides the same finally so the failure path
+        # (a RuntimeError mid-assembly) still reports suppressed hits.
+        dedup_budget = _DedupWarnBudget()
+        dedup_budget_token = _dedup_warn_budget.set(dedup_budget)
+        try:
+            result: list[JobRow] = []
+            for args in admitted_args:
+                arg_uuid = args.id
+                if arg_uuid in full_new_recs:
+                    result.append(_job_row_from_record(full_new_recs[arg_uuid]))  # type: ignore[arg-type]  # Why: asyncpg Record is duck-typed; _job_row_from_record accepts asyncpg.Record at runtime
+                elif (
+                    args.idempotency_key is not None
+                    and (args.idempotency_scope, str(args.idempotency_key)) in existing_by_idem
+                ):
+                    rec = existing_by_idem[(args.idempotency_scope, str(args.idempotency_key))]
+                    row = _job_row_from_record(rec)  # type: ignore[arg-type]  # Why: asyncpg Record is duck-typed; _job_row_from_record accepts asyncpg.Record at runtime
+                    _log_enqueue_dedup(row, dedup_reason="idempotency_key")
+                    result.append(row)
                 else:
-                    raise RuntimeError(
-                        f"enqueue_batch: no row found for args.id={args.id!r} "
-                        f"after INSERT; this is a bug"
-                    )
+                    partial = new_rows_by_id.get(arg_uuid)
+                    if partial is not None:
+                        result.append(_job_row_from_record(partial))  # type: ignore[arg-type]  # Why: asyncpg Record is duck-typed; _job_row_from_record accepts asyncpg.Record at runtime
+                    else:
+                        raise RuntimeError(
+                            f"enqueue_batch: no row found for args.id={args.id!r} "
+                            f"after INSERT; this is a bug"
+                        )
+        finally:
+            _dedup_warn_budget.reset(dedup_budget_token)
+            _log_enqueue_dedup_warn_summary(dedup_budget, dedup_reason="idempotency_key")
         return result, refusals, refused_indices
 
     if (
-        enforce_max_pending
-        and connection is not None
-        and batch_cap_groups(args_list)
+        connection is not None
         and not connection.is_in_transaction()
+        and (
+            (enforce_max_pending and batch_cap_groups(args_list))
+            # A membership chunk on a bare caller connection needs the
+            # wrapper's transaction for the same reason the cap preflight
+            # does: the batches-row lock is only a hold against the
+            # completion guard if it lives until the INSERT's commit — a
+            # lock taken and released in autocommit before the INSERT
+            # closes nothing.
+            or _membership_batch_ids(args_list)
+        )
     ):
         # Same race as capped singles: the admission count and the INSERT
         # must share one transaction or a concurrent writer slips between
@@ -1067,7 +1443,8 @@ async def _enqueue_batch(
         # admitted items, and the typed error raises only AFTER that
         # commit — raising inside would roll the admitted items back and
         # re-create the all-or-nothing refusal the partition removed.
-        # Uncapped batches skip this entirely.
+        # Uncapped batches skip the cap half; membership-only chunks wrap
+        # for the lock above.
         async with connection.transaction():
             rows, refusals, refused_indices = await _insert_on_conn(connection)
         if refusals:
@@ -1082,7 +1459,8 @@ async def _enqueue_batch(
         try:
             rows, refusals, refused_indices = await _insert_on_conn(connection)
         except _LegacyIdempotencyKeyConflictError as exc:
-            # Caller owns the (now aborted) transaction -- cannot retry.
+            # Caller owns the transaction scope -- a retry needs a fresh
+            # one, which this wrapper cannot open on the caller's connection.
             logger.warning("scoped-idempotency-migration-pending-batch")
             raise exc.to_public() from exc.original or exc
         # Why raise without committing: the caller owns this open
@@ -1140,11 +1518,18 @@ async def _enqueue_batch_fast(
     *,
     connection: "ConnLike | None" = None,
     enforce_max_pending: bool = True,
+    index_base: int = 0,
 ) -> int:
     """COPY a batch, partitioning cap admission per actor (see
     :func:`_enqueue_batch`). Idempotency violations remain all-or-nothing
     — COPY has no ON CONFLICT arbiter, so a duplicate key aborts the
     entire statement; only cap admission partitions.
+
+    ``index_base`` is the caller-coordinate shift for the per-item NUL
+    annotations (see :func:`_enqueue_batch`); every current caller passes
+    the whole list, so the default ``0`` is the live behavior — the
+    parameter exists so a future chunked COPY caller gets stream-global
+    indices by construction instead of re-growing the local-index defect.
     """
     if not args_list:
         raise ValueError("args_list must not be empty")
@@ -1160,12 +1545,12 @@ async def _enqueue_batch_fast(
     # UPDATE below stamps status/scheduled_at/schedule_to_close/
     # result_expires_at from the server clock inside the same transaction —
     # never from this process's Python clock.
-    # Same per-item annotation as _enqueue_batch's build loop: the COPY
-    # record tuples are serialized here, before any statement is issued,
-    # so a NUL-bearing item rejects the whole batch (nothing written)
-    # with the item index, actor, and field named. Tags bind as text[]
-    # (no jsonb hop on this path) and stay guarded by the EnqueueArgs
-    # construction chokepoint alone.
+    # Same per-item annotation as _enqueue_batch's build loop (including
+    # the index_base shift): the COPY record tuples are serialized here,
+    # before any statement is issued, so a NUL-bearing item rejects the
+    # whole batch (nothing written) with the item index, actor, and field
+    # named. Tags bind as text[] (no jsonb hop on this path) and stay
+    # guarded by the EnqueueArgs construction chokepoint alone.
     records: list[tuple[object, ...]] = []
     for idx, args in enumerate(args_list):
         ids.append(args.id)
@@ -1181,7 +1566,9 @@ async def _enqueue_batch_fast(
                 args.queue,
                 str(args.identity_key) if args.identity_key is not None else None,
                 args.fairness_key,
-                item_jsonb_param(args.payload, idx=idx, field="payload", actor=args.actor),
+                item_jsonb_param(
+                    args.payload, idx=index_base + idx, field="payload", actor=args.actor
+                ),
                 args.payload_schema_ver,
                 args.priority,
                 0,
@@ -1207,7 +1594,9 @@ async def _enqueue_batch_fast(
                 str(args.idempotency_key) if args.idempotency_key is not None else None,
                 args.trace_id,
                 args.span_id,
-                item_jsonb_param(args.metadata, idx=idx, field="metadata", actor=args.actor),
+                item_jsonb_param(
+                    args.metadata, idx=index_base + idx, field="metadata", actor=args.actor
+                ),
                 list(args.tags),
             )
         )
@@ -1218,6 +1607,13 @@ async def _enqueue_batch_fast(
         # Never raises the partition refusal itself: the caller raises at
         # the transaction boundary so the admitted rows commit first
         # (see _enqueue_batch's _insert_on_conn for the full rationale).
+        # Membership lock first, same rationale and same transaction
+        # ownership as _insert_on_conn: the COPY + fixup span must sit
+        # under one hold of the batches-row lock for the completion guard
+        # to see this append as in-flight.
+        membership_ids = _membership_batch_ids(args_list)
+        if membership_ids:
+            await _lock_batch_membership(conn, schema, membership_ids)
         refusals: list[MaxPendingExceededError] = []
         refused_indices: dict[str, list[int]] = {}
         refused_names: set[str] = set()
@@ -1352,10 +1748,15 @@ async def _enqueue_batch_fast(
         )
 
     if (
-        enforce_max_pending
-        and connection is not None
-        and batch_cap_groups(args_list)
+        connection is not None
         and not connection.is_in_transaction()
+        and (
+            (enforce_max_pending and batch_cap_groups(args_list))
+            # Same membership rationale as _enqueue_batch's wrapper: the
+            # lock must live to the COPY's commit, which on a bare caller
+            # connection only a transaction scope can give it.
+            or _membership_batch_ids(args_list)
+        )
     ):
         # Same race as above: the pre-COPY count and the COPY must share
         # one transaction on a caller-supplied bare connection. The inner

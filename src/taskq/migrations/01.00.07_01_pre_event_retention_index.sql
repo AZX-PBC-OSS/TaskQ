@@ -1,0 +1,65 @@
+-- Partial index serving the job_events retention sweep's windowing CTE
+-- (taskq/backend/_sweeps.py's _SWEEP_EVENT_TTL_SQL): the sweep selects
+-- `occurred_at < statement_timestamp() - retention`, ordered by
+-- (occurred_at, id), LIMIT one batch, over the deletable set only, and
+-- this index serves that shape as an ordered Index Scan whose Index Cond
+-- stops at the age boundary. Forward-only; there is no down migration. To
+-- revert, restore from backup. The literal "{schema}" token is
+-- substituted at apply time by the migration runner.
+--
+-- ── Why plain CREATE INDEX, not the no-transaction CONCURRENTLY form ──
+-- The migration runner's no-transaction directive + CREATE INDEX
+-- CONCURRENTLY template (src/taskq/migrate.py's module docstring) cannot
+-- ship here: it deadlocks under the runner's own startup discipline.
+-- apply_pending_locked serializes concurrent migrators with
+-- pg_advisory_lock (the wait shape
+-- tests/test_migrate_lock_integration.py::
+-- test_concurrent_migrations_serialize_rather_than_racing pins: two
+-- replicas starting at once serialize on that lock rather than race —
+-- exactly the scenario the lock exists for); a second replica's blocking
+-- lock wait is an open transaction, and CREATE INDEX CONCURRENTLY waits
+-- for every transaction that started before it — so a CIC build here
+-- waits on the replica's advisory-lock wait, which waits on the first
+-- migrator's advisory lock: a cycle the deadlock detector breaks by
+-- failing the apply (reproduced against this very migration: the
+-- concurrent-migrators test fails with "deadlock detected" under the CIC
+-- form and passes under this one). This file therefore follows
+-- 01.00.02_01_pre_job_events_outbox.sql's precedent: a transactional
+-- plain CREATE INDEX, whose ordinary locks queue behind the
+-- advisory-lock waiter without a snapshot-wait cycle.
+--
+-- OPS NOTE (locks), same caveat as 01.00.02_01: the CREATE INDEX below
+-- takes a write-blocking lock on job_events for the duration of the
+-- build. job_events is written on essentially every lifecycle transition
+-- and progress event, so the lock can cause observable write stalls in
+-- production. Build time is proportional to the current row count.
+-- Operators with a large or heavily-populated job_events table should
+-- run the equivalent `CREATE INDEX CONCURRENTLY IF NOT EXISTS
+-- job_events_occurred_at_idx ON "{schema}".job_events (occurred_at, id)
+-- WHERE NOT (kind = 'state_change' AND COALESCE(detail->>'reason', '')
+-- = 'lock_expired')` manually outside the migration runner during a
+-- maintenance window, then let this migration no-op via IF NOT EXISTS.
+--
+-- ── Why partial ────────────────────────────────────────────────────
+-- The index covers only the DELETABLE set — everything except the
+-- crash-reclaim outbox slice (`kind = 'state_change' AND
+-- COALESCE(detail->>'reason', '') = 'lock_expired'`), the rows
+-- poll_reclaim_events tails under its trailing-watermark protocol and
+-- which the retention sweep exempts at every age. Outbox rows are
+-- immortal under the sweep, so a full index would carry them forever and
+-- every sweep tick's ordered scan would pay for their accumulating
+-- volume; the partial form keeps per-tick cost independent of it.
+-- detail->> is jsonb_extract_path_text, IMMUTABLE, so the predicate is
+-- legal in an index. COALESCE makes a missing reason key
+-- not-'lock_expired' (deletable): a bare (detail->>'reason') =
+-- 'lock_expired' under NOT evaluates to NULL for ordinary state_change
+-- rows — the most common event kind — which would silently exempt nearly
+-- the whole table from both the index and the sweep. The WHERE clause
+-- below must stay VERBATIM-identical to the sweep SQL's carve-out
+-- predicate (taskq/backend/_sweeps.py's _SWEEP_EVENT_TTL_SQL): a partial
+-- index serves a query only when the planner can prove the query implies
+-- the index predicate, and a verbatim repeat of the predicate is that
+-- proof.
+CREATE INDEX IF NOT EXISTS job_events_occurred_at_idx
+    ON "{schema}".job_events (occurred_at, id)
+    WHERE NOT (kind = 'state_change' AND COALESCE(detail->>'reason', '') = 'lock_expired');

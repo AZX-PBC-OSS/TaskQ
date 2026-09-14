@@ -54,6 +54,10 @@ async def _enqueue_and_dispatch(
     retry_kind: str = "transient",
 ) -> tuple[JobId, UUID]:
     """Enqueue a job and dispatch it, returning (job_id, worker_id)."""
+    # Register the actor so dispatch_batch finds it (mirrors PG's
+    # actor_config requirement — candidates come FROM the registry).
+    if "test_actor" not in backend._actor_configs_meta:  # type: ignore[reportPrivateUsage]  # Why: test-only private access
+        backend.register_actor_config(actor="test_actor")
     args = EnqueueArgs(
         id=new_job_id(),
         actor="test_actor",
@@ -85,22 +89,22 @@ async def _apply_first_terminal_write(
 ) -> bool:
     """Apply the first terminal write and return True if it succeeded."""
     if terminal_state == "succeeded":
-        result = await backend.mark_succeeded(job_id, worker_id, {"ok": True})
+        result = await backend.mark_succeeded(job_id, worker_id, {"ok": True}, attempt=1)
         return result is True
 
     if terminal_state == "failed":
         error_info = ErrorInfo(
             error_class="TestError", error_message="terminal failure", error_traceback=None
         )
-        row = await backend.mark_failed_or_retry(job_id, worker_id, error_info, None)
+        row = await backend.mark_failed_or_retry(job_id, worker_id, error_info, None, attempt=1)
         return row.status == "failed"
 
     if terminal_state == "cancelled":
-        result = await backend.mark_cancelled(job_id, worker_id)
+        result = await backend.mark_cancelled(job_id, worker_id, attempt=1)
         return result is True
 
     if terminal_state == "snoozed":
-        result = await backend.mark_snoozed(job_id, worker_id, timedelta(seconds=30))
+        result = await backend.mark_snoozed(job_id, worker_id, timedelta(seconds=30), attempt=1)
         return result == "scheduled"
 
     if terminal_state == "abandoned":
@@ -124,14 +128,14 @@ async def _apply_second_terminal_write(
     Returns False if the second write unexpectedly succeeded.
     """
     if terminal_state == "succeeded":
-        return await backend.mark_succeeded(job_id, worker_id, None) is False
+        return await backend.mark_succeeded(job_id, worker_id, None, attempt=1) is False
 
     if terminal_state == "failed":
         error_info = ErrorInfo(
             error_class="TestError", error_message="terminal failure", error_traceback=None
         )
         try:
-            await backend.mark_failed_or_retry(job_id, worker_id, error_info, None)
+            await backend.mark_failed_or_retry(job_id, worker_id, error_info, None, attempt=1)
         except WorkerOwnershipMismatch:
             return True
         return False
@@ -176,13 +180,16 @@ async def test_terminal_idempotency_memory(terminal_state: str) -> None:
     second_ok = await _apply_second_terminal_write(backend, job_id, worker_id, terminal_state)
     assert second_ok, f"Second terminal write for {terminal_state} was not a no-op"
 
-    # Exactly one attempt row (no double-write)
+    # Exactly the first write's rows survive the second (no double-write):
+    # one attempt row and one state_change event for every real terminal
+    # state; the snooze is a deferral, not an execution — zero rows, its
+    # record is the row's snooze counter.
     attempts_after = await backend.get_attempts(job_id)
-    assert len(attempts_after) == len(attempts_before) == 1, (
-        f"Expected 1 attempt row, got {len(attempts_after)} for {terminal_state}"
+    expected_rows = 0 if terminal_state == "snoozed" else 1
+    assert len(attempts_after) == len(attempts_before) == expected_rows, (
+        f"Expected {expected_rows} attempt row(s), got {len(attempts_after)} for {terminal_state}"
     )
 
-    # One state_change event from the terminal write
     events = await backend.get_events(job_id)
     expected_to = "scheduled" if terminal_state == "snoozed" else terminal_state
     terminal_events = [
@@ -192,8 +199,9 @@ async def test_terminal_idempotency_memory(terminal_state: str) -> None:
         and e.detail.get("from_state") == "running"
         and e.detail.get("to_state") == expected_to
     ]
-    assert len(terminal_events) == 1, (
-        f"Expected 1 state_change event for {terminal_state}, got {len(terminal_events)}"
+    assert len(terminal_events) == expected_rows, (
+        f"Expected {expected_rows} state_change event(s) for {terminal_state}, "
+        f"got {len(terminal_events)}"
     )
 
 
@@ -244,13 +252,13 @@ async def test_terminal_idempotency_pg(
         with pytest.raises(WorkerOwnershipMismatch):
             await backend.mark_failed_or_retry(job_id, worker_id, error_info, None)
     elif terminal_state == "succeeded":
-        result = await backend.mark_succeeded(job_id, worker_id, None)
+        result = await backend.mark_succeeded(job_id, worker_id, None, attempt=1)
         assert result is False
     elif terminal_state == "cancelled":
-        result = await backend.mark_cancelled(job_id, worker_id)
+        result = await backend.mark_cancelled(job_id, worker_id, attempt=1)
         assert result is False
     elif terminal_state == "snoozed":
-        result = await backend.mark_snoozed(job_id, worker_id, timedelta(seconds=60))
+        result = await backend.mark_snoozed(job_id, worker_id, timedelta(seconds=60), attempt=1)
         assert result == "noop"
     elif terminal_state == "abandoned":
         result = await backend.mark_abandoned(job_id)
@@ -337,20 +345,23 @@ async def _pg_apply_first_terminal_write(
 ) -> bool:
     """Apply the first terminal write on PG and return True if it succeeded."""
     if terminal_state == "succeeded":
-        return await backend.mark_succeeded(job_id, worker_id, {"ok": True})
+        return await backend.mark_succeeded(job_id, worker_id, {"ok": True}, attempt=1)
 
     if terminal_state == "failed":
         error_info = ErrorInfo(
             error_class="TestError", error_message="terminal failure", error_traceback=None
         )
-        row = await backend.mark_failed_or_retry(job_id, worker_id, error_info, None)
+        row = await backend.mark_failed_or_retry(job_id, worker_id, error_info, None, attempt=1)
         return row.status == "failed"
 
     if terminal_state == "cancelled":
-        return await backend.mark_cancelled(job_id, worker_id)
+        return await backend.mark_cancelled(job_id, worker_id, attempt=1)
 
     if terminal_state == "snoozed":
-        return await backend.mark_snoozed(job_id, worker_id, timedelta(seconds=30)) == "scheduled"
+        return (
+            await backend.mark_snoozed(job_id, worker_id, timedelta(seconds=30), attempt=1)
+            == "scheduled"
+        )
 
     if terminal_state == "abandoned":
         return await backend.mark_abandoned(job_id)

@@ -105,10 +105,17 @@ class _TxBackend(FakeBackend):
         fallback_result_ttl: object = None,
         *,
         result_bytes: bytes | None = None,
+        attempt: int | None = None,
     ) -> bool:
         self.mark_succeeded_with_conn_calls.append((conn, job_id, worker_id, result))
         return await self.mark_succeeded(
-            job_id, worker_id, result, progress_seq, progress_state, result_bytes=result_bytes
+            job_id,
+            worker_id,
+            result,
+            progress_seq,
+            progress_state,
+            result_bytes=result_bytes,
+            attempt=attempt,
         )
 
 

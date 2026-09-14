@@ -8,6 +8,7 @@ module pattern (``_enqueue.py``, ``_terminal.py``, etc.).
 from collections.abc import Iterable
 from dataclasses import replace
 from datetime import datetime
+from itertools import islice
 from typing import TYPE_CHECKING, get_args
 from uuid import UUID
 
@@ -24,6 +25,7 @@ from taskq.backend._protocol import (
 )
 from taskq.backend.statemachine import TERMINAL_STATUSES
 from taskq.constants import DEFAULT_CHUNK_SIZE
+from taskq.testing._enqueue import _check_batch_jsonb
 from taskq.testing._reads import _batch_row_read_copy
 
 if TYPE_CHECKING:
@@ -186,6 +188,17 @@ def _complete_batch(
     if row is None or row.status in _BATCH_TERMINAL_STATUSES:
         return
 
+    # Mirror of the PG NOT EXISTS guard: the completion decision reads
+    # the live member set at the moment of the write, never a count the
+    # caller computed earlier. Under READ COMMITTED a count statement's
+    # snapshot can predate a concurrent member's terminal write, so an
+    # over-counted "members remain" must delay completion (the stale-
+    # batch sweep is the safety net) while the attempt itself stays safe
+    # to issue after any terminal outcome — the same call that was
+    # vetoed lands once the last member turns terminal.
+    if _count_batch_non_terminal(backend, batch_id) > 0:
+        return
+
     backend._batches[batch_id] = replace(
         row,
         status="complete",
@@ -249,21 +262,52 @@ async def _enqueue_batch_atomic(
     batch_created = False
 
     try:
-        for args in items:
-            args_with_batch = replace(
-                args,
-                metadata={**args.metadata, "batch_id": batch_id_str},
-            )
-            row = await backend.enqueue_with_conn(None, args_with_batch)
-            rows.append(row)
-            inserted_ids.append(row.id)
-            item_count += 1
+        # PG-tier parity for the chunked consumption + per-item failure
+        # coordinates: the PG atomic arm re-chunks the stream inside the
+        # backend and each chunk crosses the bulk build loop — whose
+        # per-item jsonb NUL guard annotates at index_base + the chunk
+        # position, i.e. STREAM-GLOBAL indices — BEFORE the chunk's
+        # INSERT. The mirror consumes the same chunks (same islice, same
+        # chunk_size) and preflights each stamped chunk through the same
+        # shared guards at the same base, so a NUL-bearing item surfaces
+        # as the SAME annotated PayloadValidationError naming the SAME
+        # caller-global index on both backends — previously this arm
+        # surfaced a BARE ValueError(NUL_JSONB_ERROR) with no item
+        # attribution at all (the per-item single-enqueue path has no
+        # index to name). Check ORDER also matches PG within a chunk
+        # (NUL guard precedes the cap/insert decisions), so a
+        # multi-defect batch raises the same typed error on both sides.
+        it = iter(items)
+        while True:
+            chunk_raw = list(islice(it, chunk_size))
+            if not chunk_raw:
+                break
+            chunk_base = item_count
+            item_count += len(chunk_raw)
+            chunk = [
+                replace(
+                    args,
+                    metadata={**args.metadata, "batch_id": batch_id_str},
+                )
+                for args in chunk_raw
+            ]
+            _check_batch_jsonb(chunk, index_base=chunk_base)
+            for args in chunk:
+                row = await backend.enqueue_with_conn(None, args)
+                rows.append(row)
+                inserted_ids.append(row.id)
 
         # Insert finalizer BEFORE creating the batch row so the returned
         # row's id can be used for finalizer_job_id (M4: idempotency
         # collision may return a different id than finalizer_args.id).
         finalizer_row: JobRow | None = None
         if finalizer_args is not None:
+            # Same preflight at the finalizer's caller-global coordinate
+            # (one past the last stream item — the PG arm passes the same
+            # index_base for its finalizer chunk); without it a NUL in
+            # the finalizer's payload surfaced as the bare ValueError
+            # while PG raised the annotated PayloadValidationError.
+            _check_batch_jsonb([finalizer_args], index_base=item_count)
             row = await backend.enqueue_with_conn(None, finalizer_args)
             rows.append(row)
             inserted_ids.append(row.id)

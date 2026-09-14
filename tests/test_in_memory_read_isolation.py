@@ -35,7 +35,11 @@ _START = datetime(2025, 1, 1, tzinfo=UTC)
 
 
 def _make_backend() -> InMemoryBackend:
-    return InMemoryBackend(clock=FakeClock(_START))
+    backend = InMemoryBackend(clock=FakeClock(_START))
+    # Register the fixture actor: dispatch_batch's candidates come FROM
+    # the actor_config registry (mirrors PG's per_actor_capacity CTE).
+    backend.register_actor_config(actor="test_actor")
+    return backend
 
 
 def _args(
@@ -144,7 +148,7 @@ async def test_mark_succeeded_does_not_store_caller_result_by_reference() -> Non
     assert len(claimed) == 1
 
     result: dict[str, object] = {"value": 1}
-    await backend.mark_succeeded(row.id, worker_id, result)
+    await backend.mark_succeeded(row.id, worker_id, result, attempt=1)
     result["injected"] = True
 
     fresh = await backend.get(row.id)
@@ -163,7 +167,7 @@ async def test_list_result_from_result_bytes_does_not_alias_storage() -> None:
     worker_id = new_uuid()
     claimed = await backend.dispatch_batch(worker_id, ["default"], 10, timedelta(seconds=60))
     assert len(claimed) == 1
-    await backend.mark_succeeded(row.id, worker_id, result_bytes=b"[1, 2]")
+    await backend.mark_succeeded(row.id, worker_id, result_bytes=b"[1, 2]", attempt=1)
 
     first = await backend.get(row.id)
     assert first is not None
@@ -181,11 +185,13 @@ async def test_list_result_from_result_bytes_does_not_alias_storage() -> None:
 async def test_get_archived_row_does_not_alias_storage() -> None:
     clock = FakeClock(_START)
     backend = InMemoryBackend(clock=clock)
+    # Register the fixture actor (dispatch candidates come FROM the registry).
+    backend.register_actor_config(actor="test_actor")
     row = await backend.enqueue(_args())
     worker_id = new_uuid()
     claimed = await backend.dispatch_batch(worker_id, ["default"], 10, timedelta(seconds=60))
     assert len(claimed) == 1
-    await backend.mark_succeeded(row.id, worker_id, {"value": 1})
+    await backend.mark_succeeded(row.id, worker_id, {"value": 1}, attempt=1)
 
     clock.advance(timedelta(days=1))
     archive_terminal_jobs(
@@ -210,7 +216,7 @@ async def test_get_events_rows_do_not_alias_storage() -> None:
     worker_id = new_uuid()
     claimed = await backend.dispatch_batch(worker_id, ["default"], 10, timedelta(seconds=60))
     assert len(claimed) == 1
-    await backend.mark_succeeded(row.id, worker_id, {"value": 1})
+    await backend.mark_succeeded(row.id, worker_id, {"value": 1}, attempt=1)
 
     events = await backend.get_events(row.id)
     assert events, "expected at least one state-change event"
@@ -228,6 +234,8 @@ async def test_poll_reclaim_events_rows_do_not_alias_storage() -> None:
     per poll."""
     clock = FakeClock(_START)
     backend = InMemoryBackend(clock=clock)
+    # Register the fixture actor (dispatch candidates come FROM the registry).
+    backend.register_actor_config(actor="test_actor")
     await backend.enqueue(_args())
     worker_id = new_uuid()
     claimed = await backend.dispatch_batch(worker_id, ["default"], 10, timedelta(seconds=60))
@@ -255,7 +263,7 @@ async def test_get_attempts_rows_do_not_alias_storage() -> None:
     worker_id = new_uuid()
     claimed = await backend.dispatch_batch(worker_id, ["default"], 10, timedelta(seconds=60))
     assert len(claimed) == 1
-    await backend.mark_succeeded(row.id, worker_id, {"value": 1})
+    await backend.mark_succeeded(row.id, worker_id, {"value": 1}, attempt=1)
 
     attempts = await backend.get_attempts(row.id)
     assert attempts, "expected the success attempt to be recorded"
@@ -311,6 +319,7 @@ async def test_mark_failed_or_retry_returned_row_does_not_alias_storage() -> Non
         worker_id,
         ErrorInfo(error_class="TestError", error_message="boom", error_traceback=None),
         None,
+        attempt=1,
     )
     returned.payload["injected"] = True
 

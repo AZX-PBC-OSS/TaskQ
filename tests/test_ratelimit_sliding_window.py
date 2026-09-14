@@ -11,6 +11,7 @@ from typing import Literal, cast
 import pytest
 
 from taskq._ids import new_base62
+from taskq.exceptions import RateLimitDependencyUnavailable
 from taskq.ratelimit import SlidingWindow
 from taskq.ratelimit.sliding_window import SlidingWindowStyle
 from taskq.testing.clock import FakeClock
@@ -266,6 +267,32 @@ async def test_acquire_postgres_gcra_raises_runtime_error_without_pool() -> None
         style="gcra",
     )
     with pytest.raises(RuntimeError, match="pg_pool not injected"):
+        await sw.acquire(clock=FakeClock(_START))
+
+
+@pytest.mark.parametrize("style", ["log", "gcra"])
+async def test_no_pool_branch_raises_typed_rate_limit_dependency_unavailable(
+    style: Literal["log", "gcra"],
+) -> None:
+    """The no-pool branch raises the typed dependency error the consumer's
+    dependency-failure family recognises — a ``RuntimeError`` subclass so
+    the pre-existing ``RuntimeError`` wording pins and the chaos tier's
+    ``pytest.raises(RuntimeError)`` both hold — never a bare ``RuntimeError``
+    that escapes the family and gets misattributed to the job as a failure.
+    """
+    assert issubclass(RateLimitDependencyUnavailable, RuntimeError), (
+        "the chaos pin (test_both_backends_unavailable) asserts "
+        "pytest.raises(RuntimeError); the typed error must remain a "
+        "RuntimeError subclass or that pin breaks"
+    )
+    sw = SlidingWindow(
+        name="pg-typed-test",
+        limit=10,
+        window=timedelta(seconds=60),
+        backend="postgres",
+        style=style,
+    )
+    with pytest.raises(RateLimitDependencyUnavailable, match="pg_pool not injected"):
         await sw.acquire(clock=FakeClock(_START))
 
 

@@ -18,6 +18,7 @@ import contextlib
 import threading
 import time
 from collections.abc import Iterable, Mapping
+from typing import Final
 from uuid import UUID
 
 import asyncpg
@@ -95,6 +96,21 @@ __all__ = [
 
 log: structlog.stdlib.BoundLogger = get_logger(__name__)
 _WATCHDOG_INTERVAL_SECS: float = 5.0
+
+#: How many heartbeat intervals the election holder's lease ping may be
+#: silent before a waiting pod reclaims its backend. The election lock is
+#: session-scoped with no unlock and no TTL, so a holder that dies without
+#: a FIN (power loss, SIGSTOP, black-holed partition) keeps its backend —
+#: and with it the lock — until the server's tcp_keepalives reap the
+#: session (stock default ~2 h 11 m), while a merely idle session holds it
+#: indefinitely; every other pod's election then silently retries false
+#: and the whole maintenance plane is down for the reaping horizon. The
+#: holder's ``maintenance_leader.last_seen_at`` ping rides the heartbeat
+#: tick, so four missed beats is the same slack the jobs' lock leases
+#: carry (the ``lock_lease >= 4 * heartbeat_interval`` invariant) — past
+#: it, the holder is treated as gone silent rather than merely behind.
+_LEADER_STALE_HEARTBEATS: Final[int] = 4
+
 _meter = get_meter()
 
 # Guards _active_leaders against concurrent access: the OTel SDK reader
@@ -258,10 +274,22 @@ class MaintenanceLeader:
         re-fetches a fresh credential rather than falling back to a
         stale/absent DSN. Falls back to ``open_dedicated_conn`` with the
         DSN only when no factory is available.
+
+        The factory call is bounded by ``settings.reload_factory_timeout``
+        — the SAME bound the notify reconnect loop, the bootstrap opens,
+        and the reload path apply to every factory call. Unbounded, a hung
+        token endpoint parks the election loop past every staleness
+        budget and the in-worker watchdog force-exits the whole worker
+        instead of this loop's own retry/backoff handling it; the bound's
+        exhaustion IS the loop's ordinary factory-failure path (logged,
+        heartbeat-interval backoff, retry).
         """
         factory = self._deps.leader_conn_factory
         if factory is not None:
-            conn = await factory()
+            conn = await asyncio.wait_for(
+                factory(),
+                timeout=float(self._deps.settings.reload_factory_timeout),
+            )
             # Why: the factory path bypasses open_dedicated_conn, so the
             # worker's keepalive policy must be applied here - the factory
             # owns the credential, TaskQ owns the socket policy.
@@ -289,10 +317,18 @@ class MaintenanceLeader:
         Uses ``deps.leader_conn_factory`` when set so the same credential
         source is used for all leader connections. Falls back to
         ``open_dedicated_conn`` with the DSN otherwise.
+
+        The factory call is bounded by ``settings.reload_factory_timeout``,
+        exactly as ``_open_leader_conn`` bounds it — the election loop's
+        callers already treat any factory failure (including this
+        TimeoutError) as retry-with-backoff, never a crash.
         """
         factory = self._deps.leader_conn_factory
         if factory is not None:
-            conn = await factory()
+            conn = await asyncio.wait_for(
+                factory(),
+                timeout=float(self._deps.settings.reload_factory_timeout),
+            )
             apply_keepalive_to_conn(conn, label=label)
             return conn
         dsn = self._deps.settings.pg_dsn_direct
@@ -337,6 +373,82 @@ class MaintenanceLeader:
             await self._close_leader_owned_conns(mid_run=False)
             with _active_leaders_lock:
                 _active_leaders.discard(self)
+
+    async def _reclaim_silent_election_holder(self, lock_name: str) -> None:
+        """Reclaim the election lock's holder once its lease has gone silent.
+
+        The holder's liveness signal is ``maintenance_leader.last_seen_at``
+        — written at election and pinged every heartbeat tick by the
+        leader's heartbeat loop — and it is the one signal that survives a
+        missing FIN, because it lives in the database rather than on the
+        holder's session. Staleness is measured by Postgres against
+        ``clock_timestamp()`` (never this process's clock — same doctrine
+        as the admin UI's liveness verdicts). Once the recorded holder is
+        silent past the lease-slack horizon (see
+        ``_LEADER_STALE_HEARTBEATS``), the session holding the lock is
+        identified by the lock key itself — ``pg_locks`` carries the
+        single-bigint advisory key split into its 32-bit halves — and its
+        backend is terminated, which frees the session-scoped lock with
+        the session and lets the next election cycle promote.
+
+        Everything here is best-effort and loud: a holder that released
+        between the probes reads as no pid (nothing to reclaim), a
+        deployment that restricts ``pg_terminate_backend`` keeps the
+        retry-forever behaviour but with the refusal logged instead of a
+        silent stall, and the stale-but-healthy window (a leader whose
+        heartbeat tick is merely behind) never reaches this path at all —
+        the horizon is the same four-beat slack the jobs' lock leases
+        carry.
+        """
+        schema_name = self._deps.settings.schema_name
+        if not _IDENT_RE.match(schema_name):
+            raise ValueError(f"invalid schema identifier: {schema_name!r}")
+        stale_after_secs = _LEADER_STALE_HEARTBEATS * self._deps.settings.heartbeat_interval
+        conn = self._deps.leader_conn
+        if conn is None or conn.is_closed():
+            return
+        holder = await conn.fetchrow(
+            f"SELECT worker_id, last_seen_at, "  # noqa: S608  # Why: schema_name validated against _IDENT_RE above; asyncpg cannot bind identifiers as parameters.
+            "(last_seen_at < clock_timestamp() - make_interval(secs => $1)) AS stale "
+            f'FROM "{schema_name}".maintenance_leader WHERE singleton = true',
+            stale_after_secs,
+        )
+        if holder is None or not holder["stale"]:
+            return
+        # The session currently holding this lock key: pg_locks splits the
+        # single-bigint advisory key into classid (upper 32 bits) and
+        # objid (lower 32 bits), objsubid 1 marking the one-argument form;
+        # the mask keeps the halves unsigned for the oid casts. The own-pid
+        # guard makes terminating this pod's own backend unrepresentable.
+        holder_pid = await conn.fetchval(
+            "SELECT l.pid FROM pg_locks l "
+            "WHERE l.locktype = 'advisory' AND l.granted AND l.objsubid = 1 "
+            "AND l.classid = ((hashtextextended($1, 0) >> 32) & 4294967295)::oid "
+            "AND l.objid = (hashtextextended($1, 0) & 4294967295)::oid "
+            "AND l.pid <> pg_backend_pid()",
+            lock_name,
+        )
+        if holder_pid is None:
+            log.info(
+                "leader-holder-vanished",
+                kind="leader_holder_vanished",
+                worker_id=str(self._worker_id),
+                holder_worker_id=str(holder["worker_id"]),
+                lock=lock_name,
+                stale_after_secs=stale_after_secs,
+            )
+            return
+        terminated = await conn.fetchval("SELECT pg_terminate_backend($1)", holder_pid)
+        log.warning(
+            "leader-holder-reclaimed",
+            kind="leader_holder_reclaimed",
+            worker_id=str(self._worker_id),
+            holder_worker_id=str(holder["worker_id"]),
+            holder_pid=holder_pid,
+            terminated=terminated is True,
+            lock=lock_name,
+            stale_after_secs=stale_after_secs,
+        )
 
     async def _election_loop(self, shutdown: asyncio.Event) -> None:
         guard = UnexpectedLoopErrorGuard("leader.election")
@@ -543,6 +655,40 @@ class MaintenanceLeader:
                 )
                 record_election_attempt(str(self._worker_id), won=False)
                 record_lock_contention(lost_lock_name)
+                try:
+                    # A lost election is also the only vantage point that
+                    # can free a dead-without-FIN holder: the winner's
+                    # session keeps the session-scoped lock until the
+                    # server reaps it, so the loser probes the holder's
+                    # lease and reclaims its backend once the lease has
+                    # gone silent past the slack horizon.
+                    await self._reclaim_silent_election_holder(lost_lock_name)
+                except TRANSIENT_PG_ERRORS as exc:
+                    await self._drop_leader_conn(reason="reclaim_probe_failed")
+                    await self._close_leader_owned_conns()
+                    log.warning(
+                        "leader-reclaim-probe-failed",
+                        kind="leader_reclaim_probe_failed",
+                        worker_id=str(self._worker_id),
+                        error=repr(exc),
+                    )
+                    await asyncio.sleep(self._deps.settings.heartbeat_interval)
+                    continue
+                except Exception as exc:
+                    # Backstop (see _transient.py): tolerated + logged a
+                    # few times, then deliberately fatal; cleanup mirrors
+                    # the transient path since conn state is unknown.
+                    await self._drop_leader_conn(reason="reclaim_probe_failed")
+                    await self._close_leader_owned_conns()
+                    log.warning(
+                        "leader-reclaim-probe-failed",
+                        kind="leader_reclaim_probe_failed",
+                        worker_id=str(self._worker_id),
+                        error=repr(exc),
+                    )
+                    guard.unexpected(exc)
+                    await asyncio.sleep(self._deps.settings.heartbeat_interval)
+                    continue
                 log.info(
                     "leader-retry",
                     kind="leader_retry",

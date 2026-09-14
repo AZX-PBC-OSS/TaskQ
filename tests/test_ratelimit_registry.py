@@ -350,11 +350,18 @@ async def test_reset_sliding_window() -> None:
 
 
 class _FakeConn:
-    def __init__(self) -> None:
-        self.calls: list[tuple[str, str, str]] = []
+    """Connection double for the publish statement.
 
-    async def execute(self, sql: str, name: str, kind: str) -> None:
-        self.calls.append((sql, name, kind))
+    ``execute`` mirrors asyncpg's variadic ``(sql, *args)`` contract; the
+    publish binds ``(name, kind, keyed)`` — the fleet-reclaim mark — so
+    the recorded calls carry all three bind values.
+    """
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[object, ...]] = []
+
+    async def execute(self, sql: str, *args: object) -> None:
+        self.calls.append((sql, *args))
 
 
 class _FakeAcquireCtx:
@@ -397,5 +404,12 @@ async def test_sync_rate_limit_buckets_writes_token_bucket_and_gcra() -> None:
     pool = _FakePool()
     await sync_rate_limit_buckets(reg, pool, schema="taskq")  # type: ignore[arg-type]
 
-    synced = {(name, kind) for _, name, kind in pool.conn.calls}
+    synced = {(name, kind) for _sql, name, kind, *_mark in pool.conn.calls}
     assert synced == {("tb", "token_bucket"), ("gcra_sw", "gcra")}
+    # The startup sync publishes STATIC buckets: the fleet-reclaim mark
+    # must be False on every row it writes (a static row is never
+    # deletable by the keyed-row sweep).
+    assert all(mark == [False] for _sql, _name, _kind, *mark in pool.conn.calls), (
+        "sync_rate_limit_buckets must publish static rows with keyed=False — a "
+        "statically declared bucket's rate_limit_buckets row is never fleet-reclaimable"
+    )

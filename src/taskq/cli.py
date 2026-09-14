@@ -37,6 +37,7 @@ from taskq.actor_config_ops import (
     deregister_actor,
     get_actor_config,
     list_actor_configs,
+    move_actor_queue,
     set_actor_config_capacity,
 )
 from taskq.auth import (
@@ -62,6 +63,36 @@ from taskq.worker.queue_ops import (
 from taskq.worker.run import worker_main as _worker_main
 
 logger: structlog.stdlib.BoundLogger = structlog.get_logger("taskq.cli")
+
+# ── UI first-use bounds (client/CLI processes arm no watchdogs) ────────
+#
+# The worker sources these bounds from WorkerSettings
+# (reload_factory_timeout, health_pg_ping_timeout,
+# dispatcher_command_timeout), but `taskq ui serve` loads TaskQSettings —
+# the base class carries none of them. The literals mirror those defaults
+# exactly; module-level so tests shrink them as seams (the
+# CLOSE_TIMEOUT_SECS convention).
+_UI_FACTORY_TIMEOUT_SECS: Final[float] = 30.0
+"""Bounds the UI's first-use awaits — ``pool_factory()`` /
+``redis_factory()`` (the AAD first token fetch lives inside them) and the
+eager redis ``initialize()`` (the first broker round trip). Mirrors
+``WorkerSettings.reload_factory_timeout``'s default — the SAME bound the
+worker applies to every factory call it makes (worker/deps.py), not a
+second mechanism. A hung dependency fails UI startup loudly instead of
+parking the admin server forever."""
+
+_UI_PG_PING_TIMEOUT_SECS: Final[float] = 0.2
+"""Bounds the ``/jobs/health/ready`` PG probe (acquire + SELECT 1).
+Mirrors ``WorkerSettings.health_pg_ping_timeout``'s default — the bound
+the worker's readiness ping (worker/health.py) applies to the identical
+probe; an unbounded probe turns a wedged PG into a wedged prober."""
+
+_UI_POOL_COMMAND_TIMEOUT_SECS: Final[float] = 5.0
+"""Per-query ``command_timeout`` for the UI's admin pool. Mirrors
+``WorkerSettings.dispatcher_command_timeout``'s default — the per-query
+bound on every other pool the repo builds. One pool-level bound covers
+every admin-page query on the pool (the sweep's ~20 admin query sites);
+without it a black-holed PG wedges each admin request forever."""
 
 app = typer.Typer(
     name="taskq",
@@ -139,26 +170,60 @@ def _load_actor_registry(actors: str) -> Mapping[str, ActorRef[Any, Any]]:
     """Resolve a ``module:attr`` reference to an actor registry.
 
     Accepts either ``Mapping[str, ActorRef]`` or an iterable of
-    ``ActorRef`` (keyed by name). On any failure prints the reason to
-    stderr and raises ``typer.Exit(code=1)`` — shared by ``worker`` and
-    ``actor-config diff``.
+    ``ActorRef`` (keyed by name). An iterable is materialized once,
+    before the validation pass reads it: a one-shot iterator consumed
+    by validation cannot then be rebuilt into the registry it proved it
+    held. An empty registry is refused rather than returned — every
+    downstream consumer checks ``is not None`` and cannot distinguish
+    ``{}`` from a populated mapping, so a worker handed an empty
+    registry boots and dispatches nothing. On any failure prints the
+    reason to stderr and raises ``typer.Exit(code=1)`` — shared by
+    ``worker`` and ``actor-config diff``.
+
+    That sharing is a deliberate trade-off for the read-only ``diff``
+    command: it too exits 1 on an empty registry, because the shared
+    loader cannot tell "an operator auditing stored rows against an
+    intentionally empty registry" from "a misconfigured ``--actors``
+    ref that resolved to nothing" — and the second is far more likely.
+    The workaround for a legitimate empty-registry audit: point
+    ``--actors`` at a populated registry containing nothing of interest
+    to the comparison, or read the stored rows directly
+    (``taskq actor-config list``).
     """
     raw = _import_ref(actors, example="myapp.actors:registry")
 
+    registry: Mapping[str, ActorRef[Any, Any]]
     if isinstance(raw, Mapping):
-        return cast(Mapping[str, ActorRef[Any, Any]], raw)
-    if (
-        not isinstance(raw, (str, bytes))
-        and hasattr(raw, "__iter__")
-        and all(isinstance(r, ActorRef) for r in raw)  # type: ignore[arg-type]  # Why: raw is object; pyright cannot verify iterability for the isinstance call.
-    ):
-        return {r.name: r for r in raw}  # type: ignore[union-attr]  # Why: the isinstance check ensures raw is Iterable[ActorRef]; pyright cannot narrow across the all() predicate inside elif.
-    typer.echo(
-        "expected Mapping[str, ActorRef] or Iterable[ActorRef] at "
-        f"{actors}; got {type(raw).__name__}",
-        err=True,
-    )
-    raise typer.Exit(code=1)
+        registry = cast(Mapping[str, ActorRef[Any, Any]], raw)
+    elif not isinstance(raw, (str, bytes)) and hasattr(raw, "__iter__"):
+        # Unvalidated until the isinstance guard below passes, so the
+        # element type is Any here — annotating ActorRef would make the
+        # guard look dead to the type checker.
+        items: list[Any] = list(raw)
+        if not all(isinstance(r, ActorRef) for r in items):
+            typer.echo(
+                "expected Mapping[str, ActorRef] or Iterable[ActorRef] at "
+                f"{actors}; got {type(raw).__name__}",
+                err=True,
+            )
+            raise typer.Exit(code=1)
+        registry = {r.name: r for r in items}
+    else:
+        typer.echo(
+            "expected Mapping[str, ActorRef] or Iterable[ActorRef] at "
+            f"{actors}; got {type(raw).__name__}",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    if not registry:
+        typer.echo(
+            f"actor registry at {actors} is empty — a worker with no actors "
+            "dispatches nothing; refusing to boot",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    return registry
 
 
 _PROVIDER_EXAMPLE: Final[str] = "myapp.auth:make_provider"
@@ -282,11 +347,13 @@ def worker(
     force_update_actor_config: bool = typer.Option(
         False,
         "--force-update-actor-config",
-        help="Allow sync_actor_config to overwrite a stored actor_config row whose queue "
-        "or metadata differ from the registered values. Use for one deploy to "
-        "deliberately re-route an actor, then unset. Capacity fields "
-        "(max_concurrent / max_pending / result_ttl) are unaffected — use "
-        "`taskq actor-config set` for those. Equivalent to env var "
+        help="Allow sync_actor_config to overwrite a stored actor_config row whose "
+        "metadata differs from the registered value. Use for one deploy to "
+        "deliberately adopt a code-side metadata change, then unset. The queue "
+        "assignment is unaffected — boots never rewrite it; move an actor with "
+        "`taskq actor-config move-queue`. Capacity fields (max_concurrent / "
+        "max_pending / result_ttl) are likewise unaffected — use `taskq "
+        "actor-config set` for those. Equivalent to env var "
         "TASKQ_FORCE_UPDATE_ACTOR_CONFIG=true.",
     ),
     queues: list[str] | None = typer.Option(
@@ -877,6 +944,69 @@ async def _actor_config_deregister(
     )
 
 
+@actor_config_app.command("move-queue")
+def actor_config_move_queue(
+    actor: Annotated[str, typer.Argument(help="Actor name to move.")],
+    new_queue: Annotated[str, typer.Argument(help="Target queue name.")],
+) -> None:
+    """Move an actor to a different queue in ONE operator action.
+
+    Rewrites the stored queue assignment, carries the old queue's mode and
+    max_concurrent to the target when the target has no row of its own, and
+    moves the actor's pending/scheduled backlog onto the target (bounded
+    batches, then one final transaction for the flip) so old-queue strays
+    drain through the target's consumers. Running jobs finish where they
+    were claimed. Cron fires follow the moved assignment from the flip on.
+
+    Workers boot on either side of the matching code deploy, in any order:
+    a stale `@actor(queue=...)` literal logs `actor-config-queue-override`
+    and adopts the stored assignment instead of refusing boot.
+
+    Exit codes: 0 moved, 2 refusal (invalid queue name, the actor is
+    already on that queue, or the assignment changed concurrently),
+    3 no stored row.
+    """
+    settings = TaskQSettings.load()
+    asyncio.run(_actor_config_move_queue(settings, actor, new_queue))
+
+
+async def _actor_config_move_queue(
+    settings: TaskQSettings,
+    actor: str,
+    new_queue: str,
+) -> None:
+    conn = await asyncpg.connect(str(settings.pg_dsn))
+    try:
+        result = await move_actor_queue(
+            conn,
+            actor,
+            new_queue,
+            schema=settings.schema_name,
+        )
+    except ActorNotFoundError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=3) from None
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2) from None
+    finally:
+        await close_conn_bounded(conn, "actor-config-move-queue", CLOSE_TIMEOUT_SECS)
+
+    typer.echo(
+        f"Moved actor {result.actor!r}: {result.from_queue!r} -> {result.to_queue!r}"
+        f" jobs_moved={result.jobs_moved}"
+        f" running_jobs_left={result.running_jobs_left}"
+        f" queues_row_carried={result.queues_row_carried}"
+    )
+    typer.echo(
+        f"NOTE: ensure workers consume {result.to_queue!r} now, and keep "
+        f"consuming {result.from_queue!r} until every producer runs the "
+        f"matching literal — stale producers keep enqueueing to "
+        f"{result.from_queue!r}.",
+        err=True,
+    )
+
+
 _CAPACITY_DIFF_FIELDS = ("max_concurrent", "max_pending", "result_ttl")
 
 
@@ -908,15 +1038,18 @@ def _effective_capacity(field: str, literal: object, row: ActorConfigRow) -> tup
 def _print_actor_diff(
     name: str, ref: ActorRef[Any, Any] | None, row: ActorConfigRow | None
 ) -> bool:
-    """Print one actor's diff; return whether its state blocks dispatch or boot.
+    """Print one actor's diff; return whether its state fails the gate.
 
-    Two states block: a queue/metadata structural mismatch (the next worker
-    startup raises ActorConfigDriftList) and a registry actor with no stored
-    row (the dispatch capacity gate reads only actor_config rows, so the
-    actor does not dispatch until a row is seeded). Capacity-only differences
-    never block — stored capacity is operator-owned by design — and neither
-    does a leftover row for an actor that is no longer registered: it only
-    serves already-queued jobs.
+    Three states fail: a queue mismatch (assignment drift — boot adopts the
+    stored queue, but the cron leader's fires follow it while producers
+    enqueue by their own literal, so the two routing halves disagree until
+    the move or the deploy completes), a metadata mismatch (the next worker
+    startup raises ActorConfigDriftList), and a registry actor with no
+    stored row (the dispatch capacity gate reads only actor_config rows, so
+    the actor does not dispatch until a row is seeded). Capacity-only
+    differences never fail — stored capacity is operator-owned by design —
+    and neither does a leftover row for an actor that is no longer
+    registered: it only serves already-queued jobs.
     """
     typer.echo(f"{name}:")
     if row is None:
@@ -960,9 +1093,11 @@ def _print_actor_diff(
     queue_mismatch = ref.queue != row.queue
     if queue_mismatch:
         typer.echo(
-            f"  {'queue':<15} literal={ref.queue}  stored={row.queue}  MISMATCH — structural "
-            "drift; the next worker startup raises ActorConfigDriftList unless run with "
-            "--force-update-actor-config"
+            f"  {'queue':<15} literal={ref.queue}  stored={row.queue}  MISMATCH — assignment "
+            "drift: boot adopts the stored queue (actor-config-queue-override) and "
+            "cron fires follow it while producers enqueue by their own literal. "
+            "Reconcile with `taskq actor-config move-queue ACTOR NEW_QUEUE` or "
+            "deploy the matching literal."
         )
     else:
         typer.echo(f"  {'queue':<15} {row.queue} (match)")
@@ -996,15 +1131,19 @@ def actor_config_diff(
     Reach for this when debugging "why is my change not taking effect":
     a capacity literal that differs from the stored row is IGNORED at
     runtime — the stored value wins; tune it with `taskq actor-config
-    set` — while a queue/metadata mismatch blocks the next worker
+    set` — and a queue mismatch means the two routing halves disagree
+    (boot adopts the stored queue and cron fires follow it while producers
+    enqueue by their own literal); reconcile with `taskq actor-config
+    move-queue`. A metadata mismatch still refuses the next worker
     startup with ActorConfigDriftList.
 
-    Exit codes: 0 no blocking drift; 1 at least one actor blocks dispatch
-    or the next worker boot — a registry actor with no stored row (it
-    does not dispatch until one is seeded) or a queue/metadata structural
-    mismatch. Capacity-only differences never affect the exit code:
-    stored capacity is operator-owned by design, so they are reportable
-    drift, not blocking drift.
+    Exit codes: 0 no gate-failing drift; 1 at least one actor fails the
+    gate — a registry actor with no stored row (it does not dispatch until
+    one is seeded), a queue assignment mismatch (producer literals and
+    cron routing disagree), or a metadata mismatch (startup-blocking).
+    Capacity-only differences never affect the exit code: stored capacity
+    is operator-owned by design, so they are reportable drift, not
+    gate-failing drift.
     """
     registry = _load_actor_registry(actors)
     settings = TaskQSettings.load()
@@ -1242,17 +1381,40 @@ def _ui_serve(
             # process opens re-authenticates with a fresh token; the DSN
             # path is unchanged.
             if pool_factory is not None:
-                pg_pool = await pool_factory()
+                # Why bounded: UI startup arms no watchdog — a hung token
+                # endpoint inside the factory would park `taskq ui serve`
+                # forever before any request is served.
+                # _UI_FACTORY_TIMEOUT_SECS is the SAME bound the worker
+                # applies to its bootstrap factory calls (worker/deps.py).
+                try:
+                    pg_pool = await asyncio.wait_for(
+                        pool_factory(), timeout=_UI_FACTORY_TIMEOUT_SECS
+                    )
+                except TimeoutError as exc:
+                    raise TimeoutError(
+                        f"taskq ui serve: pool_factory did not return within "
+                        f"{_UI_FACTORY_TIMEOUT_SECS}s — the credential "
+                        "provider behind it (e.g. a token endpoint) is "
+                        "black-holed. UI startup fails loudly instead of "
+                        "parking forever."
+                    ) from exc
             else:
                 # settings (the TaskQSettings this UI was launched with) is
                 # in scope, so the pair resolves through statement_cache_kwargs;
                 # forwarded explicitly so pyright can trace types through
                 # asyncpg.create_pool.
                 stmt_kwargs = statement_cache_kwargs(settings)
+                # Why command_timeout: every admin-page query runs on this
+                # pool — the pool-level per-query bound that closes all of
+                # the sweep's admin query sites at once (a black-holed PG
+                # wedges each request forever without it). Mirrors
+                # dispatcher_command_timeout's default, the per-query bound
+                # on every other pool the repo builds.
                 pg_pool = await asyncpg.create_pool(
                     pg_dsn,
                     min_size=1,
                     max_size=4,
+                    command_timeout=_UI_POOL_COMMAND_TIMEOUT_SECS,
                     statement_cache_size=stmt_kwargs["statement_cache_size"],
                     max_cached_statement_lifetime=stmt_kwargs["max_cached_statement_lifetime"],
                 )
@@ -1282,11 +1444,25 @@ def _ui_serve(
                         "Install it with: pip install 'taskq[redis]'"
                     ) from exc
 
-                client = (
-                    await redis_factory()
-                    if redis_factory is not None
-                    else aioredis.from_url(redis_url)
-                )
+                if redis_factory is not None:
+                    # Why bounded: same first-use factory discipline as the
+                    # pool factory above — the worker's reload bounds its
+                    # identical redis factory call with reload_factory_timeout
+                    # (worker/deps.py); a hung Redis credential provider must
+                    # fail UI startup loudly, not park it forever.
+                    try:
+                        client = await asyncio.wait_for(
+                            redis_factory(), timeout=_UI_FACTORY_TIMEOUT_SECS
+                        )
+                    except TimeoutError as exc:
+                        raise TimeoutError(
+                            f"taskq ui serve: redis_factory did not return "
+                            f"within {_UI_FACTORY_TIMEOUT_SECS}s — the Redis "
+                            "credential provider is black-holed. UI startup "
+                            "fails loudly instead of parking forever."
+                        ) from exc
+                else:
+                    client = aioredis.from_url(redis_url)
 
                 # Why not stack.enter_async_context(client): Redis.__aexit__
                 # calls aclose() UNBOUNDED (and shielded) — a hung broker
@@ -1309,7 +1485,20 @@ def _ui_serve(
                 # close (never raises; aclose() on a never-initialized client
                 # is a no-op).
                 stack.push_async_callback(_close_ui_redis)
-                await client.initialize()
+                # Why bounded: initialize() is the eager first broker round
+                # trip — a black-holed Redis would park UI startup forever,
+                # and the UI process arms no watchdog. Same wait_for
+                # discipline as JobsClient._open_redis; the pushed callback
+                # above already bounds the unwind's close.
+                try:
+                    await asyncio.wait_for(client.initialize(), timeout=_UI_FACTORY_TIMEOUT_SECS)
+                except TimeoutError as exc:
+                    raise TimeoutError(
+                        f"taskq ui serve: Redis initialize() did not complete "
+                        f"within {_UI_FACTORY_TIMEOUT_SECS}s — the broker at "
+                        f"{redis_url} is unreachable or black-holed. UI "
+                        "startup fails loudly instead of parking forever."
+                    ) from exc
                 redis_client = client
 
             bundle = create_router(
@@ -1345,10 +1534,21 @@ def _ui_serve(
             async def _health_ready() -> Response:  # pyright: ignore[reportUnusedFunction]  # Why: registered via FastAPI decorator.
                 t0 = time.perf_counter()
                 try:
-                    async with pool.acquire() as conn:
-                        await conn.execute("SELECT 1")
+                    # Why bounded: the worker's readiness ping bounds the
+                    # identical probe (acquire + SELECT 1) with
+                    # health_pg_ping_timeout (worker/health.py); an
+                    # unbounded probe turns a wedged pool or a black-holed
+                    # PG into a wedged prober.
+                    async with pool.acquire(timeout=_UI_PG_PING_TIMEOUT_SECS) as conn:
+                        await asyncio.wait_for(
+                            conn.execute("SELECT 1"),
+                            timeout=_UI_PG_PING_TIMEOUT_SECS,
+                        )
                     ok = True
                     reasons: list[str] = []
+                except TimeoutError:
+                    ok = False
+                    reasons = ["pg_ping_timeout"]
                 except Exception:
                     ok = False
                     reasons = ["pg_connection_error"]
@@ -1472,7 +1672,18 @@ def ui_serve(
         pg_provider = _load_pg_credential_provider(
             resolved_pg_provider_ref, option="--pg-credential-provider"
         )
-        pool_factory = make_pg_pool_factory(resolved_dsn, pg_provider, max_size=4)
+        # Why command_timeout: this factory builds the UI's admin pool —
+        # the factory-path twin of the create_pool bound in the lifespan,
+        # or the credential-provider deployment would be the one unbounded
+        # admin pool left standing. (The migrate conn_factory below is
+        # deliberately NOT bounded: DDL may legitimately exceed a
+        # per-query budget.)
+        pool_factory = make_pg_pool_factory(
+            resolved_dsn,
+            pg_provider,
+            max_size=4,
+            command_timeout=_UI_POOL_COMMAND_TIMEOUT_SECS,
+        )
         conn_factory = make_dedicated_conn_factory(resolved_dsn, pg_provider)
 
     redis_factory: RedisFactory | None = None

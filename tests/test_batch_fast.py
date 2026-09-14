@@ -7,7 +7,7 @@ Integration tests require a live Postgres container and are marked
 
 import contextlib
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 import pytest
@@ -33,6 +33,15 @@ class _Payload(BaseModel):
 
 @actor(name="batch_fast_test_actor")
 async def _test_actor(_payload: _Payload) -> None:
+    pass
+
+
+@actor(
+    name="batch_fast_unique_for_actor",
+    unique_for=timedelta(minutes=15),
+    unique_states=("pending", "scheduled", "running"),
+)
+async def _unique_for_actor(_payload: _Payload) -> None:  # pyright: ignore[reportUnusedFunction] # Why: actor decorator registers the function; it is accessed via the registry at test time.
     pass
 
 
@@ -275,6 +284,116 @@ class TestTU11DuplicateKeyTypedError:
             await client.enqueue_batch_fast(
                 [EnqueueItem(actor_ref=_test_actor, payload=_Payload(value=2), idempotency_key=key)]
             )
+
+
+class TestTUBatchTierUniqueForParity:
+    """Actor-declared ``unique_for`` is not applied on the batch tiers —
+    on EITHER backend.
+
+    The PG batch tiers (the unnest INSERT and the COPY) never run the
+    unique_for preflight: a bulk statement cannot take a per-identity
+    advisory lock without the per-item round trips that defeat bulk
+    throughput, so every batch item writes and unique_for items are
+    conservatively fully counted toward ``max_pending`` instead (the
+    single path is where the preflight pays — see
+    ``test_unique_for_caller_conn_serialization.py`` and
+    ``test_postgres_unique_for_single_flight.py``). The in-memory batch
+    tier must match that behavior, not improve on it: a test suite run
+    against ``InMemoryBackend`` that saw batch-path unique_for dedup
+    would certify dedup production never performs — false confidence,
+    the worst kind this project ships.
+
+    Whether the batch tier SHOULD honor ``unique_for`` is an open owner
+    decision (River enforces batch uniqueness with a partial unique
+    index + ON CONFLICT —
+    vendor/river/riverdriver/riverpgxv5/internal/dbsqlc/river_job.sql);
+    these pins hold the parity with current production behavior, not an
+    endorsement of it.
+    """
+
+    def _unique_for_items(self, values: tuple[int, ...], identity: str) -> list[EnqueueItem]:
+        return [
+            EnqueueItem(
+                actor_ref=_unique_for_actor, payload=_Payload(value=v), identity_key=identity
+            )
+            for v in values
+        ]
+
+    async def test_same_identity_items_in_one_batch_both_insert(self) -> None:
+        """Two items with the same (actor, identity_key) in ONE batch
+        call both insert — the PG unnest INSERT has no per-item
+        unique_for logic, so it writes both."""
+        backend = _make_backend()
+        client = _make_client(backend)
+
+        handle = await client.enqueue_batch(self._unique_for_items((1, 2), "acct:parity"))
+
+        ids = [h.job_id for h in handle.job_handles]
+        assert len(ids) == 2, f"both batch items must produce jobs; got {ids}"
+        assert len(set(ids)) == 2, (
+            f"a batch-path unique_for dedup produced one job for two items; "
+            f"PG writes both — ids={ids}"
+        )
+        assert len(backend._jobs) == 2  # type: ignore[reportPrivateUsage]  # Why: admission check against the mirror's store
+
+    async def test_same_identity_items_across_two_batches_both_insert(self) -> None:
+        """The same divergence across two batch CALLS: PG's second bulk
+        INSERT never consults unique_for, so it writes alongside the
+        first call's row."""
+        backend = _make_backend()
+        client = _make_client(backend)
+
+        await client.enqueue_batch(self._unique_for_items((1,), "acct:parity-2"))
+        await client.enqueue_batch(self._unique_for_items((2,), "acct:parity-2"))
+
+        assert len(backend._jobs) == 2, (
+            "the second batch deduped against the first batch's row; the PG "
+            "batch tier never runs the unique_for preflight"
+        )
+
+    async def test_same_identity_items_via_batch_fast_both_insert(self) -> None:
+        """The COPY tier: unique_for items are fully written (and fully
+        counted toward max_pending) — no preflight, no dedup. The STORE
+        is the observable that separates this from a dedup: the mirror's
+        fast tier counts dedup returns in its row count, so ``count``
+        alone cannot distinguish "2 written" from "1 written + 1
+        deduped"."""
+        backend = _make_backend()
+        client = _make_client(backend)
+
+        count = await client.enqueue_batch_fast(self._unique_for_items((1, 2), "acct:parity-3"))
+
+        assert count == 2, (
+            f"the fast tier wrote {count} of 2 same-identity unique_for items; "
+            f"the PG COPY path writes every row"
+        )
+        assert len(backend._jobs) == 2, (  # type: ignore[reportPrivateUsage]  # Why: admission check against the mirror's store
+            "the fast tier deduped a unique_for item in memory; the PG COPY "
+            "path never runs the unique_for preflight"
+        )
+
+    async def test_single_enqueue_unique_for_still_dedups(self) -> None:
+        """The no-overreach guard: stripping unique_for is a BATCH-tier
+        parity decision. The single-enqueue path keeps the single-flight
+        contract (PIN 5 semantics,
+        ``test_pinned_invariants.py::test_unique_for_does_not_dedupe_onto_a_succeeded_job``
+        and the in-memory pins in ``test_dedup_logging.py``)."""
+        backend = _make_backend()
+        client = _make_client(backend)
+
+        first = await client.enqueue(
+            _unique_for_actor, _Payload(value=1), identity_key="acct:parity-4"
+        )
+        second = await client.enqueue(
+            _unique_for_actor, _Payload(value=2), identity_key="acct:parity-4"
+        )
+
+        assert second.job_id == first.job_id, (
+            "the single-enqueue path stopped deduping a still-pending "
+            "identity — the single-flight guard itself is broken"
+        )
+        assert second.was_existing is True
+        assert len(backend._jobs) == 1  # type: ignore[reportPrivateUsage]  # Why: admission check against the mirror's store
 
 
 # ── Integration tests ─────────────────────────────────────────────────────

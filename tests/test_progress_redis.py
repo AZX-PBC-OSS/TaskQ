@@ -9,7 +9,7 @@ Actor calls ctx.progress() 100 times; subscriber receives all 100 kind='progress
 Subscribe before enqueue; actor calls ctx.progress(step=1) then returns; events
         arrive in order: kind='progress', kind='state_change'(succeeded, terminal=True).
 First non-subscribe message is NOT a progress event (subscribe happens before job).
-Redis publish call raises after 1st; channel='per_job' label on
+Redis publish round trip raises after 1st; channel='per_job' label on
         taskq.progress.publish_failures counter.
 """
 
@@ -92,6 +92,7 @@ async def _setup_worker(
             "TASKQ_HEARTBEAT_INTERVAL": "0.5",
             "TASKQ_LOCK_LEASE": "30.0",
             "TASKQ_WATCHDOG_LOOP_LAG_BUDGET": "1.2",
+            "TASKQ_WATCHDOG_LOOP_LAG_WARN_BUDGET": "0.5",
             "TASKQ_CANCELLATION_GRACE_PERIOD": "0.5",
             "TASKQ_CLEANUP_GRACE_PERIOD": "0.5",
         }
@@ -457,7 +458,32 @@ async def test_ti3b_first_message_is_state_change_running(
         await stack.aclose()
 
 
-# ── Redis publish raises after 1st call ─────────────────────────────
+# ── Redis publish raises after 1st round trip ──────────────────────────
+
+
+class _FailingPipeline:
+    """Pipeline stand-in whose ``execute`` raises.
+
+    Simulates a failed pipelined dual-channel publish round trip — the
+    surface progress events actually go through when
+    ``progress_publish_global`` is on (one pipeline, one execute, both
+    channels; ``client.publish`` is never called on that path).
+    """
+
+    def __init__(self, error: Exception) -> None:
+        self._error = error
+
+    def publish(self, *_args: object) -> None:
+        return None
+
+    async def execute(self) -> list[int]:
+        raise self._error
+
+    async def __aenter__(self) -> "_FailingPipeline":
+        return self
+
+    async def __aexit__(self, *_exc: object) -> None:
+        return None
 
 
 async def test_tc1_publish_failure_counter_labeled_per_job(
@@ -466,7 +492,7 @@ async def test_tc1_publish_failure_counter_labeled_per_job(
     monkeypatch: pytest.MonkeyPatch,
     module_pg_schema: ModulePgSchema,
 ) -> None:
-    """Redis publish raises after the 1st call.
+    """Redis publish raises after the 1st round trip.
 
     Oracle: taskq.progress.publish_failures counter has a data point with
     channel='per_job' attribute.
@@ -482,18 +508,21 @@ async def test_tc1_publish_failure_counter_labeled_per_job(
         pg_dsn, redis_url, schema=module_pg_schema.schema_name
     )
     try:
-        # Inject failure after the 1st publish
+        # Inject failure after the 1st publish round trip: each progress
+        # event is one pipelined execute carrying both channels, so the
+        # failure is injected at the pipeline, not at client.publish
+        # (which the pipelined path never calls).
         if deps.redis_client is not None:
-            original_publish = deps.redis_client.publish
-            call_count: list[int] = [0]
+            original_pipeline = deps.redis_client.pipeline
+            round_trips: list[int] = [0]
 
-            async def _fail_after_one(channel: str, message: bytes | str) -> int:
-                call_count[0] += 1
-                if call_count[0] > 1:
-                    raise ConnectionError("simulated Redis failure")
-                return await original_publish(channel, message)
+            def _fail_after_one(transaction: bool = True, shard_hint: str | None = None) -> object:
+                round_trips[0] += 1
+                if round_trips[0] > 1:
+                    return _FailingPipeline(ConnectionError("simulated Redis failure"))
+                return original_pipeline(transaction=transaction, shard_hint=shard_hint)
 
-            monkeypatch.setattr(deps.redis_client, "publish", _fail_after_one)
+            monkeypatch.setattr(deps.redis_client, "pipeline", _fail_after_one)
 
         wid = new_uuid()
         job_row = await _enqueue_and_dispatch(deps, backend, "_progress_redis_three", wid)

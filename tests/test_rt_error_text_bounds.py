@@ -64,7 +64,7 @@ async def test_mark_failed_truncates_1mb_error_text(
     worker_id, job_id = await create_workered_running_job(clean_pg_conn, schema)
     backend = pool_backend(settings, module_pg_pool)
 
-    row = await backend.mark_failed_or_retry(job_id, worker_id, _huge_error(), None)
+    row = await backend.mark_failed_or_retry(job_id, worker_id, _huge_error(), None, attempt=1)
     assert row.status == "failed"
 
     stored = await clean_pg_conn.fetchrow(
@@ -106,7 +106,9 @@ async def test_mark_retry_truncates_1mb_error_text(
     worker_id, job_id = await create_workered_running_job(clean_pg_conn, schema)
     backend = pool_backend(settings, module_pg_pool)
 
-    row = await backend.mark_failed_or_retry(job_id, worker_id, _huge_error(), timedelta(seconds=1))
+    row = await backend.mark_failed_or_retry(
+        job_id, worker_id, _huge_error(), timedelta(seconds=1), attempt=1
+    )
     assert row.status == "scheduled"
 
     stored = await clean_pg_conn.fetchrow(

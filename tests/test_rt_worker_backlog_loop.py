@@ -111,29 +111,37 @@ def _ctx(*, dispatcher_pool: object, is_leader: bool) -> SweepContext:
 
 async def _drive_one_sample(
     ctx: SweepContext,
-) -> tuple[dict[str, int] | None, float | None]:
-    """Run the loop until both gauges are fed once, then stop it.
+) -> tuple[dict[str, int] | None, float | None, int | None]:
+    """Run the loop until the gauges are fed once, then stop it.
 
     Spies on the obs cache-update functions via the sweeps module's own
     imported names (the established instrumentation seam) and returns the
-    first (by-status, oldest-due) pair observed.
+    first (by-status, oldest-due, running-lease-expired) triple observed.
     """
-    observed: list[tuple[dict[str, int], float]] = []
+    observed: list[tuple[dict[str, int], float, int]] = []
     original_by_status = _leader_sweeps.update_jobs_by_status_cache
     original_oldest = _leader_sweeps.update_oldest_due_age_cache
+    original_expired = _leader_sweeps.update_running_lease_expired_cache
 
     def _spy_by_status(data: dict[str, int]) -> None:
-        observed.append((dict(data), observed_oldest[0]))
+        observed.append((dict(data), observed_oldest[0], observed_expired[0]))
 
     observed_oldest: list[float] = [0.0]
+    observed_expired: list[int] = [0]
 
     def _spy_oldest(age: float) -> None:
         observed_oldest[0] = age
         if observed:
-            observed[-1] = (observed[-1][0], age)
+            observed[-1] = (observed[-1][0], age, observed[-1][2])
+
+    def _spy_expired(count: int) -> None:
+        observed_expired[0] = count
+        if observed:
+            observed[-1] = (observed[-1][0], observed[-1][1], count)
 
     _leader_sweeps.update_jobs_by_status_cache = _spy_by_status  # type: ignore[assignment]  # Why: test-only instrumentation of the module's imported names, same pattern as the stranded-jobs spies in the coverage tests.
     _leader_sweeps.update_oldest_due_age_cache = _spy_oldest  # type: ignore[assignment]  # Why: see above.
+    _leader_sweeps.update_running_lease_expired_cache = _spy_expired  # type: ignore[assignment]  # Why: see above.
     shutdown = asyncio.Event()
     task = asyncio.create_task(_backlog_detection_loop(ctx, shutdown))
     try:
@@ -144,12 +152,13 @@ async def _drive_one_sample(
     finally:
         _leader_sweeps.update_jobs_by_status_cache = original_by_status  # type: ignore[assignment]  # Why: restoring the spied module attribute.
         _leader_sweeps.update_oldest_due_age_cache = original_oldest  # type: ignore[assignment]  # Why: see above.
+        _leader_sweeps.update_running_lease_expired_cache = original_expired  # type: ignore[assignment]  # Why: see above.
         shutdown.set()
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
     if not observed:
-        return None, None
+        return None, None, None
     return observed[0]
 
 
@@ -167,7 +176,7 @@ async def test_backlog_gauges_fed_with_leadership_held_by_nobody() -> None:
     )
     ctx = _ctx(dispatcher_pool=_PoolStub(conn), is_leader=False)
 
-    by_status, oldest_due = await _drive_one_sample(ctx)
+    by_status, oldest_due, expired_lease = await _drive_one_sample(ctx)
 
     assert by_status is not None, (
         "with leadership held by nobody the backlog sampler never fed the "
@@ -176,6 +185,11 @@ async def test_backlog_gauges_fed_with_leadership_held_by_nobody() -> None:
     )
     assert by_status == {"scheduled": 12, "pending": 3}
     assert oldest_due == 87.5
+    assert expired_lease == 87, (
+        "the running-lease-expired gauge must be fed from the same "
+        "unconditional sample — a zombie-running detector that only reports "
+        "under a leader is hosted behind the leadership failure that mutes it"
+    )
 
 
 async def test_backlog_none_due_reports_zero_age() -> None:
@@ -185,10 +199,15 @@ async def test_backlog_none_due_reports_zero_age() -> None:
     conn = _ConnStub(fetch_rows=[], fetchval_result=None)
     ctx = _ctx(dispatcher_pool=_PoolStub(conn), is_leader=False)
 
-    by_status, oldest_due = await _drive_one_sample(ctx)
+    by_status, oldest_due, expired_lease = await _drive_one_sample(ctx)
 
     assert by_status == {}
     assert oldest_due == 0.0
+    assert expired_lease == 0, (
+        "a NULL aggregate (nothing running / no lease rows) must read as 0 "
+        "on the running-lease-expired gauge, not as a missing sample — a "
+        "missing sample reads identically to a dead sampler"
+    )
 
 
 # ── (d) demotion: backlog authority SURVIVES, leader-scoped gauges clear ──
@@ -206,6 +225,7 @@ async def test_demotion_keeps_backlog_gauges_and_clears_leader_scoped() -> None:
         update_oldest_due_age_cache,
         update_queue_depth_cache,
         update_reservation_slots_cache,
+        update_running_lease_expired_cache,
         update_stranded_jobs_cache,
     )
 
@@ -214,6 +234,7 @@ async def test_demotion_keeps_backlog_gauges_and_clears_leader_scoped() -> None:
     update_stranded_jobs_cache({"orphan": 7})
     otel_mod.update_jobs_by_status_cache({"scheduled": 9})  # pyright: ignore[reportPrivateUsage]  # Why: the cache-update seams are the loop's own inputs; the public re-export covers the backlog pair being asserted.
     update_oldest_due_age_cache(42.0)
+    update_running_lease_expired_cache(5)
     try:
         deps = _deps(dispatcher_pool=_PoolStub(_ConnStub()), is_leader=True)
         leader = MaintenanceLeader(
@@ -233,6 +254,10 @@ async def test_demotion_keeps_backlog_gauges_and_clears_leader_scoped() -> None:
             "the backlog gauges are every-worker samplers — demotion must keep them alive"
         )
         assert otel_mod._oldest_due_age_seconds == 42.0  # pyright: ignore[reportPrivateUsage]  # Why: see above.
+        assert otel_mod._running_lease_expired_count == 5, (  # pyright: ignore[reportPrivateUsage]  # Why: see above — the zombie-running detector is an every-worker sampler with the rest of the backlog family.
+            "the running-lease-expired gauge is an every-worker sampler — "
+            "demotion must keep it alive like its backlog siblings"
+        )
     finally:
         # Restore the process-wide sampler caches this test populated.
         update_queue_depth_cache({})
@@ -240,6 +265,7 @@ async def test_demotion_keeps_backlog_gauges_and_clears_leader_scoped() -> None:
         update_stranded_jobs_cache({})
         otel_mod.update_jobs_by_status_cache({})
         update_oldest_due_age_cache(0.0)
+        update_running_lease_expired_cache(0)
 
 
 def _queue_depth_cache() -> dict[str, int]:
@@ -279,6 +305,29 @@ async def _seed_job(
         job_id,
         status,
         scheduled_at,
+    )
+    return job_id
+
+
+async def _seed_running_job(
+    conn: asyncpg.Connection,
+    schema: str,
+    *,
+    locked_by_worker: UUID | None,
+    lock_expires_at: datetime | None,
+) -> UUID:
+    """Seed one running row with the lock columns the zombie predicate reads."""
+    job_id = new_uuid()
+    await conn.execute(
+        f'INSERT INTO "{schema}".jobs (id, actor, queue, payload, max_attempts, '  # noqa: S608  # Why: schema is the module fixture's validated identifier; no user input.
+        "retry_kind, status, priority, scheduled_at, locked_by_worker, "
+        "lock_expires_at) "
+        "VALUES ($1, 'test_actor', 'default', '{}'::jsonb, 1, 'non_retryable', "
+        "'running', 0, $2, $3, $4)",
+        job_id,
+        datetime.now(UTC),
+        locked_by_worker,
+        lock_expires_at,
     )
     return job_id
 
@@ -336,7 +385,7 @@ async def test_oldest_due_age_and_by_status_against_real_schema(
 
     ctx = _pg_ctx(clean_pg_conn, schema=module_pg_schema.schema_name, is_leader=False)
 
-    by_status, oldest_due = await _drive_one_sample(ctx)
+    by_status, oldest_due, _expired_lease = await _drive_one_sample(ctx)
 
     assert by_status is not None, "the sampler never ran against the real schema"
     assert by_status == {"scheduled": 2, "pending": 1}, (
@@ -367,6 +416,56 @@ async def test_oldest_due_age_zero_when_nothing_due(
 
     ctx = _pg_ctx(clean_pg_conn, schema=module_pg_schema.schema_name, is_leader=False)
 
-    _by_status, oldest_due = await _drive_one_sample(ctx)
+    _by_status, oldest_due, _expired_lease = await _drive_one_sample(ctx)
 
     assert oldest_due == 0.0, f"nothing is due; the gauge must read 0.0, got {oldest_due!r}"
+
+
+@pytest.mark.integration
+async def test_running_lease_expired_counts_only_expired_running_jobs(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_schema: ModulePgSchema,
+) -> None:
+    """The zombie-running shape is visible: the expired-lease count covers
+    exactly the running rows whose lease is past — not future leases, not
+    pending rows, not running rows that hold no lease.
+
+    A healthy fleet drives this gauge to zero (the reclaim sweep reclaims
+    expired leases within a tick or two of expiry), so a SUSTAINED
+    non-zero reading — the alert this gauge feeds — means reclaim is not
+    draining: work is claimed and stuck while health probes stay green.
+    """
+    schema = module_pg_schema.schema_name
+
+    now = datetime.now(UTC)
+    worker = new_uuid()
+    # One zombie: running, lease 60 s in the past.
+    await _seed_running_job(
+        clean_pg_conn,
+        schema,
+        locked_by_worker=worker,
+        lock_expires_at=now - timedelta(seconds=60),
+    )
+    # Not zombies: a running row with a live future lease…
+    await _seed_running_job(
+        clean_pg_conn,
+        schema,
+        locked_by_worker=worker,
+        lock_expires_at=now + timedelta(seconds=60),
+    )
+    # …a running row holding no lease at all (NULL never satisfies the
+    # bound)…
+    await _seed_running_job(clean_pg_conn, schema, locked_by_worker=None, lock_expires_at=None)
+    # …and a pending row whose lock columns are set (a raced write) —
+    # status, not the columns, gates the zombie shape.
+    await _seed_job(clean_pg_conn, schema, status="pending", scheduled_at=now)
+
+    ctx = _pg_ctx(clean_pg_conn, schema=module_pg_schema.schema_name, is_leader=False)
+
+    _by_status, _oldest_due, expired_lease = await _drive_one_sample(ctx)
+
+    assert expired_lease == 1, (
+        f"exactly one running row carries a past lease; the gauge read "
+        f"{expired_lease!r} — the zombie-running predicate is "
+        "status='running' AND lock_expires_at < now, nothing broader"
+    )

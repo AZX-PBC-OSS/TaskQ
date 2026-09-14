@@ -14,8 +14,9 @@ Mechanics live in the canonical guides (linked throughout); this page is about *
     4. [observability.md — setup](observability.md#1-opentelemetry-setup)
 
 !!! warning "Know which TaskQ you are actually running"
-    The published PyPI release can be far behind `main`: everything under `[Unreleased]` in the
-    [CHANGELOG](../changelog.md) — keyed rate-limit refs, `cancel_where`, enqueue tags,
+    The published PyPI release can be far behind `main`: everything in the
+    [upgrading guide](upgrading.md)'s *Breaking API changes* / *Silent behaviour changes* /
+    *Unreleased features* sections — keyed rate-limit refs, `cancel_where`, enqueue tags,
     `actor-config` live tuning, the PG rate-limit backend on the dispatch path, dozens of
     operational fixes — exists only in git pins. A `taskq-py>=0.2.2` range can silently resolve
     to the stale release, which carries known hazards the current docs no longer describe (for
@@ -132,10 +133,12 @@ async def reindex_bucket(payload: Payload) -> None: ...
   pending jobs are never dispatched, retries/snoozes that would land past the deadline fail with
   `DeadlineExceeded`, and a leader sweep fails expired queued jobs. A running attempt that finishes
   after the deadline still succeeds.
-- **The enqueue-time `heartbeat_timeout` parameter is currently inert.** It is stored on the
-  job row (and reaches the job-detail template context) but is not rendered in the admin UI,
-  and no code path reads it. All running jobs are leased for the global
-  `TASKQ_LOCK_LEASE` (default 60 s).
+- **The enqueue-time `heartbeat_timeout` parameter reclaims silent holders.** A running
+  job whose holder stops heartbeating past its `heartbeat_timeout` is crash-reclaimed
+  by the leader's sweep even while its lease — the global `TASKQ_LOCK_LEASE`
+  (default 60 s) — is still valid: the shorter of the two deadlines governs. Size it
+  `>= 2x` the fleet's `TASKQ_HEARTBEAT_INTERVAL`; a value below one heartbeat
+  interval reclaims a healthy job on a single missed beat.
 - **The stored `error_message` of a genuine `start_to_close` timeout is the literal string
   `"start_to_close"`** — alert on `error_class == "TimeoutError"` if you want all timeouts, and
   remember an actor raising its own `TimeoutError` is indistinguishable by class.
@@ -207,10 +210,18 @@ Two viable ownership postures — pick one deliberately:
    boot, making code the source of truth. An operator's live tune then reverts on the next deploy —
    document that.
 
-Structural fields are different: changing an actor's `queue` or adding `metadata` after a row
-exists **refuses to boot** (`ActorConfigDriftList`) — move an actor between queues in two steps
-(deregister/update, then boot), or set `TASKQ_FORCE_UPDATE_ACTOR_CONFIG=true` for exactly one
-boot. Never leave it set. See [workers.md — ActorConfig sync](workers.md#actorconfig-sync).
+The queue assignment is operator-owned once a row exists: move an actor between queues
+with `taskq actor-config move-queue ACTOR NEW_QUEUE` — the actor's pending/scheduled
+backlog moves to the target queue in bounded batches, then one final transaction flips
+the stored assignment and carries the old queue's mode/cap to the target (when the
+target has no row of its own), so old-queue strays drain through the target's consumers.
+Workers boot on either side of the matching code deploy (a
+stale literal logs `actor-config-queue-override` and adopts the stored queue); ensure
+workers consume the new queue, and keep consuming the old one until every producer runs
+the new literal. `metadata` is the remaining structural field: changing it after a row
+exists **refuses to boot** (`ActorConfigDriftList`) — set
+`TASKQ_FORCE_UPDATE_ACTOR_CONFIG=true` for exactly one boot. Never leave it set. See
+[workers.md — ActorConfig sync](workers.md#actorconfig-sync).
 
 ### Starvation: priority and fairness
 
@@ -273,7 +284,7 @@ A worker holds **up to four pools plus dedicated connections**:
 | `dispatcher_pool` | 4 | **direct** | dispatch claims, sweeps, leader loops |
 | `heartbeat_pool` | 4 | **direct** | heartbeat transaction every 10 s |
 | `worker_pool` | `int(max_concurrency * 1.5)` | **pooled** (may traverse PgBouncer) | terminal writes, sub-enqueues, PG-backed rate limits |
-| slot pool (conditional) | `max_concurrency + 1` | **direct** | per-slot transaction pool — only when a LOOP-scope `asyncpg.Connection` is registered **and** `max_concurrency > 1`; TaskQ's own transactional writes, one connection per consumer slot + one for the readiness probe, fully warmed at boot |
+| slot pool (conditional) | `max_concurrency + 1` | **direct** | per-slot transaction pool — only when a LOOP-scope `asyncpg.Connection` is registered **and** `max_concurrency > 1`; carries every per-job transaction (the actor's own writes via its injected slot connection, the terminal write, transactional sub-enqueues), one connection per consumer slot + one for the readiness probe, fully warmed at boot |
 | `notify_conn` | 1 | **direct** | LISTEN (session-scoped — cannot pool) |
 | `leader_conn` | 1 | **direct** | advisory-lock election (every worker) |
 | leader-only monitor + cron | +2 | **direct** | only on the elected leader |
@@ -513,15 +524,19 @@ Why the pieces matter:
       `ctx.jobs.enqueue` commits each child **immediately** through the worker pool. A parent
       failure does **not** roll back its children — the startup log warns
       `sub_enqueue_autonomous_fallback`. The idempotency keys are your correctness backstop (a
-      re-run parent re-enqueues the same children, which dedup).
+      re-run parent re-enqueues the same children, which dedup). Registering an `asyncpg.Pool`
+      at `Scope.LOOP` does **not** leave this mode: the transactional path keys on
+      `Connection`, so a Pool-only registration silently keeps autonomous commit in force.
     - *Transactional*: register a LOOP-scope `asyncpg.Connection` and children join the parent's
       transaction (rollback on failure). At `max_concurrency > 1` the worker opens a per-slot
-      transaction pool — each job transacts on its own connection — so transactional consume
-      and throughput no longer require separate workers. Keep the chaining actor on a dedicated
-      `TASKQ_MAX_CONCURRENCY=1` worker only when the LOOP-scope connection carries session state
-      (`SET ROLE`, `search_path`, an RLS-driving GUC) that TaskQ's own transactional writes must
-      inherit — on the per-slot path those writes run on the slot connections, not the registered
-      one — or to keep the connection budget minimal (no `max_concurrency + 1` slot pool).
+      transaction pool — each job transacts on its own connection, and the actor receives that
+      same slot connection by injection, so the actor's own writes join the transaction too —
+      making transactional consume and throughput compatible at any concurrency. Keep the
+      chaining actor on a dedicated `TASKQ_MAX_CONCURRENCY=1` worker only when the registered
+      LOOP-scope connection carries session state (`SET ROLE`, `search_path`, an RLS-driving
+      GUC) that the transactional writes must inherit — on the per-slot path the actor's writes
+      run on fresh slot connections that never carried that session state — or to keep the
+      connection budget minimal (no `max_concurrency + 1` slot pool).
 - For a *self*-continuing poll loop (same job comes back), `raise Snooze(delay)` instead of
   enqueueing a successor — see [§7](#7-waiting-politely-rate-limits-snooze-retryafter-retry-after).
 
@@ -603,7 +618,7 @@ See [jobs-clients.md](jobs-clients.md) for the full tradeoff table.
 | Mechanism | Semantics | Use when |
 |---|---|---|
 | `idempotency_key` (+ `idempotency_scope`) | **Exact.** DB unique index; duplicates return the existing job, no error | re-enqueue after failure/crash; exactly-once *scheduling* |
-| `unique_for` + `identity_key` | **Windowed, best-effort.** Advisory-lock preflight; concurrent enqueues may both insert but only one runs | suppressing duplicate *triggers* inside a freshness window |
+| `unique_for` + `identity_key` | **Windowed, single-flight.** A transaction-scoped advisory lock serializes the preflight-then-insert per identity on pool and bare-caller connections alike, so concurrent enqueues dedupe against the winner's row | suppressing duplicate *triggers* inside a freshness window |
 | `singleton=True` | One active job per actor | "never two of me at once" (mind the cron interaction below) |
 
 **Idempotency-key discipline** — every rule below was learned from a production incident:
@@ -945,8 +960,10 @@ and bounded fan-out per job (chunk sizes in the hundreds, not the tens of thousa
 
 Ship-ready alert rules for the metrics above exist in the repo and are ready to import:
 [`src/taskq/contrib/prometheus/rules.yaml`](https://github.com/AZX-PBC-OSS/TaskQ/blob/main/src/taskq/contrib/prometheus/rules.yaml)
-(9 rules: queue depth, heartbeat misses, crashed-job rate, abandoned jobs, lock TTL, leader
-split-brain, dispatch latency, progress failures, disabled cron) and the equivalent PrometheusRule
+(17 rules: queue depth, heartbeat misses, crashed-job rate, abandoned jobs, lock TTL, leader
+split-brain, dispatch latency, progress failures, disabled cron, scheduled-backlog growth,
+promotion stall, sweep timeouts, sweep degraded tier, maintenance-lock contention, rate-limit
+dependency outage, cron lock contention, expired-lease zombies) and the equivalent PrometheusRule
 CRD at `src/taskq/contrib/kubernetes/prometheus_rule.yaml`. Importing them is not enough — make
 sure something **scrapes** `/jobs/health/metrics` (see
 [deployment.md — Prometheus scrape](deployment.md#observability-setup)).
@@ -996,7 +1013,7 @@ The condensed "know this before your first incident" list. Each row links to the
 | `TASKQ_MIGRATE_ON_START=true` expected to run in the worker | warning `migrate-on-start-ignored-by-worker` | run migrations in a pre-deploy job / admin UI ([deployment.md](deployment.md#migration-strategy)) |
 | `taskq queues set-max-concurrent` changed, nothing happened | cap unchanged | queue caps are read at worker startup — restart workers |
 | `@actor(max_concurrent=...)` added in code, no effect | `actor-config-capacity-override` log | stored `actor_config` wins; NULL = uncapped — audit with `taskq actor-config list` ([§3](#capacity-ownership-the-seed-only-trap)) |
-| Actor's `queue`/`metadata` changed after first registration | worker refuses to boot (`ActorConfigDriftList`) | two-step move or one-boot `TASKQ_FORCE_UPDATE_ACTOR_CONFIG` ([§3](#capacity-ownership-the-seed-only-trap)) |
+| Actor's `metadata` changed after first registration | worker refuses to boot (`ActorConfigDriftList`) | one-boot `TASKQ_FORCE_UPDATE_ACTOR_CONFIG` ([§3](#capacity-ownership-the-seed-only-trap)); a `queue` change is a move, not drift — `taskq actor-config move-queue` |
 | `.env` files expected to lose to (or beat) process env | config resolves "backwards" | dotenvmodel 1.x: **process env beats `.env`** unless `DOTENV_OVERRIDE=true` — [configuration.md](configuration.md); and mind the loading CWD |
 | Actor registry passed as a generator (or generated actors missing from it) | zero/n actors registered | pass a mapping; test that every actor name is in the registry — [workers.md — Actor registry](workers.md#actor-registry) |
 
@@ -1007,7 +1024,7 @@ The condensed "know this before your first incident" list. Each row links to the
 | No `start_to_close` anywhere; an actor hangs | slot held forever | set `TASKQ_DEFAULT_START_TO_CLOSE` + per-actor overrides ([§2](#2-timeouts-start_to_close-and-schedule_to_close)) |
 | Expecting `schedule_to_close` to kill a running attempt | long attempt survives past deadline | it only gates *future* dispatches ([§2](#2-timeouts-start_to_close-and-schedule_to_close)) |
 | `start_to_close` expected to kill a sync actor's thread | job marked timed out, side effects continue anyway | sync actors keep running — poll `ctx.should_abort()` ([actors.md](actors.md#sync-actors)) |
-| `heartbeat_timeout` set at enqueue | nothing changes | currently stored but not enforced ([§2](#2-timeouts-start_to_close-and-schedule_to_close)) |
+| `heartbeat_timeout` set below one heartbeat interval | healthy jobs reclaimed on a single missed beat | size it `>= 2x` `TASKQ_HEARTBEAT_INTERVAL` — the per-job analogue of the `lock_lease >= 4 x heartbeat_interval` invariant ([§2](#2-timeouts-start_to_close-and-schedule_to_close)) |
 | Retry window shorter than routine provider blips | terminal exhaustion on an ordinary 5xx | fewer attempts, longer `base` ([§6](#6-classifying-failures-terminal-retryable-transient)) |
 | Snoozing finalizer with a tight `time_budget` | `DeadlineExceeded` mid-batch | size the budget to batch duration + retries; `time_budget` requires `kind="indefinite"` ([§5](#5-fan-out-at-scale-chunks-cursors-idempotency)) |
 | `max_retry_backoff` raised, long backoffs still capped | retries at 24 h ceiling | the ceiling is `min(policy.cap, TASKQ_MAX_RETRY_BACKOFF)` ([retries.md](retries.md#3-backoff-algorithms)) |

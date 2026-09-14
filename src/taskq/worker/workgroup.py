@@ -26,6 +26,7 @@ Config format (TOML)::
     queues = ["default"]
     max_concurrency = 8
     poll_interval = 0.5
+    pg_credential_provider = "infra.identity:pg_credentials"
 
     [workers.health]
     enabled = true
@@ -33,6 +34,12 @@ Config format (TOML)::
     stale_after = 60
     startup_grace = 15.0
     consecutive_failure_limit = 3
+
+A ``pg_credential_provider`` set at the ``[defaults]`` level applies to
+every worker, and TOML has no per-worker ``null`` — a worker cannot opt
+out of a defaults-level provider, so a workgroup mixing provider-backed
+and provider-less workers must set the field per worker instead of in
+``[defaults]``.
 """
 
 from __future__ import annotations
@@ -101,6 +108,34 @@ wrong.
 """
 
 
+# ── Child health socket path ──────────────────────────────────────────────
+
+
+def _health_socket_path(name: str, instance_id: UUID) -> str:
+    """The child worker's mandatory health socket path.
+
+    The single construction of the path: both the spawn command line and
+    the config validator's worker-name budget derive from it, so the
+    budget and the built path cannot drift apart.
+    """
+    return f"/tmp/taskq_health_{name}_{instance_id}.sock"  # noqa: S108  # Why: workgroup-child socket files live in /tmp — the shortest prefix that keeps the full path inside every platform's AF_UNIX budget; handed to the child via --health-socket-path.
+
+
+_SUN_PATH_BUDGET: int = 104 - 1
+"""Usable ``sockaddr_un.sun_path`` chars on the tightest supported
+platform (macOS/BSD: 104 bytes including the NUL terminator). Budgeted
+for the tightest platform rather than the local one — a config authored
+on a Linux host (107 usable chars) must still bind on a macOS deploy."""
+
+
+_MAX_WORKER_NAME_LEN: int = _SUN_PATH_BUDGET - len(_health_socket_path("", UUID(int=0)))
+"""Longest worker name whose health socket path still binds on every
+supported platform. With the name empty the path is exactly its fixed
+overhead — prefix, separator, instance-id uuid, suffix — so the name
+budget is the platform budget minus that overhead, derived from the real
+construction rather than restated beside it."""
+
+
 # ── Config model ──────────────────────────────────────────────────────────
 
 
@@ -149,6 +184,7 @@ class WorkerSpec:
     max_concurrency: int = 8
     worker_group: str = "default"
     force_update_actor_config: bool = False
+    pg_credential_provider: str | None = None  # module:attr — forwarded to the child CLI
     stream_limit: int = _STREAM_LIMIT  # per-line stdout/stderr buffer (bytes)
     health: WorkerHealthConfig = field(default_factory=WorkerHealthConfig)
 
@@ -162,6 +198,8 @@ class WorkerSpec:
         args.extend(["--worker-group", self.worker_group])
         if self.force_update_actor_config:
             args.append("--force-update-actor-config")
+        if self.pg_credential_provider is not None:
+            args.extend(["--pg-credential-provider", self.pg_credential_provider])
         return args
 
 
@@ -239,6 +277,9 @@ class WorkgroupConfig:
                             defaults.get("force_update_actor_config", False),
                         )
                     ),
+                    pg_credential_provider=_optional_str(
+                        w, "pg_credential_provider", defaults.get("pg_credential_provider")
+                    ),
                     stream_limit=int(
                         w.get("stream_limit", defaults.get("stream_limit", _STREAM_LIMIT))
                     ),
@@ -257,6 +298,14 @@ def _require_list_str(cfg: dict[str, Any], key: str, fallback: list[str]) -> lis
     if not isinstance(val, list) or not all(isinstance(v, str) for v in val):  # type: ignore[arg-type]  # Why: tomllib returns Any; list check above ensures val is iterable.
         raise ValueError(f"{key!r} must be a list of strings, got {val!r}")
     return val  # type: ignore[return-value]  # Why: val is narrowed to list[str] by the isinstance checks above, but pyright cannot propagate the element-type narrowing through all().
+
+
+def _optional_str(cfg: dict[str, Any], key: str, fallback: str | None) -> str | None:
+    """Extract an optional str from config or fallback; validate the type."""
+    val: Any = cfg.get(key, fallback)
+    if val is not None and not isinstance(val, str):
+        raise ValueError(f"{key!r} must be a string, got {val!r}")
+    return val
 
 
 def load_workgroup_config(path: Path) -> WorkgroupConfig:
@@ -290,8 +339,32 @@ def _validate_config(cfg: WorkgroupConfig) -> None:
         )
 
     for w in cfg.workers:
-        if len(w.name) > 64:
-            raise ValueError(f"worker[{w.name!r}].name must be <= 64 chars (socket path limit)")
+        if len(w.name) > _MAX_WORKER_NAME_LEN:
+            raise ValueError(
+                f"worker[{w.name!r}].name must be <= {_MAX_WORKER_NAME_LEN} chars: the "
+                "child's health socket path (fixed-length prefix + name + instance-id "
+                f"uuid + suffix) must stay within the {_SUN_PATH_BUDGET}-char AF_UNIX "
+                "sun_path budget of the tightest supported platform"
+            )
+        if not w.queues:
+            raise ValueError(
+                f"worker[{w.name!r}].queues must list at least one queue — a worker "
+                "that consumes no queue dispatches nothing; omit the key to fall back "
+                "to [defaults].queues, or ['default'] when no default is set"
+            )
+        if w.pg_credential_provider is not None and (
+            not w.pg_credential_provider or ":" not in w.pg_credential_provider
+        ):
+            # A provider ref the child CLI could never resolve must die
+            # HERE, at load: forwarded as-is, the child fails at
+            # import-ref resolution before it can register a heartbeat,
+            # and the supervisor restart-loops it against the burst budget
+            # with the real reason buried in the child's stderr stream.
+            raise ValueError(
+                f"worker[{w.name!r}].pg_credential_provider must be a "
+                "module:attr reference (e.g. 'infra.identity:pg_credentials') "
+                f"when present, got {w.pg_credential_provider!r}"
+            )
         if w.poll_interval <= 0:
             raise ValueError(f"worker[{w.name!r}].poll_interval must be > 0, got {w.poll_interval}")
         if w.max_concurrency <= 0:
@@ -483,7 +556,7 @@ async def _spawn_child(
     child.instance_id = new_uuid()
     child.spawned_at = time.monotonic()
     child.health_failures = 0
-    health_path = f"/tmp/taskq_health_{child.spec.name}_{child.instance_id}.sock"  # noqa: S108  # Why: temp socket path for workgroup children; passed via --health-socket-path CLI arg.
+    health_path = _health_socket_path(child.spec.name, child.instance_id)
 
     cmd = [
         sys.executable,

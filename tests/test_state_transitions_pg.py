@@ -88,7 +88,9 @@ class TestFullLifecycle:
         assert dispatched[0].status == "running"
         assert dispatched[0].attempt == 1
 
-        result = await backend.mark_snoozed(job_id, worker_id, delay=timedelta(seconds=30))
+        result = await backend.mark_snoozed(
+            job_id, worker_id, delay=timedelta(seconds=30), attempt=1
+        )
         assert result == "scheduled"
 
         async with deps.worker_pool.acquire() as conn:
@@ -97,7 +99,9 @@ class TestFullLifecycle:
             )
         assert row is not None
         assert row["status"] == "scheduled"
-        assert row["attempt"] == 1
+        # The snooze refunds the claim's attempt increment: the row
+        # dispatched at attempt 1 returns to its pre-claim 0.
+        assert row["attempt"] == 0
 
         async with deps.worker_pool.acquire() as conn:
             # 5s margin, not 1s — see TestPollingLifecycle's identical fix
@@ -119,9 +123,10 @@ class TestFullLifecycle:
         )
         assert len(dispatched2) == 1
         assert dispatched2[0].status == "running"
-        assert dispatched2[0].attempt == 2
+        # The re-dispatch re-claims the refunded increment: 0 → 1.
+        assert dispatched2[0].attempt == 1
 
-        ok = await backend.mark_succeeded(job_id, worker_id, result={"ok": True})
+        ok = await backend.mark_succeeded(job_id, worker_id, result={"ok": True}, attempt=1)
         assert ok is True
 
         async with deps.worker_pool.acquire() as conn:
@@ -137,7 +142,9 @@ class TestFullLifecycle:
         assert row["finished_at"] is not None
 
         state_changes = [e for e in events if e["kind"] == "state_change"]
-        assert len(state_changes) == 5
+        # The snooze's row transition writes no event (a deferral, not an
+        # execution): dispatch, wake promotion, re-dispatch, terminal exit.
+        assert len(state_changes) == 4
 
         transitions: list[tuple[str | None, str | None]] = []
         for e in state_changes:
@@ -145,7 +152,6 @@ class TestFullLifecycle:
             transitions.append((detail.get("from_state"), detail.get("to_state")))
         expected_sequence = [
             ("pending", "running"),
-            ("running", "scheduled"),
             ("scheduled", "pending"),
             ("pending", "running"),
             ("running", "succeeded"),
@@ -184,7 +190,7 @@ class TestConcurrentTransitions:
             name="concurrent-cancel",
         )
         snooze_task = asyncio.create_task(
-            backend.mark_snoozed(job_id, worker_id, delay=timedelta(seconds=30)),
+            backend.mark_snoozed(job_id, worker_id, delay=timedelta(seconds=30), attempt=1),
             name="concurrent-snooze",
         )
 
@@ -260,7 +266,9 @@ class TestStateTransitionEquivalence:
             mem_worker_id, ["default"], limit=1, lock_lease=_LOCK_LEASE
         )
         assert len(dispatched) == 1
-        ok = await mem_backend.mark_succeeded(mem_job_id, mem_worker_id, result={"ok": True})
+        ok = await mem_backend.mark_succeeded(
+            mem_job_id, mem_worker_id, result={"ok": True}, attempt=1
+        )
         assert ok is True
 
         mem_transitions: list[tuple[str, str]] = []
@@ -277,7 +285,9 @@ class TestStateTransitionEquivalence:
             pg_worker_id, ["default"], limit=1, lock_lease=_LOCK_LEASE
         )
         assert len(dispatched) == 1
-        ok = await pg_backend.mark_succeeded(pg_job_id, pg_worker_id, result={"ok": True})
+        ok = await pg_backend.mark_succeeded(
+            pg_job_id, pg_worker_id, result={"ok": True}, attempt=1
+        )
         assert ok is True
 
         async with deps.worker_pool.acquire() as conn:
@@ -401,7 +411,9 @@ class TestPollingLifecycle:
         )
         assert len(dispatched) == 1
 
-        result = await backend.mark_snoozed(job_id, worker_id, delay=timedelta(seconds=30))
+        result = await backend.mark_snoozed(
+            job_id, worker_id, delay=timedelta(seconds=30), attempt=1
+        )
         assert result == "scheduled"
 
         async with deps.worker_pool.acquire() as conn:
@@ -424,11 +436,13 @@ class TestPollingLifecycle:
         )
         assert len(dispatched2) == 1
 
-        ok = await backend.mark_succeeded(job_id, worker_id, result={"ok": True})
+        ok = await backend.mark_succeeded(job_id, worker_id, result={"ok": True}, attempt=1)
         assert ok is True
 
         expected_transitions = [
-            ("running", "scheduled"),
+            # The snooze's running→scheduled row transition writes no
+            # event; the sequence records the wake promotion and the
+            # terminal exit only.
             ("scheduled", "pending"),
             ("running", "succeeded"),
         ]

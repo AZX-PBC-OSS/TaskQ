@@ -144,6 +144,9 @@ async def test_pg_terminal_rejects_empty_result_bytes() -> None:
 
 async def test_testing_terminal_rejects_empty_result_bytes() -> None:
     backend = InMemoryBackend(clock=FakeClock(_START))
+    # Register the actor so dispatch_batch finds it (mirrors PG's
+    # actor_config requirement — candidates come FROM the registry).
+    backend.register_actor_config(actor="test_actor")
     args = EnqueueArgs(
         id=new_job_id(),
         actor="test_actor",
@@ -211,6 +214,9 @@ async def test_in_memory_enqueue_stores_pg_jsonb_round_trip_values(
     payload and metadata read back exactly as PG's jsonb column reads
     them."""
     backend = InMemoryBackend(clock=FakeClock(_START))
+    # Register the actor so dispatch_batch finds it (mirrors PG's
+    # actor_config requirement — candidates come FROM the registry).
+    backend.register_actor_config(actor="test_actor")
     args = EnqueueArgs(
         id=new_job_id(),
         actor="test_actor",
@@ -239,6 +245,9 @@ async def test_in_memory_terminal_progress_merge_stores_pg_jsonb_round_trip_valu
     binds — actor-supplied progress values read back exactly as PG reads
     them."""
     backend = InMemoryBackend(clock=FakeClock(_START))
+    # Register the actor so dispatch_batch finds it (mirrors PG's
+    # actor_config requirement — candidates come FROM the registry).
+    backend.register_actor_config(actor="test_actor")
     args = EnqueueArgs(
         id=new_job_id(),
         actor="test_actor",
@@ -262,6 +271,7 @@ async def test_in_memory_terminal_progress_merge_stores_pg_jsonb_round_trip_valu
             "v": UUID("12345678-1234-5678-1234-567812345678"),
             "n": float("nan"),
         },
+        attempt=1,
     )
     assert ok is True
 
@@ -279,6 +289,9 @@ async def test_in_memory_snooze_metadata_update_stores_pg_jsonb_round_trip_value
     Python objects, or the one snooze path reads back differently from
     production."""
     backend = InMemoryBackend(clock=FakeClock(_START))
+    # Register the actor so dispatch_batch finds it (mirrors PG's
+    # actor_config requirement — candidates come FROM the registry).
+    backend.register_actor_config(actor="test_actor")
     args = EnqueueArgs(
         id=new_job_id(),
         actor="test_actor",
@@ -307,6 +320,7 @@ async def test_in_memory_snooze_metadata_update_stores_pg_jsonb_round_trip_value
             "v": UUID("12345678-1234-5678-1234-567812345678"),
             "n": float("nan"),
         },
+        attempt=1,
     )
     assert ok == "scheduled"
 
@@ -333,6 +347,9 @@ async def test_in_memory_snooze_metadata_update_with_nul_raises_value_error() ->
     Before the round-trip landed here, a NUL value was stored silently —
     a result PG never could hold."""
     backend = InMemoryBackend(clock=FakeClock(_START))
+    # Register the actor so dispatch_batch finds it (mirrors PG's
+    # actor_config requirement — candidates come FROM the registry).
+    backend.register_actor_config(actor="test_actor")
     args = EnqueueArgs(
         id=new_job_id(),
         actor="test_actor",
@@ -354,6 +371,7 @@ async def test_in_memory_snooze_metadata_update_with_nul_raises_value_error() ->
             worker_id,
             timedelta(seconds=5),
             metadata_update={"k": "a\x00b"},
+            attempt=1,
         )
 
     row = await backend.get(claimed[0].id)
@@ -403,6 +421,9 @@ async def test_in_memory_attempt_metadata_with_nul_raises_value_error() -> None:
     before the INSERT), so the mirror's round-trip must reject at the
     same boundary and store nothing."""
     backend = InMemoryBackend(clock=FakeClock(_START))
+    # Register the actor so dispatch_batch finds it (mirrors PG's
+    # actor_config requirement — candidates come FROM the registry).
+    backend.register_actor_config(actor="test_actor")
     args = EnqueueArgs(
         id=new_job_id(),
         actor="test_actor",

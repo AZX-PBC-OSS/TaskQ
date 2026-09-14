@@ -12,6 +12,7 @@ Test seam — _local_queue_seed injects jobs into consumer stubs.
 
 import asyncio
 import contextlib
+import json
 from collections.abc import Callable, Generator
 from contextlib import ExitStack, contextmanager
 from typing import cast
@@ -567,6 +568,34 @@ async def test_register_worker_insert_shape(settings: WorkerSettings) -> None:
     assert params[3] == ["default"]
 
 
+async def test_register_worker_metadata_carries_binding_concurrency(
+    settings: WorkerSettings,
+) -> None:
+    """The workers-row metadata reports the capacity the worker runs at.
+
+    ``settings.max_concurrency`` sizes ``local_queue`` and bounds every
+    dispatch, so the registration write carries it in the row's metadata
+    next to ``notify_enabled`` — a fleet's effective parallelism stays
+    queryable from the database (good_job reports ``max_threads`` in its
+    process rows; sidekiq heartbeats ``concurrency``).
+    """
+    mock_conn = AsyncMock()
+    mock_pool = MagicMock()
+    mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
+    mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=None)
+
+    await register_worker(mock_pool, settings)
+
+    call_args = mock_conn.execute.call_args
+    params = call_args[0][1:]
+    metadata: dict[str, object] = json.loads(params[6])
+    assert metadata["max_concurrency"] == settings.max_concurrency == 2, (
+        "the metadata must track settings.max_concurrency — the number that "
+        f"sizes local_queue and bounds every dispatch; wrote {metadata}"
+    )
+    assert "notify_enabled" in metadata
+
+
 async def test_register_worker_mocked_timeout_raises(settings: WorkerSettings) -> None:
     """register_worker raises on pool acquire timeout."""
     mock_pool = MagicMock()
@@ -679,6 +708,7 @@ async def test_local_queue_seed_jobs_consumed(settings: WorkerSettings) -> None:
         backend: Backend,
         worker_id: UUID,
         stub_work_timeout: float = 60.0,
+        slot_freed_event: asyncio.Event | None = None,
     ) -> None:
         while not shutdown_event.is_set():
             try:

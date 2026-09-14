@@ -1550,7 +1550,9 @@ class TestConsumerVsLeaderAttemptRowShape:
         dispatched_started_at = dispatched_row["started_at"] if dispatched_row else None
         assert dispatched_started_at is not None
 
-        result = await backend.mark_snoozed(JobId(job_id), worker_id, timedelta(seconds=30))
+        result = await backend.mark_snoozed(
+            JobId(job_id), worker_id, timedelta(seconds=30), attempt=1
+        )
         assert result == "failed"
 
         async with deps.worker_pool.acquire() as conn:

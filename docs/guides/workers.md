@@ -226,8 +226,10 @@ orders candidates. The mode is resolved by querying the `queues` table at dispat
 taskq queues set-mode multi round_robin
 ```
 
-The change takes effect on the next dispatch cycle -- no worker restart needed
-(`_resolve_queue_modes` re-reads the table every dispatch batch). Queues with no
+The change takes effect within the queue-mode cache's 5 s TTL -- no worker
+restart needed (dispatch serves queue modes from a per-worker TTL cache; the
+process running `set-mode` invalidates its own caches immediately, and each
+worker picks the flip up on its next cache refill). Queues with no
 row default to `strict_fifo`, and nothing in TaskQ creates rows, so a queue is
 `strict_fifo` until you run this command.
 
@@ -337,7 +339,7 @@ worker_pool_size = int(max_concurrency * 1.5)
 
 The 1.5 factor provides headroom for terminal writes that occur just after a job finishes while the slot is being recycled. This pool is used for worker-path Postgres writes (`mark_succeeded`, `mark_failed_or_retry`, `mark_cancelled`, `mark_abandoned`). It may route through PgBouncer in transaction mode; see [PgBouncer compatibility](#pgbouncer-compatibility).
 
-When a LOOP-scope `asyncpg.Connection` is registered and `max_concurrency > 1`, the setting also sizes a fourth pool — the per-slot transaction pool (`max_concurrency + 1` direct connections, fully warmed at boot) that carries TaskQ's own transactional writes (the terminal write, transactional sub-enqueues). It is always direct-DSN and worker-internal: there is deliberately no `WorkerConnections` slot for it, and a worker that cannot open it fails to boot.
+When a LOOP-scope `asyncpg.Connection` is registered and `max_concurrency > 1`, the setting also sizes a fourth pool — the per-slot transaction pool (`max_concurrency + 1` direct connections, fully warmed at boot) that carries every per-job transaction: the actor's own writes (the actor receives its slot connection by injection), the terminal write, and transactional sub-enqueues. It is always direct-DSN and worker-internal: there is deliberately no `WorkerConnections` slot for it, and a worker that cannot open it fails to boot.
 
 `dispatcher_pool_size` (default `4`) and `heartbeat_pool_size` (default `4`) are independent pools; both always use the direct DSN.
 
@@ -363,7 +365,7 @@ Each consumer loop iteration follows this sequence:
 
 6. **Rate-limit / reservation acquire.** If the actor declares `rate_limits` or `reservations` and a `RateLimitRegistry` is registered at LOOP scope, `acquire_for_actor` is called. On denial (`ReservationUnavailable`), the job is snoozed and the actor is not invoked.
 
-7. **Actor invocation.** The actor function is called with `(payload, ctx, **di_kwargs)`. If a LOOP-scope `asyncpg.Connection` is registered, the invocation and `mark_succeeded_with_conn` are wrapped in a single transaction, making the job status update and any sub-enqueues transactional. On a single-slot worker (`TASKQ_MAX_CONCURRENCY=1`) that transaction runs on the registered LOOP-scope connection; at higher concurrency the worker opens a per-slot transaction pool and each job transacts on its own slot connection (the registered connection is still what actors receive by injection).
+7. **Actor invocation.** The actor function is called with `(payload, ctx, **di_kwargs)`. If a LOOP-scope `asyncpg.Connection` is registered, the invocation and `mark_succeeded_with_conn` are wrapped in a single transaction, making the job status update and any sub-enqueues transactional. On a single-slot worker (`TASKQ_MAX_CONCURRENCY=1`) that transaction runs on the registered LOOP-scope connection; at higher concurrency the worker opens a per-slot transaction pool, each job transacts on its own slot connection, and the actor receives that same slot connection by injection — so the actor's own writes join the transaction and concurrent slots never share a connection.
 
 8. **Result / exception handling.** See [Retry and backoff](#retry-and-backoff). All terminal Postgres writes are wrapped in `asyncio.shield`.
 
@@ -616,7 +618,8 @@ Probe these from a Kubernetes sidecar or `taskq health live` / `taskq health rea
 At startup, after `register_worker`, the worker calls `sync_actor_config` for every registered actor. This writes (or updates) rows in `{schema}.actor_config`, and treats the row's fields as two different kinds of state:
 
 - **Capacity fields** — `max_concurrent`, `max_pending`, `result_ttl` — are **operator-owned**. The `@actor(...)` literal only *seeds* the value the first time a row is created for that actor. On every subsequent startup, the stored value wins: a registered literal that differs from the stored value is expected (an operator tuned it), is never an error, and is logged at info level as `actor-config-capacity-override`. The UPSERT never writes these columns back on conflict, so nothing a worker does at startup can clobber an operator's change.
-- **Structural fields** — `queue`, `metadata` — still guard against real bugs (e.g. a stale pod routing an actor to the wrong queue) and behave exactly as before:
+- **The queue assignment** is operator-owned the same way — moved by `taskq actor-config move-queue`, never by a boot. A registered literal that differs from the stored queue is the rolling-deploy window of a move (or a literal that has not followed the assignment yet): the worker logs `actor-config-queue-override` at WARNING and boots, and the UPSERT never writes the column back on conflict, so a stale-literal pod cannot undo the move. The warning is louder than the capacity one on purpose: the cron leader's fires follow the stored queue while producers enqueue by their own literal, so a persistent mismatch means the fleet's two routing halves disagree — reconcile with `taskq actor-config move-queue` or by deploying the matching literal.
+- **Metadata** still guards against real bugs (no operator surface can move it, so any mismatch is one) and behaves exactly as before:
   - **`force=False` (default):** a mismatch raises `ActorConfigDriftList` and the worker refuses to start. The CLI prints the drift details and instructs the operator to re-run with `--force-update-actor-config`.
   - **`force=True`:** logs `actor-config-drift-overwrite` at ERROR for each drifted field and overwrites the stored value.
 
@@ -668,7 +671,15 @@ Clearing a field (`--clear-max-concurrent` etc.) writes NULL. For `max_concurren
 
 **Upgrading note.** Before this change, stored capacity always matched the last deployed literal (any drift blocked startup, or `--force-update-actor-config` rewrote it), so existing deployments upgrade seamlessly: enforcement simply continues from the stored values. Do not run `taskq actor-config set` until every pod runs the new version — an old-version pod that *restarts* mid-rollout still crashes on capacity drift.
 
-The fields checked for structural drift are: `queue` and `metadata`. Actor name changes require a migration; rename detection is not implemented.
+**Moving an actor between queues.** One operator action, two phases:
+
+```shell
+taskq actor-config move-queue mailer email_tier
+```
+
+The actor's pending/scheduled backlog is rewritten onto the target queue as bounded committed batches, then one final transaction locks the stored assignment, carries the old queue's `queues` row (mode + `max_concurrent`) to the target when the target has no row of its own, and flips the assignment — so old-queue strays drain through the target's consumers, and a crash mid-drain re-runs cleanly. Running jobs finish where they were claimed; other actors on the old queue are untouched; cron fires follow the moved assignment from the flip on. Deploy the matching `@actor(queue=...)` literal before, during, or after the move — in any order — and keep workers consuming the old queue until every producer runs the new literal (stale producers keep enqueueing to it).
+
+The fields checked for structural drift are: `metadata`. Actor name changes require a migration; rename detection is not implemented.
 
 ---
 
@@ -680,12 +691,14 @@ Multiple worker processes against the same database are fully supported. Each pr
 
 **Single leader.** Only one worker holds the `taskq:maintenance_leader:<schema>` advisory lock at a time. Other workers retry election on every `heartbeat_interval` tick. If the leader pod dies, the lock is released when the connection closes, and another worker wins the next election.
 
-**Rolling deploy gotcha.** If old and new worker versions declare different `queue` or `metadata` for the same actor name, new worker pods will fail startup with `ActorConfigDriftList`. Best practice for rolling deploys:
+**Rolling deploy gotcha.** Old and new worker versions that declare different `queue` literals for the same actor name both boot: each logs `actor-config-queue-override` (the old side) or matches (the new side), and the stored assignment — the newest one, moved by `taskq actor-config move-queue` — stays authoritative throughout the rollout. Make sure workers consume both queues for the duration of the window and drop the old queue from `TASKQ_QUEUES` only after every producer runs the new literal and its backlog has drained.
 
-1. Deploy the first new pod with `--force-update-actor-config` (or `TASKQ_FORCE_UPDATE_ACTOR_CONFIG=true`). This overwrites the stored structural config and logs the change at ERROR with `force=true`.
+A rolling deploy that changes `metadata` for the same actor name still trips the startup guard: new pods fail with `ActorConfigDriftList`. Best practice:
+
+1. Deploy the first new pod with `--force-update-actor-config` (or `TASKQ_FORCE_UPDATE_ACTOR_CONFIG=true`). This overwrites the stored metadata and logs the change at ERROR with `force=true`.
 2. Deploy all remaining pods without the flag. By the time they start, the stored config already matches the new registration, so no drift is detected.
 
-Do not leave `--force-update-actor-config` set permanently. It allows any future structural drift (`queue` / `metadata`) to be silently overwritten, removing the startup guard that protects against accidental mis-routing.
+Do not leave `--force-update-actor-config` set permanently. It allows any future metadata drift to be silently overwritten, removing the startup guard that protects against accidental mis-deploys.
 
 A rolling deploy that only changes `max_concurrent`, `max_pending`, or `result_ttl` in the `@actor(...)` decorator needs none of this — those fields no longer participate in drift detection at all. Old and new pods can register different literals for the same actor simultaneously without either one failing to start; the stored row (whatever it currently is) stays authoritative throughout the rollout. Use `taskq actor-config set` if you actually want the new literal to take effect.
 
@@ -887,7 +900,7 @@ All variables use the `TASKQ_` prefix. `WorkerSettings` extends `TaskQSettings`;
 | `TASKQ_WORKER_GROUP` | `str` | `default` | Consumer group name on CONSUMER spans |
 | `TASKQ_LOG_FORMAT` | `str` | `json` | `json` or `console` |
 | `TASKQ_LOG_LEVEL` | `str` | `INFO` | Root logger level |
-| `TASKQ_FORCE_UPDATE_ACTOR_CONFIG` | `bool` | `False` | Overwrite drifted actor-config rows without raising; see [ActorConfig sync](#actorconfig-sync) |
+| `TASKQ_FORCE_UPDATE_ACTOR_CONFIG` | `bool` | `False` | Overwrite metadata-drifted actor-config rows without raising (the queue assignment and capacity fields are never boot-rewritten); see [ActorConfig sync](#actorconfig-sync) |
 | `TASKQ_PRUNE_SCHEDULE_UTC` | `str` | `03:00` | Daily fire time for the prune sweep (Sweep 5) in `HH:MM` UTC. Ignored when `TASKQ_PRUNE_CRON_EXPR` is set. |
 | `TASKQ_PRUNE_CRON_EXPR` | `str \| None` | `None` | Full 5-field cron for the prune sweep; overrides `TASKQ_PRUNE_SCHEDULE_UTC`. |
 | `TASKQ_PRUNE_BATCH_SIZE` | `int` | `10000` | Rows per prune CTE batch. |

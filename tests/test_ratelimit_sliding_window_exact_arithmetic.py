@@ -69,6 +69,15 @@ async def test_gcra_denied_by_count_at_allow_at_boundary_retry_after_is_exact() 
     Why the boundary instant: the branch guard is ``now >= allow_at``.  Any
     later instant satisfies ``>`` as well, so only ``now == allow_at`` pins
     the ``>=`` rather than merely the branch body.
+
+    This instant is also where the twin deliberately DIVERGES from the
+    deployed backends: pure GCRA (the vendored redis-gcra Lua, and the PG
+    fallback) admits here — this would be the ``limit + 1``-th admission
+    inside one window, which GCRA's delay tolerance allows — while the
+    twin's timestamp-log guard denies it.  The strict direction is the
+    safe one: the twin can under-admit relative to its configured
+    ``limit``, never exceed it, and the deployed paths' admission is
+    correct-upstream behavior, not a defect this twin is "fixing".
     """
     sw = _gcra("gcra_count")
     clock = FakeClock(_START)
@@ -82,6 +91,13 @@ async def test_gcra_denied_by_count_at_allow_at_boundary_retry_after_is_exact() 
     assert denied.remaining == 0.0
     # oldest log entry is t=0: 0 + 1000 - 250 = 750 ms.
     assert denied.retry_after == timedelta(milliseconds=750)
+    # The strictness property itself, on the observable state: the
+    # in-window admission count still sits at exactly ``limit`` — a
+    # pure-GCRA path would have just admitted a (limit+1)-th cell and
+    # left the bucket one deeper than its configured bound.
+    state = await sw.peek(clock=clock)
+    assert state.is_exhausted is True
+    assert state.remaining == 0.0
 
 
 # ── GCRA peek: exhausted state ───────────────────────────────────────

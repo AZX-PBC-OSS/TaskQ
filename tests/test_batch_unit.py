@@ -15,25 +15,31 @@ import pytest
 
 from taskq._dsn import dsn_host
 from taskq._ids import new_uuid
-from taskq.batch import wait_for_batch
+from taskq.batch import (
+    _WAIT_FOR_BATCH_EXCLUDED_SQL,
+    _WAIT_FOR_BATCH_SQL,
+    wait_for_batch,
+)
 from taskq.exceptions import Snooze
 
 
 class FakeRecord:
-    def __init__(self, data: dict[str, int]) -> None:
+    def __init__(self, data: dict[str, int | None]) -> None:
         self._data = data
 
-    def __getitem__(self, key: str) -> int:
+    def __getitem__(self, key: str) -> int | None:
         return self._data[key]
 
 
 class FakeConn:
-    def __init__(self, row_data: dict[str, int] | None) -> None:
+    """Models the folded wait_for_batch statement: one fetchrow returns
+    the member counts joined with the batches row, where ``id`` is NULL
+    when no batches row exists."""
+
+    def __init__(self, row_data: dict[str, int | None] | None) -> None:
         self._row_data = row_data
 
     async def fetchrow(self, sql: str, *args: object) -> FakeRecord | None:
-        if "batches" in sql:
-            return None
         if self._row_data is None:
             return None
         return FakeRecord(self._row_data)
@@ -42,10 +48,10 @@ class FakeConn:
 class FakePool(asyncpg.Pool):  # type: ignore[misc]
     """asyncpg.Pool subclass that bypasses the real constructor."""
 
-    def __init__(self, row_data: dict[str, int] | None) -> None:
+    def __init__(self, row_data: dict[str, int | None] | None) -> None:
         self._conn = FakeConn(row_data)
 
-    def acquire(self) -> _PoolCtx:  # pyright: ignore[reportIncompatibleMethodOverride]  # Why: stub returns a minimal context manager; real Pool.acquire returns PoolAcquireContext with a timeout kwarg the tests never use.
+    def acquire(self, timeout: float | None = None) -> _PoolCtx:  # pyright: ignore[reportIncompatibleMethodOverride]  # Why: stub returns a minimal context manager; real Pool.acquire returns PoolAcquireContext. The timeout kwarg is now load-bearing production surface — wait_for_batch bounds every poll's acquire with it (batch.py _POOL_ACQUIRE_TIMEOUT_S) — so the stub accepts and ignores it, mirroring conftest's _FakePool.
         return _PoolCtx(self._conn)
 
 
@@ -88,6 +94,7 @@ async def test_wait_for_batch_raises_snooze_when_in_flight() -> None:
             "crashed": 0,
             "abandoned": 0,
             "in_flight": 2,
+            "id": None,
         }
     )
     with pytest.raises(Snooze):
@@ -104,6 +111,7 @@ async def test_wait_for_batch_returns_status_when_all_terminal() -> None:
             "crashed": 0,
             "abandoned": 0,
             "in_flight": 0,
+            "id": None,
         }
     )
     status = await wait_for_batch(conn, new_uuid(), snooze_via_exception=True)
@@ -124,6 +132,7 @@ async def test_wait_for_batch_empty_batch_returns_complete() -> None:
             "crashed": 0,
             "abandoned": 0,
             "in_flight": 0,
+            "id": None,
         }
     )
     status = await wait_for_batch(conn, new_uuid(), snooze_via_exception=True, on_empty="ok")
@@ -142,6 +151,7 @@ async def test_wait_for_batch_clamps_small_snooze_interval() -> None:
             "crashed": 0,
             "abandoned": 0,
             "in_flight": 1,
+            "id": None,
         }
     )
     with pytest.raises(Snooze) as exc_info:
@@ -156,7 +166,7 @@ async def test_wait_for_batch_clamps_small_snooze_interval() -> None:
 
 async def test_wait_for_batch_polling_path_terminates() -> None:
     """snooze_via_exception=False polls until all children are terminal."""
-    row_data: dict[str, int] = {
+    row_data: dict[str, int | None] = {
         "total": 1,
         "succeeded": 0,
         "failed": 0,
@@ -164,6 +174,7 @@ async def test_wait_for_batch_polling_path_terminates() -> None:
         "crashed": 0,
         "abandoned": 0,
         "in_flight": 1,
+        "id": None,
     }
     conn = FakeConn(row_data)
 
@@ -182,6 +193,7 @@ async def test_wait_for_batch_polling_path_terminates() -> None:
             "crashed": 0,
             "abandoned": 0,
             "in_flight": 0,
+            "id": None,
         }
         await original_sleep(0)
 
@@ -208,6 +220,7 @@ async def test_wait_for_batch_with_pool_acquires_connection() -> None:
             "crashed": 0,
             "abandoned": 0,
             "in_flight": 0,
+            "id": None,
         }
     )
     status = await wait_for_batch(pool, new_uuid(), snooze_via_exception=True)
@@ -232,6 +245,7 @@ async def test_wait_for_batch_pool_polling_path_terminates() -> None:
             "crashed": 0,
             "abandoned": 0,
             "in_flight": 1,
+            "id": None,
         }
     )
     original_sleep = asyncio.sleep
@@ -245,6 +259,7 @@ async def test_wait_for_batch_pool_polling_path_terminates() -> None:
             "crashed": 0,
             "abandoned": 0,
             "in_flight": 0,
+            "id": None,
         }
         await original_sleep(0)
 
@@ -258,3 +273,37 @@ async def test_wait_for_batch_pool_polling_path_terminates() -> None:
         )
     assert status.succeeded == 1
     assert status.is_complete is True
+
+
+# ── Folded poll statement: one statement, one round trip ───────────
+
+
+class TestWaitForBatchFoldedStatement:
+    """The poll statement carries the member counts and the batches row
+    together — the one-round-trip-per-poll contract. The FakeConn above
+    ignores bound arguments, so the parameter contract ($1 containment,
+    $2 the batches row join, $3 the caller-only exclusion) is pinned here
+    against drift a real connection would reject as an argument-count
+    error; pinning the production constant, not a copy, is the
+    test_sweepaudit_bounded_writes precedent."""
+
+    def test_base_statement_is_one_statement_with_row_join(self) -> None:
+        sql = _WAIT_FOR_BATCH_SQL.format(
+            schema="taskq", terminal_status_list="'succeeded','failed'"
+        )
+        assert ";" not in sql
+        assert 'LEFT JOIN "taskq".batches b ON b.id = $2' in sql
+        # The finalizer auto-exclusion resolves from the joined row.
+        assert "fb.finalizer_job_id IS NULL OR j.id <> fb.finalizer_job_id" in sql
+        assert "$3" not in sql
+
+    def test_excluded_statement_binds_the_caller_exclusion_as_third_param(self) -> None:
+        sql = _WAIT_FOR_BATCH_EXCLUDED_SQL.format(
+            schema="taskq", terminal_status_list="'succeeded','failed'"
+        )
+        assert ";" not in sql
+        assert 'LEFT JOIN "taskq".batches b ON b.id = $2' in sql
+        assert "j.id <> $3" in sql
+        # The caller exclusion replaces the finalizer exclusion — one
+        # excluded id either way.
+        assert "fb.finalizer_job_id" not in sql

@@ -18,6 +18,7 @@ import structlog.testing
 
 from taskq._ids import new_job_id, new_uuid
 from taskq.backend._protocol import CancelPhase, JobId, JobRow
+from taskq.backend._sweeps import SweepBatchSizer
 from taskq.backend.statemachine import TERMINAL_STATUSES
 from taskq.settings import WorkerSettings
 from taskq.testing.assertions import (
@@ -268,6 +269,7 @@ def _make_deps(
         HEARTBEAT_INTERVAL=str(heartbeat_interval),
         LOCK_LEASE="2.0",
         WATCHDOG_LOOP_LAG_BUDGET="1.2",
+        WATCHDOG_LOOP_LAG_WARN_BUDGET="0.5",
         MAX_HEARTBEAT_FAILURES="3",
         CANCELLATION_GRACE_PERIOD="0.0",
         CLEANUP_GRACE_PERIOD="0.0",
@@ -1297,6 +1299,12 @@ class _FakeConnForPrune(FakeConn):
 
     async def fetch(self, sql: str, *args: object) -> list[_FakeRecord]:
         self.fetch_calls.append((sql, args))
+        # The batch machinery reads the session's statement_timeout through
+        # fetch() before every batch (SET LOCAL is transaction-scoped, so
+        # the sweep must capture and restore it); the fake answers that
+        # probe itself rather than consuming a scripted batch.
+        if "current_setting" in sql:
+            return [_FakeRecord({"current_setting": "0"})]
         if "actor_config" in sql and self._actor_config_rows is not None:
             return self._actor_config_rows
         if self._batch_index < len(self._batch_rows):
@@ -1618,6 +1626,547 @@ async def test_archive_expiry_loop_gates_on_is_leader() -> None:
     assert not lock_calls, "no advisory lock when not leader"
 
 
+# ── Prune family: bounded, interruptible, retrying batches ──────────
+#
+# The once-a-day prune used to be the one maintenance family outside the
+# repo's bounded-per-transaction discipline: bare while-True drains with
+# no shutdown check (a SIGTERM mid-drain hung MaintenanceLeader's
+# TaskGroup for the whole backlog while holding the prune advisory lock
+# and a pool connection), no per-batch statement timeout or batch-size
+# breaker (a 10 000-row archive CTE under the dispatcher pool's 5 s
+# client command timeout fails every attempt on a loaded PG), and no
+# retry after a failed attempt (the next try was tomorrow's cron fire).
+# These tests pin the three halves of that fix: gate-stopped drains,
+# server-bounded batches with a latching breaker, and the intra-day
+# backoff retry that never runs a second successful prune per day.
+
+
+def _full_batch_record(batch_size: int) -> _FakeRecord:
+    """One aggregate row reporting a full batch — the drain must continue."""
+    return _FakeRecord({"actor": "a", "status": "succeeded", "cnt": batch_size})
+
+
+class _HookedPruneBatchConn(_FakeConnForPrune):
+    """Answers every prune batch with one full batch, invoking *on_batch*
+    first — a backlog no drain can exhaust, with an observation seam at
+    each batch."""
+
+    def __init__(self, *, batch_size: int, on_batch: Callable[[], None]) -> None:
+        super().__init__(batch_rows=[], fetchval_result=True)
+        self._row = [_full_batch_record(batch_size)]
+        self._on_batch = on_batch
+        self.batches = 0
+
+    async def fetch(self, sql: str, *args: object) -> list[_FakeRecord]:
+        if "candidate_ids" in sql:
+            self.batches += 1
+            self._on_batch()
+            return list(self._row)
+        return await super().fetch(sql, *args)
+
+
+class _HookedExpiryBatchConn(_FakeConnForPrune):
+    """The archive-expiry twin of _HookedPruneBatchConn (``expired`` window)."""
+
+    def __init__(self, *, batch_size: int, on_batch: Callable[[], None]) -> None:
+        super().__init__(batch_rows=[], fetchval_result=True)
+        self._row = [_FakeRecord({"status": "succeeded", "cnt": batch_size})]
+        self._on_batch = on_batch
+        self.batches = 0
+
+    async def fetch(self, sql: str, *args: object) -> list[_FakeRecord]:
+        if "expired" in sql:
+            self.batches += 1
+            self._on_batch()
+            return list(self._row)
+        return await super().fetch(sql, *args)
+
+
+async def test_prune_drain_stops_when_gate_closes() -> None:
+    """A drain gate returning False stops the drain between batches:
+    committed batches stay counted, the unbounded remainder is left for
+    the next attempt — a stopped drain is a pause, not a rollback."""
+    conn = _HookedPruneBatchConn(batch_size=10, on_batch=lambda: None)
+    allowed = 3
+
+    def gate() -> bool:
+        nonlocal allowed
+        if allowed == 0:
+            return False
+        allowed -= 1
+        return True
+
+    result = await prune_terminal_jobs(
+        conn,
+        retention_per_status={"succeeded": timedelta(days=30)},
+        archive_retention=timedelta(days=365),
+        batch_size=10,
+        schema="taskq",
+        drain_gate=gate,
+    )
+    assert conn.batches == 3, (
+        f"the drain ran {conn.batches} batches after the gate closed; a "
+        "False gate return must stop the drain before the next batch"
+    )
+    assert result.total_deleted == 30
+    assert result.archived == 30
+
+
+async def test_archive_expiry_drain_stops_when_gate_closes() -> None:
+    """The archive-expiry drain honors the same gate contract."""
+    conn = _HookedExpiryBatchConn(batch_size=10, on_batch=lambda: None)
+    allowed = 2
+
+    def gate() -> bool:
+        nonlocal allowed
+        if allowed == 0:
+            return False
+        allowed -= 1
+        return True
+
+    result = await archive_expiry_sweep(
+        conn,
+        batch_size=10,
+        schema="taskq",
+        drain_gate=gate,
+    )
+    assert conn.batches == 2
+    assert result.total_deleted == 20
+
+
+async def test_prune_batches_run_under_server_statement_timeout() -> None:
+    """Every prune batch — including the empty probe batch each status
+    runs — applies the server-side statement_timeout via SET LOCAL inside
+    the batch's transaction and restores the session value afterwards
+    (the same capture/restore contract the backend sweeps pin in
+    tests/test_rt_sweeps_timeout_leak.py)."""
+    conn = _FakeConnForPrune(batch_rows=[[_full_batch_record(5)]])
+    await prune_terminal_jobs(
+        conn,
+        retention_per_status={"succeeded": timedelta(days=30)},
+        archive_retention=timedelta(days=365),
+        schema="taskq",
+        statement_timeout_ms=4321,
+    )
+    set_config_calls = [(sql, args) for sql, args in conn.execute_calls if "set_config" in sql]
+    status_probes = len(TERMINAL_STATUSES)
+    assert len(set_config_calls) == 2 * status_probes, (
+        f"expected apply+restore per batch ({status_probes} probe batches, "
+        f"one per status); got {len(set_config_calls)} set_config calls"
+    )
+    applies = [args for _sql, args in set_config_calls[0::2]]
+    restores = [args for _sql, args in set_config_calls[1::2]]
+    assert applies and all(args == ("4321",) for args in applies), (
+        f"the bound must be the caller's statement_timeout_ms on every batch; got {applies}"
+    )
+    assert restores and all(args == ("0",) for args in restores), (
+        f"the captured session value must be restored after every batch; got {restores}"
+    )
+
+
+async def test_archive_expiry_batches_run_under_server_statement_timeout() -> None:
+    """The archive-expiry batches apply the same SET LOCAL bound."""
+    conn = _FakeConnForPrune(batch_rows=[[_FakeRecord({"status": "succeeded", "cnt": 7})], []])
+    await archive_expiry_sweep(conn, schema="taskq", batch_size=7, statement_timeout_ms=4321)
+    set_config_calls = [(sql, args) for sql, args in conn.execute_calls if "set_config" in sql]
+    # One full batch + the empty probe that ends the drain.
+    assert len(set_config_calls) == 4
+    assert [args for _sql, args in set_config_calls[0::2]] == [("4321",), ("4321",)]
+    assert [args for _sql, args in set_config_calls[1::2]] == [("0",), ("0",)]
+
+
+async def test_prune_timeout_latches_sizer_and_degrades_next_attempt() -> None:
+    """A server-side batch abort (QueryCanceledError) counts against the
+    breaker: the sizer latches and the NEXT attempt's windows run at the
+    reduced tier — the degradation that makes a loaded database drainable
+    under a timeout smaller than its backlog."""
+
+    class _TimeoutConn(_FakeConnForPrune):
+        async def fetch(self, sql: str, *args: object) -> list[_FakeRecord]:
+            if "candidate_ids" in sql:
+                raise asyncpg.QueryCanceledError("canceling statement due to statement timeout")
+            return await super().fetch(sql, *args)
+
+    sizer = SweepBatchSizer(default_size=10_000, divisor=4, failure_threshold=1, window_secs=600.0)
+    conn = _TimeoutConn(batch_rows=[])
+    with pytest.raises(asyncpg.QueryCanceledError):
+        await prune_terminal_jobs(
+            conn,
+            retention_per_status={"succeeded": timedelta(days=30)},
+            archive_retention=timedelta(days=365),
+            schema="taskq",
+            statement_timeout_ms=4321,
+            sizer=sizer,
+        )
+    assert sizer.effective_size() == 2_500, (
+        "a cancelled batch must latch the breaker to the reduced tier"
+    )
+
+    # The latched tier sizes the next attempt's windows — the retry path's
+    # whole point.
+    conn2 = _FakeConnForPrune(batch_rows=[[_full_batch_record(5)]])
+    await prune_terminal_jobs(
+        conn2,
+        retention_per_status={"succeeded": timedelta(days=30)},
+        archive_retention=timedelta(days=365),
+        schema="taskq",
+        statement_timeout_ms=4321,
+        sizer=sizer,
+    )
+    batch_fetches = [(sql, args) for sql, args in conn2.fetch_calls if "candidate_ids" in sql]
+    assert batch_fetches, "fixture broken: no prune batch ran"
+    assert batch_fetches[0][1][2] == 2_500, (
+        f"the latched reduced tier must be the window LIMIT; got args {batch_fetches[0][1]!r}"
+    )
+
+
+def _soon_then_far_croniter() -> type:
+    """A croniter double whose FIRST fire is immediate and every later one
+    an hour out: within a test window, any attempt after the first can
+    only be a failure backoff retry, never a scheduled fire. Fresh state
+    per call (the loop constructs a new croniter each iteration, so the
+    soon/far memory must be shared across instances, not per-instance)."""
+    state = {"first": True}
+
+    class _Croniter:
+        def __init__(self, expr: str, start_time: object) -> None:
+            pass
+
+        def get_next(self, dt_type: type[datetime]) -> datetime:
+            if state["first"]:
+                state["first"] = False
+                return datetime.now(UTC) + timedelta(seconds=0.01)
+            return datetime.now(UTC) + timedelta(hours=1)
+
+    return _Croniter
+
+
+class _AlwaysFailsPruneConn(_FakeConnForPrune):
+    """Every prune batch statement raises — the failed-attempt shape."""
+
+    async def fetch(self, sql: str, *args: object) -> list[_FakeRecord]:
+        if "candidate_ids" in sql:
+            raise RuntimeError("connection lost")
+        return await super().fetch(sql, *args)
+
+
+def _lock_attempts(conn: FakeConn) -> int:
+    return len([sql for sql, _ in conn.fetchval_calls if "pg_try_advisory_lock" in sql])
+
+
+async def test_prune_loop_retries_failed_attempt_with_backoff(monkeypatch: Any) -> None:  # type: ignore[reportUnknownParameterType]
+    """A failed prune attempt retries within the day on the backoff ladder
+    instead of sleeping to tomorrow's cron fire."""
+    import taskq.worker._leader_sweeps as _leader_sweeps_mod
+
+    monkeypatch.setattr(_leader_sweeps_mod, "_PRUNE_RETRY_BACKOFF_INITIAL_SECS", 0.02)
+    monkeypatch.setattr(_leader_sweeps_mod, "_PRUNE_RETRY_BACKOFF_CAP_SECS", 0.2)
+    monkeypatch.setattr(_leader_sweeps_mod.cr, "croniter", _soon_then_far_croniter())
+
+    leader_conn = _AlwaysFailsPruneConn(batch_rows=[], fetchval_result=True)
+    leader, _deps, _backend, _, _, shutdown = await _make_leader(
+        leader_conn=leader_conn,
+        dispatcher_pool=_PoolWithFixedConn(leader_conn),
+        is_leader=True,
+        monkeypatch=monkeypatch,
+    )
+
+    task = asyncio.create_task(leader._prune_loop(shutdown))
+    try:
+        await wait_for_condition(
+            lambda: _lock_attempts(leader_conn) >= 3,
+            description="a failed prune attempt must retry on the backoff ladder "
+            "(>=3 attempts) rather than wait for tomorrow's cron fire",
+            timeout=3.0,
+        )
+    finally:
+        shutdown.set()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+
+async def test_prune_loop_backoff_doubles_to_cap(monkeypatch: Any) -> None:  # type: ignore[reportUnknownParameterType]
+    """The retry cadence doubles (60 s, 120 s, … capped) rather than
+    retrying at a fixed rate: with initial=0.05 s doubling, a 1 s window
+    sees ~5 attempts, where a fixed 0.05 s cadence would see ~20 and a
+    no-retry loop exactly 1."""
+    import taskq.worker._leader_sweeps as _leader_sweeps_mod
+
+    monkeypatch.setattr(_leader_sweeps_mod, "_PRUNE_RETRY_BACKOFF_INITIAL_SECS", 0.05)
+    monkeypatch.setattr(_leader_sweeps_mod, "_PRUNE_RETRY_BACKOFF_CAP_SECS", 10.0)
+    monkeypatch.setattr(_leader_sweeps_mod.cr, "croniter", _soon_then_far_croniter())
+
+    leader_conn = _AlwaysFailsPruneConn(batch_rows=[], fetchval_result=True)
+    leader, _deps, _backend, _, _, shutdown = await _make_leader(
+        leader_conn=leader_conn,
+        dispatcher_pool=_PoolWithFixedConn(leader_conn),
+        is_leader=True,
+        monkeypatch=monkeypatch,
+    )
+
+    task = asyncio.create_task(leader._prune_loop(shutdown))
+    await asyncio.sleep(1.0)
+    shutdown.set()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+    attempts = _lock_attempts(leader_conn)
+    assert 3 <= attempts <= 7, (
+        f"{attempts} attempts in 1 s — a doubling ladder from 0.05 s lands "
+        "at ~5 (attempts at 0.05, 0.1, 0.2, 0.4, 0.8 s); ~20 means a fixed "
+        "cadence, 1 means no retry at all"
+    )
+
+
+async def test_prune_loop_success_stops_retry_for_the_day(monkeypatch: Any) -> None:  # type: ignore[reportUnknownParameterType]
+    """Fail once, succeed on the retry, then the day is done: no further
+    attempts — the once-per-SUCCESSFUL-prune-per-day guard holds through
+    the retry change (a retried day never gets a second successful
+    prune)."""
+    import taskq.worker._leader_sweeps as _leader_sweeps_mod
+
+    monkeypatch.setattr(_leader_sweeps_mod, "_PRUNE_RETRY_BACKOFF_INITIAL_SECS", 0.02)
+    monkeypatch.setattr(_leader_sweeps_mod, "_PRUNE_RETRY_BACKOFF_CAP_SECS", 0.2)
+    monkeypatch.setattr(_leader_sweeps_mod.cr, "croniter", _soon_then_far_croniter())
+
+    class _FailOnceConn(_FakeConnForPrune):
+        def __init__(self) -> None:
+            super().__init__(batch_rows=[], fetchval_result=True)
+            self._prune_batches = 0
+
+        async def fetch(self, sql: str, *args: object) -> list[_FakeRecord]:
+            if "candidate_ids" in sql:
+                self._prune_batches += 1
+                if self._prune_batches == 1:
+                    raise RuntimeError("connection lost")
+                return []
+            return await super().fetch(sql, *args)
+
+    leader_conn = _FailOnceConn()
+    leader, _deps, _backend, _, _, shutdown = await _make_leader(
+        leader_conn=leader_conn,
+        dispatcher_pool=_PoolWithFixedConn(leader_conn),
+        is_leader=True,
+        monkeypatch=monkeypatch,
+    )
+
+    task = asyncio.create_task(leader._prune_loop(shutdown))
+    try:
+        await wait_for_condition(
+            lambda: _lock_attempts(leader_conn) >= 2,
+            description="the failed first attempt must be retried",
+            timeout=3.0,
+        )
+        # The retry succeeded; the day is marked. Give the loop room to
+        # (wrongly) attempt again, then hold it to exactly two.
+        await asyncio.sleep(0.3)
+        assert _lock_attempts(leader_conn) == 2, (
+            "a successful prune must end the day's attempts — the retry "
+            "must not become a second prune"
+        )
+    finally:
+        shutdown.set()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+
+async def test_archive_expiry_loop_retries_failed_attempt_with_backoff(
+    monkeypatch: Any,  # type: ignore[reportUnknownParameterType]
+) -> None:
+    """The archive-expiry loop shares the prune loop's failure-half policy:
+    a failed attempt retries on the backoff ladder within the day."""
+    import taskq.worker._leader_sweeps as _leader_sweeps_mod
+
+    monkeypatch.setattr(_leader_sweeps_mod, "_PRUNE_RETRY_BACKOFF_INITIAL_SECS", 0.02)
+    monkeypatch.setattr(_leader_sweeps_mod, "_PRUNE_RETRY_BACKOFF_CAP_SECS", 0.2)
+    monkeypatch.setattr(_leader_sweeps_mod.cr, "croniter", _soon_then_far_croniter())
+
+    class _AlwaysFailsExpiryConn(_FakeConnForPrune):
+        async def fetch(self, sql: str, *args: object) -> list[_FakeRecord]:
+            if "expired" in sql:
+                raise RuntimeError("connection lost")
+            return await super().fetch(sql, *args)
+
+    leader_conn = _AlwaysFailsExpiryConn(batch_rows=[], fetchval_result=True)
+    leader, _deps, _backend, _, _, shutdown = await _make_leader(
+        leader_conn=leader_conn,
+        dispatcher_pool=_PoolWithFixedConn(leader_conn),
+        is_leader=True,
+        monkeypatch=monkeypatch,
+    )
+
+    task = asyncio.create_task(leader._archive_expiry_loop(shutdown))
+    try:
+        await wait_for_condition(
+            lambda: _lock_attempts(leader_conn) >= 3,
+            description="a failed archive-expiry attempt must retry on the "
+            "backoff ladder rather than wait for tomorrow's cron fire",
+            timeout=3.0,
+        )
+    finally:
+        shutdown.set()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+
+async def test_prune_loop_bounds_batches_under_pool_command_timeout(
+    monkeypatch: Any,  # type: ignore[reportUnknownParameterType]
+) -> None:
+    """The loop derives the per-batch server-side bound from the pool it
+    runs on: 80% of the default 5 s dispatcher_command_timeout = 4000 ms,
+    so the server's QueryCanceledError (breaker-counted, degrading)
+    always arrives before the pool's opaque client TimeoutError."""
+    import taskq.worker._leader_sweeps as _leader_sweeps_mod
+
+    leader_conn = _FakeConnForPrune(
+        batch_rows=[[_full_batch_record(5)]], fetchval_result=True, actor_config_rows=[]
+    )
+    leader, deps, _backend, _, _, shutdown = await _make_leader(
+        leader_conn=leader_conn,
+        dispatcher_pool=_PoolWithFixedConn(leader_conn),
+        is_leader=True,
+        monkeypatch=monkeypatch,
+    )
+    assert deps.settings.dispatcher_command_timeout == 5.0  # fixture precondition
+
+    class _InstantCroniter:
+        def __init__(self, expr: str, start_time: object) -> None:
+            pass
+
+        def get_next(self, dt_type: type[datetime]) -> datetime:
+            return datetime.now(UTC) + timedelta(seconds=0.05)
+
+    monkeypatch.setattr(_leader_sweeps_mod.cr, "croniter", _InstantCroniter)
+    deps.settings.prune_cron_expr = "* * * * *"
+
+    task = asyncio.create_task(leader._prune_loop(shutdown))
+    try:
+        await wait_for_condition(
+            lambda: any("set_config" in sql for sql, _ in leader_conn.execute_calls),
+            description="the prune loop must bound its batches with a server-side timeout",
+        )
+    finally:
+        shutdown.set()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    bound = [
+        args for sql, args in leader_conn.execute_calls if "set_config" in sql and args == ("4000",)
+    ]
+    assert bound, (
+        "prune batches must run under the pool-derived server-side bound "
+        "(0.8 x dispatcher_command_timeout); no 4000 ms set_config seen"
+    )
+
+
+async def test_prune_loop_drain_stops_on_shutdown_and_ticks_liveness(
+    monkeypatch: Any,  # type: ignore[reportUnknownParameterType]
+) -> None:
+    """SIGTERM mid-drain ends the attempt between batches — the loop task
+    finishes without cancel, after a bounded number of batches, not after
+    the whole backlog. The drain registers with detector 2 while it runs
+    (so a wedged batch loop is visible to the watchdog) and forgets the
+    registration when the attempt ends (so a once-a-day loop cannot read
+    as a stale sibling between attempts)."""
+    import taskq.worker._leader_sweeps as _leader_sweeps_mod
+
+    shutdown = asyncio.Event()
+    # The observation seam closes over a holder: the conn must be built
+    # before the leader (whose deps carry the liveness registry it
+    # observes), so the callback resolves the holder at batch time.
+    deps_holder: list[WorkerDeps] = []
+    liveness_snapshots: list[dict[str, float]] = []
+
+    def on_batch() -> None:
+        liveness_snapshots.append(dict(deps_holder[0].liveness.ages()))
+        if len(liveness_snapshots) == 3:
+            shutdown.set()
+
+    leader_conn = _HookedPruneBatchConn(batch_size=10, on_batch=on_batch)
+    leader, deps, _backend, _, _, _ = await _make_leader(
+        leader_conn=leader_conn,
+        dispatcher_pool=_PoolWithFixedConn(leader_conn),
+        is_leader=True,
+        monkeypatch=monkeypatch,
+    )
+    deps_holder.append(deps)
+
+    class _InstantCroniter:
+        def __init__(self, expr: str, start_time: object) -> None:
+            pass
+
+        def get_next(self, dt_type: type[datetime]) -> datetime:
+            return datetime.now(UTC) + timedelta(seconds=0.05)
+
+    monkeypatch.setattr(_leader_sweeps_mod.cr, "croniter", _InstantCroniter)
+    deps.settings.prune_cron_expr = "* * * * *"
+    # The hooked conn reports 10-row full batches, so the effective window
+    # must be 10 too — the sizer's default tier comes from this setting.
+    deps.settings.prune_batch_size = 10
+
+    task = asyncio.create_task(leader._prune_loop(shutdown))
+    # No cancel, no suppress: a shutdown-responsive drain lets the loop
+    # task COMPLETE on its own — the property the TaskGroup hang lacked.
+    await asyncio.wait_for(task, timeout=5.0)
+
+    assert leader_conn.batches == 3, (
+        f"{leader_conn.batches} batches ran after shutdown was set "
+        "mid-drain; the drain must stop between batches, holding the prune "
+        "advisory lock and its pool connection for at most one batch"
+    )
+    assert any("leader.prune" in ages for ages in liveness_snapshots), (
+        "the drain must register with detector 2 while batches flow — a "
+        "wedged once-a-day drain is otherwise invisible to the watchdog"
+    )
+    assert "leader.prune" not in deps.liveness.ages(), (
+        "the attempt-scoped liveness registration must be forgotten when "
+        "the attempt ends — a once-a-day loop must not read as a stale "
+        "sibling between attempts"
+    )
+
+
+async def test_archive_expiry_loop_drain_stops_on_shutdown(
+    monkeypatch: Any,  # type: ignore[reportUnknownParameterType]
+) -> None:
+    """The archive-expiry drain honors the same shutdown-between-batches
+    contract as the prune drain."""
+    import taskq.worker._leader_sweeps as _leader_sweeps_mod
+
+    shutdown = asyncio.Event()
+    batches_seen: list[int] = []
+
+    def on_batch() -> None:
+        batches_seen.append(1)
+        if len(batches_seen) == 2:
+            shutdown.set()
+
+    leader_conn = _HookedExpiryBatchConn(batch_size=10, on_batch=on_batch)
+    leader, deps, _backend, _, _, _ = await _make_leader(
+        leader_conn=leader_conn,
+        dispatcher_pool=_PoolWithFixedConn(leader_conn),
+        is_leader=True,
+        monkeypatch=monkeypatch,
+    )
+
+    class _InstantCroniter:
+        def __init__(self, expr: str, start_time: object) -> None:
+            pass
+
+        def get_next(self, dt_type: type[datetime]) -> datetime:
+            return datetime.now(UTC) + timedelta(seconds=0.05)
+
+    monkeypatch.setattr(_leader_sweeps_mod.cr, "croniter", _InstantCroniter)
+    deps.settings.archive_expiry_cron_expr = "* * * * *"
+    # The hooked conn reports 10-row full batches, so the effective window
+    # must be 10 too — the sizer's default tier comes from this setting.
+    deps.settings.prune_batch_size = 10
+
+    task = asyncio.create_task(leader._archive_expiry_loop(shutdown))
+    await asyncio.wait_for(task, timeout=5.0)
+
+    assert leader_conn.batches == 2
+
+
 # ── Prune loop releases lock on error ────────────────────────────────────────
 
 
@@ -1635,7 +2184,10 @@ async def test_prune_loop_releases_lock_on_error(monkeypatch: Any) -> None:  # t
             if "candidate_ids" in sql:
                 error_seen.set()
                 raise RuntimeError("connection lost")
-            return []
+            # Machinery probes (the batch timeout's current_setting read)
+            # answer through the base double so the error surfaces from the
+            # prune statement itself, not from the batch wrapper.
+            return await super().fetch(sql, *args)
 
     leader_conn = _ErrorConn(batch_rows=[], fetchval_result=True)
 
@@ -1686,7 +2238,10 @@ async def test_archive_expiry_loop_releases_lock_on_error(monkeypatch: Any) -> N
             if "expired" in sql:
                 error_seen.set()
                 raise RuntimeError("connection lost")
-            return []
+            # Machinery probes (the batch timeout's current_setting read)
+            # answer through the base double so the error surfaces from the
+            # expiry statement itself, not from the batch wrapper.
+            return await super().fetch(sql, *args)
 
     leader_conn = _ErrorConn(batch_rows=[], fetchval_result=True)
 
@@ -1951,7 +2506,9 @@ async def test_prune_loop_survives_unlock_failure(monkeypatch: Any) -> None:  # 
         async def fetch(self, sql: str, *args: object) -> list[_FakeRecord]:
             if "candidate_ids" in sql:
                 prune_ran.set()
-            return []
+            # Machinery probes answer through the base double (see the
+            # _ErrorConn note above).
+            return await super().fetch(sql, *args)
 
     leader_conn = _UnlockFailsConn(batch_rows=[], fetchval_result=True)
 
@@ -2007,7 +2564,9 @@ async def test_archive_expiry_loop_survives_unlock_failure(monkeypatch: Any) -> 
         async def fetch(self, sql: str, *args: object) -> list[_FakeRecord]:
             if "expired" in sql:
                 sweep_ran.set()
-            return []
+            # Machinery probes answer through the base double (see the
+            # _ErrorConn note above).
+            return await super().fetch(sql, *args)
 
     leader_conn = _UnlockFailsConn(batch_rows=[], fetchval_result=True)
 

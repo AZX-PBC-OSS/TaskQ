@@ -617,7 +617,7 @@ class TestMarkCancelledPoolSource:
         async with deps.worker_pool.acquire() as conn:
             worker_id, job_id = await setup_running_job(conn, schema)
 
-        result = await backend.mark_cancelled(job_id, worker_id)
+        result = await backend.mark_cancelled(job_id, worker_id, attempt=1)
         assert result is True
 
         async with deps.worker_pool.acquire() as conn:
@@ -626,5 +626,5 @@ class TestMarkCancelledPoolSource:
         assert row["status"] == "cancelled"
 
         # Idempotent: second call returns False
-        result2 = await backend.mark_cancelled(job_id, worker_id)
+        result2 = await backend.mark_cancelled(job_id, worker_id, attempt=1)
         assert result2 is False

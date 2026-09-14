@@ -49,6 +49,7 @@ async def test_pg_conn_aware_commits_on_supplied_connection(
                 JobId(job_id),
                 worker_id,
                 {"ok": True},
+                attempt=1,
             )
             assert ok is True
 
@@ -83,6 +84,7 @@ async def test_pg_conn_aware_rolls_back_with_caller(
                     JobId(job_id),
                     worker_id,
                     {"ok": True},
+                    attempt=1,
                 )
                 assert ok is True
                 raise RuntimeError("simulate caller rollback")
@@ -101,6 +103,9 @@ async def test_pg_conn_aware_rolls_back_with_caller(
 async def test_in_memory_delegation() -> None:
     clock = FakeClock(start=datetime(2025, 1, 1, tzinfo=UTC))
     backend = InMemoryBackend(clock=clock)
+    # Register the actor so dispatch_batch finds it (mirrors PG's
+    # actor_config requirement — candidates come FROM the registry).
+    backend.register_actor_config(actor="test_actor")
 
     args = make_enqueue_args(scheduled_at=clock.now())
     row = await backend.enqueue(args)
@@ -113,7 +118,9 @@ async def test_in_memory_delegation() -> None:
     assert len(dispatched) == 1
     job_id = dispatched[0].id
 
-    ok = await backend.mark_succeeded_with_conn(None, job_id, backend._worker_id, {"ok": True})  # type: ignore[reportPrivateUsage] # Why: test-only access to in-memory backend internals
+    ok = await backend.mark_succeeded_with_conn(
+        None, job_id, backend._worker_id, {"ok": True}, attempt=1
+    )  # type: ignore[reportPrivateUsage] # Why: test-only access to in-memory backend internals
     assert ok is True
 
     row = await backend.get(job_id)
@@ -136,7 +143,7 @@ async def test_pg_autonomous_mark_succeeded_still_works(
         await create_worker(conn, schema, worker_id)
         job_id = await create_running_job(conn, schema, worker_id)
 
-    ok = await backend.mark_succeeded(JobId(job_id), worker_id, {"ok": True})
+    ok = await backend.mark_succeeded(JobId(job_id), worker_id, {"ok": True}, attempt=1)
     assert ok is True
 
     async with deps.worker_pool.acquire() as conn:
@@ -148,6 +155,9 @@ async def test_pg_autonomous_mark_succeeded_still_works(
 async def test_in_memory_autonomous_mark_succeeded_still_works() -> None:
     clock = FakeClock(start=datetime(2025, 1, 1, tzinfo=UTC))
     backend = InMemoryBackend(clock=clock)
+    # Register the actor so dispatch_batch finds it (mirrors PG's
+    # actor_config requirement — candidates come FROM the registry).
+    backend.register_actor_config(actor="test_actor")
 
     args = make_enqueue_args(scheduled_at=clock.now())
     row = await backend.enqueue(args)
@@ -160,7 +170,7 @@ async def test_in_memory_autonomous_mark_succeeded_still_works() -> None:
     assert len(dispatched) == 1
     job_id = dispatched[0].id
 
-    ok = await backend.mark_succeeded(job_id, backend._worker_id, {"ok": True})  # type: ignore[reportPrivateUsage] # Why: test-only access to in-memory backend internals
+    ok = await backend.mark_succeeded(job_id, backend._worker_id, {"ok": True}, attempt=1)  # type: ignore[reportPrivateUsage] # Why: test-only access to in-memory backend internals
     assert ok is True
 
     row = await backend.get(job_id)

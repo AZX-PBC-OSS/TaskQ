@@ -63,12 +63,16 @@ from taskq.backend._batch_sql import (
 )
 from taskq.backend._cancel_bulk import _cancel_where
 from taskq.backend._dispatch import (
-    _dispatch_batch as _dispatch,
-)
-from taskq.backend._dispatch import (
+    QueueModeCache,
     _resolve_queue_modes,
 )
+from taskq.backend._dispatch import (
+    _dispatch_batch as _dispatch,
+)
 from taskq.backend._enqueue import (
+    DEFAULT_IDEMPOTENCY_LOCK_TIMEOUT_MS,
+    DEFAULT_MAX_PENDING_LOCK_TIMEOUT_MS,
+    DEFAULT_UNIQUE_FOR_LOCK_TIMEOUT_MS,
     _enqueue,
     _enqueue_batch,
     _enqueue_batch_fast,
@@ -77,7 +81,6 @@ from taskq.backend._enqueue import (
 from taskq.backend._notify import _SubscriberContext
 from taskq.backend._protocol import (
     BACKEND_PROTOCOL_VERSION,
-    AttemptOutcome,
     AttemptRow,
     BackendDeps,
     BatchCounts,
@@ -86,6 +89,7 @@ from taskq.backend._protocol import (
     BulkCancelResult,
     CancelFlag,
     ConnLike,
+    DenialReason,
     EnqueueArgs,
     ErrorInfo,
     EventRow,
@@ -96,6 +100,7 @@ from taskq.backend._protocol import (
     ScheduleCreateArgs,
     ScheduleRecord,
     ScheduleUpdateArgs,
+    SnoozeOutcome,
     parse_cancel_phase,
 )
 from taskq.backend._reads import (
@@ -136,11 +141,16 @@ from taskq.backend._sweeps import (
     _SWEEP_2_SQL,
     _SWEEP_3_SQL,
     _SWEEP_4_SQL,
+    _SWEEP_EVENT_TTL_SQL,
+    _SWEEP_IDLE_KEYED_BUCKETS_SQL,
+    _SWEEP_IDLE_KEYED_SLOTS_SQL,
     _SWEEP_RESULT_TTL_SQL,
     SweepBatchSizer,
     sweep_deadline_exceeded,
+    sweep_expired_events,
     sweep_expired_locks,
     sweep_expired_results,
+    sweep_idle_keyed_rows,
     sweep_leaked_reservation_slots,
     sweep_scheduled_to_pending,
 )
@@ -161,8 +171,10 @@ from taskq.backend.clock import Clock
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
     DEFAULT_CHUNK_SIZE,
+    DEFAULT_EVENT_RETENTION_BATCH_SIZE,
     DEFAULT_EVENT_WRITER_BATCH_SIZE,
     DEFAULT_EVENT_WRITER_STATEMENT_TIMEOUT_MS,
+    DEFAULT_KEYED_ROW_RECLAIM_BATCH_SIZE,
     DEFAULT_RECLAIM_POLL_LIMIT,
     RECLAIM_EVENT_VISIBILITY_DELAY,
     events_channel,
@@ -184,6 +196,9 @@ __all__ = [
     "_SWEEP_2_SQL",
     "_SWEEP_3_SQL",
     "_SWEEP_4_SQL",
+    "_SWEEP_EVENT_TTL_SQL",
+    "_SWEEP_IDLE_KEYED_BUCKETS_SQL",
+    "_SWEEP_IDLE_KEYED_SLOTS_SQL",
     "_SWEEP_RESULT_TTL_SQL",
     "PostgresBackend",
     "SweepBatchSizer",
@@ -295,6 +310,14 @@ class PostgresBackend:
         # calls, so the objects are cached for the backend's lifetime.
         self._sweep_sizers: dict[str, SweepBatchSizer] = {}
 
+        # Worker-side queue-mode cache, owned by this backend instance:
+        # the worker's single dispatch loop hits it every round, the
+        # queue-ops seam clears it (see QueueModeCache's docstring for
+        # the per-instance and concurrency contract). The TTL clock is
+        # the backend's own clock, so tests drive expiry through
+        # FakeClock exactly like every other clocked seam.
+        self._queue_mode_cache = QueueModeCache(clock=self._clock.monotonic)
+
     # ── Pool accessors (dynamic via self._deps for hot-reload) ────────
 
     @property
@@ -318,15 +341,59 @@ class PostgresBackend:
 
     supports_transactional_simulation: ClassVar[bool] = False
 
+    def _enqueue_lock_budgets(self) -> tuple[float, float, float]:
+        """The three single-enqueue advisory-lock wait budgets, read off the
+        deps' settings object at the enqueue use sites (the
+        ``dispatch_oversample`` plumbing pattern: WorkerSettings field ->
+        BackendSettings protocol -> backend reads ``self._deps.settings``
+        where the lock wait runs).
+
+        Why a defensive ``getattr`` with the module-constant fallback rather
+        than the direct read every other BackendSettings knob takes: the
+        TaskQ client's settings object (``taskq.client._ClientSettings``)
+        is constructed in client space and predates these fields — a direct
+        read would AttributeError every client-built backend's enqueue. The
+        fallback is the same 5 s constant the module functions defaulted to
+        before the knob existed, so an undeclared settings object behaves
+        exactly as it did yesterday, and the moment it declares the field
+        the operator's value flows through.
+        """
+        settings = self._deps.settings
+        return (
+            getattr(settings, "max_pending_lock_timeout_ms", DEFAULT_MAX_PENDING_LOCK_TIMEOUT_MS),
+            getattr(settings, "unique_for_lock_timeout_ms", DEFAULT_UNIQUE_FOR_LOCK_TIMEOUT_MS),
+            getattr(settings, "idempotency_lock_timeout_ms", DEFAULT_IDEMPOTENCY_LOCK_TIMEOUT_MS),
+        )
+
     async def enqueue_with_conn(
         self,
         conn: ConnLike,
         args: EnqueueArgs,
     ) -> JobRow:
-        return await _enqueue_with_conn(conn, self._sql, self._schema_name, self._clock, args)
+        max_pending_ms, unique_for_ms, idempotency_ms = self._enqueue_lock_budgets()
+        return await _enqueue_with_conn(
+            conn,
+            self._sql,
+            self._schema_name,
+            self._clock,
+            args,
+            max_pending_lock_timeout_ms=max_pending_ms,
+            unique_for_lock_timeout_ms=unique_for_ms,
+            idempotency_lock_timeout_ms=idempotency_ms,
+        )
 
     async def enqueue(self, args: EnqueueArgs) -> JobRow:
-        return await _enqueue(self._worker_pool, self._sql, self._schema_name, self._clock, args)
+        max_pending_ms, unique_for_ms, idempotency_ms = self._enqueue_lock_budgets()
+        return await _enqueue(
+            self._worker_pool,
+            self._sql,
+            self._schema_name,
+            self._clock,
+            args,
+            max_pending_lock_timeout_ms=max_pending_ms,
+            unique_for_lock_timeout_ms=unique_for_ms,
+            idempotency_lock_timeout_ms=idempotency_ms,
+        )
 
     async def enqueue_batch(
         self,
@@ -382,6 +449,7 @@ class PostgresBackend:
             queues,
             limit,
             lock_lease,
+            queue_mode_cache=self._queue_mode_cache,
         )
 
     @staticmethod
@@ -427,6 +495,7 @@ class PostgresBackend:
         fallback_result_ttl: timedelta | None = None,
         *,
         result_bytes: bytes | None = None,
+        attempt: int | None = None,
     ) -> bool:
         return await _mark_succeeded_on_conn(
             conn,
@@ -439,6 +508,7 @@ class PostgresBackend:
             fallback_result_ttl,
             self._deps.settings.result_max_bytes,
             result_bytes=result_bytes,
+            attempt=attempt,
         )
 
     async def mark_succeeded(
@@ -451,6 +521,7 @@ class PostgresBackend:
         fallback_result_ttl: timedelta | None = None,
         *,
         result_bytes: bytes | None = None,
+        attempt: int | None = None,
     ) -> bool:
         return await _mark_succeeded(
             self._worker_pool,
@@ -463,6 +534,8 @@ class PostgresBackend:
             fallback_result_ttl,
             self._deps.settings.result_max_bytes,
             result_bytes=result_bytes,
+            attempt=attempt,
+            acquire_timeout=self._deps.settings.dispatcher_command_timeout,
         )
 
     async def mark_failed_or_retry(
@@ -473,6 +546,8 @@ class PostgresBackend:
         retry_delay: timedelta | None,
         progress_seq: int = 0,
         progress_state: dict[str, object] | None = None,
+        *,
+        attempt: int | None = None,
     ) -> JobRow:
         return await _mark_failed_or_retry(
             self._worker_pool,
@@ -483,6 +558,8 @@ class PostgresBackend:
             retry_delay,
             progress_seq,
             progress_state,
+            attempt=attempt,
+            acquire_timeout=self._deps.settings.dispatcher_command_timeout,
         )
 
     async def mark_cancelled(
@@ -491,9 +568,39 @@ class PostgresBackend:
         worker_id: UUID,
         progress_seq: int = 0,
         progress_state: dict[str, object] | None = None,
+        *,
+        attempt: int | None = None,
     ) -> bool:
+        # Why _worker_pool (supersession of the original heartbeat routing,
+        # which had no documented rationale — original v0.1.0 wiring): the
+        # heartbeat pool is sized heartbeat_pool_size (default 4) for the
+        # liveness loop's one-connection-per-tick cadence, and routing a
+        # per-job terminal write onto it let a cancel storm of concurrent
+        # consumer mark_cancelled calls exhaust the very pool the
+        # heartbeat loop's own bounded acquire waits on — starving the
+        # loop into isolate_self while the worker was merely cancelling
+        # jobs (the spiral pinned by
+        # tests/test_rt_locks_terminal_write_pool_starvation.py). The
+        # routing's plausible original motive — a shielded cancel-path
+        # write outliving the worker pool's LIFO close (deps.py opens
+        # heartbeat_pool BEFORE worker_pool, so teardown closes
+        # worker_pool first) — is superseded by the bounded acquire
+        # threaded above: a closing or closed pool is exactly the
+        # wedged-checkout case the bound converts from a hang into the
+        # designed infra failure, and the cancel path already treats that
+        # outcome as best-effort (worker/_consumer.py: the row stays
+        # running and lock-lease expiry reclaims it) — the same contract
+        # every other shielded terminal write already accepts on the
+        # worker pool.
         return await _mark_cancelled(
-            self._heartbeat_pool, self._sql, job_id, worker_id, progress_seq, progress_state
+            self._worker_pool,
+            self._sql,
+            job_id,
+            worker_id,
+            progress_seq,
+            progress_state,
+            attempt=attempt,
+            acquire_timeout=self._deps.settings.dispatcher_command_timeout,
         )
 
     async def write_cancel_escalation(
@@ -503,7 +610,12 @@ class PostgresBackend:
         phase: Literal[2],
     ) -> bool:
         return await _write_cancel_escalation(
-            self._worker_pool, self._sql, job_id, worker_id, phase
+            self._worker_pool,
+            self._sql,
+            job_id,
+            worker_id,
+            phase,
+            acquire_timeout=self._deps.settings.dispatcher_command_timeout,
         )
 
     async def mark_abandoned(
@@ -513,7 +625,12 @@ class PostgresBackend:
         progress_state: dict[str, object] | None = None,
     ) -> bool:
         return await _mark_abandoned(
-            self._worker_pool, self._sql, job_id, progress_seq, progress_state
+            self._worker_pool,
+            self._sql,
+            job_id,
+            progress_seq,
+            progress_state,
+            acquire_timeout=self._deps.settings.dispatcher_command_timeout,
         )
 
     async def mark_snoozed(
@@ -525,8 +642,10 @@ class PostgresBackend:
         metadata_update: dict[str, object] | None = None,
         progress_seq: int = 0,
         progress_state: dict[str, object] | None = None,
-        outcome: AttemptOutcome = "snoozed",
-    ) -> Literal["scheduled", "failed", "noop"]:
+        outcome: SnoozeOutcome = "snoozed",
+        attempt: int | None = None,
+        denial_reason: DenialReason = "capacity",
+    ) -> Literal["scheduled", "failed", "failed:MaxAttemptsExceeded", "noop"]:
         return await _mark_snoozed(
             self._worker_pool,
             self._sql,
@@ -537,6 +656,9 @@ class PostgresBackend:
             progress_seq=progress_seq,
             progress_state=progress_state,
             outcome=outcome,
+            attempt=attempt,
+            denial_reason=denial_reason,
+            acquire_timeout=self._deps.settings.dispatcher_command_timeout,
         )
 
     async def mark_retry_after(
@@ -548,6 +670,7 @@ class PostgresBackend:
         consume_budget: bool = True,
         progress_seq: int = 0,
         progress_state: dict[str, object] | None = None,
+        attempt: int | None = None,
     ) -> Literal["scheduled", "failed:DeadlineExceeded", "failed:MaxAttemptsExceeded", "noop"]:
         return await _mark_retry_after(
             self._worker_pool,
@@ -558,12 +681,19 @@ class PostgresBackend:
             consume_budget=consume_budget,
             progress_seq=progress_seq,
             progress_state=progress_state,
+            attempt=attempt,
+            acquire_timeout=self._deps.settings.dispatcher_command_timeout,
         )
 
     # ── Attempt history ─────────────────────────────────────────────────
 
     async def write_attempt(self, attempt: AttemptRow) -> None:
-        await _write_attempt(self._worker_pool, self._sql, attempt)
+        await _write_attempt(
+            self._worker_pool,
+            self._sql,
+            attempt,
+            acquire_timeout=self._deps.settings.dispatcher_command_timeout,
+        )
 
     async def get_attempts(self, job_id: JobId) -> list[AttemptRow]:
         return await _get_attempts(self._worker_pool, self._sql, job_id)
@@ -766,6 +896,19 @@ class PostgresBackend:
                     self._sql.enqueue_notify,
                     wake_channel(self._schema_name),
                 )
+        # The statement's reopened CTE (see retry_job in
+        # _sql_templates.py) reconciles a terminal batch row back to
+        # 'active' when the retried job is one of its members -- an
+        # operator who watched a batch complete and then saw it go active
+        # again needs the admin retry that caused it named in the log,
+        # not a mystery status flip.
+        if rec["reopened_batch"]:
+            logger.info(
+                "retry_job_reopened_batch",
+                kind="batch",
+                job_id=str(job_id),
+                batch_id=str(UUID(str(rec["batch_id"]))),
+            )
         return True
 
     # ── Scheduling / sweeps ─────────────────────────────────────────────
@@ -836,7 +979,17 @@ class PostgresBackend:
         return count
 
     async def scheduled_to_pending(self, *, batch_size: int | None = None) -> int:
-        async with self._notify_pool.acquire() as conn:
+        # Bounded acquire (the sweep twin's contract,
+        # tests/test_rt_locks_sweep_notify_pool_unbounded.py): _notify_pool
+        # delegates to the dispatcher pool, which a prune drain holds for
+        # its whole multi-batch drain — an unbounded checkout queues the
+        # sweep indefinitely behind it. The dispatcher command timeout is
+        # the prune loop's own acquire convention, and the resulting
+        # TimeoutError is transient-classified by the leader loops that
+        # call these entrypoints (worker/_transient.py).
+        async with self._notify_pool.acquire(
+            timeout=self._deps.settings.dispatcher_command_timeout
+        ) as conn:
             return await self._run_bounded_sweep(
                 "scheduled_to_pending",
                 batch_size,
@@ -849,7 +1002,11 @@ class PostgresBackend:
             )
 
     async def deadline_sweep(self, *, batch_size: int | None = None) -> int:
-        async with self._notify_pool.acquire() as conn:
+        # Bounded acquire — same contract and rationale as
+        # scheduled_to_pending above.
+        async with self._notify_pool.acquire(
+            timeout=self._deps.settings.dispatcher_command_timeout
+        ) as conn:
             return await self._run_bounded_sweep(
                 "deadline_exceeded",
                 batch_size,
@@ -868,7 +1025,11 @@ class PostgresBackend:
         *,
         batch_size: int | None = None,
     ) -> int:
-        async with self._notify_pool.acquire() as conn:
+        # Bounded acquire — same contract and rationale as
+        # scheduled_to_pending above.
+        async with self._notify_pool.acquire(
+            timeout=self._deps.settings.dispatcher_command_timeout
+        ) as conn:
             return await self._run_bounded_sweep(
                 "expired_locks",
                 batch_size,
@@ -936,8 +1097,9 @@ class PostgresBackend:
         conn: ConnLike,
         *,
         schema: str,
+        batch_size: int = DEFAULT_EVENT_WRITER_BATCH_SIZE,
     ) -> int:
-        return await sweep_leaked_reservation_slots(conn, schema=schema)
+        return await sweep_leaked_reservation_slots(conn, schema=schema, batch_size=batch_size)
 
     @staticmethod
     async def sweep_expired_results(
@@ -947,6 +1109,36 @@ class PostgresBackend:
         batch_size: int = DEFAULT_EVENT_WRITER_BATCH_SIZE,
     ) -> int:
         return await sweep_expired_results(conn, schema=schema, batch_size=batch_size)
+
+    @staticmethod
+    async def sweep_expired_events(
+        conn: ConnLike,
+        *,
+        schema: str,
+        retention: timedelta,
+        batch_size: int = DEFAULT_EVENT_RETENTION_BATCH_SIZE,
+    ) -> int:
+        return await sweep_expired_events(
+            conn,
+            schema=schema,
+            retention=retention,
+            batch_size=batch_size,
+        )
+
+    @staticmethod
+    async def sweep_idle_keyed_rows(
+        conn: ConnLike,
+        *,
+        schema: str,
+        horizon: timedelta,
+        batch_size: int = DEFAULT_KEYED_ROW_RECLAIM_BATCH_SIZE,
+    ) -> int:
+        return await sweep_idle_keyed_rows(
+            conn,
+            schema=schema,
+            horizon=horizon,
+            batch_size=batch_size,
+        )
 
     # ── Read ────────────────────────────────────────────────────────────
 

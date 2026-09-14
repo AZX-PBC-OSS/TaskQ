@@ -37,8 +37,8 @@ burst_window = 60.0         # rolling window for burst counting (seconds)
 
 # Required: at least one worker definition.
 [[workers]]
-name = "api"                # unique label; used for correlation in the DB
-queues = ["default"]        # queue names this worker consumes
+name = "api"                # unique label, <= 43 chars (health socket path budget); used for DB correlation
+queues = ["default"]        # >= 1 queue this worker consumes; omit to inherit [defaults].queues / ["default"]
 max_concurrency = 8         # concurrent job limit
 poll_interval = 0.5         # producer polling cadence (seconds)
 worker_group = "default"    # observability span group name

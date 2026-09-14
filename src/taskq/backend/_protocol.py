@@ -49,6 +49,7 @@ __all__ = [
     "BACKEND_PROTOCOL_VERSION",
     "DST_STRATEGIES",
     "JOB_STATUS_VALUES",
+    "SNOOZE_OUTCOME_VALUES",
     "AttemptOutcome",
     "AttemptRow",
     "Backend",
@@ -60,6 +61,7 @@ __all__ = [
     "BulkCancelResult",
     "CancelFlag",
     "CancelPhase",
+    "DenialReason",
     "DstStrategy",
     "EnqueueArgs",
     "ErrorInfo",
@@ -80,9 +82,12 @@ __all__ = [
     "ScheduleCreateArgs",
     "ScheduleRecord",
     "ScheduleUpdateArgs",
+    "SnoozeOutcome",
     "parse_batch_status",
     "parse_cancel_phase",
     "parse_retry_kind",
+    "validate_denial_reason",
+    "validate_snooze_outcome",
 ]
 
 # ── Protocol version ───────────────────────────────────────────────────
@@ -136,6 +141,23 @@ __all__ = [
 #     the PostgresBackend.sweep_* statics — PG ignored them (the server
 #     clock is the arbiter); an implementation still declaring them fails
 #     loudly with TypeError on the call.
+#     mark_snoozed's `outcome` parameter is narrowed from AttemptOutcome
+#     to SnoozeOutcome ('snoozed' | 'reservation_denied' |
+#     'rate_limit_denied') and validated at the Python boundary: the
+#     five execution outcomes key no arm in the statement, so a caller
+#     passing one left PG firing no arm (job stranded 'running', the
+#     call returning 'noop') while the in-memory twin silently
+#     rescheduled it uncounted.  Both backends now raise ValueError
+#     naming the legal set — loud, not silent, so it folds into the
+#     unreleased v3 rather than bumping.
+#     The non-consuming deferral arms (mark_snoozed's snoozed arm and
+#     mark_retry_after's consume_budget=False arm) floor the effective
+#     delay at MIN_DEFERRAL_INTERVAL (taskq.constants): a zero-delay
+#     deferral reschedules at least that far out instead of parking the
+#     job 'pending' at clock_timestamp() at the head of the dispatch
+#     order — a claim/refund hot loop monopolising a worker slot.
+#     consume_budget=True keeps the raw delay (an immediate consuming
+#     retry is a real execution, bounded by the budget it spends).
 BACKEND_PROTOCOL_VERSION: Final[int] = 3
 
 # ── Type aliases (PEP 695) ─────────────────────────────────────────────
@@ -173,6 +195,105 @@ type AttemptOutcome = Literal[
     "reservation_denied",
     "rate_limit_denied",
 ]
+
+type SnoozeOutcome = Literal["snoozed", "reservation_denied", "rate_limit_denied"]
+"""The outcomes :meth:`Backend.mark_snoozed`'s statement arms key on.
+
+Why narrower than :data:`AttemptOutcome`: the snooze statement's arms
+branch on exactly these three values (the snooze arm's refund/counter
+CASE, the denial-keyed counters, the ``max_attempts`` gate's denial
+predicate).  The five execution outcomes key no arm — a caller passing
+one on a running job left PG firing no arm at all (the row stranded
+``running`` until the lease sweep, the call returning ``"noop"``) while
+the in-memory twin silently rescheduled the job with no counter
+increment, so the two backends disagreed on the same input.  The
+parameter carries this alias at every layer (protocol, both terminals,
+the wrappers, ``FakeBackend``) and
+:func:`validate_snooze_outcome` rejects anything else at the Python
+boundary — PG cannot express a bind-value rejection inside the
+statement, so the boundary owns it.
+"""
+
+SNOOZE_OUTCOME_VALUES: Final[frozenset[SnoozeOutcome]] = frozenset(
+    get_args(SnoozeOutcome.__value__)
+)
+"""Runtime membership set of every :data:`SnoozeOutcome` literal value.
+
+Derived from the ``SnoozeOutcome`` Literal itself (the canonical
+declaration) so the guard's legal set can never drift from the type —
+the same single-source pattern as :data:`JOB_STATUS_VALUES` and
+:data:`DST_STRATEGIES`.
+"""
+
+
+def validate_snooze_outcome(outcome: str) -> None:
+    """Reject an outcome :meth:`Backend.mark_snoozed` has no arm for.
+
+    Raises :class:`ValueError` naming the legal set and the rejected
+    value.  Called by both backends' ``mark_snoozed`` before any state
+    is touched, so they fail identically on an illegal outcome whatever
+    the job's state — never degrading to the ``"noop"`` a fenced-out
+    write would return.
+    """
+    if outcome not in SNOOZE_OUTCOME_VALUES:
+        raise ValueError(
+            f"mark_snoozed outcome must be one of {sorted(SNOOZE_OUTCOME_VALUES)}; "
+            f"got {outcome!r} — the snooze arms key on exactly these deferral "
+            "outcomes; an execution outcome has no arm here"
+        )
+
+
+type DenialReason = Literal["capacity", "unavailable"]
+"""Why a denial-class snooze write (:meth:`Backend.mark_snoozed` with a
+denial *outcome*) was denied.
+
+``capacity`` is a real saturation denial — the limiter's store answered
+and the answer was "full".  The denial is legitimate backpressure about
+a job the system chose not to run yet, and the bounded,
+budget-consuming denial loop is the deliberate contract (an operator
+scaling a bucket on denials is the intended response).
+
+``unavailable`` is the limiter's store failing to answer at all (Redis
+unreachable, the PG fallback dead or unwired) — infrastructure
+backpressure about a job whose actor never executed.  It is
+non-consuming: the claim's attempt increment is refunded exactly the
+way an actor-requested ``snoozed`` deferral refunds it, and no
+terminal arm may fire — a job whose only fault is its limiter's store
+being down never lands in a terminal exit, and when the store returns
+its original retry budget is still there to spend.
+
+Only the consumer's store-failure synthesis site passes ``unavailable``
+(explicitly, never inferred from a bucket name); every other caller
+rides the ``capacity`` default.
+"""
+
+DENIAL_REASON_VALUES: Final[frozenset[DenialReason]] = frozenset(get_args(DenialReason.__value__))
+"""Runtime membership set of every :data:`DenialReason` literal value.
+
+Derived from the :data:`DenialReason` Literal itself so the guard's
+legal set can never drift from the type — the same single-source
+pattern as :data:`SNOOZE_OUTCOME_VALUES`.
+"""
+
+
+def validate_denial_reason(reason: str) -> None:
+    """Reject a denial reason :meth:`Backend.mark_snoozed` has no arm for.
+
+    Raises :class:`ValueError` naming the legal set and the rejected
+    value.  Called by both backends' ``mark_snoozed`` beside
+    :func:`validate_snooze_outcome`, before any state is touched: PG
+    cannot reject an unknown bind value inside the statement, so the
+    Python boundary owns the check, and an illegal reason must not
+    silently degrade to one arm's semantics.
+    """
+    if reason not in DENIAL_REASON_VALUES:
+        raise ValueError(
+            f"mark_snoozed denial_reason must be one of {sorted(DENIAL_REASON_VALUES)}; "
+            f"got {reason!r} — 'capacity' is a saturation denial (budget-consuming, "
+            "the bounded loop), 'unavailable' is the store failing to answer "
+            "(non-consuming, never terminal)"
+        )
+
 
 type RetryKind = Literal["transient", "indefinite", "non_retryable"]
 """Closed set of retry tiers.
@@ -561,6 +682,17 @@ class JobRow:
     span_id: str | None
     metadata: dict[str, object]
     tags: tuple[str, ...]
+    snooze_count: int = 0
+    """Coalesced count of non-consuming deferrals (``Snooze`` and
+    ``RetryAfter(consume_budget=False)``) since enqueue — the job-row
+    record of reschedules that consumed no retry budget.  Trailing
+    default: rows materialised before the counters existed read 0.
+    """
+    rate_limit_blocked_count: int = 0
+    """Coalesced count of admission denials (reservation / rate-limit)
+    since enqueue.  Trailing default: rows materialised before the
+    counters existed read 0.
+    """
 
 
 @dataclass(frozen=True, slots=True)
@@ -1128,6 +1260,18 @@ class BackendSettings(Protocol):
     sweep_breaker_failure_threshold: int
     # Rolling window (seconds) the breaker counts failures within; default 600.0.
     sweep_breaker_window_secs: float
+    # Bounded wait (milliseconds) for the max_pending advisory lock on the
+    # single-enqueue path; default DEFAULT_MAX_PENDING_LOCK_TIMEOUT_MS (5 s).
+    # Read by the PostgresBackend enqueue wrappers at the lock use sites.
+    max_pending_lock_timeout_ms: float
+    # Bounded wait (milliseconds) for the unique_for single-flight advisory
+    # lock on the single-enqueue path; default
+    # DEFAULT_UNIQUE_FOR_LOCK_TIMEOUT_MS (5 s).
+    unique_for_lock_timeout_ms: float
+    # Bounded wait (milliseconds) for the idempotency token INSERT's
+    # speculative-lock conflict on the single-enqueue path; default
+    # DEFAULT_IDEMPOTENCY_LOCK_TIMEOUT_MS (5 s).
+    idempotency_lock_timeout_ms: float
 
 
 @runtime_checkable
@@ -1345,8 +1489,21 @@ class Backend(Protocol):
         fallback_result_ttl: timedelta | None = None,
         *,
         result_bytes: bytes | None = None,
+        attempt: int | None = None,
     ) -> bool:
         """Mark a job succeeded, computing ``result_expires_at`` at completion.
+
+        *attempt* is the attempt-identity epoch: the handler's
+        dispatch-time job-row ``attempt`` snapshot. The terminal fence is
+        one epoch deeper than the worker fence — the write lands only on
+        a row whose current ``attempt`` matches, so a stale handler's
+        write after a same-worker reclaim/redispatch (the row re-dispatched
+        at ``attempt + 1`` on the same worker) no-ops exactly like a
+        different worker's late write — the contract Oban's ``ack_query``
+        pins with ``attempted_at == ^job.attempted_at``. ``None`` — a
+        caller that cannot present the epoch — also no-ops: a terminal
+        write that cannot prove which attempt it terminates must not
+        terminate any attempt.
 
         The result reaches the backend in exactly one of two forms:
         ``result`` — the actor's result dict, which the backend serializes
@@ -1385,6 +1542,7 @@ class Backend(Protocol):
         fallback_result_ttl: timedelta | None = None,
         *,
         result_bytes: bytes | None = None,
+        attempt: int | None = None,
     ) -> bool:
         """Mark a job succeeded using the supplied connection.
 
@@ -1398,7 +1556,8 @@ class Backend(Protocol):
         ``result`` / ``result_bytes`` follow the same two-form contract as
         :meth:`mark_succeeded` — pass exactly one, or neither for a NULL
         result.  ``fallback_result_ttl`` follows the same resolution rule
-        as :meth:`mark_succeeded`.
+        as :meth:`mark_succeeded`.  ``attempt`` follows the same
+        attempt-epoch fence as :meth:`mark_succeeded`.
         """
         ...
 
@@ -1410,19 +1569,33 @@ class Backend(Protocol):
         retry_delay: timedelta | None,
         progress_seq: int = 0,
         progress_state: dict[str, object] | None = None,
+        *,
+        attempt: int | None = None,
     ) -> JobRow:
         """Mark a running job failed, or schedule a retry *retry_delay* later.
 
         ``retry_delay=None`` is the terminal-fail arm (``status='failed'``,
         the original ``error_info`` persisted).  A non-None delay is applied
         by the backend's own clock, never the caller's: ``scheduled_at =
-        now() + delay`` and the ``scheduled``/``pending`` status derive from
-        the delay alone (zero → immediate).  The same statement arbitrates
-        the ``schedule_to_close`` deadline server-side — when
-        ``clock_timestamp() + delay`` would land past the deadline, the row
-        is failed with ``error_class='DeadlineExceeded'`` instead of
-        retried — so app↔DB clock skew can neither void the retry backoff
-        nor kill a job whose deadline has not actually passed.
+        now() + delay`` — floored at
+        :data:`taskq.constants.MIN_DEFERRAL_INTERVAL`, the same bound the
+        deferral arms apply, so a failure-retry decision can never requeue
+        below the deferral floor — and the ``scheduled``/``pending`` status
+        derives from the effective delay alone (a sub-floor delay still
+        lands ``scheduled`` at least the floor out).  The same statement
+        arbitrates the ``schedule_to_close`` deadline server-side — when
+        ``clock_timestamp() + effective delay`` would land past the
+        deadline, the row is failed with ``error_class='DeadlineExceeded'``
+        instead of retried — so app↔DB clock skew can neither void the
+        retry backoff nor kill a job whose deadline has not actually
+        passed.
+
+        *attempt* is the attempt-identity epoch — see
+        :meth:`mark_succeeded`. A fenced-out write (stale epoch, wrong
+        worker, or a row that moved) raises
+        :class:`~taskq.exceptions.WorkerOwnershipMismatch`, which
+        :func:`taskq.retry.safe_mark_failed_or_retry` converts to the
+        ``None`` the handlers treat as a no-op.
         """
         ...
 
@@ -1432,6 +1605,8 @@ class Backend(Protocol):
         worker_id: UUID,
         progress_seq: int = 0,
         progress_state: dict[str, object] | None = None,
+        *,
+        attempt: int | None = None,
     ) -> bool: ...
 
     async def write_cancel_escalation(
@@ -1457,8 +1632,52 @@ class Backend(Protocol):
         metadata_update: dict[str, object] | None = None,
         progress_seq: int = 0,
         progress_state: dict[str, object] | None = None,
-        outcome: AttemptOutcome = "snoozed",
-    ) -> Literal["scheduled", "failed", "noop"]: ...
+        outcome: SnoozeOutcome = "snoozed",
+        attempt: int | None = None,
+        denial_reason: DenialReason = "capacity",
+    ) -> Literal["scheduled", "failed", "failed:MaxAttemptsExceeded", "noop"]:
+        """Release a running job back to the queue without consuming retry
+        budget.
+
+        *attempt* is the attempt-identity epoch — see
+        :meth:`mark_succeeded`; a fenced-out write returns ``"noop"``.
+
+        A non-terminal snooze/denial writes NO ``job_attempts`` /
+        ``job_events`` rows — it is admission control or a voluntary
+        deferral, not an execution — and is counted on the job row
+        (``snooze_count``, or ``rate_limit_blocked_count`` when *outcome*
+        is a denial) plus OTEL.  ``max_attempts`` is never raised: the
+        ceiling is a bound, not a counter.
+
+        *outcome* admits only the three deferral outcomes
+        (:data:`SnoozeOutcome`) — the statement's arms key on exactly
+        those; an execution outcome has no arm (PG would leave the job
+        stranded ``running``) and raises ``ValueError`` at the boundary
+        on both backends instead.  *delay* is floored at
+        :data:`taskq.constants.MIN_DEFERRAL_INTERVAL`: a non-consuming
+        deferral reschedules at least that far out, so a zero delay
+        cannot park the job at the head of the dispatch order.
+
+        *denial_reason* discriminates the two causes of a denial-class
+        outcome (:data:`DenialReason`) and binds the non-consuming arm:
+        ``"capacity"`` (the default) is a real saturation denial — the
+        store answered "full" — and the retry budget still bounds the
+        loop below.  ``"unavailable"`` is the store failing to answer —
+        infrastructure backpressure about a job whose actor never ran —
+        so the claim's attempt increment is refunded (exactly the way
+        the ``snoozed`` arm refunds it) and no terminal arm can fire:
+        the job stays retryable across a sustained outage and keeps its
+        original budget when the store returns.
+
+        The retry budget still bounds the loop for ``"capacity"``
+        denials: a non-``indefinite`` job at ``attempt >= max_attempts``
+        with no ``schedule_to_close`` fails terminally
+        (``"failed:MaxAttemptsExceeded"``) instead of rescheduling
+        forever; a job carrying ``schedule_to_close`` reschedules until
+        its deadline (``"failed"``, ``DeadlineExceeded``); an
+        ``indefinite`` job reschedules by explicit policy.
+        """
+        ...
 
     async def mark_retry_after(
         self,
@@ -1469,6 +1688,7 @@ class Backend(Protocol):
         consume_budget: bool = True,
         progress_seq: int = 0,
         progress_state: dict[str, object] | None = None,
+        attempt: int | None = None,
     ) -> Literal["scheduled", "failed:DeadlineExceeded", "failed:MaxAttemptsExceeded", "noop"]: ...
 
     # ── Attempt history ─────────────────────────────────────────────────
@@ -1547,10 +1767,21 @@ class Backend(Protocol):
 
     # ── Admin operations ──────────────────────────────────────────────
     async def retry_job(self, job_id: JobId) -> bool:
-        """Reset a terminal job (failed/crashed/cancelled) to pending.
+        """Re-run a terminal job (failed/crashed/cancelled) by re-pending it.
+
+        The attempt counter is NOT reset — the vendored admin-retry
+        precedent (Oban's ``retry_job``, River's ``JobRetry``) never
+        touches it — so a re-run job climbs to fresh attempt numbers and
+        no ``job_attempts`` write can collide on a spent epoch's primary
+        key.  ``max_attempts`` rises to ``GREATEST(max_attempts,
+        attempt + 1)`` (capped at the smallint bound), which opens the
+        budget gates for at least one fresh execution while a
+        mid-budget re-run keeps its remaining budget.
 
         Returns ``True`` if the job was retried, ``False`` if it was not
-        in a retryable state.
+        in a retryable state — or the smallint-bound ceiling cannot rise
+        past the spent attempt, in which case the row stays terminal
+        rather than re-pending a job whose next claim would overflow.
         """
         ...
 

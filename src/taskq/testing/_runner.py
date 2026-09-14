@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Literal
 from uuid import UUID
 
 import structlog
+from opentelemetry.trace import Span
 from pydantic import BaseModel
 
 from taskq.actor_config import ActorConfig
@@ -68,13 +69,34 @@ class _StubContext:
     """Minimal context passed to actor stubs by ``run_until_drained``.
 
     The full ``JobContext`` arrives later; here, stubs receive a duck-typed
-    object with the fields they read: ``job_id``, ``attempt``, ``payload``,
-    ``cancel_event``, and ``cancellation_requested``.  Aligned with the
-    production ``taskq.context.JobContext`` shape at the duck-typed
-    ``cancel_event`` / ``cancellation_requested`` level.
+    object with the fields they read: ``job_id``, ``attempt``,
+    ``snooze_count``, ``payload``, ``cancel_event``, ``span``, and
+    ``cancellation_requested``.  Aligned with the production
+    ``taskq.context.JobContext`` shape at the duck-typed
+    ``cancel_event`` / ``cancellation_requested`` level, at the
+    deferral-cycle contract (``snooze_count`` carries the row's count of
+    completed non-consuming deferrals at dispatch time, so an actor
+    keyed off it behaves identically under the test runner and the PG
+    worker), and at the trace-correlation contract (``span`` is the
+    documented OTel-disabled ``None`` — the in-memory runner is
+    uninstrumented, so actors reading ``ctx.span`` observe exactly what
+    a production worker without a tracer hands them), and at the
+    documented method surface: ``check_cancelled()``,
+    ``should_abort()``, and ``await ctx.progress(...)`` (recorded on
+    ``progress_reports``, never published — the runner has no
+    Redis/Postgres wiring) behave as the production contract documents,
+    so actors using them are exercisable under the runner.
     """
 
-    __slots__ = ("attempt", "cancel_event", "job_id", "payload")
+    __slots__ = (
+        "attempt",
+        "cancel_event",
+        "job_id",
+        "payload",
+        "progress_reports",
+        "snooze_count",
+        "span",
+    )
 
     def __init__(
         self,
@@ -82,15 +104,61 @@ class _StubContext:
         attempt: int,
         payload: dict[str, object],
         cancel_event: asyncio.Event | None,
+        snooze_count: int = 0,
     ) -> None:
         self.job_id = job_id
         self.attempt = attempt
         self.payload = payload
         self.cancel_event = cancel_event
+        self.snooze_count = snooze_count
+        self.span: Span | None = None
+        # One record per progress() call — the harness half of the
+        # documented progress contract: the report lands observably
+        # (the stub or its test inspects this list), with `seq` strictly
+        # monotone per call as production guarantees. The runner has no
+        # Redis/Postgres wiring, so nothing is published.
+        self.progress_reports: list[dict[str, object]] = []
 
     @property
     def cancellation_requested(self) -> bool:
         return self.cancel_event is not None and self.cancel_event.is_set()
+
+    def check_cancelled(self) -> None:
+        """Raise :class:`asyncio.CancelledError` when cancellation has
+        been requested — the production contract, so stubs using the
+        raising style are exercisable under the runner."""
+        if self.cancellation_requested:
+            raise asyncio.CancelledError
+
+    def should_abort(self) -> bool:
+        """Synchronous cancellation check for sync actors. Production
+        reads the same phase-1 cancellation state through a threading
+        event; the runner has one cancellation event, so both checks
+        read it."""
+        return self.cancellation_requested
+
+    async def progress(
+        self,
+        *,
+        step: int | None = None,
+        percent: float | None = None,
+        detail: str | None = None,
+        data: dict[str, object] | None = None,
+    ) -> None:
+        """Record a progress report on the context (see the
+        ``progress_reports`` attribute). Signature and ``seq``
+        monotonicity mirror the production
+        :meth:`taskq.context.JobContext.progress`; the runner never
+        blocks on the network because it never publishes."""
+        self.progress_reports.append(
+            {
+                "seq": len(self.progress_reports) + 1,
+                "step": step,
+                "percent": percent,
+                "detail": detail,
+                "data": data,
+            }
+        )
 
 
 class PassthroughPayload(BaseModel):
@@ -160,6 +228,7 @@ def _build_run_actor(
             attempt=job_row.attempt,
             payload=job_row.payload,
             cancel_event=cancel_events.get(job_row.id),
+            snooze_count=job_row.snooze_count,
         )
         result = stub(job_row.payload, stub_ctx)
         if isinstance(result, Awaitable):
@@ -460,7 +529,10 @@ async def tick_cancel_polling(backend: "InMemoryBackend") -> None:
     per-job cancel event (registered via ``register_cancel_event``).
     Subsequent calls escalate ``cancel_phase = 2`` if the cancellation
     grace period has elapsed, or mark ``abandoned`` if the cleanup
-    grace period has also elapsed.
+    grace period has also elapsed — and, when the abandoned job's
+    attempt is executing under ``run_until_drained``, cancel that
+    attempt's task: the runner's mirror of production phase 2's hard
+    cancel of a non-cooperative attempt.
 
     MUST NOT sleep or yield to the event loop.
     """
@@ -502,7 +574,22 @@ async def tick_cancel_polling(backend: "InMemoryBackend") -> None:
             # Mark abandoned via the public method so attempt/event rows
             # are written.  mark_abandoned's own
             # cancel_phase==2 guard is satisfied by the condition above.
-            await backend.mark_abandoned(job_id)
+            abandoned = await backend.mark_abandoned(job_id)
+            # Production phase 2 terminates a non-cooperative attempt by
+            # hard-cancelling the actor task once the graces elapse
+            # (cancel.py's active.task.cancel()); the cooperative event
+            # alone cannot reach an attempt that never reads it, and the
+            # runner awaits attempts inline, so without this cancel the
+            # drain parks forever beside a row that already says
+            # abandoned.  The row is terminal BEFORE the cancel: the
+            # attempt's mark_cancelled path then no-ops against the
+            # abandoned row instead of racing a second terminal write,
+            # and the drain task's own cancellation propagates through
+            # run_until_drained's caller-cancel arm (Task.cancelling()).
+            if abandoned:
+                inflight = backend._inflight_attempt  # pyright: ignore[reportPrivateUsage]  # Why: test runner helper intentionally accesses private InMemoryBackend state; this module is co-located with the backend and owns this access pattern.
+                if inflight is not None and inflight[0] == job_id:
+                    inflight[1].cancel()
 
     # Cleanup: remove cancel-tracking state for terminal jobs to prevent
     # unbounded growth of _cancel_events and _cancel_observed_at.
@@ -609,6 +696,16 @@ async def run_until_drained(backend: "InMemoryBackend") -> None:
         # _handle_generic_exception; the test runner has no such wrapper, so
         # we catch it here and transition the job to failed — matching the
         # non-retryable contract documented on PayloadValidationError.
+        # The in-flight attempt registration: tick_cancel_polling's
+        # both-graces arm cancels this task to terminate a
+        # non-cooperative attempt (the mirror of production's
+        # active.task.cancel()). Keyed by job id so only the abandon of
+        # the job actually executing can cancel the drain.
+        current_task = asyncio.current_task()
+        registration: tuple[JobId, asyncio.Task[object]] | None = None
+        if current_task is not None:
+            registration = (job.id, current_task)
+            backend._inflight_attempt = registration  # pyright: ignore[reportPrivateUsage]  # Why: test runner helper intentionally accesses private InMemoryBackend state; this module is co-located with the backend and owns this access pattern.
         try:
             outcome = await consume_one_job(
                 backend,
@@ -633,8 +730,49 @@ async def run_until_drained(backend: "InMemoryBackend") -> None:
                 worker_id=backend._worker_id,  # pyright: ignore[reportPrivateUsage]  # Why: test runner helper intentionally accesses private InMemoryBackend state; this module is co-located with the backend and owns this access pattern.
                 error_info=error_info,
                 retry_delay=None,
+                attempt=job.attempt,
             )
+            # Production's generic-exception escape routes this failure
+            # through _handle_generic_exception and applies the batch
+            # hook with the handler's terminal outcome before returning
+            # — a batch completes on any terminal member, GoodJob-aligned
+            # — so the mirror sets the failed outcome and falls through
+            # to the shared hook call below.
             outcome = "failed"
+        except asyncio.CancelledError:
+            # Cooperative-cancel mirror: production's consume_one_job marks
+            # the row cancelled on the CancelledError path and re-raises;
+            # the worker's task boundary absorbs that raise and the worker
+            # keeps dispatching — for every actor-originated raise, whether
+            # the documented check_cancelled() style or the actor ending
+            # itself with its own asyncio.CancelledError (the two are
+            # indistinguishable inside consume_one_job, and production
+            # treats them identically: same shielded mark, same re-raise,
+            # same absorption at the boundary). The runner awaits the actor
+            # inline, so this per-dispatch catch is that boundary. The
+            # discriminator is the drain task's own cancellation state, not
+            # the job's cancel event: a pending cancel request on the
+            # current task (Task.cancelling() > 0) means the cancellation
+            # targets the drain itself — the caller's stop always wins and
+            # must propagate, exactly as a production worker stops when its
+            # dispatch task is cancelled, even if the interrupted job also
+            # had a cancel requested; no pending request means the raise
+            # was actor-originated — absorb it and keep draining. On the
+            # absorb arm production's CancelledError handler applies the
+            # batch hook with "cancelled" best-effort before the re-raise
+            # — the row is terminal, so the batch completes immediately,
+            # GoodJob-aligned — and the mirror does the same: the outcome
+            # is set here and the shared hook call below applies it.
+            task = asyncio.current_task()
+            if task is not None and task.cancelling() > 0:
+                raise
+            outcome = "cancelled"
+        finally:
+            # Identity-guarded: a concurrent run_until_drained on the same
+            # backend may have registered its own attempt over ours — only
+            # clear what this dispatch registered.
+            if registration is not None and backend._inflight_attempt is registration:  # pyright: ignore[reportPrivateUsage]  # Why: test runner helper intentionally accesses private InMemoryBackend state; this module is co-located with the backend and owns this access pattern.
+                backend._inflight_attempt = None  # pyright: ignore[reportPrivateUsage]  # Why: test runner helper intentionally accesses private InMemoryBackend state; this module is co-located with the backend and owns this access pattern.
 
         try:
             await apply_batch_terminal_outcome(backend, job, outcome)
@@ -654,7 +792,7 @@ async def wait_for_batch(
     batch_id: UUID,
     *,
     snooze_interval: timedelta = timedelta(seconds=10),
-    snooze_via_exception: bool = True,  # Why: parameter kept for API consistency with taskq.batch.wait_for_batch; in-memory always raises Snooze
+    snooze_via_exception: bool = True,
     expect_at_least: int | None = None,
     on_empty: Literal["error", "ok"] = "error",
     exclude_job_id: UUID | None = None,
@@ -665,9 +803,14 @@ async def wait_for_batch(
     :class:`~taskq.batch.BatchCompletionStatus` using the same
     terminal-status set as the PG path.
 
-    The in-memory variant always raises :class:`~taskq.exceptions.Snooze`
-    when ``pending > 0``, regardless of ``snooze_via_exception`` — the
-    in-memory backend has no sleep cost.
+    Mirrors both snooze modes of the PG variant:
+    ``snooze_via_exception=True`` (the default) raises
+    :class:`~taskq.exceptions.Snooze` while members are in flight;
+    ``False`` blocks on ``asyncio.sleep(snooze_interval)`` and rescans
+    until every member is terminal. The sleep is real event-loop time —
+    the injected clock drives row timestamps, not the loop clock, the
+    same division the PG path has (PG's clock_timestamp vs the loop) —
+    so blocking-mode tests advance the batch from a concurrent task.
     """
     if snooze_interval < _min_snooze:
         original = snooze_interval
@@ -679,48 +822,55 @@ async def wait_for_batch(
         )
 
     batch_id_str = str(batch_id)
-    batch_row = backend._batches.get(batch_id)  # pyright: ignore[reportPrivateUsage]  # Why: co-located helper accessing private batch store
 
-    exclusion_id = exclude_job_id
-    if exclusion_id is None and batch_row is not None:
-        exclusion_id = batch_row.finalizer_job_id
+    while True:
+        batch_row = backend._batches.get(batch_id)  # pyright: ignore[reportPrivateUsage]  # Why: co-located helper accessing private batch store
 
-    matched = [
-        r
-        for r in backend._jobs.values()  # pyright: ignore[reportPrivateUsage]  # Why: wait_for_batch is a co-located module-level helper that requires access to the private job store; same pattern as list_jobs
-        if r.metadata.get("batch_id") == batch_id_str
-        and (exclusion_id is None or r.id != exclusion_id)
-    ]
+        exclusion_id = exclude_job_id
+        if exclusion_id is None and batch_row is not None:
+            exclusion_id = batch_row.finalizer_job_id
 
-    succeeded = sum(1 for r in matched if r.status == "succeeded")
-    failed = sum(1 for r in matched if r.status == "failed")
-    cancelled = sum(1 for r in matched if r.status == "cancelled")
-    crashed = sum(1 for r in matched if r.status == "crashed")
-    abandoned = sum(1 for r in matched if r.status == "abandoned")
-    pending = sum(1 for r in matched if r.status not in TERMINAL_STATUSES)
+        matched = [
+            r
+            for r in backend._jobs.values()  # pyright: ignore[reportPrivateUsage]  # Why: wait_for_batch is a co-located module-level helper that requires access to the private job store; same pattern as list_jobs
+            if r.metadata.get("batch_id") == batch_id_str
+            and (exclusion_id is None or r.id != exclusion_id)
+        ]
 
-    status = BatchCompletionStatus(
-        total=len(matched),
-        pending=pending,
-        succeeded=succeeded,
-        failed=failed,
-        cancelled=cancelled,
-        crashed=crashed,
-        abandoned=abandoned,
-    )
+        succeeded = sum(1 for r in matched if r.status == "succeeded")
+        failed = sum(1 for r in matched if r.status == "failed")
+        cancelled = sum(1 for r in matched if r.status == "cancelled")
+        crashed = sum(1 for r in matched if r.status == "crashed")
+        abandoned = sum(1 for r in matched if r.status == "abandoned")
+        pending = sum(1 for r in matched if r.status not in TERMINAL_STATUSES)
 
-    status = decide_batch_status(
-        batch_id=batch_id,
-        batch_row=batch_row,
-        status=status,
-        snooze_interval=snooze_interval,
-        expect_at_least=expect_at_least,
-        on_empty=on_empty,
-        snooze_via_exception=snooze_via_exception,
-    )
+        status = BatchCompletionStatus(
+            total=len(matched),
+            pending=pending,
+            succeeded=succeeded,
+            failed=failed,
+            cancelled=cancelled,
+            crashed=crashed,
+            abandoned=abandoned,
+        )
 
-    # In-memory always raises Snooze for pending > 0 — no blocking mode.
-    if status.pending > 0:
-        raise Snooze(snooze_interval)
+        status = decide_batch_status(
+            batch_id=batch_id,
+            batch_row=batch_row,
+            status=status,
+            snooze_interval=snooze_interval,
+            expect_at_least=expect_at_least,
+            on_empty=on_empty,
+            snooze_via_exception=snooze_via_exception,
+        )
 
-    return status
+        # Members in flight: raise (exception mode — the consumer
+        # reschedules the caller) or block and rescan (blocking mode),
+        # the two arms of the PG poll loop.
+        if status.pending > 0:
+            if snooze_via_exception:
+                raise Snooze(snooze_interval)
+            await asyncio.sleep(snooze_interval.total_seconds())
+            continue
+
+        return status

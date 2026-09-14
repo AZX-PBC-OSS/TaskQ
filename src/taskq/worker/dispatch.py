@@ -14,7 +14,7 @@ direction.
 
 import asyncio
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from contextlib import AsyncExitStack
 from datetime import timedelta
 from typing import TYPE_CHECKING, cast
@@ -90,13 +90,18 @@ def _to_consumed_outcome(attempt_outcome: str) -> ConsumedOutcome:
     """Map an AttemptOutcome to the semconv-valid ConsumedOutcome label set.
 
     ``AttemptOutcome`` includes ``"scheduled"`` for snooze/retry/reservation-denial
-    which is not in the instrument 2 valid set ``{succeeded, failed, cancelled,
-    abandoned}``.  From the consumer's perspective the job was released back to
-    the queue without being completed — semantically ``"abandoned"``.
+    and ``"noop"`` for a terminal write that matched nothing (the job moved
+    underneath this worker), neither of which is in the instrument 2 valid set
+    ``{succeeded, failed, cancelled, abandoned}``.  ``"noop`` outcomes never
+    reach the consumed-message recorder — ``dispatch_one_job``'s finally
+    block skips both job-outcome metrics for them (nothing was consumed;
+    the re-dispatch records the real message and duration) — so this
+    mapping exists for ``"scheduled"`` and as a defensive total map should
+    any other caller pass a noop through.
     """
-    if attempt_outcome == "scheduled":
+    if attempt_outcome in ("scheduled", "noop"):
         return "abandoned"
-    return attempt_outcome  # type: ignore[return-value]  # Why: AttemptOutcome is Literal["succeeded","failed","cancelled","scheduled"]; after the "scheduled" branch the remaining values are exactly the ConsumedOutcome union but pyright cannot narrow across the return-site coercion
+    return attempt_outcome  # type: ignore[return-value]  # Why: AttemptOutcome is Literal["succeeded","failed","cancelled","scheduled","noop"]; after the released-back-to-queue branch the remaining values are exactly the ConsumedOutcome union but pyright cannot narrow across the return-site coercion
 
 
 def _effective_reservations(
@@ -152,7 +157,11 @@ async def dispatch_one_job(
        dedicated slot pool when one is open (the per-slot path), else
        the LOOP-scope connection, else none (autonomous consume). An
        acquire failure raises :class:`SlotPoolAcquireError` before any
-       span or metric exists: infrastructure, not a job outcome.
+       span or metric exists: infrastructure, not a job outcome. On the
+       per-slot path the acquired connection also shadows the
+       LOOP-registered ``asyncpg.Connection`` for the actor invocation
+       (``loop_slot_values``), so the actor's own writes join this job's
+       transaction and concurrent slots never share a connection.
     2. Create the CONSUMER span with link to the PRODUCER span.
     3. Validate the payload against actor_ref's payload schema.
     4. Build the interim JobContext with the CONSUMER span.
@@ -213,11 +222,18 @@ async def dispatch_one_job(
     # acquire precedes the span/metrics block on purpose: a job that
     # cannot acquire is infrastructure, not a job outcome, so it must
     # produce no consumer span and no consumed-message record. The
-    # registered LOOP-scope connection stays untouched here — it is
-    # still what actors receive by DI injection.
+    # slot connection is also what the actor receives: it shadows the
+    # LOOP-scope cache for this actor invocation (loop_slot_values
+    # below), so an actor's own writes join THIS job's transaction and
+    # a registered LOOP-scope connection is never shared across
+    # concurrent slots' actors (issue #116). The registered LOOP-scope
+    # connection itself stays untouched — every non-actor reader
+    # (bootstrap's activation check, the loop-level enqueuer's
+    # provenance inference) still resolves it from the LOOP cache.
     async with AsyncExitStack() as conn_stack:
         job_enqueuer: SubJobEnqueuer = enqueuer
         transaction_conn: ConnLike | None = None
+        actor_loop_slot_values: Mapping[type, object] | None = None
         if deps.slot_pool is not None:
             slot_pool = deps.slot_pool
             acquire_timeout = deps.settings.dispatcher_command_timeout
@@ -236,6 +252,17 @@ async def dispatch_one_job(
                 )
                 raise SlotPoolAcquireError(acquire_timeout=acquire_timeout) from exc
             transaction_conn = acquired
+            # Per-slot LOOP-scope semantics for the actor: the slot
+            # connection shadows the LOOP-registered asyncpg.Connection
+            # for this invocation (build_actor_scope wraps the LOOP
+            # container in a LoopScopeSlotView). The actor's writes then
+            # join this job's transaction on this connection, and two
+            # concurrent slots' actors can never interleave operations
+            # on one connection — asyncpg permits one operation per
+            # connection, so the shared shape raised InterfaceError
+            # inside healthy actors and burned their retry budget
+            # (issue #116).
+            actor_loop_slot_values = {asyncpg.Connection: transaction_conn}
 
             async def _release_slot_conn(
                 # Why default-arg binding for pool/conn: the release must
@@ -365,6 +392,7 @@ async def dispatch_one_job(
                         actor=job.actor,
                         queue=job.queue,
                         attempt=job.attempt,
+                        snooze_count=job.snooze_count,
                         worker_id=worker_id,
                         payload=validated_payload,
                         jobs=job_enqueuer,
@@ -395,6 +423,7 @@ async def dispatch_one_job(
                         actor_func=actor_ref.fn,  # type: ignore[arg-type]  # Why: actor_ref.fn is Callable[..., object] (covers both sync and async); build_actor_scope expects Callable[..., Awaitable[object]] for DI resolution but never calls the function — sync-vs-async dispatch is handled later via actor_ref.is_sync
                         actor_name=actor_ref.name,
                         passthrough_kwargs=passthrough_kwargs,
+                        loop_slot_values=actor_loop_slot_values,
                     ) as resolved:
 
                         async def run_actor_with_di(
@@ -478,6 +507,31 @@ async def dispatch_one_job(
                 except asyncio.CancelledError:
                     outcome = "cancelled"
                     consumer_span.set_status(StatusCode.ERROR, "cancelled")
+                    # A batch completes on ANY terminal member — GoodJob's
+                    # per-job finish hook runs the completion check for
+                    # every finished job, discarded included
+                    # (vendor/good_job/app/models/good_job/batch_record.rb,
+                    # _continue_discard_or_finish: on_discard fires and
+                    # jobs_finished_at/on_finish still land) — so a
+                    # cancelled last member must complete its batch here,
+                    # not a sweep-interval later. Best-effort for the same
+                    # reason consume's own mark_cancelled on this path is
+                    # best-effort (an infra failure there is logged inside
+                    # consume and the row stays running for lock-lease
+                    # reclaim): a hook failure here is logged and the M7
+                    # stale-batch sweep remains the safety net for batch
+                    # status. On the transactional consumer path the
+                    # cancel has already aborted the slot's transaction,
+                    # so the hook's writes on that connection fail, are
+                    # logged, and the sweep recovers — immediate
+                    # completion holds on the autonomous path, the normal
+                    # case.
+                    try:
+                        await apply_batch_terminal_outcome(
+                            backend, job, "cancelled", transaction_conn=transaction_conn
+                        )
+                    except Exception:
+                        logger.exception("batch-policy-hook-failed", job_id=str(job.id))
                     raise
                 except Exception as exc:
                     outcome = "failed"
@@ -502,12 +556,38 @@ async def dispatch_one_job(
                             consumer_span,
                             handler_log,
                         )
-                        outcome = handler_result
                     except _TERMINAL_WRITE_INFRA_EXCEPTIONS as infra_exc:
+                        # An infra-failed terminal write leaves the row
+                        # RUNNING — lock-lease expiry and the sweep are the
+                        # recovery — so no batch counter may budge on a
+                        # write that never landed: the same rule the hook
+                        # itself applies to the clean-return path's "noop"
+                        # (a terminal write that matched nothing). The hook
+                        # call therefore lives in the else below, on a
+                        # real terminal outcome only.
                         _log_terminal_write_failed(handler_log, job, exc, infra_exc)
+                    else:
+                        outcome = handler_result
+                        # Best-effort, matching the hook call on consume's
+                        # clean return above (M7 sweep semantics documented
+                        # on apply_batch_terminal_outcome): non-terminal
+                        # handler outcomes ("scheduled") return inside the
+                        # hook without touching a counter.
+                        try:
+                            await apply_batch_terminal_outcome(
+                                backend, job, outcome, transaction_conn=transaction_conn
+                            )
+                        except Exception:
+                            logger.exception("batch-policy-hook-failed", job_id=str(job.id))
         finally:
             elapsed = time.monotonic() - t0
-            record_consumed_message(job.actor, job.queue, outcome=_to_consumed_outcome(outcome))
-            record_process_duration(job.actor, job.queue, elapsed)
+            # A noop means the row moved underneath this dispatch (a
+            # reclaim race): nothing was consumed, and the re-dispatch
+            # will record the real message and duration — recording here
+            # would double-count the message and stretch the histogram
+            # with a phantom process.
+            if outcome != "noop":
+                record_consumed_message(job.actor, job.queue, outcome=_to_consumed_outcome(outcome))
+                record_process_duration(job.actor, job.queue, elapsed)
 
     return outcome

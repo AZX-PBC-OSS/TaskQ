@@ -316,8 +316,9 @@ async def test_unique_for_race_window(
     clean_jobs_app: tuple[WorkerDeps, PostgresBackend],
 ) -> None:
     """Launch 100 concurrent enqueue calls with the same
-    (actor, identity_key) within the window. At most 10 rows created;
-    all callers receive a JobHandle (no exceptions)."""
+    (actor, identity_key) within the window. Exactly one row is
+    created — the single-flight advisory lock serializes the racers —
+    and all callers receive a JobHandle (no exceptions)."""
     deps, pg_backend = clean_jobs_app
     schema = deps.settings.schema_name
     client = JobsClient(pg_backend)
@@ -345,13 +346,16 @@ async def test_unique_for_race_window(
             identity,
         )
 
-    # unique_for is best-effort under concurrency; the dispatch CTE's
-    # running_identities filter ensures execution-level dedup
-    # even when enqueue-level dedup races. The hard upper bound is 100;
-    # in practice it is typically much smaller.
-    assert count <= 20, (
-        f"Race window allowed {count} rows (expected ≤ 10); "
-        f"unique_for is best-effort under concurrency"
+    # The single-flight advisory lock serializes every racer: the winner
+    # inserts and commits (releasing the lock), and each queued racer's
+    # preflight then sees the committed row and dedups — the same
+    # exactly-one contract tests/test_postgres_unique_for_single_flight.py
+    # pins under a warmed pool. The dispatch CTE's running_identities
+    # filter remains the execution-level guard behind this enqueue-level
+    # one.
+    assert count == 1, (
+        f"Race window allowed {count} rows; unique_for is serialized — "
+        f"100 concurrent enqueues of one identity must produce exactly 1"
     )
 
 

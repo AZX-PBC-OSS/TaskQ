@@ -1,7 +1,19 @@
 """Sliding-window rate limiter with pluggable backends.
 
 The log-style and GCRA in-memory backends are reference implementations
-and arithmetic oracles for the Redis Lua scripts and the PG fallbacks.
+for the Redis Lua scripts and the PG fallbacks. The log-style twin
+mirrors the deployed log scripts' count-and-window arithmetic. The GCRA
+twin mirrors the deployed pure-GCRA TAT arithmetic exactly and is
+deliberately STRICTER at the window boundary: pure GCRA (the vendored
+redis-gcra Lua and the PG fallback) admits ``limit + 1`` timestamps in
+one window at boundary conditions — an inherent property of the
+algorithm's delay tolerance, and correct-upstream behavior — while the
+in-memory twin augments the TAT with an exact timestamp log that denies
+that last admission (see ``_InMemorySlidingWindowGCRA``). The divergence
+direction is safe by construction: the twin can only under-admit
+relative to its configured ``limit``, never exceed it. Tests comparing
+the twin against the scripts must assert against the twin's own
+(stricter) contract, not assume script parity.
 
 Redis implementations (:mod:`taskq.ratelimit._sliding_window_redis`) and
 PG fallback implementations (:mod:`taskq.ratelimit._sliding_window_pg`)
@@ -164,17 +176,22 @@ class _InMemorySlidingWindowGCRA:
 
     Implements the Generic Cell Rate Algorithm (GCRA) with a single TAT
     (theoretical arrival time) value instead of a log of timestamps.
-    The arithmetic is canonical GCRA from Brandur Leach's published
+    The TAT arithmetic is canonical GCRA from Brandur Leach's published
     reference and mirrors the GCRA Lua script installed by the Redis
-    backend.
+    backend (and the PG fallback) exactly.
 
-    The in-memory backend augments the TAT with an exact timestamp log to
-    enforce a strict per-window count bound.  Standard GCRA with
+    The in-memory backend is deliberately STRICTER than those deployed
+    twins at the window boundary: it augments the TAT with an exact
+    timestamp log enforcing a per-window count bound. Standard GCRA with
     ``delay_tolerance = window_ms`` allows up to ``limit + 1`` real
-    timestamps in any window of ``window_ms`` at boundary conditions (e.g.
-    a burst of ``limit`` cells at t=0 followed by one more at
-    t=emission_interval).  The log guard closes this gap without altering
-    the TAT arithmetic used to compute ``retry_after``.
+    timestamps in any window of ``window_ms`` at boundary conditions
+    (e.g. a burst of ``limit`` cells at t=0 followed by one more at
+    t=emission_interval) — the deployed Redis Lua and PG paths, pure
+    GCRA, admit that last cell (correct-upstream behavior, vendored from
+    redis-gcra); this twin denies it. The guard is a policy choice for
+    the test substitute, safe in the strict direction only — it can
+    under-admit relative to the configured limit, never exceed it — and
+    it does not alter the TAT arithmetic used to compute ``retry_after``.
     """
 
     __slots__ = (
@@ -324,8 +341,11 @@ class SlidingWindow:
         "_mem_log",
         "_name",
         "_redis_gcra_refund_script",
+        "_redis_gcra_refund_script_client",
         "_redis_gcra_script",
+        "_redis_gcra_script_client",
         "_redis_log_script",
+        "_redis_log_script_client",
         "_script_lock",
         "_style",
         "_ttl",
@@ -371,8 +391,11 @@ class SlidingWindow:
                 self._mem_gcra = _InMemorySlidingWindowGCRA(name, limit, window_ms)
 
         self._redis_log_script: AsyncScript | None = None
+        self._redis_log_script_client: redis_async.Redis | None = None
         self._redis_gcra_script: AsyncScript | None = None
+        self._redis_gcra_script_client: redis_async.Redis | None = None
         self._redis_gcra_refund_script: AsyncScript | None = None
+        self._redis_gcra_refund_script_client: redis_async.Redis | None = None
         self._script_lock: asyncio.Lock = asyncio.Lock()
 
     @property

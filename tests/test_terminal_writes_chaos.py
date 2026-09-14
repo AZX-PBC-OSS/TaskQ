@@ -124,16 +124,20 @@ class TestConcurrentTerminalWrites:
         # Race the two callers
         if method == "mark_succeeded":
             results = await asyncio.gather(
-                backend.mark_succeeded(job_id, worker_a, {"ok": True}),
-                backend.mark_succeeded(job_id, worker_b, {"ok": True}),
+                backend.mark_succeeded(job_id, worker_a, {"ok": True}, attempt=1),
+                backend.mark_succeeded(job_id, worker_b, {"ok": True}, attempt=1),
                 return_exceptions=True,
             )
             assert results == [True, False]
 
         elif method == "mark_failed_or_retry":
             results = await asyncio.gather(
-                backend.mark_failed_or_retry(job_id, worker_a, error_info, retry_delay=None),
-                backend.mark_failed_or_retry(job_id, worker_b, error_info, retry_delay=None),
+                backend.mark_failed_or_retry(
+                    job_id, worker_a, error_info, retry_delay=None, attempt=1
+                ),
+                backend.mark_failed_or_retry(
+                    job_id, worker_b, error_info, retry_delay=None, attempt=1
+                ),
                 return_exceptions=True,
             )
             row_a = results[0]
@@ -143,8 +147,8 @@ class TestConcurrentTerminalWrites:
 
         elif method == "mark_cancelled":
             results = await asyncio.gather(
-                backend.mark_cancelled(job_id, worker_a),
-                backend.mark_cancelled(job_id, worker_b),
+                backend.mark_cancelled(job_id, worker_a, attempt=1),
+                backend.mark_cancelled(job_id, worker_b, attempt=1),
                 return_exceptions=True,
             )
             assert results == [True, False]
@@ -162,8 +166,8 @@ class TestConcurrentTerminalWrites:
 
         elif method == "mark_snoozed":
             results = await asyncio.gather(
-                backend.mark_snoozed(job_id, worker_a, timedelta(seconds=30)),
-                backend.mark_snoozed(job_id, worker_b, timedelta(seconds=30)),
+                backend.mark_snoozed(job_id, worker_a, timedelta(seconds=30), attempt=1),
+                backend.mark_snoozed(job_id, worker_b, timedelta(seconds=30), attempt=1),
                 return_exceptions=True,
             )
             assert results == ["scheduled", "noop"]
@@ -171,10 +175,10 @@ class TestConcurrentTerminalWrites:
         elif method == "mark_retry_after":
             results = await asyncio.gather(
                 backend.mark_retry_after(
-                    job_id, worker_a, timedelta(seconds=30), consume_budget=True
+                    job_id, worker_a, timedelta(seconds=30), consume_budget=True, attempt=1
                 ),
                 backend.mark_retry_after(
-                    job_id, worker_b, timedelta(seconds=30), consume_budget=True
+                    job_id, worker_b, timedelta(seconds=30), consume_budget=True, attempt=1
                 ),
                 return_exceptions=True,
             )
@@ -238,7 +242,19 @@ class TestConcurrentTerminalWrites:
             assert len(events) == 2
             assert events[0]["kind"] == "state_change"
 
-        elif method in ("mark_snoozed", "mark_retry_after"):
+        elif method == "mark_snoozed":
+            # Exactly one snooze landed (status scheduled); it wrote no
+            # rows — a deferral is not an execution — so the loser's
+            # predicate miss and the winner's write agree on zero attempt
+            # rows, and the only event is the dispatch seed.
+            assert row["status"] == "scheduled"
+            assert len(attempts) == 0
+            assert len(events) == 1
+            assert events[0]["kind"] == "state_change"
+
+        elif method == "mark_retry_after":
+            # consume_budget=True: the winner's deferral IS a real
+            # execution — one attempt row, one event of its own.
             assert row["status"] == "scheduled"
             assert len(attempts) == 1
             assert attempts[0]["outcome"] == "snoozed"
@@ -298,7 +314,9 @@ class TestTransactionRollbackOnMidFlightFailure:
 
         error_info = ErrorInfo(error_class="ValueError", error_message="boom", error_traceback=None)
         with pytest.raises(asyncpg.PostgresError):
-            await backend.mark_failed_or_retry(job_id, worker_id, error_info, retry_delay=None)
+            await backend.mark_failed_or_retry(
+                job_id, worker_id, error_info, retry_delay=None, attempt=1
+            )
 
         # Reconnect with a fresh connection and verify nothing landed.
         verify_conn = await asyncpg.connect(pg_dsn)

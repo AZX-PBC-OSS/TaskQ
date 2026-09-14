@@ -22,17 +22,22 @@ SELECT actor, max_concurrent, max_pending, queue, result_ttl, metadata
  WHERE actor = ANY($1::text[])
 """.strip()
 
-# ``max_concurrent``, ``max_pending``, and ``result_ttl`` are deliberately
-# absent from the ``DO UPDATE SET`` clause: Postgres leaves an unlisted
-# column at its current value on conflict, so an existing row's capacity
-# fields survive every subsequent startup untouched no matter what the
-# ``@actor(...)`` literal says. Those columns are only ever populated via
-# the ``INSERT`` list — i.e. the first time a row is created (seeding) — or
-# via `taskq actor-config set` (operator override). ``queue`` and
-# ``metadata`` remain structural: they are always re-written from the
+# ``max_concurrent``, ``max_pending``, ``result_ttl``, and ``queue`` are
+# deliberately absent from the ``DO UPDATE SET`` clause: Postgres leaves an
+# unlisted column at its current value on conflict, so an existing row's
+# capacity fields and queue assignment survive every subsequent startup
+# untouched no matter what the ``@actor(...)`` literal says. The capacity
+# columns are only ever populated via the ``INSERT`` list — i.e. the first
+# time a row is created (seeding) — or via `taskq actor-config set`
+# (operator override); the queue assignment via the ``INSERT`` list or
+# `taskq actor-config move-queue` (the one-step operator move). Keeping the
+# assignment out of the conflict clause is what makes a move durable across
+# a rolling deploy: a worker still carrying the old literal boots, logs
+# ``actor-config-queue-override``, and cannot flip the row back.
+# ``metadata`` remains structural: it is always re-written from the
 # registered value, which is safe because `sync_actor_config` has already
-# raised (or the caller passed ``force=True``) for any structural drift
-# before this statement runs.
+# raised (or the caller passed ``force=True``) for metadata drift before
+# this statement runs.
 _UPSERT_ACTOR_CONFIG_SQL = """
 INSERT INTO "{schema}".actor_config (actor, max_concurrent, max_pending, queue, result_ttl, metadata)
 SELECT actor, max_concurrent, max_pending, queue, result_ttl, metadata::jsonb
@@ -40,7 +45,6 @@ SELECT actor, max_concurrent, max_pending, queue, result_ttl, metadata::jsonb
       $1::text[], $2::int[], $3::int[], $4::text[], $5::float[], $6::text[]
   ) AS t(actor, max_concurrent, max_pending, queue, result_ttl, metadata)
 ON CONFLICT (actor) DO UPDATE SET
-    queue          = EXCLUDED.queue,
     metadata       = EXCLUDED.metadata,
     updated_at     = clock_timestamp()
 """.strip()
@@ -49,13 +53,20 @@ ON CONFLICT (actor) DO UPDATE SET
 # ``@actor(...)`` literal only seeds the row on first registration
 # (`stored_row is None` branch below); on every subsequent startup the
 # stored value wins and a differing literal is *expected*, not an error.
+# The queue assignment belongs to this family too — moved by
+# `taskq actor-config move-queue`, never by a boot — but is surfaced at
+# WARNING (`actor-config-queue-override`) rather than info, because cron
+# fires follow the stored queue while producers enqueue by their own
+# literal: the disagreement is real drift to surface. The check is written
+# out explicitly below rather than joined to this tuple so that
+# difference stays visible at the comparison site.
 _CAPACITY_FIELDS = ("max_concurrent", "max_pending", "result_ttl")
 
 # Fields where a stored/registered mismatch indicates a real correctness
-# bug (e.g. a stale pod routing an actor at the wrong queue) rather than a
-# deliberate operator override, and therefore still raise unless
+# bug rather than a deliberate operator override — no operator surface can
+# move them, so any mismatch is one — and therefore still raises unless
 # ``force=True``.
-_STRUCTURAL_FIELDS = ("queue", "metadata")
+_STRUCTURAL_FIELDS = ("metadata",)
 
 
 async def sync_actor_config(
@@ -78,19 +89,27 @@ async def sync_actor_config(
            ``actor-config-capacity-override`` (info level — this is an
            expected operator override, not a bug) and never raises. The
            stored value is left untouched by the UPSERT below.
-         - **Structural fields** (``queue``, ``metadata``) still raise:
-           one ``ActorConfigDriftError`` per differing field, collected
-           into ``ActorConfigDriftList`` and raised unless ``force=True``.
-           With ``force=True`` the mismatch is logged at
-           ``actor-config-drift-overwrite`` (error level) and the UPSERT
-           overwrites the stored value.
+         - **The queue assignment** is likewise operator-owned once a row
+           exists (moved by `taskq actor-config move-queue`): a differing
+           literal is logged at ``actor-config-queue-override`` (warning
+           level — cron fires follow the stored queue while producers
+           enqueue by their own literal, so the disagreement is real drift
+           to surface) and never raises. This is the rolling-deploy window
+           of a queue move: old-literal and new-literal workers both boot,
+           and the UPSERT below preserves the stored assignment so a stale
+           literal cannot undo the move.
+         - **Metadata** still raises: one ``ActorConfigDriftError`` per
+           differing field, collected into ``ActorConfigDriftList`` and
+           raised unless ``force=True``. With ``force=True`` the mismatch
+           is logged at ``actor-config-drift-overwrite`` (error level) and
+           the UPSERT overwrites the stored value.
       3. Upsert all registered rows via ``INSERT ... ON CONFLICT (actor)
-         DO UPDATE SET queue = EXCLUDED.queue, metadata =
-         EXCLUDED.metadata, updated_at = clock_timestamp()`` — capacity columns are
-         omitted from the ``SET`` clause so an existing row's
-         ``max_concurrent`` / ``max_pending`` / ``result_ttl`` survive
-         unchanged; they are populated by the ``INSERT`` list only when
-         the row is first created.
+         DO UPDATE SET metadata = EXCLUDED.metadata, updated_at =
+         clock_timestamp()`` — the capacity columns and the queue
+         assignment are omitted from the ``SET`` clause so an existing
+         row's ``max_concurrent`` / ``max_pending`` / ``result_ttl`` /
+         ``queue`` survive unchanged; they are populated by the
+         ``INSERT`` list only when the row is first created.
 
     Both phases run inside a single ``async with conn.transaction():``
     block so a SELECT-then-UPSERT race is impossible against another
@@ -147,8 +166,25 @@ async def sync_actor_config(
                         stored=stored_value,
                     )
 
-            structural_values: dict[str, str | dict[str, object]] = {
-                "queue": stored_row["queue"],
+            if cfg.queue != stored_row["queue"]:
+                # Warning, never an error: this is either the rolling-deploy
+                # window of `taskq actor-config move-queue` (stored row
+                # moved, this process's literal not yet redeployed — or the
+                # reverse) or a literal that has not followed the fleet's
+                # assignment. The stored queue routes the cron leader's
+                # fires; producers enqueue by their own literal — so the
+                # disagreement is real drift to surface, but refusing boot
+                # here is exactly what made a queue move need lockstep
+                # coordination. The newest assignment (the stored row)
+                # wins, and the UPSERT below preserves it.
+                logger.warning(
+                    "actor-config-queue-override",
+                    actor=cfg.actor,
+                    registered=cfg.queue,
+                    stored=stored_row["queue"],
+                )
+
+            structural_values: dict[str, dict[str, object]] = {
                 "metadata": stored_metadata,
             }
             for field in _STRUCTURAL_FIELDS:

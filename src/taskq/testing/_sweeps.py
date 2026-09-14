@@ -21,12 +21,12 @@ one input cannot mean three things across the two backends.
 """
 
 from dataclasses import replace
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
 import structlog
 
-from taskq.backend._protocol import AttemptRow, CancelPhase
+from taskq.backend._protocol import AttemptRow, CancelPhase, JobId, JobRow
 from taskq.backend._sweeps import (  # pyright: ignore[reportPrivateUsage]  # Why: the twins must enforce the identical boundary contract the Postgres sweeps enforce — one validator, one seam, no drift.
     _validate_positive,
 )
@@ -85,52 +85,83 @@ async def _deadline_sweep(
 ) -> int:
     _validate_positive("batch_size", batch_size)
     now = self._clock.now()
-    count = 0
+    # Select the whole bounded batch FIRST: on PG the transition UPDATE,
+    # the batched job_attempts INSERT, and the event INSERT share one
+    # transaction (sweep_deadline_exceeded), so an attempt-row primary-key
+    # collision on ANY selected row aborts the ENTIRE batch — every
+    # selected job stays pending/scheduled, nothing is written. The twin
+    # selects, validates every planned (job_id, attempt) key against the
+    # stored attempt rows and in-batch duplicates, and only then mutates:
+    # a collision raises the same typed UniqueViolationError PG's batched
+    # INSERT raises (job_attempts_pkey), never a silent duplicate append
+    # that completes the transition PG would leave torn down.
+    selected: list[tuple[JobId, JobRow]] = []
     for job_id, row in list(self._jobs.items()):
-        if count >= batch_size:
+        if len(selected) >= batch_size:
             break
         if (
             row.status in ("pending", "scheduled")
             and row.schedule_to_close is not None
             and row.schedule_to_close < now
         ):
-            self._jobs[job_id] = replace(
-                row,
-                status="failed",
-                finished_at=now,
-                error_class="DeadlineExceeded",
-                error_message="schedule_to_close reached before next dispatch",
-            )
-            attempt_row = AttemptRow(
-                job_id=job_id,
-                attempt=row.attempt,
-                started_at=row.started_at if row.started_at is not None else now,
-                finished_at=now,
-                outcome="failed",
-                error_class="DeadlineExceeded",
-                error_message="schedule_to_close reached before next dispatch",
-                error_traceback=None,
-                duration_ms=None,
-                worker_id=None,
-                metadata={},
-            )
-            self._attempts.setdefault(job_id, []).append(attempt_row)
-            self._append_state_change_event(
-                job_id=job_id,
-                from_state=row.status,
-                to_state="failed",
-                now=now,
-                error_class="DeadlineExceeded",
-            )
-            record_deadline_exceeded_swept(actor=row.actor)
-            logger.debug(
-                "state-change",
-                kind="state_change",
-                from_state=row.status,
-                to_state="failed",
-                job_id=str(job_id),
-            )
-            count += 1
+            selected.append((job_id, row))
+
+    if selected:
+        # Why a function-level import: the driver-free import-surface
+        # convention (taskq.testing imports no asyncpg at module scope);
+        # this raise path only ever runs where the driver is installed.
+        from asyncpg.exceptions import UniqueViolationError
+
+        _existing = {(a.job_id, a.attempt) for rows in self._attempts.values() for a in rows}
+        _seen: set[tuple[JobId, int]] = set()
+        for job_id, row in selected:
+            _key = (job_id, row.attempt)
+            if _key in _existing or _key in _seen:
+                raise UniqueViolationError(
+                    'duplicate key value violates unique constraint "job_attempts_pkey" '
+                    f"(job {job_id} attempt {row.attempt} already has an attempt row)"
+                )
+            _seen.add(_key)
+
+    count = 0
+    for job_id, row in selected:
+        self._jobs[job_id] = replace(
+            row,
+            status="failed",
+            finished_at=now,
+            error_class="DeadlineExceeded",
+            error_message="schedule_to_close reached before next dispatch",
+        )
+        attempt_row = AttemptRow(
+            job_id=job_id,
+            attempt=row.attempt,
+            started_at=row.started_at if row.started_at is not None else now,
+            finished_at=now,
+            outcome="failed",
+            error_class="DeadlineExceeded",
+            error_message="schedule_to_close reached before next dispatch",
+            error_traceback=None,
+            duration_ms=None,
+            worker_id=None,
+            metadata={},
+        )
+        self._attempts.setdefault(job_id, []).append(attempt_row)
+        self._append_state_change_event(
+            job_id=job_id,
+            from_state=row.status,
+            to_state="failed",
+            now=now,
+            error_class="DeadlineExceeded",
+        )
+        record_deadline_exceeded_swept(actor=row.actor)
+        logger.debug(
+            "state-change",
+            kind="state_change",
+            from_state=row.status,
+            to_state="failed",
+            job_id=str(job_id),
+        )
+        count += 1
     return count
 
 
@@ -142,108 +173,150 @@ async def _reclaim_expired_locks(
     batch_size: int = DEFAULT_EVENT_WRITER_BATCH_SIZE,
 ) -> int:
     # Mirrors PostgresBackend._SWEEP_1_SQL exactly, in both directions:
+    # * eligibility arms — the lease arm (lock_expires_at passed) and the
+    #   heartbeat arm (a per-job heartbeat_timeout whose holder has been
+    #   silent past it while the lease is still valid), disjoint by the
+    #   same lock_expires_at >= now exclusion the SQL's UNION ALL uses,
+    #   with NULL last_heartbeat_at never eligible (NULL + interval is
+    #   NULL in PG; the twin's None-guard mirrors it);
+    # * bounded batches — each arm transitions at most batch_size rows
+    #   per call (the SQL's per-arm LIMIT), so one call reclaims at most
+    #   2 x batch_size rows, exactly like the UNION ALL;
     # * carve-out — a job with an in-flight cancel request
     #   (cancel_phase != 0) is normally left for the cancellation
-    #   protocol to finish, but is still reclaimed once its lock has been
-    #   expired for cancel_grace + cleanup_grace + a flat 60s safety
-    #   margin (see _sweeps.py's _SWEEP_1_SQL comment) — otherwise a
-    #   worker that died mid-cancellation would never be recovered;
+    #   protocol to finish, but is still reclaimed once its arm's
+    #   deadline has been past for cancel_grace + cleanup_grace + a flat
+    #   60s safety margin (see _sweeps.py's _SWEEP_1_SQL comment) —
+    #   otherwise a worker that died mid-cancellation would never be
+    #   recovered;
     # * terminal labels — the retry branch resets cancel state (clean
     #   slate for the next dispatch); the exhausted branch lands on
     #   'cancelled' when a cancel was in-flight, 'crashed' otherwise,
-    #   while the attempt row records outcome='crashed' either way.
+    #   while the attempt row records outcome='crashed' either way;
+    # * outbox channel — both arms' events carry reason='lock_expired'
+    #   (the slice poll_reclaim_events tails) with a cause key naming
+    #   which deadline fired.
     _validate_positive("batch_size", batch_size)
     now = self._clock.now()
     deep_expiry_margin = cancel_grace + cleanup_grace + timedelta(seconds=60)
+    arm_counts: dict[str, int] = {"lock_expired": 0, "heartbeat_timeout": 0}
     count = 0
     for job_id, row in list(self._jobs.items()):
-        if count >= batch_size:
+        if all(c >= batch_size for c in arm_counts.values()):
             break
+        # The heartbeat arm's row-exact deadline, or None when the row
+        # carries no heartbeat_timeout / no heartbeat yet (NULL +
+        # interval is NULL in PG; the ternary's guard mirrors that
+        # None-propagation for the arithmetic below).
+        heartbeat_deadline: datetime | None = (
+            row.last_heartbeat_at + row.heartbeat_timeout
+            if row.last_heartbeat_at is not None and row.heartbeat_timeout is not None
+            else None
+        )
+        # One if/elif, conjuncts ordered so each None-guard precedes the
+        # arithmetic it guards — the same inline-narrowing shape the
+        # original single-conjunction predicate used.
+        cause: str | None = None
         if (
             row.status == "running"
             and row.lock_expires_at is not None
             and row.lock_expires_at < now
             and (row.cancel_phase == 0 or row.lock_expires_at < now - deep_expiry_margin)
         ):
-            duration_ms: int | None = None
-            if row.started_at is not None:
-                delta = now - row.started_at
-                duration_ms = int(delta.total_seconds() * 1000)
+            cause = "lock_expired"
+        elif (
+            row.status == "running"
+            and heartbeat_deadline is not None
+            and row.lock_expires_at is not None
+            and row.lock_expires_at >= now
+            and heartbeat_deadline < now
+            and (row.cancel_phase == 0 or heartbeat_deadline < now - deep_expiry_margin)
+        ):
+            cause = "heartbeat_timeout"
+        if cause is None or arm_counts[cause] >= batch_size:
+            continue
+        arm_counts[cause] += 1
+        duration_ms: int | None = None
+        if row.started_at is not None:
+            delta = now - row.started_at
+            duration_ms = int(delta.total_seconds() * 1000)
 
-            attempt_row = AttemptRow(
-                job_id=row.id,
-                attempt=row.attempt,
-                started_at=row.started_at if row.started_at is not None else now,
-                finished_at=now,
-                outcome="crashed",
-                error_class="WorkerCrashed",
-                error_message="lock expired before worker reported terminal state",
-                error_traceback=None,
-                duration_ms=duration_ms,
-                worker_id=row.locked_by_worker,
-                metadata={},
+        attempt_row = AttemptRow(
+            job_id=row.id,
+            attempt=row.attempt,
+            started_at=row.started_at if row.started_at is not None else now,
+            finished_at=now,
+            outcome="crashed",
+            error_class="WorkerCrashed",
+            error_message="lock expired before worker reported terminal state",
+            error_traceback=None,
+            duration_ms=duration_ms,
+            worker_id=row.locked_by_worker,
+            metadata={},
+        )
+        self._attempts.setdefault(job_id, []).append(attempt_row)
+
+        if row.attempt < row.max_attempts and row.retry_kind != "non_retryable":
+            new_scheduled = now + timedelta(seconds=5)
+            self._jobs[job_id] = replace(
+                row,
+                status="pending",
+                scheduled_at=new_scheduled,
+                locked_by_worker=None,
+                lock_expires_at=None,
+                cancel_phase=CancelPhase.NONE,
+                cancel_requested_at=None,
             )
-            self._attempts.setdefault(job_id, []).append(attempt_row)
-
-            if row.attempt < row.max_attempts and row.retry_kind != "non_retryable":
-                new_scheduled = now + timedelta(seconds=5)
-                self._jobs[job_id] = replace(
-                    row,
-                    status="pending",
-                    scheduled_at=new_scheduled,
-                    locked_by_worker=None,
-                    lock_expires_at=None,
-                    cancel_phase=CancelPhase.NONE,
-                    cancel_requested_at=None,
-                )
-                self._append_state_change_event(
-                    job_id,
-                    from_state="running",
-                    to_state="pending",
-                    now=now,
-                    worker_id=row.locked_by_worker,
-                    reason="lock_expired",
-                )
-                logger.debug(
-                    "state-change",
-                    kind="state_change",
-                    from_state="running",
-                    to_state="pending",
-                    job_id=str(job_id),
-                )
-            else:
-                # Exhausted: an in-flight cancel request makes 'cancelled'
-                # the honest terminal label (mirrors _SWEEP_1_SQL's CASE).
-                new_status = "cancelled" if row.cancel_phase != CancelPhase.NONE else "crashed"
-                # locked_by_worker/lock_expires_at are cleared on EVERY
-                # branch by _SWEEP_1_SQL's single SET clause list; the
-                # twin must match or a terminal row keeps pointing at a
-                # dead holder for every locked_by_worker-scoped reader.
-                self._jobs[job_id] = replace(
-                    row,
-                    status=new_status,
-                    finished_at=now,
-                    locked_by_worker=None,
-                    lock_expires_at=None,
-                    cancel_phase=CancelPhase.NONE,
-                    cancel_requested_at=None,
-                )
-                self._append_state_change_event(
-                    job_id,
-                    from_state="running",
-                    to_state=new_status,
-                    now=now,
-                    worker_id=row.locked_by_worker,
-                    reason="lock_expired",
-                )
-                logger.debug(
-                    "state-change",
-                    kind="state_change",
-                    from_state="running",
-                    to_state=new_status,
-                    job_id=str(job_id),
-                )
-            for event in self._wake_subscribers:
-                event.set()
-            count += 1
+            self._append_state_change_event(
+                job_id,
+                from_state="running",
+                to_state="pending",
+                now=now,
+                worker_id=row.locked_by_worker,
+                reason="lock_expired",
+                cause=cause,
+            )
+            logger.debug(
+                "state-change",
+                kind="state_change",
+                from_state="running",
+                to_state="pending",
+                job_id=str(job_id),
+            )
+        else:
+            # Exhausted: an in-flight cancel request makes 'cancelled'
+            # the honest terminal label (mirrors _SWEEP_1_SQL's CASE).
+            new_status = "cancelled" if row.cancel_phase != CancelPhase.NONE else "crashed"
+            # locked_by_worker/lock_expires_at are cleared on EVERY
+            # branch by _SWEEP_1_SQL's single SET clause list; the
+            # twin must match or a terminal row keeps pointing at a
+            # dead holder for every locked_by_worker-scoped reader.
+            self._jobs[job_id] = replace(
+                row,
+                status=new_status,
+                finished_at=now,
+                locked_by_worker=None,
+                lock_expires_at=None,
+                cancel_phase=CancelPhase.NONE,
+                cancel_requested_at=None,
+            )
+            self._append_state_change_event(
+                job_id,
+                from_state="running",
+                to_state=new_status,
+                now=now,
+                worker_id=row.locked_by_worker,
+                reason="lock_expired",
+                cause=cause,
+            )
+            logger.debug(
+                "state-change",
+                kind="state_change",
+                from_state="running",
+                to_state=new_status,
+                job_id=str(job_id),
+            )
+        for event in self._wake_subscribers:
+            event.set()
+        count += 1
     return count

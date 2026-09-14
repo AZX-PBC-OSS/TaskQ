@@ -1,0 +1,33 @@
+-- Drop jobs_actor_fairness_dispatch_idx now that
+-- 01.00.09_01_pre_round_robin_probe_index.sql has taken over serving the
+-- round-robin dispatch path. Forward-only; there is no down migration.
+-- To revert, restore from backup. The literal "{schema}" token is
+-- substituted at apply time by the migration runner.
+--
+-- DO NOT apply this migration (`taskq migrate up --phase post`, or a
+-- plain `taskq migrate up` once the pre phase is already applied) until
+-- every worker in the fleet is confirmed running the release that
+-- shipped 01.00.09_01_pre_round_robin_probe_index.sql. Pre-that-release
+-- code still runs the shipped round-robin candidates lateral — the
+-- ROW_NUMBER window over EVERY due pending row of the (actor, queue)
+-- pair — and that window reads this index for its pre-sorted
+-- per-partition input (01.00.00_01's index comment documents exactly
+-- that contract). Dropping the index under the old code does not break
+-- correctness (the window sorts its input either way) but removes the
+-- pre-sorted plan from a query that is already O(backlog depth) per
+-- round — the defect issue #130 filed — so an old-generation worker
+-- would pay the depth cost AND a full sort on top during the overlap
+-- window. The migration runner additionally refuses to apply a post
+-- migration before its same-version pre counterpart (see apply_pending
+-- in src/taskq/migrate.py), so `taskq migrate up --phase post` cannot
+-- drop this index before its replacement exists.
+--
+-- The new release has no consumer for this index: the depth-bounded
+-- round-robin lateral probes cohorts through the COALESCE expression
+-- index (its probes cannot use a bare fairness_key column position for
+-- the NULL cohort — see _dispatch_sql.py's
+-- _ROUND_ROBIN_CANDIDATES_LATERAL comment), and no other statement in
+-- src/ references jobs_actor_fairness_dispatch_idx. Keeping it would
+-- be pure write amplification: every enqueue and every pending↔running
+-- status flip on the jobs hot path maintains an index nothing reads.
+DROP INDEX IF EXISTS "{schema}".jobs_actor_fairness_dispatch_idx;

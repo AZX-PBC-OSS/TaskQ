@@ -1,5 +1,7 @@
 """Shared constants and helpers for admin list pages with keyset pagination."""
 
+from datetime import UTC, datetime
+
 from fastapi import HTTPException
 
 from taskq._json import check_no_nul_str
@@ -60,6 +62,38 @@ def parse_text_filter(raw: str | None, what: str) -> str | None:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return raw
+
+
+def parse_time_filter(raw: str | None, what: str) -> datetime | None:
+    """Parse an absolute ISO-8601 timestamp filter; raises HTTPException on garbage.
+
+    The admin jobs list binds ``time_from``/``time_to`` against
+    ``$n::timestamptz`` parameters, and asyncpg's timestamptz encoder
+    accepts only ``datetime`` instances — handing it the raw query
+    STRING is rejected client-side with a DataError that surfaces as an
+    opaque 500. The family's own convention for caller-supplied
+    timestamps (history.py's ``cursor_at``) parses with
+    ``datetime.fromisoformat`` and 400s on garbage; the absolute time
+    filters take the same path: a well-formed window binds as
+    datetimes, a malformed one is a clean 400 input error. An empty
+    value means no filter (the family's blank-normalization convention
+    — a submitted-but-empty form field is not garbage). A timestamp
+    without an offset is read as UTC: asyncpg binds a naive datetime in
+    the client process's local zone, so an implicit-local read would
+    shift the window by whatever machine happens to serve the page.
+    """
+    if raw is None or not raw.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{what} is not a valid ISO 8601 timestamp: {raw!r}",
+        ) from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed
 
 
 def parse_job_tags(raw: str | None) -> list[str] | None:

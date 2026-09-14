@@ -13,12 +13,19 @@ Attempt-counter semantics, verified against the library (not guessed):
   actor's ``ctx.attempt`` is that post-increment value (``worker/dispatch.py``).
   ``mark_succeeded``/``mark_failed`` leave ``attempt`` untouched
   (``backend/_sql_templates.py``), so a terminal row's ``attempt`` is exactly
-  the number of dispatches the job went through.
-- ``mark_snoozed`` deliberately leaves ``attempt`` unchanged and bumps
-  ``max_attempts = j.max_attempts + 1`` — "Snooze does not consume retry
-  budget" (``backend/_sql_templates.py``). The snoozed row lands in
-  ``scheduled`` and is re-queued by the leader's ``scheduled_to_pending``
-  sweep (~1 s cadence, ``worker/leader.py``).
+  the number of consuming dispatches the job went through.
+- A non-consuming deferral (``Snooze`` /
+  ``RetryAfter(consume_budget=False)``) REFUNDS the claim's attempt
+  increment (``attempt - 1`` floored at 0; the Oban/River snooze
+  convention) — unbounded and budget-free, ``max_attempts`` is never
+  raised, and the deferral is counted on the row's ``snooze_count``
+  instead. A snooze cycle therefore returns the row to its pre-claim
+  base and the re-dispatch re-claims exactly one increment, so an
+  actor that snoozes N times then succeeds keys the cycle count off
+  ``ctx.snooze_count`` (``ctx.attempt`` stays at 1 across snooze
+  cycles). The snoozed row lands in ``scheduled`` and is re-queued by
+  the leader's ``scheduled_to_pending`` sweep (~1 s cadence,
+  ``worker/leader.py``).
 - ``non_retryable_exceptions`` classify at the first failure:
   ``RetryClassifier.decide`` returns ``Fail`` on isinstance (``retry.py``),
   and the terminal write records ``error_class = type(exc).__name__``
@@ -159,13 +166,16 @@ async def test_snooze_requeues_then_succeeds(
     e2e_schema: E2ESchema,
     run_id: str,
 ) -> None:
-    """Snooze(200ms) on attempt 1 → requeue via ``scheduled`` → success on attempt 2.
+    """Snooze(200ms) on dispatch 1 → requeue via ``scheduled`` → success
+    on the re-claimed dispatch.
 
-    The snooze does not consume retry budget: ``mark_snoozed`` leaves
-    ``attempt`` unchanged (so the second dispatch increments it to 2) and
-    refunds ``max_attempts`` (+1) in the same UPDATE. The ``synced`` effect's
-    attempt number (2) proves success happened only on the post-snooze
-    dispatch — never on the snoozed one.
+    The snooze is budget-free: ``mark_snoozed`` refunds the claim's
+    attempt increment (1 → 0) and never touches ``max_attempts``, so the
+    re-dispatch re-claims exactly one increment — both ``fetch`` effects
+    carry attempt 1, the terminal row's attempt is 1, and the row's
+    ``snooze_count`` is the cycle's durable record. The ``synced``
+    effect's attempt number (1) proves success happened only on the
+    post-snooze dispatch — never on the snoozed one.
     """
     handle = await e2e_client.enqueue(
         sync_user_profile,
@@ -175,15 +185,17 @@ async def test_snooze_requeues_then_succeeds(
     await handle.wait(timeout=60)
 
     fetch_rows = await fetch_effects(e2e_pg_pool, e2e_schema.schema_name, run_id, kind="fetch")
-    assert [row["attempt"] for row in fetch_rows] == [1, 2]
+    # Both dispatches carry attempt 1: the snooze refunded the first
+    # claim's increment and the re-dispatch re-claimed it.
+    assert [row["attempt"] for row in fetch_rows] == [1, 1]
 
     synced_rows = await fetch_effects(e2e_pg_pool, e2e_schema.schema_name, run_id, kind="synced")
     assert len(synced_rows) == 1
-    assert synced_rows[0]["attempt"] == 2
+    assert synced_rows[0]["attempt"] == 1
 
     job = await e2e_pg_pool.fetchrow(
         f"""
-        SELECT status, attempt, max_attempts
+        SELECT status, attempt, max_attempts, snooze_count
         FROM "{e2e_schema.schema_name}".jobs
         WHERE id = $1
         """,
@@ -191,6 +203,8 @@ async def test_snooze_requeues_then_succeeds(
     )
     assert job is not None
     assert job["status"] == "succeeded"
-    assert job["attempt"] == 2
-    # Snooze refunded the budget: 3 declared + 1 refund from mark_snoozed.
-    assert job["max_attempts"] == 4
+    assert job["attempt"] == 1
+    # The snooze left the configured ceiling alone: 3 declared, 3 kept.
+    assert job["max_attempts"] == 3
+    # The deferral's durable record is the row counter.
+    assert job["snooze_count"] == 1

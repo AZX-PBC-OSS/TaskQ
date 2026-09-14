@@ -37,6 +37,7 @@ from taskq.backend._protocol import (
     JobStatus,
     LongRunningJobEventsWriter,
     ScheduleRecord,
+    SnoozeOutcome,
 )
 from taskq.backend.statemachine import (
     ACTIVE_STATUSES,
@@ -76,6 +77,7 @@ __all__ = [  # pyright: ignore[reportUnsupportedDunderAll]  # Why: __getattr__ l
     "LongRunningJobEventsWriter",
     "PostgresBackend",
     "ScheduleRecord",
+    "SnoozeOutcome",
     "assert_valid_transition",
     "decode_batch_cursor",
     "decode_cursor",

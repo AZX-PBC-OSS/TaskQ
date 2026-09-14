@@ -81,7 +81,9 @@ class _PgShapedBackend:
     async def deadline_sweep(self) -> int:
         return 0
 
-    async def sweep_leaked_reservation_slots(self, conn: object, *, schema: str) -> int:
+    async def sweep_leaked_reservation_slots(
+        self, conn: object, *, schema: str, batch_size: int = 100
+    ) -> int:
         return 0
 
     async def sweep_expired_results(
@@ -193,6 +195,30 @@ def _recording_stale_batches() -> Generator[list[dict[str, Any]], None, None]:
         sweeps_mod.complete_stale_batches = original  # type: ignore[assignment]
 
 
+@contextlib.contextmanager
+def _draining_stale_batches() -> Generator[list[dict[str, Any]], None, None]:
+    """Swap ``complete_stale_batches`` for a drain-shaped recorder: the
+    first call reports one full bounded batch, the next an empty window —
+    the shape a real bounded sweep produces when the remainder fits in one
+    more batch, so a drain-wired caller stops after exactly two calls."""
+    import taskq.worker._leader_sweeps as sweeps_mod
+
+    calls: list[dict[str, Any]] = []
+
+    async def _fake(
+        conn: object, *, schema: str, batch_size: int = DEFAULT_EVENT_WRITER_BATCH_SIZE
+    ) -> int:
+        calls.append({"schema": schema})
+        return 3 if len(calls) == 1 else 0
+
+    original = sweeps_mod.complete_stale_batches
+    sweeps_mod.complete_stale_batches = _fake  # type: ignore[assignment]  # Why: test-only instrumentation.
+    try:
+        yield calls
+    finally:
+        sweeps_mod.complete_stale_batches = original  # type: ignore[assignment]
+
+
 async def test_stale_batch_sweep_runs_for_leader_without_keyed_rate_limits() -> None:
     """A leader with a registry holding NO keyed refs (the default deployment
     shape) still runs the stale-batch completion sweep.
@@ -208,6 +234,42 @@ async def test_stale_batch_sweep_runs_for_leader_without_keyed_rate_limits() -> 
 
     assert calls, "leader must run complete_stale_batches even with no keyed rate limits"
     assert calls[0]["schema"] == ctx.deps.settings.schema_name
+
+
+async def test_stale_batch_sweep_drains_within_one_tick() -> None:
+    """A non-empty bounded batch drains to zero WITHIN the tick that first
+    saw it, through the same ``_drain_bounded`` wiring as sweeps 1/2 — not
+    one bounded call per sweep_interval, which left a large stale set
+    completing at one batch per tick while every sibling sweep drained to
+    zero per tick.
+
+    The recorder reports one full batch (3 completions) then an empty
+    window, so a drain-wired loop makes exactly two calls inside the
+    first tick; a one-call-per-tick loop makes only the first within the
+    drive window (the fixture's sweep interval is the default 30 s).
+    """
+    # The module's own _deps() pins sweep_interval to 0.01 s so negative
+    # assertions survive several ticks; THIS test needs the opposite —
+    # an interval long enough that only drain calls, not later ticks,
+    # can produce the second call inside the window.
+    settings_deps = _deps(is_leader=True)
+    settings_deps.settings.sweep_interval = 30.0
+    ctx = SweepContext(
+        deps=settings_deps,
+        backend=_PgShapedBackend(),  # type: ignore[arg-type]  # Why: test double for the Backend protocol
+        clock=FakeClock(datetime(2025, 1, 1, tzinfo=UTC)),
+        worker_id=new_uuid(),
+        rate_limit_registry=RateLimitRegistry(),
+    )
+
+    with _draining_stale_batches() as calls:
+        await _drive_sweep_loop(ctx, seconds=2.0, stop_on=lambda: len(calls) >= 2)
+
+    assert len(calls) >= 2, (
+        f"the stale-batch sweep made {len(calls)} call(s) inside one "
+        "30 s tick — a non-empty first batch must drain within the same "
+        "tick, not one bounded call per sweep_interval"
+    )
 
 
 async def test_stale_batch_sweep_skipped_when_not_leader() -> None:

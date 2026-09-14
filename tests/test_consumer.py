@@ -2223,6 +2223,8 @@ class _OwnershipMismatchBackend(_FakeBackend):
         retry_delay: timedelta | None,
         progress_seq: int = 0,
         progress_state: dict[str, object] | None = None,
+        *,
+        attempt: int | None = None,
     ) -> JobRow:
         raise WorkerOwnershipMismatch(job_id=job_id, expected=worker_id, actual=new_uuid())
 

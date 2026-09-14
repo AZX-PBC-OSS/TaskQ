@@ -11,14 +11,20 @@ shared window state is server-domain by construction, so callers on nodes
 with divergent Python clocks are all measured against the same window.
 """
 
+import asyncio
 from datetime import timedelta
 from typing import TYPE_CHECKING
 from uuid import UUID
 
 import structlog
 
-from taskq._advisory import acquire_advisory_xact_lock_bounded
+from taskq._advisory import (
+    _LOCK_TIMEOUT_SET_SQL,  # pyright: ignore[reportPrivateUsage]  # Why: the one implementation of the set_config statement shared with the enqueue path's bounded locks — a local copy would drift from the machinery it mirrors.
+    DEFAULT_ADVISORY_LOCK_CLIENT_BACKSTOP_SLACK_S,
+    acquire_advisory_xact_lock_bounded,
+)
 from taskq.backend._records import jsonb_param, jsonb_to_dict
+from taskq.exceptions import RateLimitDependencyUnavailable
 from taskq.ratelimit._decision_log import log_decision
 from taskq.ratelimit.decision import RateLimitDecision, RateLimitState
 
@@ -48,7 +54,7 @@ async def _peek_pg_log(
     settings: "WorkerSettings | None",
 ) -> RateLimitState:
     if pg_pool is None:
-        raise RuntimeError("pg_pool not injected for postgres backend")
+        raise RateLimitDependencyUnavailable("pg_pool not injected for postgres backend")
     if settings is None:
         raise RuntimeError("settings not injected for postgres backend")
 
@@ -106,7 +112,7 @@ async def _peek_pg_gcra(
     settings: "WorkerSettings | None",
 ) -> RateLimitState:
     if pg_pool is None:
-        raise RuntimeError("pg_pool not injected for postgres backend")
+        raise RateLimitDependencyUnavailable("pg_pool not injected for postgres backend")
     if settings is None:
         raise RuntimeError("settings not injected for postgres backend")
 
@@ -164,7 +170,7 @@ async def _reset_pg_log(
     settings: "WorkerSettings | None",
 ) -> None:
     if pg_pool is None:
-        raise RuntimeError("pg_pool not injected for postgres backend")
+        raise RateLimitDependencyUnavailable("pg_pool not injected for postgres backend")
     if settings is None:
         raise RuntimeError("settings not injected for postgres backend")
 
@@ -182,7 +188,7 @@ async def _reset_pg_gcra(
     settings: "WorkerSettings | None",
 ) -> None:
     if pg_pool is None:
-        raise RuntimeError("pg_pool not injected for postgres backend")
+        raise RateLimitDependencyUnavailable("pg_pool not injected for postgres backend")
     if settings is None:
         raise RuntimeError("settings not injected for postgres backend")
 
@@ -203,7 +209,7 @@ async def _refund_pg_gcra(
     if decision.previous_state is None:
         return
     if pg_pool is None:
-        raise RuntimeError("pg_pool not injected for postgres gcra refund")
+        raise RateLimitDependencyUnavailable("pg_pool not injected for postgres gcra refund")
     if settings is None:
         raise RuntimeError("settings not injected for postgres gcra refund")
 
@@ -231,7 +237,7 @@ async def _refund_pg_log(
     if decision.request_id is None:
         return
     if pg_pool is None:
-        raise RuntimeError("pg_pool not injected for postgres log refund")
+        raise RateLimitDependencyUnavailable("pg_pool not injected for postgres log refund")
     if settings is None:
         raise RuntimeError("settings not injected for postgres log refund")
 
@@ -296,7 +302,7 @@ async def _acquire_pg_log(
     never over-admit past the limit.
     """
     if pg_pool is None:
-        raise RuntimeError("pg_pool not injected for postgres backend")
+        raise RateLimitDependencyUnavailable("pg_pool not injected for postgres backend")
     if settings is None:
         raise RuntimeError("settings not injected for postgres backend")
     if request_id is None:
@@ -450,6 +456,8 @@ async def _acquire_pg_gcra(
     self: "SlidingWindow",
     pg_pool: "asyncpg.Pool | None",
     settings: "WorkerSettings | None",
+    *,
+    lock_timeout_ms: float = DEFAULT_SLIDING_WINDOW_LOCK_TIMEOUT_MS,
 ) -> RateLimitDecision:
     """Acquire GCRA-style against PG.
 
@@ -457,9 +465,22 @@ async def _acquire_pg_gcra(
     read inside the same locked transaction, so the stored TAT is
     server-domain by construction and a node with a skewed Python clock
     cannot move the shared admission boundary.
+
+    The bucket row's FOR UPDATE WAIT is bounded (default
+    :data:`DEFAULT_SLIDING_WINDOW_LOCK_TIMEOUT_MS`), mirroring the
+    log-style acquire's advisory-lock budget in the same module: with
+    ``rate_limit_pg_fallback_enabled`` on, a Redis outage funnels all
+    admission through this row lock, so an unbounded wait would let one
+    black-holed holder (dead TCP, no FIN) stall its bucket's admission
+    until the server's keepalives reap it. On budget exhaustion the
+    acquire FAILS CLOSED — the limiter's denial outcome, ``allowed=False``
+    with a retry hint of one more budget, never an exception and never
+    an admission: a racer that could not read the TAT can never advance
+    it. ``lock_timeout_ms <= 0`` waits indefinitely, the ``lock_timeout``
+    GUC convention shared with migrate.py and ``taskq._advisory``.
     """
     if pg_pool is None:
-        raise RuntimeError("pg_pool not injected for postgres backend")
+        raise RateLimitDependencyUnavailable("pg_pool not injected for postgres backend")
     if settings is None:
         raise RuntimeError("settings not injected for postgres backend")
 
@@ -474,12 +495,6 @@ async def _acquire_pg_gcra(
         f'FROM "{schema}".rate_limit_buckets '
         f"WHERE bucket_name = $1 FOR UPDATE"
     )
-    # Cold-start guard mirroring the token-bucket PG path: SELECT ... FOR
-    # UPDATE cannot lock a row that does not exist yet, so two concurrent
-    # first acquires would each read `row is None`, each admit, and race
-    # last-writer-wins on the TAT. Pre-seed a row stamped with the
-    # server-clock TAT (idempotent — DO NOTHING on conflict) so first use
-    # also serialises on the row lock below.
     preseed_sql = (
         f'INSERT INTO "{schema}".rate_limit_buckets (bucket_name, kind, state, updated_at) '  # noqa: S608  # Why: schema_name pre-validated; values are $1-bound
         f"VALUES ($1, 'gcra', "
@@ -501,8 +516,76 @@ async def _acquire_pg_gcra(
     pg_previous_state: dict[str, object] | None = None
 
     async with pg_pool.acquire() as conn, conn.transaction():
-        await conn.execute(preseed_sql, self._name)
-        row = await conn.fetchrow(select_sql, self._name)
+
+        async def _preseed_and_read() -> "asyncpg.Record | None":
+            # Cold-start guard mirroring the token-bucket PG path: SELECT
+            # ... FOR UPDATE cannot lock a row that does not exist yet, so
+            # two concurrent first acquires would each read `row is None`,
+            # each admit, and race last-writer-wins on the TAT. Pre-seed a
+            # row stamped with the server-clock TAT (idempotent — DO
+            # NOTHING on conflict) so first use also serialises on the row
+            # lock below.
+            await conn.execute(preseed_sql, self._name)
+            return await conn.fetchrow(select_sql, self._name)
+
+        row: asyncpg.Record | None = None
+
+        if lock_timeout_ms > 0:
+            # Bounded row-lock wait, mechanics mirrored from
+            # taskq._advisory's contended tier. set_config(..., true) is
+            # SET LOCAL semantics, so the bound covers every lock wait
+            # this transaction can take — the preseed's conflict check,
+            # the SELECT FOR UPDATE, the upsert's speculative insert — and
+            # dies with the transaction's own commit; no save/restore
+            # cycle is needed (unlike the enqueue helper, whose caller
+            # keeps using the transaction afterwards). The savepoint keeps
+            # the transaction committable after a 55P03 (a raw statement
+            # error would leave it aborted); the client-side backstop
+            # bounds the network black hole the server-side timeout
+            # cannot see.
+            from asyncpg.exceptions import LockNotAvailableError
+
+            await conn.execute(_LOCK_TIMEOUT_SET_SQL, f"{round(lock_timeout_ms)}ms")
+
+            async def _locked_state_read() -> None:
+                nonlocal row
+                async with conn.transaction():
+                    row = await _preseed_and_read()
+
+            try:
+                await asyncio.wait_for(
+                    _locked_state_read(),
+                    timeout=lock_timeout_ms / 1000.0
+                    + DEFAULT_ADVISORY_LOCK_CLIENT_BACKSTOP_SLACK_S,
+                )
+            except (LockNotAvailableError, TimeoutError):
+                # Fail closed: the limiter's denial outcome with a retry
+                # hint of one more budget — the timed-out racer wrote
+                # nothing (the savepoint rolled the preseed back; the
+                # upsert never ran), so the TAT was never advanced. The
+                # warning is the operator signal that the bucket (or its
+                # holder) is contended or sick rather than merely busy —
+                # the same event name the log-style path emits for the
+                # same condition.
+                logger.warning(
+                    "ratelimit-lock-timeout",
+                    bucket_name=self._name,
+                    backend="postgres",
+                    lock_timeout_ms=lock_timeout_ms,
+                )
+                result = RateLimitDecision(
+                    allowed=False,
+                    remaining=0.0,
+                    retry_after=timedelta(milliseconds=lock_timeout_ms),
+                    bucket_name=self._name,
+                    backend="postgres",
+                )
+                log_decision(result, style=self._style)
+                return result
+        else:
+            # lock_timeout_ms <= 0: the indefinite mode — the GUC
+            # convention's opt-out, and the pre-bound behavior.
+            row = await _preseed_and_read()
 
         if row is None:
             # Unreachable in the normal path — the preseed above guarantees

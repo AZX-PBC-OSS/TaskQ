@@ -425,7 +425,15 @@ async def test_phase_3_abandonment() -> None:
     active.cancel_observed_at = loop.time() - cancel_grace - cleanup_grace - 1.0
 
     recorder = _Recorder()
-    recorder.set_fetch_return([])
+    # Why the poll must return the row: the phase-3 arm is poll-fenced —
+    # mark_abandoned is worker-unfenced, so an abandon may only be queued
+    # for a row this worker's own poll still returns (locked_by this
+    # worker, cancel-requested, running). A silent poll with a local
+    # FORCED entry is a stale/reclaimed row whose abandon could terminate
+    # another worker's re-dispatched attempt (the PG-level proof is
+    # tests/test_rt_cancelwatch_cross_worker_abandon.py). This job is
+    # still this worker's, escalated to phase 2.
+    recorder.set_fetch_return([_MockRow(id=job_id, cancel_phase=2)])
 
     backend = _FakeBackend()
     backend.set_mark_abandoned_return(True)

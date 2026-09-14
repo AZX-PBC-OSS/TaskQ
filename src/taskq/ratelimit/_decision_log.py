@@ -1,9 +1,11 @@
 """Shared rate-limit decision logger.
 
 Emits ``logger.debug("rate-limit-decision", **fields)`` on every call and
-``logger.info("rate-limit-decision", **fields)`` additionally on denial.
-The ``style`` keyword argument is omitted from the log payload when
-``None`` so that token-bucket log lines remain byte-for-byte identical
+``logger.info("rate-limit-decision", **fields)`` additionally on denial;
+a denial also bumps ``taskq.ratelimit.denials`` (backend label only —
+bucket names are caller-derived and unbounded, so they are not a metric
+dimension). The ``style`` keyword argument is omitted from the log payload
+when ``None`` so that token-bucket log lines remain byte-for-byte identical
 to the pre-extraction output.
 """
 
@@ -11,6 +13,7 @@ from typing import Literal
 
 import structlog
 
+from taskq.obs import record_ratelimit_denial
 from taskq.ratelimit.decision import RateLimitDecision
 
 logger = structlog.get_logger("taskq.ratelimit._decision_log")
@@ -36,3 +39,4 @@ def log_decision(
     logger.debug("rate-limit-decision", **fields)
     if not result.allowed:
         logger.info("rate-limit-decision", **fields)
+        record_ratelimit_denial(result.backend)

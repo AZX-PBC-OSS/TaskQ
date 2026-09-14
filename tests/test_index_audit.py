@@ -49,6 +49,7 @@ from taskq.backend._sweeps import (  # pyright: ignore[reportPrivateUsage]  # Wh
     _SWEEP_1_SQL,
     _SWEEP_2_SQL,
     _SWEEP_3_SQL,
+    _SWEEP_4_SQL,
     _SWEEP_RESULT_TTL_SQL,
 )
 from taskq.constants import (
@@ -61,9 +62,11 @@ from taskq.worker._leader_shared import (
     _ARCHIVE_CTE_SQL,  # pyright: ignore[reportPrivateUsage]  # Why: same.
     _CLEANUP_STALE_WORKERS_SQL,  # pyright: ignore[reportPrivateUsage]  # Why: same.
     _EXPIRY_CTE_SQL,  # pyright: ignore[reportPrivateUsage]  # Why: same.
+    _QUERY_QUEUE_DEPTH_SQL_TEMPLATE,  # pyright: ignore[reportPrivateUsage]  # Why: same — the queue-depth gauge's exact statement.
 )
 from taskq.worker._leader_sweeps import (
     _QUERY_OLDEST_DUE_AGE_SQL_TEMPLATE,  # pyright: ignore[reportPrivateUsage]  # Why: same as above — pin the production statement, not a copy.
+    _QUERY_RUNNING_LEASE_EXPIRED_SQL_TEMPLATE,  # pyright: ignore[reportPrivateUsage]  # Why: same — the zombie-running gauge's exact statement.
 )
 
 pytestmark = pytest.mark.integration
@@ -237,6 +240,22 @@ async def audit_schema(pg_dsn: str) -> Any:
         await _drop_schema(conn, schema)
         await migrate_mod.apply_pending(conn, schema=schema)
 
+        # The shared test cluster runs with synchronous_commit=off (a
+        # throwaway container — see taskq.testing._shared_containers),
+        # and an async commit's records are not WAL-flushed when the
+        # client is acknowledged. The visibility-map set is gated on the
+        # page's WAL being durable, so a VACUUM after async-committed
+        # COPY loads cannot mark those pages all-visible — the map
+        # stalls part-covered and every candidate plan is priced as a
+        # heap-fetching scan. Seeding this fixture's loads with
+        # synchronous_commit=on makes every COPY commit durable by the
+        # time the VACUUM below runs, so the map completes and the
+        # planner can cost index-only scans — the representative steady
+        # state of a production table, whose commits are durable and
+        # whose autovacuum completes the map. Session-scoped: only this
+        # one seeding connection pays the flushes.
+        await conn.execute("SET synchronous_commit = on")
+
         now = datetime.now(UTC)
 
         def future(secs: float) -> datetime:
@@ -304,6 +323,48 @@ async def audit_schema(pg_dsn: str) -> Any:
                 "retry_kind",
             ],
             records=running,
+        )
+        # Heartbeat-configured running slice (nothing eligible — every
+        # heartbeat fresh, every lease future): the steady-state
+        # population of the heartbeat arm's partial index
+        # (jobs_running_heartbeat_deadline_idx), whose every-tick cost
+        # the arm's plan pin asserts stays index-bounded. A distinct
+        # actor names the slice so the single UPDATE below can set
+        # heartbeat_timeout on exactly these rows.
+        heartbeat_running = [
+            (
+                new_uuid(),
+                "live.heartbeat",
+                "default",
+                '{"v": 1}',
+                "running",
+                future(600 + i),
+                now - timedelta(seconds=i % 30),
+                3,
+                "transient",
+            )
+            for i in range(500)
+        ]
+        await conn.copy_records_to_table(
+            "jobs",
+            schema_name=schema,
+            columns=[
+                "id",
+                "actor",
+                "queue",
+                "payload",
+                "status",
+                "lock_expires_at",
+                "last_heartbeat_at",
+                "max_attempts",
+                "retry_kind",
+            ],
+            records=heartbeat_running,
+        )
+        await conn.execute(
+            f'UPDATE "{schema}".jobs '  # Why: fixed actor literal — no user input, nothing to $-bind.
+            "SET heartbeat_timeout = interval '30 seconds' "
+            "WHERE actor = 'live.heartbeat' AND status = 'running'"
         )
         scheduled = [
             (
@@ -497,7 +558,19 @@ async def audit_schema(pg_dsn: str) -> Any:
             columns=["job_id", "attempt", "started_at", "finished_at", "outcome", "worker_id"],
             records=referencing + unreferenceable,
         )
-        for table in ("jobs", "cron_schedules", "job_attempts", "workers"):
+        # jobs gets VACUUM (ANALYZE), not bare ANALYZE: a production jobs
+        # table is constantly vacuumed (autovacuum trails every bulk
+        # write), so its live pages are all-visible and the planner can
+        # cost index-only scans over them — the cost model the pins must
+        # be evaluated at. Bare ANALYZE leaves the COPY-loaded pages'
+        # visibility bits unset (ANALYZE never touches the map), which
+        # forces every candidate plan into heap-fetching scans and
+        # misprices the queue-depth gauge away from its (queue, id)
+        # partial index. The sibling tables keep bare ANALYZE: their
+        # pins assert Index Cond seeks whose chosen plans do not depend
+        # on the visibility map.
+        await conn.execute(f'VACUUM (ANALYZE) "{schema}".jobs')
+        for table in ("cron_schedules", "job_attempts", "workers"):
             await conn.execute(f'ANALYZE "{schema}".{table}')
         yield schema, stale_worker
     finally:
@@ -523,6 +596,41 @@ async def test_sweep_1_snap_is_index_bounded(audit_schema: Any, pg_dsn: str) -> 
             plan,
             "jobs_running_lock_expires_idx",
             "(lock_expires_at < statement_timestamp())",
+        )
+    finally:
+        await conn.close()
+
+
+async def test_sweep_1_heartbeat_arm_is_index_bounded(audit_schema: Any, pg_dsn: str) -> None:
+    """Sweep 1's heartbeat arm (the per-job ``heartbeat_timeout``
+    disjunct) must seek jobs_running_heartbeat_deadline_idx — partial on
+    ``status='running' AND heartbeat_timeout IS NOT NULL`` — with
+    ``last_heartbeat_at < statement_timestamp()`` as an Index Cond.
+
+    The row-exact deadline (``last_heartbeat_at + heartbeat_timeout``)
+    cannot be an index condition (the bound is row-dependent, and
+    timestamptz+interval is STABLE so no expression index exists), so
+    the arm's necessary condition — a heartbeat at all in the past — is
+    stated explicitly to give the partial index its range bound, and the
+    ORDER BY last_heartbeat_at pins the scan to that index's key order
+    (the ORDER-BY-pins-the-scan rule the sibling sweeps follow). Without
+    the index the OR's second arm degrades every sweep tick to a filter
+    over the whole running set — the exact whole-table-walk class this
+    audit family exists to prevent."""
+    schema, _ = audit_schema
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        plan = await _explain(
+            conn,
+            _SWEEP_1_SQL.format(schema=schema),
+            timedelta(seconds=30),
+            timedelta(seconds=10),
+            100,
+        )
+        _assert_index_cond(
+            plan,
+            "jobs_running_heartbeat_deadline_idx",
+            "(last_heartbeat_at < statement_timestamp())",
         )
     finally:
         await conn.close()
@@ -575,6 +683,59 @@ async def test_result_ttl_sweep_is_index_bounded(audit_schema: Any, pg_dsn: str)
         await conn.close()
 
 
+async def test_sweep_4_window_is_index_bounded(audit_schema: Any, pg_dsn: str) -> None:
+    """Sweep 4's candidate window must seek
+    reservation_slots_lease_expires_idx with the lease-expiry range as an
+    Index Cond. The window's bound is statement_timestamp() (STABLE) and
+    its ORDER BY pins the scan to the lease-keyed partial index — the
+    same two-clock/ORDER-BY doctrine as every sibling sweep; a volatile
+    clock_timestamp() bound (this sweep's old form) cannot be a btree
+    index condition and degrades to a post-scan Filter over the whole
+    held-slot population per tick."""
+    schema, _ = audit_schema
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        # Held slots with FUTURE leases: the steady-state shape (nothing
+        # eligible yet) every sibling plan pin seeds to. 5k rows across
+        # buckets so the planner's index choice matches a deployed fleet,
+        # not an empty table's seq-scan default.
+        now = datetime.now(UTC)
+        held = [
+            (
+                f"bucket.{b}",
+                s,
+                new_uuid(),
+                new_uuid(),
+                now,
+                now + timedelta(seconds=600 + b * 10 + s),
+            )
+            for b in range(500)
+            for s in range(10)
+        ]
+        await conn.copy_records_to_table(
+            "reservation_slots",
+            schema_name=schema,
+            columns=[
+                "bucket_name",
+                "slot_index",
+                "job_id",
+                "held_by_worker_id",
+                "acquired_at",
+                "lease_expires_at",
+            ],
+            records=held,
+        )
+        await conn.execute(f'ANALYZE "{schema}".reservation_slots')
+        plan = await _explain(conn, _SWEEP_4_SQL.format(schema=schema), 100)
+        _assert_index_cond(
+            plan,
+            "reservation_slots_lease_expires_idx",
+            "(lease_expires_at < statement_timestamp())",
+        )
+    finally:
+        await conn.close()
+
+
 async def test_backlog_oldest_due_age_sampler_is_index_bounded(
     audit_schema: Any, pg_dsn: str
 ) -> None:
@@ -592,6 +753,53 @@ async def test_backlog_oldest_due_age_sampler_is_index_bounded(
             plan,
             "jobs_scheduled_wake_idx",
             "(scheduled_at <= statement_timestamp())",
+        )
+    finally:
+        await conn.close()
+
+
+async def test_backlog_running_lease_expired_sampler_is_index_bounded(
+    audit_schema: Any, pg_dsn: str
+) -> None:
+    """The zombie-running detector's count must seek
+    jobs_running_lock_expires_idx (partial on status='running', keyed on
+    lock_expires_at) with the expiry bound as an Index Cond — the same
+    two-clock rule as every sibling sampler: a VOLATILE
+    clock_timestamp() bound cannot be a btree index condition, so it
+    would degrade to a post-scan Filter walking the whole running
+    population per worker, per interval."""
+    schema, _ = audit_schema
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        plan = await _explain(conn, _QUERY_RUNNING_LEASE_EXPIRED_SQL_TEMPLATE.format(schema=schema))
+        _assert_index_cond(
+            plan,
+            "jobs_running_lock_expires_idx",
+            "(lock_expires_at < statement_timestamp())",
+        )
+    finally:
+        await conn.close()
+
+
+async def test_queue_depth_gauge_is_served_by_queue_leading_index(
+    audit_schema: Any, pg_dsn: str
+) -> None:
+    """The every-queue_depth_interval gauge must be served by an index
+    whose key leads on queue over exactly the pending/scheduled
+    predicate. jobs_queue_active_idx (queue, id) partial on
+    ``status IN ('pending', 'scheduled')`` — the 01.00.06 bulk-cancel
+    index — matches the gauge's predicate verbatim and leads on its
+    GROUP BY column, so the sampler's cost is independent of terminal
+    history; the pin holds that property settled so a second queue-keyed
+    index over the same predicate does not get added for this gauge."""
+    schema, _ = audit_schema
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        plan = await _explain(conn, _QUERY_QUEUE_DEPTH_SQL_TEMPLATE.format(schema=schema))
+        assert "jobs_queue_active_idx" in plan, (
+            "the queue-depth gauge must be served by jobs_queue_active_idx "
+            "(queue, id) over the pending/scheduled predicate — a plan that "
+            f"walks anything else makes the sampler's cost grow with terminal history:\n{plan}"
         )
     finally:
         await conn.close()

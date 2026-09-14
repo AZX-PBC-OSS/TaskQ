@@ -54,7 +54,18 @@ async def test_stranded_jobs_loop_logs_once_per_actor() -> None:
     deps.settings.schema_name = "taskq"
     deps.settings.stranded_jobs_interval = 0.01
 
-    fake_conn = _FakeConn(rows=[{"actor": "orphan_actor", "cnt": 5}])
+    # Row shape mirrors the detector SQL's per-shape breakdown columns.
+    fake_conn = _FakeConn(
+        rows=[
+            {
+                "actor": "orphan_actor",
+                "cnt": 5,
+                "no_actor_config_cnt": 5,
+                "unserved_queue_cnt": 0,
+                "unserved_queues": [],
+            }
+        ]
+    )
     deps.worker_pool = _FakePool(fake_conn)
 
     backend = MagicMock()

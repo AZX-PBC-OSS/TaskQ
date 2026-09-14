@@ -78,13 +78,19 @@ class _SubPayload(BaseModel):
 async def _sub_actor(payload: _SubPayload) -> None: ...
 
 
-def _make_actor_ref(fn: Any, *, name: str, payload_type: type[BaseModel]) -> Any:
+def _make_actor_ref(
+    fn: Any,
+    *,
+    name: str,
+    payload_type: type[BaseModel],
+    dependencies: dict[str, type[object]] | None = None,
+) -> Any:
     return ActorRef(
         name=name,
         queue="default",
         fn=fn,
         wants_ctx=True,
-        dependencies={},
+        dependencies=dependencies if dependencies is not None else {},
         payload_type=payload_type,
         result_adapter=None,  # type: ignore[arg-type]  # Why: test-only; result_adapter not exercised by these tests
         retry=RetryPolicy(),
@@ -286,6 +292,11 @@ async def test_sibling_failure_does_not_discard_pending_sub_jobs(
     buffers for transactional simulation) with a real LOOP-scope connection
     so the transactional consume path is taken."""
     backend = InMemoryBackend(clock=FakeClock(_NOW))
+    # The dispatch parity gate: candidates are built from the actor_config
+    # registry — zero registered actors means zero candidates (the sibling
+    # PG test seeds its actors the same way; a dispatchable actor must be
+    # registered on both backends alike).
+    backend.register_actor_config(actor="slot_actor")
 
     loop_conn = await asyncpg.connect(pg_dsn)
     slot_pool = await _open_slot_pool(pg_dsn)
@@ -648,6 +659,212 @@ async def test_cancelled_slot_never_leaks_a_live_transaction_connection(
             # consumer's done-callback) so no task outlives the test.
             release_actor.set()
             await asyncio.sleep(0.2)
+    finally:
+        await slot_pool.close()
+        await loop_conn.close()
+
+
+async def test_concurrent_transactional_slots_each_hold_their_own_di_connection(
+    clean_jobs_app: JobsApp,
+    module_pg_schema: Any,
+) -> None:
+    """Two concurrent transactional slots whose actors inject the LOOP-scope
+    ``asyncpg.Connection`` must each receive the connection their own slot's
+    transaction runs on — never the ONE registered connection (issue #116).
+
+    The per-slot pool already carries TaskQ's own transactional writes (the
+    terminal write, transactional sub-enqueues — pinned above); this pin
+    closes the actor-visible half. Pre-fix, every concurrent slot's actor
+    resolved the same registered LOOP-scope connection by DI injection, so:
+
+    - two sibling actors with operations in flight on it raised
+      ``InterfaceError: cannot perform operation: another operation is in
+      progress`` inside healthy actors — the consumer's generic handler
+      burned retry budget on the misattributed failure;
+    - an actor's own writes ran OUTSIDE its slot's transaction — a failing
+      slot's rollback left them committed, so "transactional consume" was
+      not transactional for the actor's own database work.
+
+    Both faces are pinned deterministically: slot A holds an in-flight
+    statement on its injected connection (the exact contention a shared
+    connection cannot survive) and writes a marker row through it before
+    failing; slot B issues its own statement while A's is in flight.
+    """
+    backend = clean_jobs_app.backend
+    deps = clean_jobs_app.deps
+
+    seed_conn = await asyncpg.connect(module_pg_schema.pg_dsn)
+    try:
+        await seed_actors(seed_conn, module_pg_schema.schema_name, actors=["slot_actor"])
+        await seed_conn.execute("CREATE TABLE IF NOT EXISTS tq116_slot_marker (role text)")
+        await seed_conn.execute("TRUNCATE tq116_slot_marker")
+    finally:
+        await seed_conn.close()
+
+    loop_conn = await asyncpg.connect(module_pg_schema.pg_dsn)
+    slot_pool = await _open_slot_pool(module_pg_schema.pg_dsn)
+    try:
+        registry = ProviderRegistry()
+        registry.register_value(asyncpg.Connection, Scope.LOOP, loop_conn)
+
+        conns_seen: dict[str, Any] = {}
+        entered_in_transaction: dict[str, bool] = {}
+        a_in_flight = asyncio.Event()
+
+        async def slot_actor(
+            payload: _SlotPayload,
+            ctx: JobContext[_SlotPayload],
+            conn: asyncpg.Connection,
+        ) -> dict[str, object]:
+            conns_seen[payload.role] = conn
+            # Taken at actor entry, before any sibling can interleave: the
+            # injected connection must already be inside this slot's open
+            # transaction — the per-slot LOOP-scope semantics.
+            entered_in_transaction[payload.role] = conn.is_in_transaction()  # type: ignore[union-attr]  # Why: asyncpg.Connection exposes is_in_transaction; pool proxies forward it (dispatch's release path already relies on the same forwarding).
+            if payload.role == "fail":
+                # A bare write through the injected connection — no explicit
+                # transaction of the actor's own. Whichever connection this
+                # is, the write must live inside THIS slot's transaction, so
+                # this slot's failure rolls it back.
+                await conn.execute("INSERT INTO tq116_slot_marker VALUES ('fail')")
+                # Hold one in-flight statement on the injected connection:
+                # on a shared connection this is exactly the state a sibling
+                # actor's first statement cannot start against (asyncpg
+                # permits one operation per connection at a time).
+                sleep_task = asyncio.create_task(conn.execute("SELECT pg_sleep(1.0)"))  # type: ignore[union-attr]  # Why: same proxy forwarding as is_in_transaction above.
+                for _ in range(3):
+                    await asyncio.sleep(0)
+                # The sleep task has now run to its first await — the
+                # statement is on the wire — so the sibling's probe below
+                # contends with a genuinely in-flight operation.
+                a_in_flight.set()
+                await sleep_task
+                raise RuntimeError("slot A actor raised")
+            await a_in_flight.wait()
+            await conn.fetchval("SELECT 1")  # type: ignore[union-attr]  # Why: same proxy forwarding as is_in_transaction above.
+            return {"ok": True}
+
+        actor_ref = _make_actor_ref(
+            slot_actor,
+            name="slot_actor",
+            payload_type=_SlotPayload,
+            dependencies={"conn": asyncpg.Connection},
+        )
+
+        # The per-slot path wiring, as in the sibling pins above: bootstrap
+        # opens the dedicated pool on exactly this shape (LOOP-scope
+        # connection registered, max_concurrency > 1).
+        deps.slot_pool = slot_pool
+
+        async with _ScopeStack(registry) as scopes:
+            # Guard the wiring: the LOOP-scope cache still holds the ONE
+            # registered connection (what every non-actor reader sees), and
+            # the slot pool is what dispatch acquires from.
+            assert scopes.loop_scope.resolved_cache().get(asyncpg.Connection) is loop_conn
+            assert deps.slot_pool is slot_pool
+
+            enqueuer = SubJobEnqueuer(
+                loop_scope_resolved=scopes.loop_scope.resolved_cache(),
+                worker_pool=deps.worker_pool,
+                backend=backend,
+            )
+
+            for role in ("fail", "probe"):
+                await backend.enqueue(
+                    EnqueueArgs(
+                        id=new_uuid(),
+                        actor="slot_actor",
+                        queue="default",
+                        payload={"role": role},
+                        max_attempts=3,
+                        retry_kind="transient",
+                        scheduled_at=None,
+                    )
+                )
+            claimed = await backend.dispatch_batch(
+                _WORKER_ID, ["default"], 2, timedelta(seconds=120)
+            )
+            assert len(claimed) == 2
+            row_a = next(r for r in claimed if r.payload["role"] == "fail")
+            row_b = next(r for r in claimed if r.payload["role"] == "probe")
+
+            def _dispatch(row: Any) -> Any:
+                return dispatch_one_job(
+                    backend=backend,
+                    deps=deps,
+                    job=row,
+                    worker_id=_WORKER_ID,
+                    registry=registry,
+                    process_scope=scopes.process_scope,
+                    thread_scope=scopes.thread_scope,
+                    loop_scope=scopes.loop_scope,
+                    actor_ref=actor_ref,
+                    actor_config=StubActorConfig(retry=RetryPolicy()),
+                    clock=SystemClock(),
+                    active_jobs=deps.active_jobs,
+                    enqueuer=enqueuer,
+                )
+
+            task_a = asyncio.create_task(_dispatch(row_a))
+            await asyncio.wait_for(a_in_flight.wait(), timeout=10)
+            # Slot B's entire attempt runs while slot A's statement is in
+            # flight on the (pre-fix) shared connection — the natural
+            # max_concurrency > 1 interleaving, event-driven on both ends.
+            outcome_b = await _dispatch(row_b)
+            outcome_a = await task_a
+
+            # Per-slot identity: neither slot's actor received the ONE
+            # registered connection, and the two slots did not receive each
+            # other's.
+            assert conns_seen["fail"] is not loop_conn, (
+                "the failing slot's actor was handed the registered LOOP-scope "
+                "connection — one object shared across every consumer slot"
+            )
+            assert conns_seen["probe"] is not loop_conn, (
+                "the probing slot's actor was handed the registered LOOP-scope "
+                "connection — one object shared across every consumer slot"
+            )
+            assert conns_seen["fail"] is not conns_seen["probe"], (
+                "two concurrent transactional slots resolved the same connection for their actors"
+            )
+
+            # The actor's connection IS the slot's transaction connection:
+            # the consumer opened the transaction before the actor ran, so
+            # the injected connection must already be inside it.
+            assert entered_in_transaction["fail"] is True, (
+                "the actor's injected connection was not inside its slot's "
+                "open transaction at actor entry"
+            )
+            assert entered_in_transaction["probe"] is True, (
+                "the actor's injected connection was not inside its slot's "
+                "open transaction at actor entry"
+            )
+
+            # No InterfaceError misattribution: the probing slot's healthy
+            # actor must succeed, not burn retry budget on the shared
+            # connection's concurrent-operation error.
+            assert outcome_b == "succeeded", (
+                "the probing slot's healthy actor failed against its sibling's "
+                f"in-flight statement (outcome {outcome_b!r}) — the shared "
+                "connection's InterfaceError was misattributed to the actor"
+            )
+            assert outcome_a in ("scheduled", "failed")
+
+            # The failing slot's own write rolled back with its transaction.
+            marker_probe = await asyncpg.connect(module_pg_schema.pg_dsn)
+            try:
+                marker_count = await marker_probe.fetchval("SELECT count(*) FROM tq116_slot_marker")
+            finally:
+                await marker_probe.close()
+            assert marker_count == 0, (
+                "the failing slot's actor wrote through its injected connection "
+                "outside the slot's transaction — the rollback left the write "
+                f"committed ({marker_count} marker rows survive)"
+            )
+
+            row_b_after = await backend.get(row_b.id)
+            assert row_b_after is not None
+            assert row_b_after.status == "succeeded"
     finally:
         await slot_pool.close()
         await loop_conn.close()

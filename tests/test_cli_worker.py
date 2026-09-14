@@ -5,20 +5,35 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 
+from pydantic import BaseModel
 from typer.testing import CliRunner
 
-from taskq.actor import ActorRef
+from taskq.actor import ActorRef, actor
 from taskq.cli import app
 from taskq.exceptions import ActorConfigDriftError, ActorConfigDriftList
 from taskq.testing.assertions import plain_cli_output
 
 runner = CliRunner()
 
-_NO_ACTORS: Mapping[str, ActorRef[Any, Any]] = MappingProxyType({})
-_NO_ACTORS_BAD_TYPE: int = 5
 
-_NO_ACTORS_PATH = "tests.test_cli_worker:_NO_ACTORS"
-_BAD_TYPE_PATH = "tests.test_cli_worker:_NO_ACTORS_BAD_TYPE"
+class _Payload(BaseModel):
+    value: int
+
+
+@actor(name="cli_worker_actor", queue="default")
+async def _cli_worker_actor(payload: _Payload) -> None: ...
+
+
+# A populated registry: the CLI refuses an empty one (a worker with no
+# actors dispatches nothing), so a stand-in fixture must carry an actor.
+_REGISTRY: Mapping[str, ActorRef[Any, Any]] = MappingProxyType(
+    {"cli_worker_actor": _cli_worker_actor}
+)
+_REGISTRY_PATH = "tests.test_cli_worker:_REGISTRY"
+
+_BAD_TYPE: int = 5
+
+_BAD_TYPE_PATH = "tests.test_cli_worker:_BAD_TYPE"
 
 _WATCH_PATH_ONE = "/tmp/one"  # noqa: S108 # Why: literal never touched on disk — dev_watch_loop is stubbed.
 _WATCH_PATH_TWO = "/tmp/two"  # noqa: S108 # Why: literal never touched on disk — dev_watch_loop is stubbed.
@@ -36,9 +51,9 @@ def test_actors_resolution_passes_registry_to_worker_main(monkeypatch: Any) -> N
         return 42
 
     monkeypatch.setattr("taskq.cli._worker_main", fake_worker_main)
-    result = runner.invoke(app, ["worker", "--actors", _NO_ACTORS_PATH])
+    result = runner.invoke(app, ["worker", "--actors", _REGISTRY_PATH])
     assert result.exit_code == 42, f"stderr: {result.stderr}"
-    assert captured_registry is _NO_ACTORS
+    assert captured_registry is _REGISTRY
 
 
 def test_module_not_found_exit_code_and_message() -> None:
@@ -66,7 +81,7 @@ def test_force_update_flag_true(monkeypatch: Any) -> None:
 
     monkeypatch.setattr("taskq.cli._worker_main", fake_worker_main)
     result = runner.invoke(
-        app, ["worker", "--actors", _NO_ACTORS_PATH, "--force-update-actor-config"]
+        app, ["worker", "--actors", _REGISTRY_PATH, "--force-update-actor-config"]
     )
     assert result.exit_code == 0, f"stderr: {result.stderr}"
     assert captured_settings is not None
@@ -83,7 +98,7 @@ def test_force_update_flag_default_false(monkeypatch: Any) -> None:
         return 0
 
     monkeypatch.setattr("taskq.cli._worker_main", fake_worker_main)
-    result = runner.invoke(app, ["worker", "--actors", _NO_ACTORS_PATH])
+    result = runner.invoke(app, ["worker", "--actors", _REGISTRY_PATH])
     assert result.exit_code == 0, f"stderr: {result.stderr}"
     assert captured_settings is not None
     assert captured_settings.force_update_actor_config is False
@@ -100,7 +115,7 @@ def test_env_var_force_update_config(monkeypatch: Any) -> None:
 
     monkeypatch.setattr("taskq.cli._worker_main", fake_worker_main)
     monkeypatch.setenv("TASKQ_FORCE_UPDATE_ACTOR_CONFIG", "true")
-    result = runner.invoke(app, ["worker", "--actors", _NO_ACTORS_PATH])
+    result = runner.invoke(app, ["worker", "--actors", _REGISTRY_PATH])
     assert result.exit_code == 0, f"stderr: {result.stderr}"
     assert captured_settings is not None
     assert captured_settings.force_update_actor_config is True
@@ -110,9 +125,9 @@ def test_drift_error_produces_exit_one_and_hint(monkeypatch: Any) -> None:
     """ActorConfigDriftList caught at CLI — exit 1 with drift message and hint."""
     drift_error = ActorConfigDriftError(
         actor="test_actor",
-        field="queue",
-        registered="critical",
-        stored="default",
+        field="metadata",
+        registered={"team": "platform"},
+        stored={"team": "ops"},
     )
     drift_list = ActorConfigDriftList((drift_error,))
 
@@ -120,7 +135,7 @@ def test_drift_error_produces_exit_one_and_hint(monkeypatch: Any) -> None:
         raise drift_list
 
     monkeypatch.setattr("taskq.cli._worker_main", fake_worker_main)
-    result = runner.invoke(app, ["worker", "--actors", _NO_ACTORS_PATH])
+    result = runner.invoke(app, ["worker", "--actors", _REGISTRY_PATH])
     assert result.exit_code == 1, f"stderr: {result.stderr}"
     assert str(drift_error) in result.stderr
     assert "--force-update-actor-config" in result.stderr
@@ -153,7 +168,7 @@ def test_dev_watch_generic_import_error_exit_code_and_message(monkeypatch: Any) 
         raise ModuleNotFoundError(name)
 
     monkeypatch.setattr("taskq.cli.importlib.import_module", fake_import_module)
-    result = runner.invoke(app, ["dev", "tests.test_cli_worker:_NO_ACTORS"])
+    result = runner.invoke(app, ["dev", _REGISTRY_PATH])
     assert result.exit_code == 1, f"stderr: {result.stderr}"
     assert "boom during import" in result.stderr
 
@@ -177,9 +192,9 @@ def test_dev_watch_happy_path_default_cwd(monkeypatch: Any) -> None:
         captured["grace_period"] = grace_period
 
     monkeypatch.setattr("taskq.cli.dev_watch_loop", fake_dev_watch_loop)
-    result = runner.invoke(app, ["dev", _NO_ACTORS_PATH])
+    result = runner.invoke(app, ["dev", _REGISTRY_PATH])
     assert result.exit_code == 0, f"stderr: {result.stderr}"
-    assert captured["module_attr"] == _NO_ACTORS_PATH
+    assert captured["module_attr"] == _REGISTRY_PATH
     assert captured["watch_paths"] == [str(Path.cwd())]
     assert captured["grace_period"] == 5.0
     assert "watching" in plain_cli_output(result.stderr).lower()
@@ -200,7 +215,7 @@ def test_dev_watch_happy_path_explicit_watch_paths(monkeypatch: Any) -> None:
         app,
         [
             "dev",
-            _NO_ACTORS_PATH,
+            _REGISTRY_PATH,
             "--watch",
             _WATCH_PATH_ONE,
             "--watch",
@@ -248,7 +263,7 @@ def test_until_idle_flag_passed_to_worker_main(monkeypatch: Any) -> None:
         return 0
 
     monkeypatch.setattr("taskq.cli._worker_main", fake_worker_main)
-    result = runner.invoke(app, ["worker", "--actors", _NO_ACTORS_PATH, "--until-idle"])
+    result = runner.invoke(app, ["worker", "--actors", _REGISTRY_PATH, "--until-idle"])
     assert result.exit_code == 0, f"stderr: {result.stderr}"
     assert captured["until_idle"] is True
 
@@ -268,7 +283,7 @@ def test_until_idle_default_false(monkeypatch: Any) -> None:
         return 0
 
     monkeypatch.setattr("taskq.cli._worker_main", fake_worker_main)
-    result = runner.invoke(app, ["worker", "--actors", _NO_ACTORS_PATH])
+    result = runner.invoke(app, ["worker", "--actors", _REGISTRY_PATH])
     assert result.exit_code == 0, f"stderr: {result.stderr}"
     assert captured["until_idle"] is False
 
@@ -293,7 +308,7 @@ def test_idle_settle_window_passed(monkeypatch: Any) -> None:
         [
             "worker",
             "--actors",
-            _NO_ACTORS_PATH,
+            _REGISTRY_PATH,
             "--until-idle",
             "--idle-settle-window",
             "5.0",
@@ -323,7 +338,7 @@ def test_idle_max_runtime_passed(monkeypatch: Any) -> None:
         [
             "worker",
             "--actors",
-            _NO_ACTORS_PATH,
+            _REGISTRY_PATH,
             "--until-idle",
             "--idle-max-runtime",
             "300",
@@ -353,7 +368,7 @@ def test_idle_poll_interval_passed(monkeypatch: Any) -> None:
         [
             "worker",
             "--actors",
-            _NO_ACTORS_PATH,
+            _REGISTRY_PATH,
             "--until-idle",
             "--idle-poll-interval",
             "0.5",

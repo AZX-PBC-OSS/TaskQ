@@ -17,6 +17,7 @@ import asyncio
 import os
 import subprocess
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any
@@ -25,8 +26,10 @@ from uuid import UUID
 
 import asyncpg
 import pytest
+from pydantic import BaseModel
 from typer.testing import CliRunner
 
+from taskq.actor import ActorRef, actor
 from taskq.auth import PgCredential, RedisCredential
 from taskq.cli import app
 from taskq.settings import WorkerSettings
@@ -37,8 +40,21 @@ runner = CliRunner()
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
-_NO_ACTORS: Any = MappingProxyType({})
-_NO_ACTORS_PATH = "tests.test_cli_credential_provider:_NO_ACTORS"
+
+class _Payload(BaseModel):
+    value: int
+
+
+@actor(name="cred_worker_actor", queue="default")
+async def _cred_worker_actor(payload: _Payload) -> None: ...
+
+
+# A populated registry: the CLI refuses an empty one (a worker with no
+# actors dispatches nothing), so a stand-in fixture must carry an actor.
+_REGISTRY: Mapping[str, ActorRef[Any, Any]] = MappingProxyType(
+    {"cred_worker_actor": _cred_worker_actor}
+)
+_REGISTRY_PATH = "tests.test_cli_credential_provider:_REGISTRY"
 
 _MODULE = "tests.test_cli_credential_provider"
 
@@ -191,7 +207,7 @@ def _invoke_worker(monkeypatch: pytest.MonkeyPatch, *args: str) -> tuple[Any, An
         return 0
 
     monkeypatch.setattr("taskq.cli._worker_main", fake_worker_main)
-    result = runner.invoke(app, ["worker", "--actors", _NO_ACTORS_PATH, *args])
+    result = runner.invoke(app, ["worker", "--actors", _REGISTRY_PATH, *args])
     return result, captured.get("settings"), captured.get("connections")
 
 
@@ -348,7 +364,7 @@ def test_worker_subprocess_fails_loudly_on_bad_provider_env() -> None:
     env["TASKQ_PG_CREDENTIAL_PROVIDER"] = "no.such.module:make_provider"
     env["TASKQ_PG_DSN"] = "postgresql://app@db.example:5432/taskq"
     proc = subprocess.run(  # noqa: S603  # Why: fixed argv, no shell — this is the supervisor's own spawn shape.
-        [sys.executable, "-m", "taskq", "worker", "--actors", _NO_ACTORS_PATH],
+        [sys.executable, "-m", "taskq", "worker", "--actors", _REGISTRY_PATH],
         cwd=_REPO_ROOT,
         env=env,
         capture_output=True,

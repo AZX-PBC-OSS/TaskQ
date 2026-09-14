@@ -44,6 +44,7 @@ def _build_cron_settings(pg_dsn: str, schema: str) -> WorkerSettings:
             "TASKQ_HEARTBEAT_INTERVAL": str(_HEARTBEAT_INTERVAL),
             "TASKQ_LOCK_LEASE": str(_LOCK_LEASE),
             "TASKQ_WATCHDOG_LOOP_LAG_BUDGET": "2.0",
+            "TASKQ_WATCHDOG_LOOP_LAG_WARN_BUDGET": "0.5",
             "TASKQ_CANCELLATION_GRACE_PERIOD": "0.0",
             "TASKQ_CLEANUP_GRACE_PERIOD": "0.0",
             "TASKQ_MAX_HEARTBEAT_FAILURES": "999",
@@ -769,6 +770,8 @@ async def test_tc2_base_exception_propagates(pg_dsn: str, monkeypatch: pytest.Mo
 
         async def _raise_system_exit(
             row: asyncpg.Record,
+            *,
+            timeout_s: float | None = None,
         ) -> dict[str, object]:
             raise SystemExit("deliberate BaseException")
 

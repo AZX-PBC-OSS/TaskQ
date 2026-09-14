@@ -14,21 +14,30 @@ from uuid import UUID
 __all__ = [
     "BTREE_MAX_ITEM_BYTES",
     "DEFAULT_CHUNK_SIZE",
+    "DEFAULT_EVENT_RETENTION_BATCH_SIZE",
+    "DEFAULT_EVENT_RETENTION_PERIOD",
     "DEFAULT_EVENT_WRITER_BATCH_SIZE",
     "DEFAULT_EVENT_WRITER_STATEMENT_TIMEOUT_MS",
+    "DEFAULT_KEYED_ROW_RECLAIM_BATCH_SIZE",
+    "DEFAULT_KEYED_ROW_RECLAIM_PERIOD",
+    "DEFAULT_MAX_KEYED_RESERVATIONS",
     "DEFAULT_MAX_RETRY_BACKOFF",
     "DEFAULT_PRUNE_BATCH_SIZE",
     "DEFAULT_PRUNE_RETENTION",
+    "DEFAULT_PRUNE_STATEMENT_TIMEOUT_MS",
     "DEFAULT_RECLAIM_POLL_LIMIT",
     "DEFAULT_RESERVATION_BACKOFF",
     "EVENTS_CHANNEL_FMT",
     "IDEMPOTENCY_KEY_BYTES_CEILING",
     "MAX_IDEMPOTENCY_KEY_BYTES",
     "MAX_RESULT_BYTES",
+    "MIN_DEFERRAL_INTERVAL",
     "PROGRESS_CHANNEL_FMT",
     "PROGRESS_GLOBAL_CHANNEL_FMT",
     "QUEUE_CONCURRENCY_PREFIX",
     "RECLAIM_EVENT_VISIBILITY_DELAY",
+    "RECLAIM_OUTBOX_RETENTION_MULTIPLIER",
+    "RESERVATION_RETRY_HINT_MARGIN",
     "WAKE_CHANNEL_FMT",
     "WORKER_CHANNEL_FMT",
     "base_name_collides_with_reserved_prefix",
@@ -111,6 +120,42 @@ because ``timedelta(0)`` is falsy and represents an allowed decision that
 must be passed through unchanged.
 """
 
+RESERVATION_RETRY_HINT_MARGIN: Final[timedelta] = timedelta(seconds=0.5)
+"""Safety margin added to a slot denial's capacity-derived retry hint.
+
+A denial for a full bucket reports the earliest held lease's expiry as
+its ``retry_after`` (computed against the same server clock that stamps
+the leases), so the denied job re-attempts when capacity can actually
+free rather than on a fixed cadence. The margin covers the distance
+between the hint's read and the re-attempt's arrival — the denial write,
+the scheduled-to-pending promotion and the next dispatch round — which
+is milliseconds of scheduling latency, not holder processing: a live
+holder's heartbeat extends its lease before expiry, so waiting past the
+expiry instant never guarantees the slot is free anyway. Sub-second
+hints are additionally floored by ``MIN_DEFERRAL_INTERVAL`` downstream,
+so the margin's real work is on multi-second lease horizons where it is
+noise by design.
+"""
+
+MIN_DEFERRAL_INTERVAL: Final[timedelta] = timedelta(seconds=1)
+"""Minimum effective delay a NON-consuming deferral reschedules out.
+
+A ``Snooze``, a ``RetryAfter(consume_budget=False)``, and an admission
+denial's ``retry_after`` all hand their delay to ``mark_snoozed``'s
+snooze arm, which maps it onto ``scheduled_at``.  Without a floor, a
+zero delay parks the job ``pending`` at ``clock_timestamp()`` — first
+in every dispatch round (``ORDER BY scheduled_at``) and instantly
+re-claimable, so one job monopolises a worker slot in a claim/refund
+round trip per cycle.  Both non-consuming arms therefore apply
+``GREATEST(delay, this interval)``; the vendored corpus guards the same
+edge outright (River rejects a non-future snooze; Oban requires a
+positive snooze delay).
+
+A consuming ``RetryAfter`` is exempt: an immediate retry is a real
+execution, bounded by the budget it spends, not a deferral competing
+for the head of the dispatch order.
+"""
+
 DEFAULT_MAX_RETRY_BACKOFF: Final[timedelta] = timedelta(hours=24)
 """Default ceiling on a single retry's backoff.
 
@@ -122,6 +167,26 @@ so a caller that constructs one directly (tests, the in-memory backend)
 gets the same cap as a worker loaded from settings. Named here because
 six call sites had it as an independent literal, where a change to one
 would have silently disagreed with the rest.
+"""
+
+DEFAULT_MAX_KEYED_RESERVATIONS: Final[int] = 10_000
+"""Default ceiling on tracked keyed-reservation entries and their pending reclaims.
+
+The effective value is ``WorkerSettings.max_keyed_reservations``; this
+constant is that setting's default, and the fallback every
+keyed-reservation bound carries when no settings object is in scope.
+Two structures carry the ceiling: the registry's in-process tracking
+dict (the entry cap, enforced on the acquisition path) and the
+pending-reclaim set of evicted keyed buckets awaiting their
+``reservation_slots`` row deletion (its record cap, passed by both
+eviction call sites — the per-worker sweep and the opportunistic
+eviction on the acquisition path). The pending set is NOT bounded by
+the tracked-entry count: entries are evicted and re-materialised in
+waves, so pending accumulates across waves up to its own cap, at which
+point eviction is vetoed until the drain empties it. The heal-stamp
+dicts sit at or below the tracked-entry count (they ride the
+registration lifecycle). Named here so the settings default and the
+registry fallback cannot drift apart.
 """
 
 DEFAULT_PRUNE_BATCH_SIZE: Final[int] = 10000
@@ -177,6 +242,29 @@ and silently cap unrelated borrowers (dispatch, archive) at a timeout they
 never asked for.
 """
 
+DEFAULT_PRUNE_STATEMENT_TIMEOUT_MS: Final[int] = 4000
+"""Server-side ``statement_timeout`` for one prune/archive-expiry batch.
+
+80% of the default ``dispatcher_command_timeout`` (5.0 s): the prune
+family runs its batches on dispatcher-pool connections, and the pool's
+client-side ``command_timeout`` fires as an opaque ``TimeoutError`` — so
+the server-side bound is deliberately the *smaller* of the two. An
+overloaded database then aborts the batch server-side
+(``QueryCanceledError``, SQLSTATE 57014 — the transient family the
+:class:`~taskq.backend._sweeps.SweepBatchSizer` breaker counts), and the
+breaker latches a reduced batch size for the next attempt, instead of the
+client cancelling with no degradation signal. River's job cleaner pairs a
+30 s per-query timeout with a reduced-batch circuit breaker
+(``vendor/river/rivershared/riversharedmaintenance/
+river_shared_maintenance.go``); the dispatcher pool's shared command
+timeout is the tighter ceiling this family must live under, so the
+reduced tier — not a longer timeout — is what makes a loaded database
+drainable. The effective value is derived from the configured
+``dispatcher_command_timeout`` by the prune loops
+(:mod:`taskq.worker._leader_sweeps`); this constant is the signature
+default for direct callers and matches the default deployment shape.
+"""
+
 DEFAULT_PRUNE_RETENTION: Final[timedelta] = timedelta(days=30)
 """Fallback retention for a terminal status with no configured period.
 
@@ -185,6 +273,102 @@ per-status fields that override it); the sweep uses this constant when
 ``retention_per_status`` has no entry for a status, so a status added to
 ``TERMINAL_STATUSES`` without a matching setting is retained rather than
 pruned immediately.
+"""
+
+DEFAULT_EVENT_RETENTION_PERIOD: Final[timedelta] = timedelta(days=7)
+"""Default age at which ``job_events`` rows become deletable, regardless of
+parent-job status.
+
+The effective value is ``WorkerSettings.event_retention_period``
+(``timedelta(0)`` there disables the sweep entirely); this constant is the
+setting's default. The crash-reclaim outbox slice
+(``kind='state_change' AND detail->>'reason'='lock_expired'``) is kept
+``RECLAIM_OUTBOX_RETENTION_MULTIPLIER`` times this window before the same
+sweep deletes it (see that constant for the derivation).
+
+Why 7 days: events are narration — the durable forensic record for a job
+is jobs/jobs_archive plus job_attempts/job_attempts_archive, kept for the
+30-90 day prune windows and the 365-day archive window — so the event
+window only has to bound event volume, not match job retention. At the
+measured ~2 events/job and 100 jobs/s, 7 days is ~26 GB steady state
+against ~110 GB at 30 days, while staying at or under the shortest
+job-retention window (30 d) so events never outlive the shortest
+observation an operator could reasonably run.
+"""
+
+DEFAULT_EVENT_RETENTION_BATCH_SIZE: Final[int] = 10000
+"""Default ``job_events`` rows deleted per committed batch by the retention
+sweep.
+
+The effective value is ``WorkerSettings.event_retention_batch_size``; the
+sweep function carries it as a signature default for direct callers. The
+bound keeps one sweep call's DELETE a constant-size statement against any
+backlog size. 10_000 matches the prune family's batch rather than the
+100-row event-writer bound: the retention sweep writes no ``job_events``
+rows, so the ``RECLAIM_EVENT_VISIBILITY_DELAY`` INSERT-to-COMMIT margin
+that caps event *writers* does not bind it — the general
+bounded-per-transaction rule does.
+"""
+
+DEFAULT_KEYED_ROW_RECLAIM_PERIOD: Final[timedelta] = timedelta(hours=1)
+"""Default idle age at which fleet-reclaimable keyed rows (keyed
+``reservation_slots`` rows; PG-state-backed keyed ``rate_limit_buckets``
+rows) become deletable by the maintenance leader's fleet sweep.
+
+The effective value is ``WorkerSettings.keyed_row_reclaim_period``
+(``timedelta(0)`` there disables the sweep entirely); this constant is the
+setting's default. Why 1 hour: it is the SAME threshold the in-process
+registry eviction uses (``taskq.ratelimit.registry._KEYED_IDLE_THRESHOLD``)
+— a keyed entry the registry would already have evicted for idleness is
+exactly the entry whose rows the fleet sweep may reclaim, so the two
+reclamation tiers converge instead of the fleet sweep racing ahead of the
+registry's own idleness definition and churning rows under still-tracked
+buckets (the acquire-path heal covers the overlap, but the churn is
+pointless when one threshold serves both tiers).
+"""
+
+DEFAULT_KEYED_ROW_RECLAIM_BATCH_SIZE: Final[int] = 256
+"""Default bound on the fleet reclaim sweep's committed batch per tick.
+
+The effective value is ``WorkerSettings.keyed_row_reclaim_batch_size``. The
+unit is BUCKETS for ``reservation_slots`` (each bucket's full slot row set
+deletes together — a partial delete would shrink configured capacity) and
+ROWS for ``rate_limit_buckets`` (one row per bucket). Why 256: it matches
+the in-process pending-reclaim drain's per-statement slice
+(``_DEFAULT_RECLAIM_BATCH_NAMES`` in ``taskq.ratelimit.registry``), so both
+reclamation tiers move keyed rows at the same constant-size rate — at the
+default 30 s sweep interval that is ~512 buckets/min against a backlog
+bounded by the per-worker keyed caps, and one tick's write set stays
+independent of that backlog.
+"""
+
+RECLAIM_OUTBOX_RETENTION_MULTIPLIER: Final[int] = 100
+"""How many times the ordinary retention window the crash-reclaim outbox
+slice (``kind='state_change' AND detail->>'reason'='lock_expired'``) is
+kept before the retention sweep presumes its consumer gone and deletes it.
+
+The outbox cannot be exempt at every age: a fleet with NO
+``TaskQ.watch_reclaims`` consumer would then retain every ``lock_expired``
+event forever (unbounded growth), and an event committed below a watermark
+cursor that already passed it is unreachable to ``poll_reclaim_events``
+(``id > $1`` cannot go back) — without an age cap such a row is BOTH
+undeliverable and undeletable, permanently lost signal AND permanent
+storage. But it also cannot be deleted at the ordinary retention age: the
+carve-out exists so a consumer whose cursor has not reached a row yet
+still sees it. The multiplier composes the two: an unconsumed outbox row
+outlives ordinary events by this factor of the configured retention, then
+is deleted — bounded, but far beyond any healthy consumer's lag.
+
+Why 100 exactly: it must clear BOTH pinned ages with headroom on either
+side. Upward — a 400-day-old outbox row must survive a sweep call at
+30-day retention (``test_lock_expired_reclaim_outbox_is_exempt_from_
+retention``, the guard rail the original carve-out pinned): 100 x 30 d ≈
+3000 d, 7.5x headroom. Downward — a 1-hour-old unconsumed row must be
+deleted by a 1-second-retention drain (``test_rt_orphans_outbox_immortal_
+events``, the no-consumer bound): 100 x 1 s = 100 s, 36x headroom. Any
+value in (~13.4, 3600) satisfies both pins; 100 sits logarithmically
+midway and reads as "two orders of magnitude more patience than the
+narration slice gets."
 """
 
 DEFAULT_CHUNK_SIZE: Final[int] = 1000

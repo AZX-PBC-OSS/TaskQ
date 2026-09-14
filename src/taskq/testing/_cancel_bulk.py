@@ -26,10 +26,17 @@ async def _cancel_where(
     # Sanitize the filter: cancel_where ignores limit, cursor, and order_by.
     # Use a very large limit instead of None because JobFilter.limit is typed
     # as int (not int | None) with a __post_init__ guard against negatives.
-    # cursor=None disables keyset slicing. order_by=None selects the default
-    # priority/scheduled_at/id sort, which is harmless for cancel.
+    # cursor=None disables keyset slicing; order_by=None drops the caller's
+    # paging order, which cancel does not owe (JobFilter.order_by docstring).
     sanitized = dc_replace(filter, limit=2**31, cursor=None, order_by=None)
     rows = await _list_jobs(self, sanitized)
+    # cancel_where owes job-id-ascending ids: the PG statement returns
+    # ``array_agg(id ORDER BY id)`` over driving windows that are themselves
+    # ``ORDER BY id`` (backend/_cancel_bulk.py), so each batch's ids — and
+    # the drain's concatenation of batches — come back UUID-ascending. No
+    # JobSortField is id-ascending (``ordering_for``'s default orders
+    # priority first), so the id order is imposed on the listed rows here.
+    rows.sort(key=lambda r: r.id)
 
     cancelled_ids: list[UUID] = []
     cancel_requested_ids: list[UUID] = []

@@ -23,7 +23,13 @@ _ACTOR = "max_pending_actor"
 
 
 def _make_backend() -> InMemoryBackend:
-    return InMemoryBackend(clock=FakeClock(_START))
+    backend = InMemoryBackend(clock=FakeClock(_START))
+    # Dispatch candidates come FROM the actor_config registry on both
+    # backends (PG's per_actor_capacity CTE): the tier's worker registers
+    # the actor it runs, so a bare backend with no registration dispatches
+    # NOTHING — never "no filter".
+    backend.register_actor_config(actor=_ACTOR)
+    return backend
 
 
 def _max_pending_args(
@@ -107,7 +113,9 @@ async def test_scheduled_jobs_are_counted_in_max_pending() -> None:
     assert len(dispatched) == 2
 
     for row in dispatched:
-        result = await backend.mark_snoozed(row.id, worker_id, delay=timedelta(seconds=10))
+        result = await backend.mark_snoozed(
+            row.id, worker_id, delay=timedelta(seconds=10), attempt=row.attempt
+        )
         assert result == "scheduled"
 
     # 3 pending → 1 pending + 2 scheduled = count 3, which >= max_pending=3.
@@ -213,7 +221,7 @@ async def test_count_after_job_completion_frees_capacity() -> None:
     assert len(dispatched) == 2
 
     for row in dispatched:
-        ok = await backend.mark_succeeded(row.id, worker_id, result=None)
+        ok = await backend.mark_succeeded(row.id, worker_id, result=None, attempt=row.attempt)
         assert ok is True
 
     # 2 jobs succeeded (excluded from count); 3 remaining pending → count == 3.
@@ -392,7 +400,9 @@ async def test_max_pending_invariant(scenario: tuple[int, list[str]]) -> None:
         elif op == "complete_one":
             for row in backend._jobs.values():
                 if row.actor == actor and row.status == "running":
-                    await backend.mark_succeeded(row.id, worker_id, result=None)
+                    await backend.mark_succeeded(
+                        row.id, worker_id, result=None, attempt=row.attempt
+                    )
                     break
 
 

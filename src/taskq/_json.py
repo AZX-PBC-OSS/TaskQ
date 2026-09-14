@@ -18,6 +18,8 @@ from typing import Any, Final
 
 import orjson
 
+from taskq.exceptions import UnencodableValue
+
 __all__ = [
     "NUL_JSONB_ERROR",
     "check_no_nul_str",
@@ -26,6 +28,8 @@ __all__ = [
     "dumps_jsonb_str",
     "dumps_str",
     "loads",
+    "sanitize_nul_str",
+    "sanitize_surrogates",
     "structlog_serializer",
 ]
 
@@ -90,12 +94,24 @@ def dumps(value: Any, /) -> bytes:
     string keys — so failing fast surfaces at the boundary what used to
     surface as a silently rewritten key on read-back. NUL handling
     (``dumps_jsonb_str``) and all other behaviour are unchanged.
+
+    Every ``TypeError`` orjson raises here — a lone surrogate, a
+    non-``str`` dict key, an object the fallback cannot convert — is
+    re-raised as :class:`~taskq.exceptions.UnencodableValue` (a
+    ``TypeError`` subclass, so ``except TypeError`` callers and wording
+    pins are unaffected). The distinct class is what lets the retry
+    classifier fail a deterministic encoding defect non-retryably, and
+    what lets the durable-write boundary recognize exactly the family it
+    escapes rather than strands.
     """
-    return orjson.dumps(
-        value,
-        default=_orjson_fallback,
-        option=orjson.OPT_NAIVE_UTC | orjson.OPT_UTC_Z,
-    )
+    try:
+        return orjson.dumps(
+            value,
+            default=_orjson_fallback,
+            option=orjson.OPT_NAIVE_UTC | orjson.OPT_UTC_Z,
+        )
+    except TypeError as exc:
+        raise UnencodableValue(str(exc)) from exc
 
 
 def dumps_str(value: Any, /) -> str:
@@ -148,10 +164,22 @@ def dumps_jsonb_str(value: Any, /) -> str:
     keeps that classification honest: it is a permanent data defect, so the
     normal actor-failure path handles it.
 
-    The scan runs on the encoded bytes: :func:`_encoded_has_nul` prefilters
-    with a byte-level ``find`` and confirms a hit by backslash parity, so
-    neither a decode nor a parse-and-walk of the payload is needed to
-    separate a real NUL from the literal text ``\\u0000``.
+    Refusal — not escape — is this boundary's contract for values no UTF-8
+    encoder accepts (a lone surrogate, NUL's mirror defect), exactly as it
+    is for NUL itself: the enqueue paths bind caller-supplied
+    payloads/metadata/tags through here, and caller input must fail fast
+    at the door with the typed :class:`~taskq.exceptions.UnencodableValue`
+    rather than be silently rewritten to an escaped form. The escape for
+    values the actor already produced — progress state reaching a durable
+    write — lives at the consumption sites
+    (:func:`sanitize_surrogates`), mirroring how the NUL family splits
+    this function (refuse) from :func:`sanitize_nul_str` (escape derived
+    text at its bind sites).
+
+    The NUL scan runs on the encoded bytes: :func:`_encoded_has_nul`
+    prefilters with a byte-level ``find`` and confirms a hit by backslash
+    parity, so neither a decode nor a parse-and-walk of the payload is
+    needed to separate a real NUL from the literal text ``\\u0000``.
     """
     data = dumps(value)
     if _encoded_has_nul(data):
@@ -194,6 +222,41 @@ def sanitize_nul_str(value: str, /) -> str:
     NUL was.
     """
     return value.replace("\x00", "\\x00")
+
+
+def sanitize_surrogates(value: Any, /) -> Any:
+    """Rewrite unencodable codepoints into their visible backslash-escaped form.
+
+    The object-walking sibling of :func:`sanitize_nul_str`, for values the
+    actor already produced (progress state reaching a durable write): a
+    lone surrogate — ``"\\udcff"``, exactly what ``os.fsdecode`` of a
+    non-UTF-8 filename byte yields — is a legal Python ``str`` that no
+    UTF-8 encoder accepts, so no ``text``/``jsonb`` form of it exists.
+    Where rejecting (as :func:`dumps_jsonb_str` does for caller-supplied
+    values) would strand the very work the value describes — the terminal
+    write fails, the job never reaches a terminal state, and the
+    crash-reclaim loop re-dispatches it into the same value forever —
+    the escaped form keeps the write valid and the defect diagnosable:
+    the stored state shows exactly where the unencodable codepoint was.
+
+    ``str.encode("utf-8", "backslashreplace")`` is the identity for any
+    string a UTF-8 encoder already accepts, so the walk is a no-op on
+    clean values and callers pay it only on the cold path a
+    :func:`dumps` attempt already rejected. Containers are walked; every
+    other type passes through unchanged, so a value refused for a
+    non-encoding reason (a non-``str`` dict key, over-deep nesting)
+    raises again on the retry.
+    """
+    if isinstance(value, str):
+        return value.encode("utf-8", "backslashreplace").decode("utf-8")
+    if isinstance(value, dict):
+        return {
+            sanitize_surrogates(k): sanitize_surrogates(v)
+            for k, v in value.items()  # pyright: ignore[reportUnknownVariableType]  # Why: the parameter is Any by contract (the walk repairs caller-agnostic JSON values), so the comprehension's k/v inherit Unknown; every branch returns the walked shape.
+        }
+    if isinstance(value, (list, tuple)):
+        return [sanitize_surrogates(v) for v in value]  # pyright: ignore[reportUnknownVariableType]  # Why: same Any-contract walk as the dict branch.
+    return value
 
 
 def loads(data: bytes | bytearray | memoryview | str, /) -> Any:

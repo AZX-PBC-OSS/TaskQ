@@ -6,34 +6,41 @@ dispatch seam — same inputs, same rows, same order.
 The existing equivalence guards (``test_in_memory_read_isolation`` /
 ``test_in_memory_seam_registry``) only pin ALIASING and method presence:
 they check that a returned row is a fresh object and that every protocol
-method exists. Neither observes what ``dispatch_batch`` actually SELECTS,
-so two semantic divergences survive them — and both are silent, because
-the in-memory mirror is the greener of the two:
+method exists. Neither observes what ``dispatch_batch`` actually SELECTS.
+Three semantic divergences were found that way — all silent, because the
+in-memory mirror was the greener of the two — and all three are now fixed
+and behaviourally pinned by the tests in this file:
 
-1. An EMPTY ``queues`` list. InMemory filters with ``not queues or
-   row.queue in queues``, so ``[]`` means "match ALL". PG builds the
+1. An EMPTY ``queues`` list. InMemory filtered with ``not queues or
+   row.queue in queues``, so ``[]`` meant "match ALL". PG builds the
    candidate set with ``CROSS JOIN LATERAL unnest(queues)``, and an empty
    array yields zero rows — the CROSS JOIN annihilates every candidate, so
-   ``[]`` means "match NOTHING". A suite that dispatches with ``[]`` sees
+   ``[]`` means "match NOTHING". A suite that dispatched with ``[]`` saw
    work flow in memory while a real worker polls forever claiming nothing.
 
-2. A NULL ``fairness_key`` under ``round_robin``. InMemory synthesises a
+2. A NULL ``fairness_key`` under ``round_robin``. InMemory synthesised a
    SINGLETON partition per unkeyed job (``f"__null__{r.id}"``), so every
-   unkeyed job ranks 1 and crowds to the front of the interleave. PG uses
+   unkeyed job ranked 1 and crowded to the front of the interleave. PG uses
    ``PARTITION BY COALESCE(j2.fairness_key, '__null__')`` — ONE shared
    partition, ranking 1, 2, 3…, which deliberately de-prioritises the
    unkeyed cohort behind the keyed ones. ``fairness_key`` is None by
-   default, so this is the common case, and the in-memory shape is exactly
-   the round-robin starvation the mode exists to prevent.
+   default, so this was the common case, and the in-memory shape was
+   exactly the round-robin starvation the mode exists to prevent.
+
+3. ``cancel_where`` returned ids in the mirror's default priority-first
+   ``_list_jobs`` ordering while PG returns them UUID-ascending
+   (``array_agg(id ORDER BY id)`` over ``ORDER BY id`` windows).
 
 PG is production: these tests assert the PG result and flag InMemory as
-the backend that diverged. Both drive the SAME job set (same ids, same
-``fairness_key``s, same ``scheduled_at``) through both backends and
-compare WHICH jobs a bounded ``dispatch_batch`` claims. The comparison is
-on the claimed SET, not on the RETURNING sequence: ``UPDATE … RETURNING``
+the backend that diverged. The dispatch pins drive the SAME job set (same
+ids, same ``fairness_key``s, same ``scheduled_at``) through both backends
+and compare WHICH jobs a bounded ``dispatch_batch`` claims. The comparison
+is on the claimed SET, not on the RETURNING sequence: ``UPDATE … RETURNING``
 gives no row order guarantee, so selection — which jobs a limited batch
 admits and which it defers — is the observable both backends owe each
-other, and it is exactly what each divergence changes.
+other, and it is exactly what each divergence changed. The registry in
+``tests/test_backend_semantic_parity_registry.py`` walks the two backends'
+shared surface so the next divergence fails on arrival.
 """
 
 from datetime import UTC, datetime, timedelta
@@ -42,7 +49,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from taskq._ids import new_job_id, new_uuid
-from taskq.backend._protocol import EnqueueArgs, JobId, JobRow
+from taskq.backend._protocol import EnqueueArgs, JobFilter, JobId, JobRow
 from taskq.testing._runner import set_queue_mode
 from taskq.testing.clock import FakeClock
 from taskq.testing.fixtures import JobsApp, ModulePgSchema
@@ -126,6 +133,14 @@ async def _make_in_memory(
     round_robin_queues: tuple[str, ...] = (),
 ) -> InMemoryBackend:
     backend = InMemoryBackend(clock=FakeClock(_IN_MEMORY_NOW))
+    # Dispatch candidates come FROM the actor_config registry on BOTH
+    # backends (PG's per_actor_capacity CTE — every caller of this helper
+    # seeds the PG side's actor_config via _ensure_pg_actor): the twin's
+    # registry must carry the same actors, or "no actors registered" would
+    # read as "no filter" — the exact mirror-greener-than-production shape
+    # the dispatch-parity pins police.
+    for actor in {args.actor for args in args_list}:
+        backend.register_actor_config(actor=actor)
     for queue in round_robin_queues:
         set_queue_mode(backend, queue, "round_robin")
     for args in args_list:
@@ -274,4 +289,110 @@ async def test_null_fairness_key_round_robin_selection_matches_pg(
         "unkeyed job ranks 1 and consumes the whole bounded batch. "
         "fairness_key is None by default, so the mirror starves keyed "
         "cohorts in the most common configuration there is."
+    )
+
+
+# ── Divergence 3: cancel_where id ordering ────────────────────────────
+
+
+def _anti_correlated_pending_pair() -> tuple[JobId, JobId]:
+    """A ``(low-priority id, high-priority id)`` pair with low < high.
+
+    UUIDv7 ids are time-ordered, so a freshly drawn pair arrives in this
+    order almost always; drawing until it does turns the relation into a
+    construction guarantee rather than UUID luck. The caller asserts it
+    as the precondition the whole pin rests on.
+    """
+    for _ in range(1000):
+        low_id, high_id = new_job_id(), new_job_id()
+        if low_id < high_id:
+            return low_id, high_id
+    raise AssertionError("no id pair with low < high after 1000 draws")
+
+
+async def test_cancel_where_id_ordering_matches_pg(
+    module_pg_schema: ModulePgSchema,
+    clean_jobs_app: JobsApp,
+) -> None:
+    """``cancel_where`` must return ``cancelled_ids`` in the same order on
+    both backends: job-id ascending.
+
+    Unlike ``dispatch_batch`` — whose ``UPDATE … RETURNING`` carries no
+    row-order guarantee, which is why the two pins above compare claimed
+    SETS — the PG bulk cancel returns ids from ``array_agg(id ORDER BY
+    id)`` over driving windows that are themselves ``ORDER BY id``
+    (src/taskq/backend/_cancel_bulk.py:206), so the tuple's ORDER is the
+    contract. InMemory delegates to ``_list_jobs(order_by=None)``, whose
+    default ordering is ``priority DESC, scheduled_at, id`` — so whenever
+    priority order and id order disagree, the mirror returns the same ids
+    in a different order.
+
+    The seed makes them disagree by construction: job B (priority 1)
+    holds the smaller UUID and job A (priority 9) the larger, so the
+    default ordering returns (A, B) while the id ordering returns (B, A).
+    """
+    schema = module_pg_schema.schema_name
+    pg_backend = clean_jobs_app.backend
+    actor = "parity_cancel_order"
+
+    b_id, a_id = _anti_correlated_pending_pair()
+    # Precondition: priority order (A first, 9 > 1) and id order (B
+    # first) disagree — without it both backends return equal tuples and
+    # the pin proves nothing.
+    assert b_id < a_id
+
+    args_list = [
+        EnqueueArgs(
+            id=b_id,
+            actor=actor,
+            queue="default",
+            payload={},
+            max_attempts=3,
+            retry_kind="transient",
+            scheduled_at=_SCHEDULED_AT,
+            priority=1,
+        ),
+        EnqueueArgs(
+            id=a_id,
+            actor=actor,
+            queue="default",
+            payload={},
+            max_attempts=3,
+            retry_kind="transient",
+            scheduled_at=_SCHEDULED_AT,
+            priority=9,
+        ),
+    ]
+
+    async with clean_jobs_app.deps.worker_pool.acquire() as conn:  # type: ignore[union-attr]  # Why: deps is object-typed in the non-TYPE_CHECKING JobsApp shim; WorkerDeps has worker_pool at runtime.
+        await _setup_pg_queue(conn, schema, "default", "strict_fifo")
+        await _ensure_pg_actor(conn, schema, actor)
+
+    for args in args_list:
+        await pg_backend.enqueue(args)
+    mem_backend = await _make_in_memory(args_list)
+
+    pg_result = await pg_backend.cancel_where(JobFilter(actor=actor), reason="parity")
+    mem_result = await mem_backend.cancel_where(JobFilter(actor=actor), reason="parity")
+
+    # PG is the production oracle: both seeded jobs come back, smaller id
+    # first — the UUID-ascending order array_agg(id ORDER BY id) owes.
+    assert pg_result.cancelled_ids == (b_id, a_id), (
+        "PostgresBackend (production) did not produce the documented "
+        "array_agg(id ORDER BY id) UUID-ascending cancel result: expected "
+        f"({b_id}, {a_id}), got {list(pg_result.cancelled_ids)}. The "
+        "parity oracle itself is wrong — re-derive it before trusting "
+        "the InMemory comparison below."
+    )
+    assert mem_result.cancelled_ids == pg_result.cancelled_ids, (
+        "InMemoryBackend diverged from PostgresBackend at the cancel_where "
+        f"id-order seam: PG returned {list(pg_result.cancelled_ids)} "
+        "(UUID-ascending — array_agg(id ORDER BY id) over ORDER BY id "
+        "windows, src/taskq/backend/_cancel_bulk.py:206) and InMemory "
+        f"returned {list(mem_result.cancelled_ids)} (the default "
+        "priority-first _list_jobs ordering, src/taskq/testing/"
+        "_cancel_bulk.py). The same ids in a different order is a "
+        "different answer: any caller correlating cancelled_ids against "
+        "its own bookkeeping sees the mirror agree with production only "
+        "when the sort keys happen to coincide."
     )

@@ -1,8 +1,17 @@
-"""Redis fire-and-forget publish helpers for progress events."""
+"""Redis fire-and-forget publish helpers for progress events.
+
+Failure emission contract: every failed publish round trip bumps the
+``progress.publish_failures`` counter (the per-attempt aggregate — the
+observable that outages are alerted on), but the ``progress-publish-failure``
+WARNING is window-gated to one per channel per window — a sustained Redis
+death fails every publish attempt of every job, and a warning line per
+attempt is a log flood, not a signal.
+"""
 
 import asyncio
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Literal
+from time import monotonic
+from typing import TYPE_CHECKING, Final, Literal
 from uuid import UUID
 
 import structlog
@@ -17,9 +26,44 @@ if TYPE_CHECKING:
 
     from taskq.settings import WorkerSettings
 
-__all__ = ["_publish_event", "_publish_progress_event", "_publish_state_change_event"]
+__all__ = [
+    "_publish_event",
+    "_publish_event_dual",
+    "_publish_progress_event",
+    "_publish_state_change_event",
+]
 
 _log: structlog.stdlib.BoundLogger = get_logger(__name__)
+
+_PUBLISH_TIMEOUT_S: Final[float] = 1.0
+"""Bounded worst-case wait for any progress publish round trip."""
+
+_PUBLISH_FAILURE_LOG_WINDOW_S: Final[float] = 60.0
+"""Window gating the progress-publish-failure WARNING — the same bound
+the registry's keyed heal-failure emission applies to a failure that
+repeats on every attempt. The OTel counter stays the per-attempt
+aggregate."""
+
+_publish_failure_warned: dict[str, float] = {}
+"""Monotonic stamp of the last emitted publish-failure WARNING, keyed by
+channel label (bounded: the two-value channel vocabulary)."""
+
+
+def _publish_failure_warning_due(channel_labels: tuple[str, ...]) -> bool:
+    """One WARNING per channel per window; every failure still counts.
+
+    A dual publish's single failed round trip covers every channel it
+    buffered, so its caller passes all covered labels: the warning fires
+    when any covered channel is outside the window and the stamp then
+    covers all of them.
+    """
+    now = monotonic()
+    stamps = [_publish_failure_warned.get(label) for label in channel_labels]
+    if all(s is not None and now - s < _PUBLISH_FAILURE_LOG_WINDOW_S for s in stamps):
+        return False
+    for label in channel_labels:
+        _publish_failure_warned[label] = now
+    return True
 
 
 async def _publish_event(
@@ -33,17 +77,70 @@ async def _publish_event(
 ) -> None:
     """Fire-and-forget publish to a single Redis channel. Never raises."""
     try:
-        await asyncio.wait_for(redis_client.publish(channel, event_json), timeout=1.0)
+        await asyncio.wait_for(
+            redis_client.publish(channel, event_json), timeout=_PUBLISH_TIMEOUT_S
+        )
     except Exception as exc:
-        log.warning(
-            "progress-publish-failure",
-            kind="progress_publish_failure",
-            channel=channel,
-            seq=seq,
+        if _publish_failure_warning_due((channel_label,)):
+            log.warning(
+                "progress-publish-failure",
+                kind="progress_publish_failure",
+                channel=channel,
+                seq=seq,
+                error_type=type(exc).__name__,
+            )
+        record_progress_publish_failure(
+            channel=channel_label,
+            error_type=type(exc).__name__,
+        )
+
+
+async def _publish_event_dual(
+    redis_client: "redis_async.Redis",  # type: ignore[type-arg]  # Why: redis-py stubs expose Redis as an unparameterised generic; type arg cannot be supplied without a stubs update.
+    per_job_channel: str,
+    global_channel: str,
+    event_json: str,
+    *,
+    seq: int,
+    log: structlog.stdlib.BoundLogger,
+) -> None:
+    """Fire-and-forget publish of one event to the per-job and global
+    channels in a single pipelined round trip. Never raises.
+
+    Both PUBLISH commands are buffered locally and leave with one
+    ``execute`` — as two awaited ``publish`` calls, every progress event
+    paid two sequential round trips and two worst-case timeout budgets.
+    The pipeline is non-transactional on purpose: the two publishes have
+    no ordering dependency and no atomicity requirement, so MULTI/EXEC
+    would add two extra commands and an EXEC reply for nothing.
+    """
+    try:
+        async with redis_client.pipeline(transaction=False) as pipe:
+            pipe.publish(per_job_channel, event_json)
+            pipe.publish(global_channel, event_json)
+            await asyncio.wait_for(pipe.execute(), timeout=_PUBLISH_TIMEOUT_S)
+    except Exception as exc:
+        # One execute serves both channels, so the emission gate consults
+        # both channel labels: the warning fires once for the round trip
+        # and stamps both channels' windows.
+        if _publish_failure_warning_due(("per_job", "global")):
+            log.warning(
+                "progress-publish-failure",
+                kind="progress_publish_failure",
+                channels=[per_job_channel, global_channel],
+                seq=seq,
+                error_type=type(exc).__name__,
+            )
+        # One execute serves both channels, so a failed round trip means
+        # both channel-level delivery failures are true — recorded once
+        # each, which also preserves the counter total of the sequential
+        # shape this replaces, where a hard Redis outage incremented both.
+        record_progress_publish_failure(
+            channel="per_job",
             error_type=type(exc).__name__,
         )
         record_progress_publish_failure(
-            channel=channel_label,
+            channel="global",
             error_type=type(exc).__name__,
         )
 
@@ -93,24 +190,23 @@ async def _publish_progress_event(
     log = _log.bind(job_id=str(job_id), actor=actor, seq=seq)
 
     per_job_channel = progress_channel(settings.schema_name, job_id)
-    await _publish_event(
-        redis_client,
-        per_job_channel,
-        event_json,
-        seq=seq,
-        log=log,
-        channel_label="per_job",
-    )
-
     if settings.progress_publish_global:
-        global_channel = progress_global_channel(settings.schema_name)
-        await _publish_event(
+        await _publish_event_dual(
             redis_client,
-            global_channel,
+            per_job_channel,
+            progress_global_channel(settings.schema_name),
             event_json,
             seq=seq,
             log=log,
-            channel_label="global",
+        )
+    else:
+        await _publish_event(
+            redis_client,
+            per_job_channel,
+            event_json,
+            seq=seq,
+            log=log,
+            channel_label="per_job",
         )
 
 
@@ -179,22 +275,21 @@ async def _publish_state_change_event(
 
     schema = settings.schema_name
     per_job_channel = progress_channel(schema, job_id)
-    await _publish_event(
-        redis_client,
-        per_job_channel,
-        event_json,
-        seq=seq,
-        log=log,
-        channel_label="per_job",
-    )
-
     if settings.progress_publish_global:
-        global_channel = progress_global_channel(schema)
-        await _publish_event(
+        await _publish_event_dual(
             redis_client,
-            global_channel,
+            per_job_channel,
+            progress_global_channel(schema),
             event_json,
             seq=seq,
             log=log,
-            channel_label="global",
+        )
+    else:
+        await _publish_event(
+            redis_client,
+            per_job_channel,
+            event_json,
+            seq=seq,
+            log=log,
+            channel_label="per_job",
         )

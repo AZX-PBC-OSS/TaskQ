@@ -218,7 +218,9 @@ class _ScriptedBackend:
         return self._outcome("scheduled_to_pending")
 
     # The hasattr gate keys off this method's presence.
-    async def sweep_leaked_reservation_slots(self, conn: object, *, schema: str) -> int:
+    async def sweep_leaked_reservation_slots(
+        self, conn: object, *, schema: str, batch_size: int = 100
+    ) -> int:
         return self._outcome("leaked")
 
     async def sweep_expired_results(

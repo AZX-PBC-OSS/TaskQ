@@ -15,7 +15,8 @@ import asyncio
 import contextlib
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import timedelta
-from typing import TYPE_CHECKING
+from time import monotonic
+from typing import TYPE_CHECKING, Final
 from uuid import UUID
 
 import asyncpg
@@ -36,9 +37,14 @@ from taskq.backend._protocol import (
 )
 from taskq.backend.clock import Clock
 from taskq.client._enqueuer import SubJobEnqueuer, _parent_tags_var
-from taskq.constants import DEFAULT_MAX_RETRY_BACKOFF, MAX_RESULT_BYTES
+from taskq.constants import (
+    DEFAULT_MAX_RETRY_BACKOFF,
+    DEFAULT_RESERVATION_BACKOFF,
+    MAX_RESULT_BYTES,
+)
 from taskq.context import JobContext
 from taskq.exceptions import (
+    RateLimitDependencyUnavailable,
     ReservationUnavailable,
     ResultTooLarge,
     RetryAfter,
@@ -50,6 +56,8 @@ from taskq.obs import (
     bind_job_context,
     get_logger,
     log_state_change,
+    record_ratelimit_acquire_dependency_failure,
+    record_sub_enqueue_failure,
     safe_start_span,
 )
 from taskq.progress._buffer import (
@@ -79,7 +87,7 @@ from taskq.worker._handlers import (
     _TerminalWriteFailed,
 )
 from taskq.worker.cancel import ActiveJobRegistry
-from taskq.worker.deps import WorkerDeps
+from taskq.worker.deps import POOL_INFRA_EXCEPTIONS, WorkerDeps
 
 if TYPE_CHECKING:
     import redis.asyncio as redis_async
@@ -87,6 +95,52 @@ if TYPE_CHECKING:
 _log: structlog.stdlib.BoundLogger = get_logger(__name__)
 
 _OK = object()
+
+
+def _rate_limit_dependency_exceptions() -> tuple[type[BaseException], ...]:
+    """The exception family a limiter acquire raises when its STORE
+    failed to answer — Redis dead, or the PG fallback behind it dead or
+    never wired.
+
+    The PG members are the shared pool-infra classification
+    (:data:`POOL_INFRA_EXCEPTIONS`, owned by worker.deps) plus the typed
+    no-pool error the ratelimit PG delegates raise when the fallback is
+    reached without an injected pool (a store that cannot answer, not a
+    job defect — a ``RuntimeError`` subclass so the fail-loud pins hold);
+    Redis joins only when the extra is installed — without redis-py no
+    Redis error can occur on this path, so the ImportError narrows the
+    family rather than weakening it.
+    """
+    family: list[type[BaseException]] = [
+        *POOL_INFRA_EXCEPTIONS,
+        RateLimitDependencyUnavailable,
+    ]
+    try:
+        import redis as _redis_mod
+    except ImportError:
+        return tuple(family)
+    family.append(_redis_mod.RedisError)
+    return tuple(family)
+
+
+_RATE_LIMIT_DEPENDENCY_EXCEPTIONS: Final[tuple[type[BaseException], ...]] = (
+    _rate_limit_dependency_exceptions()
+)
+"""What a rate-limit acquire raises when a store dependency — not the
+job, not the actor — failed to answer. Recognised at the acquire
+boundary below and failed closed as the limiter's denial; anything else
+from the composition stays loud through the generic handler."""
+
+_DEPENDENCY_FAILURE_LOG_WINDOW_S: Final[float] = 60.0
+"""Window gating the acquire dependency-failure WARNING. A sustained
+store outage fails every rate-limited dispatch, and one warning line
+per denial is a log flood, not a signal — the same bound the registry's
+keyed heal-failure emission applies. The per-occurrence aggregate stays
+on the ``ratelimit.acquire_dependency_failures`` counter."""
+
+_dependency_failure_warned: dict[str, float] = {}
+"""Monotonic stamp of the last emitted dependency-failure WARNING, keyed
+by error class (bounded: the stores' exception vocabulary)."""
 
 
 def _encode_result(result: object, max_bytes: int = MAX_RESULT_BYTES) -> bytes | None:
@@ -183,7 +237,10 @@ async def _run_terminal_path(  # pyright: ignore[reportUnusedFunction]  # Why: c
         _buf = progress_buffers.get(job.id)
         if _buf is not None:
             _buf.dirty = False
-    if redis_client is not None and settings is not None:
+    # A noop means no transition happened — the row moved underneath
+    # this dispatch (a reclaim race) — so publishing the requested
+    # state change would announce a move the row never made.
+    if redis_client is not None and settings is not None and handler_result != "noop":
         await _publish_state_change_event(
             redis_client,
             settings,
@@ -328,9 +385,13 @@ async def consume_one_job(
     # (same model) or re-validate the model's dump, which carries the actor
     # model's applied defaults/aliases — not the raw row dict. The wrapped
     # PayloadValidationError propagates to the caller, exactly as it did
-    # from the in-try fallback and as acquire-path errors still do: callers
+    # from the in-try fallback and as non-dependency acquire-path errors
+    # still do (a wiring or programming defect must stay loud): callers
     # (dispatch_one_job's outer except, the in-memory runner's catch) own
-    # the terminal write for pre-actor failures.
+    # the terminal write for pre-actor failures. A STORE-dependency failure
+    # is the exception — the acquire boundary below fails it closed as the
+    # limiter's own denial, because an infrastructure outage is not a job
+    # outcome either.
     if validated_payload is None:
         validated_payload = validate_actor_payload(payload_type, job.payload, job.actor)
 
@@ -350,33 +411,124 @@ async def consume_one_job(
                 settings=settings,
             )
         except ReservationUnavailable as e:
+            # The handler owns the outcome tri-state (a snooze, a
+            # deadline failure, a budget-exhaustion failure, or a noop
+            # when the job moved underneath us) — its result is this
+            # dispatch's result, not a hardcoded reschedule. Routed
+            # through _run_terminal_path exactly as _dispatch_exception
+            # routes the in-actor denial for the same handler: the
+            # snooze write's infra failures surface as
+            # terminal-write-failed (never re-classified as the actor's
+            # failure by an outer generic catch), and the scheduled
+            # transition reaches Redis like every other requeue.
             if e.source == "reservation":
-                await _handle_reservation_class_denied(
-                    backend,
-                    job,
-                    worker_id,
-                    e,
-                    consumer_span,
-                    job_log,
-                    actor_config,
-                    awaiting_prefix="reservation:",
-                    outcome="reservation_denied",
-                    debug_event="consume-reservation-denied-noop",
-                )
+                handler_kwargs: dict[str, object] = {
+                    "awaiting_prefix": "reservation:",
+                    "outcome": "reservation_denied",
+                    "debug_event": "consume-reservation-denied-noop",
+                }
             else:
-                await _handle_reservation_class_denied(
+                handler_kwargs = {
+                    "awaiting_prefix": "rate_limit:",
+                    "outcome": "rate_limit_denied",
+                    "debug_event": "consume-rate-limit-denied-noop",
+                }
+            handler_kwargs["error_reporter"] = error_reporter
+            return await _run_terminal_path(
+                job=job,
+                worker_id=worker_id,
+                progress_buffers=deps.progress_buffers if deps is not None else None,
+                worker_pool=deps.worker_pool if deps is not None else worker_pool,
+                settings=deps.settings if deps is not None else settings,
+                redis_client=deps.redis_client if deps is not None else redis_client,
+                handler=_handle_reservation_class_denied,
+                handler_args=(backend, job, worker_id, e, consumer_span, job_log, actor_config),
+                handler_kwargs=handler_kwargs,
+                status="scheduled",
+                terminal=False,
+                outcome="scheduled",
+                job_exc=e,
+            )
+        except _RATE_LIMIT_DEPENDENCY_EXCEPTIONS as exc:
+            # The limiter's store could not answer. This try block wraps
+            # ONLY the acquire composition, so a store-failure-family
+            # exception here has exactly one provenance — and one
+            # response: the limiter's own fail-closed denial, never the
+            # actor-failure accounting an escapee falls into (a retry
+            # attempt burnt and the store's error persisted as the job's
+            # error_class). The snooze write runs through the same
+            # _run_terminal_path as an ordinary denial, so its infra
+            # failures surface as terminal-write-failed and the row is
+            # reclaimed by lock-lease expiry.
+            #
+            # Distinguishability: the denial carries an awaiting
+            # annotation naming the unavailability and its cause
+            # (rate_limit:unavailable:<error_type>), the
+            # acquire_dependency_failures counter rises beside the
+            # denials counter (an operator scaling a bucket on denials
+            # alone would chase an outage with capacity), and the
+            # WARNING is window-gated — a sustained outage denies every
+            # rate-limited dispatch, and a warning per denial is a log
+            # flood, not a signal.
+            #
+            # Non-consuming: the denial is infra backpressure about a
+            # job whose actor never ran, so it rides mark_snoozed's
+            # 'unavailable' arm (attempt refunded, no terminal arm) —
+            # never the budget-consuming bounded loop a saturation
+            # denial deliberately takes. The reason is passed here,
+            # explicitly: the store's unavailability is proven only at
+            # this synthesis site, never inferred downstream.
+            error_type = type(exc).__name__
+            record_ratelimit_acquire_dependency_failure(error_type)
+            now = monotonic()
+            last_warned = _dependency_failure_warned.get(error_type)
+            if last_warned is None or now - last_warned >= _DEPENDENCY_FAILURE_LOG_WINDOW_S:
+                _dependency_failure_warned[error_type] = now
+                job_log.warning(
+                    "rate-limit-dependency-failure",
+                    kind="rate_limit_dependency_failure",
+                    error_class=error_type,
+                    error_message=str(exc),
+                )
+            denial = ReservationUnavailable(
+                bucket_name=f"unavailable:{error_type}",
+                retry_after=DEFAULT_RESERVATION_BACKOFF,
+                source="rate_limit",
+            )
+            # Why a direct __cause__ assignment: the synthetic denial is
+            # constructed, not raised, so no except-context chains the
+            # store failure automatically — the chain is what the
+            # terminal-write infra log and any traceback reader see.
+            denial.__cause__ = exc
+            return await _run_terminal_path(
+                job=job,
+                worker_id=worker_id,
+                progress_buffers=deps.progress_buffers if deps is not None else None,
+                worker_pool=deps.worker_pool if deps is not None else worker_pool,
+                settings=deps.settings if deps is not None else settings,
+                redis_client=deps.redis_client if deps is not None else redis_client,
+                handler=_handle_reservation_class_denied,
+                handler_args=(
                     backend,
                     job,
                     worker_id,
-                    e,
+                    denial,
                     consumer_span,
                     job_log,
                     actor_config,
-                    awaiting_prefix="rate_limit:",
-                    outcome="rate_limit_denied",
-                    debug_event="consume-rate-limit-denied-noop",
-                )
-            return "scheduled"
+                ),
+                handler_kwargs={
+                    "awaiting_prefix": "rate_limit:",
+                    "outcome": "rate_limit_denied",
+                    "debug_event": "consume-rate-limit-dependency-failure-noop",
+                    "error_reporter": error_reporter,
+                    "denial_reason": "unavailable",
+                },
+                status="scheduled",
+                terminal=False,
+                outcome="scheduled",
+                job_exc=denial,
+            )
 
     # ── Buffer registration ────────────────────────────────────────────────
     _effective_pool = deps.worker_pool if deps is not None else worker_pool
@@ -386,7 +538,10 @@ async def consume_one_job(
     _pending_publish_tasks = getattr(deps, "pending_publish_tasks", None)
 
     if _progress_buffers is not None:
-        _buf = _ProgressBuffer(job_id=job.id, base_seq=job.progress_seq)
+        # attempt seeds the buffer's flush-fence epoch: a stale flush
+        # landing after a same-worker redispatch to a later attempt
+        # no-ops instead of clobbering the new epoch's progress.
+        _buf = _ProgressBuffer(job_id=job.id, base_seq=job.progress_seq, attempt=job.attempt)
         _progress_buffers[job.id] = _buf
 
     _parent_tags_token = _parent_tags_var.set(tuple(job.tags))
@@ -407,6 +562,7 @@ async def consume_one_job(
             actor=job.actor,
             queue=job.queue,
             attempt=job.attempt,
+            snooze_count=job.snooze_count,
             worker_id=worker_id,
             payload=validated_payload,
             jobs=live_enqueuer,
@@ -540,6 +696,7 @@ async def consume_one_job(
                         progress_state=_cancel_state
                         if _cancel_buf is not None and _cancel_buf.dirty
                         else None,
+                        attempt=job.attempt,
                     )
                 )
             except _TERMINAL_WRITE_INFRA_EXCEPTIONS as infra_exc:
@@ -686,10 +843,12 @@ async def _consume_transactional(
     """
     completion: object = None
     _tx_result: object = None
+    actor_finished = False
 
     async def _run_actor_in_tx() -> object:
         nonlocal completion
         nonlocal _tx_result
+        nonlocal actor_finished
         _preserved_exc: Snooze | RetryAfter | None = None
         _re_enqueue_list: list[EnqueueArgs] = []
 
@@ -715,6 +874,15 @@ async def _consume_transactional(
                 # timeout's own terminal write goes through the worker pool,
                 # not this connection.
                 result = await asyncio.wait_for(run_actor(job, ctx), timeout=timeout)
+                # Why a second flag beside `completion`: the outer shield's
+                # CancelledError handler must distinguish "the actor
+                # attempt is still running" (the external cancel has to be
+                # delivered to it) from "the actor returned and the commit
+                # machinery is in flight" (the shield's documented job: an
+                # in-flight commit survives the external cancel). No await
+                # sits between the actor's return and this assignment, so
+                # the two windows cannot blur.
+                actor_finished = True
                 if active_jobs is not None:
                     entry = active_jobs.get(job.id)
                     if entry is not None and entry.cancel_phase >= CancelPhase.COOPERATIVE:
@@ -746,6 +914,7 @@ async def _consume_transactional(
                         progress_seq=_pseq,
                         progress_state=_pstate,
                         fallback_result_ttl=fallback_result_ttl,
+                        attempt=job.attempt,
                     )
                 except _TERMINAL_WRITE_INFRA_EXCEPTIONS as infra_exc:
                     _log_terminal_write_failed(log, job, None, infra_exc)
@@ -789,6 +958,11 @@ async def _consume_transactional(
         try:
             await enqueuer.flush_buffer()
         except SubEnqueueError as sub_err:
+            # The parent has already been reported as succeeded, so every
+            # failed child enqueue is a job the caller believes exists but
+            # does not — count them before the log line, so the catch can
+            # never lose the signal.
+            record_sub_enqueue_failure(job.actor, len(sub_err.failed_items))
             log.error(
                 "sub_enqueue_flush_failed",
                 kind="sub_enqueue_flush_failed",
@@ -858,12 +1032,25 @@ async def _consume_transactional(
         # (commit happened), do NOT route to mark_cancelled — that would
         # mark a committed job as cancelled, violating //.
         if completion is not _OK:
-            # Not-yet-committed: the detached task still holds the
-            # transaction open (it rolls back when it observes the
-            # cancel, or the connection is terminated underneath it at
-            # release time). Retrieve its eventual outcome and fall
-            # through to the outer CancelledError handler which calls
-            # discard_buffer + mark_cancelled + raise.
+            if not actor_finished:
+                # The actor attempt is still running and nothing else
+                # ever delivers this cancellation to it — with no
+                # start_to_close bound (timeout None) it would run to
+                # completion detached, committing side effects after the
+                # row already says cancelled. Cancelling tx_task here
+                # mirrors the autonomous path, where the same external
+                # cancel propagates through wait_for into the actor and
+                # the enclosing transaction rolls back.
+                tx_task.cancel()
+            # Past the actor (commit machinery in flight) the detached
+            # task is deliberately left to finish: its eventual outcome
+            # must be retrieved here or asyncio reports "Task exception
+            # was never retrieved". The outcome itself is discarded — the
+            # dispatch path's connection release terminates a still-open
+            # transaction (see _release_slot_conn), and a detached
+            # task's late success is superseded by the cancellation
+            # handling below. task.exception() raises CancelledError when
+            # the task ended cancelled — the only outcome suppressed.
             tx_task.add_done_callback(_retrieve_detached_outcome)
         raise
 
@@ -945,6 +1132,7 @@ async def _consume_autonomous(
                     progress_state=_cancel_state
                     if _cancel_buf is not None and _cancel_buf.dirty
                     else None,
+                    attempt=job.attempt,
                 )
             )
             if _cancel_buf is not None:
@@ -992,6 +1180,7 @@ async def _consume_autonomous(
                 progress_seq=_pseq,
                 progress_state=_pstate,
                 fallback_result_ttl=fallback_result_ttl,
+                attempt=job.attempt,
             )
         )
     except _TERMINAL_WRITE_INFRA_EXCEPTIONS as infra_exc:

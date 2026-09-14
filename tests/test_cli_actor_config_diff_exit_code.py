@@ -1,11 +1,13 @@
-"""`taskq actor-config diff` must exit non-zero when drift is present.
+"""`taskq actor-config diff` must exit non-zero when gate-failing drift is present.
 
-The command's own output names queue/metadata mismatches as "structural
-drift" that will refuse the next worker boot with ActorConfigDriftList —
-exactly the state a CI gate exists to catch. A diff that detects drift,
-prints that it blocks startup, and then exits 0 reports failure as
-success to the shell; the exit code is the contract a CI pipeline can
-gate on.
+The command's own output names queue mismatches as "assignment drift" (the
+two routing halves disagree: boot adopts the stored queue and cron fires
+follow it while producers enqueue by their own literal) and metadata
+mismatches as startup-blocking (the next worker boot raises
+ActorConfigDriftList) — exactly the states a CI gate exists to catch. A
+diff that detects drift, prints that it fails the gate, and then exits 0
+reports failure as success to the shell; the exit code is the contract a
+CI pipeline can gate on.
 """
 
 from collections.abc import Mapping
@@ -50,9 +52,13 @@ def _patch_db(monkeypatch: pytest.MonkeyPatch, rows: list[ActorConfigRow]) -> No
     monkeypatch.setattr("taskq.cli.list_actor_configs", fake_list)
 
 
-def test_diff_exits_nonzero_on_structural_drift(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A stored row whose queue disagrees with the code literal is the exact
-    state that refuses worker boot — the diff must not report success."""
+def test_diff_exits_nonzero_on_queue_assignment_drift(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stored row whose queue disagrees with the code literal leaves the
+    fleet's two routing halves in disagreement — cron fires follow the
+    stored queue, producers follow their literal — so the diff must not
+    report success even though boot itself adopts the stored assignment."""
     drifted = ActorConfigRow(
         actor="drift_actor",
         max_concurrent=None,
@@ -107,9 +113,10 @@ def test_diff_exits_nonzero_when_registry_actor_has_no_stored_row(
 def test_diff_exits_nonzero_on_metadata_only_drift(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Metadata drift alone is structural drift: the next worker startup
-    raises ActorConfigDriftList on it exactly as on a queue mismatch, so
-    the gate must not pass a run whose only divergence is metadata."""
+    """Metadata drift alone is startup-blocking: the next worker startup
+    raises ActorConfigDriftList on it (metadata has no operator move
+    surface, so any mismatch is a bug), so the gate must not pass a run
+    whose only divergence is metadata."""
     metadata_drifted = ActorConfigRow(
         actor="drift_actor",
         max_concurrent=None,

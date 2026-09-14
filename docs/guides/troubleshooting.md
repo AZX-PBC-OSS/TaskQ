@@ -605,8 +605,11 @@ Check dispatch latency via OTel or the `/metrics` endpoint (`taskq health metric
   ```bash
   taskq queues set-mode multi round_robin
   ```
-  Takes effect on the next dispatch cycle — no worker restart needed
-  (`_resolve_queue_modes` re-reads the table every batch). In SQL, note the
+  Takes effect within the queue-mode cache's 5 s TTL — no worker restart
+  needed (dispatch resolves queue modes through a per-worker TTL cache; the
+  process running `set-mode` invalidates its own caches immediately, and
+  out-of-process workers pick the flip up on their next cache refill). In
+  SQL, note the
   **UPSERT**: queues are implicit — no runtime path inserts a `queues` row (only
   the admin surface does, and `set-mode` above is itself an upsert), so a plain
   `UPDATE ... WHERE name = ...` matches zero rows and silently does nothing on a

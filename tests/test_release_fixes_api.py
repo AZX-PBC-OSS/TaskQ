@@ -149,13 +149,13 @@ def test_actor_config_drift_error_exposes_remedy_hint() -> None:
     plain per-actor diff line so ActorConfigDriftList doesn't double-print
     the hint once per drift. It still exposes the hint via .hint so
     standalone callers/tests can access it directly."""
-    err = ActorConfigDriftError("my_actor", "queue", "critical", "default")
+    err = ActorConfigDriftError("my_actor", "metadata", {"team": "a"}, {"team": "b"})
     assert "force-update-actor-config" in err.hint
     assert "TASKQ_FORCE_UPDATE_ACTOR_CONFIG" in err.hint
 
 
 def test_actor_config_drift_list_str_includes_remedy_hint_once() -> None:
-    drifts = (ActorConfigDriftError("a", "queue", "critical", "default"),)
+    drifts = (ActorConfigDriftError("a", "metadata", {"team": "a"}, {"team": "b"}),)
     err = ActorConfigDriftList(drifts)
     text = str(err)
     assert text.count("force-update-actor-config") == 1

@@ -125,6 +125,7 @@ def _backend_methods_stub() -> Backend:
             fallback_result_ttl: object = None,
             *,
             result_bytes: object = None,
+            attempt: int | None = None,
         ) -> bool:
             return True
 
@@ -137,10 +138,17 @@ def _backend_methods_stub() -> Backend:
             fallback_result_ttl: object = None,
             *,
             result_bytes: object = None,
+            attempt: int | None = None,
         ) -> bool:
             return True
 
-        async def mark_cancelled(self, job_id: object, worker_id: object) -> bool:
+        async def mark_cancelled(
+            self,
+            job_id: object,
+            worker_id: object,
+            *,
+            attempt: int | None = None,
+        ) -> bool:
             return True
 
         async def write_cancel_escalation(

@@ -41,6 +41,7 @@ class _BackendMethods:
         fallback_result_ttl: object = None,
         *,
         result_bytes: object = None,
+        attempt: int | None = None,
     ) -> bool:
         return True
 
@@ -53,10 +54,17 @@ class _BackendMethods:
         fallback_result_ttl: object = None,
         *,
         result_bytes: object = None,
+        attempt: int | None = None,
     ) -> bool:
         return True
 
-    async def mark_cancelled(self, job_id: object, worker_id: object) -> bool:
+    async def mark_cancelled(
+        self,
+        job_id: object,
+        worker_id: object,
+        *,
+        attempt: int | None = None,
+    ) -> bool:
         return True
 
 

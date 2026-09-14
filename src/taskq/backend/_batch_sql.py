@@ -19,7 +19,8 @@ from itertools import islice
 from typing import TYPE_CHECKING, cast
 from uuid import UUID
 
-from asyncpg.exceptions import UniqueViolationError
+import structlog
+from asyncpg.exceptions import LockNotAvailableError, UniqueViolationError
 
 from taskq._json import dumps_str
 from taskq.backend._cursor import decode_batch_cursor
@@ -39,9 +40,12 @@ from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
     DEFAULT_CHUNK_SIZE,
 )
+from taskq.obs import get_logger
 
 if TYPE_CHECKING:
     import asyncpg
+
+logger: structlog.stdlib.BoundLogger = get_logger(__name__)
 
 __all__ = [
     "BatchSql",
@@ -128,10 +132,52 @@ UPDATE "{schema}".batches
 SET status = 'aborted', completed_at = clock_timestamp()
 WHERE id = $1 AND status = 'active'"""
 
+# The NOT EXISTS guard arbitrates completion server-side, in this
+# statement's own snapshot: the increment/reset counts CTE runs in ITS
+# statement's READ COMMITTED snapshot, which after a batches-row lock
+# wait can predate a concurrent member's terminal write, so a count of
+# zero from the caller is never the completion decision. The guard shape
+# is the one complete_stale_batches already uses (worker/
+# _leader_shared.py); the status = 'active' sibling condition keeps
+# abort-wins-over-complete intact.
+#
+# The membership CTE closes the append-race window the guard alone cannot
+# see: a READ COMMITTED snapshot cannot see another transaction's
+# uncommitted member INSERT (the streaming-append path -- a caller-
+# supplied batch_id of an existing batch, members committed chunk by
+# chunk, each chunk transaction holding this same batches-row lock from
+# before its INSERTs to its commit -- see _enqueue.py's
+# _lock_batch_membership), so the guard alone would complete the batch
+# and the append would then commit a pending member onto a terminal row.
+# FOR UPDATE NOWAIT makes the conflict itself the signal: an in-flight
+# append holds the row, this statement raises LockNotAvailableError
+# (SQLSTATE 55P03), and complete_batch() treats that as a DELAY -- the
+# docstring's own "can delay completion but never complete prematurely"
+# contract -- leaving the row 'active' for the append to commit and the
+# next hook or the stale-batch sweep to re-arbitrate. NOWAIT, not a
+# blocking wait, is load-bearing: the completer runs on the worker's
+# terminal connection inside the caller's open transaction, and blocking
+# here would park a terminal write behind an appender of unbounded
+# duration. The lock is held to this statement's commit, so an appender
+# arriving after it serializes behind the completion instead of racing
+# it. A batch row that does not exist locks nothing: EXISTS fails and
+# the UPDATE no-ops exactly as it did before the CTE.
 _COMPLETE_BATCH_SQL = """\
+WITH membership AS (
+    SELECT id
+    FROM "{schema}".batches
+    WHERE id = $1
+    FOR UPDATE NOWAIT
+)
 UPDATE "{schema}".batches
 SET status = 'complete', completed_at = clock_timestamp()
-WHERE id = $1 AND status = 'active'"""
+WHERE id = $1 AND status = 'active'
+  AND EXISTS (SELECT 1 FROM membership)
+  AND NOT EXISTS (
+    SELECT 1 FROM "{schema}".jobs
+    WHERE metadata @> $2::jsonb
+      AND status {terminal_not_in}
+  )"""
 
 _COUNT_BATCH_NON_TERMINAL_SQL = """\
 SELECT count(*)::int FROM "{schema}".jobs
@@ -163,15 +209,33 @@ LEFT JOIN LATERAL (
 ) j ON true
 WHERE 1=1"""
 
+# Bounded batch + MATERIALIZED, the _COMPLETE_STALE_BATCHES_SQL shape
+# (worker/_leader_shared.py — same table family, same correlated NOT EXISTS
+# member-probe): LIMIT $2 caps one call's DELETE, and MATERIALIZED stops the
+# planner from inlining the LIMIT-ed CTE into the DELETE in a way that could
+# remove more rows than the LIMIT. No ORDER BY: batches cardinality grows
+# with batch usage, not job volume, so the window's scan is cheap however it
+# plans — the same rationale the stale-batch completion sweep documents. The
+# count comes from a COUNT over the DELETE's RETURNING set rather than
+# materialising ids the caller only counts.
 _PRUNE_OLD_BATCHES_SQL = """\
-DELETE FROM "{schema}".batches
-WHERE completed_at IS NOT NULL
-  AND completed_at < $1
-  AND NOT EXISTS (
-    SELECT 1 FROM "{schema}".jobs j
-    WHERE j.metadata @> jsonb_build_object('batch_id', batches.id::text)
-  )
-RETURNING id"""
+WITH candidate AS MATERIALIZED (
+    SELECT id
+    FROM "{schema}".batches
+    WHERE completed_at IS NOT NULL
+      AND completed_at < $1
+      AND NOT EXISTS (
+        SELECT 1 FROM "{schema}".jobs j
+        WHERE j.metadata @> jsonb_build_object('batch_id', batches.id::text)
+      )
+    LIMIT $2
+),
+deleted AS (
+    DELETE FROM "{schema}".batches
+    WHERE id IN (SELECT id FROM candidate)
+    RETURNING id
+)
+SELECT count(*)::int FROM deleted"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -209,7 +273,7 @@ def render_batch_sql(schema: str) -> BatchSql:
         ),
         abort_batch_jobs=_ABORT_BATCH_JOBS_SQL.format(schema=schema),
         abort_batch_row=_ABORT_BATCH_ROW_SQL.format(schema=schema),
-        complete_batch=_COMPLETE_BATCH_SQL.format(schema=schema),
+        complete_batch=_COMPLETE_BATCH_SQL.format(schema=schema, terminal_not_in=_TERMINAL_NOT_IN),
         count_batch_non_terminal=_COUNT_BATCH_NON_TERMINAL_SQL.format(
             schema=schema, terminal_not_in=_TERMINAL_NOT_IN
         ),
@@ -360,8 +424,44 @@ async def complete_batch(
     sql: BatchSql,
     batch_id: UUID,
 ) -> None:
-    """Mark a batch as complete.  No-op if the batch is already terminal."""
-    await conn.execute(sql.complete_batch, batch_id)
+    """Mark a batch as complete.  No-op if the batch is already terminal
+    or any member job is still non-terminal.
+
+    Completion is arbitrated inside this statement: the ``NOT EXISTS``
+    guard counts non-terminal members in the statement's own snapshot,
+    so a caller acting on a stale count (two members terminating
+    concurrently can each read the other as non-terminal) can delay
+    completion but never complete prematurely — an optimistic attempt
+    after any terminal member is always safe, and the same attempt that
+    was vetoed lands once the last member turns terminal.
+
+    Delay also covers the member-append window: the statement's
+    membership CTE takes the batches row ``FOR UPDATE NOWAIT``, and a
+    concurrent append transaction holding that lock (the streaming chunk
+    path — see ``_COMPLETE_BATCH_SQL``'s comment) makes the statement
+    raise :class:`asyncpg.exceptions.LockNotAvailableError`. That is a
+    DELAY, not an error: a READ COMMITTED snapshot cannot see the
+    appender's uncommitted member INSERT, so completing now would be
+    precisely the premature completion the guard exists to prevent. The
+    row stays ``'active'``, the append commits, and the next terminal
+    hook or the leader's ``complete_stale_batches`` sweep re-arbitrates
+    against the now-visible membership.
+    """
+    try:
+        await conn.execute(sql.complete_batch, batch_id, _batch_filter_json(batch_id))
+    except LockNotAvailableError:
+        # Delayed on the membership lock — see the docstring. Debug, not
+        # warning: this is the same optimistic-CAS miss class as the
+        # guard's own veto (a concurrent writer won the arbitration), an
+        # expected outcome under concurrency that reconciliation already
+        # covers; the log line exists so a delayed completion is
+        # traceable to its cause when someone asks why a batch with all
+        # terminal members is still 'active'.
+        logger.debug(
+            "complete_batch_delayed_membership_lock",
+            kind="batch",
+            batch_id=str(batch_id),
+        )
 
 
 async def count_batch_non_terminal(
@@ -438,12 +538,31 @@ async def prune_old_batches(
     conn: ConnLike,
     sql: BatchSql,
     cutoff: datetime,
+    *,
+    batch_size: int = DEFAULT_CHUNK_SIZE,
 ) -> int:
     """Delete completed batches older than *cutoff* that have no remaining
-    member jobs.  Returns the number of rows deleted.
+    member jobs, one bounded batch at a time, and return the total number
+    of rows deleted.
+
+    Each call of the underlying statement deletes at most *batch_size*
+    rows (the ``_COMPLETE_STALE_BATCHES_SQL`` windowing shape); this
+    function drains the eligible set by repeating it until a window comes
+    back short, so one call still reports the whole day's deletion count.
+    Every statement is self-committing, so a drain stopped by an error
+    keeps its progress and the next call resumes the remainder. The count
+    comes from the statement itself (a COUNT over its RETURNING set), not
+    from materialising ids only to count them.
     """
-    rows = await conn.fetch(sql.prune_old_batches, cutoff)
-    return len(rows)
+    total = 0
+    while True:
+        count: int = await conn.fetchval(sql.prune_old_batches, cutoff, batch_size)
+        if count == 0:
+            break
+        total += count
+        if count < batch_size:
+            break
+    return total
 
 
 async def enqueue_batch_atomic(
@@ -490,6 +609,16 @@ async def enqueue_batch_atomic(
                 chunk_raw = list(islice(it, chunk_size))
                 if not chunk_raw:
                     break
+                # The chunk's base in the CALLER's coordinate space: the
+                # consumed prefix BEFORE this chunk. Captured before the
+                # count bump so the bulk core's per-item annotations (the
+                # jsonb NUL guard) name STREAM-GLOBAL indices — a
+                # chunk-local index from inside this loop is unfixable at
+                # the client layer, which cannot know the backend's chunk
+                # base (the streaming boundary's registry can only shift
+                # errors it sees cross its own per-chunk call, and this
+                # re-chunk happens entirely below that boundary).
+                chunk_base = item_count
                 item_count += len(chunk_raw)
                 chunk = [
                     replace(
@@ -518,6 +647,7 @@ async def enqueue_batch_atomic(
                     # raises here as plain MaxPendingExceededError before
                     # any INSERT, and the rollback discards earlier chunks.
                     refuse_whole_batch_on_cap=True,
+                    index_base=chunk_base,
                 )
                 all_rows.extend(rows)
 
@@ -537,6 +667,11 @@ async def enqueue_batch_atomic(
                     # not raise a one-item partition refusal.
                     enforce_max_pending=True,
                     refuse_whole_batch_on_cap=True,
+                    # The finalizer's caller-global coordinate: one past
+                    # the last stream item (it is the (N+1)th enqueue this
+                    # call performs). index 0 — the pre-fix annotation —
+                    # falsely accused an innocent stream item.
+                    index_base=item_count,
                 )
                 all_rows.extend(fin_rows)
                 finalizer_row = fin_rows[0]

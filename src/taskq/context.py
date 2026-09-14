@@ -51,6 +51,15 @@ class JobContext[P: BaseModel]:
     ``jobs`` provides :class:`SubJobEnqueuer` for enqueuing sub-jobs
     from within the actor body. The enqueuer resolves the database
     connection via LOOP-scope DI → worker-pool fallback.
+
+    ``snooze_count`` is the job row's count of completed non-consuming
+    deferrals (:class:`~taskq.exceptions.Snooze` /
+    :meth:`RetryAfter<taskq.exceptions.RetryAfter>` with
+    ``consume_budget=False``) at dispatch time. Such a deferral refunds
+    the claim's attempt increment, so ``attempt`` alone cannot count
+    snooze cycles — an actor that wants to snooze N times and then
+    succeed keys off ``snooze_count`` (the Oban snoozed-meta /
+    River snoozes-counter convention), not off ``attempt``.
     """
 
     job_id: UUID
@@ -61,6 +70,7 @@ class JobContext[P: BaseModel]:
     payload: P
     jobs: SubJobEnqueuer
     log: structlog.stdlib.BoundLogger
+    snooze_count: int = 0
     span: Span | None = None
     cancel_event: asyncio.Event = field(default_factory=asyncio.Event)
     _abort_requested: threading.Event = field(default_factory=threading.Event)
@@ -68,6 +78,7 @@ class JobContext[P: BaseModel]:
     _redis_client: redis_async.Redis | None = None  # type: ignore[type-arg]  # Why: redis-py stubs expose Redis as an unparameterised generic; type arg cannot be supplied without a stubs update.
     _worker_settings: WorkerSettings | None = None
     _pending_publish_tasks: set[asyncio.Task[None]] | None = None
+    _progress_dropped_notice: threading.Event = field(default_factory=threading.Event)
 
     @property
     def cancellation_requested(self) -> bool:
@@ -116,6 +127,12 @@ class JobContext[P: BaseModel]:
         raises ``TypeError`` (JSON and ``jsonb`` cannot carry non-string
         keys) where it previously would have been silently coerced.
 
+        When no progress buffers are wired into this context (direct
+        actor testing, a miswired context), the call — the Redis publish
+        included — is a deliberate no-op; the first such dropped call
+        emits one debug-level notice so the no-op is discoverable, and
+        later calls stay silent.
+
         The Redis publish is genuinely fire-and-forget: it may complete out
         of order relative to other in-flight publishes for the same job.
         Consumers reading the SSE/pub-sub stream already discard any event
@@ -126,7 +143,7 @@ class JobContext[P: BaseModel]:
         publishing to Redis are logged and recorded as a metric, never
         raised here.
         """
-        if data is not None and self._worker_settings is not None:
+        if (data is not None or detail is not None) and self._worker_settings is not None:
             # Load-bearing serialization, not redundant with the publish
             # path's ``model_dump_json``: this is the only
             # ``progress_data_max_bytes`` enforcement in the codebase, and it
@@ -141,12 +158,32 @@ class JobContext[P: BaseModel]:
             # 2.13). The double serialization of ``data`` (here + the event
             # dump) is therefore the price of the synchronous-raise contract;
             # the flush's re-serialization is a separate (PG) boundary.
-            serialised_len = len(dumps(data))
-            limit = self._worker_settings.progress_data_max_bytes
-            if serialised_len > limit:
-                raise ProgressTooLarge(limit=limit, actual=serialised_len)
+            if data is not None:
+                serialised_len = len(dumps(data))
+                limit = self._worker_settings.progress_data_max_bytes
+                if serialised_len > limit:
+                    raise ProgressTooLarge(limit=limit, actual=serialised_len)
+            if detail is not None:
+                # The detail string passes through the same publish-time
+                # serialization ``data`` does: an unencodable detail (a lone
+                # surrogate) raises to the actor HERE, before it enters the
+                # coalesce buffer and detonates at the durable write as a
+                # failure no terminal-write classification answers for. The
+                # settings-wiring condition is the data guard's own: an
+                # unwired context (direct actor testing) falls through to
+                # the write boundary, which escapes the unencodable form
+                # instead of stranding the job.
+                dumps(detail)
 
         if self._progress_buffers is None:
+            # No coalesce buffer wired, so this call — publish included —
+            # is a deliberate no-op. The first dropped call reports itself
+            # at debug level so a silent no-op is discoverable; the
+            # once-latch keeps a tight progress loop from emitting one
+            # log line per dropped call.
+            if not self._progress_dropped_notice.is_set():
+                self._progress_dropped_notice.set()
+                self.log.debug("progress-dropped-no-buffer", kind="progress_dropped")
             return
 
         buffer = self._progress_buffers.get(self.job_id)

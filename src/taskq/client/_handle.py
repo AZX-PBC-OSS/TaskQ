@@ -251,7 +251,7 @@ class JobHandle[R: BaseModel | None]:
             deadline = asyncio.get_running_loop().time() + timeout
 
         while True:
-            row = await self._backend.get(self.job_id)
+            row = await self._fetch_row_bounded_by(deadline)
             if row is None:
                 raise KeyError(self.job_id)
             self._observe(row)
@@ -268,6 +268,27 @@ class JobHandle[R: BaseModel | None]:
                 sleep = _WAIT_POLL_INTERVAL
 
             await asyncio.sleep(sleep)
+
+    async def _fetch_row_bounded_by(self, deadline: float | None) -> JobRow | None:
+        """One backend row fetch for :meth:`wait`, carrying *deadline* onto
+        the in-flight fetch itself.
+
+        Why the fetch is bounded and not merely the gaps between polls:
+        ``backend.get`` is a wait on something outside the process, and a
+        fetch that wedges — a pool acquire with no timeout of its own, a
+        black-holed connection, a hung custom backend — would otherwise
+        park :meth:`wait` inside the fetch while the caller's deadline
+        expires unenforced. :func:`asyncio.wait_for` cancels the wedged
+        fetch at the deadline and raises the ``TimeoutError`` :meth:`wait`
+        documents. With ``deadline is None`` the fetch is unbounded,
+        matching :meth:`wait` called without a timeout.
+        """
+        if deadline is None:
+            return await self._backend.get(self.job_id)
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            raise TimeoutError()
+        return await asyncio.wait_for(self._backend.get(self.job_id), timeout=remaining)
 
     def _extract_result(self, row: JobRow) -> R:
         """Convert a terminal :class:`JobRow` into ``R`` or raise."""

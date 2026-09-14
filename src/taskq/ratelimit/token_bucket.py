@@ -54,9 +54,14 @@ from typing import TYPE_CHECKING, Final
 
 import structlog
 
+from taskq._advisory import (
+    _LOCK_TIMEOUT_SET_SQL,  # pyright: ignore[reportPrivateUsage]  # Why: the one implementation of the set_config statement shared with the enqueue and sliding-window bounded locks — a local copy would drift from the machinery it mirrors.
+    DEFAULT_ADVISORY_LOCK_CLIENT_BACKSTOP_SLACK_S,
+)
 from taskq.backend._protocol import RateLimitBackend
 from taskq.backend._records import jsonb_param, jsonb_to_dict
 from taskq.backend.clock import Clock
+from taskq.exceptions import RateLimitDependencyUnavailable
 from taskq.ratelimit._decision_log import log_decision
 from taskq.ratelimit._redis_utils import ensure_redis_script, redis_time_seconds, with_pg_fallback
 from taskq.ratelimit._scripts import REFUND_SCRIPT, TOKEN_BUCKET_SCRIPT
@@ -72,6 +77,19 @@ if TYPE_CHECKING:
 logger = structlog.get_logger("taskq.ratelimit.token_bucket")
 
 _DEFAULT_FIXED_QUOTA_TTL: Final[timedelta] = timedelta(seconds=86400)
+
+#: Bounded wait (milliseconds) for the PG fallback's ``rate_limit_buckets``
+#: row lock. Same value and rationale as the log-style sliding window's
+#: :data:`~taskq.ratelimit._sliding_window_pg.DEFAULT_SLIDING_WINDOW_LOCK_TIMEOUT_MS`
+#: — the PG fallback is the Redis-outage funnel
+#: (``rate_limit_pg_fallback_enabled`` defaults on), so every admission
+#: waits on this lock exactly when the fleet is already degraded; the
+#: bound converts a black-holed holder (dead TCP, no FIN — the server
+#: reaps it only via keepalives) from a bucket-wide admission hang into
+#: the limiter's fail-closed denial. ``0`` (or less) waits indefinitely,
+#: the ``lock_timeout`` GUC convention shared with migrate.py and
+#: ``taskq._advisory``.
+DEFAULT_TOKEN_BUCKET_LOCK_TIMEOUT_MS: Final[float] = 5000.0
 
 #: Ceiling for the *derived* default TTL.
 #:
@@ -263,15 +281,33 @@ class TokenBucket:
 
     Raises :class:`ValueError` if ``capacity <= 0`` or
     ``refill_per_second < 0``.
+
+    ``keyed`` (default ``False``) marks a bucket materialised from a
+    :class:`~taskq.ratelimit.refs.KeyedRateLimitRef` whose
+    ``rate_limit_buckets`` row is FLEET-reclaimable: keyed-materialised
+    AND PG-state-backed. The restriction to ``backend="postgres"`` is
+    the point, not an accident: only a PG-state-backed bucket's acquire
+    path touches its PG row, so only there does the row's
+    ``last_used_at`` stamp (refreshed by the preseed/upsert/refund
+    statements below) truthfully track use — a redis-backend keyed
+    bucket's healthy acquire never touches PG, and its PG row is
+    outage-fallback state plus admin metadata that the fleet sweep must
+    never delete (the stamp would be a false staleness signal for an
+    actively-used bucket). The registry's materialisation arm is the
+    single call site that knows both facts and passes the flag
+    accordingly; every other constructor call keeps the static default.
     """
 
     __slots__ = (
         "_backend",
         "_capacity",
+        "_keyed",
         "_mem_bucket",
         "_name",
         "_redis_refund_script",
+        "_redis_refund_script_client",
         "_redis_script",
+        "_redis_script_client",
         "_refill",
         "_script_lock",
         "_ttl",
@@ -284,6 +320,8 @@ class TokenBucket:
         refill_per_second: float,
         backend: RateLimitBackend = "redis",
         ttl: timedelta | None = None,
+        *,
+        keyed: bool = False,
     ) -> None:
         if capacity <= 0:
             raise ValueError(f"capacity must be > 0, got {capacity}")
@@ -294,6 +332,7 @@ class TokenBucket:
         self._capacity = capacity
         self._refill = refill_per_second
         self._backend: RateLimitBackend = backend
+        self._keyed = keyed
 
         self._ttl = ttl if ttl is not None else _default_ttl(capacity, refill_per_second)
 
@@ -302,7 +341,9 @@ class TokenBucket:
             self._mem_bucket = _InMemoryBucket(name, capacity, refill_per_second)
 
         self._redis_script: AsyncScript | None = None
+        self._redis_script_client: redis_async.Redis | None = None
         self._redis_refund_script: AsyncScript | None = None
+        self._redis_refund_script_client: redis_async.Redis | None = None
         self._script_lock: asyncio.Lock = asyncio.Lock()
 
     @property
@@ -324,6 +365,13 @@ class TokenBucket:
     @property
     def ttl(self) -> timedelta:
         return self._ttl
+
+    @property
+    def keyed(self) -> bool:
+        """Whether this bucket's ``rate_limit_buckets`` row is
+        fleet-reclaimable (see the class docstring for the exact
+        marking rule)."""
+        return self._keyed
 
     def holds_consumed_memory_quota(self) -> bool:
         """True if idle-evicting this bucket's registry entry would silently reset a consumed fixed quota.
@@ -348,11 +396,22 @@ class TokenBucket:
         in the event loop with no await between this read and the dict pop,
         so the value is consistent at the sweep instant.
         """
+        # Why the protected read: _InMemoryBucket._tokens is this module's
+        # own accumulator, and the registry's idle-eviction sweep (the
+        # only caller) runs synchronously with no await between this read
+        # and the dict pop — the docstring above documents the
+        # consistency argument; a public accessor would widen the surface
+        # for one internal read.
+        tokens: float | None = (
+            self._mem_bucket._tokens  # pyright: ignore[reportPrivateUsage]  # Why: same-module internal accumulator; see the comment above.
+            if self._mem_bucket is not None
+            else None
+        )
         return (
             self._backend == "memory"
             and self._refill == 0.0
-            and self._mem_bucket is not None
-            and self._mem_bucket._tokens < self._capacity
+            and tokens is not None
+            and tokens < self._capacity
         )
 
     async def acquire(
@@ -525,20 +584,30 @@ class TokenBucket:
         pg_pool: "asyncpg.Pool | None",
         settings: "WorkerSettings | None",
     ) -> RateLimitState:
-        """Read-only PG state snapshot — the elapsed-refill estimate runs on
-        the server epoch returned alongside the state (same domain the
-        acquire path stamps)."""
+        """Read-only PG state snapshot: the STORED token count, exactly as
+        the row holds it.
+
+        No elapsed-refill projection. Peek is the audit view of the
+        store — the bounded-lock contract's fail-closed verification
+        reads it to prove a timed-out racer wrote nothing ("the seeded
+        tokens are intact"), and a projection would make that audit
+        drift with the read's timing: the same unchanged row would
+        report a different count at T and T+1s. What an acquire WOULD
+        see is the acquire's own arithmetic, applied under the row lock
+        and re-stamped atomically; projecting it here would only
+        duplicate it without its guarantees. ``is_exhausted`` and the
+        exhausted retry hint derive from the reported count, so an
+        exhausted bucket still tells the operator how long one more
+        token takes.
+        """
         if pg_pool is None:
-            raise RuntimeError("pg_pool not injected for postgres backend")
+            raise RateLimitDependencyUnavailable("pg_pool not injected for postgres backend")
         if settings is None:
             raise RuntimeError("settings not injected for postgres backend")
 
         schema = settings.schema_name
 
-        select_sql = (
-            f"SELECT state, EXTRACT(EPOCH FROM clock_timestamp()) AS now_s "  # noqa: S608  # Why: schema_name is pre-validated against _IDENT_RE at settings load time; bucket_name is $1-bound
-            f'FROM "{schema}".rate_limit_buckets WHERE bucket_name=$1'
-        )
+        select_sql = f'SELECT state FROM "{schema}".rate_limit_buckets WHERE bucket_name=$1'  # noqa: S608  # Why: schema_name is pre-validated against _IDENT_RE at settings load time; bucket_name is $1-bound
 
         async with pg_pool.acquire() as conn:
             row = await conn.fetchrow(select_sql, self._name)
@@ -546,12 +615,8 @@ class TokenBucket:
         if row is None:
             tokens = self._capacity
         else:
-            now = float(row["now_s"])
             state = jsonb_to_dict(row["state"])
             tokens = float(state.get("tokens", self._capacity))  # type: ignore[index]  # Why: rate_limit_buckets.state is NOT NULL; jsonb_to_dict only returns None for SQL NULL, which cannot occur here; fallback for rows missing keys (e.g. from schema migrations or interop writes)
-            ts = float(state.get("ts", now))  # type: ignore[index]  # Why: same — state is non-None; fallback to now for rows missing "ts"
-            elapsed = max(0.0, now - ts)
-            tokens = min(self._capacity, tokens + elapsed * self._refill)
 
         is_exhausted = tokens <= 0.0
         retry_after: timedelta | None = None
@@ -574,7 +639,7 @@ class TokenBucket:
         settings: "WorkerSettings | None",
     ) -> None:
         if pg_pool is None:
-            raise RuntimeError("pg_pool not injected for postgres backend")
+            raise RateLimitDependencyUnavailable("pg_pool not injected for postgres backend")
         if settings is None:
             raise RuntimeError("settings not injected for postgres backend")
 
@@ -607,9 +672,18 @@ class TokenBucket:
         await script(keys=[key], args=argv)  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]  # Why: redis-py AsyncScript.__call__ has no return-type annotation; refund return value is not consumed
 
     async def _ensure_refund_script(self, redis_client: "redis_async.Redis") -> "AsyncScript":
+        def get() -> "AsyncScript | None":
+            if self._redis_refund_script_client is not redis_client:
+                return None
+            return self._redis_refund_script
+
+        def bind(script: "AsyncScript") -> None:
+            self._redis_refund_script_client = redis_client
+            self._redis_refund_script = script
+
         return await ensure_redis_script(
-            lambda: self._redis_refund_script,
-            lambda s: setattr(self, "_redis_refund_script", s),
+            get,
+            bind,
             lambda: redis_client.register_script(REFUND_SCRIPT),
             self._script_lock,
         )
@@ -619,6 +693,8 @@ class TokenBucket:
         count: float,
         pg_pool: "asyncpg.Pool | None",
         settings: "WorkerSettings | None",
+        *,
+        lock_timeout_ms: float = DEFAULT_TOKEN_BUCKET_LOCK_TIMEOUT_MS,
     ) -> None:
         """Refund tokens on the PG backend using FOR UPDATE on rate_limit_buckets.
 
@@ -629,9 +705,26 @@ class TokenBucket:
         and the stored ``ts`` are server-domain (``EXTRACT(EPOCH FROM
         clock_timestamp())`` read in the same locked transaction), matching
         the acquire path's stamps.
+
+        The row-lock WAIT is bounded (default
+        :data:`DEFAULT_TOKEN_BUCKET_LOCK_TIMEOUT_MS`) by the same discipline
+        the acquire path in this file applies: with
+        ``rate_limit_pg_fallback_enabled`` on, a Redis outage funnels the
+        fleet's refunds through this lock exactly when it is already
+        degraded, and an unbounded wait would let one black-holed holder
+        (dead TCP, no FIN) pin the refund until the server's keepalives
+        reap it. On budget exhaustion the refund RAISES — the opposite of
+        the acquire's fail-closed denial, because ``_refund_pg`` returns
+        ``None`` on success and a quiet no-op return would make a lost
+        refund look like a completed one (the tokens stay spent; for a
+        fixed-quota bucket nothing ever puts them back). The raise surfaces
+        one level up as the release path's rollback-failure ERROR and
+        ``ratelimit.refund_failures`` counter. ``lock_timeout_ms <= 0``
+        waits indefinitely, the ``lock_timeout`` GUC convention shared
+        with migrate.py and ``taskq._advisory``.
         """
         if pg_pool is None:
-            raise RuntimeError("pg_pool not injected for postgres backend refund")
+            raise RateLimitDependencyUnavailable("pg_pool not injected for postgres backend refund")
         if settings is None:
             raise RuntimeError("settings not injected for postgres backend refund")
 
@@ -641,10 +734,66 @@ class TokenBucket:
             f"SELECT state, EXTRACT(EPOCH FROM clock_timestamp()) AS now_s "  # noqa: S608  # Why: schema_name is pre-validated against _IDENT_RE at settings load time; bucket_name is $1-bound
             f'FROM "{schema}".rate_limit_buckets WHERE bucket_name=$1 FOR UPDATE'
         )
-        update_sql = f'UPDATE "{schema}".rate_limit_buckets SET state=$1::jsonb, updated_at=clock_timestamp() WHERE bucket_name=$2'  # noqa: S608  # Why: schema_name is pre-validated against _IDENT_RE at settings load time; values are $1/$2-bound
+        # The refund is a release-path USE of the row (the token goes
+        # back), so it rides the same last_used_at refresh the acquire
+        # does: a bucket whose token was just refunded is mid-workflow,
+        # and an unstamped refund could let the fleet sweep catch the
+        # row idle past the horizon in the window between the acquiring
+        # worker's last acquire and its next one.
+        update_sql = f'UPDATE "{schema}".rate_limit_buckets SET state=$1::jsonb, updated_at=clock_timestamp(), last_used_at=clock_timestamp() WHERE bucket_name=$2'  # noqa: S608  # Why: schema_name is pre-validated against _IDENT_RE at settings load time; values are $1/$2-bound
 
         async with pg_pool.acquire() as conn, conn.transaction():
-            row = await conn.fetchrow(select_sql, self._name)
+            row: asyncpg.Record | None = None
+
+            if lock_timeout_ms > 0:
+                # Bounded row-lock wait, mechanics mirrored from the
+                # acquire path above (taskq._advisory's contended tier):
+                # set_config(..., true) is SET LOCAL semantics, so the
+                # bound covers every lock wait this transaction can take
+                # and dies with the transaction's own commit; the
+                # savepoint wraps the lock-taking read as one unit; the
+                # client-side backstop bounds the network black hole the
+                # server-side timeout cannot see. Why the function-level
+                # import: same boundary reason as the acquire above —
+                # this module stays importable without the asyncpg
+                # driver installed, and the refund only ever runs
+                # against a real connection.
+                from asyncpg.exceptions import LockNotAvailableError
+
+                await conn.execute(_LOCK_TIMEOUT_SET_SQL, f"{round(lock_timeout_ms)}ms")
+
+                async def _locked_state_read() -> None:
+                    nonlocal row
+                    async with conn.transaction():
+                        row = await conn.fetchrow(select_sql, self._name)
+
+                try:
+                    await asyncio.wait_for(
+                        _locked_state_read(),
+                        timeout=lock_timeout_ms / 1000.0
+                        + DEFAULT_ADVISORY_LOCK_CLIENT_BACKSTOP_SLACK_S,
+                    )
+                except (LockNotAvailableError, TimeoutError):
+                    # The acquire converts exhaustion into the limiter's
+                    # denial outcome; the refund cannot — its success
+                    # shape IS the silent ``None`` return, so the only
+                    # honest exhausted outcome is the RAISE. The warning
+                    # is the same contended-or-sick-bucket signal every
+                    # bounded limiter lock emits (one event name, one
+                    # condition), with ``phase`` marking the different
+                    # consequence: a lost refund, not a denied admission.
+                    logger.warning(
+                        "ratelimit-lock-timeout",
+                        bucket_name=self._name,
+                        backend="postgres",
+                        lock_timeout_ms=lock_timeout_ms,
+                        phase="refund",
+                    )
+                    raise
+            else:
+                # lock_timeout_ms <= 0: the indefinite mode — the GUC
+                # convention's opt-out, and the pre-bound behavior.
+                row = await conn.fetchrow(select_sql, self._name)
 
             if row is None:
                 return
@@ -723,9 +872,18 @@ class TokenBucket:
         return result
 
     async def _ensure_script(self, redis_client: "redis_async.Redis") -> "AsyncScript":
+        def get() -> "AsyncScript | None":
+            if self._redis_script_client is not redis_client:
+                return None
+            return self._redis_script
+
+        def bind(script: "AsyncScript") -> None:
+            self._redis_script_client = redis_client
+            self._redis_script = script
+
         return await ensure_redis_script(
-            lambda: self._redis_script,
-            lambda s: setattr(self, "_redis_script", s),
+            get,
+            bind,
             lambda: redis_client.register_script(TOKEN_BUCKET_SCRIPT),
             self._script_lock,
         )
@@ -750,6 +908,8 @@ class TokenBucket:
         count: float,
         pg_pool: "asyncpg.Pool | None",
         settings: "WorkerSettings | None",
+        *,
+        lock_timeout_ms: float = DEFAULT_TOKEN_BUCKET_LOCK_TIMEOUT_MS,
     ) -> RateLimitDecision:
         """PG fallback path using FOR UPDATE on rate_limit_buckets.
 
@@ -759,9 +919,23 @@ class TokenBucket:
         read in the same transaction, so the stored ``ts`` is server-domain
         by construction — a node with a skewed Python clock cannot mint
         phantom refill.
+
+        The row-lock WAIT is bounded (default
+        :data:`DEFAULT_TOKEN_BUCKET_LOCK_TIMEOUT_MS`): with
+        ``rate_limit_pg_fallback_enabled`` on, a Redis outage funnels all
+        admission through this lock, so an unbounded wait would let one
+        black-holed holder (dead TCP, no FIN) stall its bucket's admission
+        until the server's keepalives reap it. On budget exhaustion the
+        acquire FAILS CLOSED — the limiter's denial outcome, ``allowed=False``
+        with a retry hint of one more budget, the same channel the log-style
+        sliding window's lock timeout denial takes — never an exception,
+        never an admission: a racer that could not read the bucket can
+        never spend or admit tokens. ``lock_timeout_ms <= 0`` waits
+        indefinitely, the ``lock_timeout`` GUC convention shared with
+        migrate.py and ``taskq._advisory``.
         """
         if pg_pool is None:
-            raise RuntimeError("pg_pool not injected for postgres backend")
+            raise RateLimitDependencyUnavailable("pg_pool not injected for postgres backend")
         if settings is None:
             raise RuntimeError("settings not injected for postgres backend")
 
@@ -771,33 +945,116 @@ class TokenBucket:
         # pre-validated against _IDENT_RE at WorkerSettings load time.
         # The preseed stamps ts server-side via jsonb_build_object so the
         # first acquire's elapsed math is server-domain even before the
-        # SELECT below folds the epoch in.
+        # SELECT below folds the epoch in. It also carries the
+        # fleet-reclaim marking ($3): the keyed flag and a fresh
+        # last_used_at, so a row the acquire itself had to create (the
+        # publish failed, or a prior fleet sweep reclaimed it) is marked
+        # correctly at birth — a keyed PG bucket's row must never depend
+        # on a side quest's outcome for its reclamation bookkeeping.
         preseed_sql = (
-            f'INSERT INTO "{schema}".rate_limit_buckets (bucket_name, kind, state, updated_at) '  # noqa: S608  # Why: schema_name pre-validated; values are $1/$2-bound
+            f'INSERT INTO "{schema}".rate_limit_buckets (bucket_name, kind, state, updated_at, keyed, last_used_at) '  # noqa: S608  # Why: schema_name pre-validated; values are $1/$2/$3-bound
             f"VALUES ($1, 'token_bucket', "
             f"jsonb_build_object('tokens', $2::float8, "
-            f"'ts', EXTRACT(EPOCH FROM clock_timestamp())), clock_timestamp()) "
+            f"'ts', EXTRACT(EPOCH FROM clock_timestamp())), clock_timestamp(), $3, clock_timestamp()) "
             f"ON CONFLICT (bucket_name) DO NOTHING"
         )
         select_sql = (
             f"SELECT state, EXTRACT(EPOCH FROM clock_timestamp()) AS now_s "  # noqa: S608  # Why: schema_name is pre-validated against _IDENT_RE at settings load time; bucket_name is $1-bound
             f'FROM "{schema}".rate_limit_buckets WHERE bucket_name=$1 FOR UPDATE'
         )
+        # The upsert rides the fleet-reclaim marking on the write it
+        # already makes: last_used_at refreshes on every acquire (the
+        # staleness signal the leader sweep trusts), and keyed takes the
+        # CURRENT owner's mark — EXCLUDED.keyed — so a keyed bucket
+        # acquiring over a stale static-marked row claims it (reclaimable
+        # once idle again) and a static bucket acquiring over a former
+        # keyed row retires it (a live static declaration owns its row
+        # and must never lose it to the sweep).
         upsert_sql = (
-            f'INSERT INTO "{schema}".rate_limit_buckets (bucket_name, kind, state, updated_at) '  # noqa: S608  # Why: schema_name pre-validated; values are $1/$2-bound
-            f"VALUES ($1, 'token_bucket', $2::jsonb, clock_timestamp()) "
-            f"ON CONFLICT (bucket_name) DO UPDATE SET state=EXCLUDED.state, updated_at=clock_timestamp()"
+            f'INSERT INTO "{schema}".rate_limit_buckets (bucket_name, kind, state, updated_at, keyed, last_used_at) '  # noqa: S608  # Why: schema_name pre-validated; values are $1/$2/$3-bound
+            f"VALUES ($1, 'token_bucket', $2::jsonb, clock_timestamp(), $3, clock_timestamp()) "
+            f"ON CONFLICT (bucket_name) DO UPDATE SET state=EXCLUDED.state, "
+            f"updated_at=clock_timestamp(), last_used_at=clock_timestamp(), "
+            f"keyed=EXCLUDED.keyed"
         )
 
         async with pg_pool.acquire() as conn, conn.transaction():
-            # Cold-start guard: SELECT ... FOR UPDATE cannot lock a row that
-            # does not exist yet, so concurrent first acquires would each
-            # read `row is None` and independently admit up to `capacity`
-            # tokens. Pre-seed a full-capacity row (idempotent — DO NOTHING
-            # on conflict) so the very first acquire also serializes on the
-            # row lock below.
-            await conn.execute(preseed_sql, self._name, self._capacity)
-            row = await conn.fetchrow(select_sql, self._name)
+
+            async def _preseed_and_read() -> "asyncpg.Record | None":
+                # Cold-start guard: SELECT ... FOR UPDATE cannot lock a row
+                # that does not exist yet, so concurrent first acquires
+                # would each read `row is None` and independently admit up
+                # to `capacity` tokens. Pre-seed a full-capacity row
+                # (idempotent — DO NOTHING on conflict) so the very first
+                # acquire also serializes on the row lock below.
+                await conn.execute(preseed_sql, self._name, self._capacity, self._keyed)
+                return await conn.fetchrow(select_sql, self._name)
+
+            row: asyncpg.Record | None = None
+
+            if lock_timeout_ms > 0:
+                # Bounded row-lock wait, mechanics mirrored from
+                # taskq._advisory's contended tier. set_config(..., true)
+                # is SET LOCAL semantics, so the bound covers every lock
+                # wait this transaction can take — the preseed's conflict
+                # check, the SELECT FOR UPDATE, the upsert's speculative
+                # insert — and dies with the transaction's own commit; no
+                # save/restore cycle is needed (unlike the enqueue helper,
+                # whose caller keeps using the transaction afterwards).
+                # The savepoint keeps the transaction committable after a
+                # 55P03 (a raw statement error would leave it aborted);
+                # the client-side backstop bounds the network black hole
+                # the server-side timeout cannot see.
+                #
+                # Why a function-level import: this module is imported by
+                # taskq.ratelimit, which taskq.testing imports
+                # transitively — that boundary must stay importable
+                # without the asyncpg driver installed. The acquire only
+                # ever runs against a real connection, where asyncpg is
+                # guaranteed present.
+                from asyncpg.exceptions import LockNotAvailableError
+
+                await conn.execute(_LOCK_TIMEOUT_SET_SQL, f"{round(lock_timeout_ms)}ms")
+
+                async def _locked_state_read() -> None:
+                    nonlocal row
+                    async with conn.transaction():
+                        row = await _preseed_and_read()
+
+                try:
+                    await asyncio.wait_for(
+                        _locked_state_read(),
+                        timeout=lock_timeout_ms / 1000.0
+                        + DEFAULT_ADVISORY_LOCK_CLIENT_BACKSTOP_SLACK_S,
+                    )
+                except (LockNotAvailableError, TimeoutError):
+                    # Fail closed: the limiter's denial outcome with a
+                    # retry hint of one more budget — the timed-out racer
+                    # wrote nothing (the savepoint rolled the preseed
+                    # back; the upsert never ran), so nothing is admitted
+                    # or spent. The warning is the operator signal that
+                    # the bucket (or its holder) is contended or sick
+                    # rather than merely busy — the same event name the
+                    # log-style path emits for the same condition.
+                    logger.warning(
+                        "ratelimit-lock-timeout",
+                        bucket_name=self._name,
+                        backend="postgres",
+                        lock_timeout_ms=lock_timeout_ms,
+                    )
+                    result = RateLimitDecision(
+                        allowed=False,
+                        remaining=0.0,
+                        retry_after=timedelta(milliseconds=lock_timeout_ms),
+                        bucket_name=self._name,
+                        backend="postgres",
+                    )
+                    log_decision(result)
+                    return result
+            else:
+                # lock_timeout_ms <= 0: the indefinite mode — the GUC
+                # convention's opt-out, and the pre-bound behavior.
+                row = await _preseed_and_read()
 
             if row is None:
                 # Unreachable in the normal path — the preseed above guarantees
@@ -833,8 +1090,10 @@ class TokenBucket:
             # to conn.execute fails because asyncpg does not auto-encode
             # Python dicts as jsonb.
             state_param = jsonb_param({"tokens": tokens, "ts": now})
-            # updated_at and the state ts are both server-domain now
-            await conn.execute(upsert_sql, self._name, state_param)
+            # updated_at, the state ts, and the fleet-reclaim stamps
+            # (last_used_at refresh, keyed re-mark) are all server-domain
+            # now
+            await conn.execute(upsert_sql, self._name, state_param, self._keyed)
 
         result = RateLimitDecision(
             allowed=allowed,
