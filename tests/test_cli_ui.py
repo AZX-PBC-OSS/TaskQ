@@ -1016,9 +1016,12 @@ def test_ui_serve_succeeds_no_health_token_when_require_token_disabled(
     captured, _ = _capture_app(monkeypatch)
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "production")
     monkeypatch.setenv("TASKQ_HEALTH_REQUIRE_TOKEN", "false")
-    # Isolate the health_require_token check from admin_ui_require_auth, which
-    # also fails closed in non-dev when no auth_dependency is configured.
+    # Isolate the health_require_token check from admin_ui_require_auth and
+    # progress_require_auth, which also fail closed in non-dev when no
+    # auth_dependency is configured (the admin factory mounts the progress
+    # router with the same absent auth_dependency).
     monkeypatch.setenv("TASKQ_ADMIN_UI_REQUIRE_AUTH", "false")
+    monkeypatch.setenv("TASKQ_PROGRESS_REQUIRE_AUTH", "false")
     settings = TaskQSettings.load()
 
     _ui_serve(
@@ -1077,17 +1080,19 @@ def test_ui_serve_succeeds_no_health_token_in_dev_env(
 
 
 def test_ui_serve_fully_opted_out_in_production(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Explicit, simultaneous opt-out of both fail-closed defaults
-    (TASKQ_ADMIN_UI_REQUIRE_AUTH=false and TASKQ_HEALTH_REQUIRE_TOKEN=false) in a
-    non-dev environment starts cleanly and leaves the whole surface open —
-    admin UI, health, and metrics all reachable without any auth_dependency or
-    health_token configured. This is the deliberate "fully unauthenticated,
-    BYO-auth via reverse proxy" deployment shape, not an accidental one."""
+    """Explicit, simultaneous opt-out of all three fail-closed defaults
+    (TASKQ_ADMIN_UI_REQUIRE_AUTH=false, TASKQ_PROGRESS_REQUIRE_AUTH=false and
+    TASKQ_HEALTH_REQUIRE_TOKEN=false) in a non-dev environment starts cleanly
+    and leaves the whole surface open — admin UI, progress, health, and
+    metrics all reachable without any auth_dependency or health_token
+    configured. This is the deliberate "fully unauthenticated, BYO-auth via
+    reverse proxy" deployment shape, not an accidental one."""
     from taskq.cli import _ui_serve
 
     captured, _ = _capture_app(monkeypatch)
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "production")
     monkeypatch.setenv("TASKQ_ADMIN_UI_REQUIRE_AUTH", "false")
+    monkeypatch.setenv("TASKQ_PROGRESS_REQUIRE_AUTH", "false")
     monkeypatch.setenv("TASKQ_HEALTH_REQUIRE_TOKEN", "false")
     settings = TaskQSettings.load()
     # Empty-or-unset, the None-safe shape the cli's own check uses: an unset

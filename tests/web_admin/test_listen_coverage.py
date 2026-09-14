@@ -167,8 +167,33 @@ async def test_listen_delivers_payload(pg_dsn: str) -> None:
         gen = listen_with_reconnect(pool, channel, keepalive_interval=5.0)
 
         async def notify() -> None:
-            await asyncio.sleep(0.4)  # let LISTEN register
+            # Bounded poll until the listener's LISTEN registration is
+            # visible server-side: listen_with_reconnect issues
+            # LISTEN "<channel>" on its pool conn, so pg_stat_activity is
+            # the exact observable. A fixed 0.4s sleep races the
+            # generator's startup under load, and a NOTIFY sent before
+            # the registration lands is missed entirely — the first yield
+            # below would then wait out the 5s keepalive and time out.
+            # The deadline sits under that 5s wait so this assert, with
+            # its precise message, fires first.
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + 4.0
             async with pool.acquire() as c:
+                while True:
+                    listening = await c.fetchval(
+                        "SELECT count(*) FROM pg_stat_activity "
+                        "WHERE query LIKE '%LISTEN%' "
+                        "AND query LIKE '%' || $1 || '%' "
+                        "AND datname = current_database() "
+                        "AND pid != pg_backend_pid()",
+                        channel,
+                    )
+                    if listening:
+                        break
+                    assert loop.time() < deadline, (
+                        f"listen_with_reconnect never registered LISTEN on {channel!r}"
+                    )
+                    await asyncio.sleep(0.02)
                 await c.execute("SELECT pg_notify($1, $2)", channel, "hello-payload")
 
         async with asyncio.TaskGroup() as tg:

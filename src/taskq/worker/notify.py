@@ -12,10 +12,19 @@ Two channels are subscribed per worker:
     ``{"type": "<event>", ...}``
   - ``taskq_worker_{schema}_{worker_id}``: per-worker targeted events,
     same payload format, no filtering needed
+
+The reconnect backoff carries multiplicative jitter (±25% around the
+doubled delay). Without it, a large worker fleet that loses PG
+simultaneously (failover, container restart) retries in lockstep: every
+worker sleeps identical delays and lands identical simultaneous connect
+waves, re-synchronizing on each doubling and at the 30s cap. The jitter
+desynchronizes those retries the same way the deadlock backoff in
+``taskq.backend._cancel_bulk`` does.
 """
 
 import asyncio
 import contextlib
+import random
 from collections.abc import Callable, Iterable
 from uuid import UUID
 
@@ -217,6 +226,17 @@ async def reconnect_notify_conn(
     passes this - the old connection is already closed by the time it calls
     in).
 
+    The factory call is bounded by ``settings.reload_factory_timeout`` —
+    the same bound the SIGHUP reload path (deps.reload_credentials) and
+    the bootstrap slot-pool open use — and each post-factory ``LISTEN``
+    execute is bounded by ``settings.notify_listener_setup_timeout``,
+    the same bound the ``add_listener`` beside it and the initial
+    listener setup use — so neither a hung credential provider/TCP
+    connect nor a rebuilt connection that completes the handshake and
+    then black-holes on LISTEN can park the reconnect (and with it
+    ``notify_reconnect_lock``). A timeout is the retry loop's ordinary
+    failure path: logged as a reconnect attempt, backoff, retry.
+
     A SIGHUP-triggered call can race a concurrent SIGTERM/SIGINT shutdown
     (the shutdown clears ``deps.notify_reconnect_fn`` and removes listeners
     once ``notify_listener_loop`` observes the shutdown event, which may
@@ -237,7 +257,17 @@ async def reconnect_notify_conn(
                 "notify_conn has no factory to reconnect through (caller-owned "
                 "connection) - TaskQ cannot rebuild it automatically."
             )
-        new_conn = await factory()
+        # Why bounded: a hung credential provider or TCP connect parked the
+        # health-check reconnect loop here while holding
+        # notify_reconnect_lock (#156). reload_factory_timeout is the SAME
+        # bound the SIGHUP reload path applies to every factory call
+        # (deps.reload_credentials) — not a second mechanism — and its
+        # exhaustion here behaves like any factory failure: the retry
+        # loop logs the attempt, backs off, and retries.
+        new_conn = await asyncio.wait_for(
+            factory(),
+            timeout=float(deps.settings.reload_factory_timeout),
+        )
         # The DSN path gets TCP keepalive via open_dedicated_conn; a conn
         # rebuilt through the factory must get the same policy - the worker
         # owns this policy, not the user's factory. Safe on fakes (returns
@@ -245,7 +275,20 @@ async def reconnect_notify_conn(
         apply_keepalive_to_conn(new_conn, label="notify")
         try:
             for channel, on_notify in channels:
-                await new_conn.execute(f'LISTEN "{channel}"')
+                # Why bounded: a rebuilt conn can complete the factory
+                # handshake and still black-hole on the LISTEN execute —
+                # the same shape #155 fixed for health queries — parking
+                # the reconnect loop (and notify_reconnect_lock) past
+                # every other bound. The SAME
+                # notify_listener_setup_timeout that bounds the
+                # add_listener beside it applies here (not a second
+                # mechanism); exhaustion is the retry loop's ordinary
+                # failure path: logged as a reconnect attempt, backoff,
+                # retry.
+                await asyncio.wait_for(
+                    new_conn.execute(f'LISTEN "{channel}"'),
+                    timeout=float(deps.settings.notify_listener_setup_timeout),
+                )
                 await asyncio.wait_for(
                     new_conn.add_listener(channel, on_notify),  # pyright: ignore[reportArgumentType]  # Why: stubs over-narrow callback type; runtime asyncpg accepts sync callbacks per asyncpg/connection.py:_process_notification
                     timeout=float(deps.settings.notify_listener_setup_timeout),
@@ -379,16 +422,28 @@ async def _health_check_loop(
                         )
                         return
                     attempt += 1
+                    # Multiplicative jitter (±25%) applied AFTER the
+                    # exponential doubling (the pristine base doubles below,
+                    # unpolluted by previous jitter) and BEFORE the sleep, so
+                    # the logged delay is the delay actually slept. Applied
+                    # on every retry including the first: without it a fleet
+                    # that lost PG in the same instant (failover) retries in
+                    # lockstep waves — identical delays re-synchronize every
+                    # attempt, most visibly at the 30s cap where 100 workers
+                    # reconnect as one — exactly the storm the deadlock
+                    # backoff's jitter (taskq.backend._cancel_bulk) prevents
+                    # for batch retries.
+                    slept = delay * random.uniform(0.75, 1.25)  # noqa: S311  # Why: uniform is for reconnect-timing jitter, not cryptography; same non-crypto use as _cancel_bulk's deadlock backoff.
                     logger.warning(
                         "notify-reconnect-attempt",
                         kind="notify_reconnect_attempt",
                         attempt=attempt,
-                        delay=delay,
+                        delay=slept,
                         error=repr(exc),
                         error_type=type(exc).__name__,
                         channels=[ch for ch, _ in channels],
                     )
-                    await asyncio.sleep(delay)
+                    await asyncio.sleep(slept)
                     delay = min(delay * 2, 30.0)
 
 

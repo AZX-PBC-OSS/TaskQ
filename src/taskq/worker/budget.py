@@ -16,7 +16,9 @@ class ConnectionBudget:
     """Counts from the connection-budget formula."""
 
     direct_per_worker_non_leader: int
-    """Per non-leader pod: dispatcher + heartbeat + notify + leader_lock."""
+    """Per non-leader pod: dispatcher + heartbeat + notify + leader_lock,
+    plus the conditional per-slot transaction pool when
+    ``slot_pool_connections`` was passed."""
 
     direct_per_worker_leader: int
     """Per leader pod: above + leader-monitor + cron_conn (opened by the elected leader)."""
@@ -47,6 +49,7 @@ def compute_connection_budget(
     num_web_pods: int = 0,
     web_pool_size: int = 10,
     pgbouncer_compression_ratio: float = 1.0,
+    slot_pool_connections: int = 0,
 ) -> ConnectionBudget:
     """Compute connection counts.
 
@@ -57,6 +60,15 @@ def compute_connection_budget(
         num_web_pods: Web/API pods.
         web_pool_size: Pool size per web pod.
         pgbouncer_compression_ratio: 1.0 = no PgBouncer; ~10.0 for transaction mode.
+        slot_pool_connections: Direct connections of the worker's
+            per-slot transaction pool — ``max_concurrency + 1`` when a
+            worker registers a LOOP-scope connection (the conditional
+            fourth pool), ``0`` for every other shape. The startup
+            budget log cannot know yet (it runs before the LOOP scope
+            resolves), so it passes 0 and the pool's opening states the
+            real size in the ``transactional_consume_per_slot`` event;
+            fleet-sizing arithmetic that knows the worker shape passes
+            the real value here.
 
     Returns:
         A :class:`ConnectionBudget` with all integer counts.
@@ -65,7 +77,10 @@ def compute_connection_budget(
     effective_leaders = min(num_leader_pods, num_worker_pods)
 
     direct_per_worker_non_leader = (
-        settings.dispatcher_pool_size + settings.heartbeat_pool_size + 2  # notify + leader_lock
+        settings.dispatcher_pool_size
+        + settings.heartbeat_pool_size
+        + 2  # notify + leader_lock
+        + slot_pool_connections
     )
     direct_per_worker_leader = (
         direct_per_worker_non_leader + 2

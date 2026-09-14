@@ -495,6 +495,22 @@ class RateLimitRegistry:
           ``ref.payload_type.model_validate(payload.model_dump(by_alias=True))``
         - Raw dict: validate via ``ref.payload_type.model_validate(dict)``
 
+        Why the different-type case is a dump→validate round-trip rather
+        than a cheap copy: this is type CONVERSION, not duplication —
+        ``model_copy`` cannot change the model type, so one full validation
+        against ``ref.payload_type`` is load-bearing here (pinned by
+        ``test_resolve_keyed_ref_wrong_model_type_raises_validation_error``).
+        ``by_alias=True`` keeps the dumped keys matching what the source
+        model publishes; ``from_attributes`` would read attribute names
+        instead and silently diverge for alias-carrying payload models.
+        The common per-acquire case pays none of this cost: the worker
+        hands ``acquire_for_actor`` an already-validated model of the
+        actor's payload type, and when that matches ``ref.payload_type``
+        the isinstance guard above passes the object through by identity —
+        no dump, no validate. No per-call ``TypeAdapter`` is constructed on
+        any path: ``BaseModel.model_validate`` reuses the core validator
+        cached on the model class.
+
         A ValidationError from conversion is re-raised as
         :class:`~taskq.exceptions.PayloadValidationError` (non-retryable)
         — it is a payload error, not a limiter fault.

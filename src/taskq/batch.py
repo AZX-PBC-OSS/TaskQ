@@ -32,6 +32,7 @@ from taskq.backend._protocol import (
     Backend,
     BatchRow,
     BatchStatus,
+    ConnLike,
     IdempotencyKey,
     IdentityKey,
     JobRow,
@@ -308,7 +309,7 @@ async def apply_batch_terminal_outcome(
     job: JobRow,
     outcome: AttemptOutcome,
     *,
-    loop_conn: "asyncpg.Connection | None" = None,
+    transaction_conn: "ConnLike | None" = None,
 ) -> None:
     """Apply batch policy after a job reaches a terminal write.
 
@@ -349,17 +350,17 @@ async def apply_batch_terminal_outcome(
         return
 
     if outcome == "succeeded":
-        remaining = await backend.reset_batch_failures(batch_id, connection=loop_conn)
+        remaining = await backend.reset_batch_failures(batch_id, connection=transaction_conn)
         if remaining == 0:
-            await backend.complete_batch(batch_id, connection=loop_conn)
+            await backend.complete_batch(batch_id, connection=transaction_conn)
         return
 
     if outcome == "failed":
         count, threshold, remaining = await backend.increment_batch_failures(
-            batch_id, connection=loop_conn
+            batch_id, connection=transaction_conn
         )
         if threshold is not None and count >= threshold:
-            await backend.abort_batch(batch_id, connection=loop_conn)
+            await backend.abort_batch(batch_id, connection=transaction_conn)
             _logger.info(
                 "batch-aborted",
                 batch_id=str(batch_id),
@@ -368,15 +369,15 @@ async def apply_batch_terminal_outcome(
                 job_id=str(job.id),
             )
         elif remaining == 0:
-            await backend.complete_batch(batch_id, connection=loop_conn)
+            await backend.complete_batch(batch_id, connection=transaction_conn)
         return
 
     # outcome is "cancelled" or "crashed" — the only remaining
     # terminal outcomes in AttemptOutcome that are not handled above.
     if outcome in ("cancelled", "crashed"):
-        remaining = await backend.count_batch_non_terminal(batch_id, connection=loop_conn)
+        remaining = await backend.count_batch_non_terminal(batch_id, connection=transaction_conn)
         if remaining == 0:
-            await backend.complete_batch(batch_id, connection=loop_conn)
+            await backend.complete_batch(batch_id, connection=transaction_conn)
         return
 
     assert_never(outcome)

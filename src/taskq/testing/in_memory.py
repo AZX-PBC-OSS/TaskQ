@@ -30,6 +30,7 @@ import structlog
 from pydantic import BaseModel
 
 from taskq._ids import new_uuid
+from taskq._json import dumps_jsonb_str, loads
 from taskq.actor_config import ActorConfig
 from taskq.backend._cursor import (
     decode_batch_cursor,
@@ -96,6 +97,7 @@ from taskq.testing._reads import (
     _get_events,
     _list_jobs,
     _poll_reclaim_events,
+    _schedule_read_copy,
 )
 from taskq.testing._runner import (
     PassthroughPayload,
@@ -482,13 +484,22 @@ class InMemoryBackend:
         self,
         job_id: JobId,
         worker_id: UUID,
-        result: dict[str, object] | None,
+        result: dict[str, object] | None = None,
         progress_seq: int = 0,
         progress_state: dict[str, object] | None = None,
         fallback_result_ttl: timedelta | None = None,
+        *,
+        result_bytes: bytes | None = None,
     ) -> bool:
         return await _mark_succeeded(
-            self, job_id, worker_id, result, progress_seq, progress_state, fallback_result_ttl
+            self,
+            job_id,
+            worker_id,
+            result,
+            progress_seq,
+            progress_state,
+            fallback_result_ttl,
+            result_bytes=result_bytes,
         )
 
     async def mark_succeeded_with_conn(
@@ -496,13 +507,23 @@ class InMemoryBackend:
         conn: object,
         job_id: JobId,
         worker_id: UUID,
-        result: dict[str, object] | None,
+        result: dict[str, object] | None = None,
         progress_seq: int = 0,
         progress_state: dict[str, object] | None = None,
         fallback_result_ttl: timedelta | None = None,
+        *,
+        result_bytes: bytes | None = None,
     ) -> bool:
         return await _mark_succeeded_with_conn(
-            self, conn, job_id, worker_id, result, progress_seq, progress_state, fallback_result_ttl
+            self,
+            conn,
+            job_id,
+            worker_id,
+            result,
+            progress_seq,
+            progress_state,
+            fallback_result_ttl,
+            result_bytes=result_bytes,
         )
 
     async def mark_failed_or_retry(
@@ -808,10 +829,15 @@ class InMemoryBackend:
             last_fire_error=None,
             consecutive_failures=0,
             next_fire_at=args.next_fire_at,
-            metadata=args.metadata,
+            # PG serialises metadata into jsonb at INSERT time and reads it
+            # back through loads — store the round-trip of the same
+            # serialization, so a caller-held dict can never reach storage
+            # by reference and values whose orjson encoding differs from
+            # the Python object read back exactly as PG reads them.
+            metadata=loads(dumps_jsonb_str(args.metadata)),
         )
         self._schedules[sid] = record
-        return record
+        return _schedule_read_copy(record)
 
     async def list_schedules(
         self,
@@ -825,7 +851,7 @@ class InMemoryBackend:
                 continue
             if enabled is not None and rec.enabled != enabled:
                 continue
-            results.append(rec)
+            results.append(_schedule_read_copy(rec))
         return results
 
     async def update_schedule(
@@ -852,7 +878,10 @@ class InMemoryBackend:
         elif args.clear_payload_factory:
             updates["payload_factory"] = None
         if args.metadata is not None:
-            updates["metadata"] = args.metadata
+            # Same storage contract as create_schedule: the round-trip of
+            # the same serialization PG binds — no caller reference in
+            # storage, PG's jsonb read-back values.
+            updates["metadata"] = loads(dumps_jsonb_str(args.metadata))
         if args.consecutive_failures is not None:
             updates["consecutive_failures"] = args.consecutive_failures
         if args.last_fire_error is not None:
@@ -860,7 +889,7 @@ class InMemoryBackend:
 
         updated = rec.model_copy(update=updates)
         self._schedules[schedule_id] = updated
-        return updated
+        return _schedule_read_copy(updated)
 
     async def delete_schedule(self, schedule_id: UUID) -> None:
         self._schedules.pop(schedule_id, None)

@@ -175,21 +175,61 @@ remaining steps. Later steps only execute when earlier ones did not match or rai
 1. **Payload validation** — Pydantic re-validates the payload through `ref.payload_type`. Raises
    `PayloadValidationError` on failure (non-retryable).
 2. **`unique_for` dedup check** — if `identity_key` is provided and the actor has `unique_for`
-   set, scans for an existing job with the same `(actor, identity_key)` within the window and the
-   configured `unique_states`. On match, returns the existing handle with `was_existing=True` and
-   skips all remaining steps.
+    set, scans for an existing job with the same `(actor, identity_key)` within the window and the
+    configured `unique_states`. On match, returns the existing handle with `was_existing=True` and
+    skips all remaining steps. The check-then-insert is serialized per
+    `(schema, actor, identity_key)` by a transaction-scoped advisory lock (keyed
+    `taskq:unique_for:<schema>:<actor>:<identity_key>`, hashed via `hashtextextended`), so two
+    producers racing on the same logical entity cannot both insert — the loser's preflight finds
+    the winner's row and returns it as the dedup hit. The lock **wait is bounded** — 5 s by
+    default (`DEFAULT_UNIQUE_FOR_LOCK_TIMEOUT_MS` in `taskq.backend._enqueue`; a module constant
+    tunable only through private kwargs today — settings plumbing is a filed follow-up): the
+    acquire is two-tier (`taskq._advisory.acquire_advisory_xact_lock_bounded`). An uncontended
+    producer pays exactly one `pg_try_advisory_xact_lock` statement; a contended one queues
+    server-side — Postgres' own lock scheduler hands the lock to the next waiter as each holder's
+    transaction ends — with the wait bounded by a `lock_timeout` set inside a savepoint (and
+    restored before the savepoint releases, so nothing leaks to the caller's later statements),
+    plus a client-side backstop that bounds the network-black-hole case where the server never
+    answers. A producer that exhausts the budget gets `UniqueForLockTimeoutError` (this enqueue
+    wrote nothing; on a caller-owned transaction durability is the caller's decision) instead of
+    queueing indefinitely behind a same-key stampede or a black-holed holder. That error is
+    deliberately **not** in the `BackpressureError` family and bumps no
+    `taskq.backpressure.errors` counter — nothing about capacity is wrong; the dedup answer for
+    one identity could not be determined in time. The correct response is to **retry the same
+    enqueue**: once the winner's row is visible, the retry typically returns it as a dedup hit
+    (`was_existing=True`). `0` or less disables the bound entirely (the unbounded queueing
+    behavior), matching Postgres' own `lock_timeout = 0` convention.
 3. **Singleton pre-flight** — if `ref.singleton` is `True`, checks for an existing active job for
    this actor. Raises `SingletonCollisionError` on collision. Cron fires now carry the same
    `metadata["singleton"]` stamp and pre-flight — previously the flag was client-enqueue-only
    (see [Cron Scheduling — singleton and `max_pending` interaction](cron.md#singleton-and-max_pending-interaction)).
-4. **`max_pending` count check** — if `ref.max_pending` is set, counts `pending + scheduled` jobs
-   for this actor. Raises `MaxPendingExceededError` when `count >= max_pending`. The cap is
-   exact for serial producers and approximate under concurrency: the count and the INSERT are
-   separate statements with no lock between them, so concurrent producers can each pass the
-   check before anyone's insert commits — the overshoot is bounded by the number of racing
-   producers, never unbounded. Crons and single-process producers are exact. An exact cap
-   under concurrency would need a lock on the count path (as `unique_for` takes); if you need
-   that guarantee, tell us.
+ 4. **`max_pending` count check** — if `ref.max_pending` is set, counts `pending + scheduled` jobs
+    for this actor. Raises `MaxPendingExceededError` when `count >= max_pending`. Single enqueues
+    are **exact under concurrency**: the count and the INSERT are serialized per `(schema, actor)`
+    by a transaction-scoped advisory lock (the same two-tier mechanism `unique_for` uses — one
+    try-lock statement when uncontended, a server-side bounded blocking acquire when contended),
+    so concurrent producers cannot slip between the check and the insert. The lock wait is
+    bounded — 5 s by default (`DEFAULT_MAX_PENDING_LOCK_TIMEOUT_MS` in
+    `taskq.backend._enqueue`; a module constant tunable only through private kwargs today —
+    settings plumbing is a filed follow-up): a producer that cannot acquire the lock within its
+    budget gets `MaxPendingLockTimeoutError` instead of queueing behind every other racer, so
+    burst tail latency is capped by the budget rather than growing linearly with the number of
+    producers — while contended racers still queue server-side (draining at holder-release rate,
+    not at a client poll cadence), so realistic bursts are admitted rather than shed. Treat the
+    timeout exactly like a cap rejection: retry later or shed load (both errors sit in the
+    `BackpressureError` family and both record against the `taskq.backpressure.errors` counter).
+    `0` or less disables the bound entirely, matching Postgres' own `lock_timeout = 0`
+    convention. Bulk paths (`enqueue_batch`,
+    `enqueue_batch_fast`) and cron suppressions deliberately do **not** take the lock: their
+    aggregated pre-insert count is exact for the batch it admits but **approximate under
+    concurrency** — separate bulk connections can still race the count and the insert, and the
+    overshoot is bounded by the number of racing batches (documented, not silent). Crons and
+    single-process producers therefore stay exact in practice.
+
+   Operational note: the lock exists only for capped actors on the single-enqueue path, is keyed
+   `taskq:max_pending:<schema>:<actor>` (hashed via `hashtextextended`), and is transaction-scoped
+   — it shows in `pg_locks` only for the duration of a contended enqueue. Actors without
+   `max_pending` never touch it.
 5. **`idempotency_key` upsert** — if `idempotency_key` is provided and matches an existing row,
    returns the existing handle with `was_existing=True`.
 6. **Job INSERT** — inserts the new row and returns a handle with `was_existing=False`.
@@ -469,7 +509,7 @@ Enqueues jobs via the PG `COPY FROM` protocol for maximum throughput. Returns th
 
 ### Limitations
 
-- **No idempotency-key collision handling.** A duplicate key raises `asyncpg.UniqueViolationError` and aborts the entire batch. Callers must pre-deduplicate.
+- **No idempotency-key collision handling.** A duplicate `(idempotency_scope, idempotency_key)` pair — repeated within the batch or already stored — aborts the entire batch with `DuplicateIdempotencyKeyError` (nothing is written; the abort itself is deliberate bulk-import semantics). Callers must pre-deduplicate. One carve-out: during the `01.00.03` pre→post migration window, a key reused across *different* scopes raises `ScopedIdempotencyMigrationPendingError` instead, matching the other enqueue paths.
 - **`max_pending` is enforced with the same per-actor partition as `enqueue_batch()`**: within-cap actors' rows are written, an over-cap actor's items are refused, and `BatchMaxPendingExceededError` raises after the COPY commits — retry only the refused items (indices on the error), or rely on idempotency keys.
 - **No JobHandle instances.** Only the inserted count is returned. Use `batch_id` to query rows post-insert.
 - **All-or-nothing on constraint violations.** The COPY fails entirely on any constraint violation — singleton, unique index, or CHECK constraint. Only cap admission partitions.
@@ -1238,12 +1278,21 @@ if page.next_cursor:
 `SubJobEnqueuer` is accessed as `ctx.jobs` inside an actor body. It is not instantiated directly
 by application code. For actor-side usage see [Actor API — Sub-job enqueuing](actors.md#sub-job-enqueuing).
 
-!!! warning "Transactional sub-enqueue requires a single-slot worker"
+!!! warning "Transactional sub-enqueue: session state, not concurrency, is the constraint"
     Sub-enqueues join the actor's transaction only when a LOOP-scope `asyncpg.Connection` is
-    registered in DI — and that one connection is shared by **every** consumer slot, so the
-    transactional path is correct only with `TASKQ_MAX_CONCURRENCY=1`. Without a LOOP-scope
-    connection (the default worker), `ctx.jobs` commits each child immediately through the worker
-    pool (autonomous mode; the startup log warns `sub_enqueue_autonomous_fallback`). See
+    registered in DI. With `max_concurrency > 1` the worker opens a dedicated per-slot
+    transaction pool and each job transacts on its own connection, so the transactional path is
+    correct at any concurrency (the startup event `transactional_consume_per_slot` announces
+    the mode). Two consequences to know: TaskQ's own transactional writes (the terminal write,
+    transactional sub-enqueues) run on the slot connections while actors still receive the
+    registered LOOP-scope connection — if that connection carries session state (`SET ROLE`,
+    `search_path`, an RLS-driving GUC) that TaskQ's writes were expected to inherit, run the
+    transactional actor on a `TASKQ_MAX_CONCURRENCY=1` worker, where the writes keep using the
+    registered connection — and the per-slot pool costs `max_concurrency + 1` direct
+    connections, so the single-slot worker is also the minimal-connection-budget shape. Without
+    a LOOP-scope connection (the default worker), `ctx.jobs` commits each child immediately
+    through the worker pool (autonomous mode; the startup log warns
+    `sub_enqueue_autonomous_fallback`). See
     [ops.md — Fan-out at scale](ops.md#5-fan-out-at-scale-chunks-cursors-idempotency) for the
     consequences for chaining patterns.
 
@@ -1376,6 +1425,7 @@ All exceptions are in `taskq.exceptions`. Import directly:
 from taskq.exceptions import (
     BatchMaxPendingExceededError,
     MaxPendingExceededError,
+    MaxPendingLockTimeoutError,
     SingletonCollisionError,
     PayloadValidationError,
     JobFailed,
@@ -1386,6 +1436,8 @@ from taskq.exceptions import (
 | Exception | Raised when |
 |---|---|
 | `MaxPendingExceededError` | `enqueue()` called when `pending + scheduled` count >= `max_pending`. Fields: `actor` (str), `current_count` (int), `max_pending` (int). |
+| `MaxPendingLockTimeoutError` | `enqueue()` on a capped actor could not acquire the per-`(schema, actor)` serialization advisory lock within its budget (default 5 s) — too many concurrent producers, cap check never ran. Same `BackpressureError` family as `MaxPendingExceededError`; same response (retry later or shed load). Fields: `actor` (str), `timeout_ms` (float). |
+| `UniqueForLockTimeoutError` | `enqueue()` with `unique_for` + `identity_key` could not acquire the per-`(schema, actor, identity_key)` single-flight advisory lock within its budget (default 5 s, `DEFAULT_UNIQUE_FOR_LOCK_TIMEOUT_MS`) — the dedup answer for one identity could not be determined in time; nothing was inserted. NOT a `BackpressureError` (no capacity problem) and not counted in `taskq.backpressure.errors`. Response: retry the same enqueue — it typically dedupes against the winner's row (`was_existing=True`). Fields: `actor` (str), `identity_key` (str), `timeout_ms` (float). |
 | `BatchMaxPendingExceededError` | A bulk enqueue (`enqueue_batch()` / `enqueue_batch_fast()` / the chunked arm of `enqueue_batch_streaming()`) partitioned admission per actor and refused some: the within-cap actors' items were inserted first, then this raises. Fields: `refusals` (list of `MaxPendingExceededError`, one per over-cap actor), `refused_indices` (actor -> indices into the caller's items), `admitted_count` (int). Not a `MaxPendingExceededError` subclass — part of the batch is already stored; retry only the refused items or rely on idempotency keys. An `except BackpressureError` handler catches this too and must consult `admitted_count` / `refused_indices` before any whole-batch retry. |
 | `SingletonCollisionError` | `enqueue()` called for a singleton actor that already has an active job. Fields: `actor` (str), `blocking_job_id` (UUID or None), `retry_after` (timedelta or None). |
 | `PayloadValidationError` | Pydantic validation of the payload fails at enqueue time or at dispatch time. Non-retryable regardless of retry policy. Fields: `actor`, `payload_schema_ver`, `validation_errors`. |

@@ -3,13 +3,42 @@
 Provides safe, no-raise wrappers around OTel API calls so that observability
 failures never propagate to user or actor code.  All metric instruments
 are module-level singletons created at import time from the global meter provider.
+
+Label cardinality contract
+--------------------------
+
+Metric dimensions are limited to values that are bounded by construction:
+
+- ``actor``: the set of registered actor names (bounded by the code the
+  user ships) on every instrument whose actor flows through registration
+  — job-side emitters receive ``ActorRef`` names, and the cron loop's
+  success/suppression paths only emit after the tick resolved the actor
+  against ``actor_config``.  The one exception is
+  ``taskq.cron.consecutive_failures``: its failure path emits the raw
+  ``cron_schedules.actor`` string, and schedule rows accept any string
+  at creation time, so that label is capped like ``queue`` (see the
+  cardinality note above ``_bounded_cron_actor``); its per-schedule
+  attribution lives on log lines and the cron-fire span instead (see
+  the cardinality note above ``_lock_expires_in_seconds``).
+- ``sweep_name`` / ``lock`` / ``status`` / ``outcome``: closed enums, carried
+  as-is.
+- ``queue``: caller-supplied per enqueue and only charset-validated -- the
+  one open-ended label on the job-side instruments.  The four job-side
+  emitters (:func:`record_published_message`, :func:`record_dispatch_duration`,
+  :func:`record_consumed_message`, :func:`record_process_duration`) bound it
+  to the first ``_MAX_QUEUE_LABEL_VALUES`` distinct names a process sees;
+  beyond the cap the label collapses to the fixed ``_other_`` value (see the
+  cardinality note above :func:`_bounded_queue`).  Identity-like values
+  (``worker_id``, ``job_id``, ``schedule_id``) are never dimensions at all --
+  see the cardinality note above ``_lock_expires_in_seconds``.
 """
 
 import contextlib
+import functools
 import importlib.metadata
 import time
 from collections.abc import Generator, Iterable, Sequence
-from typing import Literal
+from typing import Literal, Protocol
 
 import structlog
 from opentelemetry import metrics, trace
@@ -74,16 +103,40 @@ def set_otel_enabled(enabled: bool) -> None:
     _otel_enabled = enabled
 
 
+@functools.lru_cache(maxsize=1)
 def _version() -> str:
+    """Return the installed ``taskq-py`` version, resolved once per process.
+
+    Why cached: ``importlib.metadata.version`` walks the site-packages
+    metadata on every call (~300µs, benchmarks/ab_otel_hotspots.py), and
+    :func:`get_tracer` runs per span and per enqueue -- the lookup alone
+    was ~700µs of every job's telemetry tax.  The installed version cannot
+    change while the process runs, so a single lookup is exact.
+    """
     try:
         return importlib.metadata.version("taskq-py")
     except importlib.metadata.PackageNotFoundError:
         return "0.0.0"
 
 
+_library_tracer: Tracer | None = None
+"""The tracer :func:`get_tracer` resolves once and hands back (see there)."""
+
+
 def get_tracer() -> Tracer:
-    """Return the library's tracer. Honors any globally-configured provider."""
-    return trace.get_tracer(INSTRUMENTATION_NAME, _version())
+    """Return the library's tracer. Honors any globally-configured provider.
+
+    The tracer object is resolved on first use and memoized.  That is safe
+    across the no-provider → real-provider transition: with no SDK set up,
+    ``trace.get_tracer`` returns a ``ProxyTracer``, which re-checks the
+    global provider on every span start and rebinds to the real one when an
+    SDK registers later -- so memoization never pins the proxy/no-op
+    behavior.
+    """
+    global _library_tracer
+    if _library_tracer is None:
+        _library_tracer = trace.get_tracer(INSTRUMENTATION_NAME, _version())
+    return _library_tracer
 
 
 def get_meter() -> Meter:
@@ -284,9 +337,71 @@ def record_deadline_exceeded_swept(actor: str, count: int = 1) -> None:
         )
 
 
+#: Why the ``queue`` label is capped on the job-side instruments
+#: ------------------------------------------------------------
+#: Unlike ``actor`` (bounded by the registered actor set the user ships),
+#: ``queue`` is caller-supplied per enqueue and only charset-validated
+#: (``backend/_protocol.py``) -- nothing bounds it.  5,000 distinct queue
+#: names minted 100k+ time series and 763ms scrapes in the cardinality
+#: bench, and the failure mode is the Azure Monitor one described in the
+#: ``worker_id`` note below: throttled ingestion across EVERY custom metric
+#: in the subscription, not repairable after the fact.  So the four
+#: job-side emitters admit the first ``_MAX_QUEUE_LABEL_VALUES`` distinct
+#: names a process sees (the ~100-values-per-dimension ceiling Azure's
+#: guidance sets) and collapse everything past the cap onto the fixed
+#: ``_other_`` value.  The cap never evicts: admitted names keep their own
+#: series for the life of the process, so steady-state traffic on real
+#: queues is unaffected and the series count is hard-bounded at cap + 1.
+#: Per-queue attribution is not lost -- the queue name rides on the
+#: enqueue/dispatch/consume span attributes and log lines, where
+#: cardinality is free.
+#:
+#: The admission check runs on the emitting (event-loop) thread only and
+#: is never iterated by the SDK reader thread, so the rebind discipline
+#: below does not apply; the worst a racing thread could do is admit one
+#: name past the cap, which stays bounded.
+
+_MAX_QUEUE_LABEL_VALUES: int = 100
+_QUEUE_LABEL_OVERFLOW: str = "_other_"
+
+_queue_label_values: set[str] = set()
+
+
+def _admitted_label_value(admitted: set[str], value: str, cap: int, overflow: str) -> str:
+    """Return *value*, or the fixed *overflow* label once *cap* distinct
+    values are admitted.
+
+    The shared first-N-then-overflow core of :func:`_bounded_queue` and
+    :func:`_bounded_cron_actor`: admission never evicts, so an admitted
+    value keeps its own series for the life of the process and the series
+    count is hard-bounded at cap + 1 no matter how many distinct values
+    the callers mint.
+    """
+    if value in admitted:
+        return value
+    if len(admitted) >= cap:
+        return overflow
+    admitted.add(value)
+    return value
+
+
+def _bounded_queue(queue: str) -> str:
+    """Return *queue*, or the fixed overflow label once the cap is reached.
+
+    See the cardinality note above.
+    """
+    return _admitted_label_value(
+        _queue_label_values, queue, _MAX_QUEUE_LABEL_VALUES, _QUEUE_LABEL_OVERFLOW
+    )
+
+
 _published_messages = get_meter().create_counter(
     "messaging.client.published.messages",
-    description="Count of jobs enqueued, labeled by actor and queue.",
+    description=(
+        "Count of jobs enqueued, labeled by actor and queue "
+        "(queue capped at the first _MAX_QUEUE_LABEL_VALUES distinct "
+        "names per process; overflow collapses to '_other_')."
+    ),
     unit="1",
 )
 
@@ -300,12 +415,15 @@ def record_published_message(actor: str, queue: str) -> None:
     """
     if not _otel_enabled:
         return
-    _published_messages.add(1, {"actor": actor, "queue": queue})
+    _published_messages.add(1, {"actor": actor, "queue": _bounded_queue(queue)})
 
 
 _dispatch_duration = get_meter().create_histogram(
     "taskq.dispatch.duration",
-    description="Dispatch query latency (SQL execution only), labeled by queue.",
+    description=(
+        "Dispatch query latency (SQL execution only), labeled by queue "
+        "(capped -- see _bounded_queue)."
+    ),
     unit="s",
 )
 
@@ -318,12 +436,15 @@ def record_dispatch_duration(queue: str, elapsed: float) -> None:
     """
     if not _otel_enabled:
         return
-    _dispatch_duration.record(elapsed, {"queue": queue})
+    _dispatch_duration.record(elapsed, {"queue": _bounded_queue(queue)})
 
 
 _consumed_messages = get_meter().create_counter(
     "messaging.client.consumed.messages",
-    description="Count of jobs consumed, labeled by actor, queue, and outcome.",
+    description=(
+        "Count of jobs consumed, labeled by actor, queue (capped -- see "
+        "_bounded_queue), and outcome."
+    ),
     unit="1",
 )
 
@@ -344,12 +465,14 @@ def record_consumed_message(actor: str, queue: str, *, outcome: ConsumedOutcome)
     """
     if not _otel_enabled:
         return
-    _consumed_messages.add(1, {"actor": actor, "queue": queue, "outcome": outcome})
+    _consumed_messages.add(1, {"actor": actor, "queue": _bounded_queue(queue), "outcome": outcome})
 
 
 _process_duration = get_meter().create_histogram(
     "messaging.process.duration",
-    description="Job execution duration, labeled by actor and queue.",
+    description=(
+        "Job execution duration, labeled by actor and queue (capped -- see _bounded_queue)."
+    ),
     unit="s",
 )
 
@@ -363,7 +486,7 @@ def record_process_duration(actor: str, queue: str, elapsed: float) -> None:
     """
     if not _otel_enabled:
         return
-    _process_duration.record(elapsed, {"actor": actor, "queue": queue})
+    _process_duration.record(elapsed, {"actor": actor, "queue": _bounded_queue(queue)})
 
 
 #: Why identity values are not metric dimensions
@@ -377,15 +500,36 @@ def record_process_duration(actor: str, queue: str, elapsed: float) -> None:
 #: across EVERY custom metric in the subscription, with no backfill of what was
 #: dropped. Not repairable after the fact, so it is not carried at all.
 #:
-#: The signal is not lost: per-worker attribution lives on spans and log lines,
-#: where cardinality is free (``worker_id`` is bound via contextvars onto every
-#: log line; ``taskq.worker_id`` is a cron-fire span attribute).
+#: The signal is not lost: per-worker and per-schedule attribution lives on
+#: spans and log lines, where cardinality is free (``worker_id`` is bound via
+#: contextvars onto every log line; ``taskq.worker_id`` and
+#: ``taskq.cron_schedule_id`` are cron-fire span attributes; ``schedule_id``
+#: is on the ``cron fired`` / ``cron fire failed`` / ``cron schedule
+#: auto-disabled`` log lines).
 #:
-#: ``schedule_id`` is NOT in the same class and stays a dimension on
-#: ``taskq.cron.consecutive_failures``: schedules are a bounded set an operator
-#: creates by hand, not a per-process UUID, and ``cron_auto_disable_threshold``
-#: is evaluated per schedule -- summed across schedules the metric no longer
-#: matches the mechanism it exists to monitor.
+#: ``schedule_id`` was the one identity-like dimension that survived the
+#: ``worker_id`` campaign, on the argument that schedules are a bounded set
+#: an operator creates by hand.  That argument does not hold:
+#: cron_schedules rows are runtime-creatable (``create_schedule`` is public
+#: client API, and the admin UI exposes it), each minting a fresh per-row
+#: UUID, so the value set is unbounded by construction -- nothing the
+#: library ships caps it.  ``taskq.cron.consecutive_failures`` is therefore
+#: labeled by ``actor`` -- a premise that needs its own guard, because the
+#: failure path emits the raw schedule-row actor and schedule rows accept
+#: any string at creation time, so the label is capped at the emitter
+#: (``_bounded_cron_actor`` below) rather than carried as-is.  The
+#: alerting purpose survives the relabel: a schedule stuck failing
+#: repeatedly keeps adding +1 to its actor's balance every tick.  The
+#: converse does not hold -- a non-zero balance does not mean a failing
+#: schedule, because an auto-disabled, re-enabled or deleted schedule
+#: strands its count on the actor's balance forever (re-enabling resets
+#: the DB column from the client process, which cannot emit a
+#: worker-counter delta), so the balance is a diagnostic, not the alert
+#: signal.  What the summed balance loses -- WHICH schedule -- no shipped
+#: consumer ever read: the alert fires on ``taskq.cron.disabled_schedules``
+#: and points the operator at ``cron_schedules.last_fire_error``;
+#: per-schedule debugging lives on the log lines and span attributes
+#: named above.
 #:
 #: The ``worker_id`` parameters below are kept: they are part of the published
 #: ``taskq.obs`` surface, and dropping them would be a breaking change for a
@@ -428,6 +572,94 @@ def record_heartbeat_miss(worker_id: str) -> None:
         return
     del worker_id  # Why: not a dimension -- see the cardinality note above.
     _heartbeat_misses.add(1)
+
+
+_slot_pool_acquire_failures = get_meter().create_counter(
+    "taskq.worker.slot_pool.acquire_failures",
+    description=(
+        "Bounded acquires from the per-slot transaction pool that failed "
+        "(timeout or connection error). An acquire failure is "
+        "infrastructure, not a job outcome: the claimed job recovers by "
+        "lock-lease expiry. No dimensions -- the pool name is in the "
+        "instrument name and the per-occurrence job id stays in the log "
+        "event."
+    ),
+    unit="1",
+)
+
+
+def record_slot_pool_acquire_failure() -> None:
+    """Bump the worker.slot_pool.acquire_failures counter.
+
+    Called from the exception branch of the bounded per-job acquire in
+    ``taskq.worker.dispatch`` — never the success path, matching
+    ``record_sweep_timeout``'s contract. A rate here is what separates
+    one transient timeout from every transactional job on a worker
+    failing to acquire.
+    Respects ``_otel_enabled`` — no-op when False.
+    """
+    if not _otel_enabled:
+        return
+    _slot_pool_acquire_failures.add(1)
+
+
+class _PoolOccupancySource(Protocol):
+    """Structural slice of asyncpg.Pool the occupancy gauge reads.
+
+    Keeps this observability leaf free of an asyncpg import: the only
+    producers (slot-pool bootstrap and credential reload) pass real
+    pools, which satisfy this shape structurally.
+    """
+
+    def get_size(self) -> int: ...
+
+    def get_idle_size(self) -> int: ...
+
+
+_slot_pool_occupancy_source: _PoolOccupancySource | None = None
+"""The asyncpg pool the occupancy gauge reads — set at slot-pool open
+and refreshed on credential-reload swaps."""
+
+
+def set_slot_pool_occupancy_source(pool: _PoolOccupancySource | None) -> None:
+    """Point the slot-pool occupancy gauge at *pool*.
+
+    Called at slot-pool bootstrap open and whenever a credential reload
+    swaps the pool, so the gauge always reads the live one. ``None``
+    clears the source — the gauge reports nothing, matching the
+    pool-not-open state.
+    """
+
+    global _slot_pool_occupancy_source
+    _slot_pool_occupancy_source = pool
+
+
+def _observe_slot_pool_occupancy(options: CallbackOptions) -> Iterable[Observation]:
+    pool = _slot_pool_occupancy_source
+    if pool is None:
+        return
+    try:
+        # Why defensive: the source can be a pool that teardown has since
+        # closed (the gauge outlives the swap/close notifications); a
+        # collection read must never raise into the SDK's export path.
+        in_use = pool.get_size() - pool.get_idle_size()
+    except Exception:
+        return
+    yield Observation(in_use)
+
+
+_slot_pool_occupancy_gauge = get_meter().create_observable_gauge(
+    name="taskq.worker.slot_pool.connections_in_use",
+    description=(
+        "Connections of the per-slot transaction pool currently held by "
+        "dispatching jobs. A pool pinned at its maximum for hours with "
+        "zero acquire timeouts is healthy saturation, not health - this "
+        "gauge is what makes that degradation visible below the "
+        "acquire-failure cliff."
+    ),
+    unit="1",
+    callbacks=[_observe_slot_pool_occupancy],
+)
 
 
 _queue_depth_cache: dict[str, int] = {}
@@ -586,9 +818,62 @@ def record_election_attempt(worker_id: str, *, won: bool) -> None:
         _leader_election_failures.add(1)
 
 
+#: Why the ``actor`` label on the cron failure balance is capped
+#: ------------------------------------------------------------
+#: Every other actor-labeled instrument receives actors that flowed
+#: through registration: the job-side emitters get ``ActorRef`` names
+#: (``JobsClient.enqueue`` and its batch variants only accept registered
+#: refs), and the cron loop's success/suppression paths
+#: (:func:`record_published_message`, :func:`record_backpressure_error`)
+#: only emit after the tick resolved the actor against ``actor_config``.
+#: :func:`record_cron_failure`'s FAILURE path cannot lean on that: it
+#: emits the raw ``cron_schedules.actor`` string, and ``create_schedule``
+#: accepts any string at creation time (validation is deferred to fire
+#: time by design -- a schedule may legitimately reference an actor that
+#: registers later).  A dangling, misspelled or tenant-generated actor
+#: name then fails every tick's planning loop, each failure adding +1
+#: under its own arbitrary string -- one metric series per distinct
+#: string, unbounded, the exact OTLP cardinality failure the module
+#: header warns about.  The label is therefore admitted through the same
+#: first-N-then-overflow mechanism as ``queue`` (see the note above
+#: ``_bounded_queue``): the first ``_MAX_ACTOR_LABEL_VALUES`` distinct
+#: names a process sees keep their own series, later names collapse onto
+#: the fixed ``_other_`` value, and the real name still rides the
+#: ``cron fired`` / ``cron fire failed`` log lines and the cron-fire
+#: span, where cardinality is free.
+
+_MAX_ACTOR_LABEL_VALUES: int = 100
+_ACTOR_LABEL_OVERFLOW: str = "_other_"
+
+_cron_actor_label_values: set[str] = set()
+
+
+def _bounded_cron_actor(actor: str) -> str:
+    """Return *actor*, or the fixed overflow label once the cap is reached.
+
+    See the cardinality note above.
+    """
+    return _admitted_label_value(
+        _cron_actor_label_values, actor, _MAX_ACTOR_LABEL_VALUES, _ACTOR_LABEL_OVERFLOW
+    )
+
+
 _cron_consecutive_failures = get_meter().create_up_down_counter(
     "taskq.cron.consecutive_failures",
-    description="Cron execution failure balance per schedule, via +1 per failure and -count on a successful reset.",
+    description=(
+        "Cron execution failure balance per actor, via +1 per failure and "
+        "-count on a successful reset. The balance is the SUM over the "
+        "actor's schedules and can carry permanent residue from schedules "
+        "that were disabled, re-enabled (the client-side enable resets the "
+        "DB column with no metric delta) or deleted -- the authoritative "
+        "per-schedule counts are cron_schedules.consecutive_failures and "
+        "the logs; alert on taskq.cron.disabled_schedules instead. The "
+        "actor label is capped at the first 100 distinct names per process "
+        "(overflow collapses to '_other_'). Per-schedule attribution is on "
+        "the cron fired / cron fire failed log lines and the cron-fire "
+        "span attribute taskq.cron_schedule_id, not on this label -- see "
+        "the cardinality note above _lock_expires_in_seconds."
+    ),
     unit="1",
 )
 
@@ -620,18 +905,30 @@ def record_cron_lock_contention(worker_id: str) -> None:
     _cron_lock_contention.add(1)
 
 
-def record_cron_failure(schedule_id: str, delta: int) -> None:
+def record_cron_failure(actor: str, delta: int) -> None:
     """Record a cron failure delta on the UpDownCounter.
 
     On failure, callers add ``+1`` per failure. On success, callers add
     ``-current_count`` for that schedule to reset the counter to zero —
     a simple ``add(-1)`` would leave a non-zero cumulative value if
     there were multiple consecutive failures.
+
+    Labeled by ``actor``, admitted through the same cap as ``queue``:
+    the failure path emits the raw ``cron_schedules.actor`` string and
+    schedule rows accept any string at creation time, so the first
+    ``_MAX_ACTOR_LABEL_VALUES`` distinct names keep their series and
+    later names collapse onto ``_other_`` (see the cardinality note
+    above ``_bounded_cron_actor``).  Schedules on one actor share a
+    series, and the per-schedule attribution the caller already holds
+    rides on the ``cron fired`` / ``cron fire failed`` log lines and the
+    cron-fire span instead — ``schedule_id`` is a per-row,
+    runtime-minted UUID and identity-like (see the cardinality note
+    above ``_lock_expires_in_seconds``).
     Respects ``_otel_enabled`` — no-op when False.
     """
     if not _otel_enabled:
         return
-    _cron_consecutive_failures.add(delta, {"schedule_id": schedule_id})
+    _cron_consecutive_failures.add(delta, {"actor": _bounded_cron_actor(actor)})
 
 
 _disabled_schedules_count: int = 0

@@ -20,7 +20,7 @@ See [../getting-started/quick-start.md](../getting-started/quick-start.md) for i
 
 **Heartbeat loop.** On every `heartbeat_interval` tick, acquires one connection from `heartbeat_pool`, opens a single transaction, and atomically updates `workers.last_seen_at`, extends `jobs.lock_expires_at` for all running jobs owned by this worker, extends `reservation_slots.lease_expires_at`, and (if this worker is the leader) pings `maintenance_leader.last_seen_at`. After the transaction commits, runs the cancel-controller's `run_post_tx` to drain any phase-3 abandonment queue. Consecutive failures increment `heartbeat_failures`; exceeding `max_heartbeat_failures` triggers `isolate_self`.
 
-**NOTIFY listener.** Holds a dedicated direct connection (`notify_conn`) subscribed to the `taskq_wake_{schema}` channel. When a NOTIFY arrives, the listener calls `event.set()` on all registered producer wake-subscribers, waking any sleeping producer immediately rather than waiting for the next poll tick. A health-check coroutine issues `SELECT 1` every `notify_health_check_interval` seconds and reconnects with bounded exponential backoff on failure.
+**NOTIFY listener.** Holds a dedicated direct connection (`notify_conn`) subscribed to the `taskq_wake_{schema}` channel. When a NOTIFY arrives, the listener calls `event.set()` on all registered producer wake-subscribers, waking any sleeping producer immediately rather than waiting for the next poll tick. A health-check coroutine issues `SELECT 1` every `notify_health_check_interval` seconds and reconnects with jittered bounded exponential backoff (±25% multiplicative jitter around each doubling delay) on failure.
 
 External code (for example a bulk-enqueue script) can wake sleeping workers immediately without going through the normal enqueue path:
 
@@ -337,6 +337,8 @@ worker_pool_size = int(max_concurrency * 1.5)
 
 The 1.5 factor provides headroom for terminal writes that occur just after a job finishes while the slot is being recycled. This pool is used for worker-path Postgres writes (`mark_succeeded`, `mark_failed_or_retry`, `mark_cancelled`, `mark_abandoned`). It may route through PgBouncer in transaction mode; see [PgBouncer compatibility](#pgbouncer-compatibility).
 
+When a LOOP-scope `asyncpg.Connection` is registered and `max_concurrency > 1`, the setting also sizes a fourth pool — the per-slot transaction pool (`max_concurrency + 1` direct connections, fully warmed at boot) that carries TaskQ's own transactional writes (the terminal write, transactional sub-enqueues). It is always direct-DSN and worker-internal: there is deliberately no `WorkerConnections` slot for it, and a worker that cannot open it fails to boot.
+
 `dispatcher_pool_size` (default `4`) and `heartbeat_pool_size` (default `4`) are independent pools; both always use the direct DSN.
 
 The worker spawns exactly `max_concurrency` consumer loop coroutines. They are cooperatively concurrent — asyncio, not threads. CPU-bound work should be offloaded to a thread pool executor via `asyncio.get_running_loop().run_in_executor`.
@@ -361,7 +363,7 @@ Each consumer loop iteration follows this sequence:
 
 6. **Rate-limit / reservation acquire.** If the actor declares `rate_limits` or `reservations` and a `RateLimitRegistry` is registered at LOOP scope, `acquire_for_actor` is called. On denial (`ReservationUnavailable`), the job is snoozed and the actor is not invoked.
 
-7. **Actor invocation.** The actor function is called with `(payload, ctx, **di_kwargs)`. If a LOOP-scope `asyncpg.Connection` is registered, the invocation and `mark_succeeded_with_conn` are wrapped in a single `conn.transaction()`, making the job status update and any sub-enqueues transactional.
+7. **Actor invocation.** The actor function is called with `(payload, ctx, **di_kwargs)`. If a LOOP-scope `asyncpg.Connection` is registered, the invocation and `mark_succeeded_with_conn` are wrapped in a single transaction, making the job status update and any sub-enqueues transactional. On a single-slot worker (`TASKQ_MAX_CONCURRENCY=1`) that transaction runs on the registered LOOP-scope connection; at higher concurrency the worker opens a per-slot transaction pool and each job transacts on its own slot connection (the registered connection is still what actors receive by injection).
 
 8. **Result / exception handling.** See [Retry and backoff](#retry-and-backoff). All terminal Postgres writes are wrapped in `asyncio.shield`.
 
@@ -559,7 +561,7 @@ readinessProbe:
 | Path | Success condition | Success response | Failure response |
 |---|---|---|---|
 | `GET /live` | Event loop responsive within 1.0s | `200 {"status":"ok"}` | `503 {"status":"unresponsive"}` |
-| `GET /ready` | `shutdown_phase == NONE` and PG ping succeeds within `health_pg_ping_timeout` | `200 {"ready":true,...}` | `503 {"ready":false,...}` |
+| `GET /ready` | `shutdown_phase == NONE` and PG ping succeeds within `health_pg_ping_timeout` (the per-slot transaction pool is pinged too, when it exists) | `200 {"ready":true,...}` | `503 {"ready":false,...}` |
 | `GET /metrics` | Always | `200` Prometheus text format | — |
 
 The `/ready` response body includes:
@@ -739,13 +741,14 @@ taskq workgroup start workgroup.toml
 
 ## PgBouncer compatibility
 
-The worker opens three asyncpg connection pools and two dedicated connections. Each targets a specific DSN for correctness reasons:
+The worker opens up to four asyncpg connection pools and two dedicated connections. Each targets a specific DSN for correctness reasons:
 
 | Connection | DSN used | Why |
 |---|---|---|
 | `dispatcher_pool` | `pg_dsn_direct` | Shares infrastructure with session-mode connections; direct connection avoids transaction-mode complications |
 | `heartbeat_pool` | `pg_dsn_direct` | Same rationale as dispatcher_pool |
 | `worker_pool` | `pg_dsn_pooled` | Terminal writes use short transactions; transaction-mode PgBouncer is safe here |
+| slot pool (conditional) | `pg_dsn_direct` | Per-slot transaction connections — a transaction-mode pool would break every transaction boundary; opened only when a LOOP-scope `asyncpg.Connection` is registered and `max_concurrency > 1` |
 | `notify_conn` | `pg_dsn_direct` | LISTEN state is session-scoped; a transaction-mode pool would drop the subscription between transactions |
 | `leader_conn` | `pg_dsn_direct` | `pg_try_advisory_lock` produces a session-scoped lock; a transaction-mode pool would release the lock between transactions, allowing another worker to win the lock silently |
 
@@ -862,7 +865,7 @@ All variables use the `TASKQ_` prefix. `WorkerSettings` extends `TaskQSettings`;
 | `TASKQ_HEARTBEAT_INTERVAL` | `float` | `10.0` | Seconds between heartbeat ticks |
 | `TASKQ_LOCK_LEASE` | `float` | `60.0` | Seconds before a lock is reclaimed; must be `>= 4 * heartbeat_interval` |
 | `TASKQ_MAX_HEARTBEAT_FAILURES` | `int` | `3` | Consecutive heartbeat failures before `isolate_self` |
-| `TASKQ_TERMINATION_GRACE_PERIOD` | `float` | `75.0` | Total seconds from SIGTERM to forced exit; sized to cover the default shutdown worst case (67s) |
+| `TASKQ_TERMINATION_GRACE_PERIOD` | `float` | `75.0` | Total seconds from SIGTERM to forced exit; sized to cover the default shutdown worst case (72s) |
 | `TASKQ_CANCELLATION_GRACE_PERIOD` | `float` | `30.0` | Seconds for cooperative cancel phase |
 | `TASKQ_CLEANUP_GRACE_PERIOD` | `float` | `10.0` | Seconds for force-cancel cleanup phase |
 | `TASKQ_MAX_RETRY_BACKOFF` | `timedelta` | `PT24H` | Global ceiling on per-attempt retry backoff |
@@ -875,7 +878,7 @@ All variables use the `TASKQ_` prefix. `WorkerSettings` extends `TaskQSettings`;
 | `TASKQ_NOTIFY_ENABLED` | `bool` | `true` | When `true`, the worker uses LISTEN/NOTIFY for near-zero-latency dispatch wakeups. When `false`, uses poll-only dispatch with `poll_interval`. |
 | `TASKQ_NOTIFY_POLL_INTERVAL` | `float` | `5.0` | Fallback poll cadence when NOTIFY is enabled (rarely reached — NOTIFY handles the common case). Uses `poll_interval` when NOTIFY is disabled. |
 | `TASKQ_NOTIFY_HEALTH_CHECK_INTERVAL` | `float` | `5.0` | How often the NOTIFY listener health-checks its connection |
-| `TASKQ_NOTIFY_RECONNECT_BACKOFF_INITIAL` | `float` | `1.0` | Initial backoff before first NOTIFY reconnect attempt (doubles per attempt, capped at 30s) |
+| `TASKQ_NOTIFY_RECONNECT_BACKOFF_INITIAL` | `float` | `1.0` | Initial backoff before first NOTIFY reconnect attempt (doubles per attempt, capped at 30s; each delay carries ±25% multiplicative jitter so a fleet that loses PG simultaneously does not reconnect in lockstep) |
 | `TASKQ_QUEUES` | `list[str]` | `["default"]` | Queue names this worker consumes; comma-separated |
 | `TASKQ_POOL_MAX_INACTIVE_LIFETIME` | `float` | `300.0` | Seconds before an idle pool connection is closed |
 | `TASKQ_WORKER_LABEL` | `str \| None` | `None` | Human-readable label for this worker, stored in `workers.worker_label` |

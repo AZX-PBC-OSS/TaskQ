@@ -4,30 +4,31 @@
 ``get_events`` live here as module-level functions taking
 ``self: InMemoryBackend`` as the first parameter.
 
-``get`` returns a copy of the stored row with the row's mutable fields
-copied (:func:`_read_copy`), so top-level mutation of a freshly-read
-row can never reach the backend's stored state — nested containers
-inside those dicts remain shared (:func:`_read_copy` documents the
-line). The result-TTL view composes on top of that copy. The other
-seams still alias by design pending #94: ``list_jobs`` neither copies
-nor sweeps — it exposes raw stored rows, matching PostgresBackend's
-pre-sweep list behaviour — and the write paths store and return caller
-dicts by reference, so rows from those seams stay live references to
-storage.
+Every read seam returns :func:`_read_copy` products: the stored row
+with its mutable dict fields copied, so top-level mutation of a
+freshly-read row can never reach the backend's stored state — nested
+containers inside those dicts remain shared (:func:`_read_copy`
+documents the line). This is the same isolation contract
+``PostgresBackend`` gives for free by materialising a fresh ``JobRow``
+from the SQL record on every read; the in-memory mirror must match it
+or a test can pass over code that would corrupt on PG. The result-TTL
+view composes on top of that copy.
 """
 
 from dataclasses import replace
 from datetime import datetime, timedelta
 from functools import cmp_to_key
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 from taskq.backend._cursor import ordering_for
 from taskq.backend._protocol import (
     AttemptRow,
+    BatchRow,
     EventRow,
     JobFilter,
     JobId,
     JobRow,
+    ScheduleRecord,
 )
 from taskq.backend.statemachine import ACTIVE_STATUSES, TERMINAL_STATUSES
 from taskq.constants import DEFAULT_RECLAIM_POLL_LIMIT
@@ -36,7 +37,10 @@ if TYPE_CHECKING:
     from taskq.testing.in_memory import InMemoryBackend
 
 __all__ = [
+    "_attempt_read_copy",
+    "_batch_row_read_copy",
     "_count_pending_jobs",
+    "_event_read_copy",
     "_get",
     "_get_actor_max_pending",
     "_get_attempts",
@@ -45,33 +49,83 @@ __all__ = [
     "_poll_reclaim_events",
     "_post_sweep_result_view",
     "_read_copy",
+    "_schedule_read_copy",
 ]
+
+
+def _copy_result_value(value: Any) -> Any:
+    """Copy the stored *result* value, severing the storage alias.
+
+    The ``result`` field is typed ``dict[str, object] | None`` (the actor
+    contract), but a direct ``mark_succeeded(result_bytes=...)`` caller
+    can store any single JSON value, exactly as PG's jsonb column holds
+    it and reads it back (``jsonb_to_dict`` → ``loads`` returns the
+    array/bool/number/string verbatim) — the mirror must read the same
+    bytes back the same way, so this copy cannot assume a dict. Mutable
+    container shapes get one new container (the shallow-copy line the
+    rest of this module takes); JSON scalars are immutable and pass
+    through unchanged.
+    """
+    if isinstance(value, dict):
+        # Why cast: orjson.loads yields JSON objects as dict[str, object]
+        # (JSON object keys are strings by grammar), so the cast states
+        # what the runtime value already is and keeps the copy's type
+        # fully known.
+        return dict(cast("dict[str, object]", value))
+    if isinstance(value, list):
+        return list(cast("list[object]", value))
+    return value
 
 
 def _read_copy(row: JobRow) -> JobRow:
     """Return *row* as an isolated copy for a read result.
 
-    The copy is deliberately shallow — one new dict per mutable field, no
-    deep-copy machinery, which is all a test backend needs: top-level
-    mutation of a read row (``row.result["injected"] = True``) can never
-    reach storage. Nested containers inside those dicts are still
-    shared.
+    The copy is deliberately shallow — one new container per mutable
+    field, no deep-copy machinery, which is all a test backend needs:
+    top-level mutation of a read row (``row.result["injected"] = True``)
+    can never reach storage. Nested containers inside those fields are
+    still shared. ``JobRow`` is frozen, but its mutable fields are shared
+    by reference, so one new container per field severs that aliasing;
+    the ``result`` field goes through :func:`_copy_result_value` because
+    its runtime value is not always a dict.
     """
-    # Why: red-team finding reported during the #92 result-TTL work and
-    # left unfixed there — ``get`` returned the live stored row on every
-    # non-expired read (only the expired branch produced a copy), so a
-    # caller mutating a freshly-read row's dict fields silently
-    # corrupted the backend's stored state, and later reads (and the
-    # runner's internal paths) saw the corruption. ``JobRow`` is frozen,
-    # but its dict-typed fields are shared by reference; one new dict
-    # per mutable field severs that aliasing.
     return replace(
         row,
         payload=dict(row.payload),
         progress_state=dict(row.progress_state),
-        result=None if row.result is None else dict(row.result),
+        result=None if row.result is None else _copy_result_value(row.result),
         metadata=dict(row.metadata),
     )
+
+
+def _event_read_copy(event: EventRow) -> EventRow:
+    """The EventRow analogue of :func:`_read_copy` — one new dict for the
+    single mutable field, severing the alias a read result would
+    otherwise carry into ``_events`` storage."""
+    return replace(event, detail=dict(event.detail))
+
+
+def _attempt_read_copy(attempt: AttemptRow) -> AttemptRow:
+    """The AttemptRow analogue of :func:`_read_copy` — one new dict for
+    the single mutable field, severing the alias a read result would
+    otherwise carry into ``_attempts`` storage."""
+    return replace(attempt, metadata=dict(attempt.metadata))
+
+
+def _schedule_read_copy(record: ScheduleRecord) -> ScheduleRecord:
+    """The ScheduleRecord analogue of :func:`_read_copy` — one new dict
+    for the single mutable field, severing the alias a read result would
+    otherwise carry into ``_schedules`` storage. Pydantic frozen model,
+    so the copy goes through ``model_copy`` rather than
+    :func:`dataclasses.replace`."""
+    return record.model_copy(update={"metadata": dict(record.metadata)})
+
+
+def _batch_row_read_copy(row: BatchRow) -> BatchRow:
+    """The BatchRow analogue of :func:`_read_copy` — one new dict for the
+    single mutable field, severing the alias a read result would
+    otherwise carry into ``_batches`` storage."""
+    return replace(row, metadata=dict(row.metadata))
 
 
 def _post_sweep_result_view(row: JobRow, now: datetime) -> JobRow:
@@ -153,7 +207,7 @@ async def _list_jobs(self: "InMemoryBackend", filters: JobFilter) -> list[JobRow
             r for r in candidates if ordering.compare(ordering.values(r), cursor_values) > 0
         ]
 
-    return candidates[: filters.limit]
+    return [_read_copy(r) for r in candidates[: filters.limit]]
 
 
 async def _count_pending_jobs(self: "InMemoryBackend", actors: list[str]) -> dict[str, int]:
@@ -172,7 +226,10 @@ async def _get_actor_max_pending(self: "InMemoryBackend") -> dict[str, int | Non
 
 
 async def _get_attempts(self: "InMemoryBackend", job_id: JobId) -> list[AttemptRow]:
-    return sorted(self._attempts.get(job_id, []), key=lambda a: a.attempt)
+    return [
+        _attempt_read_copy(a)
+        for a in sorted(self._attempts.get(job_id, []), key=lambda a: a.attempt)
+    ]
 
 
 async def _get_events(self: "InMemoryBackend", job_id: JobId) -> list[EventRow]:
@@ -196,7 +253,7 @@ async def _poll_reclaim_events(
     uniformly across both backends.
     """
     return [
-        e
+        _event_read_copy(e)
         for e in sorted(self._events, key=lambda ev: ev.event_id)
         if e.event_id > after_id
         and e.kind == "state_change"

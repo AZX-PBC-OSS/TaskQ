@@ -118,6 +118,88 @@ class MaxPendingExceededError(BackpressureError):
         super().__init__(actor, pending=current_count, max_pending=max_pending)
 
 
+class MaxPendingLockTimeoutError(BackpressureError):
+    """Raised when the advisory-lock wait bounding a capped actor's exact
+    count-then-insert exceeded its budget.
+
+    Distinct from :class:`MaxPendingExceededError`: the cap was never
+    observed -- this enqueue lost the race to even run the check, waiting
+    behind other producers on the same ``(schema, actor)`` lock until the
+    budget expired. The caller's correct response is the same as for a cap
+    rejection (retry later, or shed load), so this is raised from the same
+    :class:`BackpressureError` family and recorded against the same
+    ``taskq.backpressure.errors`` counter (``kind="max_pending_lock_timeout"``).
+
+    ``timeout_ms`` is the budget that expired. ``pending`` is 0 and
+    ``max_pending`` is ``None`` -- no count was taken.
+
+    Deliberately NOT a subclass of :class:`MaxPendingExceededError`: that
+    class means "the cap is full" and carries the observed count; a lock
+    timeout means "too contended to check" and conflating the two would
+    mislead handlers that react to a full queue (e.g. by logging the
+    count). Catch :class:`BackpressureError` to treat both the same way.
+    """
+
+    def __init__(self, actor: str, timeout_ms: float) -> None:
+        self.timeout_ms = timeout_ms
+        # BackpressureError.__init__ stamps actor/pending/max_pending and a
+        # generic message; args is re-set afterwards so the message names
+        # the actual condition (a bounded-wait loss, not a cap rejection).
+        super().__init__(actor, pending=0, max_pending=None)
+        self.args = (
+            f"backpressure: enqueue for actor {actor!r} could not acquire the "
+            f"max_pending advisory lock within {timeout_ms:g} ms of contention "
+            "(the exact cap check was not reached). Retry later or shed load, "
+            "exactly as for MaxPendingExceededError.",
+        )
+
+
+class UniqueForLockTimeoutError(TaskQError):
+    """Raised when the advisory-lock wait bounding a ``unique_for``
+    enqueue's preflight-then-insert exceeded its budget.
+
+    Distinct from :class:`MaxPendingLockTimeoutError` on purpose. That
+    error is a :class:`BackpressureError`: the caller's own load filled
+    the contention scope (every producer of a capped actor), the cap
+    check never ran, and the correct response is the same as for a cap
+    rejection — retry later or shed load. This error means the DEDUP
+    ANSWER for one ``(schema, actor, identity_key)`` could not be
+    determined in time: the contention scope is a single logical
+    entity's identity (a same-key stampede, or a black-holed holder the
+    server has not yet reaped), nothing about capacity is wrong, and the
+    correct response is to RETRY THE SAME ENQUEUE — by then the winner's
+    row is typically committed and the preflight returns it as a dedup
+    hit, which is the very outcome the wait existed to produce.
+    Deliberately NOT a :class:`BackpressureError` so handlers that react
+    to backpressure by shedding load or logging queue counts cannot
+    misreact, and deliberately NOT recorded against the
+    ``taskq.backpressure.errors`` counter (identity-key contention is
+    not a capacity signal; the ``unique-for-lock-timeout`` log event
+    carries the observability instead).
+
+    ``identity_key`` names the contended entity. ``timeout_ms`` is the
+    budget that expired. This enqueue wrote nothing: on a pool-owned
+    transaction the loser's transaction rolled back before any write; on
+    a caller-owned transaction (``enqueue_with_conn`` /
+    ``TaskQ.with_conn``) the savepoint the bounded acquire used rolled
+    back, the transaction remains usable, and durability of anything the
+    CALLER wrote alongside is the caller's decision, not this error's
+    claim to make.
+    """
+
+    def __init__(self, actor: str, identity_key: str, timeout_ms: float) -> None:
+        self.actor = actor
+        self.identity_key = identity_key
+        self.timeout_ms = timeout_ms
+        super().__init__(
+            f"unique_for enqueue for actor {actor!r} identity_key {identity_key!r} "
+            f"could not acquire the single-flight advisory lock within {timeout_ms:g} ms "
+            "of contention, so the dedup check did not run and nothing was inserted. "
+            "Retry the same enqueue: once the holder's row is visible, the retry "
+            "typically dedupes against it."
+        )
+
+
 class BatchMaxPendingExceededError(BackpressureError):
     """A bulk enqueue partitioned its admission per actor and refused some.
 
@@ -679,6 +761,69 @@ class ScopedIdempotencyMigrationPendingError(TaskQError):
         )
         if detail is not None:
             message = f"{message} (postgres detail: {detail})"
+        super().__init__(message)
+
+
+class DuplicateIdempotencyKeyError(TaskQError):
+    """``enqueue_batch_fast`` aborted: an item's
+    ``(idempotency_scope, idempotency_key)`` pair is already enqueued.
+
+    COPY has no ``ON CONFLICT`` arbiter, so a same-pair duplicate —
+    repeated within the batch or raced against a row the composite
+    ``jobs_idempotency_scope_key_uniq`` index already covers — aborts the
+    ENTIRE batch before a single row is written (all-or-nothing; the
+    abort is deliberate bulk-import semantics, unchanged by the
+    classification this error introduced). The non-fast paths never
+    raise for this condition: their ``ON CONFLICT`` arbiter dedupes and
+    RETURNS the existing row, so no pre-existing typed error expressed
+    "this pair is already enqueued" — hence this class, following
+    pgqueuer's ``DuplicateJobError`` precedent (a typed domain error for
+    a deduplication-constraint violation on the enqueue path, raised by
+    their in-memory adapter too). Distinct from
+    :class:`ScopedIdempotencyMigrationPendingError`, which is the
+    rolling-deploy window's cross-scope reuse signal.
+
+    ``idempotency_key`` / ``idempotency_scope`` carry the offending pair
+    when it could be attributed: the InMemory mirror detects it exactly,
+    and the PG path attributes by MATCHING the violation's detail line
+    against the batch's own candidate pairs — exact whenever the detail's
+    rendering is unambiguous (including comma-bearing scopes), and both
+    ``None`` when it is not (two distinct pairs whose values render to
+    the same detail text, or a localized/truncated detail — Postgres can
+    truncate long detail values). Never a wrong pair: ambiguity degrades
+    to unattributed rather than guessing. ``detail`` carries the postgres
+    detail verbatim when present.
+
+    Resolution: pre-deduplicate the items, or use
+    :meth:`~taskq.client.JobsClient.enqueue_batch`, which dedupes and
+    returns the existing rows.
+    """
+
+    def __init__(
+        self,
+        *,
+        idempotency_key: str | None = None,
+        idempotency_scope: str | None = None,
+        detail: str | None = None,
+    ) -> None:
+        self.idempotency_key = idempotency_key
+        self.idempotency_scope = idempotency_scope
+        self.detail = detail
+        message = (
+            "enqueue_batch_fast rejected: an item's (idempotency_scope, "
+            "idempotency_key) pair is already enqueued (duplicate within "
+            "the batch or already stored). COPY has no ON CONFLICT arbiter, "
+            "so the entire batch aborted with nothing written. "
+            "Pre-deduplicate the items or use enqueue_batch, which dedupes "
+            "and returns the existing rows."
+        )
+        if idempotency_key is not None:
+            message += (
+                f" Offending pair: idempotency_scope={idempotency_scope!r}, "
+                f"idempotency_key={idempotency_key!r}."
+            )
+        if detail is not None:
+            message += f" (postgres detail: {detail})"
         super().__init__(message)
 
 

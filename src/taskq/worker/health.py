@@ -23,7 +23,6 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Literal, TypedDict
 
-import asyncpg
 import structlog
 
 from taskq import _json
@@ -33,7 +32,7 @@ from taskq.obs import (
 )
 from taskq.settings import WorkerSettings
 from taskq.worker._watchdog import dump_task_stacks
-from taskq.worker.deps import WorkerDeps
+from taskq.worker.deps import POOL_INFRA_EXCEPTIONS, WorkerDeps
 from taskq.worker.shutdown import ShutdownPhase
 
 logger: structlog.stdlib.BoundLogger = get_logger(__name__)
@@ -153,6 +152,54 @@ async def _check_live() -> tuple[bool, str]:
         return False, "event loop unresponsive (timeout after 1.0s)"
 
 
+async def _ping_slot_pool_once(deps: WorkerDeps) -> tuple[bool, str | None]:
+    """One bounded ping of the slot pool. Returns (ok, failure reason)."""
+    timeout = deps.settings.health_pg_ping_timeout
+    try:
+        async with deps.slot_pool.acquire(timeout=timeout) as conn:  # pyright: ignore[reportOptionalMemberAccess]  # Why: the caller guards slot_pool is not None; pyright cannot narrow the field across the function boundary.
+            await asyncio.wait_for(conn.execute("SELECT 1"), timeout=timeout)
+    except TimeoutError:
+        return False, "slot_pool_ping_timeout"
+    # Why the shared pool-infra family (taskq.worker.deps): a
+    # fresh-connection acquire — after a rotation drain or terminate —
+    # surfaces revoked or refused credentials as coded server errors
+    # (InvalidPasswordError, AdminShutdownError) that are not
+    # PostgresConnectionError children; reading them as "unexpected"
+    # below would label an infrastructure failure as a programming error
+    # for the 3am reader. TimeoutError stays caught above so it keeps
+    # its own reason.
+    except POOL_INFRA_EXCEPTIONS:
+        return False, "slot_pool_connection_error"
+    except Exception as exc:
+        logger.warning("health-slot-pool-ping-unexpected", error=str(exc))
+        return False, "slot_pool_connection_error"
+    return True, None
+
+
+async def _ping_slot_pool(deps: WorkerDeps) -> tuple[bool, str | None]:
+    """Single-flight slot-pool readiness ping.
+
+    The in-flight probe lives on *deps* (one worker per deps object —
+    never shared across workers, so one worker's probe can never answer
+    for another's pool). Concurrent requests join the one in-flight
+    probe through a shield, so a cancelled waiter never cancels the
+    shared probe; the join itself is bounded by one ping budget so a
+    probe task left over from a torn-down event loop degrades to a
+    failed ping instead of hanging readiness. A request arriving after
+    the probe completed starts a fresh one — no result is served stale.
+    """
+    task = deps.slot_pool_probe_task
+    if task is None or task.done():
+        task = asyncio.create_task(_ping_slot_pool_once(deps))
+        deps.slot_pool_probe_task = task
+    try:
+        return await asyncio.wait_for(
+            asyncio.shield(task), timeout=deps.settings.health_pg_ping_timeout
+        )
+    except TimeoutError:
+        return False, "slot_pool_ping_timeout"
+
+
 async def compute_health(deps: WorkerDeps) -> HealthReport:
     """Single shared health function consumed by both transports.
 
@@ -178,12 +225,10 @@ async def compute_health(deps: WorkerDeps) -> HealthReport:
     except TimeoutError:
         pg_ping_ok_ = False
         reasons.append("pg_ping_timeout")
-    except (
-        asyncpg.PostgresConnectionError,
-        asyncpg.InterfaceError,
-        asyncpg.TooManyConnectionsError,
-        OSError,
-    ):
+    # Same shared pool-infra family as the slot-pool ping above, for the
+    # same reason: a coded server error on this direct-DSN bounded body
+    # is infrastructure, not a programming error.
+    except POOL_INFRA_EXCEPTIONS:
         pg_ping_ok_ = False
         reasons.append("pg_connection_error")
     except Exception as exc:
@@ -195,6 +240,22 @@ async def compute_health(deps: WorkerDeps) -> HealthReport:
         reasons.append("pg_connection_error")
     t1 = time.perf_counter()
     pg_ping_latency_ms = (t1 - t0) * 1000.0
+
+    # A dead slot pool would leave every transactional job failing to
+    # acquire while readiness stays green on the dispatcher pool's
+    # strength — the misattribution moved to the orchestrator. Ping the
+    # slot pool too when it exists, under the same timeout discipline;
+    # the single-flight coalescing in _ping_slot_pool is what lets the
+    # pool's one readiness-reserve connection serve overlapping probes
+    # (HTTP listener, CLI, retries) without contending.
+    if deps.slot_pool is not None:
+        slot_ok, slot_reason = await _ping_slot_pool(deps)
+        if not slot_ok:
+            pg_ping_ok_ = False
+            # ``or`` rather than an assert: a probe that reports failure
+            # with no reason must still mark readiness, with a name that
+            # says exactly that, rather than silently dropping the mark.
+            reasons.append(slot_reason or "slot_pool_ping_failed")
 
     ready = (phase == ShutdownPhase.NONE) and pg_ping_ok_
 

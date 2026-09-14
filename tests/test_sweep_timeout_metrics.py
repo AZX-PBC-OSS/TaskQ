@@ -18,6 +18,7 @@ from contextlib import asynccontextmanager
 import pytest
 from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 
+from taskq.testing.assertions import wait_for_condition
 from taskq.testing.otel import (
     collect_metrics,
     counter_data_points,
@@ -178,11 +179,10 @@ async def _drive_one_iteration(
     shutdown = asyncio.Event()
     task = asyncio.create_task(leader._scheduled_wake_loop(shutdown))  # pyright: ignore[reportAttributeAccessIssue]  # Why: leader is a real MaintenanceLeader; object-typed to keep the lazy import out of this helper's signature.
     try:
-        for _ in range(400):  # up to 4s; the deadline lands well inside it
-            if backend.calls and _samples_for_sweep(reader, "scheduled_to_pending"):
-                break
-            await asyncio.sleep(0.01)
-        assert backend.calls >= 1, "the wake loop must attempt the sweep"
+        await wait_for_condition(
+            lambda: backend.calls >= 1 and _samples_for_sweep(reader, "scheduled_to_pending") >= 1,
+            description="the wake loop must attempt the sweep and record its telemetry",
+        )
     finally:
         shutdown.set()
         task.cancel()

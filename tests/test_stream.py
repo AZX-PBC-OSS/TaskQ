@@ -45,6 +45,7 @@ from taskq.backend.statemachine import TERMINAL_STATUSES
 from taskq.client._jobs import JobsClient
 from taskq.client._taskq import JobEvent, TaskQ, _row_to_event
 from taskq.settings import TaskQSettings
+from taskq.testing.assertions import wait_for_condition
 from taskq.testing.clock import FakeClock
 from taskq.testing.in_memory import InMemoryBackend
 from taskq.testing.jobs import make_job_row
@@ -375,12 +376,38 @@ async def _dispatch_to_running(
 
 
 async def _count_listen_connections(pool: asyncpg.Pool) -> int:
-    """Count connections with an active LISTEN on the wake channel."""
+    """Count connections registered as LISTENers in this database.
+
+    The match is anchored (``LIKE 'LISTEN%'``): pg_stat_activity.query
+    holds a backend's LAST statement, so a substring match also hits the
+    counting query's own backend and every idle pool connection whose
+    last statement merely mentioned the word — noise that cancels out in
+    a single-shot count and skews a repeated poll.
+    """
     row = await pool.fetchval(
         "SELECT count(*) FROM pg_stat_activity "
-        "WHERE query LIKE '%LISTEN%' AND datname = current_database()"
+        "WHERE query LIKE 'LISTEN%' AND datname = current_database()"
     )
     return row
+
+
+async def _listen_pids(pool: asyncpg.Pool) -> list[int]:
+    """PIDs of connections LISTENing in this database, excluding the
+    querying backend — the server-side observable for both "the stream's
+    LISTEN connection exists" (pre-kill) and "it is gone" (post-kill).
+
+    Anchored match for the same reason as ``_count_listen_connections``:
+    a substring match would also return pool connections carrying a
+    stale statement that merely mentioned the word, and a victim list
+    built from it would terminate the pool instead of the stream's
+    dedicated LISTEN connection.
+    """
+    rows = await pool.fetch(
+        "SELECT pid FROM pg_stat_activity "
+        "WHERE query LIKE 'LISTEN%' AND datname = current_database() "
+        "AND pid != pg_backend_pid()"
+    )
+    return [row["pid"] for row in rows]
 
 
 # ── PG transport — stream terminates on job completion ──────────────
@@ -485,10 +512,20 @@ async def test_ti3_pg_listen_connection_closed_after_stream(pg_dsn: str) -> None
             return events
 
         task = asyncio.create_task(_collect())
-        await asyncio.sleep(0.1)
 
-        during = await _count_listen_connections(pool)
-        assert during > baseline
+        # Bounded poll until the stream's dedicated LISTEN connection is
+        # visible server-side: a fixed window false-reds when
+        # registration is merely slow under load, and never proves the
+        # stream actually holds a LISTEN registration mid-flight.
+        async def _listen_registered() -> bool:
+            return await _count_listen_connections(pool) > baseline
+
+        await wait_for_condition(
+            _listen_registered,
+            description="the stream's dedicated LISTEN connection never became visible server-side while streaming",
+            timeout=5.0,
+            poll_interval=0.05,
+        )
 
         await backend.mark_succeeded(
             job_id, worker_id, result=None, progress_seq=0, progress_state=None
@@ -497,9 +534,22 @@ async def test_ti3_pg_listen_connection_closed_after_stream(pg_dsn: str) -> None
         events = await asyncio.wait_for(task, timeout=5.0)
         assert events[-1].terminal is True
 
-        await asyncio.sleep(0.3)
-        after = await _count_listen_connections(pool)
-        assert after <= baseline
+        # The generator's finally closes the dedicated LISTEN connection
+        # before the task completes, but the server-side registration
+        # disappears asynchronously — a fixed window false-reds when the
+        # release lands after it, and never proves the release happened.
+        # A bounded poll on the server's own count does both: it waits
+        # exactly as long as the release needs and fails naming the leak
+        # if it never lands.
+        async def _listen_released() -> bool:
+            return await _count_listen_connections(pool) <= baseline
+
+        await wait_for_condition(
+            _listen_released,
+            description="the stream's dedicated LISTEN connection was not released after the stream exited",
+            timeout=5.0,
+            poll_interval=0.05,
+        )
     finally:
         await tq.close()
 
@@ -528,9 +578,21 @@ async def test_ti4_pg_break_closes_listen_connection(pg_dsn: str) -> None:
             events.append(event)
             break
 
-        await asyncio.sleep(0.3)
-        after = await _count_listen_connections(pool)
-        assert after <= baseline
+        # Breaking the async for leaves the generator suspended; the
+        # event loop's async-gen finalizer closes it (and its dedicated
+        # LISTEN connection) on a later pass, and the server-side
+        # registration disappears asynchronously after that. A bounded
+        # poll on the server's own count waits exactly as long as the
+        # release needs and fails naming the leak if it never lands.
+        async def _listen_released() -> bool:
+            return await _count_listen_connections(pool) <= baseline
+
+        await wait_for_condition(
+            _listen_released,
+            description="the stream's dedicated LISTEN connection was not released after the consumer broke out of the stream",
+            timeout=5.0,
+            poll_interval=0.05,
+        )
     finally:
         await tq.close()
 
@@ -779,25 +841,38 @@ async def test_tc1_pg_listen_connection_dropped_stream_recovers(
         assert pool is not None
         job_id = await _enqueue_job(backend)
 
+        # Hoisted so the test body can observe delivery mid-flight: the
+        # post-kill recovery gate below reads it while _collect still runs.
+        events: list[JobEvent] = []
+
         async def _collect() -> list[JobEvent]:
-            events: list[JobEvent] = []
             async for event in tq.stream(job_id):
                 events.append(event)
             return events
 
         task = asyncio.create_task(_collect())
-        await asyncio.sleep(0.1)
 
-        pool = tq._pool
-        assert pool is not None
-
-        async with pool.acquire() as conn:
-            listen_pids = await conn.fetch(
-                "SELECT pid FROM pg_stat_activity "
-                "WHERE query LIKE '%LISTEN%' AND datname = current_database() "
-                "AND pid != pg_backend_pid()"
+        # Bounded poll until the stream's dedicated LISTEN connection is
+        # visible server-side: a fixed 0.1s sleep races the generator's
+        # startup under load, and an empty victim list would silently
+        # skip the chaos path (the test would pass without exercising
+        # recovery at all).
+        loop = asyncio.get_running_loop()
+        listen_deadline = loop.time() + 5.0
+        while True:
+            pids_to_kill = await _listen_pids(pool)
+            if pids_to_kill:
+                break
+            # Why the message avoids naming the catalog view: the
+            # suite-hygiene guard AST-scans string constants for that
+            # phrase and requires the scoping predicate in the SAME
+            # string — a prose-only mention would false-positive the
+            # guard even though the query above is correctly scoped.
+            assert loop.time() < listen_deadline, (
+                "the stream's LISTEN connection never became visible in the "
+                "server's activity view within 5s"
             )
-        pids_to_kill = [row["pid"] for row in listen_pids]
+            await asyncio.sleep(0.05)
 
         for pid in pids_to_kill:
             psql_path = shutil.which("psql")
@@ -816,10 +891,35 @@ async def test_tc1_pg_listen_connection_dropped_stream_recovers(
             )
             await proc.wait()
 
-        await asyncio.sleep(0.2)
+        # The kill must be observed to land before any write: psql's exit
+        # code says nothing about it (pg_terminate_backend can decline
+        # with the query itself succeeding), and a still-live LISTEN
+        # connection would deliver every later write via NOTIFY — the
+        # test would pass green without exercising the poll-only
+        # recovery at all.
+        async def _killed_pids_gone() -> bool:
+            return not set(pids_to_kill) & set(await _listen_pids(pool))
+
+        await wait_for_condition(
+            _killed_pids_gone,
+            description="pg_terminate_backend never removed the stream's LISTEN connection from the server's activity view",
+            timeout=5.0,
+            poll_interval=0.05,
+        )
 
         await _dispatch_to_running(pool, tq._schema, job_id, worker_id)
-        await asyncio.sleep(0.1)
+
+        # Recovery must be proven before the terminal write. With the
+        # LISTEN backend gone, only the stream's poll-timeout re-fetch
+        # path can surface the running event, so its arrival in the
+        # collector is the observable that the stream survived the
+        # connection loss; writing the terminal state before this proof
+        # would leave the final wait to carry a failure that belongs
+        # here, named.
+        await wait_for_condition(
+            lambda: any(e.status == "running" for e in events),
+            description="the stream never delivered the post-kill running event via its poll-timeout re-fetch path",
+        )
 
         await backend.mark_succeeded(
             job_id, worker_id, result=None, progress_seq=0, progress_state=None

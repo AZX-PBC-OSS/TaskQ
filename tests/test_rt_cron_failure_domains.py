@@ -4,16 +4,14 @@ Three failure domains meet in one tick, and each owes different
 observable behaviour:
 
 * **Server-side enqueue failure** (C2): the batched INSERT itself fails
-  on the caller's connection — a genuine ``UniqueViolationError`` on
-  ``jobs_pkey`` driven here by colliding the first planned row's id with
-  a committed row, through the REAL ``enqueue_batch``.  The failed
-  INSERT aborts the tick's transaction, so the failure UPDATE the tick
-  runs afterwards fails in turn and the tick raises to its caller.  This
-  pins the honest observable: the caller sees
-  ``InFailedSQLTransactionError``, NOTHING survives (no partial
-  enqueues, no ``consecutive_failures`` bookkeeping, no auto-disable),
-  and the original enqueue error survives only in the per-schedule
-  span telemetry.
+  on the caller's connection — a genuine ``UniqueViolationError`` driven
+  through the REAL ``enqueue_batch``.  The failure is attributed PER
+  SCHEDULE, not per tick: the colliding plan takes one strike (identified
+  from the violation's ``Key (cols)=(vals)`` detail line) inside a
+  SAVEPOINT that keeps the tick's transaction alive, and the survivors
+  retry as a batch and fire.  A transient failure of the INSERT
+  (TimeoutError — PG weather) strikes NO schedule and re-raises for the
+  leader's transient handling.
 * **Client-side enqueue failure** (C2's contrast): the backend raises
   before any statement is sent — the transaction stays alive, so the
   per-schedule failure bookkeeping COMMITS and the tick returns 0
@@ -43,13 +41,14 @@ from taskq._ids import new_uuid
 from taskq.testing.fixtures import ModulePgSchema
 from taskq.testing.otel import setup_tracer
 from taskq.worker import cron_loop
-from taskq.worker.cron_loop import tick_cron
+from taskq.worker.cron_loop import ActorFirePolicy, tick_cron
 
 from .test_rt_cron_harness import (
     _HOURLY,
     CountingConn,
     GatedEnqueueBackend,
     JobIdCollisionBackend,
+    SingletonRaceBackend,
     cron_settings,
     hour_floor,
     make_backend,
@@ -69,27 +68,19 @@ _LOOKUP_ERROR = f"Actor '{_MISSING_ACTOR}' not found in actor_config"
 class TestServerSideEnqueueFailure:
     """C2: the batched INSERT genuinely fails on the caller's connection."""
 
-    async def test_aborts_whole_tick_with_no_partial_writes(
+    async def test_pkey_violation_strikes_only_the_colliding_row_others_fire(
         self,
         clean_pg_conn: asyncpg.Connection,
         module_pg_schema: ModulePgSchema,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """A genuine jobs_pkey violation inside the batched enqueue → the
-        tick raises InFailedSQLTransactionError (the doomed failure UPDATE
-        surfacing the abort), the caller's rollback discards everything,
-        and the original constraint error survives only in span telemetry."""
+        colliding schedule takes exactly one strike (attributed from the
+        violation's ``Key (id)=…`` detail), the tick does NOT raise, and
+        the two unrelated schedules in the same batch retry and fire."""
         schema = module_pg_schema.schema_name
         settings = cron_settings(schema)
         await seed_actor_config(clean_pg_conn, schema, _PRESENT_ACTOR)
-
-        collide_id = new_uuid()
-        await clean_pg_conn.execute(
-            f'INSERT INTO "{schema}".jobs (id, actor, queue, payload, max_attempts, '  # noqa: S608  # Why: schema is a test-fixture identifier; values are $-bound.
-            f"retry_kind) VALUES ($1, $2, 'rt_queue', '{{}}'::jsonb, 1, 'transient')",
-            collide_id,
-            _PRESENT_ACTOR,
-        )
 
         due = hour_floor(datetime.now(UTC))
         schedule_ids = [
@@ -105,48 +96,226 @@ class TestServerSideEnqueueFailure:
         ]
         before = [await schedule_row(clean_pg_conn, schema, sid) for sid in schedule_ids]
 
-        backend = JobIdCollisionBackend(settings, collide_id=collide_id)
-        _provider, exporter = setup_tracer(monkeypatch)
+        collider_conn = await asyncpg.connect(module_pg_schema.pg_dsn)
+        try:
+            backend = JobIdCollisionBackend(settings, collider_conn=collider_conn, schema=schema)
+            _provider, exporter = setup_tracer(monkeypatch)
 
-        with (
-            structlog.testing.capture_logs() as captured,
-            pytest.raises(asyncpg.InFailedSQLTransactionError),
-        ):
+            with structlog.testing.capture_logs() as captured:
+                async with clean_pg_conn.transaction():
+                    fired = await tick_cron(clean_pg_conn, settings, backend, schema, new_uuid())
+        finally:
+            await collider_conn.close()
+
+        assert fired == 2, (
+            "the two non-colliding schedules must fire — one colliding row is a "
+            "defect of one schedule, not of the tick"
+        )
+        jobs: int = await clean_pg_conn.fetchval(
+            f'SELECT count(*) FROM "{schema}".jobs'  # noqa: S608  # Why: schema is a test-fixture identifier.
+        )
+        assert jobs == 3, (
+            f"{jobs} jobs after the tick — the committed collision row plus the "
+            "two survivors' fires; nothing more, nothing less"
+        )
+        after = [await schedule_row(clean_pg_conn, schema, sid) for sid in schedule_ids]
+        colliding, *survivors = after
+        assert colliding["consecutive_failures"] == 1, (
+            "the colliding schedule takes exactly one strike"
+        )
+        assert "jobs_pkey" in (colliding["last_fire_error"] or ""), (
+            f"the strike must carry the real constraint name; got {colliding['last_fire_error']!r}"
+        )
+        assert colliding["enabled"] is True, "one strike must not auto-disable"
+        assert colliding["next_fire_at"] == before[0]["next_fire_at"], (
+            "a strike does not advance next_fire_at — the failure path is not a fire"
+        )
+        for row, _was_before in zip(survivors, before[1:], strict=True):
+            assert row["consecutive_failures"] == 0, "survivors take no strike"
+            assert row["last_fired_at"] is not None, "survivors fired"
+
+        failed_logs = [e for e in captured if e["event"] == "cron fire failed"]
+        assert len(failed_logs) == 1, (
+            f"exactly one per-schedule failure log (the colliding plan); got "
+            f"{[e['event'] for e in captured]}"
+        )
+        assert "cron schedule auto-disabled" not in [e["event"] for e in captured]
+
+        error_spans = [
+            s for s in exporter.spans_named("cron fire") if s.status.status_code == StatusCode.ERROR
+        ]
+        assert len(error_spans) == 1, (
+            "only the colliding plan's span is errored — the survivors' spans "
+            "closed cleanly on their successful fire"
+        )
+        assert "jobs_pkey" in (error_spans[0].status.description or "")
+
+    async def test_transient_enqueue_failure_raises_without_striking(
+        self,
+        clean_pg_conn: asyncpg.Connection,
+        module_pg_schema: ModulePgSchema,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A TimeoutError from the batched enqueue (statement timeout, conn
+        blip) is PG weather, not a schedule defect: the tick re-raises for
+        the leader's transient handling, the caller's rollback discards the
+        tick, and NO schedule takes a strike — three seconds of degraded PG
+        must not auto-disable every schedule in the fleet."""
+        from typing import NoReturn
+
+        from taskq.backend._protocol import EnqueueArgs
+
+        schema = module_pg_schema.schema_name
+        settings = cron_settings(schema)
+        await seed_actor_config(clean_pg_conn, schema, _PRESENT_ACTOR)
+        due = hour_floor(datetime.now(UTC))
+        schedule_ids = [
+            await seed_schedule(
+                clean_pg_conn,
+                schema,
+                actor=_PRESENT_ACTOR,
+                name=f"transient-{i}",
+                cron_expr=_HOURLY,
+                next_fire_at=due,
+            )
+            for i in range(2)
+        ]
+        before = [await schedule_row(clean_pg_conn, schema, sid) for sid in schedule_ids]
+
+        backend = make_backend(settings)
+
+        async def _raise_timeout(
+            args_list: list[EnqueueArgs],
+            *,
+            connection: object = None,
+            enforce_max_pending: bool = True,
+        ) -> NoReturn:
+            raise TimeoutError()
+
+        monkeypatch.setattr(backend, "enqueue_batch", _raise_timeout)
+
+        with pytest.raises(TimeoutError):
             async with clean_pg_conn.transaction():
                 await tick_cron(clean_pg_conn, settings, backend, schema, new_uuid())
 
         jobs: int = await clean_pg_conn.fetchval(
             f'SELECT count(*) FROM "{schema}".jobs'  # noqa: S608  # Why: schema is a test-fixture identifier.
         )
-        assert jobs == 1, (
-            f"{jobs} jobs survived an aborted tick — only the pre-seeded collision "
-            "row may exist; partial enqueues must not survive the rollback"
-        )
+        assert jobs == 0, "a transient failure must commit nothing"
         after = [await schedule_row(clean_pg_conn, schema, sid) for sid in schedule_ids]
         assert after == before, (
-            "schedule rows changed under an aborted tick — no consecutive_failures "
-            "bookkeeping and no auto-disable may survive the rollback"
+            "a transient infra failure must not increment consecutive_failures or "
+            "write any failure record — PG weather is not a schedule defect"
         )
 
-        tick_logs = [e["event"] for e in captured]
-        assert "cron fire failed" not in tick_logs, (
-            "per-schedule failure logs ran for writes that were rolled back — the "
-            "tick must not claim failures it could not commit"
+
+class TestSingletonRaceBetweenPreflightAndInsert:
+    """The preflight→INSERT window: a client enqueue commits a singleton
+    job between the tick's policy preflight (which saw no blocker) and the
+    batched INSERT (whose READ-COMMITTED statement snapshot sees it).
+
+    The whole batch aborts on the ``jobs_singleton_uniq`` violation — and
+    before per-plan attribution existed, that abort was converted into a
+    strike for EVERY schedule in the tick, auto-disabling unrelated
+    schedules three ticks in a row because one actor was busy."""
+
+    async def test_race_strikes_only_the_colliding_schedule(
+        self,
+        clean_pg_conn: asyncpg.Connection,
+        module_pg_schema: ModulePgSchema,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The colliding schedule takes exactly one strike with the real
+        constraint name; the unrelated schedule in the same tick fires; the
+        tick does not raise (the savepoint keeps the transaction alive); and
+        the colliding fire is never enqueued."""
+        schema = module_pg_schema.schema_name
+        settings = cron_settings(schema)
+        singleton_actor = "rt_singleton_actor"
+        await seed_actor_config(clean_pg_conn, schema, singleton_actor)
+        await seed_actor_config(clean_pg_conn, schema, _PRESENT_ACTOR)
+        due = hour_floor(datetime.now(UTC))
+        racer_id = await seed_schedule(
+            clean_pg_conn,
+            schema,
+            actor=singleton_actor,
+            name="racer",
+            cron_expr=_HOURLY,
+            next_fire_at=due,
         )
-        assert "cron schedule auto-disabled" not in tick_logs
+        peer_id = await seed_schedule(
+            clean_pg_conn,
+            schema,
+            actor=_PRESENT_ACTOR,
+            name="peer",
+            cron_expr=_HOURLY,
+            next_fire_at=due,
+        )
+        racer_before = await schedule_row(clean_pg_conn, schema, racer_id)
+
+        blocker_conn = await asyncpg.connect(module_pg_schema.pg_dsn)
+        try:
+            backend = SingletonRaceBackend(
+                settings, blocker_conn=blocker_conn, schema=schema, actor=singleton_actor
+            )
+            _provider, exporter = setup_tracer(monkeypatch)
+
+            with structlog.testing.capture_logs() as captured:
+                async with clean_pg_conn.transaction():
+                    fired = await tick_cron(
+                        clean_pg_conn,
+                        settings,
+                        backend,
+                        schema,
+                        new_uuid(),
+                        actor_policies={singleton_actor: ActorFirePolicy(singleton=True)},
+                    )
+        finally:
+            await blocker_conn.close()
+
+        assert fired == 1, (
+            "the healthy peer fires; only the racer loses its slot to the "
+            "client enqueue that won the preflight→INSERT window"
+        )
+        jobs = await clean_pg_conn.fetch(
+            f'SELECT actor, metadata FROM "{schema}".jobs WHERE actor = ANY($1::text[])',  # noqa: S608  # Why: schema is a test-fixture identifier; actors are $-bound.
+            [singleton_actor, _PRESENT_ACTOR],
+        )
+        assert len(jobs) == 2, f"exactly the committed blocker and the peer's fire; got {len(jobs)}"
+        singleton_jobs = [j for j in jobs if j["actor"] == singleton_actor]
+        assert len(singleton_jobs) == 1, (
+            "the colliding cron fire must not be enqueued — the client's job won the slot"
+        )
+        blocker_meta = singleton_jobs[0]["metadata"]
+        if isinstance(blocker_meta, str):  # asyncpg returns jsonb as str without a codec
+            assert '"singleton": true' in blocker_meta
+        else:
+            assert blocker_meta.get("singleton") is True
+
+        racer_after = await schedule_row(clean_pg_conn, schema, racer_id)
+        assert racer_after["consecutive_failures"] == 1, "one race loss is one strike"
+        assert "jobs_singleton_uniq" in (racer_after["last_fire_error"] or ""), (
+            f"the strike must carry the real constraint name; got {racer_after['last_fire_error']!r}"
+        )
+        assert racer_after["enabled"] is True, "one race loss must not auto-disable"
+        assert racer_after["last_fired_at"] is None
+        assert racer_after["next_fire_at"] == racer_before["next_fire_at"]
+
+        peer_after = await schedule_row(clean_pg_conn, schema, peer_id)
+        assert peer_after["consecutive_failures"] == 0, (
+            "the unrelated schedule takes no strike — a busy singleton actor is not its defect"
+        )
+        assert peer_after["last_fired_at"] is not None
+
+        failed_logs = [e for e in captured if e["event"] == "cron fire failed"]
+        assert len(failed_logs) == 1
+        assert "cron schedule auto-disabled" not in [e["event"] for e in captured]
 
         error_spans = [
             s for s in exporter.spans_named("cron fire") if s.status.status_code == StatusCode.ERROR
         ]
-        assert len(error_spans) == 3, (
-            "every planned fire must carry an errored 'cron fire' span when the "
-            "batched enqueue fails — the original error is preserved there because "
-            "the exception the caller sees is the transaction-abort mask"
-        )
-        assert all("jobs_pkey" in (s.status.description or "") for s in error_spans), (
-            "the span status must carry the ORIGINAL enqueue error text, not the "
-            "InFailedSQLTransactionError that masks it at the caller boundary"
-        )
+        assert len(error_spans) == 1
+        assert "jobs_singleton_uniq" in (error_spans[0].status.description or "")
 
 
 class TestClientSideEnqueueFailure:

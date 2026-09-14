@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import re
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from datetime import datetime
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
@@ -27,6 +27,7 @@ __all__ = [
     "pg_now",
     "plain_cli_output",
     "wait_for",
+    "wait_for_condition",
     "wait_for_job_status",
     "wait_for_leader",
 ]
@@ -258,12 +259,57 @@ def assert_has_otel_event(
     return events[0]
 
 
-async def wait_for(event: asyncio.Event, timeout: float = 2.0) -> None:  # noqa: ASYNC109
-    """Wait for an asyncio.Event with test-failure semantics on timeout."""
+async def wait_for(
+    event: asyncio.Event,
+    timeout: float = 2.0,  # noqa: ASYNC109  # Why: a `timeout` parameter is the point — callers pass per-call deadlines, not an enclosing asyncio.timeout scope; the repo's established wait-helper shape.
+    *,
+    description: str | None = None,
+) -> None:
+    """Wait for an asyncio.Event with test-failure semantics on timeout.
+
+    ``description`` names the awaited thing in the failure message so a
+    timeout says what never happened (``"<description> not set within
+    Ns"``); without it the generic ``"Event not set"`` is used.
+    """
     try:
         await asyncio.wait_for(event.wait(), timeout=timeout)
     except TimeoutError:
-        raise AssertionError(f"Event not set within {timeout}s") from None
+        label = description or "Event"
+        raise AssertionError(f"{label} not set within {timeout}s") from None
+
+
+async def wait_for_condition(
+    condition: Callable[[], bool] | Callable[[], Awaitable[bool]],
+    *,
+    description: str,
+    timeout: float = 5.0,  # noqa: ASYNC109
+    poll_interval: float = 0.01,
+) -> None:
+    """Poll *condition* until true, with test-failure semantics on timeout.
+
+    The wait surface for observables that carry no event: a background
+    task's effect on a fake's counter, a captured log entry, a state
+    flag a test cannot intercept at the flip point. The condition may
+    be async for observables that live behind a query — a server-side
+    connection count, a row's visibility — where each sample costs a
+    round trip. The deadline is monotonic-wall-time (an iteration count
+    says nothing about elapsed time under load), the cadence is the
+    poll interval, and a timeout fails the test naming what never
+    became true — never a silent pass. For observables that DO carry
+    an event, prefer :func:`wait_for`: an event wait resolves exactly
+    when the work finishes, with no cadence at all.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while True:
+        outcome: bool | Awaitable[bool] = condition()
+        if isinstance(outcome, Awaitable):
+            outcome = await outcome
+        if outcome:
+            return
+        if loop.time() > deadline:
+            raise AssertionError(f"{description} within {timeout}s") from None
+        await asyncio.sleep(poll_interval)
 
 
 async def wait_for_job_status(

@@ -501,3 +501,146 @@ def test_scrub_preserves_non_detail_escaped_newlines() -> None:
     assert "line one" in safe
     assert "line two" in safe
     assert "DETAIL" not in safe
+
+
+# ── substring prefilters on _scrub_text (perf: error-storm hot path) ────
+#
+# Each scrub regex requires a literal trigger substring in the subject:
+# _PG_DETAIL_RE and _PG_DETAIL_ESCAPED_RE need "DETAIL:"; _URI_CRED_RE needs
+# "://"; _URI_PARAM_CRED_RE needs a password-family parameter name followed
+# by "=" (and does NOT need "://" — bare "host/db?password=…" must stay
+# masked). The prefilter must therefore be a NECESSARY-condition guard per
+# regex: skipping when the substring is absent never changes output, only
+# cost. These tests pin both the skip and the byte-identical outputs.
+
+
+def test_scrub_text_skips_all_regexes_when_no_trigger_substrings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Text without any trigger substring must not run a single regex sub."""
+    import taskq.obs._redact_exc as redact_mod
+
+    class _Boom:
+        def __init__(self, name: str) -> None:
+            self._name = name
+
+        def sub(self, *args: object, **kwargs: object) -> str:
+            raise AssertionError(
+                f"{self._name}.sub must not run for text without its trigger substring"
+            )
+
+    for pattern_name in (
+        "_PG_DETAIL_RE",
+        "_PG_DETAIL_ESCAPED_RE",
+        "_URI_CRED_RE",
+        "_URI_PARAM_CRED_RE",
+    ):
+        monkeypatch.setattr(redact_mod, pattern_name, _Boom(pattern_name))
+
+    clean = "plain failure: connection refused after 3 attempts"
+    assert redact_mod._scrub_text(clean) == clean
+
+
+def test_scrub_text_skips_detail_regexes_when_detail_substring_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """URI-shaped text runs the URI masks but must not run the DETAIL regexes
+    (the DETAIL guard is independent of the URI guards)."""
+    import taskq.obs._redact_exc as redact_mod
+
+    class _Boom:
+        def sub(self, *args: object, **kwargs: object) -> str:
+            raise AssertionError("DETAIL regex sub must not run for text without 'DETAIL:'")
+
+    monkeypatch.setattr(redact_mod, "_PG_DETAIL_RE", _Boom())
+    monkeypatch.setattr(redact_mod, "_PG_DETAIL_ESCAPED_RE", _Boom())
+
+    assert redact_mod._scrub_text("postgresql://taskq:hunter2@db.internal:5432/taskq") == (
+        "postgresql://taskq:***@db.internal:5432/taskq"
+    )
+
+
+@pytest.mark.parametrize(
+    ("label", "raw", "expected"),
+    [
+        (
+            "pg-detail",
+            'duplicate key value violates unique constraint "jobs_pkey"\n'
+            "DETAIL: Key (idempotency_key)=(tenant-4417-ssn) already exists.",
+            'duplicate key value violates unique constraint "jobs_pkey"\n',
+        ),
+        (
+            "pg-detail-leading-ws",
+            "error:\n  DETAIL: Key (k)=(v) exists.\nHINT: check",
+            "error:\n\nHINT: check",
+        ),
+        (
+            "pg-detail-repr-escaped",
+            "UniqueViolationError('duplicate key...\\nDETAIL: Key (k)=(secret-row-value) already exists.')",
+            "UniqueViolationError('duplicate key...')",
+        ),
+        (
+            "uri-userinfo",
+            "could not connect to postgresql://taskq:hunter2@db.internal:5432/taskq",
+            "could not connect to postgresql://taskq:***@db.internal:5432/taskq",
+        ),
+        (
+            "uri-empty-user",
+            "redis://:AZaBcD3f@cache.internal:6380 unreachable",
+            "redis://:***@cache.internal:6380 unreachable",
+        ),
+        (
+            "uri-query-param",
+            "could not connect to postgresql://db.internal:5432/taskq?password=hunter2",
+            "could not connect to postgresql://db.internal:5432/taskq?password=***",
+        ),
+        (
+            # No "://" anywhere: _URI_PARAM_CRED_RE must still fire.
+            "uri-query-param-no-scheme",
+            "db.internal:5432/taskq?password=hunter2 failed",
+            "db.internal:5432/taskq?password=*** failed",
+        ),
+        (
+            "uri-both-shapes",
+            "scheme://user:SECRET@host/db?password=OTHER",
+            "scheme://user:***@host/db?password=***",
+        ),
+        ("pwd-param-partial", "cpwd=x and &pwd=y", "cpwd=x and &pwd=***"),
+        ("detail-lowercase-not-matched", "detail: not-a-match", "detail: not-a-match"),
+        (
+            "clean",
+            "plain failure: connection refused after 3 attempts",
+            "plain failure: connection refused after 3 attempts",
+        ),
+        ("unicode", "échec: ünïcödé ✨ message", "échec: ünïcödé ✨ message"),
+        ("empty", "", ""),
+        ("newline-no-detail", "line one\nline two", "line one\nline two"),
+        ("path-colon-slash-no-uri", "path:/not/a/uri and a:b", "path:/not/a/uri and a:b"),
+    ],
+)
+def test_scrub_text_outputs_byte_identical(label: str, raw: str, expected: str) -> None:
+    """Exact scrub outputs — the prefilter must not change a single byte."""
+    from taskq.obs._redact_exc import _scrub_text
+
+    assert _scrub_text(raw) == expected, label
+
+
+def test_scrub_text_prefilter_disabled_redaction_still_skips_detail_regexes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With redaction off, clean text still runs only the URI masks — the
+    toggle semantics and the prefilter compose."""
+    import taskq.obs._redact_exc as redact_mod
+
+    class _Boom:
+        def sub(self, *args: object, **kwargs: object) -> str:
+            raise AssertionError("DETAIL regex sub must not run while redaction is disabled")
+
+    monkeypatch.setattr(redact_mod, "_PG_DETAIL_RE", _Boom())
+    monkeypatch.setattr(redact_mod, "_PG_DETAIL_ESCAPED_RE", _Boom())
+    redact_mod.set_exception_redaction_enabled(False)
+    try:
+        text = "DETAIL: would-be-dropped\nbut redaction is off"
+        assert redact_mod._scrub_text(text) == text
+    finally:
+        redact_mod.set_exception_redaction_enabled(True)

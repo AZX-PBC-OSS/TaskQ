@@ -818,9 +818,11 @@ See the `SubJobEnqueuer` reference in [Client API — SubJobEnqueuer](jobs-clien
 
 ### Transaction semantics
 
-Sub-job enqueues use the **LOOP-scope `asyncpg.Connection`** by default. This connection is the
-same one the worker holds open for the parent job's transaction. The consequence is that sub-job
-INSERTs are part of the parent's database transaction:
+Sub-job enqueues join the parent job's transaction by default. On a `TASKQ_MAX_CONCURRENCY=1`
+worker that transaction runs on the registered **LOOP-scope `asyncpg.Connection`**; at higher
+concurrency the worker opens a dedicated per-slot transaction pool and each job transacts on
+its own slot connection (actors still receive the registered connection by injection). Either
+way, sub-job INSERTs are part of the parent's database transaction:
 
 - If the parent actor **succeeds**, the transaction commits and the sub-jobs become visible.
 - If the parent actor **raises an exception** (and will be retried or failed), the transaction
@@ -845,10 +847,15 @@ an exception. The worker emits a `sub_enqueue_autonomous_fallback` warning to st
 To ensure the transactional path is active, register an `asyncpg.Connection` at `Scope.LOOP`
 in the DI registry (see [Dependency Injection](dependency-injection.md)).
 
-!!! warning "Transactional sub-enqueue requires a single-slot worker"
-    That one LOOP-scope connection is shared by every consumer slot, so the transactional
-    path is correct only with `TASKQ_MAX_CONCURRENCY=1` (the worker warns at startup
-    otherwise). See [Jobs & Clients — SubJobEnqueuer](jobs-clients.md#subjobenqueuer).
+!!! warning "Transactional sub-enqueue: session state, not concurrency, is the constraint"
+    At `max_concurrency > 1` each job transacts on its own per-slot connection, so the
+    transactional path is correct at any concurrency — but TaskQ's own transactional writes
+    (the terminal write, transactional sub-enqueues) run on the slot connections, not the
+    registered LOOP-scope connection. If that connection carries session state (`SET ROLE`,
+    `search_path`, an RLS-driving GUC) that TaskQ's writes were expected to inherit, run the
+    transactional actor on a `TASKQ_MAX_CONCURRENCY=1` worker, where the writes keep using the
+    registered connection — also the minimal-connection-budget shape (no `max_concurrency + 1`
+    slot pool). See [Jobs & Clients — SubJobEnqueuer](jobs-clients.md#subjobenqueuer).
 
 ### Handle limitations
 
@@ -895,7 +902,7 @@ unchanged.
 | `step` | `int \| None` | Incremental step counter (e.g. items processed). |
 | `percent` | `float \| None` | Completion percentage in `[0.0, 100.0]`. |
 | `detail` | `str \| None` | Human-readable status message. |
-| `data` | `dict[str, object] \| None` | Arbitrary structured data. Must serialise to JSON. |
+| `data` | `dict[str, object] \| None` | Arbitrary structured data. Must serialise to JSON with string dict keys (a non-`str` key raises `TypeError`). |
 
 **Coalescing.** Multiple `ctx.progress()` calls between periodic flush ticks are coalesced:
 only the latest value for each field is written to Postgres. Real-time Redis events are still

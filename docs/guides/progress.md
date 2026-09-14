@@ -194,7 +194,7 @@ progress_router = create_router(
     pg_pool,  # asyncpg.Pool
     redis_client,  # redis.asyncio.Redis | None
     schema="taskq",  # must match PostgresBackend schema
-    auth_dependency=require_authenticated_user,  # optional FastAPI dep
+    auth_dependency=require_authenticated_user,  # required outside dev (fails closed)
     sse_heartbeat_interval=timedelta(seconds=15),
 )
 
@@ -203,6 +203,22 @@ app.include_router(progress_router, prefix="/jobs")
 #   GET /jobs/api/job/{job_id}/progress/stream
 #   GET /jobs/api/job/{job_id}/state
 ```
+
+**Fail-closed outside dev.** The `auth_dependency=None` default is not usable
+in a non-dev environment: `create_router()` raises `RuntimeError` when
+`TASKQ_ENVIRONMENT` is anything other than `dev` or `development` (the same
+fail-closed gate as the admin UI — see
+[admin-ui.md](admin-ui.md#fail-closed-by-default)). Opt out only when an
+authenticating ingress covers the mount point:
+
+```sh
+export TASKQ_PROGRESS_REQUIRE_AUTH=false
+# WARNING log: progress-router-no-auth — but the router is created
+```
+
+Serving without auth in *any* environment — dev included — logs the
+`progress-router-no-auth` warning: each anonymous stream holds a Redis pubsub
+subscription and an asyncio task for as long as the client stays connected.
 
 **Under `taskq ui serve` / the admin UI.** `create_router()` in `taskq.web.admin` mounts this
 same progress router internally at `/jobs` (`src/taskq/web/admin/_factory.py`), and the admin
@@ -220,7 +236,7 @@ yourself at a different prefix. Without Redis configured, the stream endpoint re
 | `pg_pool` | `asyncpg.Pool` | required | Connection pool for snapshot reads. |
 | `redis_client` | `redis.asyncio.Redis \| None` | required | Redis client. Pass `None` to disable streaming (SSE returns 503). |
 | `schema` | `str` | `"taskq"` | PostgreSQL schema; must match the backend. |
-| `auth_dependency` | `Callable \| None` | `None` | FastAPI `Depends`-compatible callable applied to all routes. |
+| `auth_dependency` | `Callable \| None` | `None` | FastAPI `Depends`-compatible callable applied to all routes. Outside dev (`TASKQ_ENVIRONMENT` not `dev`/`development`) the factory raises `RuntimeError` when omitted — the default is not usable in non-dev unless `TASKQ_PROGRESS_REQUIRE_AUTH=false` suppresses the check (only for mounts behind an authenticating ingress). Serving without auth always logs a `progress-router-no-auth` warning. |
 | `sse_heartbeat_interval` | `timedelta` | `timedelta(seconds=15)` | Interval for keepalive SSE comments. |
 
 ---

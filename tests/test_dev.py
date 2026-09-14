@@ -371,6 +371,7 @@ async def test_syntax_error_suppresses_restart(
     initial_count = spawn_tracker.spawn_count
     test_task = asyncio.current_task()
     broken_event = asyncio.Event()
+    broken_processed = asyncio.Event()
     fixed_event = asyncio.Event()
 
     async def _awatch_events(
@@ -379,6 +380,14 @@ async def test_syntax_error_suppresses_restart(
         path = str(actor_module.tmp_path / _TMP_MODULE_NAME)
         await broken_event.wait()
         yield {(1, path)}
+        # This line runs when the dev loop asks for the NEXT batch —
+        # i.e. exactly after it finished processing the broken change
+        # (validate-fail → continue, no spawn). Signalling here gives the
+        # driver a deterministic "suppression decision made" point; a
+        # fixed sleep would race that decision under load and could
+        # snapshot the spawn count before the loop even saw the broken
+        # file.
+        broken_processed.set()
         await fixed_event.wait()
         yield {(1, path)}
         raise asyncio.CancelledError()
@@ -388,12 +397,21 @@ async def test_syntax_error_suppresses_restart(
 
         actor_module.break_syntax()
         broken_event.set()
-        await asyncio.sleep(1.0)
-        count_after_break = spawn_tracker.spawn_count
+        try:
+            await asyncio.wait_for(broken_processed.wait(), timeout=5.0)
+        except TimeoutError:
+            pytest.fail(
+                "the dev loop did not finish processing the broken-syntax change within 5.0s"
+            )
+        # THE suppression assertion: the broken change must not have
+        # spawned a replacement. Without it the post-break count is only
+        # ever a baseline for the next wait, and a broken suppression
+        # would pass silently.
+        assert spawn_tracker.spawn_count == initial_count + 1
 
         actor_module.fix_syntax()
         fixed_event.set()
-        await spawn_tracker.wait_for_spawn(count_after_break + 1, deadline=5.0)
+        await spawn_tracker.wait_for_spawn(initial_count + 2, deadline=5.0)
         assert test_task is not None
         test_task.cancel()
 

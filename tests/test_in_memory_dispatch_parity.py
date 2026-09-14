@@ -1,0 +1,277 @@
+# ruff: noqa: S608  # Why: schema is fixture-derived (module_pg_schema), not user input; every value is $-bound.
+
+"""InMemoryBackend must be observably equivalent to PostgresBackend at the
+dispatch seam — same inputs, same rows, same order.
+
+The existing equivalence guards (``test_in_memory_read_isolation`` /
+``test_in_memory_seam_registry``) only pin ALIASING and method presence:
+they check that a returned row is a fresh object and that every protocol
+method exists. Neither observes what ``dispatch_batch`` actually SELECTS,
+so two semantic divergences survive them — and both are silent, because
+the in-memory mirror is the greener of the two:
+
+1. An EMPTY ``queues`` list. InMemory filters with ``not queues or
+   row.queue in queues``, so ``[]`` means "match ALL". PG builds the
+   candidate set with ``CROSS JOIN LATERAL unnest(queues)``, and an empty
+   array yields zero rows — the CROSS JOIN annihilates every candidate, so
+   ``[]`` means "match NOTHING". A suite that dispatches with ``[]`` sees
+   work flow in memory while a real worker polls forever claiming nothing.
+
+2. A NULL ``fairness_key`` under ``round_robin``. InMemory synthesises a
+   SINGLETON partition per unkeyed job (``f"__null__{r.id}"``), so every
+   unkeyed job ranks 1 and crowds to the front of the interleave. PG uses
+   ``PARTITION BY COALESCE(j2.fairness_key, '__null__')`` — ONE shared
+   partition, ranking 1, 2, 3…, which deliberately de-prioritises the
+   unkeyed cohort behind the keyed ones. ``fairness_key`` is None by
+   default, so this is the common case, and the in-memory shape is exactly
+   the round-robin starvation the mode exists to prevent.
+
+PG is production: these tests assert the PG result and flag InMemory as
+the backend that diverged. Both drive the SAME job set (same ids, same
+``fairness_key``s, same ``scheduled_at``) through both backends and
+compare WHICH jobs a bounded ``dispatch_batch`` claims. The comparison is
+on the claimed SET, not on the RETURNING sequence: ``UPDATE … RETURNING``
+gives no row order guarantee, so selection — which jobs a limited batch
+admits and which it defers — is the observable both backends owe each
+other, and it is exactly what each divergence changes.
+"""
+
+from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING
+
+import pytest
+
+from taskq._ids import new_job_id, new_uuid
+from taskq.backend._protocol import EnqueueArgs, JobId, JobRow
+from taskq.testing._runner import set_queue_mode
+from taskq.testing.clock import FakeClock
+from taskq.testing.fixtures import JobsApp, ModulePgSchema
+from taskq.testing.in_memory import InMemoryBackend
+
+if TYPE_CHECKING:
+    import asyncpg
+
+pytestmark = pytest.mark.integration
+
+_LEASE = timedelta(seconds=30)
+
+# Every job is enqueued with an explicit past ``scheduled_at`` so neither
+# backend's clock domain can decide eligibility: PG compares against
+# ``statement_timestamp()`` and InMemory against its own ``FakeClock``,
+# and both see this instant as comfortably past.
+_SCHEDULED_AT = datetime(2025, 1, 1, tzinfo=UTC)
+_IN_MEMORY_NOW = datetime(2026, 1, 1, tzinfo=UTC)
+
+
+def _args(
+    *,
+    job_id: JobId,
+    actor: str,
+    queue: str,
+    fairness_key: str | None = None,
+) -> EnqueueArgs:
+    """Identical enqueue input for both backends — the same explicit id is
+    the join key the parity comparison is built on."""
+    return EnqueueArgs(
+        id=job_id,
+        actor=actor,
+        queue=queue,
+        payload={},
+        max_attempts=3,
+        retry_kind="transient",
+        scheduled_at=_SCHEDULED_AT,
+        fairness_key=fairness_key,
+    )
+
+
+async def _setup_pg_queue(
+    conn: "asyncpg.Connection",
+    schema: str,
+    queue: str,
+    mode: str,
+) -> None:
+    await conn.execute(
+        f'INSERT INTO "{schema}".queues (name, mode) VALUES ($1, $2) '
+        "ON CONFLICT (name) DO UPDATE SET mode = $2",
+        queue,
+        mode,
+    )
+
+
+async def _ensure_pg_actor(conn: "asyncpg.Connection", schema: str, actor: str) -> None:
+    await conn.execute(
+        f'INSERT INTO "{schema}".actor_config (actor, max_concurrent, queue, metadata) '
+        "VALUES ($1, NULL, $2, $3::jsonb) "
+        "ON CONFLICT (actor) DO UPDATE SET max_concurrent = NULL",
+        actor,
+        "default",
+        "{}",
+    )
+
+
+def _ids(rows: list[JobRow]) -> list[JobId]:
+    return [r.id for r in rows]
+
+
+def _claimed(rows: list[JobRow], names: dict[JobId, str]) -> set[str]:
+    """The SET of jobs a bounded dispatch claimed. ``UPDATE … RETURNING``
+    has no row-order guarantee, so selection — not sequence — is the
+    observable both backends must agree on."""
+    return {names.get(r.id, str(r.id)) for r in rows}
+
+
+async def _make_in_memory(
+    args_list: list[EnqueueArgs],
+    *,
+    round_robin_queues: tuple[str, ...] = (),
+) -> InMemoryBackend:
+    backend = InMemoryBackend(clock=FakeClock(_IN_MEMORY_NOW))
+    for queue in round_robin_queues:
+        set_queue_mode(backend, queue, "round_robin")
+    for args in args_list:
+        await backend.enqueue(args)
+    return backend
+
+
+# ── Divergence 1: an empty ``queues`` list ────────────────────────────
+
+
+async def test_empty_queues_list_dispatches_identically_in_both_backends(
+    module_pg_schema: ModulePgSchema,
+    clean_jobs_app: JobsApp,
+) -> None:
+    """``dispatch_batch(queues=[])`` must select the same rows in both
+    backends.
+
+    PG's ``CROSS JOIN LATERAL unnest((SELECT queues FROM params))``
+    produces zero rows for an empty array, annihilating the candidate set:
+    an empty queue list claims NOTHING. InMemory's ``not queues or
+    row.queue in queues`` reads the same input as "no filter" and claims
+    EVERYTHING — so the mirror dispatches work a real worker never would.
+    """
+    schema = module_pg_schema.schema_name
+    pg_backend = clean_jobs_app.backend
+    actor = "parity_empty_queues"
+
+    args_list = [_args(job_id=new_job_id(), actor=actor, queue="default") for _ in range(3)]
+
+    async with clean_jobs_app.deps.worker_pool.acquire() as conn:  # type: ignore[union-attr]  # Why: deps is object-typed in the non-TYPE_CHECKING JobsApp shim; WorkerDeps has worker_pool at runtime.
+        await _setup_pg_queue(conn, schema, "default", "strict_fifo")
+        await _ensure_pg_actor(conn, schema, actor)
+
+    for args in args_list:
+        await pg_backend.enqueue(args)
+    mem_backend = await _make_in_memory(args_list)
+
+    pg_rows = await pg_backend.dispatch_batch(new_uuid(), [], 10, _LEASE)
+    mem_rows = await mem_backend.dispatch_batch(new_uuid(), [], 10, _LEASE)
+
+    assert _ids(pg_rows) == [], (
+        "PostgresBackend (production) diverged from its own documented "
+        f"semantics: an empty queues list should annihilate the candidate "
+        f"set via CROSS JOIN LATERAL unnest, but it dispatched {len(pg_rows)} row(s)."
+    )
+    assert sorted(_ids(mem_rows)) == sorted(_ids(pg_rows)), (
+        "InMemoryBackend diverged from PostgresBackend at dispatch_batch("
+        f"queues=[]): PG dispatched {len(pg_rows)} row(s) and InMemory "
+        f"dispatched {len(mem_rows)}. PG treats an empty queue list as "
+        "MATCH NOTHING (CROSS JOIN LATERAL unnest of an empty array yields "
+        "zero rows, src/taskq/backend/_dispatch_sql.py:100); InMemory treats "
+        "it as MATCH ALL (`not queues or row.queue in queues`, "
+        "src/taskq/testing/_dispatch.py:44). The mirror is greener than "
+        "production: tests see jobs flow while a real worker claims nothing."
+    )
+
+
+# ── Divergence 2: NULL fairness_key under round_robin ─────────────────
+
+
+async def test_null_fairness_key_round_robin_selection_matches_pg(
+    module_pg_schema: ModulePgSchema,
+    clean_jobs_app: JobsApp,
+) -> None:
+    """Unkeyed (NULL ``fairness_key``) jobs must share ONE partition in
+    both backends, so they rank 1, 2, 3… behind the keyed cohorts.
+
+    Job set for a single actor on one ``round_robin`` queue: three unkeyed
+    jobs with the oldest ``scheduled_at``, then one job each for keys "a"
+    and "b". PG's ``PARTITION BY COALESCE(fairness_key, '__null__')`` gives
+    fairness_rank 1, 2, 3 to the unkeyed cohort, so a ``limit=3`` batch
+    admits one job per cohort — null-1, key-a, key-b — and defers null-2 /
+    null-3 to a later round. InMemory's per-job synthetic partition
+    (``f"__null__{r.id}"``) ranks ALL THREE unkeyed jobs at 1, so the same
+    bounded batch is consumed entirely by the unkeyed cohort and the keyed
+    cohorts get nothing: round-robin starvation of exactly the kind the
+    mode exists to prevent, and ``fairness_key`` is None by default.
+    """
+    schema = module_pg_schema.schema_name
+    pg_backend = clean_jobs_app.backend
+    actor = "parity_null_fk"
+    queue = "rr_parity"
+
+    names: dict[JobId, str] = {}
+    args_list: list[EnqueueArgs] = []
+
+    def _add(name: str, fairness_key: str | None, offset_seconds: int) -> None:
+        job_id = new_job_id()
+        names[job_id] = name
+        args_list.append(
+            EnqueueArgs(
+                id=job_id,
+                actor=actor,
+                queue=queue,
+                payload={},
+                max_attempts=3,
+                retry_kind="transient",
+                scheduled_at=_SCHEDULED_AT + timedelta(seconds=offset_seconds),
+                fairness_key=fairness_key,
+            )
+        )
+
+    # Distinct scheduled_at values make the intended order total and
+    # id-independent, so the comparison pins semantics, not UUID luck.
+    _add("null-1", None, 0)
+    _add("null-2", None, 1)
+    _add("null-3", None, 2)
+    _add("key-a", "a", 3)
+    _add("key-b", "b", 4)
+
+    async with clean_jobs_app.deps.worker_pool.acquire() as conn:  # type: ignore[union-attr]  # Why: deps is object-typed in the non-TYPE_CHECKING JobsApp shim; WorkerDeps has worker_pool at runtime.
+        await _setup_pg_queue(conn, schema, queue, "round_robin")
+        await _ensure_pg_actor(conn, schema, actor)
+
+    for args in args_list:
+        await pg_backend.enqueue(args)
+    mem_backend = await _make_in_memory(args_list, round_robin_queues=(queue,))
+
+    # limit=3 is the discriminating window: exactly one slot per cohort if
+    # the '__null__' partition is shared, all three to the unkeyed cohort
+    # if it is not.
+    pg_rows = await pg_backend.dispatch_batch(new_uuid(), [queue], 3, _LEASE)
+    mem_rows = await mem_backend.dispatch_batch(new_uuid(), [queue], 3, _LEASE)
+
+    pg_claimed = _claimed(pg_rows, names)
+    mem_claimed = _claimed(mem_rows, names)
+
+    # PG is the production oracle: one shared '__null__' partition means
+    # only null-1 holds fairness_rank 1, alongside key-a and key-b.
+    assert pg_claimed == {"null-1", "key-a", "key-b"}, (
+        "PostgresBackend (production) did not produce the documented "
+        "COALESCE(fairness_key, '__null__') single-partition selection; "
+        f"claimed {sorted(pg_claimed)}. The parity oracle itself is wrong — "
+        "re-derive it before trusting the InMemory comparison below."
+    )
+    assert mem_claimed == pg_claimed, (
+        "InMemoryBackend diverged from PostgresBackend at the round-robin "
+        f"fairness seam: with limit=3 PG claimed {sorted(pg_claimed)} and "
+        f"InMemory claimed {sorted(mem_claimed)}. PG puts every NULL "
+        "fairness_key job in ONE shared partition (PARTITION BY "
+        "COALESCE(j2.fairness_key, '__null__'), "
+        "src/taskq/backend/_dispatch_sql.py:221) so unkeyed jobs rank "
+        "1, 2, 3… and yield their surplus slots to the keyed cohorts; "
+        "InMemory gives each unkeyed job its OWN singleton partition "
+        '(f"__null__{r.id}", src/taskq/testing/_dispatch.py:60) so every '
+        "unkeyed job ranks 1 and consumes the whole bounded batch. "
+        "fairness_key is None by default, so the mirror starves keyed "
+        "cohorts in the most common configuration there is."
+    )

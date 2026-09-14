@@ -34,10 +34,12 @@ from taskq._ids import new_job_id
 from taskq.actor import actor
 from taskq.backend._protocol import EnqueueArgs, JobFilter, JobSortField, ScheduleRecord
 from taskq.batch import EnqueueItem
+from taskq.batch_policy import AbortBatchAfter
 from taskq.client import CancelResult, JobHandle, JobsClient
 from taskq.client._args import build_enqueue_args
 from taskq.constants import MAX_IDEMPOTENCY_KEY_BYTES
 from taskq.cron import ScheduleHandle
+from taskq.exceptions import PayloadValidationError
 from taskq.testing.clock import FakeClock
 from taskq.testing.in_memory import InMemoryBackend
 from taskq.testing.jobs import make_enqueue_args, make_job_row
@@ -1804,3 +1806,120 @@ class TestExplicitTraceContext:
         assert row is not None
         assert row.trace_id is None
         assert row.span_id is None
+
+
+# ── Streaming payload validation: single pass, annotated, sanitized ───────
+
+
+class _StreamingValPayload(BaseModel):
+    value: int
+
+
+@actor(name="_streaming_val_actor")
+async def _streaming_val_actor(payload: _StreamingValPayload) -> None:
+    pass
+
+
+class _ForeignPayload(BaseModel):
+    name: str = "bad"
+
+
+class TestStreamingPayloadValidation:
+    """enqueue_batch_streaming validates each item's payload exactly once
+    (the pydantic-core pass inside build_enqueue_args — the client layer
+    must not run a second, discarded validation per item) while preserving
+    the index-annotated PayloadValidationError and the documented
+    error-sanitization contract."""
+
+    async def test_streaming_validates_each_payload_exactly_once(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A 3-item streaming batch triggers exactly one model_validate call
+        per item — not one discarded pre-validation plus the serializer's
+        own validation."""
+        calls: list[object] = []
+        original = _StreamingValPayload.model_validate
+
+        def _counting_validate(cls: type[BaseModel], payload: object) -> object:
+            calls.append(payload)
+            return original.__func__(cls, payload)  # type: ignore[attr-defined]  # Why: original is the bound classmethod; __func__ rebinds it to the patched class
+
+        monkeypatch.setattr(_StreamingValPayload, "model_validate", classmethod(_counting_validate))
+        _backend, client = _make_client()
+        items = [
+            EnqueueItem(actor_ref=_streaming_val_actor, payload=_StreamingValPayload(value=i))
+            for i in range(3)
+        ]
+
+        handle = await client.enqueue_batch_streaming(items)
+
+        assert handle.size == 3
+        assert len(calls) == 3, (
+            f"expected one validation per item, got {len(calls)} — "
+            "the streaming path is double-validating payloads"
+        )
+
+    async def test_streaming_invalid_payload_raises_index_annotated_error(self) -> None:
+        """An invalid item fails the whole batch with a PayloadValidationError
+        that names the item's index and actor; no rows are inserted for the
+        chunk that failed."""
+        backend, client = _make_client()
+        items = [
+            EnqueueItem(actor_ref=_streaming_val_actor, payload=_StreamingValPayload(value=0)),
+            EnqueueItem(actor_ref=_streaming_val_actor, payload=_ForeignPayload()),
+            EnqueueItem(actor_ref=_streaming_val_actor, payload=_StreamingValPayload(value=2)),
+        ]
+
+        with pytest.raises(PayloadValidationError, match=r"item 1.*_streaming_val_actor"):
+            await client.enqueue_batch_streaming(items)
+
+        assert len(backend._jobs) == 0  # type: ignore[reportPrivateUsage]  # Why: test-only access to verify the failed chunk inserted nothing
+
+    async def test_streaming_atomic_path_annotates_index_too(self) -> None:
+        """The autonomous atomic path (failure_policy set, lazy generator)
+        raises the same index-annotated error from inside the consumed
+        generator."""
+        _backend, client = _make_client()
+        items = [
+            EnqueueItem(actor_ref=_streaming_val_actor, payload=_StreamingValPayload(value=0)),
+            EnqueueItem(actor_ref=_streaming_val_actor, payload=_ForeignPayload()),
+        ]
+
+        with pytest.raises(PayloadValidationError, match=r"item 1.*_streaming_val_actor"):
+            await client.enqueue_batch_streaming(iter(items), failure_policy=AbortBatchAfter(3))
+
+    async def test_streaming_validation_errors_are_sanitized(self) -> None:
+        """validation_errors follows the documented sanitization contract
+        (include_url=False, include_input=False): no attacker-controlled
+        field values and no pydantic doc URLs are carried on the exception —
+        it is persisted into job rows / web admin via generic handlers."""
+        _backend, client = _make_client()
+        items = [
+            EnqueueItem(
+                actor_ref=_streaming_val_actor,
+                payload=_ForeignPayload(name="attacker-controlled-value"),
+            )
+        ]
+
+        with pytest.raises(PayloadValidationError) as exc_info:
+            await client.enqueue_batch_streaming(items)
+
+        errs = exc_info.value.validation_errors
+        assert errs, "a payload validation failure must carry its error details"
+        for err in errs:
+            assert "input" not in err, f"unsanitized payload input leaked: {err}"
+            assert "url" not in err, f"pydantic doc URL leaked: {err}"
+            assert "attacker-controlled-value" not in str(err)
+
+    async def test_streaming_payload_dict_is_json_mode_dump(self) -> None:
+        """The row payload is the JSON-mode dump of the validated payload —
+        the validate-once-then-dump serialization contract is preserved
+        end to end."""
+        backend, client = _make_client()
+        items = [EnqueueItem(actor_ref=_streaming_val_actor, payload=_StreamingValPayload(value=7))]
+
+        handle = await client.enqueue_batch_streaming(items)
+
+        row = await backend.get(handle.job_handles[0].job_id)
+        assert row is not None
+        assert row.payload == {"value": 7}

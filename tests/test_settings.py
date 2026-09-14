@@ -15,6 +15,11 @@ from dotenvmodel.types import RedisDsn, SecretStr
 from hypothesis import given
 from hypothesis import strategies as st
 
+from taskq.connections import (
+    DEFAULT_MAX_CACHED_STATEMENT_LIFETIME,
+    DEFAULT_STATEMENT_CACHE_SIZE,
+    statement_cache_kwargs,
+)
 from taskq.settings import OIDCSettings, SAMLSettings, TaskQSettings, WorkerSettings
 
 _DSN = "postgresql://taskq:taskq@localhost:5432/taskq"
@@ -273,6 +278,92 @@ def test_health_pg_ping_timeout_negative_raises() -> None:
     """Negative health_pg_ping_timeout raises via the dotenvmodel ge=0.0 constraint."""
     with pytest.raises(ConstraintViolationError, match="greater than or equal to 0"):
         _load(TASKQ_HEALTH_PG_PING_TIMEOUT="-1.0")
+
+
+# ── statement cache (asyncpg pool kwargs) ──────────────────────────
+
+
+def test_statement_cache_defaults() -> None:
+    """statement_cache_size defaults to 512, max_cached_statement_lifetime to 3600.
+
+    The defaults ARE the taskq.connections module constants every
+    TaskQ-built pool passes at its construction site — one source of
+    truth, so a tuning change to a constant moves the settings default
+    with it.
+    """
+    s = _load()
+    assert s.statement_cache_size == DEFAULT_STATEMENT_CACHE_SIZE == 512
+    assert s.max_cached_statement_lifetime == DEFAULT_MAX_CACHED_STATEMENT_LIFETIME == 3600
+
+
+def test_statement_cache_fields_live_on_taskq_settings_base() -> None:
+    """The knobs are TaskQSettings fields, not WorkerSettings-only: the
+    TaskQ client pool and the admin UI pool are built where only
+    TaskQSettings is in scope, so they must see them there."""
+    s = TaskQSettings.load_from_dict(
+        {
+            "TASKQ_STATEMENT_CACHE_SIZE": "256",
+            "TASKQ_MAX_CACHED_STATEMENT_LIFETIME": "900",
+        }
+    )
+    assert s.statement_cache_size == 256
+    assert s.max_cached_statement_lifetime == 900
+
+
+def test_statement_cache_via_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """TASKQ_STATEMENT_CACHE_SIZE / TASKQ_MAX_CACHED_STATEMENT_LIFETIME round-trip."""
+    monkeypatch.setenv("TASKQ_PG_DSN", _DSN)
+    monkeypatch.setenv("TASKQ_STATEMENT_CACHE_SIZE", "1024")
+    monkeypatch.setenv("TASKQ_MAX_CACHED_STATEMENT_LIFETIME", "7200")
+    s = WorkerSettings.load()
+    assert s.statement_cache_size == 1024
+    assert s.max_cached_statement_lifetime == 7200
+
+
+def test_statement_cache_via_dict() -> None:
+    """load_from_dict with both cache vars produces the configured values."""
+    s = _load(
+        TASKQ_STATEMENT_CACHE_SIZE="2048",
+        TASKQ_MAX_CACHED_STATEMENT_LIFETIME="1800",
+    )
+    assert s.statement_cache_size == 2048
+    assert s.max_cached_statement_lifetime == 1800
+
+
+def test_statement_cache_zero_is_valid_on_both() -> None:
+    """0 is meaningful per asyncpg's contract: cache disabled entirely /
+    no lifetime cap (cached indefinitely) — neither is an operator error."""
+    s = _load(TASKQ_STATEMENT_CACHE_SIZE="0", TASKQ_MAX_CACHED_STATEMENT_LIFETIME="0")
+    assert s.statement_cache_size == 0
+    assert s.max_cached_statement_lifetime == 0
+
+
+def test_statement_cache_negative_raises() -> None:
+    """Negative values fail the ge=0 constraint at load time."""
+    with pytest.raises(ConstraintViolationError, match="greater than or equal to 0"):
+        _load(TASKQ_STATEMENT_CACHE_SIZE="-1")
+    with pytest.raises(ConstraintViolationError, match="greater than or equal to 0"):
+        _load(TASKQ_MAX_CACHED_STATEMENT_LIFETIME="-1")
+
+
+def test_statement_cache_round_trip_to_pool_kwargs() -> None:
+    """env var → settings field → pool kwarg dict.
+
+    The full round-trip the pool-construction sites rely on: values
+    loaded from the environment surface as exactly the create_pool kwargs
+    the taskq.connections resolver hands to TaskQ-built pools.
+    """
+    s = WorkerSettings.load_from_dict(
+        {
+            "TASKQ_PG_DSN": _DSN,
+            "TASKQ_STATEMENT_CACHE_SIZE": "768",
+            "TASKQ_MAX_CACHED_STATEMENT_LIFETIME": "5400",
+        }
+    )
+    assert statement_cache_kwargs(s) == {
+        "statement_cache_size": 768,
+        "max_cached_statement_lifetime": 5400,
+    }
 
 
 # ── TASKQ_ prefix env-var loading ─────────────────────────────────
@@ -648,6 +739,39 @@ def test_environment_inherited_by_worker_settings() -> None:
     """WorkerSettings inherits the environment field from TaskQSettings."""
     s = _load(TASKQ_ENVIRONMENT="dev")
     assert s.environment == "dev"
+
+
+@pytest.mark.parametrize(
+    ("environment", "expected"),
+    [
+        ("dev", True),
+        ("development", True),
+        ("production", False),
+        ("staging", False),
+        ("", False),
+        (None, False),
+    ],
+)
+def test_is_dev_environment(environment: str | None, expected: bool) -> None:
+    """is_dev_environment is True only for the dev/development labels.
+
+    The dev label is the single carve-out from the fail-closed auth gates
+    (admin UI, health/metrics token, progress router), so the predicate
+    must treat None (the unset default) and every other label — including
+    the empty string — as not dev, keeping those gates closed.
+    """
+    s = TaskQSettings.load_from_dict(
+        {} if environment is None else {"TASKQ_ENVIRONMENT": environment}
+    )
+    assert s.is_dev_environment is expected
+
+
+def test_is_dev_environment_inherited_by_worker_settings() -> None:
+    """WorkerSettings inherits is_dev_environment from TaskQSettings."""
+    s = _load(TASKQ_ENVIRONMENT="dev")
+    assert s.is_dev_environment is True
+    s = _load(TASKQ_ENVIRONMENT="production")
+    assert s.is_dev_environment is False
 
 
 # ── admin_max_sse_connections field (TaskQSettings) ──────────────────────────

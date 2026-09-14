@@ -59,6 +59,9 @@ def _make_deps(**overrides: object) -> WorkerDeps:  # pyright: ignore[reportRetu
         "shutdown_phase": ShutdownPhase.NONE,
         "dispatcher_pool": _StubPool(),
         "heartbeat_pool": _StubPool(),
+        # The per-slot transaction pool is conditional: None on every
+        # shape these tests exercise, so the readiness ping skips it.
+        "slot_pool": None,
         "settings": SimpleNamespace(
             health_pg_ping_timeout=0.2,
             health_host="127.0.0.1",
@@ -253,6 +256,142 @@ async def test_compute_health_pg_connection_error() -> None:
     assert report.pg_ping_ok is False
     assert "pg_connection_error" in report.reasons
     assert report.ready is False
+
+
+# ── slot pool readiness: a dead slot pool marks the worker unready ──
+
+
+async def test_compute_health_pings_slot_pool_when_present() -> None:
+    """A worker on the per-slot path must have its slot pool pinged.
+
+    The dispatcher ping alone cannot see a dead slot pool, so the ping
+    must actually run when the pool exists — a readiness gate that
+    skipped it would report ready on the strength of a pool the
+    transactional path never uses.
+    """
+    slot_pool = _StubPool()
+    deps = _make_deps(slot_pool=slot_pool, slot_pool_probe_task=None)
+
+    report = await compute_health(deps)
+
+    assert report.ready is True
+    assert report.pg_ping_ok is True
+    assert report.reasons == []
+    assert slot_pool.acquire_calls == 1
+
+
+async def test_compute_health_slot_pool_unexpected_error_fails_closed() -> None:
+    """A ping failure outside the asyncpg family must still fail closed.
+
+    A broken pool raising something the typed handlers don't name must
+    mark the worker unready — never propagate out of readiness and never
+    report ready on the dispatcher pool's strength.
+    """
+    slot_pool = _StubPool(error=RuntimeError("bogus pool"))
+    deps = _make_deps(slot_pool=slot_pool, slot_pool_probe_task=None)
+
+    report = await compute_health(deps)
+
+    assert report.ready is False
+    assert report.pg_ping_ok is False
+    assert "slot_pool_connection_error" in report.reasons
+
+
+async def test_compute_health_dead_slot_pool_marks_unready() -> None:
+    """A dead slot pool marks the worker unready even with a healthy
+    dispatcher pool.
+
+    Every transactional job on such a worker fails to acquire its
+    transaction connection; reporting ready on the dispatcher pool's
+    strength would be the shared-connection misattribution moved to the
+    orchestrator — traffic routed to a worker that cannot transact.
+    """
+    slot_pool = _StubPool(error=asyncpg.InterfaceError("pool is closed"))
+    deps = _make_deps(slot_pool=slot_pool, slot_pool_probe_task=None)
+
+    report = await compute_health(deps)
+
+    assert report.ready is False
+    assert report.pg_ping_ok is False
+    assert "slot_pool_connection_error" in report.reasons
+
+
+async def test_compute_health_coded_server_error_on_slot_ping_is_not_unexpected() -> None:
+    """A revoked credential on the slot ping's fresh-connection acquire
+    is infrastructure, not a programming error.
+
+    ``InvalidPasswordError`` is a coded server error — a ``PostgresError``
+    that is not a ``PostgresConnectionError`` child — exactly what a
+    rotation or terminate produces when the ping must open a fresh
+    connection. It takes the connection-error path (fail-closed outcome
+    unchanged) and never the ``ping-unexpected`` label that reads as a
+    bug report to the 3am operator.
+    """
+    import structlog
+
+    slot_pool = _StubPool(error=asyncpg.InvalidPasswordError("password authentication failed"))
+    deps = _make_deps(slot_pool=slot_pool, slot_pool_probe_task=None)
+
+    with structlog.testing.capture_logs() as logs:
+        report = await compute_health(deps)
+
+    assert report.ready is False
+    assert report.pg_ping_ok is False
+    assert "slot_pool_connection_error" in report.reasons
+    assert all(log.get("event") != "health-slot-pool-ping-unexpected" for log in logs)
+
+
+@pytest.mark.parametrize(
+    "family_error",
+    [
+        asyncpg.InterfaceError("connection has been released back to the pool"),
+        asyncpg.InternalClientError(
+            "PoolConnectionHolder.release() called on a free connection holder"
+        ),
+        OSError("connection reset by peer"),
+    ],
+    ids=["interface-error", "internal-client-error", "os-error"],
+)
+async def test_compute_health_every_pool_infra_family_member_classifies_as_infra(
+    family_error: BaseException,
+) -> None:
+    """The shared family is only as strong as its member list: every
+    member of ``POOL_INFRA_EXCEPTIONS`` must take the connection-error
+    path at the consumer (fail closed, connection-error reason, never the
+    ``ping-unexpected`` label). A member dropped from the tuple — or a
+    site reverting to a hand-rolled family — falls into the
+    unexpected-error branch and fails here, so the single-source family
+    cannot silently shrink."""
+    import structlog
+
+    slot_pool = _StubPool(error=family_error)
+    deps = _make_deps(slot_pool=slot_pool, slot_pool_probe_task=None)
+
+    with structlog.testing.capture_logs() as logs:
+        report = await compute_health(deps)
+
+    assert report.ready is False
+    assert report.pg_ping_ok is False
+    assert "slot_pool_connection_error" in report.reasons
+    assert all(log.get("event") != "health-slot-pool-ping-unexpected" for log in logs)
+
+
+async def test_compute_health_coded_server_error_on_dispatcher_ping_is_not_unexpected() -> None:
+    """The dispatcher ping's acquire fails with the same infrastructure
+    family — a coded server error there is a connection failure, not an
+    unexpected error."""
+    import structlog
+
+    dispatcher = _StubPool(error=asyncpg.AdminShutdownError("server is shutting down"))
+    deps = _make_deps(dispatcher_pool=dispatcher)
+
+    with structlog.testing.capture_logs() as logs:
+        report = await compute_health(deps)
+
+    assert report.ready is False
+    assert report.pg_ping_ok is False
+    assert "pg_connection_error" in report.reasons
+    assert all(log.get("event") != "health-pg-ping-unexpected" for log in logs)
 
 
 # ── heartbeat_pool never called even on PG timeout ──────────────

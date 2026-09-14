@@ -2371,7 +2371,16 @@ async def test_cancelled_consumer_reraises_when_terminal_write_fails() -> None:
 
     backend.mark_cancelled = _failing_mark_cancelled  # type: ignore[method-assign]  # Why: force the shielded terminal write onto the infra-failure path.
 
+    # Why an event at actor entry: the cancel must land while the actor is
+    # running (the shielded-mark_cancelled path under test). A fixed sleep
+    # raced consumer startup under load — cancelled too early, the
+    # CancelledError propagates from setup (outside the actor-run handler)
+    # and mark_cancelled never runs. The event is set at the exact point
+    # the pin needs.
+    actor_entered = asyncio.Event()
+
     async def blocking_actor(_job: JobRow, ctx: JobContext[BaseModel]) -> object:
+        actor_entered.set()
         await ctx.cancel_event.wait()
 
     job = make_job_row(attempt=1)
@@ -2390,7 +2399,10 @@ async def test_cancelled_consumer_reraises_when_terminal_write_fails() -> None:
             active_jobs=active,
         )
     )
-    await asyncio.sleep(0.1)  # register + reach the actor
+    try:
+        await asyncio.wait_for(actor_entered.wait(), timeout=5.0)
+    except TimeoutError:
+        pytest.fail("consumer never reached the actor within 5s")
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task

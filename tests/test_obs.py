@@ -61,6 +61,17 @@ def _patch_instruments(monkeypatch: pytest.MonkeyPatch, meter: Meter) -> None:
         ),
         ("_progress_publish_failures", lambda: m.create_counter("taskq.progress.publish_failures")),
         ("_ratelimit_refund_failures", lambda: m.create_counter("taskq.ratelimit.refund_failures")),
+        (
+            "_slot_pool_acquire_failures",
+            lambda: m.create_counter("taskq.worker.slot_pool.acquire_failures"),
+        ),
+        (
+            "_slot_pool_occupancy_gauge",
+            lambda: m.create_observable_gauge(
+                "taskq.worker.slot_pool.connections_in_use",
+                callbacks=[otel_mod._observe_slot_pool_occupancy],
+            ),
+        ),
         ("_leader_election_attempts", lambda: m.create_counter("taskq.leader.election_attempts")),
         ("_leader_election_failures", lambda: m.create_counter("taskq.leader.election_failures")),
         (
@@ -250,6 +261,101 @@ def test_reservation_slots_gauge_reads_from_cache(otel_reader: InMemoryMetricRea
     assert "taskq.reservation.slots_used" in names
 
 
+# ── instrument: taskq.worker.slot_pool.* ──────────────────────────────────
+
+
+def test_record_slot_pool_acquire_failure_fires_on_failure_path(
+    otel_reader: InMemoryMetricReader,
+) -> None:
+    """The acquire-failure counter fires when the record helper is called
+    from the acquire's exception branch, with NO dimensions — the
+    per-occurrence job id lives in the log event, never a metric."""
+    obs_mod.record_slot_pool_acquire_failure()
+
+    assert counter_value(otel_reader, "taskq.worker.slot_pool.acquire_failures") == 1
+    points = counter_data_points(otel_reader, "taskq.worker.slot_pool.acquire_failures")
+    assert all(dict(p.attributes or {}) == {} for p in points)
+
+
+def test_record_slot_pool_acquire_failure_disabled() -> None:
+    otel_mod.set_otel_enabled(False)
+    obs_mod.record_slot_pool_acquire_failure()
+    otel_mod.set_otel_enabled(True)
+
+
+def test_slot_pool_occupancy_gauge_reads_held_connections(
+    otel_reader: InMemoryMetricReader,
+) -> None:
+    """The occupancy gauge reports size minus idle — the in-use count a
+    saturation-pin diagnosis needs (the acquire-failure counter is silent
+    below the cliff)."""
+
+    class _Pool:
+        def get_size(self) -> int:
+            return 9
+
+        def get_idle_size(self) -> int:
+            return 1
+
+    obs_mod.set_slot_pool_occupancy_source(_Pool())
+    try:
+        assert counter_value(otel_reader, "taskq.worker.slot_pool.connections_in_use") == 8
+    finally:
+        # Reset the module source so later tests in this process don't
+        # observe this test's pool.
+        obs_mod.set_slot_pool_occupancy_source(None)
+
+
+def test_slot_pool_occupancy_gauge_tolerates_a_broken_pool_source() -> None:
+    """A source whose accessors raise (a pool teardown closed underneath the
+    module-level source) must produce no observation — a collection read
+    that raises into the SDK's export path breaks every instrument's
+    export, not just this gauge's."""
+    import asyncpg
+
+    class _ClosedPool:
+        def get_size(self) -> int:
+            raise asyncpg.InterfaceError("pool is closed")
+
+        def get_idle_size(self) -> int:
+            return 0
+
+    obs_mod.set_slot_pool_occupancy_source(_ClosedPool())
+    try:
+        # The callback itself is the unit under test (the same object
+        # _patch_instruments registers on the test gauge).
+        assert list(otel_mod._observe_slot_pool_occupancy(None)) == []  # pyright: ignore[reportPrivateUsage, reportArgumentType]  # Why: the callback ignores its options argument; asserting the no-raise/no-observation contract directly is what discriminates the defensive branch.
+    finally:
+        obs_mod.set_slot_pool_occupancy_source(None)
+
+
+def test_slot_pool_occupancy_gauge_is_label_free() -> None:
+    """``taskq.worker.slot_pool.connections_in_use`` carries NO dimensions —
+    a single process-level number. The pool is named in the instrument and
+    there is exactly one per worker process; adding a dimension here (the
+    worker_id temptation especially — a fresh UUID per process on
+    Kubernetes) mints unbounded time series and throttles ingestion for
+    every custom metric in the subscription (see
+    tests/test_obs_metric_cardinality.py)."""
+
+    class _Pool:
+        def get_size(self) -> int:
+            return 9
+
+        def get_idle_size(self) -> int:
+            return 1
+
+    obs_mod.set_slot_pool_occupancy_source(_Pool())
+    try:
+        observations = list(otel_mod._observe_slot_pool_occupancy(None))  # pyright: ignore[reportPrivateUsage, reportArgumentType]  # Why: the callback ignores its options argument (same direct-callback pattern as the broken-source test above).
+    finally:
+        obs_mod.set_slot_pool_occupancy_source(None)
+
+    assert len(observations) == 1
+    assert dict(observations[0].attributes or {}) == {}
+    assert observations[0].value == 8
+
+
 # ── instrument 12: taskq.progress.publish_failures ────────────────────────
 
 
@@ -320,7 +426,7 @@ def test_record_election_attempt_disabled() -> None:
 
 
 def test_record_cron_failure_increment(otel_reader: InMemoryMetricReader) -> None:
-    obs_mod.record_cron_failure("schedule-1", 1)
+    obs_mod.record_cron_failure("actor-1", 1)
 
     metrics = collect_metrics(otel_reader)
     names = {m.name for m in metrics}
@@ -328,34 +434,45 @@ def test_record_cron_failure_increment(otel_reader: InMemoryMetricReader) -> Non
 
 
 def test_record_cron_failure_reset(otel_reader: InMemoryMetricReader) -> None:
-    obs_mod.record_cron_failure("schedule-1", 1)
-    obs_mod.record_cron_failure("schedule-1", -1)
+    obs_mod.record_cron_failure("actor-1", 1)
+    obs_mod.record_cron_failure("actor-1", -1)
 
     dps = counter_data_points(otel_reader, "taskq.cron.consecutive_failures")
     assert len(dps) == 1
     assert dps[0].value == 0
-    assert dps[0].attributes == {"schedule_id": "schedule-1"}
+    assert dps[0].attributes == {"actor": "actor-1"}
 
 
-def test_record_cron_failure_is_dimensioned_per_schedule(
+def test_record_cron_failure_is_dimensioned_per_actor(
     otel_reader: InMemoryMetricReader,
 ) -> None:
-    """cron_auto_disable_threshold is evaluated per schedule, so the metric
-    that watches it has to be readable per schedule: summed across schedules,
-    one schedule failing 10 times is indistinguishable from ten schedules
-    failing once, and only the first trips the threshold."""
-    obs_mod.record_cron_failure("schedule-a", 3)
-    obs_mod.record_cron_failure("schedule-b", 1)
+    """The dimension is the actor -- schedules on one actor share a
+    series. The schedule id is a per-row, runtime-minted UUID and
+    identity-like, and the actor value itself comes from the schedule
+    row (any string accepted at creation time), so the label is capped
+    at the emitter (label-contract pins:
+    tests/test_rt_worker_metric_cardinality.py). Per-schedule
+    attribution rides the cron fired / cron fire failed log lines and
+    the cron-fire span instead."""
+    obs_mod.record_cron_failure("actor-a", 3)
+    obs_mod.record_cron_failure("actor-b", 1)
 
     dps = counter_data_points(otel_reader, "taskq.cron.consecutive_failures")
-    by_schedule = {dp.attributes["schedule_id"]: dp.value for dp in dps if dp.attributes}
-    assert by_schedule == {"schedule-a": 3, "schedule-b": 1}
+    by_actor = {dp.attributes["actor"]: dp.value for dp in dps if dp.attributes}
+    assert by_actor == {"actor-a": 3, "actor-b": 1}
 
 
-def test_record_cron_failure_disabled() -> None:
+def test_record_cron_failure_disabled(otel_reader: InMemoryMetricReader) -> None:
+    """The disabled contract is a no-op, not a best-effort record: with
+    ``_otel_enabled=False`` the emitter must leave the instrument
+    untouched. The reader-backed assertion is the pin -- the pre-#157
+    shape of this test called the emitter and asserted nothing, so a
+    regression that records while disabled passed vacuously."""
     otel_mod.set_otel_enabled(False)
-    obs_mod.record_cron_failure("schedule-1", 1)
+    obs_mod.record_cron_failure("actor-1", 1)
     otel_mod.set_otel_enabled(True)
+
+    assert counter_data_points(otel_reader, "taskq.cron.consecutive_failures") == []
 
 
 # ── instrument 17: taskq.cron.disabled_schedules ──────────────────────────

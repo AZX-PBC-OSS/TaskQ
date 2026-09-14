@@ -121,20 +121,24 @@ class Backend(Protocol):
         self,
         job_id: JobId,
         worker_id: UUID,
-        result: dict | None,
+        result: dict | None = None,
         progress_seq: int = 0,
         progress_state: dict | None = None,
         fallback_result_ttl: timedelta | None = None,
-    ) -> bool: ...
+        *,
+        result_bytes: bytes | None = None,
+    ) -> bool: ...  # result OR result_bytes (its orjson encoding) — never both
     async def mark_succeeded_with_conn(
         self,
         conn,
         job_id: JobId,
         worker_id: UUID,
-        result: dict | None,
+        result: dict | None = None,
         progress_seq: int = 0,
         progress_state: dict | None = None,
         fallback_result_ttl: timedelta | None = None,
+        *,
+        result_bytes: bytes | None = None,
     ) -> bool: ...
     async def mark_failed_or_retry(
         self,
@@ -313,7 +317,24 @@ forever — the cache raises `TypeError` at first use instead).
 `fallback_result_ttl` keyword (without it, a cleared stored `result_ttl`
 keeps the enqueue-pinned `result_expires_at`, silently expiring results at
 completion; a v2 implementation errors loudly on the unexpected keyword at
-the first succeeded job).
+the first succeeded job).  The same methods gained the `result_bytes`
+keyword — the result's orjson encoding, produced once by the worker
+consumer.  An implementation that ignores it stores a NULL result (and NULL
+`result_size_bytes`) for every consumer-completed job, silently; it must
+bind `result_bytes.decode("utf-8")`, store `result_size_bytes =
+len(result_bytes)`, NUL-guard the bytes exactly as the dict form is
+guarded, reject bytes that are not valid JSON with the `ValueError`
+family (bound as text and cast server-side, non-JSON surfaces as a
+`PostgresError` the terminal-write classification reads as transient
+infrastructure — a permanent data defect looping the job through
+reclaim), and reject a call passing both `result` and `result_bytes`.
+Any valid JSON value the guard accepts — an array or scalar, not just
+an object — stores and reads back verbatim, exactly as PG's jsonb
+column holds it: `result`'s `dict[str, object] | None` type describes
+the actor contract, not a runtime guarantee for direct `result_bytes`
+callers, so a read path must not assume a dict. All of this validation
+precedes the fencing write, so a misuse or an unstorable value raises
+loudly whatever the job's state.
 
 Third-party backends should declare the version they implement as
 `BACKEND_PROTOCOL_VERSION: ClassVar[int]` and assert it against the canonical
@@ -1585,7 +1606,7 @@ to be causally related.
 | `taskq.dispatch.duration` | Histogram | SQL-execution latency for dispatch_batch |
 | `messaging.process.duration` | Histogram | Full actor execution duration |
 | `messaging.client.consumed.messages` | Counter | Count of completed jobs by actor/queue/outcome |
-| `taskq.backpressure.errors` | Counter | `MaxPendingExceededError` count by actor/kind |
+| `taskq.backpressure.errors` | Counter | Enqueue backpressure rejections by actor/kind — `max_pending` (cap reached) and `max_pending_lock_timeout` (serialization-lock wait budget exhausted) |
 | `taskq.deadline_exceeded_sweep.jobs_failed` | Counter | Jobs failed by the deadline sweep |
 | `taskq.cancellation.requested` | Counter | Bumped once per `JobsClient.cancel()` call (regardless of outcome) |
 | `taskq.cancellation.phase_transitions` | Counter | Cancel phase changes |
@@ -1665,3 +1686,23 @@ These invariants must remain true across all changes.
    only when an existing member's contract changes in a way old implementations
    would silently mishandle (see *When the version bumps* under
    §Backend protocol above).
+
+## Performance Benchmarking Toolkit
+
+The CPU hot paths (DI solving, jsonb serialization, cron next-fire, job-row
+decode) are tracked by an A/B benchmark harness in `benchmarks/`. Each hotspot
+is measured as *current code* vs a *proposed variant* in interleaved batches,
+with a correctness assertion proving the variant is output-identical before any
+timing is trusted.
+
+- Spot-check: `make bench` (full suite) or `make bench-profile` (cProfile /
+  pyinstrument a single bench).
+- Regression gate: `make bench-save` commits `benchmarks/results/baseline.json`,
+  then `make bench-check` fails (exit 1) when any bench is slower by more than
+  1.20× **and** more than 100 ns/op — medians of interleaved batches, both
+  conditions required so sub-microsecond benches don't flip on timer jitter.
+- Cross-version: `make bench-matrix` runs the suite under Python 3.12/3.13/3.14
+  via uv and prints a bench × version table.
+- Event-loop stall probes and a GIL sampler (py-spy needs root on macOS) are
+  included; see `benchmarks/README.md` for the full ops manual, the rules for
+  adding a new A/B bench, and the results JSON schema.

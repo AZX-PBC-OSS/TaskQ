@@ -20,6 +20,12 @@ from taskq._ids import new_job_id, new_uuid
 from taskq.backend._protocol import CancelPhase, JobId, JobRow
 from taskq.backend.statemachine import TERMINAL_STATUSES
 from taskq.settings import WorkerSettings
+from taskq.testing.assertions import (
+    wait_for,
+    wait_for_condition,
+    wait_for_job_status,
+    wait_for_leader,
+)
 from taskq.testing.clock import FakeClock
 from taskq.testing.in_memory import InMemoryBackend
 from taskq.worker._leader_shared import (
@@ -118,6 +124,13 @@ class FakeConn:
         self.close_wait = asyncio.Event()
         self.close_wait.set()  # close() completes instantly by default
         self.terminated = False
+        # Why an event alongside the flag: the flag is the assertion
+        # surface; the event is the WAIT surface — the watchdog closes
+        # leader-owned conns on its own task, and a test that needs
+        # "closed" can await this instead of polling a fixed interval
+        # that races the close under load (same convention as the fakes
+        # in tests/test_reload_credentials.py).
+        self.closed_event = asyncio.Event()
 
     async def fetchval(self, sql: str, *args: object) -> object:
         self.fetchval_calls.append((sql, args))
@@ -143,12 +156,14 @@ class FakeConn:
         self.close_calls += 1
         await self.close_wait.wait()
         self._closed = True
+        self.closed_event.set()
         if self._on_close is not None:
             self._on_close()
 
     def terminate(self) -> None:
         self.terminated = True
         self._closed = True
+        self.closed_event.set()
         self.close_wait.set()  # aborts any in-flight close() wait
 
     def is_closed(self) -> bool:
@@ -333,10 +348,9 @@ async def test_election_win_sets_is_leader(monkeypatch: Any) -> None:  # type: i
     )  # type: ignore[method-assign]  # Why: test-only instrumentation to observe OTel counter calls.
 
     task = asyncio.create_task(leader._election_loop(shutdown))
-    for _ in range(200):
-        if deps.is_leader.is_set():
-            break
-        await asyncio.sleep(0.01)
+    # is_leader IS an asyncio.Event — a bounded event wait (never a
+    # sleep-poll that races the election under load).
+    await wait_for_leader(deps)
     shutdown.set()
     await task
 
@@ -352,7 +366,11 @@ async def test_election_win_sets_is_leader(monkeypatch: Any) -> None:  # type: i
 async def test_election_loss_does_not_set_is_leader(monkeypatch: Any) -> None:  # type: ignore[reportUnknownParameterType]
     """Election loss: fetchval returns False → is_leader stays clear,
     no monitor opened, INFO log with kind='leader_retry', counter incremented."""
-    leader_conn = FakeConn(fetchval_result=False)
+    # Additive event on the double: set exactly where the election's lock
+    # probe is entered, so the test waits for the attempt instead of
+    # sleeping and hoping the loop reached it.
+    election_attempted = asyncio.Event()
+    leader_conn = FakeConn(fetchval_result=False, on_fetchval=election_attempted.set)
     leader, deps, _backend, _, _, shutdown = await _make_leader(
         leader_conn=leader_conn,
         monkeypatch=monkeypatch,
@@ -370,10 +388,7 @@ async def test_election_loss_does_not_set_is_leader(monkeypatch: Any) -> None:  
     )  # type: ignore[method-assign]
 
     task = asyncio.create_task(leader._election_loop(shutdown))
-    for _ in range(200):
-        if leader_conn.fetchval_calls:
-            break
-        await asyncio.sleep(0.01)
+    await wait_for(election_attempted)
     shutdown.set()
     await task
 
@@ -459,11 +474,8 @@ async def test_watchdog_continues_after_error_and_reelection(monkeypatch: Any) -
     monkeypatch.setattr(leader_mod, "open_dedicated_conn", fake_open)
 
     elect_task = asyncio.create_task(leader._election_loop(shutdown))
-    # Wait for election win
-    for _ in range(200):
-        if deps.is_leader.is_set():
-            break
-        await asyncio.sleep(0.01)
+    # Wait for election win: is_leader is the event itself.
+    await wait_for_leader(deps)
     shutdown.set()
     await elect_task
 
@@ -502,10 +514,8 @@ async def test_leader_conn_replaced_after_watchdog(monkeypatch: Any) -> None:  #
     monkeypatch.setattr(leader_mod, "open_dedicated_conn", fake_open)
 
     task = asyncio.create_task(leader._election_loop(shutdown))
-    for _ in range(200):
-        if deps.is_leader.is_set():
-            break
-        await asyncio.sleep(0.01)
+    # Wait for election win: is_leader is the event itself.
+    await wait_for_leader(deps)
     shutdown.set()
     await task
 
@@ -560,10 +570,8 @@ async def test_watchdog_reopen_uses_leader_conn_factory_not_dsn(monkeypatch: Any
     monkeypatch.setattr(leader_mod, "open_dedicated_conn", fail_if_called)
 
     task = asyncio.create_task(leader._election_loop(shutdown))
-    for _ in range(200):
-        if deps.is_leader.is_set():
-            break
-        await asyncio.sleep(0.01)
+    # Wait for election win: is_leader is the event itself.
+    await wait_for_leader(deps)
     shutdown.set()
     await task
 
@@ -611,10 +619,11 @@ async def test_reload_credentials_rebuilds_leader_monitor_and_cron_conns(
     # `if got_lock:`, which is what populates _leader_monitor_conn /
     # _cron_conn in the first place).
     task = asyncio.create_task(leader._election_loop(shutdown))
-    for _ in range(200):
-        if leader._leader_monitor_conn is not None and leader._cron_conn is not None:
-            break
-        await asyncio.sleep(0.01)
+    # The election loop opens BOTH dedicated conns before it sets
+    # is_leader (leader.py: UPSERT → monitor conn → cron conn → set), so
+    # the is_leader event wait subsumes polling the conn attributes —
+    # and it is a bounded wait on the event itself, never a sleep-poll.
+    await wait_for_leader(deps)
     assert deps.is_leader.is_set()
     assert leader._leader_monitor_conn is not None
     assert leader._cron_conn is not None
@@ -626,13 +635,15 @@ async def test_reload_credentials_rebuilds_leader_monitor_and_cron_conns(
     # it and null it while is_leader remains set (deps.py:599-606).
     deps.leader_conn = None
 
-    for _ in range(200):
-        if (
+    # The rebuilt conns are plain attributes the election loop assigns —
+    # no event to wait on, so a bounded, deadline-based poll.
+    await wait_for_condition(
+        lambda: (
             leader._leader_monitor_conn is not old_monitor_conn
             and leader._cron_conn is not old_cron_conn
-        ):
-            break
-        await asyncio.sleep(0.01)
+        ),
+        description="the re-election cascade must rebuild leader_monitor_conn and cron_conn",
+    )
     shutdown.set()
     await task
 
@@ -715,7 +726,11 @@ async def test_sweep_loops_gate_on_is_leader() -> None:
     deps.is_leader.set()
     shutdown_2 = asyncio.Event()
     task_2 = asyncio.create_task(leader._sweep_loop(shutdown_2))
-    await _stop_after_tick(task_2, shutdown_2, delay=0.05)
+    # Bounded waits on the sweeps' own observable (job status), never a
+    # fixed 0.05s hoping the tick completed under load.
+    await wait_for_job_status(backend, expired_job_id, "pending")
+    await wait_for_job_status(backend, deadline_job_id, "failed")
+    await _stop_after_tick(task_2, shutdown_2, delay=0.0)
 
     expired_row = await backend.get(expired_job_id)
     deadline_row = await backend.get(deadline_job_id)
@@ -804,13 +819,17 @@ async def test_pg_notify_issued_after_promotion(monkeypatch: Any) -> None:  # ty
     deps.is_leader.set()
 
     task = asyncio.create_task(leader._scheduled_wake_loop(shutdown))
-    for _ in range(200):
-        if fake_dp.execute_calls:
-            break
-        await asyncio.sleep(0.01)
-    shutdown.set()
-    with contextlib.suppress(asyncio.CancelledError):
-        await task
+    try:
+        # The notify execute lands on a pool-internal conn — no event to
+        # wait on, so a bounded, deadline-based poll on the recording.
+        await wait_for_condition(
+            lambda: bool(fake_dp.execute_calls),
+            description="the wake loop must issue its post-promotion pg_notify",
+        )
+    finally:
+        shutdown.set()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
 
     pg_notify_calls = [c for c in fake_dp.execute_calls if "pg_notify" in c[0]]
     assert len(pg_notify_calls) == 1
@@ -827,15 +846,23 @@ async def test_pg_notify_not_issued_when_zero(monkeypatch: Any) -> None:  # type
     )
 
     count = 0
+    # Additive event on the double: set exactly where the sweep call is
+    # entered, so the "no pg_notify" window below is anchored on a sweep
+    # that provably ran instead of a sleep hoping the loop reached it.
+    promote_attempted = asyncio.Event()
 
     async def zero_promote(**kw: object) -> int:
+        promote_attempted.set()
         return count
 
     backend.scheduled_to_pending = zero_promote  # type: ignore[method-assign]
     deps.is_leader.set()
 
     task = asyncio.create_task(leader._scheduled_wake_loop(shutdown))
-    await asyncio.sleep(0.05)
+    await wait_for(promote_attempted)
+    # The notify decision is made in the same loop step as the awaited
+    # count — one yield for the loop to finish that step, then stop it.
+    await asyncio.sleep(0)
     shutdown.set()
     with contextlib.suppress(asyncio.CancelledError):
         await task
@@ -882,10 +909,13 @@ async def test_prune_loop_runs_on_schedule(monkeypatch: Any) -> None:  # type: i
     settings.prune_batch_size = 100
 
     task = asyncio.create_task(leader._prune_loop(shutdown))
-    for _ in range(500):
-        if leader_conn.fetchval_calls:
-            break
-        await asyncio.sleep(0.01)
+
+    # Bounded poll for the prune cycle's first advisory-lock probe (no
+    # event exists on the fake's recording).
+    await wait_for_condition(
+        lambda: any("pg_try_advisory_lock" in sql for sql, _ in leader_conn.fetchval_calls),
+        description="the prune loop must attempt its advisory lock",
+    )
     shutdown.set()
     with contextlib.suppress(asyncio.CancelledError):
         await task
@@ -923,10 +953,7 @@ async def test_otel_metrics_emitted(monkeypatch: Any) -> None:  # type: ignore[r
 
     # Run election
     task = asyncio.create_task(leader._election_loop(shutdown))
-    for _ in range(200):
-        if deps.is_leader.is_set():
-            break
-        await asyncio.sleep(0.01)
+    await wait_for_leader(deps)
     shutdown.set()
     await task
 
@@ -956,7 +983,18 @@ async def test_otel_metrics_emitted(monkeypatch: Any) -> None:  # type: ignore[r
     sweep_rows_calls.clear()
     shutdown_2 = asyncio.Event()
     task_2 = asyncio.create_task(leader._sweep_loop(shutdown_2))
-    await _stop_after_tick(task_2, shutdown_2, delay=0.05)
+    # Bounded poll for both sweeps' non-empty row counters — the wake of
+    # the completion asserts, never a fixed 0.05s hoping the tick ran.
+    await wait_for_condition(
+        lambda: (
+            any(c[0] > 0 and c[1].get("sweep_name") == "expired_locks" for c in sweep_rows_calls)
+            and any(
+                c[0] > 0 and c[1].get("sweep_name") == "deadline_exceeded" for c in sweep_rows_calls
+            )
+        ),
+        description="the sweep loop must run the expired-locks and deadline sweeps",
+    )
+    await _stop_after_tick(task_2, shutdown_2, delay=0.0)
 
     names_seen = {call[1].get("sweep_name") for call in sweep_rows_calls}
     assert "expired_locks" in names_seen
@@ -1014,10 +1052,7 @@ async def test_transaction_scoped_lock_not_used(monkeypatch: Any) -> None:  # ty
     )
 
     task = asyncio.create_task(leader._election_loop(shutdown))
-    for _ in range(200):
-        if deps.is_leader.is_set():
-            break
-        await asyncio.sleep(0.01)
+    await wait_for_leader(deps)
     shutdown.set()
     await task
 
@@ -1071,26 +1106,25 @@ async def test_scheduled_wake_passes_no_clock_to_sweep() -> None:
     deps = _make_deps(is_leader=True, heartbeat_interval=0.01)
     leader = MaintenanceLeader(deps, new_uuid(), backend, clock=clock)
 
-    called: list[bool] = []
+    called = asyncio.Event()
 
     async def _capture_scheduled_to_pending() -> int:
-        called.append(True)
+        called.set()
         return 0
 
     backend.scheduled_to_pending = _capture_scheduled_to_pending  # type: ignore[method-assign]  # Why: test-only interception of the sweep call.
 
     shutdown = asyncio.Event()
     task = asyncio.create_task(leader._scheduled_wake_loop(shutdown))
-    for _ in range(200):
-        if called:
-            break
-        await asyncio.sleep(0.01)
+    # The capture closure sets the event exactly where the sweep call is
+    # entered — the bounded wait, never a sleep hoping the loop reached it.
+    await wait_for(called)
     shutdown.set()
     task.cancel()
     with contextlib.suppress(asyncio.CancelledError):
         await task
 
-    assert called
+    assert called.is_set()
 
 
 async def test_sweep_loop_passes_no_clock_to_sweeps() -> None:
@@ -1102,15 +1136,15 @@ async def test_sweep_loop_passes_no_clock_to_sweeps() -> None:
     deps = _make_deps(is_leader=True, heartbeat_interval=0.01)
     leader = MaintenanceLeader(deps, new_uuid(), backend, clock=clock)
 
-    reclaim_calls: list[bool] = []
-    deadline_calls: list[bool] = []
+    reclaim_called = asyncio.Event()
+    deadline_called = asyncio.Event()
 
     async def _capture_reclaim(cg: timedelta, ug: timedelta) -> int:
-        reclaim_calls.append(True)
+        reclaim_called.set()
         return 0
 
     async def _capture_deadline() -> int:
-        deadline_calls.append(True)
+        deadline_called.set()
         return 0
 
     backend.reclaim_expired_locks = _capture_reclaim  # type: ignore[method-assign]  # Why: test-only interception of the sweep call.
@@ -1118,17 +1152,18 @@ async def test_sweep_loop_passes_no_clock_to_sweeps() -> None:
 
     shutdown = asyncio.Event()
     task = asyncio.create_task(leader._sweep_loop(shutdown))
-    for _ in range(200):
-        if reclaim_calls and deadline_calls:
-            break
-        await asyncio.sleep(0.01)
+    # The capture closures set their events exactly where each sweep call
+    # is entered — bounded event waits, never sleeps hoping the loop
+    # reached them.
+    await wait_for(reclaim_called)
+    await wait_for(deadline_called)
     shutdown.set()
     task.cancel()
     with contextlib.suppress(asyncio.CancelledError):
         await task
 
-    assert reclaim_calls
-    assert deadline_calls
+    assert reclaim_called.is_set()
+    assert deadline_called.is_set()
 
 
 # ── _schedule_utc_to_cron ────────────────────────────────────────────
@@ -1477,10 +1512,12 @@ async def test_prune_loop_date_guard_prevents_double_run(monkeypatch: Any) -> No
 
     task = asyncio.create_task(leader._prune_loop(shutdown))
 
-    for _ in range(500):
-        if leader_conn.fetchval_calls:
-            break
-        await asyncio.sleep(0.01)
+    # Bounded poll for the first lock acquisition (no event exists on the
+    # fake's recording).
+    await wait_for_condition(
+        lambda: any("pg_try_advisory_lock" in sql for sql, _ in leader_conn.fetchval_calls),
+        description="the prune loop must attempt its first advisory lock",
+    )
 
     lock_calls_after_first = len(
         [sql for sql, _ in leader_conn.fetchval_calls if "pg_try_advisory_lock" in sql]
@@ -1532,10 +1569,12 @@ async def test_archive_expiry_loop_date_guard_prevents_double_run(monkeypatch: A
 
     task = asyncio.create_task(leader._archive_expiry_loop(shutdown))
 
-    for _ in range(500):
-        if leader_conn.fetchval_calls:
-            break
-        await asyncio.sleep(0.01)
+    # Bounded poll for the first lock acquisition (no event exists on the
+    # fake's recording).
+    await wait_for_condition(
+        lambda: any("pg_try_advisory_lock" in sql for sql, _ in leader_conn.fetchval_calls),
+        description="the archive expiry loop must attempt its first advisory lock",
+    )
 
     lock_calls_after_first = len(
         [sql for sql, _ in leader_conn.fetchval_calls if "pg_try_advisory_lock" in sql]
@@ -1586,13 +1625,15 @@ async def test_prune_loop_releases_lock_on_error(monkeypatch: Any) -> None:  # t
     """Prune loop releases advisory lock even when prune_terminal_jobs raises."""
     import taskq.worker._leader_sweeps as _leader_sweeps_mod
 
-    raise_count = 0
+    # Additive event on the double: set exactly where the prune query
+    # raises, so the test waits for the error path instead of sleeping
+    # and hoping the loop reached it.
+    error_seen = asyncio.Event()
 
     class _ErrorConn(_FakeConnForPrune):
         async def fetch(self, sql: str, *args: object) -> list[_FakeRecord]:
-            nonlocal raise_count
             if "candidate_ids" in sql:
-                raise_count += 1
+                error_seen.set()
                 raise RuntimeError("connection lost")
             return []
 
@@ -1619,11 +1660,7 @@ async def test_prune_loop_releases_lock_on_error(monkeypatch: Any) -> None:  # t
 
     task = asyncio.create_task(leader._prune_loop(shutdown))
 
-    for _ in range(500):
-        if raise_count >= 1:
-            break
-        await asyncio.sleep(0.01)
-
+    await wait_for(error_seen)
     shutdown.set()
     with contextlib.suppress(asyncio.CancelledError):
         await task
@@ -1639,13 +1676,15 @@ async def test_archive_expiry_loop_releases_lock_on_error(monkeypatch: Any) -> N
     """Archive expiry loop releases advisory lock even when sweep raises."""
     import taskq.worker._leader_sweeps as _leader_sweeps_mod
 
-    raise_count = 0
+    # Additive event on the double: set exactly where the expiry query
+    # raises, so the test waits for the error path instead of sleeping
+    # and hoping the loop reached it.
+    error_seen = asyncio.Event()
 
     class _ErrorConn(_FakeConnForPrune):
         async def fetch(self, sql: str, *args: object) -> list[_FakeRecord]:
-            nonlocal raise_count
             if "expired" in sql:
-                raise_count += 1
+                error_seen.set()
                 raise RuntimeError("connection lost")
             return []
 
@@ -1672,11 +1711,7 @@ async def test_archive_expiry_loop_releases_lock_on_error(monkeypatch: Any) -> N
 
     task = asyncio.create_task(leader._archive_expiry_loop(shutdown))
 
-    for _ in range(500):
-        if raise_count >= 1:
-            break
-        await asyncio.sleep(0.01)
-
+    await wait_for(error_seen)
     shutdown.set()
     with contextlib.suppress(asyncio.CancelledError):
         await task
@@ -1702,8 +1737,10 @@ async def test_prune_loop_wakes_on_shutdown() -> None:
 
     shutdown.set()
     task = asyncio.create_task(leader._prune_loop(shutdown))
-    await asyncio.sleep(0.1)
-    assert task.done(), "prune loop should exit immediately on shutdown"
+    # The loop observes the pre-set shutdown immediately — awaiting the
+    # task IS the bounded wait for its exit (and it re-raises if the loop
+    # died of an error instead of exiting cleanly).
+    await asyncio.wait_for(task, timeout=2.0)
     lock_calls = [sql for sql, _ in leader_conn.fetchval_calls if "pg_try_advisory_lock" in sql]
     assert not lock_calls, "no lock acquisition during shutdown"
 
@@ -1725,8 +1762,10 @@ async def test_archive_expiry_loop_wakes_on_shutdown() -> None:
 
     shutdown.set()
     task = asyncio.create_task(leader._archive_expiry_loop(shutdown))
-    await asyncio.sleep(0.1)
-    assert task.done(), "archive expiry loop should exit immediately on shutdown"
+    # The loop observes the pre-set shutdown immediately — awaiting the
+    # task IS the bounded wait for its exit (and it re-raises if the loop
+    # died of an error instead of exiting cleanly).
+    await asyncio.wait_for(task, timeout=2.0)
     lock_calls = [sql for sql, _ in leader_conn.fetchval_calls if "pg_try_advisory_lock" in sql]
     assert not lock_calls, "no lock acquisition during shutdown"
 
@@ -1762,12 +1801,10 @@ async def test_prune_loop_skips_when_lock_not_acquired(monkeypatch: Any) -> None
 
     task = asyncio.create_task(leader._prune_loop(shutdown))
 
-    for _ in range(500):
-        lock_calls = [sql for sql, _ in leader_conn.fetchval_calls if "pg_try_advisory_lock" in sql]
-        if lock_calls:
-            break
-        await asyncio.sleep(0.01)
-
+    await wait_for_condition(
+        lambda: any("pg_try_advisory_lock" in sql for sql, _ in leader_conn.fetchval_calls),
+        description="the prune loop must attempt the advisory lock",
+    )
     shutdown.set()
     with contextlib.suppress(asyncio.CancelledError):
         await task
@@ -1819,11 +1856,12 @@ async def test_prune_loop_survives_lock_acquisition_failure(monkeypatch: Any) ->
 
     task = asyncio.create_task(leader._prune_loop(shutdown))
 
-    for _ in range(500):
-        if lock_call_count >= 2:
-            break
-        await asyncio.sleep(0.01)
-
+    # Bounded poll on the failure count (a count on the fake's raise
+    # point is the observable; the loop must retry past the first one).
+    await wait_for_condition(
+        lambda: lock_call_count >= 2,
+        description="the prune loop must retry the lock acquisition after a connection failure",
+    )
     shutdown.set()
     with contextlib.suppress(asyncio.CancelledError):
         await task
@@ -1875,11 +1913,14 @@ async def test_archive_expiry_loop_survives_lock_acquisition_failure(
 
     task = asyncio.create_task(leader._archive_expiry_loop(shutdown))
 
-    for _ in range(500):
-        if lock_call_count >= 2:
-            break
-        await asyncio.sleep(0.01)
-
+    # Bounded poll on the failure count (a count on the fake's raise
+    # point is the observable; the loop must retry past the first one).
+    await wait_for_condition(
+        lambda: lock_call_count >= 2,
+        description=(
+            "the archive expiry loop must retry the lock acquisition after a connection failure"
+        ),
+    )
     shutdown.set()
     with contextlib.suppress(asyncio.CancelledError):
         await task
@@ -1896,7 +1937,10 @@ async def test_prune_loop_survives_unlock_failure(monkeypatch: Any) -> None:  # 
     instead of crashing the TaskGroup. PG releases the lock on session death."""
     import taskq.worker._leader_sweeps as _leader_sweeps_mod
 
-    prune_ran = False
+    # Additive event on the double: set exactly where the prune query is
+    # entered, so the test waits for the prune run instead of sleeping
+    # and hoping the loop reached it.
+    prune_ran = asyncio.Event()
 
     class _UnlockFailsConn(_FakeConnForPrune):
         async def execute(self, sql: str, *args: object) -> str:
@@ -1905,9 +1949,8 @@ async def test_prune_loop_survives_unlock_failure(monkeypatch: Any) -> None:  # 
             return await super().execute(sql, *args)
 
         async def fetch(self, sql: str, *args: object) -> list[_FakeRecord]:
-            nonlocal prune_ran
             if "candidate_ids" in sql:
-                prune_ran = True
+                prune_ran.set()
             return []
 
     leader_conn = _UnlockFailsConn(batch_rows=[], fetchval_result=True)
@@ -1933,16 +1976,12 @@ async def test_prune_loop_survives_unlock_failure(monkeypatch: Any) -> None:  # 
 
     task = asyncio.create_task(leader._prune_loop(shutdown))
 
-    for _ in range(500):
-        if prune_ran:
-            break
-        await asyncio.sleep(0.01)
-
+    await wait_for(prune_ran)
     shutdown.set()
     with contextlib.suppress(asyncio.CancelledError):
         await task
 
-    assert prune_ran, "prune should have run"
+    assert prune_ran.is_set(), "prune should have run"
     assert not task.cancelled(), "task should not be cancelled after unlock failure"
 
 
@@ -1954,7 +1993,10 @@ async def test_archive_expiry_loop_survives_unlock_failure(monkeypatch: Any) -> 
     block, instead of crashing the TaskGroup. PG releases the lock on session death."""
     import taskq.worker._leader_sweeps as _leader_sweeps_mod
 
-    sweep_ran = False
+    # Additive event on the double: set exactly where the expiry query is
+    # entered, so the test waits for the sweep run instead of sleeping
+    # and hoping the loop reached it.
+    sweep_ran = asyncio.Event()
 
     class _UnlockFailsConn(_FakeConnForPrune):
         async def execute(self, sql: str, *args: object) -> str:
@@ -1963,9 +2005,8 @@ async def test_archive_expiry_loop_survives_unlock_failure(monkeypatch: Any) -> 
             return await super().execute(sql, *args)
 
         async def fetch(self, sql: str, *args: object) -> list[_FakeRecord]:
-            nonlocal sweep_ran
             if "expired" in sql:
-                sweep_ran = True
+                sweep_ran.set()
             return []
 
     leader_conn = _UnlockFailsConn(batch_rows=[], fetchval_result=True)
@@ -1991,16 +2032,12 @@ async def test_archive_expiry_loop_survives_unlock_failure(monkeypatch: Any) -> 
 
     task = asyncio.create_task(leader._archive_expiry_loop(shutdown))
 
-    for _ in range(500):
-        if sweep_ran:
-            break
-        await asyncio.sleep(0.01)
-
+    await wait_for(sweep_ran)
     shutdown.set()
     with contextlib.suppress(asyncio.CancelledError):
         await task
 
-    assert sweep_ran, "archive expiry sweep should have run"
+    assert sweep_ran.is_set(), "archive expiry sweep should have run"
     assert not task.cancelled(), "task should not be cancelled after unlock failure"
 
 
@@ -2033,10 +2070,7 @@ async def test_election_reopen_retries_on_provider_exception(monkeypatch: Any) -
     deps.leader_conn_factory = flaky_factory  # type: ignore[assignment]
 
     task = asyncio.create_task(leader._election_loop(shutdown))
-    for _ in range(200):
-        if deps.is_leader.is_set():
-            break
-        await asyncio.sleep(0.01)
+    await wait_for_leader(deps)
     shutdown.set()
     await task  # must not propagate the provider exception
 
@@ -2065,10 +2099,7 @@ async def test_dedicated_conn_reopen_retries_on_provider_exception(monkeypatch: 
     deps.leader_conn_factory = flaky_factory  # type: ignore[assignment]
 
     task = asyncio.create_task(leader._election_loop(shutdown))
-    for _ in range(200):
-        if deps.is_leader.is_set():
-            break
-        await asyncio.sleep(0.01)
+    await wait_for_leader(deps)
     shutdown.set()
     await task
 
@@ -2118,24 +2149,21 @@ async def test_watchdog_does_not_close_caller_owned_leader_conn(monkeypatch: Any
     watchdog_task = asyncio.create_task(leader._watchdog_loop(shutdown))
     election_task = asyncio.create_task(leader._election_loop(shutdown))
 
-    # Wait for the watchdog failure path to run. failing_monitor._closed is
-    # the stable witness: _close_leader_owned_conns closes it AFTER the
-    # leader_conn close/abandon in the same handler, so once it is True the
+    # Wait for the watchdog failure path to run. failing_monitor.closed_event
+    # is the stable witness: _close_leader_owned_conns closes it AFTER the
+    # leader_conn close/abandon in the same handler, so once it is set the
     # caller-conn decision has definitely been made (and unlike the
     # is_leader flip, it never flips back under a racing re-election).
-    for _ in range(200):
-        if failing_monitor._closed:
-            break
-        await asyncio.sleep(0.01)
+    await wait_for(failing_monitor.closed_event)
     assert failing_monitor._closed
     assert not caller_conn.is_closed()
     assert caller_conn.close_calls == 0
 
-    # Election loop re-acquires leadership through the factory.
-    for _ in range(200):
-        if deps.is_leader.is_set() and deps.leader_conn in factory_conns:
-            break
-        await asyncio.sleep(0.01)
+    # Election loop re-acquires leadership through the factory. The
+    # election loop assigns deps.leader_conn from the factory BEFORE it
+    # wins the lock and sets is_leader (leader.py), so the event wait
+    # implies the factory-conn check asserted below.
+    await wait_for_leader(deps)
     shutdown.set()
     watchdog_task.cancel()
     with contextlib.suppress(asyncio.CancelledError):
@@ -2477,10 +2505,7 @@ async def test_factory_built_leader_conns_get_keepalive(monkeypatch: Any) -> Non
     monkeypatch.setattr(leader_mod, "apply_keepalive_to_conn", fake_keepalive)
 
     task = asyncio.create_task(leader._election_loop(shutdown))
-    for _ in range(200):
-        if deps.is_leader.is_set():
-            break
-        await asyncio.sleep(0.01)
+    await wait_for_leader(deps)
     shutdown.set()
     await task
 
@@ -2557,10 +2582,7 @@ async def test_reelection_survives_advisory_lock_gap_window(monkeypatch: Any) ->
     )
 
     task = asyncio.create_task(leader._election_loop(shutdown))
-    for _ in range(200):
-        if deps.is_leader.is_set():
-            break
-        await asyncio.sleep(0.01)
+    await wait_for_leader(deps)
     assert deps.is_leader.is_set()
 
     # Gap-window conn: first lock attempt loses, subsequent attempts win.
@@ -2595,19 +2617,15 @@ async def test_reelection_survives_advisory_lock_gap_window(monkeypatch: Any) ->
     # close between 0.01s samples under load (same class as the tc2 gate
     # flake, tests/test_leader_chaos.py).
     with structlog.testing.capture_logs() as captured:
-        for _ in range(200):
-            if any(e.get("kind") == "leader_conn_died" for e in captured):
-                break
-            await asyncio.sleep(0.01)
-        assert any(e.get("kind") == "leader_conn_died" for e in captured), (
-            "election loop never took the leader-conn-died demotion path after the null"
+        # Bounded poll on the captured entries (a capture_logs list is
+        # append-only state — no event exists to wait on).
+        await wait_for_condition(
+            lambda: any(e.get("kind") == "leader_conn_died" for e in captured),
+            description="election loop never took the leader-conn-died demotion path after the null",
         )
 
     # ...then re-sets once the old session's lock release has propagated.
-    for _ in range(200):
-        if deps.is_leader.is_set():
-            break
-        await asyncio.sleep(0.01)
+    await wait_for_leader(deps)
     shutdown.set()
     await task
 
@@ -2654,13 +2672,25 @@ async def test_sweep_loop_survives_reclaim_connection_loss() -> None:
     """A dead PG in sweep 1 must not escape ``_sweep_loop``."""
     leader, _deps, backend, _conn, _pool, shutdown = await _make_leader(is_leader=True)
 
+    dead_pg_calls = 0
+
     async def _dead_pg(*_args: object, **_kw: object) -> int:
+        nonlocal dead_pg_calls
+        dead_pg_calls += 1
         raise OSError(-2, "Name or service not known")
 
     backend.reclaim_expired_locks = _dead_pg  # type: ignore[method-assign]  # Why: test-only injection of a dead-PG failure.
 
     task = asyncio.create_task(leader._sweep_loop(shutdown))
-    await asyncio.sleep(0.05)  # one tick fires before the interval sleep
+    # The survival assert must be preceded by proof the loop actually
+    # faced the failure: the sweep attempts fire at loop entry, but a
+    # fixed window can contain zero ticks under scheduler starvation,
+    # and ``not task.done()`` would then pass without the dead-PG path
+    # having run at all.
+    await wait_for_condition(
+        lambda: dead_pg_calls >= 1,
+        description="the sweep loop never attempted reclaim_expired_locks against the dead PG",
+    )
     assert not task.done(), f"sweep loop died: {task.exception() if task.done() else None!r}"
     await _stop_after_tick(task, shutdown, delay=0.0)
 
@@ -2669,13 +2699,23 @@ async def test_sweep_loop_survives_deadline_sweep_connection_loss() -> None:
     """A dead PG in sweep 2 must not escape ``_sweep_loop``."""
     leader, _deps, backend, _conn, _pool, shutdown = await _make_leader(is_leader=True)
 
+    dead_pg_calls = 0
+
     async def _dead_pg(*_args: object, **_kw: object) -> int:
+        nonlocal dead_pg_calls
+        dead_pg_calls += 1
         raise asyncpg.InterfaceError("connection is closed")
 
     backend.deadline_sweep = _dead_pg  # type: ignore[method-assign]  # Why: test-only injection of a dead-PG failure.
 
     task = asyncio.create_task(leader._sweep_loop(shutdown))
-    await asyncio.sleep(0.05)
+    # Same proven-window discipline as the reclaim test above: the
+    # survival assert is meaningless unless the loop first faced the
+    # dead-PG call.
+    await wait_for_condition(
+        lambda: dead_pg_calls >= 1,
+        description="the sweep loop never attempted deadline_sweep against the dead PG",
+    )
     assert not task.done(), f"sweep loop died: {task.exception() if task.done() else None!r}"
     await _stop_after_tick(task, shutdown, delay=0.0)
 
@@ -2684,34 +2724,45 @@ async def test_scheduled_wake_loop_survives_connection_loss() -> None:
     """A dead PG in ``scheduled_to_pending`` must not escape the wake loop."""
     leader, _deps, backend, _conn, _pool, shutdown = await _make_leader(is_leader=True)
 
+    dead_pg_calls = 0
+
     async def _dead_pg(**_kw: object) -> int:
+        nonlocal dead_pg_calls
+        dead_pg_calls += 1
         raise OSError(-2, "Name or service not known")
 
     backend.scheduled_to_pending = _dead_pg  # type: ignore[method-assign]  # Why: test-only injection of a dead-PG failure.
 
     task = asyncio.create_task(leader._scheduled_wake_loop(shutdown))
-    await asyncio.sleep(0.05)
+    # The wake loop attempts its first sweep at loop entry, then parks
+    # on its 1s tick — the bounded wait proves the attempt happened
+    # before the survival assert speaks.
+    await wait_for_condition(
+        lambda: dead_pg_calls >= 1,
+        description="the scheduled-wake loop never attempted scheduled_to_pending against the dead PG",
+    )
     assert not task.done(), f"wake loop died: {task.exception() if task.done() else None!r}"
     await _stop_after_tick(task, shutdown, delay=0.0)
 
 
 async def test_scheduled_wake_loop_survives_notify_connection_loss() -> None:
     """A dead PG in the post-promotion ``pg_notify`` must not escape."""
-
-    class _DeadPool(FakePool):
-        @asynccontextmanager
-        async def acquire(self, *, timeout: float | None = None) -> AsyncGenerator[FakeConn, None]:  # noqa: ASYNC109
-            raise OSError(-2, "Name or service not known")
-            yield FakeConn()  # pragma: no cover  # Why: makes the body a generator.
-
+    # FakePool(fail_acquire_with=...) raises the dead-PG error at the
+    # acquire seam and counts every attempt: the wake loop only reaches
+    # the acquire after scheduled_to_pending reports a promotion, so a
+    # counted acquire is the proof the loop faced the failure.
+    dead_pool = FakePool(fail_acquire_with=OSError(-2, "Name or service not known"))
     leader, _deps, backend, _conn, _pool, shutdown = await _make_leader(
         is_leader=True,
-        dispatcher_pool=_DeadPool(),
+        dispatcher_pool=dead_pool,
     )
     backend.scheduled_to_pending = lambda **_kw: asyncio.sleep(0, result=3)  # type: ignore[method-assign]  # Why: async stub returning a positive promotion count.
 
     task = asyncio.create_task(leader._scheduled_wake_loop(shutdown))
-    await asyncio.sleep(0.05)
+    await wait_for_condition(
+        lambda: dead_pool.acquire_count >= 1,
+        description="the scheduled-wake loop never reached its post-promotion pg_notify against the dead pool",
+    )
     assert not task.done(), f"wake loop died: {task.exception() if task.done() else None!r}"
     await _stop_after_tick(task, shutdown, delay=0.0)
 
@@ -2729,7 +2780,13 @@ async def test_election_upsert_survives_connection_loss(monkeypatch: Any) -> Non
     )
 
     task = asyncio.create_task(leader._election_loop(shutdown))
-    await asyncio.sleep(0.05)
+    # FakeConn records every execute before the failure hook fires, so
+    # execute_calls is the proof the loop reached (and lost) the
+    # maintenance_leader UPSERT — the failure this test exists for.
+    await wait_for_condition(
+        lambda: len(leader_conn.execute_calls) >= 1,
+        description="the election loop never attempted the maintenance_leader UPSERT against the dead PG",
+    )
     assert not task.done(), f"election loop died: {task.exception() if task.done() else None!r}"
     assert not deps.is_leader.is_set(), "leadership must not be claimed when the UPSERT failed"
     await _stop_after_tick(task, shutdown, delay=0.0)
@@ -2744,19 +2801,37 @@ async def test_scheduled_wake_loop_survives_transient_pg_errors() -> None:
     unguarded reclaim/deadline sweeps)."""
 
     class _DeadPgBackend:
-        async def scheduled_to_pending(self, now: datetime) -> int:
+        """Backend whose ``scheduled_to_pending`` raises the dead-PG error
+        class, counting attempts so the survival assert is preceded by
+        proof the loop faced the failure.
+
+        Argless to match the production call site — the sweep's
+        server-side clock predicate is the single arbiter, so a ``now``
+        parameter would TypeError into the generic backstop instead of
+        the transient branch this test pins.
+        """
+
+        def __init__(self) -> None:
+            self.scheduled_to_pending_calls = 0
+
+        async def scheduled_to_pending(self) -> int:
+            self.scheduled_to_pending_calls += 1
             raise OSError(111, "Connect call failed")
 
+    backend = _DeadPgBackend()
     deps = _make_deps(is_leader=True)
     leader = MaintenanceLeader(
         deps,
         new_uuid(),
-        _DeadPgBackend(),  # type: ignore[arg-type]  # Why: stub satisfying only the called method.
+        backend,  # type: ignore[arg-type]  # Why: stub satisfying only the called method.
         clock=FakeClock(datetime(2025, 1, 1, tzinfo=UTC)),
     )
     shutdown = asyncio.Event()
     task = asyncio.create_task(leader._scheduled_wake_loop(shutdown))
-    await asyncio.sleep(0.1)  # several ticks against the dead backend
+    await wait_for_condition(
+        lambda: backend.scheduled_to_pending_calls >= 1,
+        description="the scheduled-wake loop never attempted scheduled_to_pending against the dead PG",
+    )
     assert not task.done(), "scheduled-wake loop died on a transient PG error"
     shutdown.set()
     task.cancel()
@@ -2822,17 +2897,17 @@ async def test_close_leader_owned_conns_identity_guard() -> None:
     """
     leader, _deps, _backend, _leader_conn, _dp, _shutdown = await _make_leader()
 
-    stale_conn = FakeConn()
+    # _CloseEntryConn marks the exact point close() is entered — the
+    # bounded wait for the suspended close, never a sleep-poll hoping
+    # the loop reached it.
+    stale_conn = _CloseEntryConn()
     stale_conn.close_wait.clear()  # close() blocks until we release it below
     leader._cron_conn = stale_conn  # type: ignore[assignment]  # Why: FakeConn is the asyncpg.Connection stand-in used throughout this module.
 
     close_task = asyncio.create_task(leader._close_leader_owned_conns())
 
     # Wait until the close is suspended inside stale_conn.close().
-    for _ in range(200):
-        if stale_conn.close_calls >= 1:
-            break
-        await asyncio.sleep(0.01)
+    await wait_for(stale_conn.close_entered)
     assert stale_conn.close_calls == 1, "close() was never entered"
 
     # While the close is suspended, the election loop creates and assigns

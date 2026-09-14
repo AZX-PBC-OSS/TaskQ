@@ -95,6 +95,9 @@ def _make_deps(settings: SimpleNamespace, *, pool: _StubPool | None = None) -> S
     return SimpleNamespace(
         shutdown_phase=ShutdownPhase.NONE,
         dispatcher_pool=pool if pool is not None else _StubPool(),
+        # The per-slot transaction pool is conditional: None on every
+        # shape these tests exercise, so the readiness ping skips it.
+        slot_pool=None,
         settings=settings,
         is_leader=SimpleNamespace(is_set=lambda: False),
         active_jobs=SimpleNamespace(count=lambda: 0),

@@ -16,7 +16,6 @@ from typing import Any, cast
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
-from croniter import croniter
 from pydantic import BaseModel
 
 from taskq._json import loads
@@ -169,6 +168,10 @@ def compute_next_fire_after(
     normal case; a two-element list is returned only when
     ``dst_strategy='allof'`` and the fire time falls in a DST overlap.
     """
+    # Lazy import: croniter (+ dateutil) costs ~16ms at import time and is
+    # only needed on the cron-tick path, not for ``import taskq``.
+    from croniter import croniter
+
     tz = ZoneInfo(timezone_name)
     after_local = after.astimezone(tz)
 
@@ -301,6 +304,8 @@ def _next_fold1_fire(
     match, if any, already fired, and the walk's beyond-range answer
     stands.
     """
+    from croniter import croniter
+
     if after_local.fold != 0:
         return None
     bounds = repeated_range_bounds(after_local, tz)
@@ -452,6 +457,10 @@ def cron(
             both occurrences in overlaps (the caller receives two
             datetimes from ``compute_next_fire_after``).
     """
+    # Lazy import (see compute_next_fire_after): validated on first
+    # decoration, not at module import.
+    from croniter import croniter
+
     if not croniter.is_valid(expression):
         raise ValueError(f"Invalid cron expression: {expression!r}")
     if payload_factory is not None and static_payload is not None:

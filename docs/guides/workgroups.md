@@ -137,13 +137,22 @@ Each workgroup instance generates a UUIDv7 at startup. This is passed to every c
 
 ## Restart policy
 
-When a child process exits (non-zero or zero), the supervisor:
+Two failures trigger a restart, and both consume the same budget:
 
-1. Records the exit time in a rolling window of `burst_window` seconds.
-2. If the number of exits in the window exceeds `burst_limit`, stops restarting and logs a critical error.
+- A child process exits (non-zero or zero).
+- A child fails to spawn at all — a broken command line, a missing binary, a permission error. Never-spawned children are retried by the liveness monitor exactly like exited ones.
+
+On either trigger the supervisor:
+
+1. Records the attempt time in a rolling window of `burst_window` seconds.
+2. If the number of attempts in the window exceeds `burst_limit`, latches give-up for that child: one critical `workgroup-burst-limit-exceeded` is logged and the child is never scheduled again — the workgroup supervisor deliberately stops handling it, so recovery requires restarting the workgroup itself (the deployment's process supervisor, or an operator).
 3. Otherwise, waits for the exponential backoff delay, then spawns a fresh child process with the same configuration.
 
-The backoff resets to `backoff_initial` after a stable period (no exits within `burst_window`).
+Each retry logs `workgroup.restart_scheduled` with a `reason` of `child_exit` or `spawn_failed`, so the two failure classes are distinguishable in the logs.
+
+The backoff resets to `backoff_initial` after a stable period (no restart attempts within `burst_window`).
+
+A failed output pump is not a restart trigger: the supervisor logs `workgroup.stream_pump_failed` and the child keeps running, with its output no longer forwarded.
 
 ## Running in production
 

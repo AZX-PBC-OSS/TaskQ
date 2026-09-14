@@ -19,6 +19,7 @@ from pydantic import BaseModel
 
 import taskq.obs as obs_mod
 from taskq._ids import new_uuid
+from taskq._json import dumps as _json_dumps
 from taskq.backend._protocol import (
     ErrorInfo,
     IdentityKey,
@@ -121,7 +122,8 @@ async def _run_consume(
 
 
 async def test_consume_success_calls_mark_succeeded() -> None:
-    """Baseline: successful actor → mark_succeeded called with result dict."""
+    """Baseline: successful actor → mark_succeeded called with the result's
+    orjson bytes (no dict — the terminal write reuses the encoding)."""
 
     async def actor(_job: JobRow, _ctx: JobContext[BaseModel]) -> dict[str, object]:
         return {"value": 42}
@@ -130,7 +132,12 @@ async def test_consume_success_calls_mark_succeeded() -> None:
     job = make_job_row()
     await _run_consume(job, backend, actor)
     assert len(backend.mark_succeeded_calls) == 1
-    assert backend.mark_succeeded_calls[0] == (job.id, _WORKER_ID, {"value": 42})
+    assert backend.mark_succeeded_calls[0] == (
+        job.id,
+        _WORKER_ID,
+        None,
+        _json_dumps({"value": 42}),
+    )
 
 
 # ── Snooze ────────────────────────────────────────────────────────────────
@@ -296,20 +303,32 @@ async def test_consume_shielded_writes_complete_when_task_is_cancelled() -> None
     """shielded write completes even when the consume task is cancelled mid-write."""
 
     write_completed = asyncio.Event()
+    # Why an event at write entry: the cancel must land while the shielded
+    # mark_succeeded is IN FLIGHT. A fixed sleep raced consumer startup
+    # under load — cancelled too early (during setup), the write never
+    # starts and the test fails at the write_completed wait below. The
+    # event is set at the exact point the pin needs: inside the write,
+    # before its designed delay.
+    write_started = asyncio.Event()
 
     class SlowBackend(FakeBackend):
         async def mark_succeeded(
             self,
             job_id: UUID,
             worker_id: UUID,
-            result: dict[str, object] | None,
+            result: dict[str, object] | None = None,
             progress_seq: int = 0,
             progress_state: dict[str, object] | None = None,
             fallback_result_ttl: object = None,
+            *,
+            result_bytes: bytes | None = None,
         ) -> bool:
+            write_started.set()
             await asyncio.sleep(0.05)
             write_completed.set()
-            return await super().mark_succeeded(job_id, worker_id, result)
+            return await super().mark_succeeded(
+                job_id, worker_id, result, result_bytes=result_bytes
+            )
 
     backend = SlowBackend()
     job = make_job_row()
@@ -321,7 +340,10 @@ async def test_consume_shielded_writes_complete_when_task_is_cancelled() -> None
         await _run_consume(job, backend, actor)
 
     task = asyncio.create_task(run())
-    await asyncio.sleep(0.01)
+    try:
+        await asyncio.wait_for(write_started.wait(), timeout=5.0)
+    except TimeoutError:
+        pytest.fail("consumer never entered the shielded mark_succeeded write within 5s")
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
@@ -527,7 +549,15 @@ async def test_consume_external_cancel_routes_to_mark_cancelled() -> None:
     mark_failed_or_retry NOT called.
     """
 
+    # Why an event at actor entry: the cancel must land while the actor is
+    # running — the CancelledError handler that routes to mark_cancelled
+    # wraps only the actor run. A fixed sleep raced consumer startup under
+    # load; cancelled during setup, the CancelledError propagates without
+    # mark_cancelled and the oracle below fails.
+    actor_entered = asyncio.Event()
+
     async def actor(_job: JobRow, _ctx: JobContext[BaseModel]) -> object:
+        actor_entered.set()
         while True:  # noqa: ASYNC110 Why: cancellation test — actor loops until externally cancelled; asyncio.Event would require a separate event per test.
             await asyncio.sleep(0)
 
@@ -538,7 +568,10 @@ async def test_consume_external_cancel_routes_to_mark_cancelled() -> None:
         await _run_consume(job, backend, actor)
 
     t = asyncio.create_task(run())
-    await asyncio.sleep(0.01)
+    try:
+        await asyncio.wait_for(actor_entered.wait(), timeout=5.0)
+    except TimeoutError:
+        pytest.fail("consumer never reached the actor within 5s")
     t.cancel()
     with pytest.raises(asyncio.CancelledError):
         await t
@@ -589,8 +622,14 @@ async def test_consume_deregister_in_finally(scenario: str) -> None:
         await _run_consume(job, backend, actor, active_jobs=registry)
 
     elif scenario == "cancel":
+        # Same discipline as test_consume_external_cancel_routes_to_mark_cancelled:
+        # await the actor's entry before cancelling, so the CancelledError
+        # lands inside the actor-run handler (not setup) and the finally
+        # deregistration below is exercised on the cancel path.
+        actor_entered = asyncio.Event()
 
         async def actor(_job: JobRow, _ctx: JobContext[BaseModel]) -> object:
+            actor_entered.set()
             while True:  # noqa: ASYNC110 Why: cancellation test — actor loops until externally cancelled.
                 await asyncio.sleep(0)
 
@@ -600,7 +639,10 @@ async def test_consume_deregister_in_finally(scenario: str) -> None:
             await _run_consume(job, backend, actor, active_jobs=registry)
 
         t = asyncio.create_task(run())
-        await asyncio.sleep(0.01)
+        try:
+            await asyncio.wait_for(actor_entered.wait(), timeout=5.0)
+        except TimeoutError:
+            pytest.fail("consumer never reached the actor within 5s")
         t.cancel()
         with pytest.raises(asyncio.CancelledError):
             await t

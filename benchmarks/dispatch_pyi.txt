@@ -1,0 +1,58 @@
+
+  _     ._   __/__   _ _  _  _ _/_   Recorded: 16:14:43  Samples:  20240
+ /_//_/// /_\ / //_// / //_'/ //     Duration: 20.281    CPU time: 20.209
+/   _/                      v5.1.3
+
+Program: benchmarks/stress_dispatch.py
+
+20.280 <module>  stress_dispatch.py:1
+└─ 20.001 run  asyncio/runners.py:161
+   └─ 20.000 Runner.run  asyncio/runners.py:87
+      └─ 20.000 _UnixSelectorEventLoop.run_until_complete  asyncio/base_events.py:690
+         └─ 20.000 _UnixSelectorEventLoop.run_forever  asyncio/base_events.py:679
+            └─ 20.000 _UnixSelectorEventLoop._run_once  asyncio/base_events.py:1981
+               └─ 20.000 Handle._run  asyncio/events.py:87
+                  └─ 20.000 main  stress_dispatch.py:206
+                     ├─ 6.933 solve_dependencies  taskq/_di/solver.py:61
+                     │  ├─ 3.438 signature  inspect.py:3392
+                     │  │  └─ 3.346 Signature.from_callable  inspect.py:3113
+                     │  │     └─ 3.285 _signature_from_callable  inspect.py:2505
+                     │  │        ├─ 2.327 Signature._signature_from_function  inspect.py:2401
+                     │  │        │  ├─ 0.745 [self]  inspect.py
+                     │  │        │  ├─ 0.628 Parameter.__init__  inspect.py:2773
+                     │  │        │  ├─ 0.405 Signature.__init__  inspect.py:3061
+                     │  │        │  └─ 0.355 get_annotations  inspect.py:177
+                     │  │        ├─ 0.605 [self]  inspect.py
+                     │  │        └─ 0.217 unwrap  inspect.py:773
+                     │  ├─ 1.285 [self]  taskq/_di/solver.py
+                     │  ├─ 1.079 get_type_hints  typing.py:2426
+                     │  │  ├─ 0.529 [self]  typing.py
+                     │  │  └─ 0.315 _eval_type  typing.py:463
+                     │  ├─ 0.405 _unwrap_scope_override  taskq/_di/solver.py:23
+                     │  │  └─ 0.310 get_origin  typing.py:2555
+                     │  └─ 0.240 BoundLoggerLazyProxy.__getattr__  structlog/_config.py:416
+                     ├─ 6.767 _job_row_from_record  taskq/backend/_records.py:67
+                     │  ├─ 2.187 _FakeRecord.__getitem__  stress_dispatch.py:139
+                     │  │  ├─ 1.161 [self]  stress_dispatch.py
+                     │  │  └─ 1.026 _FakeRecord.__getitem__  <built-in>
+                     │  ├─ 1.834 [self]  taskq/backend/_records.py
+                     │  ├─ 1.288 JobRow.__init__  <string>:2
+                     │  └─ 1.185 jsonb_to_dict  taskq/backend/_records.py:37
+                     │     └─ 0.909 loads  taskq/_json.py:160
+                     │        └─ 0.786 loads  <built-in>
+                     ├─ 4.447 compute_next_fire_after  taskq/cron.py:129
+                     │  ├─ 3.006 croniter.__init__  croniter/croniter.py:289
+                     │  │  └─ 2.876 croniter._expand  croniter/croniter.py:911
+                     │  │     ├─ 1.277 [self]  croniter/croniter.py
+                     │  │     └─ 0.695 sub  re/__init__.py:183
+                     │  │        ├─ 0.256 _compile  re/__init__.py:330
+                     │  │        ├─ 0.234 Pattern.sub  <built-in>
+                     │  │        └─ 0.205 [self]  re/__init__.py
+                     │  └─ 1.266 croniter.get_next  croniter/croniter.py:345
+                     │        [5 frames hidden]  croniter, dateutil
+                     ├─ 1.100 dumps_jsonb_str  taskq/_json.py:89
+                     │  ├─ 0.525 dumps  taskq/_json.py:57
+                     │  │  └─ 0.469 dumps  <built-in>
+                     │  └─ 0.465 [self]  taskq/_json.py
+                     └─ 0.702 [self]  stress_dispatch.py
+

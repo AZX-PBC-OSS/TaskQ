@@ -10,18 +10,20 @@ from typing import TYPE_CHECKING
 
 import structlog
 
-from taskq._json import dumps_jsonb_str
+from taskq._json import dumps_jsonb_str, loads
 from taskq.backend._protocol import (
     CancelPhase,
     EnqueueArgs,
     JobRow,
     batch_cap_groups,
 )
+from taskq.backend._records import item_jsonb_param, item_tags_jsonb_param
 from taskq.exceptions import (
     BatchMaxPendingExceededError,
     MaxPendingExceededError,
     SingletonCollisionError,
 )
+from taskq.testing._reads import _read_copy
 
 if TYPE_CHECKING:
     from taskq.testing.in_memory import InMemoryBackend
@@ -61,7 +63,7 @@ async def _enqueue(self: "InMemoryBackend", args: EnqueueArgs) -> JobRow:
                 existing_job_id=str(existing_row.id),
                 dedup_reason="unique_for",
             )
-            return existing_row
+            return _read_copy(existing_row)
 
     if args.metadata.get("singleton") is True:
         from datetime import timedelta
@@ -115,9 +117,14 @@ async def _enqueue(self: "InMemoryBackend", args: EnqueueArgs) -> JobRow:
     # an app validated against InMemory broke in production.  The guard
     # lives in this mirror, NOT in EnqueueArgs._check_no_nul_text, because
     # a struct-level check would double-scan the PG hot path, which
-    # already guards at bind time.
-    dumps_jsonb_str(args.payload)
-    dumps_jsonb_str(args.metadata)
+    # already guards at bind time.  The guard's serialization is also
+    # what PG stores: the jsonb column holds the orjson text and reads it
+    # back through loads, so the stored values are its round-trip —
+    # values whose encoding differs from the Python object (NaN/Infinity
+    # → null, UUID → string, tuple → array) read back exactly as PG
+    # reads them.
+    stored_payload = loads(dumps_jsonb_str(args.payload))
+    stored_metadata = loads(dumps_jsonb_str(args.metadata))
 
     if args.idempotency_key is not None:
         # NOTE: InMemoryBackend always simulates the fully-migrated
@@ -145,7 +152,7 @@ async def _enqueue(self: "InMemoryBackend", args: EnqueueArgs) -> JobRow:
                     existing_job_id=str(existing_row.id),
                     dedup_reason="idempotency_key",
                 )
-                return existing_row
+                return _read_copy(existing_row)
 
     now = self._clock.now()
     # None means immediate: stamp from this backend's own (single-domain)
@@ -167,7 +174,7 @@ async def _enqueue(self: "InMemoryBackend", args: EnqueueArgs) -> JobRow:
         queue=args.queue,
         identity_key=args.identity_key,
         fairness_key=args.fairness_key,
-        payload=args.payload,
+        payload=stored_payload,
         payload_schema_ver=args.payload_schema_ver,
         status=status,  # type: ignore[arg-type]  # Why: ternary "pending" if ... else "scheduled" is not narrowed to JobStatus by pyright
         priority=args.priority,
@@ -198,7 +205,7 @@ async def _enqueue(self: "InMemoryBackend", args: EnqueueArgs) -> JobRow:
         idempotency_scope=args.idempotency_scope,
         trace_id=args.trace_id,
         span_id=args.span_id,
-        metadata=args.metadata,
+        metadata=stored_metadata,
         tags=args.tags,
     )
 
@@ -219,7 +226,7 @@ async def _enqueue(self: "InMemoryBackend", args: EnqueueArgs) -> JobRow:
         actor=args.actor,
     )
 
-    return row
+    return _read_copy(row)
 
 
 async def _enqueue_with_conn(
@@ -239,6 +246,15 @@ async def _enqueue_batch(
 ) -> list[JobRow]:
     if not args_list:
         raise ValueError("args_list must not be empty")
+    # PG-tier parity for jsonb serialization failures: the PG build loop
+    # serializes every item BEFORE any SQL runs, so a NUL-bearing item
+    # rejects the whole batch with a per-item-annotated
+    # PayloadValidationError and nothing written. Without this preflight
+    # the per-item loop below admitted items 0..k-1 before item k raised
+    # a bare, unattributed ValueError -- diverging from PG on both
+    # attribution and admission. Runs before the cap preflight to match
+    # the PG statement order (build loop precedes the cap count).
+    _check_batch_jsonb(args_list)
     refusals: list[MaxPendingExceededError] = []
     refused_indices: dict[str, list[int]] = {}
     admitted_args = args_list
@@ -274,6 +290,21 @@ async def _enqueue_batch(
             admitted_count=len(rows),
         )
     return rows
+
+
+def _check_batch_jsonb(args_list: list[EnqueueArgs]) -> None:
+    """Serialize every batch item's jsonb-bound values with per-item
+    attribution, mirroring the PG tier's build loop.
+
+    Same helpers, so the same annotated PayloadValidationError (item
+    index, actor, field) and the same NUL_JSONB_ERROR wording; tags
+    included because the PG batch path binds them through jsonb[]
+    (see item_tags_jsonb_param).
+    """
+    for idx, args in enumerate(args_list):
+        item_jsonb_param(args.payload, idx=idx, field="payload", actor=args.actor)
+        item_jsonb_param(args.metadata, idx=idx, field="metadata", actor=args.actor)
+        item_tags_jsonb_param(args.tags, idx=idx, actor=args.actor)
 
 
 async def _batch_cap_refusals(
@@ -336,24 +367,77 @@ async def _enqueue_batch_fast(
         raise ValueError("args_list must not be empty")
     # COPY has no ON CONFLICT arbiter: any duplicate idempotency key —
     # within the batch or already stored — aborts the ENTIRE batch on PG
-    # (raw UniqueViolationError on jobs_idempotency_scope_key_uniq;
-    # nothing is written).  Mirror that here instead of silently
-    # deduplicating item-by-item, which reported a count that included
-    # rows PG would never have written (protocol parity; see
-    # Backend.enqueue_batch_fast's docstring).
-    from asyncpg.exceptions import UniqueViolationError
+    # (a violation of jobs_idempotency_scope_key_uniq; nothing is
+    # written).  Mirror that here instead of silently deduplicating
+    # item-by-item, which reported a count that included rows PG would
+    # never have written (protocol parity; see
+    # Backend.enqueue_batch_fast's docstring). The mirror raises the
+    # SAME typed classification the PG COPY path now gives
+    # (DuplicateIdempotencyKeyError, not a raw asyncpg violation) — and
+    # names the offending pair exactly, since the detecting loop knows
+    # it (the PG path best-effort matches the violation's detail line
+    # against the batch's candidates).
+    from taskq.exceptions import DuplicateIdempotencyKeyError
 
+    # Why this check ORDER: PG's fast path surfaces defects build-loop
+    # NUL guard → pre-COPY cap count → COPY duplicate violation, so a
+    # multi-defect batch raises PayloadValidationError (or the cap
+    # refusal) there — the duplicate is never reached. The mirror checks
+    # in the same order so the same batch raises the same typed error on
+    # both backends; checking duplicates first made a NUL+duplicate
+    # batch raise DuplicateIdempotencyKeyError in memory while PG raised
+    # PayloadValidationError.
+    _check_batch_jsonb(args_list)
+    refusals: list[MaxPendingExceededError] = []
+    refused_indices: dict[str, list[int]] = {}
+    admitted_args = args_list
+    if enforce_max_pending:
+        # Per-actor partition parity with the PG fast tier (see
+        # _enqueue_batch above and PostgresBackend.enqueue_batch_fast):
+        # over-cap actors' items are refused as a whole group, the rest
+        # COPY through, and the typed refusal raises AFTER the admitted
+        # rows are stored.
+        refusals = await _batch_cap_refusals(self, args_list)
+        if refusals:
+            refused_indices = {
+                r.actor: [i for i, a in enumerate(args_list) if a.actor == r.actor]
+                for r in refusals
+            }
+            refused_names = {r.actor for r in refusals}
+            admitted_args = [a for a in args_list if a.actor not in refused_names]
     seen: set[tuple[str, str]] = set()
-    for args in args_list:
+    # Only the ADMITTED items' pairs can violate: the PG COPY contains
+    # only admitted records, so an in-batch or stored duplicate among
+    # refused items never aborts it.
+    for args in admitted_args:
         if args.idempotency_key is None:
             continue
         pair = (args.idempotency_scope, str(args.idempotency_key))
         if pair in seen or pair in self._idempotency_index:
-            exc = UniqueViolationError(
-                "duplicate key value violates unique constraint 'jobs_idempotency_scope_key_uniq'"
+            logger.info(
+                "batch-fast-duplicate-idempotency-key",
+                batch_size=len(args_list),
+                idempotency_key=pair[1],
+                idempotency_scope=pair[0],
             )
-            exc.constraint_name = "jobs_idempotency_scope_key_uniq"
-            raise exc
+            raise DuplicateIdempotencyKeyError(
+                idempotency_key=pair[1],
+                idempotency_scope=pair[0],
+            )
         seen.add(pair)
-    rows = await _enqueue_batch(self, args_list, enforce_max_pending=enforce_max_pending)
+    # Insert the admitted subset with cap enforcement off: the partition
+    # above is this tier's only admission decision, and re-running the
+    # aggregate inside _enqueue_batch would refuse again (it is not the
+    # no-op it was pre-partition). An empty admitted list skips storage
+    # entirely — the boundary raise below is the whole outcome, matching
+    # the PG fast tier's "no COPY, no fixup, no notify" arm.
+    rows: list[JobRow] = []
+    if admitted_args:
+        rows = await _enqueue_batch(self, admitted_args, enforce_max_pending=False)
+    if refusals:
+        raise BatchMaxPendingExceededError(
+            refusals=refusals,
+            refused_indices=refused_indices,
+            admitted_count=len(rows),
+        )
     return len(rows)

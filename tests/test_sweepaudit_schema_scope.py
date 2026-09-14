@@ -145,13 +145,26 @@ class _NullTx:
 
 
 class _RecordingPgConn:
-    """Stand-in asyncpg connection recording statements for the lock-key pin."""
+    """Stand-in asyncpg connection recording statements for the lock-key pin.
+
+    Models the two-tier acquire's contended tier: the fast-path
+    ``pg_try_advisory_xact_lock`` returns False (a holder owns the lock),
+    so the savepoint-scoped blocking acquire — the statement whose key
+    this module pins — runs through ``execute`` and lands in *executed*.
+    """
 
     def __init__(self) -> None:
         self.executed: list[tuple[str, tuple[object, ...]]] = []
 
     def transaction(self) -> _NullTx:
         return _NullTx()
+
+    async def fetchval(self, sql: str, *args: object) -> object:
+        if "pg_try_advisory_xact_lock" in sql:
+            return False
+        if "current_setting" in sql:
+            return "0"
+        raise AssertionError(f"unexpected fetchval on the acquire path: {sql}")
 
     async def execute(self, sql: str, *args: object) -> str:
         self.executed.append((sql, args))

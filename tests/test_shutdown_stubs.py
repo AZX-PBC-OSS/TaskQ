@@ -39,6 +39,8 @@ class _BackendMethods:
         worker_id: object,
         result: object,
         fallback_result_ttl: object = None,
+        *,
+        result_bytes: object = None,
     ) -> bool:
         return True
 
@@ -49,6 +51,8 @@ class _BackendMethods:
         worker_id: object,
         result: object,
         fallback_result_ttl: object = None,
+        *,
+        result_bytes: object = None,
     ) -> bool:
         return True
 

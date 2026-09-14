@@ -331,6 +331,33 @@ async def test_resolve_keyed_ref_wrong_model_type_raises_validation_error() -> N
         )  # pyright: ignore[reportPrivateUsage]  # Why: exercising private resolution helper directly, matching existing test conventions.
 
 
+async def test_resolve_keyed_ref_validation_errors_are_sanitized() -> None:
+    """The cross-type conversion path (model_dump() → model_validate()) is
+    load-bearing — it is how a foreign BaseModel payload becomes an instance
+    of ref.payload_type — and its ValidationError details follow the
+    documented sanitization contract (include_url=False, include_input=False):
+    the attacker-controlled payload value and pydantic doc URLs must not
+    ride into error_message / web admin on validation_errors."""
+    reg = RateLimitRegistry()
+    ref = _keyed_ref(base_name="session-cap")
+
+    class _ForeignPayload(BaseModel):
+        secret_value: str = "attacker-controlled-value"
+
+    try:
+        await reg._resolve_reservation_name(
+            ref, payload=_ForeignPayload(), pg_pool=None, settings=None
+        )  # pyright: ignore[reportPrivateUsage]
+        raise AssertionError("expected PayloadValidationError")
+    except PayloadValidationError as exc:
+        errs = exc.validation_errors
+        assert errs, "conversion failure must carry its error details"
+        for err in errs:
+            assert "input" not in err, f"unsanitized payload input leaked: {err}"
+            assert "url" not in err, f"pydantic doc URL leaked: {err}"
+            assert "attacker-controlled-value" not in str(err)
+
+
 async def test_resolve_keyed_ref_key_fn_returning_non_str_raises_value_error() -> None:
     """key_fn returning a non-str (e.g. int) raises ValueError — a broken
     key_fn can never silently resolve to a shared/global reservation."""

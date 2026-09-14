@@ -9,7 +9,9 @@ responsibility.
 
 import inspect
 import sys
-from typing import Annotated, get_args, get_origin, get_type_hints
+from collections.abc import Callable
+from functools import lru_cache
+from typing import Annotated, Any, get_args, get_origin, get_type_hints
 
 import structlog
 
@@ -58,6 +60,49 @@ def _unwrap_scope_override(
     return (unwrapped, override_scope)
 
 
+@lru_cache(maxsize=512)
+def _cached_introspection(
+    func: Callable[..., object],
+) -> tuple[
+    dict[str, Any],
+    tuple[tuple[str, bool, Any], ...],
+]:
+    """Resolve *func*'s type hints and precompute its signature check-plan.
+
+    Reflection dominated the per-job solve cost (~24µs of ~42µs measured):
+    both ``get_type_hints`` and ``inspect.signature`` are pure functions of
+    the callable, so they are memoized here, keyed on the ``func`` object
+    and bounded at 512 entries so dynamically-generated callables (e.g.
+    test doubles built per-example) cannot grow it without bound. The
+    second element precomputes exactly what the unannotated-parameter
+    check needs per signature entry — name, whether a default exists, and
+    the parameter kind — so the hot loop touches no ``inspect`` objects.
+
+    Two invariants callers must respect:
+
+    - The returned hints dict is shared across every solve of *func*;
+      treat it as read-only (the solver only iterates it).
+    - Hints resolve against the module globals seen at FIRST resolution
+      and are not re-resolved when those globals change afterwards. This
+      differs from uncached ``get_type_hints`` only for forward references
+      whose name appears in the module's globals after the first solve —
+      not a path actor modules take in practice: registration happens
+      after import, and job dispatch resolves against concrete types.
+    """
+    module = sys.modules.get(func.__module__)
+    globalns = vars(module) if module is not None else {}
+    hints: dict[str, Any] = get_type_hints(
+        func,
+        include_extras=True,
+        globalns=globalns,
+    )
+    sig_params = tuple(
+        (name, param.default is inspect.Parameter.empty, param.kind)
+        for name, param in inspect.signature(func).parameters.items()
+    )
+    return hints, sig_params
+
+
 async def solve_dependencies(
     *,
     func: object,
@@ -91,13 +136,7 @@ async def solve_dependencies(
         raise DIError(f"solve_dependencies requires a callable, got {type(func)!r}")
 
     try:
-        module = sys.modules.get(func.__module__)
-        globalns = vars(module) if module is not None else {}
-        hints = get_type_hints(
-            func,
-            include_extras=True,
-            globalns=globalns,
-        )
+        hints, sig_params = _cached_introspection(func)
     except NameError as name_error:
         raise DIError(
             f"unresolvable annotation in {func.__module__}.{func.__qualname__}: {name_error}"
@@ -140,13 +179,12 @@ async def solve_dependencies(
             cache_hit=container.last_cache_hit,
         )
 
-    sig = inspect.signature(func)
-    for pname, param in sig.parameters.items():
+    for pname, default_is_empty, param_kind in sig_params:
         if pname == "self":
             continue
         if pname in kwargs or pname in passthrough:
             continue
-        if param.default is inspect.Parameter.empty and param.kind in (
+        if default_is_empty and param_kind in (
             inspect.Parameter.POSITIONAL_OR_KEYWORD,
             inspect.Parameter.KEYWORD_ONLY,
         ):

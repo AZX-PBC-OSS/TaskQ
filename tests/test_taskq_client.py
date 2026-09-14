@@ -32,6 +32,7 @@ from taskq.backend._protocol import Backend, JobFilter, JobId, JobRow
 from taskq.client._handle import JobHandle
 from taskq.client._taskq import JobEvent, _stream_pg, _stream_redis
 from taskq.migrate import apply_pending
+from taskq.testing.assertions import wait_for
 from taskq.types import CancelResult
 
 pytestmark = pytest.mark.integration
@@ -666,6 +667,28 @@ async def _delete_job(pool: asyncpg.Pool, schema: str, job_id: UUID) -> None:
         )
 
 
+async def _wait_for_event_bounded(
+    event: asyncio.Event,
+    *,
+    description: str,
+    timeout: float = 5.0,  # noqa: ASYNC109  # Why: bounded wait helper, the same shape as wait_for in taskq.testing.assertions — not an asyncio.timeout scope.
+) -> None:
+    """Bounded event wait that never routes through ``asyncio.wait_for``.
+
+    Why not :func:`taskq.testing.assertions.wait_for`: the tests below
+    monkeypatch ``asyncio.wait_for`` at module scope, so ANY wait_for-
+    based wait from the test side would be hijacked by the fake — and
+    the test's own call would land first, consuming the injected-OSError
+    branch meant for the stream. ``asyncio.timeout`` is a different seam
+    and stays real.
+    """
+    try:
+        async with asyncio.timeout(timeout):
+            await event.wait()
+    except TimeoutError:
+        pytest.fail(f"{description} within {timeout}s")
+
+
 class TestStreamPgInternals:
     """Direct unit tests for :func:`taskq.client._taskq._stream_pg`.
 
@@ -728,6 +751,11 @@ class TestStreamPgInternals:
             assert pool is not None
 
             events: list[JobEvent] = []
+            # Wired into the consume double: _stream_pg awaits add_listener
+            # (the server-side LISTEN) strictly before its first fetch and
+            # yield, so the first appended event proves the LISTEN
+            # registration landed — no timed window hoping it did.
+            listen_registered = asyncio.Event()
 
             async def _consume() -> None:
                 async for evt in _stream_pg(
@@ -740,9 +768,15 @@ class TestStreamPgInternals:
                     last_status=None,
                 ):
                     events.append(evt)
+                    listen_registered.set()
 
             consumer = asyncio.create_task(_consume())
-            await asyncio.sleep(0.2)  # let the LISTEN registration land
+            # Event-driven gate instead of a fixed 0.2s sleep: the window
+            # races the dedicated connection's startup under load, and a
+            # NOTIFY sent before the registration lands is missed — the
+            # stream would park on its 30s poll timeout and fail the
+            # bounded wait below.
+            await wait_for(listen_registered, timeout=5.0)
             await _set_job_status(pool, _SCHEMA_LABEL, handle.job_id, "succeeded")
             async with pool.acquire() as conn:
                 await conn.execute(f"NOTIFY \"{wake_channel(_SCHEMA_LABEL)}\", 'x'")
@@ -827,6 +861,11 @@ class TestStreamPgInternals:
 
             real_wait_for = asyncio.wait_for
             call_count = 0
+            # Wired into the fake exactly where the observable flips: the
+            # event fires at the injected OSError itself, so the wait
+            # below is on the real thing, not a timed window hoping the
+            # consumer reached it under load.
+            os_fired = asyncio.Event()
 
             async def _fake_wait_for(aw: object, timeout: float | None = None) -> object:  # noqa: ASYNC109 — mirrors asyncio.wait_for's signature to monkeypatch it in a test
                 nonlocal call_count
@@ -835,6 +874,7 @@ class TestStreamPgInternals:
                     close = getattr(aw, "close", None)
                     if callable(close):
                         close()
+                    os_fired.set()
                     raise OSError("simulated LISTEN connection loss")
                 return await real_wait_for(aw, timeout)  # type: ignore[arg-type]
 
@@ -855,7 +895,10 @@ class TestStreamPgInternals:
                     events.append(evt)
 
             consumer = asyncio.create_task(_consume())
-            await asyncio.sleep(0.2)
+            await _wait_for_event_bounded(
+                os_fired,
+                description="the injected OSError never fired",
+            )
             assert call_count >= 1  # the injected OSError has fired
             # A non-terminal transition inside the fallback poll loop exercises
             # the loop-back path (as opposed to returning immediately).
@@ -887,6 +930,11 @@ class TestStreamPgInternals:
 
             real_wait_for = asyncio.wait_for
             call_count = 0
+            # Wired into the fake exactly where the observable flips: the
+            # event fires at the injected OSError itself, so the wait
+            # below is on the real thing, not a timed window hoping the
+            # consumer reached it under load.
+            os_fired = asyncio.Event()
 
             async def _fake_wait_for(aw: object, timeout: float | None = None) -> object:  # noqa: ASYNC109 — mirrors asyncio.wait_for's signature to monkeypatch it in a test
                 nonlocal call_count
@@ -895,6 +943,7 @@ class TestStreamPgInternals:
                     close = getattr(aw, "close", None)
                     if callable(close):
                         close()
+                    os_fired.set()
                     raise OSError("simulated LISTEN connection loss")
                 return await real_wait_for(aw, timeout)  # type: ignore[arg-type]
 
@@ -913,7 +962,10 @@ class TestStreamPgInternals:
                     pass
 
             consumer = asyncio.create_task(_consume())
-            await asyncio.sleep(0.2)
+            await _wait_for_event_bounded(
+                os_fired,
+                description="the injected OSError never fired",
+            )
             assert call_count >= 1  # now in the fallback poll loop
             await _delete_job(pool, _SCHEMA_LABEL, handle.job_id)
 

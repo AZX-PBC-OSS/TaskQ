@@ -8,15 +8,17 @@ writes the enqueues plus the schedule advances as a handful of batched
 statements inside the caller's transaction.
 """
 
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
-from typing import Literal
+from typing import Final, Literal
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
 import asyncpg
 import structlog
+from asyncpg.exceptions import UniqueViolationError
 from opentelemetry import trace
 from opentelemetry.trace import Span, SpanKind, StatusCode
 
@@ -51,6 +53,7 @@ from taskq.obs import (
 )
 from taskq.obs._redact_exc import safe_exception_message
 from taskq.settings import WorkerSettings
+from taskq.worker._transient import TRANSIENT_PG_ERRORS
 
 log: structlog.stdlib.BoundLogger = get_logger(__name__)
 
@@ -119,6 +122,27 @@ class _FireFailure:
 
 
 @dataclass(frozen=True, slots=True)
+class _BufferedFailureTelemetry:
+    """Deferred failure telemetry for one failed-or-struck schedule.
+
+    Carries everything the end-of-tick emission needs to open the
+    per-failure span (PRODUCER kind, the link captured at failure time,
+    schedule/worker attributes), mark it ERROR, attach the
+    ``cron.auto_disabled`` event, and emit the metric delta.  Nothing is
+    exported at failure time: a strike persists only if the tick's
+    failures UPDATE executes AND the caller's transaction commits, so
+    exporting at strike time claims schedule failures (and auto-disables)
+    that a later transient error can still roll back — see the emission
+    section in :func:`tick_cron`.
+    """
+
+    failure: _FireFailure
+    exc: Exception
+    links: list[trace.Link] | None
+    worker_id: UUID
+
+
+@dataclass(frozen=True, slots=True)
 class _SuppressedFire:
     """One planned fire dropped before the enqueue by a policy preflight,
     with its computed ``next_fire_at`` (the suppression UPDATE advances the
@@ -146,43 +170,30 @@ async def resolve_payload(row: asyncpg.Record) -> dict[str, object]:
     return await resolve_cron_payload(pf, row["metadata"])
 
 
-def _record_fire_failure(
-    span: Span,
+def _compute_fire_failure(
     row: asyncpg.Record,
     exc: Exception,
     settings: WorkerSettings,
 ) -> _FireFailure:
-    """Mirror of the pre-batching per-schedule except-branch: mark the span,
-    bump the failure count, decide auto-disable.
+    """The pure half of the per-failure except-branch: bump the failure
+    count, decide auto-disable, sanitize the error text.
 
-    The span status description and the ``cron.auto_disabled`` event carry
-    :func:`safe_exception_message` — span text is exported to third-party
-    telemetry backends, and ``str()`` of a constraint violation quotes row
-    values.  The returned ``error_text`` is NUL-sanitized (see
-    :class:`_FireFailure`) because it is bound as ``text`` by the batched
-    failures UPDATE.
+    No span, no export — the telemetry half (:func:`_mark_failure_span`)
+    runs from the end-of-tick emission only, after every statement of the
+    tick has executed; see :class:`_BufferedFailureTelemetry`.
 
-    Both fall back to the exception's class name when the message is
-    empty: ``str(TimeoutError())`` is ``''`` — exactly what
-    ``resolve_payload``'s ``wait_for`` raises for a payload factory that
-    never returns — and without the fallback a schedule can be failing
-    (and auto-disabled) with an empty reason in the column, the log event
-    and the exported span status.
+    ``error_text`` is NUL-sanitized (see :class:`_FireFailure`) because it
+    is bound as ``text`` by the batched failures UPDATE, and carries the
+    exception's class name as a fallback when the message is empty:
+    ``str(TimeoutError())`` is ``''`` — exactly what ``resolve_payload``'s
+    ``wait_for`` raises for a payload factory that never returns — and
+    without the fallback a schedule can be failing (and auto-disabled)
+    with an empty reason in the column, the log event and the exported
+    span status.
     """
     class_name = type(exc).__name__
-    span_text = safe_exception_message(exc) or class_name
-    span.set_status(StatusCode.ERROR, span_text)
     consecutive: int = (row["consecutive_failures"] or 0) + 1
     auto_disable = consecutive >= settings.cron_auto_disable_threshold
-    if auto_disable:
-        span.add_event(
-            "cron.auto_disabled",
-            {
-                "schedule_name": row["actor"],
-                "last_error": span_text,
-                "failure_count": consecutive,
-            },
-        )
     return _FireFailure(
         schedule_id=row["id"],
         row=row,
@@ -190,6 +201,34 @@ def _record_fire_failure(
         consecutive=consecutive,
         auto_disable=auto_disable,
     )
+
+
+def _mark_failure_span(
+    span: Span,
+    failure: _FireFailure,
+    exc: Exception,
+) -> None:
+    """The telemetry half of the old per-failure except-branch: mark the
+    (already-open) failure span ERROR and attach ``cron.auto_disabled``.
+
+    The span status description and the event carry
+    :func:`safe_exception_message` — span text is exported to third-party
+    telemetry backends, and ``str()`` of a constraint violation quotes row
+    values.  Both fall back to the exception's class name when the message
+    is empty, for the same reason as :func:`_compute_fire_failure`.
+    """
+    class_name = type(exc).__name__
+    span_text = safe_exception_message(exc) or class_name
+    span.set_status(StatusCode.ERROR, span_text)
+    if failure.auto_disable:
+        span.add_event(
+            "cron.auto_disabled",
+            {
+                "schedule_name": failure.row["actor"],
+                "last_error": span_text,
+                "failure_count": failure.consecutive,
+            },
+        )
 
 
 async def _suppress_policy_collisions(
@@ -350,6 +389,222 @@ def _max_pending_suppressed(plan: _FireSuccess, current_count: int, cap: int) ->
     )
 
 
+_DETAIL_KEY_RE = re.compile(r"^Key \((?P<cols>[^)]*)\)=\((?P<vals>.*)\) already exists\.$")
+"""Postgres' unique-violation detail line: the index's columns and the
+colliding values.  ``jobs_singleton_uniq`` is keyed on ``(actor)`` and
+``jobs_pkey`` on ``(id)`` (the initial migration), so the values name the
+colliding actor or the collided job id — the one fact per-plan
+attribution needs without re-inserting anything."""
+
+_ATTRIBUTABLE_CONSTRAINTS: Final[frozenset[str]] = frozenset({"jobs_pkey", "jobs_singleton_uniq"})
+"""The only constraints whose violations per-plan attribution may trust.
+
+The detail regex accepts any ``(cols)=(vals) already exists.`` shape an
+index can produce, but only these two are TaskQ's own.  An operator-added
+non-partial unique index on ``(actor)`` raises the same ``Key
+(actor)=(x)`` detail under a different constraint name; see
+:func:`_attribute_violation`."""
+
+
+def _attribute_violation(
+    pending: list[_FireSuccess],
+    exc: Exception,
+) -> tuple[list[_FireSuccess], list[_FireSuccess]] | None:
+    """Map a batched-INSERT unique violation to the plan(s) that caused it.
+
+    Returns ``(offenders, survivors)``, or ``None`` when the error cannot
+    be attributed SAFELY — any other exception type, a violation of a
+    constraint TaskQ does not own, an unparsable or truncated detail
+    line, or a value naming no pending plan.  The caller isolates per
+    plan on ``None`` rather than guessing: striking the wrong schedule is
+    the auto-disable trap this whole path exists to avoid.
+
+    Every attribution is verified against the pending plans before it is
+    trusted: an ``id`` value must be a job id some pending plan actually
+    mints, and an ``actor`` value must name a plan whose args carry the
+    ``singleton`` stamp — the partial index covers only stamped rows, so
+    an unstamped plan for the same actor cannot be the violator.  A value
+    that verifies against nothing pending means the detail is not telling
+    us which of OUR rows collided (PG truncates long detail values;
+    indexes can be added by an operator) — unattributable, on purpose.
+    """
+    if not isinstance(exc, UniqueViolationError):
+        return None
+    # Why: gate on the constraint NAME, not just the detail's column list.
+    # Today only jobs_pkey (id) and jobs_singleton_uniq (actor, partial)
+    # can produce the detail shapes parsed below — but an operator-added
+    # non-partial unique index on (actor) raises the same "Key
+    # (actor)=(x) already exists." detail under its own name, and
+    # attributing from the detail alone would strike a singleton-stamped
+    # plan of that actor when the violator was an unstamped row the
+    # operator's index (not TaskQ's) rejected — a wrong strike toward
+    # auto-disable.  A None/unknown constraint name falls back too: only
+    # the two names TaskQ ships are attributable.
+    if exc.constraint_name not in _ATTRIBUTABLE_CONSTRAINTS:
+        return None
+    match = _DETAIL_KEY_RE.match(exc.detail or "")
+    if match is None:
+        return None
+    cols = match.group("cols")
+    value = match.group("vals")
+    if cols == "id":
+        try:
+            collided: UUID = UUID(value)
+        except ValueError:
+            return None
+        offenders = [
+            plan for plan in pending if any(args.id == collided for args in plan.enqueue_args)
+        ]
+    elif cols == "actor":
+        offenders = [
+            plan
+            for plan in pending
+            if plan.actor == value
+            and any(args.metadata.get("singleton") is True for args in plan.enqueue_args)
+        ]
+    else:
+        return None
+    if not offenders:
+        return None
+    struck_ids = {plan.schedule_id for plan in offenders}
+    return offenders, [plan for plan in pending if plan.schedule_id not in struck_ids]
+
+
+def _strike_plans(
+    plans: list[_FireSuccess],
+    exc: Exception,
+    failures: list[_FireFailure],
+    telemetry: list[_BufferedFailureTelemetry],
+    worker_id: UUID,
+    settings: WorkerSettings,
+) -> None:
+    """Convert write-failed plans into per-schedule failures, appended to
+    *failures*, and buffer their telemetry in *telemetry* for the
+    end-of-tick emission.
+
+    The failure RECORD must exist at strike time — the tick's failures
+    UPDATE binds it — but the span, auto-disable event and metric delta
+    must not be exported here: the strikes only persist if that UPDATE
+    executes AND the caller's transaction commits, and a TRANSIENT error
+    from any later statement of the tick rolls them all back (the
+    emission site in :func:`tick_cron` is the single exporter).
+    """
+    for plan in plans:
+        current_span = trace.get_current_span()
+        current_ctx = current_span.get_span_context()
+        links = [trace.Link(current_ctx)] if current_ctx.is_valid else None
+        failure = _compute_fire_failure(plan.row, exc, settings)
+        failures.append(failure)
+        telemetry.append(
+            _BufferedFailureTelemetry(
+                failure=failure,
+                exc=exc,
+                links=links,
+                worker_id=worker_id,
+            )
+        )
+
+
+async def _enqueue_planned_fires(
+    conn: asyncpg.Connection,
+    backend: Backend,
+    plans: list[_FireSuccess],
+    failures: list[_FireFailure],
+    telemetry: list[_BufferedFailureTelemetry],
+    worker_id: UUID,
+    settings: WorkerSettings,
+) -> list[_FireSuccess]:
+    """Enqueue the planned fires and return the plans whose jobs landed.
+
+    The whole batch is ONE ``INSERT ... SELECT`` statement, so Postgres
+    aborts the entire statement when a single row violates a constraint —
+    and a statement error poisons the surrounding transaction (every later
+    statement fails with SQLSTATE 25P02 until rollback).  Both halves of
+    that sentence are what the pre-batching per-row enqueue never had to
+    face, and what this helper's shape contains:
+
+    * The enqueue runs inside a SAVEPOINT (asyncpg's nested
+      ``conn.transaction()`` on the caller's already-open transaction): a
+      failed batch rolls back to the savepoint, leaving the caller's
+      transaction alive and the tick's remaining bookkeeping — the
+      survivors' advance, the suppression UPDATE, the strikes — committable.
+      Without it, the failure UPDATE below the old inline except-branch
+      raised ``InFailedSQLTransactionError`` itself: no strike ever
+      persisted, while the span/metric telemetry still claimed every
+      schedule failed (and the leader's backstop guard counted the
+      non-transient abort toward killing the worker).
+    * A unique violation is attributed from the error itself
+      (:func:`_attribute_violation`): the colliding plan(s) take one
+      strike each and the SURVIVORS retry as a batch.  The preflight is
+      advisory — a client enqueue committing between the preflight SELECT
+      and this INSERT (READ COMMITTED: the INSERT takes a fresh snapshot)
+      is a race the tick lost for that one actor, not a defect of every
+      schedule in the batch.  Each retry strikes at least one plan, so
+      the loop is bounded by the batch size.
+    * Transient PG errors (:data:`TRANSIENT_PG_ERRORS` — statement
+      timeout, connection drop, server shutdown) re-raise without
+      recording a single failure: the caller's transaction rolls back and
+      the leader's transient handling retries the tick.  A strike is a
+      statement about the SCHEDULE's health; PG weather must not write
+      one, however many schedules were in flight.
+    * Any other failure is not attributable from the error alone, so each
+      plan retries in its own savepoint: the plans that individually fail
+      take their own strike with their own exception; the plans that
+      individually succeed land.  This is the fallback for shapes like a
+      check violation or a NUL that escaped to the server — per-plan cost
+      is paid only on the failure path.
+    """
+    pending = list(plans)
+    landed: list[_FireSuccess] = []
+    while pending:
+        batch_args = [args for plan in pending for args in plan.enqueue_args]
+        try:
+            async with conn.transaction():
+                await backend.enqueue_batch(
+                    batch_args,
+                    connection=conn,
+                    # Pre-admitted by _suppress_policy_collisions, which
+                    # trims every plan to the remaining capacity: re-checking
+                    # here would turn a concurrent client enqueue borrowing the
+                    # last slot into a whole-tick abort, striking schedules
+                    # whose only defect is a busy actor (the auto-disable trap
+                    # the preflight exists to prevent). Accepted converse cost:
+                    # a client commit landing between the preflight SELECT and
+                    # this INSERT overshoots the cap by that commit, bounded by
+                    # one tick's kept plans — liveness over strictness, stated.
+                    # That same commit can violate jobs_singleton_uniq — the
+                    # attribution + survivor-retry below is the backstop for
+                    # exactly that window.
+                    enforce_max_pending=False,
+                )
+            landed.extend(pending)
+            pending = []
+        except TRANSIENT_PG_ERRORS:
+            raise
+        except Exception as exc:
+            attributed = _attribute_violation(pending, exc)
+            if attributed is not None:
+                offenders, survivors = attributed
+                _strike_plans(offenders, exc, failures, telemetry, worker_id, settings)
+                pending = survivors
+            else:
+                for plan in pending:
+                    try:
+                        async with conn.transaction():
+                            await backend.enqueue_batch(
+                                plan.enqueue_args,
+                                connection=conn,
+                                enforce_max_pending=False,
+                            )
+                        landed.append(plan)
+                    except TRANSIENT_PG_ERRORS:
+                        raise
+                    except Exception as plan_exc:
+                        _strike_plans([plan], plan_exc, failures, telemetry, worker_id, settings)
+                pending = []
+    return landed
+
+
 async def tick_cron(
     conn: asyncpg.Connection,
     settings: WorkerSettings,
@@ -466,6 +721,10 @@ async def tick_cron(
 
     successes: list[_FireSuccess] = []
     failures: list[_FireFailure] = []
+    # Failure telemetry (spans, auto-disable events, metric deltas) is
+    # buffered here and exported ONLY after every statement of the tick
+    # has executed — see the emission section at the end of this function.
+    failure_telemetry: list[_BufferedFailureTelemetry] = []
 
     for row in rows:
         current_span = trace.get_current_span()
@@ -475,7 +734,14 @@ async def tick_cron(
         with safe_start_span(
             "cron fire",
             kind=SpanKind.PRODUCER,
-            attributes={"cron_schedule_name": row["actor"], "taskq.worker_id": str(worker_id)},
+            attributes={
+                "cron_schedule_name": row["actor"],
+                "taskq.worker_id": str(worker_id),
+                # Why: per-schedule attribution lives here and on the log
+                # lines, not on the consecutive-failures metric's label --
+                # span cardinality is free (see obs/_otel.py).
+                "taskq.cron_schedule_id": str(row["id"]),
+            },
             links=links,
             new_root=True,
         ) as span:
@@ -484,7 +750,23 @@ async def tick_cron(
                     await _plan_fire(row, server_now, settings, actor_configs, actor_policies)
                 )
             except Exception as exc:
-                failures.append(_record_fire_failure(span, row, exc, settings))
+                # Why buffered, not marked on *span*: this failure joins the
+                # strike telemetry in the end-of-tick emission.  The span
+                # above records the planning ATTEMPT and closes UNSET; the
+                # failure claim (ERROR status, auto-disable event) is the
+                # emission span's to make, and only after the tick's SQL has
+                # all executed — a transient error from any later statement
+                # rolls this failure back with the rest of the tick.
+                failure = _compute_fire_failure(row, exc, settings)
+                failures.append(failure)
+                failure_telemetry.append(
+                    _BufferedFailureTelemetry(
+                        failure=failure,
+                        exc=exc,
+                        links=links,
+                        worker_id=worker_id,
+                    )
+                )
 
     # Policy preflight (singleton / max_pending parity with the client
     # enqueue path) — before the batched enqueue, and only when a planned
@@ -504,47 +786,9 @@ async def tick_cron(
         )
 
     if successes:
-        try:
-            await backend.enqueue_batch(
-                [args for plan in successes for args in plan.enqueue_args],
-                connection=conn,
-                # Pre-admitted by _suppress_policy_collisions above, which
-                # trims every plan to the remaining capacity: re-checking
-                # here would turn a concurrent client enqueue borrowing the
-                # last slot into a whole-tick abort, striking schedules
-                # whose only defect is a busy actor (the auto-disable trap
-                # the preflight exists to prevent). Accepted converse cost:
-                # a client commit landing between the preflight SELECT and
-                # this INSERT overshoots the cap by that commit, bounded by
-                # one tick's kept plans — liveness over strictness, stated.
-                enforce_max_pending=False,
-            )
-        except Exception as exc:
-            # One enqueue statement covers every planned fire, so its failure
-            # fails them all at once.  Convert each planned success into a
-            # per-schedule failure with the same span and metric handling the
-            # planning loop uses, so the auto-disable telemetry survives the
-            # move off the per-row enqueue path.  On a real connection the
-            # failed INSERT has aborted the caller's transaction; the failure
-            # UPDATE below then surfaces that error and the caller's rollback
-            # discards it — the same outcome the per-schedule error branch
-            # produced before batching.
-            unsent, successes = successes, []
-            for plan in unsent:
-                current_span = trace.get_current_span()
-                current_ctx = current_span.get_span_context()
-                links = [trace.Link(current_ctx)] if current_ctx.is_valid else None
-                with safe_start_span(
-                    "cron fire",
-                    kind=SpanKind.PRODUCER,
-                    attributes={
-                        "cron_schedule_name": plan.actor,
-                        "taskq.worker_id": str(worker_id),
-                    },
-                    links=links,
-                    new_root=True,
-                ) as span:
-                    failures.append(_record_fire_failure(span, plan.row, exc, settings))
+        successes = await _enqueue_planned_fires(
+            conn, backend, successes, failures, failure_telemetry, worker_id, settings
+        )
 
     if successes:
         # One statement advances every fired schedule: server-clock
@@ -576,6 +820,7 @@ async def tick_cron(
             [entry.next_fire_at for entry in suppressed],
         )
 
+    disabled_count_after: int | None = None
     if failures:
         # One statement for both failure flavours.  The CASE, not
         # ``enabled = NOT f.disable``, is load-bearing: a plain NOT would
@@ -609,14 +854,47 @@ async def tick_cron(
             )
 
         if any(failure.auto_disable for failure in failures):
-            disabled_count: int = await conn.fetchval(
+            # SQL phase, deliberately: the count must be read INSIDE this
+            # transaction (it includes the tick's own uncommitted disables).
+            # Only the gauge export is deferred to the emission section
+            # below, with the rest of the strike telemetry.
+            disabled_count_after = await conn.fetchval(
                 f'SELECT COUNT(*) FROM "{schema}".cron_schedules WHERE enabled = false'
             )
-            update_disabled_schedules_count(disabled_count)
+
+    # ── Telemetry emission — after every statement of the tick ────────
+    #
+    # Why: the strikes and auto-disables above persist only if the failures
+    # UPDATE executed AND the caller's transaction commits.  A TRANSIENT
+    # error from any later statement re-raises and the leader retries the
+    # tick with nothing persisted — so failure spans, auto-disable events
+    # and metric deltas are buffered (see _BufferedFailureTelemetry) and
+    # exported only here, where every statement has already executed.
+    # Before the buffering, spans opened (and exported) at strike time
+    # claimed schedule failures and auto-disables a later transient error
+    # rolled back: the trace backend said schedule X auto-disabled while
+    # the DB row said enabled with count 0.
+    #
+    # Residual divergence, stated honestly: a failed COMMIT itself still
+    # diverges.  The buffers are emitted right before returning to the
+    # leader, which then commits — if that COMMIT fails (rare infra), the
+    # leader's retry re-runs the tick, re-striking and re-emitting, so the
+    # trace backend can again show a failure the DB does not keep.  Moving
+    # emission past the commit would require the leader to carry the
+    # buffers across the commit boundary, trading this window for a worse
+    # one (a worker death between commit and emit silently LOSES the
+    # telemetry for strikes that did persist).  Success-path telemetry
+    # (fired logs, published-message counters, failure-count resets) and
+    # suppression telemetry share the same residual for the same reason.
 
     for plan in successes:
         if plan.prev_consecutive > 0:
-            record_cron_failure(str(plan.schedule_id), -plan.prev_consecutive)
+            # Why actor, not schedule_id: the metric's dimension is the
+            # registered actor set (bounded by the shipped code); the
+            # schedule id rides the log line below and the cron-fire span.
+            # The delta is this schedule's OWN prior count, so the actor's
+            # balance lands on the sum of its other schedules' counts.
+            record_cron_failure(plan.actor, -plan.prev_consecutive)
         log.info(
             "cron fired",
             kind="cron_fire",
@@ -627,17 +905,42 @@ async def tick_cron(
         )
         record_published_message(plan.actor, plan.queue)
 
-    for failure in failures:
+    for entry in failure_telemetry:
+        # Span shape matches the pre-buffering strike-time export (PRODUCER
+        # kind, the link captured at failure time, the
+        # cron_schedule_name / worker_id / cron_schedule_id attributes) —
+        # only the emission TIME moved.
+        with safe_start_span(
+            "cron fire",
+            kind=SpanKind.PRODUCER,
+            attributes={
+                "cron_schedule_name": entry.failure.row["actor"],
+                "taskq.worker_id": str(entry.worker_id),
+                # Why: same per-schedule attribution as the planning-loop
+                # span above -- the metric lost this label on purpose.
+                "taskq.cron_schedule_id": str(entry.failure.schedule_id),
+            },
+            links=entry.links,
+            new_root=True,
+        ) as span:
+            _mark_failure_span(span, entry.failure, entry.exc)
+        failure = entry.failure
         log.error(
             "cron schedule auto-disabled" if failure.auto_disable else "cron fire failed",
             kind="cron_fire",
             actor=failure.row["actor"],
-            worker_id=str(worker_id),
+            worker_id=str(entry.worker_id),
             schedule_id=str(failure.schedule_id),
             consecutive_failures=failure.consecutive,
             error=failure.error_text,
         )
-        record_cron_failure(str(failure.schedule_id), 1)
+        # Why actor: the schedule id stays on this log line and the
+        # cron-fire span, not on the metric (see the cardinality note in
+        # obs/_otel.py).
+        record_cron_failure(failure.row["actor"], 1)
+
+    if disabled_count_after is not None:
+        update_disabled_schedules_count(disabled_count_after)
 
     for entry in suppressed:
         if entry.reason == "singleton_collision":

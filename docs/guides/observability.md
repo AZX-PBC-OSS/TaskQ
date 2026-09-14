@@ -218,6 +218,7 @@ they represent safety-critical signals.
 | `taskq.backpressure.capacity_refresh_failures` | `1` | `degraded` | Failed refreshes of the enqueue-side `actor_config` capacity cache. `degraded` is `"stale_snapshot"` (a previous snapshot is still being served) or `"no_snapshot"` (the cache never loaded and every enqueue is enforcing the `@actor` literal). | unconditional |
 | `taskq.deadline_exceeded_sweep.jobs_failed` | `1` | `actor` | Jobs failed by the deadline-exceeded sweep. | unconditional |
 | `taskq.heartbeat.misses` | `1` | — | Heartbeat renewal failures. | yes |
+| `taskq.worker.slot_pool.acquire_failures` | `1` | — | Bounded acquires from the per-slot transaction pool that failed (timeout or connection error) — infrastructure, not a job outcome: the claimed job is left for lock-lease reclaim. The per-occurrence job id and cause stay in the `slot-pool-acquire-failed` log event. | yes |
 | `taskq.leader.election_attempts` | `1` | — | Leader election attempts. | yes |
 | `taskq.leader.election_failures` | `1` | — | Election attempts that did not win the lock. | yes |
 | `taskq.error_reporter.failures` | `1` | `reporter_type` | `ErrorReporter` invocation failures. | yes |
@@ -250,6 +251,7 @@ they represent safety-critical signals.
 | `taskq.maintenance_leader.is_leader` | `1` | `worker_id` | `1` on the elected leader pod, `0` on all others. |
 | `taskq.cron.disabled_schedules` | `1` | — | Count of currently disabled cron schedules. |
 | `taskq.heartbeat.consecutive_failures` | — | — | Consecutive heartbeat tick failures for this worker (sample-on-scrape). |
+| `taskq.worker.slot_pool.connections_in_use` | `1` | — | Connections of the per-slot transaction pool currently held by dispatching jobs (reported only when the worker runs one). A pool pinned at its maximum with zero acquire failures is saturation — visible below the acquire-failure cliff. |
 | `taskq.maintenance_leader.sweep_last_success_seconds` | `s` | `sweep_name` | Unix timestamp of each sweep's last successful call. `time() - this value` is sweep staleness; a value that never moves while the process runs is a stalled sweep. |
 | `taskq.maintenance_leader.sweep_batch_size` | `1` | `sweep_name` | Rows per committed batch each sweep is currently using. A value below `event_writer_batch_size` is the reduced (degraded) tier. |
 | `taskq.maintenance_leader.sweep_batch_size_configured` | `1` | `sweep_name` | The batch size this worker's `event_writer_batch_size` configures for each sweep; emitted at the same call site as `sweep_batch_size` so the sweep-degraded alert compares the two label-matched. |
@@ -271,15 +273,38 @@ or zero row sample.
 
 | Metric name | Unit | Attributes | Description |
 |---|---|---|---|
-| `taskq.cron.consecutive_failures` | `1` | — | Consecutive cron execution failures, summed across schedules. On success the caller adds a negative delta equal to the current count for that schedule, so a non-zero total means at least one schedule is failing; the `cron fired` and `cron schedule auto-disabled` logs name which. |
+| `taskq.cron.consecutive_failures` | `1` | `actor` | Per-actor summed balance of consecutive cron execution failures: `+1` per failed fire, `-count` on a successful reset. Schedules on one actor share one series, so the balance is the sum over that actor's schedules — **including permanent residue**: an auto-disabled schedule leaves its count behind, re-enabling resets the DB column with no metric delta (the reset runs client-side, in another process), and deleting a schedule strands its count, so a healthy multi-schedule actor can sit permanently non-zero. The authoritative per-schedule counts are the `cron_schedules.consecutive_failures` column and the `cron fired` / `cron fire failed` / `cron schedule auto-disabled` logs (plus the `taskq.cron_schedule_id` attribute on the `cron fire` span); alert on `taskq.cron.disabled_schedules > 0` (the shipped `rules.yaml` alert) rather than on this balance. The `actor` label is capped: the first 100 distinct names a process sees keep their series, later names collapse onto `_other_`. |
 
 ### Dimension cardinality
 
 No metric carries `worker_id`, `schedule_id`, `job_id` or any other identity
 value as a dimension, and new instruments must not add one. The
-maintenance-sweep labels (`sweep_name`, `lock`, `status`) are bounded enums
-like `queue` and `actor` — a handful of values fixed by the code, not
-identity values, so they are allowed as dimensions.
+maintenance-sweep labels (`sweep_name`, `lock`, `status`) are bounded enums —
+a handful of values fixed by the code, not identity values, so they are
+allowed as dimensions.
+
+The `queue` label on the job-side emitters (`messaging.client.published.messages`,
+`messaging.client.consumed.messages`, `taskq.dispatch.duration`,
+`messaging.process.duration`) is bounded by the code: the first 100 distinct
+queue names a process sees keep their own series, and every later name
+collapses onto the fixed `_other_` value. The cap never evicts, so the series
+count is hard-bounded at 101 per metric regardless of how many queue names the
+deployment mints — unbounded, 5,000 distinct names produced 100k+ time series
+in the cardinality benchmark. Per-queue attribution is not lost: the queue
+name still rides on the enqueue/dispatch/consume span attributes and log
+lines, where cardinality is free. `actor` remains user-defined and unbounded
+on those emitters — keep actor names a bounded enum.
+
+The cron counter's `actor` label is the exception, and it is capped the same
+way `queue` is: `create_schedule` accepts any string actor at creation time
+(validation is deferred to fire time by design), and a dangling, misspelled
+or tenant-generated name fails every tick's planning loop — each failure
+emitting the raw string as a label value — so
+`taskq.cron.consecutive_failures` admits only the first 100 distinct actor
+names a process sees and collapses the rest onto `_other_`. Every other
+actor-labeled instrument receives actors that flowed through registration
+(`ActorRef` names on the job side, `actor_config`-resolved names on the cron
+success/suppression paths) and carries them as-is.
 
 Azure Monitor counts every unique combination of metric name, dimension key and
 dimension value published in the last 12 hours as an *active time series*, caps
@@ -297,7 +322,8 @@ free:
 - **Logs** — `worker_id` is bound via contextvars onto every log line;
   `schedule_id` is on the `cron fired`, `cron schedule auto-disabled` and
   `cron-tick-lock-contended` lines.
-- **Spans** — `taskq.worker_id` is an attribute of the `cron fire` span.
+- **Spans** — `taskq.worker_id` and `taskq.cron_schedule_id` are attributes
+  of the `cron fire` span.
 
 The `record_*` helpers still *accept* `worker_id` / `schedule_id`: they are part
 of the published `taskq.obs` surface and the callers already hold the value.
@@ -392,6 +418,10 @@ propagates to actor or user code.
 | `heartbeat-hook-failure` | warning | `state_change` | `worker_id`, `cause`, `error` | Cancel controller failure inside heartbeat transaction |
 | `heartbeat-tick-unexpected-error` | error | — | `worker_id` | Unexpected exception in heartbeat loop |
 | `dispatch` | info | `dispatch` | `from_state`, `to_state`, `count`, `worker_id`, `queues`, `limit_n` | Each dispatch batch |
+| `slot-pool-acquire-failed` | error | `slot_pool_acquire_failed` | `pool`, `acquire_timeout`, `job_id`, `error_class`, `error_message` | A job's bounded acquire from the per-slot transaction pool failed — the job is left for lock-lease reclaim, not failed |
+| `slot-conn-terminated-transaction-in-flight` | warning | `slot_conn_terminated_transaction_in_flight` | `job_id` | A cancelled slot's connection was still inside its transaction at release time, so it was terminated instead of returned to the pool — the server rolls the transaction back, the job row stays `running`, and lock-lease expiry reclaims it |
+| `slot-pool-release-skipped-pool-closed` | warning | `slot_pool_release_skipped_pool_closed` | `job_id`, `error_class`, `error_message` | The slot pool was closed underneath the job (credential-rotation drain or teardown); release is refused or the proxy was already released back — the connection is already gone and the job's real outcome is preserved |
+| `slot-pool-release-skipped-conn-dead` | warning | `slot_pool_release_skipped_conn_dead` | `job_id`, `error_class`, `error_message` | The slot connection was terminated underneath the job (credential-rotation drain or teardown close-timeout) — even the transaction probe cannot run on it; the terminator owns its disposal and the job's real outcome is preserved |
 | `consume-rate-limit-denied-noop` | debug | — | `from_state`, `to_state`, `cause` | Reservation denied but no state transition occurred |
 | `prune` | info | `prune` | `status`, `count`, `cutoff_time`, `duration_ms` | Per-status batch result from the prune sweep (Sweep 5) |
 | `archive_expiry` | info | `archive_expiry` | `status`, `count`, `expire_before`, `duration_ms` | Per-status batch result from the archive expiry sweep (Sweep 6) |

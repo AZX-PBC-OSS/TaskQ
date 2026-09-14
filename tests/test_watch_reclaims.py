@@ -264,12 +264,18 @@ async def test_watch_reclaims_visibility_risk_probe_warns_by_default(
 
     tq = _inject_poll_only_tq(backend, poll_timeout=0.02)
 
-    async def _produce_after_delay() -> None:
-        await asyncio.sleep(0.1)
-        await _make_running_row(backend)
-
-    producer = asyncio.create_task(_produce_after_delay())
     with structlog.testing.capture_logs() as captured:
+        # The row must land only after the probe has run and warned: in
+        # this poll transport the poll PRECEDES the probe (see
+        # _watch_reclaims_poll), so a row landing early is delivered by
+        # the first poll and _collect closes the generator before the
+        # probe ever runs — with a fixed producer delay the warning
+        # assert races generator startup under load.
+        async def _produce_after_probe() -> None:
+            await _wait_for_log(captured, "watch-reclaims-visibility-delay-at-risk")
+            await _make_running_row(backend)
+
+        producer = asyncio.create_task(_produce_after_probe())
         try:
             events = await asyncio.wait_for(
                 _collect(tq.watch_reclaims(after_id=0), n=1), timeout=5.0
@@ -304,12 +310,16 @@ async def test_watch_reclaims_visibility_risk_probe_failure_never_kills_watcher(
 
     tq = _inject_poll_only_tq(backend, poll_timeout=0.02)
 
-    async def _produce_after_delay() -> None:
-        await asyncio.sleep(0.1)
-        await _make_running_row(backend)
-
-    producer = asyncio.create_task(_produce_after_delay())
     with structlog.testing.capture_logs() as captured:
+        # Same ordering discipline as the companion test above: the row
+        # lands only after the (failing) probe has actually run — the
+        # poll transport polls before probing, so an early row closes the
+        # generator before the failure path is exercised.
+        async def _produce_after_probe() -> None:
+            await _wait_for_log(captured, "watch-reclaims-visibility-risk-probe-failed")
+            await _make_running_row(backend)
+
+        producer = asyncio.create_task(_produce_after_probe())
         try:
             events = await asyncio.wait_for(
                 _collect(tq.watch_reclaims(after_id=0), n=1), timeout=5.0
@@ -343,12 +353,20 @@ class _FakeListenConn:
         self._termination_listeners: list[Any] = []
         self.listener_channels: list[str] = []
         self.close_calls = 0
+        # Why an event alongside the channel list: the list is the
+        # assertion surface; the event is the WAIT surface — a test that
+        # needs "LISTEN registered" (before killing the conn, or before
+        # producing events the NOTIFY path must catch) can wait for this
+        # instead of sleeping a fixed interval that races the generator's
+        # startup or reconnect under load.
+        self.listener_registered = asyncio.Event()
 
     async def add_listener(self, channel: str, callback: Any) -> None:
         if self._closed:
             raise asyncpg.InterfaceError("connection is closed")
         self.listener_channels.append(channel)
         self._notify_callbacks.append((channel, callback))
+        self.listener_registered.set()
 
     async def remove_listener(self, channel: str, callback: Any) -> None:
         self._notify_callbacks = [
@@ -385,6 +403,32 @@ class _FakeListenConn:
             cb(self, 0, ch, "")
 
 
+async def _wait_for_listen_registered(
+    conns: list[_FakeListenConn],
+    index: int = 0,
+    *,
+    timeout: float = 5.0,  # noqa: ASYNC109 # Why: polling-loop timeout for _wait_for_listen_registered; not an anyio cancel scope
+) -> None:
+    """Bounded wait until ``conns[index]`` exists AND has LISTEN registered.
+
+    ``add_listener`` sets the conn's ``listener_registered`` event exactly
+    where the observable flips, so this waits precisely as long as the
+    generator needs to open the connection and register LISTEN — never a
+    fixed sleep that races startup (or a reconnect) under load, and the
+    bound turns a wedged generator into a loud failure instead of a hang.
+    Compound condition rather than a bare event await: the conn at *index*
+    does not exist until the factory creates it.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while not (len(conns) > index and conns[index].listener_registered.is_set()):
+        assert loop.time() < deadline, (
+            f"LISTEN was never registered on listen conn #{index} within {timeout}s — "
+            "the generator never reached add_listener"
+        )
+        await asyncio.sleep(0.01)
+
+
 async def test_watch_reclaims_pg_reconnects_after_listen_conn_death(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -412,10 +456,19 @@ async def test_watch_reclaims_pg_reconnects_after_listen_conn_death(
     )
     with structlog.testing.capture_logs() as captured:
         task = asyncio.create_task(_collect(gen, n=1))
-        await asyncio.sleep(0.05)  # first poll + LISTEN registration settle
+        # LISTEN registered on the first factory conn before the kill:
+        # killing earlier makes add_listener raise InterfaceError (a
+        # different failure mode than the one under test) and the kill's
+        # wake never fires.
+        await _wait_for_listen_registered(conns)
         assert len(conns) == 1
         conns[0].kill()
-        await asyncio.sleep(0.2)  # detection + fallback polls + reconnect (interval=2 @ 0.02s)
+        # Bounded wait for the reconnect (conns[1] + LISTEN re-registered
+        # on it) BEFORE producing the event: _collect closes the generator
+        # once the event is delivered, so a reconnect that loses a race
+        # to a fixed sleep can never happen afterwards — the
+        # len(conns) == 2 assert below would fail permanently.
+        await _wait_for_listen_registered(conns, index=1)
         await _make_running_row(backend)
         events = await asyncio.wait_for(task, timeout=5.0)
 
@@ -444,9 +497,17 @@ async def test_watch_reclaims_pg_caller_owned_conn_death_permanent_poll_fallback
     )
     with structlog.testing.capture_logs() as captured:
         task = asyncio.create_task(_collect(gen, n=1))
-        await asyncio.sleep(0.05)
+        # LISTEN registered before the kill — killing earlier makes
+        # add_listener raise instead of exercising the death-detection
+        # path under test.
+        await _wait_for_listen_registered([conn])
         conn.kill()
-        await asyncio.sleep(0.1)
+        # The row is created only once the generator has provably entered
+        # the permanent poll fallback (the 'connection-lost' line is its
+        # entry marker — same ordering discipline as the degraded-drain
+        # tests below); a fixed sleep just hoped the detection pass had
+        # run.
+        await _wait_for_log(captured, "watch-reclaims-listen-connection-lost")
         await _make_running_row(backend)
         events = await asyncio.wait_for(task, timeout=5.0)
 
@@ -481,8 +542,9 @@ async def test_watch_reclaims_pg_pool_error_propagates_not_misdiagnosed(
 
     # poll_timeout is huge so the generator parks in wake.wait() after the
     # first (empty, successful) poll; fire_notify() then drives the
-    # failure specifically through _catch_up_after_notify — the call site
-    # the old except clause misdiagnosed as a LISTEN failure.
+    # failure specifically through _catch_up_after_notify — the call
+    # site whose transient-pool failure a too-broad except clause
+    # misdiagnoses as a LISTEN failure (the regression this test pins).
     gen = _watch_reclaims_pg(
         None,
         _UNIT_SCHEMA_LABEL,
@@ -498,7 +560,18 @@ async def test_watch_reclaims_pg_pool_error_propagates_not_misdiagnosed(
         raise AssertionError("generator finished without yielding")
 
     task = asyncio.create_task(_first_event())
-    await asyncio.sleep(0.05)  # first poll done; parked in wake.wait()
+    # LISTEN registered AND the first (successful) poll completed before
+    # the synthetic NOTIFY: without registration fire_notify() drives
+    # nothing (the task would time out), and without poll #1 the failure
+    # would fire from the regular poll instead of _catch_up_after_notify
+    # — the exact call site this test exists to pin.
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + 5.0
+    while not (conn.listener_registered.is_set() and calls["n"] >= 1):
+        assert loop.time() < deadline, (
+            "generator never registered LISTEN and completed its first poll within 5s"
+        )
+        await asyncio.sleep(0.01)
     conn.fire_notify()
     with pytest.raises(asyncpg.InterfaceError):
         await asyncio.wait_for(task, timeout=2.0)
@@ -560,10 +633,12 @@ async def test_watch_reclaims_pg_degraded_loop_drains_full_batches() -> None:
     )
     with structlog.testing.capture_logs() as captured:
         task = asyncio.create_task(_collect(gen, n=250))
-        await asyncio.sleep(0.05)  # LISTEN registered, first (empty) poll done
-        assert conn.listener_channels, (
-            "generator never registered LISTEN — settle sleep insufficient"
-        )
+        # LISTEN registered before the kill — a fixed settle sleep raced
+        # the generator's startup under load (and killing before
+        # registration makes add_listener raise, exiting the path under
+        # test entirely).
+        await _wait_for_listen_registered([conn])
+        assert conn.listener_channels, "generator never registered LISTEN"
         conn.kill()  # into the caller-owned permanent poll fallback
         await _wait_for_log(captured, "watch-reclaims-listen-connection-lost")
         for _ in range(250):
@@ -604,7 +679,9 @@ async def test_watch_reclaims_pg_owned_conn_degraded_loop_drains_full_batches(
     )
     with structlog.testing.capture_logs() as captured:
         task = asyncio.create_task(_collect(gen, n=250))
-        await asyncio.sleep(0.05)  # factory conn opened, LISTEN registered
+        # Factory conn opened + LISTEN registered before the kill — a
+        # fixed settle sleep raced the generator's startup under load.
+        await _wait_for_listen_registered(conns)
         assert len(conns) == 1
         conns[0].kill()  # into the owned-conn poll/reconnect fallback
         await _wait_for_log(captured, "watch-reclaims-listen-connection-lost")
@@ -631,8 +708,10 @@ async def test_watch_reclaims_pg_reconnect_attempt_is_timeboxed(
     backend = _make_backend()
     client = _make_client(backend)
     conns: list[_FakeListenConn] = []
+    attempts = {"n": 0}
 
     async def _factory() -> _FakeListenConn:
+        attempts["n"] += 1
         if not conns:
             conn = _FakeListenConn()
             conns.append(conn)
@@ -648,9 +727,18 @@ async def test_watch_reclaims_pg_reconnect_attempt_is_timeboxed(
         pg_conn_factory=_factory,  # type: ignore[arg-type]  # Why: fake conn stand-in for asyncpg.Connection
     )
     task = asyncio.create_task(_collect(gen, n=1))
-    await asyncio.sleep(0.05)
+    await _wait_for_listen_registered(conns)
     conns[0].kill()
-    await asyncio.sleep(0.2)  # several reconnect attempts, each capped at poll_timeout
+    # Bounded wait until the first hanging reconnect attempt has STARTED:
+    # the pin is that a timeboxed attempt does not stall the degraded
+    # poll loop, so the row must land only after an attempt is (or was)
+    # in flight — with a fixed sleep the row could beat the first
+    # attempt and the test would pass vacuously.
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + 5.0
+    while attempts["n"] < 2:
+        assert loop.time() < deadline, "no hanging reconnect attempt started within 5s of the kill"
+        await asyncio.sleep(0.01)
     await _make_running_row(backend)
     events = await asyncio.wait_for(task, timeout=5.0)
 
@@ -686,9 +774,25 @@ async def test_watch_reclaims_pg_reconnect_failure_warns_on_a_cadence(
     )
     with structlog.testing.capture_logs() as captured:
         task = asyncio.create_task(_collect(gen, n=1))
-        await asyncio.sleep(0.05)
+        await _wait_for_listen_registered(conns)
         conns[0].kill()
-        await asyncio.sleep(0.7)  # ~50+ failed attempts at poll_timeout=0.01
+        # Bounded wait for the cadence itself — warnings at failed
+        # attempts 1, 10, 20 — instead of a fixed 0.7s window that races
+        # attempt throughput under load (too short → fewer than 3
+        # warnings and a false failure; too long → wasted test time).
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + 5.0
+        while True:
+            warned = sum(
+                1 for e in captured if e["event"] == "watch-reclaims-reconnect-still-failing"
+            )
+            if warned >= 3:
+                break
+            assert loop.time() < deadline, (
+                f"reconnect-failure cadence produced only {warned} warning(s) within 5s "
+                "(expected >= 3, at failed attempts 1, 10, 20)"
+            )
+            await asyncio.sleep(0.01)
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
@@ -753,14 +857,21 @@ async def test_watch_reclaims_pg_cancellation_inside_degraded_loop_closes_owned_
         0.02,
         pg_conn_factory=_factory,  # type: ignore[arg-type]  # Why: fake conn stand-in for asyncpg.Connection
     )
-    task = asyncio.create_task(_collect(gen, n=1))
-    await asyncio.sleep(0.05)
-    conns[0].kill()
-    await asyncio.sleep(0.1)  # generator is now parked in the degraded loop
+    with structlog.testing.capture_logs() as captured:
+        task = asyncio.create_task(_collect(gen, n=1))
+        # LISTEN registered before the kill — killing earlier makes
+        # add_listener raise instead of entering the degraded loop.
+        await _wait_for_listen_registered(conns)
+        conns[0].kill()
+        # Cancel only once the generator is provably INSIDE the degraded
+        # loop (the 'connection-lost' line is its entry marker) — with the
+        # old fixed sleep the cancel could land in the healthy loop and
+        # this teardown-only pin would pass vacuously.
+        await _wait_for_log(captured, "watch-reclaims-listen-connection-lost")
 
-    task.cancel()  # CancelledError unwinds through the fallback loop → finally
-    with contextlib.suppress(asyncio.CancelledError):
-        await task
+        task.cancel()  # CancelledError unwinds through the fallback loop → finally
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
 
     assert conns[0].close_calls == 1, "owned connection must be closed exactly once on teardown"
 
@@ -831,7 +942,15 @@ async def test_visibility_probe_hang_does_not_stall_delivery(
     backend = _make_backend()
     client = _make_client(backend)
 
+    # Why an event at probe entry: the row must land while the probe is
+    # actually hung — in this poll transport the poll PRECEDES the probe,
+    # so a row landing early is delivered by the first poll and the
+    # generator closes before the hang is ever exercised. A fixed producer
+    # delay let the test pass vacuously under load.
+    probe_entered = asyncio.Event()
+
     async def _hanging_check(*args: Any, **kwargs: Any) -> Any:
+        probe_entered.set()
         await asyncio.sleep(30.0)
 
     monkeypatch.setattr(
@@ -841,7 +960,10 @@ async def test_visibility_probe_hang_does_not_stall_delivery(
     gen = _watch_reclaims_poll(client, 0.02, after_id=0)
 
     async def _produce_after_first_probe() -> None:
-        await asyncio.sleep(0.1)  # first (empty) poll has run; probe is now hung
+        try:
+            await asyncio.wait_for(probe_entered.wait(), timeout=5.0)
+        except TimeoutError:
+            pytest.fail("the visibility-risk probe never started within 5s")
         await _make_running_row(backend)
 
     producer = asyncio.create_task(_produce_after_first_probe())
@@ -956,11 +1078,35 @@ async def test_watch_reclaims_pg_listen_delivers_promptly(pg_dsn: str) -> None:
                 attempt=1,
             )
 
-        loop_start = asyncio.get_event_loop().time()
+        # Anchored when the sweep starts (after LISTEN is confirmed live,
+        # see _sweep_soon) — the promptness pin is delivery-from-sweep,
+        # not watcher startup latency.
+        sweep_started_at: list[float] = []
 
         async def _sweep_soon() -> None:
-            await asyncio.sleep(0.2)
+            # Bounded wait until the watcher's LISTEN connection is live
+            # server-side: sweeping before LISTEN is registered misses the
+            # NOTIFY entirely and delivery falls back to the 30s poll
+            # timeout — a fixed 0.2s sleep races watcher startup
+            # under load and can blow the 8s collection budget.
             assert tq._pool is not None
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + 5.0
+            while True:
+                async with tq._pool.acquire() as c:
+                    listen_pids = await c.fetch(
+                        "SELECT pid FROM pg_stat_activity "
+                        "WHERE query LIKE '%LISTEN%' AND datname = current_database() "
+                        "AND pid != pg_backend_pid()"
+                    )
+                if listen_pids:
+                    break
+                assert loop.time() < deadline, (
+                    "no LISTEN connection appeared within 5s — "
+                    "watch_reclaims never registered LISTEN"
+                )
+                await asyncio.sleep(0.05)
+            sweep_started_at.append(loop.time())
             async with tq._pool.acquire() as conn:
                 await PostgresBackend.sweep_expired_locks(
                     conn,
@@ -977,7 +1123,7 @@ async def test_watch_reclaims_pg_listen_delivers_promptly(pg_dsn: str) -> None:
         finally:
             await sweep_task
 
-        elapsed = asyncio.get_event_loop().time() - loop_start
+        elapsed = asyncio.get_running_loop().time() - sweep_started_at[0]
         assert len(events) == 1
         assert events[0].job_id == JobId(job_id)
         # Comfortably under poll_timeout (30s) — proves NOTIFY plus its
@@ -1015,17 +1161,28 @@ async def test_watch_reclaims_survives_listen_connection_kill(pg_dsn: str) -> No
             # Start consuming in the background so the LISTEN connection is
             # actually opened before we kill it.
             collect_task = asyncio.create_task(asyncio.wait_for(_collect(gen, n=2), timeout=30.0))
-            await asyncio.sleep(0.2)
-
+            # Bounded wait until the watcher's LISTEN connection is live:
+            # killing before it exists misses the chaos target entirely
+            # and exercises nothing — a fixed 0.2s sleep races
+            # watcher startup under load.
             assert tq._pool is not None
-            async with tq._pool.acquire() as conn:
-                listen_pids = await conn.fetch(
-                    "SELECT pid FROM pg_stat_activity "
-                    "WHERE query LIKE '%LISTEN%' AND datname = current_database() "
-                    "AND pid != pg_backend_pid()"
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + 5.0
+            while True:
+                async with tq._pool.acquire() as conn:
+                    listen_pids = await conn.fetch(
+                        "SELECT pid FROM pg_stat_activity "
+                        "WHERE query LIKE '%LISTEN%' AND datname = current_database() "
+                        "AND pid != pg_backend_pid()"
+                    )
+                if listen_pids:
+                    break
+                assert loop.time() < deadline, (
+                    "no LISTEN connection found to kill within 5s — "
+                    "watch_reclaims never registered LISTEN"
                 )
+                await asyncio.sleep(0.05)
             killed_pids = {int(row["pid"]) for row in listen_pids}
-            assert killed_pids, "no LISTEN connection found to kill"
             psql_path = shutil.which("psql")
             if psql_path is None:
                 pytest.skip(

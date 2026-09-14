@@ -30,6 +30,7 @@ import structlog.testing
 
 from taskq.connections import WorkerConnections
 from taskq.settings import WorkerSettings
+from taskq.testing.assertions import wait_for
 from taskq.worker import deps as deps_mod
 from taskq.worker.deps import open_worker_deps, reload_credentials
 
@@ -63,6 +64,13 @@ class _FakePool:
         self.close_wait.set()  # close() completes instantly by default
         self.close_error: Exception | None = None
         self._close_events = close_events
+        # Why closed_event alongside the closed flag (and despite the
+        # _close_events name-ordering list): the flag is the assertion
+        # surface; the event is the WAIT surface — reload_credentials
+        # drains OLD pools on background tasks, and a test that needs
+        # "drained" can await this instead of sleeping a fixed interval
+        # that races the drain under load.
+        self.closed_event = asyncio.Event()
 
     async def close(self) -> None:
         self.close_calls += 1
@@ -76,8 +84,10 @@ class _FakePool:
             # raising close still leaves the pool terminated AND closed.
             self.terminated = True
             self.closed = True
+            self.closed_event.set()
             raise self.close_error
         self.closed = True
+        self.closed_event.set()
         if self._close_events is not None:
             self._close_events.append(self.name)
 
@@ -85,6 +95,7 @@ class _FakePool:
         self.terminate_calls += 1
         self.terminated = True
         self.closed = True
+        self.closed_event.set()
         self.close_wait.set()  # aborts any in-flight close() wait
 
     def is_closing(self) -> bool:
@@ -433,8 +444,12 @@ async def test_teardown_bounds_hot_swapped_pool_after_reload(
             assert deps.dispatcher_pool is old_dispatcher
             await reload_credentials(deps, drain_timeout=0.05)
             assert deps.dispatcher_pool is new_dispatcher
-            # Let the background drain of the old pool finish before exit.
-            await asyncio.sleep(0.2)
+            # Event-driven, bounded wait for the old pool's background
+            # drain — a fixed sleep here races the drain under load. The
+            # 2.0s bound sits under the outer 5s teardown budget so a
+            # broken drain fails as this wait's AssertionError, not the
+            # outer timeout.
+            await wait_for(old_dispatcher.closed_event, timeout=2.0)
             new_dispatcher.close_wait.clear()  # teardown close hangs from now on
 
     assert new_dispatcher.terminated is True

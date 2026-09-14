@@ -31,6 +31,7 @@ from sse_starlette.event import ServerSentEvent
 
 import taskq.web.progress as progress_mod
 from taskq.backend.statemachine import TERMINAL_STATUSES
+from taskq.client._taskq import orjson_response_class
 from taskq.constants import progress_channel
 from taskq.progress._events import ProgressEvent
 from taskq.web.progress import (
@@ -590,6 +591,69 @@ def test_poll_state_404_when_not_found() -> None:
     assert resp.status_code == 404
 
 
+# ── orjson response-class wiring (no stdlib json on TaskQ's own routes) ──
+
+
+def test_poll_state_uses_orjson_response_class() -> None:
+    """Poll-state 200 renders through taskq._json (orjson): body equals the
+    orjson render of the payload and the application/json content-type and
+    200 status are unchanged."""
+    pg_row = _pg_row(status="running", progress_seq=3, progress_state={"rows": 100})
+    _, client = _make_app(pg_row, None)
+
+    resp = client.get(f"/jobs/api/job/{_JOB_ID}/state")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "application/json"
+    expected = orjson_response_class()(
+        {"status": "running", "progress_state": {"rows": 100}, "progress_seq": 3}
+    ).body
+    assert resp.content == expected
+
+
+@pytest.mark.asyncio
+async def test_503_before_sse_uses_orjson_response_class() -> None:
+    """Redis-unavailable 503 (before the SSE upgrade) returns the shared
+    orjson response class — status, Retry-After and body semantics unchanged."""
+    router = create_router(
+        _StubPool(_pg_row()),
+        None,
+        schema=_SCHEMA_LABEL,
+        sse_heartbeat_interval=_HEARTBEAT,
+    )
+    endpoint = next(
+        route.endpoint
+        for route in router.routes
+        if isinstance(route, APIRoute) and route.path.endswith("/progress/stream")
+    )
+
+    resp = await endpoint(job_id=_JOB_ID, request=_mock_request(), last_event_id=None)
+
+    assert isinstance(resp, orjson_response_class())
+    assert resp.status_code == 503
+    assert resp.headers["retry-after"] == "2"
+    expected_body = orjson_response_class()({"error": "redis_not_configured"}).body
+    assert resp.body == expected_body
+
+
+@pytest.mark.asyncio
+async def test_subscribe_failure_503_uses_orjson_response_class(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Subscribe-failure 503 returns the shared orjson response class —
+    status, Retry-After and body semantics unchanged."""
+    monkeypatch.setattr(progress_mod, "CLOSE_TIMEOUT_SECS", 0.05, raising=False)
+    pubsub = _HungPubSub([], subscribe_error=ConnectionError("broker down"))
+    endpoint = _make_stream_endpoint(_StubPool(_pg_row()), pubsub)
+
+    resp = await endpoint(job_id=_JOB_ID, request=_mock_request(), last_event_id=None)
+
+    assert isinstance(resp, orjson_response_class())
+    assert resp.status_code == 503
+    assert resp.headers["retry-after"] == "2"
+    expected_body = orjson_response_class()({"error": "redis_not_configured"}).body
+    assert resp.body == expected_body
+
+
 # ── Auth dependency ──────────────────────────────────────────────────────
 
 
@@ -704,6 +768,240 @@ def test_resolve_last_event_id_priority() -> None:
     req_no_header.headers.get.return_value = None
     assert _resolve_last_event_id(req_no_header, 3) == 3
     assert _resolve_last_event_id(req_no_header, None) is None
+
+
+# ── SSE raw passthrough (perf: no pydantic round-trip per client per event) ──
+#
+# The Redis payload is already exactly ``ProgressEvent.model_dump_json(
+# exclude_none=True)`` bytes (progress/_publish.py:78,164), and this generator
+# only reads ``seq``/``terminal``. Re-validating and re-serializing per message
+# per client is O(clients x events) pydantic work that re-derives bytes the
+# channel already carries. These tests pin the passthrough contract: identical
+# SSE output, identical malformed-message dispatch.
+
+_GOLDEN_CORPUS: list[ProgressEvent] = [
+    # normal progress with all optional fields present
+    ProgressEvent(
+        v=1,
+        kind="progress",
+        job_id=_JOB_ID,
+        actor="test_actor",
+        ts=datetime(2026, 1, 1, tzinfo=UTC),
+        seq=1,
+        status="running",
+        step=3,
+        percent=42.5,
+        detail="step 3",
+        data={"k": "v", "n": 1.5},
+    ),
+    # terminal state_change closes the stream
+    ProgressEvent(
+        v=1,
+        kind="state_change",
+        job_id=_JOB_ID,
+        actor="test_actor",
+        ts=datetime(2026, 1, 1, tzinfo=UTC),
+        seq=2,
+        status="succeeded",
+        terminal=True,
+        data={"rows": 42},
+    ),
+    # all-None optional fields — exclude_none drops them from the wire
+    ProgressEvent(
+        v=1,
+        kind="progress",
+        job_id=_JOB_ID,
+        actor="test_actor",
+        ts=datetime(2026, 1, 1, tzinfo=UTC),
+        seq=3,
+        status="running",
+    ),
+    # unicode round-trips as raw UTF-8 on the wire
+    ProgressEvent(
+        v=1,
+        kind="progress",
+        job_id=_JOB_ID,
+        actor="test_actor",
+        ts=datetime(2026, 1, 1, tzinfo=UTC),
+        seq=4,
+        status="running",
+        detail="héllo wörld 日本語 🎉",
+        data={"emoji": "🚀", "accents": "café"},
+    ),
+    # float formatting edge cases (0.1, 1e23, integral float)
+    ProgressEvent(
+        v=1,
+        kind="progress",
+        job_id=_JOB_ID,
+        actor="test_actor",
+        ts=datetime(2026, 1, 1, tzinfo=UTC),
+        seq=5,
+        status="running",
+        percent=0.1,
+        data={"f": 0.1, "g": 1e23, "h": -2.5, "i": 3.0},
+    ),
+    # nested data with a null and a bool
+    ProgressEvent(
+        v=1,
+        kind="progress",
+        job_id=_JOB_ID,
+        actor="test_actor",
+        ts=datetime(2026, 1, 1, tzinfo=UTC),
+        seq=6,
+        status="running",
+        data={"a": [1, 2, {"b": None, "c": True}], "d": ""},
+    ),
+    # terminal with a datetime-bearing payload (pydantic ts round-trip)
+    ProgressEvent(
+        v=1,
+        kind="state_change",
+        job_id=_JOB_ID,
+        actor="test_actor",
+        ts=datetime(2026, 6, 15, 12, 30, 45, 123456, tzinfo=UTC),
+        seq=7,
+        status="succeeded",
+        terminal=True,
+    ),
+]
+
+
+def _redis_msg_from_event(event: ProgressEvent) -> dict[str, Any]:
+    """Redis message shaped exactly as _publish leaves it on the channel."""
+    return {
+        "type": "message",
+        "channel": b"taskq:taskq:progress:" + str(_JOB_ID).encode(),
+        "data": event.model_dump_json(exclude_none=True).encode(),
+    }
+
+
+@pytest.mark.asyncio
+async def test_sse_stream_does_not_pydantic_roundtrip(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The generator must emit the raw Redis payload without a pydantic
+    validate→dump round-trip: the wire bytes are already
+    ``model_dump_json(exclude_none=True)`` output (progress/_publish.py)."""
+    # Terminal events close the stream, so they go last; the assertion is
+    # one SSE data event per corpus event + the done signal.
+    non_terminal = [e for e in _GOLDEN_CORPUS if not e.terminal]
+    terminal = [e for e in _GOLDEN_CORPUS if e.terminal]
+    messages = [_redis_msg_from_event(e) for e in [*non_terminal, *terminal]]
+    pubsub = _StubPubSub(messages)
+
+    def _boom(*args: object, **kwargs: object) -> None:
+        raise AssertionError("model_validate_json must not run on the SSE hot path")
+
+    monkeypatch.setattr(ProgressEvent, "model_validate_json", classmethod(_boom))
+
+    results = await _drive_generator(_pg_row(status="running", progress_seq=0), pubsub)
+
+    # one SSE per corpus event + one done after the terminal event
+    data_events = [r for r in results if r.data is not None]
+    assert len(data_events) == len(_GOLDEN_CORPUS)
+    assert results[-1].event == "done"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "source_event",
+    _GOLDEN_CORPUS,
+    ids=lambda e: f"seq{e.seq}-{'terminal' if e.terminal else 'progress'}",
+)
+async def test_sse_golden_corpus_passthrough_equivalence(
+    source_event: ProgressEvent,
+) -> None:
+    """For every corpus event the SSE data must be byte-identical to (a) the
+    raw published wire bytes and (b) the old validate→dump round-trip —
+    proving the passthrough changes nothing on the wire.
+
+    One stream per corpus event: a terminal event legitimately closes the
+    stream, so events after a terminal need their own generator to observe.
+    The round-trip idempotency asserted here is what makes the passthrough
+    equivalent to the old behavior — verified, not assumed.
+    """
+    pubsub = _StubPubSub([_redis_msg_from_event(source_event)])
+
+    results = await _drive_generator(_pg_row(status="running", progress_seq=0), pubsub)
+
+    data_events = [r for r in results if r.data is not None]
+    assert len(data_events) == 2  # PG snapshot (seq 0) + the corpus event
+    sse = data_events[-1]
+
+    raw_wire = source_event.model_dump_json(exclude_none=True)
+    # (a) raw passthrough: the published bytes are emitted verbatim
+    assert sse.data == raw_wire
+    # (b) old behavior: validate → dump reproduces the same bytes
+    round_tripped = ProgressEvent.model_validate_json(raw_wire).model_dump_json(exclude_none=True)
+    assert round_tripped == raw_wire, f"round-trip not idempotent for {source_event.seq}"
+    # event name and id derived identically from the envelope
+    assert sse.event == ("terminal" if source_event.terminal else "progress")
+    assert sse.id == str(source_event.seq)
+
+
+# Malformed payloads discarded identically by the cheap envelope check and by
+# full pydantic validation: unparseable JSON, non-object JSON, and JSON
+# objects missing required envelope keys. After each, the next well-formed
+# event must still flow — the guard discards and continues.
+_MALFORMED_PAYLOADS: list[bytes] = [
+    b"not valid json",
+    b"[1, 2]",
+    b'"a bare string"',
+    b"5",
+    b"null",
+    b"{}",
+    b'{"seq": 2}',  # missing kind/job_id/actor/ts/status
+    b'{"kind": "progress"}',  # missing seq and the rest
+    b'{"kind": "bogus", "job_id": "00000000-0000-0000-0000-000000000001", '
+    b'"actor": "a", "ts": "2026-01-01T00:00:00Z", "seq": 2, "status": "running"}',
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("payload", _MALFORMED_PAYLOADS)
+async def test_sse_malformed_payload_discarded_stream_continues(
+    payload: bytes,
+) -> None:
+    """Malformed messages: debug log + discard, stream continues, and the
+    guard's dispatch (log event name, fields, level) is unchanged."""
+    good = _make_event(seq=3)
+    pubsub = _StubPubSub([{"type": "message", "data": payload}, _redis_msg(good), _EXHAUST])
+
+    with structlog.testing.capture_logs() as captured:
+        results = await _drive_generator(_pg_row(status="running", progress_seq=0), pubsub)
+
+    data_events = [r for r in results if r.data is not None]
+    # PG snapshot (seq 0) + the one good event behind the malformed payload
+    assert len(data_events) == 2
+    assert json.loads(data_events[-1].data)["seq"] == 3
+
+    malformed_logs = [e for e in captured if e.get("event") == "sse-redis-malformed-message"]
+    assert len(malformed_logs) == 1
+    assert malformed_logs[0]["log_level"] == "debug"
+    assert malformed_logs[0]["job_id"] == str(_JOB_ID)
+    assert malformed_logs[0]["channel"] == progress_channel(_SCHEMA_LABEL, _JOB_ID)
+
+
+@pytest.mark.asyncio
+async def test_sse_missing_terminal_key_defaults_to_progress() -> None:
+    """``terminal`` is optional on the model (default False): an envelope
+    without it must emit as a progress event, not be discarded."""
+    envelope = {
+        "v": 1,
+        "kind": "progress",
+        "job_id": str(_JOB_ID),
+        "actor": "test_actor",
+        "ts": "2026-01-01T00:00:00Z",
+        "seq": 4,
+        "status": "running",
+        "step": 2,
+    }
+    pubsub = _StubPubSub([{"type": "message", "data": json.dumps(envelope).encode()}, _EXHAUST])
+
+    results = await _drive_generator(_pg_row(status="running", progress_seq=0), pubsub)
+
+    data_events = [r for r in results if r.data is not None]
+    assert len(data_events) == 2  # snapshot + the envelope
+    assert data_events[-1].event == "progress"
+    assert data_events[-1].id == "4"
+    assert json.loads(data_events[-1].data)["step"] == 2
 
 
 # ── Bounded pubsub closes (review N5) ──────────────────────────────

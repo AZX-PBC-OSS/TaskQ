@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import HTMLResponse, JSONResponse
 from jinja2 import Environment
 
+from taskq.client._taskq import orjson_response_class
 from taskq.web.admin._constants import (
     _ALL_STATUSES,  # pyright: ignore[reportPrivateUsage]  # Why: shared constants published by the admin constants module; private prefix scopes them within the admin package.
     _FETCH_SIZE,  # pyright: ignore[reportPrivateUsage]  # Why: shared constants published by the admin constants module; private prefix scopes them within the admin package.
@@ -25,6 +26,10 @@ _STATS_LIMIT: int = 200
 _COUNT_CAP: int = 1001  # fetch one over 1000 so we can display "1000+"
 _CURSOR_NULL_SENTINEL: str = "__NULL__"
 _CURSOR_FAR_FUTURE: datetime = datetime(9999, 12, 31, 23, 59, 59, tzinfo=UTC)
+
+# JSON responses render through orjson (taskq._json), never stdlib json —
+# byte-identical bodies to starlette's stdlib JSONResponse for these payloads.
+_OrjsonJSONResponse: "type[JSONResponse]" = orjson_response_class()
 
 # ── History list SQL ────────────────────────────────────────────────────
 
@@ -254,4 +259,4 @@ def register(router: APIRouter) -> None:
         async with pool.acquire() as conn:
             rows = await conn.fetch(stats_sql)
         data: list[dict[str, Any]] = [dict(r) for r in rows]
-        return JSONResponse(content={"actors": data})
+        return _OrjsonJSONResponse(content={"actors": data})

@@ -103,6 +103,15 @@ __all__ = [
 #     `fallback_result_ttl` keyword — without it a v2 implementation
 #     keeps the enqueue-pinned result_expires_at when the stored
 #     result_ttl is cleared, silently expiring results at completion.
+#     mark_succeeded / mark_succeeded_with_conn also gained the
+#     `result_bytes` keyword — the result's orjson encoding, produced
+#     once by the worker consumer. An implementation that ignores it
+#     stores a NULL result (and NULL result_size_bytes) for every
+#     consumer-completed job, silently; it must bind
+#     result_bytes.decode("utf-8") and store
+#     result_size_bytes = len(result_bytes) when it is given, reject a
+#     call passing both result and result_bytes, and NUL-guard the
+#     bytes exactly as the dict form is guarded.
 #     EnqueueArgs.scheduled_at is now optional — None means immediate
 #     and the backend's server stamps/decides it. A v2-era implementation
 #     fails LOUDLY on None ('>' not supported between NoneType and
@@ -1200,7 +1209,7 @@ class Backend(Protocol):
         self,
         args_list: list[EnqueueArgs],
         *,
-        connection: "asyncpg.Connection | None" = None,
+        connection: "ConnLike | None" = None,
         enforce_max_pending: bool = True,
     ) -> list[JobRow]:
         """Insert multiple jobs in a single batched operation.
@@ -1237,7 +1246,7 @@ class Backend(Protocol):
         self,
         args_list: list[EnqueueArgs],
         *,
-        connection: "asyncpg.Connection | None" = None,
+        connection: "ConnLike | None" = None,
         enforce_max_pending: bool = True,
     ) -> int:
         """Insert multiple jobs via the COPY FROM protocol for maximum throughput.
@@ -1263,7 +1272,8 @@ class Backend(Protocol):
           before it is ever dispatched.
         - A duplicate ``idempotency_key`` — within the batch or already
           stored — violates the unique index and aborts the ENTIRE batch
-          (all-or-nothing atomicity; nothing is written).
+          (all-or-nothing atomicity; nothing is written), surfacing as
+          :class:`~taskq.exceptions.DuplicateIdempotencyKeyError`.
         - Items carrying a resolved ``max_pending`` cap are
           admission-checked as one aggregate before the COPY, with the
           same per-actor partition as :meth:`enqueue_batch` — within-cap
@@ -1277,8 +1287,8 @@ class Backend(Protocol):
         ``len(args_list)`` — this path never deduplicates, so the count
         never includes pre-existing rows.  The in-memory mirror implements
         the same contract: duplicates raise
-        ``asyncpg.UniqueViolationError`` before any row is written, and
-        the count is the number of items.
+        :class:`~taskq.exceptions.DuplicateIdempotencyKeyError` before
+        any row is written, and the count is the number of items.
 
         This is a performance-focused variant of :meth:`enqueue_batch`
         (which DOES deduplicate idempotency-key collisions via ``ON
@@ -1290,7 +1300,7 @@ class Backend(Protocol):
 
     async def enqueue_with_conn(
         self,
-        conn: "asyncpg.Connection",
+        conn: "ConnLike",
         args: EnqueueArgs,
     ) -> JobRow:
         """Enqueue a job using the supplied connection.
@@ -1329,12 +1339,28 @@ class Backend(Protocol):
         self,
         job_id: JobId,
         worker_id: UUID,
-        result: dict[str, object] | None,
+        result: dict[str, object] | None = None,
         progress_seq: int = 0,
         progress_state: dict[str, object] | None = None,
         fallback_result_ttl: timedelta | None = None,
+        *,
+        result_bytes: bytes | None = None,
     ) -> bool:
         """Mark a job succeeded, computing ``result_expires_at`` at completion.
+
+        The result reaches the backend in exactly one of two forms:
+        ``result`` — the actor's result dict, which the backend serializes
+        exactly once (orjson via :func:`taskq._json.dumps_jsonb_str`,
+        NUL-guarded) — or ``result_bytes`` — the result already serialized
+        to orjson bytes (the exact output of :func:`taskq._json.dumps`),
+        which the backend reuses as-is: bound as
+        ``result_bytes.decode("utf-8")`` with ``result_size_bytes =
+        len(result_bytes)`` and no second serialization.  The worker
+        consumer always passes ``result_bytes`` (it serialized the result
+        once already); direct callers normally pass ``result``.  Passing
+        both non-None raises ``ValueError``; both ``None`` stores a NULL
+        result.  The ``result_bytes`` form is NUL-guarded at the same
+        boundary, raising the same ``ValueError`` the dict form raises.
 
         Expiry resolution, first match wins: a non-NULL stored
         ``actor_config.result_ttl`` (operator-owned) applies; otherwise
@@ -1350,13 +1376,15 @@ class Backend(Protocol):
 
     async def mark_succeeded_with_conn(
         self,
-        conn: "asyncpg.Connection",
+        conn: "ConnLike",
         job_id: JobId,
         worker_id: UUID,
-        result: dict[str, object] | None,
+        result: dict[str, object] | None = None,
         progress_seq: int = 0,
         progress_state: dict[str, object] | None = None,
         fallback_result_ttl: timedelta | None = None,
+        *,
+        result_bytes: bytes | None = None,
     ) -> bool:
         """Mark a job succeeded using the supplied connection.
 
@@ -1367,8 +1395,10 @@ class Backend(Protocol):
         method does NOT open or close one. The autonomous variant
         ``mark_succeeded(...)`` acquires its own connection.
 
-        ``fallback_result_ttl`` follows the same resolution rule as
-        :meth:`mark_succeeded`.
+        ``result`` / ``result_bytes`` follow the same two-form contract as
+        :meth:`mark_succeeded` — pass exactly one, or neither for a NULL
+        result.  ``fallback_result_ttl`` follows the same resolution rule
+        as :meth:`mark_succeeded`.
         """
         ...
 
@@ -1667,35 +1697,35 @@ class Backend(Protocol):
         finalizer_job_id: UUID | None,
         originating_actor: str | None,
         *,
-        connection: "asyncpg.Connection | None" = None,
+        connection: "ConnLike | None" = None,
     ) -> None: ...
 
     async def increment_batch_failures(
         self,
         batch_id: UUID,
         *,
-        connection: "asyncpg.Connection | None" = None,
+        connection: "ConnLike | None" = None,
     ) -> tuple[int, int | None, int]: ...
 
     async def reset_batch_failures(
         self,
         batch_id: UUID,
         *,
-        connection: "asyncpg.Connection | None" = None,
+        connection: "ConnLike | None" = None,
     ) -> int: ...
 
     async def abort_batch(
         self,
         batch_id: UUID,
         *,
-        connection: "asyncpg.Connection | None" = None,
+        connection: "ConnLike | None" = None,
     ) -> int: ...
 
     async def complete_batch(
         self,
         batch_id: UUID,
         *,
-        connection: "asyncpg.Connection | None" = None,
+        connection: "ConnLike | None" = None,
     ) -> None: ...
 
     async def get_batch(
@@ -1712,7 +1742,7 @@ class Backend(Protocol):
         self,
         batch_id: UUID,
         *,
-        connection: "asyncpg.Connection | None" = None,
+        connection: "ConnLike | None" = None,
     ) -> int: ...
 
     async def prune_old_batches(

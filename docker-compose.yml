@@ -8,6 +8,12 @@ services:
       POSTGRES_PASSWORD: taskq
       POSTGRES_DB: taskq
       POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --locale=C"
+    # PG JIT measurably degrades dispatch during enqueue/claim churn: the
+    # planner's cost model crosses jit_above_cost on a busy jobs table and
+    # JIT compilation made dispatch up to 45x slower (see docs/guides/ops.md,
+    # "Database performance knobs"). To disable it here, append to `command`:
+    #   - -c
+    #   - jit=off
     command:
       - postgres
       - -c

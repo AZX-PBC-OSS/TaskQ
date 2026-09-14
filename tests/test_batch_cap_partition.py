@@ -1,6 +1,6 @@
 """#149 — bulk-tier cap enforcement partitions admission per actor.
 
-``_enforce_batch_max_pending`` (PG) / ``_check_batch_max_pending``
+``_batch_cap_refusals`` (PG) / ``_batch_cap_refusals`` (InMemory)
 (InMemory) refused the ENTIRE enqueue_batch / enqueue_batch_fast call
 when ANY single actor's group exceeded its cap — all-or-nothing across
 actors. A parent enqueuing a mixed-actor sub-batch where ONE child actor

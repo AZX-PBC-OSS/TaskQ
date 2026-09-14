@@ -12,12 +12,14 @@ to the ambient trace context.
 Pure-Python, no PG required.
 """
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 import pytest
+from asyncpg.exceptions import UniqueViolationError
 from opentelemetry import trace
+from opentelemetry.trace import StatusCode
 
 from taskq._ids import new_uuid
 from taskq.cron import _factory_cache
@@ -25,9 +27,10 @@ from taskq.settings import WorkerSettings
 from taskq.testing.clock import FakeClock
 from taskq.testing.in_memory import InMemoryBackend
 from taskq.testing.otel import setup_tracer
-from taskq.worker.cron_loop import tick_cron
+from taskq.worker import cron_loop
+from taskq.worker.cron_loop import ActorFirePolicy, tick_cron
 
-from .test_leader import FakeConn, _worker_settings
+from .test_leader import FakeConn, _FakeTransaction, _worker_settings
 
 # The fake connection's server clock: every croniter seed in a tick comes
 # from this single domain, so the tests seed schedule rows relative to it.
@@ -114,6 +117,11 @@ class _FakeCronConn(FakeConn):
         if "cron_schedules" in sql:
             self.read_due_schedules = True
             return self.schedule_rows
+        if '"taskq".jobs' in sql:
+            # The policy preflights (singleton blockers, max_pending counts)
+            # and the DST overlap-twin probe read the jobs table; this fake
+            # holds no jobs, so the preflights see none.
+            return []
         raise AssertionError(f"unexpected fetch: {sql}")
 
 
@@ -182,11 +190,17 @@ async def _tick(
     settings: WorkerSettings,
     backend: InMemoryBackend,
     worker_id: UUID | None = None,
+    actor_policies: Mapping[str, ActorFirePolicy] | None = None,
 ) -> int:
     """Drive one tick inside the caller-owned transaction the contract requires."""
     async with conn.transaction():
         return await tick_cron(
-            conn, settings, backend, "taskq", worker_id if worker_id is not None else new_uuid()
+            conn,
+            settings,
+            backend,
+            "taskq",
+            worker_id if worker_id is not None else new_uuid(),
+            actor_policies=actor_policies,
         )
 
 
@@ -696,3 +710,851 @@ async def test_cron_enqueue_failure_counts_and_autodisables(
         if ev.name == "cron.auto_disabled"
     ]
     assert len(auto_disabled) == 1
+
+
+# ── batched-enqueue failures are attributed per schedule, not per tick ─
+#
+# The policy preflights are advisory: a client enqueue can commit in the
+# window between the preflight SELECT and the batched INSERT (the tick's
+# transaction is READ COMMITTED, so the INSERT's own statement snapshot
+# sees the newly committed row).  The batched INSERT then violates
+# ``jobs_singleton_uniq`` — and Postgres aborts the WHOLE statement, not
+# just the offending row.  The strike must land only on the schedule whose
+# fire actually collided; unrelated schedules in the same tick must fire
+# (or at worst keep their counters untouched), because their only defect
+# was sharing a tick with a busy actor.  Three such ticks striking everyone
+# is the auto-disable trap: every unrelated schedule in the fleet goes
+# dark because one actor was busy.
+#
+# A transient infra failure of the batched INSERT (statement timeout,
+# connection drop, server shutdown) is not a schedule defect at all and
+# must not strike ANY schedule — the leader's transient handling retries
+# the whole tick.
+
+
+def _singleton_violation(actor: str) -> UniqueViolationError:
+    """A faithful ``jobs_singleton_uniq`` violation as asyncpg surfaces it.
+
+    The partial unique index is keyed on ``(actor)`` (see the initial
+    migration), so Postgres' detail line names the colliding ACTOR — the
+    one fact needed to attribute the violation to a plan without
+    re-inserting anything.
+    """
+    exc = UniqueViolationError(
+        'duplicate key value violates unique constraint "jobs_singleton_uniq"'
+    )
+    exc.constraint_name = "jobs_singleton_uniq"
+    exc.detail = f"Key (actor)=({actor}) already exists."
+    return exc
+
+
+async def test_singleton_race_between_preflight_and_insert_strikes_only_the_racer() -> None:
+    """One plan collides with a singleton blocker that commits between the
+    preflight and the batched INSERT: the colliding schedule takes exactly
+    one strike and the unrelated schedule in the same tick still fires —
+    no tick-wide strike, no auto-disable of the healthy schedule, and the
+    colliding fire is not enqueued."""
+    racer_id = new_uuid()
+    peer_id = new_uuid()
+    conn = _FakeCronConn(
+        schedule_rows=[
+            _make_schedule_row(
+                actor="busy_actor",
+                next_fire_at=_NOW,
+                schedule_id=racer_id,
+            ),
+            _make_schedule_row(
+                actor="healthy_actor",
+                next_fire_at=_NOW,
+                schedule_id=peer_id,
+            ),
+        ],
+        actor_config_rows=[
+            _make_actor_config_row(actor="busy_actor"),
+            _make_actor_config_row(actor="healthy_actor"),
+        ],
+    )
+    settings = _cron_settings()
+
+    from taskq.backend._protocol import EnqueueArgs, JobRow
+
+    class _SingletonRacedBackend(InMemoryBackend):
+        """First batched INSERT hits the newly-committed blocker; the retry
+        (the survivors only) lands — the blocker persists for the tick."""
+
+        def __init__(self) -> None:
+            super().__init__(clock=FakeClock(_NOW))
+            self._raced = False
+
+        async def enqueue_batch(
+            self,
+            args_list: list[EnqueueArgs],
+            *,
+            connection: object = None,
+            enforce_max_pending: bool = True,
+        ) -> list[JobRow]:
+            if not self._raced:
+                self._raced = True
+                raise _singleton_violation("busy_actor")
+            return await super().enqueue_batch(
+                args_list, connection=connection, enforce_max_pending=enforce_max_pending
+            )
+
+    backend = _SingletonRacedBackend()
+
+    fired = await _tick(
+        conn,
+        settings,
+        backend,
+        actor_policies={"busy_actor": ActorFirePolicy(singleton=True)},
+    )
+
+    assert fired == 1, (
+        "the healthy schedule in the colliding tick must still fire — a busy "
+        "singleton actor is not a defect of every schedule in the batch"
+    )
+    failure_updates = _failure_updates(conn)
+    assert len(failure_updates) == 1, "exactly one schedule takes a strike"
+    _sql, args = failure_updates[0]
+    assert args[0] == [racer_id], (
+        f"the strike must land only on the colliding schedule, got {args[0]}"
+    )
+    error_texts: object = args[1]
+    assert isinstance(error_texts, list)
+    assert "jobs_singleton_uniq" in str(error_texts[0]), (
+        "the strike must carry the real constraint name as the reason"
+    )
+    assert args[2] == [1], "a first race loss is one strike, not three"
+    assert args[3] == [False], "a first race loss must not auto-disable"
+    success_updates = _success_updates(conn)
+    assert len(success_updates) == 1
+    _sql, success_args = success_updates[0]
+    assert success_args[0] == [peer_id]
+    assert not [j for j in backend._jobs.values() if j.actor == "busy_actor"], (
+        "the colliding fire must not be enqueued — the client's job won the slot"
+    )
+
+
+async def test_transient_enqueue_failure_raises_without_striking_schedules() -> None:
+    """A TimeoutError from the batched enqueue (statement timeout, conn
+    blip) is PG weather, not a schedule defect: the tick re-raises for the
+    leader's transient handling (retry next tick) and NO schedule takes a
+    strike — the caller's rollback discards the tick and no
+    consecutive_failures bookkeeping may commit."""
+    conn = _FakeCronConn(
+        schedule_rows=[
+            _make_schedule_row(actor="timeout_actor", next_fire_at=_NOW),
+        ],
+        actor_config_rows=[_make_actor_config_row(actor="timeout_actor")],
+    )
+    settings = _cron_settings()
+
+    from taskq.backend._protocol import EnqueueArgs, JobRow
+
+    class _TimeoutBackend(InMemoryBackend):
+        async def enqueue_batch(
+            self,
+            args_list: list[EnqueueArgs],
+            *,
+            connection: object = None,
+            enforce_max_pending: bool = True,
+        ) -> list[JobRow]:
+            raise TimeoutError()
+
+    with pytest.raises(TimeoutError):
+        await _tick(conn, settings, _TimeoutBackend(clock=FakeClock(_NOW)))
+
+    assert _failure_updates(conn) == [], (
+        "a transient infra failure of the batched INSERT must not increment "
+        "consecutive_failures — three seconds of PG weather would auto-disable "
+        "every healthy schedule in the fleet"
+    )
+    assert _success_updates(conn) == []
+
+
+async def test_unattributable_server_error_is_isolated_per_plan() -> None:
+    """A non-transient error the tick cannot attribute from the error alone
+    (no constraint violation, no detail) falls back to enqueuing each plan
+    in its own savepoint, so the failure lands only on the plan that
+    actually fails and the healthy plans in the same tick still fire."""
+    racer_id = new_uuid()
+    peer_id = new_uuid()
+    conn = _FakeCronConn(
+        schedule_rows=[
+            _make_schedule_row(actor="defect_actor", next_fire_at=_NOW, schedule_id=racer_id),
+            _make_schedule_row(actor="healthy_actor", next_fire_at=_NOW, schedule_id=peer_id),
+        ],
+        actor_config_rows=[
+            _make_actor_config_row(actor="defect_actor"),
+            _make_actor_config_row(actor="healthy_actor"),
+        ],
+    )
+    settings = _cron_settings()
+
+    from taskq.backend._protocol import EnqueueArgs, JobRow
+
+    class _DefectBackend(InMemoryBackend):
+        """Only the defect actor's rows fail (server-side, per plan)."""
+
+        def __init__(self) -> None:
+            super().__init__(clock=FakeClock(_NOW))
+
+        async def enqueue_batch(
+            self,
+            args_list: list[EnqueueArgs],
+            *,
+            connection: object = None,
+            enforce_max_pending: bool = True,
+        ) -> list[JobRow]:
+            if any(a.actor == "defect_actor" for a in args_list):
+                raise ValueError("payload defect: NUL in text")
+            return await super().enqueue_batch(
+                args_list, connection=connection, enforce_max_pending=enforce_max_pending
+            )
+
+    backend = _DefectBackend()
+    fired = await _tick(conn, settings, backend)
+
+    assert fired == 1, "the plan without the defect must still fire"
+    failure_updates = _failure_updates(conn)
+    assert len(failure_updates) == 1
+    _sql, args = failure_updates[0]
+    assert args[0] == [racer_id], f"only the actually-failing plan takes the strike, got {args[0]}"
+    success_updates = _success_updates(conn)
+    assert len(success_updates) == 1
+    _sql, success_args = success_updates[0]
+    assert success_args[0] == [peer_id]
+
+
+async def test_pkey_violation_strikes_only_the_colliding_row() -> None:
+    """A ``jobs_pkey`` violation carries the collided id in its detail
+    line: the plan minting that id is struck and the rest of the batch
+    retries and fires."""
+    racer_id = new_uuid()
+    peer_id = new_uuid()
+    conn = _FakeCronConn(
+        schedule_rows=[
+            _make_schedule_row(actor="collide_actor", next_fire_at=_NOW, schedule_id=racer_id),
+            _make_schedule_row(actor="healthy_actor", next_fire_at=_NOW, schedule_id=peer_id),
+        ],
+        actor_config_rows=[
+            _make_actor_config_row(actor="collide_actor"),
+            _make_actor_config_row(actor="healthy_actor"),
+        ],
+    )
+    settings = _cron_settings()
+
+    from taskq.backend._protocol import EnqueueArgs, JobRow
+
+    class _PkeyCollisionBackend(InMemoryBackend):
+        """The first batched INSERT carries one already-committed id."""
+
+        def __init__(self) -> None:
+            super().__init__(clock=FakeClock(_NOW))
+            self._collided: UUID | None = None
+
+        async def enqueue_batch(
+            self,
+            args_list: list[EnqueueArgs],
+            *,
+            connection: object = None,
+            enforce_max_pending: bool = True,
+        ) -> list[JobRow]:
+            if self._collided is None:
+                self._collided = args_list[0].id
+                exc = UniqueViolationError(
+                    'duplicate key value violates unique constraint "jobs_pkey"'
+                )
+                exc.constraint_name = "jobs_pkey"
+                exc.detail = f"Key (id)=({self._collided}) already exists."
+                raise exc
+            return await super().enqueue_batch(
+                args_list, connection=connection, enforce_max_pending=enforce_max_pending
+            )
+
+    backend = _PkeyCollisionBackend()
+    fired = await _tick(conn, settings, backend)
+
+    assert fired == 1, "only the colliding plan fails; its peer fires"
+    failure_updates = _failure_updates(conn)
+    assert len(failure_updates) == 1
+    _sql, args = failure_updates[0]
+    assert args[0] == [racer_id]
+    error_texts: object = args[1]
+    assert isinstance(error_texts, list)
+    assert "jobs_pkey" in str(error_texts[0])
+
+
+# ── a transient error AFTER strikes rolls back the strikes — and must
+#    not have exported their telemetry ─────────────────────────────────
+#
+# A strike persists only if the tick's failures UPDATE executes AND the
+# caller's transaction commits.  A TRANSIENT error from any LATER
+# statement of the tick (the successes UPDATE here) re-raises correctly —
+# zero strikes persist, the leader retries — but the strike spans used to
+# be opened (and exported) at strike time, inside _strike_plans: the
+# trace backend claimed schedule failures and auto-disables that the
+# rollback erased.  Trace says schedule X auto-disabled; the DB row says
+# enabled with count 0.  This pins the buffered emission: no failure
+# span, no auto-disable event, no metric delta, unless ALL of the tick's
+# SQL ran.
+
+
+async def test_transient_after_strikes_emits_no_failure_telemetry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The batched enqueue strikes one plan (attributed singleton race),
+    the survivors land, and THEN the successes UPDATE raises TimeoutError:
+    the tick re-raises with zero persisted strikes and zero EXPORTED
+    failure telemetry — no error span, no cron.auto_disabled event, no
+    record_cron_failure delta."""
+    from taskq.backend._protocol import EnqueueArgs, JobRow
+
+    _, exporter = setup_tracer(monkeypatch)
+    cron_failure_calls: list[tuple[str, int]] = []
+    monkeypatch.setattr(
+        cron_loop,
+        "record_cron_failure",
+        lambda sid, delta: cron_failure_calls.append((sid, delta)),
+    )
+
+    racer_id = new_uuid()
+    peer_id = new_uuid()
+
+    class _SuccessUpdateTransientConn(_FakeCronConn):
+        """The successes UPDATE — the statement AFTER the strikes were
+        computed — dies with a transient error (server timeout)."""
+
+        async def execute(self, sql: str, *args: object) -> str:
+            if "last_fired_at = clock_timestamp()" in sql:
+                raise TimeoutError("successes UPDATE timed out")
+            return await super().execute(sql, *args)
+
+    class _RacedBackend(InMemoryBackend):
+        """First batched INSERT hits the raced blocker; the survivors'
+        retry lands."""
+
+        def __init__(self) -> None:
+            super().__init__(clock=FakeClock(_NOW))
+            self._raced = False
+
+        async def enqueue_batch(
+            self,
+            args_list: list[EnqueueArgs],
+            *,
+            connection: object = None,
+            enforce_max_pending: bool = True,
+        ) -> list[JobRow]:
+            if not self._raced:
+                self._raced = True
+                raise _singleton_violation("telemetry_racer")
+            return await super().enqueue_batch(
+                args_list, connection=connection, enforce_max_pending=enforce_max_pending
+            )
+
+    conn = _SuccessUpdateTransientConn(
+        schedule_rows=[
+            _make_schedule_row(actor="telemetry_racer", next_fire_at=_NOW, schedule_id=racer_id),
+            _make_schedule_row(actor="telemetry_peer", next_fire_at=_NOW, schedule_id=peer_id),
+        ],
+        actor_config_rows=[
+            _make_actor_config_row(actor="telemetry_racer"),
+            _make_actor_config_row(actor="telemetry_peer"),
+        ],
+    )
+
+    with pytest.raises(TimeoutError):
+        await _tick(
+            conn,
+            _cron_settings(),
+            _RacedBackend(),
+            actor_policies={"telemetry_racer": ActorFirePolicy(singleton=True)},
+        )
+
+    assert _failure_updates(conn) == [], (
+        "the failures UPDATE never ran — the transient re-raise must precede it"
+    )
+    assert cron_failure_calls == [], (
+        "a strike the rollback erased must not move the cron failure counter"
+    )
+    error_spans = [
+        s for s in exporter.spans_named("cron fire") if s.status.status_code == StatusCode.ERROR
+    ]
+    assert error_spans == [], (
+        "failure spans were exported for strikes the transient rollback "
+        "erased — telemetry must be emitted only after all of the tick's "
+        "SQL has executed"
+    )
+    auto_disabled = [
+        ev
+        for s in exporter.spans_named("cron fire")
+        for ev in (s.events or [])
+        if ev.name == "cron.auto_disabled"
+    ]
+    assert auto_disabled == [], "no auto-disable event for a strike that never persisted"
+
+
+async def test_operator_index_violation_is_not_attributed() -> None:
+    """An operator-added non-partial unique index on (actor) raises the
+    same ``Key (actor)=(x) already exists.`` detail shape as
+    ``jobs_singleton_uniq`` — but a DIFFERENT constraint name.
+
+    Attribution gated on the detail alone would strike the
+    singleton-stamped plan of that actor (the only pending plan the
+    stamp-verification finds) even though the violator was an unstamped
+    row the operator's index — not TaskQ's — rejected: a wrong strike
+    toward auto-disable for a schedule whose fire broke none of TaskQ's
+    own constraints.  The gate on ``constraint_name`` sends anything but
+    ``jobs_pkey`` / ``jobs_singleton_uniq`` down the per-plan fallback;
+    here the raced collision clears before the per-plan retry (READ
+    COMMITTED fresh snapshot), so both schedules fire and NO strike is
+    written."""
+    from taskq.backend._protocol import EnqueueArgs, JobRow
+
+    stamped_id = new_uuid()
+    peer_id = new_uuid()
+
+    class _OperatorIndexBackend(InMemoryBackend):
+        """First batched INSERT violates an operator-added non-partial
+        unique index on (actor): jobs_singleton_uniq's detail shape, a
+        foreign constraint name."""
+
+        def __init__(self) -> None:
+            super().__init__(clock=FakeClock(_NOW))
+            self._raised = False
+
+        async def enqueue_batch(
+            self,
+            args_list: list[EnqueueArgs],
+            *,
+            connection: object = None,
+            enforce_max_pending: bool = True,
+        ) -> list[JobRow]:
+            if not self._raised:
+                self._raised = True
+                exc = UniqueViolationError(
+                    'duplicate key value violates unique constraint "jobs_actor_operator_uniq"'
+                )
+                exc.constraint_name = "jobs_actor_operator_uniq"
+                exc.detail = "Key (actor)=(op_index_actor) already exists."
+                raise exc
+            return await super().enqueue_batch(
+                args_list, connection=connection, enforce_max_pending=enforce_max_pending
+            )
+
+    conn = _FakeCronConn(
+        schedule_rows=[
+            _make_schedule_row(actor="op_index_actor", next_fire_at=_NOW, schedule_id=stamped_id),
+            _make_schedule_row(actor="op_index_peer", next_fire_at=_NOW, schedule_id=peer_id),
+        ],
+        actor_config_rows=[
+            _make_actor_config_row(actor="op_index_actor"),
+            _make_actor_config_row(actor="op_index_peer"),
+        ],
+    )
+
+    fired = await _tick(
+        conn,
+        _cron_settings(),
+        _OperatorIndexBackend(),
+        actor_policies={"op_index_actor": ActorFirePolicy(singleton=True)},
+    )
+
+    assert fired == 2, (
+        "an operator-index violation must not strike the singleton-stamped "
+        "plan of the named actor — the per-plan fallback retried both and "
+        "both landed"
+    )
+    assert _failure_updates(conn) == [], (
+        "attribution from the detail line alone would have written a "
+        "failure UPDATE striking the stamped schedule for a constraint "
+        "TaskQ does not own"
+    )
+    success_updates = _success_updates(conn)
+    assert len(success_updates) == 1
+    _sql, success_args = success_updates[0]
+    assert success_args[0] == [stamped_id, peer_id]
+
+
+# ── attribution failure modes: every unattributable shape falls back ──
+#
+# The pre-fix bug class was the WRONG-SCHEDULE strike: an error the parser
+# could not safely map to a plan was either attributed anyway (operator
+# index, above) or never exercised with the shapes that actually reach
+# the parser.  These close the remaining traps: an actor-named detail
+# whose only pending plan is NOT singleton-stamped, and the three
+# detail-line degenerate shapes (None, garbage, truncated).
+
+
+async def test_actor_detail_without_singleton_stamp_falls_back() -> None:
+    """``cols == "actor"`` naming a plan that is NOT singleton-stamped:
+    the stamp-verification guard (the partial index only covers stamped
+    rows) must find no offender, so the violation is unattributable —
+    per-plan fallback, no wrong strike.
+
+    Without actor_policies the plans carry no ``metadata["singleton"]``
+    stamp at all, so a parser that trusted the detail line alone would
+    strike the named actor's schedule for a violation its rows cannot
+    have produced (jobs_singleton_uniq never covers unstamped rows)."""
+    from taskq.backend._protocol import EnqueueArgs, JobRow
+
+    named_id = new_uuid()
+    peer_id = new_uuid()
+
+    class _UnstampedActorBackend(InMemoryBackend):
+        """Batched INSERT violates jobs_singleton_uniq (faithful
+        constraint name) naming an actor whose pending plans are
+        unstamped; the per-plan retries land."""
+
+        def __init__(self) -> None:
+            super().__init__(clock=FakeClock(_NOW))
+            self._raised = False
+
+        async def enqueue_batch(
+            self,
+            args_list: list[EnqueueArgs],
+            *,
+            connection: object = None,
+            enforce_max_pending: bool = True,
+        ) -> list[JobRow]:
+            if not self._raised:
+                self._raised = True
+                raise _singleton_violation("unstamped_actor")
+            return await super().enqueue_batch(
+                args_list, connection=connection, enforce_max_pending=enforce_max_pending
+            )
+
+    conn = _FakeCronConn(
+        schedule_rows=[
+            _make_schedule_row(actor="unstamped_actor", next_fire_at=_NOW, schedule_id=named_id),
+            _make_schedule_row(actor="unstamped_peer", next_fire_at=_NOW, schedule_id=peer_id),
+        ],
+        actor_config_rows=[
+            _make_actor_config_row(actor="unstamped_actor"),
+            _make_actor_config_row(actor="unstamped_peer"),
+        ],
+    )
+
+    fired = await _tick(conn, _cron_settings(), _UnstampedActorBackend())
+
+    assert fired == 2, "the fallback retried both plans and both landed"
+    assert _failure_updates(conn) == [], (
+        "an actor-named detail whose only pending plan is unstamped must "
+        "not strike it — jobs_singleton_uniq cannot have been violated by "
+        "an unstamped row"
+    )
+    success_updates = _success_updates(conn)
+    assert len(success_updates) == 1
+    _sql, success_args = success_updates[0]
+    assert success_args[0] == [named_id, peer_id]
+
+
+@pytest.mark.parametrize(
+    "detail",
+    [
+        pytest.param(None, id="detail-none"),
+        pytest.param("some garbage the server never sends", id="detail-garbage"),
+        pytest.param(
+            "Key (actor)=(aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            id="detail-truncated",
+        ),
+    ],
+)
+async def test_degenerate_detail_lines_fall_back(detail: str | None) -> None:
+    """``UniqueViolationError`` with a detail that is None, garbage, or
+    truncated (PG cuts long detail values — the tail `` already
+    exists.`` is gone) is unparsable: per-plan fallback, no strike.
+
+    The constraint name is faithful (``jobs_singleton_uniq``) so the
+    constraint gate passes and ONLY the detail parser stands between the
+    violation and a wrong strike — every existing "unattributable" test
+    used a ValueError that never reached the parser at all."""
+    from taskq.backend._protocol import EnqueueArgs, JobRow
+
+    stamped_id = new_uuid()
+    peer_id = new_uuid()
+
+    class _DegenerateDetailBackend(InMemoryBackend):
+        def __init__(self) -> None:
+            super().__init__(clock=FakeClock(_NOW))
+            self._raised = False
+
+        async def enqueue_batch(
+            self,
+            args_list: list[EnqueueArgs],
+            *,
+            connection: object = None,
+            enforce_max_pending: bool = True,
+        ) -> list[JobRow]:
+            if not self._raised:
+                self._raised = True
+                exc = UniqueViolationError(
+                    'duplicate key value violates unique constraint "jobs_singleton_uniq"'
+                )
+                exc.constraint_name = "jobs_singleton_uniq"
+                exc.detail = detail
+                raise exc
+            return await super().enqueue_batch(
+                args_list, connection=connection, enforce_max_pending=enforce_max_pending
+            )
+
+    conn = _FakeCronConn(
+        schedule_rows=[
+            _make_schedule_row(actor="degenerate_actor", next_fire_at=_NOW, schedule_id=stamped_id),
+            _make_schedule_row(actor="degenerate_peer", next_fire_at=_NOW, schedule_id=peer_id),
+        ],
+        actor_config_rows=[
+            _make_actor_config_row(actor="degenerate_actor"),
+            _make_actor_config_row(actor="degenerate_peer"),
+        ],
+    )
+
+    fired = await _tick(
+        conn,
+        _cron_settings(),
+        _DegenerateDetailBackend(),
+        actor_policies={"degenerate_actor": ActorFirePolicy(singleton=True)},
+    )
+
+    assert fired == 2, "an unparsable detail must not strike the stamped plan"
+    assert _failure_updates(conn) == []
+
+
+async def test_operator_index_column_detail_falls_back() -> None:
+    """An operator-index-shaped detail naming a column TaskQ never keys
+    on (``Key (tenant_id)=(x) already exists.``): neither the constraint
+    gate nor the column parser can attribute it — per-plan fallback, no
+    strike."""
+    from taskq.backend._protocol import EnqueueArgs, JobRow
+
+    tenant_id_: UUID = new_uuid()
+    peer_id = new_uuid()
+
+    class _TenantIndexBackend(InMemoryBackend):
+        def __init__(self) -> None:
+            super().__init__(clock=FakeClock(_NOW))
+            self._raised = False
+
+        async def enqueue_batch(
+            self,
+            args_list: list[EnqueueArgs],
+            *,
+            connection: object = None,
+            enforce_max_pending: bool = True,
+        ) -> list[JobRow]:
+            if not self._raised:
+                self._raised = True
+                exc = UniqueViolationError(
+                    'duplicate key value violates unique constraint "jobs_tenant_operator_uniq"'
+                )
+                exc.constraint_name = "jobs_tenant_operator_uniq"
+                exc.detail = "Key (tenant_id)=(tenant-x) already exists."
+                raise exc
+            return await super().enqueue_batch(
+                args_list, connection=connection, enforce_max_pending=enforce_max_pending
+            )
+
+    conn = _FakeCronConn(
+        schedule_rows=[
+            _make_schedule_row(actor="tenant_actor", next_fire_at=_NOW, schedule_id=tenant_id_),
+            _make_schedule_row(actor="tenant_peer", next_fire_at=_NOW, schedule_id=peer_id),
+        ],
+        actor_config_rows=[
+            _make_actor_config_row(actor="tenant_actor"),
+            _make_actor_config_row(actor="tenant_peer"),
+        ],
+    )
+
+    fired = await _tick(conn, _cron_settings(), _TenantIndexBackend())
+
+    assert fired == 2
+    assert _failure_updates(conn) == []
+
+
+# ── the retry loop terminates when the RETRY also violates ────────────
+#
+# Attribution strikes at least one plan per pass, so the loop is bounded
+# by the batch size — but every existing fake succeeded on the retry.
+# This pins the second-violation pass: two singleton actors raced
+# externally, the first pass strikes actor A's plan, the survivors' retry
+# violates for actor B, and the THIRD pass lands the survivor.
+
+
+async def test_second_violation_on_retry_strikes_both_and_exits() -> None:
+    """Two externally-raced singleton actors in one batch: pass 1 strikes
+    A, pass 2 (the survivors) strikes B, pass 3 lands the healthy peer —
+    two strikes both persisted, survivors fire, loop exits."""
+    from taskq.backend._protocol import EnqueueArgs, JobRow
+
+    a_id = new_uuid()
+    b_id = new_uuid()
+    c_id = new_uuid()
+
+    class _TwoRacedSingletonBackend(InMemoryBackend):
+        """Each raced actor's rows violate exactly once, on whichever
+        pass first carries them — A on pass 1, B on pass 2, C never."""
+
+        def __init__(self) -> None:
+            super().__init__(clock=FakeClock(_NOW))
+            self._raised: set[str] = set()
+            self.batch_calls = 0
+
+        async def enqueue_batch(
+            self,
+            args_list: list[EnqueueArgs],
+            *,
+            connection: object = None,
+            enforce_max_pending: bool = True,
+        ) -> list[JobRow]:
+            self.batch_calls += 1
+            actors = {a.actor for a in args_list}
+            for actor in ("raced_a", "raced_b"):
+                if actor in actors and actor not in self._raised:
+                    self._raised.add(actor)
+                    raise _singleton_violation(actor)
+            return await super().enqueue_batch(
+                args_list, connection=connection, enforce_max_pending=enforce_max_pending
+            )
+
+    conn = _FakeCronConn(
+        schedule_rows=[
+            _make_schedule_row(actor="raced_a", next_fire_at=_NOW, schedule_id=a_id),
+            _make_schedule_row(actor="raced_b", next_fire_at=_NOW, schedule_id=b_id),
+            _make_schedule_row(actor="raced_healthy", next_fire_at=_NOW, schedule_id=c_id),
+        ],
+        actor_config_rows=[
+            _make_actor_config_row(actor="raced_a"),
+            _make_actor_config_row(actor="raced_b"),
+            _make_actor_config_row(actor="raced_healthy"),
+        ],
+    )
+    backend = _TwoRacedSingletonBackend()
+
+    fired = await _tick(
+        conn,
+        _cron_settings(),
+        backend,
+        actor_policies={
+            "raced_a": ActorFirePolicy(singleton=True),
+            "raced_b": ActorFirePolicy(singleton=True),
+        },
+    )
+
+    assert fired == 1, "the never-raced survivor fires after both strikes"
+    assert backend.batch_calls == 3, (
+        f"the loop must take exactly three passes (violate A, violate B, "
+        f"land C); took {backend.batch_calls} — an unbounded loop would hang "
+        "the tick, and a single-pass fallback would strike all three"
+    )
+    failure_updates = _failure_updates(conn)
+    assert len(failure_updates) == 1, "one batched failures UPDATE carries both strikes"
+    _sql, args = failure_updates[0]
+    assert args[0] == [a_id, b_id], f"both raced schedules struck, in strike order; got {args[0]}"
+    assert args[2] == [1, 1], "each raced schedule takes exactly one strike"
+    assert args[3] == [False, False], "a first race loss must not auto-disable"
+    success_updates = _success_updates(conn)
+    assert len(success_updates) == 1
+    _sql, success_args = success_updates[0]
+    assert success_args[0] == [c_id]
+
+
+# ── cancellation mid-savepoint ────────────────────────────────────────
+#
+# CancelledError is a BaseException: it passes through every ``except
+# Exception`` in the enqueue path (neither TRANSIENT_PG_ERRORS retry
+# semantics nor a per-schedule strike) — but it must still roll the
+# batched enqueue back to ITS savepoint on the way out, leaving the
+# caller's transaction (the thing the leader rolls back) intact, and
+# with buffered emission it must export nothing.
+
+
+async def test_cancelled_error_mid_savepoint_rolls_back_and_writes_no_strikes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cancellation while the batched enqueue holds the savepoint open:
+    the savepoint rolls back, the CancelledError propagates, zero
+    strikes are written and zero failure telemetry exported."""
+    import asyncio
+
+    from taskq.backend._protocol import EnqueueArgs, JobRow
+
+    _, exporter = setup_tracer(monkeypatch)
+    cron_failure_calls: list[tuple[str, int]] = []
+    monkeypatch.setattr(
+        cron_loop,
+        "record_cron_failure",
+        lambda sid, delta: cron_failure_calls.append((sid, delta)),
+    )
+
+    entered = asyncio.Event()
+
+    class _WedgeInsideSavepointBackend(InMemoryBackend):
+        """The batched enqueue wedges after entering the savepoint —
+        cancellation can only land inside it."""
+
+        def __init__(self) -> None:
+            super().__init__(clock=FakeClock(_NOW))
+
+        async def enqueue_batch(
+            self,
+            args_list: list[EnqueueArgs],
+            *,
+            connection: object = None,
+            enforce_max_pending: bool = True,
+        ) -> list[JobRow]:
+            entered.set()
+            await asyncio.Event().wait()  # wedge until the test cancels
+            raise AssertionError("unreachable: the wedge must be cancelled")
+
+    class _RecordingTransaction(_FakeTransaction):
+        """asyncpg-shaped nested-transaction double: records the
+        savepoint begin/rollback order a real connection would issue
+        (nested transaction on an in-transaction connection = SAVEPOINT;
+        exception on exit = ROLLBACK TO SAVEPOINT, exception propagates)."""
+
+        def __init__(self, log: list[str]) -> None:
+            self._log = log
+
+        async def __aenter__(self) -> None:
+            self._log.append("savepoint-begin")
+            return None
+
+        async def __aexit__(self, *args: object) -> None:
+            self._log.append("savepoint-rollback" if args[0] is not None else "savepoint-release")
+
+    class _SavepointConn(_FakeCronConn):
+        def __init__(self, **kwargs: object) -> None:
+            super().__init__(**kwargs)  # type: ignore[arg-type]  # Why: test-only double; kwargs are the _FakeCronConn constructor's.
+            self.savepoint_log: list[str] = []
+
+        def transaction(self) -> _RecordingTransaction:
+            return _RecordingTransaction(self.savepoint_log)
+
+    conn = _SavepointConn(
+        schedule_rows=[
+            _make_schedule_row(actor="cancel_actor", next_fire_at=_NOW),
+        ],
+        actor_config_rows=[_make_actor_config_row(actor="cancel_actor")],
+    )
+
+    task = asyncio.create_task(_tick(conn, _cron_settings(), _WedgeInsideSavepointBackend()))
+    await entered.wait()  # the tick is wedged INSIDE the savepoint
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert conn.savepoint_log == [
+        "savepoint-begin",  # the caller-owned transaction (from _tick)
+        "savepoint-begin",  # the batched enqueue's savepoint
+        "savepoint-rollback",  # cancellation rolled back TO the savepoint
+        "savepoint-rollback",  # and the caller's transaction rolls back too
+    ], (
+        "cancellation must roll the savepoint back on its way out — the enqueue's partial write cannot survive in the caller's transaction"
+    )
+    assert _failure_updates(conn) == [], "a cancelled tick writes zero strikes"
+    assert cron_failure_calls == [], "and exports no failure telemetry"
+    error_spans = [
+        s for s in exporter.spans_named("cron fire") if s.status.status_code == StatusCode.ERROR
+    ]
+    assert error_spans == []
+    assert _success_updates(conn) == []

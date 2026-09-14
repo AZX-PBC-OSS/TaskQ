@@ -12,7 +12,18 @@ from uuid import UUID
 
 import structlog
 
-from taskq._json import dumps_str as _json_dumps_str
+# Why: private import — the pre-serialized result path holds bytes, not a
+# dict, so the byte-level scan is the only way to run dumps_jsonb_str's NUL
+# guard without a second serialization (same justification as
+# backend/_terminal.py, mirrored here so both backends fail identically).
+from taskq._json import (
+    NUL_JSONB_ERROR,
+    _encoded_has_nul,  # pyright: ignore[reportPrivateUsage]
+    decode_result_bytes,
+    dumps_jsonb_str,
+    loads,
+)
+from taskq._json import dumps as _json_dumps
 from taskq.backend._protocol import (
     AttemptOutcome,
     AttemptRow,
@@ -25,6 +36,8 @@ from taskq.exceptions import (
     ResultTooLarge,
     WorkerOwnershipMismatch,
 )
+from taskq.retry import MAX_ATTEMPTS_SMALLINT_CEILING
+from taskq.testing._reads import _read_copy
 
 if TYPE_CHECKING:
     from taskq.testing.in_memory import InMemoryBackend
@@ -49,36 +62,93 @@ def _merge_progress(
     current: dict[str, object] | None,
     update: dict[str, object] | None,
 ) -> dict[str, object] | None:
-    """Mirror PG ``COALESCE(progress_state,'{}') || new`` for terminal writes."""
+    """Mirror PG ``COALESCE(progress_state,'{}') || new`` for terminal writes.
+
+    The merge result is round-tripped through the same guarded
+    serialization PG binds (both sides of the jsonb concat are
+    ``dumps_jsonb_str`` output), so values whose encoding differs from
+    the Python object (NaN/Infinity → null, UUID → string, tuple →
+    array) read back exactly as PG reads them, and a NUL in the update
+    raises the same ``ValueError`` PG's bind raises instead of being
+    stored; the round-trip is idempotent for already-stored JSON-native
+    state.
+    """
     if update is not None:
-        return (current or {}) | update
-    return current
+        return loads(dumps_jsonb_str((current or {}) | update))
+    if current is None:
+        return None
+    return loads(dumps_jsonb_str(current))
 
 
 async def _mark_succeeded(
     self: "InMemoryBackend",
     job_id: JobId,
     worker_id: UUID,
-    result: dict[str, object] | None,
+    result: dict[str, object] | None = None,
     progress_seq: int = 0,
     progress_state: dict[str, object] | None = None,
     fallback_result_ttl: timedelta | None = None,
+    *,
+    result_bytes: bytes | None = None,
 ) -> bool:
-    row = self._jobs.get(job_id)
-    if row is None:
-        return False
-    if row.status != "running" or row.locked_by_worker != worker_id:
-        return False
-
-    now = self._clock.now()
-    result_size_bytes: int | None = (
-        len(_json_dumps_str(result).encode("utf-8")) if result is not None else None
-    )
+    # Caller-input validation precedes the state fence, matching the PG
+    # terminal's order (its guards run before the fencing UPDATE): a
+    # misuse or a permanently-unstorable value raises loudly whatever the
+    # job's state, and only a value PG would accept reaches the fence —
+    # where a missing or mismatched job still returns False, exactly as
+    # PG's fencing UPDATE matching no row returns False.
+    if result is not None and result_bytes is not None:
+        raise ValueError(
+            "result and result_bytes are mutually exclusive; pass the actor's "
+            "result dict (serialized here) or its taskq._json.dumps bytes "
+            "(reused as-is), not both"
+        )
+    # Both result forms normalize to the same observable state as PG: the
+    # stored result never reaches storage by reference (PG serializes into
+    # jsonb at write time) and result_size_bytes is the exact byte length
+    # of what PG would store.  The bytes form — what the worker consumer
+    # passes — reuses the caller's serialization as-is (dict via a decode
+    # round-trip, the same orjson bytes PG would bind); the dict form
+    # serializes exactly once here and stores the round-trip of those
+    # same bytes, so values whose orjson encoding differs from the Python
+    # object (NaN/Infinity → null, UUID → string, tuple → array) read
+    # back exactly as PG's jsonb column reads them back.
+    stored_result: dict[str, object] | None
+    result_size_bytes: int | None
+    if result_bytes is not None:
+        if not result_bytes:
+            # Mirror the PG backend: empty bytes are never valid orjson
+            # output and would bind as '' (invalid jsonb) — raise the same
+            # ValueError here so the testing backend is observable-equivalent.
+            raise ValueError(
+                "result_bytes must be non-empty orjson output (taskq._json.dumps); "
+                "pass result for the dict form or omit both for a NULL result"
+            )
+        if _encoded_has_nul(result_bytes):
+            raise ValueError(NUL_JSONB_ERROR)
+        stored_result = decode_result_bytes(result_bytes)
+        result_size_bytes = len(result_bytes)
+    elif result is not None:
+        data = _json_dumps(result)
+        if _encoded_has_nul(data):
+            raise ValueError(NUL_JSONB_ERROR)
+        stored_result = loads(data)
+        result_size_bytes = len(data)
+    else:
+        stored_result = None
+        result_size_bytes = None
     max_result_bytes = self._result_max_bytes
     if result_size_bytes is not None and result_size_bytes > max_result_bytes:
         raise ResultTooLarge(
             f"result size {result_size_bytes} bytes exceeds {max_result_bytes} byte cap"
         )
+
+    row = self._jobs.get(job_id)
+    if row is None:
+        return False
+    if row.status != "running" or row.locked_by_worker != worker_id:
+        return False
+    now = self._clock.now()
     # Mirror the PG COALESCE: stored (operator-owned) result_ttl applied at
     # completion; then the worker-supplied fallback (the @actor literal),
     # also at completion; then the enqueue-time value.
@@ -92,7 +162,7 @@ async def _mark_succeeded(
     self._jobs[job_id] = replace(
         row,
         status="succeeded",
-        result=result,
+        result=stored_result,
         result_size_bytes=result_size_bytes,
         result_expires_at=new_result_expires_at,
         finished_at=now,
@@ -132,13 +202,22 @@ async def _mark_succeeded_with_conn(
     conn: object,
     job_id: JobId,
     worker_id: UUID,
-    result: dict[str, object] | None,
+    result: dict[str, object] | None = None,
     progress_seq: int = 0,
     progress_state: dict[str, object] | None = None,
     fallback_result_ttl: timedelta | None = None,
+    *,
+    result_bytes: bytes | None = None,
 ) -> bool:
     return await _mark_succeeded(
-        self, job_id, worker_id, result, progress_seq, progress_state, fallback_result_ttl
+        self,
+        job_id,
+        worker_id,
+        result,
+        progress_seq,
+        progress_state,
+        fallback_result_ttl,
+        result_bytes=result_bytes,
     )
 
 
@@ -208,7 +287,7 @@ async def _mark_failed_or_retry(
                 to_state="failed",
                 job_id=str(job_id),
             )
-            return updated
+            return _read_copy(updated)
 
         retry_status: Literal["scheduled", "pending"] = (
             "scheduled" if retry_delay > timedelta(0) else "pending"
@@ -257,7 +336,7 @@ async def _mark_failed_or_retry(
             to_state="scheduled",
             job_id=str(job_id),
         )
-        return updated
+        return _read_copy(updated)
 
     now = self._clock.now()
     merged_progress = _merge_progress(row.progress_state, progress_state)
@@ -300,7 +379,7 @@ async def _mark_failed_or_retry(
         to_state="failed",
         job_id=str(job_id),
     )
-    return updated
+    return _read_copy(updated)
 
 
 async def _mark_cancelled(
@@ -508,11 +587,25 @@ async def _mark_snoozed(
         )
         return "failed"
 
-    new_metadata = row.metadata if metadata_update is None else {**row.metadata, **metadata_update}
+    # PG's snooze arm binds metadata_update through jsonb_param (the
+    # NUL-guarded serialization) and merges it server-side
+    # (j.metadata || update), so the update's values read back as PG's
+    # jsonb round-trip reads them — round-trip it here through the same
+    # serialization before the merge; row.metadata is already the
+    # round-trip enqueue stored.
+    new_metadata = (
+        row.metadata
+        if metadata_update is None
+        else {**row.metadata, **loads(dumps_jsonb_str(metadata_update))}
+    )
     snooze_status: Literal["scheduled", "pending"] = (
         "scheduled" if new_scheduled_at > now else "pending"
     )
     merged_progress = _merge_progress(row.progress_state, progress_state)
+    # Why: saturate at the smallint ceiling — PG's mark_snoozed widens the
+    # budget with LEAST(j.max_attempts + 1, 32767); an unbounded Python
+    # increment would let the mirror's rows cross the column domain the
+    # real backend's rows can never leave (parity doctrine).
     self._jobs[job_id] = replace(
         row,
         status=snooze_status,
@@ -521,7 +614,7 @@ async def _mark_snoozed(
         locked_by_worker=None,
         lock_expires_at=None,
         last_heartbeat_at=None,
-        max_attempts=row.max_attempts + 1,
+        max_attempts=min(row.max_attempts + 1, MAX_ATTEMPTS_SMALLINT_CEILING),
         metadata=new_metadata,
         cancel_phase=CancelPhase.NONE,
         cancel_requested_at=None,
@@ -667,7 +760,14 @@ async def _mark_retry_after(
         return "failed:MaxAttemptsExceeded"
 
     new_attempt = row.attempt
-    new_max_attempts = row.max_attempts if consume_budget else row.max_attempts + 1
+    # Why: saturate at the smallint ceiling, mirroring PG's
+    # mark_retry_after_consume_false LEAST() increment (same parity
+    # rationale as _mark_snoozed above).
+    new_max_attempts = (
+        row.max_attempts
+        if consume_budget
+        else min(row.max_attempts + 1, MAX_ATTEMPTS_SMALLINT_CEILING)
+    )
     retry_status: Literal["scheduled", "pending"] = (
         "scheduled" if new_scheduled_at > now else "pending"
     )
@@ -719,4 +819,11 @@ async def _mark_retry_after(
 
 
 async def _write_attempt(self: "InMemoryBackend", attempt: AttemptRow) -> None:
-    self._attempts.setdefault(attempt.job_id, []).append(attempt)
+    # PG serialises the attempt row at INSERT time (metadata through
+    # dumps_jsonb_str, the same NUL-guarded serialization jsonb_param
+    # binds) and reads it back through loads, so a caller-held AttemptRow
+    # can never reach storage by reference and the stored metadata holds
+    # PG's jsonb read-back values.
+    self._attempts.setdefault(attempt.job_id, []).append(
+        replace(attempt, metadata=loads(dumps_jsonb_str(attempt.metadata)))
+    )

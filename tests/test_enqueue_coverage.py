@@ -32,10 +32,12 @@ from taskq.backend._protocol import EnqueueArgs, IdentityKey, JobRow
 from taskq.backend._sql_templates import render as render_sql
 from taskq.exceptions import (
     MaxPendingExceededError,
+    PayloadValidationError,
     ScopedIdempotencyMigrationPendingError,
     SingletonCollisionError,
 )
 from taskq.testing.clock import FakeClock
+from taskq.testing.in_memory import InMemoryBackend
 
 _SCHEMA_LABEL = "taskq"
 _SQL = render_sql(_SCHEMA_LABEL)
@@ -137,6 +139,13 @@ class _FakeEnqueueConn:
         return None
 
     async def fetchval(self, sql: str, *args: object) -> object:
+        # The max_pending try-lock succeeds by default: these tests model an
+        # uncontended enqueue; contention behavior is covered by
+        # test_postgres_enqueue_max_pending_lock.py. Without this, the
+        # bounded-wait budget (5 s default) would expire inside every
+        # capped-path test before the count is ever reached.
+        if "pg_try_advisory_xact_lock" in sql:
+            return True
         for pattern, result in self._fetchval_map.items():
             if pattern in sql:
                 return result
@@ -434,6 +443,126 @@ async def test_enqueue_accepts_clean_tags() -> None:
     row = await _enqueue_on_conn(conn, _SQL, _SCHEMA_LABEL, clock, args)
 
     assert isinstance(row, JobRow)
+
+
+# ── Batch serialization: per-item NUL attribution ────────────────────────
+#
+# The batch build loops serialize every item BEFORE any SQL runs, so a NUL
+# in any item raised a bare ValueError(NUL_JSONB_ERROR) that named neither
+# the item nor the field. Pydantic validation failures get per-item
+# annotation via _item_payload_error in the client layer
+# (taskq.client._jobs); the NUL ValueError bypassed that contract. The
+# batch still refuses atomically (attribution, not partial admission):
+# these tests prove the rejection fires before any connection is acquired.
+
+
+class _ForbiddenPool:
+    """Pool stand-in that fails if touched.
+
+    The NUL build-loop rejection must fire before any connection is
+    acquired: nothing ran, so nothing was written -- the same
+    all-or-nothing admission PG gives by aborting before the INSERT.
+    """
+
+    def acquire(self) -> object:
+        raise AssertionError("pool must not be acquired when a NUL item rejects the batch")
+
+
+async def test_enqueue_batch_nul_payload_names_item_and_field() -> None:
+    """A NUL in item 2's payload rejects the whole batch with a
+    PayloadValidationError naming item 2, the actor, and the payload
+    field -- the _item_payload_error annotation contract."""
+    args_list = [_make_args() for _ in range(5)]
+    args_list[2] = replace(args_list[2], payload={"value": "bad\x00value"})
+
+    with pytest.raises(PayloadValidationError) as exc_info:
+        await _enqueue_batch(_ForbiddenPool(), _SQL, _SCHEMA_LABEL, args_list)  # type: ignore[arg-type]  # Why: pool is never reached; the stand-in proves it
+
+    msg = str(exc_info.value)
+    assert "item 2" in msg
+    assert "payload" in msg
+    assert "test_actor" in msg
+    assert "NUL" in msg
+    assert exc_info.value.validation_errors[0]["loc"] == ("payload",)
+
+
+async def test_enqueue_batch_nul_metadata_names_item_and_field() -> None:
+    """Same attribution for a NUL riding in item 3's metadata."""
+    args_list = [_make_args() for _ in range(5)]
+    args_list[3] = replace(args_list[3], metadata={"note": "bad\x00note"})
+
+    with pytest.raises(PayloadValidationError) as exc_info:
+        await _enqueue_batch(_ForbiddenPool(), _SQL, _SCHEMA_LABEL, args_list)  # type: ignore[arg-type]  # Why: pool is never reached; the stand-in proves it
+
+    msg = str(exc_info.value)
+    assert "item 3" in msg
+    assert "metadata" in msg
+    assert exc_info.value.validation_errors[0]["loc"] == ("metadata",)
+
+
+async def test_enqueue_batch_nul_tags_names_item_and_field() -> None:
+    """Same attribution for a NUL in item 4's tags, reachable only by
+    bypassing the EnqueueArgs chokepoint (as only object.__setattr__
+    can) -- the batch path still binds tags through jsonb, so the
+    serialization layer keeps its own annotated guard."""
+    args_list = [_make_args() for _ in range(5)]
+    object.__setattr__(args_list[4], "tags", ("bad\x00tag",))
+
+    with pytest.raises(PayloadValidationError) as exc_info:
+        await _enqueue_batch(_ForbiddenPool(), _SQL, _SCHEMA_LABEL, args_list)  # type: ignore[arg-type]  # Why: pool is never reached; the stand-in proves it
+
+    msg = str(exc_info.value)
+    assert "item 4" in msg
+    assert "tags" in msg
+    assert exc_info.value.validation_errors[0]["loc"] == ("tags",)
+
+
+async def test_enqueue_batch_fast_nul_payload_names_item_and_field() -> None:
+    """The COPY build loop has the same gap: a NUL in item 1's payload
+    rejects the whole batch with the per-item annotation, before any
+    COPY is issued."""
+    args_list = [_make_args() for _ in range(3)]
+    args_list[1] = replace(args_list[1], payload={"value": "bad\x00value"})
+
+    with pytest.raises(PayloadValidationError) as exc_info:
+        await _enqueue_batch_fast(_ForbiddenPool(), _SQL, _SCHEMA_LABEL, args_list)  # type: ignore[arg-type]  # Why: pool is never reached; the stand-in proves it
+
+    msg = str(exc_info.value)
+    assert "item 1" in msg
+    assert "payload" in msg
+    assert exc_info.value.validation_errors[0]["loc"] == ("payload",)
+
+
+async def test_memory_enqueue_batch_nul_payload_annotated_and_atomic() -> None:
+    """InMemoryBackend parity: the batch mirror rejects a NUL-bearing item
+    with the same per-item annotation AND the same all-or-nothing
+    admission as PG. Pre-fix the per-item loop admitted items 0..k-1
+    before item k raised a bare, unattributed ValueError."""
+    backend = InMemoryBackend(clock=FakeClock(_NOW))
+    args_list = [_make_args() for _ in range(4)]
+    args_list[2] = replace(args_list[2], payload={"value": "bad\x00value"})
+
+    with pytest.raises(PayloadValidationError) as exc_info:
+        await backend.enqueue_batch(args_list)
+
+    assert "item 2" in str(exc_info.value)
+    assert "payload" in str(exc_info.value)
+    # Atomic like PG: items 0..1 were not admitted before the rejection.
+    assert len(backend._jobs) == 0  # type: ignore[reportPrivateUsage]  # Why: test-only admission check
+
+
+async def test_memory_enqueue_batch_nul_metadata_annotated_and_atomic() -> None:
+    """InMemoryBackend parity for the metadata field."""
+    backend = InMemoryBackend(clock=FakeClock(_NOW))
+    args_list = [_make_args() for _ in range(3)]
+    args_list[1] = replace(args_list[1], metadata={"note": "bad\x00note"})
+
+    with pytest.raises(PayloadValidationError) as exc_info:
+        await backend.enqueue_batch(args_list)
+
+    assert "item 1" in str(exc_info.value)
+    assert "metadata" in str(exc_info.value)
+    assert len(backend._jobs) == 0  # type: ignore[reportPrivateUsage]  # Why: test-only admission check
 
 
 # ── _enqueue_batch_fast: schedule_to_close_interval + result_ttl ────────

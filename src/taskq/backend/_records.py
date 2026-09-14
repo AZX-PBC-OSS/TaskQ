@@ -6,9 +6,9 @@ reuse (e.g. the rate-limit modules) and unit testing.
 """
 
 from datetime import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
-from taskq._json import dumps_jsonb_str, loads
+from taskq._json import NUL_JSONB_ERROR, dumps_jsonb_str, loads
 from taskq.backend._protocol import (
     BatchRow,
     IdempotencyKey,
@@ -20,6 +20,7 @@ from taskq.backend._protocol import (
     parse_retry_kind,
 )
 from taskq.backend._sql import parse_rowcount
+from taskq.exceptions import PayloadValidationError
 
 if TYPE_CHECKING:
     import asyncpg
@@ -28,6 +29,8 @@ __all__ = [
     "_batch_row_from_record",
     "_job_row_from_record",
     "compute_duration_ms",
+    "item_jsonb_param",
+    "item_tags_jsonb_param",
     "jsonb_param",
     "jsonb_to_dict",
     "parse_rowcount",
@@ -62,6 +65,67 @@ def jsonb_param(value: dict[str, object] | None) -> str | None:
     if value is None:
         return None
     return dumps_jsonb_str(value)
+
+
+def _nul_item_payload_error(*, idx: int, field: str, actor: str) -> PayloadValidationError:
+    """The per-item NUL rejection, in the client layer's annotation shape.
+
+    Message and ``validation_errors`` mirror ``_item_payload_error`` in
+    ``taskq.client._jobs`` (item index + actor in the message; sanitized
+    error entries with no ``input``/``url`` keys) so a batch caller sees
+    one consistent annotation contract whether the defect was caught by
+    pydantic or by the jsonb serialization guard.
+    """
+    return PayloadValidationError(
+        f"Payload validation failed for item {idx} (actor={actor!r}): {field} {NUL_JSONB_ERROR}",
+        actor=actor,
+        validation_errors=[{"type": "value_error", "loc": (field,), "msg": NUL_JSONB_ERROR}],
+    )
+
+
+def item_jsonb_param(
+    value: dict[str, object] | None,
+    *,
+    idx: int,
+    field: Literal["payload", "metadata"],
+    actor: str,
+) -> str:
+    """``jsonb_param`` for one *batch* item, with per-item NUL attribution.
+
+    Why: the batch build loops serialize every item before any SQL runs,
+    so a NUL in any item previously raised a bare ``ValueError`` that
+    named neither the item nor the field — one bad item aborted the
+    whole batch with no attribution. Pydantic validation failures get
+    per-item annotation in the client layer; the NUL ``ValueError``
+    bypassed that contract, so the same annotation is attached here, at
+    the serialization layer both backends share. The batch still refuses
+    atomically: callers use this in the build loop, before any statement
+    is issued, so nothing is written (attribution, not partial
+    admission).
+
+    ``None`` normalizes to ``'{}'`` — the batch loops' ``or '{}'``
+    folded in so call sites stay one call.
+    """
+    try:
+        return jsonb_param(value) or "{}"
+    except ValueError as exc:
+        raise _nul_item_payload_error(idx=idx, field=field, actor=actor) from exc
+
+
+def item_tags_jsonb_param(tags: tuple[str, ...], *, idx: int, actor: str) -> str:
+    """``dumps_jsonb_str`` for one *batch* item's tags, same attribution.
+
+    The batch path binds tags as ``$N::jsonb[]`` (jagged-array transit),
+    so a NUL tag hits the same ``jsonb_in`` rejection as a NUL payload —
+    see :func:`item_jsonb_param` for the annotation rationale. Only
+    reachable by bypassing the ``EnqueueArgs`` text-field chokepoint
+    (``__post_init__`` rejects NUL tags at construction); the guard here
+    keeps the serialization layer honest about what it actually binds.
+    """
+    try:
+        return dumps_jsonb_str(list(tags))
+    except ValueError as exc:
+        raise _nul_item_payload_error(idx=idx, field="tags", actor=actor) from exc
 
 
 def _job_row_from_record(rec: "asyncpg.Record") -> JobRow:

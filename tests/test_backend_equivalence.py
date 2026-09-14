@@ -26,7 +26,7 @@ from taskq.backend._cancel_bulk import _cancel_where
 from taskq.backend._protocol import ErrorInfo, EventRow, IdentityKey, JobId, JobSortField, JobStatus
 from taskq.backend._reads import _list_jobs
 from taskq.backend.statemachine import ACTIVE_STATUSES, TERMINAL_STATUSES
-from taskq.exceptions import BatchMaxPendingExceededError
+from taskq.exceptions import BatchMaxPendingExceededError, DuplicateIdempotencyKeyError
 from taskq.testing.in_memory import InMemoryBackend, encode_cursor
 
 # The harness exercises PG via backend_pair; PG branch must be opt-in.
@@ -2242,13 +2242,12 @@ async def test_enqueue_batch_fast_intra_batch_duplicate_aborts_entire_batch(
 ) -> None:
     """D7 parity pin: COPY has no ON CONFLICT arbiter, so a duplicate
     ``idempotency_key`` WITHIN one batch violates the unique index and
-    aborts the ENTIRE batch — all-or-nothing, nothing written, and PG
-    surfaces it as ``asyncpg.UniqueViolationError``.  Pre-fix the InMemory
-    mirror silently deduplicated item-by-item and returned a count that
-    included rows PG would never have written (count=2 for a batch whose
-    every row PG would have rejected)."""
-    import asyncpg
-
+    aborts the ENTIRE batch — all-or-nothing, nothing written, and both
+    backends surface the typed ``DuplicateIdempotencyKeyError`` (the
+    classification fix; previously a raw ``asyncpg.UniqueViolationError``).
+    Pre-fix the InMemory mirror silently deduplicated item-by-item and
+    returned a count that included rows PG would never have written
+    (count=2 for a batch whose every row PG would have rejected)."""
     key = f"dup-intra-{new_uuid()}"
     args_list = [
         EnqueueArgs(
@@ -2273,7 +2272,7 @@ async def test_enqueue_batch_fast_intra_batch_duplicate_aborts_entire_batch(
         ),
     ]
 
-    with pytest.raises(asyncpg.UniqueViolationError):
+    with pytest.raises(DuplicateIdempotencyKeyError):
         await backend_pair.enqueue_batch_fast(args_list)
 
     # All-or-nothing: no row from the batch survived.
@@ -2288,11 +2287,9 @@ async def test_enqueue_batch_fast_existing_key_aborts_entire_batch(
 ) -> None:
     """D7 parity pin, cross-call shape: a batch-fast item whose
     ``(idempotency_scope, idempotency_key)`` already exists from an earlier
-    write aborts the whole batch on PG (COPY cannot dedupe); the InMemory
-    mirror must agree instead of silently returning the stored row's
-    count."""
-    import asyncpg
-
+    write aborts the whole batch on PG (COPY cannot dedupe) with the typed
+    ``DuplicateIdempotencyKeyError``; the InMemory mirror must agree
+    instead of silently returning the stored row's count."""
     key = f"dup-existing-{new_uuid()}"
     first = EnqueueArgs(
         id=new_job_id(),
@@ -2329,7 +2326,7 @@ async def test_enqueue_batch_fast_existing_key_aborts_entire_batch(
             idempotency_key=key,
         ),
     ]
-    with pytest.raises(asyncpg.UniqueViolationError):
+    with pytest.raises(DuplicateIdempotencyKeyError):
         await backend_pair.enqueue_batch_fast(batch)
 
     # All-or-nothing: the fresh item must NOT have been written either.
@@ -2358,6 +2355,139 @@ async def test_enqueue_batch_fast_count_is_items_written(backend_pair: Backend) 
     ]
     count = await backend_pair.enqueue_batch_fast(args_list)
     assert count == 3
+
+
+async def test_enqueue_batch_fast_multi_defect_batch_raises_payload_validation(
+    backend_pair: Backend,
+) -> None:
+    """D7 parity pin, defect-ordering: a batch carrying BOTH a NUL-bearing
+    payload and a duplicate (scope, key) pair must raise the SAME typed
+    error on both backends — PayloadValidationError, because PG's fast
+    path serializes every item in the build loop (NUL guard) BEFORE the
+    pre-COPY cap count and long before the COPY's duplicate violation.
+    The InMemory mirror used to check duplicates first, so the same batch
+    raised DuplicateIdempotencyKeyError in memory and
+    PayloadValidationError on PG — a multi-defect batch could pass app
+    tests and break on the first real enqueue."""
+    from taskq.exceptions import PayloadValidationError
+
+    key = f"dup-multi-defect-{new_uuid()}"
+    args_list = [
+        # The NUL-bearing item: on PG the build loop's item_jsonb_param
+        # rejects the whole batch before anything is written.
+        EnqueueArgs(
+            id=new_job_id(),
+            actor="actor_a",
+            queue="default",
+            payload={"text": "bad\x00nul"},
+            max_attempts=3,
+            retry_kind="transient",
+            scheduled_at=_START,
+        ),
+        # The duplicate pair: would abort the COPY on PG if the batch ever
+        # reached it — the ordering pin is that it must NOT be reached.
+        EnqueueArgs(
+            id=new_job_id(),
+            actor="actor_a",
+            queue="default",
+            payload={},
+            max_attempts=3,
+            retry_kind="transient",
+            scheduled_at=_START,
+            idempotency_key=key,
+        ),
+        EnqueueArgs(
+            id=new_job_id(),
+            actor="actor_a",
+            queue="default",
+            payload={},
+            max_attempts=3,
+            retry_kind="transient",
+            scheduled_at=_START,
+            idempotency_key=key,
+        ),
+    ]
+
+    with pytest.raises(PayloadValidationError):
+        await backend_pair.enqueue_batch_fast(args_list)
+
+    # All-or-nothing: no row from the batch survived on either backend.
+    rows = await backend_pair.list_jobs(JobFilter(actor="actor_a", limit=100))
+    assert all(r.idempotency_key != key for r in rows), (
+        "the rejected batch must leave no rows behind"
+    )
+
+
+async def test_enqueue_batch_fast_multi_defect_batch_raises_cap_before_duplicate(
+    backend_pair: Backend,
+) -> None:
+    """D7 parity pin, cap-vs-duplicate ordering under the per-actor
+    partition: a batch whose sole actor is over cap is refused as a whole
+    group BEFORE the COPY ever sees the duplicate violation — the caller
+    sees BatchMaxPendingExceededError naming the actor and every item
+    index, and the duplicate pair is never reached (it is also
+    cap-discounted on both tiers, consuming no capacity, so the cap
+    verdict depends only on the fresh items). PG's fast path runs the
+    pre-COPY cap partition before the COPY; the mirror checks in the
+    same order."""
+    from taskq.exceptions import BatchMaxPendingExceededError
+
+    key = f"dup-cap-order-{new_uuid()}"
+    args_list = [
+        # Three fresh items against a cap of 2: the cap verdict is decided
+        # by these, regardless of the duplicate below.
+        *(
+            EnqueueArgs(
+                id=new_job_id(),
+                actor="actor_a",
+                queue="default",
+                payload={"i": i},
+                max_attempts=3,
+                retry_kind="transient",
+                scheduled_at=_START,
+                max_pending=2,
+            )
+            for i in range(3)
+        ),
+        # The duplicate pair: cap-discounted, but would abort the COPY if
+        # the batch reached it — the pin is that the cap refusal comes
+        # first on BOTH backends.
+        EnqueueArgs(
+            id=new_job_id(),
+            actor="actor_a",
+            queue="default",
+            payload={},
+            max_attempts=3,
+            retry_kind="transient",
+            scheduled_at=_START,
+            max_pending=2,
+            idempotency_key=key,
+        ),
+        EnqueueArgs(
+            id=new_job_id(),
+            actor="actor_a",
+            queue="default",
+            payload={},
+            max_attempts=3,
+            retry_kind="transient",
+            scheduled_at=_START,
+            max_pending=2,
+            idempotency_key=key,
+        ),
+    ]
+
+    with pytest.raises(BatchMaxPendingExceededError) as excinfo:
+        await backend_pair.enqueue_batch_fast(args_list)
+
+    err = excinfo.value
+    assert err.admitted_count == 0, "every item belongs to the over-cap actor"
+    assert set(err.refused_indices) == {"actor_a"}
+    assert sorted(err.refused_indices["actor_a"]) == [0, 1, 2, 3, 4]
+
+    rows = await backend_pair.list_jobs(JobFilter(actor="actor_a", limit=100))
+    assert all(r.idempotency_key != key for r in rows), (
+        "the refused batch must leave no rows behind"
+    )
 
 
 # ── keyset pagination under every ordering ─────────────────────────────

@@ -52,9 +52,15 @@ _log: structlog.stdlib.BoundLogger = get_logger(__name__)
 #: Deliberately NOT here: auth failures (``InvalidPasswordError`` et al.)
 #: are not transient for static DSNs and must not retry silently (the
 #: credential-provider reopen path has its own deliberate broad catch);
-#: ``LockNotAvailableError`` needs a lock_timeout TaskQ never sets; data
-#: errors (constraint violations, undefined tables) are bugs, and the
-#: guard below makes them loud and then deliberately fatal.
+#: ``LockNotAvailableError`` (55P03) is raised by the bounded advisory
+#: acquires' scoped ``lock_timeout`` — every acquire site converts it to
+#: its own typed outcome (``MaxPendingLockTimeoutError`` /
+#: ``UniqueForLockTimeoutError`` / the limiter's fail-closed denial), so
+#: one reaching this classifier means a leaked or operator-set
+#: ``lock_timeout`` hit an ordinary statement — surfacing loudly beats
+#: silently retrying under an unknown bound; data errors (constraint
+#: violations, undefined tables) are bugs, and the guard below makes them
+#: loud and then deliberately fatal.
 TRANSIENT_PG_ERRORS: tuple[type[BaseException], ...] = (
     TimeoutError,
     asyncpg.PostgresConnectionError,

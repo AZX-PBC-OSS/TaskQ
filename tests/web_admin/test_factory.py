@@ -170,6 +170,10 @@ def test_warning_logged_when_no_auth_non_dev(
     with admin_ui_require_auth explicitly set to false (opt-out path)."""
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "production")
     monkeypatch.setenv("TASKQ_ADMIN_UI_REQUIRE_AUTH", "false")
+    # The admin factory mounts the progress router with the same absent
+    # auth_dependency, so its fail-closed gate needs the same opt-out for
+    # this unauthenticated-by-ingress shape to start at all.
+    monkeypatch.setenv("TASKQ_PROGRESS_REQUIRE_AUTH", "false")
     create_router(stub_pool)  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
     warning_events = [
         e

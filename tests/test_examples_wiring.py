@@ -114,6 +114,8 @@ async def _run_main_with_mocked_deps(
             worker_id: object,
             result: object,
             fallback_result_ttl: object = None,
+            *,
+            result_bytes: object = None,
         ) -> bool:
             return True
 
@@ -124,6 +126,8 @@ async def _run_main_with_mocked_deps(
             worker_id: object,
             result: object,
             fallback_result_ttl: object = None,
+            *,
+            result_bytes: object = None,
         ) -> bool:
             return True
 

@@ -50,6 +50,29 @@ def _restore_notify_module_globals() -> Iterator[None]:  # pyright: ignore[repor
 # ── Helpers ──────────────────────────────────────────────────────────────
 
 
+async def _wait_for_listener_registered(
+    backend: PostgresBackend,
+    *,
+    timeout: float = 5.0,  # noqa: ASYNC109 # Why: polling-loop timeout for _wait_for_listener_registered; not an anyio cancel scope
+) -> None:
+    """Bounded wait until the notify listener has registered LISTEN.
+
+    ``notify_listener_loop`` flips ``_connected_lookup[backend]`` to True
+    exactly when its initial ``add_listener`` registrations complete (the
+    same flip point the health gauge reads), so this waits precisely as
+    long as listener startup needs — never a fixed sleep that races it
+    under load. Enqueueing (or killing the listener conn) before that
+    point misses the NOTIFY path the tests exist to exercise.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while not _connected_lookup.get(backend, False):
+        assert loop.time() < deadline, (
+            "the notify listener never registered LISTEN within 5s of loop start"
+        )
+        await asyncio.sleep(0.01)
+
+
 async def _setup_schema(pg_dsn: str, schema: str) -> None:
     conn = await asyncpg.connect(pg_dsn)
     try:
@@ -108,7 +131,11 @@ async def test_enqueue_wakes_subscriber_with_listener(pg_dsn: str) -> None:
             )
 
             async with backend.subscribe_wake() as event:
-                await asyncio.sleep(0.05)
+                # LISTEN registered before the enqueue: the NOTIFY fires
+                # at commit and is only caught by a registered listener —
+                # a fixed 0.05s sleep raced listener startup under load
+                # and a missed NOTIFY left nothing but the 2s timeout.
+                await _wait_for_listener_registered(backend)
 
                 args = _enqueue_args()
                 t0 = time.perf_counter()
@@ -165,8 +192,13 @@ async def test_polling_fallback_with_dead_listener(pg_dsn: str) -> None:
                 )
 
                 async with backend.subscribe_wake() as event_wake:
-                    await asyncio.sleep(0.05)
-
+                    # LISTEN registered before the kill so the chaos
+                    # scenario is faithful (a live listener dying
+                    # mid-run, not a listener that never started); the
+                    # assert below cannot race either way — open_worker_deps
+                    # opens notify_conn during its awaited context entry —
+                    # but the scenario can degrade without this wait.
+                    await _wait_for_listener_registered(backend)
                     notify_conn = deps.notify_conn
                     assert notify_conn is not None
                     pid = notify_conn.get_server_pid()

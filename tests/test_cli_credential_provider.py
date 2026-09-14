@@ -30,6 +30,7 @@ from typer.testing import CliRunner
 from taskq.auth import PgCredential, RedisCredential
 from taskq.cli import app
 from taskq.settings import WorkerSettings
+from taskq.testing.assertions import wait_for
 from taskq.worker.deps import open_worker_deps, reload_credentials
 
 runner = CliRunner()
@@ -79,12 +80,20 @@ class _FakePool:
     def __init__(self, **kwargs: Any) -> None:
         self.kwargs = kwargs
         self.closed = False
+        # Why an event alongside the flag: the flag is the assertion
+        # surface; the event is the WAIT surface — reload_credentials
+        # closes OLD resources on background drain tasks, and a test that
+        # needs "drained" can await this instead of sleeping a fixed
+        # interval that races the drain under load.
+        self.closed_event = asyncio.Event()
 
     async def close(self) -> None:
         self.closed = True
+        self.closed_event.set()
 
     def terminate(self) -> None:
         self.closed = True
+        self.closed_event.set()
 
     def is_closing(self) -> bool:
         return self.closed
@@ -94,15 +103,22 @@ class _FakeConn:
     def __init__(self, **kwargs: Any) -> None:
         self.kwargs = kwargs
         self.closed = False
+        # Why an event alongside the flag: mirrors _FakePool — the reload
+        # drains OLD dedicated connections on background tasks, and tests
+        # await this event instead of sleeping a fixed interval that races
+        # the drain under load.
+        self.closed_event = asyncio.Event()
 
     async def execute(self, sql: str, *_args: object) -> str:
         return "OK"
 
     async def close(self) -> None:
         self.closed = True
+        self.closed_event.set()
 
     def terminate(self) -> None:
         self.closed = True
+        self.closed_event.set()
 
     def is_closed(self) -> bool:
         return self.closed
@@ -140,7 +156,11 @@ def fake_redis(monkeypatch: pytest.MonkeyPatch) -> list[Any]:
         client = MagicMock()
         client.url = url
         client.credential_provider = kwargs.get("credential_provider")
-        client.aclose = AsyncMock()
+        # Why an event on the fake client: the reload's background drain
+        # acloses the OLD client, and tests await this event instead of
+        # sleeping a fixed interval that races the drain under load.
+        client.closed_event = asyncio.Event()
+        client.aclose = AsyncMock(side_effect=lambda: client.closed_event.set())
         built.append(client)
         return client
 
@@ -196,8 +216,18 @@ async def test_cli_pg_provider_rotates_credentials_on_reload(
     async with open_worker_deps(settings, connections=connections) as deps:
         calls_after_open = PROVIDER.pg_calls
         assert calls_after_open > 0, "provider was never consulted at startup"
+        # Capture the OLD resources: the reload closes them on background
+        # drain tasks after it returns, and the waits below need handles on
+        # exactly those instances.
+        old_dispatcher: Any = deps.dispatcher_pool
+        old_heartbeat: Any = deps.heartbeat_pool
+        old_worker: Any = deps.worker_pool
+        old_notify: Any = deps.notify_conn
         reloaded, failed = await reload_credentials(deps, drain_timeout=0.1)
-        await asyncio.sleep(0.05)
+        # Bounded, event-driven waits for the background drains — never a
+        # fixed sleep racing them under load.
+        for old in (old_dispatcher, old_heartbeat, old_worker, old_notify):
+            await wait_for(old.closed_event, timeout=5.0)
 
     assert failed == []
     assert set(reloaded) == {
@@ -232,8 +262,17 @@ async def test_cli_redis_provider_rotates_client_on_reload(
     assert connections is not None, "CLI passed no connections= to worker_main"
 
     async with open_worker_deps(settings, connections=connections) as deps:
+        old_dispatcher: Any = deps.dispatcher_pool
+        old_heartbeat: Any = deps.heartbeat_pool
+        old_worker: Any = deps.worker_pool
+        old_notify: Any = deps.notify_conn
+        old_redis: Any = deps.redis_client
         reloaded, failed = await reload_credentials(deps, drain_timeout=0.1)
-        await asyncio.sleep(0.05)
+        # Bounded, event-driven waits for the background drains (pools,
+        # notify conn, and the old Redis client's aclose) — never a fixed
+        # sleep racing them under load.
+        for old in (old_dispatcher, old_heartbeat, old_worker, old_notify, old_redis):
+            await wait_for(old.closed_event, timeout=5.0)
 
     assert "redis_client" in reloaded
     assert failed == []
@@ -255,8 +294,13 @@ async def test_cli_provider_accepts_zero_arg_factory(
     )
     assert connections is not None
     async with open_worker_deps(settings, connections=connections) as deps:
+        old_dispatcher: Any = deps.dispatcher_pool
+        old_heartbeat: Any = deps.heartbeat_pool
+        old_worker: Any = deps.worker_pool
+        old_notify: Any = deps.notify_conn
         reloaded, failed = await reload_credentials(deps, drain_timeout=0.1)
-        await asyncio.sleep(0.05)
+        for old in (old_dispatcher, old_heartbeat, old_worker, old_notify):
+            await wait_for(old.closed_event, timeout=5.0)
     assert failed == []
     assert "dispatcher" in reloaded
 
@@ -276,8 +320,13 @@ async def test_provider_configurable_by_env_var_alone(
     _result, settings, connections = _invoke_worker(monkeypatch)
     assert connections is not None, "env var did not reach the worker command"
     async with open_worker_deps(settings, connections=connections) as deps:
+        old_dispatcher: Any = deps.dispatcher_pool
+        old_heartbeat: Any = deps.heartbeat_pool
+        old_worker: Any = deps.worker_pool
+        old_notify: Any = deps.notify_conn
         reloaded, _failed = await reload_credentials(deps, drain_timeout=0.1)
-        await asyncio.sleep(0.05)
+        for old in (old_dispatcher, old_heartbeat, old_worker, old_notify):
+            await wait_for(old.closed_event, timeout=5.0)
     assert "dispatcher" in reloaded
 
 
@@ -446,8 +495,13 @@ async def test_reload_interval_without_provider_warns_at_startup(
 
     with structlog.testing.capture_logs() as captured:
         async with open_worker_deps(settings, connections=None) as deps:
+            # DSN path: only notify_conn (and leader_conn, closed inline
+            # before the reload returns) is factory-backed, so the old
+            # notify conn is the one resource drained in the background.
+            old_notify: Any = deps.notify_conn
             reloaded, _failed = await reload_credentials(deps, drain_timeout=0.1)
-            await asyncio.sleep(0.05)
+            # Bounded, event-driven wait for that drain.
+            await wait_for(old_notify.closed_event, timeout=5.0)
 
     events = [entry.get("event") for entry in captured]
     assert "reload-interval-set-without-credential-provider" in events
@@ -493,8 +547,13 @@ async def test_provider_configurable_by_dotenv_file(
     _result, settings, connections = _invoke_worker(monkeypatch)
     assert connections is not None, ".env did not reach the worker command"
     async with open_worker_deps(settings, connections=connections) as deps:
+        old_dispatcher: Any = deps.dispatcher_pool
+        old_heartbeat: Any = deps.heartbeat_pool
+        old_worker: Any = deps.worker_pool
+        old_notify: Any = deps.notify_conn
         reloaded, _failed = await reload_credentials(deps, drain_timeout=0.1)
-        await asyncio.sleep(0.05)
+        for old in (old_dispatcher, old_heartbeat, old_worker, old_notify):
+            await wait_for(old.closed_event, timeout=5.0)
     assert "dispatcher" in reloaded
 
 

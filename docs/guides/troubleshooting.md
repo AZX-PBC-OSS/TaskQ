@@ -307,7 +307,7 @@ Worker logs `notify-conn-error` and repeated `notify-reconnect-attempt`. Dispatc
 
 ### Cause
 
-The NOTIFY listener holds a dedicated direct connection (`notify_conn`) subscribed to `taskq_wake_{schema}`. A health-check issues `SELECT 1` every `notify_health_check_interval` (default 5s). On failure, it reconnects with bounded exponential backoff (initial 1s, doubling, max 30s). Common triggers: `pg_terminate_backend`, network partition, PgBouncer in transaction mode (LISTEN is session-scoped), or Postgres restart (`AdminShutdownError` is treated as reconnectable).
+The NOTIFY listener holds a dedicated direct connection (`notify_conn`) subscribed to `taskq_wake_{schema}`. A health-check issues `SELECT 1` every `notify_health_check_interval` (default 5s). On failure, it reconnects with bounded exponential backoff (initial 1s, doubling, max 30s, each delay multiplied by a random factor in [0.75, 1.25] so a fleet that lost PG simultaneously does not retry in lockstep). Common triggers: `pg_terminate_backend`, network partition, PgBouncer in transaction mode (LISTEN is session-scoped), or Postgres restart (`AdminShutdownError` is treated as reconnectable).
 
 ### Diagnosis
 
@@ -465,7 +465,7 @@ A `RuntimeError` with "admin UI requires auth_dependency" means the fail-closed 
 ### Fix
 
 - **Auth (dev):** `TASKQ_ENVIRONMENT=development taskq ui serve`.
-- **Auth (production):** pass an `auth_dependency` to `create_router()`, or set `TASKQ_ADMIN_UI_REQUIRE_AUTH=false` behind a reverse proxy that enforces auth.
+- **Auth (production):** pass an `auth_dependency` to `create_router()`, or set `TASKQ_ADMIN_UI_REQUIRE_AUTH=false` and `TASKQ_PROGRESS_REQUIRE_AUTH=false` behind a reverse proxy that enforces auth.
 - **Redis:** `TASKQ_REDIS_URL=redis://redis:6379/0 taskq ui serve`.
 - **Missing `[fastapi]` extra:** `uv add "taskq-py[fastapi]"`.
 - **Health token:** set `TASKQ_HEALTH_TOKEN` to a strong token, or `TASKQ_HEALTH_REQUIRE_TOKEN=false` if relying on network policy.

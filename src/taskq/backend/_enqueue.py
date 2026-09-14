@@ -8,13 +8,13 @@ wrappers that delegate.
 """
 
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 import structlog
 from asyncpg.exceptions import UniqueViolationError
 
-from taskq._json import dumps_jsonb_str
+from taskq._advisory import acquire_advisory_xact_lock_bounded
 from taskq.backend._protocol import (
     ConnLike,
     EnqueueArgs,
@@ -23,6 +23,8 @@ from taskq.backend._protocol import (
 )
 from taskq.backend._records import (
     _job_row_from_record,
+    item_jsonb_param,
+    item_tags_jsonb_param,
     jsonb_param,
 )
 from taskq.backend._sql_templates import SqlTemplates
@@ -30,9 +32,12 @@ from taskq.backend.clock import Clock
 from taskq.constants import wake_channel
 from taskq.exceptions import (
     BatchMaxPendingExceededError,
+    DuplicateIdempotencyKeyError,
     MaxPendingExceededError,
+    MaxPendingLockTimeoutError,
     ScopedIdempotencyMigrationPendingError,
     SingletonCollisionError,
+    UniqueForLockTimeoutError,
 )
 from taskq.obs import (
     get_logger,
@@ -54,11 +59,30 @@ logger: structlog.stdlib.BoundLogger = get_logger(__name__)
 
 _SINGLETON_CONSTRAINT_NAME = "jobs_singleton_uniq"
 
-#: Serializes the unique_for preflight-then-insert for one
-#: (schema, actor, identity_key). No schema interpolation, so it is not a
-#: SqlTemplates entry; see the call site for why this is a lock and not an
-#: index.
-_UNIQUE_FOR_LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))"
+#: Bounded wait (milliseconds) for the max_pending advisory lock on the
+#: single-enqueue path. The lock is held across a count query + INSERT (a
+#: couple of round trips -- low single-digit milliseconds on a healthy
+#: pool), so 5 s tolerates a burst of hundreds of queued racers while
+#: keeping tail latency capped instead of linear in the racer count. A
+#: racer that exhausts the budget gets MaxPendingLockTimeoutError -- the
+#: same typed backpressure treatment as a cap rejection -- rather than
+#: queueing indefinitely. ``0`` (or less) waits indefinitely, matching the
+#: ``lock_timeout`` GUC convention used by migrate.py.
+DEFAULT_MAX_PENDING_LOCK_TIMEOUT_MS: float = 5000.0
+
+#: Bounded wait (milliseconds) for the unique_for single-flight advisory
+#: lock on the single-enqueue path. Why a SEPARATE constant rather than
+#: reusing DEFAULT_MAX_PENDING_LOCK_TIMEOUT_MS: the two budgets bound
+#: different semantics (capacity admission vs identity dedup) and are
+#: tuned by different operators -- an API path that treats
+#: MaxPendingLockTimeoutError as shed-load wants its backpressure wait
+#: short, while a unique_for caller whose correct contention outcome is a
+#: dedup return may want a longer wait before giving up on the answer.
+#: Same 5 s starting point: the holder's critical section is the same
+#: scale (one preflight SELECT + one INSERT), so the burst arithmetic
+#: carries over. ``0`` (or less) waits indefinitely, matching the
+#: ``lock_timeout`` GUC convention shared with the max_pending budget.
+DEFAULT_UNIQUE_FOR_LOCK_TIMEOUT_MS: float = 5000.0
 
 # The old single-column idempotency index, still present alongside the new
 # composite one during the rolling-deploy window between
@@ -66,6 +90,57 @@ _UNIQUE_FOR_LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))"
 # 01.00.03_01_post_idempotency_scope_drop_old_index.sql. See
 # ScopedIdempotencyMigrationPendingError for the full rationale.
 _LEGACY_IDEMPOTENCY_KEY_CONSTRAINT_NAME = "jobs_idempotency_key_uniq"
+
+# The composite (idempotency_scope, idempotency_key) arbiter index. The
+# non-fast paths' ON CONFLICT targets it and dedupes; the COPY path has
+# no arbiter, so a violation reported against it is a same-pair
+# duplicate (in-batch or raced against a stored row) and is classified
+# to the typed DuplicateIdempotencyKeyError in _enqueue_batch_fast.
+_COMPOSITE_IDEMPOTENCY_KEY_CONSTRAINT_NAME = "jobs_idempotency_scope_key_uniq"
+
+# Postgres' unique-violation detail line for the composite index renders
+# the colliding (scope, key) values RAW and unquoted (verified against
+# live PG 18: commas, spaces, quotes, newlines all pass through
+# unescaped), so a scope containing ", " makes the detail positionally
+# AMBIGUOUS -- scope "a, b" key "c" reports
+# "Key (idempotency_scope, idempotency_key)=(a, b, c) already exists.",
+# which a left-to-right split mis-reads as scope "a" key "b, c". The
+# attribution therefore does not parse the detail at all: it renders each
+# of the batch's own (scope, key) candidates into PG's detail format and
+# matches. Exactly one rendering equal to the server's detail names the
+# pair honestly (comma-space scopes included); zero matches (a localized
+# or truncated detail, a non-raw rendering) or more than one (two
+# distinct candidate pairs producing the same detail text) degrade to
+# unattributed-but-typed -- never a wrong pair. The in-memory mirror
+# attributes exactly by construction; PG parity is best-effort with this
+# verified fallback.
+_COMPOSITE_IDEMPOTENCY_DETAIL_TEMPLATE = (
+    "Key (idempotency_scope, idempotency_key)=({scope}, {key}) already exists."
+)
+
+
+def _attribute_duplicate_pair(
+    detail: str | None,
+    candidates: "set[tuple[str, str]]",
+) -> tuple[str | None, str | None]:
+    """Best-effort attribution of a composite-index COPY violation.
+
+    Returns the unique candidate pair whose rendered detail equals the
+    server's *detail*, or (None, None) when no candidate matches or the
+    rendering is ambiguous. Callers pass the batch's own (scope, key)
+    candidate set -- the violating pair is always among the batch's items
+    (an in-batch duplicate or an item raced against a stored row).
+    """
+    if not detail:
+        return (None, None)
+    matches = [
+        (scope, key)
+        for scope, key in candidates
+        if _COMPOSITE_IDEMPOTENCY_DETAIL_TEMPLATE.format(scope=scope, key=key) == detail
+    ]
+    if len(matches) == 1:
+        return matches[0]
+    return (None, None)
 
 
 async def _batch_cap_refusals(
@@ -229,12 +304,95 @@ class _LegacyIdempotencyKeyConflictError(Exception):
         )
 
 
+async def _acquire_max_pending_lock(
+    conn: ConnLike,
+    lock_key: str,
+    *,
+    timeout_ms: float,
+    actor: str,
+) -> None:
+    """Acquire the capped-actor serialization advisory lock with a bounded wait.
+
+    Two-tier via
+    :func:`taskq._advisory.acquire_advisory_xact_lock_bounded`: one
+    try-lock statement when uncontended (identical happy-path round-trip
+    count to the pre-bounded era), a server-side bounded blocking acquire
+    inside a savepoint when contended (Postgres' lock scheduler queues
+    the waiters and hands off at holder-release rate — MEASURED ~25x the
+    contended throughput of a client-side poll loop at 128 same-key
+    racers), and a client-side wait_for backstop for the network black
+    hole. ``timeout_ms <= 0`` waits indefinitely (the migrate.py
+    ``lock_timeout`` convention).
+
+    Raises :class:`MaxPendingLockTimeoutError` when the budget expires —
+    the same typed backpressure treatment as a cap rejection, recorded
+    against the same ``taskq.backpressure.errors`` counter. A raw driver
+    error never surfaces from contention.
+    """
+    if not await acquire_advisory_xact_lock_bounded(conn, lock_key, timeout_ms=timeout_ms):
+        logger.warning(
+            "max-pending-lock-timeout",
+            actor=actor,
+            lock_timeout_ms=timeout_ms,
+        )
+        record_backpressure_error(actor, kind="max_pending_lock_timeout")
+        raise MaxPendingLockTimeoutError(actor=actor, timeout_ms=timeout_ms)
+
+
+async def _acquire_unique_for_lock(
+    conn: ConnLike,
+    lock_key: str,
+    *,
+    timeout_ms: float,
+    actor: str,
+    identity_key: str,
+) -> None:
+    """Acquire the unique_for single-flight advisory lock with a bounded wait.
+
+    Two-tier via
+    :func:`taskq._advisory.acquire_advisory_xact_lock_bounded` (same
+    machinery as the max_pending lock above — the shared helper's
+    docstring has the measured rationale).
+
+    Why exhaustion raises :class:`UniqueForLockTimeoutError` and NOT a
+    backpressure-flavored error: the contention scope is one logical
+    entity's ``(schema, actor, identity_key)``, not an actor's whole
+    producer population, and the outcome the wait existed to produce is
+    the DEDUP RETURN below (the winner's row handed back to the loser).
+    Exhaustion therefore means "the dedup answer could not be determined
+    in time" — the caller's correct response is to retry the same
+    enqueue, which typically dedupes against the now-visible winner —
+    which no BackpressureError handler expresses (those shed load or
+    log queue counts). Correspondingly NOT recorded against
+    ``taskq.backpressure.errors``: identity-key contention is not a
+    capacity signal, and spiking that counter would trip capacity
+    alerting; the ``unique-for-lock-timeout`` log event carries the
+    observability instead. A raw driver error never surfaces from
+    contention.
+    """
+    if not await acquire_advisory_xact_lock_bounded(conn, lock_key, timeout_ms=timeout_ms):
+        logger.warning(
+            "unique-for-lock-timeout",
+            actor=actor,
+            identity_key=identity_key,
+            lock_timeout_ms=timeout_ms,
+        )
+        raise UniqueForLockTimeoutError(
+            actor=actor,
+            identity_key=identity_key,
+            timeout_ms=timeout_ms,
+        )
+
+
 async def _enqueue_on_conn(
     conn: ConnLike,
     sql: SqlTemplates,
     schema: str,
     clock: Clock,
     args: EnqueueArgs,
+    *,
+    max_pending_lock_timeout_ms: float = DEFAULT_MAX_PENDING_LOCK_TIMEOUT_MS,
+    unique_for_lock_timeout_ms: float = DEFAULT_UNIQUE_FOR_LOCK_TIMEOUT_MS,
 ) -> JobRow:
     """Core enqueue logic running on *conn*.
 
@@ -267,7 +425,15 @@ async def _enqueue_on_conn(
         # call observes the open transaction. Callers that already hold a
         # transaction are untouched.
         async with conn.transaction():
-            return await _enqueue_on_conn(conn, sql, schema, clock, args)
+            return await _enqueue_on_conn(
+                conn,
+                sql,
+                schema,
+                clock,
+                args,
+                max_pending_lock_timeout_ms=max_pending_lock_timeout_ms,
+                unique_for_lock_timeout_ms=unique_for_lock_timeout_ms,
+            )
     if args.unique_for is not None and args.identity_key is not None:
         # Why a lock at all: what follows is a check-then-insert. Under READ
         # COMMITTED two dispatchers enqueuing the same (actor, identity_key)
@@ -289,6 +455,10 @@ async def _enqueue_on_conn(
         #      cannot vary by actor.
         # A lock, unlike an index, serializes exactly the callers that race
         # and leaves the window and state-set semantics to the preflight.
+        # (Same conclusion as graphile-worker's design by omission: it offers
+        # only a permanent job_key upsert index, no windowed dedup, because a
+        # window cannot be an index predicate; the queues that dedup by index
+        # — graphile-worker, pgqueuer's dedupe_key — dedup forever.)
         #
         # Transaction-scoped, not session-scoped: it releases on COMMIT with
         # no unlock call to leak on an error path, and it is safe under
@@ -296,9 +466,30 @@ async def _enqueue_on_conn(
         # convention already used for the prune and archive-expiry locks; a
         # collision between two different identity keys costs a little
         # needless serialization and never correctness.
-        await conn.execute(
-            _UNIQUE_FOR_LOCK_SQL,
+        #
+        # Why a BOUNDED wait (the two-tier acquire in
+        # _acquire_unique_for_lock, same machinery as max_pending below):
+        # the pre-fix blocking acquire queued same-key racers with
+        # unbounded tail latency — N racers serialized meant the last
+        # waited ~N holder critical sections, and a black-holed holder (a
+        # session the server has not yet reaped) pinned every same-key
+        # enqueue until TCP keepalives cleared it. The correct outcome of
+        # waiting is usually the dedup return just below (the winner's
+        # row), and a holder's critical section is one preflight SELECT +
+        # one INSERT, so a bounded budget still delivers that outcome for
+        # any realistic burst — the contended tier queues server-side and
+        # drains at holder-release rate, so the bound only bites on a
+        # pathological holder; there the caller gets the typed
+        # UniqueForLockTimeoutError with retry-yields-dedup guidance
+        # instead of an unbounded block (see that error for why it is
+        # deliberately not backpressure-flavored). Lock order is fixed
+        # (this first, max_pending second) so no lock cycle can form.
+        await _acquire_unique_for_lock(
+            conn,
             f"taskq:unique_for:{schema}:{args.actor}:{args.identity_key}",
+            timeout_ms=unique_for_lock_timeout_ms,
+            actor=args.actor,
+            identity_key=str(args.identity_key),
         )
         existing_rec = await conn.fetchrow(
             sql.enqueue_unique_for_preflight,
@@ -358,9 +549,25 @@ async def _enqueue_on_conn(
         # fixed order here (unique_for first, this second) so no lock cycle
         # can form. A hash collision between actors costs needless
         # serialization, never correctness.
-        await conn.execute(
-            _UNIQUE_FOR_LOCK_SQL,
+        #
+        # Why a BOUNDED wait (see _acquire_max_pending_lock for the
+        # two-tier choice): every racer on this lock holds it across its
+        # own count + INSERT round trips, so an unbounded blocking acquire
+        # makes N concurrent producers serialize with the last one
+        # waiting ~N transactions — tail latency linear in the burst
+        # size, unbounded. Now the wait is capped at
+        # *max_pending_lock_timeout_ms* (5 s default) and an exhausted
+        # racer gets the same typed backpressure treatment as a cap
+        # rejection, while the contended tier still queues server-side
+        # (draining at holder-release rate, not at a client poll cadence)
+        # so realistic bursts are admitted rather than shed. The cap
+        # stays EXACT either way: once acquired, the lock is held across
+        # the count and the INSERT exactly as before.
+        await _acquire_max_pending_lock(
+            conn,
             f"taskq:max_pending:{schema}:{args.actor}",
+            timeout_ms=max_pending_lock_timeout_ms,
+            actor=args.actor,
         )
         count_rec = await conn.fetchval(
             sql.enqueue_max_pending_count,
@@ -501,9 +708,20 @@ async def _enqueue_with_conn(
     schema: str,
     clock: Clock,
     args: EnqueueArgs,
+    *,
+    max_pending_lock_timeout_ms: float = DEFAULT_MAX_PENDING_LOCK_TIMEOUT_MS,
+    unique_for_lock_timeout_ms: float = DEFAULT_UNIQUE_FOR_LOCK_TIMEOUT_MS,
 ) -> JobRow:
     try:
-        return await _enqueue_on_conn(conn, sql, schema, clock, args)
+        return await _enqueue_on_conn(
+            conn,
+            sql,
+            schema,
+            clock,
+            args,
+            max_pending_lock_timeout_ms=max_pending_lock_timeout_ms,
+            unique_for_lock_timeout_ms=unique_for_lock_timeout_ms,
+        )
     except _LegacyIdempotencyKeyConflictError as exc:
         # Caller owns the (now aborted) transaction -- cannot retry here.
         logger.warning(
@@ -521,11 +739,22 @@ async def _enqueue(
     schema: str,
     clock: Clock,
     args: EnqueueArgs,
+    *,
+    max_pending_lock_timeout_ms: float = DEFAULT_MAX_PENDING_LOCK_TIMEOUT_MS,
+    unique_for_lock_timeout_ms: float = DEFAULT_UNIQUE_FOR_LOCK_TIMEOUT_MS,
 ) -> JobRow:
     try:
         async with pool.acquire() as conn:
             async with conn.transaction():
-                return await _enqueue_on_conn(conn, sql, schema, clock, args)
+                return await _enqueue_on_conn(
+                    conn,
+                    sql,
+                    schema,
+                    clock,
+                    args,
+                    max_pending_lock_timeout_ms=max_pending_lock_timeout_ms,
+                    unique_for_lock_timeout_ms=unique_for_lock_timeout_ms,
+                )
     except _LegacyIdempotencyKeyConflictError as exc:
         public = exc.to_public()
 
@@ -537,7 +766,15 @@ async def _enqueue(
     try:
         async with pool.acquire() as conn:
             async with conn.transaction():
-                return await _enqueue_on_conn(conn, sql, schema, clock, args)
+                return await _enqueue_on_conn(
+                    conn,
+                    sql,
+                    schema,
+                    clock,
+                    args,
+                    max_pending_lock_timeout_ms=max_pending_lock_timeout_ms,
+                    unique_for_lock_timeout_ms=unique_for_lock_timeout_ms,
+                )
     except _LegacyIdempotencyKeyConflictError as exc:
         logger.warning(
             "scoped-idempotency-migration-pending",
@@ -554,7 +791,7 @@ async def _enqueue_batch(
     schema: str,
     args_list: list[EnqueueArgs],
     *,
-    connection: "asyncpg.Connection | None" = None,
+    connection: "ConnLike | None" = None,
     enforce_max_pending: bool = True,
     refuse_whole_batch_on_cap: bool = False,
 ) -> list[JobRow]:
@@ -574,6 +811,81 @@ async def _enqueue_batch(
     if not args_list:
         raise ValueError("args_list must not be empty")
 
+    ids: list[UUID] = []
+    actors: list[str] = []
+    queues: list[str] = []
+    identity_keys: list[str | None] = []
+    fairness_keys: list[str | None] = []
+    payloads: list[str] = []
+    payload_schema_vers: list[int] = []
+    priorities: list[int] = []
+    max_attempts_list: list[int] = []
+    retry_kinds: list[str] = []
+    stc_intervals: list[timedelta | None] = []
+    stc_raws: list[datetime | None] = []
+    start_to_closes: list[object] = []
+    heartbeat_timeouts: list[object] = []
+    scheduled_ats: list[datetime | None] = []
+    metadatas: list[str] = []
+    idempotency_keys: list[str | None] = []
+    idempotency_scopes: list[str] = []
+    trace_ids: list[str | None] = []
+    span_ids: list[str | None] = []
+    result_ttls: list[timedelta | None] = []
+    tag_jsons: list[str] = []
+
+    # Why annotate per item during the build: this loop serializes every
+    # item BEFORE any SQL runs, so the first NUL-bearing item aborts the
+    # whole batch with nothing written. item_jsonb_param /
+    # item_tags_jsonb_param attach the per-item annotation (index, actor,
+    # field) at that raise — the same contract the client layer's
+    # _item_payload_error gives pydantic failures — instead of the bare
+    # ValueError(NUL_JSONB_ERROR) that named nothing. Admission semantics
+    # ride the partition below: a defective item rejects the whole call
+    # (all-or-nothing, caller-space index) before the cap check or INSERT
+    # ever runs.
+    for idx, args in enumerate(args_list):
+        ids.append(args.id)
+        actors.append(args.actor)
+        queues.append(args.queue)
+        identity_keys.append(str(args.identity_key) if args.identity_key is not None else None)
+        fairness_keys.append(args.fairness_key)
+        payloads.append(item_jsonb_param(args.payload, idx=idx, field="payload", actor=args.actor))
+        payload_schema_vers.append(args.payload_schema_ver)
+        priorities.append(args.priority)
+        max_attempts_list.append(args.max_attempts)
+        retry_kinds.append(args.retry_kind)
+        # schedule_to_close and result_expires_at are resolved server-side
+        # (COALESCE(clock_timestamp() + stc_interval, stc_raw) and
+        # clock_timestamp() + result_ttl in enqueue_batch) — never in Python.
+        stc_intervals.append(args.schedule_to_close_interval)
+        stc_raws.append(args.schedule_to_close)
+        start_to_closes.append(args.start_to_close)
+        heartbeat_timeouts.append(args.heartbeat_timeout)
+        # None means immediate — the server stamps/decides (COALESCE in
+        # enqueue_batch); there is no Python pre-decision.
+        scheduled_ats.append(args.scheduled_at)
+        metadatas.append(
+            item_jsonb_param(args.metadata, idx=idx, field="metadata", actor=args.actor)
+        )
+        idempotency_keys.append(
+            str(args.idempotency_key) if args.idempotency_key is not None else None
+        )
+        idempotency_scopes.append(args.idempotency_scope)
+        trace_ids.append(args.trace_id)
+        span_ids.append(args.span_id)
+        # result_expires_at is resolved server-side (clock_timestamp() +
+        # result_ttl in enqueue_batch) — never in Python.
+        result_ttls.append(args.result_ttl)
+        # tag_jsons transits the wire as $21::jsonb[] (see enqueue_batch's
+        # comment on jagged-array handling) — each element is parsed by
+        # Postgres' jsonb_in before jsonb_array_elements_text unpacks it
+        # into the text[] `tags` column, so a NUL here hits the same
+        # jsonb_in rejection as any other jsonb write; the item-annotated
+        # dumps_jsonb_str wrapper guards it before the value ever reaches
+        # Postgres.
+        tag_jsons.append(item_tags_jsonb_param(args.tags, idx=idx, actor=args.actor))
+
     async def _insert_on_conn(
         conn: ConnLike,
     ) -> tuple[list[JobRow], list[MaxPendingExceededError], dict[str, list[int]]]:
@@ -583,6 +895,7 @@ async def _enqueue_batch(
         # all-or-nothing behavior the partition exists to remove).
         refusals: list[MaxPendingExceededError] = []
         refused_indices: dict[str, list[int]] = {}
+        refused_names: set[str] = set()
         admitted_args = args_list
         if enforce_max_pending:
             refusals = await _batch_cap_refusals(conn, sql, args_list)
@@ -613,93 +926,49 @@ async def _enqueue_batch(
             # is exactly "nothing admitted".
             return [], refusals, refused_indices
 
-        ids: list[UUID] = []
-        actors: list[str] = []
-        queues: list[str] = []
-        identity_keys: list[str | None] = []
-        fairness_keys: list[str | None] = []
-        payloads: list[str] = []
-        payload_schema_vers: list[int] = []
-        priorities: list[int] = []
-        max_attempts_list: list[int] = []
-        retry_kinds: list[str] = []
-        stc_intervals: list[timedelta | None] = []
-        stc_raws: list[datetime | None] = []
-        start_to_closes: list[object] = []
-        heartbeat_timeouts: list[object] = []
-        scheduled_ats: list[datetime | None] = []
-        metadatas: list[str] = []
-        idempotency_keys: list[str | None] = []
-        idempotency_scopes: list[str] = []
-        trace_ids: list[str | None] = []
-        span_ids: list[str | None] = []
-        result_ttls: list[timedelta | None] = []
-        tag_jsons: list[str] = []
-
-        for args in admitted_args:
-            ids.append(UUID(bytes=args.id.bytes))
-            actors.append(args.actor)
-            queues.append(args.queue)
-            identity_keys.append(str(args.identity_key) if args.identity_key is not None else None)
-            fairness_keys.append(args.fairness_key)
-            payloads.append(jsonb_param(args.payload) or "{}")
-            payload_schema_vers.append(args.payload_schema_ver)
-            priorities.append(args.priority)
-            max_attempts_list.append(args.max_attempts)
-            retry_kinds.append(args.retry_kind)
-            # schedule_to_close and result_expires_at are resolved server-side
-            # (COALESCE(clock_timestamp() + stc_interval, stc_raw) and
-            # clock_timestamp() + result_ttl in enqueue_batch) — never in Python.
-            stc_intervals.append(args.schedule_to_close_interval)
-            stc_raws.append(args.schedule_to_close)
-            start_to_closes.append(args.start_to_close)
-            heartbeat_timeouts.append(args.heartbeat_timeout)
-            # None means immediate — the server stamps/decides (COALESCE in
-            # enqueue_batch); there is no Python pre-decision.
-            scheduled_ats.append(args.scheduled_at)
-            metadatas.append(jsonb_param(args.metadata) or "{}")
-            idempotency_keys.append(
-                str(args.idempotency_key) if args.idempotency_key is not None else None
-            )
-            idempotency_scopes.append(args.idempotency_scope)
-            trace_ids.append(args.trace_id)
-            span_ids.append(args.span_id)
-            # result_expires_at is resolved server-side (clock_timestamp() +
-            # result_ttl in enqueue_batch) — never in Python.
-            result_ttls.append(args.result_ttl)
-            # tag_jsons transits the wire as $21::jsonb[] (see enqueue_batch's
-            # comment on jagged-array handling) — each element is parsed by
-            # Postgres' jsonb_in before jsonb_array_elements_text unpacks it
-            # into the text[] `tags` column, so a NUL here hits the same
-            # jsonb_in rejection as any other jsonb write; dumps_jsonb_str
-            # guards it before the value ever reaches Postgres.
-            tag_jsons.append(dumps_jsonb_str(list(args.tags)))
+        # Why filter the pre-built arrays instead of re-serializing the
+        # admitted subset: the annotated build loop above already
+        # serialized every item BEFORE any SQL (a NUL-bearing item rejects
+        # the whole call with nothing written and the pool never touched —
+        # the pinned NUL -> cap -> insert order), so the partition selects
+        # positions from those arrays rather than paying a second
+        # serialization pass over the admitted subset. Happy path (no
+        # refusals): the filter is skipped entirely and the arrays alias
+        # through unchanged — the partition costs the common case nothing.
+        # Order matches sql.enqueue_batch's binding order exactly (scopes
+        # before keys, stc_raws last).
+        insert_cols: list[list[Any]] = [
+            ids,
+            actors,
+            queues,
+            identity_keys,
+            fairness_keys,
+            payloads,
+            payload_schema_vers,
+            priorities,
+            max_attempts_list,
+            retry_kinds,
+            stc_intervals,
+            start_to_closes,
+            heartbeat_timeouts,
+            scheduled_ats,
+            metadatas,
+            idempotency_scopes,
+            idempotency_keys,
+            trace_ids,
+            span_ids,
+            result_ttls,
+            tag_jsons,
+            stc_raws,
+        ]
+        if refusals:
+            keep = [i for i, a in enumerate(args_list) if a.actor not in refused_names]
+            insert_cols = [[col[i] for i in keep] for col in insert_cols]
 
         try:
             returning_recs = await conn.fetch(
                 sql.enqueue_batch,
-                ids,
-                actors,
-                queues,
-                identity_keys,
-                fairness_keys,
-                payloads,
-                payload_schema_vers,
-                priorities,
-                max_attempts_list,
-                retry_kinds,
-                stc_intervals,
-                start_to_closes,
-                heartbeat_timeouts,
-                scheduled_ats,
-                metadatas,
-                idempotency_scopes,
-                idempotency_keys,
-                trace_ids,
-                span_ids,
-                result_ttls,
-                tag_jsons,
-                stc_raws,
+                *insert_cols,
             )
         except UniqueViolationError as exc:
             if exc.constraint_name == _LEGACY_IDEMPOTENCY_KEY_CONSTRAINT_NAME:
@@ -732,7 +1001,7 @@ async def _enqueue_batch(
 
         collision_pairs: list[tuple[str, str]] = []
         for args in admitted_args:
-            if args.idempotency_key is not None and UUID(bytes=args.id.bytes) not in inserted_ids:
+            if args.idempotency_key is not None and args.id not in inserted_ids:
                 collision_pairs.append((args.idempotency_scope, str(args.idempotency_key)))
 
         new_item_ids = list(inserted_ids)
@@ -743,7 +1012,10 @@ async def _enqueue_batch(
                 new_item_ids,
             )
             for rec in recs:
-                full_new_recs[UUID(bytes=rec["id"].bytes)] = rec
+                # Why no UUID(bytes=...) reconstruction: asyncpg's uuid codec
+                # already returns stdlib uuid.UUID — same assumption the
+                # inserted_ids set above makes.
+                full_new_recs[rec["id"]] = rec
 
         existing_by_idem: dict[tuple[str, str], object] = {}
         if collision_pairs:
@@ -760,7 +1032,7 @@ async def _enqueue_batch(
 
         result: list[JobRow] = []
         for args in admitted_args:
-            arg_uuid = UUID(bytes=args.id.bytes)
+            arg_uuid = args.id
             if arg_uuid in full_new_recs:
                 result.append(_job_row_from_record(full_new_recs[arg_uuid]))  # type: ignore[arg-type]  # Why: asyncpg Record is duck-typed; _job_row_from_record accepts asyncpg.Record at runtime
             elif (
@@ -866,7 +1138,7 @@ async def _enqueue_batch_fast(
     schema: str,
     args_list: list[EnqueueArgs],
     *,
-    connection: "asyncpg.Connection | None" = None,
+    connection: "ConnLike | None" = None,
     enforce_max_pending: bool = True,
 ) -> int:
     """COPY a batch, partitioning cap admission per actor (see
@@ -877,6 +1149,69 @@ async def _enqueue_batch_fast(
     if not args_list:
         raise ValueError("args_list must not be empty")
 
+    ids: list[UUID] = []
+    scheduled_ats: list[datetime | None] = []
+    stc_intervals: list[timedelta | None] = []
+    stc_raws: list[datetime | None] = []
+    result_ttls: list[timedelta | None] = []
+
+    # COPY can only write literal values, so it writes the
+    # domain-insensitive columns (sql.copy_enqueue_columns) and the fixup
+    # UPDATE below stamps status/scheduled_at/schedule_to_close/
+    # result_expires_at from the server clock inside the same transaction —
+    # never from this process's Python clock.
+    # Same per-item annotation as _enqueue_batch's build loop: the COPY
+    # record tuples are serialized here, before any statement is issued,
+    # so a NUL-bearing item rejects the whole batch (nothing written)
+    # with the item index, actor, and field named. Tags bind as text[]
+    # (no jsonb hop on this path) and stay guarded by the EnqueueArgs
+    # construction chokepoint alone.
+    records: list[tuple[object, ...]] = []
+    for idx, args in enumerate(args_list):
+        ids.append(args.id)
+        scheduled_ats.append(args.scheduled_at)
+        stc_intervals.append(args.schedule_to_close_interval)
+        stc_raws.append(args.schedule_to_close)
+        result_ttls.append(args.result_ttl)
+
+        records.append(
+            (
+                args.id,
+                args.actor,
+                args.queue,
+                str(args.identity_key) if args.identity_key is not None else None,
+                args.fairness_key,
+                item_jsonb_param(args.payload, idx=idx, field="payload", actor=args.actor),
+                args.payload_schema_ver,
+                args.priority,
+                0,
+                args.max_attempts,
+                args.retry_kind,
+                args.start_to_close,
+                args.heartbeat_timeout,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                0,
+                None,
+                None,
+                None,
+                "{}",
+                0,
+                None,
+                None,
+                args.idempotency_scope,
+                str(args.idempotency_key) if args.idempotency_key is not None else None,
+                args.trace_id,
+                args.span_id,
+                item_jsonb_param(args.metadata, idx=idx, field="metadata", actor=args.actor),
+                list(args.tags),
+            )
+        )
+
     async def _copy_on_conn(
         conn: ConnLike,
     ) -> tuple[int, list[MaxPendingExceededError], dict[str, list[int]]]:
@@ -885,6 +1220,7 @@ async def _enqueue_batch_fast(
         # (see _enqueue_batch's _insert_on_conn for the full rationale).
         refusals: list[MaxPendingExceededError] = []
         refused_indices: dict[str, list[int]] = {}
+        refused_names: set[str] = set()
         admitted_args = args_list
         if enforce_max_pending:
             refusals = await _batch_cap_refusals(conn, sql, args_list)
@@ -900,67 +1236,29 @@ async def _enqueue_batch_fast(
             # error raises at the boundary; nothing was written.
             return 0, refusals, refused_indices
 
-        ids: list[UUID] = []
-        scheduled_ats: list[datetime | None] = []
-        stc_intervals: list[timedelta | None] = []
-        stc_raws: list[datetime | None] = []
-        result_ttls: list[timedelta | None] = []
-
-        # COPY can only write literal values, so it writes the
-        # domain-insensitive columns (sql.copy_enqueue_columns) and the fixup
-        # UPDATE below stamps status/scheduled_at/schedule_to_close/
-        # result_expires_at from the server clock inside the same transaction —
-        # never from this process's Python clock.
-        records: list[tuple[object, ...]] = []
-        for args in admitted_args:
-            ids.append(UUID(bytes=args.id.bytes))
-            scheduled_ats.append(args.scheduled_at)
-            stc_intervals.append(args.schedule_to_close_interval)
-            stc_raws.append(args.schedule_to_close)
-            result_ttls.append(args.result_ttl)
-
-            records.append(
-                (
-                    UUID(bytes=args.id.bytes),
-                    args.actor,
-                    args.queue,
-                    str(args.identity_key) if args.identity_key is not None else None,
-                    args.fairness_key,
-                    jsonb_param(args.payload) or "{}",
-                    args.payload_schema_ver,
-                    args.priority,
-                    0,
-                    args.max_attempts,
-                    args.retry_kind,
-                    args.start_to_close,
-                    args.heartbeat_timeout,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    0,
-                    None,
-                    None,
-                    None,
-                    "{}",
-                    0,
-                    None,
-                    None,
-                    args.idempotency_scope,
-                    str(args.idempotency_key) if args.idempotency_key is not None else None,
-                    args.trace_id,
-                    args.span_id,
-                    jsonb_param(args.metadata) or "{}",
-                    list(args.tags),
-                )
-            )
+        # Why filter the pre-built records/arrays instead of re-serializing
+        # the admitted subset: same rationale as _enqueue_batch's
+        # insert_cols — the annotated build above already serialized every
+        # item before any SQL (the pinned NUL -> cap -> COPY order), so
+        # the partition selects positions from what is already built; the
+        # happy path aliases through with zero extra work.
+        copy_records = records
+        fixup_cols: list[list[Any]] = [
+            ids,
+            scheduled_ats,
+            stc_intervals,
+            stc_raws,
+            result_ttls,
+        ]
+        if refusals:
+            keep = [i for i, a in enumerate(args_list) if a.actor not in refused_names]
+            copy_records = [records[i] for i in keep]
+            fixup_cols = [[col[i] for i in keep] for col in fixup_cols]
 
         try:
             result = await conn.copy_records_to_table(
                 "jobs",
-                records=records,
+                records=copy_records,
                 columns=sql.copy_enqueue_columns,
                 schema_name=schema,
             )
@@ -985,15 +1283,56 @@ async def _enqueue_batch_fast(
                     batch_size=len(admitted_args),
                 )
                 raise ScopedIdempotencyMigrationPendingError(detail=str(exc)) from exc
+            if exc.constraint_name == _COMPOSITE_IDEMPOTENCY_KEY_CONSTRAINT_NAME:
+                # Why classify while keeping the abort: COPY cannot
+                # dedupe, so a same-pair duplicate (in-batch or raced
+                # against a stored row) has no recovery on this path --
+                # the all-or-nothing abort is the documented bulk-import
+                # semantics and stays. But the raw
+                # asyncpg.UniqueViolationError forced callers to
+                # string-match a driver exception to tell "my batch had
+                # a duplicate key" apart from every other unique
+                # violation (pkey, singleton). The non-fast paths never
+                # raise for this condition -- their ON CONFLICT arbiter
+                # dedupes and RETURNS the existing row -- so there was
+                # no typed error to reuse; DuplicateIdempotencyKeyError
+                # is this path's own, following pgqueuer's
+                # DuplicateJobError precedent (typed domain error for a
+                # dedup-constraint violation, raised by their in-memory
+                # adapter too). The offending pair is attributed by
+                # MATCHING the detail against the batch's own candidates
+                # (see _attribute_duplicate_pair): named exactly when the
+                # rendering is unambiguous -- including comma-bearing
+                # scopes, which a positional parse mis-reads --
+                # and unattributed-but-typed on ambiguity (two distinct
+                # pairs rendering to the same detail text) or on a
+                # localized/truncated detail. During the 01.00.03 rolling
+                # window a same-pair duplicate may instead be reported
+                # against the legacy index, which the branch above
+                # already converts -- that carve-out is pre-existing
+                # documented behavior for this path, unchanged here.
+                batch_candidates = {
+                    (args.idempotency_scope, str(args.idempotency_key))
+                    for args in args_list
+                    if args.idempotency_key is not None
+                }
+                dup_scope, dup_key = _attribute_duplicate_pair(exc.detail, batch_candidates)
+                logger.info(
+                    "batch-fast-duplicate-idempotency-key",
+                    batch_size=len(args_list),
+                    idempotency_key=dup_key,
+                    idempotency_scope=dup_scope,
+                )
+                raise DuplicateIdempotencyKeyError(
+                    idempotency_key=dup_key,
+                    idempotency_scope=dup_scope,
+                    detail=exc.detail,
+                ) from exc
             raise
         count = int(result.split()[-1])
         await conn.execute(
             sql.enqueue_batch_fast_fixup,
-            ids,
-            scheduled_ats,
-            stc_intervals,
-            stc_raws,
-            result_ttls,
+            *fixup_cols,
         )
         await conn.execute(
             sql.enqueue_notify,

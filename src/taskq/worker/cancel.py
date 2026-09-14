@@ -48,6 +48,7 @@ import structlog
 from pydantic import BaseModel
 
 from taskq._json import dumps_str
+from taskq._shield import shield_with_retrieval
 from taskq.backend._protocol import Backend, CancelPhase, JobId
 from taskq.backend._sql import (
     CANCEL_ESCALATION_SQL,
@@ -329,7 +330,12 @@ class _CancelController:
         worker_id = self._worker_id
         while self._pending_abandons:
             job_id = self._pending_abandons.popleft()
-            abandoned = await asyncio.shield(self._backend.mark_abandoned(job_id))
+            # shield_with_retrieval, not plain asyncio.shield: a second
+            # CancelledError landing while this abandon write is detached
+            # (shutdown racing a force-cancel escalation) must not orphan
+            # the inner outcome — the retrieval callback logs its failure
+            # instead of asyncio reporting "Task exception was never retrieved".
+            abandoned = await shield_with_retrieval(self._backend.mark_abandoned(job_id))
             if not abandoned:
                 entry = self._deps.active_jobs.get(job_id)
                 if entry is not None:

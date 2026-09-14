@@ -301,9 +301,9 @@ async def test_sub_enqueue_db_write_then_actor_raises(
 
     try:
         resolved = loop_scope.resolved_cache()
-        loop_conn_raw = resolved.get(asyncpg.Connection)
-        assert isinstance(loop_conn_raw, asyncpg.Connection)
-        loop_conn: asyncpg.Connection = loop_conn_raw  # type: ignore[assignment] # Why: PoolConnectionProxy is assignable to Connection at runtime but pyright sees a static mismatch
+        transaction_conn_raw = resolved.get(asyncpg.Connection)
+        assert isinstance(transaction_conn_raw, asyncpg.Connection)
+        transaction_conn: asyncpg.Connection = transaction_conn_raw  # type: ignore[assignment] # Why: PoolConnectionProxy is assignable to Connection at runtime but pyright sees a static mismatch
 
         enqueuer = SubJobEnqueuer(
             loop_scope_resolved=resolved,
@@ -336,7 +336,7 @@ async def test_sub_enqueue_db_write_then_actor_raises(
         async def run_actor(_job: JobRow, _ctx: JobContext[BaseModel]) -> object:
             neo4j_stub: object = resolved.get(Neo4jClientProtocol)
             assert isinstance(neo4j_stub, _StubNeo4jClient)
-            await neo4j_stub.save("site-42", conn=loop_conn)
+            await neo4j_stub.save("site-42", conn=transaction_conn)
             await enqueuer.enqueue(_ENRICH_REF, _EnrichPayload())
             raise RuntimeError("actor raised after DB write")
 
@@ -351,7 +351,7 @@ async def test_sub_enqueue_db_write_then_actor_raises(
                 payload_type=_PropertyPayload,
                 clock=clk,
                 enqueuer=enqueuer,
-                loop_conn=loop_conn,
+                transaction_conn=transaction_conn,
             )
 
         async with deps.worker_pool.acquire() as check_conn:
@@ -380,9 +380,9 @@ async def test_sub_enqueue_neo4j_failure(
 
     try:
         resolved = loop_scope.resolved_cache()
-        loop_conn_raw = resolved.get(asyncpg.Connection)
-        assert isinstance(loop_conn_raw, asyncpg.Connection)
-        loop_conn: asyncpg.Connection = loop_conn_raw  # type: ignore[assignment] # Why: PoolConnectionProxy is assignable to Connection at runtime but pyright sees a static mismatch
+        transaction_conn_raw = resolved.get(asyncpg.Connection)
+        assert isinstance(transaction_conn_raw, asyncpg.Connection)
+        transaction_conn: asyncpg.Connection = transaction_conn_raw  # type: ignore[assignment] # Why: PoolConnectionProxy is assignable to Connection at runtime but pyright sees a static mismatch
 
         enqueuer = SubJobEnqueuer(
             loop_scope_resolved=resolved,
@@ -415,7 +415,7 @@ async def test_sub_enqueue_neo4j_failure(
         async def run_actor(_job: JobRow, _ctx: JobContext[BaseModel]) -> object:
             neo4j_stub: object = resolved.get(Neo4jClientProtocol)
             assert isinstance(neo4j_stub, _FailingNeo4jClient)
-            await neo4j_stub.save("site-42", conn=loop_conn)
+            await neo4j_stub.save("site-42", conn=transaction_conn)
             await enqueuer.enqueue(_ENRICH_REF, _EnrichPayload())
             return {"ok": True}
 
@@ -430,7 +430,7 @@ async def test_sub_enqueue_neo4j_failure(
                 payload_type=_PropertyPayload,
                 clock=clk,
                 enqueuer=enqueuer,
-                loop_conn=loop_conn,
+                transaction_conn=transaction_conn,
             )
 
         async with deps.worker_pool.acquire() as check_conn:
@@ -459,9 +459,9 @@ async def test_sub_enqueue_success(
 
     try:
         resolved = loop_scope.resolved_cache()
-        loop_conn_raw = resolved.get(asyncpg.Connection)
-        assert isinstance(loop_conn_raw, asyncpg.Connection)
-        loop_conn: asyncpg.Connection = loop_conn_raw  # type: ignore[assignment] # Why: PoolConnectionProxy is assignable to Connection at runtime but pyright sees a static mismatch
+        transaction_conn_raw = resolved.get(asyncpg.Connection)
+        assert isinstance(transaction_conn_raw, asyncpg.Connection)
+        transaction_conn: asyncpg.Connection = transaction_conn_raw  # type: ignore[assignment] # Why: PoolConnectionProxy is assignable to Connection at runtime but pyright sees a static mismatch
 
         enqueuer = SubJobEnqueuer(
             loop_scope_resolved=resolved,
@@ -494,7 +494,7 @@ async def test_sub_enqueue_success(
         async def run_actor(_job: JobRow, _ctx: JobContext[BaseModel]) -> object:
             neo4j_stub: object = resolved.get(Neo4jClientProtocol)
             assert isinstance(neo4j_stub, _StubNeo4jClient)
-            await neo4j_stub.save("site-42", conn=loop_conn)
+            await neo4j_stub.save("site-42", conn=transaction_conn)
             await enqueuer.enqueue(_ENRICH_REF, _EnrichPayload())
             return {"ok": True}
 
@@ -509,7 +509,7 @@ async def test_sub_enqueue_success(
                 payload_type=_PropertyPayload,
                 clock=clk,
                 enqueuer=enqueuer,
-                loop_conn=loop_conn,
+                transaction_conn=transaction_conn,
             )
 
         async with deps.worker_pool.acquire() as check_conn:

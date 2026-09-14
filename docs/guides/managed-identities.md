@@ -79,6 +79,7 @@ Three consequences worth knowing:
 | Worker — dispatcher pool | `WorkerConnections.dispatcher_pool` | `dispatcher_pool_factory` | `pg_dsn_direct` role |
 | Worker — heartbeat pool | `WorkerConnections.heartbeat_pool` | `heartbeat_pool_factory` | `command_timeout=2s` is your responsibility when overriding |
 | Worker — worker pool | `WorkerConnections.worker_pool` | `worker_pool_factory` | `pg_dsn_pooled` role |
+| Worker — per-slot transaction pool | — (deliberately no `WorkerConnections` slot) | — (worker-internal) | Opened when a LOOP-scope `asyncpg.Connection` is registered and `max_concurrency > 1`; built by TaskQ on the direct DSN, or provider-backed via `pg_credential_provider` on `worker_main` / `worker_main_async` |
 | Worker — notify conn | `WorkerConnections.notify_conn` | `notify_conn_factory` | LISTEN is issued by TaskQ; a dropped conn is rebuilt through the same factory |
 | Worker — leader conn | `WorkerConnections.leader_conn` | `leader_conn_factory` | Advisory-lock conn |
 | Worker — Redis | `WorkerConnections.redis_client` | `redis_client_factory` | |
@@ -87,7 +88,7 @@ Three consequences worth knowing:
 | Client — stream LISTEN conn | `TaskQ(listen_conn=...)` | `TaskQ(pg_conn_factory=...)` | Replaces the DSN-only LISTEN transport |
 | Migrate — locked apply | `apply_pending_locked(conn=...)` | `apply_pending_locked(conn_factory=...)` | `list_applied` / `apply_pending` take an open conn only — no factory |
 | Admin UI | `create_router(pg_pool=..., redis_client=...)` ✓ existing | — | Or `taskq ui serve --pg-credential-provider` / `--redis-credential-provider` |
-| CLI — `taskq worker` | — | `--pg-credential-provider` / `--redis-credential-provider` (env: `TASKQ_PG_CREDENTIAL_PROVIDER` / `TASKQ_REDIS_CREDENTIAL_PROVIDER`) | Builds **every** worker role: all three pools, `notify_conn`, `leader_conn`, Redis |
+| CLI — `taskq worker` | — | `--pg-credential-provider` / `--redis-credential-provider` (env: `TASKQ_PG_CREDENTIAL_PROVIDER` / `TASKQ_REDIS_CREDENTIAL_PROVIDER`) | Builds **every** worker role: all four pools (dispatcher, heartbeat, worker, and the conditional per-slot transaction pool), `notify_conn`, `leader_conn`, Redis |
 | CLI — `taskq workgroup start` | — | same env vars | Children are `taskq worker` subprocesses and inherit the environment |
 | CLI — `taskq migrate up` / `status` | — | `--pg-credential-provider` (env: `TASKQ_PG_CREDENTIAL_PROVIDER`) | One-shot connection through the provider |
 
@@ -268,8 +269,18 @@ when you have a custom entrypoint and want the same full wiring:
 from taskq.auth import build_worker_connections
 
 connections = build_worker_connections(settings, pg_provider=provider, redis_provider=provider)
-worker_main(settings, actor_registry=ACTORS, connections=connections)
+worker_main(
+    settings,
+    actor_registry=ACTORS,
+    connections=connections,
+    pg_credential_provider=provider,  # the per-slot pool does not read WorkerConnections
+)
 ```
+
+The `pg_credential_provider` argument exists for the per-slot transaction pool (opened when a
+LOOP-scope `asyncpg.Connection` is registered and `max_concurrency > 1`): the role pools take
+their credentials from `connections`, the slot pool from this parameter — or from the direct
+DSN when omitted. See [Worker: `WorkerConnections`](#worker-workerconnections).
 
 ---
 
@@ -351,6 +362,15 @@ What a reload does:
   get that long to finish. On timeout the old pool is **terminated**;
   an actor that outlives the drain sees its next `acquire()` fail and
   the job retries — landing on the new pool.
+* A provider-backed per-slot transaction pool rotates with the rest, keeping
+  its boot-time size (`TASKQ_MAX_CONCURRENCY` is boot-only). In-flight jobs
+  get the drain timeout to finish; past it the old pool is terminated — the
+  job's transaction rolls back, the row stays `running`, and lock-lease
+  expiry reclaims and retries it: a loud, retryable infrastructure failure,
+  never a false success. For the drain window the worker briefly holds
+  `2 × (max_concurrency + 1)` slot-pool connections (old pool draining +
+  new pool warm) — budget for that peak when rotations can coincide across
+  the fleet.
 * A SIGHUP arriving **mid-reload** (success or failure) is honored with
   exactly one follow-up reload; N signals during one reload coalesce
   into one follow-up, not N. Reloads are skipped while shutdown is in
@@ -681,6 +701,15 @@ worker_main(
 
 Mixing a pre-constructed pool **and** a factory for the same role raises
 `ValueError` at startup — pick one.
+
+The worker's per-slot transaction pool (opened when a LOOP-scope `asyncpg.Connection` is
+registered and `max_concurrency > 1`) has **no** `WorkerConnections` slot, by design: it is
+worker-internal infrastructure, built by TaskQ on the direct DSN. Embedders whose credentials
+live in their own pool factories must **also** pass `pg_credential_provider` to `worker_main` /
+`worker_main_async` — the same provider used to build `connections` — or the slot pool
+authenticates from the DSN (the worker warns `slot_pool_own_credentials` at boot when
+caller-supplied pools are in play with no provider). The `taskq worker` CLI passes the resolved
+`--pg-credential-provider` / `TASKQ_PG_CREDENTIAL_PROVIDER` automatically.
 
 ### `worker_main_async` — when you must own the loop
 

@@ -282,6 +282,14 @@ class _FakePgConn:
     async def fetchrow(self, sql: str, *args: object) -> Any:
         return self._pool.fetchrow_result
 
+    async def fetchval(self, sql: str, *args: object) -> object:
+        # The per-bucket advisory try-lock: uncontended in this fake —
+        # the fast-path try-lock acquires, so the locked window sequence
+        # runs and the contended tier is never entered.
+        if "pg_try_advisory_xact_lock" in sql:
+            return True
+        raise AssertionError(f"unexpected fetchval on the acquire path: {sql}")
+
     async def execute(self, sql: str, *args: object) -> None:
         self._pool.execute_calls.append((sql, args))
 

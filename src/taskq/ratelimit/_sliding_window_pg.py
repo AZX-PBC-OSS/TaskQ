@@ -17,6 +17,7 @@ from uuid import UUID
 
 import structlog
 
+from taskq._advisory import acquire_advisory_xact_lock_bounded
 from taskq.backend._records import jsonb_param, jsonb_to_dict
 from taskq.ratelimit._decision_log import log_decision
 from taskq.ratelimit.decision import RateLimitDecision, RateLimitState
@@ -249,17 +250,50 @@ async def _refund_pg_log(
     )
 
 
+#: Bounded wait (milliseconds) for the per-bucket log-style advisory
+#: lock. The lock is held across a DELETE + count/INSERT pair (a few
+#: round trips — low single-digit milliseconds on a healthy pool), so
+#: 5 s tolerates a burst of hundreds of queued racers while capping
+#: tail latency instead of letting it scale with the racer count, and a
+#: black-holed holder (dead TCP, no FIN) blocks its bucket for at most
+#: one budget instead of until the server's keepalives reap it. Same
+#: default as the enqueue path's DEFAULT_MAX_PENDING_LOCK_TIMEOUT_MS. A
+#: racer that exhausts the budget gets the limiter's DENIAL outcome —
+#: fail closed, never an admission. ``0`` (or less) waits indefinitely,
+#: matching the ``lock_timeout`` GUC convention used by migrate.py.
+#: A module constant tunable only through the acquire's private kwargs
+#: today — settings plumbing is a filed follow-up.
+DEFAULT_SLIDING_WINDOW_LOCK_TIMEOUT_MS: float = 5000.0
+
+#: The acquire mechanics (try-lock fast path, savepoint + lock_timeout +
+#: blocking contended tier, client-side backstop) live in
+#: ``taskq._advisory`` — one implementation shared with the enqueue
+#: path's locks; this module contributes only the site-specific budget
+#: above and the denial-on-exhaustion semantics at the call site.
+
+
 async def _acquire_pg_log(
     self: "SlidingWindow",
     pg_pool: "asyncpg.Pool | None",
     settings: "WorkerSettings | None",
     request_id: UUID | None,
+    *,
+    lock_timeout_ms: float = DEFAULT_SLIDING_WINDOW_LOCK_TIMEOUT_MS,
 ) -> RateLimitDecision:
     """Acquire log-style against PG.
 
     Every window predicate and the inserted ``ts`` are ``clock_timestamp()``
     — the PG server clock owns the shared window state, so nodes with
     divergent Python clocks all get measured against the same window.
+
+    The per-bucket advisory lock is acquired with the two-tier bounded
+    acquire (``acquire_advisory_xact_lock_bounded`` from
+    ``taskq._advisory``; default
+    :data:`DEFAULT_SLIDING_WINDOW_LOCK_TIMEOUT_MS`). On budget
+    exhaustion the acquire FAILS CLOSED: it returns the limiter's denial
+    outcome — ``allowed=False`` with a retry hint, never an exception and
+    never an admission — so a racer that could not check the window can
+    never over-admit past the limit.
     """
     if pg_pool is None:
         raise RuntimeError("pg_pool not injected for postgres backend")
@@ -317,11 +351,61 @@ async def _acquire_pg_log(
     # operating on different ``"{schema}".rate_limit_window_entries``
     # tables. Qualifying keeps the lock's scope identical to the table
     # it serializes access to.
-    advisory_lock_sql = "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))"
+    #
+    # Why a bounded TWO-TIER acquire and not the unbounded blocking
+    # acquire this path once took (the same machinery as the enqueue
+    # path's locks — see acquire_advisory_xact_lock_bounded in
+    # taskq._advisory for the measured rationale): every racer on this lock holds it across
+    # its own DELETE + count/INSERT round trips, so an unbounded
+    # blocking acquire makes N concurrent dispatches of a rate-limited
+    # actor queue on one lock — tail latency linear in the racer count,
+    # and a black-holed holder (dead TCP, no FIN; the server reaps it
+    # only via keepalives) blocks the whole bucket's dispatch until
+    # then. The two-tier acquire keeps the happy path at exactly one
+    # try-lock statement, queues contended racers SERVER-SIDE (Postgres'
+    # lock scheduler hands off at holder-release rate, not at a client
+    # poll cadence), bounds the wait with a savepoint-scoped
+    # lock_timeout, and backstops the network black hole client-side.
+    # Once acquired, the lock is transaction-scoped and the
+    # delete/count/insert sequence below is unchanged — the window
+    # itself stays EXACT.
+    #
+    # On budget exhaustion the acquire FAILS CLOSED: a racer that could
+    # not check the window must never over-admit, so it returns the
+    # limiter's denial outcome — RateLimitDecision allowed=False with a
+    # retry hint — never an exception, never an admission. A lock-timeout
+    # denial is NOT an empty bucket; operators should read it the same
+    # way as any other denial (backpressure — the dispatch layer snoozes
+    # and re-promotes the job either way), with the distinct
+    # ratelimit-lock-timeout warning below as the signal that the bucket
+    # (or its holder) is contended or sick rather than merely busy. No
+    # counter bump: taskq.backpressure.errors is enqueue-scoped
+    # (actor-keyed); the limiter's denial channel is the
+    # rate-limit-decision log event, which this denial flows through
+    # like any other. retry_after carries one more budget — the holder's
+    # critical section is a few round trips, so if this budget expired
+    # the honest earliest re-check is after another full one.
     lock_key = f"taskq:{schema}:sw:{self._name}"
 
     async with pg_pool.acquire() as conn, conn.transaction():
-        await conn.execute(advisory_lock_sql, lock_key)
+        if not await acquire_advisory_xact_lock_bounded(conn, lock_key, timeout_ms=lock_timeout_ms):
+            logger.warning(
+                "ratelimit-lock-timeout",
+                bucket_name=self._name,
+                backend="postgres",
+                lock_timeout_ms=lock_timeout_ms,
+            )
+            result = RateLimitDecision(
+                allowed=False,
+                remaining=0.0,
+                retry_after=timedelta(milliseconds=lock_timeout_ms),
+                bucket_name=self._name,
+                backend="postgres",
+                request_id=str(request_id),
+            )
+            log_decision(result, style=self._style)
+            return result
+
         await conn.execute(delete_sql, self._name, window_ms)
 
         inserted = await conn.fetchrow(

@@ -554,7 +554,7 @@ def create_router(
     router = APIRouter(**router_kwargs)
 
     if auth_dependency is None:
-        is_dev_env = settings.environment in {"dev", "development"}
+        is_dev_env = settings.is_dev_environment
         if not is_dev_env and settings.admin_ui_require_auth:
             raise RuntimeError(
                 "admin UI requires auth_dependency in non-dev environments "

@@ -61,7 +61,15 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from urllib.parse import parse_qs, quote, urlencode, urlparse, urlunparse
 
-from taskq.connections import ConnFactory, PoolFactory, RedisFactory, WorkerConnections
+from taskq.connections import (
+    DEFAULT_MAX_CACHED_STATEMENT_LIFETIME,
+    DEFAULT_STATEMENT_CACHE_SIZE,
+    ConnFactory,
+    PoolFactory,
+    RedisFactory,
+    WorkerConnections,
+    statement_cache_kwargs,
+)
 from taskq.obs import get_logger
 
 if TYPE_CHECKING:
@@ -331,6 +339,8 @@ def make_pg_pool_factory(
     max_size: int = 4,
     max_inactive_connection_lifetime: float = 300.0,
     command_timeout: float | None = None,
+    statement_cache_size: int = DEFAULT_STATEMENT_CACHE_SIZE,
+    max_cached_statement_lifetime: int = DEFAULT_MAX_CACHED_STATEMENT_LIFETIME,
     init: Callable[[asyncpg.Connection], Awaitable[None]] | None = None,
     setup: Callable[[asyncpg.Connection], Awaitable[None]] | None = None,
     server_settings: dict[str, str] | None = None,
@@ -396,6 +406,18 @@ def make_pg_pool_factory(
     ``{"statement_timeout": "30s", "search_path": "app"}``). Useful for
     per-pool configuration that must be set at connection time.
 
+    *statement_cache_size* / *max_cached_statement_lifetime* are forwarded
+    to ``asyncpg.create_pool`` and default to TaskQ's tuning (the
+    ``taskq.connections`` module constants — 512 entries, 1 h lifetime —
+    which are also the ``TaskQSettings`` field defaults). asyncpg's own
+    defaults (100 / 300 s) thrash on TaskQ's read paths, so a
+    provider-backed pool must get the same cache treatment as the
+    DSN-built ones. Call sites with a
+    :class:`~taskq.settings.WorkerSettings` in scope pass the values
+    resolved through :func:`taskq.connections.statement_cache_kwargs` so
+    the ``TASKQ_STATEMENT_CACHE_SIZE`` / ``TASKQ_MAX_CACHED_STATEMENT_LIFETIME``
+    env vars apply to provider-backed pools too.
+
     *connection_class* is forwarded to ``asyncpg.create_pool`` and sets
     the :class:`asyncpg.Connection` subclass used by the pool. Use it to
     install custom codecs or override connection methods across the
@@ -418,6 +440,8 @@ def make_pg_pool_factory(
             "min_size": min_size,
             "max_size": max_size,
             "max_inactive_connection_lifetime": max_inactive_connection_lifetime,
+            "statement_cache_size": statement_cache_size,
+            "max_cached_statement_lifetime": max_cached_statement_lifetime,
         }
         if credential.username is not None:
             kwargs["user"] = credential.username
@@ -650,12 +674,19 @@ def build_worker_connections(
         direct = pg_dsn_direct or pg_dsn or str(settings.resolved_pg_dsn_direct)
         pooled = pg_dsn_pooled or pg_dsn or str(settings.resolved_pg_dsn_pooled)
         lifetime = settings.pool_max_inactive_lifetime
+        # Same statement-cache treatment as open_worker_deps' DSN-built
+        # pools — switching authentication must not switch cache behaviour.
+        # The kwargs are forwarded explicitly (not splatted) so pyright
+        # traces types through make_pg_pool_factory's typed parameters.
+        stmt_kwargs = statement_cache_kwargs(settings)
         conns.dispatcher_pool_factory = make_pg_pool_factory(
             direct,
             pg_provider,
             max_size=settings.dispatcher_pool_size,
             max_inactive_connection_lifetime=lifetime,
             command_timeout=settings.dispatcher_command_timeout,
+            statement_cache_size=stmt_kwargs["statement_cache_size"],
+            max_cached_statement_lifetime=stmt_kwargs["max_cached_statement_lifetime"],
         )
         conns.heartbeat_pool_factory = make_pg_pool_factory(
             direct,
@@ -663,12 +694,16 @@ def build_worker_connections(
             max_size=settings.heartbeat_pool_size,
             max_inactive_connection_lifetime=lifetime,
             command_timeout=settings.heartbeat_command_timeout,
+            statement_cache_size=stmt_kwargs["statement_cache_size"],
+            max_cached_statement_lifetime=stmt_kwargs["max_cached_statement_lifetime"],
         )
         conns.worker_pool_factory = make_pg_pool_factory(
             pooled,
             pg_provider,
             max_size=settings.worker_pool_size,
             max_inactive_connection_lifetime=lifetime,
+            statement_cache_size=stmt_kwargs["statement_cache_size"],
+            max_cached_statement_lifetime=stmt_kwargs["max_cached_statement_lifetime"],
         )
         conns.notify_conn_factory = make_dedicated_conn_factory(
             direct, pg_provider, command_timeout=settings.dispatcher_command_timeout

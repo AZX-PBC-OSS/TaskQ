@@ -26,6 +26,7 @@ from uuid import UUID
 import structlog
 
 from taskq._close import CLOSE_TIMEOUT_SECS, close_conn_bounded
+from taskq._shield import shield_with_retrieval
 from taskq.backend._protocol import Backend, CancelPhase
 from taskq.backend._sql import (
     parse_rowcount,  # pyright: ignore[reportPrivateUsage]  # Why: parse_rowcount is the canonical command-tag parser; used identically in worker/cancel.py.
@@ -194,7 +195,11 @@ async def orchestrate_shutdown(
         )
         for active in deps.active_jobs.all():
             try:
-                await asyncio.shield(
+                # shield_with_retrieval, not plain asyncio.shield: shutdown
+                # races escalating cancellation, so a detached write here can
+                # be double-cancelled — its outcome must be retrieved (see
+                # taskq._shield).
+                await shield_with_retrieval(
                     backend.write_cancel_escalation(active.job_id, worker_id, phase=2)
                 )
             except Exception as e:
@@ -222,7 +227,7 @@ async def orchestrate_shutdown(
         )
         for active in deps.active_jobs.all():
             try:
-                await asyncio.shield(backend.mark_abandoned(active.job_id))
+                await shield_with_retrieval(backend.mark_abandoned(active.job_id))
             except asyncio.CancelledError:
                 pass
             except Exception as exc:

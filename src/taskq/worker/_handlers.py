@@ -28,7 +28,6 @@ fix; until then this list tells the truth about what is emitted.
 shared between ``consume_one_job`` and ``_consume_transactional``.
 """
 
-import asyncio
 import traceback
 from collections.abc import Callable
 from datetime import timedelta
@@ -40,6 +39,7 @@ import structlog
 from opentelemetry import trace
 
 from taskq._json import sanitize_nul_str
+from taskq._shield import shield_with_retrieval
 from taskq.backend._protocol import (
     AttemptOutcome as BackendAttemptOutcome,
 )
@@ -260,7 +260,7 @@ async def _handle_timeout(
                 "error_class": error_info.error_class,
             },
         )
-        updated_row = await asyncio.shield(
+        updated_row = await shield_with_retrieval(
             safe_mark_failed_or_retry(
                 backend,
                 job.id,
@@ -290,7 +290,7 @@ async def _handle_timeout(
                 "error_class": error_info.error_class,
             },
         )
-        updated_row = await asyncio.shield(
+        updated_row = await shield_with_retrieval(
             safe_mark_failed_or_retry(
                 backend,
                 job.id,
@@ -350,7 +350,7 @@ async def _handle_snooze(
 ) -> AttemptOutcome:
     raw_count = (job.metadata or {}).get("snooze_count", 0)
     current_snooze_count: int = int(raw_count) if isinstance(raw_count, (int, str)) else 0
-    tri = await asyncio.shield(
+    tri = await shield_with_retrieval(
         backend.mark_snoozed(
             job.id,
             worker_id,
@@ -436,7 +436,7 @@ async def _handle_retry_after(
     *,
     error_reporter: ErrorReporter | None = None,
 ) -> AttemptOutcome:
-    tri = await asyncio.shield(
+    tri = await shield_with_retrieval(
         backend.mark_retry_after(
             job.id,
             worker_id,
@@ -529,7 +529,7 @@ async def _handle_reservation_class_denied(
     progress_state: dict[str, object] | None = None,
     error_reporter: ErrorReporter | None = None,
 ) -> AttemptOutcome:
-    tri = await asyncio.shield(
+    tri = await shield_with_retrieval(
         backend.mark_snoozed(
             job.id,
             worker_id,
@@ -655,7 +655,7 @@ async def _handle_generic_exception(
                 "error_class": type(e).__name__,
             },
         )
-        updated_row = await asyncio.shield(
+        updated_row = await shield_with_retrieval(
             safe_mark_failed_or_retry(
                 backend,
                 job.id,
@@ -689,7 +689,7 @@ async def _handle_generic_exception(
                 ),
             },
         )
-        updated_row = await asyncio.shield(
+        updated_row = await shield_with_retrieval(
             safe_mark_failed_or_retry(
                 backend,
                 job.id,

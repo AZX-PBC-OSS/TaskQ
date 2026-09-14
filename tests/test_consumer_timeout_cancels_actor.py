@@ -88,7 +88,7 @@ async def _consume(probe: _ActorProbe, *, transactional: bool) -> AttemptOutcome
             actor_config=default_actor_config(),
             payload_type=EmptyPayload,
             clock=FakeClock(_NOW),
-            loop_conn=_FakeConnection() if transactional else None,  # pyright: ignore[reportArgumentType]  # Why: structural asyncpg.Connection stand-in, as in tests/test_consumer_sub_enqueue.py
+            transaction_conn=_FakeConnection() if transactional else None,  # pyright: ignore[reportArgumentType]  # Why: structural asyncpg.Connection stand-in, as in tests/test_consumer_sub_enqueue.py
         )
     return outcome
 
