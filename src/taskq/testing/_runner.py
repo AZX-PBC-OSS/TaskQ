@@ -703,13 +703,13 @@ async def run_until_drained(backend: "InMemoryBackend") -> None:
                 error_info=error_info,
                 retry_delay=None,
             )
-            # The batch hook is skipped on this escape, exactly as
-            # production skips it: dispatch_one_job's single
-            # apply_batch_terminal_outcome call sits before its except
-            # handlers, so every escape — this one included — jumps past
-            # it; the batch completes via the next member's terminal hook
-            # or the stale-batch sweep.
-            continue
+            # Production's generic-exception escape routes this failure
+            # through _handle_generic_exception and applies the batch
+            # hook with the handler's terminal outcome before returning
+            # — a batch completes on any terminal member, GoodJob-aligned
+            # — so the mirror sets the failed outcome and falls through
+            # to the shared hook call below.
+            outcome = "failed"
         except asyncio.CancelledError:
             # Cooperative-cancel mirror: production's consume_one_job marks
             # the row cancelled on the CancelledError path and re-raises;
@@ -722,14 +722,16 @@ async def run_until_drained(backend: "InMemoryBackend") -> None:
             # an external cancellation of the drain task itself (callers
             # cancel run_until_drained — the job-handle timeout suite runs
             # it as a cancellable task) is the event: set → absorb and keep
-            # draining; unset → the caller's cancel, propagate. The batch
-            # hook is skipped on the absorb, exactly as production's raise
-            # jumps past dispatch_one_job's hook call: the batch completes
-            # via the next member's terminal hook or the stale-batch sweep.
+            # draining; unset → the caller's cancel, propagate. On the
+            # absorb arm production's CancelledError handler applies the
+            # batch hook with "cancelled" best-effort before the re-raise
+            # — the row is terminal, so the batch completes immediately,
+            # GoodJob-aligned — and the mirror does the same: the outcome
+            # is set here and the shared hook call below applies it.
             cancel_event = backend._cancel_events.get(job.id)  # pyright: ignore[reportPrivateUsage]  # Why: test runner helper intentionally accesses private InMemoryBackend state; this module is co-located with the backend and owns this access pattern.
             if cancel_event is None or not cancel_event.is_set():
                 raise
-            continue
+            outcome = "cancelled"
 
         try:
             await apply_batch_terminal_outcome(backend, job, outcome)

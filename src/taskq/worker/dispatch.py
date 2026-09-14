@@ -484,6 +484,31 @@ async def dispatch_one_job(
                 except asyncio.CancelledError:
                     outcome = "cancelled"
                     consumer_span.set_status(StatusCode.ERROR, "cancelled")
+                    # A batch completes on ANY terminal member — GoodJob's
+                    # per-job finish hook runs the completion check for
+                    # every finished job, discarded included
+                    # (vendor/good_job/app/models/good_job/batch_record.rb,
+                    # _continue_discard_or_finish: on_discard fires and
+                    # jobs_finished_at/on_finish still land) — so a
+                    # cancelled last member must complete its batch here,
+                    # not a sweep-interval later. Best-effort for the same
+                    # reason consume's own mark_cancelled on this path is
+                    # best-effort (an infra failure there is logged inside
+                    # consume and the row stays running for lock-lease
+                    # reclaim): a hook failure here is logged and the M7
+                    # stale-batch sweep remains the safety net for batch
+                    # status. On the transactional consumer path the
+                    # cancel has already aborted the slot's transaction,
+                    # so the hook's writes on that connection fail, are
+                    # logged, and the sweep recovers — immediate
+                    # completion holds on the autonomous path, the normal
+                    # case.
+                    try:
+                        await apply_batch_terminal_outcome(
+                            backend, job, "cancelled", transaction_conn=transaction_conn
+                        )
+                    except Exception:
+                        logger.exception("batch-policy-hook-failed", job_id=str(job.id))
                     raise
                 except Exception as exc:
                     outcome = "failed"
@@ -508,9 +533,29 @@ async def dispatch_one_job(
                             consumer_span,
                             handler_log,
                         )
-                        outcome = handler_result
                     except _TERMINAL_WRITE_INFRA_EXCEPTIONS as infra_exc:
+                        # An infra-failed terminal write leaves the row
+                        # RUNNING — lock-lease expiry and the sweep are the
+                        # recovery — so no batch counter may budge on a
+                        # write that never landed: the same rule the hook
+                        # itself applies to the clean-return path's "noop"
+                        # (a terminal write that matched nothing). The hook
+                        # call therefore lives in the else below, on a
+                        # real terminal outcome only.
                         _log_terminal_write_failed(handler_log, job, exc, infra_exc)
+                    else:
+                        outcome = handler_result
+                        # Best-effort, matching the hook call on consume's
+                        # clean return above (M7 sweep semantics documented
+                        # on apply_batch_terminal_outcome): non-terminal
+                        # handler outcomes ("scheduled") return inside the
+                        # hook without touching a counter.
+                        try:
+                            await apply_batch_terminal_outcome(
+                                backend, job, outcome, transaction_conn=transaction_conn
+                            )
+                        except Exception:
+                            logger.exception("batch-policy-hook-failed", job_id=str(job.id))
         finally:
             elapsed = time.monotonic() - t0
             # A noop means the row moved underneath this dispatch (a

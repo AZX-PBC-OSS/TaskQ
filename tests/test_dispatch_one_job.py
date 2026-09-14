@@ -12,6 +12,8 @@ Covers:
   - Actor sees live ctx with working cancel_event
   - Interim ctx is not the actor's ctx (regression guard)
   - Slot-pool acquire failure raises outside the job-outcome accounting
+  - Escape paths apply the batch policy hook (cooperative cancel,
+    pre-actor payload validation)
 """
 
 import asyncio
@@ -19,6 +21,7 @@ from collections.abc import AsyncIterator, Coroutine, Generator
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
 from unittest.mock import MagicMock
+from uuid import UUID
 
 import asyncpg
 import pytest
@@ -35,6 +38,7 @@ from taskq._di.scopes import (
 )
 from taskq._ids import new_uuid
 from taskq.actor import ActorRef
+from taskq.backend._protocol import JobRow
 from taskq.client._enqueuer import SubJobEnqueuer
 from taskq.context import JobContext
 from taskq.exceptions import Snooze
@@ -789,6 +793,133 @@ async def test_cancel_event_on_live_ctx_works() -> None:
             enqueuer=SubJobEnqueuer(
                 backend=as_backend(fake_backend), loop_scope_resolved=None, worker_pool=None
             ),
+        )
+
+
+# ── Escape paths apply the batch policy hook ──────────────────────────
+
+
+async def test_cooperative_cancel_escape_applies_batch_hook() -> None:
+    """A cooperative cancel escaping ``consume_one_job`` still reaches
+    the batch policy hook: dispatch's CancelledError handler applies
+    :func:`apply_batch_terminal_outcome` with ``cancelled`` best-effort
+    before its re-raise — a batch completes on any terminal member,
+    discarded included (GoodJob's finish check fires for every finished
+    job), so the finalizer runs immediately instead of a sweep-interval
+    late. The recorder stands in for the hook (the FakeBackend carries
+    no batch stores), pinning the call and its outcome; a dispatch that
+    re-raises past the hook leaves the recorder empty and turns this
+    pin red."""
+    hook_calls: list[tuple[UUID, str]] = []
+
+    async def my_actor(payload: _Payload, ctx: JobContext[_Payload]) -> dict[str, object]:
+        raise asyncio.CancelledError
+
+    async def _recording_batch_hook(
+        backend: object,
+        job: JobRow,
+        outcome: str,
+        *,
+        transaction_conn: object = None,
+    ) -> None:
+        hook_calls.append((job.id, outcome))
+
+    async with _ScopeStack() as scopes:
+        fake_backend = FakeBackend()
+        fake_deps = _FakeWorkerDeps()
+        actor_ref = _make_actor_ref(my_actor)
+        job = make_job_row(payload={"value": 42})
+        active_jobs = fake_deps.active_jobs
+
+        with pytest.MonkeyPatch.context() as m:
+            m.setattr("taskq.worker.dispatch.apply_batch_terminal_outcome", _recording_batch_hook)
+
+            with pytest.raises(asyncio.CancelledError):
+                await dispatch_one_job(
+                    backend=as_backend(fake_backend),
+                    deps=_as_deps(fake_deps),
+                    job=job,
+                    worker_id=_WORKER_ID,
+                    registry=scopes.registry,
+                    process_scope=scopes.process_scope,
+                    thread_scope=scopes.thread_scope,
+                    loop_scope=scopes.loop_scope,
+                    actor_ref=actor_ref,  # type: ignore[arg-type]  # Why: ActorRef[Any, Any] is not ActorRef[BaseModel, BaseModel | None]; pyright cannot widen the generic parameters, but the runtime contract is sound
+                    actor_config=StubActorConfig(retry=RetryPolicy()),
+                    clock=FakeClock(_NOW),
+                    active_jobs=active_jobs,
+                    enqueuer=SubJobEnqueuer(
+                        backend=as_backend(fake_backend), loop_scope_resolved=None, worker_pool=None
+                    ),
+                )
+
+        assert hook_calls == [(job.id, "cancelled")], (
+            "the CancelledError escape must apply the batch hook with the "
+            "cancelled outcome before its re-raise — a batch whose last "
+            "member ends through the escape completes immediately, "
+            f"GoodJob-aligned; got {hook_calls}"
+        )
+
+
+async def test_payload_validation_escape_applies_batch_hook() -> None:
+    """A pre-actor payload-validation failure escaping dispatch's
+    validate call still reaches the batch policy hook: the
+    generic-exception escape routes through ``_handle_generic_exception``
+    and applies :func:`apply_batch_terminal_outcome` with the handler's
+    terminal outcome — ``failed`` for the non-retryable
+    ``PayloadValidationError`` — before returning. The recorder stands
+    in for the hook, pinning the call and its outcome; a dispatch that
+    returns past the hook leaves the recorder empty and turns this pin
+    red."""
+    hook_calls: list[tuple[UUID, str]] = []
+
+    async def my_actor(payload: _Payload, ctx: JobContext[_Payload]) -> dict[str, object]:
+        return {}
+
+    async def _recording_batch_hook(
+        backend: object,
+        job: JobRow,
+        outcome: str,
+        *,
+        transaction_conn: object = None,
+    ) -> None:
+        hook_calls.append((job.id, outcome))
+
+    async with _ScopeStack() as scopes:
+        fake_backend = FakeBackend()
+        fake_deps = _FakeWorkerDeps()
+        actor_ref = _make_actor_ref(my_actor)
+
+        job_with_bad_payload = make_job_row(
+            payload={"not_a_valid_field": "oops"},
+        )
+
+        with pytest.MonkeyPatch.context() as m:
+            m.setattr("taskq.worker.dispatch.apply_batch_terminal_outcome", _recording_batch_hook)
+
+            await dispatch_one_job(
+                backend=as_backend(fake_backend),
+                deps=_as_deps(fake_deps),
+                job=job_with_bad_payload,
+                worker_id=_WORKER_ID,
+                registry=scopes.registry,
+                process_scope=scopes.process_scope,
+                thread_scope=scopes.thread_scope,
+                loop_scope=scopes.loop_scope,
+                actor_ref=actor_ref,  # type: ignore[arg-type]  # Why: ActorRef[Any, Any] is not ActorRef[BaseModel, BaseModel | None]; pyright cannot widen the generic parameters, but the runtime contract is sound
+                actor_config=StubActorConfig(retry=RetryPolicy()),
+                clock=FakeClock(_NOW),
+                active_jobs=fake_deps.active_jobs,
+                enqueuer=SubJobEnqueuer(
+                    backend=as_backend(fake_backend), loop_scope_resolved=None, worker_pool=None
+                ),
+            )
+
+        assert hook_calls == [(job_with_bad_payload.id, "failed")], (
+            "the payload-validation escape must apply the batch hook with "
+            "the handler's terminal outcome — a batch whose last member "
+            "ends through the escape completes immediately, "
+            f"GoodJob-aligned; got {hook_calls}"
         )
 
 

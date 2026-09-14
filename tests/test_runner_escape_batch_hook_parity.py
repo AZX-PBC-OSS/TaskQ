@@ -1,23 +1,30 @@
-"""The runner's escape paths skip the batch hook, exactly as production's
-escapes jump past ``dispatch_one_job``'s single hook call.
+"""The runner's escape paths apply the batch hook, mirroring production's
+escape handlers — a batch whose last member ends through an escape
+completes immediately, GoodJob-aligned.
 
-Production applies :func:`apply_batch_terminal_outcome` at exactly one
-site — inside ``dispatch_one_job``'s try, after ``consume_one_job``
-returns cleanly (``src/taskq/worker/dispatch.py``). Every escape path
-re-raises or handles past it: a cooperative cancel sets ``outcome
-cancelled`` and re-raises; a pre-actor escape routes through
-``_handle_generic_exception`` and returns. The batch then completes via
-the next member's terminal hook or the stale-batch sweep — never
-immediately on the escape itself.
+Production's ``dispatch_one_job`` applies
+:func:`apply_batch_terminal_outcome` on the clean return from
+``consume_one_job`` and on every escape, best-effort before the
+re-raise/return: the CancelledError handler calls the hook with
+``cancelled`` before re-raising, and the generic-exception handler calls
+it with ``_handle_generic_exception``'s terminal outcome (a handler
+whose terminal write infra-failed leaves the row RUNNING and stays
+hook-silent — the sweep is the recovery, and no batch counter may budge
+on a non-terminal write). GoodJob's per-job finish hook runs the
+batch-completion check for ANY terminal member, discarded included
+(``vendor/good_job/app/models/good_job/batch_record.rb``:
+``_continue_discard_or_finish`` fires ``on_discard`` and still sets
+``jobs_finished_at`` and fires ``on_finish``), so a batch whose last
+member ends through an escape completes immediately — never
+sweep-deferred on a normal flow.
 
 The runner's two escape mirrors (``PayloadValidationError`` and the
-cooperative-cancel absorb in ``run_until_drained``) once called the hook
-with ``failed``/``cancelled`` — an observable divergence on the batched
-surface: a batch whose last member ends through an escape completed
-immediately in the harness and only via the sweep in production. These
-pins hold the parity: the member's row reaches its terminal state, and
-the batch row stays ``active`` — the completion is the sweep's or the
-next member's, not the escape's.
+cooperative-cancel absorb in ``run_until_drained``) hold the same
+contract: the escape sets the terminal outcome and falls through to the
+shared hook call. These pins hold it — the member's row reaches its
+terminal state AND the batch row reaches ``complete``; re-skipping the
+hook on either mirror strands the batch ``active`` until the
+stale-batch sweep and turns these pins red.
 """
 
 import asyncio
@@ -33,12 +40,15 @@ from taskq.testing.in_memory import InMemoryBackend
 _START = datetime(2025, 1, 1, tzinfo=UTC)
 
 
-async def test_cooperative_cancel_escape_skips_the_batch_hook() -> None:
+async def test_cooperative_cancel_escape_completes_the_batch() -> None:
     """A cooperatively-cancelled batch member reaches terminal
-    ``cancelled`` while its batch stays ``active`` — production's escape
-    jumps past the batch hook, so the harness must not complete the
-    batch on the escape either. Re-adding the hook call on the absorb
-    path completes the batch here immediately and turns this pin red."""
+    ``cancelled`` and its batch completes on the escape itself — the
+    runner's absorb mirror falls through to the shared batch hook with
+    ``cancelled``, exactly as production's CancelledError handler
+    applies the hook best-effort before its re-raise (GoodJob completes
+    on any terminal member, discarded included). Re-skipping the hook
+    call on the absorb path strands the batch ``active`` until the
+    stale-batch sweep and turns this pin red."""
     clock = FakeClock(start=_START)
     backend = InMemoryBackend(clock=clock)
     batch_id = new_uuid()
@@ -70,19 +80,22 @@ async def test_cooperative_cancel_escape_skips_the_batch_hook() -> None:
     assert row.status == "cancelled", f"the member must reach terminal cancelled; got {row.status}"
     batch = await backend.get_batch(batch_id)
     assert batch is not None
-    assert batch.status == "active", (
-        "the escape must not apply the batch hook: production's dispatch "
-        "re-raises past its single hook call, so the batch completes via "
-        f"the sweep or the next member — got {batch.status}"
+    assert batch.status == "complete", (
+        "the escape must apply the batch hook: production's dispatch "
+        "CancelledError handler applies it best-effort before the "
+        "re-raise, so a batch whose last member ends through the "
+        f"escape completes immediately — got {batch.status}"
     )
 
 
-async def test_payload_validation_escape_skips_the_batch_hook() -> None:
+async def test_payload_validation_escape_completes_the_batch() -> None:
     """A pre-actor payload-validation failure reaches terminal ``failed``
-    while its batch stays ``active`` — the same production skip, on the
-    runner's other escape mirror. Re-adding the hook call on the
-    validation escape completes (or failure-counts) the batch here and
-    turns this pin red."""
+    and its batch completes on the escape itself — the runner's
+    validation mirror falls through to the shared batch hook with
+    ``failed``, mirroring production's generic-exception escape, where
+    the handler's terminal outcome reaches the hook. Re-skipping the
+    hook call on the validation escape strands the batch ``active``
+    until the stale-batch sweep and turns this pin red."""
     clock = FakeClock(start=_START)
     backend = InMemoryBackend(clock=clock)
     batch_id = new_uuid()
@@ -114,8 +127,9 @@ async def test_payload_validation_escape_skips_the_batch_hook() -> None:
     assert row.error_class == "PayloadValidationError"
     batch = await backend.get_batch(batch_id)
     assert batch is not None
-    assert batch.status == "active", (
-        "the escape must not apply the batch hook: production's dispatch "
-        "handles the escape past its single hook call, so the batch "
-        f"completes via the sweep or the next member — got {batch.status}"
+    assert batch.status == "complete", (
+        "the escape must apply the batch hook: production's dispatch "
+        "routes the escape through the generic handler and applies the "
+        "hook with its terminal outcome, so a batch whose last member "
+        f"ends through the escape completes immediately — got {batch.status}"
     )
