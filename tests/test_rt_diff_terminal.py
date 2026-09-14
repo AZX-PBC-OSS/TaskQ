@@ -14,7 +14,8 @@ import pytest
 from taskq._ids import new_uuid
 from taskq.backend._protocol import ErrorInfo
 from taskq.exceptions import WorkerOwnershipMismatch
-from tests.test_rt_diff_harness import DiffSide, assert_mirror, run_differential
+
+from .test_rt_diff_harness import DiffSide, assert_mirror, run_differential
 
 pytestmark = pytest.mark.integration
 

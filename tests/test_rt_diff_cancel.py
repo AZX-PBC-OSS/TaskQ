@@ -10,7 +10,8 @@ from __future__ import annotations
 import pytest
 
 from taskq._ids import new_uuid
-from tests.test_rt_diff_harness import DiffSide, assert_mirror, run_differential
+
+from .test_rt_diff_harness import DiffSide, assert_mirror, run_differential
 
 pytestmark = pytest.mark.integration
 
