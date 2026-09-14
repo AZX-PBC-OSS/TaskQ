@@ -497,8 +497,8 @@ the `taskq._json.dumps` docstring for the full reasoning.
 > enqueue API.
 
 Passing `heartbeat_timeout` to any enqueue API (`JobsClient.enqueue`, the
-`TaskQ` facade, `SubJobEnqueuer.enqueue()` / `enqueue_batch()`) now raises
-`ValueError` naming the parameter. It was previously accepted and silently
+`TaskQ` facade, `SubJobEnqueuer.enqueue()`) now raises `ValueError` naming
+the parameter. It was previously accepted and silently
 ignored — job reclamation is governed by the global `TASKQ_LOCK_LEASE`
 setting; no worker or reclaim sweep reads a per-job heartbeat timeout.
 Remove the parameter from call sites, or size `TASKQ_LOCK_LEASE` for the
@@ -541,6 +541,12 @@ a bound, not a counter). Two behaviours follow from that:
   wait out a saturation express it explicitly: `retry_kind
   'indefinite'`, or a `schedule_to_close` deadline (the deadline, not
   the budget, ends a deadline-carrying job).
+
+  The `schedule_to_close` deadline is the terminal exit for the
+  deferral paths only — a consuming `RetryAfter` (the default,
+  `consume_budget=True`) at a spent budget terminally fails regardless
+  of a future deadline: a consuming retry is a real execution, so its
+  budget exhaustion ends the job, deadline or no deadline.
 
 ---
 
