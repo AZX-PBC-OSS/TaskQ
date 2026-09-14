@@ -85,6 +85,59 @@ def test_uri_credentials_are_masked(raw: str) -> None:
     assert "internal" in safe or "h/db" in safe
 
 
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "could not connect to postgresql://:hunter2@db.internal:5432/taskq",
+        "redis://:AZaBcD3f@cache.internal:6380 unreachable",
+    ],
+)
+def test_uri_credentials_with_empty_username_are_masked(raw: str) -> None:
+    # Why a case of its own: `[^\s:/@]+` demanded a username of at least one
+    # character, so the `scheme://:pass@` form (what a DSN renders when only a
+    # password is set) matched nothing and shipped the password verbatim.
+    safe = safe_exception_message(Exception(raw))
+    for secret in ("hunter2", "AZaBcD3f"):
+        assert secret not in safe
+    # The scheme prefix is group 1, so the masked empty-username form still
+    # reads `scheme://:***@host` rather than a mangled fragment.
+    assert ":***@" in safe
+    # Host survives: it is the diagnostic part.
+    assert "internal" in safe
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "could not connect to postgresql://db.internal:5432/taskq?password=hunter2",
+        "postgres://h/db?sslmode=require&password=p%40ss failed",
+    ],
+)
+def test_uri_query_param_password_is_masked(raw: str) -> None:
+    # Why: libpq takes the password as a query parameter too, and that
+    # spelling has no userinfo for the userinfo mask to bite on, so the value
+    # reached the telemetry backend verbatim. Both `?password=` (first
+    # parameter) and `&password=` (later parameter) positions are covered.
+    safe = safe_exception_message(Exception(raw))
+    for secret in ("hunter2", "p%40ss"):
+        assert secret not in safe
+    # The parameter NAME survives -- an operator can see which setting carried
+    # the credential -- and every non-credential parameter is untouched.
+    assert "password=***" in safe
+    assert "sslmode=require" in safe or "db.internal" in safe
+
+
+def test_uri_with_userinfo_and_query_param_password_masks_both() -> None:
+    # Why the exact shape: a DSN can carry both spellings at once and the two
+    # masks run in sequence, so this pins the ordering -- each fires exactly
+    # once and neither corrupts the other's already-masked output.
+    raw = "postgresql://taskq:hunter2@db.internal:5432/taskq?password=Zaq12edx"
+    safe = safe_exception_message(Exception(raw))
+    assert "hunter2" not in safe
+    assert "Zaq12edx" not in safe
+    assert safe == "postgresql://taskq:***@db.internal:5432/taskq?password=***"
+
+
 def test_message_is_length_bounded_and_reports_what_it_dropped() -> None:
     """A bounded message says how much was cut, so the bound is actionable.
 
@@ -193,11 +246,11 @@ async def test_cron_auto_disabled_event_omits_row_values(
     """``cron.auto_disabled`` must carry the redacted message, not ``str(exc)``.
 
     The auto-disable branch already calls ``set_status(..., safe_exception_message(exc))``
-    — this pins the ``add_event`` attribute ~9 lines below it to the same
-    contract. Drives the real ``fire_schedule`` error path to the 3-strike
-    auto-disable with a backend whose enqueue fails with a DETAIL-carrying
-    asyncpg ``UniqueViolationError``: the recurring-caller-key leak vector,
-    shipped to the telemetry backend on every tick until disable fires.
+    — this pins the ``add_event`` attribute to the same contract. Drives the
+    real ``tick_cron`` error path to the 3-strike auto-disable with a backend
+    whose batched enqueue fails with a DETAIL-carrying asyncpg
+    ``UniqueViolationError``: the recurring-caller-key leak vector, shipped
+    to the telemetry backend on every tick until disable fires.
     """
     from datetime import UTC, datetime
 
@@ -206,7 +259,7 @@ async def test_cron_auto_disabled_event_omits_row_values(
     from taskq.testing.clock import FakeClock
     from taskq.testing.in_memory import InMemoryBackend
     from taskq.testing.otel import setup_tracer
-    from taskq.worker.cron_loop import fire_schedule
+    from taskq.worker.cron_loop import tick_cron
 
     from .test_cron_loop import (
         _cron_settings,
@@ -221,23 +274,35 @@ async def test_cron_auto_disabled_event_omits_row_values(
     assert canary in str(exc)
 
     class _EnqueueFailsBackend(InMemoryBackend):
-        """Real in-memory backend whose enqueue fails like a live PG would."""
+        """Real in-memory backend whose batched enqueue fails like a live
+        PG would."""
 
-        async def enqueue_with_conn(self, conn: object, args: EnqueueArgs) -> JobRow:
+        async def enqueue_batch(
+            self,
+            args_list: list[EnqueueArgs],
+            *,
+            connection: object = None,
+            enforce_max_pending: bool = True,
+        ) -> list[JobRow]:
             raise exc
 
     _, exporter = setup_tracer(monkeypatch)
-    now = datetime(2025, 1, 1, 10, 5, 0, tzinfo=UTC)
-    conn = _FakeCronConn(actor_config_row=_make_actor_config_row(), disabled_count=1)
-    backend = _EnqueueFailsBackend(clock=FakeClock(now))
+    backend = _EnqueueFailsBackend(clock=FakeClock(datetime(2025, 1, 1, 10, 5, 0, tzinfo=UTC)))
 
     for i in range(3):
-        row = _make_schedule_row(
-            actor="leaky_actor",
-            consecutive_failures=i,
-            next_fire_at=datetime(2025, 1, 1, 10, 0, 0, tzinfo=UTC),
+        conn = _FakeCronConn(
+            schedule_rows=[
+                _make_schedule_row(
+                    actor="leaky_actor",
+                    consecutive_failures=i,
+                    next_fire_at=datetime(2025, 1, 1, 10, 0, 0, tzinfo=UTC),
+                )
+            ],
+            actor_config_rows=[_make_actor_config_row(actor="leaky_actor")],
+            disabled_count=1,
         )
-        await fire_schedule(conn, row, now, _cron_settings(), backend, "taskq", new_uuid(), {})
+        async with conn.transaction():
+            await tick_cron(conn, _cron_settings(), backend, "taskq", new_uuid())
 
     auto_disabled = [
         ev

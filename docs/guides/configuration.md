@@ -117,7 +117,7 @@ PgBouncer recommendation threshold), see [ops.md — Sizing](ops.md#4-sizing-wor
 
 ### Leader Sweep Intervals
 
-The leader runs periodic sweep cycles that reclaim expired locks, expire results, clean up stale workers, evict idle keyed refs, and collect metrics. These settings control the cadence of each sub-task within a sweep cycle.
+The leader runs periodic sweep cycles that reclaim expired locks, expire results, clean up stale workers, evict idle keyed refs, and collect metrics. These settings control the cadence of each sub-task within a sweep cycle, and the event-writer knobs bound each sweep's database work per batch.
 
 | Env Var | Type | Default | Description | Constraints |
 |---|---|---|---|---|
@@ -125,6 +125,14 @@ The leader runs periodic sweep cycles that reclaim expired locks, expire results
 | `TASKQ_QUEUE_DEPTH_INTERVAL` | `float` (seconds) | `15.0` | Period between queue-depth metrics sampling iterations. | Min: 1.0 |
 | `TASKQ_RESERVATION_SLOTS_INTERVAL` | `float` (seconds) | `15.0` | Period between reservation-slot metrics sampling iterations. | Min: 1.0 |
 | `TASKQ_STRANDED_JOBS_INTERVAL` | `float` (seconds) | `60.0` | Period between stranded-jobs (pending jobs whose actor has no `actor_config`) warning checks. | Min: 1.0 |
+| `TASKQ_EVENT_WRITER_BATCH_SIZE` | `int` | `100` | Rows per committed batch for every writer of `job_events` rows (the expired-lock, deadline and scheduled-to-pending sweeps, bulk cancel, actor deregistration). Keeps each batch transaction inside the `reclaim_event_visibility_delay` margin; the server-side `statement_timeout` remains the enforcement if a batch exceeds it. The loop drains the remainder across further batches/calls. | Range: 1–10000 |
+| `TASKQ_EVENT_WRITER_STATEMENT_TIMEOUT_MS` | `float` (milliseconds) | `1750.0` | Server-side `statement_timeout` applied to each event-writer batch transaction via `SET LOCAL`. Defaults to 7/8 of the 2 s `reclaim_event_visibility_delay` margin: a batch that cannot finish inside the watermark margin is aborted by the server rather than silently corrupting reclaim-event delivery. | Min: 50.0 |
+| `TASKQ_EVENT_WRITER_REDUCED_BATCH_DIVISOR` | `int` | `4` | Divisor for the reduced event-writer batch tier: once a worker's sweeps trip the batch-size breaker, batches shrink to `max(1, event_writer_batch_size / this)`. Only a degradation ceiling — raising it makes the degraded tier closer to the normal one. | Range: 2–1000 |
+| `TASKQ_SWEEP_BREAKER_FAILURE_THRESHOLD` | `int` | `3` | Consecutive sweep-batch cancellations (within `TASKQ_SWEEP_BREAKER_WINDOW_SECS`) before the batch-size breaker latches to the reduced tier for the rest of the process lifetime. Any success between failures resets the consecutive count; a latched breaker does not unlatch. | Min: 1 |
+| `TASKQ_SWEEP_BREAKER_WINDOW_SECS` | `float` (seconds) | `600.0` | Rolling window the sweep breaker counts consecutive failures within. | Min: 1.0 |
+| `TASKQ_SWEEP_DRAIN_BATCHES` | `int` | `8` | Maximum event-writer batches the leader's sweep loop executes per sweep per tick before leaving the remainder to the next tick. Bounded so one iteration cannot monopolise the loop; every batch commits, so a stopped drain keeps its progress. | Range: 1–1000 |
+
+See [maintenance-sweeps.md](maintenance-sweeps.md) for why these bounds exist — the failure modes they prevent, the derivation of each default, the breaker's latching rationale, and the failure semantics of the bounded bulk operations.
 
 ### Graceful Shutdown
 
@@ -323,6 +331,7 @@ See [observability.md](observability.md) for OTel configuration.
 |---|---|---|---|---|
 | `TASKQ_CRON_CATCH_UP_WINDOW` | `timedelta` | `1h` | Missed firings within this window are caught up sequentially; older misses are skipped. | Must not be negative |
 | `TASKQ_CRON_AUTO_DISABLE_THRESHOLD` | `int` | `3` | Consecutive failures before a schedule is auto-disabled. | Min: 1 |
+| `TASKQ_CRON_TICK_LIMIT` | `int` | `100` | Maximum schedules one cron tick selects, plans and fires. A catch-up burst larger than this drains across successive one-second ticks instead of one oversized transaction; the remainder stays due and untouched until its tick. | Range: 1–10000 |
 
 See [cron.md](cron.md) for cron scheduling details.
 

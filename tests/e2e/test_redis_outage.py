@@ -39,7 +39,7 @@ import pytest
 import pytest_asyncio
 
 from taskq._ids import new_uuid
-from taskq.testing._shared_containers import creator_labels
+from taskq.testing._shared_containers import creator_labels, skip_test_without_docker
 from tests.conftest import free_host_port
 
 from ._assertions import (
@@ -119,7 +119,10 @@ def chaos_df(e2e_network: Network) -> Iterator[ChaosDf]:
     Own container so the test can stop/start it without touching the shared
     session ``e2e_dragonfly``. The network alias is unique per test and
     Docker preserves the container's network config across stop/start.
+    Skips with a reason (never errors) when the Docker daemon is
+    unreachable.
     """
+    skip_test_without_docker()
     from testcontainers.community.redis import RedisContainer
 
     alias = f"df-outage-{new_uuid().hex[:8]}"

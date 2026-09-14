@@ -20,12 +20,12 @@ from taskq._ids import new_base62, new_uuid
 from taskq.backend._protocol import JobId
 from taskq.backend.clock import SystemClock
 from taskq.backend.postgres import PostgresBackend
-from taskq.constants import wake_channel
+from taskq.constants import schema_lock_name, wake_channel
 from taskq.settings import WorkerSettings
 from taskq.testing.fixtures import _create_worker
 from taskq.worker.deps import WorkerDeps, open_worker_deps
 from taskq.worker.heartbeat import isolate_self
-from taskq.worker.leader import MAINTENANCE_LEADER_LOCK_NAME, MaintenanceLeader
+from taskq.worker.leader import MaintenanceLeader
 
 pytestmark = pytest.mark.integration
 
@@ -316,11 +316,15 @@ async def test_ti4_advisory_lock_release_on_close(pg_dsn: str) -> None:
 
     ;.
     """
+    # No per-test schema is in play here (the test never opens WorkerDeps),
+    # so pin the lock of the default-configured leader: the schema-qualified
+    # maintenance lock for the default schema_name ("taskq").
+    lock_name = schema_lock_name("maintenance_leader", "taskq")
     conn1 = await asyncpg.connect(pg_dsn)
     try:
         got = await conn1.fetchval(
             "SELECT pg_try_advisory_lock(hashtextextended($1, 0))",
-            MAINTENANCE_LEADER_LOCK_NAME,
+            lock_name,
         )
         assert got is True
     finally:
@@ -330,12 +334,12 @@ async def test_ti4_advisory_lock_release_on_close(pg_dsn: str) -> None:
     try:
         got2 = await conn2.fetchval(
             "SELECT pg_try_advisory_lock(hashtextextended($1, 0))",
-            MAINTENANCE_LEADER_LOCK_NAME,
+            lock_name,
         )
         assert got2 is True
         await conn2.execute(
             "SELECT pg_advisory_unlock(hashtextextended($1, 0))",
-            MAINTENANCE_LEADER_LOCK_NAME,
+            lock_name,
         )
     finally:
         await conn2.close()

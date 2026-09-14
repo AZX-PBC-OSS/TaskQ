@@ -96,7 +96,12 @@ class SessionManager:
     local http dev), ``samesite="lax"``, ``path`` (scoped to the admin mount).
     """
 
-    secret: str
+    # Why repr=False: the cookie-signing key is a credential (whoever holds
+    # it can forge session cookies); the default dataclass repr would print
+    # it into any log or debugger that reprs the manager. field() adds no
+    # default, so positional/keyword construction is unchanged - the same
+    # pattern _serializer already uses below.
+    secret: str = field(repr=False)
     max_age_seconds: int = 28800
     secure_cookie: bool = True
     cookie_name: str = SESSION_COOKIE_NAME

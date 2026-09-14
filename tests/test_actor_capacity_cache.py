@@ -35,10 +35,15 @@ from pydantic import BaseModel
 from taskq.actor import ActorRef, actor
 from taskq.backend._protocol import Backend
 from taskq.batch import EnqueueItem
+from taskq.batch_policy import AbortBatchAfter
 from taskq.client._capacity import ActorCapacityCache
 from taskq.client._enqueuer import SubJobEnqueuer
 from taskq.client._jobs import JobsClient
-from taskq.exceptions import MaxPendingExceededError, PartialBatchError
+from taskq.exceptions import (
+    BatchMaxPendingExceededError,
+    MaxPendingExceededError,
+    PartialBatchError,
+)
 from taskq.testing.clock import FakeClock
 from taskq.testing.in_memory import InMemoryBackend
 
@@ -504,27 +509,31 @@ async def test_refresh_failure_is_retried_no_more_often_than_ttl() -> None:
 
 
 async def test_enqueue_batch_honors_stored_limit() -> None:
-    """The aggregated batch check uses the same resolution: stored 2 with
-    no literal → a batch of 3 raises before inserting anything."""
+    """The backend's per-actor admission uses the same resolution: stored 2
+    with no literal → a single-actor batch of 3 is refused whole (every
+    item belongs to the over-cap actor, so the partition admits nothing)
+    and raises the typed batch refusal."""
     backend = _make_backend()
     backend.register_actor_config(actor="cap_batch", max_pending=2)
     client = JobsClient(backend)
     ref = _uncapped("cap_batch")
 
     items = [EnqueueItem(actor_ref=ref, payload=_Payload(value=i)) for i in range(3)]
-    with pytest.raises(MaxPendingExceededError):
+    with pytest.raises(BatchMaxPendingExceededError) as exc_info:
         await client.enqueue_batch(items)
+    assert exc_info.value.admitted_count == 0
 
 
 async def test_enqueue_batch_stored_null_uses_literal() -> None:
-    """Batch path, cleared override: literal 2 still bounds the batch."""
+    """Batch path, cleared override: literal 2 still bounds the batch — the
+    whole single-actor batch is refused with the typed batch error."""
     backend = _make_backend()
     backend.register_actor_config(actor="cap_batch_null")
     client = JobsClient(backend)
     ref = _literal_capped("cap_batch_null", 2)
 
     items = [EnqueueItem(actor_ref=ref, payload=_Payload(value=i)) for i in range(3)]
-    with pytest.raises(MaxPendingExceededError):
+    with pytest.raises(BatchMaxPendingExceededError):
         await client.enqueue_batch(items)
 
 
@@ -564,6 +573,88 @@ async def test_sub_enqueuer_batch_honors_stored_limit() -> None:
     with pytest.raises(PartialBatchError) as exc_info:
         await enqueuer.enqueue_batch(items)
     assert any(isinstance(exc, MaxPendingExceededError) for _, exc in exc_info.value.failed_items)
+
+
+def _stored_count(backend: InMemoryBackend, actor_name: str) -> int:
+    return sum(1 for row in backend._jobs.values() if row.actor == actor_name)
+
+
+async def test_enqueue_batch_streaming_honors_stored_limit() -> None:
+    """The streaming chunked arm resolves the same effective caps as
+    ``enqueue_batch``: a stored override on a literal-less actor must
+    refuse. The arm previously built its chunk args with no resolved
+    caps, so the actor carried ``max_pending=None`` and was invisible to
+    the backend's cap groups — the override was silently unenforced while
+    the docs claimed partition parity with ``enqueue_batch``.
+
+    Chunking is deliberate: the capped actor first appears in chunk 2,
+    pinning that resolution happens per NEW actor across chunks, and that
+    the committed prefix counts toward the stream-global refusal."""
+    backend = _make_backend()
+    backend.register_actor_config(actor="cap_stream_capped", max_pending=1)
+    client = JobsClient(backend)
+    capped = _uncapped("cap_stream_capped")
+    healthy = _uncapped("cap_stream_healthy")
+
+    def _stream():
+        yield EnqueueItem(actor_ref=healthy, payload=_Payload(value=0))
+        yield EnqueueItem(actor_ref=healthy, payload=_Payload(value=1))
+        yield EnqueueItem(actor_ref=capped, payload=_Payload(value=2))
+        yield EnqueueItem(actor_ref=capped, payload=_Payload(value=3))
+
+    with pytest.raises(BatchMaxPendingExceededError) as exc_info:
+        await client.enqueue_batch_streaming(_stream(), chunk_size=2)
+
+    err = exc_info.value
+    # Stream-global indices into the caller's stream (chunk 2 = offset 2).
+    assert err.refused_indices == {"cap_stream_capped": [2, 3]}
+    # The committed prefix (chunk 1's two healthy items) plus this
+    # chunk's admitted items (none — the only actor here is refused).
+    assert err.admitted_count == 2
+    assert _stored_count(backend, "cap_stream_healthy") == 2
+    assert _stored_count(backend, "cap_stream_capped") == 0
+
+
+async def test_enqueue_batch_streaming_atomic_honors_stored_limit() -> None:
+    """The streaming ATOMIC arm (failure_policy, no connection) resolves
+    the same effective caps and keeps its all-or-nothing contract: a
+    stored override on a literal-less actor raises plain
+    ``MaxPendingExceededError`` and the whole single transaction rolls
+    back — nothing stored. Same arm gap as the chunked path: without
+    resolution the override was invisible and the batch silently
+    succeeded."""
+    backend = _make_backend()
+    backend.register_actor_config(actor="cap_stream_atomic", max_pending=2)
+    client = JobsClient(backend)
+    ref = _uncapped("cap_stream_atomic")
+
+    items = [EnqueueItem(actor_ref=ref, payload=_Payload(value=i)) for i in range(3)]
+    with pytest.raises(MaxPendingExceededError) as exc_info:
+        await client.enqueue_batch_streaming(items, failure_policy=AbortBatchAfter(3))
+
+    assert exc_info.value.actor == "cap_stream_atomic"
+    assert exc_info.value.max_pending == 2
+    assert _stored_count(backend, "cap_stream_atomic") == 0
+
+
+async def test_enqueue_batch_fast_honors_stored_limit() -> None:
+    """The COPY arm resolves the same effective caps: a stored override on
+    a literal-less actor refuses the whole single-actor batch. Same arm
+    gap as the other two: no resolution, no carried cap, no enforcement
+    — while the method's docstring claims partition parity with
+    ``enqueue_batch``."""
+    backend = _make_backend()
+    backend.register_actor_config(actor="cap_fast", max_pending=2)
+    client = JobsClient(backend)
+    ref = _uncapped("cap_fast")
+
+    items = [EnqueueItem(actor_ref=ref, payload=_Payload(value=i)) for i in range(3)]
+    with pytest.raises(BatchMaxPendingExceededError) as exc_info:
+        await client.enqueue_batch_fast(items)
+
+    assert exc_info.value.admitted_count == 0
+    assert exc_info.value.refused_indices == {"cap_fast": [0, 1, 2]}
+    assert _stored_count(backend, "cap_fast") == 0
 
 
 # ── Multi-process agreement ─────────────────────────────────────────────

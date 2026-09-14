@@ -504,6 +504,20 @@ async def enqueue_batch_atomic(
                     schema,
                     chunk,
                     connection=cast("asyncpg.Connection | None", conn),
+                    # Explicit, not defaulted: these chunks share the atomic
+                    # transaction, so per-chunk admission accumulates to the
+                    # true aggregate — a default flip must not silently
+                    # disarm it.
+                    enforce_max_pending=True,
+                    # Why whole-call refusal: every chunk runs inside ONE
+                    # shared transaction, so the partition's
+                    # insert-then-raise would insert this chunk's admitted
+                    # items only for the wrapper's rollback to discard
+                    # them — a misleading non-admission. All-or-nothing is
+                    # the atomic path's documented contract; the refusal
+                    # raises here as plain MaxPendingExceededError before
+                    # any INSERT, and the rollback discards earlier chunks.
+                    refuse_whole_batch_on_cap=True,
                 )
                 all_rows.extend(rows)
 
@@ -518,6 +532,11 @@ async def enqueue_batch_atomic(
                     schema,
                     [finalizer_args],
                     connection=cast("asyncpg.Connection | None", conn),
+                    # Same all-or-nothing arm as the chunks above: a capped
+                    # finalizer actor must abort the whole atomic batch,
+                    # not raise a one-item partition refusal.
+                    enforce_max_pending=True,
+                    refuse_whole_batch_on_cap=True,
                 )
                 all_rows.extend(fin_rows)
                 finalizer_row = fin_rows[0]

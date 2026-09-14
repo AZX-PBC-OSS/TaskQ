@@ -15,7 +15,7 @@ from taskq._ids import new_uuid
 from taskq.web.admin import create_router
 from taskq.web.admin.ops import _fetch_redis_rl_state
 
-from . import StubBackend, StubRecord, _stub_job_row, _StubPool
+from . import StubBackend, StubPipelinedRedis, StubRecord, _stub_job_row, _StubPool
 
 # ── Schedules, rate-limits, reservations routes: discovery ───────────────
 
@@ -602,7 +602,7 @@ async def test_fetch_redis_rl_state_returns_none_when_no_redis() -> None:
 async def test_fetch_redis_rl_state_returns_state() -> None:
     """_fetch_redis_rl_state returns dict of Redis state when successful."""
 
-    class _FakeRedis:
+    class _FakeRedis(StubPipelinedRedis):
         def __init__(self, data: dict[str, dict[str, str]]) -> None:
             self._data = data
 
@@ -620,7 +620,10 @@ async def test_fetch_redis_rl_state_returns_state() -> None:
 async def test_fetch_redis_rl_state_returns_none_on_failure() -> None:
     """_fetch_redis_rl_state returns None when Redis raises."""
 
-    class _BrokenRedis:
+    class _BrokenRedis(StubPipelinedRedis):
+        # The reader raising means the pipeline's single execute() round
+        # trip raises — the transport's failure seam — so the fetch's
+        # degrade-to-None guard is exercised at the round trip itself.
         async def hgetall(self, key: str) -> dict[str, str]:
             raise ConnectionError("redis down")
 
@@ -632,7 +635,7 @@ async def test_fetch_redis_rl_state_returns_none_on_failure() -> None:
 async def test_fetch_redis_rl_state_uses_sliding_window_key() -> None:
     """_fetch_redis_rl_state uses taskq:{schema}:sw:{name} for sliding_window_log kind."""
 
-    class _FakeRedis:
+    class _FakeRedis(StubPipelinedRedis):
         def __init__(self, data: dict[str, int]) -> None:
             self._data = data
 
@@ -650,7 +653,7 @@ async def test_fetch_redis_rl_state_uses_sliding_window_key() -> None:
 async def test_fetch_redis_rl_state_decodes_bytes() -> None:
     """_fetch_redis_rl_state decodes bytes keys/values from Redis."""
 
-    class _FakeRedis:
+    class _FakeRedis(StubPipelinedRedis):
         async def hgetall(self, key: str) -> list[tuple[bytes, bytes]]:
             return [(b"tokens", b"10"), (b"last_refill", b"2025-01-01")]
 
@@ -666,7 +669,7 @@ async def test_fetch_redis_rl_state_decodes_bytes() -> None:
 async def test_fetch_redis_rl_state_gcra() -> None:
     """_fetch_redis_rl_state returns tat for sliding_window_gcra kind."""
 
-    class _FakeRedis:
+    class _FakeRedis(StubPipelinedRedis):
         async def get(self, key: str) -> str | None:
             return "1234567890.0"
 
@@ -1174,18 +1177,9 @@ def test_rate_limits_page_with_pg_state_and_redis(
         },
     )
 
-    class _FakeRedis:
+    class _FakeRedis(StubPipelinedRedis):
         async def hmget(self, key: object, fields: object) -> list[object]:
             return [None, None]
-
-        async def hgetall(self, key: object) -> dict[str, str]:
-            return {}
-
-        async def get(self, key: object) -> str | None:
-            return None
-
-        async def zcard(self, key: object) -> int:
-            return 0
 
         async def ping(self) -> bool:
             return True
@@ -1266,19 +1260,16 @@ def test_rate_limits_page_fetches_redis_state_for_pg_only_keyed_buckets(
 
     fetched_keys: list[str] = []
 
-    class _FakeRedis:
+    class _FakeRedis(StubPipelinedRedis):
         async def hmget(self, key: object, fields: object) -> list[object]:
             return [None, None]
 
-        async def hgetall(self, key: object) -> dict[str, str]:
+        # The pipeline's execute() resolves queued reads through this
+        # reader, so a key recorded here is a key the live-Redis fetch
+        # actually read in its one round trip.
+        async def hgetall(self, key: str) -> dict[str, str]:
             fetched_keys.append(str(key))
             return {}
-
-        async def get(self, key: object) -> str | None:
-            return None
-
-        async def zcard(self, key: object) -> int:
-            return 0
 
         async def ping(self) -> bool:
             return True

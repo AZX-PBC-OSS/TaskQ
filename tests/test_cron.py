@@ -10,6 +10,7 @@ property test — compute_next_fire_after always returns a datetime
        strictly after the `after` argument for valid expressions.
 """
 
+import asyncio
 from collections.abc import Iterator
 from dataclasses import FrozenInstanceError
 from datetime import UTC, datetime
@@ -760,3 +761,90 @@ async def testresolve_payload_factory_import_error_propagates() -> None:
     """resolve_payload propagates ImportError from _resolve_factory."""
     with pytest.raises(ImportError):
         await resolve_payload("nonexistent.module.fn", {})
+
+
+# ── compute_next_fire_after: a seed inside a repeated (fall-back) hour ──
+#
+# croniter walks naive wall-clock time, so a seed sitting exactly ON a
+# match inside a DST overlap is invisible to the strictly-greater walk:
+# the same wall-clock's later occurrence is a real next match, but naive
+# comparison cannot distinguish the two and the walk jumps a year.  The
+# strategies split on what that means: ``skip``/``firstof`` fire a
+# repeated hour once, at the earlier occurrence — which the seed already
+# is — so the next slot is genuinely next year; ``allof`` owes the later
+# occurrence, so the fold-1 twin is the next fire.  Reachable in
+# production whenever a leader outage or manual edit leaves
+# ``next_fire_at`` ON the fold-0 occurrence: the post-outage tick fires
+# the earlier occurrence and, without this, the later one is silently
+# lost for a year.
+
+_OVERLAP_TZ = "America/New_York"
+_OVERLAP_EXPR = "30 1 1 11 *"  # 01:30 local every Nov 1; 2026-11-01 falls back
+_FOLD0_UTC = datetime(2026, 11, 1, 5, 30, tzinfo=UTC)  # 01:30 EDT (first 01:30)
+_FOLD1_UTC = datetime(2026, 11, 1, 6, 30, tzinfo=UTC)  # 01:30 EST (second 01:30)
+_NEXT_SLOT_UTC = datetime(2027, 11, 1, 5, 30, tzinfo=UTC)
+
+
+def test_allof_seed_on_first_occurrence_returns_the_second() -> None:
+    """The fold-0 occurrence just fired (it is the seed); ``allof`` still
+    owes the fold-1 twin — a strictly later instant — so the next fire
+    is the twin, not next year.
+
+    Compared as normalized instants: the function's contract preserves
+    the schedule's timezone, and a zone-aware datetime does not compare
+    equal to a UTC one at the same instant in this runtime."""
+    out = compute_next_fire_after(_OVERLAP_EXPR, _OVERLAP_TZ, _FOLD0_UTC, dst_strategy="allof")
+    assert [d.astimezone(UTC) for d in out] == [_FOLD1_UTC], (
+        f"a seed on the first occurrence of a repeated hour must return the "
+        f"second occurrence ({_FOLD1_UTC}) under allof, got {out}"
+    )
+
+
+def test_allof_seed_on_second_occurrence_advances_to_next_slot() -> None:
+    """From the fold-1 occurrence both members of the pair are consumed or
+    past; the next fire is the next slot, which croniter finds correctly."""
+    out = compute_next_fire_after(_OVERLAP_EXPR, _OVERLAP_TZ, _FOLD1_UTC, dst_strategy="allof")
+    assert [d.astimezone(UTC) for d in out] == [_NEXT_SLOT_UTC]
+
+
+@pytest.mark.parametrize("strategy", ["skip", "firstof"])
+def test_single_fire_strategies_advance_one_slot_from_inside_the_overlap(
+    strategy: str,
+) -> None:
+    """``skip``/``firstof`` fire a repeated hour once, at the earlier
+    occurrence — the seed — so nothing is owed and the next slot is next
+    year, from either member of the pair."""
+    for seed in (_FOLD0_UTC, _FOLD1_UTC):
+        out = compute_next_fire_after(_OVERLAP_EXPR, _OVERLAP_TZ, seed, dst_strategy=strategy)
+        assert [d.astimezone(UTC) for d in out] == [_NEXT_SLOT_UTC], (
+            f"{strategy} from {seed}: got {out}"
+        )
+
+
+def test_allof_seed_inside_overlap_on_a_non_matching_wall_is_untouched() -> None:
+    """A seed inside the repeated hour whose wall-clock is NOT a match
+    takes the normal walk — the fold handling only owns the seed's own
+    matched wall-clock."""
+    seed = datetime(2026, 11, 1, 5, 10, tzinfo=UTC)  # 01:10 EDT, inside the hour
+    out = compute_next_fire_after(_OVERLAP_EXPR, _OVERLAP_TZ, seed, dst_strategy="allof")
+    assert [d.astimezone(UTC) for d in out] == [_FOLD0_UTC, _FOLD1_UTC], (
+        "a non-matching seed inside the fold must still see both occurrences"
+    )
+
+
+async def _hung_factory() -> dict[str, object]:
+    """Outlives the payload-factory timeout: the wait_for cancels the
+    sleep long before the return is reached."""
+    await asyncio.sleep(30)
+    return {}
+
+
+@pytest.mark.asyncio
+async def testresolve_payload_timeout_names_the_factory() -> None:
+    """A hung async factory's TimeoutError must name the dotted factory
+    path — the schedule's error text is the only place an operator sees
+    WHICH factory hung."""
+    dotted = f"{_hung_factory.__module__}.{_hung_factory.__qualname__}"
+    with pytest.raises(TimeoutError, match="timed out after 5s") as exc_info:
+        await resolve_payload(dotted, {})
+    assert dotted in str(exc_info.value)

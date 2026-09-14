@@ -67,6 +67,9 @@ def _make_deps(**overrides: object) -> SimpleNamespace:
             redis_url=None,
             health_socket_path="",
             health_tasks_enabled=False,
+            # Maintenance-health fields read by build_ready_body.
+            sweep_interval=30.0,
+            event_writer_batch_size=100,
         ),
         "is_leader": SimpleNamespace(is_set=lambda: False),
         "active_jobs": SimpleNamespace(count=lambda: 2),
@@ -97,6 +100,10 @@ def _make_settings(sock_path: str) -> SimpleNamespace:
         # read site: it gates a privileged endpoint. Mirrors the real
         # WorkerSettings default.
         health_tasks_enabled=False,
+        # Maintenance-health fields read by build_ready_body. Mirror the
+        # real WorkerSettings defaults.
+        sweep_interval=30.0,
+        event_writer_batch_size=100,
     )
 
 
@@ -173,6 +180,8 @@ async def test_cli_ready_healthy_exit_code() -> None:
         # "reasons", "loop_tick_ages" and "shutdown_elapsed_seconds" are
         # the watchdog observability additions — a probe consumer needs
         # them to distinguish a zombie-ready worker from a healthy one.
+        # "maintenance" is the degraded-maintenance view: degraded sweeps
+        # do not flip readiness, they surface here for operators.
         assert set(data.keys()) == {
             "ready",
             "live",
@@ -180,6 +189,7 @@ async def test_cli_ready_healthy_exit_code() -> None:
             "redis_configured",
             "active_jobs",
             "is_leader",
+            "maintenance",
             "loop_tick_ages",
             "shutdown_elapsed_seconds",
             "shutdown_phase",

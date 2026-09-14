@@ -61,7 +61,12 @@ from taskq.backend._protocol import (
 )
 from taskq.backend.clock import Clock
 from taskq.backend.statemachine import ACTIVE_STATUSES
-from taskq.constants import DEFAULT_CHUNK_SIZE, DEFAULT_RECLAIM_POLL_LIMIT, MAX_RESULT_BYTES
+from taskq.constants import (
+    DEFAULT_CHUNK_SIZE,
+    DEFAULT_EVENT_WRITER_BATCH_SIZE,
+    DEFAULT_RECLAIM_POLL_LIMIT,
+    MAX_RESULT_BYTES,
+)
 from taskq.retry import OnRetryExhausted, OnSuccess, RetryClassifierHook, RetryPolicy
 from taskq.testing._batch import (
     _abort_batch,
@@ -383,16 +388,22 @@ class InMemoryBackend:
         args_list: list[EnqueueArgs],
         *,
         connection: object = None,
+        enforce_max_pending: bool = True,
     ) -> list[JobRow]:
-        return await _enqueue_batch(self, args_list, connection=connection)
+        return await _enqueue_batch(
+            self, args_list, connection=connection, enforce_max_pending=enforce_max_pending
+        )
 
     async def enqueue_batch_fast(
         self,
         args_list: list[EnqueueArgs],
         *,
         connection: object = None,
+        enforce_max_pending: bool = True,
     ) -> int:
-        return await _enqueue_batch_fast(self, args_list, connection=connection)
+        return await _enqueue_batch_fast(
+            self, args_list, connection=connection, enforce_max_pending=enforce_max_pending
+        )
 
     # ── Actor-config registry helpers ───────────────────────────────────
 
@@ -685,19 +696,35 @@ class InMemoryBackend:
     # ── Scheduling / sweeps ────────────────────────────────────────────
     # No caller-supplied now: the injected Clock is the single arbiter
     # (the mirror of PG's server-side clock_timestamp() predicates).
+    # Like the Postgres sweeps, one call processes at most batch_size
+    # eligible rows; repeated calls drain.  The Backend protocol
+    # signature stays unchanged — the extra defaulted keyword-only
+    # parameter is structurally compatible with the protocol method.
 
-    async def scheduled_to_pending(self) -> int:
-        return await _scheduled_to_pending(self)
+    async def scheduled_to_pending(
+        self,
+        *,
+        batch_size: int = DEFAULT_EVENT_WRITER_BATCH_SIZE,
+    ) -> int:
+        return await _scheduled_to_pending(self, batch_size=batch_size)
 
-    async def deadline_sweep(self) -> int:
-        return await _deadline_sweep(self)
+    async def deadline_sweep(
+        self,
+        *,
+        batch_size: int = DEFAULT_EVENT_WRITER_BATCH_SIZE,
+    ) -> int:
+        return await _deadline_sweep(self, batch_size=batch_size)
 
     async def reclaim_expired_locks(
         self,
         cancel_grace: timedelta,
         cleanup_grace: timedelta,
+        *,
+        batch_size: int = DEFAULT_EVENT_WRITER_BATCH_SIZE,
     ) -> int:
-        return await _reclaim_expired_locks(self, cancel_grace, cleanup_grace)
+        return await _reclaim_expired_locks(
+            self, cancel_grace, cleanup_grace, batch_size=batch_size
+        )
 
     # ── Archive and expiry simulation ─────────────────────────────────
 

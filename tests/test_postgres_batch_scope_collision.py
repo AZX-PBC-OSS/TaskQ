@@ -6,8 +6,6 @@ Extends tests/test_postgres_enqueue_batch_collision.py style:
 - Same key+scope pair within a batch collides correctly against a pre-existing row.
 """
 
-from datetime import UTC, datetime
-
 import pytest
 
 from taskq._ids import new_job_id
@@ -32,7 +30,10 @@ def _make_args(
         payload=payload or {"key": "value"},
         max_attempts=3,
         retry_kind="transient",
-        scheduled_at=datetime.now(UTC),
+        # None = immediate: the server stamps and decides status in the
+        # enqueue statement itself — a Python-clock stamp races the
+        # app-to-DB skew and can land the row 'scheduled' under load.
+        scheduled_at=None,
         idempotency_key=IdempotencyKey(idempotency_key) if idempotency_key is not None else None,
         idempotency_scope=idempotency_scope,
     )

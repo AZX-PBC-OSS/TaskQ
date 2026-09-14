@@ -37,14 +37,22 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final
+from uuid import UUID
 
 from taskq._json import loads
 from taskq.backend._protocol import ConnLike
 from taskq.backend._records import jsonb_param
-from taskq.backend._sql import INSERT_EVENT_SQL
+from taskq.backend._sql import INSERT_EVENTS_DETAIL_BATCH_SQL
+from taskq.backend._sweeps import (
+    _apply_batch_statement_timeout,  # pyright: ignore[reportPrivateUsage]  # Why: the batch statement_timeout capture/restore is shared verbatim by every event-writer batch path; re-defining it here would let the two disciplines drift.
+    _restore_statement_timeout,  # pyright: ignore[reportPrivateUsage]  # Why: same shared-discipline rationale as _apply_batch_statement_timeout.
+    _validate_positive,  # pyright: ignore[reportPrivateUsage]  # Why: the canonical pre-SQL bound validation, shared with the sweeps and the bulk cancel.
+)
 from taskq.backend.statemachine import ACTIVE_STATUSES, TERMINAL_STATUSES
 from taskq.constants import (
-    _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining it
+    _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
+    DEFAULT_EVENT_WRITER_BATCH_SIZE,
+    DEFAULT_EVENT_WRITER_STATEMENT_TIMEOUT_MS,
 )
 from taskq.exceptions import (
     ActorHasActiveJobsError,
@@ -300,26 +308,42 @@ SELECT id::text FROM "{schema}".cron_schedules
  WHERE actor = $1 AND enabled = true
 """.strip()
 
-# The FROM-subquery snapshot pattern (same as backend/_cancel_bulk.py): the
-# subquery captures each row's pre-cancel status — UPDATE ... RETURNING can
-# only see the new value — and the repeated status predicate on the target
+# The FROM-CTE snapshot pattern (same as backend/_cancel_bulk.py): the CTE
+# captures each row's pre-cancel status — UPDATE ... RETURNING can only see
+# the new value — and the repeated status predicate on the target
 # re-evaluates rows concurrently modified since the snapshot (EPQ-safe).
+# MATERIALIZED is load-bearing: without it the planner may inline the
+# LIMIT-ed matching CTE into the UPDATE as a nested loop and update more
+# rows than the LIMIT admits. The final SELECT aggregates from both CTEs
+# so the same statement returns the WINDOW count (``matched_count``) as
+# well as the affected rows — the drain terminates on the window count,
+# never the affected count, which an EPQ drop shorts while matching rows
+# remain beyond the window.
 _DEREGISTER_CANCEL_PENDING_SQL = """
-UPDATE "{schema}".jobs AS j
-   SET status = 'cancelled',
-       finished_at = clock_timestamp(),
-       error_class = 'ActorDeregistered',
-       error_message = 'Job cancelled by actor deregistration (force=True)'
-  FROM (
-      SELECT id, status AS prev_status
-        FROM "{schema}".jobs
-       WHERE actor = $1
-         AND status IN ('pending', 'scheduled')
-       ORDER BY id
-  ) AS prev
- WHERE j.id = prev.id
-   AND j.status IN ('pending', 'scheduled')
-RETURNING j.id, prev.prev_status
+WITH matching AS MATERIALIZED (
+    SELECT id, status AS prev_status
+      FROM "{schema}".jobs
+     WHERE actor = $1
+       AND status IN ('pending', 'scheduled')
+     ORDER BY id
+     LIMIT $2
+),
+cancelled AS (
+    UPDATE "{schema}".jobs AS j
+       SET status = 'cancelled',
+           finished_at = clock_timestamp(),
+           error_class = 'ActorDeregistered',
+           error_message = 'Job cancelled by actor deregistration (force=True)'
+      FROM matching AS prev
+     WHERE j.id = prev.id
+       AND j.status IN ('pending', 'scheduled')
+    RETURNING j.id, prev.prev_status
+)
+SELECT
+    (SELECT count(*)::int FROM matching) AS matched_count,
+    (SELECT count(*)::int FROM cancelled) AS cancelled_directly,
+    (SELECT array_agg(id ORDER BY id) FROM cancelled) AS cancelled_ids,
+    (SELECT array_agg(prev_status ORDER BY id) FROM cancelled) AS cancelled_prev_statuses
 """.strip()
 
 _DEREGISTER_DISABLE_SCHEDULES_SQL = """
@@ -358,12 +382,59 @@ SELECT count(*) FROM "{schema}".jobs
 """.strip()
 
 
+async def _finalize_deregister(
+    conn: ConnLike,
+    actor: str,
+    *,
+    purge_queue: bool,
+    schema: str,
+) -> tuple[str, int, bool]:
+    """Delete the ``actor_config`` row and gather the tail of the result.
+
+    Runs inside the caller's transaction: the DELETE with its
+    ``ActorNotFoundError``-on-zero-rows race handling, the terminal-history
+    count, and the optional queue purge — each an individually bounded
+    statement, so the whole tail fits one small transaction however large
+    the actor's backlog was.
+    """
+    deleted_rows = await conn.fetch(
+        _DEREGISTER_DELETE_ACTOR_CONFIG_SQL.format(schema=schema),
+        actor,
+    )
+    if not deleted_rows:
+        # Handles the concurrent-delete race: under READ COMMITTED, a
+        # concurrent transaction could delete the row between our
+        # preflight check and this DELETE.
+        raise ActorNotFoundError(actor)
+
+    queue_name: str = deleted_rows[0]["queue"]
+
+    terminal_count = await conn.fetchval(
+        _DEREGISTER_COUNT_TERMINAL_SQL.format(schema=schema),
+        actor,
+        list(TERMINAL_STATUSES),
+    )
+
+    queue_purged = False
+    if purge_queue:
+        purged_name = await conn.fetchval(
+            _DEREGISTER_PURGE_QUEUE_SQL.format(schema=schema),
+            queue_name,
+            list(ACTIVE_STATUSES),
+        )
+        queue_purged = purged_name is not None
+
+    return queue_name, int(terminal_count or 0), queue_purged
+
+
 async def deregister_actor(
     conn: ConnLike,
     actor: str,
     *,
     force: bool = False,
     purge_queue: bool = False,
+    batch_size: int = DEFAULT_EVENT_WRITER_BATCH_SIZE,
+    statement_timeout_ms: int = DEFAULT_EVENT_WRITER_STATEMENT_TIMEOUT_MS,
     schema: str = "taskq",
 ) -> DeregisterResult:
     """Deregister an actor: delete its ``actor_config`` row with safety checks.
@@ -375,23 +446,40 @@ async def deregister_actor(
          :class:`ActorHasEnabledSchedulesError`.
       3. Delete the ``actor_config`` row.
       4. Optionally purge the orphaned queue (if ``purge_queue=True``, no
-         other ``actor_config`` row references the same queue, and no
-         non-terminal job in the ``jobs`` table still references it —
-         ``jobs.actor``/``jobs.queue`` are plain text with no FK, so jobs
-         enqueued to unregistered actors are invisible to the
-         actor_config-only guard).
+          other ``actor_config`` row references the same queue, and no
+          non-terminal job in the ``jobs`` table still references it —
+          ``jobs.actor``/``jobs.queue`` are plain text with no FK, so jobs
+          enqueued to unregistered actors are invisible to the
+          actor_config-only guard).
 
     **force=True:**
       1. Refuse if any running jobs reference the actor — raises
-         :class:`ActorHasActiveJobsError`.
+          :class:`ActorHasActiveJobsError`.
       2. Cancel pending/scheduled jobs for this actor.
       3. Disable enabled cron schedules for this actor.
       4. Delete the ``actor_config`` row.
       5. Optionally purge the orphaned queue (same guards as above).
 
-    Terminal job history is never deleted or modified. The entire operation
-    runs inside a single ``conn.transaction()`` block. If the actor has no
-    stored ``actor_config`` row, raises :class:`ActorNotFoundError`.
+    Terminal job history is never deleted or modified. With ``force=False``
+    the whole operation runs inside a single ``conn.transaction()`` block;
+    with ``force=True`` the cancel drains as bounded committed batches
+    (``batch_size`` driving rows per transaction, each carrying a
+    server-side ``statement_timeout`` bound with ``SET LOCAL`` semantics —
+    the same capture/restore discipline the maintenance sweeps use)
+    followed by one final transaction for the schedule disable, the
+    delete, the terminal count, and the optional purge — so a mid-drain
+    failure leaves the batches already committed as partial progress, and
+    a re-run continues where it stopped (the cancel's EPQ predicates skip
+    the rows earlier batches already cancelled). The drain terminates on
+    the WINDOW count the driving statement returns from its own
+    MATERIALIZED ``matching`` CTE, never the UPDATE's affected-row count:
+    an EPQ drop (a dispatcher claiming a windowed row between the
+    statement's snapshot and its row lock) shorts the affected count
+    while matching rows remain beyond the window, and terminating on it
+    would delete the ``actor_config`` row with uncancelled pending jobs
+    still stranded against it. ``jobs_cancelled`` counts only affected
+    rows. If the actor has no stored ``actor_config`` row, raises
+    :class:`ActorNotFoundError`.
 
     .. warning::
        **Concurrent enqueue / dispatch race (TOCTOU).** The transaction
@@ -429,20 +517,27 @@ async def deregister_actor(
     """
     if not _IDENT_RE.match(schema):
         raise ValueError(f"invalid schema identifier: {schema!r}")
+    # LIMIT 0 is a legal rowless query that would otherwise stall the
+    # force drain forever (an empty window never falls below it); a zero
+    # statement_timeout disables the batch's safety net outright.
+    _validate_positive("batch_size", batch_size)
+    _validate_positive("statement_timeout_ms", statement_timeout_ms)
 
-    async with conn.transaction():
-        # Check actor_config row exists first — ActorNotFoundError takes
-        # precedence over all other checks so callers don't get misleading
-        # errors for actors that are already deregistered but have stranded
-        # jobs.
-        exists = await conn.fetchval(
-            _DEREGISTER_CHECK_ACTOR_EXISTS_SQL.format(schema=schema),
-            actor,
-        )
-        if not exists:
-            raise ActorNotFoundError(actor)
+    # Actor-exists check first, as its own statement on the caller's
+    # connection — ActorNotFoundError takes precedence over all other
+    # checks so callers don't get misleading errors for actors that are
+    # already deregistered but have stranded jobs.
+    exists = await conn.fetchval(
+        _DEREGISTER_CHECK_ACTOR_EXISTS_SQL.format(schema=schema),
+        actor,
+    )
+    if not exists:
+        raise ActorNotFoundError(actor)
 
-        if not force:
+    if not force:
+        # Every statement in this branch is small and bounded — one
+        # transaction keeps the refusal checks and the delete atomic.
+        async with conn.transaction():
             active_rows = await conn.fetch(
                 _DEREGISTER_CHECK_ACTIVE_JOBS_SQL.format(schema=schema),
                 actor,
@@ -463,81 +558,92 @@ async def deregister_actor(
                 schedule_ids = [row["id"] for row in schedule_rows]
                 raise ActorHasEnabledSchedulesError(actor, schedule_ids)
 
-            jobs_cancelled = 0
             schedules_disabled = 0
-        else:
-            running_rows = await conn.fetch(
-                _DEREGISTER_CHECK_ACTIVE_JOBS_SQL.format(schema=schema),
-                actor,
-                [_RUNNING_STATUS],
+            jobs_cancelled = 0
+            queue_name, terminal_count, queue_purged = await _finalize_deregister(
+                conn, actor, purge_queue=purge_queue, schema=schema
             )
-            if running_rows:
-                status_counts: dict[str, int] = {
-                    str(row["status"]): int(row["cnt"]) for row in running_rows
-                }
-                active_count = sum(status_counts.values())
-                raise ActorHasActiveJobsError(actor, active_count, status_counts, force=True)
+    else:
+        running_rows = await conn.fetch(
+            _DEREGISTER_CHECK_ACTIVE_JOBS_SQL.format(schema=schema),
+            actor,
+            [_RUNNING_STATUS],
+        )
+        if running_rows:
+            running_counts: dict[str, int] = {
+                str(row["status"]): int(row["cnt"]) for row in running_rows
+            }
+            active_count = sum(running_counts.values())
+            raise ActorHasActiveJobsError(actor, active_count, running_counts, force=True)
 
-            cancelled_rows = await conn.fetch(
-                _DEREGISTER_CANCEL_PENDING_SQL.format(schema=schema),
-                actor,
-            )
-            jobs_cancelled = len(cancelled_rows)
-            if cancelled_rows:
-                event_sql = INSERT_EVENT_SQL.format(schema=schema)
-                await conn.executemany(
-                    event_sql,
-                    [
-                        (
-                            row["id"],
-                            "state_change",
+        # Bounded drain: each batch commits its driving UPDATE plus the
+        # state_change events describing it, so no transaction holds row
+        # locks on more than batch_size jobs, and each batch carries a
+        # server-side statement_timeout (SET LOCAL semantics, the sweeps'
+        # capture/restore discipline) so the event INSERT-to-COMMIT span
+        # is enforced, not merely hoped, inside the
+        # RECLAIM_EVENT_VISIBILITY_DELAY margin. Termination keys on the
+        # WINDOW count the statement returns from its own MATERIALIZED
+        # matching CTE — never the UPDATE's affected-row count, which an
+        # EPQ drop (a dispatcher claiming a windowed row mid-statement)
+        # shorts while matching rows remain beyond the window. The
+        # affected count drives only jobs_cancelled, so an EPQ-dropped
+        # row is never reported as cancelled.
+        event_batch_sql = INSERT_EVENTS_DETAIL_BATCH_SQL.format(schema=schema)
+        jobs_cancelled = 0
+        while True:
+            async with conn.transaction():
+                prev_timeout = await _apply_batch_statement_timeout(conn, statement_timeout_ms)
+                row = await conn.fetchrow(
+                    _DEREGISTER_CANCEL_PENDING_SQL.format(schema=schema),
+                    actor,
+                    batch_size,
+                )
+                count = int(row["cancelled_directly"]) if row is not None else 0
+                if row is not None and count:
+                    batch_ids: list[UUID] = list(row["cancelled_ids"] or [])
+                    prev_statuses: dict[UUID, str] = dict(
+                        zip(batch_ids, list(row["cancelled_prev_statuses"] or []), strict=True)
+                    )
+                    await conn.execute(
+                        event_batch_sql,
+                        batch_ids,
+                        [
                             jsonb_param(
                                 {
                                     # The row's real prior status, not a
                                     # 'pending_or_scheduled' placeholder —
                                     # same contract as _cancel_bulk.py.
-                                    "from_state": str(row["prev_status"]),
+                                    "from_state": prev_statuses[jid],
                                     "to_state": "cancelled",
                                     "reason": "actor_deregistered",
                                 }
-                            ),
-                        )
-                        for row in cancelled_rows
-                    ],
-                )
+                            )
+                            for jid in batch_ids
+                        ],
+                        "state_change",
+                    )
+                    # Counted only now, after the batch's event write
+                    # succeeded: an aborted batch contributes no phantom
+                    # cancellations.
+                    jobs_cancelled += count
+                # Success path only: restore the caller's timeout inside
+                # the still-open transaction; on error the rollback has
+                # already discarded the SET LOCAL.
+                await _restore_statement_timeout(conn, prev_timeout)
+            matched_count = int(row["matched_count"]) if row is not None else 0
+            if matched_count < batch_size:
+                break
 
+        async with conn.transaction():
             disable_result = await conn.execute(
                 _DEREGISTER_DISABLE_SCHEDULES_SQL.format(schema=schema),
                 actor,
             )
             schedules_disabled = int(disable_result.split()[-1]) if disable_result else 0
-
-        deleted_rows = await conn.fetch(
-            _DEREGISTER_DELETE_ACTOR_CONFIG_SQL.format(schema=schema),
-            actor,
-        )
-        if not deleted_rows:
-            # Handles the concurrent-delete race: under READ COMMITTED, a
-            # concurrent transaction could delete the row between our
-            # preflight check and this DELETE.
-            raise ActorNotFoundError(actor)
-
-        queue_name = deleted_rows[0]["queue"]
-
-        terminal_count = await conn.fetchval(
-            _DEREGISTER_COUNT_TERMINAL_SQL.format(schema=schema),
-            actor,
-            list(TERMINAL_STATUSES),
-        )
-
-        queue_purged = False
-        if purge_queue:
-            purged_name = await conn.fetchval(
-                _DEREGISTER_PURGE_QUEUE_SQL.format(schema=schema),
-                queue_name,
-                list(ACTIVE_STATUSES),
+            queue_name, terminal_count, queue_purged = await _finalize_deregister(
+                conn, actor, purge_queue=purge_queue, schema=schema
             )
-            queue_purged = purged_name is not None
 
     return DeregisterResult(
         actor=actor,
@@ -545,6 +651,6 @@ async def deregister_actor(
         actor_config_deleted=True,
         schedules_disabled=schedules_disabled,
         jobs_cancelled=jobs_cancelled,
-        terminal_jobs_remaining=terminal_count or 0,
+        terminal_jobs_remaining=terminal_count,
         queue_purged=queue_purged,
     )

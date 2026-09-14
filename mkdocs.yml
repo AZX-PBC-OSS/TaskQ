@@ -101,6 +101,8 @@ nav:
       - Cron Scheduling: guides/cron.md
       - Dependency Injection: guides/dependency-injection.md
       - Observability: guides/observability.md
+      - Alert Runbooks: guides/runbooks.md
+      - Maintenance Sweeps: guides/maintenance-sweeps.md
       - Testing: guides/testing.md
       - Admin UI: guides/admin-ui.md
       - SSO / SAML: guides/sso.md

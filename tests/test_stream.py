@@ -801,7 +801,11 @@ async def test_tc1_pg_listen_connection_dropped_stream_recovers(
 
         for pid in pids_to_kill:
             psql_path = shutil.which("psql")
-            assert psql_path is not None, "psql not found on PATH"
+            if psql_path is None:
+                pytest.skip(
+                    "psql not on PATH — required to terminate the LISTEN backend "
+                    "from the test process (install the PostgreSQL client tools)"
+                )
             proc = await asyncio.create_subprocess_exec(
                 psql_path,
                 pg_dsn,

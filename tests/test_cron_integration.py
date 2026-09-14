@@ -19,13 +19,14 @@ from taskq.backend._protocol import Backend
 from taskq.backend.clock import SystemClock
 from taskq.backend.postgres import PostgresBackend
 from taskq.client._jobs import JobsClient
+from taskq.constants import schema_lock_name
 from taskq.cron import compute_next_fire_after
 from taskq.settings import WorkerSettings
 from taskq.testing.fixtures import _create_worker
 from taskq.testing.otel import setup_tracer
 from taskq.worker.cron_loop import tick_cron
 from taskq.worker.deps import WorkerDeps, open_worker_deps
-from taskq.worker.leader import MAINTENANCE_LEADER_LOCK_NAME, MaintenanceLeader
+from taskq.worker.leader import MaintenanceLeader
 
 pytestmark = pytest.mark.integration
 
@@ -642,15 +643,19 @@ async def test_tc1_leader_failover_mid_tick(pg_dsn: str, monkeypatch: pytest.Mon
     leader B, not leader A — verified by asserting 0 jobs after leader A
     shutdown, before leader B starts).
 
-    The mid-tick interruption is simulated by patching fire_schedule
-    to raise on every call while leader A is running. Each tick from
-    leader A opens a transaction, acquires the advisory lock, then the
-    patched fire_schedule raises — causing the transaction to roll back
-    (advisory lock released, no UPDATEs committed). Leader A can never
+    The mid-tick interruption is simulated by patching the leader's
+    ``tick_cron`` callee to raise on every tick while leader A is running
+    (the tick was rewritten to plan per-schedule fires internally, so the
+    injection moved from the old per-schedule ``fire_schedule`` seam to the
+    tick itself — a tick-level RuntimeError is the failure shape that rolls
+    the whole transaction back rather than being recorded per-schedule).
+    Each tick from leader A opens a transaction, acquires the advisory
+    lock, then the patched tick raises — causing the transaction to roll
+    back (advisory lock released, no UPDATEs committed). Leader A can never
     successfully fire. Leader B then acquires the lock and completes the
     tick successfully.
     """
-    import taskq.worker.cron_loop as cron_loop_mod
+    import taskq.worker.leader as leader_mod
 
     async with _open_cron_two(pg_dsn, f"test_cron_{new_base62()}") as (
         schema,
@@ -672,19 +677,10 @@ async def test_tc1_leader_failover_mid_tick(pg_dsn: str, monkeypatch: pytest.Mon
                 next_fire_at=datetime.now(UTC) - timedelta(hours=2),
             )
 
-        async def _fire_always_crash(
-            conn: asyncpg.Connection,
-            row: asyncpg.Record,
-            server_now: datetime,
-            settings: WorkerSettings,
-            backend: Backend,
-            schema: str,
-            worker_id: UUID,
-            actor_config_cache: dict[str, object],
-        ) -> None:
+        async def _tick_always_crash(*args: object, **kwargs: object) -> int:
             raise RuntimeError("injected mid-tick failure")
 
-        monkeypatch.setattr(cron_loop_mod, "fire_schedule", _fire_always_crash)
+        monkeypatch.setattr(leader_mod, "tick_cron", _tick_always_crash)
 
         leader_a = MaintenanceLeader(deps_a, wid_a, backend_a, clock=SystemClock())
         shutdown_a = asyncio.Event()
@@ -703,7 +699,7 @@ async def test_tc1_leader_failover_mid_tick(pg_dsn: str, monkeypatch: pytest.Mon
                 with suppress(asyncpg.InterfaceError, OSError):
                     await deps_a.leader_conn.execute(
                         "SELECT pg_advisory_unlock(hashtextextended($1, 0))",
-                        MAINTENANCE_LEADER_LOCK_NAME,
+                        schema_lock_name("maintenance_leader", schema),
                     )
                 with suppress(asyncpg.InterfaceError, OSError):
                     await deps_a.leader_conn.close()

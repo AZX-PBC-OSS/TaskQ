@@ -182,6 +182,22 @@ WHERE j.id = eligible.id
 RETURNING j.*;
 """
 
+# Two-clock split (same doctrine as taskq.backend._sweeps): the
+# row-selection bounds in the candidates laterals use statement_timestamp()
+# (STABLE) so the planner can serve them as Index Conds on
+# jobs_actor_dispatch_idx / jobs_actor_fairness_dispatch_idx — a VOLATILE
+# clock_timestamp() bound is only ever a post-scan Filter, and a Filter
+# walks every not-yet-due pending row at the head of the index order
+# before it can collect LIMIT due rows: measured on a 20k-row
+# not-yet-due pending backlog (PG 18, EXPLAIN ANALYZE BUFFERS) the
+# volatile bound removed 20,000 rows by filter over 20,172 buffers
+# (~5.1 ms) where the stable bound is an Index Cond terminating at the
+# range boundary (10 buffers, ~0.04 ms). statement_timestamp() is the
+# statement-start wall clock — for a LIMIT-ed, sub-second snap it is
+# semantically clock_timestamp() evaluated once. The WRITTEN values in
+# the UPDATE (started_at / last_heartbeat_at / lock_expires_at) stay
+# clock_timestamp(): they must stay co-monotonic with the rows this
+# statement writes.
 _STRICT_FIFO_CANDIDATES_LATERAL = """\
     SELECT j2.id, j2.actor, j2.identity_key, j2.fairness_key,
            j2.priority, j2.scheduled_at
@@ -189,8 +205,8 @@ _STRICT_FIFO_CANDIDATES_LATERAL = """\
     WHERE j2.actor = pac.actor
       AND j2.queue = sq.queue_name
       AND j2.status = 'pending'
-      AND j2.scheduled_at <= clock_timestamp()
-      AND (j2.schedule_to_close IS NULL OR j2.schedule_to_close > clock_timestamp())
+      AND j2.scheduled_at <= statement_timestamp()
+      AND (j2.schedule_to_close IS NULL OR j2.schedule_to_close > statement_timestamp())
     ORDER BY j2.priority DESC, j2.scheduled_at, j2.id
     LIMIT pac.residual * (SELECT oversample FROM params)"""
 
@@ -200,17 +216,17 @@ _ROUND_ROBIN_CANDIDATES_LATERAL = """\
            w2.priority, w2.scheduled_at
     FROM (
       SELECT j2.id, j2.actor, j2.identity_key, j2.fairness_key,
-             j2.priority, j2.scheduled_at,
-             ROW_NUMBER() OVER (
-               PARTITION BY COALESCE(j2.fairness_key, '__null__')
-               ORDER BY j2.priority DESC, j2.scheduled_at, j2.id
-             ) AS fairness_rank
+              j2.priority, j2.scheduled_at,
+              ROW_NUMBER() OVER (
+                PARTITION BY COALESCE(j2.fairness_key, '__null__')
+                ORDER BY j2.priority DESC, j2.scheduled_at, j2.id
+              ) AS fairness_rank
       FROM "{schema}".jobs j2
       WHERE j2.actor = pac.actor
         AND j2.queue = sq.queue_name
         AND j2.status = 'pending'
-        AND j2.scheduled_at <= clock_timestamp()
-        AND (j2.schedule_to_close IS NULL OR j2.schedule_to_close > clock_timestamp())
+        AND j2.scheduled_at <= statement_timestamp()
+        AND (j2.schedule_to_close IS NULL OR j2.schedule_to_close > statement_timestamp())
     ) w2
     -- Oversample per fairness_key (not globally): a global LIMIT here would
     -- truncate the candidate list before fairness_rank partitioning, so a

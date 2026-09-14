@@ -46,6 +46,7 @@ class _FakeMaintenanceLeader:
         *,
         clock: object = None,
         rate_limit_registry: object = None,
+        actor_policies: object = None,
     ) -> None:
         pass
 

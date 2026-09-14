@@ -350,6 +350,50 @@ def _docker_errors() -> tuple[type[Exception], ...]:
 
 
 # ============================================================================================
+# Daemon reachability (the portability seam: skip with a reason, never error)
+# ============================================================================================
+
+
+def docker_unreachable_reason() -> str | None:
+    """Why this process cannot reach the Docker daemon, or ``None`` if it can.
+
+    A cheap ``ping()`` through the same client configuration every container
+    start in this module uses (``docker.from_env()`` — ``DOCKER_HOST`` and
+    friends honored), so what the probe reports is exactly what a container
+    start would hit. Deliberately narrow: only the daemon-connection failure
+    modes produce a reason (``DockerException`` from the SDK, ``OSError`` for
+    an absent or refused socket/pipe) — anything else is a real bug and must
+    surface, not be skipped away.
+    """
+    try:
+        from docker import from_env
+
+        from_env().ping()
+    except (*_docker_errors(), OSError) as exc:
+        return f"Docker daemon unreachable ({exc})"
+    return None
+
+
+def skip_test_without_docker() -> None:
+    """Skip the current test with an explanatory reason when the Docker
+    daemon is unreachable.
+
+    Every container-dependent fixture calls this FIRST, so a machine without
+    a running daemon sees SKIPPED tests with instructions — never fixture
+    ERRORS — the same skip-with-reason discipline the suite already applies
+    to missing extras and platform limits. A Docker-less agent can still run
+    every non-container tier of the suite.
+    """
+    reason = docker_unreachable_reason()
+    if reason is not None:
+        import pytest
+
+        pytest.skip(
+            f"{reason} — start Docker, or deselect the container tier with -m 'not integration'"
+        )
+
+
+# ============================================================================================
 # Docker I/O wrappers (best-effort by design: a Docker hiccup must never stop a run)
 # ============================================================================================
 

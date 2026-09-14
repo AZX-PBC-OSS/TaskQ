@@ -6,11 +6,13 @@ mark_cancelled, mark_abandoned, mark_snoozed) plus write_cancel_request
 so the "from two concurrent workers against the
 same job" clause is satisfied for every method.
 
-PG fails between parent UPDATE and job_attempts INSERT — whole
-transaction rolls back. This test is the executable proof that
-"Every running-state terminal transition
-atomically emits one job_events row and one job_attempts row in the
-same transaction as the parent UPDATE."
+PG fails mid-way through a terminal write — nothing lands. The mark_*
+terminal writes are ONE fused statement (jobs UPDATE + job_attempts
+INSERT + job_events INSERT in a single data-modifying-CTE statement —
+see _terminal.py's module docstring), so the mid-flight seam is inside
+the statement itself; this test is the executable proof that "Every
+running-state terminal transition atomically emits one job_events row
+and one job_attempts row in the same statement as the parent UPDATE."
 
 request_cancel racing against worker dispatch. Run ~50
 iterations with random small delays; assert all end in a consistent
@@ -18,6 +20,7 @@ state.
 """
 
 import asyncio
+import json
 import random
 from datetime import timedelta
 from typing import TYPE_CHECKING
@@ -29,7 +32,6 @@ import pytest
 from taskq._ids import new_uuid
 from taskq.backend._protocol import ErrorInfo
 from taskq.exceptions import WorkerOwnershipMismatch
-from taskq.testing.asyncpg_chaos import ChaosConnection, ChaosException, ChaosPool
 from taskq.testing.fixtures import JobsApp
 from taskq.testing.pg import create_pending_job, create_running_job, create_worker
 
@@ -255,15 +257,20 @@ class TestConcurrentTerminalWrites:
 
 
 class TestTransactionRollbackOnMidFlightFailure:
-    """PG fails between parent UPDATE and job_attempts INSERT —
-    whole transaction rolls back.
+    """PG fails mid-way through the terminal write — nothing lands.
 
-    Wraps an asyncpg Connection in a ChaosConnection that raises on the
-    2nd query call (after the parent UPDATE succeeds via fetchrow, but
-    before the job_attempts INSERT via execute). Injects the wrapped
-    connection via ChaosPool into the backend's ``_worker_pool``.
-    Asserts the exception propagates, the job row is still ``running``,
-    and no job_attempts or job_events rows exist.
+    The mark_* terminal writes are ONE fused statement (jobs UPDATE +
+    job_attempts INSERT + job_events INSERT in a single data-modifying-CTE
+    statement — see _terminal.py's module docstring), so there is no
+    Python seam between the UPDATE and the INSERTs to fail on: the only
+    genuine "mid-flight" failure left is SERVER-side, partway through the
+    statement itself.  This test injects one: a pre-seeded job_attempts
+    row collides with the att CTE's PK (job_id, attempt) after the jobs
+    UPDATE has matched and locked the row, forcing a UniqueViolationError
+    from inside the statement.  Asserts the exception propagates, and the
+    statement's atomicity leaves the job row still ``running`` with no
+    new job_attempts or job_events rows — the executable proof that the
+    fused UPDATE cannot commit without its attempt/event INSERTs.
     """
 
     async def test_transaction_rollback_on_mid_flight_failure(
@@ -271,7 +278,6 @@ class TestTransactionRollbackOnMidFlightFailure:
         jobs_app: JobsApp,
         pg_dsn: str,
     ) -> None:
-
         deps = jobs_app.deps
         backend = jobs_app.backend
         schema = deps.settings.schema_name
@@ -280,28 +286,21 @@ class TestTransactionRollbackOnMidFlightFailure:
         async with deps.worker_pool.acquire() as conn:
             await create_worker(conn, schema, worker_id)
             job_id = await create_running_job(conn, schema, worker_id)
+            # The poisoned row: same (job_id, attempt) key the fused att CTE
+            # will try to INSERT.  The jobs UPDATE matches and locks the row
+            # first; the att INSERT then dies on job_attempts_pkey.
+            await conn.execute(
+                f"""INSERT INTO "{schema}".job_attempts
+                    (job_id, attempt, started_at, outcome, metadata)
+                    VALUES ($1, 1, clock_timestamp(), 'bogus', '{{}}'::jsonb)""",
+                job_id,
+            )
 
-        # Open a direct connection and wrap it in ChaosConnection.
-        # fail_on_call=2: the 1st query (fetchrow / UPDATE) succeeds;
-        # the 2nd query (execute / INSERT attempt) raises ChaosException.
-        direct_conn = await asyncpg.connect(pg_dsn)
-        chaos_conn = ChaosConnection(direct_conn, fail_on_call=2)
-        chaos_pool = ChaosPool(chaos_conn)
+        error_info = ErrorInfo(error_class="ValueError", error_message="boom", error_traceback=None)
+        with pytest.raises(asyncpg.PostgresError):
+            await backend.mark_failed_or_retry(job_id, worker_id, error_info, retry_delay=None)
 
-        # PostgresBackend._worker_pool reads deps.worker_pool live (so
-        # SIGHUP hot-reload swaps are visible without reconstruction) —
-        # inject the chaos pool via deps, not the now-read-only property.
-        original_pool = deps.worker_pool
-        deps.worker_pool = chaos_pool  # type: ignore[assignment] # Why: injecting chaos pool for rollback test
-
-        try:
-            with pytest.raises(ChaosException):
-                await backend.mark_succeeded(job_id, worker_id, {"ok": True})
-        finally:
-            deps.worker_pool = original_pool  # Why: restoring original pool
-            await chaos_conn.close()
-
-        # Reconnect with a fresh connection and verify rollback
+        # Reconnect with a fresh connection and verify nothing landed.
         verify_conn = await asyncpg.connect(pg_dsn)
         try:
             row = await verify_conn.fetchrow(
@@ -309,19 +308,31 @@ class TestTransactionRollbackOnMidFlightFailure:
             )
             assert row is not None
             assert row["status"] == "running", (
-                "transaction did not roll back — status should still be 'running'"
+                "failed terminal write must leave the job 'running' — the fused "
+                "statement aborted whole (at-least-once reclaim contract)"
             )
 
             attempts = await verify_conn.fetch(
                 f'SELECT * FROM "{schema}".job_attempts WHERE job_id = $1', job_id
             )
-            assert len(attempts) == 0, "job_attempts row should not exist after rollback"
+            assert len(attempts) == 1, "only the pre-seeded attempt row should exist"
+            assert attempts[0]["outcome"] == "bogus"
 
             events = await verify_conn.fetch(
                 f'SELECT * FROM "{schema}".job_events WHERE job_id = $1', job_id
             )
             assert len(events) == 1, (
-                "job_events row should still contain the pending->running event from create_running_job (which ran before the chaos injection)"
+                "job_events row should still contain the pending->running event from create_running_job (which ran before the injected failure)"
+            )
+            kinds = {event["kind"] for event in events}
+            assert "state_change" in kinds
+            details = [event["detail"] for event in events]
+            to_states = [
+                (d["to_state"] if isinstance(d, dict) else json.loads(d)["to_state"])
+                for d in details
+            ]
+            assert to_states == ["running"], (
+                "no terminal state_change event may persist from the aborted statement"
             )
         finally:
             await verify_conn.close()

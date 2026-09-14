@@ -18,6 +18,7 @@ from taskq import migrate as migrate_mod
 from taskq._ids import new_job_id, new_uuid
 from taskq._json import dumps_str
 from taskq.backend._sql_templates import COPY_FROM_COLUMNS
+from taskq.constants import schema_lock_name
 from taskq.settings import TaskQSettings
 from taskq.worker.leader import archive_expiry_sweep, prune_terminal_jobs
 
@@ -1000,8 +1001,12 @@ async def test_pg_failure_mid_cte(pg_conn: asyncpg.Connection, settings: TaskQSe
 
     kill_conn = await asyncpg.connect(str(settings.pg_dsn))
 
+    # The schema-qualified prune-loop lock name (the one production
+    # acquires via schema_lock_name): a killed holder's lock must
+    # auto-release so the prune underneath can proceed.
     lock_acquired: bool = await kill_conn.fetchval(
-        "SELECT pg_try_advisory_lock(hashtextextended($1, 0))", "taskq:prune"
+        "SELECT pg_try_advisory_lock(hashtextextended($1, 0))",
+        schema_lock_name("prune", schema),
     )
     assert lock_acquired
 
@@ -1027,32 +1032,36 @@ async def test_pg_failure_mid_cte(pg_conn: asyncpg.Connection, settings: TaskQSe
 
 
 async def test_concurrent_prune_lock(pg_conn: asyncpg.Connection, settings: TaskQSettings) -> None:
-    """Two asyncpg connections both attempt pg_try_advisory_lock('taskq:prune').
-    Assert: first acquires; second returns false. No duplicate inserts."""
+    """Two asyncpg connections both attempt the schema-qualified prune-loop
+    advisory lock (``taskq:prune:{schema}``, the name the prune loop
+    acquires via ``schema_lock_name``). Assert: first acquires; second
+    returns false — mutual exclusion within one schema for the same
+    loop's lock. No duplicate inserts."""
     await _apply(pg_conn, settings)
+    lock_name = schema_lock_name("prune", settings.schema_name)
 
     conn1 = await asyncpg.connect(str(settings.pg_dsn))
     conn2 = await asyncpg.connect(str(settings.pg_dsn))
 
     try:
         lock1: bool = await conn1.fetchval(
-            "SELECT pg_try_advisory_lock(hashtextextended($1, 0))", "taskq:prune"
+            "SELECT pg_try_advisory_lock(hashtextextended($1, 0))", lock_name
         )
         lock2: bool = await conn2.fetchval(
-            "SELECT pg_try_advisory_lock(hashtextextended($1, 0))", "taskq:prune"
+            "SELECT pg_try_advisory_lock(hashtextextended($1, 0))", lock_name
         )
 
         assert lock1 is True
         assert lock2 is False
 
-        await conn1.execute("SELECT pg_advisory_unlock(hashtextextended($1, 0))", "taskq:prune")
+        await conn1.execute("SELECT pg_advisory_unlock(hashtextextended($1, 0))", lock_name)
 
         lock3: bool = await conn2.fetchval(
-            "SELECT pg_try_advisory_lock(hashtextextended($1, 0))", "taskq:prune"
+            "SELECT pg_try_advisory_lock(hashtextextended($1, 0))", lock_name
         )
         assert lock3 is True
 
-        await conn2.execute("SELECT pg_advisory_unlock(hashtextextended($1, 0))", "taskq:prune")
+        await conn2.execute("SELECT pg_advisory_unlock(hashtextextended($1, 0))", lock_name)
     finally:
         await conn1.close()
         await conn2.close()
@@ -1064,36 +1073,36 @@ async def test_concurrent_prune_lock(pg_conn: asyncpg.Connection, settings: Task
 async def test_concurrent_archive_expiry_lock(
     pg_conn: asyncpg.Connection, settings: TaskQSettings
 ) -> None:
-    """Two asyncpg connections both attempt pg_try_advisory_lock('taskq:archive_expiry').
-    Assert: first acquires; second returns false."""
+    """Two asyncpg connections both attempt the schema-qualified
+    archive-expiry-loop advisory lock (``taskq:archive_expiry:{schema}``,
+    the name the loop acquires via ``schema_lock_name``). Assert: first
+    acquires; second returns false — mutual exclusion within one schema
+    for the same loop's lock."""
     await _apply(pg_conn, settings)
+    lock_name = schema_lock_name("archive_expiry", settings.schema_name)
 
     conn1 = await asyncpg.connect(str(settings.pg_dsn))
     conn2 = await asyncpg.connect(str(settings.pg_dsn))
 
     try:
         lock1: bool = await conn1.fetchval(
-            "SELECT pg_try_advisory_lock(hashtextextended($1, 0))", "taskq:archive_expiry"
+            "SELECT pg_try_advisory_lock(hashtextextended($1, 0))", lock_name
         )
         lock2: bool = await conn2.fetchval(
-            "SELECT pg_try_advisory_lock(hashtextextended($1, 0))", "taskq:archive_expiry"
+            "SELECT pg_try_advisory_lock(hashtextextended($1, 0))", lock_name
         )
 
         assert lock1 is True
         assert lock2 is False
 
-        await conn1.execute(
-            "SELECT pg_advisory_unlock(hashtextextended($1, 0))", "taskq:archive_expiry"
-        )
+        await conn1.execute("SELECT pg_advisory_unlock(hashtextextended($1, 0))", lock_name)
 
         lock3: bool = await conn2.fetchval(
-            "SELECT pg_try_advisory_lock(hashtextextended($1, 0))", "taskq:archive_expiry"
+            "SELECT pg_try_advisory_lock(hashtextextended($1, 0))", lock_name
         )
         assert lock3 is True
 
-        await conn2.execute(
-            "SELECT pg_advisory_unlock(hashtextextended($1, 0))", "taskq:archive_expiry"
-        )
+        await conn2.execute("SELECT pg_advisory_unlock(hashtextextended($1, 0))", lock_name)
     finally:
         await conn1.close()
         await conn2.close()

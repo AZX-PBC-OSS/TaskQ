@@ -23,7 +23,7 @@ from taskq.ratelimit.sliding_window import SlidingWindow
 from taskq.ratelimit.token_bucket import TokenBucket
 from taskq.web.admin.ops import _fetch_redis_rl_state
 
-from . import StubBackend, StubConnection, StubRecord, _stub_job_row
+from . import StubBackend, StubConnection, StubPipelinedRedis, StubRecord, _stub_job_row
 
 
 def _get_csrf_token(client: Any) -> str:
@@ -670,19 +670,17 @@ def test_schedule_skip_400_when_no_future_fire_time(monkeypatch: pytest.MonkeyPa
 
 async def test_fetch_redis_rl_state_token_bucket_empty_raw_skips() -> None:
     """An empty hgetall result for a token bucket does not populate the result dict."""
-
-    class _FakeRedis:
-        async def hgetall(self, key: str) -> dict[str, str]:
-            return {}
-
-    result = await _fetch_redis_rl_state(_FakeRedis(), "taskq", [("api:global", "token_bucket")])
+    # StubPipelinedRedis's default hgetall reader is the empty-hash case.
+    result = await _fetch_redis_rl_state(
+        StubPipelinedRedis(), "taskq", [("api:global", "token_bucket")]
+    )
     assert result == {}
 
 
 async def test_fetch_redis_rl_state_gcra_present() -> None:
     """sliding_window_gcra kind reads the TAT value via GET."""
 
-    class _FakeRedis:
+    class _FakeRedis(StubPipelinedRedis):
         async def get(self, key: str) -> bytes:
             return b"12345.0"
 
@@ -695,38 +693,46 @@ async def test_fetch_redis_rl_state_gcra_present() -> None:
 
 async def test_fetch_redis_rl_state_gcra_absent() -> None:
     """sliding_window_gcra kind with no TAT key present does not populate the result."""
-
-    class _FakeRedis:
-        async def get(self, key: str) -> None:
-            return None
-
+    # StubPipelinedRedis's default get reader is the missing-key case.
     result = await _fetch_redis_rl_state(
-        _FakeRedis(), "taskq", [("my_gcra", "sliding_window_gcra")]
+        StubPipelinedRedis(), "taskq", [("my_gcra", "sliding_window_gcra")]
     )
     assert result == {}
 
 
 async def test_fetch_redis_rl_state_sliding_window_log_zero_count_skips() -> None:
     """A zero ZCARD count for sliding_window_log does not populate the result."""
-
-    class _FakeRedis:
-        async def zcard(self, key: str) -> int:
-            return 0
-
+    # StubPipelinedRedis's default zcard reader is the empty-zset case.
     result = await _fetch_redis_rl_state(
-        _FakeRedis(), "taskq", [("my_window", "sliding_window_log")]
+        StubPipelinedRedis(), "taskq", [("my_window", "sliding_window_log")]
     )
     assert result == {}
 
 
-async def test_fetch_redis_rl_state_unknown_kind_is_skipped() -> None:
-    """An unrecognized kind falls through the if/elif chain without action."""
+async def test_fetch_redis_rl_state_unknown_kind_raises_value_error() -> None:
+    """An unrecognized kind fails LOUD at the boundary, never silently.
 
-    class _FakeRedis:
-        pass
+    The validation runs while the pipeline's commands are built, before
+    any Redis round trip, and outside the fetch's degrade-to-None guard:
+    that guard exists for the transport being down, and an unknown kind
+    is a caller bug (the registry only emits the three kinds) —
+    swallowing it would convert a loud validation failure into a silent
+    whole-page degrade. A mis-kind bucket must not masquerade as a
+    bucket with no state either.
+    """
 
-    result = await _fetch_redis_rl_state(_FakeRedis(), "taskq", [("mystery", "unknown_kind")])
-    assert result == {}
+    class _RecordingRedis(StubPipelinedRedis):
+        def __init__(self) -> None:
+            self.commands: list[object] = []
+
+        async def hgetall(self, key: str) -> dict[str, str]:
+            self.commands.append(key)
+            return {}
+
+    redis = _RecordingRedis()
+    with pytest.raises(ValueError, match="unknown rate-limit kind"):
+        await _fetch_redis_rl_state(redis, "taskq", [("mystery", "unknown_kind")])
+    assert redis.commands == [], "validation must land before any Redis round trip"
 
 
 # ── Rate-limits page: sliding-window / unknown-kind / redis-backend branches ──
@@ -827,7 +833,7 @@ def test_rate_limits_page_with_redis_client_configured(monkeypatch: pytest.Monke
     bucket = TokenBucket("api:global", capacity=3, refill_per_second=1.0, backend="redis")
     monkeypatch.setattr(rl_registry, "_rate_limits", {"api:global": bucket})
 
-    class _FakeRedis:
+    class _FakeRedis(StubPipelinedRedis):
         async def hgetall(self, key: str) -> dict[str, str]:
             return {"tokens": "2"}
 

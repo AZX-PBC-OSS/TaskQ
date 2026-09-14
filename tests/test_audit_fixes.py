@@ -193,11 +193,18 @@ async def test_max_pending_batch_boundary_uses_ge() -> None:
     with pytest.raises(MaxPendingExceededError):
         await client.enqueue(ref, _Payload(x=4))
 
+    # Why the batch expects the typed batch error, not
+    # MaxPendingExceededError: every item belongs to the one over-cap
+    # actor, so the backend's per-actor partition admits nothing and
+    # raises BatchMaxPendingExceededError (a BackpressureError sibling,
+    # deliberately not a subclass — see its docstring).
     from taskq.batch import EnqueueItem
+    from taskq.exceptions import BatchMaxPendingExceededError
 
     items = [EnqueueItem(actor_ref=ref, payload=_Payload(x=i)) for i in range(2)]
-    with pytest.raises(MaxPendingExceededError):
+    with pytest.raises(BatchMaxPendingExceededError) as exc_info:
         await client.enqueue_batch(items)
+    assert exc_info.value.admitted_count == 0
 
 
 @pytest.mark.asyncio

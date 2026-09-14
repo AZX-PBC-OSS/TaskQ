@@ -389,6 +389,78 @@ their enforcement paths read as *use the `@actor(...)` value*. Note that
 `--clear-max-concurrent` does **not** do this — the dispatch SQL reads NULL as
 *unlimited*, because it cannot see the code literal once the row exists.
 
+### Schema-qualified advisory locks: adopt by restart
+
+> **Unreleased.** Silent for correctly-deployed fleets; a rolling deploy
+> across the rename has a split-leader window.
+
+The advisory-lock names are now schema-qualified —
+`taskq:maintenance_leader:<schema>`, `taskq:cron:<schema>`,
+`taskq:prune:<schema>`, `taskq:archive_expiry:<schema>`,
+`taskq:migrate:<schema>` — replacing the unqualified (`taskq:maintenance_leader`,
+…) forms outright. Advisory locks live in a per-database namespace, so the
+unqualified names serialized every schema in the database against each other:
+two schemas sharing one PG instance meant one schema's leader could silently
+starve the other's. The qualified names give each schema its own locks.
+
+**The upgrade hazard is a rolling deploy.** Old and new workers hold different
+lock names, so during the roll both an old and a new worker can act as leader
+of the same schema at once. The maintenance sweeps stay row-safe in that
+window (every snap uses `FOR UPDATE SKIP LOCKED`), but cron gains a
+**double-fire window** — its advisory lock is what serialises ticks. Nothing
+errors anywhere; the fleet-level signal is `sum(taskq_maintenance_leader_is_leader) != 1`.
+
+**Adopt by restarting the fleet onto the new release, not by rolling it.**
+Stop the old workers, start the new ones. The exposure window is the deploy
+itself, not the steady state. See
+[maintenance-sweeps.md](maintenance-sweeps.md) §5 for the full reasoning and
+[runbooks.md](runbooks.md#taskqleaderlockcontention) for the alert whose
+remediation carries this note.
+
+### Migration `01.00.06_01` takes write-blocking index locks
+
+> **Unreleased.** Operational note for the `jobs` / `job_attempts` index
+> migration; nothing breaks, but the apply can stall fleet writes.
+
+Migration `01.00.06_01_pre_cancel_and_cascade_indexes.sql` adds the indexes
+that serve the bounded bulk-cancel/deregistration drains and the stale-worker
+cleanup fan-out. It uses plain transactional `CREATE INDEX` — each build takes
+a write-blocking lock on its table for the duration, and `jobs` is the hottest
+table in the system (enqueue, dispatch and heartbeat all write it). Build
+time scales with the current row count: on a large, busy production `jobs`
+table the apply can stall the worker fleet's writes for a noticeable window.
+
+- **Apply during a maintenance window**, or when `jobs` is small/quiescent
+  (e.g. right after a prune sweep), on any deployment where `jobs` is large.
+  Most deployments see momentary builds — the bounded maintenance sweeps keep
+  steady-state `jobs` small.
+- It is transactional *deliberately*: the `CREATE INDEX CONCURRENTLY` form
+  deadlocks under the migration runner's own serialized-migrator advisory
+  lock (the concurrent build waits on every transaction that started before
+  it, including a second replica's blocking lock wait — a cycle the deadlock
+  detector breaks by failing the apply). This follows the
+  `01.00.02_01` precedent; the migration file's header carries the full
+  derivation.
+
+### Bulk cancel and force-deregistration now make bounded committed progress
+
+> **Unreleased.** Changes the failure semantics of `JobsClient.cancel_where()`
+> and `deregister_actor(force=True)`; both remain correct to re-run.
+
+These operations previously did all of their work in one unbounded
+transaction; they now drain their match set in bounded committed batches
+(`event_writer_batch_size` rows per transaction, each with a server-side
+`statement_timeout`). A mid-operation failure therefore leaves the batches
+that already committed **as durable partial progress** instead of rolling
+everything back — and a re-run continues where the stopped one left off,
+because already-cancelled rows fall out of the match set. If you relied on
+all-or-nothing semantics (e.g. aborting a tenant offboard on any error and
+expecting zero cancels), re-check the returned counts before retrying: they
+now reflect only what the completed batches did. See
+[maintenance-sweeps.md](maintenance-sweeps.md) for the full semantics,
+including why the drain terminates on the window count rather than the
+affected-row count.
+
 ---
 
 ## Bounded inputs

@@ -41,8 +41,8 @@ result = await client.cancel_where(
 )
 ```
 
-`cancel_where()` cancels all jobs matching a `JobFilter` in a single set-based SQL
-operation. Pending/scheduled jobs go straight to terminal `cancelled`; running jobs get
+`cancel_where()` cancels all jobs matching a `JobFilter` using set-based SQL, drained in
+bounded committed batches. Pending/scheduled jobs go straight to terminal `cancelled`; running jobs get
 `cancel_phase=1` (cooperative cancel). Returns a `BulkCancelResult` with counts and
 affected IDs. See [jobs-clients.md](jobs-clients.md#cancel_where) for the full API.
 

@@ -155,6 +155,15 @@ class _FakeEnqueueConn:
     def transaction(self) -> _FakeTx:
         return _FakeTx()
 
+    def is_in_transaction(self) -> bool:
+        """Model a caller-owned connection with an open transaction.
+
+        ``_enqueue_on_conn`` wraps capped actors in its own transaction
+        only when the caller supplied none; True here exercises the
+        lock-then-count path directly.
+        """
+        return True
+
     async def copy_records_to_table(
         self, table: str, *, records: list[object], columns: list[str], schema_name: str
     ) -> str:

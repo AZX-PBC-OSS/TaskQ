@@ -30,7 +30,7 @@ from testcontainers.community.postgres import PostgresContainer
 from taskq._ids import new_base62
 from taskq.migrate import apply_pending
 from taskq.settings import WorkerSettings
-from taskq.testing._shared_containers import creator_labels
+from taskq.testing._shared_containers import creator_labels, skip_test_without_docker
 
 pytestmark = pytest.mark.integration
 
@@ -50,8 +50,10 @@ async def _off_loop_container(
     Why: docker-py is requests-based — container start (+ readiness wait) and
     stop are blocking HTTP round-trips that can run for seconds; executed on
     the loop they stall it for the whole round-trip, defeating every
-    client-side timeout sharing that loop.
+    client-side timeout sharing that loop. Skips the test with a reason
+    (never errors) when the Docker daemon is unreachable.
     """
+    skip_test_without_docker()
     try:
         started = await asyncio.to_thread(container.start)
     except BaseException:

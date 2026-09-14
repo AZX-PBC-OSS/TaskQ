@@ -69,7 +69,7 @@ import pytest
 import pytest_asyncio
 
 from taskq._ids import new_uuid
-from taskq.testing._shared_containers import creator_labels
+from taskq.testing._shared_containers import creator_labels, skip_test_without_docker
 from tests.conftest import free_host_port
 
 from ._assertions import fetch_effects, poll_until, wait_for_effects, wait_for_worker_ready
@@ -160,7 +160,10 @@ def chaos_pg(e2e_network: Network) -> Iterator[ChaosPg]:
     strand the test-side pool, TaskQ client, and schema teardown on a
     port nothing listens on. An explicitly published port is part of the
     container's declared config and is restored verbatim on start.
+    Skips with a reason (never errors) when the Docker daemon is
+    unreachable.
     """
+    skip_test_without_docker()
     from testcontainers.community.postgres import PostgresContainer
 
     alias = f"pg-restart-{new_uuid().hex[:8]}"

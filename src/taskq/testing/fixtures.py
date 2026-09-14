@@ -110,6 +110,7 @@ from taskq.testing._shared_containers import (
     invocation_state_dir,
     next_redis_logical_db,
     shared_service_pair,
+    skip_test_without_docker,
 )
 from taskq.testing.clock import FakeClock
 from taskq.testing.in_memory import InMemoryBackend, PassthroughPayload
@@ -628,8 +629,10 @@ def redis_container(tmp_path_factory: pytest.TempPathFactory) -> Iterator[_Redis
     logical DB; sharing would let one consumer's FLUSHDB wipe another's mid-run
     state); later workers reuse it; the last worker to finish removes it. The
     shim exposes ``get_container_host_ip`` / ``get_exposed_port`` so
-    ``redis_url_for(redis_container, db)`` keeps working unchanged.
+    ``redis_url_for(redis_container, db)`` keeps working unchanged. Skips
+    with a reason (never errors) when the Docker daemon is unreachable.
     """
+    skip_test_without_docker()
     state_dir = invocation_state_dir(tmp_path_factory)
     with shared_service_pair(state_dir) as services:
         yield _RedisContainerShim(
@@ -648,7 +651,9 @@ def killable_redis_container() -> Iterator[RedisContainer]:
     sweepable — Ryuk is disabled process-wide by the shared-container machinery
     (see :mod:`taskq.testing._shared_containers`), so labeling is what lets the
     next run's stale sweep remove these once their owner pids are dead.
+    Skips with a reason (never errors) when the Docker daemon is unreachable.
     """
+    skip_test_without_docker()
     from testcontainers.community.redis import RedisContainer
 
     with (

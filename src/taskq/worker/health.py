@@ -21,13 +21,17 @@ import socket
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, TypedDict
 
 import asyncpg
 import structlog
 
 from taskq import _json
-from taskq.obs import get_logger
+from taskq.obs import (
+    _otel,  # pyright: ignore[reportPrivateUsage]  # Why: the sweep-health caches are module-level singletons owned by the obs layer; maintenance_health reads them directly (see its docstring for why that is the right seam).
+    get_logger,
+)
+from taskq.settings import WorkerSettings
 from taskq.worker._watchdog import dump_task_stacks
 from taskq.worker.deps import WorkerDeps
 from taskq.worker.shutdown import ShutdownPhase
@@ -594,7 +598,71 @@ class HealthServer:
         return 200
 
 
+class MaintenanceHealth(TypedDict):
+    """Degraded-maintenance view embedded in the readiness body."""
+
+    degraded: bool
+    reasons: list[str]
+
+
+def maintenance_health(settings: WorkerSettings) -> MaintenanceHealth:
+    """Report whether this process's maintenance sweeps are degraded.
+
+    Degraded is deliberately NOT unready: the 200/503 semantics of both
+    transports stay driven by liveness/readiness alone, and this view is the
+    "up, but promotion/sweeps are unhealthy" signal that orchestrators and
+    humans read from the body.
+
+    Reads ``taskq.obs._otel``'s cache singletons directly because the health
+    endpoint reports THIS process's view of ITS sweep health — the caches are
+    module-level singletons in this process and there is no second source of
+    truth to reconcile against.
+
+    An empty success cache (a fresh process that has never completed a sweep)
+    reports ``degraded=False`` with the informational reason ``"no sweep has
+    completed yet"``: a worker that just started has not stalled anything, but
+    a body that silently omits the gap is exactly the "no samples" shape the
+    original backlog incident hid behind — the string keeps the gap visible
+    without paging anyone.
+    """
+    reasons: list[str] = []
+    degraded = False
+
+    success_stamps: dict[str, float] = _otel._sweep_success_cache  # pyright: ignore[reportPrivateUsage]  # Why: in-process singleton cache; the docstring above is the rationale for reading it directly.
+    batch_sizes: dict[str, int] = _otel._sweep_batch_size_cache  # pyright: ignore[reportPrivateUsage]  # Why: same singleton-cache rationale as above.
+
+    if not success_stamps:
+        return MaintenanceHealth(degraded=False, reasons=["no sweep has completed yet"])
+
+    now = time.time()
+    for sweep_name, stamp in success_stamps.items():
+        staleness = now - stamp
+        # Three whole intervals without a success is a stalled sweep, not a
+        # slow one: one missed interval is jitter, two is suspicion, three
+        # means no completion has landed for the sweep's own cadence at all.
+        if staleness > 3 * settings.sweep_interval:
+            degraded = True
+            reasons.append(f"sweep={sweep_name} stalled {int(staleness)}s")
+
+    for sweep_name, size in batch_sizes.items():
+        # Below the configured batch size is the reduced tier: the worker
+        # itself has judged the database unable to finish full batches.
+        if size < settings.event_writer_batch_size:
+            degraded = True
+            reasons.append(f"sweep={sweep_name} batch size degraded to {size}")
+
+    return MaintenanceHealth(degraded=degraded, reasons=reasons)
+
+
 def build_ready_body(report: HealthReport, deps: WorkerDeps) -> bytes:
+    """Serialize the readiness body shared by both transports.
+
+    The body carries the probe verdict (``ready``/``live``/``reasons``), the
+    worker-state view, and — as ``maintenance`` — the degraded-maintenance
+    view from :func:`maintenance_health`. ``maintenance.degraded`` never feeds
+    ``report.ready``: degraded means "up but sweeps are unhealthy", an
+    operator signal in the body, not a 503.
+    """
     body = {
         "ready": report.ready,
         "live": report.live,
@@ -602,6 +670,7 @@ def build_ready_body(report: HealthReport, deps: WorkerDeps) -> bytes:
         "redis_configured": report.redis_configured,
         "active_jobs": report.active_jobs,
         "is_leader": report.is_leader,
+        "maintenance": maintenance_health(deps.settings),
         "loop_tick_ages": report.loop_tick_ages,
         "shutdown_elapsed_seconds": report.shutdown_elapsed_seconds,
         "shutdown_phase": (

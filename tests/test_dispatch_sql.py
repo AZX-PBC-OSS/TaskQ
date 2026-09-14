@@ -74,7 +74,12 @@ class TestDispatchStrictFifoSql:
         candidates_body = _cte_body(rendered, "candidates")
         assert "schedule_to_close" in candidates_body
         assert "schedule_to_close IS NULL" in candidates_body
-        assert "schedule_to_close > clock_timestamp()" in candidates_body
+        # Why statement_timestamp (STABLE), not clock_timestamp (VOLATILE):
+        # a volatile bound is never an Index Cond, so the candidates lateral
+        # post-scan-filters the pending backlog instead of terminating at
+        # the range boundary on jobs_actor_dispatch_idx — pinned by plan in
+        # tests/test_sweepaudit_dispatch_bound.py.
+        assert "schedule_to_close > statement_timestamp()" in candidates_body
 
     def test_locked_has_no_window_function(self) -> None:
         """locked CTE must NOT contain a window function — PG forbids

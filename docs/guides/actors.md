@@ -845,6 +845,11 @@ an exception. The worker emits a `sub_enqueue_autonomous_fallback` warning to st
 To ensure the transactional path is active, register an `asyncpg.Connection` at `Scope.LOOP`
 in the DI registry (see [Dependency Injection](dependency-injection.md)).
 
+!!! warning "Transactional sub-enqueue requires a single-slot worker"
+    That one LOOP-scope connection is shared by every consumer slot, so the transactional
+    path is correct only with `TASKQ_MAX_CONCURRENCY=1` (the worker warns at startup
+    otherwise). See [Jobs & Clients — SubJobEnqueuer](jobs-clients.md#subjobenqueuer).
+
 ### Handle limitations
 
 Handles returned by `ctx.jobs.enqueue()` do **not** have a client bound to them. Calling

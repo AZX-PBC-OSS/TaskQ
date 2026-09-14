@@ -619,6 +619,20 @@ class RateLimitRegistry:
                     source="reservation",
                 )
         if concrete_name not in self._reservations:
+            # A PG-backed materialization needs the schema the slot rows
+            # live in, and settings is its only source. Falling back to the
+            # ConcurrencyReservation default ("taskq") here — as this path
+            # once did — silently targets a schema the caller never
+            # configured: slot rows land in whatever "taskq".reservation_
+            # slots exists in that database. The in-memory path (no pool)
+            # stays settings-free: its slot table is process-local and the
+            # schema is never read.
+            if settings is None and pg_pool is not None:
+                raise RuntimeError(
+                    "KeyedReservationRef materialization against Postgres requires "
+                    "settings (the schema source for reservation_slots): pass the "
+                    "worker's TaskQSettings to acquire_for_actor(settings=...)"
+                )
             schema = settings.schema_name if settings is not None else "taskq"
             new_reservation = ConcurrencyReservation(
                 name=concrete_name, slots=ref.slots, lease=ref.lease, schema=schema

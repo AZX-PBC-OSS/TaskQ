@@ -17,12 +17,13 @@ signals, NOTIFY, and schedule CRUD wiring.
 """
 
 import asyncio
-from collections.abc import Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from contextlib import AbstractAsyncContextManager as AsyncContextManager
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, ClassVar, Literal
+from typing import ClassVar, Literal
 from uuid import UUID
 
+import asyncpg
 import structlog
 
 from taskq._json import dumps_str
@@ -136,6 +137,7 @@ from taskq.backend._sweeps import (
     _SWEEP_3_SQL,
     _SWEEP_4_SQL,
     _SWEEP_RESULT_TTL_SQL,
+    SweepBatchSizer,
     sweep_deadline_exceeded,
     sweep_expired_locks,
     sweep_expired_results,
@@ -159,6 +161,8 @@ from taskq.backend.clock import Clock
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
     DEFAULT_CHUNK_SIZE,
+    DEFAULT_EVENT_WRITER_BATCH_SIZE,
+    DEFAULT_EVENT_WRITER_STATEMENT_TIMEOUT_MS,
     DEFAULT_RECLAIM_POLL_LIMIT,
     RECLAIM_EVENT_VISIBILITY_DELAY,
     events_channel,
@@ -170,10 +174,9 @@ from taskq.obs import (
     get_meter,
     log_cancel_phase_change,
     log_state_change,
+    record_sweep_batch_size,
+    record_sweep_batch_size_configured,
 )
-
-if TYPE_CHECKING:
-    import asyncpg
 
 __all__ = [
     "BACKEND_PROTOCOL_VERSION",
@@ -183,6 +186,7 @@ __all__ = [
     "_SWEEP_4_SQL",
     "_SWEEP_RESULT_TTL_SQL",
     "PostgresBackend",
+    "SweepBatchSizer",
 ]
 
 logger: structlog.stdlib.BoundLogger = get_logger(__name__)
@@ -200,6 +204,13 @@ if BACKEND_PROTOCOL_VERSION != _EXPECTED_PROTOCOL_VERSION:
         f"current BACKEND_PROTOCOL_VERSION is {BACKEND_PROTOCOL_VERSION}. "
         "Update the implementation."
     )
+
+# The event-writer batch knobs (event_writer_batch_size,
+# event_writer_statement_timeout_ms, event_writer_reduced_batch_divisor,
+# sweep_breaker_failure_threshold, sweep_breaker_window_secs) are declared
+# fields on the ``BackendSettings`` protocol, so every settings object that
+# reaches a PostgresBackend carries them — read directly at the use sites
+# below, no per-read fallbacks.
 
 
 def _cancel_notify_payload(job_id: UUID, worker_id: UUID) -> str:
@@ -279,6 +290,11 @@ class PostgresBackend:
         self._schedule_sql = ScheduleSql.build(self._schema_name)
         self._batch_sql: BatchSql = render_batch_sql(self._schema_name)
 
+        # Per-sweep batch sizers, built lazily on first use (see
+        # _sweep_sizer): the breaker's latch state must survive across
+        # calls, so the objects are cached for the backend's lifetime.
+        self._sweep_sizers: dict[str, SweepBatchSizer] = {}
+
     # ── Pool accessors (dynamic via self._deps for hot-reload) ────────
 
     @property
@@ -317,6 +333,7 @@ class PostgresBackend:
         args_list: list[EnqueueArgs],
         *,
         connection: "asyncpg.Connection | None" = None,
+        enforce_max_pending: bool = True,
     ) -> list[JobRow]:
         return await _enqueue_batch(
             self._worker_pool,
@@ -324,6 +341,7 @@ class PostgresBackend:
             self._schema_name,
             args_list,
             connection=connection,
+            enforce_max_pending=enforce_max_pending,
         )
 
     async def enqueue_batch_fast(
@@ -331,6 +349,7 @@ class PostgresBackend:
         args_list: list[EnqueueArgs],
         *,
         connection: "asyncpg.Connection | None" = None,
+        enforce_max_pending: bool = True,
     ) -> int:
         return await _enqueue_batch_fast(
             self._worker_pool,
@@ -338,6 +357,7 @@ class PostgresBackend:
             self._schema_name,
             args_list,
             connection=connection,
+            enforce_max_pending=enforce_max_pending,
         )
 
     # ── Dispatch ────────────────────────────────────────────────────────
@@ -674,8 +694,21 @@ class PostgresBackend:
         filter: JobFilter,
         reason: str | None,
     ) -> BulkCancelResult:
+        # batch_size and the timeout are declared BackendSettings fields
+        # (see _protocol.BackendSettings): bounded, typed reads — the
+        # int() is the numeric conversion for SET LOCAL statement_timeout's
+        # integer parameter, not a defensive coercion. No breaker wraps
+        # this call (unlike _run_bounded_sweep): cancel_where is an
+        # interactive operator call, not loop policy, so a timeout abort
+        # propagates to the caller instead of degrading a standing loop.
         result, notify_targets = await _cancel_where(
-            self._worker_pool, self._schema_name, self._sql, filter, reason
+            self._worker_pool,
+            self._schema_name,
+            self._sql,
+            filter,
+            reason,
+            batch_size=self._deps.settings.event_writer_batch_size,
+            statement_timeout_ms=int(self._deps.settings.event_writer_statement_timeout_ms),
         )
         if notify_targets:
             channels: list[str] = []
@@ -718,24 +751,116 @@ class PostgresBackend:
 
     # ── Scheduling / sweeps ─────────────────────────────────────────────
     # No `now` parameter: every predicate is evaluated server-side
-    # (clock_timestamp()) — the server clock is the arbiter.
+    # (clock_timestamp()) — the server clock is the arbiter.  One call
+    # transitions at most one bounded batch of rows; repeated calls
+    # drain.  The bound and its degradation tier come from settings via
+    # the per-sweep SweepBatchSizer; an explicit batch_size overrides the
+    # tier for that call only.
 
-    async def scheduled_to_pending(self) -> int:
-        async with self._notify_pool.acquire() as conn:
-            return await sweep_scheduled_to_pending(conn, schema=self._schema_name)
+    def _sweep_sizer(self, sweep_name: str) -> SweepBatchSizer:
+        """The per-sweep batch sizer, built lazily from current settings.
 
-    async def deadline_sweep(self) -> int:
+        Lazy (not in ``__init__``) for two reasons: a backend only needs a
+        sizer for the sweeps it actually runs, and reading the knobs at
+        first use (not construction) picks up settings mutated after the
+        backend was built — the seam tests use to shrink sweep intervals
+        on an already-constructed deps. The knobs themselves are declared
+        fields on ``BackendSettings``, read directly below.  Built once per
+        sweep name, then cached for the backend's lifetime — the breaker's
+        latch state is exactly the state that must survive across calls.
+        """
+        sizer = self._sweep_sizers.get(sweep_name)
+        if sizer is None:
+            settings = self._deps.settings
+            sizer = SweepBatchSizer(
+                default_size=settings.event_writer_batch_size,
+                divisor=settings.event_writer_reduced_batch_divisor,
+                failure_threshold=settings.sweep_breaker_failure_threshold,
+                window_secs=settings.sweep_breaker_window_secs,
+            )
+            self._sweep_sizers[sweep_name] = sizer
+        return sizer
+
+    async def _run_bounded_sweep(
+        self,
+        sweep_name: str,
+        batch_size: int | None,
+        run: Callable[[int, int], Awaitable[int]],
+    ) -> int:
+        """Run one sweep call at a bounded batch size, breaker-wrapped.
+
+        The size the sweep actually uses (the sizer's effective tier, or
+        an explicit ``batch_size`` override) is recorded before the call
+        so the gauge reports reality rather than configuration.  An
+        aborted batch — server-side ``statement_timeout`` arriving as
+        ``asyncpg.QueryCanceledError`` (SQLSTATE 57014), or a client
+        ``command_timeout`` arriving as ``TimeoutError``; the two shapes
+        an aborted batch produces — counts against the breaker and
+        re-raises for the caller's transient-error handling.
+        """
+        sizer = self._sweep_sizer(sweep_name)
+        size = batch_size if batch_size is not None else sizer.effective_size()
+        record_sweep_batch_size(sweep_name, size)
+        # Emitted at the same call site so the used and configured gauges
+        # stay label-matched for the gauge-to-gauge sweep-degraded alert.
+        record_sweep_batch_size_configured(sweep_name, self._deps.settings.event_writer_batch_size)
+        # Declared BackendSettings field (float ms); int() is the numeric
+        # conversion for SET LOCAL statement_timeout's integer parameter,
+        # not a defensive coercion.
+        timeout_ms = int(self._deps.settings.event_writer_statement_timeout_ms)
+        try:
+            count = await run(size, timeout_ms)
+        except (asyncpg.QueryCanceledError, TimeoutError):
+            sizer.on_timeout()
+            raise
+        sizer.on_success()
+        return count
+
+    async def scheduled_to_pending(self, *, batch_size: int | None = None) -> int:
         async with self._notify_pool.acquire() as conn:
-            return await sweep_deadline_exceeded(conn, schema=self._schema_name)
+            return await self._run_bounded_sweep(
+                "scheduled_to_pending",
+                batch_size,
+                lambda size, timeout_ms: sweep_scheduled_to_pending(
+                    conn,
+                    schema=self._schema_name,
+                    batch_size=size,
+                    statement_timeout_ms=timeout_ms,
+                ),
+            )
+
+    async def deadline_sweep(self, *, batch_size: int | None = None) -> int:
+        async with self._notify_pool.acquire() as conn:
+            return await self._run_bounded_sweep(
+                "deadline_exceeded",
+                batch_size,
+                lambda size, timeout_ms: sweep_deadline_exceeded(
+                    conn,
+                    schema=self._schema_name,
+                    batch_size=size,
+                    statement_timeout_ms=timeout_ms,
+                ),
+            )
 
     async def reclaim_expired_locks(
         self,
         cancel_grace: timedelta,
         cleanup_grace: timedelta,
+        *,
+        batch_size: int | None = None,
     ) -> int:
         async with self._notify_pool.acquire() as conn:
-            return await sweep_expired_locks(
-                conn, cancel_grace, cleanup_grace, schema=self._schema_name
+            return await self._run_bounded_sweep(
+                "expired_locks",
+                batch_size,
+                lambda size, timeout_ms: sweep_expired_locks(
+                    conn,
+                    cancel_grace,
+                    cleanup_grace,
+                    schema=self._schema_name,
+                    batch_size=size,
+                    statement_timeout_ms=timeout_ms,
+                ),
             )
 
     @staticmethod
@@ -745,24 +870,47 @@ class PostgresBackend:
         cleanup_grace: timedelta,
         *,
         schema: str,
+        batch_size: int = DEFAULT_EVENT_WRITER_BATCH_SIZE,
+        statement_timeout_ms: int = DEFAULT_EVENT_WRITER_STATEMENT_TIMEOUT_MS,
     ) -> int:
-        return await sweep_expired_locks(conn, cancel_grace, cleanup_grace, schema=schema)
+        return await sweep_expired_locks(
+            conn,
+            cancel_grace,
+            cleanup_grace,
+            schema=schema,
+            batch_size=batch_size,
+            statement_timeout_ms=statement_timeout_ms,
+        )
 
     @staticmethod
     async def sweep_deadline_exceeded(
         conn: ConnLike,
         *,
         schema: str,
+        batch_size: int = DEFAULT_EVENT_WRITER_BATCH_SIZE,
+        statement_timeout_ms: int = DEFAULT_EVENT_WRITER_STATEMENT_TIMEOUT_MS,
     ) -> int:
-        return await sweep_deadline_exceeded(conn, schema=schema)
+        return await sweep_deadline_exceeded(
+            conn,
+            schema=schema,
+            batch_size=batch_size,
+            statement_timeout_ms=statement_timeout_ms,
+        )
 
     @staticmethod
     async def sweep_scheduled_to_pending(
         conn: ConnLike,
         *,
         schema: str,
+        batch_size: int = DEFAULT_EVENT_WRITER_BATCH_SIZE,
+        statement_timeout_ms: int = DEFAULT_EVENT_WRITER_STATEMENT_TIMEOUT_MS,
     ) -> int:
-        return await sweep_scheduled_to_pending(conn, schema=schema)
+        return await sweep_scheduled_to_pending(
+            conn,
+            schema=schema,
+            batch_size=batch_size,
+            statement_timeout_ms=statement_timeout_ms,
+        )
 
     @staticmethod
     async def sweep_leaked_reservation_slots(
@@ -777,8 +925,9 @@ class PostgresBackend:
         conn: ConnLike,
         *,
         schema: str,
+        batch_size: int = DEFAULT_EVENT_WRITER_BATCH_SIZE,
     ) -> int:
-        return await sweep_expired_results(conn, schema=schema)
+        return await sweep_expired_results(conn, schema=schema, batch_size=batch_size)
 
     # ── Read ────────────────────────────────────────────────────────────
 

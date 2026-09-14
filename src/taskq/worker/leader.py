@@ -2,8 +2,10 @@
 A single elected leader per cluster runs cooperative loops inside one
 asyncio.TaskGroup: election, watchdog, scheduled-wake (sweep 3), cron,
 sweep (sweeps 1/2/4), prune (sweep 5), archive expiry (sweep 6), stale
-worker cleanup, queue depth, and reservation slots.  Non-leader pods retry
-election periodically and skip the gated work.
+worker cleanup, queue depth, reservation slots, and backlog detection.
+Non-leader pods retry election periodically and skip the gated work —
+the backlog detector is the deliberate exception (every worker samples;
+see ``_backlog_detection_loop``).
 Failover SLA:
   Worker killed      ≤ heartbeat_interval + 1 s
   Partition detect   ≤ watchdog_interval + heartbeat_interval + 2 s
@@ -15,7 +17,7 @@ import asyncio
 import contextlib
 import threading
 import time
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from uuid import UUID
 
 import asyncpg
@@ -27,12 +29,17 @@ from taskq.backend._protocol import Backend
 from taskq.backend.clock import Clock
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
+    schema_lock_name,
     wake_channel,
 )
-from taskq.obs import (
+from taskq.obs import (  # pyright: ignore[reportPrivateUsage]  # Why: the sweep-health caches are module-level singletons owned by the obs layer; the demotion path clears them directly (see health.py for the same seam).
+    _otel,
     get_logger,
     get_meter,
     record_election_attempt,
+    record_lock_contention,
+    record_sweep_success,
+    record_sweep_timeout,
     update_queue_depth_cache,
     update_reservation_slots_cache,
     update_stranded_jobs_cache,
@@ -40,8 +47,6 @@ from taskq.obs import (
 from taskq.ratelimit.registry import RateLimitRegistry
 from taskq.worker._leader_shared import (
     _EK1,
-    ARCHIVE_EXPIRY_LOCK_NAME,
-    PRUNE_LOCK_NAME,
     ArchiveExpiryResult,
     PruneResult,
     SweepContext,
@@ -49,7 +54,8 @@ from taskq.worker._leader_shared import (
     _dbg,
     _err,
     _load_actor_retention_overrides,
-    _metric,
+    _metric_duration,
+    _metric_rows,
     _schedule_utc_to_cron,
     archive_expiry_sweep,
     cleanup_stale_workers,
@@ -58,6 +64,8 @@ from taskq.worker._leader_shared import (
 )
 from taskq.worker._leader_sweeps import (
     _archive_expiry_loop,
+    _backlog_detection_loop,
+    _is_deadline_family,  # pyright: ignore[reportPrivateUsage]  # Why: the one deadline-family classifier, shared by every leader loop's timeout accounting instead of each site re-deriving it.
     _prune_loop,
     _queue_depth_loop,
     _reservation_slots_loop,
@@ -65,7 +73,7 @@ from taskq.worker._leader_sweeps import (
     _sweep_loop,
 )
 from taskq.worker._transient import TRANSIENT_PG_ERRORS, UnexpectedLoopErrorGuard
-from taskq.worker.cron_loop import tick_cron
+from taskq.worker.cron_loop import ActorFirePolicy, tick_cron
 from taskq.worker.deps import (
     WorkerDeps,
     apply_keepalive_to_conn,
@@ -73,9 +81,6 @@ from taskq.worker.deps import (
 )
 
 __all__ = [
-    "ARCHIVE_EXPIRY_LOCK_NAME",
-    "MAINTENANCE_LEADER_LOCK_NAME",
-    "PRUNE_LOCK_NAME",
     "ArchiveExpiryResult",
     "MaintenanceLeader",
     "PruneResult",
@@ -89,7 +94,6 @@ __all__ = [
 ]
 
 log: structlog.stdlib.BoundLogger = get_logger(__name__)
-MAINTENANCE_LEADER_LOCK_NAME: str = "taskq:maintenance_leader"
 _WATCHDOG_INTERVAL_SECS: float = 5.0
 _meter = get_meter()
 
@@ -129,11 +133,16 @@ class MaintenanceLeader:
         *,
         clock: Clock,
         rate_limit_registry: RateLimitRegistry | None = None,
+        actor_policies: Mapping[str, ActorFirePolicy] | None = None,
     ) -> None:
         self._deps = deps
         self._worker_id = worker_id
         self._backend = backend
         self._clock = clock
+        # Singleton / max_pending flags the cron tick stamps and enforces
+        # on its fires (parity with the client enqueue path); None keeps
+        # the tick's no-stamping behavior.
+        self._actor_policies = actor_policies
         self._sweep_ctx = SweepContext(
             deps=deps,
             backend=backend,
@@ -171,9 +180,22 @@ class MaintenanceLeader:
         # those can park for seconds on a dead PG (same reason is_leader is
         # cleared first); if the election loop re-elects during that
         # suspension the sweep loops repopulate on their next tick.
+        # The backlog gauges (jobs-by-status, oldest due age) are deliberately
+        # NOT in this list: _backlog_detection_loop samples them on every
+        # worker, so a demoted process keeps full authority over its own
+        # series and clearing them would mute the detectors under the exact
+        # leadership failure they exist to expose.
         update_queue_depth_cache({})
         update_reservation_slots_cache({})
         update_stranded_jobs_cache({})
+        # The sweep-health stamps (last success, batch size) are leader-loop
+        # samples and lose authority with the rest: a demoted process
+        # exporting frozen stamps reports a degraded maintenance view forever
+        # after an ordinary failover, and its frozen sweep_last_success
+        # series pages promotion-stalled while the new leader promotes fine.
+        # Re-election during the bounded closes below repopulates them on the
+        # sweep loops' next tick, same as the three clears above.
+        _otel.clear_sweep_health_caches()
         for attr in ("_cron_conn", "_leader_monitor_conn"):
             conn = getattr(self, attr)
             if conn is not None and not conn.is_closed():
@@ -301,6 +323,9 @@ class MaintenanceLeader:
                 tg.create_task(self._archive_expiry_loop(shutdown), name="leader.archive_expiry")
                 tg.create_task(self._queue_depth_loop(shutdown), name="leader.queue_depth")
                 tg.create_task(
+                    self._backlog_detection_loop(shutdown), name="leader.backlog_detection"
+                )
+                tg.create_task(
                     self._reservation_slots_loop(shutdown), name="leader.reservation_slots"
                 )
                 tg.create_task(self._stranded_jobs_loop(shutdown), name="leader.stranded_jobs")
@@ -390,7 +415,7 @@ class MaintenanceLeader:
             try:
                 got_lock = await self._deps.leader_conn.fetchval(
                     "SELECT pg_try_advisory_lock(hashtextextended($1, 0))",
-                    MAINTENANCE_LEADER_LOCK_NAME,
+                    schema_lock_name("maintenance_leader", self._deps.settings.schema_name),
                 )
             except TRANSIENT_PG_ERRORS as exc:
                 await self._drop_leader_conn(reason="lock_attempt_failed")
@@ -509,11 +534,20 @@ class MaintenanceLeader:
                     worker_id=str(self._worker_id),
                 )
             else:
+                # The losing side is the detector: contention here is what
+                # makes two schemas silently sharing one lock (or a stuck
+                # holder) observable instead of a healthy-looking fleet with
+                # no leader.
+                lost_lock_name = schema_lock_name(
+                    "maintenance_leader", self._deps.settings.schema_name
+                )
                 record_election_attempt(str(self._worker_id), won=False)
+                record_lock_contention(lost_lock_name)
                 log.info(
                     "leader-retry",
                     kind="leader_retry",
                     worker_id=str(self._worker_id),
+                    lock=lost_lock_name,
                     next_retry_secs=self._deps.settings.heartbeat_interval,
                 )
             # Reaching here means a full election cycle completed (lock won,
@@ -596,6 +630,7 @@ class MaintenanceLeader:
             self._deps.liveness.tick("leader.scheduled_wake", period=1.0)
             if self._deps.is_leader.is_set():
                 start = time.monotonic()
+                rows: int | None = None
                 try:
                     # Why one deadline for the WHOLE iteration: the count > 0
                     # path awaits PG twice (scheduled_to_pending, then the
@@ -608,10 +643,8 @@ class MaintenanceLeader:
                         # No `now` argument — the sweep's server-side
                         # predicate (scheduled_at <= clock_timestamp()) is
                         # the single arbiter.
-                        count = await self._backend.scheduled_to_pending()
-                        _metric("scheduled_to_pending", count, start)
-                        _dbg("scheduled_wake_tick", "scheduled_wake_tick", count, start)
-                        if count > 0:
+                        rows = await self._backend.scheduled_to_pending()
+                        if rows > 0:
                             channel = wake_channel(self._deps.settings.schema_name)
                             async with self._deps.dispatcher_pool.acquire(
                                 timeout=self._deps.settings.dispatcher_command_timeout
@@ -627,6 +660,15 @@ class MaintenanceLeader:
                     # missed wake NOTIFY is covered by the producer's poll
                     # interval. Unguarded it escapes into the worker's
                     # TaskGroup and wedges shutdown (see _leader_sweeps).
+                    # rows is None means the awaited sweep call itself was
+                    # cut short — a sweep-timeouts increment. rows bound
+                    # means the sweep COMPLETED and the deadline casualty
+                    # was the wake NOTIFY: a different failure (pool
+                    # exhaustion / notify timeout), already logged below,
+                    # and counting the completed call as aborted would page
+                    # the sweep-timeouts alert for a healthy sweep.
+                    if rows is None and _is_deadline_family(exc):
+                        record_sweep_timeout("scheduled_to_pending")
                     log.warning(
                         "scheduled-wake-failed",
                         kind="scheduled_wake_failed",
@@ -638,6 +680,17 @@ class MaintenanceLeader:
                     # _transient.py): tolerated and logged a few times, then
                     # deliberately fatal rather than an infinite silent retry.
                     guard.unexpected(exc)
+                finally:
+                    # rows is bound only by the awaited call above; the
+                    # deadline that aborts it also aborts the binding, so
+                    # the failure path records duration WITHOUT a row sample
+                    # (a 0-row sample would be indistinguishable from a
+                    # healthy empty sweep).
+                    _metric_duration("scheduled_to_pending", start)
+                    if rows is not None:
+                        _metric_rows("scheduled_to_pending", rows)
+                        record_sweep_success("scheduled_to_pending")
+                        _dbg("scheduled_wake_tick", "scheduled_wake_tick", rows, start)
             await asyncio.sleep(1.0)
 
     async def _cron_loop(self, shutdown: asyncio.Event) -> None:
@@ -661,6 +714,8 @@ class MaintenanceLeader:
             if conn is None:
                 await asyncio.sleep(1)
                 continue
+            start = time.monotonic()
+            fired: int | None = None
             try:
                 # Why one deadline for the WHOLE tick: a tick is BEGIN + N
                 # statements (one per due schedule, plus catch-up bursts) +
@@ -673,12 +728,14 @@ class MaintenanceLeader:
                 # rolls back bounded by the same command_timeout).
                 async with asyncio.timeout(self._deps.settings.dispatcher_command_timeout):
                     async with conn.transaction():
-                        await tick_cron(
+                        fired = await tick_cron(
                             conn,
                             self._deps.settings,
                             self._backend,
                             self._deps.settings.schema_name,
                             self._worker_id,
+                            limit=self._deps.settings.cron_tick_limit,
+                            actor_policies=self._actor_policies,
                         )
                 guard.ok()
             except TRANSIENT_PG_ERRORS as exc:
@@ -703,6 +760,7 @@ class MaintenanceLeader:
                     # OSError here, but the deadline family (asyncio.timeout /
                     # command_timeout) must keep the conn, while a raw OSError
                     # (socket death) must drop it.
+                    record_sweep_timeout("cron")
                     log.warning(
                         "cron-tick-timeout",
                         kind="cron_tick_timeout",
@@ -750,6 +808,14 @@ class MaintenanceLeader:
                     error=repr(exc),
                 )
                 guard.unexpected(exc)
+            finally:
+                # fired is bound only when tick_cron returned; a timed-out
+                # tick records duration WITHOUT a row sample (a 0-row sample
+                # would be indistinguishable from a healthy empty tick).
+                _metric_duration("cron", start)
+                if fired is not None:
+                    _metric_rows("cron", fired)
+                    record_sweep_success("cron")
             await asyncio.sleep(1)
 
     async def _sweep_loop(self, shutdown: asyncio.Event) -> None:
@@ -763,6 +829,9 @@ class MaintenanceLeader:
 
     async def _queue_depth_loop(self, shutdown: asyncio.Event) -> None:
         await _queue_depth_loop(self._sweep_ctx, shutdown)
+
+    async def _backlog_detection_loop(self, shutdown: asyncio.Event) -> None:
+        await _backlog_detection_loop(self._sweep_ctx, shutdown)
 
     async def _reservation_slots_loop(self, shutdown: asyncio.Event) -> None:
         await _reservation_slots_loop(self._sweep_ctx, shutdown)

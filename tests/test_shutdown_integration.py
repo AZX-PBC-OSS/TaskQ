@@ -18,7 +18,6 @@ import asyncio
 import contextlib
 import inspect as _inspect
 from collections.abc import Callable
-from datetime import datetime, timezone
 from unittest.mock import MagicMock
 from uuid import UUID
 
@@ -142,9 +141,23 @@ def _fake_active_job(
     )
 
 
-def _now_utc() -> datetime:
-    """Return current UTC datetime for ``EnqueueArgs.scheduled_at``."""
-    return datetime.now(tz=timezone.utc)  # noqa: UP017 # Why: timezone.utc is the canonical form; datetime.UTC requires 3.11+ typeshed support that pyright cannot resolve in this project's environment.
+def _immediate() -> None:
+    """Scheduled-at seed for immediate jobs: ``None`` (server-clock domain).
+
+    Why not an absolute ``datetime.now(timezone.utc)``: the enqueue SQL
+    decides status as ``COALESCE($n, clock_timestamp()) >
+    clock_timestamp()`` — an absolute Python-clock timestamp races the
+    server clock at that boundary. A test-process clock even a few
+    microseconds ahead of the database clock lands the row ``'scheduled'``
+    instead of ``'pending'``; the ``WHERE status='pending'`` seeding
+    updates in these tests then silently no-op, the job never runs, and
+    the terminal-status assertions fail on clock skew rather than on
+    shutdown behaviour (observed as a load-dependent flake in the parallel
+    suite). ``None`` is the canonical immediate form — the enqueue stamps
+    the server clock and decides status in the same statement, one clock
+    domain.
+    """
+    return None
 
 
 # ── Integration tests ───────────────────────────────────────────────────
@@ -206,7 +219,7 @@ async def test_ti1_sigterm_three_jobs(
                 payload={},
                 max_attempts=3,
                 retry_kind="transient",
-                scheduled_at=_now_utc(),
+                scheduled_at=_immediate(),
             )
         )
 
@@ -264,7 +277,7 @@ async def test_ti2_cooperative_cancel(
             payload={},
             max_attempts=3,
             retry_kind="transient",
-            scheduled_at=_now_utc(),
+            scheduled_at=_immediate(),
         )
     )
 
@@ -339,7 +352,7 @@ async def test_ti4_drain_to_pending(
                 payload={},
                 max_attempts=3,
                 retry_kind="transient",
-                scheduled_at=_now_utc(),
+                scheduled_at=_immediate(),
             )
         )
 
@@ -391,7 +404,7 @@ async def test_ti5_heartbeat_during_cancelling(
             payload={},
             max_attempts=3,
             retry_kind="transient",
-            scheduled_at=_now_utc(),
+            scheduled_at=_immediate(),
         )
     )
 
@@ -436,7 +449,7 @@ async def test_ti6_cancel_poll_loop(
             payload={},
             max_attempts=3,
             retry_kind="transient",
-            scheduled_at=_now_utc(),
+            scheduled_at=_immediate(),
         )
     )
 
@@ -493,7 +506,7 @@ async def test_tc1_forcing_recovery(
             payload={},
             max_attempts=3,
             retry_kind="transient",
-            scheduled_at=_now_utc(),
+            scheduled_at=_immediate(),
         )
     )
 
@@ -543,7 +556,7 @@ async def test_tc2_pg_unavailable_drain(
                 payload={},
                 max_attempts=3,
                 retry_kind="transient",
-                scheduled_at=_now_utc(),
+                scheduled_at=_immediate(),
             )
         )
 
@@ -602,7 +615,7 @@ async def test_tc3_shielded_abandoning_write(
             payload={},
             max_attempts=3,
             retry_kind="transient",
-            scheduled_at=_now_utc(),
+            scheduled_at=_immediate(),
         )
     )
 
@@ -671,7 +684,7 @@ async def test_tc4_pg_failover_forcing(
             payload={},
             max_attempts=3,
             retry_kind="transient",
-            scheduled_at=_now_utc(),
+            scheduled_at=_immediate(),
         )
     )
 
@@ -733,7 +746,7 @@ async def test_tc5_actor_swallows_cancelled_error(
             payload={},
             max_attempts=3,
             retry_kind="transient",
-            scheduled_at=_now_utc(),
+            scheduled_at=_immediate(),
         )
     )
 

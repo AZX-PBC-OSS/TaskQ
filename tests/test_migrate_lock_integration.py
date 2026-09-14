@@ -37,8 +37,9 @@ async def test_lock_contention_raises_instead_of_blocking_forever(pg_dsn: str) -
     holder = await asyncpg.connect(pg_dsn)
     try:
         await holder.execute(
-            "SELECT pg_advisory_lock($1)", migrate_mod._MIGRATION_LOCK_KEY
-        )  # Why: pinning the exact key the migrator uses.
+            "SELECT pg_advisory_lock(hashtextextended($1, 0))",
+            migrate_mod.migration_lock_name("lock_contention_test"),
+        )  # Why: pinning the exact key the migrator uses for THIS schema.
 
         async with asyncio.timeout(20):
             with pytest.raises(SystemExit) as excinfo:
@@ -51,7 +52,10 @@ async def test_lock_contention_raises_instead_of_blocking_forever(pg_dsn: str) -
         # Must not be misreported as a broken migration.
         assert "migration failed, aborting startup" not in msg
     finally:
-        await holder.execute("SELECT pg_advisory_unlock($1)", migrate_mod._MIGRATION_LOCK_KEY)
+        await holder.execute(
+            "SELECT pg_advisory_unlock(hashtextextended($1, 0))",
+            migrate_mod.migration_lock_name("lock_contention_test"),
+        )
         await holder.close()
 
 
@@ -59,13 +63,19 @@ async def test_lock_is_released_so_the_next_migrator_proceeds(pg_dsn: str) -> No
     """The bound must not leak the lock on the failure path."""
     holder = await asyncpg.connect(pg_dsn)
     try:
-        await holder.execute("SELECT pg_advisory_lock($1)", migrate_mod._MIGRATION_LOCK_KEY)
+        await holder.execute(
+            "SELECT pg_advisory_lock(hashtextextended($1, 0))",
+            migrate_mod.migration_lock_name("lock_release_test"),
+        )
         with pytest.raises(SystemExit):
             await migrate_mod.apply_pending_locked(
                 pg_dsn, schema="lock_release_test", lock_timeout=1.0
             )
     finally:
-        await holder.execute("SELECT pg_advisory_unlock($1)", migrate_mod._MIGRATION_LOCK_KEY)
+        await holder.execute(
+            "SELECT pg_advisory_unlock(hashtextextended($1, 0))",
+            migrate_mod.migration_lock_name("lock_release_test"),
+        )
         await holder.close()
 
     # Uncontended now: the same call must succeed and actually migrate.

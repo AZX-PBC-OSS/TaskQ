@@ -36,7 +36,7 @@ from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 
 import taskq.obs as obs_mod
 import taskq.obs._otel as otel_mod
-from taskq.constants import CRON_LOCK_NAME
+from taskq.constants import schema_lock_name
 from taskq.settings import WorkerSettings
 from taskq.testing.actor import FakeBackend, as_backend
 from taskq.testing.otel import counter_data_points
@@ -126,7 +126,9 @@ async def test_a_contended_tick_counts_logs_and_reads_no_schedules(
     entry = next(e for e in logs if e["event"] == "cron-tick-lock-contended")
     # Per-worker attribution lives here instead, where cardinality is free.
     assert entry["worker_id"] == str(_WORKER_ID)
-    assert entry["lock"] == CRON_LOCK_NAME
+    # The tick is driven with schema "public" (see _tick), so the contended
+    # log carries the schema-qualified cron lock name for that schema.
+    assert entry["lock"] == schema_lock_name("cron", "public")
 
 
 async def test_an_uncontended_tick_reads_schedules_and_records_no_contention(

@@ -76,6 +76,8 @@ from taskq.client._handle import JobHandle
 from taskq.client._jobs import JobsClient
 from taskq.constants import (
     DEFAULT_CHUNK_SIZE,
+    DEFAULT_EVENT_WRITER_BATCH_SIZE,
+    DEFAULT_EVENT_WRITER_STATEMENT_TIMEOUT_MS,
     MAX_RESULT_BYTES,
     RECLAIM_EVENT_VISIBILITY_DELAY,
     progress_channel,
@@ -142,6 +144,19 @@ class _ClientSettings:
     # writes a terminal result, but the backend's storage-boundary guard
     # reads this off whatever settings object it was handed.
     result_max_bytes: int = MAX_RESULT_BYTES
+    # Event-writer knobs declared on BackendSettings: a client-built
+    # PostgresBackend reaches the same bounded write paths (cancel_where
+    # reads the batch cap; the sweep sizer and per-batch statement timeout
+    # follow if the client ever calls them), so the settings object handed
+    # to the backend must declare them. Defaults mirror WorkerSettings'
+    # (the constants it defaults to, plus its own Field defaults), so a
+    # client-built backend behaves exactly as before the contract was
+    # declared — the values the backend's old defensive fallbacks supplied.
+    event_writer_batch_size: int = DEFAULT_EVENT_WRITER_BATCH_SIZE
+    event_writer_statement_timeout_ms: float = DEFAULT_EVENT_WRITER_STATEMENT_TIMEOUT_MS
+    event_writer_reduced_batch_divisor: int = 4
+    sweep_breaker_failure_threshold: int = 3
+    sweep_breaker_window_secs: float = 600.0
 
 
 @dataclass(slots=True)

@@ -80,6 +80,14 @@ def _make_settings(
         health_request_timeout=2.0,
         health_max_header_bytes=16 * 1024,
         health_readiness_check_timeout=5.0,
+        # Maintenance-health fields read by build_ready_body's
+        # maintenance_health view (only when the process-global OTel sweep
+        # caches are non-empty — i.e. when other sweep-recording tests ran
+        # earlier in this xdist worker process; without these the /ready
+        # handler raises AttributeError and answers 500). Mirrors the stub
+        # settings in tests/test_health.py and tests/test_web_health.py.
+        sweep_interval=30.0,
+        event_writer_batch_size=100,
     )
 
 

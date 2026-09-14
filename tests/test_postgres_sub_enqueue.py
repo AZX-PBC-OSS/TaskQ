@@ -113,7 +113,14 @@ async def _enqueue_parent(backend: "PostgresBackend") -> JobRow:
             payload={"name": "parent"},
             max_attempts=3,
             retry_kind="transient",
-            scheduled_at=datetime.now(UTC),
+            # None = immediate, in the SERVER clock domain. An absolute
+            # datetime.now() races the enqueue SQL's status boundary
+            # (COALESCE($n, clock_timestamp()) > clock_timestamp()) —
+            # with the testcontainer clock a fraction of a millisecond
+            # behind the host, a warm asyncpg statement cache (sub-ms
+            # sample→execute latency, as in the parallel suite) lands the
+            # row 'scheduled', which _dispatch_job below cannot claim.
+            scheduled_at=None,
         )
     )
 

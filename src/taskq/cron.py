@@ -11,7 +11,7 @@ import importlib
 import inspect
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 from uuid import UUID
 from zoneinfo import ZoneInfo
@@ -88,7 +88,24 @@ async def resolve_payload(
         factory = _resolve_factory(payload_factory)
         result: object = factory()
         if inspect.iscoroutine(result):
-            result = await asyncio.wait_for(result, timeout=5.0)
+            try:
+                result = await asyncio.wait_for(result, timeout=5.0)
+            except TimeoutError as exc:
+                # Name the factory: the schedule's error text is the only
+                # place an operator sees WHICH factory hung.  A factory
+                # that fails with its own TimeoutError reason keeps that
+                # reason — "pool exhausted" is the diagnosis, "hung for
+                # 5s" would be a lie.  The type stays TimeoutError so
+                # every classification and catch site downstream is
+                # unchanged.
+                reason = str(exc)
+                if reason:
+                    raise TimeoutError(
+                        f"cron payload factory {payload_factory!r}: {reason}"
+                    ) from exc
+                raise TimeoutError(
+                    f"cron payload factory {payload_factory!r} timed out after 5s"
+                ) from exc
         if isinstance(result, BaseModel):
             return result.model_dump()
         if isinstance(result, dict):
@@ -134,7 +151,19 @@ def compute_next_fire_after(
         interpretations and checking that they differ. For ``skip`` and
         ``firstof``, the earlier (first) occurrence is used. For
         ``allof``, both occurrences are returned so the caller can
-        enqueue a job for each.
+        enqueue a job for each. A fold-0 seed inside a repeated range is
+        special under ``allof``: once the range's fold-0 matches are
+        spent, the next owed fire is the fold-1 pass's first match — a
+        wall time at or before the seed's that the naive walk cannot
+        see — so it is computed directly. Under ``skip`` and
+        ``firstof`` the repeated range counts as one slot at the earlier
+        occurrence, so the walk's answer stands. A fold-1 seed inside
+        the range is the mirror: every in-range wall match's earlier
+        occurrence is spent, so under ``allof`` the next owed fire is
+        the next in-range match's fold-1 occurrence, and under ``skip``
+        and ``firstof`` the answer is the first match beyond the range
+        — the naive walk alone would answer an instant at or before the
+        seed.
 
     Returns a list of 1 or 2 datetimes. A single-element list is the
     normal case; a two-element list is returned only when
@@ -142,6 +171,55 @@ def compute_next_fire_after(
     """
     tz = ZoneInfo(timezone_name)
     after_local = after.astimezone(tz)
+
+    # A repeated range plays twice: its wall matches fire once as fold-0
+    # instants, then the whole range re-plays as fold-1 instants.
+    # croniter's walk sees only wall time — it finds every match
+    # strictly after the seed's wall, but it cannot see the fold-1 pass
+    # at all: those matches' walls sit at or before the seed's wall.
+    # Only ``allof`` owes that pass — ``skip`` and ``firstof`` fire a
+    # repeated range once, at the earlier occurrence, which the seed's
+    # range has already given — so for those strategies the walk's
+    # answer stands.  This is reachable whenever a leader outage or a
+    # manual edit leaves ``next_fire_at`` inside the range: without
+    # this branch the fold-1 pass is silently lost for a year.
+    if dst_strategy == "allof":
+        fold1_next = _next_fold1_fire(cron_expr, after_local, tz)
+        if fold1_next is not None:
+            return [fold1_next]
+
+    # A fold-1 seed inside the range is the mirror image: every wall
+    # match at or before the seed's wall has spent its earlier
+    # occurrence — all of the range's fold-0 instants precede all of
+    # its fold-1 instants — and the naive walk cannot express that
+    # ordering.  It answers the next wall match's fold-0 interpretation
+    # (an instant BEFORE the seed) or, under ``allof``, a pair whose
+    # first member precedes the seed — a function named
+    # ``compute_next_fire_after`` may never answer at or before its
+    # seed.  ``allof`` owes the fold-1 occurrence of the next in-range
+    # match; ``skip`` and ``firstof`` owe nothing further in the range
+    # (each slot fires once, at the earlier occurrence — all spent), so
+    # they advance to the first match beyond it.  A candidate outside
+    # the seed's range — a later match, possibly in a later repeated
+    # range — is ordered correctly by the ordinary walk below.
+    if after_local.fold != 0:
+        bounds = repeated_range_bounds(after_local, tz)
+        if bounds is not None:
+            range_start, range_end = bounds
+            cr = croniter(cron_expr, after_local)
+            candidate = cr.get_next(datetime)
+            if candidate.tzinfo is None:
+                candidate = candidate.replace(tzinfo=tz)
+            if range_start <= candidate.replace(tzinfo=None) < range_end:
+                if dst_strategy == "allof":
+                    return [_fold_to_utc(candidate, tz, fold=1)]
+                cr = croniter(cron_expr, candidate.replace(tzinfo=None))
+                beyond = cr.get_next(datetime)
+                while range_start <= beyond < range_end:
+                    cr = croniter(cron_expr, beyond)
+                    beyond = cr.get_next(datetime)
+                return [_check_gap(beyond.replace(tzinfo=tz), tz)]
+
     cr = croniter(cron_expr, after_local)
     candidate = cr.get_next(datetime)
 
@@ -173,6 +251,70 @@ def compute_next_fire_after(
         return [_fold_to_utc(candidate, tz, fold=0)]
 
     return [candidate]
+
+
+def repeated_range_bounds(after_local: datetime, tz: ZoneInfo) -> tuple[datetime, datetime] | None:
+    """The repeated (fall-back) wall range containing *after_local*'s wall
+    time, as naive dated walls ``[start, end)`` — or None when the wall is
+    not ambiguous in *tz*.
+
+    The bounds are walked from the wall rather than assumed hour-aligned:
+    half-hour repeat zones (Lord Howe repeats 02:00→01:30) answer the
+    same way full-hour zones do.
+    """
+    if not _is_ambiguous_time(after_local, tz):
+        return None
+    start = after_local.replace(tzinfo=None, second=0, microsecond=0)
+    while _is_ambiguous_time((start - timedelta(minutes=1)).replace(tzinfo=tz), tz):
+        start = start - timedelta(minutes=1)
+    end = start + timedelta(minutes=1)
+    while _is_ambiguous_time(end.replace(tzinfo=tz), tz):
+        end = end + timedelta(minutes=1)
+    return start, end
+
+
+def _next_fold1_fire(
+    cron_expr: str,
+    after_local: datetime,
+    tz: ZoneInfo,
+) -> datetime | None:
+    """The next fire the fold-1 (later) pass of a repeated range owes
+    from a fold-0 seed inside it, or None when the ordinary walk already
+    answers the next owed fire.
+
+    A repeated range plays twice: its wall matches fire once as fold-0
+    instants, then the whole range re-plays as fold-1 instants.  The
+    naive walk sees only wall time, so it finds every match strictly
+    after the seed's wall — the fold-0 pass's remaining matches — but
+    it cannot see the fold-1 pass at all: those matches' walls sit at
+    or before the seed's wall.  Once the fold-0 pass owes nothing more,
+    the next owed fire is the fold-1 pass's FIRST match, and only this
+    computation can name it.  That match is the seed's own match's twin
+    in the founding case (a single match in the range), the MATCH's
+    twin — not the seed's — when the seed sits past it, and the
+    range's first match when the seed sits late in the range.
+
+    None (the walk answers) when the seed is not a fold-0 instant of a
+    repeated range, when a fold-0 match still remains in the range —
+    the walk finds it and its own overlap branch returns its pair — or
+    when the expression matches nothing in the range: the seed's own
+    match, if any, already fired, and the walk's beyond-range answer
+    stands.
+    """
+    if after_local.fold != 0:
+        return None
+    bounds = repeated_range_bounds(after_local, tz)
+    if bounds is None:
+        return None
+    start, end = bounds
+    naive = after_local.replace(tzinfo=None)
+    nxt = croniter(cron_expr, naive).get_next(datetime)
+    if nxt < end:
+        return None
+    first = croniter(cron_expr, start - timedelta(seconds=1)).get_next(datetime)
+    if first >= end:
+        return None
+    return _fold_to_utc(first.replace(tzinfo=tz), tz, fold=1)
 
 
 def _is_ambiguous_time(dt: datetime, tz: ZoneInfo) -> bool:

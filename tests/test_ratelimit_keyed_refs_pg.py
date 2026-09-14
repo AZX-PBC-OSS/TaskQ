@@ -32,6 +32,19 @@ class _SessionPayload(BaseModel):
     session_id: str
 
 
+def _pg_settings(pg_dsn: str) -> WorkerSettings:
+    """Settings naming the schema these tests migrate (``taskq``).
+
+    The keyed-reservation materialization path refuses to guess a schema
+    from a PG pool alone — settings is the schema source, so tests that
+    exercise the PG path pass it explicitly.
+    """
+    return WorkerSettings.load_from_dict(
+        {"TASKQ_PG_DSN": pg_dsn, "TASKQ_SCHEMA_NAME": "taskq"},
+        validate=False,
+    )
+
+
 async def test_keyed_reservation_lazy_registration_against_real_pg(
     pg_dsn: str,
 ) -> None:
@@ -62,6 +75,7 @@ async def test_keyed_reservation_lazy_registration_against_real_pg(
             worker_id=new_uuid(),
             payload=_SessionPayload(session_id="s1"),
             pg_pool=pool,
+            settings=_pg_settings(pg_dsn),
         )
 
         assert len(acquired) == 1
@@ -158,6 +172,7 @@ async def test_eviction_while_holder_active_does_not_over_admit(
             worker_id=holder_worker,
             payload=_SessionPayload(session_id="s1"),
             pg_pool=pool,
+            settings=_pg_settings(pg_dsn),
         )
         assert len(acquired) == 1
         concrete = "keyed-refs-evict-probe:s1"
@@ -180,6 +195,7 @@ async def test_eviction_while_holder_active_does_not_over_admit(
                 worker_id=new_uuid(),
                 payload=_SessionPayload(session_id="s1"),
                 pg_pool=pool,
+                settings=_pg_settings(pg_dsn),
             )
 
         # The slot table was not mutated by re-registration: exactly one
@@ -203,6 +219,7 @@ async def test_eviction_while_holder_active_does_not_over_admit(
             worker_id=new_uuid(),
             payload=_SessionPayload(session_id="s1"),
             pg_pool=pool,
+            settings=_pg_settings(pg_dsn),
         )
         assert len(reacquired) == 1
     finally:

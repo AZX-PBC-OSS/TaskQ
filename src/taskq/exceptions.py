@@ -118,6 +118,93 @@ class MaxPendingExceededError(BackpressureError):
         super().__init__(actor, pending=current_count, max_pending=max_pending)
 
 
+class BatchMaxPendingExceededError(BackpressureError):
+    """A bulk enqueue partitioned its admission per actor and refused some.
+
+    Raised by :meth:`~taskq.backend._protocol.Backend.enqueue_batch` /
+    :meth:`~taskq.backend._protocol.Backend.enqueue_batch_fast` (and every
+    client path riding them) when one or more actors' items exceed their
+    effective ``max_pending``: the within-cap actors' items are inserted
+    FIRST, then this error raises naming the refusals — the bulk-tier
+    sibling of :class:`PartialBatchError`, which is the house shape for
+    partial batch admission (succeeded count + failed indices + typed
+    per-failure exceptions).
+
+    An over-cap actor's items are refused as a whole group, never
+    partially filled up to the cap: the single-enqueue path refuses a
+    capped enqueue outright, and a partial fill would admit an arbitrary
+    prefix of the caller's items that the caller never chose.
+
+    Fields:
+
+    - ``refusals`` — one :class:`MaxPendingExceededError` per over-cap
+      actor (``actor``, ``current_count`` at the admission check, the
+      effective ``max_pending``).
+    - ``refused_indices`` — actor name -> indices into the caller's items
+      list of that actor's refused items. For
+      :meth:`~taskq.client.JobsClient.enqueue_batch_streaming`'s chunked
+      path the indices are stream-global and the stream stops at the
+      refusing chunk: items after it were never attempted.
+    - ``admitted_count`` — how many items were admitted and inserted by
+      the raising call.
+
+    Durability of the admitted items depends on the path: committed when
+    the call owned its transaction (no caller-supplied connection — one
+    pool transaction per call/chunk); inserted-but-uncommitted on a
+    caller-supplied connection with an open transaction, where that
+    transaction's commit/rollback decides. ``enqueue_batch`` /
+    ``enqueue_batch_streaming`` with ``failure_policy`` or ``finalizer``
+    and no connection (the atomic path) never raises this error — its
+    single transaction keeps the legacy all-or-nothing contract and
+    raises plain :class:`MaxPendingExceededError` with nothing committed.
+
+    Deliberately NOT a :class:`MaxPendingExceededError` subclass: handlers
+    written for the pre-partition contract assume that a raised
+    ``MaxPendingExceededError`` left nothing enqueued. Under this error
+    part of the batch IS stored — a blind whole-batch retry would
+    duplicate the admitted items. Catch this type explicitly and retry
+    only the refused indices, or give items ``idempotency_key``s so a
+    whole-batch retry deduplicates against the admitted rows.
+
+    The same hazard reaches handlers written against the shared base:
+    ``except BackpressureError`` catches this error too, and the
+    base's contract ("the caller decides whether to retry, fail, or
+    wait") predates partial admission. A generic backpressure handler
+    that retries the whole batch MUST first consult
+    ``admitted_count`` / ``refused_indices`` — retry only the refused
+    items, or rely on ``idempotency_key``s — otherwise it duplicates
+    the admitted items on every retry.
+    """
+
+    def __init__(
+        self,
+        *,
+        refusals: list[MaxPendingExceededError],
+        refused_indices: dict[str, list[int]],
+        admitted_count: int,
+    ) -> None:
+        self.refusals = refusals
+        self.refused_indices = refused_indices
+        self.admitted_count = admitted_count
+        # Why attribute mirrors of the first refusal: BackpressureError
+        # consumers (metrics, generic handlers) read .actor/.pending/
+        # .max_pending; multi-actor callers should read .refusals.
+        self.actor = refusals[0].actor if refusals else ""
+        self.pending = refusals[0].current_count if refusals else 0
+        self.max_pending = refusals[0].max_pending if refusals else None
+        detail = "; ".join(
+            f"{r.actor} (pending={r.current_count}, max_pending={r.max_pending}) "
+            f"refused at item indices {refused_indices.get(r.actor, [])}"
+            for r in refusals
+        )
+        # Why the skipped super().__init__: BackpressureError builds a
+        # single-actor message; this error's facts are multi-actor, so the
+        # message is composed here and set through the grandparent.
+        super(BackpressureError, self).__init__(
+            f"BatchMaxPendingExceededError: {admitted_count} items admitted; {detail}"
+        )
+
+
 class PayloadValidationError(TaskQError):
     """Pydantic validation failed at enqueue or dispatch.
 

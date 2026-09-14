@@ -157,6 +157,10 @@ class FakeConn:
     def transaction(self) -> _FakeTransaction:
         return _FakeTransaction()
 
+    def is_in_transaction(self) -> bool:
+        """Model a caller-owned connection with an open transaction."""
+        return True
+
 
 class FakePool:
     """Lightweight asyncpg.Pool stand-in that tracks acquire and connections."""
@@ -2584,12 +2588,20 @@ async def test_reelection_survives_advisory_lock_gap_window(monkeypatch: Any) ->
     await original.close()
     deps.leader_conn = None
 
-    # is_leader clears as the re-election cascade begins...
-    for _ in range(200):
-        if not deps.is_leader.is_set():
-            break
-        await asyncio.sleep(0.01)
-    assert not deps.is_leader.is_set()
+    # The demotion is latched on the leader_conn_died event, not sampled on
+    # is_leader: the fast path logs it and clears is_leader in the same step
+    # (no await between the log and the clear), while the re-win can re-set
+    # the flag within one 10ms heartbeat — the transient False window can
+    # close between 0.01s samples under load (same class as the tc2 gate
+    # flake, tests/test_leader_chaos.py).
+    with structlog.testing.capture_logs() as captured:
+        for _ in range(200):
+            if any(e.get("kind") == "leader_conn_died" for e in captured):
+                break
+            await asyncio.sleep(0.01)
+        assert any(e.get("kind") == "leader_conn_died" for e in captured), (
+            "election loop never took the leader-conn-died demotion path after the null"
+        )
 
     # ...then re-sets once the old session's lock release has propagated.
     for _ in range(200):

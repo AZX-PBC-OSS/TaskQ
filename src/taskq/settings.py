@@ -21,7 +21,7 @@ from uuid import UUID
 
 from croniter import croniter
 from dotenvmodel import DotEnvConfig, Field, ValidationError, ValidatorContext
-from dotenvmodel.types import PostgresDsn, RedisDsn
+from dotenvmodel.types import PostgresDsn, RedisDsn, SecretStr
 
 from taskq._close import worst_case_teardown_tail
 from taskq._json import check_no_nul_str
@@ -33,6 +33,8 @@ from taskq.backend._protocol import (
 )
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining it
+    DEFAULT_EVENT_WRITER_BATCH_SIZE,
+    DEFAULT_EVENT_WRITER_STATEMENT_TIMEOUT_MS,
     DEFAULT_MAX_RETRY_BACKOFF,
     DEFAULT_PRUNE_BATCH_SIZE,
     DEFAULT_PRUNE_RETENTION,
@@ -56,12 +58,18 @@ class OIDCSettings(DotEnvConfig):
         "(e.g. https://login.microsoftonline.com/{tenant}/v2.0).",
     )
     client_id: str = Field(default="", description="OAuth2 client ID registered at the IdP.")
-    client_secret: str = Field(default="", description="OAuth2 client secret.")
+    # Why SecretStr (dotenvmodel's native mechanism, issue #111): a settings
+    # repr reaches logs, debuggers and crash tracebacks; SecretStr masks
+    # itself there and in every error path, loads straight from the env var
+    # (a raw str is coerced on load and on a str default), and unwraps only
+    # at the explicit get_secret_value() boundary. client_id stays plain —
+    # a public OAuth2 identifier, not a credential.
+    client_secret: SecretStr = Field(default="", description="OAuth2 client secret.")
     redirect_uri: str = Field(
         default="",
         description="Must match the app registration's configured redirect URI.",
     )
-    session_secret: str = Field(
+    session_secret: SecretStr = Field(
         default="",
         description="Signing key for session cookies; "
         "use >=32 bytes of random data. Rotate to invalidate all sessions.",
@@ -111,11 +119,15 @@ class SAMLSettings(DotEnvConfig):
         default=None,
         description="SP cert (signed requests / encrypted assertions).",
     )
-    sp_private_key: str | None = Field(
+    # Why SecretStr: the SP's private key is the secret half of the keypair
+    # (its public half sp_x509_cert and the IdP's idp_x509_cert stay plain —
+    # published certificates, not credentials); session_secret signs session
+    # cookies. Same dotenvmodel-native masking rationale as OIDCSettings.
+    sp_private_key: SecretStr | None = Field(
         default=None,
         description="SP private key (PEM).",
     )
-    session_secret: str = Field(
+    session_secret: SecretStr = Field(
         default="",
         description="Signing key for session cookies.",
     )
@@ -379,7 +391,13 @@ class TaskQSettings(DotEnvConfig):
         "'none' (default, unauthenticated/BYO-auth), 'oidc' (taskq[oidc]), "
         "or 'saml' (taskq[saml]). See docs/guides/sso.md.",
     )
-    health_token: str = Field(
+    # Why SecretStr: the bearer credential for the health/metrics routes —
+    # same dotenvmodel-native masking rationale as the SSO secrets. Two
+    # gotchas pinned by the cli's unwrap: a SecretStr is always truthy (even
+    # the empty default), and an unset env var loads the field as None —
+    # hence the Optional annotation and the None-safe set-check. DSN fields
+    # stay their BaseDsn types (their own repr already masks passwords).
+    health_token: SecretStr | None = Field(
         default="",
         description="TASKQ_HEALTH_TOKEN. Bearer token for machine-to-machine "
         "access to health/metrics endpoints. When set, health and metrics "
@@ -752,6 +770,63 @@ class WorkerSettings(TaskQSettings):
         "sweep_expired_results, cleanup_stale_workers, and idle keyed-ref "
         "eviction. Lower values reduce recovery latency for crashed workers "
         "at the cost of more frequent PG queries.",
+    )
+    event_writer_batch_size: int = Field(
+        default=DEFAULT_EVENT_WRITER_BATCH_SIZE,
+        ge=1,
+        le=10_000,
+        description="TASKQ_EVENT_WRITER_BATCH_SIZE. Rows per committed batch "
+        "for every writer of job_events rows (the expired-lock, deadline and "
+        "scheduled-to-pending sweeps, bulk cancel, actor deregistration). "
+        "Keeps each batch transaction inside the "
+        "reclaim_event_visibility_delay margin; the server-side "
+        "statement_timeout remains the enforcement if a batch exceeds it. "
+        "The loop drains the remainder across further batches/calls.",
+    )
+    event_writer_statement_timeout_ms: float = Field(
+        default=DEFAULT_EVENT_WRITER_STATEMENT_TIMEOUT_MS,
+        ge=50.0,
+        description="TASKQ_EVENT_WRITER_STATEMENT_TIMEOUT_MS (milliseconds). "
+        "Server-side statement_timeout applied to each event-writer batch "
+        "transaction via SET LOCAL. Defaults to 7/8 of the 2 s "
+        "reclaim_event_visibility_delay margin: a batch that cannot finish "
+        "inside the watermark margin is aborted by the server rather than "
+        "silently corrupting reclaim-event delivery.",
+    )
+    event_writer_reduced_batch_divisor: int = Field(
+        default=4,
+        ge=2,
+        le=1000,
+        description="TASKQ_EVENT_WRITER_REDUCED_BATCH_DIVISOR. Divisor for "
+        "the reduced event-writer batch tier: once a worker's sweeps trip "
+        "the batch-size breaker, batches shrink to "
+        "max(1, event_writer_batch_size / this). Only a degradation ceiling "
+        "— raising it makes the degraded tier closer to the normal one.",
+    )
+    sweep_breaker_failure_threshold: int = Field(
+        default=3,
+        ge=1,
+        description="TASKQ_SWEEP_BREAKER_FAILURE_THRESHOLD. Consecutive "
+        "sweep-batch cancellations (within sweep_breaker_window_secs) before "
+        "the batch-size breaker latches to the reduced tier for the rest of "
+        "the process lifetime. Any success between failures resets the "
+        "consecutive count; a latched breaker does not unlatch.",
+    )
+    sweep_breaker_window_secs: float = Field(
+        default=600.0,
+        ge=1.0,
+        description="TASKQ_SWEEP_BREAKER_WINDOW_SECS (seconds). Rolling "
+        "window the sweep breaker counts consecutive failures within.",
+    )
+    sweep_drain_batches: int = Field(
+        default=8,
+        ge=1,
+        le=1000,
+        description="TASKQ_SWEEP_DRAIN_BATCHES. Maximum event-writer batches "
+        "the leader's sweep loop executes per sweep per tick before leaving "
+        "the remainder to the next tick. Bounded so one iteration cannot "
+        "monopolise the loop; every batch commits, so a stopped drain keeps "
+        "its progress.",
     )
     queue_depth_interval: float = Field(
         default=15.0,
@@ -1324,6 +1399,15 @@ class WorkerSettings(TaskQSettings):
         ge=1,
         description="TASKQ_CRON_AUTO_DISABLE_THRESHOLD. Consecutive failures "
         "before a schedule is auto-disabled.",
+    )
+    cron_tick_limit: int = Field(
+        default=DEFAULT_EVENT_WRITER_BATCH_SIZE,
+        ge=1,
+        le=10_000,
+        description="TASKQ_CRON_TICK_LIMIT. Maximum schedules one cron tick "
+        "selects, plans and fires. A catch-up burst larger than this drains "
+        "across successive one-second ticks instead of one oversized "
+        "transaction; the remainder stays due and untouched until its tick.",
     )
 
     # ── Until-idle drain mode ────────────────────────────────────────────

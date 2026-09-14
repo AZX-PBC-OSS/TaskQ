@@ -38,18 +38,19 @@ from uuid import UUID
 
 import asyncpg
 import pytest
+import structlog
 from testcontainers.community.postgres import PostgresContainer
 
 from taskq._ids import new_base62, new_uuid
 from taskq.backend.clock import SystemClock
 from taskq.backend.postgres import PostgresBackend
-from taskq.testing._shared_containers import creator_labels
+from taskq.constants import schema_lock_name
+from taskq.testing._shared_containers import creator_labels, skip_test_without_docker
 from taskq.testing.fixtures import _create_worker, _open_pg_backend, _open_two_pg_workers
 from taskq.testing.settings import shorten_chaos_settings
 from taskq.worker.deps import WorkerDeps, open_worker_deps
 from taskq.worker.leader import (
     _WATCHDOG_INTERVAL_SECS,
-    MAINTENANCE_LEADER_LOCK_NAME,
     MaintenanceLeader,
 )
 
@@ -196,8 +197,11 @@ async def test_tc2_partition_leader_via_monitor_conn(pg_dsn: str) -> None:
     backend PID via direct attribute access (Option A per the
     private-attribute policy) and terminates it from a separate
     connection. Within WATCHDOG_INTERVAL + heartbeat_interval + 5s
-    (default 20s), asserts is_leader is cleared and leader_conn was
-    replaced. Then waits for re-election within another
+    (default 20s), asserts the watchdog demoted — latched on the
+    leadership_lost event rather than sampled on is_leader, because the
+    election loop can re-claim the released lock within one heartbeat
+    and close the is_leader=False window between samples — and that
+    leader_conn was replaced. Then waits for re-election within another
     heartbeat_interval + 5s.
 
     Source: (would fail if
@@ -262,12 +266,20 @@ async def test_tc2_partition_leader_via_monitor_conn(pg_dsn: str) -> None:
 
                 partition_timeout = _WATCHDOG_INTERVAL_SECS + deps.settings.heartbeat_interval + 5
                 deadline = asyncio.get_running_loop().time() + partition_timeout
+                # Why latch on the leadership_lost event instead of polling
+                # is_leader: both watchdog demote branches clear is_leader
+                # and drop the leader conn BEFORE logging, but the election
+                # loop can re-claim the just-released lock within one
+                # heartbeat, so the is_leader=False window can close between
+                # 0.05s samples under load (observed under -n 4). The log
+                # entry is the demotion's own record — it latches.
                 leader_deposed = False
-                while asyncio.get_running_loop().time() < deadline:
-                    if not deps.is_leader.is_set():
-                        leader_deposed = True
-                        break
-                    await asyncio.sleep(0.05)  # fast poll (fast re-election with 1s heartbeat)
+                with structlog.testing.capture_logs() as captured:
+                    while asyncio.get_running_loop().time() < deadline:
+                        if any(e.get("kind") == "leadership_lost" for e in captured):
+                            leader_deposed = True
+                            break
+                        await asyncio.sleep(0.05)
                 assert leader_deposed, (
                     f"Leader was not deposed within {partition_timeout}s after "
                     f"pg_terminate_backend on leader_monitor_conn"
@@ -302,8 +314,10 @@ async def _off_loop_container(
     Why: docker-py is requests-based — container start (+ readiness wait) and
     stop are blocking HTTP round-trips that can run for seconds; executed on
     the loop they stall it for the whole round-trip, defeating every
-    client-side timeout sharing that loop.
+    client-side timeout sharing that loop. Skips the test with a reason
+    (never errors) when the Docker daemon is unreachable.
     """
+    skip_test_without_docker()
     try:
         started = await asyncio.to_thread(container.start)
     except BaseException:
@@ -460,7 +474,7 @@ async def test_tc3_pg_primary_failover() -> None:
                 try:
                     got_lock = await raw_lock_conn.fetchval(
                         "SELECT pg_try_advisory_lock(hashtextextended($1, 0))",
-                        MAINTENANCE_LEADER_LOCK_NAME,
+                        schema_lock_name("maintenance_leader", schema_name),
                     )
                     assert got_lock is True, (
                         "Failed to acquire advisory lock after container restart"
@@ -481,7 +495,7 @@ async def test_tc3_pg_primary_failover() -> None:
 
                     await raw_lock_conn.execute(
                         "SELECT pg_advisory_unlock(hashtextextended($1, 0))",
-                        MAINTENANCE_LEADER_LOCK_NAME,
+                        schema_lock_name("maintenance_leader", schema_name),
                     )
                 finally:
                     await raw_lock_conn.close()
@@ -527,7 +541,7 @@ async def test_tc4_advisory_lock_release_on_graceful_shutdown(
                 try:
                     got = await probe_conn.fetchval(
                         "SELECT pg_try_advisory_lock(hashtextextended($1, 0))",
-                        MAINTENANCE_LEADER_LOCK_NAME,
+                        schema_lock_name("maintenance_leader", deps.settings.schema_name),
                     )
                     assert got is False, (
                         "Expected lock to be held by leader, but pg_try_advisory_lock returned True"
@@ -553,7 +567,7 @@ async def test_tc4_advisory_lock_release_on_graceful_shutdown(
                 try:
                     got = await fresh_conn.fetchval(
                         "SELECT pg_try_advisory_lock(hashtextextended($1, 0))",
-                        MAINTENANCE_LEADER_LOCK_NAME,
+                        schema_lock_name("maintenance_leader", deps.settings.schema_name),
                     )
                     assert got is True, (
                         "Expected lock to be released after "
@@ -562,7 +576,7 @@ async def test_tc4_advisory_lock_release_on_graceful_shutdown(
                     )
                     await fresh_conn.execute(
                         "SELECT pg_advisory_unlock(hashtextextended($1, 0))",
-                        MAINTENANCE_LEADER_LOCK_NAME,
+                        schema_lock_name("maintenance_leader", deps.settings.schema_name),
                     )
                 finally:
                     await fresh_conn.close()
@@ -602,7 +616,7 @@ async def test_tc5_lock_name_collision(pg_dsn: str) -> None:
             try:
                 got = await blocker_conn.fetchval(
                     "SELECT pg_try_advisory_lock(hashtextextended($1, 0))",
-                    MAINTENANCE_LEADER_LOCK_NAME,
+                    schema_lock_name("maintenance_leader", deps.settings.schema_name),
                 )
                 assert got is True
 

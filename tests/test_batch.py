@@ -23,7 +23,7 @@ from taskq.batch import BatchCompletionStatus, BatchHandle, EnqueueItem
 from taskq.client._handle import JobHandle
 from taskq.client._jobs import JobsClient
 from taskq.constants import MAX_IDEMPOTENCY_KEY_BYTES
-from taskq.exceptions import MaxPendingExceededError, PayloadValidationError
+from taskq.exceptions import BackpressureError, PayloadValidationError
 from taskq.testing.clock import FakeClock
 from taskq.testing.in_memory import InMemoryBackend
 
@@ -826,7 +826,16 @@ class TestTIGinNegSequentialScanForTextExtraction:
 
 @pytest.mark.integration
 class TestTI7500ActorAggregatedMaxPending:
-    """500-actor aggregated max_pending check (single round-trip)."""
+    """500-actor batch admission stays one backend call, one grouped count.
+
+    The aggregated count query itself now lives in the backend tier
+    (``_batch_cap_refusals`` — the client-side pre-check was removed with
+    #149 because it aborted whole mixed-actor calls), so the count is
+    unit-pinned against the fake-conn harness in
+    tests/test_batch_cap_partition.py; this integration pin guards the
+    caller-visible shape: one ``enqueue_batch`` backend call for the
+    whole 500-actor batch, all within their caps, all admitted.
+    """
 
     async def test_500_actors_single_count_pending_call(self, pg_dsn: str) -> None:
         import asyncpg
@@ -853,22 +862,34 @@ class TestTI7500ActorAggregatedMaxPending:
             EnqueueItem(actor_ref=ref, payload=_Payload(value=i)) for i, ref in enumerate(mp_actors)
         ]
 
-        count_pending_calls = 0
-        original_count_pending = PostgresBackend.count_pending_jobs
+        enqueue_batch_calls = 0
+        original_enqueue_batch = PostgresBackend.enqueue_batch
 
-        async def _counting_count_pending(
-            backend_self: PostgresBackend, actors: list[str]
-        ) -> dict[str, int]:
-            nonlocal count_pending_calls
-            count_pending_calls += 1
-            return await original_count_pending(backend_self, actors)
+        async def _counting_enqueue_batch(
+            backend_self: PostgresBackend,
+            args_list: list[object],
+            *,
+            connection: object | None = None,
+            enforce_max_pending: bool = True,
+        ) -> list[object]:
+            nonlocal enqueue_batch_calls
+            enqueue_batch_calls += 1
+            return await original_enqueue_batch(
+                backend_self,
+                args_list,
+                connection=connection,
+                enforce_max_pending=enforce_max_pending,
+            )  # type: ignore[arg-type]  # Why: wrapper delegates with same args
 
-        with patch.object(PostgresBackend, "count_pending_jobs", _counting_count_pending):
+        with patch.object(PostgresBackend, "enqueue_batch", _counting_enqueue_batch):
             async with TaskQ(dsn=pg_dsn, schema=schema) as tq:
                 handle = await tq.enqueue_batch(items)
 
         assert handle.size == 500
-        assert count_pending_calls == 1
+        assert enqueue_batch_calls == 1, (
+            "the whole 500-actor batch must stay ONE backend enqueue_batch call "
+            "(one grouped admission count inside it), not one per actor"
+        )
 
 
 def _make_mp_actor_fn(idx: int) -> Any:
@@ -991,17 +1012,27 @@ class TestTN1MixedValidInvalidPayloadsFailEntirely:
         assert count == 0
 
 
-# ── MaxPendingExceededError when max_pending exceeded ────────────
+# ── Single-actor batch over cap: typed refusal, nothing admitted ──
 
 
 @pytest.mark.integration
 class TestTN2MaxPendingExceededError:
-    """MaxPendingExceededError when max_pending exceeded — all-or-nothing."""
+    """Single-actor batch over its cap: refused whole with the typed batch error.
+
+    Every item belongs to the one over-cap actor, so the backend's
+    per-actor partition (#149) admits nothing and raises
+    BatchMaxPendingExceededError — a BackpressureError sibling of
+    MaxPendingExceededError, deliberately not a subclass — with zero
+    rows written. Mixed-actor partition (healthy actors admitted) is
+    pinned in tests/test_batch_cap_partition.py and
+    tests/test_backend_equivalence.py.
+    """
 
     async def test_max_pending_exceeded_raises(self, pg_dsn: str) -> None:
         import asyncpg
 
         from taskq import TaskQ
+        from taskq.exceptions import BatchMaxPendingExceededError
         from taskq.migrate import apply_pending
 
         schema = "taskq_test_batch_tn2"
@@ -1021,11 +1052,12 @@ class TestTN2MaxPendingExceededError:
         ]
 
         async with TaskQ(dsn=pg_dsn, schema=schema) as tq:
-            with pytest.raises(MaxPendingExceededError) as exc_info:
+            with pytest.raises(BatchMaxPendingExceededError) as exc_info:
                 await tq.enqueue_batch(items)
 
-        assert exc_info.value.actor == _limited_actor.name
-        assert isinstance(exc_info.value, MaxPendingExceededError)
+        assert exc_info.value.admitted_count == 0
+        assert exc_info.value.refused_indices == {_limited_actor.name: list(range(10))}
+        assert isinstance(exc_info.value, BackpressureError)
 
         conn = await asyncpg.connect(pg_dsn)
         try:
@@ -1066,10 +1098,16 @@ class TestTN3EmptyBatchRaisesValueErrorBeforeDB:
             args_list: list[object],
             *,
             connection: object | None = None,
+            enforce_max_pending: bool = True,
         ) -> list[object]:
             nonlocal enqueue_batch_calls
             enqueue_batch_calls += 1
-            return await original_enqueue_batch(backend_self, args_list, connection=connection)  # type: ignore[arg-type]  # Why: wrapper delegates with same args
+            return await original_enqueue_batch(
+                backend_self,
+                args_list,
+                connection=connection,
+                enforce_max_pending=enforce_max_pending,
+            )  # type: ignore[arg-type]  # Why: wrapper delegates with same args
 
         async with TaskQ(dsn=pg_dsn, schema=schema) as tq:
             with patch.object(PostgresBackend, "enqueue_batch", _counting_enqueue_batch):
@@ -1109,10 +1147,16 @@ class TestTN4OversizedBatchRaisesValueErrorBeforeDB:
             args_list: list[object],
             *,
             connection: object | None = None,
+            enforce_max_pending: bool = True,
         ) -> list[object]:
             nonlocal enqueue_batch_calls
             enqueue_batch_calls += 1
-            return await original_enqueue_batch(backend_self, args_list, connection=connection)  # type: ignore[arg-type]  # Why: wrapper delegates with same args
+            return await original_enqueue_batch(
+                backend_self,
+                args_list,
+                connection=connection,
+                enforce_max_pending=enforce_max_pending,
+            )  # type: ignore[arg-type]  # Why: wrapper delegates with same args
 
         items = [_make_item(i) for i in range(1001)]
         async with TaskQ(dsn=pg_dsn, schema=schema) as tq:

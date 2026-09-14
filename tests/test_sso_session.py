@@ -183,3 +183,27 @@ def test_logout_clears_cookie() -> None:
     set_cookie = resp.headers.get("set-cookie", "")
     assert "taskq_session=" in set_cookie
     assert "Max-Age=0" in set_cookie or "expires=" in set_cookie.lower()
+
+
+# ── repr does not leak the signing key ────────────────────────────────────
+
+
+def test_repr_masks_secret() -> None:
+    """repr(SessionManager) never embeds the cookie-signing key.
+
+    The secret can forge session cookies, so it is a credential; the default
+    dataclass repr would print it into any log or debugger that reprs the
+    manager. Non-secret knobs stay visible so the repr stays useful.
+    """
+    manager = SessionManager(secret="session-signing-key-DO-NOT-PRINT", max_age_seconds=3600)
+    r = repr(manager)
+    assert "session-signing-key-DO-NOT-PRINT" not in r
+    assert "taskq_session" in r  # cookie_name still visible
+    assert "max_age_seconds=3600" in r
+
+
+def test_secret_remains_required_first_constructor_argument() -> None:
+    """field(repr=False) adds no default: secret stays required, so every
+    existing SessionManager(secret=..., ...) call site is untouched."""
+    with pytest.raises(TypeError, match="secret"):
+        SessionManager()  # type: ignore[reportCallIssue]  # Why: deliberately omitting the required secret to pin that the repr change added no default.

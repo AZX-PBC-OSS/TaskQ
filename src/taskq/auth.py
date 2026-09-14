@@ -57,7 +57,7 @@ than pairing a fresh password with a stale username.
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from urllib.parse import parse_qs, quote, urlencode, urlparse, urlunparse
 
@@ -99,7 +99,12 @@ class PgCredential:
     preserved.
     """
 
-    password: str
+    # Why repr=False: the default dataclass repr embeds the token a provider
+    # just fetched - the exact credential this module exists to keep out of
+    # DSN strings (see make_pg_pool_factory); repr'd into a log or debugger
+    # is the same leak. field() adds no default, so construction is
+    # unchanged. username stays repr-able: a principal name, not a secret.
+    password: str = field(repr=False)
     username: str | None = None
 
 
@@ -108,7 +113,10 @@ class RedisCredential:
     """A Redis credential issued by a rotating-credential provider."""
 
     username: str
-    password: str
+    # Why repr=False: same masking rationale as PgCredential.password - the
+    # bearer token / password must not survive a repr; username (the
+    # managed-identity object ID / principal) is not a credential.
+    password: str = field(repr=False)
 
 
 # --- Provider protocols ---

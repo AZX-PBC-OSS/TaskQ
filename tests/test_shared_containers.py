@@ -23,6 +23,7 @@ from collections.abc import Iterator
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
@@ -136,6 +137,70 @@ def test_labeled_pids_collects_parseable_pids_across_all_owner_labels() -> None:
 def test_pid_alive_self_true_and_reaped_child_false() -> None:
     assert sc.pid_alive(os.getpid()) is True
     assert sc.pid_alive(_dead_pid()) is False
+
+
+# ── Daemon reachability (the portability seam) ─────────────────────────────
+
+
+def test_docker_unreachable_reason_is_none_when_ping_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A reachable daemon (``ping()`` returns) is not a reason to skip."""
+    monkeypatch.setattr("docker.from_env", lambda **_kwargs: SimpleNamespace(ping=lambda: None))
+    assert sc.docker_unreachable_reason() is None
+
+
+def test_docker_unreachable_reason_reports_daemon_connection_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The SDK's daemon-down shape (``DockerException`` from ``ping()``)
+    becomes the skip reason — exactly what a container start would hit."""
+    from docker.errors import DockerException
+
+    def _from_env(**_kwargs: object) -> object:
+        def _ping() -> None:
+            raise DockerException("Error while fetching server API version")
+
+        return SimpleNamespace(ping=_ping)
+
+    monkeypatch.setattr("docker.from_env", _from_env)
+    reason = sc.docker_unreachable_reason()
+    assert reason is not None
+    assert reason.startswith("Docker daemon unreachable")
+    assert "server API version" in reason
+
+
+def test_docker_unreachable_reason_reports_transport_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An absent socket / refused connection (``OSError`` family) is also a
+    daemon-unreachable reason — the DOCKER_HOST-pointing-nowhere case."""
+
+    def _from_env(**_kwargs: object) -> object:
+        def _ping() -> None:
+            raise FileNotFoundError("no such socket")
+
+        return SimpleNamespace(ping=_ping)
+
+    monkeypatch.setattr("docker.from_env", _from_env)
+    reason = sc.docker_unreachable_reason()
+    assert reason is not None
+    assert "no such socket" in reason
+
+
+def test_skip_test_without_docker_skips_with_reason_when_unreachable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(sc, "docker_unreachable_reason", lambda: "Docker daemon unreachable (down)")
+    with pytest.raises(pytest.skip.Exception, match="Docker daemon unreachable"):
+        sc.skip_test_without_docker()
+
+
+def test_skip_test_without_docker_is_a_no_op_when_reachable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(sc, "docker_unreachable_reason", lambda: None)
+    sc.skip_test_without_docker()
 
 
 # ── Sweep decision ──────────────────────────────────────────────────────────

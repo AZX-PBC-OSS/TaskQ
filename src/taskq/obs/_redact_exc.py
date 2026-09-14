@@ -15,8 +15,11 @@ Two concrete leaks, both verified by execution rather than assumed:
   ``idempotency_key``, ``identity_key`` and ``fairness_key`` are all
   caller-supplied and routinely carry tenant or subject identifiers.
 * **Credentials in URI-shaped text.** Any ``scheme://user:password@host``
-  appearing in a message is masked, so a DSN that reaches an exception by any
-  route cannot be forwarded verbatim.
+  (the empty-username ``scheme://:password@host`` form included) and any
+  password-family query parameter (``?password=…`` / ``&password=…``)
+  appearing in a message is masked, so a DSN that reaches an exception by
+  any route cannot be forwarded verbatim, in whichever spelling it carries
+  the credential.
 
 Scope, deliberately narrow: only ``DETAIL`` is dropped. ``HINT`` is Postgres's
 suggested fix and ``CONTEXT`` is the PL/pgSQL call stack -- both structural,
@@ -82,7 +85,25 @@ _PG_DETAIL_ESCAPED_RE = re.compile(
 )
 
 #: userinfo in a URI. Group 1 is the scheme+user, group 2 the password.
-_URI_CRED_RE = re.compile(r"(\b[a-zA-Z][a-zA-Z0-9+.-]*://[^\s:/@]+):([^\s@]+)@")
+#:
+#: The username class is ``*``, not ``+``: an EMPTY username is a real shape —
+#: ``postgresql://:SECRET@host/db`` is what a DSN renders when only a
+#: password is set — and ``+`` skipped it entirely, shipping the password
+#: verbatim. With ``*`` group 1 is the bare scheme prefix, so the masked
+#: form still reads ``scheme://:***@host``.
+_URI_CRED_RE = re.compile(r"(\b[a-zA-Z][a-zA-Z0-9+.-]*://[^\s:/@]*):([^\s@]+)@")
+
+#: password-family credentials in a URI QUERY STRING. Group 1 is the ``?``/``&``
+#: delimiter plus the parameter name — kept verbatim so the masked form still
+#: names which setting carried the credential — and group 2 is the value. The
+#: name set is deliberately tight to the password family: broader names
+#: (``secret``, ``token``, …) would redact non-credential parameters, which
+#: is its own bug. The value class stops at whitespace, ``&`` (the next
+#: parameter) and ``@`` (the userinfo boundary), so it never overruns the
+#: parameter it belongs to. No scheme prefix is demanded: a query string
+#: rides on bare ``host/db?password=…`` text too, and gating on ``://``
+#: would miss exactly that shape.
+_URI_PARAM_CRED_RE = re.compile(r"([?&](?:password|passphrase|passwd|pwd)=)([^\s&@]+)")
 
 #: Default bound on scrubbed message text. 2000 to match
 #: ``web/admin/jobs.py``'s ``_TRACEBACK_DISPLAY_LIMIT`` — one number for "how
@@ -124,7 +145,18 @@ def _scrub_text(text: str) -> str:
     :data:`_PG_DETAIL_RE`, and the literal ``\\n`` ``repr()`` flattens them
     into by :data:`_PG_DETAIL_ESCAPED_RE`.
 
-    The credential mask is applied unconditionally, outside the
+    Both credential shapes are masked: userinfo (``scheme://user:pass@host``,
+    empty username included) by :data:`_URI_CRED_RE`, then password-family
+    query parameters (``?password=…`` / ``&password=…``) by
+    :data:`_URI_PARAM_CRED_RE`. The order is safe for a DSN carrying both at
+    once (``scheme://user:SECRET@host/db?password=OTHER``): the userinfo
+    password class stops only at whitespace/``@`` and so claims the whole
+    userinfo password even when it embeds query-param-looking text, the
+    param value class excludes ``@`` and so cannot reach back into userinfo,
+    and neither mask's ``***`` output contains anything the other regex can
+    re-match — each fires exactly once.
+
+    The credential masks are applied unconditionally, outside the
     ``_redaction_enabled`` guard: the debugging case that wants a row value
     never wants a password, and a DSN reaching a telemetry vendor is a
     credential disclosure regardless of why redaction was relaxed.
@@ -132,7 +164,8 @@ def _scrub_text(text: str) -> str:
     if _redaction_enabled:
         text = _PG_DETAIL_RE.sub("", text)
         text = _PG_DETAIL_ESCAPED_RE.sub("", text)
-    return _URI_CRED_RE.sub(r"\1:***@", text)
+    text = _URI_CRED_RE.sub(r"\1:***@", text)
+    return _URI_PARAM_CRED_RE.sub(r"\1***", text)
 
 
 def set_exception_message_max_chars(limit: int) -> None:

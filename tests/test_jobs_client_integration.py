@@ -4,8 +4,6 @@ Covers:
 - JobsClient.enqueue against the PG backend with pg_notify actually firing.
 """
 
-from datetime import UTC, datetime
-
 import pytest
 from pydantic import TypeAdapter
 
@@ -36,7 +34,7 @@ class TestJobsClientIntegration:
             payload={"value": 1},
             max_attempts=3,
             retry_kind="transient",
-            scheduled_at=datetime.now(UTC),
+            scheduled_at=None,
         )
 
         job_row = await backend.enqueue(args)

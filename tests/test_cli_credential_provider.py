@@ -379,7 +379,10 @@ def test_migrate_up_uses_credential_provider(monkeypatch: pytest.MonkeyPatch) ->
         async def __aexit__(self, *_: object) -> None:
             return None
 
-    monkeypatch.setattr("taskq.migrate.migration_advisory_lock", lambda _conn: _NullLock())
+    monkeypatch.setattr(
+        "taskq.migrate.migration_advisory_lock",
+        lambda _conn, **_kwargs: _NullLock(),
+    )
 
     result = runner.invoke(
         app, ["migrate", "up", "--pg-credential-provider", f"{_MODULE}:PROVIDER"]

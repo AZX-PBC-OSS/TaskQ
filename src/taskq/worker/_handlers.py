@@ -39,6 +39,7 @@ import asyncpg
 import structlog
 from opentelemetry import trace
 
+from taskq._json import sanitize_nul_str
 from taskq.backend._protocol import (
     AttemptOutcome as BackendAttemptOutcome,
 )
@@ -219,10 +220,14 @@ async def _handle_timeout(
     *,
     error_reporter: ErrorReporter | None = None,
 ) -> AttemptOutcome:
+    # The message and traceback are derived from an uncontrolled exception:
+    # rejecting them (the ErrorInfo guard's job for caller-supplied text)
+    # would strand the very job the text describes — the terminal write
+    # must land with the defect visible as an escape sequence.
     error_info = ErrorInfo(
         error_class=type(exc).__name__,
-        error_message=str(exc) or "start_to_close",
-        error_traceback=_format_exc(exc),
+        error_message=sanitize_nul_str(str(exc) or "start_to_close"),
+        error_traceback=sanitize_nul_str(_format_exc(exc)),
     )
     log.warning(
         "job_timeout",
@@ -615,10 +620,14 @@ async def _handle_generic_exception(
     *,
     error_reporter: ErrorReporter | None = None,
 ) -> AttemptOutcome:
+    # The message and traceback are derived from an uncontrolled exception:
+    # rejecting them (the ErrorInfo guard's job for caller-supplied text)
+    # would strand the very job the text describes — the terminal write
+    # must land with the defect visible as an escape sequence.
     error_info = ErrorInfo(
         error_class=type(e).__name__,
-        error_message=str(e),
-        error_traceback=_format_exc(e),
+        error_message=sanitize_nul_str(str(e)),
+        error_traceback=sanitize_nul_str(_format_exc(e)),
     )
     log.warning(
         "job_exception",

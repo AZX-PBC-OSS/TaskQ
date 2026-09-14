@@ -179,9 +179,17 @@ remaining steps. Later steps only execute when earlier ones did not match or rai
    configured `unique_states`. On match, returns the existing handle with `was_existing=True` and
    skips all remaining steps.
 3. **Singleton pre-flight** — if `ref.singleton` is `True`, checks for an existing active job for
-   this actor. Raises `SingletonCollisionError` on collision.
+   this actor. Raises `SingletonCollisionError` on collision. Cron fires now carry the same
+   `metadata["singleton"]` stamp and pre-flight — previously the flag was client-enqueue-only
+   (see [Cron Scheduling — singleton and `max_pending` interaction](cron.md#singleton-and-max_pending-interaction)).
 4. **`max_pending` count check** — if `ref.max_pending` is set, counts `pending + scheduled` jobs
-   for this actor. Raises `MaxPendingExceededError` when `count >= max_pending`.
+   for this actor. Raises `MaxPendingExceededError` when `count >= max_pending`. The cap is
+   exact for serial producers and approximate under concurrency: the count and the INSERT are
+   separate statements with no lock between them, so concurrent producers can each pass the
+   check before anyone's insert commits — the overshoot is bounded by the number of racing
+   producers, never unbounded. Crons and single-process producers are exact. An exact cap
+   under concurrency would need a lock on the count path (as `unique_for` takes); if you need
+   that guarantee, tell us.
 5. **`idempotency_key` upsert** — if `idempotency_key` is provided and matches an existing row,
    returns the existing handle with `was_existing=True`.
 6. **Job INSERT** — inserts the new row and returns a handle with `was_existing=False`.
@@ -366,8 +374,16 @@ dispatched**. If you batch future-scheduled jobs with deadlines, size
 - `len(items) > 1000` raises `ValueError`.
 - **All** payloads are validated before any INSERT. A single validation failure raises
   `PayloadValidationError` and leaves no rows inserted.
-- `max_pending` is checked in one aggregated query across all actors in the batch.
-  Any violation raises `MaxPendingExceededError` before the INSERT.
+- `max_pending` admission is **partitioned per actor**: the backend counts existing
+  `pending + scheduled` per actor in one aggregated query, admits every within-cap
+  actor's items, and refuses an over-cap actor's items as a whole group (never
+  partially filled up to the cap). When any actor is refused, the within-cap actors'
+  items are still enqueued and `BatchMaxPendingExceededError` raises afterwards —
+  it names each refused actor, the refused item indices into `items`, and the
+  admitted count. Retry only the refused items, or give items `idempotency_key`s
+  so a whole-batch retry deduplicates. The atomic path (`failure_policy`/`finalizer`
+  set, no `connection`) keeps all-or-nothing: a cap violation rolls back the entire
+  single transaction and raises plain `MaxPendingExceededError` with nothing committed.
 - Idempotency-key collisions return the existing `JobHandle` with `was_existing=True`,
   same as single-item `enqueue()`.
 
@@ -448,15 +464,15 @@ Enqueues jobs via the PG `COPY FROM` protocol for maximum throughput. Returns th
 | Max batch size | 1,000 | 50,000 |
 | Idempotency key | Yes (ON CONFLICT) | No (duplicate key aborts entire batch) |
 | Return value | `BatchHandle` with `JobHandle` per item | `int` (row count) |
-| `max_pending` check | Yes | No |
-| Partial success | Yes | No (all-or-nothing atomicity) |
+| `max_pending` check | Yes — per-actor partition | Yes — per-actor partition |
+| Partial success | Cap refusals partition per actor (typed error after partial write); idempotency collisions return existing handles | Cap refusals partition per actor (typed error after partial write); COPY is all-or-nothing on constraint violations |
 
 ### Limitations
 
 - **No idempotency-key collision handling.** A duplicate key raises `asyncpg.UniqueViolationError` and aborts the entire batch. Callers must pre-deduplicate.
-- **No max_pending check.** The caller is responsible for ensuring actor limits are not exceeded.
+- **`max_pending` is enforced with the same per-actor partition as `enqueue_batch()`**: within-cap actors' rows are written, an over-cap actor's items are refused, and `BatchMaxPendingExceededError` raises after the COPY commits — retry only the refused items (indices on the error), or rely on idempotency keys.
 - **No JobHandle instances.** Only the inserted count is returned. Use `batch_id` to query rows post-insert.
-- **All-or-nothing.** The COPY fails entirely on any constraint violation — singleton, unique index, or CHECK constraint.
+- **All-or-nothing on constraint violations.** The COPY fails entirely on any constraint violation — singleton, unique index, or CHECK constraint. Only cap admission partitions.
 
 See [ops.md — Fan-out at scale](ops.md#5-fan-out-at-scale-chunks-cursors-idempotency) for the
 batch-API chooser table and the chunking patterns that avoid these limits.
@@ -656,8 +672,22 @@ async def enqueue_from_generator(client: JobsClient, doc_ids: Iterable[str]) -> 
 When `failure_policy` or `finalizer` is set and `connection` is `None`, the
 entire operation is delegated to `Backend.enqueue_batch_atomic` for
 single-transaction atomicity. Otherwise, chunks are inserted via
-`Backend.enqueue_batch` on the caller-owned connection, with the batch row and
-finalizer created as the last statements.
+`Backend.enqueue_batch`: with a caller-supplied connection all chunks share
+that connection's open transaction (one transaction aggregate — the caller
+owns the boundary); with **no connection each chunk is its own pool
+transaction**, so progress commits incrementally, chunk by chunk.
+
+**No-connection failure surface:** when chunk *N* fails (cap refusal,
+payload validation, a driver error), chunks `1..N-1` — plus the refusing
+chunk's within-cap actors, under the per-actor `max_pending` partition —
+are already durably committed, nothing is returned (the `BatchHandle` is
+only constructed after the stream drains), and the call raises. A cap
+refusal raises `BatchMaxPendingExceededError` with stream-global refused
+item indices and an `admitted_count` covering every committed item; items
+after the refusing chunk were never attempted. **A blind retry of the full
+iterable would duplicate the committed prefix** — retry safely by giving
+items `idempotency_key`s (a retry deduplicates against the committed rows)
+or by resuming from the refused items.
 
 ---
 
@@ -1031,10 +1061,10 @@ async def cancel_where(
 ) -> BulkCancelResult: ...
 ```
 
-Cancel all jobs matching `filter` in a single set-based operation. Pending/scheduled
-jobs go straight to terminal `cancelled`; running jobs get `cancel_phase=1` (cooperative
-cancel) — the worker's heartbeat observes the phase change and sets the in-process
-`cancel_event` at the next tick.
+Cancel all jobs matching `filter` using set-based SQL, drained in bounded committed
+batches. Pending/scheduled jobs go straight to terminal `cancelled`; running jobs get
+`cancel_phase=1` (cooperative cancel) — the worker's heartbeat observes the phase change
+and sets the in-process `cancel_event` at the next tick.
 
 **Guardrail:** a filter with no predicates (no `queue`, `status`, `actor`,
 `identity_key`, `batch_id`, `tags`, or `active`) is rejected with `EmptyFilterError`
@@ -1044,9 +1074,12 @@ unless `allow_empty_filter=True` is passed. This prevents accidental full-table 
 `active`. The `limit`, `cursor`, and `order_by` fields are ignored — a bulk cancel is
 not paginated.
 
-**Snapshot boundary:** jobs matching the filter that are enqueued *after* the
-statement's snapshot escape this call. Stop producers first, or issue a follow-up call;
-the returned counts make non-convergence detectable.
+**Snapshot boundary:** the drain re-runs its driving statement per batch, each under a
+fresh snapshot, so a matching job enqueued mid-drain is picked up by a later batch. Jobs
+enqueued after the *final* batch's snapshot escape this call. Stop producers first, or
+issue a follow-up call; the returned counts make non-convergence detectable. A
+mid-operation failure leaves the batches that already committed as durable partial
+progress, and a re-run continues where it stopped — already-cancelled rows are skipped.
 
 ```python
 result = await client.cancel_where(
@@ -1071,10 +1104,14 @@ Frozen Pydantic model returned by `cancel_where()`.
 | `cancel_requested_ids` | `list[UUID]` | IDs of running jobs with cancel requested. |
 | `total_affected` | `int` (property) | `cancelled_directly + cancel_requested`. |
 
-For tenant-scale cancels (10^5+ matching rows), partition via filter (e.g.
-`JobFilter(queue=..., tags=...)` to split by queue). A single transaction covering 10^6
-rows would hold locks too long. The counts let the caller verify completeness and issue
-follow-up calls for remaining partitions.
+For tenant-scale cancels (10^5+ matching rows), the drain makes progress batch by
+batch — no single transaction ever holds locks on more than `event_writer_batch_size`
+rows — so a very large match set costs time, not lock-hold. The cancel NOTIFYs to
+running jobs' workers are sent once, after the drain completes, in one batched
+statement. Partitioning via filter (e.g. `JobFilter(queue=..., tags=...)` to split by
+queue) is no longer required for lock safety, but remains useful when you want
+per-partition counts or parallel calls. The counts let the caller verify completeness
+and issue follow-up calls for remaining partitions.
 
 ---
 
@@ -1337,6 +1374,7 @@ All exceptions are in `taskq.exceptions`. Import directly:
 
 ```python
 from taskq.exceptions import (
+    BatchMaxPendingExceededError,
     MaxPendingExceededError,
     SingletonCollisionError,
     PayloadValidationError,
@@ -1348,10 +1386,18 @@ from taskq.exceptions import (
 | Exception | Raised when |
 |---|---|
 | `MaxPendingExceededError` | `enqueue()` called when `pending + scheduled` count >= `max_pending`. Fields: `actor` (str), `current_count` (int), `max_pending` (int). |
+| `BatchMaxPendingExceededError` | A bulk enqueue (`enqueue_batch()` / `enqueue_batch_fast()` / the chunked arm of `enqueue_batch_streaming()`) partitioned admission per actor and refused some: the within-cap actors' items were inserted first, then this raises. Fields: `refusals` (list of `MaxPendingExceededError`, one per over-cap actor), `refused_indices` (actor -> indices into the caller's items), `admitted_count` (int). Not a `MaxPendingExceededError` subclass — part of the batch is already stored; retry only the refused items or rely on idempotency keys. An `except BackpressureError` handler catches this too and must consult `admitted_count` / `refused_indices` before any whole-batch retry. |
 | `SingletonCollisionError` | `enqueue()` called for a singleton actor that already has an active job. Fields: `actor` (str), `blocking_job_id` (UUID or None), `retry_after` (timedelta or None). |
 | `PayloadValidationError` | Pydantic validation of the payload fails at enqueue time or at dispatch time. Non-retryable regardless of retry policy. Fields: `actor`, `payload_schema_ver`, `validation_errors`. |
 | `JobFailed` | `JobHandle.wait()` observed a non-success terminal status. Field: `row` (JobRow) with `status`, `error_class`, `error_message`, `error_traceback`. |
 | `ResultUnavailable` | `JobHandle.wait()` observed `"succeeded"` but no usable result is stored (TTL expired, `None` returned where `R` is non-`None`). Field: `row` (JobRow). |
+
+**Catching backpressure generically.** `MaxPendingExceededError`, `SingletonCollisionError`, and
+`BatchMaxPendingExceededError` all subclass `BackpressureError`, so `except BackpressureError` is a
+valid catch-all for enqueue-time backpressure — with one hazard: the batch variant raises **after
+the within-cap actors' items are stored**, so a generic handler that retries the whole batch
+duplicates them. Consult `admitted_count` / `refused_indices` before retrying (retry only the
+refused items, or rely on `idempotency_key`s to deduplicate a whole-batch retry).
 
 ```python
 from taskq.exceptions import JobFailed, ResultUnavailable

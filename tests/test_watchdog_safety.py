@@ -513,6 +513,7 @@ async def test_health_socket_secured_when_tasks_enabled(tmp_path: Path) -> None:
     """
     import os
     import stat
+    import sys
     from types import SimpleNamespace
     from typing import cast
 
@@ -520,6 +521,22 @@ async def test_health_socket_secured_when_tasks_enabled(tmp_path: Path) -> None:
     from taskq.worker.health import HealthServer
 
     sock_path = str(tmp_path / "health.sock")
+    # Why a length-guarded skip (environmental, not a code defect): macOS caps
+    # AF_UNIX sun_path at 104 bytes (Linux: 108), and pytest's tmp_path on a
+    # long-temp-dir machine renders this socket path ~128 bytes, so
+    # asyncio.start_unix_server fails with "AF_UNIX path too long" before the
+    # permission assertion can even run. The constraint is a property of the
+    # TEST HARNESS's path, not the code under test — production
+    # TASKQ_HEALTH_SOCKET_PATH values (e.g. /run/taskq/health.sock) sit far
+    # below the cap. Skipped only when the harness path itself cannot bind;
+    # platforms with short tmp dirs (Linux CI) still execute the assertion.
+    _sun_path_limit = 104 if sys.platform == "darwin" else 108
+    if len(sock_path.encode()) >= _sun_path_limit:
+        pytest.skip(
+            f"AF_UNIX sun_path limit on this platform ({_sun_path_limit} bytes) is "
+            f"below the pytest tmp_path socket path ({len(sock_path.encode())} "
+            "bytes): the bind fails before the assertion can run"
+        )
     settings = WorkerSettings.load_from_dict(
         {
             "TASKQ_PG_DSN": "postgresql://x:x@localhost/x",
@@ -1720,7 +1737,11 @@ async def test_cron_multi_statement_tick_gap_stays_within_budget(
         SimpleNamespace(
             liveness=liveness,
             is_leader=is_leader,
-            settings=SimpleNamespace(schema_name="taskq", dispatcher_command_timeout=2.5),
+            # cron_tick_limit: read by _cron_loop as the tick's cap (mirrors
+            # the WorkerSettings default, DEFAULT_EVENT_WRITER_BATCH_SIZE).
+            settings=SimpleNamespace(
+                schema_name="taskq", dispatcher_command_timeout=2.5, cron_tick_limit=100
+            ),
         ),
     )
     leader = MaintenanceLeader(
@@ -2059,7 +2080,11 @@ async def test_cron_loop_treats_transient_error_as_retry_not_fatal(
         SimpleNamespace(
             liveness=liveness,
             is_leader=is_leader,
-            settings=SimpleNamespace(schema_name="taskq", dispatcher_command_timeout=2.5),
+            # cron_tick_limit: read by _cron_loop as the tick's cap (mirrors
+            # the WorkerSettings default, DEFAULT_EVENT_WRITER_BATCH_SIZE).
+            settings=SimpleNamespace(
+                schema_name="taskq", dispatcher_command_timeout=2.5, cron_tick_limit=100
+            ),
         ),
     )
     leader = MaintenanceLeader(
@@ -2306,7 +2331,11 @@ async def test_cron_timeout_branch_sleeps_before_next_tick(
         SimpleNamespace(
             liveness=liveness,
             is_leader=is_leader,
-            settings=SimpleNamespace(schema_name="taskq", dispatcher_command_timeout=0.1),
+            # cron_tick_limit: read by _cron_loop as the tick's cap (mirrors
+            # the WorkerSettings default, DEFAULT_EVENT_WRITER_BATCH_SIZE).
+            settings=SimpleNamespace(
+                schema_name="taskq", dispatcher_command_timeout=0.1, cron_tick_limit=100
+            ),
         ),
     )
     leader = MaintenanceLeader(
@@ -2539,7 +2568,11 @@ async def test_transient_pg_errors_doc_describes_query_canceled_correctly(
         SimpleNamespace(
             liveness=liveness,
             is_leader=is_leader,
-            settings=SimpleNamespace(schema_name="taskq", dispatcher_command_timeout=2.5),
+            # cron_tick_limit: read by _cron_loop as the tick's cap (mirrors
+            # the WorkerSettings default, DEFAULT_EVENT_WRITER_BATCH_SIZE).
+            settings=SimpleNamespace(
+                schema_name="taskq", dispatcher_command_timeout=2.5, cron_tick_limit=100
+            ),
         ),
     )
     leader = MaintenanceLeader(

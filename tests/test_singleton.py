@@ -212,7 +212,12 @@ def _pg_singleton_args(
         payload={},
         max_attempts=3,
         retry_kind="transient",
-        scheduled_at=datetime.now(UTC),
+        # None = immediate: the enqueue SQL stamps the server clock and
+        # decides status in the same statement. A Python-clock stamp sits
+        # ahead of the database clock by the app-to-DB skew, so the status
+        # CASE can land the row 'scheduled' under load — a race this seed
+        # has no reason to take.
+        scheduled_at=None,
         metadata={"singleton": True},
         schedule_to_close=schedule_to_close,
         idempotency_key=IdempotencyKey(idempotency_key) if idempotency_key is not None else None,
@@ -232,7 +237,12 @@ def _pg_non_singleton_args(
         payload={},
         max_attempts=3,
         retry_kind="transient",
-        scheduled_at=datetime.now(UTC),
+        # None = immediate: the enqueue SQL stamps the server clock and
+        # decides status in the same statement. A Python-clock stamp sits
+        # ahead of the database clock by the app-to-DB skew, so the status
+        # CASE can land the row 'scheduled' under load — a race this seed
+        # has no reason to take.
+        scheduled_at=None,
         idempotency_key=IdempotencyKey(idempotency_key) if idempotency_key is not None else None,
     )
 
@@ -679,7 +689,12 @@ async def test_property_singleton_invariant_pg(
                             payload={},
                             max_attempts=3,
                             retry_kind="transient",
-                            scheduled_at=datetime.now(UTC),
+                            # None = immediate: the enqueue SQL stamps the server clock and
+                            # decides status in the same statement. A Python-clock stamp sits
+                            # ahead of the database clock by the app-to-DB skew, so the status
+                            # CASE can land the row 'scheduled' under load — a race this seed
+                            # has no reason to take.
+                            scheduled_at=None,
                             metadata={"singleton": True},
                         )
                     )
