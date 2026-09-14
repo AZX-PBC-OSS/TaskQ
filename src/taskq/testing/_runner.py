@@ -714,22 +714,28 @@ async def run_until_drained(backend: "InMemoryBackend") -> None:
             # Cooperative-cancel mirror: production's consume_one_job marks
             # the row cancelled on the CancelledError path and re-raises;
             # the worker's task boundary absorbs that raise and the worker
-            # keeps dispatching. The runner awaits the actor inline, so
-            # this per-dispatch catch is that boundary. The discriminator
-            # between a cooperative cancel (the stub's check_cancelled()
-            # raised — only possible once the job's registered cancel event
-            # is set, the controller's phase-1-then-phase-2 protocol) and
-            # an external cancellation of the drain task itself (callers
-            # cancel run_until_drained — the job-handle timeout suite runs
-            # it as a cancellable task) is the event: set → absorb and keep
-            # draining; unset → the caller's cancel, propagate. On the
+            # keeps dispatching — for every actor-originated raise, whether
+            # the documented check_cancelled() style or the actor ending
+            # itself with its own asyncio.CancelledError (the two are
+            # indistinguishable inside consume_one_job, and production
+            # treats them identically: same shielded mark, same re-raise,
+            # same absorption at the boundary). The runner awaits the actor
+            # inline, so this per-dispatch catch is that boundary. The
+            # discriminator is the drain task's own cancellation state, not
+            # the job's cancel event: a pending cancel request on the
+            # current task (Task.cancelling() > 0) means the cancellation
+            # targets the drain itself — the caller's stop always wins and
+            # must propagate, exactly as a production worker stops when its
+            # dispatch task is cancelled, even if the interrupted job also
+            # had a cancel requested; no pending request means the raise
+            # was actor-originated — absorb it and keep draining. On the
             # absorb arm production's CancelledError handler applies the
             # batch hook with "cancelled" best-effort before the re-raise
             # — the row is terminal, so the batch completes immediately,
             # GoodJob-aligned — and the mirror does the same: the outcome
             # is set here and the shared hook call below applies it.
-            cancel_event = backend._cancel_events.get(job.id)  # pyright: ignore[reportPrivateUsage]  # Why: test runner helper intentionally accesses private InMemoryBackend state; this module is co-located with the backend and owns this access pattern.
-            if cancel_event is None or not cancel_event.is_set():
+            task = asyncio.current_task()
+            if task is not None and task.cancelling() > 0:
                 raise
             outcome = "cancelled"
 
