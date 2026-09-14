@@ -255,9 +255,11 @@ difference is not a matter of degree.
 that `WHERE` clause matches the partial unique index, it is not a filter on `status`. A key
 therefore collides against a row in **any** status, `succeeded` and `failed` included, for as long
 as the row exists in `jobs` (see [No TTL](#idempotency_key) above; the horizon is
-`prune_retention_*`). The collision is silent and successful: `DO NOTHING` fires, the follow-up
-SELECT returns the old row, and you get a handle with `was_existing=True` for a job that may have
-finished weeks ago.
+`prune_retention_*`). The collision is successful, and no longer silent: `DO NOTHING` fires, the
+follow-up SELECT returns the old row, and you get a handle with `was_existing=True` for a job
+that may have finished weeks ago — plus an `enqueue_deduplicated` log line carrying the target's
+`status`, `existing_job_id`, and `dedup_reason`, emitted at WARNING level when the target is
+terminal (the case that almost always indicates a bug).
 
 **`unique_for` does filter on status** — it matches only `unique_states` (default
 `("pending", "scheduled", "running")`) inside the window — but the preflight runs only when

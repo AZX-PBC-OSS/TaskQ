@@ -736,7 +736,11 @@ finding at the call site.
   "not while one is live" is what you want; see
   [sweeps.md — Idempotency by role](sweeps.md#idempotency-by-role).
 - **Assert it in code:** treat `was_existing is True` on a successor enqueue as an error rather
-  than a success — it is the only signal this failure produces.
+  than a success.
+- **Alert on the log:** an `enqueue_deduplicated` line at **WARNING** level means the dedup
+  target was terminal — the work this enqueue asked for will not run. The line carries the
+  target's `status`, `existing_job_id`, and `dedup_reason`, so this failure now surfaces in logs
+  without any code change.
 
 ---
 
@@ -888,7 +892,7 @@ collision is pure work loss.
 |---|---|
 | Key derived from a value the handler advances | Keying on the row's `updated_at` (or a version the handler bumps) means cancellation leaves the key unchanged forever — the corpse swallows every retrigger. |
 | Fixed business key, no attempt axis | `f"extract:{file_id}"` collides with the cancelled row for the whole retention window. |
-| Re-posting after any terminal status | The same applies to `failed`: a post-fix rerun of a failed batch silently no-ops onto the dead jobs. |
+| Re-posting after any terminal status | The same applies to `failed`: a post-fix rerun of a failed batch no-ops onto the dead jobs — every hit logs `enqueue_deduplicated` at WARNING (the target is terminal), but no job is created. |
 
 ### Diagnosis
 
@@ -923,60 +927,86 @@ call site the retrigger returns `was_existing=True`.
 
 ---
 
-## 19. `job_events` and `job_attempts` grow without bound
+## 19. `job_events` and `job_attempts` growth — retention bounds one, not the other
 
 ### Symptom
 
 The `taskq` schema becomes the largest thing in the database and keeps growing, while
-job throughput is unremarkable. `job_events` runs to millions of rows. `jobs_archive`
-is empty or tiny, so it looks like `prune` has never reclaimed anything.
+job throughput is unremarkable.
 
-A production deployment measured 2,074,421 `reservation_denied` attempts against
+The two tables no longer share a fate. `job_events` now has age-based retention: the
+leader's sweep deletes rows older than `TASKQ_EVENT_RETENTION_PERIOD` (default 7 days;
+`timedelta(0)` disables the sweep; the lock-expired crash-reclaim outbox slice is exempt
+at any setting) **regardless of parent-job status** — so even rows hanging under a
+still-looping job are reclaimed. `job_attempts` has no equivalent: its rows reach
+`job_attempts_archive` only when prune reaches a **terminal** owning job, so rows under a
+non-terminal job remain prune-unreachable and can still accumulate without bound.
+
+The scale unchecked growth reaches, from a production deployment measured before the
+denial-counters contract landed: 2,074,421 `reservation_denied` attempts against
 168,963 successes — a **12.3:1 ratio** — for 2.5 GB across `job_events` (1,602 MB) and
 `job_attempts` (911 MB): **32% of a 7.85 GB database was denial bookkeeping.**
 
 ### Cause
 
-A job denied a `ConcurrencyReservation` slot writes **four durable rows per denial
-cycle** — one `job_attempts` row with `outcome='reservation_denied'` plus three
-`job_events` transitions (`running→scheduled`, `scheduled→pending`, `pending→running`)
-— and then tries again. Measured at ~1,193 bytes per denial.
+Until the denial-counters contract (below), a job denied a `ConcurrencyReservation` slot
+wrote **four durable rows per denial cycle** — one `job_attempts` row with
+`outcome='reservation_denied'` plus three `job_events` transitions (`running→scheduled`,
+`scheduled→pending`, `pending→running`) — and then tried again. Measured at ~1,193 bytes
+per denial. Two properties made that unbounded rather than self-limiting:
 
-Two properties make that unbounded rather than self-limiting:
-
-1. **A denial does not consume retry budget.** `mark_snoozed`'s `SET` list contains no
+1. **A denial did not consume retry budget.** `mark_snoozed`'s `SET` list contained no
    `attempt` assignment, and `attempt` is incremented only by the dispatch lease — so
-   both sides of `attempt < max_attempts` advance together and the gap is invariant. The
-   failure gate is unreachable via denials. The only terminal exit is `deadline_failed`,
-   which requires `schedule_to_close`: **a job without `schedule_to_close` can be denied
-   forever.** One production job reached `attempt=1015/1018` over 6h12m before
-   succeeding.
-2. **`prune` cannot reach the rows.** `prune_terminal_jobs` keys on
+   both sides of `attempt < max_attempts` advanced together and the gap was invariant.
+   The failure gate was unreachable via denials. The only terminal exit was
+   `deadline_failed`, which required `schedule_to_close`: **a job without
+   `schedule_to_close` could be denied forever.** One production job reached
+   `attempt=1015/1018` over 6h12m before succeeding.
+2. **`prune` could not reach the rows.** `prune_terminal_jobs` keys on
    `status = ANY(TERMINAL_STATUSES) AND finished_at < cutoff`. A denial-looping job is
-   never terminal and has `finished_at` reset to `NULL` on every denial, so the FK
-   cascade that removes `job_events` never fires. `job_events` also has no archive table
-   and appears in no expiry CTE — note the asymmetry, since `job_attempts` *is*
+   never terminal and had `finished_at` reset to `NULL` on every denial, so the FK
+   cascade that removes `job_events` never fired. `job_events` also had no archive table
+   and appeared in no expiry CTE — note the asymmetry, since `job_attempts` *is*
    preserved into `job_attempts_archive`.
 
-There is no setting that suppresses the event trail: the three inserts are
-unconditional and run inside `asyncio.shield`.
+Mechanically, the denial write is **one fused statement inside `asyncio.shield`** —
+status update, attempt row, and `running→scheduled` event in a single round trip —
+while the `scheduled→pending` promotion and the `pending→running` dispatch event are
+written by separate transactions (the leader's promotion sweep and the dispatch lease),
+so a denial cycle's four rows were never one suppressible transaction.
+
+**The shipped contract.** The denial-churn behaviour is versioned away in
+[upgrading.md — Reservation and rate-limit denials are counters, not event
+rows](upgrading.md#reservation-and-rate-limit-denials-are-counters-not-event-rows):
+denials write no per-occurrence `job_attempts`/`job_events` rows and no longer raise
+`max_attempts` — a denial increments the bounded `snooze_count` /
+`rate_limit_blocked_count` counter columns on the job row instead. A non-`indefinite`
+job with no `schedule_to_close` now terminally fails with `MaxAttemptsExceeded` when
+its retry budget is spent, rather than snoozing forever. The observability is the
+`taskq.ratelimit.denials` OTEL counter (the rate-limit backend is its one label).
+`job_events` growth from any era is additionally bounded by the retention sweep
+described above. What the contract does **not** change: `job_attempts` rows under a job
+that has not reached a terminal status are still written by genuine attempt activity
+and still have no reachable cleanup path.
 
 ### Diagnosis
 
-```sql
--- Denial-to-success ratio, and which actors are paying it.
-SELECT j.queue, a.outcome, count(*) AS attempts, count(DISTINCT j.actor) AS actors
-FROM taskq.job_attempts a JOIN taskq.jobs j ON j.id = a.job_id
-WHERE a.outcome IN ('reservation_denied', 'succeeded')
-GROUP BY 1, 2 ORDER BY 3 DESC;
+The denial-pressure signal moved from row counts to the counter: watch
+`taskq.ratelimit.denials`. Historical `job_attempts.outcome='reservation_denied'` rows
+are pre-contract residue — they stop accumulating under the contract, but rows already
+written leave `job_attempts` only when prune reaches their terminal job. The remaining
+growth signal is `job_attempts` under non-terminal jobs:
 
+```sql
 -- Attempts per job: ~1.0 is healthy, >2 means churn.
 SELECT j.actor, count(*) AS attempts, count(DISTINCT j.id) AS jobs,
        round(count(*)::numeric / nullif(count(DISTINCT j.id), 0), 3) AS per_job
 FROM taskq.job_attempts a JOIN taskq.jobs j ON j.id = a.job_id
 GROUP BY 1 HAVING count(*) > 1000 ORDER BY per_job DESC;
 
--- Is any of it prunable? Rows hanging off a non-terminal job never are.
+-- Events by owning-job status. Retention deletes these after
+-- TASKQ_EVENT_RETENTION_PERIOD regardless of status, so a persistent
+-- non-terminal slice means fresh writes (or retention disabled).
 SELECT j.status, count(e.*) AS events, pg_size_pretty(sum(pg_column_size(e.*))) AS sz
 FROM taskq.job_events e JOIN taskq.jobs j ON j.id = e.job_id
 GROUP BY 1 ORDER BY 2 DESC;
@@ -984,11 +1014,13 @@ GROUP BY 1 ORDER BY 2 DESC;
 
 ### Fix
 
-The churn is **oversubscription**, not load. Excess admission pressure is
+The churn is **oversubscription**, not load — that finding produced the measurements
+above and the arithmetic is contract-independent. Excess admission pressure is
 `Σ(per-actor max_concurrent) ÷ queue ceiling`; denial rate scales with it. One
 production tier ran 389 actor slots against a ceiling of 20 (**19.4×**) and minted
 ~1.06M denials/day. Splitting the socket-bound actors onto their own tier took the same
-fleet to **1.60×** and **6,341 denials/day** — a 167× reduction, 1.27 GB/day to ~8 MB/day.
+fleet to **1.60×** and **6,341 denials/day** — a 167× reduction, 1.27 GB/day to ~8 MB/day
+of denial writes under the old regime.
 
 - **Separate tiers by what a job OCCUPIES**, not by how expensive it feels. An LLM call
   holds a socket, not a core; putting it on a CPU tier sized for OCR is what creates the
@@ -997,11 +1029,15 @@ fleet to **1.60×** and **6,341 denials/day** — a 167× reduction, 1.27 GB/day
   `await asyncio.sleep()`s *inside* the job holds its slot and **cannot** generate a
   denial. An actor that releases its slot and re-queues is what mints them. This is the
   bound that matters — not the size of the ceiling.
-- **Set `schedule_to_close`** on anything that claims a reservation, so a denial loop has
-  a terminal exit at all.
-- **Do not expect retention to reclaim a live loop.** Retention
-  (`TASKQ_PRUNE_RETENTION_SUCCEEDED`, default 30d) only helps once the owning jobs reach
-  a terminal status; rows under a still-looping job have no reachable cleanup path.
+- **Set `schedule_to_close`** on anything that claims a reservation. The contract gives
+  every non-`indefinite` job a terminal exit — `MaxAttemptsExceeded` when the retry
+  budget is spent, or `DeadlineExceeded` at the deadline — but a wall-clock bound is
+  still the right answer for "this work is pointless if it has not finished within N".
+- **Retention bounds `job_events`, not `job_attempts`.** `TASKQ_EVENT_RETENTION_PERIOD`
+  (default 7 days) reclaims event rows even under still-looping jobs. `job_attempts`
+  rows under a non-terminal job still have no cleanup path until the job goes terminal
+  and prune reaches it — and `TASKQ_PRUNE_RETENTION_SUCCEEDED` (default 30d) only runs
+  then.
 
 ---
 

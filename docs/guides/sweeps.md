@@ -1,9 +1,14 @@
-# Sweeps
+# Sweep Patterns
 
 A **sweep** is a recurring pass over a population of rows that need work: candidates to screen,
 records to refresh, searches to evaluate, files to extract. It is the most common shape of
 background work after plain request-triggered jobs, and it is the shape that most often ships
 looking correct and draining at a fraction of the rate its author intended.
+
+A note on the word: this guide is about *your* recurring passes over *your* data. TaskQ's own
+internal **maintenance sweeps** — the leader's repair loops that reclaim expired locks, fail
+overdue deadlines, promote due schedules, and expire old rows — are a different subject with
+their own guide, `docs/guides/maintenance-sweeps.md`.
 
 This guide prescribes one shape and names the four failure modes that come from departing from
 it. The shape is:
@@ -285,8 +290,10 @@ against a row in *any* status, `succeeded` included, for as long as that row phy
 So a recursive successor carrying the same idempotency key as its predecessor collapses onto that
 predecessor's own `succeeded` row. `DO NOTHING` fires, the follow-up SELECT returns the dead
 predecessor, the caller gets a handle with `was_existing=True`, and **no job is created**. The
-chain stops after one link. No exception, no failed job, nothing in a dashboard — the enqueue
-"succeeded" and returned a handle to a job that finished hours ago.
+chain stops after one link. No exception, no failed job — and the collision is not invisible:
+every idempotency hit logs `enqueue_deduplicated` with the target's status, at WARNING level
+when the target is terminal, so this exact case (a `succeeded` predecessor) leaves a log trail
+even though the enqueue "succeeded" and returned a handle to a job that finished hours ago.
 
 Conversely, the `unique_for` preflight *does* filter on status, but it only runs at all when
 **both** `unique_for` and `identity_key` are present:
@@ -424,7 +431,10 @@ A link that is *progressing normally* calls `enqueue` for its successor. If the 
 at the cap, that enqueue raises, the link fails, and **the walk ends**. Worse, it is sticky: the
 retry re-walks the same page and enqueues into the same full queue, so it fails again for the same
 reason. A backpressure signal has become a chain-terminating error, and the retry cannot clear it
-because the retry is not what filled the queue.
+because the retry is not what filled the queue. (The cap check itself is serialized per actor by
+a bounded advisory lock; a racer that cannot acquire the lock within its budget gets
+`MaxPendingLockTimeoutError` — the same shed-the-enqueue treatment as the cap, never an
+unbounded wait.)
 
 Two ways out, both better than a cap on the chained actor:
 
@@ -443,7 +453,8 @@ Two ways out, both better than a cap on the chained actor:
     contributes to a dispatch round before any actor's second-ranked job is taken. Ten thousand
     pending leaves therefore cannot crowd out the one pending root that would advance the chain.
     This holds in both queue dispatch modes: `strict_fifo` keeps the per-actor partition and is
-    FIFO only *within* an actor. What the per-actor ranking does **not** give you is global
+    ordered *within* an actor by priority, then time — not strictly FIFO. What the per-actor
+    ranking does **not** give you is global
     priority — a high-priority job of one actor loses to a low-priority job of another at a
     better rank. See [workers.md — Queue dispatch modes](workers.md#queue-dispatch-modes).
 
@@ -457,7 +468,7 @@ on is a guard whose lifetime is the root's lifetime, because a thin root outlive
 | Approach | Verdict |
 |---|---|
 | `unique_for` + `identity_key` on the root | Correct for suppressing a duplicate *root*. Does **not** cover the descendants: the root succeeds in seconds and the window frees while the chain runs. |
-| `singleton=True` on the root | Same blind spot, plus a sharper edge: three consecutive collisions **auto-disable the schedule permanently** (`cron_auto_disable_threshold=3`). See [ops.md — Cron and scheduled workloads](ops.md#cron-and-scheduled-workloads). |
+| `singleton=True` on the root | Same blind spot — it covers the root only, not the descendants. A colliding cron fire is **suppressed, not failed**: no failure strike, no auto-disable, and the next due tick re-evaluates. See [cron.md — Singleton and `max_pending` interaction](cron.md#singleton-and-max_pending-interaction) and [ops.md — Cron and scheduled workloads](ops.md#cron-and-scheduled-workloads). |
 | `unique_for` on the *successor* | **Wrong and chain-fatal.** A successor would dedup against its own `running` parent and the chain would end at link one. |
 | An app-level run guard | **The robust option.** A row per sweep run with a status; the root refuses to start when a run is `active`, and a link marks it finished on the short page. |
 
@@ -529,9 +540,11 @@ One more failure worth recognising, because it inverts the usual relationship be
 status and reality: **100% of jobs reporting success while every run is failing.**
 
 When a worker dies mid-job, its **lock lease** expires (`TASKQ_LOCK_LEASE`, 60 s by default) and
-the leader's expired-lock sweep reclaims the row. Note the trigger is the lock lease, not
-`heartbeat_timeout` — that per-job column is stored but not currently enforced by any sweep. What
-the reclaim does depends on the retry budget:
+the leader's expired-lock sweep reclaims the row. The trigger is the lock lease, not
+`heartbeat_timeout`: no worker or reclaim sweep reads a per-job heartbeat timeout — the column is
+stored but unenforced — and any enqueue now **refuses** the parameter with a `ValueError` instead
+of accepting and silently ignoring it, so no caller can set it. Reclaim latency is therefore
+`TASKQ_LOCK_LEASE` and nothing else. What the reclaim does depends on the retry budget:
 
 ```sql
 SET status = CASE

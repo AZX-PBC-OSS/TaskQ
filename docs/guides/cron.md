@@ -320,10 +320,14 @@ including the cursor and idempotency rules a self-enqueuing chain requires, is
 
 Because a chain can then outlive its own cadence, decide overlap deliberately. A cron fire does
 **not** check whether the previous fire is still running, and there is no cron-level overlap
-setting; the suppression options — and the trap that `singleton=True` turns each overlap into a
-fire failure that auto-disables the schedule after
-`TASKQ_CRON_AUTO_DISABLE_THRESHOLD` (default 3) — are set out in
-[ops.md — Cron and scheduled workloads](ops.md#cron-and-scheduled-workloads) and
+setting: suppression comes from the actor's own flags. Cron fires honor `singleton` and
+`max_pending` exactly like client enqueues, and a blocked fire is **suppressed, not failed** —
+no `last_fire_error` write, no `consecutive_failures` strike in either direction, no
+auto-disable. `TASKQ_CRON_AUTO_DISABLE_THRESHOLD` (default 3) counts only genuine failures —
+payload factory errors and the like — so an actor that is merely busy is never punished for it.
+The semantics are set out in
+[Singleton and `max_pending` interaction](#singleton-and-max_pending-interaction),
+[ops.md — Cron and scheduled workloads](ops.md#cron-and-scheduled-workloads), and
 [sweeps.md — Single-flight the chain](sweeps.md#single-flight-the-chain).
 
 Some passes genuinely must be cron-paced: one whose next query returns the same rows until its
@@ -362,7 +366,7 @@ operator to run `taskq migrate up`.
 ## See also
 
 - [Actors](actors.md) — `@actor` decorator reference
-- [Sweeps](sweeps.md) — the page/fan-out/recurse pattern for cron-triggered batch work
+- [Sweep Patterns](sweeps.md) — the page/fan-out/recurse pattern for cron-triggered batch work
 - [Operations & Adoption](ops.md#cron-and-scheduled-workloads) — overlap suppression and its traps
 - [Workers](workers.md) — maintenance leader, cron loop, sweep loops
 - [Configuration](configuration.md) — `TASKQ_CRON_CATCH_UP_WINDOW`, `TASKQ_CRON_AUTO_DISABLE_THRESHOLD`, and other settings

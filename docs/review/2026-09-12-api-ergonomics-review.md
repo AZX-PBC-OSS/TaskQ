@@ -10,6 +10,39 @@ the remedy proposed here.
 
 ---
 
+## Post-stack addendum — 2026-09-13
+
+The design stack that followed this review has landed. Four verdicts are affected; none is
+reversed. Banner note: `src/` line citations throughout the body below are pinned to the
+pre-stack review commit (`9157b31`) and are historical — line numbers and some cited shapes
+have moved since.
+
+- **P1 (dedup observability): half landed.** The logging half is in: every idempotency hit
+  now logs `enqueue_deduplicated` carrying the target's status, at **WARNING** level when
+  the target is terminal. The proposed `JobHandle.deduplicated_onto_terminal` property has
+  **not** landed — it remains the open half of #140.
+- **P5 (`max_pending` and successor enqueues): the supporting premise is inverted, and the
+  verdict is stronger.** The review noted that `enqueue_batch_streaming` and
+  `enqueue_batch_fast` "already do not enforce" `max_pending`. Post-stack, **all** batch
+  arms enforce per-actor caps and refuse over-cap items with `BatchMaxPendingExceededError`
+  (admitted items commit first; the refusal carries the refused indices for selective
+  retry). The case against exempting successors no longer has a batch-path counterexample
+  to lean on — do not exempt them.
+- **P6 (rate limits and the failure budget): the citation moved.** `Snooze` and
+  `RetryAfter(consume_budget=False)` are no longer implemented as bare
+  `max_attempts + 1`; the statements now saturate at the smallint ceiling —
+  `LEAST(max_attempts + 1, 32767)`. The finding itself (budget-free primitives already
+  ship and are documented) is unchanged.
+- **P8 (a first-class sweep/fan-out abstraction): the vocabulary collision worsened.** The
+  internal sweep inventory grew — an event-retention sweep among the additions — and the
+  operational sweeps now have a dedicated guide, `docs/guides/maintenance-sweeps.md`. The
+  companion this review said to wait for has landed as `docs/guides/sweeps.md` ("Sweep
+  Patterns"). A user-facing `@sweep` decorator would now collide with a named, documented,
+  guide-level concept; the "must not be called sweep" bar is higher than when the body
+  below was written.
+
+---
+
 ## 0. The framing that matters
 
 Every single defect class below is **already documented**, most of them in the `ops.md` guide that
