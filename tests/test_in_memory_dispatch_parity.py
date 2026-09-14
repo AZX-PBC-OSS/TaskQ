@@ -6,34 +6,41 @@ dispatch seam — same inputs, same rows, same order.
 The existing equivalence guards (``test_in_memory_read_isolation`` /
 ``test_in_memory_seam_registry``) only pin ALIASING and method presence:
 they check that a returned row is a fresh object and that every protocol
-method exists. Neither observes what ``dispatch_batch`` actually SELECTS,
-so two semantic divergences survive them — and both are silent, because
-the in-memory mirror is the greener of the two:
+method exists. Neither observes what ``dispatch_batch`` actually SELECTS.
+Three semantic divergences were found that way — all silent, because the
+in-memory mirror was the greener of the two — and all three are now fixed
+and behaviourally pinned by the tests in this file:
 
-1. An EMPTY ``queues`` list. InMemory filters with ``not queues or
-   row.queue in queues``, so ``[]`` means "match ALL". PG builds the
+1. An EMPTY ``queues`` list. InMemory filtered with ``not queues or
+   row.queue in queues``, so ``[]`` meant "match ALL". PG builds the
    candidate set with ``CROSS JOIN LATERAL unnest(queues)``, and an empty
    array yields zero rows — the CROSS JOIN annihilates every candidate, so
-   ``[]`` means "match NOTHING". A suite that dispatches with ``[]`` sees
+   ``[]`` means "match NOTHING". A suite that dispatched with ``[]`` saw
    work flow in memory while a real worker polls forever claiming nothing.
 
-2. A NULL ``fairness_key`` under ``round_robin``. InMemory synthesises a
+2. A NULL ``fairness_key`` under ``round_robin``. InMemory synthesised a
    SINGLETON partition per unkeyed job (``f"__null__{r.id}"``), so every
-   unkeyed job ranks 1 and crowds to the front of the interleave. PG uses
+   unkeyed job ranked 1 and crowded to the front of the interleave. PG uses
    ``PARTITION BY COALESCE(j2.fairness_key, '__null__')`` — ONE shared
    partition, ranking 1, 2, 3…, which deliberately de-prioritises the
    unkeyed cohort behind the keyed ones. ``fairness_key`` is None by
-   default, so this is the common case, and the in-memory shape is exactly
-   the round-robin starvation the mode exists to prevent.
+   default, so this was the common case, and the in-memory shape was
+   exactly the round-robin starvation the mode exists to prevent.
+
+3. ``cancel_where`` returned ids in the mirror's default priority-first
+   ``_list_jobs`` ordering while PG returns them UUID-ascending
+   (``array_agg(id ORDER BY id)`` over ``ORDER BY id`` windows).
 
 PG is production: these tests assert the PG result and flag InMemory as
-the backend that diverged. Both drive the SAME job set (same ids, same
-``fairness_key``s, same ``scheduled_at``) through both backends and
-compare WHICH jobs a bounded ``dispatch_batch`` claims. The comparison is
-on the claimed SET, not on the RETURNING sequence: ``UPDATE … RETURNING``
+the backend that diverged. The dispatch pins drive the SAME job set (same
+ids, same ``fairness_key``s, same ``scheduled_at``) through both backends
+and compare WHICH jobs a bounded ``dispatch_batch`` claims. The comparison
+is on the claimed SET, not on the RETURNING sequence: ``UPDATE … RETURNING``
 gives no row order guarantee, so selection — which jobs a limited batch
 admits and which it defers — is the observable both backends owe each
-other, and it is exactly what each divergence changes.
+other, and it is exactly what each divergence changed. The registry in
+``tests/test_backend_semantic_parity_registry.py`` walks the two backends'
+shared surface so the next divergence fails on arrival.
 """
 
 from datetime import UTC, datetime, timedelta

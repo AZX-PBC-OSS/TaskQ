@@ -14,8 +14,9 @@ Mechanics live in the canonical guides (linked throughout); this page is about *
     4. [observability.md — setup](observability.md#1-opentelemetry-setup)
 
 !!! warning "Know which TaskQ you are actually running"
-    The published PyPI release can be far behind `main`: everything under `[Unreleased]` in the
-    [CHANGELOG](../changelog.md) — keyed rate-limit refs, `cancel_where`, enqueue tags,
+    The published PyPI release can be far behind `main`: everything in the
+    [upgrading guide](upgrading.md)'s *Breaking API changes* / *Silent behaviour changes* /
+    *Unreleased features* sections — keyed rate-limit refs, `cancel_where`, enqueue tags,
     `actor-config` live tuning, the PG rate-limit backend on the dispatch path, dozens of
     operational fixes — exists only in git pins. A `taskq-py>=0.2.2` range can silently resolve
     to the stale release, which carries known hazards the current docs no longer describe (for

@@ -18,6 +18,7 @@ from taskq.backend._protocol import (
     batch_cap_groups,
 )
 from taskq.backend._records import item_jsonb_param, item_tags_jsonb_param
+from taskq.backend.statemachine import TERMINAL_STATUSES
 from taskq.exceptions import (
     BatchMaxPendingExceededError,
     MaxPendingExceededError,
@@ -53,13 +54,14 @@ async def _enqueue(self: "InMemoryBackend", args: EnqueueArgs) -> JobRow:
         if candidates:
             existing_row = max(candidates, key=lambda r: r.created_at)
             logger.info(
-                "job_enqueue_deduplicated",
-                kind="job_enqueue_deduplicated",
+                "enqueue_deduplicated",
+                kind="enqueue_deduplicated",
                 job_id=str(existing_row.id),
                 actor=existing_row.actor,
                 queue=existing_row.queue,
                 identity_key=existing_row.identity_key,
                 idempotency_key=None,
+                status=existing_row.status,
                 existing_job_id=str(existing_row.id),
                 dedup_reason="unique_for",
             )
@@ -141,17 +143,26 @@ async def _enqueue(self: "InMemoryBackend", args: EnqueueArgs) -> JobRow:
         if existing_id is not None:
             existing_row = self._jobs.get(existing_id)
             if existing_row is not None:
-                logger.info(
-                    "job_enqueue_deduplicated",
-                    kind="job_enqueue_deduplicated",
-                    job_id=str(existing_row.id),
-                    actor=existing_row.actor,
-                    queue=existing_row.queue,
-                    identity_key=existing_row.identity_key,
-                    idempotency_key=existing_row.idempotency_key,
-                    existing_job_id=str(existing_row.id),
-                    dedup_reason="idempotency_key",
-                )
+                fields: dict[str, object] = {
+                    "kind": "enqueue_deduplicated",
+                    "job_id": str(existing_row.id),
+                    "actor": existing_row.actor,
+                    "queue": existing_row.queue,
+                    "identity_key": existing_row.identity_key,
+                    "idempotency_key": existing_row.idempotency_key,
+                    "idempotency_scope": existing_row.idempotency_scope,
+                    "status": existing_row.status,
+                    "existing_job_id": str(existing_row.id),
+                    "dedup_reason": "idempotency_key",
+                }
+                # A terminal target never runs the work again — the key stays
+                # pinned to a dead job until it ages out of retention — so the
+                # hit is louder than the live-job case, which is normal
+                # single-flight operation.
+                if existing_row.status in TERMINAL_STATUSES:
+                    logger.warning("enqueue_deduplicated", **fields)
+                else:
+                    logger.info("enqueue_deduplicated", **fields)
                 return _read_copy(existing_row)
 
     now = self._clock.now()

@@ -411,3 +411,66 @@ def test_saml_rejects_a_replayed_assertion_id() -> None:
         f"second={second.headers['location']!r}"
     )
     assert "taskq_session=" not in second.headers.get("set-cookie", "")
+
+
+def test_saml_replay_rejection_happens_even_when_every_other_check_passes() -> None:
+    """End-to-end discriminating pin for the replay cache.
+
+    The test above can go green at the request-binding gate: with no
+    ``/login`` at all, BOTH presentations are refused for "no pending SAML
+    AuthnRequest" and the replay cache is never reached. This pin first
+    drives two fully accepted logins — asserting each acceptance and its
+    minted session so it cannot pass vacuously — then re-presents assertion
+    B byte-identically while its 1h NotOnOrAfter window is live and a fresh
+    AuthnRequest cookie is in play: the state in which the signature,
+    timestamps, and request binding all still pass, leaving a
+    consumed-assertion-ID record as the only possible rejector.
+
+    The replayed POST needs one more ``/login`` first: the callback drops
+    the request cookie on every outcome (the AuthnRequest ID is single-use),
+    so the previous login's id was already consumed by B's first acceptance
+    — without a fresh login the rejection would come from the binding gate,
+    not the replay cache.
+    """
+    pytest.importorskip("onelogin.saml2.auth")
+    from tests._sso_saml_crypto import build_saml_response
+
+    client = _saml_client(_saml_config())
+
+    def _assert_accepted(resp: Any, what: str) -> None:
+        assert "error=authentication+failed" not in resp.headers.get("location", ""), (
+            f"{what} was not accepted; location={resp.headers['location']!r}"
+        )
+        assert any("taskq_session=" in header for header in resp.headers.get_list("set-cookie")), (
+            f"{what} was accepted but no session cookie was minted"
+        )
+
+    # Login 1 → assertion A accepted, a session minted.
+    client.get(f"{_BASE_PATH}/login", follow_redirects=False)
+    assertion_a = build_saml_response(nameid="user-replay-e2e-a")
+    _assert_accepted(_post_assertion(client, assertion_a), "assertion A")
+
+    # Login 2 → assertion B, a DIFFERENT assertion ID, also accepted.
+    client.get(f"{_BASE_PATH}/login", follow_redirects=False)
+    assertion_b = build_saml_response(nameid="user-replay-e2e-b")
+    assert _assertion_id(assertion_a) != _assertion_id(assertion_b), (
+        "assertions A and B share an assertion ID — B's first presentation "
+        "would already be a replay"
+    )
+    _assert_accepted(_post_assertion(client, assertion_b), "assertion B")
+
+    # A live AuthnRequest binding for the replayed POST: without it the
+    # rejection below would come from the binding gate, not the replay cache.
+    client.get(f"{_BASE_PATH}/login", follow_redirects=False)
+    assert client.cookies.get("taskq_saml_request"), (
+        "no live AuthnRequest cookie at the replayed POST — the rejection "
+        "below would come from the request-binding gate, not the replay cache"
+    )
+
+    replayed = _post_assertion(client, assertion_b)
+
+    assert "error=authentication+failed" in replayed.headers["location"], (
+        "a byte-identical assertion authenticated twice while its NotOnOrAfter "
+        f"window and the request binding were live; location={replayed.headers['location']!r}"
+    )
+    assert "taskq_session=" not in replayed.headers.get("set-cookie", "")

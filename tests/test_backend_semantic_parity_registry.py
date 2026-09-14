@@ -4,30 +4,34 @@ until its in-memory-vs-Postgres *behaviour* is classified.
 The class this file guards: a seam where ``InMemoryBackend`` and
 ``PostgresBackend`` return DIFFERENT RESULTS for the same inputs. Not
 different objects — different answers. Three instances were found this
-way, and all three passed every existing guard (all three are now fixed
-and pinned in ``tests/test_in_memory_dispatch_parity.py``):
+way, and all three passed every existing guard until each was discovered
+by hand. All three are fixed and behaviourally pinned in
+``tests/test_in_memory_dispatch_parity.py``; this registry exists so the
+next one fails on arrival instead of waiting to be found the same way:
 
-1. An empty ``queues`` list means "match ALL" in memory
-   (``testing/_dispatch.py``: ``not queues or row.queue in queues``) and
-   "match NOTHING" in PG (``backend/_dispatch_sql.py``: an empty
-   ``unnest`` in a ``CROSS JOIN LATERAL`` annihilates the candidate set).
-2. A NULL ``fairness_key`` gets a SINGLETON partition per job in memory
+1. An empty ``queues`` list meant "match ALL" in memory
+   (``testing/_dispatch.py`` filtered with ``not queues or row.queue in
+   queues``) and "match NOTHING" in PG (``backend/_dispatch_sql.py``: an
+   empty ``unnest`` in a ``CROSS JOIN LATERAL`` annihilates the candidate
+   set).
+2. A NULL ``fairness_key`` got a SINGLETON partition per job in memory
    (``f"__null__{r.id}"``) and ONE SHARED partition in PG
    (``PARTITION BY COALESCE(j2.fairness_key, '__null__')``), so the
-   unkeyed cohort consumes a whole bounded batch in the mirror while PG
+   unkeyed cohort consumed a whole bounded batch in the mirror while PG
    admits one job per cohort. ``fairness_key`` is None by default.
-3. ``cancel_where`` returns ids sorted by UUID in PG
+3. ``cancel_where`` returned ids sorted by UUID in PG
    (``array_agg(id ORDER BY id)``) and by the default priority-first
    ``_list_jobs`` ordering in memory.
 
 Why the existing guards could not catch any of them:
 ``test_in_memory_read_isolation.py`` and ``test_in_memory_seam_registry.py``
 pin ALIASING (does a seam hand out stored objects?) and SURFACE
-COMPLETENESS (is every public member classified?). Both report green at the
-same commit where the two backends demonstrably select different rows. The
-constitution requires the mirror to be "observably equivalent ... at every
-seam"; those files implement a strict subset of that and read as though they
-implement all of it. This file guards the remaining half: SEMANTICS.
+COMPLETENESS (is every public member classified?). Both reported green at
+the same commit where the two backends demonstrably selected different
+rows. The constitution requires the mirror to be "observably equivalent
+... at every seam"; those files implement a strict subset of that and
+read as though they implement all of it. This file guards the remaining
+half: SEMANTICS.
 
 Precedent: ``tests/test_sweepaudit_bounded_writes.py`` and
 ``tests/test_web_router_factories_fail_closed.py`` — per-site behavioural
