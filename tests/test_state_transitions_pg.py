@@ -97,7 +97,9 @@ class TestFullLifecycle:
             )
         assert row is not None
         assert row["status"] == "scheduled"
-        assert row["attempt"] == 1
+        # The snooze refunds the claim's attempt increment: the row
+        # dispatched at attempt 1 returns to its pre-claim 0.
+        assert row["attempt"] == 0
 
         async with deps.worker_pool.acquire() as conn:
             # 5s margin, not 1s — see TestPollingLifecycle's identical fix
@@ -119,7 +121,8 @@ class TestFullLifecycle:
         )
         assert len(dispatched2) == 1
         assert dispatched2[0].status == "running"
-        assert dispatched2[0].attempt == 2
+        # The re-dispatch re-claims the refunded increment: 0 → 1.
+        assert dispatched2[0].attempt == 1
 
         ok = await backend.mark_succeeded(job_id, worker_id, result={"ok": True})
         assert ok is True

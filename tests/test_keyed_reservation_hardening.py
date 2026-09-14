@@ -335,9 +335,9 @@ async def test_opportunistic_eviction_scan_is_amortized_under_sustained_denials(
     scan_calls: list[timedelta] = []
     real_evict = reg.evict_idle_keyed_reservations
 
-    def _spy_evict(*, idle_for: timedelta) -> int:
+    def _spy_evict(*, idle_for: timedelta, max_pending_reclaims: int | None = None) -> int:
         scan_calls.append(idle_for)
-        return real_evict(idle_for=idle_for)
+        return real_evict(idle_for=idle_for, max_pending_reclaims=max_pending_reclaims)
 
     monkeypatch.setattr(reg, "evict_idle_keyed_reservations", _spy_evict)
 

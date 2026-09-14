@@ -49,6 +49,7 @@ __all__ = [
     "BACKEND_PROTOCOL_VERSION",
     "DST_STRATEGIES",
     "JOB_STATUS_VALUES",
+    "SNOOZE_OUTCOME_VALUES",
     "AttemptOutcome",
     "AttemptRow",
     "Backend",
@@ -80,9 +81,11 @@ __all__ = [
     "ScheduleCreateArgs",
     "ScheduleRecord",
     "ScheduleUpdateArgs",
+    "SnoozeOutcome",
     "parse_batch_status",
     "parse_cancel_phase",
     "parse_retry_kind",
+    "validate_snooze_outcome",
 ]
 
 # ── Protocol version ───────────────────────────────────────────────────
@@ -136,6 +139,23 @@ __all__ = [
 #     the PostgresBackend.sweep_* statics — PG ignored them (the server
 #     clock is the arbiter); an implementation still declaring them fails
 #     loudly with TypeError on the call.
+#     mark_snoozed's `outcome` parameter is narrowed from AttemptOutcome
+#     to SnoozeOutcome ('snoozed' | 'reservation_denied' |
+#     'rate_limit_denied') and validated at the Python boundary: the
+#     five execution outcomes key no arm in the statement, so a caller
+#     passing one left PG firing no arm (job stranded 'running', the
+#     call returning 'noop') while the in-memory twin silently
+#     rescheduled it uncounted.  Both backends now raise ValueError
+#     naming the legal set — loud, not silent, so it folds into the
+#     unreleased v3 rather than bumping.
+#     The non-consuming deferral arms (mark_snoozed's snoozed arm and
+#     mark_retry_after's consume_budget=False arm) floor the effective
+#     delay at MIN_DEFERRAL_INTERVAL (taskq.constants): a zero-delay
+#     deferral reschedules at least that far out instead of parking the
+#     job 'pending' at clock_timestamp() at the head of the dispatch
+#     order — a claim/refund hot loop monopolising a worker slot.
+#     consume_budget=True keeps the raw delay (an immediate consuming
+#     retry is a real execution, bounded by the budget it spends).
 BACKEND_PROTOCOL_VERSION: Final[int] = 3
 
 # ── Type aliases (PEP 695) ─────────────────────────────────────────────
@@ -173,6 +193,53 @@ type AttemptOutcome = Literal[
     "reservation_denied",
     "rate_limit_denied",
 ]
+
+type SnoozeOutcome = Literal["snoozed", "reservation_denied", "rate_limit_denied"]
+"""The outcomes :meth:`Backend.mark_snoozed`'s statement arms key on.
+
+Why narrower than :data:`AttemptOutcome`: the snooze statement's arms
+branch on exactly these three values (the snooze arm's refund/counter
+CASE, the denial-keyed counters, the ``max_attempts`` gate's denial
+predicate).  The five execution outcomes key no arm — a caller passing
+one on a running job left PG firing no arm at all (the row stranded
+``running`` until the lease sweep, the call returning ``"noop"``) while
+the in-memory twin silently rescheduled the job with no counter
+increment, so the two backends disagreed on the same input.  The
+parameter carries this alias at every layer (protocol, both terminals,
+the wrappers, ``FakeBackend``) and
+:func:`validate_snooze_outcome` rejects anything else at the Python
+boundary — PG cannot express a bind-value rejection inside the
+statement, so the boundary owns it.
+"""
+
+SNOOZE_OUTCOME_VALUES: Final[frozenset[SnoozeOutcome]] = frozenset(
+    get_args(SnoozeOutcome.__value__)
+)
+"""Runtime membership set of every :data:`SnoozeOutcome` literal value.
+
+Derived from the ``SnoozeOutcome`` Literal itself (the canonical
+declaration) so the guard's legal set can never drift from the type —
+the same single-source pattern as :data:`JOB_STATUS_VALUES` and
+:data:`DST_STRATEGIES`.
+"""
+
+
+def validate_snooze_outcome(outcome: str) -> None:
+    """Reject an outcome :meth:`Backend.mark_snoozed` has no arm for.
+
+    Raises :class:`ValueError` naming the legal set and the rejected
+    value.  Called by both backends' ``mark_snoozed`` before any state
+    is touched, so they fail identically on an illegal outcome whatever
+    the job's state — never degrading to the ``"noop"`` a fenced-out
+    write would return.
+    """
+    if outcome not in SNOOZE_OUTCOME_VALUES:
+        raise ValueError(
+            f"mark_snoozed outcome must be one of {sorted(SNOOZE_OUTCOME_VALUES)}; "
+            f"got {outcome!r} — the snooze arms key on exactly these deferral "
+            "outcomes; an execution outcome has no arm here"
+        )
+
 
 type RetryKind = Literal["transient", "indefinite", "non_retryable"]
 """Closed set of retry tiers.
@@ -1468,7 +1535,7 @@ class Backend(Protocol):
         metadata_update: dict[str, object] | None = None,
         progress_seq: int = 0,
         progress_state: dict[str, object] | None = None,
-        outcome: AttemptOutcome = "snoozed",
+        outcome: SnoozeOutcome = "snoozed",
     ) -> Literal["scheduled", "failed", "failed:MaxAttemptsExceeded", "noop"]:
         """Release a running job back to the queue without consuming retry
         budget.
@@ -1479,6 +1546,15 @@ class Backend(Protocol):
         (``snooze_count``, or ``rate_limit_blocked_count`` when *outcome*
         is a denial) plus OTEL.  ``max_attempts`` is never raised: the
         ceiling is a bound, not a counter.
+
+        *outcome* admits only the three deferral outcomes
+        (:data:`SnoozeOutcome`) — the statement's arms key on exactly
+        those; an execution outcome has no arm (PG would leave the job
+        stranded ``running``) and raises ``ValueError`` at the boundary
+        on both backends instead.  *delay* is floored at
+        :data:`taskq.constants.MIN_DEFERRAL_INTERVAL`: a non-consuming
+        deferral reschedules at least that far out, so a zero delay
+        cannot park the job at the head of the dispatch order.
 
         The retry budget still bounds the loop: a non-``indefinite`` job
         at ``attempt >= max_attempts`` with no ``schedule_to_close``

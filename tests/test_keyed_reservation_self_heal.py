@@ -21,6 +21,7 @@ drain must itself stay bounded: eviction refuses to record past its
 cap, leaving the entry registered for a later sweep.
 """
 
+import asyncio
 from datetime import timedelta
 from time import monotonic
 from typing import Any
@@ -174,9 +175,7 @@ async def test_busy_denial_issues_no_heal(
         ensure_calls = 0
         real_ensure = ConcurrencyReservation.ensure_slots
 
-        async def _spy_ensure(
-            self: ConcurrencyReservation, pool: "asyncpg.Pool"
-        ) -> None:
+        async def _spy_ensure(self: ConcurrencyReservation, pool: "asyncpg.Pool") -> None:
             nonlocal ensure_calls
             ensure_calls += 1
             await real_ensure(self, pool)
@@ -215,9 +214,7 @@ async def test_heal_window_does_not_survive_eviction_and_re_registration(
         probes = 0
         real_probe = ConcurrencyReservation.slot_rows_exist
 
-        async def _spy_probe(
-            self: ConcurrencyReservation, pool: "asyncpg.Pool"
-        ) -> bool:
+        async def _spy_probe(self: ConcurrencyReservation, pool: "asyncpg.Pool") -> bool:
             nonlocal probes
             probes += 1
             return await real_probe(self, pool)
@@ -380,3 +377,198 @@ async def test_drain_failure_is_counted_and_pending_intact(
         "invisibility)"
     )
     assert reg.has_pending_reservation_reclaims, "a failed drain must keep its backlog"
+
+
+async def test_pending_cap_follows_the_setting_on_the_opportunistic_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The opportunistic eviction records pending reclaims under the
+    SETTING-derived cap: with ``max_keyed_reservations=3``, a second
+    eviction wave finds the pending set at the ceiling, every eviction in
+    the wave is vetoed, and the new key is denied (fail-closed) until the
+    drain empties the pending set. The constant fallback would let pending
+    grow past the setting's ceiling while the tracked entries themselves
+    are capped at it."""
+    from importlib import import_module
+
+    registry_mod = import_module("taskq.ratelimit.registry")
+
+    settings = WorkerSettings.load_from_dict(
+        {
+            "TASKQ_PG_DSN": "postgresql://x:x@localhost/x",
+            "TASKQ_MAX_KEYED_RESERVATIONS": "3",
+        },
+        validate=False,
+    )
+    reg = RateLimitRegistry()
+    ref = _ref("wave-probe", slots=1)
+
+    fake_time = 1000.0
+    monkeypatch.setattr(registry_mod, "monotonic", lambda: fake_time)
+    for key in ("k1", "k2", "k3"):
+        await reg._resolve_reservation_name(  # pyright: ignore[reportPrivateUsage]  # Why: materializing keyed entries without PG, matching the pattern above.
+            ref, payload=_SessionPayload(session_id=key), pg_pool=None, settings=settings
+        )
+    assert len(reg._keyed_reservation_last_used) == 3  # pyright: ignore[reportPrivateUsage]  # Why: the cap is observable as the tracked-entry count.
+
+    # Wave 1: all three idle; a new key hits the cap, the opportunistic
+    # eviction records all three (pending at the setting's ceiling) and
+    # the new key is admitted.
+    fake_time = 5000.0
+    await reg._resolve_reservation_name(  # pyright: ignore[reportPrivateUsage]
+        ref, payload=_SessionPayload(session_id="k4"), pg_pool=None, settings=settings
+    )
+    assert otel_mod._keyed_reclaim_pending == 3  # pyright: ignore[reportPrivateUsage]  # Why: the pending-depth gauge's backing value is the observable signal.
+
+    # Refill to the cap; all idle again.
+    for key in ("k5", "k6"):
+        await reg._resolve_reservation_name(  # pyright: ignore[reportPrivateUsage]
+            ref, payload=_SessionPayload(session_id=key), pg_pool=None, settings=settings
+        )
+    assert len(reg._keyed_reservation_last_used) == 3  # pyright: ignore[reportPrivateUsage]
+    fake_time = 9000.0
+
+    # Wave 2: pending is already at the setting-derived cap, so every
+    # eviction in the wave is vetoed — pending never exceeds the setting
+    # and the new key is denied until the drain empties pending.
+    with pytest.raises(ReservationUnavailable):
+        await reg._resolve_reservation_name(  # pyright: ignore[reportPrivateUsage]
+            ref, payload=_SessionPayload(session_id="k7"), pg_pool=None, settings=settings
+        )
+    assert otel_mod._keyed_reclaim_pending == 3, (  # pyright: ignore[reportPrivateUsage]  # Why: the pending-depth gauge's backing value is the observable signal.
+        "the opportunistic eviction must record under the settings-derived "
+        "cap, not the constant fallback — pending may never exceed the setting"
+    )
+    assert len(reg._keyed_reservation_last_used) == 3, (  # pyright: ignore[reportPrivateUsage]  # Why: the veto is observable as tracked entries the eviction left behind.
+        "vetoed entries must stay registered for the next sweep"
+    )
+    assert "wave-probe:k4" in reg.reservations
+    assert "wave-probe:k6" in reg.reservations
+
+
+async def test_cap_veto_is_logged_once_per_eviction_call() -> None:
+    """At the pending cap, an eviction call that must shed N+1 buckets
+    records N and logs the veto count ONCE: pending at cap means
+    reclamation is falling behind (the drain cannot keep up with the
+    eviction rate) — an onset signal for the operator alongside the
+    steady pending-depth gauge, not a silent skip."""
+    reg = RateLimitRegistry()
+    ref = _ref("veto-probe", slots=1)
+    for i in range(7):
+        await reg._resolve_reservation_name(  # pyright: ignore[reportPrivateUsage]  # Why: materializing keyed entries without PG, matching the pattern above.
+            ref, payload=_SessionPayload(session_id=f"k{i}"), pg_pool=None, settings=None
+        )
+
+    with structlog.testing.capture_logs() as captured:
+        evicted = reg.evict_idle_keyed_reservations(idle_for=timedelta(0), max_pending_reclaims=5)
+
+    assert evicted == 5
+    veto_logs = [e for e in captured if e.get("event") == "registry-keyed-reclaim-pending-cap-veto"]
+    assert len(veto_logs) == 1, (
+        "one aggregated veto line per eviction call — a line per shed entry "
+        "re-creates the flood the aggregation exists to prevent"
+    )
+    assert veto_logs[0]["vetoed"] == 2
+    assert veto_logs[0]["cap"] == 5
+    assert len(reg._keyed_reservation_last_used) == 2, (  # pyright: ignore[reportPrivateUsage]  # Why: the veto is observable as tracked entries the eviction left behind.
+        "shed entries must stay registered for the next sweep"
+    )
+
+
+@pytest.mark.integration
+async def test_cancelled_heal_does_not_leave_a_standing_window_stamp(
+    pg_dsn: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A CancelledError propagating out of the heal probe must not leave
+    the 60-second heal-window stamp set: the next denial probes
+    immediately, instead of being suppressed for the rest of the window
+    by a stamp from a heal that never ran to completion."""
+    await _fresh_schema(pg_dsn)
+
+    pool = await asyncpg.create_pool(dsn=pg_dsn, min_size=1, max_size=2)
+    try:
+        reg = RateLimitRegistry()
+        ref = _ref("cancel-probe", slots=1)
+        settings = _settings(pg_dsn)
+
+        # Job A holds the only slot; the bucket is busy for the whole test.
+        await _acquire(reg, ref, pool, settings)
+
+        probes = 0
+        real_probe = ConcurrencyReservation.slot_rows_exist
+        cancelled_once = False
+
+        async def _cancel_once_probe(self: ConcurrencyReservation, pool: "asyncpg.Pool") -> bool:
+            nonlocal probes, cancelled_once
+            probes += 1
+            if not cancelled_once:
+                cancelled_once = True
+                raise asyncio.CancelledError()
+            return await real_probe(self, pool)
+
+        monkeypatch.setattr(ConcurrencyReservation, "slot_rows_exist", _cancel_once_probe)
+
+        # Job B's denial starts a heal; the probe is cancelled mid-flight
+        # and the cancellation propagates — it is a task teardown, not a
+        # heal outcome, so the composition rollback deliberately lets it
+        # through untouched.
+        with pytest.raises(asyncio.CancelledError):
+            await _acquire(reg, ref, pool, settings)
+
+        # Job C's denial must probe IMMEDIATELY: the cancelled heal left
+        # no standing stamp, so the window does not suppress it.
+        with pytest.raises(ReservationUnavailable):
+            await _acquire(reg, ref, pool, settings)
+        assert probes == 2, (
+            "a cancelled heal must roll its window stamp back — the next "
+            "denial probes immediately instead of waiting out the window"
+        )
+    finally:
+        await pool.close()
+
+
+@pytest.mark.integration
+async def test_heal_failure_counts_every_attempt_but_warns_once_per_window(
+    pg_dsn: str,
+    monkeypatch: pytest.MonkeyPatch,
+    otel_reader: InMemoryMetricReader,
+) -> None:
+    """A persistently-failing probe retries the heal on EVERY denial (the
+    stamp is rolled back so the next denial re-probes): the failure
+    COUNTER records each attempt — metrics aggregate — but the WARNING is
+    rate-limited to one per bucket per heal window. A busy bucket with a
+    broken probe denies on every acquisition; a warning per failure would
+    put one log line per denial into the log."""
+    await _fresh_schema(pg_dsn)
+
+    pool = await asyncpg.create_pool(dsn=pg_dsn, min_size=1, max_size=2)
+    try:
+        reg = RateLimitRegistry()
+        ref = _ref("failwarn-probe", slots=1)
+        settings = _settings(pg_dsn)
+
+        # Job A holds the only slot; the bucket is busy for the whole test.
+        await _acquire(reg, ref, pool, settings)
+
+        async def _failing_probe(self: ConcurrencyReservation, pool: "asyncpg.Pool") -> bool:
+            raise ConnectionError("probe down")
+
+        monkeypatch.setattr(ConcurrencyReservation, "slot_rows_exist", _failing_probe)
+
+        with structlog.testing.capture_logs() as captured:
+            with pytest.raises(ReservationUnavailable):
+                await _acquire(reg, ref, pool, settings)
+            with pytest.raises(ReservationUnavailable):
+                await _acquire(reg, ref, pool, settings)
+
+        assert counter_value(otel_reader, "taskq.ratelimit.reclaim_heal_failures") == 2, (
+            "every failed heal attempt must count — the counter is the aggregate signal"
+        )
+        warn_events = [e for e in captured if e.get("event") == "keyed-reservation-heal-failed"]
+        assert len(warn_events) == 1, (
+            "the heal-failure warning must fire once per bucket per heal window — "
+            "a busy bucket with a failing probe denies on every acquisition"
+        )
+    finally:
+        await pool.close()

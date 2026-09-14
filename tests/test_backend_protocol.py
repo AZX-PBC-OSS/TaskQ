@@ -333,6 +333,27 @@ class TestReturnAnnotations:
             f"'failed:MaxAttemptsExceeded', 'noop'], got {ret}"
         )
 
+    def test_mark_snoozed_outcome_parameter_is_snooze_outcome(self) -> None:
+        """The outcome parameter admits exactly the three deferral
+        outcomes the statement's arms key on.
+
+        It was previously ``AttemptOutcome`` — eight values, five of
+        which key no arm: with ``outcome='succeeded'`` at budget, PG
+        fired no arm (job stranded ``running``, call returned ``noop``)
+        while the in-memory twin silently rescheduled it uncounted. The
+        narrowed Literal makes that disagreement unrepresentable.
+        """
+        from typing import get_args
+
+        hints = get_type_hints(Backend.mark_snoozed)
+        outcome = hints.get("outcome")
+        expected = {"snoozed", "reservation_denied", "rate_limit_denied"}
+        assert outcome is not None and set(get_args(outcome.__value__)) == expected, (  # type: ignore[attr-defined] # Why: PEP 695 type alias introspection
+            f"mark_snoozed's outcome parameter should be SnoozeOutcome — "
+            f"the Literal{sorted(expected)} deferral outcomes its arms key "
+            f"on — got {outcome!r}"
+        )
+
     def test_mark_retry_after_returns_tri_state(self) -> None:
         from typing import get_args
 
@@ -352,6 +373,45 @@ class TestReturnAnnotations:
         hints = get_type_hints(Backend.write_attempt)
         assert hints.get("return") is type(None), (
             f"write_attempt should return None, got {hints.get('return')}"
+        )
+
+
+# ── FakeBackend tracks the protocol signature it pins ──────────────────
+
+
+class TestFakeBackendMarkSnoozedParity:
+    """``FakeBackend`` exists to pin the worker against the protocol; a
+    stale annotation on its own seam certifies calls the protocol
+    forbids. ``mark_snoozed``'s return Literal previously lacked
+    ``"failed:MaxAttemptsExceeded"`` and its ``outcome`` parameter was
+    the wide ``AttemptOutcome`` — both drifted behind the contract the
+    fake is there to enforce.
+    """
+
+    def test_return_literal_matches_protocol(self) -> None:
+        from typing import get_args
+
+        from taskq.testing.actor import FakeBackend
+
+        protocol_ret = get_type_hints(Backend.mark_snoozed)["return"]
+        fake_ret = get_type_hints(FakeBackend.mark_snoozed)["return"]
+        assert set(get_args(fake_ret)) == set(get_args(protocol_ret)), (
+            f"FakeBackend.mark_snoozed return Literal drifted from the "
+            f"protocol: {fake_ret!r} vs {protocol_ret!r}"
+        )
+
+    def test_outcome_parameter_matches_protocol(self) -> None:
+        from typing import get_args
+
+        from taskq.testing.actor import FakeBackend
+
+        protocol_outcome = get_type_hints(Backend.mark_snoozed)["outcome"]
+        fake_outcome = get_type_hints(FakeBackend.mark_snoozed)["outcome"]
+        assert set(get_args(fake_outcome.__value__)) == set(  # type: ignore[attr-defined] # Why: PEP 695 type alias introspection
+            get_args(protocol_outcome.__value__)  # type: ignore[attr-defined] # Why: same
+        ), (
+            f"FakeBackend.mark_snoozed outcome parameter drifted from the "
+            f"protocol: {fake_outcome!r} vs {protocol_outcome!r}"
         )
 
 
@@ -406,6 +466,17 @@ class TestTypeAliases:
             "rate_limit_denied",
         }
         args = set(AttemptOutcome.__value__.__args__)  # type: ignore[attr-defined] # Why: PEP 695 type alias introspection
+        assert args == expected
+
+    def test_snooze_outcome_literal_values(self) -> None:
+        """SnoozeOutcome — the narrowed outcome set mark_snoozed's arms
+        key on — exists as its own alias so every layer (protocol, PG
+        terminal, in-memory twin, FakeBackend) shares one source of
+        truth instead of re-declaring a Literal that can drift wide."""
+        from taskq.backend._protocol import SnoozeOutcome
+
+        expected = {"snoozed", "reservation_denied", "rate_limit_denied"}
+        args = set(SnoozeOutcome.__value__.__args__)  # type: ignore[attr-defined] # Why: PEP 695 type alias introspection
         assert args == expected
 
 

@@ -35,7 +35,7 @@ that exemption and is as load-bearing as the red tests.
 """
 
 from datetime import UTC, datetime, timedelta
-from typing import Protocol, cast
+from typing import Final, Protocol, cast
 from uuid import UUID
 
 import asyncpg
@@ -140,7 +140,20 @@ async def _drive_denial_loop(
         await _relock_for_next_dispatch(conn, schema, job_id, worker_id)
 
 
-async def _seed_denied_job(conn: asyncpg.Connection, schema: str, worker_id: UUID) -> UUID:
+_SEED_CARRIER_DEADLINE: Final[object] = object()
+"""Sentinel for ``_seed_denied_job``: seed with the +1-day close deadline —
+the shape whose denial loop keeps rescheduling until the deadline. Pass
+``None`` for the no-deadline shape, whose only terminal exit is the retry
+budget."""
+
+
+async def _seed_denied_job(
+    conn: asyncpg.Connection,
+    schema: str,
+    worker_id: UUID,
+    *,
+    schedule_to_close: object | datetime | None = _SEED_CARRIER_DEADLINE,
+) -> UUID:
     job_id = new_job_id()
     await seed_actors(conn, schema)
     await create_worker(conn, schema, worker_id)
@@ -151,7 +164,12 @@ async def _seed_denied_job(conn: asyncpg.Connection, schema: str, worker_id: UUI
         job_id=job_id,
         max_attempts=3,
         attempt=1,
-        schedule_to_close=datetime.now(UTC) + timedelta(days=1),
+        schedule_to_close=cast(
+            "datetime | None",
+            datetime.now(UTC) + timedelta(days=1)
+            if schedule_to_close is _SEED_CARRIER_DEADLINE
+            else schedule_to_close,
+        ),
     )
     return job_id
 
@@ -303,14 +321,27 @@ async def test_denial_rows_are_reclaimable_by_retention(
 ) -> None:
     """CONTRACT: rows written by a denial loop must be reclaimable.
 
-    ``prune_terminal_jobs`` keys on ``status IN (terminal) AND finished_at <
-    cutoff``.  Every snooze sets ``finished_at = NULL`` and the job never
-    terminates (defect 2), so the prune sweep matches zero rows at ANY
-    retention period — the accrued rows from defect 1 are permanently
-    unreclaimable.  Either the rows must not accrue, or some sweep must be
-    able to reach them.
+    ``prune_terminal_jobs`` keys on ``status IN (terminal) AND finished_at
+    < cutoff`` — the vendored corpus's only reclaim shape (delete whole
+    job rows keyed on a completion timestamp: Oban's pruner ``max_age``,
+    good_job's ``finished_before``, River's per-status retention periods;
+    a zero retention is the documented prune-terminal-now point in all of
+    them and in TaskQ's own prune family). Two composing defects made
+    denial rows permanently unreclaimable: the loop never terminated
+    (every snooze re-nulled ``finished_at`` and raised the ceiling, so
+    the budget gate was unreachable), and each cycle minted rows nothing
+    could ever reach. The contract is the docstring's own disjunction —
+    the rows must not accrue, or some sweep must be able to reach them —
+    and this test pins the second arm on the shape the first arm's fix
+    terminalises: a no-deadline transient job, driven to its
+    ``MaxAttemptsExceeded`` exit by denial pressure, whose aged rows the
+    prune then reclaims via the parent cascade.
 
-    RED today: prune archives nothing and every accrued row survives.
+    RED against the pre-fix defect by construction: under the
+    ceiling-raising snooze the loop NEVER terminates (the mechanism
+    ``test_denial_loop_terminates_within_retry_budget`` pins red in the
+    companion file), so no row ever becomes prune-eligible at ANY
+    retention and the count cannot drop.
     """
     schema = settings.schema_name
     worker_settings = _build_settings(pg_dsn, schema)
@@ -321,11 +352,36 @@ async def test_denial_rows_are_reclaimable_by_retention(
         await apply_pending(conn, schema=schema)
 
         worker_id = new_uuid()
-        job_id = await _seed_denied_job(conn, schema, worker_id)
+        job_id = await _seed_denied_job(conn, schema, worker_id, schedule_to_close=None)
 
         async with open_worker_deps(worker_settings) as deps:
             backend = _make_backend(deps)
-            await _drive_denial_loop(backend, conn, schema, job_id, worker_id)
+            # Drive the real denial cycle — mark_snoozed, then the
+            # dispatcher's re-claim — until the budget exit fires.
+            terminal_outcome: str | None = None
+            for _ in range(_DENIAL_CYCLES):
+                outcome = await backend.mark_snoozed(
+                    job_id,
+                    worker_id,
+                    _ZERO,
+                    metadata_update={"awaiting": "reservation:test_bucket"},
+                    outcome="reservation_denied",
+                )
+                if outcome != "scheduled":
+                    terminal_outcome = outcome
+                    break
+                await _relock_for_next_dispatch(conn, schema, job_id, worker_id)
+        assert terminal_outcome == "failed:MaxAttemptsExceeded", (
+            f"the no-deadline denial loop must terminate within its retry budget; "
+            f"last outcome {terminal_outcome!r}"
+        )
+
+        row = await conn.fetchrow(
+            f'SELECT status, finished_at FROM "{schema}".jobs WHERE id = $1',  # noqa: S608
+            job_id,
+        )
+        assert row is not None and row["status"] == "failed"
+        assert row["finished_at"] is not None
 
         # Age every row far past any plausible retention window.
         await conn.execute(
@@ -341,16 +397,20 @@ async def test_denial_rows_are_reclaimable_by_retention(
         )
 
         events_before = await _count(conn, schema, "job_events", job_id)
-        assert events_before > 0, "denial loop wrote no events — test setup is wrong"
+        assert events_before > 0, "the terminal exit wrote no events — test setup is wrong"
 
+        # Retention zero is the prune family's documented immediate-archive
+        # point (settings.py: "timedelta(0) means archive all terminal jobs
+        # immediately (valid)") — the corpus's prune-terminal-now form.
+        _zero = timedelta(seconds=0)
         await prune_terminal_jobs(
             conn,
             retention_per_status={
-                "succeeded": timedelta(seconds=1),
-                "failed": timedelta(seconds=1),
-                "cancelled": timedelta(seconds=1),
-                "crashed": timedelta(seconds=1),
-                "abandoned": timedelta(seconds=1),
+                "succeeded": _zero,
+                "failed": _zero,
+                "cancelled": _zero,
+                "crashed": _zero,
+                "abandoned": _zero,
             },
             archive_retention=timedelta(days=365),
             batch_size=10_000,
@@ -362,11 +422,11 @@ async def test_denial_rows_are_reclaimable_by_retention(
         await conn.close()
 
     assert events_after < events_before, (
-        f"{events_before} job_events rows aged 400 days survived a 1-second retention "
-        "prune untouched: the denial loop re-nulls finished_at and the job never reaches a "
-        "terminal status, so prune_terminal_jobs' "
-        "`status IN (terminal) AND finished_at < cutoff` predicate matches zero rows at "
-        "ANY retention period. These rows are permanently unreclaimable."
+        f"{events_before} job_events rows aged 400 days survived an immediate-retention "
+        "prune of their terminal parent: prune_terminal_jobs' "
+        "`status IN (terminal) AND finished_at < cutoff` predicate matched the "
+        f"budget-exited job but its event rows survived ({events_after} remain). A "
+        "terminal job's rows must be reclaimable with it."
     )
 
 

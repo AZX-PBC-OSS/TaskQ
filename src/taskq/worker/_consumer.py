@@ -184,7 +184,10 @@ async def _run_terminal_path(  # pyright: ignore[reportUnusedFunction]  # Why: c
         _buf = progress_buffers.get(job.id)
         if _buf is not None:
             _buf.dirty = False
-    if redis_client is not None and settings is not None:
+    # A noop means no transition happened — the row moved underneath
+    # this dispatch (a reclaim race) — so publishing the requested
+    # state change would announce a move the row never made.
+    if redis_client is not None and settings is not None and handler_result != "noop":
         await _publish_state_change_event(
             redis_client,
             settings,
@@ -354,31 +357,40 @@ async def consume_one_job(
             # The handler owns the outcome tri-state (a snooze, a
             # deadline failure, a budget-exhaustion failure, or a noop
             # when the job moved underneath us) — its result is this
-            # dispatch's result, not a hardcoded reschedule.
+            # dispatch's result, not a hardcoded reschedule. Routed
+            # through _run_terminal_path exactly as _dispatch_exception
+            # routes the in-actor denial for the same handler: the
+            # snooze write's infra failures surface as
+            # terminal-write-failed (never re-classified as the actor's
+            # failure by an outer generic catch), and the scheduled
+            # transition reaches Redis like every other requeue.
             if e.source == "reservation":
-                return await _handle_reservation_class_denied(
-                    backend,
-                    job,
-                    worker_id,
-                    e,
-                    consumer_span,
-                    job_log,
-                    actor_config,
-                    awaiting_prefix="reservation:",
-                    outcome="reservation_denied",
-                    debug_event="consume-reservation-denied-noop",
-                )
-            return await _handle_reservation_class_denied(
-                backend,
-                job,
-                worker_id,
-                e,
-                consumer_span,
-                job_log,
-                actor_config,
-                awaiting_prefix="rate_limit:",
-                outcome="rate_limit_denied",
-                debug_event="consume-rate-limit-denied-noop",
+                handler_kwargs: dict[str, object] = {
+                    "awaiting_prefix": "reservation:",
+                    "outcome": "reservation_denied",
+                    "debug_event": "consume-reservation-denied-noop",
+                }
+            else:
+                handler_kwargs = {
+                    "awaiting_prefix": "rate_limit:",
+                    "outcome": "rate_limit_denied",
+                    "debug_event": "consume-rate-limit-denied-noop",
+                }
+            handler_kwargs["error_reporter"] = error_reporter
+            return await _run_terminal_path(
+                job=job,
+                worker_id=worker_id,
+                progress_buffers=deps.progress_buffers if deps is not None else None,
+                worker_pool=deps.worker_pool if deps is not None else worker_pool,
+                settings=deps.settings if deps is not None else settings,
+                redis_client=deps.redis_client if deps is not None else redis_client,
+                handler=_handle_reservation_class_denied,
+                handler_args=(backend, job, worker_id, e, consumer_span, job_log, actor_config),
+                handler_kwargs=handler_kwargs,
+                status="scheduled",
+                terminal=False,
+                outcome="scheduled",
+                job_exc=e,
             )
 
     # ── Buffer registration ────────────────────────────────────────────────
@@ -410,6 +422,7 @@ async def consume_one_job(
             actor=job.actor,
             queue=job.queue,
             attempt=job.attempt,
+            snooze_count=job.snooze_count,
             worker_id=worker_id,
             payload=validated_payload,
             jobs=live_enqueuer,

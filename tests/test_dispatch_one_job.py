@@ -37,6 +37,7 @@ from taskq._ids import new_uuid
 from taskq.actor import ActorRef
 from taskq.client._enqueuer import SubJobEnqueuer
 from taskq.context import JobContext
+from taskq.exceptions import Snooze
 from taskq.retry import RetryPolicy
 from taskq.settings import WorkerSettings
 from taskq.testing.actor import FakeBackend, StubActorConfig, as_backend
@@ -1481,6 +1482,60 @@ async def test_slot_pool_acquire_failure_raises_outside_job_outcome_accounting(
 
 async def _noop_actor(payload: _Payload, ctx: JobContext[_Payload]) -> dict[str, object]:
     return {}
+
+
+# ── noop outcome: not a consumption, not a process duration ──────────────
+
+
+async def test_noop_outcome_records_no_consumed_message_nor_duration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A noop terminal write (the row moved underneath this dispatch — a
+    reclaim race) is not a consumption: the job will be re-consumed and
+    re-recorded by its next dispatch, so the consumed-messages counter
+    and the process-duration histogram must stay untouched.
+
+    Mirrors the spy pattern of
+    test_slot_pool_acquire_failure_raises_outside_job_outcome_accounting:
+    infrastructure-shaped non-consumptions must not inflate the
+    job-outcome metrics.
+    """
+    import taskq.worker.dispatch as dispatch_mod
+
+    record_consumed = MagicMock()
+    record_duration = MagicMock()
+    monkeypatch.setattr(dispatch_mod, "record_consumed_message", record_consumed)
+    monkeypatch.setattr(dispatch_mod, "record_process_duration", record_duration)
+
+    async def snooze_actor(payload: _Payload, ctx: JobContext[_Payload]) -> None:
+        raise Snooze(timedelta(seconds=30))
+
+    async with _ScopeStack() as scopes:
+        fake_backend = FakeBackend(mark_snoozed_return="noop")
+        fake_deps = _FakeWorkerDeps()
+
+        outcome = await dispatch_one_job(
+            backend=as_backend(fake_backend),
+            deps=_as_deps(fake_deps),
+            job=make_job_row(payload={"value": 42}),
+            worker_id=_WORKER_ID,
+            registry=scopes.registry,
+            process_scope=scopes.process_scope,
+            thread_scope=scopes.thread_scope,
+            loop_scope=scopes.loop_scope,
+            actor_ref=_make_actor_ref(snooze_actor),  # type: ignore[arg-type]  # Why: same ActorRef generic-widening pattern as the tests above.
+            actor_config=StubActorConfig(retry=RetryPolicy()),
+            clock=FakeClock(_NOW),
+            active_jobs=fake_deps.active_jobs,
+            enqueuer=SubJobEnqueuer(
+                backend=as_backend(fake_backend), loop_scope_resolved=None, worker_pool=None
+            ),
+        )
+
+        assert outcome == "noop"
+        assert len(fake_backend.mark_snoozed_calls) == 1
+        record_consumed.assert_not_called()
+        record_duration.assert_not_called()
 
 
 # ── Slot-pool release: a pool closed mid-dispatch must not replace the outcome ──

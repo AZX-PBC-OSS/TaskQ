@@ -53,7 +53,7 @@ from taskq.testing.clock import FakeClock
 from taskq.testing.fixtures import ModulePgSchema, _open_pg_backend_on_schema
 from taskq.testing.in_memory import InMemoryBackend
 from taskq.testing.jobs import make_enqueue_args
-from taskq.testing.otel import counter_value
+from taskq.testing.otel import counter_data_points, counter_value
 
 runner = CliRunner()
 
@@ -454,19 +454,49 @@ def _dirty_buffer(job_id: UUID, *, state: dict[str, object] | None = None) -> _P
 
 
 class _FailingPool:
-    """A pool whose ``acquire`` raises — the per-job flush failure path."""
+    """A pool whose ``acquire`` raises — a pool-wide outage: every job's
+    flush that tick is lost, not just one job's."""
 
     def acquire(self) -> Any:
         raise asyncpg.PostgresConnectionError("pool acquire failed")
 
 
-class TestProgressFlushFailureIsCounted:
-    """Progress FLUSH failures log and emit no metric.
+class _StatementFailingPool:
+    """A pool that acquires fine but hands out a connection whose
+    ``fetchrow`` raises — the per-job flush failure path (the UPDATE
+    itself fails; only this job's delta is lost)."""
 
-    ``_flush.py:63`` (per-job flush failure) and ``_flush.py:147`` (total
-    inability to obtain a pool) both log ``"progress-flush-error"`` with
-    ``kind="progress_flush_error"``, while the adjacent progress PUBLISH
-    failure has ``taskq.progress.publish_failures`` (``_otel.py:708``).
+    def acquire(self) -> "_FailingConnCtx":
+        return _FailingConnCtx()
+
+
+class _FailingConnCtx:
+    async def __aenter__(self) -> "_FailingConn":
+        return _FailingConn()
+
+    async def __aexit__(self, *args: object) -> None:
+        pass
+
+
+class _FailingConn:
+    async def fetchrow(self, *args: object) -> Any:
+        raise asyncpg.PostgresError("simulated flush UPDATE failure")
+
+
+class TestProgressFlushFailureIsCounted:
+    """Progress FLUSH failures log and count, with the two materially
+    different incidents distinguishable in both the metric stage label
+    and the log kind.
+
+    A per-job flush failure (the UPDATE statement itself fails — one
+    job's progress delta is lost) is labeled ``stage='per_job'`` /
+    ``kind="progress_flush_error"``. A pool-stage failure — the flush
+    loop cannot obtain a pool at all, or the per-job acquire fails —
+    loses EVERY job's progress delta and is labeled ``stage='pool'`` /
+    ``kind="progress_flush_pool_error"``. The two must stay
+    distinguishable in an alert rule, which is why the acquire failure
+    and the statement failure sit in separate handlers rather than one
+    catch-all around the whole acquire-then-update span.
     """
 
     async def test_per_job_flush_failure_increments_counter(
@@ -478,7 +508,7 @@ class TestProgressFlushFailureIsCounted:
         buffers: dict[UUID, _ProgressBuffer] = {job_id: buffer}
 
         await _flush_buffer(
-            _FailingPool(),  # type: ignore[arg-type]  # Why: a minimal stand-in for asyncpg.Pool; only acquire() is reached.
+            _StatementFailingPool(),  # type: ignore[arg-type]  # Why: a minimal stand-in for asyncpg.Pool; only acquire() and the conn's fetchrow are reached.
             "taskq",
             job_id,
             new_uuid(),
@@ -487,6 +517,44 @@ class TestProgressFlushFailureIsCounted:
         )
 
         assert counter_value(otel_reader, "taskq.progress.flush_failures") == 1
+        dps = counter_data_points(otel_reader, "taskq.progress.flush_failures")
+        assert dps and dps[0].attributes == {
+            "stage": "per_job",
+            "error_type": "PostgresError",
+        }, f"per-job statement failure must carry stage='per_job': {dps}"
+
+    async def test_pool_acquire_failure_records_the_pool_stage(
+        self, otel_reader: InMemoryMetricReader
+    ) -> None:
+        """A pool-wide acquire failure loses every job's flush that tick —
+        it must be counted at ``stage='pool'`` with the pool log kind, not
+        folded into the per-job taxonomy."""
+        job_id = UUID(str(new_job_id()))
+        buffer = _dirty_buffer(job_id, state={"step": "one"})
+        buffers: dict[UUID, _ProgressBuffer] = {job_id: buffer}
+
+        with structlog.testing.capture_logs() as logs:
+            await _flush_buffer(
+                _FailingPool(),  # type: ignore[arg-type]  # Why: a minimal stand-in for asyncpg.Pool; only acquire() is reached.
+                "taskq",
+                job_id,
+                new_uuid(),
+                buffer,
+                buffers,
+            )
+
+        dps = counter_data_points(otel_reader, "taskq.progress.flush_failures")
+        assert dps and dps[0].attributes == {
+            "stage": "pool",
+            "error_type": "PostgresConnectionError",
+        }, (
+            "an acquire failure is a pool-wide outage (every job's flush "
+            f"that tick is lost) and must carry stage='pool': {dps}"
+        )
+        kinds = {e.get("kind") for e in logs if e.get("kind")}
+        assert kinds == {"progress_flush_pool_error"}, (
+            f"the acquire failure must log the pool kind, not the per-job kind: {logs}"
+        )
 
     async def test_pool_getter_failure_increments_counter(
         self, otel_reader: InMemoryMetricReader
@@ -514,11 +582,12 @@ class TestProgressFlushFailureIsCounted:
     async def test_pool_failure_is_distinguishable_from_per_job_failure(self) -> None:
         """The two handlers must not share one event name and kind.
 
-        A per-job flush failure and a total inability to obtain a pool are
-        materially different incidents: the first loses one job's progress,
-        the second loses every job's.  Emitting the identical
-        ``"progress-flush-error"`` / ``kind="progress_flush_error"`` makes
-        them indistinguishable in a log query or an alert rule.
+        A per-job flush failure (the UPDATE statement fails) and a total
+        inability to obtain a pool are materially different incidents:
+        the first loses one job's progress, the second loses every job's.
+        Emitting the identical ``"progress-flush-error"`` /
+        ``kind="progress_flush_error"`` makes them indistinguishable in a
+        log query or an alert rule.
         """
         job_id = UUID(str(new_job_id()))
         buffers: dict[UUID, _ProgressBuffer] = {job_id: _dirty_buffer(job_id)}
@@ -544,7 +613,7 @@ class TestProgressFlushFailureIsCounted:
 
         with structlog.testing.capture_logs() as job_logs:
             await _flush_buffer(
-                _FailingPool(),  # type: ignore[arg-type]  # Why: a minimal stand-in for asyncpg.Pool; only acquire() is reached.
+                _StatementFailingPool(),  # type: ignore[arg-type]  # Why: a minimal stand-in for asyncpg.Pool; only acquire() and the conn's fetchrow are reached.
                 "taskq",
                 job_id2,
                 new_uuid(),

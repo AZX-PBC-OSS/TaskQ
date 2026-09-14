@@ -338,10 +338,12 @@ def _clean_rate_limit_registry(request: pytest.FixtureRequest) -> Iterator[None]
     imports every collected module before running any test — so by the
     first test, the registry already holds ALL modules' entries.
 
-    The registry has four module-level dicts plus two float timestamps that
+    The registry has seven module-level dicts plus two float timestamps that
     can carry state across tests: ``_rate_limits``, ``_reservations``,
-    ``_keyed_reservation_last_used``, and ``_keyed_rate_limit_last_used``.
-    The latter two are populated by lazy keyed-ref materialization
+    ``_keyed_reservation_last_used``, ``_keyed_rate_limit_last_used``, the
+    keyed-reservation pending-reclaim set and heal-stamp dicts, and the
+    heal-failure log-once stamps. The keyed dicts are populated by lazy
+    keyed-ref materialization
     (``_resolve_reservation_name`` / ``_resolve_rate_limit_name``) and
     would leak across tests if not isolated — a test that materializes a
     keyed ref against the real singleton would leave tracking entries
@@ -351,7 +353,7 @@ def _clean_rate_limit_registry(request: pytest.FixtureRequest) -> Iterator[None]
     test's cap-hit can't suppress a later test's expected scan.
 
     * Unit tests: cleared outright via the public
-      :meth:`RateLimitRegistry.clear` (which resets all six state fields,
+      :meth:`RateLimitRegistry.clear` (which resets every state field,
       including the opportunistic-eviction scan timestamps) —
       ``sync_rate_limit_buckets`` / ``sync_slots`` (called from ``_main``)
       would otherwise attempt pool I/O on stub-pool objects.

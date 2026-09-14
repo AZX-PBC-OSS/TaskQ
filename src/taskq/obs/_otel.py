@@ -40,7 +40,7 @@ import contextlib
 import functools
 import importlib.metadata
 import time
-from collections.abc import Generator, Iterable, Sequence
+from collections.abc import Callable, Generator, Iterable, Sequence
 from typing import Literal, Protocol
 
 import structlog
@@ -151,9 +151,30 @@ def get_tracer() -> Tracer:
     return _library_tracer
 
 
+_library_meter: Meter | None = None
+"""The meter :func:`get_meter` resolves once and hands back (see there)."""
+
+
 def get_meter() -> Meter:
-    """Return the library's meter. Honors any globally-configured provider."""
-    return metrics.get_meter(INSTRUMENTATION_NAME, _version())
+    """Return the library's meter. Honors any globally-configured provider.
+
+    The meter object is resolved on first use and memoized, exactly like
+    :func:`get_tracer`: with no SDK set up, ``metrics.get_meter`` returns
+    a ``_ProxyMeter``, which rebinds to the real provider's meter when an
+    SDK registers later (``on_set_meter_provider`` notifies every proxy
+    meter, and every proxy instrument on it), so memoization never pins
+    the proxy/no-op behavior. And unlike the uncached call, it never asks
+    the proxy provider for a second meter: ``_ProxyMeterProvider`` appends
+    every ``get_meter`` result to a list with no cleanup path, so an
+    unmemoized accessor grows that list on every lazy-instrument call —
+    one entry per rate-limit denial, reservation denial, flush failure,
+    and drain row-count, in exactly the default deployment (taskq never
+    installs a provider itself).
+    """
+    global _library_meter
+    if _library_meter is None:
+        _library_meter = metrics.get_meter(INSTRUMENTATION_NAME, _version())
+    return _library_meter
 
 
 def _record_scrubbed_error(span: Span, exc: BaseException) -> None:
@@ -813,11 +834,12 @@ def record_progress_flush_failure(stage: str, error_type: str) -> None:
     """Bump the progress.flush_failures counter.
 
     ``stage`` must be ``'per_job'`` (one job's flush UPDATE failed — that
-    job's progress since the last flush is lost) or ``'pool'`` (the flush
-    loop could not obtain a pool at all — every job's progress is lost).
+    job's progress since the last flush is lost) or ``'pool'`` (a pool
+    could not be obtained at all — the loop-level getter failed, or the
+    per-job acquire failed/exhausted — so every job's progress is lost).
     The two are materially different incidents and must stay
-    distinguishable in an alert rule, which is also why the flush loop's
-    pool-stage log events carry a different kind than the per-job ones.
+    distinguishable in an alert rule, which is also why both pool-stage
+    sites log a different kind than the per-job one.
     ``error_type`` is the exception class name.
     Respects ``_otel_enabled`` — no-op when False.
     """
@@ -873,24 +895,72 @@ def record_ratelimit_refund_failure(bucket: str, backend: str) -> None:
     _ratelimit_refund_failures.add(1, {"bucket": bucket, "backend": backend})
 
 
+_lazy_counters: dict[str, tuple[Meter, Counter]] = {}
+"""Memoized lazy-counter instruments: name → (owning meter, instrument)."""
+
+_lazy_histograms: dict[str, tuple[Meter, Histogram]] = {}
+"""The histogram sibling of ``_lazy_counters`` (see the note below)."""
+
+
+def _cached_lazy_instrument[T: (Counter, Histogram)](
+    name: str,
+    cache: dict[str, tuple[Meter, T]],
+    create: Callable[[Meter], T],
+) -> T:
+    """Return instrument *name* on the current meter, memoized per meter.
+
+    An SDK ``Meter`` caches instruments by name, kind, description, and
+    unit, so on an SDK-backed meter the pre-memo shape was already a dict
+    lookup. The no-SDK ``_ProxyMeter`` caches nothing: every
+    ``create_counter`` mints a fresh ``_ProxyCounter`` and appends it to a
+    list with no cleanup path — so without this memo, the default
+    deployment (no provider installed, which is taskq's own default)
+    leaked one instrument per lazy-instrument call, growing through
+    exactly the denial and flush-failure storms the counters exist to
+    measure. The cache key carries the owning METER by identity, not just
+    the name: a meter swap (the meter-isolating test fixtures patch
+    ``get_meter`` per test) must mint a fresh instrument on the new meter
+    so the isolated reader sees the counts; a stale entry is replaced on
+    the first call after the swap. Emitter-thread only — nothing iterates
+    these dicts on the SDK reader thread, so the rebind discipline the
+    gauge caches follow does not apply.
+    """
+    meter = get_meter()
+    cached = cache.get(name)
+    if cached is not None and cached[0] is meter:
+        return cached[1]
+    instrument = create(meter)
+    cache[name] = (meter, instrument)
+    return instrument
+
+
 def _lazy_counter(name: str, *, description: str) -> Counter:
     """Create-or-lookup counter *name* on the CURRENT global meter provider.
 
     Unlike the module-level singletons in this file, instruments created
-    through this helper are resolved at call time. The singleton pattern
-    freezes whatever meter provider was global at import: an application
-    that configures its SDK after importing taskq (and the meter-isolating
-    test harnesses, which swap ``get_meter`` per test) would never see
-    these counts. The SDK ``Meter`` caches instruments by name, kind,
-    description and unit, so the steady-state cost is a dict lookup, not
-    a fresh instrument per call.
+    through this helper are resolved at call time, because the singleton
+    pattern freezes whatever meter provider was global at import: an
+    application that configures its SDK after importing taskq (and the
+    meter-isolating test harnesses, which swap ``get_meter`` per test)
+    would never see these counts. Call-time resolution alone is not
+    enough — the no-SDK proxy meter caches nothing, so the instrument is
+    memoized per (meter identity, name); see
+    :func:`_cached_lazy_instrument` for why that exact key.
     """
-    return get_meter().create_counter(name, description=description, unit="1")
+    return _cached_lazy_instrument(
+        name,
+        _lazy_counters,
+        lambda meter: meter.create_counter(name, description=description, unit="1"),
+    )
 
 
 def _lazy_histogram(name: str, *, description: str, unit: str) -> Histogram:
     """The histogram sibling of :func:`_lazy_counter` (see there for why)."""
-    return get_meter().create_histogram(name, description=description, unit=unit)
+    return _cached_lazy_instrument(
+        name,
+        _lazy_histograms,
+        lambda meter: meter.create_histogram(name, description=description, unit=unit),
+    )
 
 
 def record_ratelimit_denial(backend: str) -> None:

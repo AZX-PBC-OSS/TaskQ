@@ -41,12 +41,12 @@ from opentelemetry import trace
 from taskq._json import sanitize_nul_str
 from taskq._shield import shield_with_retrieval
 from taskq.backend._protocol import (
-    AttemptOutcome as BackendAttemptOutcome,
-)
-from taskq.backend._protocol import (
     Backend,
     ErrorInfo,
     JobRow,
+)
+from taskq.backend._protocol import (
+    SnoozeOutcome as BackendSnoozeOutcome,
 )
 from taskq.exceptions import (
     ReservationUnavailable,
@@ -212,6 +212,25 @@ def _log_job_failed(
     log.error("job-failed", **fields)
 
 
+async def _post_write_row(backend: Backend, job: JobRow) -> JobRow:
+    """Re-read the job row a terminal hook is handed, post-write.
+
+    The snooze-family terminal writes return a tri-state string (unlike
+    ``mark_failed_or_retry``, which returns the written row), so the
+    post-write world a hook inspects — status, error_class, the standing
+    attempt — is re-read here. A re-read that fails with an infra error
+    or finds no row degrades to the dispatch-time row: the terminal
+    write already landed, and misreporting it as a terminal-write
+    failure — or dropping the hooks entirely — would be worse than
+    handing the hooks the stale snapshot.
+    """
+    try:
+        updated = await backend.get(job.id)
+    except _TERMINAL_WRITE_INFRA_EXCEPTIONS:
+        return job
+    return updated if updated is not None else job
+
+
 async def _handle_timeout(
     backend: Backend,
     job: JobRow,
@@ -354,14 +373,14 @@ async def _handle_snooze(
     *,
     error_reporter: ErrorReporter | None = None,
 ) -> AttemptOutcome:
-    raw_count = (job.metadata or {}).get("snooze_count", 0)
-    current_snooze_count: int = int(raw_count) if isinstance(raw_count, (int, str)) else 0
+    # The row's snooze_count column is the deferral counter — the
+    # backend's snooze arm increments it; no metadata mirror is merged
+    # here (one source of truth).
     tri = await shield_with_retrieval(
         backend.mark_snoozed(
             job.id,
             worker_id,
             s.delay,
-            metadata_update={"snooze_count": current_snooze_count + 1},
             progress_seq=progress_seq,
             progress_state=progress_state,
         )
@@ -392,12 +411,13 @@ async def _handle_snooze(
                 "error_class": "MaxAttemptsExceeded",
             },
         )
+        hook_row = await _post_write_row(backend, job)
         _log_job_failed(
             log,
             job,
             cause="MaxAttemptsExceeded",
             error_class="MaxAttemptsExceeded",
-            snooze_count=current_snooze_count,
+            snooze_count=hook_row.snooze_count,
         )
         log_state_change(
             log,
@@ -407,14 +427,14 @@ async def _handle_snooze(
         )
         await invoke_on_retry_exhausted(
             actor_config.on_retry_exhausted,
-            job,
+            hook_row,
             RuntimeError("MaxAttemptsExceeded"),
             actor_config.on_retry_exhausted_timeout,
             log=log,
         )
         await invoke_error_reporter(
             error_reporter,
-            job,
+            hook_row,
             RuntimeError("MaxAttemptsExceeded"),
             log=log,
         )
@@ -428,12 +448,16 @@ async def _handle_snooze(
                 "error_class": "DeadlineExceeded",
             },
         )
+        hook_row = await _post_write_row(backend, job)
+        # The snooze_count log field reads the row counter the terminal
+        # write left behind: the rejected deferral never landed, so the
+        # column still counts only the snoozes that did.
         _log_job_failed(
             log,
             job,
             cause="DeadlineExceeded",
             error_class="DeadlineExceeded",
-            snooze_count=current_snooze_count,
+            snooze_count=hook_row.snooze_count,
         )
         log_state_change(
             log,
@@ -443,14 +467,14 @@ async def _handle_snooze(
         )
         await invoke_on_retry_exhausted(
             actor_config.on_retry_exhausted,
-            job,
+            hook_row,
             TimeoutError("DeadlineExceeded"),
             actor_config.on_retry_exhausted_timeout,
             log=log,
         )
         await invoke_error_reporter(
             error_reporter,
-            job,
+            hook_row,
             TimeoutError("DeadlineExceeded"),
             log=log,
         )
@@ -517,6 +541,7 @@ async def _handle_retry_after(
                 "error_class": cause,
             },
         )
+        hook_row = await _post_write_row(backend, job)
         _log_job_failed(
             log,
             job,
@@ -538,12 +563,12 @@ async def _handle_retry_after(
         )
         await invoke_on_retry_exhausted(
             actor_config.on_retry_exhausted,
-            job,
+            hook_row,
             exc,
             actor_config.on_retry_exhausted_timeout,
             log=log,
         )
-        await invoke_error_reporter(error_reporter, job, exc, log=log)
+        await invoke_error_reporter(error_reporter, hook_row, exc, log=log)
         return "failed"
     else:
         log.debug(
@@ -565,7 +590,7 @@ async def _handle_reservation_class_denied(
     actor_config: ActorConfigLike,
     *,
     awaiting_prefix: str,
-    outcome: BackendAttemptOutcome,
+    outcome: BackendSnoozeOutcome,
     debug_event: str,
     progress_seq: int = 0,
     progress_state: dict[str, object] | None = None,
@@ -617,6 +642,7 @@ async def _handle_reservation_class_denied(
                 "bucket_name": e.bucket_name,
             },
         )
+        hook_row = await _post_write_row(backend, job)
         _log_job_failed(
             log,
             job,
@@ -633,14 +659,14 @@ async def _handle_reservation_class_denied(
         )
         await invoke_on_retry_exhausted(
             actor_config.on_retry_exhausted,
-            job,
+            hook_row,
             RuntimeError("MaxAttemptsExceeded"),
             actor_config.on_retry_exhausted_timeout,
             log=log,
         )
         await invoke_error_reporter(
             error_reporter,
-            job,
+            hook_row,
             RuntimeError("MaxAttemptsExceeded"),
             log=log,
         )
@@ -654,6 +680,7 @@ async def _handle_reservation_class_denied(
                 "error_class": "DeadlineExceeded",
             },
         )
+        hook_row = await _post_write_row(backend, job)
         _log_job_failed(
             log,
             job,
@@ -670,14 +697,14 @@ async def _handle_reservation_class_denied(
         )
         await invoke_on_retry_exhausted(
             actor_config.on_retry_exhausted,
-            job,
+            hook_row,
             TimeoutError("DeadlineExceeded"),
             actor_config.on_retry_exhausted_timeout,
             log=log,
         )
         await invoke_error_reporter(
             error_reporter,
-            job,
+            hook_row,
             TimeoutError("DeadlineExceeded"),
             log=log,
         )

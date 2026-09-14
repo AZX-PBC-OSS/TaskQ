@@ -3,27 +3,31 @@
 """Red-team pins for keyed-reservation slot reclamation.
 
 Each distinct ``base_name:key`` materialises its own ``slots`` rows in
-``reservation_slots`` (``ratelimit/registry.py:661`` → ``ensure_slots``).
+``reservation_slots`` (``ratelimit/registry.py:739`` → ``ensure_slots``).
 When the key goes idle, ``evict_idle_keyed_reservations``
-(``registry.py:1247-1275``) drops only the in-process dict entry, on the
-strength of a docstring claiming the rows "are already reclaimed
-independently by the existing lock-expiry sweep". That claim is false:
+(``registry.py:1485``) once dropped only the in-process dict entry, on
+the strength of a docstring claiming the rows "are already reclaimed
+independently by the existing lock-expiry sweep". That claim was false:
 the lock-expiry sweep is ``UPDATE ... SET job_id = NULL``
-(``backend/_sweeps.py:330-337``) — it clears the row but leaves it — and
-the only DELETE path, ``sync_slots``, iterates *currently registered*
+(``backend/_sweeps.py:334-341``) — it clears the row but leaves it — and
+``sync_slots``, for its part, iterates *currently registered*
 reservations, so an evicted bucket is invisible to it by construction.
-The rows are orphaned with no code path able to delete them, ever, and
+The rows were orphaned with no code path able to delete them, ever, and
 steady-state cardinality is ``slots x every key ever seen`` — unbounded
-in the caller-supplied key space.
+in the caller-supplied key space. The pending-reclaim drain
+(``registry.py:1647``, ``drain_pending_reservation_reclaims``) is the
+DELETE path that closes exactly this gap; these tests pin its contract.
 
 The contract these tests pin: once a keyed bucket is evicted AND idle
 (no slot held), its ``reservation_slots`` rows are reclaimed; and a key
 that becomes active again afterwards re-materialises and acquires
-cleanly. Deliberately NOT pinned: the actively-held case — a slot still
-held by a live job must survive eviction, and
+cleanly. Deliberately NOT pinned here: the actively-held case — a slot
+still held by a live job must survive eviction (pinned by
 ``tests/test_ratelimit_keyed_refs_pg.py::test_eviction_while_holder_active_does_not_over_admit``
-guards that; these tests release the slot before evicting so the two
-cases cannot be conflated.
+and, for the drain's idle-guarded DELETE specifically, by
+``tests/test_keyed_reservation_drain_rotation.py::test_held_slot_survives_drain_until_release``);
+these tests release the slot before evicting so the two cases cannot be
+conflated.
 """
 
 from datetime import timedelta

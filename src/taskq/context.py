@@ -51,6 +51,15 @@ class JobContext[P: BaseModel]:
     ``jobs`` provides :class:`SubJobEnqueuer` for enqueuing sub-jobs
     from within the actor body. The enqueuer resolves the database
     connection via LOOP-scope DI → worker-pool fallback.
+
+    ``snooze_count`` is the job row's count of completed non-consuming
+    deferrals (:class:`~taskq.exceptions.Snooze` /
+    :meth:`RetryAfter<taskq.exceptions.RetryAfter>` with
+    ``consume_budget=False``) at dispatch time. Such a deferral refunds
+    the claim's attempt increment, so ``attempt`` alone cannot count
+    snooze cycles — an actor that wants to snooze N times and then
+    succeed keys off ``snooze_count`` (the Oban snoozed-meta /
+    River snoozes-counter convention), not off ``attempt``.
     """
 
     job_id: UUID
@@ -61,6 +70,7 @@ class JobContext[P: BaseModel]:
     payload: P
     jobs: SubJobEnqueuer
     log: structlog.stdlib.BoundLogger
+    snooze_count: int = 0
     span: Span | None = None
     cancel_event: asyncio.Event = field(default_factory=asyncio.Event)
     _abort_requested: threading.Event = field(default_factory=threading.Event)

@@ -49,28 +49,52 @@ async def _flush_buffer(
     snapshot_state = dict(buffer.pending_state)
 
     try:
+        # The acquire is a POOL-stage operation: a failure or exhaustion
+        # here loses every job's flush this tick, not just this one's, so
+        # it is labeled with the pool event/kind — the same taxonomy the
+        # loop-level pool_getter handler uses — and must not be folded
+        # into the per-job handler below. The statement runs in its own
+        # try so only its failures count as per-job.
         async with worker_pool.acquire() as conn:
-            row = await conn.fetchrow(
-                sql,
-                dumps_jsonb_str(snapshot_state),
-                snapshot_delta,
-                job_id,
-                worker_id,
-            )
+            try:
+                row = await conn.fetchrow(
+                    sql,
+                    dumps_jsonb_str(snapshot_state),
+                    snapshot_delta,
+                    job_id,
+                    worker_id,
+                )
+            except Exception as exc:
+                if isinstance(exc, asyncio.CancelledError):
+                    raise
+                # A failed flush UPDATE loses only this job's progress
+                # delta; the pool stages above lose every job's — hence
+                # the distinct kinds and stage labels.
+                _log.error(
+                    "progress-flush-error",
+                    job_id=str(job_id),
+                    error=str(exc),
+                    kind="progress_flush_error",
+                )
+                record_progress_flush_failure(
+                    stage="per_job",
+                    error_type=type(exc).__name__,
+                )
+                return
     except Exception as exc:
         if isinstance(exc, asyncio.CancelledError):
             raise
-        # A failed flush UPDATE loses only this job's progress delta; the
-        # pool-stage handler in progress_flush_loop loses every job's —
-        # hence the distinct kinds and stage labels.
+        # A pool-wide acquire failure/exhaustion loses every job's flush
+        # this tick, exactly like the loop-level pool_getter failure —
+        # hence the pool event/kind and stage, never the per-job ones.
         _log.error(
-            "progress-flush-error",
+            "progress-flush-pool-error",
             job_id=str(job_id),
             error=str(exc),
-            kind="progress_flush_error",
+            kind="progress_flush_pool_error",
         )
         record_progress_flush_failure(
-            stage="per_job",
+            stage="pool",
             error_type=type(exc).__name__,
         )
         return

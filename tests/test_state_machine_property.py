@@ -12,7 +12,8 @@ random valid call sequences preserve invariants
 exhaustive illegal (from_status, to_status) pairs all raise
     IllegalStateTransition from assert_valid_transition.
 attempt-count invariant (non-negative, never decreases across
-    dispatch, unchanged across mark_snoozed).
+    dispatch, refunded by exactly the claim's increment across
+    mark_snoozed).
 
 anchors: (job state machine), (in-memory backend).
 """
@@ -460,23 +461,37 @@ class JobStateMachine(RuleBasedStateMachine):
 
     @invariant()
     def check_attempt_invariant(self) -> None:
-        """attempt is non-negative, never decreases across
-        dispatch calls, and is unchanged across mark_snoozed calls.
+        """attempt is non-negative, never decreases across dispatch
+        calls, and a non-consuming deferral (mark_snoozed) refunds
+        exactly the claim's increment: the post-snooze attempt is the
+        pre-snooze value minus one, floored at zero.
         """
         for jid, row in self.backend._jobs.items():  # type: ignore[reportPrivateUsage] # Why: test-only private access for invariant check
             assert row.attempt >= 0, f"attempt is negative for job {jid}: {row.attempt}"
             prev = self._prev_attempt.get(jid)
             if prev is not None:
-                assert row.attempt >= prev, (
-                    f"attempt decreased for job {jid}: {prev} -> {row.attempt}"
-                )
+                refunded = self._snoozed_attempt_snapshot.get(jid)
+                if refunded is not None:
+                    # A snooze ran since the last check: the attempt is
+                    # either untouched (the write noop'd or terminally
+                    # failed — those arms do not refund) or refunded by
+                    # exactly the claim's increment.
+                    assert row.attempt in (prev, max(refunded - 1, 0)), (
+                        f"snooze moved attempt for job {jid} outside the "
+                        f"refund contract: {prev} -> {row.attempt}"
+                    )
+                else:
+                    assert row.attempt >= prev, (
+                        f"attempt decreased for job {jid}: {prev} -> {row.attempt}"
+                    )
             self._prev_attempt[jid] = row.attempt
 
         for jid, pre_attempt in self._snoozed_attempt_snapshot.items():
             row = self.backend._jobs.get(jid)  # type: ignore[reportPrivateUsage] # Why: test-only private access for invariant check
             if row is not None and row.status == "scheduled":
-                assert row.attempt == pre_attempt, (
-                    f"mark_snoozed changed attempt for job {jid}: {pre_attempt} -> {row.attempt}"
+                assert row.attempt == max(pre_attempt - 1, 0), (
+                    f"mark_snoozed broke the refund contract for job {jid}: "
+                    f"{pre_attempt} -> {row.attempt}"
                 )
 
         self._snoozed_attempt_snapshot.clear()

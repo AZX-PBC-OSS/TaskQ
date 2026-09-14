@@ -95,12 +95,13 @@ from taskq._json import (
     decode_result_bytes,
 )
 from taskq.backend._protocol import (
-    AttemptOutcome,
     AttemptRow,
     ConnLike,
     ErrorInfo,
     JobId,
     JobRow,
+    SnoozeOutcome,
+    validate_snooze_outcome,
 )
 from taskq.backend._records import (
     _job_row_from_record,
@@ -583,8 +584,15 @@ async def _mark_snoozed(
     metadata_update: dict[str, object] | None = None,
     progress_seq: int = 0,
     progress_state: dict[str, object] | None = None,
-    outcome: AttemptOutcome = "snoozed",
+    outcome: SnoozeOutcome = "snoozed",
 ) -> Literal["scheduled", "failed", "failed:MaxAttemptsExceeded", "noop"]:
+    # The statement's arms key on exactly the three SnoozeOutcome values;
+    # PG cannot reject an unknown bind value inside the statement itself,
+    # so this boundary owns the check (the in-memory twin raises the
+    # identical error) — before the pool is even touched, so an illegal
+    # outcome raises loudly whatever the job's state instead of firing
+    # no arm and stranding the row 'running'.
+    validate_snooze_outcome(outcome)
     branch: str
     async with pool.acquire() as conn:
         rec = await conn.fetchrow(

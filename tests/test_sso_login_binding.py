@@ -3,22 +3,25 @@
 Two independent defects, both of which let a response that was never solicited
 by *this* browser's login be accepted as a fresh authentication:
 
-**OIDC — no ``nonce``.**  ``src/taskq/web/admin/auth/oidc.py`` builds the
-authorization URL with ``state`` and PKCE but never mints a ``nonce``, and the
-callback constructs ``CodeIDToken`` with ``params={"client_id": ...}`` only.
-authlib's ``validate_nonce()`` is a no-op unless ``params["nonce"]`` is truthy,
-and ``CodeIDToken.ESSENTIAL_CLAIMS`` is ``['iss', 'sub', 'aud', 'exp', 'iat']``
-— no ``nonce``. So an ID token carrying no nonce at all validates cleanly.
-``state`` + PKCE bind the *code*; only the nonce binds the *ID token*, which is
-the credential the session is actually minted from.
+**OIDC — no ``nonce`` (fixed in this branch).**  ``oidc.py`` originally
+built the authorization URL with ``state`` and PKCE but no ``nonce``, and
+the callback passed ``params={"client_id": ...}`` only — authlib's
+``validate_nonce()`` is a no-op unless ``params["nonce"]`` is truthy, so an
+ID token carrying no nonce at all validated cleanly. ``state`` + PKCE bind
+the *code*; only the nonce binds the *ID token* — the credential the
+session is minted from. The fix mints a per-login ``nonce`` into the
+authorization URL and the signed state cookie and threads it into
+``CodeIDToken``'s ``params``; the pins below hold it there.
 
-**SAML — no ``InResponseTo`` binding and no replay cache.**
-``saml.py`` calls ``auth.process_response()`` with no ``request_id``.  Inside
-python3-saml the check is guarded by ``if in_response_to is not None and
-request_id is not None:`` — passing ``None`` makes it a dead branch, so an
-IdP-initiated (unsolicited) or captured-and-replayed assertion is accepted.
-``auth.get_last_request_id()`` is never called and nothing persists it, and
-there is no assertion-ID replay cache anywhere in the tree.
+**SAML — the binding must hold for the IdP-initiated shape too.**
+``saml.py`` passes ``request_id`` into ``process_response`` and keeps a
+consumed-assertion-ID cache, but inside python3-saml the comparison is
+guarded by ``if in_response_to is not None and request_id is not None:`` —
+a response carrying no ``InResponseTo`` at all passes untouched, so with a
+live request cookie any IdP-initiated assertion for this SP's audience
+mints a session without answering any AuthnRequest.  The callback
+therefore enforces the equality itself: an accepted response's
+``InResponseTo`` must equal the issued request ID.
 
 Every test below asserts the DESIRABLE behaviour, so each goes green once the
 binding is implemented.
@@ -297,6 +300,27 @@ def _spy_process_response(
     yield calls
 
 
+@contextmanager
+def _spy_login_request_ids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> Generator[list[str], None, None]:
+    """Record the AuthnRequest ID every ``login`` call issues."""
+    from onelogin.saml2.auth import OneLogin_Saml2_Auth
+
+    issued: list[str] = []
+    original = OneLogin_Saml2_Auth.login
+
+    def spy(self: Any, *args: Any, **kwargs: Any) -> Any:
+        url = original(self, *args, **kwargs)
+        request_id = self.get_last_request_id()
+        if isinstance(request_id, str):
+            issued.append(request_id)
+        return url
+
+    monkeypatch.setattr(OneLogin_Saml2_Auth, "login", spy)
+    yield issued
+
+
 def test_saml_callback_passes_a_request_id_to_process_response(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -378,6 +402,68 @@ def test_saml_rejects_an_unsolicited_assertion() -> None:
     assert "taskq_session=" not in resp.headers.get("set-cookie", "")
 
 
+def test_saml_rejects_an_assertion_that_answers_no_authn_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An assertion carrying no InResponseTo must not mint a session.
+
+    The unsolicited test above covers the no-cookie case; this is the
+    forced-login shape that survives it. python3-saml guards its
+    InResponseTo comparison with ``if in_response_to is not None and
+    request_id is not None:`` (onelogin/saml2/response.py), so a response
+    carrying no InResponseTo at all sails past
+    ``process_response(request_id=...)`` even with the live request cookie
+    in place: any IdP-initiated assertion for this SP's audience, POSTed to
+    the ACS within the cookie window, mints a session without answering any
+    AuthnRequest.
+    """
+    pytest.importorskip("onelogin.saml2.auth")
+    from tests._sso_saml_crypto import build_saml_response
+
+    client = _saml_client(_saml_config())
+    with _spy_login_request_ids(monkeypatch) as issued:
+        client.get(f"{_BASE_PATH}/login", follow_redirects=False)
+
+    assert issued, "/login did not issue an AuthnRequest ID"
+    assert client.cookies.get("taskq_saml_request"), "no live AuthnRequest cookie"
+
+    # build_saml_response emits no InResponseTo unless given one — exactly
+    # the IdP-initiated shape.
+    resp = _post_assertion(client, build_saml_response(nameid="user-forced-login"))
+
+    assert "error=authentication+failed" in resp.headers["location"], (
+        "an assertion answering no AuthnRequest was accepted while a live "
+        f"request cookie existed; location={resp.headers['location']!r}"
+    )
+    assert "taskq_session=" not in resp.headers.get("set-cookie", "")
+
+
+def test_saml_rejects_an_assertion_answering_a_foreign_authn_request() -> None:
+    """A mismatched InResponseTo with a live cookie must not mint a session.
+
+    Pins python3-saml's own comparison — the branch that is live when both
+    sides are present: an assertion naming a request this browser never
+    issued must be refused.
+    """
+    pytest.importorskip("onelogin.saml2.auth")
+    from tests._sso_saml_crypto import build_saml_response
+
+    client = _saml_client(_saml_config())
+    client.get(f"{_BASE_PATH}/login", follow_redirects=False)
+    assert client.cookies.get("taskq_saml_request"), "no live AuthnRequest cookie"
+
+    resp = _post_assertion(
+        client,
+        build_saml_response(nameid="user-foreign-irt", in_response_to="request-id-never-issued"),
+    )
+
+    assert "error=authentication+failed" in resp.headers["location"], (
+        f"an assertion answering a foreign AuthnRequest was accepted; "
+        f"location={resp.headers['location']!r}"
+    )
+    assert "taskq_session=" not in resp.headers.get("set-cookie", "")
+
+
 def _assertion_id(response_b64: str) -> str:
     xml = base64.b64decode(response_b64).decode("utf-8")
     match = re.search(r'<saml:Assertion[^>]*\bID="([^"]+)"', xml)
@@ -413,7 +499,9 @@ def test_saml_rejects_a_replayed_assertion_id() -> None:
     assert "taskq_session=" not in second.headers.get("set-cookie", "")
 
 
-def test_saml_replay_rejection_happens_even_when_every_other_check_passes() -> None:
+def test_saml_replay_rejection_happens_even_when_every_other_check_passes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """End-to-end discriminating pin for the replay cache.
 
     The test above can go green at the request-binding gate: with no
@@ -421,16 +509,15 @@ def test_saml_replay_rejection_happens_even_when_every_other_check_passes() -> N
     AuthnRequest" and the replay cache is never reached. This pin first
     drives two fully accepted logins — asserting each acceptance and its
     minted session so it cannot pass vacuously — then re-presents assertion
-    B byte-identically while its 1h NotOnOrAfter window is live and a fresh
-    AuthnRequest cookie is in play: the state in which the signature,
-    timestamps, and request binding all still pass, leaving a
-    consumed-assertion-ID record as the only possible rejector.
-
-    The replayed POST needs one more ``/login`` first: the callback drops
-    the request cookie on every outcome (the AuthnRequest ID is single-use),
-    so the previous login's id was already consumed by B's first acceptance
-    — without a fresh login the rejection would come from the binding gate,
-    not the replay cache.
+    B byte-identically while its 1h NotOnOrAfter window is live and the
+    request binding is one the ACS still accepts: the browser's login-2
+    cookie value, captured before B's first acceptance and restored after
+    the callback dropped it (the AuthnRequest ID is single-use, so the
+    request cookie is cleared on every outcome). That is the state in which
+    the signature, timestamps, and InResponseTo binding all still pass,
+    leaving a consumed-assertion-ID record as the only possible rejector —
+    a spy on ``process_response`` proves the replayed POST got that far by
+    arriving with login-2's request ID.
     """
     pytest.importorskip("onelogin.saml2.auth")
     from tests._sso_saml_crypto import build_saml_response
@@ -445,29 +532,39 @@ def test_saml_replay_rejection_happens_even_when_every_other_check_passes() -> N
             f"{what} was accepted but no session cookie was minted"
         )
 
-    # Login 1 → assertion A accepted, a session minted.
-    client.get(f"{_BASE_PATH}/login", follow_redirects=False)
-    assertion_a = build_saml_response(nameid="user-replay-e2e-a")
-    _assert_accepted(_post_assertion(client, assertion_a), "assertion A")
+    with _spy_login_request_ids(monkeypatch) as issued:
+        # Login 1 → assertion A, answering login 1's request, accepted.
+        client.get(f"{_BASE_PATH}/login", follow_redirects=False)
+        assertion_a = build_saml_response(nameid="user-replay-e2e-a", in_response_to=issued[-1])
+        _assert_accepted(_post_assertion(client, assertion_a), "assertion A")
 
-    # Login 2 → assertion B, a DIFFERENT assertion ID, also accepted.
-    client.get(f"{_BASE_PATH}/login", follow_redirects=False)
-    assertion_b = build_saml_response(nameid="user-replay-e2e-b")
-    assert _assertion_id(assertion_a) != _assertion_id(assertion_b), (
-        "assertions A and B share an assertion ID — B's first presentation "
-        "would already be a replay"
+        # Login 2 → assertion B, a DIFFERENT assertion ID, also accepted.
+        client.get(f"{_BASE_PATH}/login", follow_redirects=False)
+        request_b = issued[-1]
+        cookie_b = client.cookies.get("taskq_saml_request")
+        assert cookie_b, "login 2 set no AuthnRequest cookie"
+        assertion_b = build_saml_response(nameid="user-replay-e2e-b", in_response_to=request_b)
+        assert _assertion_id(assertion_a) != _assertion_id(assertion_b), (
+            "assertions A and B share an assertion ID — B's first presentation "
+            "would already be a replay"
+        )
+        _assert_accepted(_post_assertion(client, assertion_b), "assertion B")
+
+    # The captured (cookie, assertion) pair from login 2 is the replay
+    # attack: byte-identical assertion re-POSTed with the request binding it
+    # still answers. Without restoring the cookie the rejection below would
+    # come from the cookie or binding gate, not the replay cache.
+    client.cookies.clear()
+    client.cookies.set("taskq_saml_request", cookie_b, domain="testserver.invalid", path="/")
+
+    with _spy_process_response(monkeypatch) as calls:
+        replayed = _post_assertion(client, assertion_b)
+
+    assert calls == [request_b], (
+        f"the replayed POST did not reach process_response with login-2's "
+        f"request ID {request_b!r} (calls={calls!r}) — the rejection below "
+        "came from the cookie or binding gate, not the replay cache"
     )
-    _assert_accepted(_post_assertion(client, assertion_b), "assertion B")
-
-    # A live AuthnRequest binding for the replayed POST: without it the
-    # rejection below would come from the binding gate, not the replay cache.
-    client.get(f"{_BASE_PATH}/login", follow_redirects=False)
-    assert client.cookies.get("taskq_saml_request"), (
-        "no live AuthnRequest cookie at the replayed POST — the rejection "
-        "below would come from the request-binding gate, not the replay cache"
-    )
-
-    replayed = _post_assertion(client, assertion_b)
 
     assert "error=authentication+failed" in replayed.headers["location"], (
         "a byte-identical assertion authenticated twice while its NotOnOrAfter "

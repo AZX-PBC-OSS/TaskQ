@@ -26,6 +26,7 @@ from taskq.backend._cancel_bulk import _cancel_where
 from taskq.backend._protocol import ErrorInfo, EventRow, IdentityKey, JobId, JobSortField, JobStatus
 from taskq.backend._reads import _list_jobs
 from taskq.backend.statemachine import ACTIVE_STATUSES, TERMINAL_STATUSES
+from taskq.constants import MIN_DEFERRAL_INTERVAL
 from taskq.exceptions import BatchMaxPendingExceededError, DuplicateIdempotencyKeyError
 from taskq.testing.in_memory import InMemoryBackend, encode_cursor
 
@@ -677,12 +678,13 @@ async def test_pg_connection_loss_raises_typed_exception(
 # ── Snooze / RetryAfter / reservation equivalence ──
 
 
-async def test_snooze_cycle_preserves_attempt_round_trip(
+async def test_snooze_cycle_refunds_attempt_round_trip(
     backend_pair: Backend,
 ) -> None:
     """enqueue → dispatch (attempt=1) → mark_snoozed(delay=30s)
-    returns "scheduled" → attempt unchanged at 1 (snooze does not touch
-    attempt) → scheduled_to_pending → dispatch increments to attempt=2.
+    returns "scheduled" → the deferral refunds the claim's increment
+    (attempt back to its pre-claim 0) → scheduled_to_pending → dispatch
+    re-claims it (attempt=1).
     """
     job_id, wid = await _enqueue_dispatch_any(backend_pair)
 
@@ -693,10 +695,10 @@ async def test_snooze_cycle_preserves_attempt_round_trip(
     result = await backend_pair.mark_snoozed(job_id, wid, timedelta(seconds=30))
     assert result == "scheduled"
 
-    # snooze leaves attempt untouched
+    # the snooze refunds the claim's increment: 1 → 0
     row = await backend_pair.get(job_id)
     assert row is not None
-    assert row.attempt == 1
+    assert row.attempt == 0
 
     # Advance/promote: for PG, mark_snoozed sets scheduled_at = now() + 30s
     # (server-side); force scheduled_at to the past so scheduled_to_pending
@@ -710,8 +712,8 @@ async def test_snooze_cycle_preserves_attempt_round_trip(
         lock_lease=_LOCK_LEASE,
     )
     assert len(dispatched) == 1
-    # dispatch increments: 1 → 2
-    assert dispatched[0].attempt == 2
+    # the re-dispatch re-claims the refunded base: 0 → 1
+    assert dispatched[0].attempt == 1
 
     attempts = await backend_pair.get_attempts(job_id)
     # The snooze wrote no attempt row (a deferral is not an execution);
@@ -795,11 +797,12 @@ async def test_retry_after_consume_true_increments_attempt(
     _assert_state_change_event(events, "running", "scheduled")
 
 
-async def test_retry_after_consume_false_preserves_attempt(
+async def test_retry_after_consume_false_refunds_attempt(
     backend_pair: Backend,
 ) -> None:
-    """same setup, consume_budget=False returns "scheduled" → row
-    attempt=1 unchanged.
+    """same setup, consume_budget=False returns "scheduled" → the
+    non-consuming deferral refunds the claim's increment: row attempt
+    back to its pre-claim 0.
     """
     job_id, wid = await _enqueue_dispatch_any(backend_pair)
 
@@ -814,7 +817,7 @@ async def test_retry_after_consume_false_preserves_attempt(
 
     row = await backend_pair.get(job_id)
     assert row is not None
-    _assert_job_row(row, status="scheduled", attempt=1, last_heartbeat_at_none=True)
+    _assert_job_row(row, status="scheduled", attempt=0, last_heartbeat_at_none=True)
 
     attempts = await backend_pair.get_attempts(job_id)
     # A non-consuming RetryAfter is a deferral, not an execution: no
@@ -1355,28 +1358,35 @@ async def test_poll_reclaim_events_equivalence(backend_pair: Backend) -> None:
 async def test_mark_snoozed_delay_exactly_equal_remaining_budget_fails(
     backend_pair: Backend,
 ) -> None:
-    """mark_snoozed where new_scheduled_at == schedule_to_close
+    """mark_snoozed where the EFFECTIVE new_scheduled_at == schedule_to_close
     returns 'scheduled' (boundary: the > check rejects when new_scheduled >
     deadline, and == does NOT cross the > boundary).
 
-    For InMemory: advance clock to deadline so clock.now() == schedule_to_close.
+    The effective delay is floored at MIN_DEFERRAL_INTERVAL, so the
+    boundary is constructed from the floor: the clock sits exactly one
+    floor below the deadline and the zero delay is floored up onto it.
+
+    For InMemory: advance clock to deadline - MIN_DEFERRAL_INTERVAL so
+    the floored delay lands exactly on schedule_to_close.
     For PG: schedule_to_close is in the future relative to server-side
-    clock_timestamp(), so clock_timestamp() + delay(0s) <= schedule_to_close
-    → snooze arm fires.
+    clock_timestamp(), so clock_timestamp() + effective delay(1s) <=
+    schedule_to_close → snooze arm fires.
     """
     # Set schedule_to_close in the future relative to the backend's "now"
     deadline = _now_for(backend_pair) + timedelta(hours=12)
     job_id, wid = await _enqueue_dispatch_any(backend_pair)
     await _force_job_state(backend_pair, job_id, schedule_to_close=deadline)
 
-    # For InMemory: advance clock to the deadline so now == schedule_to_close.
+    # For InMemory: place the clock one floor below the deadline so the
+    # floored zero delay lands exactly ON it (==).
     # For PG: no clock manipulation needed — server-side clock_timestamp()
-    # < schedule_to_close.
+    # < schedule_to_close by 12h.
     if isinstance(backend_pair, InMemoryBackend):
-        backend_pair.advance_clock_to(deadline)
+        backend_pair.advance_clock_to(deadline - MIN_DEFERRAL_INTERVAL)
 
     result = await backend_pair.mark_snoozed(job_id, wid, timedelta(seconds=0))
-    # == boundary: new_scheduled_at == schedule_to_close → guard is >, so NOT rejected
+    # == boundary: effective new_scheduled_at == schedule_to_close → guard
+    # is >, so NOT rejected
     assert result == "scheduled"
 
 

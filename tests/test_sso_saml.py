@@ -79,14 +79,33 @@ def _post_saml_response(client: TestClient, response_b64: str, base_path: str = 
     )
 
 
-def _do_login(client: TestClient, base_path: str = "/admin") -> None:
-    """Start a login so the callback has a pending AuthnRequest.
+def _do_login(client: TestClient, base_path: str = "/admin") -> str:
+    """Start a login and return the AuthnRequest ID it issued.
 
     The ACS endpoint accepts only an assertion answering this browser's own
-    AuthnRequest, so every callback POST in these tests follows a /login.
+    AuthnRequest, so every callback POST in these tests follows a /login and
+    threads the issued ID into its fixture assertion.
     """
-    resp = client.get(f"{base_path}/login", follow_redirects=False)
-    assert resp.status_code == 302
+    from onelogin.saml2.auth import OneLogin_Saml2_Auth
+
+    issued: list[str] = []
+    original_login = OneLogin_Saml2_Auth.login
+
+    def spy_login(self: Any, *args: Any, **kwargs: Any) -> Any:
+        url = original_login(self, *args, **kwargs)
+        request_id = self.get_last_request_id()
+        if isinstance(request_id, str):
+            issued.append(request_id)
+        return url
+
+    OneLogin_Saml2_Auth.login = spy_login
+    try:
+        resp = client.get(f"{base_path}/login", follow_redirects=False)
+        assert resp.status_code == 302
+    finally:
+        OneLogin_Saml2_Auth.login = original_login
+    assert issued, "/login issued no AuthnRequest ID"
+    return issued[-1]
 
 
 # ── Full login → ACS callback → session → authorized request round trip ───
@@ -98,8 +117,8 @@ def test_full_round_trip_default_auth_only() -> None:
     app = _make_app(config)
     client = _client(app)
 
-    saml_response = build_saml_response(nameid="user-saml-1")
-    _do_login(client)
+    request_id = _do_login(client)
+    saml_response = build_saml_response(nameid="user-saml-1", in_response_to=request_id)
     resp = _post_saml_response(client, saml_response)
     assert resp.status_code == 302
     assert resp.headers["location"] == "/admin"
@@ -114,8 +133,8 @@ def test_callback_sets_session_cookie() -> None:
     app = _make_app(config)
     client = _client(app)
 
-    saml_response = build_saml_response()
-    _do_login(client)
+    request_id = _do_login(client)
+    saml_response = build_saml_response(in_response_to=request_id)
     resp = _post_saml_response(client, saml_response)
     set_cookie = resp.headers.get("set-cookie", "")
     assert "taskq_session=" in set_cookie
@@ -192,12 +211,14 @@ def test_group_attribute_user_in_allowed_group_passes() -> None:
     app = _make_app(config)
     client = _client(app)
 
+    request_id = _do_login(client)
     saml_response = build_saml_response(
         nameid="user-saml-1",
         attributes={"groups": ["admins", "viewers"]},
+        in_response_to=request_id,
     )
-    _do_login(client)
-    _post_saml_response(client, saml_response)
+    resp = _post_saml_response(client, saml_response)
+    assert "error=authentication+failed" not in resp.headers.get("location", "")
 
     resp = client.get("/admin/protected", headers={"accept": "application/json"})
     assert resp.status_code == 200
@@ -209,12 +230,17 @@ def test_group_attribute_user_not_in_allowed_group_401() -> None:
     app = _make_app(config)
     client = _client(app)
 
+    request_id = _do_login(client)
     saml_response = build_saml_response(
         nameid="user-saml-1",
         attributes={"groups": ["viewers"]},
+        in_response_to=request_id,
     )
-    _do_login(client)
-    _post_saml_response(client, saml_response)
+    resp = _post_saml_response(client, saml_response)
+    assert "error=authentication+failed" not in resp.headers.get("location", ""), (
+        "callback must accept the assertion — the 401 under test is the "
+        "dependency's group gate, not a rejected login"
+    )
 
     resp = client.get("/admin/protected", headers={"accept": "application/json"})
     assert resp.status_code == 401
@@ -226,8 +252,10 @@ def test_group_attribute_absent_with_allowlist_fails_closed() -> None:
     app = _make_app(config)
     client = _client(app)
 
-    saml_response = build_saml_response(nameid="user-saml-1", attributes={})
-    _do_login(client)
+    request_id = _do_login(client)
+    saml_response = build_saml_response(
+        nameid="user-saml-1", attributes={}, in_response_to=request_id
+    )
     resp = _post_saml_response(client, saml_response)
     assert resp.status_code == 302
     assert "error=authentication+failed" in resp.headers["location"]
@@ -242,9 +270,10 @@ def test_saml_logout_clears_session() -> None:
     app = _make_app(config)
     client = _client(app)
 
-    saml_response = build_saml_response()
-    _do_login(client)
-    _post_saml_response(client, saml_response)
+    request_id = _do_login(client)
+    saml_response = build_saml_response(in_response_to=request_id)
+    resp = _post_saml_response(client, saml_response)
+    assert "error=authentication+failed" not in resp.headers.get("location", "")
 
     resp = client.get("/admin/logout", follow_redirects=False)
     assert resp.status_code == 302

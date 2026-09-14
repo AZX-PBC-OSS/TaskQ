@@ -502,3 +502,105 @@ def test_record_pruned_jobs_disabled() -> None:
     otel_mod.set_otel_enabled(False)
     obs_mod.record_pruned_jobs("my_actor", "completed")
     otel_mod.set_otel_enabled(True)
+
+
+# ── lazy-instrument and meter memoization (no-SDK proxy leak) ──────────
+
+
+class _CountingMeter:
+    """A stub meter that records every counter creation.
+
+    Stands in for the no-SDK ``_ProxyMeter``: what this stub counts is
+    exactly what the proxy meter appends to its unbounded, never-cleaned
+    ``_instruments`` list, so "N creations" here is "N leaked proxy
+    instruments" in the default deployment.
+    """
+
+    def __init__(self) -> None:
+        self.created_counters: list[str] = []
+
+    def create_counter(self, name: str, unit: str = "", description: str = "") -> "_StubCounter":
+        self.created_counters.append(name)
+        return _StubCounter()
+
+
+class _StubCounter:
+    """No-op counter — the pin counts creations, not recordings."""
+
+    def add(self, value: int, attributes: dict[str, str] | None = None) -> None:
+        pass
+
+
+def test_get_meter_is_memoized() -> None:
+    """``get_meter`` must hand back ONE meter object for the process.
+
+    With no SDK installed (the default deployment — taskq never installs
+    a MeterProvider), ``metrics.get_meter`` mints a fresh ``_ProxyMeter``
+    on every call and the proxy provider appends each to a list with no
+    cleanup path, so an uncached accessor grows that list forever — once
+    per lazy-instrument call, which is once per denial, flush failure, and
+    drain row-count.
+    """
+    first = otel_mod.get_meter()
+    second = otel_mod.get_meter()
+
+    assert first is second, (
+        "get_meter minted a fresh proxy meter per call: the no-SDK proxy "
+        "provider appends every meter to a list with no cleanup path, so "
+        "each call is a permanent leak in exactly the default deployment"
+    )
+
+
+def test_lazy_recorder_memoizes_its_instrument_per_meter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A lazy recorder called N times must mint its counter ONCE, keyed on
+    the CURRENT meter.
+
+    The lazy recorders resolve their instrument at call time (see
+    ``_lazy_counter``) so a meter swap is always honored — but with no SDK
+    installed, every uncached call minted a fresh proxy counter and
+    appended it to the proxy meter's unbounded instruments list, growing
+    it on every rate-limit denial, reservation denial, and flush failure
+    during exactly the denial storms the counters exist to measure. The
+    memo must rebind on a meter swap (the per-test fixtures swap
+    ``get_meter``; the isolated reader must see the swapped meter's
+    counts) and two different recorders must not collide on one entry.
+    """
+    otel_mod.set_otel_enabled(True)
+    meter_a = _CountingMeter()
+    monkeypatch.setattr(otel_mod, "get_meter", lambda: meter_a)
+
+    for _ in range(5):
+        obs_mod.record_reservation_denial("bucket-a", "reservation")
+
+    assert meter_a.created_counters == ["taskq.reservation.denials"], (
+        "each record_reservation_denial call minted a fresh instrument: "
+        f"{meter_a.created_counters} — with no SDK installed (the default "
+        "deployment) every minted proxy counter is appended to a list with "
+        "no cleanup path"
+    )
+
+    meter_b = _CountingMeter()
+    monkeypatch.setattr(otel_mod, "get_meter", lambda: meter_b)
+    obs_mod.record_reservation_denial("bucket-b", "rate_limit")
+
+    assert meter_b.created_counters == ["taskq.reservation.denials"], (
+        "a swapped meter must get a fresh instrument: the per-test "
+        "meter-swap fixtures rely on the isolated reader seeing the new "
+        f"meter's counts (created: {meter_b.created_counters})"
+    )
+    assert meter_a.created_counters == ["taskq.reservation.denials"], (
+        "the first meter must not gain instruments after the swap"
+    )
+
+    obs_mod.record_ratelimit_denial("sliding_window")
+    obs_mod.record_ratelimit_denial("sliding_window")
+
+    assert meter_b.created_counters == [
+        "taskq.reservation.denials",
+        "taskq.ratelimit.denials",
+    ], (
+        "two different recorders must not collide on the cache, and each "
+        f"recorder's instrument must be minted exactly once: {meter_b.created_counters}"
+    )

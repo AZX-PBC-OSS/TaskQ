@@ -25,13 +25,15 @@ from taskq._json import (
 )
 from taskq._json import dumps as _json_dumps
 from taskq.backend._protocol import (
-    AttemptOutcome,
     AttemptRow,
     CancelPhase,
     ErrorInfo,
     JobId,
     JobRow,
+    SnoozeOutcome,
+    validate_snooze_outcome,
 )
+from taskq.constants import MIN_DEFERRAL_INTERVAL
 from taskq.exceptions import (
     ResultTooLarge,
     WorkerOwnershipMismatch,
@@ -534,14 +536,29 @@ async def _mark_snoozed(
     metadata_update: dict[str, object] | None = None,
     progress_seq: int = 0,
     progress_state: dict[str, object] | None = None,
-    outcome: AttemptOutcome = "snoozed",
+    outcome: SnoozeOutcome = "snoozed",
 ) -> Literal["scheduled", "failed", "failed:MaxAttemptsExceeded", "noop"]:
+    # Caller-input validation precedes the state fence, matching the PG
+    # terminal's order (its guard runs before the fencing UPDATE): an
+    # illegal outcome raises loudly whatever the job's state — the same
+    # ValueError, from the same shared validator, the PG boundary
+    # raises — never silently degrading to the "noop" a fenced-out
+    # write would return.
+    validate_snooze_outcome(outcome)
     row = self._jobs.get(job_id)
     if row is None or row.status != "running" or row.locked_by_worker != worker_id:
         return "noop"
 
     now = self._clock.now()
-    new_scheduled_at = now + delay
+    # The non-consuming deferral floor: a zero/now delay would park the
+    # job 'pending' at the head of the dispatch order and make it
+    # instantly re-claimable — one claim/refund round trip per cycle
+    # monopolising a worker slot (River rejects a non-future snooze;
+    # Oban requires a positive delay).  The floored delay is the SINGLE
+    # effective delay: the deadline comparison below uses it too, the
+    # conservative direction, mirroring the SQL arms' GREATEST().
+    effective_delay = max(delay, MIN_DEFERRAL_INTERVAL)
+    new_scheduled_at = now + effective_delay
 
     # Arm order here is deadline → max_attempts → snooze; the fused SQL
     # checks snoozed → max_attempts → deadline with NOT EXISTS chaining.
@@ -715,7 +732,15 @@ async def _mark_retry_after(
         return "noop"
 
     now = self._clock.now()
-    new_scheduled_at = now + delay
+    # The deferral floor applies only to the NON-consuming arm: a
+    # consuming RetryAfter is a real execution choosing to retry
+    # immediately, bounded by the budget it spends, so it keeps the raw
+    # delay (0 → pending at now).  The non-consuming arm carries
+    # mark_snoozed's floor in full — the same single effective delay
+    # feeds the deadline comparison below, the conservative direction,
+    # mirroring the SQL arms' GREATEST().
+    effective_delay = delay if consume_budget else max(delay, MIN_DEFERRAL_INTERVAL)
+    new_scheduled_at = now + effective_delay
 
     if row.schedule_to_close is not None and new_scheduled_at > row.schedule_to_close:
         deadline_merged_progress = _merge_progress(row.progress_state, progress_state)

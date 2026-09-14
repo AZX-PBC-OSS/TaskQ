@@ -59,6 +59,7 @@ from taskq.backend._protocol import (
     ScheduleCreateArgs,
     ScheduleRecord,
     ScheduleUpdateArgs,
+    SnoozeOutcome,
 )
 from taskq.backend.clock import Clock
 from taskq.backend.statemachine import ACTIVE_STATUSES
@@ -573,7 +574,7 @@ class InMemoryBackend:
         metadata_update: dict[str, object] | None = None,
         progress_seq: int = 0,
         progress_state: dict[str, object] | None = None,
-        outcome: AttemptOutcome = "snoozed",
+        outcome: SnoozeOutcome = "snoozed",
     ) -> Literal["scheduled", "failed", "failed:MaxAttemptsExceeded", "noop"]:
         return await _mark_snoozed(
             self,

@@ -717,13 +717,13 @@ class TestEquivalence:
         assert len(mem_events) == len(pg_events)
 
 
-# ── mark_snoozed preserves attempt ──────────────────────
+# ── mark_snoozed refunds the claim's attempt increment ──────
 
 
-class TestMarkSnoozedPreservesAttempt:
-    """snooze preserves attempt — no budget consumption."""
+class TestMarkSnoozedRefundsAttempt:
+    """snooze refunds the claim's attempt increment — budget-free."""
 
-    async def test_mark_snoozed_preserves_attempt(self, clean_jobs_app: JobsApp) -> None:
+    async def test_mark_snoozed_refunds_attempt(self, clean_jobs_app: JobsApp) -> None:
         deps = clean_jobs_app.deps
         backend = clean_jobs_app.backend
         schema = deps.settings.schema_name
@@ -739,9 +739,10 @@ class TestMarkSnoozedPreservesAttempt:
                 f'SELECT attempt, status FROM "{schema}".jobs WHERE id = $1', job_id
             )
         row = assert_job_status(row, "scheduled")
-        assert row["attempt"] == 1
+        # The refund returns the pre-claim value: 1 → 0.
+        assert row["attempt"] == 0
 
-    async def test_mark_snoozed_attempt_record_preserves_attempt(
+    async def test_mark_snoozed_attempt_record_refunds_attempt(
         self, clean_jobs_app: JobsApp
     ) -> None:
         deps = clean_jobs_app.deps
@@ -764,10 +765,11 @@ class TestMarkSnoozedPreservesAttempt:
                 f'FROM "{schema}".jobs WHERE id = $1',
                 job_id,
             )
-        # The deferral's whole durable record is the row: attempt
-        # unchanged, the snooze counter incremented, no attempt row.
+        # The deferral's whole durable record is the row: attempt refunded
+        # to its pre-claim value, the snooze counter incremented, no
+        # attempt row.
         assert row is not None
-        assert row["attempt"] == 1
+        assert row["attempt"] == 0
         assert row["snooze_count"] == 1
         assert row["rate_limit_blocked_count"] == 0
         assert len(attempts) == 0
@@ -971,13 +973,14 @@ class TestMarkRetryAfterConsumeTrue:
         assert attempts[0]["error_class"] == "RetryAfter"
 
 
-# ── mark_retry_after consume_budget=False preserves attempt ──────
+# ── mark_retry_after consume_budget=False refunds attempt ──────
 
 
 class TestMarkRetryAfterConsumeFalse:
-    """mark_retry_after with consume_budget=False preserves attempt."""
+    """mark_retry_after with consume_budget=False refunds the claim's
+    attempt increment — same deferral contract as a Snooze."""
 
-    async def test_mark_retry_after_consume_budget_false_preserves_attempt(
+    async def test_mark_retry_after_consume_budget_false_refunds_attempt(
         self, clean_jobs_app: JobsApp
     ) -> None:
         deps = clean_jobs_app.deps
@@ -997,7 +1000,8 @@ class TestMarkRetryAfterConsumeFalse:
                 f'SELECT attempt, status FROM "{schema}".jobs WHERE id = $1', job_id
             )
         row = assert_job_status(row, "scheduled")
-        assert row["attempt"] == 1
+        # The refund returns the pre-claim value: 1 → 0.
+        assert row["attempt"] == 0
 
 
 # ── mark_retry_after max-attempts exceeded ──────────────────────

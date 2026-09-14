@@ -95,3 +95,34 @@ pg_credential_provider = "infra.identity:reports_credentials"
             "reaches the child process."
         )
         assert args[args.index("--pg-credential-provider") + 1] == expected
+
+
+def test_workgroup_toml_rejects_an_empty_credential_provider(tmp_path: Path) -> None:
+    """``pg_credential_provider = ""`` must fail at LOAD time, naming the
+    worker and the field.
+
+    An empty string passes the loader's optional-str type check and is
+    forwarded as ``--pg-credential-provider ""``, so the child dies at
+    import-ref resolution — before it can register a heartbeat or drain a
+    queue — and the supervisor restart-loops it against the burst budget,
+    with the only diagnostic buried in the child's stderr stream.
+    """
+    config = tmp_path / "workgroup.toml"
+    config.write_text(
+        """
+actors = "tests.actors:registry"
+
+[[workers]]
+name = "ingest"
+queues = ["ingest"]
+pg_credential_provider = ""
+"""
+    )
+
+    with pytest.raises(ValueError, match=r"worker\['ingest'\].pg_credential_provider") as excinfo:
+        WorkgroupConfig.from_toml(config)
+
+    assert "module:attr" in str(excinfo.value), (
+        "the error must state what a provider ref IS (module:attr), not "
+        f"only that this value is not one: {excinfo.value}"
+    )

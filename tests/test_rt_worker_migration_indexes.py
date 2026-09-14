@@ -130,12 +130,18 @@ async def test_audit_indexes_present_after_full_migration_run(pg_dsn: str) -> No
             "the audit migration must be part of a fresh schema's pending set; "
             f"applied: {applied_keys}"
         )
-        # Every previous migration applied before it (ledger order is the
-        # runner's contract; this pins the file's position in it).
-        position = applied_keys.index("01.00.06_01:pre")
-        assert position == len(applied_keys) - 1, (
-            "01.00.06_01 must apply LAST on a fresh schema (it depends on the "
-            "tables every earlier migration creates)"
+        # Ledger order is the runner's contract: a fresh schema's run must
+        # end on the ledger's LAST migration — the lexicographically
+        # greatest discovered version — so the audit migration's table
+        # dependencies (created by earlier versions) are always in place.
+        # Pinned DYNAMICALLY against discover()'s own ordering so the next
+        # added migration cannot stale this assert the way the hard-coded
+        # "01.00.06_01 applies last" did once 01.00.07/01.00.08 landed.
+        discovered_keys = [m.key for m in migrate_mod.discover()]
+        assert applied_keys[-1] == discovered_keys[-1], (
+            "a fresh schema's full run must apply the ledger in discover() "
+            f"order and end on its last migration ({discovered_keys[-1]}), "
+            f"got {applied_keys[-1]}"
         )
         for name, _table, _documented in _AUDIT_INDEXES:
             ddl = await _indexdef(conn, schema, name)

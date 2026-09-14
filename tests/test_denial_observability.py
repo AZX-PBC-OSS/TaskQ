@@ -23,6 +23,14 @@ database:
    ``non_retryable`` falling through to a reschedule), while a job
    carrying a future ``schedule_to_close`` keeps rescheduling until its
    deadline — the close deadline is that job's own terminal exit.
+4. A zero-delay non-consuming deferral reschedules at least
+   ``MIN_DEFERRAL_INTERVAL`` out, as ``scheduled`` — a deferral can
+   never park a job ``pending`` at ``clock_timestamp()`` at the head of
+   the dispatch order (the claim/refund hot loop; River rejects a
+   non-future snooze and Oban requires a positive delay for the same
+   reason). A consuming ``RetryAfter`` keeps its raw delay: an
+   immediate retry is a real execution, bounded by the budget it
+   spends.
 """
 
 from datetime import UTC, datetime, timedelta
@@ -37,6 +45,7 @@ import taskq.obs as obs_mod
 import taskq.obs._otel as otel_mod
 from taskq._ids import new_job_id, new_uuid
 from taskq.backend._protocol import EnqueueArgs, JobId
+from taskq.constants import MIN_DEFERRAL_INTERVAL
 from taskq.exceptions import ReservationUnavailable
 from taskq.retry import RetryPolicy
 from taskq.testing.actor import StubActorConfig
@@ -77,9 +86,15 @@ async def _mem_job(
     retry_kind: str = "non_retryable",
     schedule_to_close: datetime | None = None,
     running: bool = True,
+    clock: FakeClock | None = None,
 ) -> tuple[InMemoryBackend, JobId, UUID]:
-    """Enqueue (and optionally dispatch) one job on the in-memory twin."""
-    backend = InMemoryBackend(clock=FakeClock(_NOW))
+    """Enqueue (and optionally dispatch) one job on the in-memory twin.
+
+    A caller-supplied *clock* is the same instance the backend holds, so
+    the test can drive time (``clock.advance``) the way the leader's
+    promotion sweep does between dispatch rounds.
+    """
+    backend = InMemoryBackend(clock=FakeClock(_NOW) if clock is None else clock)
     args = EnqueueArgs(
         id=new_job_id(),
         actor="denial_actor",
@@ -281,10 +296,18 @@ async def test_actor_deferral_is_unbounded_and_never_spends_budget() -> None:
     rescheduled with ``attempt`` back at its pre-claim base and
     ``max_attempts`` untouched. A budget-gated deferral arm, or a
     ceiling-raising refund, fails here.
+
+    Re-dispatch drives the FakeClock past each deferral and promotes the
+    job, exactly as the leader's ``scheduled_to_pending`` sweep does
+    between dispatch rounds — a zero-delay deferral is floored at
+    ``MIN_DEFERRAL_INTERVAL``, so the loop advances time instead of
+    relying on the job sitting at the head of the dispatch order.
     """
+    clock = FakeClock(_NOW)
     backend, job_id, worker_id = await _mem_job(
         max_attempts=1,
         retry_kind="transient",
+        clock=clock,
     )
     cycles = 5  # far beyond the 1-attempt budget
     zero_delay = timedelta(0)
@@ -297,6 +320,12 @@ async def test_actor_deferral_is_unbounded_and_never_spends_budget() -> None:
             outcome="snoozed",
         )
         assert result == "scheduled"
+        # Advance past the floored deferral and promote, exactly as the
+        # leader sweep does; pre-floor this is a no-op on an already-
+        # pending job, post-floor it is the promotion that makes the
+        # job dispatchable again.
+        clock.advance(MIN_DEFERRAL_INTERVAL)
+        await backend.scheduled_to_pending()
         # Re-claim, exactly as the dispatcher does: attempt = attempt + 1.
         worker_id = new_uuid()
         dispatched = await backend.dispatch_batch(worker_id, ["default"], 1, timedelta(seconds=60))
@@ -321,3 +350,70 @@ async def test_actor_deferral_is_unbounded_and_never_spends_budget() -> None:
     assert row.attempt == 0
     assert row.max_attempts == 1
     assert row.snooze_count == cycles + 1
+
+
+# ── 4. a zero-delay deferral is floored, never parked at the head ───────
+
+
+async def test_zero_delay_deferrals_reschedule_at_least_min_deferral_interval_out() -> None:
+    """Every non-consuming deferral shape — ``Snooze``, an admission
+    denial whose ``retry_after`` is 0, and
+    ``RetryAfter(consume_budget=False)`` — reschedules at least
+    ``MIN_DEFERRAL_INTERVAL`` out as ``scheduled``.
+
+    A delay of 0 must not land the job ``pending`` at ``clock_timestamp()``:
+    dispatch orders by ``scheduled_at``, so the job would sort first in
+    every round and be instantly re-claimable — one claim/refund round
+    trip per cycle monopolising a worker slot. The vendored corpus guards
+    the same edge (River rejects a non-future snooze; Oban requires a
+    positive delay).
+    """
+    floor = _NOW + MIN_DEFERRAL_INTERVAL
+
+    # Snooze: the actor-requested deferral.
+    backend, job_id, worker_id = await _mem_job(max_attempts=10, retry_kind="transient")
+    result = await backend.mark_snoozed(job_id, worker_id, timedelta(0))
+    assert result == "scheduled"
+    row = await backend.get(job_id)
+    assert row is not None
+    assert row.status == "scheduled"
+    assert row.scheduled_at >= floor
+
+    # A denial whose retry_after is 0 — the same snooze arm, same floor.
+    backend, job_id, worker_id = await _mem_job(max_attempts=10, retry_kind="transient")
+    result = await backend.mark_snoozed(
+        job_id,
+        worker_id,
+        timedelta(0),
+        outcome="reservation_denied",
+    )
+    assert result == "scheduled"
+    row = await backend.get(job_id)
+    assert row is not None
+    assert row.status == "scheduled"
+    assert row.scheduled_at >= floor
+
+    # RetryAfter(consume_budget=False): the arm's twin.
+    backend, job_id, worker_id = await _mem_job(max_attempts=10, retry_kind="transient")
+    result = await backend.mark_retry_after(job_id, worker_id, timedelta(0), consume_budget=False)
+    assert result == "scheduled"
+    row = await backend.get(job_id)
+    assert row is not None
+    assert row.status == "scheduled"
+    assert row.scheduled_at >= floor
+
+
+async def test_consuming_retry_after_keeps_its_raw_zero_delay() -> None:
+    """The floor is scoped to NON-consuming deferrals: a consuming
+    ``RetryAfter`` with delay 0 stays an immediate retry (``pending`` at
+    now) — a real execution choosing to retry right away is bounded by
+    the budget it spends, not by the deferral floor."""
+    backend, job_id, worker_id = await _mem_job(max_attempts=10, retry_kind="transient")
+
+    result = await backend.mark_retry_after(job_id, worker_id, timedelta(0), consume_budget=True)
+    assert result == "scheduled"
+
+    row = await backend.get(job_id)
+    assert row is not None
+    assert row.status == "pending"
+    assert row.scheduled_at == _NOW

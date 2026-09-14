@@ -77,7 +77,6 @@ from taskq.backend._enqueue import (
 from taskq.backend._notify import _SubscriberContext
 from taskq.backend._protocol import (
     BACKEND_PROTOCOL_VERSION,
-    AttemptOutcome,
     AttemptRow,
     BackendDeps,
     BatchCounts,
@@ -96,6 +95,7 @@ from taskq.backend._protocol import (
     ScheduleCreateArgs,
     ScheduleRecord,
     ScheduleUpdateArgs,
+    SnoozeOutcome,
     parse_cancel_phase,
 )
 from taskq.backend._reads import (
@@ -529,7 +529,7 @@ class PostgresBackend:
         metadata_update: dict[str, object] | None = None,
         progress_seq: int = 0,
         progress_state: dict[str, object] | None = None,
-        outcome: AttemptOutcome = "snoozed",
+        outcome: SnoozeOutcome = "snoozed",
     ) -> Literal["scheduled", "failed", "failed:MaxAttemptsExceeded", "noop"]:
         return await _mark_snoozed(
             self._worker_pool,

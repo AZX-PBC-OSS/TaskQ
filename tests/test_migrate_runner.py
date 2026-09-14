@@ -401,9 +401,53 @@ async def test_migration_advisory_lock_widens_statement_timeout_before_the_apply
     assert executed.count("SET statement_timeout = 0") == 1, (
         "the widening must run exactly once for the whole apply phase, not per migration"
     )
+    assert executed.index("SET statement_timeout = 0") > next(
+        i for i, sql in enumerate(executed) if "pg_advisory_lock" in sql
+    ), "the widening must happen only AFTER the lock is acquired"
     assert executed.index("SET statement_timeout = 0") < next(
         i for i, sql in enumerate(executed) if "apply_phase_marker" in sql
     ), "the widening must precede the apply phase's first statement"
+
+
+class _ContendedLockConn(_FakeMigrateConn):
+    """_FakeMigrateConn whose ``pg_advisory_lock`` raises
+    ``LockNotAvailableError`` — a caller-owned connection that merely lost
+    the lock race. Every other SQL completes normally."""
+
+    def __init__(self, applied: set[str]) -> None:
+        super().__init__(applied)
+        self.acquire_attempts = 0
+
+    async def execute(self, sql: str, *args: object) -> str:
+        if "pg_advisory_lock" in sql:
+            self.acquire_attempts += 1
+            raise asyncpg.LockNotAvailableError("canceling statement due to lock timeout")
+        return await super().execute(sql, *args)
+
+
+async def test_migration_advisory_lock_contention_does_not_widen_statement_timeout() -> None:
+    """Losing the lock race must return the caller-owned connection
+    WITHOUT a session-wide unlimited statement_timeout.
+
+    The contention path raises SystemExit before any migration runs, and
+    the connection returns to its owner (the CLI keeps it precisely to
+    run diagnostics after a failure) — a widening that fires on this path
+    leaves an unbounded statement timeout on a session that will never
+    run DDL, with no restore anywhere.
+    """
+    conn = _ContendedLockConn(applied=set())
+
+    with pytest.raises(SystemExit, match="another process is applying migrations"):
+        async with migrate_mod.migration_advisory_lock(  # type: ignore[arg-type]  # Why: _FakeMigrateConn stands in for asyncpg.Connection.
+            conn, lock_timeout=120.0, schema="taskq"
+        ):
+            pytest.fail("the body must never run when the lock is not acquired")
+
+    assert conn.acquire_attempts == 1
+    assert not any("statement_timeout" in sql for sql in conn.executed), (
+        "a contention exit widened statement_timeout on a caller-owned "
+        f"connection that merely lost the lock race: {conn.executed}"
+    )
 
 
 class _FailStatementTimeoutWidenConn(_FakeMigrateConn):

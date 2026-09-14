@@ -910,7 +910,6 @@ async def test_stranded_jobs_loop_warns_for_pending_without_actor_config() -> No
     import taskq.worker._leader_sweeps as sweeps_mod
 
     warned_actors: list[str] = []
-    original_warning = sweeps_mod.log.warning
 
     def _spy_warning(event: str, **kwargs: object) -> None:
         if event == "stranded-jobs-no-actor-config":
@@ -926,7 +925,7 @@ async def test_stranded_jobs_loop_warns_for_pending_without_actor_config() -> No
         )
         await _stop_loop(task, shutdown, delay=0.0)
     finally:
-        sweeps_mod.log.warning = original_warning  # type: ignore[method-assign]
+        del sweeps_mod.log.warning  # type: ignore[method-assign]  # Why: removing the instance attribute restores the lazy proxy's class-level dispatch — re-assigning the saved bound method would pin a stale chain and freeze the proxy against later config swaps (e.g. structlog.testing.capture_logs).
 
     assert "orphan_actor" in warned_actors
 
@@ -1116,7 +1115,6 @@ async def _run_stranded_loop_collecting(
 
     warnings: list[dict[str, object]] = []
     gauge_updates: list[dict[str, int]] = []
-    original_warning = sweeps_mod.log.warning
     original_update = sweeps_mod.update_stranded_jobs_cache
 
     def _spy_warning(event: str, **kwargs: object) -> None:
@@ -1138,7 +1136,7 @@ async def _run_stranded_loop_collecting(
         )
         await _stop_loop(task, shutdown, delay=0.0)
     finally:
-        sweeps_mod.log.warning = original_warning  # type: ignore[method-assign]
+        del sweeps_mod.log.warning  # type: ignore[method-assign]  # Why: removing the instance attribute restores the lazy proxy's class-level dispatch — re-assigning the saved bound method would pin a stale chain and freeze the proxy against later config swaps (e.g. structlog.testing.capture_logs).
         sweeps_mod.update_stranded_jobs_cache = original_update  # type: ignore[assignment]
     return warnings, gauge_updates
 
@@ -1193,7 +1191,6 @@ async def test_stranded_jobs_detector_disabled_logs_at_error() -> None:
     leader._deps.settings.schema_name = "bad;schema"  # type: ignore[reportPrivateUsage]  # Why: test mutates the deps the leader was constructed with.
 
     events: list[str] = []
-    original_error = sweeps_mod.log.error
 
     def _spy_error(event: str, **kwargs: object) -> None:
         events.append(event)
@@ -1206,7 +1203,7 @@ async def test_stranded_jobs_detector_disabled_logs_at_error() -> None:
         # (the disabled detector returns before entering its while body).
         await asyncio.wait_for(task, timeout=2.0)
     finally:
-        sweeps_mod.log.error = original_error  # type: ignore[method-assign]
+        del sweeps_mod.log.error  # type: ignore[method-assign]  # Why: un-pins the lazy proxy (see the warning-spy restores above).
 
     assert "stranded-jobs-detector-disabled" in events
 
@@ -1220,7 +1217,6 @@ async def test_sweep_loop_acquire_has_timeout() -> None:
 
     warn_calls: list[str] = []
     saw_leaked_slots_failure = asyncio.Event()
-    original_warning = sweeps_mod.log.warning
 
     def _spy_warning(event: str, **kw: object) -> None:
         warn_calls.append(event)
@@ -1277,7 +1273,7 @@ async def test_sweep_loop_acquire_has_timeout() -> None:
         finally:
             await _stop_loop(task, shutdown, delay=0.0)
     finally:
-        sweeps_mod.log.warning = original_warning  # type: ignore[method-assign]
+        del sweeps_mod.log.warning  # type: ignore[method-assign]  # Why: removing the instance attribute restores the lazy proxy's class-level dispatch — re-assigning the saved bound method would pin a stale chain and freeze the proxy against later config swaps (e.g. structlog.testing.capture_logs).
 
     assert "sweep-leaked-slots-failed" in warn_calls, (
         "acquire() without timeout= hangs forever - the sweep never times out "

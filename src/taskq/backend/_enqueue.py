@@ -501,6 +501,11 @@ async def _enqueue_on_conn(
         )
         if existing_rec is not None:
             row = _job_row_from_record(existing_rec)
+            # Why unconditional info, when the idempotency-key dedup site
+            # warns on a terminal target: this preflight matches only
+            # unique_states, which exclude terminal states, so the row it
+            # returns can never be terminal — that site can see a weeks-old
+            # failed row; this one cannot see a terminal row at all.
             logger.info(
                 "enqueue_deduplicated",
                 kind="enqueue_deduplicated",

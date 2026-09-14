@@ -12,7 +12,6 @@ from pydantic import BaseModel
 from taskq._ids import new_job_id, new_uuid
 from taskq.backend._protocol import (
     BACKEND_PROTOCOL_VERSION,
-    AttemptOutcome,
     AttemptRow,
     Backend,
     CancelFlag,
@@ -24,6 +23,7 @@ from taskq.backend._protocol import (
     JobRow,
     ScheduleCreateArgs,
     ScheduleUpdateArgs,
+    SnoozeOutcome,
 )
 from taskq.retry import OnRetryExhausted, OnSuccess, RetryClassifierHook, RetryPolicy
 
@@ -110,7 +110,9 @@ class FakeBackend:
     def __init__(
         self,
         *,
-        mark_snoozed_return: Literal["scheduled", "failed", "noop"] = "scheduled",
+        mark_snoozed_return: Literal[
+            "scheduled", "failed", "failed:MaxAttemptsExceeded", "noop"
+        ] = "scheduled",
         mark_retry_after_return: Literal[
             "scheduled", "failed:DeadlineExceeded", "failed:MaxAttemptsExceeded", "noop"
         ] = "scheduled",
@@ -122,7 +124,9 @@ class FakeBackend:
         self.mark_snoozed_calls: list[dict[str, object]] = []
         self.mark_retry_after_calls: list[dict[str, object]] = []
         self.mark_failed_or_retry_calls: list[dict[str, object]] = []
-        self._mark_snoozed_return: Literal["scheduled", "failed", "noop"] = mark_snoozed_return
+        self._mark_snoozed_return: Literal[
+            "scheduled", "failed", "failed:MaxAttemptsExceeded", "noop"
+        ] = mark_snoozed_return
         self._mark_retry_after_return: Literal[
             "scheduled", "failed:DeadlineExceeded", "failed:MaxAttemptsExceeded", "noop"
         ] = mark_retry_after_return
@@ -238,8 +242,8 @@ class FakeBackend:
         metadata_update: dict[str, object] | None = None,
         progress_seq: int = 0,
         progress_state: dict[str, object] | None = None,
-        outcome: AttemptOutcome = "snoozed",
-    ) -> Literal["scheduled", "failed", "noop"]:
+        outcome: SnoozeOutcome = "snoozed",
+    ) -> Literal["scheduled", "failed", "failed:MaxAttemptsExceeded", "noop"]:
         self.mark_snoozed_calls.append(
             {
                 "job_id": job_id,

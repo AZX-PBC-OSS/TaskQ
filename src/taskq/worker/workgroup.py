@@ -34,6 +34,12 @@ Config format (TOML)::
     stale_after = 60
     startup_grace = 15.0
     consecutive_failure_limit = 3
+
+A ``pg_credential_provider`` set at the ``[defaults]`` level applies to
+every worker, and TOML has no per-worker ``null`` — a worker cannot opt
+out of a defaults-level provider, so a workgroup mixing provider-backed
+and provider-less workers must set the field per worker instead of in
+``[defaults]``.
 """
 
 from __future__ import annotations
@@ -307,6 +313,19 @@ def _validate_config(cfg: WorkgroupConfig) -> None:
     for w in cfg.workers:
         if len(w.name) > 64:
             raise ValueError(f"worker[{w.name!r}].name must be <= 64 chars (socket path limit)")
+        if w.pg_credential_provider is not None and (
+            not w.pg_credential_provider or ":" not in w.pg_credential_provider
+        ):
+            # A provider ref the child CLI could never resolve must die
+            # HERE, at load: forwarded as-is, the child fails at
+            # import-ref resolution before it can register a heartbeat,
+            # and the supervisor restart-loops it against the burst budget
+            # with the real reason buried in the child's stderr stream.
+            raise ValueError(
+                f"worker[{w.name!r}].pg_credential_provider must be a "
+                "module:attr reference (e.g. 'infra.identity:pg_credentials') "
+                f"when present, got {w.pg_credential_provider!r}"
+            )
         if w.poll_interval <= 0:
             raise ValueError(f"worker[{w.name!r}].poll_interval must be > 0, got {w.poll_interval}")
         if w.max_concurrency <= 0:

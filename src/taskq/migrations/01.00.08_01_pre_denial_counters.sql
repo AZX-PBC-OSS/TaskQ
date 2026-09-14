@@ -29,11 +29,14 @@
 --
 -- OPS NOTE (locks): ALTER TABLE ... ADD COLUMN with a non-volatile
 -- default is metadata-only on PG >= 11 (no table rewrite; the default
--- is stored in pg_attribute and read from there), and ADD CONSTRAINT
--- ... CHECK scans the table once under ACCESS EXCLUSIVE lock. The scan
--- cost scales with the current jobs row count; the column adds
--- themselves do not rewrite anything. Apply during a maintenance window
--- on any deployment where jobs is large.
+-- is stored in pg_attribute and read from there), so the column adds
+-- themselves do not rewrite anything. The CHECK constraint is added in
+-- two phases: NOT VALID takes only a brief ACCESS EXCLUSIVE (the
+-- constraint applies to every new write immediately) and VALIDATE then
+-- scans the existing rows under the weaker SHARE UPDATE EXCLUSIVE lock,
+-- which does not block concurrent reads or writes — on a large jobs
+-- table the validation scan therefore does not stall the fleet the way
+-- a validated ADD CONSTRAINT's exclusive scan would.
 --
 -- ROLLING DEPLOY: pre-phase is safe for both code generations. The
 -- previous release's snooze statements reference only columns that
@@ -57,9 +60,22 @@ ALTER TABLE "{schema}".jobs_archive
 DO $$
 BEGIN
     ALTER TABLE "{schema}".jobs
-        ADD CONSTRAINT jobs_max_attempts_check CHECK (max_attempts >= 1);
+        ADD CONSTRAINT jobs_max_attempts_check CHECK (max_attempts >= 1) NOT VALID;
 EXCEPTION
     WHEN duplicate_object THEN NULL;  -- constraint already present; idempotent re-apply
+END
+$$;
+
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'jobs_max_attempts_check'
+          AND conrelid = '"{schema}".jobs'::regclass
+          AND NOT convalidated
+    ) THEN
+        ALTER TABLE "{schema}".jobs VALIDATE CONSTRAINT jobs_max_attempts_check;
+    END IF;
 END
 $$;
 

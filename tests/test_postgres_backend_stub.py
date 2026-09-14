@@ -121,11 +121,14 @@ class TestStaticTypeCompatibility:
 
 
 class TestSnoozeRetryStatusCase:
-    """The pending-vs-scheduled CASE must compare the delay parameter
-    directly against ``interval '0'`` rather than calling
+    """The pending-vs-scheduled CASE must compare the statement's delay
+    parameter directly against ``interval '0'`` rather than calling
     ``clock_timestamp()`` twice — two separate calls are non-deterministic
     for ``delay=0`` and could misclassify a zero-delay snooze as
-    ``scheduled`` instead of ``pending``.
+    ``scheduled`` instead of ``pending``. The non-consuming arms read
+    ``effective_delay`` (the parameter floored at the deferral interval —
+    the arm's single delay, see MIN_DEFERRAL_INTERVAL); the consuming arm
+    reads the raw parameter.
     """
 
     def _sqls(self) -> tuple[str, str, str]:
@@ -138,9 +141,17 @@ class TestSnoozeRetryStatusCase:
         )
 
     def test_status_case_compares_delay_to_zero_interval(self) -> None:
-        for sql in self._sqls():
-            assert "CASE WHEN $3::interval > interval '0'" in sql, (
-                f"status CASE must use $3::interval > interval '0', got: {sql[:200]}"
+        # The consuming arm reads the raw parameter; the non-consuming arms
+        # read effective_delay (the parameter floored at the deferral
+        # interval — the arm's single delay, see MIN_DEFERRAL_INTERVAL).
+        for sql, case_head in (
+            (self._sqls()[0], "CASE WHEN (SELECT effective_delay FROM params) > interval '0'"),
+            (self._sqls()[1], "CASE WHEN $3::interval > interval '0'"),
+            (self._sqls()[2], "CASE WHEN (SELECT effective_delay FROM params) > interval '0'"),
+        ):
+            assert case_head in sql, (
+                f"status CASE must compare the statement's delay parameter against "
+                f"interval '0', expected {case_head!r}, got: {sql[:200]}"
             )
 
     def test_status_case_has_no_double_clock_timestamp(self) -> None:

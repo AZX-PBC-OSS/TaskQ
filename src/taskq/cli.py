@@ -148,6 +148,16 @@ def _load_actor_registry(actors: str) -> Mapping[str, ActorRef[Any, Any]]:
     registry boots and dispatches nothing. On any failure prints the
     reason to stderr and raises ``typer.Exit(code=1)`` — shared by
     ``worker`` and ``actor-config diff``.
+
+    That sharing is a deliberate trade-off for the read-only ``diff``
+    command: it too exits 1 on an empty registry, because the shared
+    loader cannot tell "an operator auditing stored rows against an
+    intentionally empty registry" from "a misconfigured ``--actors``
+    ref that resolved to nothing" — and the second is far more likely.
+    The workaround for a legitimate empty-registry audit: point
+    ``--actors`` at a populated registry containing nothing of interest
+    to the comparison, or read the stored rows directly
+    (``taskq actor-config list``).
     """
     raw = _import_ref(actors, example="myapp.actors:registry")
 

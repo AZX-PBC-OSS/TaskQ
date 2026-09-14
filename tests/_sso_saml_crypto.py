@@ -49,7 +49,7 @@ IDP_CERT_SAML: str = _format_cert_for_saml(IDP_CERT_PEM)
 
 _ASSERTION_TEMPLATE = """\
 <samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" \
-ID="{response_id}" Version="2.0" IssueInstant="{issue_instant}" Destination="{acs_url}">
+ID="{response_id}" Version="2.0" IssueInstant="{issue_instant}"{in_response_to_attr} Destination="{acs_url}">
   <saml:Issuer xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion">{idp_entity_id}</saml:Issuer>
   <samlp:Status><samlp:StatusCode Value="urn:oasis:names:tc:SAML:2.0:status:Success"/></samlp:Status>
   <saml:Assertion xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" \
@@ -84,8 +84,14 @@ def build_saml_response(
     nameid: str = "user-saml-1",
     attributes: dict[str, list[str]] | None = None,
     sign: bool = True,
+    in_response_to: str | None = None,
 ) -> str:
-    """Build a SAML Response (base64-encoded), optionally with a signed assertion."""
+    """Build a SAML Response (base64-encoded), optionally with a signed assertion.
+
+    ``in_response_to`` emits ``InResponseTo`` on the ``<samlp:Response>``
+    element — where python3-saml's ``OneLogin_Saml2_Response.get_in_response_to``
+    reads it; omitted by default (the IdP-initiated shape).
+    """
     from onelogin.saml2.utils import OneLogin_Saml2_Utils
 
     now = dt.datetime.now(dt.UTC)
@@ -108,6 +114,8 @@ def build_saml_response(
         attr_stmt += _attr_xml(name, values)
     attr_stmt += "    </saml:AttributeStatement>\n"
 
+    in_response_to_attr = f' InResponseTo="{in_response_to}"' if in_response_to is not None else ""
+
     xml = _ASSERTION_TEMPLATE.format(
         response_id="_response-" + OneLogin_Saml2_Utils.generate_unique_id(),
         assertion_id="_assertion-" + OneLogin_Saml2_Utils.generate_unique_id(),
@@ -120,6 +128,7 @@ def build_saml_response(
         sp_entity_id=SP_ENTITY_ID,
         nameid=nameid,
         attribute_statement=attr_stmt,
+        in_response_to_attr=in_response_to_attr,
     )
 
     if sign:

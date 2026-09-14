@@ -276,7 +276,9 @@ async def test_running_to_failed_max_attempts(
 async def test_running_to_scheduled_snooze(
     memory_jobs: InMemoryBackend,
 ) -> None:
-    """running → scheduled via mark_snoozed (Snooze)."""
+    """running → scheduled via mark_snoozed (Snooze): the deferral refunds
+    the claim's attempt increment, so the row returns to its pre-claim
+    attempt value."""
     job_id, worker_id = await _enqueue_and_dispatch(memory_jobs)
 
     result = await memory_jobs.mark_snoozed(job_id, worker_id, delay=timedelta(seconds=30))
@@ -286,7 +288,9 @@ async def test_running_to_scheduled_snooze(
     assert row is not None
     assert row.status == "scheduled"
     assert row.scheduled_at == _START + timedelta(seconds=30)
-    assert row.attempt == 1
+    # The refund: a running row dispatched at attempt 1 goes back to its
+    # pre-claim 0 — the snooze is budget-free and unbounded.
+    assert row.attempt == 0
 
     # The row transition is real but writes no event row: the only
     # state_change events belong to dispatches and terminal exits.
@@ -329,7 +333,9 @@ async def test_running_to_scheduled_retry_after_consume(
 async def test_running_to_scheduled_retry_after_no_consume(
     memory_jobs: InMemoryBackend,
 ) -> None:
-    """running → scheduled via mark_retry_after (consume_budget=False)."""
+    """running → scheduled via mark_retry_after (consume_budget=False): a
+    non-consuming RetryAfter is a deferral — it refunds the claim's
+    attempt increment exactly like a Snooze."""
     job_id, worker_id = await _enqueue_and_dispatch(memory_jobs)
     pre_attempt = (await memory_jobs.get(job_id)).attempt  # type: ignore[union-attr] # Why: just dispatched, row exists
 
@@ -341,7 +347,11 @@ async def test_running_to_scheduled_retry_after_no_consume(
     row = await memory_jobs.get(job_id)
     assert row is not None
     assert row.status == "scheduled"
-    assert row.attempt == pre_attempt
+    # The refund returns the pre-claim value (attempt - 1, floored at 0).
+    assert row.attempt == pre_attempt - 1
+    # The consume-false deferral is counted on the same row column a
+    # Snooze uses — one counter for all non-consuming deferrals.
+    assert row.snooze_count == 1
 
 
 # ── running → scheduled via mark_snoozed(outcome='reservation_denied') ─

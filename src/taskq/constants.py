@@ -28,6 +28,7 @@ __all__ = [
     "IDEMPOTENCY_KEY_BYTES_CEILING",
     "MAX_IDEMPOTENCY_KEY_BYTES",
     "MAX_RESULT_BYTES",
+    "MIN_DEFERRAL_INTERVAL",
     "PROGRESS_CHANNEL_FMT",
     "PROGRESS_GLOBAL_CHANNEL_FMT",
     "QUEUE_CONCURRENCY_PREFIX",
@@ -114,6 +115,25 @@ because ``timedelta(0)`` is falsy and represents an allowed decision that
 must be passed through unchanged.
 """
 
+MIN_DEFERRAL_INTERVAL: Final[timedelta] = timedelta(seconds=1)
+"""Minimum effective delay a NON-consuming deferral reschedules out.
+
+A ``Snooze``, a ``RetryAfter(consume_budget=False)``, and an admission
+denial's ``retry_after`` all hand their delay to ``mark_snoozed``'s
+snooze arm, which maps it onto ``scheduled_at``.  Without a floor, a
+zero delay parks the job ``pending`` at ``clock_timestamp()`` — first
+in every dispatch round (``ORDER BY scheduled_at``) and instantly
+re-claimable, so one job monopolises a worker slot in a claim/refund
+round trip per cycle.  Both non-consuming arms therefore apply
+``GREATEST(delay, this interval)``; the vendored corpus guards the same
+edge outright (River rejects a non-future snooze; Oban requires a
+positive snooze delay).
+
+A consuming ``RetryAfter`` is exempt: an immediate retry is a real
+execution, bounded by the budget it spends, not a deferral competing
+for the head of the dispatch order.
+"""
+
 DEFAULT_MAX_RETRY_BACKOFF: Final[timedelta] = timedelta(hours=24)
 """Default ceiling on a single retry's backoff.
 
@@ -128,17 +148,23 @@ would have silently disagreed with the rest.
 """
 
 DEFAULT_MAX_KEYED_RESERVATIONS: Final[int] = 10_000
-"""Default ceiling on tracked keyed-reservation entries (and their pending reclaims).
+"""Default ceiling on tracked keyed-reservation entries and their pending reclaims.
 
 The effective value is ``WorkerSettings.max_keyed_reservations``; this
 constant is that setting's default, and the fallback every
-keyed-reservation bound carries when no settings object is in scope —
-the registry's in-process tracking dict, the pending-reclaim set that
-records evicted keyed buckets awaiting their ``reservation_slots`` row
-deletion, and the heal-stamp dict all sit at or below the tracked-entry
-count, so one ceiling bounds every structure the caller-controlled key
-space can grow. Named here so the settings default and the registry
-fallback cannot drift apart.
+keyed-reservation bound carries when no settings object is in scope.
+Two structures carry the ceiling: the registry's in-process tracking
+dict (the entry cap, enforced on the acquisition path) and the
+pending-reclaim set of evicted keyed buckets awaiting their
+``reservation_slots`` row deletion (its record cap, passed by both
+eviction call sites — the per-worker sweep and the opportunistic
+eviction on the acquisition path). The pending set is NOT bounded by
+the tracked-entry count: entries are evicted and re-materialised in
+waves, so pending accumulates across waves up to its own cap, at which
+point eviction is vetoed until the drain empties it. The heal-stamp
+dicts sit at or below the tracked-entry count (they ride the
+registration lifecycle). Named here so the settings default and the
+registry fallback cannot drift apart.
 """
 
 DEFAULT_PRUNE_BATCH_SIZE: Final[int] = 10000

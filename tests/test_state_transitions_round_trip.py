@@ -40,7 +40,12 @@ async def _extract_state_change_transitions(
 
 
 async def test_full_snooze_round_trip() -> None:
-    """Full snooze round-trip: enqueue → dispatch → Snooze → scheduled_to_pending → dispatch → succeed."""
+    """Full snooze round-trip: enqueue → dispatch → Snooze → scheduled_to_pending → dispatch → succeed.
+
+    The snooze refunds the claim's attempt increment (Oban/River
+    convention), so one snooze cycle + one final successful dispatch
+    leaves the attempt at 1 — the deferral never walks the counter.
+    """
     backend = _make_backend()
 
     call_count = 0
@@ -62,14 +67,14 @@ async def test_full_snooze_round_trip() -> None:
     assert row is not None
     assert row.status == "succeeded"
     assert call_count == 2
-    assert row.attempt == 2
+    assert row.attempt == 1
 
     attempts = await backend.get_attempts(args.id)
     # The snooze wrote no attempt row (a deferral is not an execution);
-    # the only record is the terminal success at attempt 2.
+    # the only record is the terminal success at the re-claimed attempt.
     assert len(attempts) == 1
     assert attempts[0].outcome == "succeeded"
-    assert attempts[0].attempt == 2
+    assert attempts[0].attempt == 1
 
     # The snooze's row transition writes no event: the state_change
     # sequence records dispatches, the wake promotion, and the terminal
@@ -82,13 +87,19 @@ async def test_full_snooze_round_trip() -> None:
         ("running", "succeeded"),
     ]
     assert row.snooze_count == 1
+    # The row's snooze_count column is the deferral's ONLY counter — no
+    # metadata mirror is merged alongside it (one source of truth).
+    assert "snooze_count" not in (row.metadata or {})
 
 
 # ── multiple snooze cycles (3x) ─────────────────────────────────
 
 
 async def test_multiple_snooze_cycles() -> None:
-    """Multiple snooze cycles (3x): attempt unchanged across snoozes; final status='succeeded'."""
+    """Multiple snooze cycles (3x): each snooze refunds the claim's
+    increment and each re-dispatch re-claims it, so after three snooze
+    cycles + one final successful dispatch the attempt is 1 (the
+    deferral is unbounded and never walks the counter)."""
     backend = _make_backend()
 
     call_count = 0
@@ -110,7 +121,7 @@ async def test_multiple_snooze_cycles() -> None:
     assert row is not None
     assert row.status == "succeeded"
     assert call_count == 4
-    assert row.attempt == 4
+    assert row.attempt == 1
 
     attempts = await backend.get_attempts(args.id)
     # The three snoozes wrote no attempt rows; the coalesced snooze
@@ -185,7 +196,12 @@ async def test_retry_after_round_trip() -> None:
 
 
 async def test_indefinite_retry_polling_pattern() -> None:
-    """(unit version). Polling pattern: enqueue → dispatch → Snooze(30s) → wake tick → dispatch → succeed."""
+    """(unit version). Polling pattern: enqueue → dispatch → Snooze(30s) → wake tick → dispatch → succeed.
+
+    The snooze refunds the claim's increment, so the polling pattern's
+    terminal attempt is 1 — one consuming dispatch, no matter how many
+    snooze cycles preceded it.
+    """
     backend = _make_backend()
 
     call_count = 0
@@ -207,7 +223,7 @@ async def test_indefinite_retry_polling_pattern() -> None:
     assert row is not None
     assert row.status == "succeeded"
     assert call_count == 2
-    assert row.attempt == 2
+    assert row.attempt == 1
 
     # The snooze's row transition writes no event row (see
     # test_full_snooze_round_trip); the sequence records dispatches, the
@@ -247,7 +263,8 @@ async def test_cancel_mid_snooze() -> None:
     row = await backend.get(args.id)
     assert row is not None
     assert row.status == "scheduled"
-    assert row.attempt == 1
+    # The refund: the claim's increment (dispatch 0 → 1) is returned.
+    assert row.attempt == 0
 
     ok = await backend.write_cancel_request(args.id, reason="user")
     assert ok is True

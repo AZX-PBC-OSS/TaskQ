@@ -374,6 +374,7 @@ async def consumer_loop_stub(
                 actor=job.actor,
                 queue=job.queue,
                 attempt=job.attempt,
+                snooze_count=job.snooze_count,
                 worker_id=worker_id,
                 payload=_StubPayload(),
                 jobs=SubJobEnqueuer(
@@ -499,6 +500,16 @@ async def di_consumer_loop(
             # lease expiry — a worker whose registry has the actor can then
             # pick it up. The short delay keeps this worker from re-claiming
             # it in a hot loop.
+            #
+            # Contract: an unregistered actor parks the job at the snooze
+            # cadence, budget-free — mark_snoozed's default 'snoozed'
+            # outcome refunds the claim's attempt increment, so a job whose
+            # actor is missing (through no fault of its own) never burns
+            # retry budget while it waits for a worker that can run it;
+            # the stranded-jobs detector surfaces it. This is not an
+            # actor-requested deferral semantically, but the snooze write
+            # is the closest bounded outcome — a delay, a release, and a
+            # released_reason marker in one transition.
             try:
                 await backend.mark_snoozed(
                     job.id,

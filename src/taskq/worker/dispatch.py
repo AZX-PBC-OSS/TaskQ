@@ -92,9 +92,12 @@ def _to_consumed_outcome(attempt_outcome: str) -> ConsumedOutcome:
     ``AttemptOutcome`` includes ``"scheduled"`` for snooze/retry/reservation-denial
     and ``"noop"`` for a terminal write that matched nothing (the job moved
     underneath this worker), neither of which is in the instrument 2 valid set
-    ``{succeeded, failed, cancelled, abandoned}``.  From the consumer's
-    perspective the job was released back to the queue without being
-    completed — semantically ``"abandoned"``.
+    ``{succeeded, failed, cancelled, abandoned}``.  ``"noop`` outcomes never
+    reach the consumed-message recorder — ``dispatch_one_job``'s finally
+    block skips both job-outcome metrics for them (nothing was consumed;
+    the re-dispatch records the real message and duration) — so this
+    mapping exists for ``"scheduled"`` and as a defensive total map should
+    any other caller pass a noop through.
     """
     if attempt_outcome in ("scheduled", "noop"):
         return "abandoned"
@@ -367,6 +370,7 @@ async def dispatch_one_job(
                         actor=job.actor,
                         queue=job.queue,
                         attempt=job.attempt,
+                        snooze_count=job.snooze_count,
                         worker_id=worker_id,
                         payload=validated_payload,
                         jobs=job_enqueuer,
@@ -509,7 +513,13 @@ async def dispatch_one_job(
                         _log_terminal_write_failed(handler_log, job, exc, infra_exc)
         finally:
             elapsed = time.monotonic() - t0
-            record_consumed_message(job.actor, job.queue, outcome=_to_consumed_outcome(outcome))
-            record_process_duration(job.actor, job.queue, elapsed)
+            # A noop means the row moved underneath this dispatch (a
+            # reclaim race): nothing was consumed, and the re-dispatch
+            # will record the real message and duration — recording here
+            # would double-count the message and stretch the histogram
+            # with a phantom process.
+            if outcome != "noop":
+                record_consumed_message(job.actor, job.queue, outcome=_to_consumed_outcome(outcome))
+                record_process_duration(job.actor, job.queue, elapsed)
 
     return outcome

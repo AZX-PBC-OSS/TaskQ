@@ -243,8 +243,10 @@ def create_saml_auth(config: SAMLAuthConfig, *, base_path: str = "") -> AuthBund
     async def callback(request: Request) -> Response:  # pyright: ignore[reportUnusedFunction]  # Why: registered via FastAPI decorator.
         try:
             # The ACS endpoint answers this browser's own AuthnRequest and
-            # nothing else: an assertion no /login solicited is refused before
-            # any signature work.
+            # nothing else: the cookie gate below refuses POSTs with no
+            # pending request before any signature work, and the
+            # InResponseTo equality check after signature validation binds
+            # the accepted response to the request /login issued.
             request_cookie = request.cookies.get(_REQUEST_COOKIE_NAME)
             if not request_cookie:
                 raise ValueError("no pending SAML AuthnRequest for this browser")
@@ -263,6 +265,14 @@ def create_saml_auth(config: SAMLAuthConfig, *, base_path: str = "") -> AuthBund
                 raise ValueError(auth.get_last_error_reason() or "SAML response validation failed")
             if not auth.is_authenticated():
                 raise ValueError("not authenticated")
+
+            # python3-saml compares InResponseTo only when the response
+            # carries one, so an IdP-initiated response (no InResponseTo)
+            # would pass process_response unanswered to any AuthnRequest;
+            # only this equality check refuses that shape.
+            in_response_to = auth.get_last_response_in_response_to()
+            if in_response_to != request_id:
+                raise ValueError("SAML response does not answer this browser's AuthnRequest")
 
             # An assertion whose InResponseTo is absent (or otherwise valid but
             # captured) can be re-POSTed while its window is live; only a

@@ -272,13 +272,19 @@ async def test_denial_loop_terminates_within_retry_budget(
         # A terminal outcome from the denial path is what the fix may add;
         # the row's status is the source of truth, checked at the top of
         # the next iteration — so make the job immediately re-eligible and
-        # loop.
+        # loop. The zero-delay denial snooze is floored at
+        # MIN_DEFERRAL_INTERVAL, which leaves the job 'scheduled' 1 s out;
+        # forcing scheduled_at into the past stands in for that second
+        # passing, and the scheduled_to_pending sweep is the promotion a
+        # real leader runs between dispatch rounds — the loop must go
+        # through it, because dispatch only claims 'pending' rows.
         async with clean_jobs_app.deps.worker_pool.acquire() as conn:  # type: ignore[union-attr]  # Why: as above.
             await conn.execute(
                 f'UPDATE "{schema}".jobs SET scheduled_at = clock_timestamp() - interval '
                 "'1 second' WHERE id = $1",
                 job_id,
             )
+        await backend.scheduled_to_pending()
 
     pytest.fail(
         "10 dispatch→denial→snooze cycles on a job with max_attempts=3 and "

@@ -4,9 +4,14 @@ Validates the end-to-end structured logging contract: enqueuing, dispatching,
 state-changing, and cancelling a job all produce correctly structured log lines
 with mandatory fields. These are the acceptance-definition tests.
 
-The ``_logging_configured_guard`` autouse fixture (imported into conftest.py
-from ``taskq.testing.otel``) snapshots and restores structlog global state
-between tests.
+The suite-wide ``_logging_configured_guard`` autouse fixture (imported into
+conftest.py from ``taskq.testing.otel``) resets structlog's configuration
+between tests — but a lazy proxy that binds while this file's production
+``setup_logging`` (``cache_logger_on_first_use=True``) is active pins its
+assembled logger on the proxy instance, out of the config reset's reach, and
+then bypasses every later ``capture_logs`` window. The file-local
+``_scoped_logging_configuration`` fixture below is what reverts that; see
+there for the full mechanism.
 
 These tests treat the structured log output as an observable public
 contract for downstream log-aggregation pipelines (e.g. Datadog) — not as
@@ -20,6 +25,8 @@ import contextlib
 import io
 import json
 import logging
+import sys
+from collections.abc import Iterator
 from contextlib import AsyncExitStack
 from datetime import timedelta
 from typing import Any
@@ -31,6 +38,7 @@ import structlog
 from hypothesis import given, settings
 from hypothesis import strategies as st
 from pydantic import BaseModel
+from structlog._config import BoundLoggerLazyProxy
 
 import taskq.obs as obs_mod
 import taskq.obs._structlog as structlog_mod
@@ -60,6 +68,77 @@ pytestmark = pytest.mark.integration
 
 _HEARTBEAT_INTERVAL = 0.5
 _LOCK_LEASE = 2.0
+
+
+def _proxy_pinned_binds() -> set[int]:
+    """ids of lazy proxies whose assembled logger is pinned on the instance.
+
+    A proxy that binds while ``cache_logger_on_first_use`` is True gets an
+    instance-level ``bind`` shadowing the class's lazy method (structlog
+    ``_config.BoundLoggerLazyProxy.bind``) — the only observable mark of
+    the pin, and exactly the state a teardown must undo.
+    """
+    pinned: set[int] = set()
+    for module in list(sys.modules.values()):
+        if module is None:  # pyright: ignore[reportUnnecessaryComparison]  # Why: sys.modules can hold None entries (blocked/stale imports) at runtime; the stubs model it as ModuleType only.
+            continue
+        for value in vars(module).values():
+            if isinstance(value, BoundLoggerLazyProxy) and "bind" in vars(value):
+                pinned.add(id(value))
+    return pinned
+
+
+@pytest.fixture(autouse=True)
+def _scoped_logging_configuration() -> Iterator[None]:  # pyright: ignore[reportUnusedFunction]  # Why: autouse fixture consumed implicitly by the test runner; pyright does not track fixture usage.
+    """Snapshot and restore every piece of global state this file changes.
+
+    Each test calls ``setup_logging`` — the production configure — which
+    sets four kinds of global state, and each leaks differently:
+
+    * structlog's configuration: restored via ``configure(**snapshot)``.
+    * the stdlib root logger's handler set and level.
+    * ``taskq.obs._structlog._logging_configured``.
+    * module-level lazy proxies that bind while
+      ``cache_logger_on_first_use=True`` is in force pin their assembled
+      logger ON THE PROXY INSTANCE. The suite-wide guard's
+      ``structlog.reset_defaults()`` replaces the config but cannot reach
+      those proxies: they keep running the frozen production processor
+      chain forever, so a later test file's ``capture_logs`` — which
+      swaps only the CURRENT config's processor list in place — captures
+      none of their events (the order-dependent silent-failure-guards
+      failures). Deleting the instance ``bind`` attribute restores the
+      lazy class method, so the proxy rebinds against whatever config the
+      next caller runs under.
+    """
+    config = structlog.get_config()
+    processors = list(config["processors"])
+    root_handlers = list(logging.root.handlers)
+    root_level = logging.root.level
+    configured_flag = structlog_mod._logging_configured  # pyright: ignore[reportPrivateUsage]  # Why: the file's setup_logging flips this module flag; the fixture restores it.
+    pinned_before = _proxy_pinned_binds()
+    try:
+        yield
+    finally:
+        for module in list(sys.modules.values()):
+            if module is None:  # pyright: ignore[reportUnnecessaryComparison]  # Why: sys.modules can hold None entries (blocked/stale imports) at runtime; the stubs model it as ModuleType only.
+                continue
+            for value in vars(module).values():
+                if (
+                    isinstance(value, BoundLoggerLazyProxy)
+                    and "bind" in vars(value)
+                    and id(value) not in pinned_before
+                ):
+                    del value.bind
+        structlog.configure(
+            processors=processors,
+            wrapper_class=config["wrapper_class"],
+            context_class=config["context_class"],
+            logger_factory=config["logger_factory"],
+            cache_logger_on_first_use=config["cache_logger_on_first_use"],
+        )
+        logging.root.handlers[:] = root_handlers
+        logging.root.setLevel(root_level)
+        structlog_mod._logging_configured = configured_flag  # pyright: ignore[reportPrivateUsage]  # Why: restores the snapshot taken above.
 
 
 class _Payload(BaseModel):

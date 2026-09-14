@@ -24,6 +24,7 @@ from taskq.backend._sql import (
 )
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining
+    MIN_DEFERRAL_INTERVAL,
 )
 
 __all__ = ["SqlTemplates", "render"]
@@ -94,6 +95,14 @@ _COPY_ENQUEUE_OMITTED: Final[frozenset[str]] = frozenset(
 )
 COPY_ENQUEUE_COLUMNS: Final[tuple[str, ...]] = tuple(
     c for c in COPY_FROM_COLUMNS if c not in _COPY_ENQUEUE_OMITTED
+)
+
+# The non-consuming deferral floor, pre-rendered for the two arms that
+# carry it (mark_snoozed's snoozed arm and mark_retry_after's
+# consume_budget=False snoozed arm). Derived from the constant so the
+# SQL and the in-memory twin read one value and cannot drift.
+_MIN_DEFERRAL_INTERVAL_SQL: Final[str] = (
+    f"interval '{MIN_DEFERRAL_INTERVAL.total_seconds()} seconds'"
 )
 
 
@@ -561,15 +570,28 @@ SELECT * FROM upd""",
 WITH params AS (
     SELECT $1::uuid AS job_id,
            $2::uuid AS worker_id,
-           $3::interval AS delay,
+           -- A non-consuming deferral reschedules at least
+           -- MIN_DEFERRAL_INTERVAL out (the GREATEST below): a zero/now
+           -- delay would park the job 'pending' at clock_timestamp() at
+           -- the head of the dispatch order (ORDER BY scheduled_at),
+           -- instantly re-claimable — one claim/refund round trip per
+           -- cycle monopolising a worker slot. River rejects a
+           -- non-future snooze; Oban requires a positive delay. The
+           -- consuming arms keep the raw delay: an immediate consuming
+           -- retry is a real execution, bounded by the budget it
+           -- spends. effective_delay is the arm's SINGLE delay —
+           -- status, scheduled_at and every deadline comparison read
+           -- it, so the snoozed and deadline arms partition exactly
+           -- (a row can never match neither).
+           GREATEST($3::interval, {_MIN_DEFERRAL_INTERVAL_SQL}) AS effective_delay,
            $4::jsonb AS metadata_update,
            $5::int AS progress_seq,
            $6::jsonb AS progress_state
 ),
 snoozed AS (
     UPDATE "{s}".jobs j
-    SET status = CASE WHEN $3::interval > interval '0' THEN 'scheduled'::"{s}".job_status ELSE 'pending'::"{s}".job_status END,
-        scheduled_at = clock_timestamp() + (SELECT delay FROM params),
+    SET status = CASE WHEN (SELECT effective_delay FROM params) > interval '0' THEN 'scheduled'::"{s}".job_status ELSE 'pending'::"{s}".job_status END,
+        scheduled_at = clock_timestamp() + (SELECT effective_delay FROM params),
         finished_at = NULL,
         locked_by_worker = NULL,
         lock_expires_at = NULL,
@@ -586,7 +608,7 @@ snoozed AS (
       AND j.status = 'running'
       AND j.locked_by_worker = (SELECT worker_id FROM params)
       AND (j.schedule_to_close IS NULL
-           OR clock_timestamp() + (SELECT delay FROM params) <= j.schedule_to_close)
+           OR clock_timestamp() + (SELECT effective_delay FROM params) <= j.schedule_to_close)
       AND ($7::text = 'snoozed'
            OR j.retry_kind = 'indefinite'
            OR j.attempt < j.max_attempts
@@ -631,7 +653,7 @@ deadline_failed AS (
       AND j.status = 'running'
       AND j.locked_by_worker = (SELECT worker_id FROM params)
       AND j.schedule_to_close IS NOT NULL
-      AND clock_timestamp() + (SELECT delay FROM params) > j.schedule_to_close
+      AND clock_timestamp() + (SELECT effective_delay FROM params) > j.schedule_to_close
       AND NOT EXISTS (SELECT 1 FROM snoozed)
       AND NOT EXISTS (SELECT 1 FROM max_attempts_failed)
     RETURNING j.*, 'failed'::text AS outcome_branch, clock_timestamp() AS now_ts
@@ -832,14 +854,18 @@ UNION ALL SELECT * FROM max_attempts_failed
 WITH params AS (
     SELECT $1::uuid AS job_id,
            $2::uuid AS worker_id,
-           $3::interval AS delay,
+           -- effective_delay carries mark_snoozed's deferral floor (see
+           -- its params comment for the why): this arm is non-consuming
+           -- by construction, and it must never park the job at the
+           -- head of the dispatch order either.
+           GREATEST($3::interval, {_MIN_DEFERRAL_INTERVAL_SQL}) AS effective_delay,
            $4::int AS progress_seq,
            $5::jsonb AS progress_state
 ),
 snoozed AS (
     UPDATE "{s}".jobs j
-    SET status = CASE WHEN $3::interval > interval '0' THEN 'scheduled'::"{s}".job_status ELSE 'pending'::"{s}".job_status END,
-        scheduled_at = clock_timestamp() + (SELECT delay FROM params),
+    SET status = CASE WHEN (SELECT effective_delay FROM params) > interval '0' THEN 'scheduled'::"{s}".job_status ELSE 'pending'::"{s}".job_status END,
+        scheduled_at = clock_timestamp() + (SELECT effective_delay FROM params),
         finished_at = NULL,
         locked_by_worker = NULL,
         lock_expires_at = NULL,
@@ -854,7 +880,7 @@ snoozed AS (
       AND j.status = 'running'
       AND j.locked_by_worker = (SELECT worker_id FROM params)
       AND (j.schedule_to_close IS NULL
-           OR clock_timestamp() + (SELECT delay FROM params) <= j.schedule_to_close)
+           OR clock_timestamp() + (SELECT effective_delay FROM params) <= j.schedule_to_close)
     RETURNING j.*, 'snoozed'::text AS outcome_branch, clock_timestamp() AS now_ts
 ),
 deadline_failed AS (
@@ -873,7 +899,7 @@ deadline_failed AS (
       AND j.status = 'running'
       AND j.locked_by_worker = (SELECT worker_id FROM params)
       AND j.schedule_to_close IS NOT NULL
-      AND clock_timestamp() + (SELECT delay FROM params) > j.schedule_to_close
+      AND clock_timestamp() + (SELECT effective_delay FROM params) > j.schedule_to_close
       AND NOT EXISTS (SELECT 1 FROM snoozed)
     RETURNING j.*, 'deadline_failed'::text AS outcome_branch, clock_timestamp() AS now_ts
 ),

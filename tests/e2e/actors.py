@@ -130,18 +130,27 @@ async def sync_user_profile(
     *,
     pool: asyncpg.Pool,
 ) -> None:
-    """Simulates an external profile-API sync with scripted failure injection."""
+    """Simulates an external profile-API sync with scripted failure injection.
+
+    ``fail_times`` counts attempts for the transient/permanent kinds and
+    SNOOZES for the snooze kind: a non-consuming deferral refunds the
+    claim's attempt increment, so ``ctx.attempt`` stays at 1 across
+    snooze cycles — an actor that snoozes N times then succeeds counts
+    deferrals (``ctx.snooze_count``, the Oban snoozed-meta /
+    River snoozes-counter convention), not attempts.
+    """
     await _record_effect(
         pool,
         ctx,
         "fetch",
         {"run_id": payload.run_id, "user_id": payload.user_id, "attempt": ctx.attempt},
     )
-    if ctx.attempt <= payload.fail_times:
+    if payload.fail_kind == "snooze":
+        if ctx.snooze_count < payload.fail_times:
+            raise Snooze(timedelta(milliseconds=200))
+    elif ctx.attempt <= payload.fail_times:
         if payload.fail_kind == "permanent":
             raise PermanentSyncError(f"permanent sync failure for user {payload.user_id}")
-        if payload.fail_kind == "snooze":
-            raise Snooze(timedelta(milliseconds=200))
         raise RuntimeError("simulated fetch failure")
     await asyncio.sleep(payload.fetch_latency_ms / 1000)
     profile = {"user_id": payload.user_id, "display_name": "E2E User", "timezone": "UTC"}

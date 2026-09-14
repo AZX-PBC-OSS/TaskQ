@@ -582,7 +582,15 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
         rl = ctx.rate_limit_registry if ctx.rate_limit_registry is not None else rl_registry
         if rl.has_keyed_reservations:
             try:
-                evicted = rl.evict_idle_keyed_reservations(idle_for=_KEYED_IDLE_THRESHOLD)
+                # Why max_pending_reclaims: the pending-reclaim set's cap
+                # tracks the operator's keyed-reservation ceiling — the
+                # constant fallback (10 000) would let pending grow far
+                # past a deliberately small setting while the tracked
+                # entries themselves are capped at it.
+                evicted = rl.evict_idle_keyed_reservations(
+                    idle_for=_KEYED_IDLE_THRESHOLD,
+                    max_pending_reclaims=ctx.deps.settings.max_keyed_reservations,
+                )
                 if evicted:
                     log.debug(
                         "sweep-evicted-idle-keyed-reservations",
