@@ -1016,13 +1016,14 @@ class TestTickCancelPollingEscalationEvent:
 # ── G-1: mark_snoozed leaves attempt untouched ─────────────────────────
 
 
-class TestSnoozePreservesAttempt:
-    """G-1: mark_snoozed leaves attempt untouched (§6.2); dispatch
-    unconditionally increments, so the round-trip count reflects dispatch
-    cycles, not snooze cycles.
+class TestSnoozeRefundsAttempt:
+    """A snooze refunds the claim's attempt increment (floored at 0), so
+    an actor-requested deferral never spends retry budget; dispatch is
+    what increments, and only real executions leave the increment
+    standing.
     """
 
-    async def test_in_memory_snooze_preserves_attempt(self) -> None:
+    async def test_in_memory_snooze_refunds_attempt(self) -> None:
         backend = _make_backend()
         job_id, wid = await _enqueue_and_dispatch(backend)
 
@@ -1035,7 +1036,7 @@ class TestSnoozePreservesAttempt:
 
         row = await backend.get(job_id)
         assert row is not None
-        assert row.attempt == 1
+        assert row.attempt == 0
 
 
 # ── G-6: mark_snoozed clears last_heartbeat_at ──────────────────────────
@@ -1249,9 +1250,10 @@ class TestMarkRetryAfterConsumeTrueIncrements:
 
 
 class TestMarkRetryAfterConsumeFalsePreserves:
-    """consume_budget=False: attempt unchanged, status='scheduled', no
-    attempt/event rows (a non-consuming deferral is not an execution),
-    snooze_count incremented.  Returns "scheduled".
+    """consume_budget=False: the claim's attempt increment is refunded
+    (floored at 0), status='scheduled', no attempt/event rows (a
+    non-consuming deferral is not an execution), snooze_count
+    incremented.  Returns "scheduled".
     """
 
     async def test_in_memory_mark_retry_after_consume_false_preserves(self) -> None:
@@ -1270,7 +1272,7 @@ class TestMarkRetryAfterConsumeFalsePreserves:
         row = await backend.get(job_id)
         assert row is not None
         assert row.status == "scheduled"
-        assert row.attempt == 1
+        assert row.attempt == 0
         assert row.scheduled_at == _START + timedelta(seconds=10)
         assert row.snooze_count == 1
         assert row.rate_limit_blocked_count == 0

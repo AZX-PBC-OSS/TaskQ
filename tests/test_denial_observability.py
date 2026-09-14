@@ -266,3 +266,58 @@ async def test_denial_on_job_with_close_deadline_keeps_rescheduling() -> None:
     assert row is not None
     assert row.status == "scheduled"
     assert row.schedule_to_close == _NOW + timedelta(hours=1)
+
+
+async def test_actor_deferral_is_unbounded_and_never_spends_budget() -> None:
+    """The deliberate capability: a job honouring downstream 429s
+    (``Snooze`` / ``RetryAfter(consume_budget=False)``) snoozes
+    INDEFINITELY — a deferral never spends retry budget, no matter how
+    many cycles pass or how small the budget is.
+
+    The budget is preserved by refunding the claim's attempt increment
+    (the Oban/River snooze convention), NOT by raising the ceiling: a
+    transient job with ``max_attempts=1`` and no close deadline, driven
+    through many more deferral cycles than its budget, must still be
+    rescheduled with ``attempt`` back at its pre-claim base and
+    ``max_attempts`` untouched. A budget-gated deferral arm, or a
+    ceiling-raising refund, fails here.
+    """
+    backend, job_id, worker_id = await _mem_job(
+        max_attempts=1,
+        retry_kind="transient",
+    )
+    cycles = 5  # far beyond the 1-attempt budget
+    zero_delay = timedelta(0)
+
+    for _ in range(cycles):
+        result = await backend.mark_snoozed(
+            job_id,
+            worker_id,
+            zero_delay,
+            outcome="snoozed",
+        )
+        assert result == "scheduled"
+        # Re-claim, exactly as the dispatcher does: attempt = attempt + 1.
+        worker_id = new_uuid()
+        dispatched = await backend.dispatch_batch(worker_id, ["default"], 1, timedelta(seconds=60))
+        assert [r.id for r in dispatched] == [job_id]
+
+    row = await backend.get(job_id)
+    assert row is not None
+    assert row.status == "running"
+    # The refund returns the claim's increment every cycle: attempt
+    # oscillates 0 -> 1 -> 0 and never walks toward the smallint
+    # ceiling, so the deferral can continue indefinitely.
+    assert row.attempt == 1  # the current claim's increment, pre-refund
+    assert row.max_attempts == 1
+    assert row.snooze_count == cycles
+    assert row.rate_limit_blocked_count == 0
+
+    # The consume_budget=False arm carries the same contract.
+    result = await backend.mark_retry_after(job_id, worker_id, _DELAY, consume_budget=False)
+    assert result == "scheduled"
+    row = await backend.get(job_id)
+    assert row is not None
+    assert row.attempt == 0
+    assert row.max_attempts == 1
+    assert row.snooze_count == cycles + 1

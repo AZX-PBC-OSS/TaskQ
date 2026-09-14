@@ -565,8 +565,10 @@ class TestPayloadValidationFailureRouting:
 
 async def test_run_until_drained_handles_reservation_unavailable() -> None:
     """ReservationUnavailable raised by stub produces a scheduled row
-    with metadata['awaiting'] == 'reservation:<bucket>' and an attempt
-    row with outcome='reservation_denied'.
+    with metadata['awaiting'] == 'reservation:<bucket>', the
+    rate_limit_blocked_count counter incremented on the row, and NO
+    attempt row for the denial (a denial is admission control, not an
+    execution — the only attempt row is the eventual success).
     """
     clock = FakeClock(_START)
     backend = _make_backend(clock)
@@ -589,10 +591,14 @@ async def test_run_until_drained_handles_reservation_unavailable() -> None:
     row = await backend.get(args.id)
     assert row is not None
     assert row.metadata.get("awaiting") == "reservation:gpu_pool"
+    assert row.rate_limit_blocked_count == 1
+    assert row.snooze_count == 0
 
     attempts = await backend.get_attempts(args.id)
     reservation_attempts = [a for a in attempts if a.outcome == "reservation_denied"]
-    assert len(reservation_attempts) == 1
+    assert reservation_attempts == []
+    # The re-dispatched execution succeeded and wrote its one row.
+    assert [a.outcome for a in attempts] == ["succeeded"]
 
 
 # ── Single-actor cap ─────────────────────────────────────────────

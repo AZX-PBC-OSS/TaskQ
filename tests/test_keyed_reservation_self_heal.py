@@ -174,10 +174,12 @@ async def test_busy_denial_issues_no_heal(
         ensure_calls = 0
         real_ensure = ConcurrencyReservation.ensure_slots
 
-        async def _spy_ensure(res: ConcurrencyReservation, p: object) -> None:
+        async def _spy_ensure(
+            self: ConcurrencyReservation, pool: "asyncpg.Pool"
+        ) -> None:
             nonlocal ensure_calls
             ensure_calls += 1
-            await real_ensure(res, p)  # pyright: ignore[reportArgumentType]  # Why: p is the same asyncpg.Pool the real method expects; the spy only counts.
+            await real_ensure(self, pool)
 
         monkeypatch.setattr(ConcurrencyReservation, "ensure_slots", _spy_ensure)
 
@@ -213,10 +215,12 @@ async def test_heal_window_does_not_survive_eviction_and_re_registration(
         probes = 0
         real_probe = ConcurrencyReservation.slot_rows_exist
 
-        async def _spy_probe(res: ConcurrencyReservation, p: object) -> bool:
+        async def _spy_probe(
+            self: ConcurrencyReservation, pool: "asyncpg.Pool"
+        ) -> bool:
             nonlocal probes
             probes += 1
-            return await real_probe(res, p)  # pyright: ignore[reportArgumentType]  # Why: p is the same asyncpg.Pool the real method expects; the spy only counts.
+            return await real_probe(self, pool)
 
         monkeypatch.setattr(ConcurrencyReservation, "slot_rows_exist", _spy_probe)
 

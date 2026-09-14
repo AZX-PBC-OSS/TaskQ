@@ -89,6 +89,8 @@ def _full_record(*, job_id: UUID | None = None) -> dict[str, object]:
         "span_id": None,
         "metadata": "{}",
         "tags": [],
+        "snooze_count": 0,
+        "rate_limit_blocked_count": 0,
     }
 
 

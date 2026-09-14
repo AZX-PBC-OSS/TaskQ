@@ -518,14 +518,29 @@ counter columns on the job row and emits an OTEL counter; it writes no
 Anything that consumed per-denial event rows (e.g. dashboards over
 `job_events`) must read the counters or OTEL instead.
 
-### Snoozing no longer raises `max_attempts`
+### Snoozing and denials no longer raise `max_attempts`; deferrals refund the claim's attempt
 
-> **Unreleased.** Breaking for jobs that previously snoozed forever.
+> **Unreleased.** Breaking for jobs that previously snoozed forever
+> under admission denials.
 
-Snoozing no longer raises `max_attempts` (the ceiling is immutable); a
-non-`indefinite` job with no `schedule_to_close` now terminally fails with
-`MaxAttemptsExceeded` when its retry budget is spent rather than snoozing
-forever.
+`max_attempts` is now immutable — no code path raises it (the ceiling is
+a bound, not a counter). Two behaviours follow from that:
+
+* **Actor-requested deferrals are unbounded, and never spend budget.**
+  A `Snooze`, or a `RetryAfter(consume_budget=False)` honouring a
+  server 429, refunds the dispatch claim's `attempt` increment
+  (`attempt - 1`, floored at 0 — the Oban/River snooze convention), so a
+  job can wait out an unready downstream indefinitely: `attempt`
+  oscillates and never walks toward the smallint ceiling, and
+  `max_attempts` never moves. Backoff keys off real executions only.
+* **Admission denials are budget-bounded.** A reservation/rate-limit
+  denial leaves the claim's increment standing, and a
+  non-`indefinite` job with no `schedule_to_close` now terminally fails
+  with `MaxAttemptsExceeded` when its retry budget is spent, rather
+  than re-queueing forever against a saturated bucket. Jobs that must
+  wait out a saturation express it explicitly: `retry_kind
+  'indefinite'`, or a `schedule_to_close` deadline (the deadline, not
+  the budget, ends a deadline-carrying job).
 
 ---
 

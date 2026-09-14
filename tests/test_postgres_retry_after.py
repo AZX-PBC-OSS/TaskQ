@@ -314,9 +314,10 @@ async def test_mark_retry_after_no_consume_snoozed(
 
     assert row is not None
     assert row["status"] == "scheduled"
-    assert row["attempt"] == 1
-    # consume_budget=False does not touch the ceiling: the deferral is
-    # counted on the row's snooze counter instead.
+    assert row["attempt"] == 0
+    # consume_budget=False does not touch the ceiling: the claim's
+    # attempt increment is refunded and the deferral is counted on the
+    # row's snooze counter instead.
     assert row["max_attempts"] == 3
     assert row["snooze_count"] == 1
     assert row["rate_limit_blocked_count"] == 0
@@ -514,7 +515,7 @@ async def test_mark_snoozed_snoozed_branch(
 
     assert row is not None
     assert row["status"] == "scheduled"
-    assert row["attempt"] == 1  # attempt unchanged by snooze
+    assert row["attempt"] == 0  # the snooze refunds the claim's increment
     assert row["max_attempts"] == 3  # the ceiling is a bound, not a counter
     assert row["snooze_count"] == 1
     assert row["rate_limit_blocked_count"] == 0
@@ -650,7 +651,7 @@ async def test_mark_snoozed_job_events_and_attempts_both_branches(
 
         assert s_row is not None
         assert s_row["status"] == "scheduled"
-        assert s_row["attempt"] == 1
+        assert s_row["attempt"] == 0  # the snooze refunds the claim's increment
         assert s_row["max_attempts"] == 5  # the ceiling is a bound, not a counter
 
         # The snoozed branch writes no rows: no attempt, and the only

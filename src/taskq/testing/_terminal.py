@@ -593,13 +593,17 @@ async def _mark_snoozed(
         )
         return "failed"
 
-    # The non-consuming budget gate: the exact complement of the snooze
-    # arm's guard — a non-indefinite job at attempt >= max_attempts with
-    # no close deadline has no remaining exit except the terminal one.
-    # A job carrying schedule_to_close reschedules until its deadline
-    # (its own terminal exit); an indefinite job reschedules by policy.
+    # The admission-denial budget gate: the exact complement of the
+    # snooze arm's guard for DENIAL outcomes only — a non-indefinite job
+    # at attempt >= max_attempts with no close deadline has no remaining
+    # exit except the terminal one.  An actor-requested deferral
+    # (outcome 'snoozed') never reaches this gate: its budget is
+    # refunded below.  A job carrying schedule_to_close reschedules until
+    # its deadline (its own terminal exit); an indefinite job reschedules
+    # by policy.
     if (
-        row.attempt >= row.max_attempts
+        outcome in ("reservation_denied", "rate_limit_denied")
+        and row.attempt >= row.max_attempts
         and row.retry_kind != "indefinite"
         and (row.schedule_to_close is None)
     ):
@@ -661,8 +665,12 @@ async def _mark_snoozed(
     )
     merged_progress = _merge_progress(row.progress_state, progress_state)
     # A non-terminal snooze/denial writes no attempt/event rows and never
-    # touches max_attempts (the ceiling is a bound, not a counter): the
-    # outcome-keyed counters on the row are its whole durable record,
+    # touches max_attempts (the ceiling is a bound, not a counter).  An
+    # actor-requested deferral REFUNDS the claim's attempt increment
+    # (floored at 0) so downstream-429 snoozing is unbounded and never
+    # walks the column; an admission denial leaves the increment
+    # standing (budget-bounded backpressure).  The outcome-keyed
+    # counters on the row are the deferral's whole durable record,
     # mirroring the SQL arms' CASE increments.
     self._jobs[job_id] = replace(
         row,
@@ -672,6 +680,7 @@ async def _mark_snoozed(
         locked_by_worker=None,
         lock_expires_at=None,
         last_heartbeat_at=None,
+        attempt=max(row.attempt - 1, 0) if outcome == "snoozed" else row.attempt,
         snooze_count=row.snooze_count + (1 if outcome == "snoozed" else 0),
         rate_limit_blocked_count=row.rate_limit_blocked_count
         + (1 if outcome in ("reservation_denied", "rate_limit_denied") else 0),
@@ -763,18 +772,14 @@ async def _mark_retry_after(
     #
     # The exhaustion arm is enum-complete over retry_kind (any
     # non-indefinite kind fails at budget — a transient-only predicate
-    # left non_retryable matching no arm).  For consume_budget=True the
-    # arm accepts a job whose reschedule point still fits under its close
-    # deadline (the deadline check above has already returned the
-    # past-deadline rows, so nothing further is needed here); for
-    # consume_budget=False a job CARRYING a close deadline never takes
-    # this arm — the deadline, not the budget, is that job's terminal
-    # exit.
-    if (
-        row.attempt >= row.max_attempts
-        and row.retry_kind != "indefinite"
-        and (consume_budget or row.schedule_to_close is None)
-    ):
+    # left non_retryable matching no arm) and exists ONLY on the
+    # consuming path: a consuming RetryAfter IS a real execution, so the
+    # budget it spends is real.  A non-consuming RetryAfter is an
+    # actor-requested deferral — the deadline check above has already
+    # returned past-deadline rows, and everything else reschedules with
+    # the attempt refunded below, so the budget never degrades no matter
+    # how long downstream is unready.
+    if consume_budget and row.attempt >= row.max_attempts and row.retry_kind != "indefinite":
         maxatt_merged_progress = _merge_progress(row.progress_state, progress_state)
         self._jobs[job_id] = replace(
             row,
@@ -821,11 +826,14 @@ async def _mark_retry_after(
         )
         return "failed:MaxAttemptsExceeded"
 
-    new_attempt = row.attempt
-    # A non-consuming RetryAfter is a deferral, not an execution: it
-    # writes no attempt/event rows, never touches max_attempts, and
+    # A non-consuming RetryAfter is an actor-requested deferral, not an
+    # execution: it writes no attempt/event rows, never touches
+    # max_attempts, REFUNDS the claim's attempt increment (floored at 0,
+    # so honouring downstream 429s never degrades the budget), and
     # counts itself on the row's snooze counter.  A consuming one IS a
-    # real execution and keeps writing its rows below.
+    # real execution: its attempt increment stands and it keeps writing
+    # its rows below.
+    new_attempt = row.attempt if consume_budget else max(row.attempt - 1, 0)
     retry_status: Literal["scheduled", "pending"] = (
         "scheduled" if new_scheduled_at > now else "pending"
     )

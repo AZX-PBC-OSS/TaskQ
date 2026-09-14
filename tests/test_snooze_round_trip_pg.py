@@ -6,7 +6,7 @@ Covers:
 - Reservation denial metadata observable
 - asyncio.shield on snooze write
 - Concurrent snooze and cancel
-- Snooze back-off then succeed, attempt unchanged across snooze cycle
+- Snooze back-off then succeed: the snooze refunds the claim's attempt increment
 """
 
 # ruff: noqa: S608 Why: schema name validated by WorkerSettings.post_load against _IDENT_RE before reaching SQL; asyncpg has no parameter binding for identifiers; matches existing integration test pattern
@@ -146,7 +146,7 @@ async def test_snooze_round_trip_with_scheduled_wake(
     row_after = await backend.get(job_id)
     assert row_after is not None
     assert row_after.status == "scheduled"
-    assert row_after.attempt == 1  # attempt unchanged by snooze
+    assert row_after.attempt == 0  # the snooze refunds the claim's increment
 
     # scheduled→pending wake + re-dispatch
     async with deps.worker_pool.acquire() as conn:
@@ -155,7 +155,7 @@ async def test_snooze_round_trip_with_scheduled_wake(
 
     row2 = await backend.get(job_id)
     assert row2 is not None
-    assert row2.attempt == 2  # dispatch increments from 1 → 2
+    assert row2.attempt == 1  # dispatch increments from 0 → 1
     assert row2.status == "running"
 
     async def success_actor(_job: JobRow, _ctx: JobContext[BaseModel]) -> dict[str, object]:
@@ -166,14 +166,14 @@ async def test_snooze_round_trip_with_scheduled_wake(
     final = await backend.get(job_id)
     assert final is not None
     assert final.status == "succeeded"
-    assert final.attempt == 2
+    assert final.attempt == 1
 
     attempts = await backend.get_attempts(job_id)
     # Only the terminal success wrote an attempt row: the snooze was a
     # deferral, not an execution.
     assert len(attempts) == 1
     succeeded_attempt = next(a for a in attempts if a.outcome == "succeeded")
-    assert succeeded_attempt.attempt == 2
+    assert succeeded_attempt.attempt == 1
 
 
 # ── RetryAfter round-trip ─────────────────────────────────────
@@ -472,7 +472,7 @@ async def test_concurrent_snooze_and_cancel(
 async def test_snooze_backoff_then_succeed_round_trip(
     clean_jobs_app: JobsApp,
 ) -> None:
-    """Snooze back-off then succeed, attempt unchanged across snooze cycle."""
+    """Snooze back-off then succeed: the snooze refunds the claim's attempt increment."""
     deps = clean_jobs_app.deps
     backend = clean_jobs_app.backend
     schema = deps.settings.schema_name
@@ -518,4 +518,4 @@ async def test_snooze_backoff_then_succeed_round_trip(
     final = await backend.get(job_id)
     assert final is not None
     assert final.status == "succeeded"
-    assert final.attempt == 2  # snooze preserves attempt ; dispatch increments normally
+    assert final.attempt == 1  # the snooze refunded its claim's increment; dispatch re-claimed once

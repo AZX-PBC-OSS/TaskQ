@@ -472,37 +472,63 @@ WITH upd AS (
     FROM upd
 )
 SELECT * FROM upd""",
-        # Snooze does not consume retry budget: the UPDATE deliberately
-        # leaves j.attempt unchanged, and max_attempts is a CEILING, never
-        # a counter — no arm here raises it.  Non-executing deferrals are
-        # counted on the job row instead (snooze_count /
-        # rate_limit_blocked_count, keyed by the $7 outcome), the
-        # convention the vendored corpus is unanimous on: Oban preserves
-        # "the original max_attempts" across snoozes and counts them in
-        # the job's meta (vendor/oban/lib/oban/worker.ex:273-278), River
-        # decrements attempt and carries a `snoozes` metadata counter
-        # (vendor/river/rivertype/river_type.go:55-59,
-        # riverdriver/riverdrivertest/job_update.go:917-930), and the only
-        # ceiling raises anywhere in the corpus are explicit admin retry
-        # actions (River's JobRetry
-        # riverdriver/riverdatabasesql/internal/dbsqlc/river_job.sql.go:1263,
-        # Oban's retry_job engines/basic.ex:370) — no system widens the
-        # budget automatically.  A deferral that raised the ceiling while
-        # dispatch advanced attempt kept both sides of
-        # `attempt < max_attempts` moving in lockstep, so the budget gate
-        # was unreachable and denial loops never terminated (measured in
-        # production: one job denied 1,014 times, 6.5M job_events rows).
+        # A non-consuming deferral never spends retry budget, and the
+        # ceiling is never a counter — no arm here raises max_attempts.
+        # HOW the budget is preserved differs by who asked for the
+        # deferral:
+        #
+        #   * An actor-requested deferral ($7 = 'snoozed' — the Snooze
+        #     exception, or a server Retry-After honoured without budget)
+        #     REFUNDS the claim's attempt increment: attempt - 1, floored
+        #     at 0.  Dispatch stamped attempt = attempt + 1 when it
+        #     claimed the row; the actor never ran, so the increment is
+        #     returned and the gap `max_attempts - attempt` is exactly
+        #     what it was before the claim.  A job can honour downstream
+        #     429s indefinitely: attempt oscillates between N and N+1 and
+        #     never walks toward the smallint ceiling.  This is the
+        #     convention the vendored corpus is unanimous on — Oban's
+        #     snooze rolls back the attempt and preserves "the original
+        #     max_attempts... no matter how many times a job snoozes"
+        #     while counting snoozes in the job's meta
+        #     (vendor/oban/lib/oban/worker.ex:273-278,
+        #     engines/basic.ex:274-285 `inc: [attempt: -1]`); River's
+        #     snooze/interrupt pass `attempt-1` with a `snoozes` metadata
+        #     counter (vendor/river/internal/jobexecutor/job_executor.go:396-420);
+        #     graphile-worker-rs refunds on recovery
+        #     (`attempts = GREATEST(0, attempts - 1)`).  The only ceiling
+        #     raises anywhere in the corpus are explicit admin retry
+        #     actions (River's JobRetry
+        #     riverdriver/riverdatabasesql/internal/dbsqlc/river_job.sql.go:1263,
+        #     Oban's retry_job engines/basic.ex:370) — no system widens
+        #     the budget automatically.
+        #   * An admission denial ($7 = 'reservation_denied' /
+        #     'rate_limit_denied') leaves the claim's increment standing:
+        #     the system's own backpressure is budget-bounded, so a
+        #     saturated bucket fails the job out at attempt >=
+        #     max_attempts instead of re-queueing it forever (measured in
+        #     production under the unbounded shape: one job denied 1,014
+        #     times, 6.5M job_events rows).  Jobs that must wait out a
+        #     saturation express it explicitly: retry_kind 'indefinite',
+        #     or a schedule_to_close deadline.
+        #
+        # Both paths are counted on the job row (snooze_count /
+        # rate_limit_blocked_count, keyed by $7) instead of minting
+        # per-occurrence rows.
         #
         # Three arms, exhaustive and mutually exclusive over every
         # fenced row:
-        #   snoozed            — budget remains (attempt < max_attempts,
-        #                        any kind), OR the kind is indefinite, OR
-        #                        the job carries schedule_to_close (its
-        #                        own terminal exit — the deadline, not the
+        #   snoozed            — an actor-requested deferral (always,
+        #                        while the deadline allows), OR an
+        #                        admission denial while budget remains
+        #                        (attempt < max_attempts, any kind), OR
+        #                        the kind is indefinite, OR the job
+        #                        carries schedule_to_close (its own
+        #                        terminal exit — the deadline, not the
         #                        budget, ends that job);
-        #   max_attempts_failed — the exact complement: a non-indefinite
-        #                        job at attempt >= max_attempts with no
-        #                        close deadline;
+        #   max_attempts_failed — the complement, admission denials
+        #                        only: a non-indefinite job at
+        #                        attempt >= max_attempts with no close
+        #                        deadline;
         #   deadline_failed     — the reschedule point passes
         #                        schedule_to_close.
         # A non-terminal snooze/denial writes NO job_attempts/job_events
@@ -550,6 +576,7 @@ snoozed AS (
         last_heartbeat_at = NULL,
         cancel_phase = 0,
         cancel_requested_at = NULL,
+        attempt = CASE WHEN $7::text = 'snoozed' THEN GREATEST(j.attempt - 1, 0) ELSE j.attempt END,
         snooze_count = CASE WHEN $7::text = 'snoozed' THEN j.snooze_count + 1 ELSE j.snooze_count END,
         rate_limit_blocked_count = CASE WHEN $7::text IN ('reservation_denied', 'rate_limit_denied') THEN j.rate_limit_blocked_count + 1 ELSE j.rate_limit_blocked_count END,
         metadata = j.metadata || COALESCE((SELECT metadata_update FROM params), '{{}}'::jsonb),
@@ -560,7 +587,8 @@ snoozed AS (
       AND j.locked_by_worker = (SELECT worker_id FROM params)
       AND (j.schedule_to_close IS NULL
            OR clock_timestamp() + (SELECT delay FROM params) <= j.schedule_to_close)
-      AND (j.retry_kind = 'indefinite'
+      AND ($7::text = 'snoozed'
+           OR j.retry_kind = 'indefinite'
            OR j.attempt < j.max_attempts
            OR j.schedule_to_close IS NOT NULL)
     RETURNING j.*, 'snoozed'::text AS outcome_branch, clock_timestamp() AS now_ts
@@ -580,6 +608,7 @@ max_attempts_failed AS (
     WHERE j.id = (SELECT job_id FROM params)
       AND j.status = 'running'
       AND j.locked_by_worker = (SELECT worker_id FROM params)
+      AND $7::text IN ('reservation_denied', 'rate_limit_denied')
       AND j.retry_kind <> 'indefinite'
       AND j.attempt >= j.max_attempts
       AND j.schedule_to_close IS NULL
@@ -789,11 +818,16 @@ deadline_evt AS (
 SELECT * FROM snoozed
 UNION ALL SELECT * FROM max_attempts_failed
  UNION ALL SELECT * FROM deadline_failed""",
-        # The RetryAfter(consume_budget=False) arm carries the same
-        # three-arm budget-gated structure and the same fixed ceiling as
-        # mark_snoozed above — same rationale (see that template's
-        # comment).  The outcome here is always a plain snooze, so only
-        # snooze_count increments.
+        # The RetryAfter(consume_budget=False) arm is an actor-requested
+        # deferral — a server Retry-After honoured without spending
+        # budget — so it carries the mark_snoozed 'snoozed' contract in
+        # full: the claim's attempt increment is REFUNDED (attempt - 1,
+        # floored at 0), the ceiling is never touched, the deferral is
+        # unbounded (downstream may be unready for hours; attempt
+        # oscillates and never walks the smallint column), and the only
+        # terminal exit is the schedule_to_close deadline.  See the
+        # mark_snoozed comment for the corpus convention.  The outcome
+        # here is always a plain snooze, so only snooze_count increments.
         mark_retry_after_consume_false=f"""\
 WITH params AS (
     SELECT $1::uuid AS job_id,
@@ -812,6 +846,7 @@ snoozed AS (
         last_heartbeat_at = NULL,
         cancel_phase = 0,
         cancel_requested_at = NULL,
+        attempt = GREATEST(j.attempt - 1, 0),
         snooze_count = j.snooze_count + 1,
         progress_seq = (SELECT progress_seq FROM params),
         progress_state = CASE WHEN (SELECT progress_state FROM params) IS NOT NULL THEN COALESCE(j.progress_state, '{{}}'::jsonb) || (SELECT progress_state FROM params) ELSE j.progress_state END
@@ -820,31 +855,7 @@ snoozed AS (
       AND j.locked_by_worker = (SELECT worker_id FROM params)
       AND (j.schedule_to_close IS NULL
            OR clock_timestamp() + (SELECT delay FROM params) <= j.schedule_to_close)
-      AND (j.retry_kind = 'indefinite'
-           OR j.attempt < j.max_attempts
-           OR j.schedule_to_close IS NOT NULL)
     RETURNING j.*, 'snoozed'::text AS outcome_branch, clock_timestamp() AS now_ts
-),
-max_attempts_failed AS (
-    UPDATE "{s}".jobs j
-    SET status = 'failed',
-        finished_at = clock_timestamp(),
-        error_class = 'MaxAttemptsExceeded',
-        error_message = 'retry budget exhausted',
-        error_traceback = NULL,
-        locked_by_worker = NULL,
-        lock_expires_at = NULL,
-        last_heartbeat_at = NULL,
-        progress_seq = (SELECT progress_seq FROM params),
-        progress_state = CASE WHEN (SELECT progress_state FROM params) IS NOT NULL THEN COALESCE(j.progress_state, '{{}}'::jsonb) || (SELECT progress_state FROM params) ELSE j.progress_state END
-    WHERE j.id = (SELECT job_id FROM params)
-      AND j.status = 'running'
-      AND j.locked_by_worker = (SELECT worker_id FROM params)
-      AND j.retry_kind <> 'indefinite'
-      AND j.attempt >= j.max_attempts
-      AND j.schedule_to_close IS NULL
-      AND NOT EXISTS (SELECT 1 FROM snoozed)
-    RETURNING j.*, 'max_attempts_failed'::text AS outcome_branch, clock_timestamp() AS now_ts
 ),
 deadline_failed AS (
     UPDATE "{s}".jobs j
@@ -864,30 +875,10 @@ deadline_failed AS (
       AND j.schedule_to_close IS NOT NULL
       AND clock_timestamp() + (SELECT delay FROM params) > j.schedule_to_close
       AND NOT EXISTS (SELECT 1 FROM snoozed)
-      AND NOT EXISTS (SELECT 1 FROM max_attempts_failed)
     RETURNING j.*, 'deadline_failed'::text AS outcome_branch, clock_timestamp() AS now_ts
 ),
 holder AS (
     SELECT id FROM "{s}".workers WHERE id = $2 FOR KEY SHARE
-),
-max_attempts_att AS (
-    INSERT INTO "{s}".job_attempts
-    (job_id, attempt, started_at, finished_at, outcome,
-     error_class, error_message, error_traceback, duration_ms, worker_id, metadata)
-    SELECT m.id, m.attempt, m.started_at, clock_timestamp(), 'failed',
-           'MaxAttemptsExceeded', 'retry budget exhausted', NULL,
-           trunc(EXTRACT(EPOCH FROM (m.finished_at - m.started_at)) * 1000)::int,
-           (SELECT id FROM holder), '{{}}'::jsonb
-    FROM max_attempts_failed m
-),
-max_attempts_evt AS (
-    INSERT INTO "{s}".job_events
-    (job_id, occurred_at, kind, detail)
-    SELECT m.id, clock_timestamp(), 'state_change',
-           jsonb_build_object('from_state', 'running', 'to_state', 'failed',
-                              'error_class', 'MaxAttemptsExceeded',
-                              'worker_id', $2::text)
-    FROM max_attempts_failed m
 ),
 deadline_att AS (
     INSERT INTO "{s}".job_attempts
@@ -909,7 +900,6 @@ deadline_evt AS (
     FROM deadline_failed d
 )
 SELECT * FROM snoozed
-UNION ALL SELECT * FROM max_attempts_failed
 UNION ALL SELECT * FROM deadline_failed""",
         # ── Shared INSERT templates ────────────────────────────────
         # Same holder-CTE idiom as INSERT_ATTEMPT_SQL (see _sql.py for the

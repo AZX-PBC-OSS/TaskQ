@@ -21,12 +21,13 @@ import pytest
 from pydantic import BaseModel
 
 from taskq._ids import new_uuid
-from taskq.backend._protocol import AttemptOutcome, JobRow
+from taskq.backend._protocol import JobRow
 from taskq.context import JobContext
 from taskq.testing.actor import EmptyPayload, FakeBackend, as_backend, default_actor_config
 from taskq.testing.clock import FakeClock
 from taskq.testing.jobs import make_job_row
 from taskq.worker._consumer import consume_one_job
+from taskq.worker._handlers import AttemptOutcome
 
 _NOW = datetime(2025, 1, 1, tzinfo=UTC)
 _WORKER_ID = new_uuid()
