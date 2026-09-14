@@ -123,3 +123,37 @@ async def test_actor_runner_custom_job_id(
     )
     assert observed_id == custom_id
     assert observed_attempt == 3
+
+
+# ── part 4: deferral-cycle contract through the harness ────────
+
+
+async def test_actor_runner_snooze_count_parameter_reaches_the_context(
+    actor_runner: ActorRunnerCallable,
+    memory_jobs: InMemoryBackend,
+) -> None:
+    """The ``snooze_count`` parameter exercises a deferral-cycled actor
+    beyond first dispatch.
+
+    Without the parameter the harness silently defaulting to 0 would let
+    a snooze-N-then-succeed actor test pass while only ever exercising
+    first-dispatch behaviour — false confidence, the exact silent-gap
+    shape the issue tracks. The actor below is the documented contract
+    (keyed off ``ctx.snooze_count``, as the PG e2e pins): it must observe
+    the value the caller supplied.
+    """
+    observed: list[int] = []
+
+    def cycler(payload: object, ctx: JobContext[BaseModel]) -> bool:
+        observed.append(ctx.snooze_count)
+        return ctx.snooze_count >= 2
+
+    result = await actor_runner(
+        cycler,
+        {},
+        backend=memory_jobs,
+        snooze_count=2,
+    )
+
+    assert result is True
+    assert observed == [2]
