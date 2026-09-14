@@ -68,13 +68,18 @@ class _StubContext:
     """Minimal context passed to actor stubs by ``run_until_drained``.
 
     The full ``JobContext`` arrives later; here, stubs receive a duck-typed
-    object with the fields they read: ``job_id``, ``attempt``, ``payload``,
-    ``cancel_event``, and ``cancellation_requested``.  Aligned with the
-    production ``taskq.context.JobContext`` shape at the duck-typed
-    ``cancel_event`` / ``cancellation_requested`` level.
+    object with the fields they read: ``job_id``, ``attempt``,
+    ``snooze_count``, ``payload``, ``cancel_event``, and
+    ``cancellation_requested``.  Aligned with the production
+    ``taskq.context.JobContext`` shape at the duck-typed
+    ``cancel_event`` / ``cancellation_requested`` level and at the
+    deferral-cycle contract: ``snooze_count`` carries the row's count of
+    completed non-consuming deferrals at dispatch time, so an actor
+    keyed off it behaves identically under the test runner and the PG
+    worker.
     """
 
-    __slots__ = ("attempt", "cancel_event", "job_id", "payload")
+    __slots__ = ("attempt", "cancel_event", "job_id", "payload", "snooze_count")
 
     def __init__(
         self,
@@ -82,11 +87,13 @@ class _StubContext:
         attempt: int,
         payload: dict[str, object],
         cancel_event: asyncio.Event | None,
+        snooze_count: int = 0,
     ) -> None:
         self.job_id = job_id
         self.attempt = attempt
         self.payload = payload
         self.cancel_event = cancel_event
+        self.snooze_count = snooze_count
 
     @property
     def cancellation_requested(self) -> bool:
@@ -160,6 +167,7 @@ def _build_run_actor(
             attempt=job_row.attempt,
             payload=job_row.payload,
             cancel_event=cancel_events.get(job_row.id),
+            snooze_count=job_row.snooze_count,
         )
         result = stub(job_row.payload, stub_ctx)
         if isinstance(result, Awaitable):

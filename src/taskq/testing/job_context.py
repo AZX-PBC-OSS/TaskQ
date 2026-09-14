@@ -50,6 +50,7 @@ class JobContext[P: BaseModel]:
     worker_id: UUID
     jobs: SubJobEnqueuer
     log: structlog.stdlib.BoundLogger
+    snooze_count: int = 0
     deps: dict[str, object] | None = field(default=None)
     abort_requested: threading.Event = field(default_factory=threading.Event)
 
